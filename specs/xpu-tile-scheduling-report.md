@@ -78,7 +78,11 @@ rerun once (`SPANS_ONLY=1`) after a launch-count bookkeeping fix
 (`8663d500`); a later row supersedes an earlier one with the same key. The
 first legs — `rows-hip-20260906-1810`, `rows-cpu-20260906-1810`, and the
 CPU rerun `rows-cpu-20260906-1502-full` after the barrier-fission fix
-(`e0fa4871`) — are the `Before` sides of the trials in §4. One row per (workload, shape, KPI); the noise band is
+(`e0fa4871`) — are the `Before` sides of the trials in §4. The quiet-box
+second runs of the legs of record (`rows-hip-20260906-1624`,
+`rows-cpu-20260906-1637`, same device code on `9e67e1c2`, the developer
+keeping the box idle) are the `--bands` source for every later trial: a
+KPI's band is the union of its two runs (§4 T-004 and T-005, §5). One row per (workload, shape, KPI); the noise band is
 min/max over five blocks (over frames for the frame stand-in); `pending`
 rows name what could not be measured here and why. `bandwidth_fraction` is
 pending on every kernel until §2 has the device's achievable bandwidth; the
@@ -568,6 +572,22 @@ changed (before `rows-hip-20260906-1810`, after `-1532`): 43 keep, 4
 +7% (0.887 → 0.953 µs), seam 50 µs isolated overhead +4%. The same reading
 as T-002: drift, and the band source is 0.3.3.
 
+T-004 / T-005 — 0.3.2, the second run on a quiet box (the developer at the
+keyboard, nothing competing; same device code, `9e67e1c2`): gfx1151
+`rows-hip-20260906-1532` → `-1624`, CPU `rows-cpu-20260906-1529` → `-1637`,
+paired without `--bands` so the table is the drift itself. gfx1151: 68 keep,
+7 `worse`, 54 `single` — `wmmaGemm` 2048² +5.9% isolated and +6.2%
+pipelined (with its derived rate and bandwidth), `matmulTiled` 2048²
+isolated +1.2%, llm decode −0.4% against a 0.35%-wide band. CPU: 61 keep,
+10 `worse`, 50 `single` — `dot` 16M +6.9% isolated and +16.4% pipelined
+(with its derived rows; the same kernel drifted +31% in T-002), `saxpy` 16M
+pipelined +4.6%, `wmmaGemm` 512² isolated +2.7%, `matmulTiled` 1024² at
+the band's edge (+0.4%). These are the unstable KPIs of §5. From here every
+trial passes `--bands=` with these second-run files, so each KPI's band is
+the union of its two quiet-box runs. A first attempt handed the trial the
+after run itself as the bands and read 129 of 129 `keep`; the tool now
+refuses a bands file carrying the after run's identity.
+
 ## 5. Residuals
 
 Changes that measured worse or flat and shipped gated off, with the row that
@@ -576,7 +596,8 @@ decided it and what would reopen it.
 | Residual | Trial | Why | Reopen when |
 |---|---|---|---|
 | CLOSED 2026-09-06 — CPU backend: `dot`, `reduceSum`, `matmulTiled`, `cg`, `degenerate` were pending | baseline → T-001 | The CPU barrier fission declined a uniform loop whose code after its last barrier was the latch block (`CpuBarrierFission.cpp` started a region at the latch and walked around the loop: "unstructured barrier control flow"). Fixed in `cpu-barrier-fission-loops` Unit 1 (cajeta `e0fa4871`; 7 tests, a per-work-item latch is now declined by name); the CPU leg reran the same day: 112 rows, 14 pending, all of them `bandwidth_fraction` (§3.3). Unit 0's two silences (the skip note, the failure count) stay in place | closed |
-| CPU-leg verdicts: one run's band understates run-to-run drift | T-001, T-002 | Two runs of identical code minutes apart (T-002) flagged 9 of 43 banded KPIs — `dot` 1M isolated +31%, `stencil5` 1024² pipelined +18%, seam rows at 200 µs by sub-microsecond amounts; the fission trial (T-001) flagged 5 of the same kind on paths it never touched, and the gfx1151 rerun (T-003, no device code changed) 4 of 47. A five-block band from one run is a few percent wide on a 32-core host at `auto` power; drift between runs is not | scheduling 0.3.2 (the day-apart pair) with 0.3.3 (`trial --bands`: per KPI the wider of the within-run band and the day-apart spread); until then a CPU-leg `worse` is reported, not gating |
+| CPU-leg verdicts: one run's band understates run-to-run drift | T-001, T-002 | Two runs of identical code minutes apart (T-002) flagged 9 of 43 banded KPIs — `dot` 1M isolated +31%, `stencil5` 1024² pipelined +18%, seam rows at 200 µs by sub-microsecond amounts; the fission trial (T-001) flagged 5 of the same kind on paths it never touched, and the gfx1151 rerun (T-003, no device code changed) 4 of 47. A five-block band from one run is a few percent wide on a 32-core host at `auto` power; drift between runs is not | closed 2026-09-06 by 0.3.2 + 0.3.3: every trial from here passes `--bands=rows-hip-20260906-1624.jsonl` or `rows-cpu-20260906-1637.jsonl` (the quiet-box second runs of the legs of record), so a KPI's band is the union of its two runs |
+| Unstable KPIs: drift between two quiet-box runs wider than one run's band | T-004, T-005 | gfx1151: `wmmaGemm` 2048² (6%), `matmulTiled` 2048² (1.2%), llm decode tokens/s (0.4% against a 0.35% band). CPU backend: `dot` 16M (7–16%; +31% in T-002 — the fissioned reduce is the least stable kernel there), `saxpy` 16M (4.6%), `wmmaGemm` 512² (2.7%), `matmulTiled` 1024² (0.4%, the band's edge). Their union bands are that wide | a scheduler claim on one of these shows a delta beyond the union band, or measures with more blocks; a third run does not narrow a band that is honestly wide |
 | `bandwidth_fraction` pending on every kernel | baseline | needs the device's measured achievable bandwidth | scheduling Unit 2 fills §2 |
 | CLOSED 2026-09-06 — `matrix_core_fraction`, `attention_kernel_duration` were not produced by the harness | baseline → 0.2.4 | `run.sh` profiles the llm bench and `xpubench-report spans --llm` derives them as rows: 92.9% (a lower bound, shared kernels counted as prefill), 58.0 µs decode and 904.6 µs prefill attention, plus `device_busy` 98.7%; the ring's own accounting decides whether the totals-based rows are trusted (§3.5) | closed |
 | `per_token_p99` pending | baseline | `SchedThroughput` prints a per-run mean, not per-token latencies | cajeta-llm's bench emits per-token timings (profiles plan Unit 1 needs it) |

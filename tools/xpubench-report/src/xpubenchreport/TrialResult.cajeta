@@ -10,11 +10,16 @@ public final class TrialResult {
     public int32 widened;
     /** KPIs paired at all (a row in both files). */
     public int32 paired;
+    /** The trial was refused: `--bands` carried the after run's own identity,
+     *  so the union would contain every after median and every verdict
+     *  would be `keep` by construction. */
+    public boolean refused;
 
     public TrialResult() {
         this.worse = 0;
         this.single = 0;
         this.widened = 0;
         this.paired = 0;
+        this.refused = false;
     }
 }

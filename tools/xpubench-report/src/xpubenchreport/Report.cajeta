@@ -342,6 +342,9 @@ public final class Report {
             bands.appendAll(p);
         }
         TrialResult res #= Report.trialRows(b, af, bands, id, unit, commit, date);
+        if (res.refused) {
+            return 2;
+        }
         return res.worse == 0 ? 0 : 1;
     }
 
@@ -378,6 +381,21 @@ public final class Report {
     public static #TrialResult trialRows(ArrayList<Row> b, ArrayList<Row> af, ArrayList<Row> bands,
                                          String id, String unit, String commit, String date) {
         TrialResult res = heap TrialResult();
+        // The bands must come from a rerun of the BEFORE code. Handed the
+        // after run itself, the union contains every after median and the
+        // trial reads `keep` on every row — measured on 2026-09-06, 129 of
+        // 129, before this check existed.
+        if (bands.count() > 0 && af.count() > 0) {
+            String ib #= bands.get(0).identity();
+            String ia #= af.get(0).identity();
+            if (ib.equals(ia)) {
+                System.stderr.println("xpubench-report: --bands must be a rerun of the BEFORE code, "
+                    + "not the after run (same identity: " + ia + "); refusing a trial whose "
+                    + "every verdict would be keep by construction");
+                res.refused = true;
+                return res;
+            }
+        }
         System.stdout.println("| Trial | Date | Plan / unit | Workload | Device | KPI | Before | After | Delta | Noise band | Commit | Verdict | Note |");
         System.stdout.println("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
         int32 x = 0;

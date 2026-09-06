@@ -476,12 +476,14 @@ const char* kTrialDriver =
     "import cajeta.collection.ArrayList;\n"
     "import cajeta.lang.String;\n"
     "public class DriveT {\n"
+    // the run a row belongs to: before 06, the day-apart pair 07, after 08
+    "    static String when = \"2026-09-06\";\n"
     "    static #String row(String wl, String kpi, String unit, float64 med, float64 lo, float64 hi, int32 n) {\n"
     "        return \"{\\\"workload\\\":\\\"\" + wl + \"\\\",\\\"shape\\\":\\\"s\\\",\\\"kpi\\\":\\\"\" + kpi\n"
     "            + \"\\\",\\\"unit\\\":\\\"\" + unit + \"\\\",\\\"median\\\":\" + med + \",\\\"min\\\":\" + lo\n"
     "            + \",\\\"max\\\":\" + hi + \",\\\"p95\\\":0,\\\"n\\\":\" + n\n"
     "            + \",\\\"device\\\":\\\"d\\\",\\\"backend\\\":\\\"hip\\\",\\\"driver\\\":\\\"v\\\",\\\"compiler\\\":\\\"c\\\",\"\n"
-    "            + \"\\\"powerMode\\\":\\\"auto\\\",\\\"date\\\":\\\"2026-09-06\\\",\\\"arm\\\":\\\"baseline\\\",\\\"note\\\":\\\"\\\"}\\n\";\n"
+    "            + \"\\\"powerMode\\\":\\\"auto\\\",\\\"date\\\":\\\"\" + DriveT.when + \"\\\",\\\"arm\\\":\\\"baseline\\\",\\\"note\\\":\\\"\\\"}\\n\";\n"
     "    }\n"
     "    static #ArrayList<Report.Row> rows(String json) {\n"
     "        ArrayList<Report.Row> list = heap ArrayList<Report.Row>();\n"
@@ -491,12 +493,14 @@ const char* kTrialDriver =
     "    }\n"
     // before: a frame p99 (single), a five-block saxpy duration, a seam kernel_time (single)
     "    static #String before() {\n"
+    "        DriveT.when = \"2026-09-06\";\n"
     "        return DriveT.row(\"frame\", \"frame_p99\", \"ms\", 5.184, 5.184, 5.184, 1)\n"
     "            + DriveT.row(\"kernel.saxpy\", \"duration_isolated\", \"us\", 44.71, 43.45, 57.74, 5)\n"
     "            + DriveT.row(\"seam\", \"kernel_time\", \"us\", 6.46, 6.46, 6.46, 1);\n"
     "    }\n"
     // the day-apart rerun of the same code: p99 4.937, saxpy drifted to 60 [58, 62]; no seam row
     "    static #String pair() {\n"
+    "        DriveT.when = \"2026-09-07\";\n"
     "        return DriveT.row(\"frame\", \"frame_p99\", \"ms\", 4.937, 4.937, 4.937, 1)\n"
     "            + DriveT.row(\"kernel.saxpy\", \"duration_isolated\", \"us\", 60.0, 58.0, 62.0, 5);\n"
     "    }\n"
@@ -505,30 +509,40 @@ const char* kTrialDriver =
     "        ArrayList<Report.Row> a #= DriveT.rows(afterJson);\n"
     "        ArrayList<Report.Row> p #= DriveT.rows(withBands ? DriveT.pair() : \"\");\n"
     "        TrialResult r #= Report.trialRows(b, a, p, \"T-test\", \"u\", \"c\", \"\");\n"
+    "        if (r.refused) { return -1; }\n"
     "        return r.worse * 1000 + r.single * 100 + r.widened * 10 + r.paired;\n"
+    "    }\n"
+    // the after rows, built as a fresh run (08) unless a case says otherwise
+    "    static #String after(float64 p99) {\n"
+    "        return DriveT.row(\"frame\", \"frame_p99\", \"ms\", p99, p99, p99, 1)\n"
+    "            + DriveT.row(\"kernel.saxpy\", \"duration_isolated\", \"us\", 61.0, 60.0, 62.5, 5)\n"
+    "            + DriveT.row(\"seam\", \"kernel_time\", \"us\", 7.0, 7.0, 7.0, 1);\n"
+    "    }\n"
+    // --bands handed the after run itself (same identity): refused, not 100% keep
+    "    public static int32 bandsIsAfter() {\n"
+    "        DriveT.when = \"2026-09-07\";\n"
+    "        String a #= DriveT.after(5.1);\n"
+    "        return DriveT.run(a, true);\n"
     "    }\n"
     // p99 5.1 inside [4.937, 5.184]; saxpy 61 inside the union [43.45, 62] though
     // outside one run's band; kernel_time 7.0 has no partner -> single.
     // Expect worse 0, single 1, widened 2, paired 3 -> 0123.
     "    public static int32 insideUnion() {\n"
-    "        String a #= DriveT.row(\"frame\", \"frame_p99\", \"ms\", 5.1, 5.1, 5.1, 1)\n"
-    "            + DriveT.row(\"kernel.saxpy\", \"duration_isolated\", \"us\", 61.0, 60.0, 62.5, 5)\n"
-    "            + DriveT.row(\"seam\", \"kernel_time\", \"us\", 7.0, 7.0, 7.0, 1);\n"
+    "        DriveT.when = \"2026-09-08\";\n"
+    "        String a #= DriveT.after(5.1);\n"
     "        return DriveT.run(a, true);\n"
     "    }\n"
     // p99 5.5 past the pair's spread, slower: worse 1 -> 1123.
     "    public static int32 outsideUnion() {\n"
-    "        String a #= DriveT.row(\"frame\", \"frame_p99\", \"ms\", 5.5, 5.5, 5.5, 1)\n"
-    "            + DriveT.row(\"kernel.saxpy\", \"duration_isolated\", \"us\", 61.0, 60.0, 62.5, 5)\n"
-    "            + DriveT.row(\"seam\", \"kernel_time\", \"us\", 7.0, 7.0, 7.0, 1);\n"
+    "        DriveT.when = \"2026-09-08\";\n"
+    "        String a #= DriveT.after(5.5);\n"
     "        return DriveT.run(a, true);\n"
     "    }\n"
     // the same after rows without --bands: p99 and kernel_time single, saxpy 61 is
     // outside [43.45, 57.74] -> worse 1, single 2, widened 0, paired 3 -> 1203.
     "    public static int32 noBands() {\n"
-    "        String a #= DriveT.row(\"frame\", \"frame_p99\", \"ms\", 5.1, 5.1, 5.1, 1)\n"
-    "            + DriveT.row(\"kernel.saxpy\", \"duration_isolated\", \"us\", 61.0, 60.0, 62.5, 5)\n"
-    "            + DriveT.row(\"seam\", \"kernel_time\", \"us\", 7.0, 7.0, 7.0, 1);\n"
+    "        DriveT.when = \"2026-09-08\";\n"
+    "        String a #= DriveT.after(5.1);\n"
     "        return DriveT.run(a, false);\n"
     "    }\n"
     "}\n";
@@ -559,4 +573,6 @@ TEST(XpuBenchHarness, trialBandsFromDayApartPair) {
     EXPECT_EQ(call("insideUnion"), 123) << "worse.single.widened.paired: expected 0/1/2/3";
     EXPECT_EQ(call("outsideUnion"), 1123) << "a p99 past the pair's spread must gate";
     EXPECT_EQ(call("noBands"), 1203) << "without --bands the single-run rule stands";
+    EXPECT_EQ(call("bandsIsAfter"), -1)
+        << "--bands with the after run's own identity must be refused, not read as all keep";
 }
