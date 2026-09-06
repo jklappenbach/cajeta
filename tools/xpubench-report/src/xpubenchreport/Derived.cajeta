@@ -1,0 +1,27 @@
+package xpubenchreport;
+
+import cajeta.lang.String;
+
+/**
+ * A row derived from device spans, before it is written to the leg's rows
+ * file: either a value with a unit, or `pending` with the reason in `note`.
+ */
+public final class Derived {
+    public String workload;
+    public String shape;
+    public String kpi;
+    public String unit;
+    public float64 value;
+    public boolean pending;
+    public String note;
+
+    public Derived() {
+        this.workload = "";
+        this.shape = "";
+        this.kpi = "";
+        this.unit = "";
+        this.value = 0.0;
+        this.pending = false;
+        this.note = "";
+    }
+}

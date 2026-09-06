@@ -1,0 +1,421 @@
+package xpubenchreport;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+
+/**
+ * Device spans → report rows (xpu-tile-scheduling plan 0.2.4).
+ *
+ * The harness rows are host-clocked. A profiled pass of the same workload
+ * gives per-kernel device spans through `cajeta profile summary --csv`, and
+ * this class turns them into the rows the host clock cannot produce:
+ *
+ *   device_span                per iteration of the workload: the sum over
+ *                              its kernels (with multiplicity) of the average
+ *                              device span — `dot` is dot + finalSum2, the CG
+ *                              stand-in is seven launches.
+ *   device_time_per_iteration  the same figure for the CG stand-in, beside
+ *   queue_empty_time           100 x (1 - device / wall): the share of an
+ *                              iteration's wall in which the device had
+ *                              nothing queued.
+ *   llm: matrix_core_fraction  WMMA kernels' device time over prefill device
+ *                              time (total minus the decode-only kernels;
+ *                              shared kernels count as prefill, so a lower
+ *                              bound), attention_kernel_duration (decode
+ *                              attention + its reduce, per layer per token),
+ *                              prefill_attention_kernel_duration,
+ *                              device_busy (device time / wall).
+ *
+ * Every figure is built from per-kernel AVERAGES times a launch count the
+ * harness recorded (`launches` rows), never from the CSV's totals alone: the
+ * capture ring overwrites its oldest records, so a lossy run keeps the tail
+ * and its totals lie (8,000 of 43,874 kept, no prefill kernel among them —
+ * report §3.5). When the CSV says records were dropped, or a kernel has
+ * fewer records than the harness launched, the rows are `pending` with the
+ * count in the note rather than a number that is wrong.
+ */
+public final class Spans {
+    public ArrayList<Span> spans;
+    /** From the CSV's `# gpu_records_kept=N gpu_records_dropped=M` line; -1
+     *  when the summary carried none (a trace without ring accounting). */
+    public int64 kept;
+    public int64 dropped;
+
+    public Spans() {
+        this.spans = heap ArrayList<Span>();
+        this.kept = (int64) 0 - (int64) 1;
+        this.dropped = (int64) 0 - (int64) 1;
+    }
+
+    // ── CSV ──────────────────────────────────────────────────────────────
+
+    static int64 longAfter(String line, String key) {
+        int64 at = line.indexOf(key);
+        if (at < (int64) 0) {
+            return (int64) 0 - (int64) 1;
+        }
+        int32 i = (int32) at + key.byteLength();
+        int32 n = line.byteLength();
+        int32 j = i;
+        while (j < n && line.byteAt(j) >= 48 && line.byteAt(j) <= 57) {
+            j = j + 1;
+        }
+        if (j == i) {
+            return (int64) 0 - (int64) 1;
+        }
+        String tok #= line.substring(i, j);
+        return Long.parseLong(tok);
+    }
+
+    /** The k-th comma-separated field of `line` (0-based), or "" past the end. */
+    static #String field(String line, int32 k) {
+        int32 start = 0;
+        int32 idx = 0;
+        int32 i = 0;
+        int32 n = line.byteLength();
+        while (i <= n) {
+            if (i == n || line.byteAt(i) == 44) {
+                if (idx == k) {
+                    return line.substring(start, i);
+                }
+                idx = idx + 1;
+                start = i + 1;
+            }
+            i = i + 1;
+        }
+        return "" + "";
+    }
+
+    /** Parse the summary CSV: a `#` accounting line, the header, one line per
+     *  kernel (name,count,total_ns,self_ns,avg_ns,max_ns). */
+    public static #Spans parse(String csv) {
+        Spans s = heap Spans();
+        int32 start = 0;
+        int32 i = 0;
+        int32 n = csv.byteLength();
+        while (i <= n) {
+            if (i == n || csv.byteAt(i) == 10) {
+                if (i > start) {
+                    String line #= csv.substring(start, i);
+                    if (line.startsWith("#")) {
+                        s.kept = Spans.longAfter(line, "gpu_records_kept=");
+                        s.dropped = Spans.longAfter(line, "gpu_records_dropped=");
+                    } else if (!line.startsWith("name,")) {
+                        Span sp = heap Span();
+                        sp.name #= Spans.field(line, 0);
+                        String c #= Spans.field(line, 1);
+                        String t #= Spans.field(line, 2);
+                        String a #= Spans.field(line, 4);
+                        String m #= Spans.field(line, 5);
+                        if (c.byteLength() > 0 && sp.name.byteLength() > 0) {
+                            sp.count = Long.parseLong(c);
+                            sp.totalNs = Long.parseLong(t);
+                            sp.avgNs = Long.parseLong(a);
+                            sp.maxNs = Long.parseLong(m);
+                            s.spans.add(#sp);
+                        }
+                    }
+                }
+                start = i + 1;
+            }
+            i = i + 1;
+        }
+        return s;
+    }
+
+    public Span find(String name) {
+        int32 i = 0;
+        while (i < this.spans.count()) {
+            Span sp = this.spans.get(i);
+            if (sp.name.equals(name)) {
+                return #= sp;    // a view into the list: ships the borrow, claims no title
+            }
+            i = i + 1;
+        }
+        return null;
+    }
+
+    public int32 count() {
+        return this.spans.count();
+    }
+
+    // ── names with multiplicity ("stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy") ──
+
+    static int32 nameCount(String names) {
+        int32 c = names.byteLength() > 0 ? 1 : 0;
+        int32 i = 0;
+        while (i < names.byteLength()) {
+            if (names.byteAt(i) == 44) {
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return c;
+    }
+
+    static #String nameAt(String names, int32 k) {
+        return Spans.field(names, k);
+    }
+
+    /** Sum over the names list of avg span, in µs; -1 when a name has no record. */
+    public float64 perIterationUs(String names) {
+        float64 ns = 0.0;
+        int32 k = 0;
+        int32 c = Spans.nameCount(names);
+        while (k < c) {
+            String nm #= Spans.nameAt(names, k);
+            Span sp = this.find(nm);
+            if (sp == null) {
+                return 0.0 - 1.0;
+            }
+            ns = ns + (float64) sp.avgNs;
+            k = k + 1;
+        }
+        return ns / 1000.0;
+    }
+
+    /** How many times `name` appears in the names list. */
+    static int32 multiplicity(String names, String name) {
+        int32 m = 0;
+        int32 k = 0;
+        int32 c = Spans.nameCount(names);
+        while (k < c) {
+            String nm #= Spans.nameAt(names, k);
+            if (nm.equals(name)) {
+                m = m + 1;
+            }
+            k = k + 1;
+        }
+        return m;
+    }
+
+    /** True when the ring reported drops, or any named kernel has fewer
+     *  records than the harness launched (iterations x multiplicity). */
+    public boolean lossy(String names, int64 iterations) {
+        if (this.dropped > (int64) 0) {
+            return true;
+        }
+        int32 k = 0;
+        int32 c = Spans.nameCount(names);
+        while (k < c) {
+            String nm #= Spans.nameAt(names, k);
+            Span sp = this.find(nm);
+            if (sp == null) {
+                return true;
+            }
+            int64 expected = iterations * (int64) Spans.multiplicity(names, nm);
+            if (sp.count < expected) {
+                return true;
+            }
+            k = k + 1;
+        }
+        return false;
+    }
+
+    /** The reason a lossy pass is pending: what the ring kept and what was launched. */
+    public #String lossNote(String names, int64 iterations) {
+        int64 recs = (int64) 0;
+        int32 k = 0;
+        int32 c = Spans.nameCount(names);
+        while (k < c) {
+            String nm #= Spans.nameAt(names, k);
+            Span sp = this.find(nm);
+            if (sp != null && Spans.multiplicity(names, nm) > 0) {
+                recs = recs + sp.count / (int64) Spans.multiplicity(names, nm);
+            }
+            k = k + 1;
+        }
+        String d = this.dropped > (int64) 0 ? " (ring dropped " + this.dropped + " records)" : "";
+        return "profiled pass lossy: " + recs + " of " + (iterations * (int64) c)
+            + " launch records for " + names + d + "; rerun with a larger CAJETA_PROFILER_GPU_RING";
+    }
+
+    // ── llm name classes (cajeta-llm kernel names, report §3.5) ─────────────
+
+    public float64 totalNsAll() {
+        float64 t = 0.0;
+        int32 i = 0;
+        while (i < this.spans.count()) {
+            t = t + (float64) this.spans.get(i).totalNs;
+            i = i + 1;
+        }
+        return t;
+    }
+
+    public float64 totalNsMatching(String needle) {
+        float64 t = 0.0;
+        int32 i = 0;
+        while (i < this.spans.count()) {
+            Span sp = this.spans.get(i);
+            if (sp.name.contains(needle)) {
+                t = t + (float64) sp.totalNs;
+            }
+            i = i + 1;
+        }
+        return t;
+    }
+
+    /** Sum of the average spans of every kernel whose name contains `needle`, µs; -1 when none. */
+    public float64 avgUsMatching(String needle) {
+        float64 ns = 0.0;
+        boolean any = false;
+        int32 i = 0;
+        while (i < this.spans.count()) {
+            Span sp = this.spans.get(i);
+            if (sp.name.contains(needle)) {
+                ns = ns + (float64) sp.avgNs;
+                any = true;
+            }
+            i = i + 1;
+        }
+        return any ? ns / 1000.0 : 0.0 - 1.0;
+    }
+
+    static boolean decodeOnly(String name) {
+        return name.contains("Decode") || name.contains("WaveMatVec");
+    }
+
+    /** Device time of the prefill phase: everything minus the decode-only kernels. */
+    public float64 prefillTotalNs() {
+        float64 t = 0.0;
+        int32 i = 0;
+        while (i < this.spans.count()) {
+            Span sp = this.spans.get(i);
+            if (!Spans.decodeOnly(sp.name)) {
+                t = t + (float64) sp.totalNs;
+            }
+            i = i + 1;
+        }
+        return t;
+    }
+
+    // ── derivations ──────────────────────────────────────────────────────
+
+    static #Derived value(String workload, String shape, String kpi, String unit, float64 v, String note) {
+        Derived d = heap Derived();
+        d.workload #= "" + workload;
+        d.shape #= "" + shape;
+        d.kpi #= "" + kpi;
+        d.unit #= "" + unit;
+        d.value = v;
+        d.pending = false;
+        d.note #= "" + note;
+        return d;
+    }
+
+    static #Derived pendingRow(String workload, String shape, String kpi, String why) {
+        Derived d = heap Derived();
+        d.workload #= "" + workload;
+        d.shape #= "" + shape;
+        d.kpi #= "" + kpi;
+        d.unit #= "pending";
+        d.value = 0.0;
+        d.pending = true;
+        d.note #= "" + why;
+        return d;
+    }
+
+    static float64 round(float64 v, int32 places) {
+        float64 m = 1.0;
+        int32 i = 0;
+        while (i < places) {
+            m = m * 10.0;
+            i = i + 1;
+        }
+        float64 x = v * m;
+        float64 r = x >= 0.0 ? (float64) ((int64) (x + 0.5)) : 0.0 - (float64) ((int64) (0.5 - x));
+        return r / m;
+    }
+
+    /**
+     * Rows for one harness workload/shape from its profiled pass. `names` is
+     * the kernel list with multiplicity, `iterations` how many times the
+     * harness issued that list, `wallUs` the host wall per iteration (0 when
+     * the workload has none — the kernel rows, the seam probe).
+     */
+    public static #ArrayList<Derived> derive(Spans s, String workload, String shape, String names,
+                                             int64 iterations, float64 wallUs) {
+        ArrayList<Derived> out = heap ArrayList<Derived>();
+        boolean cgLike = wallUs > 0.0;
+        if (s.lossy(names, iterations)) {
+            String why #= s.lossNote(names, iterations);
+            out.add(#Spans.pendingRow(workload, shape, "device_span", why));
+            if (cgLike) {
+                out.add(#Spans.pendingRow(workload, shape, "device_time_per_iteration", why));
+                out.add(#Spans.pendingRow(workload, shape, "queue_empty_time", why));
+            }
+            return out;
+        }
+        float64 us = s.perIterationUs(names);
+        String prov = "device tier, avg span x launches per iteration (" + names + "), "
+            + iterations + " iterations profiled";
+        out.add(#Spans.value(workload, shape, "device_span", "us", Spans.round(us, 2), prov));
+        if (cgLike) {
+            out.add(#Spans.value(workload, shape, "device_time_per_iteration", "us",
+                                 Spans.round(us, 2), prov));
+            float64 empty = 100.0 * (1.0 - us / wallUs);
+            if (empty < 0.0) {
+                empty = 0.0;
+            }
+            out.add(#Spans.value(workload, shape, "queue_empty_time", "%", Spans.round(empty, 1),
+                                 "100 x (1 - device_time_per_iteration / wall_per_iteration "
+                                 + Spans.round(wallUs, 1) + " us) in the profiled pass"));
+        }
+        return out;
+    }
+
+    /**
+     * Rows for the cajeta-llm run (report §3.5 automated). `wallMs` is the
+     * profiled process's prefill + decode wall. Fractions and busy are
+     * totals-based and pending when the ring dropped records or cannot say;
+     * the attention durations are averages and stand on the kept records.
+     */
+    public static #ArrayList<Derived> deriveLlm(Spans s, String shape, float64 wallMs) {
+        ArrayList<Derived> out = heap ArrayList<Derived>();
+        boolean totalsOk = s.kept >= (int64) 0 && s.dropped == (int64) 0;
+        String why = s.kept < (int64) 0
+            ? "the trace carries no ring accounting, so totals cannot be trusted"
+            : "the capture ring dropped " + s.dropped + " of " + (s.kept + s.dropped)
+              + " records; totals are over the kept tail — rerun with a larger CAJETA_PROFILER_GPU_RING";
+        if (totalsOk) {
+            float64 pre = s.prefillTotalNs();
+            float64 wmma = s.totalNsMatching("Wmma");
+            if (pre > 0.0) {
+                out.add(#Spans.value("llm.prefill", shape, "matrix_core_fraction", "%",
+                                     Spans.round(100.0 * wmma / pre, 1),
+                                     "WMMA kernels' device time / prefill device time (all kernels minus "
+                                     + "the decode-only ones; shared kernels count as prefill — a lower bound)"));
+            } else {
+                out.add(#Spans.pendingRow("llm.prefill", shape, "matrix_core_fraction",
+                                          "no prefill kernel records in the trace"));
+            }
+            if (wallMs > 0.0) {
+                out.add(#Spans.value("llm", shape, "device_busy", "%",
+                                     Spans.round(100.0 * s.totalNsAll() / (wallMs * 1000000.0), 1),
+                                     "device time over prefill + decode wall of the profiled process ("
+                                     + Spans.round(wallMs, 0) + " ms)"));
+            }
+        } else {
+            out.add(#Spans.pendingRow("llm.prefill", shape, "matrix_core_fraction", why));
+            out.add(#Spans.pendingRow("llm", shape, "device_busy", why));
+        }
+        float64 dec = s.avgUsMatching("attnFlashDecode");
+        if (dec >= 0.0) {
+            out.add(#Spans.value("llm.decode", shape, "attention_kernel_duration", "us",
+                                 Spans.round(dec, 1),
+                                 "decode attention + its reduce, avg device span per layer per token"));
+        } else {
+            out.add(#Spans.pendingRow("llm.decode", shape, "attention_kernel_duration",
+                                      "no decode attention kernel record in the trace"));
+        }
+        float64 pre = s.avgUsMatching("attnFlashPrefill");
+        if (pre >= 0.0) {
+            out.add(#Spans.value("llm.prefill", shape, "attention_kernel_duration", "us",
+                                 Spans.round(pre, 1), "prefill attention, avg device span per layer per chunk"));
+        } else {
+            out.add(#Spans.pendingRow("llm.prefill", shape, "attention_kernel_duration",
+                                      "no prefill attention kernel record in the trace (a lossy ring keeps the tail)"));
+        }
+        return out;
+    }
+}

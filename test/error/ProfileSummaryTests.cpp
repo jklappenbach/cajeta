@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -240,4 +241,85 @@ TEST(ProfileSummary, aMissingFileIsAnErrorNotAnEmptySummary) {
     EXPECT_FALSE(cajeta::prof::summarize("/nonexistent/nope.pftrace",
                                          SummaryOptions{}, &s, &err));
     EXPECT_FALSE(err.empty()) << "the failure must say what went wrong";
+}
+
+// ── The device ring's own accounting (xpu-tile-scheduling 0.2.4) ──────────
+//
+// The runtime annotates its `cajeta.profiler.run` instant with
+// gpu_records_kept / gpu_records_dropped (the CAPTURE ring, the one
+// CAJETA_PROFILER_GPU_RING sizes). A summary that could not say whether the
+// ring overflowed left "8,000 of 43,874 launches kept, no prefill kernel
+// among them" indistinguishable from a complete run — averages survived,
+// totals lied (report §3.5, 2026-09-06). The summary reads the annotation
+// and the CSV carries it, so a consumer can refuse totals from a lossy ring.
+extern "C" int32_t __cajeta_pb_uint64(uint8_t* out, uint32_t field, uint64_t v);
+extern "C" int32_t __cajeta_pb_bytes(uint8_t* out, uint32_t field,
+                                     const uint8_t* data, int32_t len);
+
+namespace {
+
+// A trace of two packets: the profiler's meta track and its run instant
+// carrying the two ring annotations. Field numbers as the writer emits them.
+std::string writeMetaOnlyTrace(int64_t kept, int64_t dropped) {
+    uint8_t buf[1024];
+    int32_t n = 0;
+    {   // packet 1: TrackDescriptor{uuid=1, name="cajeta.profiler"}
+        uint8_t td[64];
+        int32_t t = __cajeta_pb_uint64(td, 1, 1);
+        const char* nm = "cajeta.profiler";
+        t += __cajeta_pb_bytes(td + t, 2, (const uint8_t*) nm, (int32_t) std::strlen(nm));
+        uint8_t pkt[96];
+        int32_t p = __cajeta_pb_bytes(pkt, 60, td, t);
+        n += __cajeta_pb_bytes(buf + n, 1, pkt, p);
+    }
+    {   // packet 2: TrackEvent{type=INSTANT(3), track=1, name, annos}
+        uint8_t te[256];
+        int32_t t = __cajeta_pb_uint64(te, 9, 3);
+        t += __cajeta_pb_uint64(te + t, 11, 1);
+        const char* nm = "cajeta.profiler.run";
+        t += __cajeta_pb_bytes(te + t, 23, (const uint8_t*) nm, (int32_t) std::strlen(nm));
+        auto anno = [&](const char* key, int64_t v) {
+            uint8_t da[64];
+            int32_t d = __cajeta_pb_bytes(da, 10, (const uint8_t*) key, (int32_t) std::strlen(key));
+            d += __cajeta_pb_uint64(da + d, 4, (uint64_t) v);
+            t += __cajeta_pb_bytes(te + t, 4, da, d);
+        };
+        anno("gpu_records_kept", kept);
+        anno("gpu_records_dropped", dropped);
+        uint8_t pkt[320];
+        int32_t p = __cajeta_pb_uint64(pkt, 8, 1000);
+        p += __cajeta_pb_bytes(pkt + p, 11, te, t);
+        n += __cajeta_pb_bytes(buf + n, 1, pkt, p);
+    }
+    std::string path = "tmp/profile-summary-ring-" + std::to_string(kept) + ".pftrace";
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return "";
+    std::fwrite(buf, 1, (size_t) n, f);
+    std::fclose(f);
+    return path;
+}
+
+} // namespace
+
+// 0.2.4 — the ring's kept / dropped counts are read from the run annotation.
+TEST(ProfileSummary, deviceRingAccountingIsSurfaced) {
+    std::string path = writeMetaOnlyTrace(8000, 35874);
+    ASSERT_FALSE(path.empty()) << "could not write the fixture under tmp/";
+    Summary s;
+    std::string err;
+    ASSERT_TRUE(cajeta::prof::summarize(path, SummaryOptions{}, &s, &err)) << err;
+    EXPECT_EQ(s.gpuRecordsKept, 8000);
+    EXPECT_EQ(s.gpuRecordsDropped, 35874);
+    std::remove(path.c_str());
+}
+
+// A trace from before the annotation existed says "unknown", not "zero
+// dropped" — a reader must not mistake silence for a complete ring.
+TEST(ProfileSummary, aTraceWithoutRingAccountingSaysUnknown) {
+    if (!exists(amdgpuTrace())) GTEST_SKIP() << "fixture not present: " << amdgpuTrace();
+    Summary s;
+    std::string err;
+    ASSERT_TRUE(cajeta::prof::summarize(amdgpuTrace(), SummaryOptions{}, &s, &err)) << err;
+    EXPECT_EQ(s.gpuRecordsKept, -1);
+    EXPECT_EQ(s.gpuRecordsDropped, -1);
 }

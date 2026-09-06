@@ -37,8 +37,12 @@ shift || true
 EXTRA=("$@")
 
 COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-STAMP="$(date +%Y%m%d-%H%M)"
+# DATE and STAMP are overridable so a leg split across invocations (to fit a
+# tool's timeout: `run.sh cpu --workloads=kernels`, then KEEP_ROWS=1
+# DATE=... STAMP=... `run.sh cpu --workloads=cg,...`) keeps one identity and
+# one rows file; KEEP_ROWS=1 appends to that file instead of truncating it.
+DATE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+STAMP="${STAMP:-$(date +%Y%m%d-%H%M)}"
 ROCM="$(hipconfig --version 2>/dev/null || true)"
 KVER="$(uname -r)"
 DRIVER_HIP="linux ${KVER}, ROCm ${ROCM:-unknown}"
@@ -85,6 +89,82 @@ build_llm() {   # the cajeta-llm SchedThroughput bench, GPU only (no cpu fallbac
     LLM_EXE="$OUT/schedthroughput"
 }
 
+# One profiled pass: the harness under CAJETA_PROFILER with a ring sized to
+# the launch count, the trace summarised per kernel, and the rows the host
+# clock cannot produce derived from the spans and appended to the leg's rows
+# (xpu-tile-scheduling plan 0.2.4; the derivations live in
+# tools/xpubench-report Spans.cajeta). A pass runs one shape and one seam
+# target at a time so every span in the trace belongs to one row.
+#   $1 backend  $2 binary  $3 leg rows  $4 driver  $5 tag  $6 ring  $7.. harness flags
+profile_pass() {
+    local backend="$1" bin="$2" rows="$3" driver="$4" tag="$5" ring="$6"; shift 6
+    local base="$OUT/prof-${tag}-${backend}-${STAMP}"
+    rm -f "$base.pftrace" "$base.jsonl" "$base.csv"
+    echo "[xpubench] profiled pass $tag (ring $ring)"
+    CAJETA_XPU_BACKEND="$backend" CAJETA_PROFILER=1 CAJETA_PROFILER_OUT="$base.pftrace" \
+        CAJETA_PROFILER_GPU_RING="$ring" \
+        "$OUT/$bin" --out="$base.jsonl" --compiler="$COMMIT" --driver="$driver" --date="$DATE" \
+        "$@" > "$base.log" 2>&1 || { echo "[xpubench] profiled pass $tag failed — $base.log" >&2; return 0; }
+    if [[ ! -s "$base.pftrace" ]]; then echo "[xpubench] no trace from pass $tag" >&2; return 0; fi
+    "$CAJETA" profile summary "$base.pftrace" --csv > "$base.csv" 2>/dev/null || { echo "[xpubench] no device track in pass $tag" >&2; return 0; }
+    "$OUT/xpubench-report" spans --csv="$base.csv" --rows="$base.jsonl" --out="$rows"
+}
+
+span_passes() {   # $1 backend  $2 binary  $3 leg rows  $4 driver
+    local backend="$1" bin="$2" rows="$3" driver="$4"
+    local wl
+    wl="$(harness_workloads)"
+    if has_workload "$wl" kernels; then
+        profile_pass "$backend" "$bin" "$rows" "$driver" kernels-small 65536 \
+            --workloads=kernels --kernel-shape=small --blocks=2 --per=5
+        profile_pass "$backend" "$bin" "$rows" "$driver" kernels-large 65536 \
+            --workloads=kernels --kernel-shape=large --blocks=2 --per=5
+    fi
+    if has_workload "$wl" cg; then
+        profile_pass "$backend" "$bin" "$rows" "$driver" cg 262144 --workloads=cg --blocks=2
+    fi
+    if has_workload "$wl" degenerate; then
+        profile_pass "$backend" "$bin" "$rows" "$driver" degenerate 262144 --workloads=degenerate --blocks=2
+    fi
+    if has_workload "$wl" seam; then
+        local t
+        for t in 5 50 200; do
+            profile_pass "$backend" "$bin" "$rows" "$driver" "seam-$t" 65536 \
+                --workloads=seam --seam-targets="$t" --blocks=2
+        done
+    fi
+    # cajeta-llm: the bench process itself under the profiler (the harness
+    # cannot hand its child an extended environment), its wall from the two
+    # lines it prints, the rows derived with --llm.
+    if [[ "$backend" == "hip" && -n "${LLM_EXE:-}" && "$LLM" == "1" ]] && has_workload "$wl" llm; then
+        local base="$OUT/prof-llm-${backend}-${STAMP}"
+        rm -f "$base.pftrace" "$base.csv" "$base.log"
+        echo "[xpubench] profiled pass llm (ring 4194304)"
+        CAJETA_PROFILER=1 CAJETA_PROFILER_OUT="$base.pftrace" CAJETA_PROFILER_GPU_RING=4194304 \
+            "$LLM_EXE" "$MODEL" "prompt=${PROMPT:-2048}" "gen=${GEN:-64}" "ctx=$(( ${PROMPT:-2048} + ${GEN:-64} + 64 ))" \
+            > "$base.log" 2>&1 || { echo "[xpubench] profiled llm run failed — $base.log" >&2; return 0; }
+        local pre dec wall
+        pre="$(awk '/^prefill ms:/ {print $3}' "$base.log" | head -1)"
+        dec="$(awk '/^decode ms:/ {print $3}' "$base.log" | head -1)"
+        if [[ -z "$pre" || -z "$dec" || ! -s "$base.pftrace" ]]; then echo "[xpubench] profiled llm run printed no timings" >&2; return 0; fi
+        wall="$(awk -v a="$pre" -v b="$dec" 'BEGIN { printf "%d", a + b }')"
+        "$CAJETA" profile summary "$base.pftrace" --csv > "$base.csv" 2>/dev/null || return 0
+        "$OUT/xpubench-report" spans --llm --csv="$base.csv" --rows="$rows" --out="$rows" \
+            --shape="prompt${PROMPT:-2048}+gen${GEN:-64}" --wall-ms="$wall"
+    fi
+}
+
+# The --workloads= list this invocation runs (the harness default when the
+# caller passed none), so the profiled passes cover the same set.
+harness_workloads() {
+    local a
+    for a in "${EXTRA[@]}"; do
+        case "$a" in --workloads=*) echo "${a#--workloads=}"; return 0;; esac
+    done
+    echo "kernels,cg,degenerate,frame,pair,seam,llm"
+}
+has_workload() { [[ ",$1," == *",$2,"* ]]; }
+
 run_leg() {   # $1 = backend (hip|cpu), $2 = binary, $3.. = harness flags
     local backend="$1" bin="$2"; shift 2
     local rows="$OUT/rows-${backend}-${STAMP}.jsonl"
@@ -94,22 +174,12 @@ run_leg() {   # $1 = backend (hip|cpu), $2 = binary, $3.. = harness flags
         llmflags=(--llm-exe="$LLM_EXE" --model="$MODEL")
     fi
     echo "[xpubench] leg $backend -> $rows"
-    rm -f "$rows"
+    [[ "${KEEP_ROWS:-0}" == "1" ]] || rm -f "$rows"
     CAJETA_XPU_BACKEND="$backend" "$OUT/$bin" --out="$rows" --compiler="$COMMIT" \
         --driver="$driver" --date="$DATE" "${llmflags[@]}" "$@" "${EXTRA[@]}"
-    # the seam probe again under the profiler: its launch-window slice is the
-    # runtime's own view of the seam (cajeta profile summary --csv)
-    if [[ "${SEAM_TRACE:-1}" == "1" ]]; then
-        local trace="$OUT/seam-${backend}-${STAMP}.pftrace"
-        rm -f "$trace"
-        CAJETA_XPU_BACKEND="$backend" CAJETA_PROFILER=1 CAJETA_PROFILER_OUT="$trace" \
-            "$OUT/$bin" --out="$OUT/seam-profiled-${backend}-${STAMP}.jsonl" --workloads=seam \
-            --blocks=3 --compiler="$COMMIT" --driver="$driver" --date="$DATE" > /dev/null || true
-        if [[ -s "$trace" ]]; then
-            "$CAJETA" profile summary "$trace" --csv > "$OUT/seam-${backend}-${STAMP}.csv" 2>/dev/null || true
-            echo "[xpubench] profiler launch-window per kernel (host tier unless rocprofiler-sdk is installed):"
-            grep -E '^name|^spin' "$OUT/seam-${backend}-${STAMP}.csv" || true
-        fi
+    # the profiled passes: device spans → rows the host clock cannot give
+    if [[ "${SPANS:-1}" == "1" ]]; then
+        span_passes "$backend" "$bin" "$rows" "$driver"
     fi
     echo "[xpubench] rendering $OUT/baseline-${backend}-${STAMP}.md"
     "$OUT/xpubench-report" baseline "$rows" > "$OUT/baseline-${backend}-${STAMP}.md"

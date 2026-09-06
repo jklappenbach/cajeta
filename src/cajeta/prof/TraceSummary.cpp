@@ -37,8 +37,15 @@ namespace cajeta::prof {
         constexpr uint32_t kTeNameIid        = 10;
         constexpr uint32_t kTeTrackUuid      = 11;
         constexpr uint32_t kTeName           = 23;
+        constexpr uint32_t kTeDebugAnnos     = 4;
+        constexpr uint32_t kDaName           = 10;
+        constexpr uint32_t kDaIntValue       = 4;
         constexpr int32_t  kSliceBegin       = 1;
         constexpr int32_t  kSliceEnd         = 2;
+        // The runtime's run-metadata instant (cajeta_rt_prof_trace.c,
+        // __cajeta_prof_trace_metadata): its debug annotations carry the
+        // device capture ring's kept / dropped counts.
+        constexpr const char* kRunMetaEvent  = "cajeta.profiler.run";
 
         struct Field {
             uint32_t       number = 0;
@@ -158,6 +165,37 @@ namespace cajeta::prof {
                         });
                         if (iid) internedName[iid] = name;
                     });
+                } else if (g.number == kPktTrackEvent && g.wire == 2) {
+                    // The run-metadata instant carries the device capture
+                    // ring's accounting as debug annotations. Read here, in
+                    // the descriptor pass, so a trace with no device slice at
+                    // all still reports what its ring did.
+                    std::string name;
+                    std::vector<std::pair<std::string, int64_t>> annos;
+                    walk(g.data, (size_t) g.len, [&](const Field& t) {
+                        if (t.number == kTeName && t.wire == 2) {
+                            name.assign((const char*) t.data, (size_t) t.len);
+                        } else if (t.number == kTeDebugAnnos && t.wire == 2) {
+                            std::string key;
+                            int64_t v = 0;
+                            bool hasV = false;
+                            walk(t.data, (size_t) t.len, [&](const Field& d) {
+                                if (d.number == kDaName && d.wire == 2)
+                                    key.assign((const char*) d.data, (size_t) d.len);
+                                else if (d.number == kDaIntValue && d.wire == 0) {
+                                    v = (int64_t) d.len;
+                                    hasV = true;
+                                }
+                            });
+                            if (hasV) annos.emplace_back(key, v);
+                        }
+                    });
+                    if (name == kRunMetaEvent) {
+                        for (const auto& a : annos) {
+                            if (a.first == "gpu_records_kept") out->gpuRecordsKept = a.second;
+                            else if (a.first == "gpu_records_dropped") out->gpuRecordsDropped = a.second;
+                        }
+                    }
                 }
             });
         });
@@ -314,7 +352,9 @@ namespace cajeta::prof {
                 "  --from=<dur>   window start, relative to the first slice\n"
                 "  --to=<dur>     window end (default: the whole run)\n"
                 "  --host         total HOST frames instead of device kernels\n"
-                "  --csv          machine-readable output\n"
+                "  --csv          machine-readable output; its first line is\n"
+                "                 `# gpu_records_kept=N gpu_records_dropped=M` when\n"
+                "                 the trace carries the device ring's accounting\n"
                 "\n"
                 "<dur> is ns unless suffixed: 500us, 20ms, 1s.\n"
                 "The window is RELATIVE because absolute timestamps are\n"
@@ -389,6 +429,12 @@ namespace cajeta::prof {
         }
 
         if (csv) {
+            // The ring's accounting first, as a comment line, so a consumer
+            // can refuse totals from a lossy ring before it reads a number.
+            if (sum.gpuRecordsKept >= 0) {
+                std::printf("# gpu_records_kept=%" PRId64 " gpu_records_dropped=%" PRId64 "\n",
+                            sum.gpuRecordsKept, sum.gpuRecordsDropped);
+            }
             std::printf("name,count,total_ns,self_ns,avg_ns,max_ns\n");
             for (const auto& r : sum.rows) {
                 std::printf("%s,%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "\n",
@@ -426,6 +472,17 @@ namespace cajeta::prof {
         if (opts.host) {
             std::printf("`total` counts a frame's children too, so that column "
                         "sums to more than the run is long.\n");
+        }
+        if (sum.gpuRecordsKept >= 0) {
+            const int64_t total = sum.gpuRecordsKept + sum.gpuRecordsDropped;
+            std::printf("device records: %" PRId64 " kept, %" PRId64 " dropped (%" PRId64 " per mille)\n",
+                        sum.gpuRecordsKept, sum.gpuRecordsDropped,
+                        total > 0 ? (sum.gpuRecordsDropped * 1000) / total : 0);
+            if (sum.gpuRecordsDropped > 0) {
+                std::printf("the capture ring overwrote its oldest records: averages stand, "
+                            "totals and shares are over the kept tail — "
+                            "set CAJETA_PROFILER_GPU_RING above the launch count\n");
+            }
         }
         return 0;
     }

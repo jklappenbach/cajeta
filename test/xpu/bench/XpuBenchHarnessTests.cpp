@@ -282,3 +282,180 @@ TEST(XpuBenchHarness, trialVerdictRule) {
     EXPECT_EQ(call("singleUp"), 2) << "a zero-width band must not read a delta as a regression";
     EXPECT_EQ(call("singleDown"), 2) << "nor as an improvement: no band, no verdict";
 }
+
+// ── Device spans → rows (xpu-tile-scheduling 0.2.4) ──────────────────────
+//
+// A hand-written `cajeta profile summary --csv` stands in for a profiled
+// pass. Each derivation is asserted on its number; a lossy ring (fewer
+// records than the harness launched, or the ring's own drop count) turns
+// the rows pending rather than wrong. The report tool's own Spans source
+// is compiled from disk.
+namespace {
+
+const char* kSpansDriver =
+    "package xpubenchreport;\n"
+    "import cajeta.collection.ArrayList;\n"
+    "import cajeta.lang.String;\n"
+    "public class DriveS {\n"
+    "    static String CSV = \"# gpu_records_kept=2733 gpu_records_dropped=0\\n\"\n"
+    "        + \"name,count,total_ns,self_ns,avg_ns,max_ns\\n\"\n"
+    "        + \"dot,111,11100000,11100000,100000,150000\\n\"\n"
+    "        + \"finalSum2,111,555000,555000,5000,9000\\n\"\n"
+    "        + \"stencil5,600,60000000,60000000,100000,120000\\n\"\n"
+    "        + \"saxpy,1800,36000000,36000000,20000,30000\\n\";\n"
+    "    static String LOSSY = \"# gpu_records_kept=8000 gpu_records_dropped=35874\\n\"\n"
+    "        + \"name,count,total_ns,self_ns,avg_ns,max_ns\\n\"\n"
+    "        + \"dot,111,11100000,11100000,100000,150000\\n\"\n"
+    "        + \"finalSum2,111,555000,555000,5000,9000\\n\";\n"
+    "    static String NORING = \"name,count,total_ns,self_ns,avg_ns,max_ns\\n\"\n"
+    "        + \"dot,100,10000000,10000000,100000,150000\\n\"\n"
+    "        + \"finalSum2,111,555000,555000,5000,9000\\n\";\n"
+    // §3.5's kernels, totals in ns, avg in ns
+    "    static String LLM = \"# gpu_records_kept=43874 gpu_records_dropped=0\\n\"\n"
+    "        + \"name,count,total_ns,self_ns,avg_ns,max_ns\\n\"\n"
+    "        + \"q4kWmmaKernel,3264,7904200000,7904200000,2421600,6194474\\n\"\n"
+    "        + \"q6kWmmaEpiKernel,544,1470900000,1470900000,2703900,6883774\\n\"\n"
+    "        + \"attnFlashPrefillGqa4Kernel,544,498800000,498800000,916900,2170330\\n\"\n"
+    "        + \"q4kQ8WaveMatVecKernel,7168,871800000,871800000,121600,246425\\n\"\n"
+    "        + \"attnFlashDecodeGqa4Kernel,2048,89200000,89200000,43555,90000\\n\"\n"
+    "        + \"attnFlashDecodeReduceKernel,2048,37300000,37300000,18213,30000\\n\";\n"
+    "    static int32 tenths(float64 v) { return (int32) (v * 10.0 + (v >= 0.0 ? 0.5 : -0.5)); }\n"
+    // parse: four kernels, the ring line read
+    "    public static int32 parsed() {\n"
+    "        Spans s #= Spans.parse(DriveS.CSV);\n"
+    "        if (s.count() != 4) { return 1; }\n"
+    "        if (s.kept != (int64) 2733 || s.dropped != (int64) 0) { return 2; }\n"
+    "        Span d = s.find(\"dot\");\n"
+    "        if (d == null || d.count != (int64) 111 || d.avgNs != (int64) 100000) { return 3; }\n"
+    "        if (s.find(\"gather\") != null) { return 4; }\n"
+    "        Spans n #= Spans.parse(DriveS.NORING);\n"
+    "        if (n.kept != (int64) -1 || n.dropped != (int64) -1) { return 5; }\n"
+    "        return 0;\n"
+    "    }\n"
+    // dot = dot + finalSum2 = 105.0 us; cg = 100 + 2x100 + 5 + 3x20 = 365.0 us; absent -> -1
+    "    public static int32 perIteration() {\n"
+    "        Spans s #= Spans.parse(DriveS.CSV);\n"
+    "        if (DriveS.tenths(s.perIterationUs(\"dot,finalSum2\")) != 1050) { return 1; }\n"
+    "        if (DriveS.tenths(s.perIterationUs(\"stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy\")) != 3650) { return 2; }\n"
+    "        if (s.perIterationUs(\"gather\") >= 0.0) { return 3; }\n"
+    "        return 0;\n"
+    "    }\n"
+    // lossy: counts short of iterations x multiplicity, or the ring's drop count
+    "    public static int32 lossy() {\n"
+    "        Spans s #= Spans.parse(DriveS.CSV);\n"
+    "        if (s.lossy(\"dot,finalSum2\", (int64) 111)) { return 1; }\n"
+    "        if (!s.lossy(\"dot,finalSum2\", (int64) 112)) { return 2; }\n"
+    "        if (s.lossy(\"stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy\", (int64) 55)) { return 3; }\n"
+    "        if (!s.lossy(\"stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy\", (int64) 56)) { return 4; }\n"
+    "        Spans l #= Spans.parse(DriveS.LOSSY);\n"
+    "        if (!l.lossy(\"dot,finalSum2\", (int64) 111)) { return 5; }\n"
+    "        Spans n #= Spans.parse(DriveS.NORING);\n"
+    "        if (!n.lossy(\"dot,finalSum2\", (int64) 111)) { return 6; }\n"   // dot has 100 < 111
+    "        return 0;\n"
+    "    }\n"
+    // cg rows: device_span 365.0, device_time_per_iteration 365.0, queue_empty 100 x (1 - 365/492.7) = 25.9
+    "    public static int32 cgRows() {\n"
+    "        Spans s #= Spans.parse(DriveS.CSV);\n"
+    "        ArrayList<Derived> d #= Spans.derive(s, \"cg\", \"1024x1024x2000\",\n"
+    "            \"stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy\", (int64) 55, 492.7);\n"
+    "        if (d.count() != 3) { return 1; }\n"
+    "        if (!d.get(0).kpi.equals(\"device_span\") || d.get(0).pending) { return 2; }\n"
+    "        if (DriveS.tenths(d.get(0).value) != 3650) { return 3; }\n"
+    "        if (!d.get(1).kpi.equals(\"device_time_per_iteration\") || DriveS.tenths(d.get(1).value) != 3650) { return 4; }\n"
+    "        if (!d.get(2).kpi.equals(\"queue_empty_time\") || !d.get(2).unit.equals(\"%\")) { return 5; }\n"
+    "        if (DriveS.tenths(d.get(2).value) != 259) { return 6; }\n"
+    "        return 0;\n"
+    "    }\n"
+    // a kernel row: one KPI, no wall
+    "    public static int32 kernelRow() {\n"
+    "        Spans s #= Spans.parse(DriveS.CSV);\n"
+    "        ArrayList<Derived> d #= Spans.derive(s, \"kernel.dot\", \"1048576\", \"dot,finalSum2\", (int64) 111, 0.0);\n"
+    "        if (d.count() != 1) { return 1; }\n"
+    "        if (d.get(0).pending || DriveS.tenths(d.get(0).value) != 1050) { return 2; }\n"
+    "        if (!d.get(0).unit.equals(\"us\")) { return 3; }\n"
+    "        return 0;\n"
+    "    }\n"
+    // a lossy pass: every row pending, the note says what was kept and launched
+    "    public static int32 lossyRows() {\n"
+    "        Spans l #= Spans.parse(DriveS.LOSSY);\n"
+    "        ArrayList<Derived> d #= Spans.derive(l, \"cg\", \"1024x1024x2000\", \"dot,finalSum2\", (int64) 111, 492.7);\n"
+    "        if (d.count() != 3) { return 1; }\n"
+    "        int32 i = 0;\n"
+    "        while (i < d.count()) {\n"
+    "            if (!d.get(i).pending || !d.get(i).unit.equals(\"pending\")) { return 2; }\n"
+    "            if (!d.get(i).note.contains(\"35874\")) { return 3; }\n"
+    "            if (!d.get(i).note.contains(\"CAJETA_PROFILER_GPU_RING\")) { return 4; }\n"
+    "            i = i + 1;\n"
+    "        }\n"
+    "        return 0;\n"
+    "    }\n"
+    // llm: fraction 9375.1 / (10872.2 - 998.3) = 94.9%; attention 43.555 + 18.213 = 61.8 us;
+    //      prefill attention 916.9 us; device_busy 10872.2 / 11802 = 92.1%
+    "    public static int32 llmRows() {\n"
+    "        Spans s #= Spans.parse(DriveS.LLM);\n"
+    "        ArrayList<Derived> d #= Spans.deriveLlm(s, \"prompt2048+gen64\", 11802.0);\n"
+    "        if (d.count() != 4) { return 1; }\n"
+    "        if (!d.get(0).kpi.equals(\"matrix_core_fraction\") || d.get(0).pending) { return 2; }\n"
+    "        if (DriveS.tenths(d.get(0).value) != 949) { return 3; }\n"
+    "        if (!d.get(1).kpi.equals(\"device_busy\") || DriveS.tenths(d.get(1).value) != 921) { return 4; }\n"
+    "        if (!d.get(2).kpi.equals(\"attention_kernel_duration\") || !d.get(2).workload.equals(\"llm.decode\")) { return 5; }\n"
+    "        if (DriveS.tenths(d.get(2).value) != 618) { return 6; }\n"
+    "        if (!d.get(3).workload.equals(\"llm.prefill\") || DriveS.tenths(d.get(3).value) != 9169) { return 7; }\n"
+    "        return 0;\n"
+    "    }\n"
+    // llm on a lossy ring: the totals-based rows pending, the averages still stand
+    "    public static int32 llmLossy() {\n"
+    "        String csv = \"# gpu_records_kept=8000 gpu_records_dropped=35874\\n\"\n"
+    "            + \"name,count,total_ns,self_ns,avg_ns,max_ns\\n\"\n"
+    "            + \"q4kQ8WaveMatVecKernel,7168,871800000,871800000,121600,246425\\n\"\n"
+    "            + \"attnFlashDecodeGqa4Kernel,832,36200000,36200000,43555,90000\\n\";\n"
+    "        Spans s #= Spans.parse(csv);\n"
+    "        ArrayList<Derived> d #= Spans.deriveLlm(s, \"prompt2048+gen64\", 11802.0);\n"
+    "        if (d.count() != 4) { return 1; }\n"
+    "        if (!d.get(0).pending || !d.get(0).note.contains(\"35874\")) { return 2; }\n"
+    "        if (!d.get(1).pending) { return 3; }\n"
+    "        if (d.get(2).pending || DriveS.tenths(d.get(2).value) != 436) { return 4; }\n"
+    "        if (!d.get(3).pending) { return 5; }\n"   // prefill attention lost with the head of the ring
+    "        return 0;\n"
+    "    }\n"
+    "}\n";
+
+std::unique_ptr<CajetaJit> compileSpans() {
+    std::map<std::string, std::string> sources;
+    std::string dir = here() + "/../../../tools/xpubench-report/src/xpubenchreport/";
+    sources["xpubenchreport.Span"] = readFile(dir + "Span.cajeta");
+    sources["xpubenchreport.Derived"] = readFile(dir + "Derived.cajeta");
+    sources["xpubenchreport.Spans"] = readFile(dir + "Spans.cajeta");
+    sources["xpubenchreport.DriveS"] = kSpansDriver;
+    return CajetaJit::compile(sources, "xpubenchreport.DriveS", cpuOptions());
+}
+
+} // namespace
+
+// 0.2.4 — each derived row asserted on its number.
+TEST(XpuBenchHarness, deviceSpansDeriveRows) {
+    auto jit = compileSpans();
+    ASSERT_NE(jit, nullptr);
+    auto call = [&](const char* name) {
+        auto f = jit->lookup<int (*)()>(name);
+        return f ? f() : -1;
+    };
+    EXPECT_EQ(call("parsed"), 0);
+    EXPECT_EQ(call("perIteration"), 0);
+    EXPECT_EQ(call("cgRows"), 0);
+    EXPECT_EQ(call("kernelRow"), 0);
+    EXPECT_EQ(call("llmRows"), 0);
+}
+
+// 0.2.4 — a lossy ring marks the rows pending rather than wrong.
+TEST(XpuBenchHarness, lossyRingMarksSpanRowsPending) {
+    auto jit = compileSpans();
+    ASSERT_NE(jit, nullptr);
+    auto call = [&](const char* name) {
+        auto f = jit->lookup<int (*)()>(name);
+        return f ? f() : -1;
+    };
+    EXPECT_EQ(call("lossy"), 0);
+    EXPECT_EQ(call("lossyRows"), 0);
+    EXPECT_EQ(call("llmLossy"), 0);
+}

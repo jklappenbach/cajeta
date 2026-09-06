@@ -3,8 +3,11 @@ package xpubenchreport;
 import cajeta.codec.json.Json;
 import cajeta.codec.json.JsonObject;
 import cajeta.codec.json.JsonValue;
+import cajeta.codec.json.JsonWriter;
 import cajeta.collection.ArrayList;
 import cajeta.io.file.File;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.OpenMode;
 import cajeta.lang.String;
 
 /**
@@ -238,6 +241,14 @@ public final class Report {
         i = 0;
         while (i < rows.count()) {
             Row r = rows.get(i);
+            // `launches` is bookkeeping for the spans verb, not a KPI. A
+            // pending row is superseded by a measured row with the same key
+            // (the harness writes `pending` for what a later profiled pass
+            // then fills), so the table shows the number, not both.
+            if (r.kpi.equals("launches") || (r.unit.equals("pending") && Report.hasMeasured(rows, r))) {
+                i = i + 1;
+                continue;
+            }
             if (r.unit.equals("pending")) {
                 System.stdout.println("| " + r.workload + " | " + r.shape + " | " + r.backend
                     + " | " + r.kpi + " | pending | | | | " + Report.cell(r.note) + " |");
@@ -253,6 +264,24 @@ public final class Report {
             i = i + 1;
         }
         return 0;
+    }
+
+    /** True when another row with `r`'s key carries a measurement. */
+    static boolean hasMeasured(ArrayList<Row> rows, Row r) {
+        String key #= r.key();
+        int32 j = 0;
+        while (j < rows.count()) {
+            Row o = rows.get(j);
+            j = j + 1;
+            if (o == r || o.unit.equals("pending")) {
+                continue;
+            }
+            String ko #= o.key();
+            if (ko.equals(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static #String opt(String[] args, String key, String dflt) {
@@ -303,7 +332,7 @@ public final class Report {
         while (x < b.count()) {
             Row rb = b.get(x);
             x = x + 1;
-            if (rb.unit.equals("pending")) {
+            if (rb.unit.equals("pending") || rb.kpi.equals("launches")) {
                 continue;
             }
             String key #= rb.key();
@@ -354,9 +383,117 @@ public final class Report {
         return worse == 0 ? 0 : 1;
     }
 
+    /**
+     * xpubench-report spans --csv=<summary.csv> --rows=<profiled-run rows>
+     *     --out=<leg rows.jsonl> [--llm --shape=<shape> --wall-ms=<int>]
+     *
+     * Device-span rows from one profiled pass (plan 0.2.4). The pass's own
+     * rows give the identity, the `launches` rows (value = iterations, note
+     * = kernel names with multiplicity) and, for the CG stand-in, the wall
+     * per iteration; the CSV gives the spans (Spans). The rows are appended
+     * to the leg's file so `baseline` and `trial` see them beside the
+     * host-clocked ones, with the same identity. `--llm` derives the
+     * cajeta-llm rows instead, from the profiled process's wall.
+     */
+    public static int32 spans(String[] args) {
+        String csvPath #= Report.opt(args, "--csv=", "");
+        String rowsPath #= Report.opt(args, "--rows=", "");
+        String outPath #= Report.opt(args, "--out=", "");
+        String shape #= Report.opt(args, "--shape=", "");
+        String wallS #= Report.opt(args, "--wall-ms=", "0");
+        boolean llm = false;
+        int32 a = 0;
+        while (a < (int32) args.count()) {
+            if (args[a].equals("--llm")) {
+                llm = true;
+            }
+            a = a + 1;
+        }
+        if (csvPath.byteLength() == 0 || rowsPath.byteLength() == 0 || outPath.byteLength() == 0) {
+            System.stderr.println("usage: xpubench-report spans --csv=<summary.csv> --rows=<profiled rows> "
+                + "--out=<leg rows> [--llm --shape=<shape> --wall-ms=<int>]");
+            return 2;
+        }
+        int8[] cb #= File.readAllBytes(csvPath);
+        if (cb == null) {
+            System.stderr.println("xpubench-report: cannot read " + csvPath);
+            return 1;
+        }
+        String csv #= heap String(#cb, (int32) cb.count());
+        Spans s #= Spans.parse(csv);
+        ArrayList<Row> rows #= Report.loadFile(rowsPath);
+        if (rows.count() == 0) {
+            System.stderr.println("xpubench-report: no rows in " + rowsPath);
+            return 1;
+        }
+        Row id = rows.get(0);
+        ArrayList<Derived> all = heap ArrayList<Derived>();
+        if (llm) {
+            ArrayList<Derived> d #= Spans.deriveLlm(s, shape, (float64) Long.parseLong(wallS));
+            all.appendAll(d);
+        } else {
+            int32 i = 0;
+            while (i < rows.count()) {
+                Row r = rows.get(i);
+                if (r.kpi.equals("launches") && !r.unit.equals("pending")) {
+                    float64 wall = 0.0;
+                    int32 j = 0;
+                    while (j < rows.count()) {
+                        Row w = rows.get(j);
+                        if (w.kpi.equals("wall_per_iteration") && w.workload.equals(r.workload)
+                            && w.shape.equals(r.shape) && !w.unit.equals("pending")) {
+                            wall = w.median;
+                        }
+                        j = j + 1;
+                    }
+                    ArrayList<Derived> d #= Spans.derive(s, r.workload, r.shape, r.note,
+                                                         (int64) r.median, wall);
+                    all.appendAll(d);
+                }
+                i = i + 1;
+            }
+        }
+        int32 k = 0;
+        while (k < all.count()) {
+            Report.writeRow(outPath, id, all.get(k));
+            k = k + 1;
+        }
+        System.stdout.println("xpubench-report: " + all.count() + " span row(s) appended to " + outPath
+            + (s.dropped > (int64) 0 ? " (ring dropped " + s.dropped + " records)" : ""));
+        return 0;
+    }
+
+    /** One derived row in the harness's row schema, with the pass's identity. */
+    static void writeRow(String path, Row id, Derived d) {
+        JsonWriter w = heap JsonWriter();
+        w.beginObject();
+        w.key("workload");  w.writeString(d.workload);
+        w.key("shape");     w.writeString(d.shape);
+        w.key("kpi");       w.writeString(d.kpi);
+        w.key("unit");      w.writeString(d.unit);
+        w.key("median");    w.writeNumber(d.value);
+        w.key("min");       w.writeNumber(d.value);
+        w.key("max");       w.writeNumber(d.value);
+        w.key("p95");       w.writeNumber(0.0);
+        w.key("n");         w.writeNumber(d.pending ? (int64) 0 : (int64) 1);
+        w.key("device");    w.writeString(id.device);
+        w.key("backend");   w.writeString(id.backend);
+        w.key("driver");    w.writeString(id.driver);
+        w.key("compiler");  w.writeString(id.compiler);
+        w.key("powerMode"); w.writeString(id.powerMode);
+        w.key("date");      w.writeString(id.date);
+        w.key("arm");       w.writeString(id.arm);
+        w.key("note");      w.writeString(d.note);
+        w.endObject();
+        FileWriter f #= File.openWrite(path, OpenMode.APPEND);
+        w.writeLineTo(f);
+        f.close();
+    }
+
     public static int32 main(String[] args) {
         if (args.count() < 2) {
-            System.stderr.println("usage: xpubench-report baseline <rows.jsonl>... | trial <before> <after> --id= --unit= --commit=");
+            System.stderr.println("usage: xpubench-report baseline <rows.jsonl>... | trial <before> <after> "
+                + "--id= --unit= --commit= | spans --csv= --rows= --out= [--llm --shape= --wall-ms=]");
             return 2;
         }
         String verb = args[0];
@@ -365,6 +502,9 @@ public final class Report {
         }
         if (verb.equals("trial")) {
             return Report.trial(args);
+        }
+        if (verb.equals("spans")) {
+            return Report.spans(args);
         }
         System.stderr.println("xpubench-report: unknown verb " + verb);
         return 2;

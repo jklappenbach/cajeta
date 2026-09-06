@@ -159,6 +159,10 @@ public final class Harness {
         int32 llmRuns = Harness.optInt(args, "--llm-runs=", 5);
         int32 prompt = Harness.optInt(args, "--prompt=", 2048);
         int32 gen = Harness.optInt(args, "--gen=", 64);
+        // A profiled pass (plan 0.2.4) runs one shape and one seam target at
+        // a time, so a kernel's device spans in the trace belong to one row.
+        String kernelShape #= Harness.opt(args, "--kernel-shape=", "both");
+        String seamTargets #= Harness.opt(args, "--seam-targets=", "5,50,200");
 
         System.stdout.println("=== xpubench — xpu-tile baseline harness ===");
         String backend = Device.activeBackend();
@@ -256,21 +260,23 @@ public final class Harness {
             System.stdout.println("--- arm " + arm + " ---");
 
             if (Harness.has(workloads, "kernels")) {
-                System.stdout.println("[kernels]");
-                Workloads.saxpy(rows, small, "" + (int32) small);
-                Workloads.saxpy(rows, large, "" + (int32) large);
-                Workloads.dot(rows, small, "" + (int32) small);
-                Workloads.dot(rows, large, "" + (int32) large);
-                Workloads.stencil(rows, stW, stH, "" + (int32) stW + "x" + (int32) stH);
-                Workloads.stencil(rows, stWL, stHL, "" + (int32) stWL + "x" + (int32) stHL);
-                Workloads.reduce(rows, small, "" + (int32) small);
-                Workloads.reduce(rows, large, "" + (int32) large);
-                Workloads.matmul(rows, mmSmall, "" + (int32) mmSmall + "^2");
-                Workloads.matmul(rows, mmLarge, "" + (int32) mmLarge + "^2");
-                Workloads.wmma(rows, mmSmall, "" + (int32) mmSmall + "^2");
-                Workloads.wmma(rows, mmLarge, "" + (int32) mmLarge + "^2");
-                Workloads.gather(rows, small, "" + (int32) small);
-                Workloads.gather(rows, large, "" + (int32) large);
+                System.stdout.println("[kernels] shape " + kernelShape);
+                boolean doSmall = !kernelShape.equals("large");
+                boolean doLarge = !kernelShape.equals("small");
+                if (doSmall) { Workloads.saxpy(rows, small, "" + (int32) small); }
+                if (doLarge) { Workloads.saxpy(rows, large, "" + (int32) large); }
+                if (doSmall) { Workloads.dot(rows, small, "" + (int32) small); }
+                if (doLarge) { Workloads.dot(rows, large, "" + (int32) large); }
+                if (doSmall) { Workloads.stencil(rows, stW, stH, "" + (int32) stW + "x" + (int32) stH); }
+                if (doLarge) { Workloads.stencil(rows, stWL, stHL, "" + (int32) stWL + "x" + (int32) stHL); }
+                if (doSmall) { Workloads.reduce(rows, small, "" + (int32) small); }
+                if (doLarge) { Workloads.reduce(rows, large, "" + (int32) large); }
+                if (doSmall) { Workloads.matmul(rows, mmSmall, "" + (int32) mmSmall + "^2"); }
+                if (doLarge) { Workloads.matmul(rows, mmLarge, "" + (int32) mmLarge + "^2"); }
+                if (doSmall) { Workloads.wmma(rows, mmSmall, "" + (int32) mmSmall + "^2"); }
+                if (doLarge) { Workloads.wmma(rows, mmLarge, "" + (int32) mmLarge + "^2"); }
+                if (doSmall) { Workloads.gather(rows, small, "" + (int32) small); }
+                if (doLarge) { Workloads.gather(rows, large, "" + (int32) large); }
             }
             if (Harness.has(workloads, "cg")) {
                 System.stdout.println("[cg]");
@@ -291,10 +297,11 @@ public final class Harness {
                 Workloads.frame(rows, (uint32) frameN, frames, 16667, true, soloP99, "pair");
             }
             if (Harness.has(workloads, "seam")) {
-                System.stdout.println("[seam]");
-                Workloads.seam(rows, 5);
-                Workloads.seam(rows, 50);
-                Workloads.seam(rows, 200);
+                System.stdout.println("[seam] targets " + seamTargets);
+                String st = "," + seamTargets + ",";
+                if (st.contains(",5,")) { Workloads.seam(rows, 5); }
+                if (st.contains(",50,")) { Workloads.seam(rows, 50); }
+                if (st.contains(",200,")) { Workloads.seam(rows, 200); }
             }
             if (Harness.has(workloads, "llm")) {
                 if (llmExe.byteLength() == 0 || model.byteLength() == 0) {

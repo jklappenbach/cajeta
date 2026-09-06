@@ -1,0 +1,20 @@
+package xpubenchreport;
+
+import cajeta.lang.String;
+
+/** One kernel's line of `cajeta profile summary --csv`. */
+public final class Span {
+    public String name;
+    public int64 count;
+    public int64 totalNs;
+    public int64 avgNs;
+    public int64 maxNs;
+
+    public Span() {
+        this.name = "";
+        this.count = (int64) 0;
+        this.totalNs = (int64) 0;
+        this.avgNs = (int64) 0;
+        this.maxNs = (int64) 0;
+    }
+}

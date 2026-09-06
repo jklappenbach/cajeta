@@ -60,6 +60,16 @@ namespace cajeta::prof {
         bool    sawAnyTrack = false;       // a trace with no matching track at
                                            // all is a different failure from
                                            // one whose window excluded them
+        /**
+         * The device CAPTURE ring's own accounting, from the runtime's
+         * `cajeta.profiler.run` annotation (gpu_records_kept / _dropped). The
+         * ring overwrites its oldest records, so a lossy run keeps the tail:
+         * averages survive, totals and fractions do not. -1 when the trace
+         * carries no such annotation (a run from before 2026-09-02, or a
+         * host-only profile) — unknown, which is not the same as zero dropped.
+         */
+        int64_t gpuRecordsKept = -1;
+        int64_t gpuRecordsDropped = -1;
     };
 
     /**

@@ -60,6 +60,14 @@ public final class Workloads {
                            float64[] iso, int32 isoN, float64[] isoBlocks, int32 isoB,
                            float64[] pipeBlocks, int32 pipeB, int64 bytes, int64 flops,
                            int64 failures) {
+        // What one iteration of this workload launches, with multiplicity,
+        // and how many iterations this run issued (warm-up + isolated +
+        // pipelined): the `spans` verb of xpubench-report pairs a profiled
+        // pass's per-kernel device spans with exactly these (plan 0.2.4).
+        String names = name.equals("dot") ? "dot,finalSum2"
+            : (name.equals("reduceSum") ? "reduceSum,finalSum2" : "" + name);
+        int32 iterations = 1 + isoN + pipeB * Workloads.pipeCount;
+        rows.single("kernel." + name, shape, "launches", "iterations", (float64) iterations, names);
         if (failures > 0) {
             // The runtime prints one stderr line per launch it could not run and
             // returns; the host clock then times nothing. Those are not rows.
@@ -644,6 +652,9 @@ public final class Workloads {
         rows.row(workload, shape, "wall_per_iteration", "us", Stats.round(usPerIter, 2),
                  Stats.round(1000000.0 / ipsHi, 2), Stats.round(1000000.0 / ipsLo, 2), 0.0,
                  Workloads.blocks, "1e6 / iterations_per_second; band from its band");
+        rows.single(workload, shape, "launches", "iterations",
+                    (float64) (1 + perBlockIters * Workloads.blocks),
+                    "stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy");
     }
 
     // ── the frame stand-in ───────────────────────────────────────────────
@@ -845,14 +856,17 @@ public final class Workloads {
         out.upload(hz);
         KernelStream s #= KernelStream.create();
         int64 f0 = Device.launchFailures();
-        // calibrate: ns per iteration from a pipelined batch at 200k iters
+        // calibrate: ns per iteration from a pipelined batch at 200k iters.
+        // Its own kernel name (`spinCal`), so a profiled pass sees the target
+        // launches under `spin` alone: eleven ~240 us calibration launches in
+        // a 5 us target's average would read it as 8.6 us (plan 0.2.4).
         uint32 calIters = 200000;
-        spin.launch(s, grid: [1], block: [1])(out, calIters);
+        spinCal.launch(s, grid: [1], block: [1])(out, calIters);
         s.sync();
         int64 c0 = Clock.nanoTime();
         int32 k = 0;
         while (k < 10) {
-            spin.launch(s, grid: [1], block: [1])(out, calIters);
+            spinCal.launch(s, grid: [1], block: [1])(out, calIters);
             k = k + 1;
         }
         s.sync();
@@ -915,6 +929,7 @@ public final class Workloads {
         }
         rows.single("seam", shape, "kernel_time", "us", Stats.round(kernelUs, 2),
                     "spin(" + (int32) iters + ") pipelined x100; calibrated from " + Stats.round(nsPerIter, 3) + " ns/iter");
+        rows.single("seam", shape, "launches", "iterations", (float64) (100 + nb * 2 * per), "spin");
         rows.row("seam", shape, "launch_call", "us",
                  Stats.round(Stats.median(callB, nb), 3), Stats.round(Stats.min(callB, nb), 3),
                  Stats.round(Stats.max(callB, nb), 3), Stats.round(Stats.percentile(call, per, 95), 3),
@@ -1143,6 +1158,24 @@ public final class Workloads {
     public static void spin(KernelBuffer<float32> out, uint32 iters) {
         // xorshift32: an integer recurrence no optimizer folds to a closed
         // form (a float FMA chain with constant coefficients was folded).
+        uint32 x = 2463534242;
+        uint32 i = 0;
+        while (i < iters) {
+            x = x ^ (x << 13);
+            x = x ^ (x >> 17);
+            x = x ^ (x << 5);
+            i = i + 1;
+        }
+        if (KernelThread.globalIdX() == 0) {
+            out[0] = (float32) (x & 1023);
+        }
+    }
+
+    // The same loop under its own name, for the seam probe's calibration
+    // launches only: a profiled pass then sees the target launches under
+    // `spin` alone (plan 0.2.4).
+    @Kernel
+    public static void spinCal(KernelBuffer<float32> out, uint32 iters) {
         uint32 x = 2463534242;
         uint32 i = 0;
         while (i < iters) {
