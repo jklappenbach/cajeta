@@ -794,7 +794,22 @@ int32_t __cajeta_prof_cupti_flush(void) {
 
 void __cajeta_prof_cupti_reset(void) {
     pthread_mutex_lock(&caj_cupti_mutex);
-    if (caj_cupti.lib) { caj_cupti_libclose(caj_cupti.lib); caj_cupti.lib = NULL; }
+    // The library handle is deliberately NOT closed, and caj_cupti.path is
+    // kept: once bound, libcupti is PINNED for the life of the process.
+    //
+    // CUPTI patches libcuda's driver dispatch table the first time any CUPTI
+    // API runs — and register_timestamp_callback runs on every bind, WSL2's
+    // refusal (CUptiResult 39) included: it initializes the interception
+    // layer and THEN says no. dlclose would unmap the code those patched
+    // pointers target while the pointers stay in the driver; the next cuInit
+    // calls through the stale hook and the process dies with rip == the dead
+    // address. That was the WSL SIGSEGV in
+    // XpuDeviceProfileNvidiaDeviceTests.rawQueryAnswersOnCuda whenever any
+    // CUPTI test ran earlier in the same binary (gdb: cuInit -> ?? at an
+    // unmapped address, libcupti absent from `info sharedlibrary`). The old
+    // comment here assumed the registration "belongs to the library handle";
+    // it belongs to the driver, which we cannot unpatch. A later init reuses
+    // caj_cupti.lib and rebinds. Every OTHER field resets below.
     caj_cupti.state = CAJETA_CUPTI_UNATTEMPTED;
     caj_cupti.bound = 0;
     caj_cupti.has_ts_callback = 0;
@@ -802,9 +817,9 @@ void __cajeta_prof_cupti_reset(void) {
     caj_cupti.ts_registered = 0;
     caj_cupti.ts_status = -1;
     caj_cupti.kinds_enabled = 0;
-    // Unlike rocprofiler's process-wide force_configure, CUPTI's registration
-    // belongs to the library handle reset just closed — so a later init may,
-    // and must, configure again.
+    // A later init must configure again (cuptiActivityRegisterCallbacks is
+    // re-registered on the still-loaded library; CUPTI replaces the pair).
+    // NOT because the handle was closed — it wasn't (see above).
     caj_cupti.configured = 0;
     caj_cupti.ts_first = 0;
     caj_cupti.records = 0;
@@ -815,7 +830,8 @@ void __cajeta_prof_cupti_reset(void) {
     caj_cupti.pops = 0;
     __cajeta_prof_cupti_corr_reset();
     memset(&caj_cupti.api, 0, sizeof(caj_cupti.api));
-    caj_cupti.path[0] = '\0';
+    // caj_cupti.path is kept: it names the pinned library, which is still
+    // loaded — clearing it would report a mapping that is in fact present.
     caj_cupti.reason[0] = '\0';
     pthread_mutex_unlock(&caj_cupti_mutex);
 }
@@ -840,7 +856,15 @@ int32_t __cajeta_prof_cupti_init(void) {
     }
     char tried[CAJ_CUPTI_PATH_MAX];
     tried[0] = '\0';
-    void* lib = caj_cupti_load(tried, sizeof(tried));
+    // A handle pinned by an earlier bind is REUSED, never re-dlopen'd (so the
+    // refcount does not creep one per reset/init cycle) and never closed —
+    // see __cajeta_prof_cupti_reset for why the mapping must outlive us.
+    void* lib = caj_cupti.lib;
+    if (lib) {
+        snprintf(tried, sizeof(tried), "%s", caj_cupti.path);
+    } else {
+        lib = caj_cupti_load(tried, sizeof(tried));
+    }
     if (!lib) {
         char why[CAJ_CUPTI_REASON_MAX];
         const char* err = caj_cupti_liberr();
@@ -865,7 +889,10 @@ int32_t __cajeta_prof_cupti_init(void) {
                      "submit-to-complete",
                      tried, caj_cupti_entries[missing].name,
                      caj_cupti.bound, CAJ_CUPTI_ENTRY_COUNT);
-            caj_cupti_libclose(lib);
+            // Only a handle loaded by THIS call may be closed: no CUPTI API
+            // has run on it yet, so the driver holds no pointers into it. A
+            // pinned handle (a previous bind's) is left mapped — see reset.
+            if (lib != caj_cupti.lib) caj_cupti_libclose(lib);
             caj_cupti.bound = 0;
             memset(&caj_cupti.api, 0, sizeof(caj_cupti.api));
             caj_cupti_say(CAJETA_CUPTI_ABSENT, tried, why);

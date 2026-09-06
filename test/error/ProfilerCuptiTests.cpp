@@ -10,6 +10,7 @@
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "../../runtime/native/cajeta_prof_abi.h"
+#include "../xpu/XpuDeviceTestUtil.h"
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
@@ -265,6 +266,49 @@ TEST(ProfilerCupti, presentCuptiBindsAllCoreEntryPoints) {
     std::printf(" RESULT u12_cupti_path=%s\n", c.libPath() ? c.libPath() : "");
     std::printf(" RESULT u12_cupti_entries=%d\n", c.entriesBound());
     std::printf(" RESULT u12_has_timestamp_callback=%d\n", c.hasTsCallback());
+    c.reset();
+}
+
+// --- the pinned-library rule ------------------------------------------------
+// CUPTI patches libcuda's driver dispatch table the first time any CUPTI API
+// runs — register_timestamp_callback does, on every bind, and on WSL2 it
+// initializes the interception layer and THEN refuses (CUptiResult 39).
+// dlclose'ing libcupti afterwards unmaps the code those patched pointers
+// target while the pointers stay in the driver; the next cuInit calls through
+// the stale hook and the process SIGSEGVs with rip == the dead address. That
+// was the WSL SIGSEGV in XpuDeviceProfileNvidiaDeviceTests.rawQueryAnswersOnCuda
+// whenever ANY CUPTI test ran earlier in the same binary (gdb: libcupti mapped
+// at 0x7ffff50b6170-0x7ffff54c4804, unloaded, then cuInit -> rip
+// 0x7ffff51032b0, inside the former range). The rule under test: once bound,
+// libcupti is pinned for the life of the process — reset() clears state,
+// never the mapping — and the pinned library is reusable by a later init.
+//
+// The sequence is exactly the one that faulted, and deliberately calls no
+// cuInit before the bind: the crash was on the FIRST cuInit after a
+// bind+reset. Pre-fix, the cudaAvailable() line below killed the process.
+TEST(ProfilerCupti, aBoundCuptiStaysMappedAcrossResetSoCuInitDoesNotFault) {
+    auto& c = cu();
+    ASSERT_TRUE(c.init && c.reset && c.state);
+    c.reset();
+    if (!c.init()) {
+        GTEST_SKIP() << "CUPTI not loadable here ("
+                     << (c.reason() ? c.reason() : "no reason")
+                     << ") — nothing to pin";
+    }
+    ASSERT_EQ(c.state(), CAJETA_CUPTI_READY);
+    // bind (a real CUPTI call ran, hooks are in the driver) -> reset -> cuInit.
+    c.reset();
+    EXPECT_EQ(c.state(), CAJETA_CUPTI_UNATTEMPTED);
+    const bool cuda = cajeta::xpu::test::cudaAvailable();   // pre-fix: SIGSEGV
+    if (!cuda) {
+        GTEST_SKIP() << "no CUDA device: the post-reset cuInit ran WITHOUT "
+                        "faulting, which is the contract; the reuse half below "
+                        "needs a device";
+    }
+    // And the pinned library is reusable: a second bind is still READY.
+    EXPECT_TRUE(c.init())
+        << "a later init could not rebind the pinned libcupti";
+    EXPECT_EQ(c.state(), CAJETA_CUPTI_READY);
     c.reset();
 }
 
