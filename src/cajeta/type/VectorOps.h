@@ -636,32 +636,48 @@ namespace vecops {
             }
         }
 
-        // Tier 2 — portable partial reduction. The CORRECTNESS fallback for
-        // targets with no hand-written path; measured NOT to reach vpdp* on
-        // x86 (see Tier 1.5), so it is not the performance story it was
-        // originally specified to be.
+        // Tier 2 — portable, fully SPECIFIED reduction. The CORRECTNESS
+        // fallback for targets with no hand-written path; measured NOT to
+        // reach vpdp* on x86 (see Tier 1.5), so it is not the performance
+        // story it was originally specified to be.
+        //
+        // This tier used to call llvm.vector.partial.reduce.add after a
+        // deinterleave that assumed the intrinsic reduces STRIDED lanes
+        // (result[i] = in[i] + in[i+N] + in[i+2N] + in[i+3N]). LangRef says
+        // the intrinsic's lane grouping is UNSPECIFIED, and it moved under the
+        // r10 LLVM 23 fork — measured with lli on x86-64 (generic AND native):
+        // result[i] = in[i] + in[i+8] + in[i+16] + in[i+24] for i < 8, then
+        // the same over the upper half. A halved, stride-8 grouping. Every
+        // input lane still counted once (the 16 results sum to the full total),
+        // so nothing was dropped — the deinterleave simply targeted a grouping
+        // that no longer exists, and every lane of the product landed in the
+        // wrong sum. The full-sweep tripwire
+        // VectorDotAccumTests.genericTargetUsesThePortablePartialReduction
+        // returned 100 (lane 0 wrong) on WSL and Windows alike, and nothing
+        // else ran this tier after the r10 upgrade: Tier 1.5 (VNNI) and Tier 3
+        // (scalar) never touch the intrinsic, so their tests stayed green.
+        //
+        // Now: four explicit lane gathers — mul lanes 4i+k for k = 0..3, each
+        // a <n x i32> shuffle — summed into the accumulator. Semantics fixed by
+        // shufflevector, not by an intrinsic's implementation detail; correct
+        // on any LLVM; and still one vector op per step rather than Tier 3's
+        // scalar loop. On a generic target the intrinsic expanded to exactly
+        // this shape anyway, so there is no performance to lose.
         if (!forceScalar && lanes == n * 4) {
             auto* wideTy = llvm::FixedVectorType::get(i32, lanes);
             llvm::Value* we = wUnsigned ? b.CreateZExt(w, wideTy, "dotacc.w")
                                         : b.CreateSExt(w, wideTy, "dotacc.w");
             llvm::Value* ae = b.CreateSExt(a, wideTy, "dotacc.a");
             llvm::Value* mul = b.CreateMul(we, ae, "dotacc.mul");
-            // llvm.vector.partial.reduce.add reduces STRIDED, not adjacent:
-            // result[i] = acc[i] + in[i] + in[i+N] + in[i+2N] + in[i+3N].
-            // vpdpbusd (and the scalar tier) sum lanes 4i..4i+3. Same count,
-            // different lane mapping -- so deinterleave first, putting lane
-            // 4i+k at position k*N+i. Caught by the bit-identical test, which
-            // is exactly what that requirement is for.
-            llvm::SmallVector<int, 64> mask(lanes);
-            for (unsigned k = 0; k < 4; ++k)
-                for (unsigned i = 0; i < n; ++i)
-                    mask[k * n + i] = (int) (i * 4 + k);
-            llvm::Value* shuf = b.CreateShuffleVector(mul, mul, mask,
-                                                      "dotacc.deint");
-            llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
-                m, llvm::Intrinsic::vector_partial_reduce_add,
-                {accTy, wideTy});
-            return b.CreateCall(fn, {acc, shuf}, "dotacc.pr");
+            llvm::Value* sum = acc;
+            for (unsigned k = 0; k < 4; ++k) {
+                llvm::SmallVector<int, 16> mask(n);
+                for (unsigned i = 0; i < n; ++i) mask[i] = (int) (i * 4 + k);
+                llvm::Value* gather = b.CreateShuffleVector(mul, mul, mask,
+                                                            "dotacc.gather");
+                sum = b.CreateAdd(sum, gather, "dotacc.red");
+            }
+            return sum;
         }
 
         // Tier 3 — scalar. The correctness floor, and what

@@ -311,20 +311,34 @@ TEST(VectorDotAccumTests, scalarFallbackIsBitIdentical) {
 // matters as much as the positive: this is the case where VNNI must NOT be
 // reached for, so a tier check that always answered "yes" would fail here.
 //
-// This caught a real defect: llvm.vector.partial.reduce.add reduces STRIDED
-// (result[i] = acc[i] + in[i] + in[i+N] + in[i+2N] + in[i+3N]) while vpdpbusd
-// and the scalar tier sum lanes 4i..4i+3. Same operation count, same result
-// shape, different lane mapping — every dimension checks out and only the
-// values differ. The kernel deinterleaves first. Without the bit-identical
-// requirement above, that would have shipped.
+// This caught a real defect TWICE. First: llvm.vector.partial.reduce.add
+// reduced STRIDED (result[i] = acc[i] + in[i] + in[i+N] + ...) while vpdpbusd
+// and the scalar tier sum lanes 4i..4i+3 — same count, same shape, different
+// lane mapping — and the kernel deinterleaved first to compensate. Second
+// (2026-09-06, the release full sweep, WSL and Windows alike): LangRef says
+// that intrinsic's grouping is UNSPECIFIED, and under the r10 LLVM 23 fork it
+// moved to a halved, stride-8 grouping (measured with lli: result[i] =
+// in[i] + in[i+8] + in[i+16] + in[i+24] for i < 8), so the deinterleave now
+// scrambled every lane and this test returned 100 (lane 0 wrong). Nothing
+// else runs this tier: VNNI and scalar never touch the intrinsic, so their
+// tests stayed green — which is exactly why this test exists. The portable
+// tier is now four explicit lane gathers (mul lanes 4i+k) summed into the
+// accumulator: semantics fixed by shufflevector, correct on any LLVM. The
+// negative assertion on the intrinsic below is the tripwire against ever
+// depending on its grouping again.
 TEST(VectorDotAccumTests, genericTargetUsesThePortablePartialReduction) {
     std::string ir;
     // Names the cpu rather than relying on the default, which became `native`
     // on 2026-08-22. A test that depends on the default being a baseline ISA
     // silently stops testing anything the day that default moves.
     EXPECT_EQ(runI32(DOTACC, true, &ir, "x86-64"), 1);
-    EXPECT_NE(ir.find("vector.partial.reduce.add"), std::string::npos)
-        << "expected the portable partial reduction on a generic target";
+    EXPECT_NE(ir.find("dotacc.gather"), std::string::npos)
+        << "expected the portable explicit-gather reduction on a generic target";
+    EXPECT_EQ(ir.find("vector.partial.reduce.add"), std::string::npos)
+        << "llvm.vector.partial.reduce.add has an UNSPECIFIED lane grouping "
+           "that changed under the r10 LLVM 23 fork (measured: halved, "
+           "stride-8) and scrambled the result; the portable tier must not "
+           "depend on it";
     EXPECT_EQ(ir.find("vpdpbusd"), std::string::npos)
         << "generic x86-64 does not have VNNI; emitting it would not run";
 }
