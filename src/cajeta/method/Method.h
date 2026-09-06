@@ -654,6 +654,16 @@ namespace cajeta {
         static bool nodeHasStackReturn(const AbstractSyntaxNodePtr& node);
         static bool blockHasStackReturn(const BlockPtr& block);
 
+        // The value-shape-by-convention return class: `cajeta.lang.Optional<T>`
+        // (any instantiation, or the template itself). A method or lambda
+        // returning it is ALWAYS sret, whatever its body does — the body scan
+        // above cannot see a relay (`return other.find();`), and a relay typed
+        // as a pointer return `ret`s the struct its callee produced (verifier
+        // failure, or an empty Optional where nothing verifies). Interface
+        // declarations decided by this rule first (#63); methods and lambdas
+        // now agree with them.
+        static bool isValueShapeReturnType(const CajetaTypePtr& t);
+
         // stdlib-ownership-convention U2 — true iff this method's body PROVES
         // its plain (non-`#`) result is a window into the receiver's interior:
         // every return is a `this.field` read (or an index into one), and

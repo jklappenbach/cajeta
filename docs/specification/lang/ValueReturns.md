@@ -222,3 +222,46 @@ return) but ties Way 2 only when NRVO fires.
 
 This keeps **one way**: storage class (stack = copy / heap = reference) is the
 single dimension, now governing `return` identically to assignment and parameters.
+
+## The relay gap, closed (2026-09-06)
+
+The body scan cannot see a **relay**: a method whose body returns an Optional it
+obtained from a call has no `stack` in it.
+
+```cajeta
+Optional<int32> take() { return this.ch.receive(); }   // receive() is sret
+```
+
+Under the scan alone `take` was typed as a pointer return while its body `ret`
+the struct `receive` produced through sret. LLVM's verifier rejects that IR
+("Function return type does not match operand type of return inst"); where
+nothing verified, the caller read the struct bits as a pointer and the Optional
+arrived empty — measured in cabra's LineReader (2026-08-31) and in nine
+`KernelManifest` accessors (2026-09-06; the nine errors printed under other
+`Optional<…>` names because a merged module shares one LLVM struct between
+isomorphic instantiations — `Optional<int32>` and `Optional<Severity>` are both
+`{ ptr, i1, i32 }`).
+
+The determination is now **decided by the return type for the value-shape
+class**: a method, an interface declaration or an inferred lambda that returns
+`cajeta.lang.Optional<T>` (any instantiation) is sret whatever its body does
+(`Method::isValueShapeReturnType`, the predicate the interface path already used
+under #63). The body scan still turns sret on for any other class returned by
+`return stack X(...)`, and an explicit `(P) -> R` / `(P) -> #R` on a lambda's
+LHS stays authoritative. The relay's `return <call>` lands in the sret path's
+non-construction fallback, which copies the callee's value into the caller's
+slot.
+
+Two shapes have nothing to copy and are rejected at the return, not at the first
+caller's segfault:
+
+- `return null;` in a by-value method — `CAJETA_ERROR_NULL_RETURN_BY_VALUE`;
+  write `return stack Optional<T>(false);`.
+- `return heap X(...);` in a by-value method — `CAJETA_ERROR_HEAP_RETURN_BY_VALUE`;
+  write `return stack X(...)`, or declare the return `#T` to hand the caller an
+  owned heap object (that form is untouched by the rule).
+
+`test/parser/OptionalRelayReturnTests.cpp` pins all of this: static-helper and
+generic-instance relays keep flag and value, a two-hop relay through `orElse`,
+the relay's `define void … sret(` shape in IR, the two rejections, the owned
+`#Optional<T>` form still compiling, and an inferred lambda relaying an sret call.

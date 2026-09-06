@@ -1883,6 +1883,41 @@ namespace cajeta {
             && curFn->arg_size() > 0
             && curFn->getArg(0)->hasAttribute(llvm::Attribute::StructRet);
         if ((sretMethod || sretFnSig) && expression) {
+            // Two shapes have NOTHING to copy into the caller's slot, and
+            // used to reach the memcpy below as a null / heap pointer:
+            // `return null` (memcpy from address 0 at run time) and a `heap`
+            // construction (the heap object copied out, then leaked). Both
+            // are one edit away from the by-value spelling; say so here
+            // instead of at the first caller's segfault.
+            {
+                std::string what;
+                if (auto m = module->getCurrentMethod()) {
+                    what = "`" + m->toCanonical(false) + "`";
+                    if (m->getReturnType())
+                        what += " returns `" + m->getReturnType()->toCanonical() + "` by value";
+                } else {
+                    what = "this lambda returns a value-shape class by value";
+                }
+                if (auto tl = dynamic_pointer_cast<TextLiteralExpression>(expression)) {
+                    if (tl->getLiteralType() == LITERAL_TYPE_NULL) {
+                        throw Exception(
+                            what + ", so `return null` has no value to copy into the "
+                            "caller's slot. Return an empty instance instead — for an "
+                            "Optional, `return stack Optional<T>(false);`.",
+                            "CAJETA_ERROR_NULL_RETURN_BY_VALUE");
+                    }
+                }
+                if (auto ne = dynamic_pointer_cast<NewExpression>(expression)) {
+                    if (!ne->getStackAlloc()) {
+                        throw Exception(
+                            what + ", so a `heap` construction here would be copied "
+                            "out and leaked. Write `return stack ...(...)` — or, to "
+                            "hand the caller an owned heap object, declare the return "
+                            "type `#T`.",
+                            "CAJETA_ERROR_HEAP_RETURN_BY_VALUE");
+                    }
+                }
+            }
             llvm::Value* sretPtr = curFn->getArg(0);
             if (auto newExpr = dynamic_pointer_cast<NewExpression>(expression)) {
                 newExpr->setNrvoTarget(sretPtr);

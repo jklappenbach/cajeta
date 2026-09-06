@@ -212,6 +212,19 @@ namespace cajeta {
     // (NewExpression with stackAlloc) or a stack aggregate-initializer. Storage
     // class lives on the construction, not the type — so this is how the
     // compiler learns a method returns by copy.
+    bool Method::isValueShapeReturnType(const CajetaTypePtr& t) {
+        auto klass = dynamic_pointer_cast<CajetaClass>(t);
+        if (!klass || klass->isInterface()) return false;
+        QualifiedNamePtr qn = klass->getQName();
+        if (!qn) return false;
+        // Instantiated generics carry their arguments in the type name
+        // ("Optional<int32>"), the template origin its type vars
+        // ("Optional<T>") — match the base name up to the bracket.
+        const std::string& tn = qn->getTypeName();
+        bool isOptionalName = tn == "Optional" || tn.rfind("Optional<", 0) == 0;
+        return isOptionalName && qn->getPackageName() == "cajeta.lang";
+    }
+
     bool Method::exprIsStackConstruction(const ExpressionPtr& e) {
         if (!e) return false;
         if (auto ne = dynamic_pointer_cast<NewExpression>(e)) {
@@ -982,47 +995,38 @@ namespace cajeta {
             returnsStackValueCache = 1;
             return true;
         }
-        // #63: an interface method (abstract, no body) returning a value-shape
-        // class (Optional<T>) has no body to scan, but the dispatch-site
-        // ABI must match the impl's. Impls of such methods use `return stack
-        // X(...)` (or `return o` for a local value-shape, forced sret via #66
-        // off this very decl) and compile with sret; the interface decl's
-        // prototype must too, or indirect calls via the vtable misalign args.
-        //
         // The convention is decided by the RETURN CLASS, and the default is
-        // the REFERENCE (heap-pointer) ABI: an impl returning `Tensor<f64>`,
-        // `ArrayList<T>`, `String`, or any ordinary class emits `ret ptr`,
-        // and sret-forcing the decl misaligns the indirect call — the sret
-        // slot becomes `this` and dispatch SIGSEGVs (the iface-generic-
-        // returns defect; previously seen as the ifx Backend.name() String
-        // case, which was special-cased). Force sret ONLY for the known
+        // the REFERENCE (heap-pointer) ABI: a method returning `Tensor<f64>`,
+        // `ArrayList<T>`, `String`, or any ordinary class emits `ret ptr`, and
+        // sret-forcing it misaligns every call — the sret slot becomes `this`
+        // and dispatch SIGSEGVs (the iface-generic-returns defect; earlier the
+        // ifx Backend.name() String case). Force sret ONLY for the known
         // value-shape-by-convention class, `cajeta.lang.Optional` — the
-        // canonical (and, ecosystem-wide, only) stack-returned interface
-        // return today. A future value-shape class joins by extending this
-        // predicate (or growing a real class-level convention marker).
-        if (parent && parent->isInterface()) {
-            QualifiedNamePtr rtName = rtClass->getQName();
-            // Instantiated generics carry their arguments in the type name
-            // ("Optional<int32>"), the template origin its type vars
-            // ("Optional<T>") — match the base name up to the bracket.
-            std::string rtTypeName = rtName ? rtName->getTypeName() : "";
-            bool isOptionalName = rtTypeName == "Optional"
-                || rtTypeName.rfind("Optional<", 0) == 0;
-            bool isValueShapeReturn = rtName
-                && isOptionalName
-                && rtName->getPackageName() == "cajeta.lang";
+        // canonical (and, ecosystem-wide, only) stack-returned class today.
+        //
+        // This used to apply to interface declarations alone (#63: an
+        // abstract method has no body to scan, and the dispatch-site ABI must
+        // match the impl's). A concrete method's ABI came from the body scan,
+        // which cannot see a RELAY — `Optional<int32> take() { return
+        // this.ch.receive(); }` has no `stack` in its body, was typed as a
+        // pointer return, and `ret` the struct its callee produced through
+        // sret: an IR verifier failure, or an empty Optional wherever nothing
+        // verified (cabra LineReader 2026-08-31, KernelManifest 2026-09-06).
+        // Deciding by type here makes methods, lambdas and interface decls
+        // agree, and the ReturnStatement sret path copies a relayed value in
+        // (its non-construction fallback). A future value-shape class joins
+        // by extending isValueShapeReturnType (or a class-level marker).
+        if (isValueShapeReturnType(rtClass)) {
             if (getenv("CAJETA_DBG_SRET")) {
-                std::cerr << "[sret-probe] iface decl " << parent->getQName()->toCanonical()
-                          << "::" << name << " rt=" << (rtName ? rtName->toCanonical() : "<null>")
-                          << " pkg=" << (rtName ? rtName->getPackageName() : "?")
-                          << " type=" << (rtName ? rtName->getTypeName() : "?")
-                          << " valueShape=" << isValueShapeReturn << std::endl;
+                std::cerr << "[sret-probe] value-shape return "
+                          << (parent && parent->getQName()
+                                  ? parent->getQName()->toCanonical() : std::string("?"))
+                          << "::" << name << " rt=" << rtClass->toCanonical()
+                          << (parent && parent->isInterface() ? " (iface decl)" : "")
+                          << std::endl;
             }
-            if (isValueShapeReturn) {
-                returnsStackValueCache = 1;
-                return true;
-            }
-            // Reference return: fall through to the pointer ABI.
+            returnsStackValueCache = 1;
+            return true;
         }
         // #66: a class method whose body has no `return stack X(...)` (the
         // canonical PeekStream/SkipStream shape — body is just `return o;`

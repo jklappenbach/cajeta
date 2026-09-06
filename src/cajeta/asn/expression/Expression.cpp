@@ -4241,9 +4241,11 @@ bool cajetaRhsCarriesRedundantSharp(
         // body whose returns are `return stack X(...)`). An expectedType from
         // the LHS pins the ABI; otherwise infer it the same way Method does.
         bool returnsOwn = true;
+        bool abiPinnedByExpected = false;
         if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
             ret = expectedFn->getReturnType();
             returnsOwn = expectedFn->isReturnsOwnership();
+            abiPinnedByExpected = true;
         }
         if (!ret) {
             if (auto bexpr = std::dynamic_pointer_cast<Expression>(body)) {
@@ -4260,6 +4262,14 @@ bool cajetaRhsCarriesRedundantSharp(
             if (Method::nodeHasStackReturn(body)) {
                 returnsOwn = false;
             }
+        }
+        // Type-driven, as Method::returnsStackValue decides for methods: an
+        // INFERRED lambda returning the value-shape class (Optional<T>) is
+        // sret whatever its body does — a body that relays an Optional call
+        // (`(v) -> S.opt(v)`) has no `stack` for the scans above to see. An
+        // explicit fn-type on the LHS stays authoritative.
+        if (!abiPinnedByExpected && ret && Method::isValueShapeReturnType(ret)) {
+            returnsOwn = false;
         }
         if (!ret) ret = CajetaType::of("void");
         std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret, returnsOwn);
