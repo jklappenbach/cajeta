@@ -25,8 +25,12 @@
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Triple.h"
 
+#include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
+#include <optional>
+#include <sstream>
 
 namespace cajeta {
 namespace xpu {
@@ -266,8 +270,50 @@ std::string findPtxas() {
     return {};
 }
 
+std::vector<PtxasKernelStats> parsePtxasVerbose(const std::string& text) {
+    std::vector<PtxasKernelStats> out;
+    // The unsigned integer immediately before `suffix` on `line`; 0 if absent.
+    auto numBefore = [](const std::string& line, const char* suffix) -> unsigned {
+        size_t p = line.find(suffix);
+        if (p == std::string::npos) return 0;
+        size_t e = p;
+        while (e > 0 && line[e - 1] == ' ') --e;
+        size_t s = e;
+        while (s > 0 && std::isdigit((unsigned char) line[s - 1])) --s;
+        if (s == e) return 0;
+        return (unsigned) std::strtoul(line.substr(s, e - s).c_str(), nullptr, 10);
+    };
+    std::istringstream ss(text);
+    std::string line;
+    PtxasKernelStats* cur = nullptr;
+    while (std::getline(ss, line)) {
+        if (size_t p = line.find("Function properties for "); p != std::string::npos) {
+            std::string name = line.substr(p + std::strlen("Function properties for "));
+            while (!name.empty() && (name.back() == ' ' || name.back() == '\r' || name.back() == ':'))
+                name.pop_back();
+            out.push_back(PtxasKernelStats{});
+            cur = &out.back();
+            cur->name = name;
+            continue;
+        }
+        if (!cur) continue;
+        if (line.find("bytes stack frame") != std::string::npos) {
+            cur->stackBytes = numBefore(line, " bytes stack frame");
+            cur->spillStoreBytes = numBefore(line, " bytes spill stores");
+            cur->spillLoadBytes = numBefore(line, " bytes spill loads");
+        }
+        if (line.find("Used ") != std::string::npos
+                && line.find(" registers") != std::string::npos) {
+            cur->registers = numBefore(line, " registers");
+            cur->smemBytes = numBefore(line, " bytes smem");
+        }
+    }
+    return out;
+}
+
 std::vector<uint8_t> assembleCubin(const std::string& ptx,
-                                   const std::string& arch) {
+                                   const std::string& arch,
+                                   std::string* verboseLog) {
     std::string ptxas = findPtxas();
     if (ptxas.empty()) {
         llvm::errs() << "cajeta.xpu.nvidia: ptxas not found (set CUDA_PATH or "
@@ -306,15 +352,38 @@ std::vector<uint8_t> assembleCubin(const std::string& ptx,
     // directly (no shell), so paths with spaces ("Program Files") are safe.
     std::string archArg = "-arch=" + arch;
     std::string oFlag = "-o";
+    std::string vFlag = "-v";
     llvm::SmallVector<llvm::StringRef, 8> args = {
         ptxas, archArg, ptxPath.str(), oFlag, cubinPath.str()};
+    // `-v` prints the per-kernel resource report on stderr; capture it to a
+    // temp file for the manifest footprint. The cubin is unaffected.
+    llvm::SmallString<128> logPath;
+    std::optional<llvm::StringRef> redirects[3] = {std::nullopt, std::nullopt, std::nullopt};
+    bool capture = false;
+    if (verboseLog) {
+        verboseLog->clear();
+        if (!llvm::sys::fs::createTemporaryFile("cajeta_xpu", "ptxas.log", logPath)) {
+            args.push_back(vFlag);
+            redirects[2] = llvm::StringRef(logPath);
+            capture = true;
+        }
+    }
     std::string errMsg;
-    int rc = llvm::sys::ExecuteAndWait(ptxas, args, /*Env=*/std::nullopt,
-                                       /*Redirects=*/{}, /*SecondsToWait=*/0,
-                                       /*MemoryLimit=*/0, &errMsg);
+    int rc = llvm::sys::ExecuteAndWait(
+        ptxas, args, /*Env=*/std::nullopt,
+        /*Redirects=*/capture ? llvm::ArrayRef<std::optional<llvm::StringRef>>(redirects)
+                              : llvm::ArrayRef<std::optional<llvm::StringRef>>(),
+        /*SecondsToWait=*/0, /*MemoryLimit=*/0, &errMsg);
+    if (capture) {
+        if (auto log = llvm::MemoryBuffer::getFile(logPath, /*IsText=*/true))
+            *verboseLog = (*log)->getBuffer().str();
+        llvm::sys::fs::remove(logPath);
+    }
     if (rc != 0) {
         llvm::errs() << "cajeta.xpu.nvidia: ptxas failed (rc=" << rc << ") "
                      << errMsg << "\n";
+        if (capture && verboseLog && !verboseLog->empty())
+            llvm::errs() << *verboseLog << "\n";
         return {};
     }
 

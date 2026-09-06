@@ -35,6 +35,8 @@ namespace cajeta {
 namespace cajeta {
 namespace xpu {
 
+    struct KernelManifest;
+
     // The concrete device backends. These values are a runtime ABI — cast to
     // ids in emitBackendManifest — so the explicit initializers are load-bearing:
     // never renumber or reorder without updating every consumer of the manifest.
@@ -61,13 +63,16 @@ namespace xpu {
     // kernels successfully embedded. Mirrors the per-backend
     // emitKernelRegistration contract: unsupported kernels (XPU-N01) are
     // skipped, not fatal. `arch` is the device arch string (e.g. "sm_89" or
-    // "gfx1151").
+    // "gfx1151"). `manifests`, when given, receives one KernelManifest per
+    // (kernel, target) the backend embedded (xpu-tile-manifest §2) — the
+    // compiler writes the JSON copies from it; the JIT host passes nothing.
     int emitKernelRegistration(Backend backend,
                                const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
                                const std::string& arch,
                                const std::unordered_map<std::string, unsigned>&
-                                   kernelMaxThreads = {});
+                                   kernelMaxThreads = {},
+                               std::vector<KernelManifest>* manifests = nullptr);
 
     // Embed each graphics-shader (@Vertex/@Fragment/…) method's SPIR-V + a
     // registration ctor into `hostModule` — the rasterization parallel of

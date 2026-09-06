@@ -31,15 +31,21 @@ namespace cajeta {
 
 namespace cajeta {
 namespace xpu {
+
+    struct KernelManifest;
+
 namespace cpu {
 
     // Lower each @Kernel in `kernels` to host code, link into `hostModule`, and
     // emit a registration ctor per kernel. Returns the number embedded. `arch`
     // is ignored (the CPU backend has no arch); it is present for a uniform
-    // backend-registration signature.
+    // backend-registration signature. `manifests`, when given, receives one
+    // identity-only KernelManifest per kernel (xpu-tile-manifest §2.4: the CPU
+    // has no VGPR / LDS footprint, so those fields are absent, never zero).
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
-                               const std::string& arch = "");
+                               const std::string& arch = "",
+                               std::vector<KernelManifest>* manifests = nullptr);
 
 } // namespace cpu
 } // namespace xpu

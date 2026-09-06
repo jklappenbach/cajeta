@@ -283,6 +283,31 @@ unsigned occupancy(const DeviceModel& m, unsigned block,
     return std::min(m.maxWavesPerMP, blocks * wavesPerBlock);
 }
 
+const char* occupancyLimiterName(const DeviceModel& m, unsigned block,
+                                 unsigned kernelVgpr, unsigned ldsBytes) {
+    if (block == 0 || block > m.maxThreadsPerBlock || m.waveSize == 0) return "unknown";
+    unsigned wavesPerBlock = (block + m.waveSize - 1) / m.waveSize;
+    if (wavesPerBlock == 0) return "unknown";
+    unsigned wavesByReg = kernelVgpr == 0
+        ? m.maxWavesPerMP
+        : m.regsPerMP / (kernelVgpr * m.waveSize);
+    unsigned blocksByReg = wavesByReg / wavesPerBlock;
+    unsigned blocksByWave = m.maxWavesPerMP / wavesPerBlock;
+    if (ldsBytes != 0 && ldsBytes > ldsCeilingPerBlock(m)) return "lds";
+    unsigned blocksByLds = ldsBytes == 0
+        ? blocksByWave
+        : m.ldsBytesPerMP / std::max(ldsBytes, 1u);
+    unsigned blocks = std::min({blocksByReg, blocksByWave, blocksByLds});
+    if (blocks == 0) return "unknown";
+    // A resident-block cap below every other limiter is a slot limit.
+    if (m.maxBlocksPerMP && m.maxBlocksPerMP < blocks) return "waveSlots";
+    // Name the SCARCE resource: a budget that merely ties the wave-slot cap
+    // is not what bounds residency.
+    if (blocks == blocksByLds && ldsBytes != 0 && blocksByLds < blocksByWave) return "lds";
+    if (blocks == blocksByReg && blocksByReg < blocksByWave) return "registers";
+    return "waveSlots";
+}
+
 std::vector<unsigned> candidateBlocks(const DeviceModel& m, unsigned kernelVgpr,
                                       unsigned ldsBytes, unsigned clamp) {
     std::vector<std::pair<unsigned, unsigned>> scored;   // (block, occupancy)

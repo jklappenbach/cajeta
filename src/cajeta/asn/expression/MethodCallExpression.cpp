@@ -45,6 +45,7 @@
 #include "DotExpression.h"
 #include "Identifier.h"
 #include "LiteralExpression.h"
+#include "cajeta/xpu/core/XpuAttributes.h"
 #include "NewExpression.h"
 #include "cajeta/type/Scope.h"
 #include "cajeta/field/Field.h"
@@ -1784,6 +1785,23 @@ namespace cajeta {
         return declared;
     }
 
+    // xpu-tile-manifest §12.1 — `k.manifest()`: is `name` a bare @Kernel of the
+    // class being generated? The receiver of a launch must be a bare kernel
+    // name in the launching class (XPU-N02); the manifest accessor follows the
+    // same rule, so an `obj.manifest()` on some user object is untouched.
+    static MethodPtr findKernelByBareName(const CajetaModulePtr& module,
+                                          const std::string& name) {
+        CajetaClassPtr klass;
+        if (!module->getStructureStack().empty())
+            klass = module->getStructureStack().back();
+        if (!klass && module->getCurrentMethod())
+            klass = module->getCurrentMethod()->getParent();
+        if (!klass) return nullptr;
+        for (auto& [k, m] : klass->getMethods())
+            if (m && m->getName() == name && cajeta::xpu::isKernel(*m)) return m;
+        return nullptr;
+    }
+
     void MethodCallExpression::resolveTypes(CajetaModulePtr module) {
         // LINT ONLY. In a build this must behave exactly as the base did —
         // walking children and nothing else. Resolving a call's ARGUMENTS
@@ -1812,6 +1830,20 @@ namespace cajeta {
         for (auto& child : children) {
             if (!child) continue;
             try { child->resolveTypes(module); } catch (...) { }
+        }
+
+        // xpu-tile-manifest §12.1 — `k.manifest()` types as the stdlib record
+        // (mirrors the codegen intercept below; the lint has no callee to find).
+        if (methodCallName == "manifest" && parameters.empty()
+                && children.size() == 1) {
+            if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                if (findKernelByBareName(module, recvId->getTextValue())) {
+                    try {
+                        resolvedType = CajetaType::of("KernelManifest", "cajeta.xpu");
+                    } catch (...) { }
+                    return;
+                }
+            }
         }
 
         // 5.1.7 — the `arr.stream()` intrinsic. Not a method anywhere:
@@ -1958,6 +1990,41 @@ namespace cajeta {
         // specialized early-return paths (intrinsics, closure calls) that a
         // `#`-argument can still reach.
         rejectTransferOfBorrowArgs(module, parameters);
+
+        // ----- xpu-tile-manifest §12.1: `k.manifest()` on a bare @Kernel name -----
+        // The receiver is a kernel NAME in the launching class, not a value (the
+        // launch rule, XPU-N02). Lower to the stdlib
+        // `cajeta.xpu.KernelManifest.of("<name>")`, which reads the record the
+        // active backend registered beside its device code — so the program
+        // sees the manifest of the artifact it will actually launch.
+        if (methodCallName == "manifest" && parameters.empty()
+                && children.size() == 1 && explicitMethodTypeArgs.empty()) {
+            if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                const std::string kernelName = recvId->getTextValue();
+                if (findKernelByBareName(module, kernelName)) {
+                    auto kmClass = std::dynamic_pointer_cast<CajetaClass>(
+                        CajetaType::of("KernelManifest", "cajeta.xpu"));
+                    if (!kmClass) {
+                        throw Exception(
+                            "cajeta.xpu.KernelManifest is not available; cannot "
+                            "lower '" + kernelName + ".manifest()'",
+                            "XPU-N02");
+                    }
+                    TextLiteralExpression nameLit("\"" + kernelName + "\"",
+                                                  LITERAL_TYPE_STRING);
+                    llvm::Value* nameStr = nameLit.generateCode(module);
+                    std::vector<ParameterEntry> entries;
+                    entries.push_back(
+                        ParameterEntry(CajetaType::of("String"), "", nameStr));
+                    std::string ofName = "of";
+                    llvm::Value* record = kmClass->invokeMethod(
+                        ofName, entries, /*isConstructor=*/false,
+                        /*thisInstance=*/nullptr, module);
+                    resolvedType = kmClass;
+                    return record;
+                }
+            }
+        }
 
         // ----- tryAs<T>() intrinsic (reified capture -> Optional<T>) -----
         // `recv.tryAs<Foo<int32>>()` checks recv's runtime reified instantiation

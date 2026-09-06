@@ -1,0 +1,226 @@
+package cajeta.xpu;
+
+import cajeta.codec.json.Json;
+import cajeta.codec.json.JsonArray;
+import cajeta.codec.json.JsonObject;
+import cajeta.codec.json.JsonValue;
+import cajeta.lang.Optional;
+
+/**
+ * KernelManifest — the per-(kernel, target) record the compiler emitted beside
+ * the device code (xpu-tile-manifest §2, §3, §12.1). `k.manifest()` on a
+ * `@Kernel` name returns the record for the ACTIVE backend, read from the
+ * artifact the launch will use; it is immutable and needs no storage.
+ *
+ * Absent is a value here, not zero: a field the target could not report (the
+ * CPU backend has no VGPR count) reads as an EMPTY `Optional`, never as 0
+ * (§1.4, §2.4). Identity fields are always present.
+ *
+ * ```cajeta
+ * KernelManifest m = saxpy.manifest();
+ * Optional<int32> vgpr = m.vgpr();
+ * if (vgpr.isPresent() && m.spillBytes().orElse(0) > 0) { ... }
+ * ```
+ *
+ * `null` when the active backend has no device code for the kernel (a
+ * construct that backend cannot lower — the build printed
+ * `[xpu-kernel-skipped]` for it).
+ */
+public final class KernelManifest {
+    // ---- identity (§2) -------------------------------------------------- //
+    /** Qualified kernel name, e.g. `test.M.saxpy`. */
+    public String kernel;
+    /** Backend and arch, e.g. `amdgpu/gfx1151`, `cpu/znver4`. */
+    public String target;
+    /** `sha256:<64 hex>` over the device code this record describes. */
+    public String codeHash;
+    /** The compiler that built it. */
+    public String compilerVersion;
+    /** XPU ABI the build spoke (3). */
+    public int32 xpuAbiVersion;
+    /** tile-manifest schema version (1). */
+    public int32 schemaVersion;
+    /** Completion instrumentation compiled in. */
+    public boolean instrumented;
+    /** Derived: read and write sets disjoint (§6.5). */
+    public boolean restartable;
+    /** Derived: may enter a replayed graph (§8.3). */
+    public boolean captureSafe;
+
+    // ---- footprint (§3): -1 / null = absent ---------------------------- //
+    private int32 waveWidthValue;
+    private int32 vgprValue;
+    private int32 sgprValue;
+    private int32 spillBytesValue;
+    private int32 ldsStaticBytesValue;
+    private int32 threadsPerGroupValue;
+    private int32 residentGroupsPerCuValue;
+    private String ldsDynamicParamValue;
+    private String occupancyLimiterValue;
+    private int32[] feasibleBlocksValue;
+
+    public KernelManifest() {
+        this.waveWidthValue = -1;
+        this.vgprValue = -1;
+        this.sgprValue = -1;
+        this.spillBytesValue = -1;
+        this.ldsStaticBytesValue = -1;
+        this.threadsPerGroupValue = -1;
+        this.residentGroupsPerCuValue = -1;
+        this.xpuAbiVersion = 0;
+        this.schemaVersion = 0;
+        this.instrumented = false;
+        this.restartable = false;
+        this.captureSafe = false;
+    }
+
+    /**
+     * The manifest of `kernelName` (a simple `@Kernel` name) for the active
+     * backend, or `null` when that backend registered no device code for it.
+     * `k.manifest()` lowers to this.
+     */
+    public static #KernelManifest of(String kernelName) {
+        int8[] b #= kernelName.toBytes();
+        int8[] json #= KernelManifest.nativeJson(b, (int64) b.count());
+        if (json == null) {
+            return null;
+        }
+        return KernelManifest.fromJson(json, (int64) json.count());
+    }
+
+    /** Parse a tile-manifest-v1 document. `null` on a malformed document. */
+    public static #KernelManifest fromJson(int8[] bytes, int64 len) {
+        JsonValue root #= Json.parse(bytes, len);
+        if (root == null || root.kind() != JsonValue.OBJECT) {
+            return null;
+        }
+        JsonObject o = root.object();
+        KernelManifest m #= heap KernelManifest();
+        Optional<int32> sv = o.getInt("schemaVersion");
+        if (sv.isPresent()) { m.schemaVersion = sv.get(); }
+        Optional<boolean> rs = o.getBoolean("restartable");
+        if (rs.isPresent()) { m.restartable = rs.get(); }
+        Optional<boolean> cs = o.getBoolean("captureSafe");
+        if (cs.isPresent()) { m.captureSafe = cs.get(); }
+
+        Optional<JsonObject> idOpt = o.getObject("identity");
+        if (idOpt.isPresent()) {
+            JsonObject id = idOpt.get();
+            m.kernel #= KernelManifest.str(id, "kernel");
+            m.target #= KernelManifest.str(id, "target");
+            m.codeHash #= KernelManifest.str(id, "codeHash");
+            m.compilerVersion #= KernelManifest.str(id, "compilerVersion");
+            Optional<int32> abi = id.getInt("xpuAbiVersion");
+            if (abi.isPresent()) { m.xpuAbiVersion = abi.get(); }
+            Optional<boolean> ins = id.getBoolean("instrumented");
+            if (ins.isPresent()) { m.instrumented = ins.get(); }
+        }
+        Optional<JsonObject> fpOpt = o.getObject("footprint");
+        if (fpOpt.isPresent()) {
+            JsonObject fp = fpOpt.get();
+            m.waveWidthValue = KernelManifest.num(fp, "waveWidth");
+            m.vgprValue = KernelManifest.num(fp, "vgpr");
+            m.sgprValue = KernelManifest.num(fp, "sgpr");
+            m.spillBytesValue = KernelManifest.num(fp, "spillBytes");
+            m.ldsStaticBytesValue = KernelManifest.num(fp, "ldsStaticBytes");
+            m.threadsPerGroupValue = KernelManifest.num(fp, "threadsPerGroup");
+            m.residentGroupsPerCuValue = KernelManifest.num(fp, "residentGroupsPerCu");
+            m.ldsDynamicParamValue #= KernelManifest.str(fp, "ldsDynamicParam");
+            m.occupancyLimiterValue #= KernelManifest.str(fp, "occupancyLimiter");
+            Optional<JsonArray> fb = fp.getArray("feasibleBlocks");
+            if (fb.isPresent()) {
+                JsonArray arr = fb.get();
+                int32 n = arr.count();
+                int32[] blocks = heap int32[n];
+                int32 i = 0;
+                while (i < n) {
+                    JsonValue v = arr.get(i);
+                    blocks[i] = v == null ? 0 : v.asInt32();
+                    i = i + 1;
+                }
+                m.feasibleBlocksValue #= #blocks;
+            }
+        }
+        return m;
+    }
+
+    // ---- footprint accessors: empty when the target did not report it --- //
+    // Each accessor CONSTRUCTS its Optional. A stack Optional relayed through
+    // a helper (`return KernelManifest.opt(v)`) loses its present flag on the
+    // second hop — the measured cabra LineReader defect — so no helper here.
+
+    /** Wave (subgroup) width the code object was built for. */
+    public Optional<int32> waveWidth() {
+        if (this.waveWidthValue < 0) { return stack Optional<int32>(false, 0); }
+        return stack Optional<int32>(true, this.waveWidthValue);
+    }
+    /** Vector registers per work-item, as the artifact states them. */
+    public Optional<int32> vgpr() {
+        if (this.vgprValue < 0) { return stack Optional<int32>(false, 0); }
+        return stack Optional<int32>(true, this.vgprValue);
+    }
+    /** Scalar registers per wave. */
+    public Optional<int32> sgpr() {
+        if (this.sgprValue < 0) { return stack Optional<int32>(false, 0); }
+        return stack Optional<int32>(true, this.sgprValue);
+    }
+    /** Scratch bytes per work-item (spills live here); 0 = none. */
+    public Optional<int32> spillBytes() {
+        if (this.spillBytesValue < 0) { return stack Optional<int32>(false, 0); }
+        return stack Optional<int32>(true, this.spillBytesValue);
+    }
+    /** Static shared-memory (LDS) bytes per group. */
+    public Optional<int32> ldsStaticBytes() {
+        if (this.ldsStaticBytesValue < 0) { return stack Optional<int32>(false, 0); }
+        return stack Optional<int32>(true, this.ldsStaticBytesValue);
+    }
+    /** Present only when the block is pinned (§3.3). */
+    public Optional<int32> threadsPerGroup() {
+        if (this.threadsPerGroupValue < 0) { return stack Optional<int32>(false, 0); }
+        return stack Optional<int32>(true, this.threadsPerGroupValue);
+    }
+    /**
+     * Resident groups per driver multiprocessor at the pinned block — a
+     * CAPACITY accounting unit for the scheduler, never a performance target
+     * (§3.4).
+     */
+    public Optional<int32> residentGroupsPerCu() {
+        if (this.residentGroupsPerCuValue < 0) { return stack Optional<int32>(false, 0); }
+        return stack Optional<int32>(true, this.residentGroupsPerCuValue);
+    }
+    /** The launch parameter that sizes dynamic shared memory (§3.5). */
+    public Optional<String> ldsDynamicParam() {
+        if (this.ldsDynamicParamValue == null) { return stack Optional<String>(false, #null); }
+        return stack Optional<String>(true, this.ldsDynamicParamValue);
+    }
+    /** `registers`, `lds`, `waveSlots` or `unknown`. */
+    public Optional<String> occupancyLimiter() {
+        if (this.occupancyLimiterValue == null) { return stack Optional<String>(false, #null); }
+        return stack Optional<String>(true, this.occupancyLimiterValue);
+    }
+    /** True when the block is a launch argument and the picker enumerated sizes. */
+    public boolean hasFeasibleBlocks() { return this.feasibleBlocksValue != null; }
+    /** Feasible block sizes, best first (VIEW; `null` when absent). */
+    public int32[] feasibleBlocks() { return this.feasibleBlocksValue; }
+
+    // ---- helpers -------------------------------------------------------- //
+
+    private static int32 num(JsonObject o, String key) {
+        Optional<int32> v = o.getInt(key);
+        if (v.isPresent()) {
+            return v.get();
+        }
+        return -1;
+    }
+
+    private static #String str(JsonObject o, String key) {
+        JsonValue v = o.get(key);
+        if (v == null || v.kind() != JsonValue.STRING) {
+            return null;
+        }
+        return v.asString();
+    }
+
+    @Native("__cajeta_xpu_kernel_manifest_json")
+    private static #int8[] nativeJson(int8[] name, int64 len);
+}

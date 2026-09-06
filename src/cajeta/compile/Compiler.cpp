@@ -55,6 +55,7 @@
 #include "CajetaParserBaseVisitor.h"
 #include "../xpu/core/XpuAttributes.h"
 #include "../xpu/XpuTarget.h"
+#include "../xpu/core/KernelManifest.h"
 #include "../xpu/mir/XpuMirBuilder.h"
 #include "../asn/expression/LiteralExpression.h"
 #include "../xpu/nvidia/NvptxBackend.h"
@@ -3439,9 +3440,24 @@ namespace cajeta {
             for (XpuBackend cb : xpuBackends) {
                 cajeta::xpu::Backend backend = toLayer(cb);
                 std::string arch = singleBackend ? xpuArch : defaultArch(cb);
+                std::vector<cajeta::xpu::KernelManifest> manifests;
                 cajeta::xpu::emitKernelRegistration(
                     backend, kernels, *module->getLlvmModule(), arch,
-                    kernelMaxThreads);
+                    kernelMaxThreads, &manifests);
+                // xpu-tile-manifest §12.4: a JSON copy of every manifest beside
+                // the artifact — `<module stem>.<kernel>.<target>.manifest.json`
+                // — so a build can be audited without running it. The JIT host
+                // writes nothing (Unit 2: served from memory there).
+                if (!manifests.empty()) {
+                    std::error_code ec;
+                    std::filesystem::create_directories(
+                        std::filesystem::path(base).parent_path(), ec);
+                    for (const auto& m : manifests) {
+                        std::ofstream out(base + "." + cajeta::xpu::manifestFileName(m),
+                                          std::ios::binary);
+                        out << cajeta::xpu::toJson(m);
+                    }
+                }
                 // Graphics shaders register alongside kernels — a no-op for the
                 // non-Vulkan backends (no raster pipeline). Rides the same build.
                 cajeta::xpu::emitGraphicsRegistration(

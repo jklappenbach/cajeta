@@ -28,19 +28,23 @@ namespace xpu {
                                llvm::Module& hostModule,
                                const std::string& arch,
                                const std::unordered_map<std::string, unsigned>&
-                                   kernelMaxThreads) {
+                                   kernelMaxThreads,
+                               std::vector<KernelManifest>* manifests) {
         switch (backend) {
             case Backend::Nvptx:
-                return nvidia::emitKernelRegistration(kernels, hostModule, arch);
+                return nvidia::emitKernelRegistration(kernels, hostModule, arch,
+                                                      manifests);
             case Backend::Amdgpu:
                 // Only AMDGPU consumes the launch workgroup sizes today
                 // (amdgpu-flat-work-group-size); other backends ignore them.
                 return amd::emitKernelRegistration(kernels, hostModule, arch,
-                                                   kernelMaxThreads);
+                                                   kernelMaxThreads, manifests);
             case Backend::Spirv:
-                return vulkan::emitKernelRegistration(kernels, hostModule, arch);
+                return vulkan::emitKernelRegistration(kernels, hostModule, arch,
+                                                      manifests);
             case Backend::Cpu:
-                return cpu::emitKernelRegistration(kernels, hostModule, arch);
+                return cpu::emitKernelRegistration(kernels, hostModule, arch,
+                                                   manifests);
         }
         return 0;
     }

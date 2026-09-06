@@ -17,6 +17,8 @@
 #include "../lowering/KernelLowering.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
+#include "cajeta/xpu/core/XpuKernelAttr.h"
+#include "cajeta/xpu/core/KernelManifest.h"
 #include "cajeta/error/Exception.h"
 
 #include "llvm/IR/Constants.h"
@@ -37,7 +39,8 @@ namespace amd {
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
                                const std::string& arch,
-                               const KernelMaxThreads& maxThreads) {
+                               const KernelMaxThreads& maxThreads,
+                               std::vector<KernelManifest>* manifests) {
         if (kernels.empty()) return 0;
 
         // `arch` may be a comma-separated list ("gfx1100,gfx1151") → a multi-arch
@@ -112,8 +115,44 @@ namespace amd {
                 setKernelWorkgroupSize(kfn, it->second);
             }
 
-            std::vector<uint8_t> hsaco = assembleHsacoBundle(devMod, archList);
-            if (hsaco.empty()) continue;  // lld/bundler missing or errored
+            std::vector<ArchHsaco> perArch = assembleHsacoPerArch(devMod, archList);
+            if (perArch.empty()) continue;  // lld missing or a per-arch codegen error
+            std::vector<uint8_t> hsaco = bundleHsacos(perArch);
+            if (hsaco.empty()) continue;    // bundler missing or errored
+
+            // xpu-tile-manifest §2, §3: one manifest per (kernel, arch), hashed
+            // over and read from the very code object that registers below. A
+            // block is pinned by an @Occupancy clamp or by one constant launch
+            // block (the size the backend budgeted registers for); otherwise the
+            // picker's feasible sizes are recorded (§3.3).
+            std::vector<KernelManifest> kernelManifests;
+            {
+                std::optional<unsigned> pinned;
+                if (auto attr = XpuKernelAttr::from(*method))
+                    if (attr->maxThreads()) pinned = *attr->maxThreads();
+                if (!pinned)
+                    if (auto it = maxThreads.find(entryName); it != maxThreads.end())
+                        pinned = it->second;
+                for (const ArchHsaco& ah : perArch) {
+                    KernelManifest m;
+                    m.kernel = qualifiedKernelName(method);
+                    m.target = "amdgpu/" + ah.arch;
+                    m.codeHash = sha256Hex(ah.hsaco.data(), ah.hsaco.size());
+                    m.compilerVersion = compilerVersionString();
+                    m.xpuAbiVersion = CAJETA_XPU_ABI_VERSION;
+                    for (const AmdCodeObjectFootprint& fp : readCodeObjectFootprint(ah.hsaco)) {
+                        if (fp.name != entryName) continue;
+                        m.vgpr = fp.vgpr;
+                        m.sgpr = fp.sgpr;
+                        m.spillBytes = fp.privateSegmentBytes;
+                        m.ldsStaticBytes = fp.groupSegmentBytes;
+                        m.waveWidth = fp.wavefrontSize;
+                    }
+                    fillOccupancy(m, ah.arch, pinned);
+                    warnIfSpilling(m);
+                    kernelManifests.push_back(std::move(m));
+                }
+            }
 
             // Embed the hsaco as a private host-module constant.
             llvm::Constant* dataInit = llvm::ConstantDataArray::get(
@@ -168,10 +207,18 @@ namespace amd {
                                     kindGV, szGV});
             }
 
+            // The manifests ride the same ctor, so `k.manifest()` reads them
+            // from the artifact at run time (§12.1) — one per arch.
+            for (size_t i = 0; i < kernelManifests.size(); ++i)
+                emitManifestRegistration(hostModule, b, nameStr, /*CAJ_XPU_HIP=*/1,
+                                         perArch[i].arch, kernelManifests[i]);
             b.CreateRetVoid();
 
             // Run at module-init time (LLJIT: jit->initialize; native: startup).
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
+            if (manifests)
+                manifests->insert(manifests->end(), kernelManifests.begin(),
+                                  kernelManifests.end());
             ++emitted;
         }
         return emitted;

@@ -14,6 +14,8 @@
 #include "CpuKernelLowering.h"
 #include "../lowering/KernelLowering.h"   // collectKernelParamInfo / KernelParamInfo
 #include "CpuBackend.h"
+#include "cajeta/xpu/core/KernelManifest.h"
+#include "cajeta_xpu_abi.h"   // CAJETA_XPU_ABI_VERSION for the manifest identity
 #include "CpuBarrierFission.h"
 #include "cajeta/compile/Optimizer.h"
 
@@ -764,7 +766,8 @@ void foldWaveVariants(llvm::Function& f) {
 
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
-                               const std::string& /*arch*/) {
+                               const std::string& /*arch*/,
+                               std::vector<KernelManifest>* manifests) {
         if (kernels.empty()) return 0;
 
         llvm::LLVMContext& ctx = hostModule.getContext();
@@ -862,6 +865,24 @@ void foldWaveVariants(llvm::Function& f) {
             if (!kfn) continue;
             kfn->setName(sym);
             kfn->setLinkage(llvm::GlobalValue::ExternalLinkage);
+
+            // xpu-tile-manifest §2.4: identity only — the CPU has no VGPR or
+            // LDS footprint, so those fields stay ABSENT. The device code here
+            // is the lowered host IR, hashed before it merges into the module.
+            KernelManifest manifest;
+            {
+                std::string ir;
+                llvm::raw_string_ostream os(ir);
+                mod->print(os, nullptr);
+                os.flush();
+                manifest.kernel = qualifiedKernelName(method);
+                manifest.target = "cpu/" + (hostTm ? hostTm->getTargetCPU().str()
+                                                   : std::string("unknown"));
+                manifest.codeHash = sha256Hex(
+                    reinterpret_cast<const uint8_t*>(ir.data()), ir.size());
+                manifest.compilerVersion = compilerVersionString();
+                manifest.xpuAbiVersion = CAJETA_XPU_ABI_VERSION;
+            }
 
             if (llvm::Linker::linkModules(hostModule, std::move(mod))) {
                 continue;  // link error (logged by the linker)
@@ -1165,9 +1186,12 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::Value* nameStr =
                 b.CreateGlobalString(entryName, "xpu.cpu.kname." + entryName);
             b.CreateCall(regFn, {nameStr, thunk});
+            emitManifestRegistration(hostModule, b, nameStr, /*CAJ_XPU_CPU=*/3,
+                                     "", manifest);
             b.CreateRetVoid();
 
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
+            if (manifests) manifests->push_back(manifest);
             ++emitted;
         }
         return emitted;

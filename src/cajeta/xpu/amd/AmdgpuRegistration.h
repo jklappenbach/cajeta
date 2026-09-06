@@ -29,6 +29,9 @@ namespace cajeta {
 
 namespace cajeta {
 namespace xpu {
+
+    struct KernelManifest;
+
 namespace amd {
 
     // kernel-occupancy-autotune §2: kernel canonical name -> the largest launch
@@ -40,10 +43,14 @@ namespace amd {
     // @Kernel in `kernels`. Returns the number embedded (0 if none / the
     // amdgcn target is unavailable). `arch` is a GFX target (e.g. "gfx1151").
     // `maxThreads` carries each kernel's launch workgroup size (empty = unknown).
+    // `manifests`, when given, receives one KernelManifest per (kernel, arch)
+    // embedded — the hash and footprint of the very hsaco that registers
+    // (xpu-tile-manifest §2, §3). A multi-arch bundle yields one per arch.
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
                                const std::string& arch = "gfx1151",
-                               const KernelMaxThreads& maxThreads = {});
+                               const KernelMaxThreads& maxThreads = {},
+                               std::vector<KernelManifest>* manifests = nullptr);
 
 } // namespace amd
 } // namespace xpu

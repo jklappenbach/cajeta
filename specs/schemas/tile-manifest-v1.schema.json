@@ -31,7 +31,7 @@
         "ldsDynamicParam": { "type": "string", "description": "Name of the launch parameter that sizes dynamic shared memory" },
         "threadsPerGroup": { "type": "integer", "minimum": 1, "description": "Present only when pinned by @Tile or @Occupancy" },
         "feasibleBlocks": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "description": "Best-first, from the occupancy picker, when the block is a launch argument" },
-        "residentGroupsPerCu": { "type": "integer", "minimum": 0, "description": "Capacity accounting unit only — never a performance target" },
+        "residentGroupsPerCu": { "type": "integer", "minimum": 0, "description": "Resident groups per driver multiprocessor (the occupancy picker's unit: a WGP on RDNA, an SM on NVIDIA) at the pinned block. Capacity accounting unit only — never a performance target" },
         "occupancyLimiter": { "enum": ["registers", "lds", "waveSlots", "unknown"] }
       }
     },

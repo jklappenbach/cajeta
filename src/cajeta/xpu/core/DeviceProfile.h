@@ -175,6 +175,14 @@ namespace xpu {
     unsigned occupancy(const DeviceModel& m, unsigned block,
                        unsigned kernelVgpr, unsigned ldsBytes);
 
+    // Which budget binds `occupancy()` for this config: "registers", "lds",
+    // "waveSlots" (the wave-residency or resident-block cap), or "unknown"
+    // when the config does not fit / the model cannot say. The manifest's
+    // `occupancyLimiter` (xpu-tile-manifest §3.3); same arithmetic as
+    // occupancy(), kept beside it so the two cannot drift.
+    const char* occupancyLimiterName(const DeviceModel& m, unsigned block,
+                                     unsigned kernelVgpr, unsigned ldsBytes);
+
     // Feasible block sizes (wave multiples that fit the budgets), best-first by
     // predicted occupancy (larger block breaks ties). `clamp` (0 = none) caps the
     // block (an @Occupancy / §2 bound). Empty if nothing fits.

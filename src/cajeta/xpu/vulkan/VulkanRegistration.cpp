@@ -11,6 +11,8 @@
 //
 
 #include "VulkanRegistration.h"
+#include "cajeta/xpu/core/KernelManifest.h"
+#include <optional>
 #include "SpirvBackend.h"
 #include "SpirvKernelLowering.h"
 
@@ -38,7 +40,8 @@ namespace vulkan {
 
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
-                               const std::string& arch) {
+                               const std::string& arch,
+                               std::vector<KernelManifest>* manifests) {
         if (kernels.empty()) return 0;
 
         // A FRESH SPIR-V TargetMachine per kernel (created in the loop below):
@@ -105,6 +108,21 @@ namespace vulkan {
             std::vector<uint8_t> spirv = emitSpirv(devMod, *tm);
             if (spirv.empty()) return false;  // codegen error (logged)
 
+            // xpu-tile-manifest §2: identity + hash over the SPIR-V that
+            // registers, for the primary variant. Pipeline statistics are a
+            // driver fact at pipeline creation, so the footprint stays absent
+            // (§3.1 "where the driver exposes them") — never zero.
+            std::optional<KernelManifest> manifest;
+            if (registerKparams) {
+                KernelManifest m;
+                m.kernel = qualifiedKernelName(method);
+                m.target = "spirv/" + arch;
+                m.codeHash = sha256Hex(spirv.data(), spirv.size());
+                m.compilerVersion = compilerVersionString();
+                m.xpuAbiVersion = CAJETA_XPU_ABI_VERSION;
+                manifest = std::move(m);
+            }
+
             // Embed the SPIR-V as a private host-module constant.
             llvm::Constant* dataInit = llvm::ConstantDataArray::get(
                 ctx, llvm::ArrayRef<uint8_t>(spirv.data(), spirv.size()));
@@ -160,10 +178,14 @@ namespace vulkan {
                                         kindGV, szGV});
                 }
             }
+            if (manifest)
+                emitManifestRegistration(hostModule, b, nameStr, /*CAJ_XPU_VULKAN=*/2,
+                                         arch, *manifest);
             b.CreateRetVoid();
 
             // Run at module-init time (LLJIT: jit->initialize; native: startup).
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
+            if (manifest && manifests) manifests->push_back(*manifest);
             return true;
         };
 

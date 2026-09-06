@@ -172,6 +172,25 @@ int64_t __cajeta_xpu_device_geometry(int32_t key);
  * out->valid == 0 and the consumer falls back to estimated defaults. */
 int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out);
 
+/* --- kernel manifests (xpu-tile-manifest §12.1) ---------------------------- *
+ * Each backend's registration ctor records the per-(kernel, target) manifest
+ * JSON the compiler emitted beside the device code: `arch` is the device arch
+ * token ("gfx1151", "sm_89", "vulkan1.3", "" for cpu); a multi-arch bundle
+ * registers one manifest per arch under the same name. `json` lives in the
+ * host module's constant data for the process lifetime; nothing here writes
+ * to it. Re-registration of the same (name, backend, arch) overwrites. */
+void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
+                                           int32_t backend, const char* arch,
+                                           const void* json, uint64_t len);
+
+/* cajeta.xpu.KernelManifest.of — the manifest JSON of `nameArr` (a cajeta
+ * int8[], payload at +8, NOT NUL-terminated) for the ACTIVE backend, as a
+ * fresh cajeta int8[] the caller owns; NULL when the active backend has no
+ * manifest for the kernel. With several arch entries the one matching the
+ * live device's arch token wins, else the first registered. A device touch
+ * (selects the backend), like Device.activeBackend(). */
+void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len);
+
 /* Measure device memory bandwidth (GB/s) via a device-to-device copy of `bytes`
  * (read + write = 2*bytes of traffic), best of `passes`. Returns 0.0 on failure,
  * no GPU, or profiling disabled. Nothing is persisted. */

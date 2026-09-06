@@ -4,6 +4,9 @@
 
 #include "NvptxRegistration.h"
 #include "NvptxBackend.h"
+#include "cajeta/xpu/core/KernelManifest.h"
+#include "cajeta/xpu/core/XpuKernelAttr.h"
+#include <optional>
 #include "NvptxKernelLowering.h"
 #include "NvptxOptixRayQuery.h"
 
@@ -30,7 +33,8 @@ namespace nvidia {
 
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
-                               const std::string& arch) {
+                               const std::string& arch,
+                               std::vector<KernelManifest>* manifests) {
         if (kernels.empty()) return 0;
 
         // One NVPTX TargetMachine for all kernels (it's arch-, not kernel-,
@@ -109,8 +113,35 @@ namespace nvidia {
 
             std::string ptx = emitPtx(devMod, *tm);
             if (ptx.empty()) continue;
-            std::vector<uint8_t> cubin = assembleCubin(ptx, arch);
+            std::string ptxasLog;
+            std::vector<uint8_t> cubin = assembleCubin(ptx, arch, &ptxasLog);
             if (cubin.empty()) continue;  // ptxas missing or errored
+
+            // xpu-tile-manifest §2, §3: identity + hash over the cubin that
+            // registers; footprint from `ptxas -v` (registers, static smem,
+            // stack-frame bytes as the scratch figure). The warp is 32 wide
+            // on every NVIDIA part. Occupancy fields need an arch-table row,
+            // which sm_* lacks today — absent, not guessed.
+            KernelManifest manifest;
+            manifest.kernel = qualifiedKernelName(method);
+            manifest.target = "nvptx/" + arch;
+            manifest.codeHash = sha256Hex(cubin.data(), cubin.size());
+            manifest.compilerVersion = compilerVersionString();
+            manifest.xpuAbiVersion = CAJETA_XPU_ABI_VERSION;
+            manifest.waveWidth = 32;
+            for (const PtxasKernelStats& st : parsePtxasVerbose(ptxasLog)) {
+                if (st.name != entryName) continue;
+                manifest.vgpr = st.registers;
+                manifest.ldsStaticBytes = st.smemBytes;
+                manifest.spillBytes = st.stackBytes;
+            }
+            {
+                std::optional<unsigned> pinned;
+                if (auto attr = XpuKernelAttr::from(*method))
+                    if (attr->maxThreads()) pinned = *attr->maxThreads();
+                fillOccupancy(manifest, arch, pinned);
+            }
+            warnIfSpilling(manifest);
 
             // Embed the cubin as a private host-module constant.
             llvm::Constant* dataInit = llvm::ConstantDataArray::get(
@@ -232,10 +263,13 @@ namespace nvidia {
                     // Unsupported/non-constant ray-query shape (XPU-N04) — software cubin only.
                 }
             }
+            emitManifestRegistration(hostModule, b, nameStr, /*CAJ_XPU_CUDA=*/0,
+                                     arch, manifest);
             b.CreateRetVoid();
 
             // Run at module-init time (LLJIT: jit->initialize; native: startup).
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
+            if (manifests) manifests->push_back(manifest);
             ++emitted;
         }
         return emitted;

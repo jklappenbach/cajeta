@@ -1184,6 +1184,113 @@ void __cajeta_xpu_register_module(const char* kernelName, const void* image,
     cajeta_xpu_register_module_impl(kernelName, image, len, -1);
 }
 
+// --- kernel manifests (xpu-tile-manifest §12.1) ------------------------------
+// One entry per (name, backend, arch): the manifest JSON the compiler embedded
+// beside that backend's device code. The pointer is host-module constant data,
+// valid for the process lifetime; re-registration overwrites (the module
+// registry's rule — a second JIT'd program reusing a name must win).
+struct cajeta_xpu_manifest {
+    char name[256];
+    int backend;
+    char arch[64];
+    const char* json;
+    uint64_t len;
+};
+// Two per module slot: a multi-arch bundle registers one manifest per arch.
+#define CAJETA_XPU_MAX_MANIFESTS (2 * CAJETA_XPU_MAX_MODULES)
+static struct cajeta_xpu_manifest g_xpu_manifests[CAJETA_XPU_MAX_MANIFESTS];
+static int g_xpu_manifest_count;
+
+void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size,
+                                uint64_t count);
+
+void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
+                                           int32_t backend, const char* arch,
+                                           const void* json, uint64_t len) {
+    if (!kernelName || !json) return;
+    if (!arch) arch = "";
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    struct cajeta_xpu_manifest* e = NULL;
+    int i;
+    for (i = 0; i < g_xpu_manifest_count; i++) {
+        if (g_xpu_manifests[i].backend == (int) backend &&
+            strncmp(g_xpu_manifests[i].name, kernelName,
+                    sizeof(g_xpu_manifests[i].name)) == 0 &&
+            strncmp(g_xpu_manifests[i].arch, arch,
+                    sizeof(g_xpu_manifests[i].arch)) == 0) {
+            e = &g_xpu_manifests[i];
+            break;
+        }
+    }
+    if (!e && g_xpu_manifest_count < CAJETA_XPU_MAX_MANIFESTS) {
+        e = &g_xpu_manifests[g_xpu_manifest_count++];
+        strncpy(e->name, kernelName, sizeof(e->name) - 1);
+        e->name[sizeof(e->name) - 1] = '\0';
+        strncpy(e->arch, arch, sizeof(e->arch) - 1);
+        e->arch[sizeof(e->arch) - 1] = '\0';
+        e->backend = (int) backend;
+    }
+    if (!e) {
+        fprintf(stderr,
+                "cajeta.xpu: kernel manifest registry FULL (%d) — dropping '%s'\n",
+                CAJETA_XPU_MAX_MANIFESTS, kernelName);
+    } else {
+        e->json = (const char*) json;
+        e->len = len;
+    }
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+}
+
+// STATIC native (no `this`): `nameArr` is a cajeta int8[] (payload at +8).
+void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len) {
+    if (!nameArr || len <= 0 || len > 255) return NULL;
+    char name[256];
+    memcpy(name, (const char*) nameArr + 8, (size_t) len);
+    name[len] = 0;
+    int backend = cajeta_xpu_active_backend();
+    if (backend < 0) return NULL;
+
+    int i, candidates = 0;
+    struct cajeta_xpu_manifest* pick = NULL;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    for (i = 0; i < g_xpu_manifest_count; i++) {
+        if (g_xpu_manifests[i].backend == backend &&
+            strncmp(g_xpu_manifests[i].name, name,
+                    sizeof(g_xpu_manifests[i].name)) == 0) {
+            if (!pick) pick = &g_xpu_manifests[i];
+            candidates++;
+        }
+    }
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    if (!pick) return NULL;
+
+    // Several arches under one name (a multi-arch bundle): serve the one the
+    // live device runs. The arch token the driver reports may carry a feature
+    // suffix ("gfx1151:sramecc-:xnack-"), so match on the registered prefix.
+    if (candidates > 1) {
+        CajetaXpuRawDevice dev;
+        if (cajeta_xpu_query_raw_device(&dev) && dev.archName[0]) {
+            pthread_mutex_lock(&g_xpu_cuda_lock);
+            for (i = 0; i < g_xpu_manifest_count; i++) {
+                struct cajeta_xpu_manifest* e = &g_xpu_manifests[i];
+                if (e->backend == backend && e->arch[0] &&
+                    strncmp(e->name, name, sizeof(e->name)) == 0 &&
+                    strncmp(e->arch, dev.archName, strlen(e->arch)) == 0) {
+                    pick = e;
+                    break;
+                }
+            }
+            pthread_mutex_unlock(&g_xpu_cuda_lock);
+        }
+    }
+
+    // A fresh cajeta int8[] { i64 count, [count x i8] } the caller owns.
+    void* hdr = __cajeta_new_array_header(8, 1, pick->len);
+    if (!hdr) return NULL;
+    if (pick->len) memcpy((char*) hdr + 8, pick->json, (size_t) pick->len);
+    return hdr;
+}
+
 // Is `kernelName` actually LAUNCHABLE on the active backend — device code
 // registered, and (Vulkan) parameter metadata present? Type-level routing
 // (hasBatchKernel) cannot know a backend SKIPPED a kernel at build (the

@@ -51,9 +51,26 @@ namespace nvidia {
     // Assemble PTX text into a .cubin for `arch` (e.g. "sm_89") by
     // shelling out to ptxas. Returns the cubin bytes, or empty on failure
     // (ptxas missing, or a ptxas error — which is logged). This is the
-    // single-arch path; multi-arch fatbin is a later increment.
+    // single-arch path; multi-arch fatbin is a later increment. When
+    // `verboseLog` is given, ptxas runs with `-v` and its per-kernel resource
+    // report (registers, smem, spill, stack) is returned in it — the manifest
+    // footprint source (xpu-tile-manifest §3.1).
     std::vector<uint8_t> assembleCubin(const std::string& ptx,
-                                       const std::string& arch = "sm_89");
+                                       const std::string& arch = "sm_89",
+                                       std::string* verboseLog = nullptr);
+
+    // One kernel's resource report from `ptxas -v` text: the "Function
+    // properties for <name>" block plus its "Used N registers, ... bytes smem"
+    // line. Fields ptxas did not print are 0.
+    struct PtxasKernelStats {
+        std::string name;
+        unsigned registers = 0;
+        unsigned smemBytes = 0;
+        unsigned spillStoreBytes = 0;
+        unsigned spillLoadBytes = 0;
+        unsigned stackBytes = 0;
+    };
+    std::vector<PtxasKernelStats> parsePtxasVerbose(const std::string& text);
 
 } // namespace nvidia
 } // namespace xpu

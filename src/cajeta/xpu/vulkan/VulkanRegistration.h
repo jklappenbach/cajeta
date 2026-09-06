@@ -29,14 +29,22 @@ namespace cajeta {
 
 namespace cajeta {
 namespace xpu {
+
+    struct KernelManifest;
+
 namespace vulkan {
 
     // Emit SPIR-V constants + registration ctors into `hostModule` for each
     // @Kernel in `kernels`. Returns the number embedded (0 if none / the spirv
     // target is unavailable). `arch` is the SPIR-V target env (e.g. "vulkan1.3").
+    // `manifests`, when given, receives one KernelManifest per kernel (the
+    // primary variant): identity + the SPIR-V hash. Pipeline statistics are a
+    // driver fact at pipeline creation, so the footprint stays absent here
+    // (xpu-tile-manifest §3.1 "where the driver exposes them").
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
-                               const std::string& arch = "vulkan1.3");
+                               const std::string& arch = "vulkan1.3",
+                               std::vector<KernelManifest>* manifests = nullptr);
 
     // Emit SPIR-V constants + registration ctors into `hostModule` for each
     // graphics-shader method (@Vertex/@Fragment/…) in `shaders` — the

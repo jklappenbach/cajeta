@@ -33,15 +33,21 @@ namespace cajeta {
 
 namespace cajeta {
 namespace xpu {
+
+    struct KernelManifest;
+
 namespace nvidia {
 
     // Emit cubin constants + registration ctors into `hostModule` for each
     // method in `kernels` that is a @Kernel. Returns the number of kernels
     // successfully embedded (0 if none / ptxas unavailable). Never throws —
     // unsupported kernels are skipped.
+    // `manifests`, when given, receives one KernelManifest per kernel: identity
+    // + the cubin hash, footprint from `ptxas -v` (xpu-tile-manifest §3.1).
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
-                               const std::string& arch = "sm_89");
+                               const std::string& arch = "sm_89",
+                               std::vector<KernelManifest>* manifests = nullptr);
 
 } // namespace nvidia
 } // namespace xpu

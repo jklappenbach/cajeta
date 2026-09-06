@@ -29,6 +29,9 @@
 #include <sstream>
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/BinaryFormat/ELF.h"
+#include "llvm/BinaryFormat/MsgPackDocument.h"
+#include "llvm/Object/ELF.h"
 
 #include <cstdlib>
 #include <mutex>
@@ -416,14 +419,32 @@ std::vector<std::string> splitArchList(const std::string& arch) {
     return out;
 }
 
-std::vector<uint8_t> assembleHsacoBundle(
+std::vector<ArchHsaco> assembleHsacoPerArch(
         llvm::Module& deviceModule, const std::vector<std::string>& arches) {
-    if (arches.empty()) return {};
+    std::vector<ArchHsaco> out;
+    if (arches.empty()) return out;
     if (arches.size() == 1) {
         auto tm = createAmdgpuTargetMachine(arches[0]);
-        return tm ? assembleHsaco(deviceModule, *tm, arches[0])
-                  : std::vector<uint8_t>{};
+        if (!tm) return out;
+        std::vector<uint8_t> hsaco = assembleHsaco(deviceModule, *tm, arches[0]);
+        if (hsaco.empty()) return out;
+        out.push_back({arches[0], std::move(hsaco)});
+        return out;
     }
+    for (const std::string& arch : arches) {
+        auto tm = createAmdgpuTargetMachine(arch);
+        if (!tm) return {};
+        auto clone = llvm::CloneModule(deviceModule);   // assembleHsaco mutates
+        std::vector<uint8_t> hsaco = assembleHsaco(*clone, *tm, arch);
+        if (hsaco.empty()) return {};
+        out.push_back({arch, std::move(hsaco)});
+    }
+    return out;
+}
+
+std::vector<uint8_t> bundleHsacos(const std::vector<ArchHsaco>& perArch) {
+    if (perArch.empty()) return {};
+    if (perArch.size() == 1) return perArch[0].hsaco;
     auto bundler = llvm::sys::findProgramByName("clang-offload-bundler");
     if (!bundler) {
         llvm::errs() << "cajeta.xpu.amd: clang-offload-bundler not found "
@@ -455,17 +476,12 @@ std::vector<uint8_t> assembleHsacoBundle(
 
     std::string targets = "host-x86_64-unknown-linux-gnu";
     std::vector<std::string> inputFlags = {"-input=" + hostFile};
-    for (const std::string& arch : arches) {
-        auto tm = createAmdgpuTargetMachine(arch);
-        if (!tm) { cleanup(); return {}; }
-        auto clone = llvm::CloneModule(deviceModule);   // assembleHsaco mutates
-        std::vector<uint8_t> hsaco = assembleHsaco(*clone, *tm, arch);
-        if (hsaco.empty()) { cleanup(); return {}; }
+    for (const ArchHsaco& ah : perArch) {
         std::string f;
-        if (!writeTemp("hsaco", hsaco.data(), hsaco.size(), f)) {
+        if (!writeTemp("hsaco", ah.hsaco.data(), ah.hsaco.size(), f)) {
             cleanup(); return {};
         }
-        targets += ",hipv4-amdgcn-amd-amdhsa--" + arch;
+        targets += ",hipv4-amdgcn-amd-amdhsa--" + ah.arch;
         inputFlags.push_back("-input=" + f);
     }
 
@@ -495,6 +511,83 @@ std::vector<uint8_t> assembleHsacoBundle(
     }
     cleanup();
     return bundle;
+}
+
+std::vector<uint8_t> assembleHsacoBundle(
+        llvm::Module& deviceModule, const std::vector<std::string>& arches) {
+    return bundleHsacos(assembleHsacoPerArch(deviceModule, arches));
+}
+
+// The code object's AMDGPU metadata note is a msgpack document; its
+// `amdhsa.kernels` array holds one map per kernel with the resource fields the
+// assembler measured. This is the same note `llvm-readelf --notes` renders as
+// YAML, read in-process — no parsing of ISA text, no second codegen.
+std::vector<AmdCodeObjectFootprint> readCodeObjectFootprint(
+        const std::vector<uint8_t>& elfBytes) {
+    std::vector<AmdCodeObjectFootprint> out;
+    if (elfBytes.empty()) return out;
+    llvm::StringRef data(reinterpret_cast<const char*>(elfBytes.data()),
+                         elfBytes.size());
+    auto elfOrErr = llvm::object::ELF64LEFile::create(data);
+    if (!elfOrErr) { llvm::consumeError(elfOrErr.takeError()); return out; }
+    const llvm::object::ELF64LEFile& elf = *elfOrErr;
+    auto sections = elf.sections();
+    if (!sections) { llvm::consumeError(sections.takeError()); return out; }
+
+    auto uintOf = [](const llvm::msgpack::DocNode& n) -> unsigned {
+        switch (n.getKind()) {
+            case llvm::msgpack::Type::UInt: return (unsigned) n.getUInt();
+            case llvm::msgpack::Type::Int:  return n.getInt() < 0 ? 0u : (unsigned) n.getInt();
+            default: return 0;
+        }
+    };
+
+    for (const auto& shdr : *sections) {
+        if (shdr.sh_type != llvm::ELF::SHT_NOTE) continue;
+        llvm::Error err = llvm::Error::success();
+        for (const auto& note : elf.notes(shdr, err)) {
+            if (note.getName() != "AMDGPU"
+                    || note.getType() != llvm::ELF::NT_AMDGPU_METADATA)
+                continue;
+            llvm::ArrayRef<uint8_t> desc = note.getDesc(shdr.sh_addralign);
+            llvm::msgpack::Document doc;
+            if (!doc.readFromBlob(llvm::StringRef(
+                        reinterpret_cast<const char*>(desc.data()), desc.size()),
+                    /*Multi=*/false))
+                continue;
+            llvm::msgpack::DocNode& root = doc.getRoot();
+            if (!root.isMap()) continue;
+            auto& rootMap = root.getMap();
+            auto kIt = rootMap.find("amdhsa.kernels");
+            if (kIt == rootMap.end() || !kIt->second.isArray()) continue;
+            for (llvm::msgpack::DocNode& k : kIt->second.getArray()) {
+                if (!k.isMap()) continue;
+                auto& km = k.getMap();
+                auto str = [&](const char* key) -> std::string {
+                    auto it = km.find(key);
+                    if (it == km.end() || !it->second.isString()) return {};
+                    return it->second.getString().str();
+                };
+                auto num = [&](const char* key) -> unsigned {
+                    auto it = km.find(key);
+                    return it == km.end() ? 0u : uintOf(it->second);
+                };
+                AmdCodeObjectFootprint fp;
+                fp.name = str(".name");
+                fp.vgpr = num(".vgpr_count");
+                fp.sgpr = num(".sgpr_count");
+                fp.vgprSpill = num(".vgpr_spill_count");
+                fp.sgprSpill = num(".sgpr_spill_count");
+                fp.privateSegmentBytes = num(".private_segment_fixed_size");
+                fp.groupSegmentBytes = num(".group_segment_fixed_size");
+                fp.wavefrontSize = num(".wavefront_size");
+                fp.maxFlatWorkgroupSize = num(".max_flat_workgroup_size");
+                out.push_back(std::move(fp));
+            }
+        }
+        if (err) llvm::consumeError(std::move(err));
+    }
+    return out;
 }
 
 } // namespace amd

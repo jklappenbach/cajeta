@@ -100,11 +100,13 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
 - **3.2** When a kernel spills, the manifest records the spill bytes and the
   build emits a warning naming the kernel; a spilling kernel is never silently
   accepted as tuned (Volkov).
-- **3.3** When the block size is pinned (a `@Tile` shape or an `@Occupancy`
-  clamp), the manifest records the pinned threads per group and the resident
-  groups per compute unit the occupancy picker computes from the footprint; when
-  the block size is a launch argument, it records the feasible block sizes
-  best-first as the picker enumerates them.
+- **3.3** When the block size is pinned (a `@Tile` shape, an `@Occupancy`
+  clamp, or one constant launch block at every launch site — the size the
+  backend budgeted registers for), the manifest records the pinned threads per
+  group and the resident groups per compute unit the occupancy picker computes
+  from the footprint (the picker's unit is the driver multiprocessor: a WGP on
+  RDNA, an SM on NVIDIA); when the block size is a launch argument, it records
+  the feasible block sizes best-first as the picker enumerates them.
 - **3.4** When the manifest reports occupancy, it labels it as a capacity
   accounting unit for the scheduler, never as a performance target; any report
   that prints occupancy also prints the roofline fraction where one is measured

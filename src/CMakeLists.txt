@@ -461,6 +461,9 @@ if(CAJETA_USE_LLVM_DYLIB)
 else()
     llvm_map_components_to_libnames(LLVM_LIBS
             support core irreader option
+            # object + binaryformat: the kernel manifest reads the AMDGPU code
+            # object's msgpack metadata note (xpu-tile-manifest §3.1).
+            object binaryformat
             target mc passes analysis bitwriter bitreader
             orcjit orcdebugging jitlink executionengine runtimedyld linker
             AllTargetsAsmParsers

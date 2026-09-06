@@ -73,6 +73,39 @@ namespace amd {
     std::vector<uint8_t> assembleHsacoBundle(
         llvm::Module& deviceModule, const std::vector<std::string>& arches);
 
+    // The two halves of assembleHsacoBundle, for callers that need the per-arch
+    // code objects themselves: the kernel manifest hashes and reads the
+    // footprint of the very bytes that register (xpu-tile-manifest §2, §3), one
+    // record per arch. assembleHsacoPerArch is empty on any per-arch failure;
+    // bundleHsacos returns one hsaco verbatim and wraps several in a
+    // clang-offload-bundle (empty when the bundler is missing or fails).
+    struct ArchHsaco {
+        std::string arch;
+        std::vector<uint8_t> hsaco;
+    };
+    std::vector<ArchHsaco> assembleHsacoPerArch(
+        llvm::Module& deviceModule, const std::vector<std::string>& arches);
+    std::vector<uint8_t> bundleHsacos(const std::vector<ArchHsaco>& perArch);
+
+    // Per-kernel footprint read from an assembled code object's AMDGPU metadata
+    // note — the msgpack `amdhsa.kernels` records `llvm-readelf --notes` prints
+    // — exactly as the artifact states them (xpu-tile-manifest §3.1). Empty
+    // when the bytes are not an AMDGPU ELF or carry no metadata note. Fields
+    // the record omits are 0.
+    struct AmdCodeObjectFootprint {
+        std::string name;                 // .name (kernel symbol)
+        unsigned vgpr = 0;                // .vgpr_count
+        unsigned sgpr = 0;                // .sgpr_count
+        unsigned vgprSpill = 0;           // .vgpr_spill_count
+        unsigned sgprSpill = 0;           // .sgpr_spill_count
+        unsigned privateSegmentBytes = 0; // .private_segment_fixed_size (scratch)
+        unsigned groupSegmentBytes = 0;   // .group_segment_fixed_size (static LDS)
+        unsigned wavefrontSize = 0;       // .wavefront_size
+        unsigned maxFlatWorkgroupSize = 0;// .max_flat_workgroup_size
+    };
+    std::vector<AmdCodeObjectFootprint> readCodeObjectFootprint(
+        const std::vector<uint8_t>& elf);
+
     // Split a comma-separated arch string ("gfx1100,gfx1151") into a list,
     // trimming spaces and dropping empties. A single arch yields one element.
     std::vector<std::string> splitArchList(const std::string& arch);
