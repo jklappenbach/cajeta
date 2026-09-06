@@ -59,15 +59,29 @@ Two facts about the set, both measured on 2026-09-06:
 
 - **Instrument.** Host clock (`Clock.nanoTime`) around launch and sync, in
   two modes: *isolated* (one launch, one sync) for latency and *pipelined*
-  (fifty queued, one sync) for the cost a full queue sees. The profiler's
-  AMD device tier (rocprofiler-sdk, loaded from `$ROCM_PATH/lib` — this
-  box's user-local ROCm tree carries it) is active and records device
-  spans; `run.sh` profiles the seam pass with it as a cross-check, and the
-  report's §3.5 uses it on the cajeta-llm run. Set
-  `CAJETA_PROFILER_GPU_RING` large (4 M) for a run with tens of thousands
-  of launches: the record sink drops on overflow, so a small ring keeps
-  per-kernel averages but loses totals. The harness rows stay host-clocked
-  so they mean the same thing on every backend.
+  (fifty queued, one sync) for the cost a full queue sees. The harness rows
+  stay host-clocked so they mean the same thing on every backend.
+- **Profiled passes** (scheduling plan 0.2.4). After the timed run, `run.sh`
+  runs each workload once more under `CAJETA_PROFILER=1` — one kernel shape
+  and one seam target per pass, so every span in a trace belongs to one row
+  (`--kernel-shape=small|large`, `--seam-targets=5`) — summarises the trace
+  per kernel (`cajeta profile summary --csv`) and derives the rows the host
+  clock cannot give (`xpubench-report spans`, `Spans.cajeta`): per-kernel
+  `device_span`, the CG stand-in's `device_time_per_iteration` and
+  `queue_empty_time`, the seam probe's span per target, and on the llm run
+  `matrix_core_fraction`, `device_busy` and the two
+  `attention_kernel_duration`s. Every figure is an average span times the
+  launch count the harness recorded in its `launches` rows (kernel names
+  with multiplicity, iterations issued), never a total: the capture ring
+  overwrites its oldest records, and the summary's first CSV line
+  (`# gpu_records_kept=N gpu_records_dropped=M`) plus the launch counts turn
+  a lossy pass into `pending` rows with the counts in the note. Rings are
+  sized per pass (65 K kernels and seam, 256 K CG, 4 M llm). The AMD device
+  tier is rocprofiler-sdk from `$ROCM_PATH/lib`; on the CPU backend a span
+  is the inline launch itself. `SPANS=0` skips the passes; `SPANS_ONLY=1`
+  with `KEEP_ROWS=1` and the leg's `DATE=`/`STAMP=` re-runs only the passes
+  of the listed workloads and appends their rows (a later row with the same
+  key supersedes an earlier one in both report verbs).
 - **Warm-up.** Every kernel runs once per shape before timing.
 - **Blocks.** Five blocks per KPI; each block's median is one sample of the
   noise band (min/max over blocks); p95 is over every individual sample.
@@ -90,8 +104,20 @@ does not refuse on a clean table or because of its own pid).
 ```sh
 tmp/bench/xpubench-report baseline tmp/bench/rows-hip-<stamp>.jsonl
 tmp/bench/xpubench-report trial before.jsonl after.jsonl --id=T-001 --unit="scheduling U1" --commit=<sha>
+tmp/bench/xpubench-report spans --csv=prof-cg-hip-<stamp>.csv --rows=prof-cg-hip-<stamp>.jsonl --out=rows-hip-<stamp>.jsonl
 ```
 
-`baseline` prints the report's §3 table; `trial` pairs two rows files by
-(workload, shape, KPI, backend) and prints §4 rows with delta, the before
-row's noise band, and a `keep` / `worse` verdict (exit 1 on any `worse`).
+`baseline` prints the report's §3 table (`launches` rows hidden, a later
+row superseding an earlier one with the same key); `trial` pairs two rows
+files by (workload, shape, KPI, backend) and prints §4 rows with delta, the
+before row's noise band, and a verdict — `keep`, `worse`, or `single` when
+the before row has no band (n = 1: reported, not gated; exit 1 on any
+`worse`); `spans` appends device-span rows derived from one profiled pass
+(`run.sh` calls it after every pass).
+
+A leg can be split across invocations to fit a tool's timeout:
+`run.sh cpu --workloads=kernels`, then `KEEP_ROWS=1 DATE=<the first
+run's date> STAMP=<its stamp> SKIP_BUILD=1 run.sh cpu
+--workloads=cg,degenerate,frame,pair,seam` — one rows file, one identity.
+The compiler field is `git rev-parse HEAD`, so commit before the leg of
+record.

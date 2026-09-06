@@ -245,7 +245,7 @@ public final class Report {
             // pending row is superseded by a measured row with the same key
             // (the harness writes `pending` for what a later profiled pass
             // then fills), so the table shows the number, not both.
-            if (r.kpi.equals("launches") || (r.unit.equals("pending") && Report.hasMeasured(rows, r))) {
+            if (r.kpi.equals("launches") || Report.superseded(rows, i)) {
                 i = i + 1;
                 continue;
             }
@@ -266,14 +266,25 @@ public final class Report {
         return 0;
     }
 
-    /** True when another row with `r`'s key carries a measurement. */
-    static boolean hasMeasured(ArrayList<Row> rows, Row r) {
+    /**
+     * True when a LATER row with `r`'s key carries a measurement, or `r` is
+     * pending and any measured row does. A rows file is append-only — a
+     * profiled pass rerun (`SPANS_ONLY=1`) adds newer rows after the ones it
+     * replaces — so the last measured row for a key is the one that stands.
+     */
+    static boolean superseded(ArrayList<Row> rows, int32 at) {
+        Row r = rows.get(at);
         String key #= r.key();
+        boolean pending = r.unit.equals("pending");
         int32 j = 0;
         while (j < rows.count()) {
             Row o = rows.get(j);
+            int32 here = j;
             j = j + 1;
-            if (o == r || o.unit.equals("pending")) {
+            if (here == at || o.unit.equals("pending")) {
+                continue;
+            }
+            if (!pending && here < at) {
                 continue;
             }
             String ko #= o.key();
@@ -331,17 +342,19 @@ public final class Report {
         int32 x = 0;
         while (x < b.count()) {
             Row rb = b.get(x);
+            int32 xb = x;
             x = x + 1;
-            if (rb.unit.equals("pending") || rb.kpi.equals("launches")) {
+            if (rb.unit.equals("pending") || rb.kpi.equals("launches") || Report.superseded(b, xb)) {
                 continue;
             }
             String key #= rb.key();
             int32 y = 0;
             while (y < af.count()) {
                 Row ra = af.get(y);
+                int32 ya = y;
                 y = y + 1;
                 String ka #= ra.key();
-                if (!ka.equals(key) || ra.unit.equals("pending")) {
+                if (!ka.equals(key) || ra.unit.equals("pending") || Report.superseded(af, ya)) {
                     continue;
                 }
                 float64 delta = ra.median - rb.median;

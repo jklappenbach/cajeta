@@ -17,7 +17,7 @@ instrument.
 |---|---|
 | Devices | gfx1151 (Strix Halo APU, this box); CPU backend (this box); RTX 4090 (PHOENIX, rows filled by that session) |
 | Identity recorded per row | device, driver version, compiler commit, power mode, backend |
-| Instrument | Host clock (`Clock.nanoTime`) around launch and sync, in two modes: **isolated** (one launch, one sync — kernel plus launch plus sync latency) and **pipelined** (fifty queued launches, one sync, divided by fifty — the per-kernel cost a full queue sees), so a row means the same thing on every backend. The profiler's AMD device tier (rocprofiler-sdk, bound from `$ROCM_PATH/lib` — this box's user-local ROCm 7.11.0 tree carries it; proven by a loader trace, since the runtime prints nothing when it binds) records device spans and is the cross-check: `run.sh` profiles the seam pass with it (§3.4) and the cajeta-llm run was profiled with it (§3.5). `CAJETA_PROFILER_GPU_RING=4194304` for runs with tens of thousands of launches; the sink drops on overflow and a small ring keeps averages but loses totals. CUPTI on NVIDIA when that session runs. |
+| Instrument | Host clock (`Clock.nanoTime`) around launch and sync, in two modes: **isolated** (one launch, one sync — kernel plus launch plus sync latency) and **pipelined** (fifty queued launches, one sync, divided by fifty — the per-kernel cost a full queue sees), so a row means the same thing on every backend. The profiler's AMD device tier (rocprofiler-sdk, bound from `$ROCM_PATH/lib` — this box's user-local ROCm 7.11.0 tree carries it; proven by a loader trace, since the runtime prints nothing when it binds) records device spans, and since 0.2.4 (2026-09-06) every workload gets a profiled pass after its timed run — one kernel shape or seam target per pass — whose per-kernel spans become rows beside the host-clocked ones (`device_span`, `device_time_per_iteration`, `queue_empty_time`, and on the llm run `matrix_core_fraction`, `device_busy`, both `attention_kernel_duration`s; `xpubench-report spans`). Every such figure is an average span times the launch count the harness recorded, never a total: the capture ring overwrites its oldest records, `cajeta profile summary` now reports `gpu_records_kept` / `_dropped`, and a pass whose ring dropped or whose counts fall short of the launches issued yields `pending` rows carrying the counts. Rings are sized per pass (65 K kernels and seam, 256 K CG, 4 M llm). CUPTI on NVIDIA when that session runs. |
 | Warm-up | first-touch pages committed and every kernel run once per shape before timing (the first-touch finding: ~890 ms one-time on fresh buffers) |
 | Runs | 5 blocks per KPI; a block's median is one sample of the noise band (min/max over blocks); p95 is nearest-rank over every individual sample (20 per block for kernels, 100 for the seam probe, every frame for the frame stand-in); cajeta-llm: 5 processes, one run each |
 | Idle gate | no other `cajeta_test`, `xpubench`, `gpuparity`, `SchedThroughput`, or llama.cpp binary alive, matched by process NAME (`pgrep -a`) excluding the harness itself; exit 3 and no rows otherwise; load average printed beside it. Tested both ways in `XpuBenchHarnessTests` |
@@ -67,18 +67,23 @@ Filled by scheduling Unit 2. Absent means the device could not report it.
 
 ## 3. Baseline (before any scheduler code)
 
-Filled by scheduling Unit 0 on 2026-09-06, commit `8fea9b63` (the harness
-and the two compiler/runtime fixes it needed are the commit after). Rows:
-`tmp/bench/rows-hip-20260906-1810.jsonl` for gfx1151 and, for the CPU
-backend, `tmp/bench/rows-cpu-20260906-1502-full.jsonl` — the leg rerun the
-same day on commit `e0fa4871` after the CPU barrier-fission fix
-(`cpu-barrier-fission-loops`); the first CPU leg, `rows-cpu-20260906-1810`,
-is the `Before` side of trial T-001 in §4 (gitignored; the tables below are
-the rendered copy). One row per (workload, shape, KPI); the noise band is
+Filled by scheduling Unit 0 on 2026-09-06 (first legs on commit `8fea9b63`)
+and rerun the same evening on `f721f0bf` with the profiled passes of 0.2.4,
+which is the baseline of record: `tmp/bench/rows-hip-20260906-1532.jsonl`
+for gfx1151 and `tmp/bench/rows-cpu-20260906-1529.jsonl` for the CPU
+backend (gitignored; the tables below are the rendered copy). Each leg ran
+as two invocations of `run.sh` under one identity (`KEEP_ROWS=1` with the
+first invocation's `DATE` and `STAMP`), and the kernel profiled passes were
+rerun once (`SPANS_ONLY=1`) after a launch-count bookkeeping fix
+(`8663d500`); a later row supersedes an earlier one with the same key. The
+first legs — `rows-hip-20260906-1810`, `rows-cpu-20260906-1810`, and the
+CPU rerun `rows-cpu-20260906-1502-full` after the barrier-fission fix
+(`e0fa4871`) — are the `Before` sides of the trials in §4. One row per (workload, shape, KPI); the noise band is
 min/max over five blocks (over frames for the frame stand-in); `pending`
-rows name what could not be measured here and why. Rows for `bytes_moved`
-and `bandwidth_fraction` (pending on every kernel until §2 has the device's
-achievable bandwidth) are in the JSON and omitted from the tables.
+rows name what could not be measured here and why. `bandwidth_fraction` is
+pending on every kernel until §2 has the device's achievable bandwidth; the
+`launches` rows the profiled passes use (iterations issued, kernel names
+with multiplicity) are in the JSON and hidden from the tables.
 
 ### 3.1 What the baseline says (read before the tables)
 
@@ -102,9 +107,27 @@ achievable bandwidth) are in the JSON and omitted from the tables.
   LDS-tiled GEMM 1.66 TFLOP/s; the f16 tile GEMM on the matrix cores
   5.4 TFLOP/s; a random gather runs 11× slower than the streaming kernel
   at the same element count (10.0 ms vs 0.92 ms).
-- **cajeta-llm** on the same compiler: 2,048-token prefill 9.82 s (208.5
-  tok/s), decode 40.4 tok/s (24.8 ms per token), five processes agreeing
-  within 0.3%.
+- **cajeta-llm** on the same compiler: 2,048-token prefill 9.82 s (208.6
+  tok/s), decode 40.5 tok/s (24.7 ms per token), five processes agreeing
+  within 0.3%. From the profiled run (0.2.4 rows; ring 43,874 of 43,874
+  records kept): the device is busy 98.7% of prefill + decode wall;
+  prefill's device time is 92.9% on the WMMA kernels (a lower bound —
+  kernels both phases share are counted as prefill; §3.5's hand split gave
+  ~94%); decode attention takes 58.0 µs per layer per token (attention +
+  its reduce), prefill attention 904.6 µs per layer per 128-token chunk.
+- **The device is idle for 15% of the CG loop.** From the profiled passes:
+  the CG stand-in's seven kernels occupy gfx1151 for 92.6 µs of a 98.0 µs
+  iteration (`queue_empty_time` 15.4%), and the one-element degenerate loop
+  for 6.2 of 15.3 µs (74.5% empty) — the launch gaps a scheduler that
+  submits ahead can close, measured rather than inferred. On the CPU
+  backend a launch is the kernel (0.5% and 16.7%).
+- **The seam, seen from the device.** One profiled pass per target: the
+  `spin` kernel's device span is 5.9 / 50.6 / 198.8 µs where the
+  host-clocked pipelined time is 9.5 / 52.7 / 207.4 µs, so a pipelined
+  launch on HIP leaves 2–9 µs of device idle between kernels beyond the
+  kernel itself; the CPU backend's spans (7.5 / 53.4 / 190.7 µs) are the
+  inline launches and bracket the host figure. A per-kernel `device_span`
+  row now sits beside every `duration_isolated` in §3.2 and §3.3.
 - **Two kernels were fixed before the baseline was taken.** The first
   reductions used a same-address float atomic and were contention-bound on
   HIP (446 µs for 1M elements, 2.3 GFLOP/s, a bimodal band at 16M); the
@@ -126,96 +149,166 @@ achievable bandwidth) are in the JSON and omitted from the tables.
   Three reruns of the fixed binary, minutes apart, disagreed by up to 31%
   on `dot` 1M isolated (78 → 103 µs) and 18% on `stencil5` 1024² pipelined,
   against five-block bands a few percent wide; a control trial of two
-  identical-code runs read 9 of 43 banded KPIs as `worse`. The trial verb's
-  bands come from one run, so a CPU-leg verdict is not readable until
-  0.3.2 and 0.3.3 set bands from repeated runs (§4, §5).
+  identical-code runs read 9 of 43 banded KPIs as `worse`. The gfx1151
+  rerun the same evening (T-003, no device code changed) flagged 4 of 47:
+  `matmulTiled` 2048² by 0.8–1.2%, the degenerate loop's host cost by 7%,
+  one seam overhead by 4%. The trial verb's bands come from one run, so a
+  verdict on either leg is not readable until 0.3.2 and 0.3.3 set bands
+  from repeated runs (§4, §5).
 - **Frame p50 is noisier than p99 suggests**: 4.18 ms median with a
   3.5–6.6 ms band over 600 frames, unscheduled and solo. Later units read
   the p99 and the miss count, not the p50, for the frame stand-in.
 
 ### 3.2 gfx1151 (HIP)
 
-Identity: AMD RYZEN AI MAX+ 395 w/ Radeon 8060S | hip | linux 7.0.0-30-generic, ROCm 7.2.53150-7b886380f9 | 8fea9b63 | auto | 2026-09-06T17:09:24Z
+Identity: AMD RYZEN AI MAX+ 395 w/ Radeon 8060S | hip | linux 7.0.0-30-generic, ROCm 7.2.53150-7b886380f9 | f721f0bf | auto | 2026-09-06T19:32:22Z
 
 | Workload | Shape | Device | KPI | Median | Noise band | p95 | n | Note |
 |---|---|---|---|---|---|---|---|---|
-| kernel.saxpy | 1048576 | hip | duration_isolated | 19.97 us | [19.93, 21.04] | 77.67 | 5 | launch+sync per sample; class memory-bound |
-| kernel.saxpy | 1048576 | hip | duration_pipelined | 15.08 us | [15.06, 22.55] |  | 5 | 50 queued launches / count; class memory-bound |
-| kernel.saxpy | 1048576 | hip | achieved_rate | 139.1 GFLOP/s | [139.1, 139.1] |  | 1 | flops / duration_pipelined |
-| kernel.saxpy | 16777216 | hip | duration_isolated | 917.0 us | [914.2, 923.4] | 933.9 | 5 | launch+sync per sample; class memory-bound |
-| kernel.saxpy | 16777216 | hip | duration_pipelined | 918.9 us | [917.7, 930.8] |  | 5 | 50 queued launches / count; class memory-bound |
-| kernel.saxpy | 16777216 | hip | achieved_rate | 36.51 GFLOP/s | [36.51, 36.51] |  | 1 | flops / duration_pipelined |
-| kernel.dot | 1048576 | hip | duration_isolated | 25.63 us | [25.45, 93.73] | 112.2 | 5 | launch+sync per sample; class memory-bound+reduce |
-| kernel.dot | 1048576 | hip | duration_pipelined | 20.68 us | [20.49, 35.76] |  | 5 | 50 queued launches / count; class memory-bound+reduce |
-| kernel.dot | 1048576 | hip | achieved_rate | 101.4 GFLOP/s | [101.4, 101.4] |  | 1 | flops / duration_pipelined |
-| kernel.dot | 16777216 | hip | duration_isolated | 659.8 us | [658.2, 673.2] | 718.2 | 5 | launch+sync per sample; class memory-bound+reduce |
-| kernel.dot | 16777216 | hip | duration_pipelined | 656.9 us | [652.3, 663.1] |  | 5 | 50 queued launches / count; class memory-bound+reduce |
-| kernel.dot | 16777216 | hip | achieved_rate | 51.08 GFLOP/s | [51.08, 51.08] |  | 1 | flops / duration_pipelined |
-| kernel.stencil5 | 1024x1024 | hip | duration_isolated | 21.93 us | [21.8, 88.21] | 106.4 | 5 | launch+sync per sample; class memory-bound |
-| kernel.stencil5 | 1024x1024 | hip | duration_pipelined | 16.66 us | [16.62, 16.79] |  | 5 | 50 queued launches / count; class memory-bound |
-| kernel.stencil5 | 1024x1024 | hip | achieved_rate | 503.6 GFLOP/s | [503.6, 503.6] |  | 1 | flops / duration_pipelined |
-| kernel.stencil5 | 4096x4096 | hip | duration_isolated | 604.8 us | [604.2, 626.2] | 638.8 | 5 | launch+sync per sample; class memory-bound |
-| kernel.stencil5 | 4096x4096 | hip | duration_pipelined | 605.4 us | [599.1, 615.9] |  | 5 | 50 queued launches / count; class memory-bound |
-| kernel.stencil5 | 4096x4096 | hip | achieved_rate | 221.7 GFLOP/s | [221.7, 221.7] |  | 1 | flops / duration_pipelined |
-| kernel.reduceSum | 1048576 | hip | duration_isolated | 37.19 us | [37.04, 38.04] | 51.01 | 5 | launch+sync per sample; class sync-bound |
-| kernel.reduceSum | 1048576 | hip | duration_pipelined | 26.45 us | [26.34, 26.63] |  | 5 | 50 queued launches / count; class sync-bound |
-| kernel.reduceSum | 1048576 | hip | achieved_rate | 39.64 GFLOP/s | [39.64, 39.64] |  | 1 | flops / duration_pipelined |
-| kernel.reduceSum | 16777216 | hip | duration_isolated | 555.0 us | [552.8, 556.0] | 574.8 | 5 | launch+sync per sample; class sync-bound |
-| kernel.reduceSum | 16777216 | hip | duration_pipelined | 551.2 us | [547.1, 567.6] |  | 5 | 50 queued launches / count; class sync-bound |
-| kernel.reduceSum | 16777216 | hip | achieved_rate | 30.44 GFLOP/s | [30.44, 30.44] |  | 1 | flops / duration_pipelined |
-| kernel.matmulTiled | 512^2 | hip | duration_isolated | 179.6 us | [175.5, 195.7] | 376.3 | 5 | launch+sync per sample; class compute-bound |
-| kernel.matmulTiled | 512^2 | hip | duration_pipelined | 161.4 us | [160.5, 167.7] |  | 5 | 50 queued launches / count; class compute-bound |
-| kernel.matmulTiled | 512^2 | hip | achieved_rate | 1663.6 GFLOP/s | [1663.6, 1663.6] |  | 1 | flops / duration_pipelined |
-| kernel.matmulTiled | 2048^2 | hip | duration_isolated | 10234.0 us | [10213.7, 10241.8] | 10330.2 | 5 | launch+sync per sample; class compute-bound |
-| kernel.matmulTiled | 2048^2 | hip | duration_pipelined | 10320.0 us | [10207.0, 10381.3] |  | 5 | 50 queued launches / count; class compute-bound |
-| kernel.matmulTiled | 2048^2 | hip | achieved_rate | 1664.7 GFLOP/s | [1664.7, 1664.7] |  | 1 | flops / duration_pipelined |
-| kernel.wmmaGemm | 512^2 | hip | duration_isolated | 78.46 us | [65.21, 79.67] | 144.6 | 5 | launch+sync per sample; class matrix-core |
-| kernel.wmmaGemm | 512^2 | hip | duration_pipelined | 61.48 us | [60.76, 63.5] |  | 5 | 50 queued launches / count; class matrix-core |
-| kernel.wmmaGemm | 512^2 | hip | achieved_rate | 4366.5 GFLOP/s | [4366.5, 4366.5] |  | 1 | flops / duration_pipelined |
-| kernel.wmmaGemm | 2048^2 | hip | duration_isolated | 3140.2 us | [3103.6, 3171.2] | 3252.1 | 5 | launch+sync per sample; class matrix-core |
-| kernel.wmmaGemm | 2048^2 | hip | duration_pipelined | 3180.7 us | [3138.4, 3252.8] |  | 5 | 50 queued launches / count; class matrix-core |
-| kernel.wmmaGemm | 2048^2 | hip | achieved_rate | 5401.3 GFLOP/s | [5401.3, 5401.3] |  | 1 | flops / duration_pipelined |
-| kernel.gather | 1048576 | hip | duration_isolated | 107.9 us | [103.8, 108.1] | 110.3 | 5 | launch+sync per sample; class indirect |
-| kernel.gather | 1048576 | hip | duration_pipelined | 87.8 us | [87.5, 93.39] |  | 5 | 50 queued launches / count; class indirect |
-| kernel.gather | 16777216 | hip | duration_isolated | 9978.6 us | [9976.9, 9989.2] | 10187.9 | 5 | launch+sync per sample; class indirect |
-| kernel.gather | 16777216 | hip | duration_pipelined | 9999.5 us | [9987.2, 10008.2] |  | 5 | 50 queued launches / count; class indirect |
-| cg | 1024x1024x10000 | hip | iterations_per_second | 10141.3 iter/s | [9919.4, 10208.1] |  | 5 | 7 launches/iteration (stencil + 2 dot partials + 1 final + 3 axpy), 2000 iterations per block, one sync per block |
-| cg | 1024x1024x10000 | hip | host_cost_per_node | 0.829 us | [0.826, 0.954] |  | 5 | host wall time inside the launch calls / launches |
-| cg | 1024x1024x10000 | hip | wall_per_iteration | 98.61 us | [98.61, 98.61] |  | 1 | 1e6 / iterations_per_second |
-| degenerate | 1x1x10000 | hip | iterations_per_second | 67606.5 iter/s | [63625.4, 69171.5] |  | 5 | 7 launches/iteration (stencil + 2 dot partials + 1 final + 3 axpy), 2000 iterations per block, one sync per block |
-| degenerate | 1x1x10000 | hip | host_cost_per_node | 0.887 us | [0.878, 0.945] |  | 5 | host wall time inside the launch calls / launches |
-| degenerate | 1x1x10000 | hip | wall_per_iteration | 14.79 us | [14.79, 14.79] |  | 1 | 1e6 / iterations_per_second |
-| seam | 5us | hip | kernel_time | 7.35 us | [7.35, 7.35] |  | 1 | spin(1002) pipelined x100; calibrated from 4.988 ns/iter |
-| seam | 5us | hip | launch_call | 0.871 us | [0.791, 0.872] | 0.972 | 5 | host time inside the launch statement |
-| seam | 5us | hip | pipelined_overhead | -0.23 us | [-0.232, -0.215] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
-| seam | 5us | hip | isolated_overhead | 5.305 us | [5.154, 5.345] |  | 5 | launch + sync minus kernel_time |
-| seam | 50us | hip | kernel_time | 53.56 us | [53.56, 53.56] |  | 1 | spin(10008) pipelined x100; calibrated from 4.996 ns/iter |
-| seam | 50us | hip | launch_call | 14.818 us | [14.808, 14.828] | 14.928 | 5 | host time inside the launch statement |
-| seam | 50us | hip | pipelined_overhead | 0.704 us | [-0.631, 1.232] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
-| seam | 50us | hip | isolated_overhead | 18.297 us | [18.257, 18.337] |  | 5 | launch + sync minus kernel_time |
-| seam | 200us | hip | kernel_time | 207.3 us | [207.3, 207.3] |  | 1 | spin(40066) pipelined x100; calibrated from 4.992 ns/iter |
-| seam | 200us | hip | launch_call | 11.732 us | [10.35, 14.818] | 15.339 | 5 | host time inside the launch statement |
-| seam | 200us | hip | pipelined_overhead | 1.116 us | [0.119, 2.517] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
-| seam | 200us | hip | isolated_overhead | 13.976 us | [13.705, 18.013] |  | 5 | launch + sync minus kernel_time |
-| llm.prefill | prompt2048+gen64 | hip | prefill_ms | 9824.8 ms | [9819.8, 9844.3] |  | 5 | SchedThroughput, one process per run, chunked at the engine's default |
-| llm.prefill | prompt2048+gen64 | hip | prefill_tokens_per_second | 208.5 tok/s | [208.0, 208.6] |  | 5 | from the same runs |
-| llm.prefill | prompt2048+gen64 | hip | matrix_core_fraction | pending | | | | needs the device tier (rocprofiler-sdk) to attribute prefill time to WMMA kernels |
-| llm.decode | prompt2048+gen64 | hip | tokens_per_second | 40.37 tok/s | [40.36, 40.45] |  | 5 | batch 1, greedy, 64 generated tokens after the prompt |
-| llm.decode | prompt2048+gen64 | hip | ms_per_token | 24.77 ms | [24.72, 24.78] |  | 5 | mean per token per run |
-| llm.decode | prompt2048+gen64 | hip | per_token_p99 | pending | | | | SchedThroughput prints a per-run mean, not per-token latencies |
-| llm.decode | prompt2048+gen64 | hip | attention_kernel_duration | pending | | | | needs the device tier (rocprofiler-sdk) for per-kernel device spans |
-| frame | 8388608x12@16.667ms | hip | frame_p50 | 4.17 ms | [3.538, 5.921] | 5.097 | 600 | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
-| frame | 8388608x12@16.667ms | hip | frame_p99 | 5.097 ms | [5.097, 5.097] |  | 1 | nearest-rank over frames |
+| kernel.saxpy | 1048576 | hip | duration_isolated | 19.97 us | [19.93, 20.82] | 43.23 | 5 | launch+sync per sample; class memory-bound |
+| kernel.saxpy | 1048576 | hip | duration_pipelined | 15.08 us | [15.05, 15.18] |  | 5 | 50 queued launches / count; class memory-bound |
+| kernel.saxpy | 1048576 | hip | bytes_moved | 12582912 bytes | [12582912, 12582912] |  | 1 | ideal traffic: every element read/written once |
+| kernel.saxpy | 1048576 | hip | achieved_bandwidth | 834.3 GB/s | [828.7, 835.9] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.saxpy | 1048576 | hip | achieved_rate | 139.1 GFLOP/s | [138.1, 139.3] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.saxpy | 1048576 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.saxpy | 16777216 | hip | duration_isolated | 907.5 us | [904.4, 913.4] | 920.9 | 5 | launch+sync per sample; class memory-bound |
+| kernel.saxpy | 16777216 | hip | duration_pipelined | 908.1 us | [905.0, 930.3] |  | 5 | 50 queued launches / count; class memory-bound |
+| kernel.saxpy | 16777216 | hip | bytes_moved | 201326592 bytes | [201326592, 201326592] |  | 1 | ideal traffic: every element read/written once |
+| kernel.saxpy | 16777216 | hip | achieved_bandwidth | 221.7 GB/s | [216.4, 222.5] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.saxpy | 16777216 | hip | achieved_rate | 36.95 GFLOP/s | [36.07, 37.08] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.saxpy | 16777216 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.dot | 1048576 | hip | duration_isolated | 25.72 us | [25.53, 26.54] | 104.4 | 5 | launch+sync per sample; class memory-bound+reduce |
+| kernel.dot | 1048576 | hip | duration_pipelined | 20.65 us | [20.5, 23.83] |  | 5 | 50 queued launches / count; class memory-bound+reduce |
+| kernel.dot | 1048576 | hip | bytes_moved | 8388608 bytes | [8388608, 8388608] |  | 1 | ideal traffic: every element read/written once |
+| kernel.dot | 1048576 | hip | achieved_bandwidth | 406.2 GB/s | [352.0, 409.2] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.dot | 1048576 | hip | achieved_rate | 101.6 GFLOP/s | [88, 102.3] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.dot | 1048576 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.dot | 16777216 | hip | duration_isolated | 655.1 us | [654.5, 660.5] | 666.9 | 5 | launch+sync per sample; class memory-bound+reduce |
+| kernel.dot | 16777216 | hip | duration_pipelined | 644.8 us | [639.8, 699.6] |  | 5 | 50 queued launches / count; class memory-bound+reduce |
+| kernel.dot | 16777216 | hip | bytes_moved | 134217728 bytes | [134217728, 134217728] |  | 1 | ideal traffic: every element read/written once |
+| kernel.dot | 16777216 | hip | achieved_bandwidth | 208.2 GB/s | [191.8, 209.8] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.dot | 16777216 | hip | achieved_rate | 52.04 GFLOP/s | [47.96, 52.44] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.dot | 16777216 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.stencil5 | 1024x1024 | hip | duration_isolated | 21.92 us | [21.88, 89.01] | 106.8 | 5 | launch+sync per sample; class memory-bound |
+| kernel.stencil5 | 1024x1024 | hip | duration_pipelined | 16.65 us | [16.64, 16.98] |  | 5 | 50 queued launches / count; class memory-bound |
+| kernel.stencil5 | 1024x1024 | hip | bytes_moved | 8388608 bytes | [8388608, 8388608] |  | 1 | ideal traffic: every element read/written once |
+| kernel.stencil5 | 1024x1024 | hip | achieved_bandwidth | 503.8 GB/s | [494.0, 504.0] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.stencil5 | 1024x1024 | hip | achieved_rate | 503.8 GFLOP/s | [494.0, 504.0] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.stencil5 | 1024x1024 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.stencil5 | 4096x4096 | hip | duration_isolated | 599.0 us | [590.5, 624.4] | 630.5 | 5 | launch+sync per sample; class memory-bound |
+| kernel.stencil5 | 4096x4096 | hip | duration_pipelined | 601.8 us | [593.5, 615.0] |  | 5 | 50 queued launches / count; class memory-bound |
+| kernel.stencil5 | 4096x4096 | hip | bytes_moved | 134217728 bytes | [134217728, 134217728] |  | 1 | ideal traffic: every element read/written once |
+| kernel.stencil5 | 4096x4096 | hip | achieved_bandwidth | 223.0 GB/s | [218.3, 226.1] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.stencil5 | 4096x4096 | hip | achieved_rate | 223.0 GFLOP/s | [218.3, 226.1] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.stencil5 | 4096x4096 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.reduceSum | 1048576 | hip | duration_isolated | 36.91 us | [31.66, 37.3] | 130.5 | 5 | launch+sync per sample; class sync-bound |
+| kernel.reduceSum | 1048576 | hip | duration_pipelined | 26.37 us | [26.26, 26.52] |  | 5 | 50 queued launches / count; class sync-bound |
+| kernel.reduceSum | 1048576 | hip | bytes_moved | 4194304 bytes | [4194304, 4194304] |  | 1 | ideal traffic: every element read/written once |
+| kernel.reduceSum | 1048576 | hip | achieved_bandwidth | 159.1 GB/s | [158.1, 159.7] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.reduceSum | 1048576 | hip | achieved_rate | 39.77 GFLOP/s | [39.53, 39.92] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.reduceSum | 1048576 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.reduceSum | 16777216 | hip | duration_isolated | 548.8 us | [537.4, 577.9] | 584.6 | 5 | launch+sync per sample; class sync-bound |
+| kernel.reduceSum | 16777216 | hip | duration_pipelined | 538.2 us | [533.1, 551.3] |  | 5 | 50 queued launches / count; class sync-bound |
+| kernel.reduceSum | 16777216 | hip | bytes_moved | 67108864 bytes | [67108864, 67108864] |  | 1 | ideal traffic: every element read/written once |
+| kernel.reduceSum | 16777216 | hip | achieved_bandwidth | 124.7 GB/s | [121.7, 125.9] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.reduceSum | 16777216 | hip | achieved_rate | 31.17 GFLOP/s | [30.43, 31.47] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.reduceSum | 16777216 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.matmulTiled | 512^2 | hip | duration_isolated | 179.9 us | [175.1, 180.4] | 185.0 | 5 | launch+sync per sample; class compute-bound |
+| kernel.matmulTiled | 512^2 | hip | duration_pipelined | 162.9 us | [161.3, 168.9] |  | 5 | 50 queued launches / count; class compute-bound |
+| kernel.matmulTiled | 512^2 | hip | bytes_moved | 3145728 bytes | [3145728, 3145728] |  | 1 | ideal traffic: every element read/written once |
+| kernel.matmulTiled | 512^2 | hip | achieved_bandwidth | 19.31 GB/s | [18.62, 19.51] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.matmulTiled | 512^2 | hip | achieved_rate | 1647.4 GFLOP/s | [1589.0, 1664.5] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.matmulTiled | 512^2 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.matmulTiled | 2048^2 | hip | duration_isolated | 10314.9 us | [10288.0, 10386.5] | 11281.2 | 5 | launch+sync per sample; class compute-bound |
+| kernel.matmulTiled | 2048^2 | hip | duration_pipelined | 10446.7 us | [10292.8, 10588.3] |  | 5 | 50 queued launches / count; class compute-bound |
+| kernel.matmulTiled | 2048^2 | hip | bytes_moved | 50331648 bytes | [50331648, 50331648] |  | 1 | ideal traffic: every element read/written once |
+| kernel.matmulTiled | 2048^2 | hip | achieved_bandwidth | 4.82 GB/s | [4.75, 4.89] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.matmulTiled | 2048^2 | hip | achieved_rate | 1644.5 GFLOP/s | [1622.5, 1669.1] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.matmulTiled | 2048^2 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.wmmaGemm | 512^2 | hip | duration_isolated | 77.58 us | [66.38, 297.3] | 298.8 | 5 | launch+sync per sample; class matrix-core |
+| kernel.wmmaGemm | 512^2 | hip | duration_pipelined | 62.69 us | [60.81, 63.92] |  | 5 | 50 queued launches / count; class matrix-core |
+| kernel.wmmaGemm | 512^2 | hip | bytes_moved | 2097152 bytes | [2097152, 2097152] |  | 1 | ideal traffic: every element read/written once |
+| kernel.wmmaGemm | 512^2 | hip | achieved_bandwidth | 33.45 GB/s | [32.81, 34.49] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.wmmaGemm | 512^2 | hip | achieved_rate | 4281.9 GFLOP/s | [4199.8, 4414.1] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.wmmaGemm | 512^2 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.wmmaGemm | 2048^2 | hip | duration_isolated | 3135.6 us | [3129.4, 3173.4] | 3231.7 | 5 | launch+sync per sample; class matrix-core |
+| kernel.wmmaGemm | 2048^2 | hip | duration_pipelined | 3133.7 us | [3095.3, 3174.9] |  | 5 | 50 queued launches / count; class matrix-core |
+| kernel.wmmaGemm | 2048^2 | hip | bytes_moved | 33554432 bytes | [33554432, 33554432] |  | 1 | ideal traffic: every element read/written once |
+| kernel.wmmaGemm | 2048^2 | hip | achieved_bandwidth | 10.71 GB/s | [10.57, 10.84] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.wmmaGemm | 2048^2 | hip | achieved_rate | 5482.2 GFLOP/s | [5411.2, 5550.4] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.wmmaGemm | 2048^2 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.gather | 1048576 | hip | duration_isolated | 108.0 us | [104.0, 108.2] | 113.3 | 5 | launch+sync per sample; class indirect |
+| kernel.gather | 1048576 | hip | duration_pipelined | 87.74 us | [87.63, 98.22] |  | 5 | 50 queued launches / count; class indirect |
+| kernel.gather | 1048576 | hip | bytes_moved | 12582912 bytes | [12582912, 12582912] |  | 1 | ideal traffic: every element read/written once |
+| kernel.gather | 1048576 | hip | achieved_bandwidth | 143.4 GB/s | [128.1, 143.6] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.gather | 1048576 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.gather | 16777216 | hip | duration_isolated | 9587.7 us | [9585.1, 9588.3] | 9743.3 | 5 | launch+sync per sample; class indirect |
+| kernel.gather | 16777216 | hip | duration_pipelined | 9611.2 us | [9602.3, 9643.5] |  | 5 | 50 queued launches / count; class indirect |
+| kernel.gather | 16777216 | hip | bytes_moved | 201326592 bytes | [201326592, 201326592] |  | 1 | ideal traffic: every element read/written once |
+| kernel.gather | 16777216 | hip | achieved_bandwidth | 20.95 GB/s | [20.88, 20.97] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.gather | 16777216 | hip | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| cg | 1024x1024x10000 | hip | iterations_per_second | 10208.7 iter/s | [9956.4, 10248.1] |  | 5 | 7 launches/iteration (stencil + 2 dot partials + 1 final + 3 axpy), 2000 iterations per block, one sync per block |
+| cg | 1024x1024x10000 | hip | host_cost_per_node | 0.843 us | [0.828, 0.962] |  | 5 | host wall time inside the launch calls / launches |
+| cg | 1024x1024x10000 | hip | wall_per_iteration | 97.96 us | [97.58, 100.4] |  | 5 | 1e6 / iterations_per_second; band from its band |
+| degenerate | 1x1x10000 | hip | iterations_per_second | 65565.6 iter/s | [65315.8, 68723.9] |  | 5 | 7 launches/iteration (stencil + 2 dot partials + 1 final + 3 axpy), 2000 iterations per block, one sync per block |
+| degenerate | 1x1x10000 | hip | host_cost_per_node | 0.953 us | [0.866, 0.971] |  | 5 | host wall time inside the launch calls / launches |
+| degenerate | 1x1x10000 | hip | wall_per_iteration | 15.25 us | [14.55, 15.31] |  | 5 | 1e6 / iterations_per_second; band from its band |
+| cg | 1024x1024x10000 | hip | device_span | 92.63 us | [92.63, 92.63] |  | 1 | device tier, avg span x launches per iteration (stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy), 10001 iterations profiled |
+| cg | 1024x1024x10000 | hip | device_time_per_iteration | 92.63 us | [92.63, 92.63] |  | 1 | device tier, avg span x launches per iteration (stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy), 10001 iterations profiled |
+| cg | 1024x1024x10000 | hip | queue_empty_time | 15.4 % | [15.4, 15.4] |  | 1 | 100 x (1 - device_time_per_iteration / wall_per_iteration 109.5 us) in the profiled pass |
+| degenerate | 1x1x10000 | hip | device_span | 6.16 us | [6.16, 6.16] |  | 1 | device tier, avg span x launches per iteration (stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy), 10001 iterations profiled |
+| degenerate | 1x1x10000 | hip | device_time_per_iteration | 6.16 us | [6.16, 6.16] |  | 1 | device tier, avg span x launches per iteration (stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy), 10001 iterations profiled |
+| degenerate | 1x1x10000 | hip | queue_empty_time | 74.5 % | [74.5, 74.5] |  | 1 | 100 x (1 - device_time_per_iteration / wall_per_iteration 24.1 us) in the profiled pass |
+| frame | 8388608x12@16.667ms | hip | frame_p50 | 4.162 ms | [3.544, 5.036] | 4.908 | 600 | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
+| frame | 8388608x12@16.667ms | hip | frame_p99 | 4.908 ms | [4.908, 4.908] |  | 1 | nearest-rank over frames |
 | frame | 8388608x12@16.667ms | hip | missed_frames_per_10000 | 0 frames | [0, 0] |  | 1 | 0 of 600 frames exceeded the period |
 | frame | 8388608x12@16.667ms | hip | sync_points_per_frame | 1 count | [1, 1] |  | 1 | one host sync per frame; the 11 intra-frame dependencies ride stream order |
-| pair | 8388608x12@16.667ms | hip | frame_p50 | 9.319 ms | [9.17, 10.627] | 10.192 | 600 | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
-| pair | 8388608x12@16.667ms | hip | frame_p99 | 10.192 ms | [10.192, 10.192] |  | 1 | nearest-rank over frames |
+| pair | 8388608x12@16.667ms | hip | frame_p50 | 9.313 ms | [9.147, 10.638] | 10.177 | 600 | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
+| pair | 8388608x12@16.667ms | hip | frame_p99 | 10.177 ms | [10.177, 10.177] |  | 1 | nearest-rank over frames |
 | pair | 8388608x12@16.667ms | hip | missed_frames_per_10000 | 0 frames | [0, 0] |  | 1 | 0 of 600 frames exceeded the period |
 | pair | 8388608x12@16.667ms | hip | sync_points_per_frame | 1 count | [1, 1] |  | 1 | one host sync per frame; the 11 intra-frame dependencies ride stream order |
-| pair | 8388608x12@16.667ms | hip | besteffort_throughput | 169.9 GB/s | [169.9, 169.9] |  | 1 | 8448 saxpy(16M) launches on the second stream, batches of 24 refilled on completion |
-| pair | 8388608x12@16.667ms | hip | protected_p99_slowdown | 100.0 % | [100.0, 100.0] |  | 1 | frame p99 co-run vs solo 5.097 ms |
-| pair | 8388608x12@16.667ms | hip | besteffort_pct_of_solo | 76.1 % | [76.1, 76.1] |  | 1 | vs solo pipelined saxpy(16M) 223.2 GB/s |
-| pair | 8388608x12@16.667ms | hip | goodput | 88.1 % | [88.1, 88.1] |  | 1 | mean of protected on-time % and best-effort % of solo |
+| pair | 8388608x12@16.667ms | hip | besteffort_throughput | 170.6 GB/s | [170.6, 170.6] |  | 1 | 8496 saxpy(16M) launches on the second stream, batches of 24 refilled on completion |
+| pair | 8388608x12@16.667ms | hip | protected_p99_slowdown | 107.3 % | [107.3, 107.3] |  | 1 | frame p99 co-run vs solo 4.908 ms |
+| pair | 8388608x12@16.667ms | hip | besteffort_pct_of_solo | 79.8 % | [79.8, 79.8] |  | 1 | vs solo pipelined saxpy(16M) 213.68 GB/s |
+| pair | 8388608x12@16.667ms | hip | goodput | 89.9 % | [89.9, 89.9] |  | 1 | mean of protected on-time % and best-effort % of solo |
+| seam | 5us | hip | kernel_time | 9.47 us | [9.47, 9.47] |  | 1 | spin(1000) pipelined x100; calibrated from 4.999 ns/iter |
+| seam | 5us | hip | launch_call | 0.871 us | [0.831, 0.872] | 0.962 | 5 | host time inside the launch statement |
+| seam | 5us | hip | pipelined_overhead | -2.366 us | [-2.377, -2.344] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
+| seam | 5us | hip | isolated_overhead | 3.12 us | [3.09, 3.129] |  | 5 | launch + sync minus kernel_time |
+| seam | 50us | hip | kernel_time | 52.69 us | [52.69, 52.69] |  | 1 | spin(9980) pipelined x100; calibrated from 5.01 ns/iter |
+| seam | 50us | hip | launch_call | 14.818 us | [14.287, 14.837] | 14.928 | 5 | host time inside the launch statement |
+| seam | 50us | hip | pipelined_overhead | 0.274 us | [-0.181, 3.6] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
+| seam | 50us | hip | isolated_overhead | 19.034 us | [18.644, 19.224] |  | 5 | launch + sync minus kernel_time |
+| seam | 200us | hip | kernel_time | 207.4 us | [207.4, 207.4] |  | 1 | spin(39974) pipelined x100; calibrated from 5.003 ns/iter |
+| seam | 200us | hip | launch_call | 10.399 us | [10.35, 14.817] | 14.998 | 5 | host time inside the launch statement |
+| seam | 200us | hip | pipelined_overhead | -0.705 us | [-1.823, 1.599] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
+| seam | 200us | hip | isolated_overhead | 15.191 us | [13.318, 17.566] |  | 5 | launch + sync minus kernel_time |
+| seam | 5us | hip | device_span | 5.87 us | [5.87, 5.87] |  | 1 | device tier, avg span x launches per iteration (spin), 500 iterations profiled |
+| seam | 50us | hip | device_span | 50.55 us | [50.55, 50.55] |  | 1 | device tier, avg span x launches per iteration (spin), 500 iterations profiled |
+| seam | 200us | hip | device_span | 198.8 us | [198.8, 198.8] |  | 1 | device tier, avg span x launches per iteration (spin), 500 iterations profiled |
+| llm.prefill | prompt2048+gen64 | hip | prefill_ms | 9816.4 ms | [9802.6, 9862.0] |  | 5 | SchedThroughput, one process per run, chunked at the engine's default |
+| llm.prefill | prompt2048+gen64 | hip | prefill_tokens_per_second | 208.6 tok/s | [207.7, 208.9] |  | 5 | from the same runs |
+| llm.decode | prompt2048+gen64 | hip | tokens_per_second | 40.51 tok/s | [40.42, 40.56] |  | 5 | batch 1, greedy, 64 generated tokens after the prompt |
+| llm.decode | prompt2048+gen64 | hip | ms_per_token | 24.68 ms | [24.66, 24.74] |  | 5 | mean per token per run |
+| llm.decode | prompt2048+gen64 | hip | per_token_p99 | pending | | | | SchedThroughput prints a per-run mean, not per-token latencies |
+| llm.prefill | prompt2048+gen64 | hip | matrix_core_fraction | 92.9 % | [92.9, 92.9] |  | 1 | WMMA kernels' device time / prefill device time (all kernels minus the decode-only ones; shared kernels count as prefill — a lower bound) |
+| llm | prompt2048+gen64 | hip | device_busy | 98.7 % | [98.7, 98.7] |  | 1 | device time over prefill + decode wall of the profiled process (11548 ms) |
+| llm.decode | prompt2048+gen64 | hip | attention_kernel_duration | 58 us | [58, 58] |  | 1 | decode attention + its reduce, avg device span per layer per token |
+| llm.prefill | prompt2048+gen64 | hip | attention_kernel_duration | 904.6 us | [904.6, 904.6] |  | 1 | prefill attention, avg device span per layer per chunk |
+| kernel.saxpy | 1048576 | hip | device_span | 18.29 us | [18.29, 18.29] |  | 1 | device tier, avg span x launches per iteration (saxpy), 111 iterations profiled |
+| kernel.dot | 1048576 | hip | device_span | 18.29 us | [18.29, 18.29] |  | 1 | device tier, avg span x launches per iteration (dot,finalSum2), 111 iterations profiled |
+| kernel.stencil5 | 1024x1024 | hip | device_span | 19.66 us | [19.66, 19.66] |  | 1 | device tier, avg span x launches per iteration (stencil5), 111 iterations profiled |
+| kernel.reduceSum | 1048576 | hip | device_span | 28.15 us | [28.15, 28.15] |  | 1 | device tier, avg span x launches per iteration (reduceSum,finalSum2), 111 iterations profiled |
+| kernel.matmulTiled | 512^2 | hip | device_span | 210.7 us | [210.7, 210.7] |  | 1 | device tier, avg span x launches per iteration (matmulTiled), 17 iterations profiled |
+| kernel.wmmaGemm | 512^2 | hip | device_span | 112.8 us | [112.8, 112.8] |  | 1 | device tier, avg span x launches per iteration (wmmaGemm), 17 iterations profiled |
+| kernel.gather | 1048576 | hip | device_span | 86.07 us | [86.07, 86.07] |  | 1 | device tier, avg span x launches per iteration (gather), 111 iterations profiled |
+| kernel.saxpy | 16777216 | hip | device_span | 897.0 us | [897.0, 897.0] |  | 1 | device tier, avg span x launches per iteration (saxpy), 111 iterations profiled |
+| kernel.dot | 16777216 | hip | device_span | 633.9 us | [633.9, 633.9] |  | 1 | device tier, avg span x launches per iteration (dot,finalSum2), 111 iterations profiled |
+| kernel.stencil5 | 4096x4096 | hip | device_span | 610.4 us | [610.4, 610.4] |  | 1 | device tier, avg span x launches per iteration (stencil5), 111 iterations profiled |
+| kernel.reduceSum | 16777216 | hip | device_span | 574.1 us | [574.1, 574.1] |  | 1 | device tier, avg span x launches per iteration (reduceSum,finalSum2), 111 iterations profiled |
+| kernel.matmulTiled | 2048^2 | hip | device_span | 10357.2 us | [10357.2, 10357.2] |  | 1 | device tier, avg span x launches per iteration (matmulTiled), 17 iterations profiled |
+| kernel.wmmaGemm | 2048^2 | hip | device_span | 3163.3 us | [3163.3, 3163.3] |  | 1 | device tier, avg span x launches per iteration (wmmaGemm), 17 iterations profiled |
+| kernel.gather | 16777216 | hip | device_span | 11692.3 us | [11692.3, 11692.3] |  | 1 | device tier, avg span x launches per iteration (gather), 111 iterations profiled |
 
 ### 3.3 CPU backend
 
@@ -224,134 +317,156 @@ The CPU backend runs every launch inline on the calling thread, so
 concurrent (the pair row shows the frame absorbing the best-effort work),
 and the pipelined and isolated modes coincide.
 
-Identity: AMD RYZEN AI MAX+ 395 w/ Radeon 8060S | cpu | linux 7.0.0-30-generic | e0fa4871 | auto | 2026-09-06T19:02:13Z
+Identity: AMD RYZEN AI MAX+ 395 w/ Radeon 8060S | cpu | linux 7.0.0-30-generic | f721f0bf | auto | 2026-09-06T19:29:50Z
 
 | Workload | Shape | Device | KPI | Median | Noise band | p95 | n | Note |
 |---|---|---|---|---|---|---|---|---|
-| kernel.saxpy | 1048576 | cpu | duration_isolated | 46.29 us | [43.22, 58.26] | 78.47 | 5 | launch+sync per sample; class memory-bound |
-| kernel.saxpy | 1048576 | cpu | duration_pipelined | 44.18 us | [43.52, 88.07] |  | 5 | 50 queued launches / count; class memory-bound |
+| kernel.saxpy | 1048576 | cpu | duration_isolated | 48.88 us | [43.47, 60.24] | 65.25 | 5 | launch+sync per sample; class memory-bound |
+| kernel.saxpy | 1048576 | cpu | duration_pipelined | 49.83 us | [47.31, 54.19] |  | 5 | 50 queued launches / count; class memory-bound |
 | kernel.saxpy | 1048576 | cpu | bytes_moved | 12582912 bytes | [12582912, 12582912] |  | 1 | ideal traffic: every element read/written once |
-| kernel.saxpy | 1048576 | cpu | achieved_bandwidth | 284.8 GB/s | [142.9, 289.1] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
-| kernel.saxpy | 1048576 | cpu | achieved_rate | 47.47 GFLOP/s | [23.81, 48.19] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.saxpy | 1048576 | cpu | achieved_bandwidth | 252.5 GB/s | [232.2, 266.0] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.saxpy | 1048576 | cpu | achieved_rate | 42.09 GFLOP/s | [38.7, 44.33] |  | 5 | flops / duration_pipelined; band from the duration band |
 | kernel.saxpy | 1048576 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.saxpy | 16777216 | cpu | duration_isolated | 986.8 us | [860.9, 1029.6] | 1154.2 | 5 | launch+sync per sample; class memory-bound |
-| kernel.saxpy | 16777216 | cpu | duration_pipelined | 992.6 us | [954.8, 1023.5] |  | 5 | 50 queued launches / count; class memory-bound |
+| kernel.saxpy | 16777216 | cpu | duration_isolated | 1009.1 us | [989.5, 1127.5] | 1338.2 | 5 | launch+sync per sample; class memory-bound |
+| kernel.saxpy | 16777216 | cpu | duration_pipelined | 996.3 us | [984.3, 1019.5] |  | 5 | 50 queued launches / count; class memory-bound |
 | kernel.saxpy | 16777216 | cpu | bytes_moved | 201326592 bytes | [201326592, 201326592] |  | 1 | ideal traffic: every element read/written once |
-| kernel.saxpy | 16777216 | cpu | achieved_bandwidth | 202.8 GB/s | [196.7, 210.9] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
-| kernel.saxpy | 16777216 | cpu | achieved_rate | 33.8 GFLOP/s | [32.79, 35.14] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.saxpy | 16777216 | cpu | achieved_bandwidth | 202.1 GB/s | [197.5, 204.5] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.saxpy | 16777216 | cpu | achieved_rate | 33.68 GFLOP/s | [32.91, 34.09] |  | 5 | flops / duration_pipelined; band from the duration band |
 | kernel.saxpy | 16777216 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.dot | 1048576 | cpu | duration_isolated | 102.6 us | [78.4, 115.2] | 125.6 | 5 | launch+sync per sample; class memory-bound+reduce |
-| kernel.dot | 1048576 | cpu | duration_pipelined | 103.0 us | [84.12, 109.2] |  | 5 | 50 queued launches / count; class memory-bound+reduce |
+| kernel.dot | 1048576 | cpu | duration_isolated | 81.36 us | [72.31, 128.6] | 141.9 | 5 | launch+sync per sample; class memory-bound+reduce |
+| kernel.dot | 1048576 | cpu | duration_pipelined | 90.89 us | [89.36, 101.9] |  | 5 | 50 queued launches / count; class memory-bound+reduce |
 | kernel.dot | 1048576 | cpu | bytes_moved | 8388608 bytes | [8388608, 8388608] |  | 1 | ideal traffic: every element read/written once |
-| kernel.dot | 1048576 | cpu | achieved_bandwidth | 81.48 GB/s | [76.85, 99.72] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
-| kernel.dot | 1048576 | cpu | achieved_rate | 20.37 GFLOP/s | [19.21, 24.93] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.dot | 1048576 | cpu | achieved_bandwidth | 92.3 GB/s | [82.32, 93.88] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.dot | 1048576 | cpu | achieved_rate | 23.07 GFLOP/s | [20.58, 23.47] |  | 5 | flops / duration_pipelined; band from the duration band |
 | kernel.dot | 1048576 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.dot | 16777216 | cpu | duration_isolated | 2056.1 us | [1960.1, 2139.0] | 2217.2 | 5 | launch+sync per sample; class memory-bound+reduce |
-| kernel.dot | 16777216 | cpu | duration_pipelined | 1947.6 us | [1929.8, 2014.8] |  | 5 | 50 queued launches / count; class memory-bound+reduce |
+| kernel.dot | 16777216 | cpu | duration_isolated | 2053.0 us | [2038.8, 2134.9] | 2289.4 | 5 | launch+sync per sample; class memory-bound+reduce |
+| kernel.dot | 16777216 | cpu | duration_pipelined | 1889.3 us | [1862.2, 2007.5] |  | 5 | 50 queued launches / count; class memory-bound+reduce |
 | kernel.dot | 16777216 | cpu | bytes_moved | 134217728 bytes | [134217728, 134217728] |  | 1 | ideal traffic: every element read/written once |
-| kernel.dot | 16777216 | cpu | achieved_bandwidth | 68.91 GB/s | [66.62, 69.55] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
-| kernel.dot | 16777216 | cpu | achieved_rate | 17.23 GFLOP/s | [16.65, 17.39] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.dot | 16777216 | cpu | achieved_bandwidth | 71.04 GB/s | [66.86, 72.07] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.dot | 16777216 | cpu | achieved_rate | 17.76 GFLOP/s | [16.71, 18.02] |  | 5 | flops / duration_pipelined; band from the duration band |
 | kernel.dot | 16777216 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.stencil5 | 1024x1024 | cpu | duration_isolated | 149.9 us | [146.6, 156.9] | 199.4 | 5 | launch+sync per sample; class memory-bound |
-| kernel.stencil5 | 1024x1024 | cpu | duration_pipelined | 154.7 us | [128.2, 162.6] |  | 5 | 50 queued launches / count; class memory-bound |
+| kernel.stencil5 | 1024x1024 | cpu | duration_isolated | 120.1 us | [114.0, 156.2] | 177.0 | 5 | launch+sync per sample; class memory-bound |
+| kernel.stencil5 | 1024x1024 | cpu | duration_pipelined | 149.7 us | [133.6, 166.0] |  | 5 | 50 queued launches / count; class memory-bound |
 | kernel.stencil5 | 1024x1024 | cpu | bytes_moved | 8388608 bytes | [8388608, 8388608] |  | 1 | ideal traffic: every element read/written once |
-| kernel.stencil5 | 1024x1024 | cpu | achieved_bandwidth | 54.21 GB/s | [51.58, 65.45] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
-| kernel.stencil5 | 1024x1024 | cpu | achieved_rate | 54.21 GFLOP/s | [51.58, 65.45] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.stencil5 | 1024x1024 | cpu | achieved_bandwidth | 56.02 GB/s | [50.53, 62.8] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.stencil5 | 1024x1024 | cpu | achieved_rate | 56.02 GFLOP/s | [50.53, 62.8] |  | 5 | flops / duration_pipelined; band from the duration band |
 | kernel.stencil5 | 1024x1024 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.stencil5 | 4096x4096 | cpu | duration_isolated | 2307.6 us | [2257.3, 2824.5] | 2987.3 | 5 | launch+sync per sample; class memory-bound |
-| kernel.stencil5 | 4096x4096 | cpu | duration_pipelined | 2243.0 us | [2122.6, 2354.0] |  | 5 | 50 queued launches / count; class memory-bound |
+| kernel.stencil5 | 4096x4096 | cpu | duration_isolated | 2272.0 us | [2258.5, 2313.6] | 2437.9 | 5 | launch+sync per sample; class memory-bound |
+| kernel.stencil5 | 4096x4096 | cpu | duration_pipelined | 2148.1 us | [2133.0, 2313.6] |  | 5 | 50 queued launches / count; class memory-bound |
 | kernel.stencil5 | 4096x4096 | cpu | bytes_moved | 134217728 bytes | [134217728, 134217728] |  | 1 | ideal traffic: every element read/written once |
-| kernel.stencil5 | 4096x4096 | cpu | achieved_bandwidth | 59.84 GB/s | [57.02, 63.23] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
-| kernel.stencil5 | 4096x4096 | cpu | achieved_rate | 59.84 GFLOP/s | [57.02, 63.23] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.stencil5 | 4096x4096 | cpu | achieved_bandwidth | 62.48 GB/s | [58.01, 62.92] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.stencil5 | 4096x4096 | cpu | achieved_rate | 62.48 GFLOP/s | [58.01, 62.92] |  | 5 | flops / duration_pipelined; band from the duration band |
 | kernel.stencil5 | 4096x4096 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.reduceSum | 1048576 | cpu | duration_isolated | 279.2 us | [211.6, 299.9] | 354.8 | 5 | launch+sync per sample; class sync-bound |
-| kernel.reduceSum | 1048576 | cpu | duration_pipelined | 279.3 us | [266.3, 292.0] |  | 5 | 50 queued launches / count; class sync-bound |
+| kernel.reduceSum | 1048576 | cpu | duration_isolated | 287.2 us | [220.0, 298.2] | 364.1 | 5 | launch+sync per sample; class sync-bound |
+| kernel.reduceSum | 1048576 | cpu | duration_pipelined | 267.9 us | [254.4, 324.4] |  | 5 | 50 queued launches / count; class sync-bound |
 | kernel.reduceSum | 1048576 | cpu | bytes_moved | 4194304 bytes | [4194304, 4194304] |  | 1 | ideal traffic: every element read/written once |
-| kernel.reduceSum | 1048576 | cpu | achieved_bandwidth | 15.02 GB/s | [14.37, 15.75] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
-| kernel.reduceSum | 1048576 | cpu | achieved_rate | 3.75 GFLOP/s | [3.59, 3.94] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.reduceSum | 1048576 | cpu | achieved_bandwidth | 15.66 GB/s | [12.93, 16.48] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.reduceSum | 1048576 | cpu | achieved_rate | 3.91 GFLOP/s | [3.23, 4.12] |  | 5 | flops / duration_pipelined; band from the duration band |
 | kernel.reduceSum | 1048576 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.reduceSum | 16777216 | cpu | duration_isolated | 4386.5 us | [4271.1, 4475.4] | 5046.6 | 5 | launch+sync per sample; class sync-bound |
-| kernel.reduceSum | 16777216 | cpu | duration_pipelined | 4140.1 us | [4060.9, 4271.2] |  | 5 | 50 queued launches / count; class sync-bound |
+| kernel.reduceSum | 16777216 | cpu | duration_isolated | 4582.4 us | [4512.8, 4625.4] | 5018.0 | 5 | launch+sync per sample; class sync-bound |
+| kernel.reduceSum | 16777216 | cpu | duration_pipelined | 4482.7 us | [4458.3, 4595.7] |  | 5 | 50 queued launches / count; class sync-bound |
 | kernel.reduceSum | 16777216 | cpu | bytes_moved | 67108864 bytes | [67108864, 67108864] |  | 1 | ideal traffic: every element read/written once |
-| kernel.reduceSum | 16777216 | cpu | achieved_bandwidth | 16.21 GB/s | [15.71, 16.53] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
-| kernel.reduceSum | 16777216 | cpu | achieved_rate | 4.05 GFLOP/s | [3.93, 4.13] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.reduceSum | 16777216 | cpu | achieved_bandwidth | 14.97 GB/s | [14.6, 15.05] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.reduceSum | 16777216 | cpu | achieved_rate | 3.74 GFLOP/s | [3.65, 3.76] |  | 5 | flops / duration_pipelined; band from the duration band |
 | kernel.reduceSum | 16777216 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.matmulTiled | 512^2 | cpu | duration_isolated | 4954.8 us | [4888.3, 5016.5] | 5138.4 | 5 | launch+sync per sample; class compute-bound |
-| kernel.matmulTiled | 512^2 | cpu | duration_pipelined | 4983.4 us | [4615.1, 5342.3] |  | 5 | 50 queued launches / count; class compute-bound |
+| kernel.matmulTiled | 512^2 | cpu | duration_isolated | 4915.7 us | [4897.0, 4956.6] | 5458.7 | 5 | launch+sync per sample; class compute-bound |
+| kernel.matmulTiled | 512^2 | cpu | duration_pipelined | 4756.9 us | [4476.0, 5267.3] |  | 5 | 50 queued launches / count; class compute-bound |
 | kernel.matmulTiled | 512^2 | cpu | bytes_moved | 3145728 bytes | [3145728, 3145728] |  | 1 | ideal traffic: every element read/written once |
-| kernel.matmulTiled | 512^2 | cpu | achieved_bandwidth | 0.63 GB/s | [0.59, 0.68] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
-| kernel.matmulTiled | 512^2 | cpu | achieved_rate | 53.87 GFLOP/s | [50.25, 58.17] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.matmulTiled | 512^2 | cpu | achieved_bandwidth | 0.66 GB/s | [0.6, 0.7] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.matmulTiled | 512^2 | cpu | achieved_rate | 56.43 GFLOP/s | [50.96, 59.97] |  | 5 | flops / duration_pipelined; band from the duration band |
 | kernel.matmulTiled | 512^2 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.matmulTiled | 1024^2 | cpu | duration_isolated | 33357.0 us | [31888.0, 34114.7] | 34813.3 | 5 | launch+sync per sample; class compute-bound |
-| kernel.matmulTiled | 1024^2 | cpu | duration_pipelined | 32904.8 us | [30960.1, 33549.7] |  | 5 | 50 queued launches / count; class compute-bound |
+| kernel.matmulTiled | 1024^2 | cpu | duration_isolated | 33616.6 us | [29452.0, 35358.9] | 37293.8 | 5 | launch+sync per sample; class compute-bound |
+| kernel.matmulTiled | 1024^2 | cpu | duration_pipelined | 33341.0 us | [31383.4, 33368.9] |  | 5 | 50 queued launches / count; class compute-bound |
 | kernel.matmulTiled | 1024^2 | cpu | bytes_moved | 12582912 bytes | [12582912, 12582912] |  | 1 | ideal traffic: every element read/written once |
-| kernel.matmulTiled | 1024^2 | cpu | achieved_bandwidth | 0.38 GB/s | [0.38, 0.41] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
-| kernel.matmulTiled | 1024^2 | cpu | achieved_rate | 65.26 GFLOP/s | [64.01, 69.36] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.matmulTiled | 1024^2 | cpu | achieved_bandwidth | 0.38 GB/s | [0.38, 0.4] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.matmulTiled | 1024^2 | cpu | achieved_rate | 64.41 GFLOP/s | [64.36, 68.43] |  | 5 | flops / duration_pipelined; band from the duration band |
 | kernel.matmulTiled | 1024^2 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.wmmaGemm | 512^2 | cpu | duration_isolated | 2820.7 us | [2818.5, 2821.6] | 2849.6 | 5 | launch+sync per sample; class matrix-core |
-| kernel.wmmaGemm | 512^2 | cpu | duration_pipelined | 2679.1 us | [2548.7, 2822.0] |  | 5 | 50 queued launches / count; class matrix-core |
+| kernel.wmmaGemm | 512^2 | cpu | duration_isolated | 2793.2 us | [2170.7, 2814.6] | 2819.3 | 5 | launch+sync per sample; class matrix-core |
+| kernel.wmmaGemm | 512^2 | cpu | duration_pipelined | 2697.6 us | [2576.0, 2805.5] |  | 5 | 50 queued launches / count; class matrix-core |
 | kernel.wmmaGemm | 512^2 | cpu | bytes_moved | 2097152 bytes | [2097152, 2097152] |  | 1 | ideal traffic: every element read/written once |
-| kernel.wmmaGemm | 512^2 | cpu | achieved_bandwidth | 0.78 GB/s | [0.74, 0.82] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
-| kernel.wmmaGemm | 512^2 | cpu | achieved_rate | 100.2 GFLOP/s | [95.12, 105.3] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.wmmaGemm | 512^2 | cpu | achieved_bandwidth | 0.78 GB/s | [0.75, 0.81] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.wmmaGemm | 512^2 | cpu | achieved_rate | 99.51 GFLOP/s | [95.68, 104.2] |  | 5 | flops / duration_pipelined; band from the duration band |
 | kernel.wmmaGemm | 512^2 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.wmmaGemm | 1024^2 | cpu | duration_isolated | 18667.3 us | [18149.0, 19699.4] | 20568.1 | 5 | launch+sync per sample; class matrix-core |
-| kernel.wmmaGemm | 1024^2 | cpu | duration_pipelined | 18577.0 us | [18127.3, 18983.5] |  | 5 | 50 queued launches / count; class matrix-core |
+| kernel.wmmaGemm | 1024^2 | cpu | duration_isolated | 18395.5 us | [16577.2, 19718.5] | 20444.4 | 5 | launch+sync per sample; class matrix-core |
+| kernel.wmmaGemm | 1024^2 | cpu | duration_pipelined | 18530.0 us | [17851.8, 20088.5] |  | 5 | 50 queued launches / count; class matrix-core |
 | kernel.wmmaGemm | 1024^2 | cpu | bytes_moved | 8388608 bytes | [8388608, 8388608] |  | 1 | ideal traffic: every element read/written once |
-| kernel.wmmaGemm | 1024^2 | cpu | achieved_bandwidth | 0.45 GB/s | [0.44, 0.46] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
-| kernel.wmmaGemm | 1024^2 | cpu | achieved_rate | 115.6 GFLOP/s | [113.1, 118.5] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.wmmaGemm | 1024^2 | cpu | achieved_bandwidth | 0.45 GB/s | [0.42, 0.47] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.wmmaGemm | 1024^2 | cpu | achieved_rate | 115.9 GFLOP/s | [106.9, 120.3] |  | 5 | flops / duration_pipelined; band from the duration band |
 | kernel.wmmaGemm | 1024^2 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.gather | 1048576 | cpu | duration_isolated | 73.75 us | [72.58, 106.5] | 125.4 | 5 | launch+sync per sample; class indirect |
-| kernel.gather | 1048576 | cpu | duration_pipelined | 85.5 us | [76.88, 88.21] |  | 5 | 50 queued launches / count; class indirect |
+| kernel.gather | 1048576 | cpu | duration_isolated | 73.48 us | [72.22, 100.0] | 122.7 | 5 | launch+sync per sample; class indirect |
+| kernel.gather | 1048576 | cpu | duration_pipelined | 81.51 us | [76.43, 82.61] |  | 5 | 50 queued launches / count; class indirect |
 | kernel.gather | 1048576 | cpu | bytes_moved | 12582912 bytes | [12582912, 12582912] |  | 1 | ideal traffic: every element read/written once |
-| kernel.gather | 1048576 | cpu | achieved_bandwidth | 147.2 GB/s | [142.7, 163.7] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.gather | 1048576 | cpu | achieved_bandwidth | 154.4 GB/s | [152.3, 164.6] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
 | kernel.gather | 1048576 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| kernel.gather | 16777216 | cpu | duration_isolated | 7102.9 us | [6988.1, 7207.6] | 7677.8 | 5 | launch+sync per sample; class indirect |
-| kernel.gather | 16777216 | cpu | duration_pipelined | 7074.9 us | [7014.1, 7229.1] |  | 5 | 50 queued launches / count; class indirect |
+| kernel.gather | 16777216 | cpu | duration_isolated | 7184.6 us | [7100.9, 7292.2] | 8005.1 | 5 | launch+sync per sample; class indirect |
+| kernel.gather | 16777216 | cpu | duration_pipelined | 7053.9 us | [6987.1, 7110.9] |  | 5 | 50 queued launches / count; class indirect |
 | kernel.gather | 16777216 | cpu | bytes_moved | 201326592 bytes | [201326592, 201326592] |  | 1 | ideal traffic: every element read/written once |
-| kernel.gather | 16777216 | cpu | achieved_bandwidth | 28.46 GB/s | [27.85, 28.7] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.gather | 16777216 | cpu | achieved_bandwidth | 28.54 GB/s | [28.31, 28.81] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
 | kernel.gather | 16777216 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
-| cg | 1024x1024x2000 | cpu | iterations_per_second | 2022.9 iter/s | [1950.7, 2145.3] |  | 5 | 7 launches/iteration (stencil + 2 dot partials + 1 final + 3 axpy), 400 iterations per block, one sync per block |
-| cg | 1024x1024x2000 | cpu | host_cost_per_node | 70.596 us | [66.569, 73.21] |  | 5 | host wall time inside the launch calls / launches |
-| cg | 1024x1024x2000 | cpu | wall_per_iteration | 494.3 us | [466.1, 512.6] |  | 5 | 1e6 / iterations_per_second; band from its band |
-| degenerate | 1x1x2000 | cpu | iterations_per_second | 93561.4 iter/s | [84624.4, 94248.5] |  | 5 | 7 launches/iteration (stencil + 2 dot partials + 1 final + 3 axpy), 400 iterations per block, one sync per block |
-| degenerate | 1x1x2000 | cpu | host_cost_per_node | 1.524 us | [1.513, 1.685] |  | 5 | host wall time inside the launch calls / launches |
-| degenerate | 1x1x2000 | cpu | wall_per_iteration | 10.69 us | [10.61, 11.82] |  | 5 | 1e6 / iterations_per_second; band from its band |
-| frame | 8388608x12@16.667ms | cpu | frame_p50 | 3.257 ms | [1.992, 5.883] | 5.31 | 600 | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
-| frame | 8388608x12@16.667ms | cpu | frame_p99 | 5.31 ms | [5.31, 5.31] |  | 1 | nearest-rank over frames |
+| cg | 1024x1024x2000 | cpu | iterations_per_second | 2032.0 iter/s | [1969.6, 2103.0] |  | 5 | 7 launches/iteration (stencil + 2 dot partials + 1 final + 3 axpy), 400 iterations per block, one sync per block |
+| cg | 1024x1024x2000 | cpu | host_cost_per_node | 70.283 us | [67.907, 72.508] |  | 5 | host wall time inside the launch calls / launches |
+| cg | 1024x1024x2000 | cpu | wall_per_iteration | 492.1 us | [475.5, 507.7] |  | 5 | 1e6 / iterations_per_second; band from its band |
+| degenerate | 1x1x2000 | cpu | iterations_per_second | 90369.6 iter/s | [84182.7, 91637.9] |  | 5 | 7 launches/iteration (stencil + 2 dot partials + 1 final + 3 axpy), 400 iterations per block, one sync per block |
+| degenerate | 1x1x2000 | cpu | host_cost_per_node | 1.578 us | [1.556, 1.694] |  | 5 | host wall time inside the launch calls / launches |
+| degenerate | 1x1x2000 | cpu | wall_per_iteration | 11.07 us | [10.91, 11.88] |  | 5 | 1e6 / iterations_per_second; band from its band |
+| frame | 8388608x12@16.667ms | cpu | frame_p50 | 3.245 ms | [2.045, 5.806] | 5.207 | 600 | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
+| frame | 8388608x12@16.667ms | cpu | frame_p99 | 5.207 ms | [5.207, 5.207] |  | 1 | nearest-rank over frames |
 | frame | 8388608x12@16.667ms | cpu | missed_frames_per_10000 | 0 frames | [0, 0] |  | 1 | 0 of 600 frames exceeded the period |
 | frame | 8388608x12@16.667ms | cpu | sync_points_per_frame | 1 count | [1, 1] |  | 1 | one host sync per frame; the 11 intra-frame dependencies ride stream order |
-| pair | 8388608x12@16.667ms | cpu | frame_p50 | 53.177 ms | [49.357, 59.97] | 57.286 | 600 | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
-| pair | 8388608x12@16.667ms | cpu | frame_p99 | 57.286 ms | [57.286, 57.286] |  | 1 | nearest-rank over frames |
+| pair | 8388608x12@16.667ms | cpu | frame_p50 | 53.172 ms | [49.343, 59.771] | 58.486 | 600 | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
+| pair | 8388608x12@16.667ms | cpu | frame_p99 | 58.486 ms | [58.486, 58.486] |  | 1 | nearest-rank over frames |
 | pair | 8388608x12@16.667ms | cpu | missed_frames_per_10000 | 10000.0 frames | [10000.0, 10000.0] |  | 1 | 600 of 600 frames exceeded the period |
 | pair | 8388608x12@16.667ms | cpu | sync_points_per_frame | 1 count | [1, 1] |  | 1 | one host sync per frame; the 11 intra-frame dependencies ride stream order |
-| pair | 8388608x12@16.667ms | cpu | besteffort_throughput | 181.5 GB/s | [181.5, 181.5] |  | 1 | 28800 saxpy(16M) launches on the second stream, batches of 24 refilled on completion |
-| pair | 8388608x12@16.667ms | cpu | protected_p99_slowdown | 978.8 % | [978.8, 978.8] |  | 1 | frame p99 co-run vs solo 5.31 ms |
-| pair | 8388608x12@16.667ms | cpu | besteffort_pct_of_solo | 99.6 % | [99.6, 99.6] |  | 1 | vs solo pipelined saxpy(16M) 182.19 GB/s |
-| pair | 8388608x12@16.667ms | cpu | goodput | 49.8 % | [49.8, 49.8] |  | 1 | mean of protected on-time % and best-effort % of solo |
-| seam | 5us | cpu | kernel_time | 6.56 us | [6.56, 6.56] |  | 1 | spin(4240) pipelined x100; calibrated from 1.179 ns/iter |
-| seam | 5us | cpu | launch_call | 6.392 us | [6.252, 6.403] | 6.523 | 5 | host time inside the launch statement |
-| seam | 5us | cpu | pipelined_overhead | -0.142 us | [-0.255, -0.052] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
-| seam | 5us | cpu | isolated_overhead | -0.144 us | [-0.274, -0.024] |  | 5 | launch + sync minus kernel_time |
-| seam | 50us | cpu | kernel_time | 50.94 us | [50.94, 50.94] |  | 1 | spin(42313) pipelined x100; calibrated from 1.182 ns/iter |
-| seam | 50us | cpu | launch_call | 50.626 us | [50.595, 50.766] | 51.056 | 5 | host time inside the launch statement |
-| seam | 50us | cpu | pipelined_overhead | -0.171 us | [-0.197, -0.109] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
-| seam | 50us | cpu | isolated_overhead | -0.282 us | [-0.313, -0.142] |  | 5 | launch + sync minus kernel_time |
-| seam | 200us | cpu | kernel_time | 200.4 us | [200.4, 200.4] |  | 1 | spin(170020) pipelined x100; calibrated from 1.176 ns/iter |
-| seam | 200us | cpu | launch_call | 200.0 us | [200.0, 200.1] | 203.3 | 5 | host time inside the launch statement |
-| seam | 200us | cpu | pipelined_overhead | 0.279 us | [0.249, 0.58] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
-| seam | 200us | cpu | isolated_overhead | -0.297 us | [-0.357, -0.247] |  | 5 | launch + sync minus kernel_time |
+| pair | 8388608x12@16.667ms | cpu | besteffort_throughput | 180.9 GB/s | [180.9, 180.9] |  | 1 | 28800 saxpy(16M) launches on the second stream, batches of 24 refilled on completion |
+| pair | 8388608x12@16.667ms | cpu | protected_p99_slowdown | 1023.3 % | [1023.3, 1023.3] |  | 1 | frame p99 co-run vs solo 5.207 ms |
+| pair | 8388608x12@16.667ms | cpu | besteffort_pct_of_solo | 95.4 % | [95.4, 95.4] |  | 1 | vs solo pipelined saxpy(16M) 189.71 GB/s |
+| pair | 8388608x12@16.667ms | cpu | goodput | 47.7 % | [47.7, 47.7] |  | 1 | mean of protected on-time % and best-effort % of solo |
+| seam | 5us | cpu | kernel_time | 6.43 us | [6.43, 6.43] |  | 1 | spin(4187) pipelined x100; calibrated from 1.194 ns/iter |
+| seam | 5us | cpu | launch_call | 6.272 us | [6.231, 6.382] | 6.402 | 5 | host time inside the launch statement |
+| seam | 5us | cpu | pipelined_overhead | -0.096 us | [-0.115, 0.021] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
+| seam | 5us | cpu | isolated_overhead | -0.126 us | [-0.166, 0.075] |  | 5 | launch + sync minus kernel_time |
+| seam | 50us | cpu | kernel_time | 51.05 us | [51.05, 51.05] |  | 1 | spin(42450) pipelined x100; calibrated from 1.178 ns/iter |
+| seam | 50us | cpu | launch_call | 50.835 us | [50.776, 50.916] | 51.187 | 5 | host time inside the launch statement |
+| seam | 50us | cpu | pipelined_overhead | -0.108 us | [-0.137, -0.016] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
+| seam | 50us | cpu | isolated_overhead | -0.189 us | [-0.248, -0.108] |  | 5 | launch + sync minus kernel_time |
+| seam | 200us | cpu | kernel_time | 200.6 us | [200.6, 200.6] |  | 1 | spin(169962) pipelined x100; calibrated from 1.177 ns/iter |
+| seam | 200us | cpu | launch_call | 200.1 us | [200.0, 200.1] | 203.2 | 5 | host time inside the launch statement |
+| seam | 200us | cpu | pipelined_overhead | 0.134 us | [-0.046, 0.292] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
+| seam | 200us | cpu | isolated_overhead | -0.444 us | [-0.554, -0.394] |  | 5 | launch + sync minus kernel_time |
+| cg | 1024x1024x2000 | cpu | device_span | 507.0 us | [507.0, 507.0] |  | 1 | device tier, avg span x launches per iteration (stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy), 2001 iterations profiled |
+| cg | 1024x1024x2000 | cpu | device_time_per_iteration | 507.0 us | [507.0, 507.0] |  | 1 | device tier, avg span x launches per iteration (stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy), 2001 iterations profiled |
+| cg | 1024x1024x2000 | cpu | queue_empty_time | 0.5 % | [0.5, 0.5] |  | 1 | 100 x (1 - device_time_per_iteration / wall_per_iteration 509.3 us) in the profiled pass |
+| degenerate | 1x1x2000 | cpu | device_span | 11.22 us | [11.22, 11.22] |  | 1 | device tier, avg span x launches per iteration (stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy), 2001 iterations profiled |
+| degenerate | 1x1x2000 | cpu | device_time_per_iteration | 11.22 us | [11.22, 11.22] |  | 1 | device tier, avg span x launches per iteration (stencil5,dot,dot,finalSum2,saxpy,saxpy,saxpy), 2001 iterations profiled |
+| degenerate | 1x1x2000 | cpu | queue_empty_time | 16.7 % | [16.7, 16.7] |  | 1 | 100 x (1 - device_time_per_iteration / wall_per_iteration 13.5 us) in the profiled pass |
+| seam | 5us | cpu | device_span | 7.51 us | [7.51, 7.51] |  | 1 | device tier, avg span x launches per iteration (spin), 500 iterations profiled |
+| seam | 50us | cpu | device_span | 53.4 us | [53.4, 53.4] |  | 1 | device tier, avg span x launches per iteration (spin), 500 iterations profiled |
+| seam | 200us | cpu | device_span | 190.7 us | [190.7, 190.7] |  | 1 | device tier, avg span x launches per iteration (spin), 500 iterations profiled |
+| kernel.saxpy | 1048576 | cpu | device_span | 67.06 us | [67.06, 67.06] |  | 1 | device tier, avg span x launches per iteration (saxpy), 111 iterations profiled |
+| kernel.dot | 1048576 | cpu | device_span | 91.16 us | [91.16, 91.16] |  | 1 | device tier, avg span x launches per iteration (dot,finalSum2), 111 iterations profiled |
+| kernel.stencil5 | 1024x1024 | cpu | device_span | 135.2 us | [135.2, 135.2] |  | 1 | device tier, avg span x launches per iteration (stencil5), 111 iterations profiled |
+| kernel.reduceSum | 1048576 | cpu | device_span | 260.0 us | [260.0, 260.0] |  | 1 | device tier, avg span x launches per iteration (reduceSum,finalSum2), 111 iterations profiled |
+| kernel.matmulTiled | 512^2 | cpu | device_span | 4738.9 us | [4738.9, 4738.9] |  | 1 | device tier, avg span x launches per iteration (matmulTiled), 17 iterations profiled |
+| kernel.wmmaGemm | 512^2 | cpu | device_span | 2414.1 us | [2414.1, 2414.1] |  | 1 | device tier, avg span x launches per iteration (wmmaGemm), 17 iterations profiled |
+| kernel.gather | 1048576 | cpu | device_span | 86.16 us | [86.16, 86.16] |  | 1 | device tier, avg span x launches per iteration (gather), 111 iterations profiled |
+| kernel.saxpy | 16777216 | cpu | device_span | 1092.3 us | [1092.3, 1092.3] |  | 1 | device tier, avg span x launches per iteration (saxpy), 111 iterations profiled |
+| kernel.dot | 16777216 | cpu | device_span | 2200.9 us | [2200.9, 2200.9] |  | 1 | device tier, avg span x launches per iteration (dot,finalSum2), 111 iterations profiled |
+| kernel.stencil5 | 4096x4096 | cpu | device_span | 2208.9 us | [2208.9, 2208.9] |  | 1 | device tier, avg span x launches per iteration (stencil5), 111 iterations profiled |
+| kernel.reduceSum | 16777216 | cpu | device_span | 4694.3 us | [4694.3, 4694.3] |  | 1 | device tier, avg span x launches per iteration (reduceSum,finalSum2), 111 iterations profiled |
+| kernel.matmulTiled | 1024^2 | cpu | device_span | 38293.4 us | [38293.4, 38293.4] |  | 1 | device tier, avg span x launches per iteration (matmulTiled), 17 iterations profiled |
+| kernel.wmmaGemm | 1024^2 | cpu | device_span | 19339.1 us | [19339.1, 19339.1] |  | 1 | device tier, avg span x launches per iteration (wmmaGemm), 17 iterations profiled |
+| kernel.gather | 16777216 | cpu | device_span | 7009.0 us | [7009.0, 7009.0] |  | 1 | device tier, avg span x launches per iteration (gather), 111 iterations profiled |
 
 ### 3.4 Device tier on the seam pass
 
-`cajeta profile summary --csv` over the profiled seam pass (`spin`, all three
-durations mixed, 2,133 launches): average device span 100.4 µs on HIP. The
-unprofiled rows put the three kernel times at 7.35, 53.6 and 207.3 µs (mean
-89.4 µs), so the device tier reads the same kernels about 11 µs longer on
-average, which is the dispatch-to-completion part the host clock cannot
-see inside a pipelined batch. The CPU backend's figure (88.9 µs) is the inline
-launch itself. A per-duration split needs one profiled pass per target,
-which a later unit can add; the mixed figure is recorded, not used for
-verdicts.
+Since 0.2.4 the seam probe gets one profiled pass per target and its device
+span is a row (`seam device_span` in §3.2 and §3.3; the calibration launches
+run under their own kernel name, `spinCal`, so they stay out of the target's
+average). The first leg's single mixed pass (5, 50 and 200 µs together,
+2,133 launches, 100.4 µs average on HIP against an 89.4 µs mean of the
+three host-clocked kernel times) is superseded by those rows and by §3.1's
+reading of them: 5.9 / 50.6 / 198.8 µs on the device against 9.5 / 52.7 /
+207.4 µs pipelined on the host.
 
 ### 3.5 Device tier on the cajeta-llm run
 
@@ -386,6 +501,16 @@ Derived (these fill the two llm KPIs the harness marks pending):
 The first profiled attempt used the default ring and kept 8,000 of these
 spans with no prefill kernel among them — averages survived, totals did
 not. Any per-kernel accounting over a long run sets the ring explicitly.
+
+Automated since 0.2.4: `run.sh` runs the bench under the profiler (ring
+4 M) and `xpubench-report spans --llm` derives the rows in §3.2 —
+`matrix_core_fraction` 92.9% (the lower bound above: kernels both phases
+share count as prefill), `device_busy` 98.7%, `attention_kernel_duration`
+58.0 µs decode (attention + reduce) and 904.6 µs prefill. The ring's own
+accounting, now read by `cajeta profile summary` (`gpu_records_kept`
+43,874, `gpu_records_dropped` 0 on this run), is what makes the fractions
+trustworthy: a ring that dropped records yields pending fractions and keeps
+only the averages.
 
 ## 4. Trials
 
@@ -436,6 +561,13 @@ and `stencil5` 1024² pipelined +18% — the CPU backend's run-to-run drift is
 wider than one run's five-block band, so a CPU-leg `worse` is not readable
 until 0.3.2 and 0.3.3 set bands from repeated runs (§5).
 
+T-003 — control: the gfx1151 rerun on `f721f0bf` with no device code
+changed (before `rows-hip-20260906-1810`, after `-1532`): 43 keep, 4
+`worse`, 55 `single` — `matmulTiled` 2048² isolated +0.8% and pipelined
++1.2% against bands 0.3–1.7% wide, the degenerate loop's host cost per node
++7% (0.887 → 0.953 µs), seam 50 µs isolated overhead +4%. The same reading
+as T-002: drift, and the band source is 0.3.3.
+
 ## 5. Residuals
 
 Changes that measured worse or flat and shipped gated off, with the row that
@@ -444,13 +576,13 @@ decided it and what would reopen it.
 | Residual | Trial | Why | Reopen when |
 |---|---|---|---|
 | CLOSED 2026-09-06 — CPU backend: `dot`, `reduceSum`, `matmulTiled`, `cg`, `degenerate` were pending | baseline → T-001 | The CPU barrier fission declined a uniform loop whose code after its last barrier was the latch block (`CpuBarrierFission.cpp` started a region at the latch and walked around the loop: "unstructured barrier control flow"). Fixed in `cpu-barrier-fission-loops` Unit 1 (cajeta `e0fa4871`; 7 tests, a per-work-item latch is now declined by name); the CPU leg reran the same day: 112 rows, 14 pending, all of them `bandwidth_fraction` (§3.3). Unit 0's two silences (the skip note, the failure count) stay in place | closed |
-| CPU-leg verdicts: one run's band understates run-to-run drift | T-001, T-002 | Two runs of identical code minutes apart (T-002) flagged 9 of 43 banded KPIs — `dot` 1M isolated +31%, `stencil5` 1024² pipelined +18%, seam rows at 200 µs by sub-microsecond amounts; the fission trial (T-001) flagged 5 of the same kind on paths it never touched. A five-block band from one run is a few percent wide on a 32-core host at `auto` power; day-to-day drift is not | scheduling 0.3.2 (the day-apart pair) with 0.3.3 (`trial --bands`: per KPI the wider of the within-run band and the day-apart spread); until then a CPU-leg `worse` is reported, not gating |
+| CPU-leg verdicts: one run's band understates run-to-run drift | T-001, T-002 | Two runs of identical code minutes apart (T-002) flagged 9 of 43 banded KPIs — `dot` 1M isolated +31%, `stencil5` 1024² pipelined +18%, seam rows at 200 µs by sub-microsecond amounts; the fission trial (T-001) flagged 5 of the same kind on paths it never touched, and the gfx1151 rerun (T-003, no device code changed) 4 of 47. A five-block band from one run is a few percent wide on a 32-core host at `auto` power; drift between runs is not | scheduling 0.3.2 (the day-apart pair) with 0.3.3 (`trial --bands`: per KPI the wider of the within-run band and the day-apart spread); until then a CPU-leg `worse` is reported, not gating |
 | `bandwidth_fraction` pending on every kernel | baseline | needs the device's measured achievable bandwidth | scheduling Unit 2 fills §2 |
-| `matrix_core_fraction`, `attention_kernel_duration` not produced by the harness | baseline | the harness rows are host-clocked; §3.5 measured both from device spans in one profiled run (94%; 43.6 µs decode, 917 µs prefill) | a later unit folds a profiled llm pass into the harness so the rows carry them |
+| CLOSED 2026-09-06 — `matrix_core_fraction`, `attention_kernel_duration` were not produced by the harness | baseline → 0.2.4 | `run.sh` profiles the llm bench and `xpubench-report spans --llm` derives them as rows: 92.9% (a lower bound, shared kernels counted as prefill), 58.0 µs decode and 904.6 µs prefill attention, plus `device_busy` 98.7%; the ring's own accounting decides whether the totals-based rows are trusted (§3.5) | closed |
 | `per_token_p99` pending | baseline | `SchedThroughput` prints a per-run mean, not per-token latencies | cajeta-llm's bench emits per-token timings (profiles plan Unit 1 needs it) |
-| Seam device-tier figure (§3.4) is a three-duration mix | baseline | one profiled pass covers 5, 50 and 200 µs together; the summary cannot split them by name | one profiled pass per target duration |
+| CLOSED 2026-09-06 — seam device-tier figure (§3.4) was a three-duration mix | baseline → 0.2.4 | one profiled pass per target, the calibration launches under their own kernel name: `seam device_span` 5.9 / 50.6 / 198.8 µs on gfx1151, 2–9 µs under the host-clocked pipelined time (§3.1) | closed |
 | Frame p50 band 3.5–6.6 ms solo | baseline | run-to-run jitter of the unscheduled frame; p99 and the miss count are the frame KPIs that verdicts read | a scheduler unit that claims to reduce jitter measures p50 with N runs, not one |
-| CG `queue-empty time` not measured | baseline | needs the device-tier spans of the CG loop subtracted from wall; the harness rows are host-clocked | a profiled CG pass (the device tier is available, §3.5 shows the method) |
+| CLOSED 2026-09-06 — CG `queue-empty time` was not measured | baseline → 0.2.4 | a profiled CG pass: `queue_empty_time` 15.4% on gfx1151 (92.6 µs of device time in a 98.0 µs iteration), 74.5% for the degenerate loop; 0.5% and 16.7% on the CPU backend, where a launch is the kernel (§3.1) | closed |
 
 ## 6. Closing summary (after the last unit)
 
