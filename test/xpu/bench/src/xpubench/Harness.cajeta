@@ -1,0 +1,312 @@
+package xpubench;
+
+import cajeta.collection.ArrayList;
+import cajeta.io.file.File;
+import cajeta.io.file.Path;
+import cajeta.lang.String;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+import cajeta.xpu.Device;
+
+/**
+ * xpubench — the baseline harness for the xpu-tile family (scheduling plan
+ * Unit 0). Runs each workload unscheduled, warm, N blocks, idle-gated, arms
+ * in A/B/B/A order, and appends one JSON row per (workload, shape, KPI) to
+ * the rows file. tools/xpubench-report renders the rows into the report.
+ *
+ *   xpubench [--out=tmp/bench/rows.jsonl] [--workloads=kernels,cg,degenerate,
+ *            frame,pair,seam,llm] [--arms=baseline] [--blocks=5] [--per=20]
+ *            [--shapes=full|cpu|small] [--frames=600] [--frame-n=8388608]
+ *            [--llm-exe=PATH --model=PATH [--llm-runs=5] [--prompt=2048]
+ *            [--gen=64]] [--compiler=ID] [--driver=ID] [--date=ISO]
+ *
+ * Exit 3 when the idle gate refuses (another cajeta_test, bench, or GPU
+ * client is alive); nothing is written in that case.
+ */
+public final class Harness {
+    private Harness() { }
+
+    /// `args` carries the user arguments only under this entry form; scanning
+    /// from 0 and matching on the `--` prefix is right either way.
+    static #String opt(String[] args, String key, String dflt) {
+        int32 i = 0;
+        while (i < (int32) args.count()) {
+            String a = args[i];
+            if (a.startsWith(key)) {
+                return a.substring(key.byteLength(), a.byteLength());
+            }
+            i = i + 1;
+        }
+        return "" + dflt;
+    }
+
+    static int32 optInt(String[] args, String key, int32 dflt) {
+        String v #= Harness.opt(args, key, "");
+        if (v.byteLength() == 0) {
+            return dflt;
+        }
+        return Integer.parseInt(v);
+    }
+
+    static boolean has(String csv, String name) {
+        return csv.contains(name);
+    }
+
+    /** First line of `cmd`'s stdout containing `needle`, after `needle`. */
+    static #String probe(String[] argv, String needle) {
+        Command cmd = heap Command(#argv);
+        cmd.captureStdout();
+        cmd.captureStderr();
+        ProcessResult r #= cmd.run();
+        if (!r.launched()) {
+            return "" + "";
+        }
+        int8[] out = r.stdout();
+        if (out == null) {
+            return "" + "";
+        }
+        ArrayList<String> lines #= Gate.lines(out, (int32) out.count());
+        int32 i = 0;
+        while (i < lines.count()) {
+            String line = lines.get(i);
+            int64 at = line.indexOf(needle);
+            if (at >= (int64) 0) {
+                String rest #= line.substring((int32) at + needle.byteLength(), line.byteLength());
+                return rest.trim();
+            }
+            i = i + 1;
+        }
+        return "" + "";
+    }
+
+    static #String deviceName(String backend) {
+        if (backend.equals("hip")) {
+            String[] argv = heap String[1];
+            argv[0] = "rocminfo";
+            String name #= Harness.probe(argv, "Marketing Name:");
+            if (name.byteLength() > 0) {
+                return name;
+            }
+            return "" + "hip device";
+        }
+        String cpu #= Gate.catFile("/proc/cpuinfo");
+        if (cpu.byteLength() > 0) {
+            int8[] b #= cpu.toBytes();
+            ArrayList<String> lines #= Gate.lines(b, (int32) b.count());
+            int32 i = 0;
+            while (i < lines.count()) {
+                String line = lines.get(i);
+                if (line.startsWith("model name")) {
+                    int64 at = line.indexOf(":");
+                    String rest #= line.substring((int32) at + 1, line.byteLength());
+                    return rest.trim();
+                }
+                i = i + 1;
+            }
+        }
+        return "" + backend + " device";
+    }
+
+    static #String powerMode() {
+        int32 c = 0;
+        while (c < 4) {
+            String p = "/sys/class/drm/card" + c + "/device/power_dpm_force_performance_level";
+            Path pp #= Path.of(p);
+            if (pp.exists()) {
+                String mode #= Gate.catFile(p);
+                if (mode.byteLength() > 0) {
+                    return mode.trim();
+                }
+            }
+            c = c + 1;
+        }
+        return "" + "unknown";
+    }
+
+    static #String kernelVersion() {
+        String first #= Gate.catFile("/proc/version");
+        if (first.byteLength() == 0) {
+            return "" + "unknown";
+        }
+        // "Linux version X.Y.Z-... (" -> the third word
+        int32 n = first.byteLength();
+        int32 i = 0;
+        int32 word = 0;
+        int32 start = 0;
+        while (i < n) {
+            if (first.byteAt(i) == 32) {
+                word = word + 1;
+                if (word == 3) {
+                    return first.substring(start, i);
+                }
+                start = i + 1;
+            }
+            i = i + 1;
+        }
+        return first.trim();
+    }
+
+    public static int32 main(String[] args) {
+        String out #= Harness.opt(args, "--out=", "tmp/bench/rows.jsonl");
+        String workloads #= Harness.opt(args, "--workloads=", "kernels,cg,degenerate,frame,pair,seam,llm");
+        String armsCsv #= Harness.opt(args, "--arms=", "baseline");
+        Workloads.blocks = Harness.optInt(args, "--blocks=", 5);
+        Workloads.perBlock = Harness.optInt(args, "--per=", 20);
+        int32 frames = Harness.optInt(args, "--frames=", 600);
+        int32 frameN = Harness.optInt(args, "--frame-n=", 8388608);
+        String llmExe #= Harness.opt(args, "--llm-exe=", "");
+        String model #= Harness.opt(args, "--model=", "");
+        int32 llmRuns = Harness.optInt(args, "--llm-runs=", 5);
+        int32 prompt = Harness.optInt(args, "--prompt=", 2048);
+        int32 gen = Harness.optInt(args, "--gen=", 64);
+
+        System.stdout.println("=== xpubench — xpu-tile baseline harness ===");
+        String backend = Device.activeBackend();
+        System.stdout.println("active backend: " + backend);
+        if (backend.equals("none")) {
+            System.stdout.println("no accelerator backend is active; nothing to measure");
+            return 2;
+        }
+
+        // idle gate
+        ArrayList<String> busy #= Gate.liveOffenders();
+        String load #= Gate.loadAverage();
+        System.stdout.println("idle gate: " + busy.count() + " offending process(es), load " + load);
+        if (busy.count() > 0) {
+            int32 i = 0;
+            while (i < busy.count()) {
+                System.stdout.println("  " + busy.get(i));
+                i = i + 1;
+            }
+            System.stdout.println("refusing to measure on a busy box (exit 3)");
+            return 3;
+        }
+
+        String shapesArg #= Harness.opt(args, "--shapes=", "auto");
+        boolean shapesSmall = shapesArg.equals("small");
+        boolean shapesCpu = shapesArg.equals("cpu")
+            || (shapesArg.equals("auto") && backend.equals("cpu"));
+        String shapes = shapesSmall ? "small" : (shapesCpu ? "cpu" : "full");
+        uint32 small = 1048576;          // 1M elements
+        uint32 large = 16777216;         // 16M elements
+        uint32 mmSmall = 512;
+        uint32 mmLarge = 2048;
+        uint32 stW = 1024;
+        uint32 stH = 1024;
+        uint32 stWL = 4096;
+        uint32 stHL = 4096;
+        int32 cgIters = 10000;
+        if (shapesCpu && !shapesSmall) {
+            mmLarge = 1024;
+            cgIters = 2000;
+        }
+        if (shapesSmall) {
+            small = 65536;
+            large = 262144;
+            mmSmall = 128;
+            mmLarge = 256;
+            stW = 256;
+            stH = 256;
+            stWL = 512;
+            stHL = 512;
+            cgIters = 200;
+            if (frames > 60) {
+                frames = 60;
+            }
+            if (frameN > 1048576) {
+                frameN = 1048576;
+            }
+        }
+
+        Path dir #= Path.of(out).parent();
+        dir.mkdirs();
+        Rows rows = heap Rows(#out);
+        rows.backend = backend;
+        rows.device #= Harness.deviceName(backend);
+        String kv #= Harness.kernelVersion();
+        rows.driver #= Harness.opt(args, "--driver=", "linux " + kv);
+        rows.compiler #= Harness.opt(args, "--compiler=", "unknown");
+        rows.powerMode #= Harness.powerMode();
+        rows.date #= Harness.opt(args, "--date=", "");
+        System.stdout.println("device: " + rows.device + " | driver: " + rows.driver
+            + " | compiler: " + rows.compiler + " | power: " + rows.powerMode
+            + " | shapes: " + shapes + " | blocks " + Workloads.blocks + " x " + Workloads.perBlock);
+
+        // arms in A/B/B/A order, one round
+        ArrayList<String> arms = heap ArrayList<String>();
+        int32 st = 0;
+        int32 ai = 0;
+        int32 an = armsCsv.byteLength();
+        while (ai <= an) {
+            if (ai == an || armsCsv.byteAt(ai) == 44) {
+                if (ai > st) {
+                    arms.add(armsCsv.substring(st, ai));
+                }
+                st = ai + 1;
+            }
+            ai = ai + 1;
+        }
+        int32[] order #= Stats.abbaOrder(arms.count(), 1);
+        float64 soloP99 = 0.0;
+        int32 slot = 0;
+        while (slot < (int32) order.count()) {
+            String arm = arms.get(order[slot]);
+            rows.arm = arm;
+            Workloads.applyArm(arm);
+            System.stdout.println("--- arm " + arm + " ---");
+
+            if (Harness.has(workloads, "kernels")) {
+                System.stdout.println("[kernels]");
+                Workloads.saxpy(rows, small, "" + (int32) small);
+                Workloads.saxpy(rows, large, "" + (int32) large);
+                Workloads.dot(rows, small, "" + (int32) small);
+                Workloads.dot(rows, large, "" + (int32) large);
+                Workloads.stencil(rows, stW, stH, "" + (int32) stW + "x" + (int32) stH);
+                Workloads.stencil(rows, stWL, stHL, "" + (int32) stWL + "x" + (int32) stHL);
+                Workloads.reduce(rows, small, "" + (int32) small);
+                Workloads.reduce(rows, large, "" + (int32) large);
+                Workloads.matmul(rows, mmSmall, "" + (int32) mmSmall + "^2");
+                Workloads.matmul(rows, mmLarge, "" + (int32) mmLarge + "^2");
+                Workloads.wmma(rows, mmSmall, "" + (int32) mmSmall + "^2");
+                Workloads.wmma(rows, mmLarge, "" + (int32) mmLarge + "^2");
+                Workloads.gather(rows, small, "" + (int32) small);
+                Workloads.gather(rows, large, "" + (int32) large);
+            }
+            if (Harness.has(workloads, "cg")) {
+                System.stdout.println("[cg]");
+                Workloads.cg(rows, stW, stH, cgIters, "" + (int32) stW + "x" + (int32) stH
+                             + "x" + cgIters, "cg");
+            }
+            if (Harness.has(workloads, "degenerate")) {
+                System.stdout.println("[degenerate]");
+                uint32 one = 1;
+                Workloads.cg(rows, one, one, cgIters, "1x1x" + cgIters, "degenerate");
+            }
+            if (Harness.has(workloads, "frame")) {
+                System.stdout.println("[frame]");
+                soloP99 = Workloads.frame(rows, (uint32) frameN, frames, 16667, false, 0.0, "frame");
+            }
+            if (Harness.has(workloads, "pair")) {
+                System.stdout.println("[pair]");
+                Workloads.frame(rows, (uint32) frameN, frames, 16667, true, soloP99, "pair");
+            }
+            if (Harness.has(workloads, "seam")) {
+                System.stdout.println("[seam]");
+                Workloads.seam(rows, 5);
+                Workloads.seam(rows, 50);
+                Workloads.seam(rows, 200);
+            }
+            if (Harness.has(workloads, "llm")) {
+                if (llmExe.byteLength() == 0 || model.byteLength() == 0) {
+                    System.stdout.println("[llm] skipped: pass --llm-exe= and --model=");
+                } else {
+                    System.stdout.println("[llm]");
+                    Llm.run(rows, llmExe, model, prompt, gen, llmRuns);
+                }
+            }
+            slot = slot + 1;
+        }
+        System.stdout.println("wrote " + rows.written + " rows to " + out);
+        return 0;
+    }
+}

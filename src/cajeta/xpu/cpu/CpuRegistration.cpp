@@ -924,7 +924,18 @@ void foldWaveVariants(llvm::Function& f) {
                     fissionBarrierKernel(linked, wrapper, nReal, ctaidV, ntidV,
                                          nctaidV, hostModule, &wiLatches,
                                          dynSharedBytes);
-                } catch (cajeta::Exception&) {
+                } catch (cajeta::Exception& e) {
+                    // Say so at build time, exactly as the XPU-N01 path above
+                    // does: a swallowed fission failure left three baseline
+                    // kernels (a stride-loop reduce, a tiled GEMM) with no CPU
+                    // code and no diagnostic, and their launches read as
+                    // sub-microsecond kernels until the runtime's failure
+                    // counter was checked (xpu-tile-scheduling Unit 0).
+                    fprintf(stderr,
+                            "cajeta: note: [xpu-kernel-skipped] %s: no cpu device "
+                            "code — barrier fission: %s (%s)\n",
+                            entryName.c_str(), e.getMessage().c_str(),
+                            e.getErrorId().c_str());
                     wrapper->eraseFromParent();
                     linked->eraseFromParent();    // has barrier markers; unusable
                     continue;                     // host-stub fallback

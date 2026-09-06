@@ -1,0 +1,134 @@
+package xpubench;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+
+/**
+ * cajeta-llm decode and prefill (xpu-tile-scheduling plan 0.2.1): runs the
+ * already-built `SchedThroughput` bench N times as a subprocess and reads
+ * the two lines it prints —
+ *
+ *     prefill ms: <ms>  tok/s: <tps>
+ *     decode ms: <ms>  tok/s: <tps>  ms/token/seq: <ms>
+ *
+ * One process per run, so every run pays model load and first-touch the
+ * same way and none inherits a warm cache from the run before it. The bench
+ * binary is built by run.sh from the cajeta-llm checkout for the GPU only
+ * (no cpu fallback), the way its own tools/gpu script builds.
+ */
+public final class Llm {
+    private Llm() { }
+
+    /** The float after `key` on the line, or -1 when absent. */
+    static float64 after(String line, String key) {
+        int64 at = line.indexOf(key);
+        if (at < (int64) 0) {
+            return 0.0 - 1.0;
+        }
+        int32 i = (int32) at + key.byteLength();
+        int32 n = line.byteLength();
+        while (i < n && line.byteAt(i) == 32) {
+            i = i + 1;
+        }
+        int32 j = i;
+        while (j < n && line.byteAt(j) != 32) {
+            j = j + 1;
+        }
+        String tok #= line.substring(i, j);
+        return Stats.parseFloat(tok);
+    }
+
+    public static void run(Rows rows, String exe, String model, int32 prompt, int32 gen,
+                           int32 runs) {
+        float64[] preMs = heap float64[runs];
+        float64[] preTps = heap float64[runs];
+        float64[] decTps = heap float64[runs];
+        float64[] decMsTok = heap float64[runs];
+        int32 got = 0;
+        int32 r = 0;
+        while (r < runs) {
+            String[] argv = heap String[5];
+            argv[0] = exe;
+            argv[1] = model;
+            argv[2] = "prompt=" + prompt;
+            argv[3] = "gen=" + gen;
+            argv[4] = "ctx=" + (prompt + gen + 64);
+            Command cmd = heap Command(#argv);
+            cmd.captureStdout();
+            cmd.captureStderr();
+            ProcessResult res #= cmd.run();
+            if (!res.launched()) {
+                System.stdout.println("  llm: could not launch " + exe);
+                break;
+            }
+            int8[] out = res.stdout();
+            if (out == null) {
+                break;
+            }
+            ArrayList<String> lines #= Gate.lines(out, (int32) out.count());
+            boolean sawPre = false;
+            boolean sawDec = false;
+            int32 i = 0;
+            while (i < lines.count()) {
+                String line = lines.get(i);
+                if (line.startsWith("prefill ms:")) {
+                    preMs[got] = Llm.after(line, "prefill ms:");
+                    preTps[got] = Llm.after(line, "tok/s:");
+                    sawPre = true;
+                } else if (line.startsWith("decode ms:")) {
+                    decTps[got] = Llm.after(line, "tok/s:");
+                    decMsTok[got] = Llm.after(line, "ms/token/seq:");
+                    sawDec = true;
+                }
+                i = i + 1;
+            }
+            if (sawPre && sawDec) {
+                System.stdout.println("  llm run " + (r + 1) + ": prefill " + preMs[got]
+                    + " ms (" + preTps[got] + " tok/s), decode " + decTps[got]
+                    + " tok/s (" + decMsTok[got] + " ms/token)");
+                got = got + 1;
+            } else {
+                System.stdout.println("  llm run " + (r + 1) + ": exit " + res.code()
+                    + ", result lines not found");
+                int8[] err = res.stderr();
+                if (err != null && err.count() > 0) {
+                    ArrayList<String> el #= Gate.lines(err, (int32) err.count());
+                    int32 e = 0;
+                    while (e < el.count() && e < 6) {
+                        System.stdout.println("    " + el.get(e));
+                        e = e + 1;
+                    }
+                }
+            }
+            r = r + 1;
+        }
+        String shape = "prompt" + prompt + "+gen" + gen;
+        if (got == 0) {
+            rows.pending("llm.prefill", shape, "prefill_ms", "no successful run of " + exe);
+            rows.pending("llm.decode", shape, "tokens_per_second", "no successful run of " + exe);
+            return;
+        }
+        rows.row("llm.prefill", shape, "prefill_ms", "ms",
+                 Stats.round(Stats.median(preMs, got), 1), Stats.round(Stats.min(preMs, got), 1),
+                 Stats.round(Stats.max(preMs, got), 1), 0.0, got,
+                 "SchedThroughput, one process per run, chunked at the engine's default");
+        rows.row("llm.prefill", shape, "prefill_tokens_per_second", "tok/s",
+                 Stats.round(Stats.median(preTps, got), 1), Stats.round(Stats.min(preTps, got), 1),
+                 Stats.round(Stats.max(preTps, got), 1), 0.0, got, "from the same runs");
+        rows.pending("llm.prefill", shape, "matrix_core_fraction",
+                     "needs the device tier (rocprofiler-sdk) to attribute prefill time to WMMA kernels");
+        rows.row("llm.decode", shape, "tokens_per_second", "tok/s",
+                 Stats.round(Stats.median(decTps, got), 2), Stats.round(Stats.min(decTps, got), 2),
+                 Stats.round(Stats.max(decTps, got), 2), 0.0, got,
+                 "batch 1, greedy, " + gen + " generated tokens after the prompt");
+        rows.row("llm.decode", shape, "ms_per_token", "ms",
+                 Stats.round(Stats.median(decMsTok, got), 2), Stats.round(Stats.min(decMsTok, got), 2),
+                 Stats.round(Stats.max(decMsTok, got), 2), 0.0, got, "mean per token per run");
+        rows.pending("llm.decode", shape, "per_token_p99",
+                     "SchedThroughput prints a per-run mean, not per-token latencies");
+        rows.pending("llm.decode", shape, "attention_kernel_duration",
+                     "needs the device tier (rocprofiler-sdk) for per-kernel device spans");
+    }
+}

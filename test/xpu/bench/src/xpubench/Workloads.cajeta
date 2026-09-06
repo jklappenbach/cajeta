@@ -1,0 +1,1143 @@
+package xpubench;
+
+import cajeta.concurrent.Tasks;
+import cajeta.lang.String;
+import cajeta.time.Clock;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.Device;
+import cajeta.xpu.Event;
+import cajeta.xpu.Group;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Wave;
+import cajeta.xpu.Workgroup;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+
+/**
+ * The baseline workloads (xpu-tile-scheduling plan 0.2.1), each emitting
+ * rows through {@link Rows}. Every measurement here is HOST-CLOCKED around
+ * launch and sync: on this box the profiler's AMD device tier needs
+ * rocprofiler-sdk, which is absent, so the runtime's device slice is the
+ * launch call's own window — the right instrument for the seam KPI and the
+ * wrong one for kernel duration. Two host-clocked modes cover both:
+ *
+ *   isolated   launch, sync, one sample — kernel + launch + sync overhead,
+ *              the honest per-kernel latency;
+ *   pipelined  `count` launches then one sync, divided by count — the
+ *              per-kernel cost when the queue is kept full, which is what a
+ *              throughput scheduler sees.
+ *
+ * Blocks: `blocks` blocks per KPI, each block's median is one sample of the
+ * noise band; p95 is over every individual sample. Warm-up: every kernel
+ * runs once per shape (first-touch pages committed) before timing.
+ *
+ * Kernel launches cannot be wrapped in a thunk (a kernel launch inside a
+ * lambda crashes host codegen), so each kernel has its own sampling loop.
+ */
+public final class Workloads {
+    private Workloads() { }
+
+    public static int32 blocks = 5;
+    public static int32 perBlock = 20;
+    public static int32 pipeCount = 50;
+
+    /** Arms are labels in Unit 0; later units switch the scheduler here. */
+    public static void applyArm(String arm) {
+        return;
+    }
+
+    static int32 grid(uint32 n) {
+        return (int32) ((n + 255) / 256);
+    }
+
+    static float64 usOf(int64 ns) {
+        return (float64) ns / 1000.0;
+    }
+
+    /** Emit the standard kernel rows from isolated and pipelined samples. */
+    static void kernelRows(Rows rows, String name, String shape, String kclass,
+                           float64[] iso, int32 isoN, float64[] isoBlocks, int32 isoB,
+                           float64[] pipeBlocks, int32 pipeB, int64 bytes, int64 flops,
+                           int64 failures) {
+        if (failures > 0) {
+            // The runtime prints one stderr line per launch it could not run and
+            // returns; the host clock then times nothing. Those are not rows.
+            String why = "" + failures + " launches failed on this backend (kernel not registered; see stderr)";
+            rows.pending("kernel." + name, shape, "duration_isolated", why);
+            rows.pending("kernel." + name, shape, "duration_pipelined", why);
+            rows.pending("kernel." + name, shape, "achieved_bandwidth", why);
+            return;
+        }
+        float64 isoMed = Stats.median(isoBlocks, isoB);
+        rows.row("kernel." + name, shape, "duration_isolated", "us",
+                 Stats.round(isoMed, 2), Stats.round(Stats.min(isoBlocks, isoB), 2),
+                 Stats.round(Stats.max(isoBlocks, isoB), 2),
+                 Stats.round(Stats.percentile(iso, isoN, 95), 2), isoB,
+                 "launch+sync per sample; class " + kclass);
+        float64 pipeMed = Stats.median(pipeBlocks, pipeB);
+        rows.row("kernel." + name, shape, "duration_pipelined", "us",
+                 Stats.round(pipeMed, 2), Stats.round(Stats.min(pipeBlocks, pipeB), 2),
+                 Stats.round(Stats.max(pipeBlocks, pipeB), 2), 0.0, pipeB,
+                 "" + Workloads.pipeCount + " queued launches / count; class " + kclass);
+        rows.single("kernel." + name, shape, "bytes_moved", "bytes", (float64) bytes,
+                    "ideal traffic: every element read/written once");
+        if (pipeMed > 0.0) {
+            float64 gbps = (float64) bytes / (pipeMed * 1000.0);
+            rows.single("kernel." + name, shape, "achieved_bandwidth", "GB/s",
+                        Stats.round(gbps, 2), "bytes_moved / duration_pipelined");
+            if (flops > 0) {
+                float64 gflops = (float64) flops / (pipeMed * 1000.0);
+                rows.single("kernel." + name, shape, "achieved_rate", "GFLOP/s",
+                            Stats.round(gflops, 2), "flops / duration_pipelined");
+            }
+        }
+        rows.pending("kernel." + name, shape, "bandwidth_fraction",
+                     "needs the device's measured achievable bandwidth (report §2, scheduling Unit 2)");
+    }
+
+    // ── saxpy ────────────────────────────────────────────────────────────
+
+    public static void saxpy(Rows rows, uint32 n, String shape) {
+        float32[] hx = heap float32[n];
+        float32[] hy = heap float32[n];
+        uint32 i = 0;
+        while (i < n) {
+            hx[i] = 1.0f;
+            hy[i] = 2.0f;
+            i = i + 1;
+        }
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) n);
+        x.upload(hx);
+        y.upload(hy);
+        KernelStream s #= KernelStream.create();
+        int64 f0 = Device.launchFailures();
+        int32 g = Workloads.grid(n);
+        saxpy.launch(s, grid: [g], block: [256])(y, x, 1.0001f, n);
+        s.sync();
+
+        int32 isoN = Workloads.blocks * Workloads.perBlock;
+        float64[] iso = heap float64[isoN];
+        float64[] isoB = heap float64[Workloads.blocks];
+        float64[] pipeB = heap float64[Workloads.blocks];
+        float64[] blk = heap float64[Workloads.perBlock];
+        int32 b = 0;
+        while (b < Workloads.blocks) {
+            int32 j = 0;
+            while (j < Workloads.perBlock) {
+                int64 t0 = Clock.nanoTime();
+                saxpy.launch(s, grid: [g], block: [256])(y, x, 1.0001f, n);
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                blk[j] = Workloads.usOf(t1 - t0);
+                iso[b * Workloads.perBlock + j] = blk[j];
+                j = j + 1;
+            }
+            isoB[b] = Stats.median(blk, Workloads.perBlock);
+            int64 p0 = Clock.nanoTime();
+            int32 k = 0;
+            while (k < Workloads.pipeCount) {
+                saxpy.launch(s, grid: [g], block: [256])(y, x, 1.0001f, n);
+                k = k + 1;
+            }
+            s.sync();
+            int64 p1 = Clock.nanoTime();
+            pipeB[b] = Workloads.usOf(p1 - p0) / (float64) Workloads.pipeCount;
+            b = b + 1;
+        }
+        s.destroy();
+        int64 bytes = (int64) n * 12;          // read x, read y, write y
+        Workloads.kernelRows(rows, "saxpy", shape, "memory-bound", iso, isoN, isoB,
+                             Workloads.blocks, pipeB, Workloads.blocks, bytes, (int64) n * 2,
+                             Device.launchFailures() - f0);
+    }
+
+    // ── dot ──────────────────────────────────────────────────────────────
+
+    public static void dot(Rows rows, uint32 n, String shape) {
+        float32[] hx = heap float32[n];
+        uint32 i = 0;
+        while (i < n) {
+            hx[i] = 0.5f;
+            i = i + 1;
+        }
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(4);
+        x.upload(hx);
+        y.upload(hx);
+        float32[] hz = heap float32[4];
+        out.upload(hz);
+        KernelStream s #= KernelStream.create();
+        int64 f0 = Device.launchFailures();
+        int32 g = Workloads.grid(n);
+        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) g);
+        dot.launch(s, grid: [g], block: [256])(part, x, y, n);
+        finalSum2.launch(s, grid: [1], block: [256])(out, part, part, (uint32) g);
+        s.sync();
+
+        int32 isoN = Workloads.blocks * Workloads.perBlock;
+        float64[] iso = heap float64[isoN];
+        float64[] isoB = heap float64[Workloads.blocks];
+        float64[] pipeB = heap float64[Workloads.blocks];
+        float64[] blk = heap float64[Workloads.perBlock];
+        int32 b = 0;
+        while (b < Workloads.blocks) {
+            int32 j = 0;
+            while (j < Workloads.perBlock) {
+                int64 t0 = Clock.nanoTime();
+                dot.launch(s, grid: [g], block: [256])(part, x, y, n);
+                finalSum2.launch(s, grid: [1], block: [256])(out, part, part, (uint32) g);
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                blk[j] = Workloads.usOf(t1 - t0);
+                iso[b * Workloads.perBlock + j] = blk[j];
+                j = j + 1;
+            }
+            isoB[b] = Stats.median(blk, Workloads.perBlock);
+            int64 p0 = Clock.nanoTime();
+            int32 k = 0;
+            while (k < Workloads.pipeCount) {
+                dot.launch(s, grid: [g], block: [256])(part, x, y, n);
+                finalSum2.launch(s, grid: [1], block: [256])(out, part, part, (uint32) g);
+                k = k + 1;
+            }
+            s.sync();
+            int64 p1 = Clock.nanoTime();
+            pipeB[b] = Workloads.usOf(p1 - p0) / (float64) Workloads.pipeCount;
+            b = b + 1;
+        }
+        s.destroy();
+        Workloads.kernelRows(rows, "dot", shape, "memory-bound+reduce", iso, isoN, isoB,
+                             Workloads.blocks, pipeB, Workloads.blocks, (int64) n * 8, (int64) n * 2,
+                             Device.launchFailures() - f0);
+    }
+
+    // ── stencil5 ─────────────────────────────────────────────────────────
+
+    public static void stencil(Rows rows, uint32 w, uint32 h, String shape) {
+        uint32 n = w * h;
+        float32[] hin = heap float32[n];
+        uint32 i = 0;
+        while (i < n) {
+            hin[i] = 1.0f;
+            i = i + 1;
+        }
+        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) n);
+        in.upload(hin);
+        out.upload(hin);
+        KernelStream s #= KernelStream.create();
+        int64 f0 = Device.launchFailures();
+        int32 g = Workloads.grid(n);
+        stencil5.launch(s, grid: [g], block: [256])(out, in, w, h);
+        s.sync();
+
+        int32 isoN = Workloads.blocks * Workloads.perBlock;
+        float64[] iso = heap float64[isoN];
+        float64[] isoB = heap float64[Workloads.blocks];
+        float64[] pipeB = heap float64[Workloads.blocks];
+        float64[] blk = heap float64[Workloads.perBlock];
+        int32 b = 0;
+        while (b < Workloads.blocks) {
+            int32 j = 0;
+            while (j < Workloads.perBlock) {
+                int64 t0 = Clock.nanoTime();
+                stencil5.launch(s, grid: [g], block: [256])(out, in, w, h);
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                blk[j] = Workloads.usOf(t1 - t0);
+                iso[b * Workloads.perBlock + j] = blk[j];
+                j = j + 1;
+            }
+            isoB[b] = Stats.median(blk, Workloads.perBlock);
+            int64 p0 = Clock.nanoTime();
+            int32 k = 0;
+            while (k < Workloads.pipeCount) {
+                stencil5.launch(s, grid: [g], block: [256])(out, in, w, h);
+                k = k + 1;
+            }
+            s.sync();
+            int64 p1 = Clock.nanoTime();
+            pipeB[b] = Workloads.usOf(p1 - p0) / (float64) Workloads.pipeCount;
+            b = b + 1;
+        }
+        s.destroy();
+        Workloads.kernelRows(rows, "stencil5", shape, "memory-bound", iso, isoN, isoB,
+                             Workloads.blocks, pipeB, Workloads.blocks, (int64) n * 8, (int64) n * 8,
+                             Device.launchFailures() - f0);
+    }
+
+    // ── reduceSum ────────────────────────────────────────────────────────
+
+    public static void reduce(Rows rows, uint32 n, String shape) {
+        float32[] hin = heap float32[n];
+        uint32 i = 0;
+        while (i < n) {
+            hin[i] = 1.0f;
+            i = i + 1;
+        }
+        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(4);
+        in.upload(hin);
+        float32[] hz = heap float32[4];
+        out.upload(hz);
+        KernelStream s #= KernelStream.create();
+        int64 f0 = Device.launchFailures();
+        int32 g = Workloads.grid(n);
+        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) g);
+        reduceSum.launch(s, grid: [g], block: [256])(part, in, n);
+        finalSum2.launch(s, grid: [1], block: [256])(out, part, part, (uint32) g);
+        s.sync();
+
+        int32 isoN = Workloads.blocks * Workloads.perBlock;
+        float64[] iso = heap float64[isoN];
+        float64[] isoB = heap float64[Workloads.blocks];
+        float64[] pipeB = heap float64[Workloads.blocks];
+        float64[] blk = heap float64[Workloads.perBlock];
+        int32 b = 0;
+        while (b < Workloads.blocks) {
+            int32 j = 0;
+            while (j < Workloads.perBlock) {
+                int64 t0 = Clock.nanoTime();
+                reduceSum.launch(s, grid: [g], block: [256])(part, in, n);
+                finalSum2.launch(s, grid: [1], block: [256])(out, part, part, (uint32) g);
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                blk[j] = Workloads.usOf(t1 - t0);
+                iso[b * Workloads.perBlock + j] = blk[j];
+                j = j + 1;
+            }
+            isoB[b] = Stats.median(blk, Workloads.perBlock);
+            int64 p0 = Clock.nanoTime();
+            int32 k = 0;
+            while (k < Workloads.pipeCount) {
+                reduceSum.launch(s, grid: [g], block: [256])(part, in, n);
+                finalSum2.launch(s, grid: [1], block: [256])(out, part, part, (uint32) g);
+                k = k + 1;
+            }
+            s.sync();
+            int64 p1 = Clock.nanoTime();
+            pipeB[b] = Workloads.usOf(p1 - p0) / (float64) Workloads.pipeCount;
+            b = b + 1;
+        }
+        s.destroy();
+        Workloads.kernelRows(rows, "reduceSum", shape, "sync-bound", iso, isoN, isoB,
+                             Workloads.blocks, pipeB, Workloads.blocks, (int64) n * 4, (int64) n,
+                             Device.launchFailures() - f0);
+    }
+
+    // ── matmulTiled ──────────────────────────────────────────────────────
+
+    public static void matmul(Rows rows, uint32 n, String shape) {
+        uint32 total = n * n;
+        float32[] ha = heap float32[total];
+        uint32 i = 0;
+        while (i < total) {
+            ha[i] = 0.001f;
+            i = i + 1;
+        }
+        KernelBuffer<float32> a = heap KernelBuffer<float32>((uint64) total);
+        KernelBuffer<float32> b2 = heap KernelBuffer<float32>((uint64) total);
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) total);
+        a.upload(ha);
+        b2.upload(ha);
+        c.upload(ha);
+        KernelStream s #= KernelStream.create();
+        int64 f0 = Device.launchFailures();
+        int32 t = (int32) (n / 16);
+        matmulTiled.launch(s, grid: [t, t], block: [256])(c, a, b2, n);
+        s.sync();
+
+        int32 per = Workloads.perBlock / 4;      // GEMMs are long; fewer samples
+        if (per < 3) {
+            per = 3;
+        }
+        int32 pipe = Workloads.pipeCount / 10;
+        if (pipe < 3) {
+            pipe = 3;
+        }
+        int32 isoN = Workloads.blocks * per;
+        float64[] iso = heap float64[isoN];
+        float64[] isoB = heap float64[Workloads.blocks];
+        float64[] pipeB = heap float64[Workloads.blocks];
+        float64[] blk = heap float64[per];
+        int32 b = 0;
+        while (b < Workloads.blocks) {
+            int32 j = 0;
+            while (j < per) {
+                int64 t0 = Clock.nanoTime();
+                matmulTiled.launch(s, grid: [t, t], block: [256])(c, a, b2, n);
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                blk[j] = Workloads.usOf(t1 - t0);
+                iso[b * per + j] = blk[j];
+                j = j + 1;
+            }
+            isoB[b] = Stats.median(blk, per);
+            int64 p0 = Clock.nanoTime();
+            int32 k = 0;
+            while (k < pipe) {
+                matmulTiled.launch(s, grid: [t, t], block: [256])(c, a, b2, n);
+                k = k + 1;
+            }
+            s.sync();
+            int64 p1 = Clock.nanoTime();
+            pipeB[b] = Workloads.usOf(p1 - p0) / (float64) pipe;
+            b = b + 1;
+        }
+        s.destroy();
+        int64 nn = (int64) n;
+        Workloads.kernelRows(rows, "matmulTiled", shape, "compute-bound", iso, isoN, isoB,
+                             Workloads.blocks, pipeB, Workloads.blocks, nn * nn * 12,
+                             nn * nn * nn * 2,
+                             Device.launchFailures() - f0);
+    }
+
+    // ── wmmaGemm ─────────────────────────────────────────────────────────
+
+    public static void wmma(Rows rows, uint32 n, String shape) {
+        uint32 total = n * n;
+        float16[] ha = heap float16[total];
+        float32[] hc = heap float32[total];
+        uint32 i = 0;
+        while (i < total) {
+            ha[i] = (float16) 0.01f;
+            hc[i] = 0.0f;
+            i = i + 1;
+        }
+        KernelBuffer<float16> a = heap KernelBuffer<float16>((uint64) total);
+        KernelBuffer<float16> b2 = heap KernelBuffer<float16>((uint64) total);
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) total);
+        a.upload(ha);
+        b2.upload(ha);
+        c.upload(hc);
+        KernelStream s #= KernelStream.create();
+        int64 f0 = Device.launchFailures();
+        int32 tiles = (int32) ((n / 16) * (n / 16));
+        int32 wave = 1;
+        if (!Device.activeBackend().equals("cpu")) {
+            wave = Device.waveSize();
+            if (wave <= 0) {
+                wave = 32;
+            }
+        }
+        wmmaGemm.launch(s, grid: [tiles], block: [wave])(a, b2, c, n);
+        s.sync();
+
+        int32 per = Workloads.perBlock / 4;
+        if (per < 3) {
+            per = 3;
+        }
+        int32 pipe = Workloads.pipeCount / 10;
+        if (pipe < 3) {
+            pipe = 3;
+        }
+        int32 isoN = Workloads.blocks * per;
+        float64[] iso = heap float64[isoN];
+        float64[] isoB = heap float64[Workloads.blocks];
+        float64[] pipeB = heap float64[Workloads.blocks];
+        float64[] blk = heap float64[per];
+        int32 b = 0;
+        while (b < Workloads.blocks) {
+            int32 j = 0;
+            while (j < per) {
+                int64 t0 = Clock.nanoTime();
+                wmmaGemm.launch(s, grid: [tiles], block: [wave])(a, b2, c, n);
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                blk[j] = Workloads.usOf(t1 - t0);
+                iso[b * per + j] = blk[j];
+                j = j + 1;
+            }
+            isoB[b] = Stats.median(blk, per);
+            int64 p0 = Clock.nanoTime();
+            int32 k = 0;
+            while (k < pipe) {
+                wmmaGemm.launch(s, grid: [tiles], block: [wave])(a, b2, c, n);
+                k = k + 1;
+            }
+            s.sync();
+            int64 p1 = Clock.nanoTime();
+            pipeB[b] = Workloads.usOf(p1 - p0) / (float64) pipe;
+            b = b + 1;
+        }
+        s.destroy();
+        int64 nn = (int64) n;
+        Workloads.kernelRows(rows, "wmmaGemm", shape, "matrix-core", iso, isoN, isoB,
+                             Workloads.blocks, pipeB, Workloads.blocks, nn * nn * 8,
+                             nn * nn * nn * 2,
+                             Device.launchFailures() - f0);
+    }
+
+    // ── gather ───────────────────────────────────────────────────────────
+
+    public static void gather(Rows rows, uint32 n, String shape) {
+        float32[] hin = heap float32[n];
+        uint32[] hidx = heap uint32[n];
+        uint32 i = 0;
+        uint32 seed = 12345;
+        while (i < n) {
+            hin[i] = 1.0f;
+            seed = seed * 1664525 + 1013904223;      // uint32 wraps
+            hidx[i] = seed % n;
+            i = i + 1;
+        }
+        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<uint32> idx = heap KernelBuffer<uint32>((uint64) n);
+        in.upload(hin);
+        out.upload(hin);
+        idx.upload(hidx);
+        KernelStream s #= KernelStream.create();
+        int64 f0 = Device.launchFailures();
+        int32 g = Workloads.grid(n);
+        gather.launch(s, grid: [g], block: [256])(out, in, idx, n);
+        s.sync();
+
+        int32 isoN = Workloads.blocks * Workloads.perBlock;
+        float64[] iso = heap float64[isoN];
+        float64[] isoB = heap float64[Workloads.blocks];
+        float64[] pipeB = heap float64[Workloads.blocks];
+        float64[] blk = heap float64[Workloads.perBlock];
+        int32 b = 0;
+        while (b < Workloads.blocks) {
+            int32 j = 0;
+            while (j < Workloads.perBlock) {
+                int64 t0 = Clock.nanoTime();
+                gather.launch(s, grid: [g], block: [256])(out, in, idx, n);
+                s.sync();
+                int64 t1 = Clock.nanoTime();
+                blk[j] = Workloads.usOf(t1 - t0);
+                iso[b * Workloads.perBlock + j] = blk[j];
+                j = j + 1;
+            }
+            isoB[b] = Stats.median(blk, Workloads.perBlock);
+            int64 p0 = Clock.nanoTime();
+            int32 k = 0;
+            while (k < Workloads.pipeCount) {
+                gather.launch(s, grid: [g], block: [256])(out, in, idx, n);
+                k = k + 1;
+            }
+            s.sync();
+            int64 p1 = Clock.nanoTime();
+            pipeB[b] = Workloads.usOf(p1 - p0) / (float64) Workloads.pipeCount;
+            b = b + 1;
+        }
+        s.destroy();
+        Workloads.kernelRows(rows, "gather", shape, "indirect", iso, isoN, isoB,
+                             Workloads.blocks, pipeB, Workloads.blocks, (int64) n * 12, 0,
+                             Device.launchFailures() - f0);
+    }
+
+    // ── the CG stand-in ──────────────────────────────────────────────────
+
+    /**
+     * stencil SpMV + two dots (per-block partials) + one final reduce that
+     * folds both dots + three axpys: seven launches per iteration. `iters` iterations, `w` x `h` grid.
+     * A 1 x 1 grid is the degenerate problem: pure framework overhead.
+     */
+    public static void cg(Rows rows, uint32 w, uint32 h, int32 iters, String shape,
+                          String workload) {
+        uint32 n = w * h;
+        float32[] hv = heap float32[n];
+        uint32 i = 0;
+        while (i < n) {
+            hv[i] = 1.0f;
+            i = i + 1;
+        }
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> r = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> p = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> ap = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> sc = heap KernelBuffer<float32>(4);
+        x.upload(hv);
+        r.upload(hv);
+        p.upload(hv);
+        ap.upload(hv);
+        float32[] hz = heap float32[4];
+        sc.upload(hz);
+        KernelStream s #= KernelStream.create();
+        int64 f0 = Device.launchFailures();
+        int32 g = Workloads.grid(n);
+        KernelBuffer<float32> pr = heap KernelBuffer<float32>((uint64) g);
+        KernelBuffer<float32> pp = heap KernelBuffer<float32>((uint64) g);
+        float32 alpha = 0.001f;
+        float32 beta = 0.5f;
+
+        // warm-up: one iteration
+        stencil5.launch(s, grid: [g], block: [256])(ap, p, w, h);
+        dot.launch(s, grid: [g], block: [256])(pr, r, r, n);
+        dot.launch(s, grid: [g], block: [256])(pp, p, ap, n);
+        finalSum2.launch(s, grid: [1], block: [256])(sc, pr, pp, (uint32) g);
+        saxpy.launch(s, grid: [g], block: [256])(x, p, alpha, n);
+        saxpy.launch(s, grid: [g], block: [256])(r, ap, 0.0f - alpha, n);
+        saxpy.launch(s, grid: [g], block: [256])(p, r, beta, n);
+        s.sync();
+
+        float64[] itersPerSec = heap float64[Workloads.blocks];
+        float64[] hostPerNode = heap float64[Workloads.blocks];
+        int32 perBlockIters = iters / Workloads.blocks;
+        if (perBlockIters < 1) {
+            perBlockIters = 1;
+        }
+        int32 b = 0;
+        while (b < Workloads.blocks) {
+            int64 hostNs = 0;
+            int64 t0 = Clock.nanoTime();
+            int32 it = 0;
+            while (it < perBlockIters) {
+                int64 h0 = Clock.nanoTime();
+                stencil5.launch(s, grid: [g], block: [256])(ap, p, w, h);
+                dot.launch(s, grid: [g], block: [256])(pr, r, r, n);
+                dot.launch(s, grid: [g], block: [256])(pp, p, ap, n);
+                finalSum2.launch(s, grid: [1], block: [256])(sc, pr, pp, (uint32) g);
+                saxpy.launch(s, grid: [g], block: [256])(x, p, alpha, n);
+                saxpy.launch(s, grid: [g], block: [256])(r, ap, 0.0f - alpha, n);
+                saxpy.launch(s, grid: [g], block: [256])(p, r, beta, n);
+                int64 h1 = Clock.nanoTime();
+                hostNs = hostNs + (h1 - h0);
+                it = it + 1;
+            }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            float64 secs = (float64) (t1 - t0) / 1000000000.0;
+            itersPerSec[b] = (float64) perBlockIters / secs;
+            hostPerNode[b] = Workloads.usOf(hostNs) / ((float64) perBlockIters * 7.0);
+            b = b + 1;
+        }
+        s.destroy();
+        if (Device.launchFailures() - f0 > 0) {
+            String why = "" + (Device.launchFailures() - f0) + " launches failed on this backend (kernel not registered; see stderr)";
+            rows.pending(workload, shape, "iterations_per_second", why);
+            rows.pending(workload, shape, "host_cost_per_node", why);
+            return;
+        }
+        rows.row(workload, shape, "iterations_per_second", "iter/s",
+                 Stats.round(Stats.median(itersPerSec, Workloads.blocks), 1),
+                 Stats.round(Stats.min(itersPerSec, Workloads.blocks), 1),
+                 Stats.round(Stats.max(itersPerSec, Workloads.blocks), 1), 0.0,
+                 Workloads.blocks, "7 launches/iteration (stencil + 2 dot partials + 1 final + 3 axpy), "
+                 + perBlockIters + " iterations per block, one sync per block");
+        rows.row(workload, shape, "host_cost_per_node", "us",
+                 Stats.round(Stats.median(hostPerNode, Workloads.blocks), 3),
+                 Stats.round(Stats.min(hostPerNode, Workloads.blocks), 3),
+                 Stats.round(Stats.max(hostPerNode, Workloads.blocks), 3), 0.0,
+                 Workloads.blocks, "host wall time inside the launch calls / launches");
+        float64 usPerIter = 1000000.0 / Stats.median(itersPerSec, Workloads.blocks);
+        rows.single(workload, shape, "wall_per_iteration", "us", Stats.round(usPerIter, 2),
+                    "1e6 / iterations_per_second");
+    }
+
+    // ── the frame stand-in ───────────────────────────────────────────────
+
+    /** Spin-wait until `deadline` (ns on the Clock.nanoTime scale), sleeping
+     *  the whole milliseconds first so the wait does not burn a core. */
+    static void waitUntil(int64 deadline) {
+        int64 now = Clock.nanoTime();
+        int64 remainMs = (deadline - now) / 1000000 - 1;
+        if (remainMs > 0) {
+            Tasks.sleepMillis(remainMs);
+        }
+        while (Clock.nanoTime() < deadline) {
+        }
+    }
+
+    /**
+     * Twelve dependent kernels per frame at a `periodUs` period, `frames`
+     * frames. With `besteffort` true a second stream is kept loaded with
+     * saxpy launches for the whole run — the protected + best-effort pair,
+     * unscheduled, the baseline every later unit compares to.
+     */
+    public static float64 frame(Rows rows, uint32 n, int32 frames, int64 periodUs,
+                                boolean besteffort, float64 soloP99, String workload) {
+        float32[] hv = heap float32[n];
+        uint32 i = 0;
+        while (i < n) {
+            hv[i] = 1.0f;
+            i = i + 1;
+        }
+        KernelBuffer<float32> a = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> b = heap KernelBuffer<float32>((uint64) n);
+        a.upload(hv);
+        b.upload(hv);
+        uint32 bn = 16777216;
+        float32[] hb = heap float32[bn];
+        uint32 q = 0;
+        while (q < bn) {
+            hb[q] = 1.0f;
+            q = q + 1;
+        }
+        KernelBuffer<float32> bx = heap KernelBuffer<float32>((uint64) bn);
+        KernelBuffer<float32> by = heap KernelBuffer<float32>((uint64) bn);
+        bx.upload(hb);
+        by.upload(hb);
+        KernelStream s #= KernelStream.create();
+        int64 f0 = Device.launchFailures();
+        KernelStream be #= KernelStream.create();
+        int32 g = Workloads.grid(n);
+        int32 gb = Workloads.grid(bn);
+        // The best-effort stream keeps a BOUNDED backlog: a batch of `beBatch`
+        // launches (~2 x the period of work) is in flight at all times and is
+        // refilled when its Event reports it done. Enqueuing a fixed count per
+        // frame paced the stream to the frame loop and read the same GB/s on
+        // every backend; an unbounded backlog would grow for the whole run.
+        int32 beBatch = 24;
+        int64 beLaunches = 0;
+        Event beDone #= Event.create();          // the older batch in flight
+        Event beDone2 #= Event.create();         // the newer one; two keep the queue non-empty
+
+        // warm-up frame
+        int32 step = 0;
+        while (step < 12) {
+            if ((step % 2) == 0) {
+                chainStep.launch(s, grid: [g], block: [256])(b, a, 0.999f, 0.001f, n);
+            } else {
+                chainStep.launch(s, grid: [g], block: [256])(a, b, 0.999f, 0.001f, n);
+            }
+            step = step + 1;
+        }
+        s.sync();
+        float64 soloGbps = 0.0;
+        if (besteffort) {
+            saxpy.launch(be, grid: [gb], block: [256])(by, bx, 1.0001f, bn);
+            be.sync();
+            // the best-effort stream's solo rate: the same launches, alone
+            int64 s0 = Clock.nanoTime();
+            int32 sk = 0;
+            while (sk < 20) {
+                saxpy.launch(be, grid: [gb], block: [256])(by, bx, 1.0001f, bn);
+                sk = sk + 1;
+            }
+            be.sync();
+            int64 s1 = Clock.nanoTime();
+            soloGbps = 20.0 * (float64) bn * 12.0 / ((float64) (s1 - s0));
+        }
+
+        float64[] frameMs = heap float64[frames];
+        int64 period = periodUs * 1000;
+        int64 start = Clock.nanoTime();
+        int64 wall0 = start;
+        int32 f = 0;
+        while (f < frames) {
+            int64 due = start + (int64) f * period;
+            Workloads.waitUntil(due);
+            int64 t0 = Clock.nanoTime();
+            if (besteffort && (beLaunches == 0 || beDone.query())) {
+                int32 k = 0;
+                while (k < beBatch) {
+                    saxpy.launch(be, grid: [gb], block: [256])(by, bx, 1.0001f, bn);
+                    k = k + 1;
+                }
+                beDone.recordOn(be);
+                beLaunches = beLaunches + (int64) beBatch;
+            }
+            if (besteffort && (beLaunches == (int64) beBatch || beDone2.query())) {
+                int32 k = 0;
+                while (k < beBatch) {
+                    saxpy.launch(be, grid: [gb], block: [256])(by, bx, 1.0001f, bn);
+                    k = k + 1;
+                }
+                beDone2.recordOn(be);
+                beLaunches = beLaunches + (int64) beBatch;
+            }
+            step = 0;
+            while (step < 12) {
+                if ((step % 2) == 0) {
+                    chainStep.launch(s, grid: [g], block: [256])(b, a, 0.999f, 0.001f, n);
+                } else {
+                    chainStep.launch(s, grid: [g], block: [256])(a, b, 0.999f, 0.001f, n);
+                }
+                step = step + 1;
+            }
+            s.sync();
+            int64 t1 = Clock.nanoTime();
+            frameMs[f] = (float64) (t1 - t0) / 1000000.0;
+            f = f + 1;
+        }
+        if (besteffort) {
+            be.sync();
+        }
+        int64 wall1 = Clock.nanoTime();
+        s.destroy();
+        be.destroy();
+        beDone.destroy();
+        beDone2.destroy();
+        if (Device.launchFailures() - f0 > 0) {
+            String why = "" + (Device.launchFailures() - f0) + " launches failed on this backend (kernel not registered; see stderr)";
+            rows.pending(workload, "" + (int32) n + "x12", "frame_p50", why);
+            rows.pending(workload, "" + (int32) n + "x12", "frame_p99", why);
+            return 0.0;
+        }
+
+        float64 p50 = Stats.median(frameMs, frames);
+        float64 p99 = Stats.percentile(frameMs, frames, 99);
+        float64 periodMs = (float64) periodUs / 1000.0;
+        int32 missed = 0;
+        int32 j = 0;
+        while (j < frames) {
+            if (frameMs[j] > periodMs) {
+                missed = missed + 1;
+            }
+            j = j + 1;
+        }
+        String shape = "" + (int32) n + "x12@" + periodMs + "ms";
+        rows.row(workload, shape, "frame_p50", "ms", Stats.round(p50, 3),
+                 Stats.round(Stats.min(frameMs, frames), 3),
+                 Stats.round(Stats.max(frameMs, frames), 3), Stats.round(p99, 3), frames,
+                 "12 dependent chainStep launches + one sync per frame; band is min/max over frames");
+        rows.single(workload, shape, "frame_p99", "ms", Stats.round(p99, 3), "nearest-rank over frames");
+        rows.single(workload, shape, "missed_frames_per_10000", "frames",
+                    Stats.round((float64) missed * 10000.0 / (float64) frames, 1),
+                    "" + missed + " of " + frames + " frames exceeded the period");
+        rows.single(workload, shape, "sync_points_per_frame", "count", 1.0,
+                    "one host sync per frame; the 11 intra-frame dependencies ride stream order");
+        if (besteffort) {
+            float64 wallS = (float64) (wall1 - wall0) / 1000000000.0;
+            float64 gbps = (float64) beLaunches * (float64) bn * 12.0 / (wallS * 1000000000.0);
+            rows.single(workload, shape, "besteffort_throughput", "GB/s", Stats.round(gbps, 2),
+                        "" + beLaunches + " saxpy(16M) launches on the second stream, batches of " + beBatch + " refilled on completion");
+            if (soloP99 > 0.0) {
+                rows.single(workload, shape, "protected_p99_slowdown", "%",
+                            Stats.round((p99 / soloP99 - 1.0) * 100.0, 1),
+                            "frame p99 co-run vs solo " + Stats.round(soloP99, 3) + " ms");
+            }
+            if (soloGbps > 0.0) {
+                float64 pct = gbps / soloGbps * 100.0;
+                rows.single(workload, shape, "besteffort_pct_of_solo", "%", Stats.round(pct, 1),
+                            "vs solo pipelined saxpy(16M) " + Stats.round(soloGbps, 2) + " GB/s");
+                float64 onTime = (float64) (frames - missed) / (float64) frames * 100.0;
+                rows.single(workload, shape, "goodput", "%",
+                            Stats.round(0.5 * onTime + 0.5 * pct, 1),
+                            "mean of protected on-time % and best-effort % of solo");
+            }
+        }
+        return p99;
+    }
+
+    // ── the seam probe ───────────────────────────────────────────────────
+
+    /**
+     * What a launch costs around a kernel held at `targetUs`: the host time
+     * inside the launch call, the per-launch cost when queued, and the
+     * launch+sync cost isolated, each minus the kernel's own time.
+     */
+    public static void seam(Rows rows, int32 targetUs) {
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(4);
+        float32[] hz = heap float32[4];
+        out.upload(hz);
+        KernelStream s #= KernelStream.create();
+        int64 f0 = Device.launchFailures();
+        // calibrate: ns per iteration from a pipelined batch at 200k iters
+        uint32 calIters = 200000;
+        spin.launch(s, grid: [1], block: [1])(out, calIters);
+        s.sync();
+        int64 c0 = Clock.nanoTime();
+        int32 k = 0;
+        while (k < 10) {
+            spin.launch(s, grid: [1], block: [1])(out, calIters);
+            k = k + 1;
+        }
+        s.sync();
+        int64 c1 = Clock.nanoTime();
+        float64 nsPerIter = (float64) (c1 - c0) / 10.0 / (float64) calIters;
+        float64 want = (float64) targetUs * 1000.0 / nsPerIter;
+        uint32 iters = (uint32) want;
+        if (iters < 1) {
+            iters = 1;
+        }
+        // the kernel's own time at this iters, pipelined so the seam is amortized
+        int64 k0 = Clock.nanoTime();
+        k = 0;
+        while (k < 100) {
+            spin.launch(s, grid: [1], block: [1])(out, iters);
+            k = k + 1;
+        }
+        s.sync();
+        int64 k1 = Clock.nanoTime();
+        float64 kernelUs = Workloads.usOf(k1 - k0) / 100.0;
+
+        int32 nb = Workloads.blocks;
+        float64[] callB = heap float64[nb];
+        float64[] pipeB = heap float64[nb];
+        float64[] isoB = heap float64[nb];
+        int32 per = 100;
+        float64[] call = heap float64[per];
+        float64[] iso = heap float64[per];
+        int32 b = 0;
+        while (b < nb) {
+            int32 j = 0;
+            while (j < per) {
+                int64 t0 = Clock.nanoTime();
+                spin.launch(s, grid: [1], block: [1])(out, iters);
+                int64 t1 = Clock.nanoTime();
+                s.sync();
+                int64 t2 = Clock.nanoTime();
+                call[j] = Workloads.usOf(t1 - t0);
+                iso[j] = Workloads.usOf(t2 - t0);
+                j = j + 1;
+            }
+            callB[b] = Stats.median(call, per);
+            isoB[b] = Stats.median(iso, per) - kernelUs;
+            int64 p0 = Clock.nanoTime();
+            j = 0;
+            while (j < per) {
+                spin.launch(s, grid: [1], block: [1])(out, iters);
+                j = j + 1;
+            }
+            s.sync();
+            int64 p1 = Clock.nanoTime();
+            pipeB[b] = Workloads.usOf(p1 - p0) / (float64) per - kernelUs;
+            b = b + 1;
+        }
+        s.destroy();
+        String shape = "" + targetUs + "us";
+        if (Device.launchFailures() - f0 > 0) {
+            rows.pending("seam", shape, "launch_call", "" + (Device.launchFailures() - f0) + " launches failed on this backend (kernel not registered; see stderr)");
+            return;
+        }
+        rows.single("seam", shape, "kernel_time", "us", Stats.round(kernelUs, 2),
+                    "spin(" + (int32) iters + ") pipelined x100; calibrated from " + Stats.round(nsPerIter, 3) + " ns/iter");
+        rows.row("seam", shape, "launch_call", "us",
+                 Stats.round(Stats.median(callB, nb), 3), Stats.round(Stats.min(callB, nb), 3),
+                 Stats.round(Stats.max(callB, nb), 3), Stats.round(Stats.percentile(call, per, 95), 3),
+                 nb, "host time inside the launch statement");
+        rows.row("seam", shape, "pipelined_overhead", "us",
+                 Stats.round(Stats.median(pipeB, nb), 3), Stats.round(Stats.min(pipeB, nb), 3),
+                 Stats.round(Stats.max(pipeB, nb), 3), 0.0, nb,
+                 "(100 queued launches + sync)/100 minus kernel_time");
+        rows.row("seam", shape, "isolated_overhead", "us",
+                 Stats.round(Stats.median(isoB, nb), 3), Stats.round(Stats.min(isoB, nb), 3),
+                 Stats.round(Stats.max(isoB, nb), 3), 0.0, nb,
+                 "launch + sync minus kernel_time");
+    }
+
+    // ── the kernels (launch receivers must be bare names in the launching class) ──
+
+    // y[i] = a*x[i] + y[i]
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
+                             float32 a, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            y[i] = a * x[i] + y[i];
+        }
+    }
+
+    // out[block] = sum over the block of x[i]*y[i] — wave reduce, LDS across
+    // the block's waves, one partial per block; finalSum2 folds the partials.
+    // The first cuts used a same-address float atomic (per wave, then per
+    // block) and were contention-bound on HIP: 446 us for 1M elements, 2.3
+    // GFLOP/s, a bimodal band at 16M. A property of the kernel, not of any
+    // scheduler, so the baseline carries the two-stage form.
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void dot(KernelBuffer<float32> out, KernelBuffer<float32> x,
+                           KernelBuffer<float32> y, uint32 n) {
+        Shared<float32> lds = shared float32[256];     // one slot per wave; a wave is one lane on the CPU backend
+        uint32 t = KernelThread.x();
+        uint32 i = KernelThread.globalIdX();
+        float32 p = 0.0f;
+        if (i < n) {
+            p = x[i] * y[i];
+        }
+        float32 s = Wave.reduceSumF32(p);
+        uint32 w = Wave.width();
+        uint32 waveIdx = t / w;
+        if (Wave.isFirstLane()) {
+            lds[waveIdx] = s;
+        }
+        Barrier.workgroup();
+        if (t == 0) {
+            uint32 waves = 256 / w;
+            float32 total = 0.0f;
+            uint32 k = 0;
+            while (k < waves) {
+                total = total + lds[k];
+                k = k + 1;
+            }
+            out[Workgroup.x()] = total;
+        }
+    }
+
+    // out = 4*in - (N, S, E, W) on a w x h grid; the boundary copies in.
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void stencil5(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                                uint32 w, uint32 h) {
+        uint32 i = KernelThread.globalIdX();
+        uint32 total = w * h;
+        if (i < total) {
+            uint32 r = i / w;
+            uint32 c = i - r * w;
+            if (r == 0 || c == 0 || r + 1 == h || c + 1 == w) {
+                out[i] = in[i];
+            } else {
+                out[i] = 4.0f * in[i] - in[i - 1] - in[i + 1] - in[i - w] - in[i + w];
+            }
+        }
+    }
+
+    // out[block] = sum over the block of in — LDS tree reduce, two barriers,
+    // one partial per block (finalSum2 folds them).
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void reduceSum(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                                 uint32 n) {
+        Shared<float32> lds = shared float32[256];
+        uint32 t = KernelThread.x();
+        uint32 i = KernelThread.globalIdX();
+        float32 v = 0.0f;
+        if (i < n) {
+            v = in[i];
+        }
+        lds[t] = v;
+        Barrier.workgroup();
+        uint32 stride = 128;
+        while (stride > 0) {
+            if (t < stride) {
+                lds[t] = lds[t] + lds[t + stride];
+            }
+            Barrier.workgroup();
+            stride = stride / 2;
+        }
+        if (t == 0) {
+            out[Workgroup.x()] = lds[0];
+        }
+    }
+
+    // c = a*b, n x n row-major f32, 16x16 LDS tiles, 256 threads per block,
+    // block (Workgroup.x, Workgroup.y) owns output tile (bx, by).
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void matmulTiled(KernelBuffer<float32> c, KernelBuffer<float32> a,
+                                   KernelBuffer<float32> b, uint32 n) {
+        Shared<float32> as = shared float32[256];
+        Shared<float32> bs = shared float32[256];
+        uint32 t = KernelThread.x();
+        uint32 tr = t / 16;
+        uint32 tc = t - tr * 16;
+        uint32 row = Workgroup.y() * 16 + tr;
+        uint32 col = Workgroup.x() * 16 + tc;
+        float32 acc = 0.0f;
+        uint32 k0 = 0;
+        while (k0 < n) {
+            as[t] = a[row * n + k0 + tc];
+            bs[t] = b[(k0 + tr) * n + col];
+            Barrier.workgroup();
+            uint32 k = 0;
+            while (k < 16) {
+                acc = acc + as[tr * 16 + k] * bs[k * 16 + tc];
+                k = k + 1;
+            }
+            Barrier.workgroup();
+            k0 = k0 + 16;
+        }
+        c[row * n + col] = acc;
+    }
+
+    // c = a*b on the matrix cores: one wave per 16x16 output tile, f16 in,
+    // f32 accumulate. Group.mac is the tile surface; the compiler picks WMMA
+    // on gfx1151 and the software tile on the CPU backend.
+    @Kernel
+    public static void wmmaGemm(KernelBuffer<float16> a, KernelBuffer<float16> b,
+                                KernelBuffer<float32> c, uint32 n) {
+        uint32 tiles = n / 16;
+        uint32 tile = Workgroup.x();
+        uint32 tr = tile / tiles;
+        uint32 tc = tile - tr * tiles;
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        uint32 k = 0;
+        while (k < n) {
+            CooperativeMatrix<float16,16,16,0> ma;
+            ma.load(a, tr * 16 * n + k, 0, n);
+            CooperativeMatrix<float16,16,16,1> mb;
+            mb.load(b, k * n + tc * 16, 0, n);
+            Group.mac(mc, ma, mb);
+            k = k + 16;
+        }
+        mc.store(c, tr * 16 * n + tc * 16, 0, n);
+    }
+
+    // out[i] = in[idx[i]] — the indirect access mode.
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void gather(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                              KernelBuffer<uint32> idx, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            out[i] = in[idx[i]];
+        }
+    }
+
+    // out[i] = in[i]*k + d — one dependent step of the frame chain.
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void chainStep(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                                 float32 k, float32 d, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            out[i] = in[i] * k + d;
+        }
+    }
+
+    // out[0] = sum(pa[0..count)), out[1] = sum(pb[0..count)) — one block folds
+    // the per-block partials of one or two reductions (the CG stand-in's two
+    // dots share one final launch). Pass the same array twice for one sum.
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void finalSum2(KernelBuffer<float32> out, KernelBuffer<float32> pa,
+                                 KernelBuffer<float32> pb, uint32 count) {
+        Shared<float32> la = shared float32[256];
+        Shared<float32> lb = shared float32[256];
+        uint32 t = KernelThread.x();
+        float32 sa = 0.0f;
+        float32 sb = 0.0f;
+        uint32 i = t;
+        while (i < count) {
+            sa = sa + pa[i];
+            sb = sb + pb[i];
+            i = i + 256;
+        }
+        la[t] = sa;
+        lb[t] = sb;
+        Barrier.workgroup();
+        uint32 stride = 128;
+        while (stride > 0) {
+            if (t < stride) {
+                la[t] = la[t] + la[t + stride];
+                lb[t] = lb[t] + lb[t + stride];
+            }
+            Barrier.workgroup();
+            stride = stride / 2;
+        }
+        if (t == 0) {
+            out[0] = la[0];
+            out[1] = lb[0];
+        }
+    }
+
+    // A dependent FMA loop `iters` long on one thread; its duration is
+    // calibrated at run time so the seam probe can hold a kernel at 5, 50
+    // and 200 us and measure what a launch costs around it.
+    @Kernel
+    public static void spin(KernelBuffer<float32> out, uint32 iters) {
+        // xorshift32: an integer recurrence no optimizer folds to a closed
+        // form (a float FMA chain with constant coefficients was folded).
+        uint32 x = 2463534242;
+        uint32 i = 0;
+        while (i < iters) {
+            x = x ^ (x << 13);
+            x = x ^ (x >> 17);
+            x = x ^ (x << 5);
+            i = i + 1;
+        }
+        if (KernelThread.globalIdX() == 0) {
+            out[0] = (float32) (x & 1023);
+        }
+    }
+}

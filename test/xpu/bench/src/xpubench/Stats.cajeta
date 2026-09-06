@@ -1,0 +1,171 @@
+package xpubench;
+
+import cajeta.collection.Sort;
+import cajeta.lang.String;
+
+/**
+ * The arithmetic behind every row the harness emits (xpu-tile-scheduling
+ * plan 0.1.2): median, min/max noise band, p95, and the A/B/B/A arm order.
+ *
+ * Kept free of any device or process dependency so the gtest can check it
+ * on the CPU backend without a GPU or a subprocess.
+ */
+public final class Stats {
+    private Stats() { }
+
+    /** A sorted COPY of `a[0..n)`; the caller's array is untouched. */
+    public static #float64[] sortedCopy(float64[] a, int32 n) {
+        float64[] s = heap float64[n];
+        int32 i = 0;
+        while (i < n) {
+            s[i] = a[i];
+            i = i + 1;
+        }
+        Sort.sort<float64>(s, n);
+        return s;
+    }
+
+    /** Median of `a[0..n)`; the lower middle for even n, so the value is a
+     *  real sample rather than an interpolation nobody measured. */
+    public static float64 median(float64[] a, int32 n) {
+        if (n <= 0) {
+            return 0.0;
+        }
+        float64[] s #= Stats.sortedCopy(a, n);
+        return s[(n - 1) / 2];
+    }
+
+    /** The p-th percentile (0..100) of `a[0..n)` by nearest-rank. */
+    public static float64 percentile(float64[] a, int32 n, int32 p) {
+        if (n <= 0) {
+            return 0.0;
+        }
+        float64[] s #= Stats.sortedCopy(a, n);
+        int32 rank = (p * n + 99) / 100;      // ceil(p/100 * n)
+        if (rank < 1) {
+            rank = 1;
+        }
+        if (rank > n) {
+            rank = n;
+        }
+        return s[rank - 1];
+    }
+
+    public static float64 min(float64[] a, int32 n) {
+        if (n <= 0) {
+            return 0.0;
+        }
+        float64 m = a[0];
+        int32 i = 1;
+        while (i < n) {
+            if (a[i] < m) {
+                m = a[i];
+            }
+            i = i + 1;
+        }
+        return m;
+    }
+
+    public static float64 max(float64[] a, int32 n) {
+        if (n <= 0) {
+            return 0.0;
+        }
+        float64 m = a[0];
+        int32 i = 1;
+        while (i < n) {
+            if (a[i] > m) {
+                m = a[i];
+            }
+            i = i + 1;
+        }
+        return m;
+    }
+
+    /**
+     * The arm order for `rounds` rounds over `arms` arms: A B B A A B B A ...
+     * (the reflected pattern), so a background load that decays over the
+     * run is spread evenly across arms instead of landing on whichever arm
+     * was always first. Returns the arm index for each slot; `rounds * arms`
+     * entries.
+     */
+    public static #int32[] abbaOrder(int32 arms, int32 rounds) {
+        int32 total = arms * rounds;
+        int32[] order = heap int32[total];
+        int32 slot = 0;
+        int32 r = 0;
+        while (r < rounds) {
+            boolean forward = (r % 2) == 0;
+            int32 k = 0;
+            while (k < arms) {
+                int32 idx = forward ? k : (arms - 1 - k);
+                order[slot] = idx;
+                slot = slot + 1;
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        return order;
+    }
+
+    /** Parse a decimal float64 out of `s` (digits, one optional '.', an
+     *  optional leading '-', an optional exponent). The stdlib has no float
+     *  parser; the harness only reads numbers it printed itself. */
+    public static float64 parseFloat(String s) {
+        int32 n = s.byteLength();
+        int32 i = 0;
+        boolean neg = false;
+        if (i < n && s.byteAt(i) == 45) {          // '-'
+            neg = true;
+            i = i + 1;
+        }
+        float64 v = 0.0;
+        while (i < n && s.byteAt(i) >= 48 && s.byteAt(i) <= 57) {
+            v = v * 10.0 + (float64) (s.byteAt(i) - 48);
+            i = i + 1;
+        }
+        if (i < n && s.byteAt(i) == 46) {          // '.'
+            i = i + 1;
+            float64 scale = 0.1;
+            while (i < n && s.byteAt(i) >= 48 && s.byteAt(i) <= 57) {
+                v = v + scale * (float64) (s.byteAt(i) - 48);
+                scale = scale * 0.1;
+                i = i + 1;
+            }
+        }
+        if (i < n && (s.byteAt(i) == 101 || s.byteAt(i) == 69)) {   // 'e' / 'E'
+            i = i + 1;
+            boolean eneg = false;
+            if (i < n && s.byteAt(i) == 45) {
+                eneg = true;
+                i = i + 1;
+            } else if (i < n && s.byteAt(i) == 43) {
+                i = i + 1;
+            }
+            int32 e = 0;
+            while (i < n && s.byteAt(i) >= 48 && s.byteAt(i) <= 57) {
+                e = e * 10 + (int32) (s.byteAt(i) - 48);
+                i = i + 1;
+            }
+            int32 k = 0;
+            while (k < e) {
+                v = eneg ? v / 10.0 : v * 10.0;
+                k = k + 1;
+            }
+        }
+        return neg ? 0.0 - v : v;
+    }
+
+    /** `v` rounded to `places` decimals, for rows that should not carry
+     *  fifteen digits of noise. */
+    public static float64 round(float64 v, int32 places) {
+        float64 scale = 1.0;
+        int32 i = 0;
+        while (i < places) {
+            scale = scale * 10.0;
+            i = i + 1;
+        }
+        float64 x = v * scale;
+        int64 r = (int64) (x >= 0.0 ? x + 0.5 : x - 0.5);
+        return (float64) r / scale;
+    }
+}

@@ -1,0 +1,192 @@
+package xpubench;
+
+import cajeta.collection.ArrayList;
+import cajeta.io.file.File;
+import cajeta.io.file.Path;
+import cajeta.lang.String;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+
+/**
+ * The idle gate (xpu-tile-scheduling plan 0.1.1): the harness refuses to
+ * measure while another `cajeta_test`, bench, or known GPU client is alive.
+ * Two concurrent sweeps fake timeouts in both, and a decaying background
+ * load has faked a speedup before; a row taken on a busy box is not a row.
+ *
+ * Split in two so it can be tested both ways: {@link #offenders} is pure
+ * (a list of command lines in, the offending ones out) and is what the
+ * gtest drives with an injected list; {@link #liveOffenders} reads the real
+ * process table through `pgrep -af` and is what the harness calls.
+ */
+public final class Gate {
+    private Gate() { }
+
+    /** Substrings of a command line that mark a process this harness must
+     *  not measure beside. Lower-case; matching is case-insensitive. */
+    public static #String[] patterns() {
+        String[] p = heap String[7];
+        p[0] = "cajeta_test";
+        p[1] = "xpubench";
+        p[2] = "gpuparity";
+        p[3] = "schedthroughput";
+        p[4] = "llama-bench";
+        p[5] = "llama-completion";
+        p[6] = "cajeta_llama";
+        return p;
+    }
+
+    static #String lower(String s) {
+        int32 n = s.byteLength();
+        int8[] b = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            int8 c = s.byteAt(i);
+            if (c >= 65 && c <= 90) {
+                c = (int8) (c + 32);
+            }
+            b[i] = c;
+            i = i + 1;
+        }
+        return heap String(#b, n);
+    }
+
+    /**
+     * Which of `lines` (one `pid command...` line each) name a process the
+     * gate refuses to run beside. `selfPid` is excluded so the harness does
+     * not refuse itself; lines whose command is `pgrep` are excluded so the
+     * probe does not see its own reflection.
+     */
+    public static #ArrayList<String> offenders(ArrayList<String> lines, int32 selfPid) {
+        ArrayList<String> hits = heap ArrayList<String>();
+        String[] pats #= Gate.patterns();
+        String selfTag = "" + selfPid + " ";
+        int32 i = 0;
+        while (i < lines.count()) {
+            String line = lines.get(i);
+            i = i + 1;
+            if (line.byteLength() == 0) {
+                continue;
+            }
+            if (line.startsWith(selfTag)) {
+                continue;
+            }
+            String lc #= Gate.lower(line);
+            if (lc.contains("pgrep")) {
+                continue;
+            }
+            int32 k = 0;
+            boolean hit = false;
+            while (k < (int32) pats.count()) {
+                if (lc.contains(pats[k])) {
+                    hit = true;
+                }
+                k = k + 1;
+            }
+            if (hit) {
+                hits.add(line);
+            }
+        }
+        return hits;
+    }
+
+    /** Split `text` on newlines into an owned list of lines. */
+    public static #ArrayList<String> lines(int8[] bytes, int32 len) {
+        ArrayList<String> out = heap ArrayList<String>();
+        int32 start = 0;
+        int32 i = 0;
+        while (i <= len) {
+            if (i == len || bytes[i] == 10) {
+                int32 n = i - start;
+                int8[] copy = heap int8[n];
+                int32 j = 0;
+                while (j < n) {
+                    copy[j] = bytes[start + j];
+                    j = j + 1;
+                }
+                out.add(heap String(#copy, n));
+                start = i + 1;
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /** This process's pid, read from /proc/self. 0 when unreadable. */
+    public static int32 selfPid() {
+        Path self #= Path.of("/proc/self");
+        Path real #= self.canonical();
+        String s #= real.name();
+        if (s.byteLength() == 0) {
+            return 0;
+        }
+        return Integer.parseInt(s);
+    }
+
+    /** Read a whole file through `cat`: procfs and sysfs report a zero size,
+     *  so a size-driven read returns nothing for them. */
+    public static #String catFile(String path) {
+        String[] argv = heap String[2];
+        argv[0] = "cat";
+        argv[1] = path;
+        Command cmd = heap Command(#argv);
+        cmd.captureStdout();
+        cmd.captureStderr();
+        ProcessResult r #= cmd.run();
+        if (!r.launched() || r.code() != 0) {
+            return "" + "";
+        }
+        int8[] out = r.stdout();
+        if (out == null) {
+            return "" + "";
+        }
+        int32 n = (int32) out.count();
+        int8[] copy = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            copy[i] = out[i];
+            i = i + 1;
+        }
+        return heap String(#copy, n);
+    }
+
+    /** The real process table, filtered: every process pgrep reports whose
+     *  NAME matches a pattern, minus this process. Name, not command line:
+     *  the shell that launched this harness carries `xpubench` in its own
+     *  argument list and is not a competitor for the device. */
+    public static #ArrayList<String> liveOffenders() {
+        String[] argv = heap String[3];
+        argv[0] = "pgrep";
+        argv[1] = "-a";
+        argv[2] = "cajeta_test|xpubench|gpuparity|[Ss]ched[Tt]hroughput|llama-bench|llama-completion|cajeta_llama";
+        Command cmd = heap Command(#argv);
+        cmd.captureStdout();
+        ProcessResult r #= cmd.run();
+        if (!r.launched()) {
+            // No pgrep: the gate cannot see, and a gate that cannot see
+            // reports that rather than passing.
+            ArrayList<String> blind = heap ArrayList<String>();
+            blind.add("(idle gate blind: pgrep not launchable)");
+            return blind;
+        }
+        int8[] out = r.stdout();
+        if (out == null) {
+            return heap ArrayList<String>();
+        }
+        ArrayList<String> ls #= Gate.lines(out, (int32) out.count());
+        return Gate.offenders(ls, Gate.selfPid());
+    }
+
+    /** The 1-minute load average, advisory only (printed beside the gate). */
+    public static #String loadAverage() {
+        String s #= Gate.catFile("/proc/loadavg");
+        int32 n = s.byteLength();
+        if (n == 0) {
+            return "" + "?";
+        }
+        int32 i = 0;
+        while (i < n && s.byteAt(i) != 32) {
+            i = i + 1;
+        }
+        return s.substring(0, i);
+    }
+}

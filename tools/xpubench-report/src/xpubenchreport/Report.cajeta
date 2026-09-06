@@ -1,0 +1,360 @@
+package xpubenchreport;
+
+import cajeta.codec.json.Json;
+import cajeta.codec.json.JsonObject;
+import cajeta.codec.json.JsonValue;
+import cajeta.collection.ArrayList;
+import cajeta.io.file.File;
+import cajeta.lang.String;
+
+/**
+ * xpubench-report — turns the harness's JSON rows into the tables of
+ * specs/xpu-tile-scheduling-report.md (xpu-tile-scheduling plan 0.2.3).
+ *
+ *   xpubench-report baseline <rows.jsonl>...
+ *       §3 rows: | Workload | Shape | Device | KPI | Median | Noise band |
+ *       p95 | n | Note |, preceded by one identity line per distinct
+ *       (device, backend, driver, compiler, power mode, date).
+ *
+ *   xpubench-report trial <before.jsonl> <after.jsonl> --id=T-001
+ *       --unit="scheduling U1" --commit=<sha> [--date=ISO]
+ *       §4 rows: one per (workload, shape, KPI, backend) present in both
+ *       files, with delta, the before row's noise band, and a verdict:
+ *       `keep` when the after median is inside the before band or better,
+ *       `worse` when it is outside the band in the bad direction. Better
+ *       is lower for durations and misses, higher for rates.
+ *
+ * Numbers exist once, in the rows; this tool only formats.
+ */
+public final class Report {
+    private Report() { }
+
+    /** One parsed row. Fields mirror the harness's JSON. */
+    public static final class Row {
+        public String workload;
+        public String shape;
+        public String kpi;
+        public String unit;
+        public float64 median;
+        public float64 lo;
+        public float64 hi;
+        public float64 p95;
+        public int64 n;
+        public String device;
+        public String backend;
+        public String driver;
+        public String compiler;
+        public String powerMode;
+        public String date;
+        public String arm;
+        public String note;
+
+        public Row() {
+            this.workload = "";
+            this.shape = "";
+            this.kpi = "";
+            this.unit = "";
+            this.median = 0.0;
+            this.lo = 0.0;
+            this.hi = 0.0;
+            this.p95 = 0.0;
+            this.n = 0;
+            this.device = "";
+            this.backend = "";
+            this.driver = "";
+            this.compiler = "";
+            this.powerMode = "";
+            this.date = "";
+            this.arm = "";
+            this.note = "";
+        }
+
+        public #String identity() {
+            return this.device + " | " + this.backend + " | " + this.driver + " | "
+                + this.compiler + " | " + this.powerMode + " | " + this.date;
+        }
+
+        public #String key() {
+            return this.workload + "|" + this.shape + "|" + this.kpi + "|" + this.backend;
+        }
+    }
+
+    static #String str(JsonObject o, String key) {
+        JsonValue v = o.get(key);
+        if (v == null || v.kind() != JsonValue.STRING) {
+            return "" + "";
+        }
+        return v.asString();
+    }
+
+    static float64 num(JsonObject o, String key) {
+        JsonValue v = o.get(key);
+        if (v == null || v.kind() != JsonValue.NUMBER) {
+            return 0.0;
+        }
+        return v.asFloat64();
+    }
+
+    /** Split `bytes` on newlines, parse each non-empty line as one row. */
+    public static void load(ArrayList<Row> into, int8[] bytes, int32 len) {
+        int32 start = 0;
+        int32 i = 0;
+        while (i <= len) {
+            if (i == len || bytes[i] == 10) {
+                int32 n = i - start;
+                if (n > 1) {
+                    int8[] copy = heap int8[n];
+                    int32 j = 0;
+                    while (j < n) {
+                        copy[j] = bytes[start + j];
+                        j = j + 1;
+                    }
+                    JsonValue v #= Json.parse(copy, (int64) n);
+                    if (v != null && v.kind() == JsonValue.OBJECT) {
+                        JsonObject o = v.object();
+                        Row r = heap Row();
+                        r.workload #= Report.str(o, "workload");
+                        r.shape #= Report.str(o, "shape");
+                        r.kpi #= Report.str(o, "kpi");
+                        r.unit #= Report.str(o, "unit");
+                        r.median = Report.num(o, "median");
+                        r.lo = Report.num(o, "min");
+                        r.hi = Report.num(o, "max");
+                        r.p95 = Report.num(o, "p95");
+                        r.n = (int64) Report.num(o, "n");
+                        r.device #= Report.str(o, "device");
+                        r.backend #= Report.str(o, "backend");
+                        r.driver #= Report.str(o, "driver");
+                        r.compiler #= Report.str(o, "compiler");
+                        r.powerMode #= Report.str(o, "powerMode");
+                        r.date #= Report.str(o, "date");
+                        r.arm #= Report.str(o, "arm");
+                        r.note #= Report.str(o, "note");
+                        into.add(#r);
+                    }
+                }
+                start = i + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    public static #ArrayList<Row> loadFile(String path) {
+        ArrayList<Row> rows = heap ArrayList<Row>();
+        int8[] b #= File.readAllBytes(path);
+        if (b == null) {
+            System.stderr.println("xpubench-report: cannot read " + path);
+            return rows;
+        }
+        Report.load(rows, b, (int32) b.count());
+        return rows;
+    }
+
+    /** A number for a table cell: integers as integers, small values with
+     *  up to three decimals, nothing in exponent form. */
+    public static #String fmt(float64 v) {
+        // Format the magnitude, then restore the sign: an integer whole part
+        // of 0 cannot carry a minus, so -0.395 came out as 0.395 once.
+        float64 a = v < 0.0 ? 0.0 - v : v;
+        String sign = v < 0.0 ? "-" : "";
+        if (a >= 1000000.0) {
+            int64 whole = (int64) a;
+            return sign + whole;
+        }
+        if (a >= 100.0) {
+            int64 tenths = (int64) (a * 10.0 + 0.5);
+            int64 whole = tenths / 10;
+            int64 frac = tenths - whole * 10;
+            return sign + whole + "." + frac;
+        }
+        int64 thou = (int64) (a * 1000.0 + 0.5);
+        int64 whole = thou / 1000;
+        int64 frac = thou - whole * 1000;
+        String pad = frac < 10 ? "00" : (frac < 100 ? "0" : "");
+        if (frac == 0) {
+            return sign + whole;
+        }
+        String s = sign + whole + "." + pad + frac;
+        // trim trailing zeros
+        int32 end = s.byteLength();
+        while (end > 0 && s.byteAt(end - 1) == 48) {
+            end = end - 1;
+        }
+        if (end > 0 && s.byteAt(end - 1) == 46) {
+            end = end - 1;
+        }
+        return s.substring(0, end);
+    }
+
+    static #String cell(String s) {
+        return s.replace("|", "/");
+    }
+
+    /** Lower is better for durations, misses, slowdowns; higher for rates. */
+    public static boolean lowerIsBetter(Row r) {
+        String u = r.unit;
+        if (u.equals("us") || u.equals("ms") || u.equals("bytes")) {
+            return true;
+        }
+        if (r.kpi.contains("missed") || r.kpi.contains("slowdown") || r.kpi.contains("cost")) {
+            return true;
+        }
+        return false;
+    }
+
+    public static int32 baseline(String[] args, int32 from) {
+        ArrayList<Row> rows = heap ArrayList<Row>();
+        int32 a = from;
+        while (a < (int32) args.count()) {
+            ArrayList<Row> part #= Report.loadFile(args[a]);
+            rows.appendAll(part);
+            a = a + 1;
+        }
+        // identity lines, deduplicated in order of first appearance
+        ArrayList<String> seen = heap ArrayList<String>();
+        int32 i = 0;
+        while (i < rows.count()) {
+            Row r = rows.get(i);
+            String id #= r.identity();
+            boolean dup = false;
+            int32 k = 0;
+            while (k < seen.count()) {
+                if (seen.get(k).equals(id)) {
+                    dup = true;
+                }
+                k = k + 1;
+            }
+            if (!dup) {
+                System.stdout.println("Identity: " + id);
+                seen.add(#id);
+            }
+            i = i + 1;
+        }
+        System.stdout.println("");
+        System.stdout.println("| Workload | Shape | Device | KPI | Median | Noise band | p95 | n | Note |");
+        System.stdout.println("|---|---|---|---|---|---|---|---|---|");
+        i = 0;
+        while (i < rows.count()) {
+            Row r = rows.get(i);
+            if (r.unit.equals("pending")) {
+                System.stdout.println("| " + r.workload + " | " + r.shape + " | " + r.backend
+                    + " | " + r.kpi + " | pending | | | | " + Report.cell(r.note) + " |");
+            } else {
+                String med #= Report.fmt(r.median);
+                String lo #= Report.fmt(r.lo);
+                String hi #= Report.fmt(r.hi);
+                String p95 #= r.p95 > 0.0 ? Report.fmt(r.p95) : "" + "";
+                System.stdout.println("| " + r.workload + " | " + r.shape + " | " + r.backend
+                    + " | " + r.kpi + " | " + med + " " + r.unit + " | [" + lo + ", " + hi
+                    + "] | " + p95 + " | " + r.n + " | " + Report.cell(r.note) + " |");
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    static #String opt(String[] args, String key, String dflt) {
+        int32 i = 0;
+        while (i < (int32) args.count()) {
+            String a = args[i];
+            if (a.startsWith(key)) {
+                return a.substring(key.byteLength(), a.byteLength());
+            }
+            i = i + 1;
+        }
+        return "" + dflt;
+    }
+
+    public static int32 trial(String[] args) {
+        // positional: trial <before> <after>; options after
+        int32 pos = 0;
+        String before = "";
+        String after = "";
+        int32 i = 1;
+        while (i < (int32) args.count()) {
+            String a = args[i];
+            if (!a.startsWith("--")) {
+                if (pos == 0) {
+                    before = a;
+                } else if (pos == 1) {
+                    after = a;
+                }
+                pos = pos + 1;
+            }
+            i = i + 1;
+        }
+        if (pos < 2) {
+            System.stderr.println("usage: xpubench-report trial <before.jsonl> <after.jsonl> --id=T-001 --unit=... --commit=...");
+            return 2;
+        }
+        String id #= Report.opt(args, "--id=", "T-???");
+        String unit #= Report.opt(args, "--unit=", "");
+        String commit #= Report.opt(args, "--commit=", "");
+        String date #= Report.opt(args, "--date=", "");
+        ArrayList<Row> b #= Report.loadFile(before);
+        ArrayList<Row> af #= Report.loadFile(after);
+        System.stdout.println("| Trial | Date | Plan / unit | Workload | Device | KPI | Before | After | Delta | Noise band | Commit | Verdict | Note |");
+        System.stdout.println("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+        int32 worse = 0;
+        int32 x = 0;
+        while (x < b.count()) {
+            Row rb = b.get(x);
+            x = x + 1;
+            if (rb.unit.equals("pending")) {
+                continue;
+            }
+            String key #= rb.key();
+            int32 y = 0;
+            while (y < af.count()) {
+                Row ra = af.get(y);
+                y = y + 1;
+                String ka #= ra.key();
+                if (!ka.equals(key) || ra.unit.equals("pending")) {
+                    continue;
+                }
+                float64 delta = ra.median - rb.median;
+                float64 pct = rb.median != 0.0 ? delta / rb.median * 100.0 : 0.0;
+                boolean lower = Report.lowerIsBetter(rb);
+                boolean inside = ra.median >= rb.lo && ra.median <= rb.hi;
+                boolean better = lower ? ra.median < rb.lo : ra.median > rb.hi;
+                String verdict = (inside || better) ? "keep" : "worse";
+                if (verdict.equals("worse")) {
+                    worse = worse + 1;
+                }
+                String dateCell = date.byteLength() > 0 ? date : ra.date;
+                String bm #= Report.fmt(rb.median);
+                String am #= Report.fmt(ra.median);
+                String dm #= Report.fmt(delta);
+                String dp #= Report.fmt(pct);
+                String lo #= Report.fmt(rb.lo);
+                String hi #= Report.fmt(rb.hi);
+                System.stdout.println("| " + id + " | " + dateCell + " | " + unit + " | "
+                    + rb.workload + " [" + rb.shape + "] | " + rb.backend + " | " + rb.kpi
+                    + " | " + bm + " " + rb.unit + " | " + am + " " + ra.unit + " | " + dm + " ("
+                    + dp + "%) | [" + lo + ", " + hi + "] | " + commit + " | " + verdict
+                    + " | " + Report.cell(ra.note) + " |");
+            }
+        }
+        System.stdout.println("");
+        System.stdout.println(worse == 0
+            ? "not-worse: every paired KPI is inside its noise band or better"
+            : "not-worse FAILED: " + worse + " KPI(s) regressed beyond the noise band");
+        return worse == 0 ? 0 : 1;
+    }
+
+    public static int32 main(String[] args) {
+        if (args.count() < 2) {
+            System.stderr.println("usage: xpubench-report baseline <rows.jsonl>... | trial <before> <after> --id= --unit= --commit=");
+            return 2;
+        }
+        String verb = args[0];
+        if (verb.equals("baseline")) {
+            return Report.baseline(args, 1);
+        }
+        if (verb.equals("trial")) {
+            return Report.trial(args);
+        }
+        System.stderr.println("xpubench-report: unknown verb " + verb);
+        return 2;
+    }
+}

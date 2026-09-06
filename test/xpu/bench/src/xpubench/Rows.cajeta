@@ -1,0 +1,91 @@
+package xpubench;
+
+import cajeta.codec.json.JsonWriter;
+import cajeta.io.file.File;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.OpenMode;
+import cajeta.lang.String;
+
+/**
+ * One JSON object per line, one line per (workload, device, KPI) — the
+ * harness's only output (xpu-tile-scheduling plan 0.1.1). The report tool
+ * under tools/xpubench-report turns these into the report's tables; nothing
+ * here formats markdown, so the numbers exist exactly once.
+ *
+ * Every row carries the identity the report's method section requires:
+ * device, backend, driver, compiler commit, power mode, and the arm.
+ */
+public final class Rows {
+    public String path;
+    public String device;
+    public String backend;
+    public String driver;
+    public String compiler;
+    public String powerMode;
+    public String date;
+    public String arm;
+    public int32 written;
+
+    public Rows(#String path) {
+        this.path #= path;
+        this.device = "";
+        this.backend = "";
+        this.driver = "";
+        this.compiler = "";
+        this.powerMode = "";
+        this.date = "";
+        this.arm = "baseline";
+        this.written = 0;
+    }
+
+    /**
+     * Append one row. `median`, `lo`, `hi` are the median and the min/max
+     * noise band over `n` blocks; `p95` is over every sample the blocks saw
+     * (0 when the KPI has no per-sample distribution). `note` carries what a
+     * number alone cannot: the tier that measured it, a caveat, a shape.
+     */
+    public void row(String workload, String shape, String kpi, String unit,
+                    float64 median, float64 lo, float64 hi, float64 p95,
+                    int32 n, String note) {
+        JsonWriter w = heap JsonWriter();
+        w.beginObject();
+        w.key("workload");  w.writeString(workload);
+        w.key("shape");     w.writeString(shape);
+        w.key("kpi");       w.writeString(kpi);
+        w.key("unit");      w.writeString(unit);
+        w.key("median");    w.writeNumber(median);
+        w.key("min");       w.writeNumber(lo);
+        w.key("max");       w.writeNumber(hi);
+        w.key("p95");       w.writeNumber(p95);
+        w.key("n");         w.writeNumber((int64) n);
+        w.key("device");    w.writeString(this.device);
+        w.key("backend");   w.writeString(this.backend);
+        w.key("driver");    w.writeString(this.driver);
+        w.key("compiler");  w.writeString(this.compiler);
+        w.key("powerMode"); w.writeString(this.powerMode);
+        w.key("date");      w.writeString(this.date);
+        w.key("arm");       w.writeString(this.arm);
+        w.key("note");      w.writeString(note);
+        w.endObject();
+        FileWriter f #= File.openWrite(this.path, OpenMode.APPEND);
+        w.writeLineTo(f);
+        f.close();
+        this.written = this.written + 1;
+        System.stdout.println("  row " + workload + " [" + shape + "] " + kpi
+            + " = " + median + " " + unit + "  band [" + lo + ", " + hi + "]"
+            + (p95 > 0.0 ? "  p95 " + p95 : "") + "  n=" + n);
+    }
+
+    /** A row whose value is a single number with no distribution (a count,
+     *  a derived figure). */
+    public void single(String workload, String shape, String kpi, String unit,
+                       float64 value, String note) {
+        this.row(workload, shape, kpi, unit, value, value, value, 0.0, 1, note);
+    }
+
+    /** A row recording that a KPI could NOT be measured here and why; the
+     *  report renders it as pending rather than leaving a silent gap. */
+    public void pending(String workload, String shape, String kpi, String why) {
+        this.row(workload, shape, kpi, "pending", 0.0, 0.0, 0.0, 0.0, 0, why);
+    }
+}

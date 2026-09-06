@@ -1016,6 +1016,11 @@ static void cajeta_xpu_launch_cpu(const char* name,
                                   int32_t specCount, const int32_t* specValues) {
     void* p = __cajeta_xpu_lookup_cpu_kernel(name);
     if (!p) {
+        // Counted like every other dispatch that did not run: this is the
+        // path a kernel the CPU fission declined lands on, and a harness
+        // that checks Device.launchFailures() must see it move (it did not,
+        // and three skipped kernels read as sub-microsecond ones).
+        cajeta_xpu_note_launch_failure();
         fprintf(stderr, "cajeta.xpu: no registered CPU kernel '%s' to launch\n",
                 name);
         return;
