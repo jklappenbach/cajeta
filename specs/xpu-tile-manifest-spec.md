@@ -3,7 +3,7 @@
 **draft** — filed 2026-09-06. The compile-time half of the Tile scheduling
 family. Companion documents: [`xpu-tile-scheduling`](xpu-tile-scheduling-spec.md)
 (the runtime scheduler that consumes the manifest) and
-[`xpu-tile-workload-profiles`](xpu-tile-workload-profiles-spec.md) (the three
+[`xpu-tile-workload-profiles`](xpu-tile-workload-profiles-spec.md) (the four
 client profiles). Research record:
 [`xpu-tile-scheduling-findings`](xpu-tile-scheduling-findings.md). Machine-readable
 shape: [`schemas/tile-manifest-v1.schema.json`](schemas/tile-manifest-v1.schema.json).
@@ -125,10 +125,14 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
   loop bound loaded from a buffer), the field is marked `measured` and the
   runtime substitutes observation.
 - **4.3** When a kernel is a hand kernel (not on the surface), the compiler
-  still derives what it can from buffer accesses and loop bounds, and marks the
-  rest `measured`; the author may supply a `@Cost(flops = …, bytes = …)`
-  declaration, which the manifest records as `declared` and the runtime treats
-  as a prior to be corrected, never as ground truth.
+  still derives what it can from buffer accesses and constant or argument loop
+  bounds, and marks the rest `measured`. There is no author-declared cost: a
+  developer cannot reasonably know it, the corpus shows declared classes are
+  wrong across phases, and one solo run per shape is cheap (§14). The measured
+  cost is reported back to the developer through the profiler (§14.4).
+- **4.3a** When every cost field of a kernel is `measured`, the scheduler is
+  still correct: derived cost expressions shorten warm-up, they are never a
+  requirement (scheduling spec §3.4).
 - **4.4** When matrix-core and vector-ALU operations are both present, the
   manifest keeps them separate; a device's two peaks differ by an order of
   magnitude (A100: 312 vs 19.5 TFLOP/s) and a single FLOP count misclassifies.
@@ -292,9 +296,17 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
 - **12.3** When `cajeta kernel-inspect` (the `kernel-artifact-inspection` spec)
   prints a kernel's resource report, its footprint columns are the manifest's
   §3 fields, so the inspection tool and the scheduler cannot disagree.
-- **12.4** When a manifest is emitted, it is also written as JSON conforming to
-  `schemas/tile-manifest-v1.schema.json` beside the artifact in the build
-  output, so a build can be audited without running it.
+- **12.4** When a manifest is emitted, it is embedded in the artifact it
+  describes — a data section of an `--emit=exe` binary, a member of the `.cja`
+  beside the kernel's device code, in memory for a JIT run — and a JSON copy
+  conforming to `schemas/tile-manifest-v1.schema.json` is written to the build
+  output so a build can be audited without running it. The artifact is never
+  modified after build; nothing at runtime writes to a manifest, and reading
+  one needs no storage.
+- **12.5** When a program runs where no writable storage exists, the manifest
+  is still available (it is in the artifact) and every measured fact is held in
+  memory; the calibration tiers of the scheduling spec §12 say what may be
+  cached or embedded beyond that.
 
 ## 13. Portability corrections carried from the cooperative-tile review
 
@@ -313,7 +325,57 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
 - **13.5** When a `Tile` local is assigned two roles across `mac` calls, the
   compiler reports an error; today the first role silently wins.
 
-## 14. Decisions
+## 14. Developer workflow — how the numbers are produced and shipped
+
+Settled with the developer 2026-09-06. The author declares intent (a stream's
+period, a best-effort mark, a streamed buffer, a variant family) and never a
+quantity; every quantity is derived by the compiler or measured by the runtime,
+and every measured quantity is shown back to the author.
+
+- **14.1 Write.** When a kernel is written on the cooperative surface, its cost
+  is countable and derived; when it is a hand kernel, it starts as `measured`.
+  Intent lives in types (`PeriodicStream`, a `Degradable` variant family, a
+  submission builder), not in annotations sprinkled on launch sites.
+- **14.2 Build.** When `cajeta build` lowers a kernel, it emits the manifest
+  into the artifact (§12.4); `cajeta kernel-inspect` prints it; the IDE shows
+  the same record inline on the `@Kernel` (registers, LDS, wave width, spill as
+  a warning, derived class per target, `measured` where the compiler could not
+  count), and a tile-granularity miss at a launch site is an inspection.
+- **14.3 Test.** When a project pins a kernel's facts, it asserts them from
+  `k.manifest()` in ordinary tests (no spill, restartable, memory-bound on a
+  named target, granularity honored), run in the device-tests leg; the ISA
+  reader's "spilled 0" acceptance in cajeta-llm is the precedent.
+- **14.4 Profile.** When `cajeta profile` runs a program or its bench verb,
+  the summary carries one line per kernel and shape: derived class, achieved
+  fraction of the measured roofline, duration percentile, predictability, and
+  bytes moved; the profiler tool window shows the same as a kernel card, and
+  `profile-run-history` gives the delta between two runs. The scheduler's own
+  outcomes (goodput, per-kernel slowdown, what a frame cut) flow through the
+  same sink into the same view.
+- **14.5 Ship.** When an artifact is built, it carries the manifest and, by
+  default, nothing measured: measurements are device-specific and the language
+  is platform-independent, so every device measures itself (scheduling §12
+  tier 1). The archive never changes after build.
+- **14.6 Embed, opt-in, for fixed hardware.** When a deployment has no
+  writable storage and a fixed target (an appliance, an embedded board, code in
+  EPROM), the developer runs `cajeta calibrate` on that device and passes the
+  resulting snapshot to `cajeta build`, which embeds it as read-only data beside
+  the manifest; at runtime the bundled `CalibrationStore` serves it after
+  validating it against the live device identity (scheduling §12.4c). This is
+  never the default.
+- **14.6a Store, replaceable.** When an application knows where its
+  calibration records should live (a console's save-data API, a flash region,
+  a network cache), it replaces the default `CalibrationStore` module — which
+  implements the platform heuristic — with its own before the first launch
+  (scheduling §12.4a); the discovery class is the only storage mechanism, and
+  the static manifest never goes through it — it is in the artifact.
+- **14.7 Calibrate deliberately.** When `cajeta calibrate` runs, it executes
+  every kernel in the build solo at representative shapes and fills the
+  calibration set without running the application; the shapes come from a
+  previous profile run, or optionally from a static method the kernel's class
+  provides. This is the one optional developer input.
+
+## 15. Decisions
 
 - **D1 — one manifest for every `@Kernel`, richer on the surface.** The
   scheduler must serve hand kernels (cajeta-llm has 183 launch sites) and
@@ -329,18 +391,24 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
   kernel restartable; the compiler proves it from access modes.
 - **D5 — the manifest shares the inspection tool's footprint schema.**
   `kernel-artifact-inspection` §1.2(b) and this spec emit one record.
+- **D6 — no author-declared cost; measured, and reported.** (Developer,
+  2026-09-06.) A developer cannot reasonably know a kernel's cost, and asking
+  creates burden without accuracy. Hand kernels are measured; the profiler
+  reports what was measured (§14.4).
+- **D7 — the manifest lives in the artifact, immutable.** Not a sidecar that
+  can be lost, not a file the runtime rewrites; reading it needs no storage.
+- **D8 — ship nothing measured by default.** The language is platform
+  independent; a binary carries no assumption about the device it lands on. An
+  embedded calibration snapshot is an opt-in build input for fixed-hardware,
+  storage-less targets only (§14.6).
 
-## 15. Open questions
+## 16. Open questions — resolved 2026-09-06
 
-- **O1** Whether `@Cost` declarations on hand kernels are worth having at all,
-  or whether hand kernels should be measured-only. Recommendation: allow it as
-  a prior, record it as `declared`, and let the runtime's window overwrite it.
-- **O2** Whether the JSON manifest should live in the `.cja` archive as well as
-  the build directory, so a published library's kernels arrive with their
-  manifests. Recommendation: yes, under the same path convention as sidecar
-  manifests, but only once the schema is stable at v1.
+- **O1** (author-declared cost) — resolved as D6.
+- **O2** (manifest in the `.cja`) — resolved as D7: the manifest goes wherever
+  the device artifact goes; it is a packaging invariant, not a choice.
 
-## 16. References
+## 17. References
 
 - Research record: [`xpu-tile-scheduling-findings`](xpu-tile-scheduling-findings.md).
 - Corpora: `research/xpu-scheduling/papers/` (Paella instrumentation, Orion

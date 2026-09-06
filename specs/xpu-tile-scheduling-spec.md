@@ -7,7 +7,7 @@
 [`robotics-kernel-scheduling`](archive/robotics-kernel-scheduling-spec.md).
 Companion documents: [`xpu-tile-manifest`](xpu-tile-manifest-spec.md) (what the
 compiler records per kernel) and
-[`xpu-tile-workload-profiles`](xpu-tile-workload-profiles-spec.md) (the three
+[`xpu-tile-workload-profiles`](xpu-tile-workload-profiles-spec.md) (the four
 client profiles this scheduler must serve). Research record with every number's
 source: [`xpu-tile-scheduling-findings`](xpu-tile-scheduling-findings.md).
 
@@ -58,7 +58,7 @@ measured in the findings document:
 - **In:** the submission model; per-submission classification against a
   measured device; the dependency graph derived from access sets; admission and
   co-residency; launch-rate control; compute-unit partitioning where the
-  backend offers it; the three schedule policies and their deadline semantics;
+  backend offers it; the four schedule policies and their deadline semantics;
   graph capture and replay; resident pools as a scheduled resource; the
   feedback loop through the profiler's record sink; the per-device calibration
   set; the backend mechanism ladder.
@@ -93,18 +93,30 @@ measured in the findings document:
 
 ## 2. The submission
 
-- **2.1** When a kernel is launched through the scheduler, the launch site
-  hands the runtime a **value-typed submission**: the kernel, its arguments,
-  geometry (grid and block, or a ragged item list), the target stream or queue
-  class, and the policy fields below. It is never a closure over the launch
-  site (Paella), which also sidesteps the open kernel-launch-in-lambda defect.
+- **2.1** When a kernel is launched, the launch site hands the runtime a
+  **value-typed submission**: the kernel, its arguments, geometry (grid and
+  block, or a ragged item list), the target stream or queue class, and the
+  policy fields below. It is never a closure over the launch site (Paella),
+  which also sidesteps the open kernel-launch-in-lambda defect. **Every launch
+  is a submission** (developer, 2026-09-06): the existing
+  `k.launch(s, grid: …, block: …)(args)` form is a submission with the kernel's
+  default policy and access sets from the manifest, so no existing call site
+  changes; a `KernelSubmission` passed in place of the stream adds what a
+  default cannot know — policy, deadline window, protection, a compute-unit
+  budget, a capture identity, an energy budget.
+- **2.1a** When the seam's own cost is measured, it is within measurement
+  noise for kernels above 100 µs and reported below that; a runtime switch
+  bypasses the scheduler entirely for A/B measurement, and that bypass is the
+  only unscheduled path.
 - **2.2** When a submission is built, its read set, exclusive-write set,
   accumulate set and indirect-bound set are the manifest's parameter modes
   bound to the actual buffer handles; the author does not restate them.
 - **2.3** When a submission names a policy, it is one of `throughput`,
-  `latency`, or `frameBudget`; `latency` and `frameBudget` carry a deadline
-  window `(earliest, latest)` in the host clock; a submission with no policy
-  takes the kernel's manifest default, else `throughput`.
+  `latency`, `frameBudget`, or `energy`; `latency` and `frameBudget` carry a
+  deadline window `(earliest, latest)` in the host clock; `energy` carries a
+  joules-per-period budget on a periodic stream and is evaluated as a
+  constraint alongside that stream's deadline (§8.7); a submission with no
+  policy takes the kernel's manifest default, else `throughput`.
 - **2.4** When a submission is protected (`latency`, `frameBudget`, or an
   explicit protected bit), no scheduling action may defer or throttle it; when
   it is best-effort, every control in §6–§8 may act on it.
@@ -118,9 +130,9 @@ measured in the findings document:
   and the per-item reservation it needs; admission checks the pool before the
   device.
 - **2.8** When a submission is made and the manifest for `(kernel, active
-  target)` is missing, the launch proceeds unscheduled on the direct path with a
-  diagnostic; the direct `k.launch(...)` path remains available and is what
-  unscheduled launches use.
+  target)` is missing, the launch proceeds as an unclassified submission — no
+  co-residency, `throughput` semantics, measured from its first run — with a
+  diagnostic; there is no separate direct path (§2.1a).
 - **2.9** When a submission is rejected (unmeetable deadline §8.2.3, pool
   exhaustion §10.4, oversubscribed device §5.7), the rejection is returned to
   the caller with a reason; it is never silently dropped or silently run late.
@@ -475,6 +487,38 @@ measured in the findings document:
   utilization sampling window is at most 10 ms, because load peaks last tens
   of milliseconds.
 
+### 8.7 `energy`
+
+Decided in v1 by the developer (2026-09-06). Three of the thirteen edge
+schedulers surveyed treat energy as a hard constraint, not a weighted term;
+one reached 4.6× lower energy at equal latency (630 → 136 mJ at 25 ms); about
+half of an AI workload's energy is off-chip traffic, so ordering changes
+energy at fixed work; and precision is the steepest lever measured (0.22 pJ per
+multiply-add at 3-bit versus 1.76 at 8-bit).
+
+- **8.7.1** When a periodic stream declares `energy(joulesPerPeriod)`, the
+  runtime estimates each submission's energy from the calibration set's
+  measured picojoules-per-operation table by precision (§12.7), the manifest's
+  bytes moved and stored widths, and the device's measured base power, and
+  admits a period's schedule only if the estimate fits the budget alongside
+  the stream's deadline; energy is a constraint, never a weighted objective.
+- **8.7.2** When the budget cannot be met, the runtime degrades by variant
+  family first (precision before rate — profiles spec §6.2), then by the rate
+  ladder, and reports each step; it never silently exceeds the budget.
+- **8.7.3** When ordering is free of deadline pressure, the runtime prefers
+  the order that minimizes off-chip traffic: consumers placed directly after
+  their producers, captured chains over discrete launches, streaming loads
+  marked non-temporal.
+- **8.7.4** When the device's power mode changes, the picojoule table and
+  every duration record are re-derived (§12.4b); a table captured at one mode
+  is wrong at another.
+- **8.7.5** When power is not readable on a device, the `energy` policy
+  reports itself unavailable once and behaves as `frameBudget` for that
+  stream; it is never a silent no-op.
+- **8.7.6** When energy outcomes are reported, they are joules per period and
+  per work item, through the profiler summary (§11.7), beside the latency
+  figures.
+
 ## 9. Capture and replay
 
 - **9.1** When a sequence of capture-safe submissions (manifest §8.3) repeats
@@ -560,6 +604,11 @@ measured in the findings document:
   occupancy).
 - **11.6** When a utilization figure is printed, the definition used
   (accelerator-only, host-inclusive, combined) is stated with the number.
+- **11.7** When the profiler summary is printed, it carries one line per
+  kernel and shape from the calibration set: derived class, achieved fraction
+  of the measured roofline, duration percentile, predictability, bytes moved —
+  so a developer sees what the scheduler inferred and fixes a kernel that
+  measures badly instead of describing it (manifest spec §14.4).
 
 ## 12. The calibration set — per device, measured, persisted
 
@@ -577,16 +626,56 @@ measured in the findings document:
 - **12.3** When a kernel is first co-run, its scaling knee (§7.3) and its
   sensitivity to last-level-cache pressure are measured and stored under its
   manifest identity.
-- **12.4** When the set is persisted, it is keyed by device identity, driver
-  version, compiler version and **power mode**, and read on the next run; the
-  shipped `DeviceProfile` (per-process, unpersisted) is extended to hold it
-  rather than replaced. A cost table captured at one power mode is wrong by
-  2.1× at another (cuRobo: the same twenty kernels ran 316 µs at 60 W and
-  662 µs at 15 W on Orin), so a power-mode change invalidates the set.
+- **12.4** When the calibration set is held, its source of truth is **memory**
+  (tier 1): every process measures each shape once, solo, and schedules from
+  that; this works with no writable filesystem, in a sandbox, in a notebook
+  session, on an embedded target. The shipped `DeviceProfile` (per-process,
+  unpersisted) is extended to hold it rather than replaced.
+- **12.4a** When calibration records leave memory, they do so only through a
+  **`CalibrationStore`**, the I/O module — the single mechanism (developer,
+  2026-09-06: "a discovery class is the only way to go"). The interface has
+  three operations: load a record by key, store a record by key, and report
+  whether the store is writable. Memory is the scheduler's own state, not a
+  store; the store is where records come from at startup and go to when
+  measured. An application **replaces** the default module with its own before
+  the first launch when it knows its platform better than the runtime does (a
+  console's save-data API, a flash region, a shared network cache). No
+  environment variable or property name is part of the contract; a module that
+  wants one reads it itself.
+- **12.4b** When no module is installed, the **default module implements the
+  heuristic**: it first serves read-only records embedded in the artifact at
+  build (§12.4c) if any, then probes the platform's user cache convention once
+  for writability (the XDG cache directory or `~/.cache` on Linux, local
+  application data on Windows, the user caches directory on macOS — never the
+  artifact store, which is a content-addressed registry, and never `/tmp`) and
+  reports itself read-only or absent if nothing is writable. Records are keyed
+  by manifest hash, device identity, driver version, compiler version and
+  **power mode**; a mismatched or corrupt record is ignored; a failed store
+  never fails the program; writes are deferred, atomic and bounded; the cache
+  is disposable because measurement regenerates it. A cost table captured at
+  one power mode is wrong by 2.1× at another (cuRobo: the same twenty kernels
+  ran 316 µs at 60 W and 662 µs at 15 W on Orin), so a power-mode change
+  invalidates the record.
+- **12.4c** When a deployment has no writable storage and a fixed target
+  (opt-in), a snapshot produced by `cajeta calibrate` on that device is
+  embedded by `cajeta build` as read-only data beside the manifest and served
+  by the default module; at runtime it is validated against the live device
+  identity and discarded on mismatch, leaving memory alone. **The default
+  ships nothing measured** (developer, 2026-09-06): the language is platform
+  independent, and a binary carries no assumption about the device it lands on.
+- **12.4d** When the module faults, the scheduler isolates it, disables it,
+  reports it once, and continues from memory (the profiler's sink discipline,
+  §5.6.5 there); no store operation sits on the launch path.
 - **12.6** When the set is first built, it includes a two-point occupancy
   headroom probe (a solver-shaped chain at 4 and at 48 concurrent units) so the
   runtime knows whether co-running is viable on this device at all: the probe
   cost 8 ms on a 4090 and 417 ms on an Orin at 15 W (cuRobo).
+- **12.7** When power is readable, the set includes a **picojoules-per-
+  operation table by precision** (matrix-core and vector paths at each stored
+  width the backend supports, plus per-byte off-chip traffic cost), measured
+  by sampling power under a synthetic kernel family, and the device's base
+  power; the sampling latency of the power source (10–100 ms on `rocm-smi` and
+  NVML) is recorded with it so §8.7's estimates carry their own uncertainty.
 - **12.5** When the number the AMD arc measured (a 2.2 µs in-stream launch gap
   on gfx1151) and the number the profiler measured on Ada (~8 µs per probe
   submit) are compared, they are first made commensurable by measuring both
@@ -640,6 +729,11 @@ relied on.
 | Co-run penalty on the protected task | +230 % unpartitioned; +75 % time-sliced; +3 % at 90/10; +46 % at 50/50 | manipulation study (Orin) |
 | Yield-check spacing | 10–50 µs of work | derived (§8.4.6) |
 | Cost-history window | 5 samples; utilization sampled at ≤ 10 ms | DARIS; manipulation study |
+| Energy per multiply-add by precision | 0.22 pJ at 3-bit; 1.76 pJ at 8-bit (8×) | edge-robotics energy survey |
+| Share of energy in off-chip traffic | ~50 % | edge-robotics energy survey |
+| Energy-constrained scheduling, achievable | 4.6× lower at equal latency (630 → 136 mJ, 25 ms) | Map-and-Conquer (edge SoC) |
+| Power-mode cost shift | 2.1× (60 W → 15 W, same kernels) | cuRobo (Orin) |
+| Power sampling latency | 10–100 ms | `rocm-smi`, NVML |
 | Protected p99 under co-run | ≤ 15 % over solo (measured 9–22 %) | Orion (V100/A100), REEF (MI50) |
 | Frame time under co-run | ≤ 10 % over solo | TGS |
 | Best-effort outstanding work | ≤ 2.5 % of protected budget | Orion |
@@ -656,10 +750,15 @@ relied on.
 ## 15. Integration
 
 - **15.1** When the cooperative-tile seams are adopted, `KernelSubmission`
-  gains the fields of §2 and loses author-filled footprint; `Scheduler.submit`
-  becomes the scheduled launch path rather than a record-and-return; the
-  `KernelResourceDescriptor` it returns is the manifest bound to the
-  submission; `SchedulePolicy` and `ArithmeticCharacter` keep their ordinals.
+  gains the fields of §2 and loses author-filled footprint; every launch goes
+  through the scheduler (§2.1) and `Scheduler.submit` is the explicit form of
+  the same path; the `KernelResourceDescriptor` it returns is the manifest
+  bound to the submission; `SchedulePolicy` keeps its ordinals and appends
+  `Energy` as 3; `ArithmeticCharacter` keeps its ordinals and becomes a hint.
+- **15.6** When the Vulkan backend is scheduled, the wait-idle-per-dispatch
+  fix (`vulkan-dispatch-serialization`) ships first as its own plan; this
+  arc's Vulkan unit then builds multiple queues, timeline semaphores and
+  pre-recorded submission on top of it (developer, 2026-09-06).
 - **15.2** When cajeta-llm's request scheduler (`dev.cajeta.llm.sched.Scheduler`,
   continuous batching with chunked prefill) runs on this scheduler, it remains
   the request-level policy and becomes a client: each iteration it assembles is
@@ -687,7 +786,10 @@ relied on.
    backend cannot meet it, that backend runs without notifications and §6.8
    degrades to duration prediction.
 5. **Power readability.** `rocm-smi` and NVML sample at 10–100 ms; the power
-   channel is coarse and may be unavailable in CI.
+   channel is coarse and may be unavailable in CI. With `energy` in v1 this
+   is now a first-order risk: the picojoule table's error bounds are part of
+   the calibration set (§12.7) and the policy declares itself unavailable
+   rather than guessing (§8.7.5).
 6. **The APU interaction.** Host-side overlap steals GPU clock on a shared
    package budget (Nexus's 7.4× lever meets iGniter's power channel); no paper
    measures it, and it is an early experiment.
@@ -717,30 +819,44 @@ relied on.
 - **D9 — the kernel gap catalog is retired.** Kernel families each profile
   needs are listed in the profiles spec without a status column; status lives
   in the specs that build them.
+- **D10 — measured, in memory, nothing shipped by default.** (Developer,
+  2026-09-06.) No author-declared cost anywhere; the calibration set's source
+  of truth is memory; a cache and an embedded snapshot are accelerators, the
+  latter opt-in for fixed hardware only.
+- **D12 — every launch is a submission.** (Developer, 2026-09-06.) No
+  separate direct path; the existing launch form is a default-policy
+  submission; a bypass switch exists for measurement only.
+- **D13 — Vulkan is split.** (Developer, 2026-09-06.) The serialization fix
+  ships first on its own; this arc owns the queue model on top of it.
+- **D14 — `energy` is a v1 policy.** (Developer, 2026-09-06.) A joules-per-
+  period constraint on periodic streams, from a measured picojoule table by
+  precision; precision degrades before rate; unavailable where power is not
+  readable, never a silent no-op.
+- **D15 — validation order is ML, then simulation, then game.** (Developer,
+  2026-09-06.)
+- **D11 — one storage mechanism: the `CalibrationStore` I/O module.**
+  (Developer, 2026-09-06.) The default module implements the heuristic
+  (bundled snapshot, then platform cache); an application replaces it with a
+  custom module. Memory is the scheduler's state, not a store. No environment
+  variable or property name is a runtime contract.
 
 ## 18. Open questions for the developer
 
-- **O1 Persistence of the calibration set.** `DeviceProfile` is per-process.
-  Recommendation: persist under the user's cajeta home keyed as §12.4, with an
-  environment override for CI.
-- **O2 Scheduled-launch spelling.** Whether `k.launch(sub)(args)` or
-  `Scheduler.submit(k, sub)(args)`; both need compiler support for the
-  value-typed descriptor. Recommendation: the former, mirroring the existing
-  launch form.
-- **O3 Vulkan queue work ownership.** Whether multi-queue and timeline
-  semaphores are units of this arc or of `vulkan-dispatch-serialization`.
-  Recommendation: this arc owns the queue model; that filing becomes its first
-  Vulkan unit.
-- **O4 Power and energy as inputs.** The robotics corpus treats energy as a
-  hard constraint per period (three of thirteen edge schedulers; one reached
-  4.6× lower energy at equal latency), and about half of an AI workload's energy
-  is off-chip traffic, so ordering changes energy at fixed work. Recommendation:
-  measure and record power in v1, act on droop only for the `frameBudget`
-  policy on the 4090, and reserve an `energy(joulesPerPeriod)` policy value
-  without implementing it.
-- **O5 Validation order.** Recommendation: the ML profile first (both machines,
-  cabra and cajeta-llm exist as clients), then simulation (CPU-testable
-  end-to-end), then game (blocked on Vulkan queue work).
+- **O1 Persistence of the calibration set — resolved 2026-09-06** as the
+  `CalibrationStore` I/O module of §12.4a–12.4d: memory is the scheduler's
+  state; the default module implements the heuristic (embedded read-only
+  snapshot when built in, then the platform cache when writable) and an
+  application replaces it with a custom module; the discovery class is the
+  only mechanism and no environment or property name is part of the contract.
+  Nothing measured ships by default.
+- **O2 Scheduled-launch spelling — resolved 2026-09-06** as D12: every launch
+  is a submission; the existing form is the default-policy case.
+- **O3 Vulkan queue work ownership — resolved 2026-09-06** as D13: the
+  serialization fix first as its own plan, then this arc's Vulkan unit.
+- **O4 Power and energy — resolved 2026-09-06** as D14: the `energy` policy
+  is implemented in v1 (§8.7, §12.7), not reserved.
+- **O5 Validation order — resolved 2026-09-06** as D15: ML, then simulation,
+  then game.
 
 ## 19. References
 

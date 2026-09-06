@@ -1,7 +1,7 @@
-# Spec: Tile workload profiles — game rendering, multimodal ML, engineering simulation (`xpu-tile-workload-profiles`)
+# Spec: Tile workload profiles — game rendering, multimodal ML, ML training at scale, engineering simulation (`xpu-tile-workload-profiles`)
 
 **draft** — filed 2026-09-06. The client half of the Tile scheduling family:
-what each of the three workload classes the scheduler must serve looks like as
+what each of the four workload classes the scheduler must serve looks like as
 a stream of submissions, which policies it uses, what it needs from the
 manifest ([`xpu-tile-manifest`](xpu-tile-manifest-spec.md)) and the scheduler
 ([`xpu-tile-scheduling`](xpu-tile-scheduling-spec.md)), and the witness
@@ -16,17 +16,19 @@ Research record: [`xpu-tile-scheduling-findings`](xpu-tile-scheduling-findings.m
 
 A scheduler validated on one workload becomes that workload's scheduler. The
 cooperative-tile arc learned this and demanded two clients from day one; this
-family demands three, chosen because they pull in different directions: a
+family demands four, chosen because they pull in different directions: a
 renderer wants a fixed period and determinism, a multimodal ML stack wants
-throughput for one model and latency for two others on the same device, and a
-simulation wants thousands of identical steps with nothing dropped. Each
+throughput for one model and latency for two others on the same device, a
+training job wants every matrix core busy for hours with a second job
+harvesting the gaps, and a simulation wants thousands of identical steps with
+nothing dropped. Each
 profile below is a set of conformance requirements the scheduler must meet, a
 list of what the profile needs the manifest to carry, and the witness pipeline
 that measures it.
 
 ### 1.2 Scope
 
-- **In:** the three profiles; their kernel-class tables; their deadline and
+- **In:** the four profiles; their kernel-class tables; their deadline and
   batching models; their resident-state needs; the witness pipelines and
   budgets; the cross-profile conformance rules; how the retired robotics
   profile's multi-rate model folds in.
@@ -307,6 +309,119 @@ hardest.
   serialized step and the gradient buffers are bit-identical to the serialized
   run.
 
+## 3A. ML training at scale
+
+Added as a fourth profile by the developer (2026-09-06). The kernel-level
+rules of §3.8 apply unchanged; this section adds the profile: the shape of a
+training step, its memory discipline, its overlap opportunities, its
+multi-job behavior, and its witness. Distribution across devices belongs to
+`cajeta-ml-dist`; this profile schedules one device's share of a training job
+and treats collectives as submissions on a queue.
+
+### 3A.1 Shape
+
+A step is forward, backward, and an optimizer update, repeated with fixed
+shapes for the life of a run. The backward carries about 2.5× the forward's
+operations (five matmuls against two in attention alone), parallelizes on a
+different axis, and accumulates into gradient buffers. Activations live from
+the forward into the backward unless recomputed; the optimizer is a pure
+streaming pass over every parameter, memory-bound and dependency-free.
+Realistic efficiency runs from 30 % of peak on a single device baseline to
+about 72 % model-FLOP utilization with a fully fused attention path
+(Megatron, FlashAttention-2), so the profile's KPI is achieved fraction of the
+measured matrix-core peak per step, not occupancy.
+
+### 3A.2 Kernel classes
+
+| Kernel | Class | Notes |
+|---|---|---|
+| Forward GEMMs, attention | compute-bound at training batch | static shapes; capture |
+| Backward GEMMs | compute-bound | `accumulate` writes into gradients |
+| Backward attention | compute-bound; atomic `dQ` | never co-run two accumulators |
+| Recompute of checkpointed activations | compute-bound | a scheduled launch, never free |
+| Norm, activation, dropout, residual | memory-bound | duplicate rather than synchronize |
+| Loss and logits | compute then memory | fuse cross-entropy into the logit GEMM |
+| Gradient reduction or transfer | interconnect-bound | issued per parameter as it completes |
+| Optimizer step | memory-bound, one fused launch | ~24 bytes per parameter per step; ~120 ms per 1B parameters at 200 GB/s |
+| Data loading and host transfer | transfer-bound | pipelined a stage ahead (PipeSwitch) |
+
+### 3A.3 Memory discipline
+
+- **3A.3.1** When activations are live into the backward, the manifest marks
+  the intermediate so (manifest §4), and fusion across that boundary is
+  refused; when a layer is checkpointed, the recompute launch is scheduled
+  with its own cost and reservation.
+- **3A.3.2** When a job must be suspended or switched (a second job, a
+  validation phase), the switch happens at the iteration's memory minimum, and
+  the resident state copied is an order of magnitude smaller than the
+  iteration's peak allocation (Salus, Gandiva).
+- **3A.3.3** When parameters, optimizer state, gradients and activations are
+  allocated, they are resident pools (scheduling §10) sized once at job start;
+  no driver allocation occurs on the step path.
+- **3A.3.4** When the device shares memory with the host, no device-to-host
+  spill path is built; the allocator's retained cache is bounded instead
+  (AntMan and TGS on an APU).
+
+### 3A.4 Overlap
+
+- **3A.4.1** When a parameter's gradient completes, its reduction or transfer
+  is submitted immediately on a queue that runs concurrently with the next
+  backward kernel (Megatron's rule); the scheduler tracks per-parameter
+  readiness through the access sets.
+- **3A.4.2** When the optimizer step runs, it is one fused multi-tensor launch
+  and the preferred co-run partner of the next layer's backward GEMM, since the
+  two are opposite-class by construction.
+- **3A.4.3** When the next micro-batch's inputs are transferred, the transfer
+  overlaps the current micro-batch's compute at a grouping whose fixed cost is
+  under a configured fraction of the group's compute time; on unified memory
+  the stage is elided.
+- **3A.4.4** When a memory-bound elementwise op sits between partitioned
+  GEMMs, it is duplicated rather than synchronized around.
+- **3A.4.5** When gradients are accumulated across micro-batches, the
+  accumulate writes serialize per buffer and the step's dependency graph stays
+  one captured chain per micro-batch.
+
+### 3A.5 Multi-job behavior
+
+- **3A.5.1** When a training job is protected and an opportunistic job shares
+  the device, the opportunistic job's launch rate is regulated against the
+  protected job's iteration period (scheduling §6), and the protected job stays
+  within 10 % of its solo throughput (TGS measured 89–95 % of exclusive; AntMan
+  within 4 % of it).
+- **3A.5.2** When a protected job's phases change demand (train, validate,
+  host-only), the controller re-allocates within one control interval of the
+  transition.
+- **3A.5.3** When two high-occupancy training kernels would co-run
+  unregulated, they are interleaved instead (Gandiva's measured −11 to −16 %
+  from unregulated packing).
+
+### 3A.6 Shape and determinism
+
+- **3A.6.1** When a vocabulary or hidden dimension is chosen, it is padded to
+  the manifest's tile granularity (Megatron: a multiple of 128).
+- **3A.6.2** When launches are reordered, each kernel draws from the RNG
+  stream identity its manifest names; dropout inside a partitioned region
+  draws differently per partition, outside it identically.
+- **3A.6.3** When a step is replayed as a captured graph and the accumulation
+  order is fixed, gradients are bit-identical between live and captured runs;
+  when the order is not fixed, the tolerance is declared, never discovered.
+
+### 3A.7 Witness
+
+- **3A.7.1** When the training witness runs, it is a four-layer transformer
+  block training step (bf16 compute, fp32 master weights, activation
+  checkpointing on two layers) with a fused optimizer, on AMD and CPU from one
+  source, using `cajeta-ml`'s training core as the client.
+- **3A.7.2** When the witness is measured, the step with optimizer co-run and
+  gradient-ready reductions beats the serialized step, achieved matrix-core
+  fraction per step is reported, gradients are bit-identical to the serialized
+  run under a fixed accumulation order, and the captured step matches the live
+  step.
+- **3A.7.3** When the multi-job witness runs, a protected training job
+  co-runs with an opportunistic inference stream; the protected job's
+  iteration period stays within 10 % of solo and the uncontrolled baseline is
+  recorded alongside.
+
 ## 4. Engineering compute simulation
 
 ### 4.1 Shape
@@ -440,9 +555,10 @@ be dropped, kernels are usually not idempotent, and some deployments
   spec that builds the family owns its status (`xpu-scan-primitive`,
   cajeta-llm, and future specs).
 - **5.3** When two profiles are resident in one process (a game with an ML
-  NPC, a simulation with a visualizer), the highest-criticality stream's policy
-  governs admission and the rest fill best-effort; the scheduler composes
-  profiles, it does not select one.
+  NPC, a simulation with a visualizer, a training job with an inference
+  stream), the highest-criticality stream's policy governs admission and the
+  rest fill best-effort; the scheduler composes profiles, it does not select
+  one.
 - **5.4** When a profile's budget in scheduling §14 is re-measured on a
   reference device, the profile's witness pins the new number and the table is
   updated with the source.
@@ -469,33 +585,40 @@ rest is deferred:
   level down.
 - **6.3** Engine-affinity placement across GPU, NPU and real-time CPU cores is
   deferred to `npu-target-support`; the scheduler places on one device.
-- **6.4** An energy governor (precision, rate, DVFS) is deferred; power is
-  measured and recorded in v1 (scheduling O4).
+- **6.4** The energy governor is the `energy` policy of scheduling §8.7,
+  decided into v1 (developer, 2026-09-06): a joules-per-period constraint on a
+  periodic stream, degrading precision before rate. Any profile's periodic
+  stream may declare it — a mobile-class frame stream, a battery-bound speech
+  pipeline, an edge simulation step.
 
 ## 7. Decisions
 
-- **D1 — three profiles, each with a measured witness on two backends.**
+- **D1 — four profiles, each with a measured witness on two backends.**
+  (Developer, 2026-09-06: training at scale added as the fourth.)
 - **D2 — the game profile is compute-side.** Raster interop is deferred; the
   frame discipline and the compute passes are the deliverable.
-- **D3 — the ML witness is the first built** (scheduling O5): both reference
+- **D3 — the ML witness is the first built** (scheduling D15): both reference
   devices, and cajeta-llm and cabra exist as clients.
 - **D4 — cajeta-llm's request scheduler is a client, not a casualty.** Its
   policies stay; its iterations become ragged submissions.
 - **D5 — robotics is folded, not kept.** Its model survives as the deadline
-  streams; engine affinity and energy wait for their own arcs.
+  streams and the `energy` policy; engine affinity waits for
+  `npu-target-support`.
+- **D6 — the speech witness is synthetic first.** (Developer, 2026-09-06.) A
+  vocoder-shaped bandwidth-bound periodic stream beside cajeta-llm decode; a
+  real STT/TTS model replaces it when a speech client exists.
+- **D7 — the game witness runs on HIP streams first.** (Developer,
+  2026-09-06.) The frame discipline is backend-independent; the Vulkan re-run
+  follows the queue unit.
+- **D8 — training at scale is a profile, with `cajeta-ml`'s training core as
+  its client.** (Developer, 2026-09-06.) Distribution stays with
+  `cajeta-ml-dist`.
 
-## 8. Open questions for the developer
+## 8. Open questions — resolved 2026-09-06
 
-- **O1** Whether the speech witness should be a real STT/TTS model (there is
-  no cajeta speech engine today) or the synthetic bandwidth-bound periodic
-  stream proposed in §3.9.1. Recommendation: synthetic first, real when a
-  speech client exists.
-- **O2** Whether the game witness should wait for Vulkan multi-queue or run on
-  HIP streams first. Recommendation: HIP first; the frame discipline is
-  backend-independent and the Vulkan queue work is a separate unit.
-- **O3** Whether a fourth profile (data-science or `cajeta-ml` training at
-  scale) is wanted now. Recommendation: no; the training rules in §3.8 cover
-  the kernel-level needs and `cajeta-ml-dist` owns distribution.
+- **O1** (speech witness) — resolved as D6.
+- **O2** (game witness backend) — resolved as D7.
+- **O3** (fourth profile) — resolved as D8: training at scale, §3A.
 
 ## 9. References
 

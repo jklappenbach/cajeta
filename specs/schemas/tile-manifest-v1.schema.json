@@ -113,14 +113,7 @@
         "policy": { "enum": ["throughput", "latency", "frameBudget"] },
         "characterHint": { "enum": ["computeBound", "memoryBound"] },
         "power": { "enum": ["normal", "high"] },
-        "protection": { "enum": ["protected", "bestEffort", "unspecified"] },
-        "declaredCost": {
-          "type": "object",
-          "properties": {
-            "flops": { "$ref": "#/$defs/costExpr" },
-            "bytes": { "$ref": "#/$defs/costExpr" }
-          }
-        }
+        "protection": { "enum": ["protected", "bestEffort", "unspecified"] }
       }
     }
   },
@@ -129,7 +122,7 @@
       "type": "object",
       "required": ["kind"],
       "properties": {
-        "kind": { "enum": ["expr", "measured", "declared"] },
+        "kind": { "enum": ["expr", "measured"], "description": "expr = derived by the compiler; measured = the runtime fills it from observation. There is no author-declared cost (spec D6)." },
         "expr": { "type": "string", "description": "Arithmetic over parameter names and tile constants, e.g. '2*T*d*k' or 'blocksPerRow*17'" },
         "params": { "type": "array", "items": { "type": "string" } }
       }
