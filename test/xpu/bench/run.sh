@@ -175,8 +175,12 @@ run_leg() {   # $1 = backend (hip|cpu), $2 = binary, $3.. = harness flags
     fi
     echo "[xpubench] leg $backend -> $rows"
     [[ "${KEEP_ROWS:-0}" == "1" ]] || rm -f "$rows"
-    CAJETA_XPU_BACKEND="$backend" "$OUT/$bin" --out="$rows" --compiler="$COMMIT" \
-        --driver="$driver" --date="$DATE" "${llmflags[@]}" "$@" "${EXTRA[@]}"
+    # SPANS_ONLY=1 (with KEEP_ROWS=1 and the leg's DATE/STAMP) re-runs just
+    # the profiled passes of the listed workloads and appends their rows.
+    if [[ "${SPANS_ONLY:-0}" != "1" ]]; then
+        CAJETA_XPU_BACKEND="$backend" "$OUT/$bin" --out="$rows" --compiler="$COMMIT" \
+            --driver="$driver" --date="$DATE" "${llmflags[@]}" "$@" "${EXTRA[@]}"
+    fi
     # the profiled passes: device spans → rows the host clock cannot give
     if [[ "${SPANS:-1}" == "1" ]]; then
         span_passes "$backend" "$bin" "$rows" "$driver"

@@ -59,14 +59,14 @@ public final class Workloads {
     static void kernelRows(Rows rows, String name, String shape, String kclass,
                            float64[] iso, int32 isoN, float64[] isoBlocks, int32 isoB,
                            float64[] pipeBlocks, int32 pipeB, int64 bytes, int64 flops,
-                           int64 failures) {
+                           int64 failures, int32 pipePer) {
         // What one iteration of this workload launches, with multiplicity,
         // and how many iterations this run issued (warm-up + isolated +
         // pipelined): the `spans` verb of xpubench-report pairs a profiled
         // pass's per-kernel device spans with exactly these (plan 0.2.4).
         String names = name.equals("dot") ? "dot,finalSum2"
             : (name.equals("reduceSum") ? "reduceSum,finalSum2" : "" + name);
-        int32 iterations = 1 + isoN + pipeB * Workloads.pipeCount;
+        int32 iterations = 1 + isoN + pipeB * pipePer;
         rows.single("kernel." + name, shape, "launches", "iterations", (float64) iterations, names);
         if (failures > 0) {
             // The runtime prints one stderr line per launch it could not run and
@@ -171,7 +171,7 @@ public final class Workloads {
         int64 bytes = (int64) n * 12;          // read x, read y, write y
         Workloads.kernelRows(rows, "saxpy", shape, "memory-bound", iso, isoN, isoB,
                              Workloads.blocks, pipeB, Workloads.blocks, bytes, (int64) n * 2,
-                             Device.launchFailures() - f0);
+                             Device.launchFailures() - f0, Workloads.pipeCount);
     }
 
     // ── dot ──────────────────────────────────────────────────────────────
@@ -232,7 +232,7 @@ public final class Workloads {
         s.destroy();
         Workloads.kernelRows(rows, "dot", shape, "memory-bound+reduce", iso, isoN, isoB,
                              Workloads.blocks, pipeB, Workloads.blocks, (int64) n * 8, (int64) n * 2,
-                             Device.launchFailures() - f0);
+                             Device.launchFailures() - f0, Workloads.pipeCount);
     }
 
     // ── stencil5 ─────────────────────────────────────────────────────────
@@ -287,7 +287,7 @@ public final class Workloads {
         s.destroy();
         Workloads.kernelRows(rows, "stencil5", shape, "memory-bound", iso, isoN, isoB,
                              Workloads.blocks, pipeB, Workloads.blocks, (int64) n * 8, (int64) n * 8,
-                             Device.launchFailures() - f0);
+                             Device.launchFailures() - f0, Workloads.pipeCount);
     }
 
     // ── reduceSum ────────────────────────────────────────────────────────
@@ -346,7 +346,7 @@ public final class Workloads {
         s.destroy();
         Workloads.kernelRows(rows, "reduceSum", shape, "sync-bound", iso, isoN, isoB,
                              Workloads.blocks, pipeB, Workloads.blocks, (int64) n * 4, (int64) n,
-                             Device.launchFailures() - f0);
+                             Device.launchFailures() - f0, Workloads.pipeCount);
     }
 
     // ── matmulTiled ──────────────────────────────────────────────────────
@@ -413,7 +413,7 @@ public final class Workloads {
         Workloads.kernelRows(rows, "matmulTiled", shape, "compute-bound", iso, isoN, isoB,
                              Workloads.blocks, pipeB, Workloads.blocks, nn * nn * 12,
                              nn * nn * nn * 2,
-                             Device.launchFailures() - f0);
+                             Device.launchFailures() - f0, pipe);
     }
 
     // ── wmmaGemm ─────────────────────────────────────────────────────────
@@ -489,7 +489,7 @@ public final class Workloads {
         Workloads.kernelRows(rows, "wmmaGemm", shape, "matrix-core", iso, isoN, isoB,
                              Workloads.blocks, pipeB, Workloads.blocks, nn * nn * 8,
                              nn * nn * nn * 2,
-                             Device.launchFailures() - f0);
+                             Device.launchFailures() - f0, pipe);
     }
 
     // ── gather ───────────────────────────────────────────────────────────
@@ -549,7 +549,7 @@ public final class Workloads {
         s.destroy();
         Workloads.kernelRows(rows, "gather", shape, "indirect", iso, isoN, isoB,
                              Workloads.blocks, pipeB, Workloads.blocks, (int64) n * 12, 0,
-                             Device.launchFailures() - f0);
+                             Device.launchFailures() - f0, Workloads.pipeCount);
     }
 
     // ── the CG stand-in ──────────────────────────────────────────────────
