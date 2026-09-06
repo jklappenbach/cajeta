@@ -88,7 +88,9 @@
 int32_t __cajeta_net_is_wouldblock(void) {
     int e = cajeta_net_raw_errno();
 #if defined(_WIN32)
-    return (e == WSAEWOULDBLOCK) ? 1 : 0;
+    // WSAEWOULDBLOCK from a non-blocking connect means "in flight", not
+    // "would block" — see cajeta_net_note_op in cajeta_net_socket.c.
+    return (e == WSAEWOULDBLOCK && !cajeta_net_last_op_was_connect()) ? 1 : 0;
 #else
     if (e == EAGAIN) return 1;
 #  if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
@@ -113,9 +115,14 @@ int32_t __cajeta_net_is_in_progress(void) {
     int e = cajeta_net_raw_errno();
 #if defined(_WIN32)
     // Winsock signals a non-blocking connect-in-flight as WSAEWOULDBLOCK; a
-    // re-issued connect on an already-in-flight socket gives WSAEALREADY.
-    return (e == WSAEWOULDBLOCK || e == WSAEINPROGRESS || e == WSAEALREADY)
-               ? 1 : 0;
+    // re-issued connect on an already-in-flight socket gives WSAEALREADY. The
+    // WSAEWOULDBLOCK reading is only valid when the last intrinsic WAS the
+    // connect — from recv/send/accept it means "would block" (see
+    // cajeta_net_note_op), and reporting that as an in-flight connect is the
+    // misclassification NetNonBlockingTests.wouldBlockClassifiedNotAsHardError
+    // caught on Windows.
+    if (e == WSAEWOULDBLOCK) return cajeta_net_last_op_was_connect() ? 1 : 0;
+    return (e == WSAEINPROGRESS || e == WSAEALREADY) ? 1 : 0;
 #else
     return (e == EINPROGRESS) ? 1 : 0;
 #endif

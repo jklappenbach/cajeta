@@ -482,6 +482,26 @@ int32_t __cajeta_net_sockname_is_v6(int32_t fd) {
     cajeta_socklen_t len = (cajeta_socklen_t) sizeof(ss);
     if (getsockname(cajeta_net_from_fd(fd), (struct sockaddr*) &ss, &len)
             == CAJETA_SOCKET_ERROR) {
+#if defined(_WIN32)
+        // POSIX answers getsockname on an UNBOUND socket with a zeroed address
+        // of the right family; Winsock refuses it with WSAEINVAL, which made
+        // this probe return -1 for every fresh UDP socket on Windows
+        // (NetMulticastOptionsTests.roundTripAndErrors, release full sweep
+        // 2026-09-06). The family is still knowable without binding: it is
+        // fixed at socket() time and Winsock exposes it through
+        // SO_PROTOCOL_INFO's iAddressFamily. Fall back to that on exactly the
+        // unbound case so a genuine bad-fd error still reports -1.
+        if (WSAGetLastError() == WSAEINVAL) {
+            WSAPROTOCOL_INFOW info;
+            int ilen = (int) sizeof(info);
+            memset(&info, 0, sizeof(info));
+            if (getsockopt(cajeta_net_from_fd(fd), SOL_SOCKET, SO_PROTOCOL_INFOW,
+                           (char*) &info, &ilen) == 0) {
+                if (info.iAddressFamily == AF_INET6) return 1;
+                if (info.iAddressFamily == AF_INET)  return 0;
+            }
+        }
+#endif
         return -1;
     }
     if (ss.ss_family == AF_INET6) return 1;

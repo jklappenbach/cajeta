@@ -107,9 +107,44 @@ TEST(SfuMathTests, generalDivisionWithinUlps) {
     }
 }
 
+// The correctly-rounded float32 fma, computed exactly and portably. The
+// product of two float32s is EXACT in a double (24 + 24 = 48 < 53 bits), so
+// a*b + c is the exact value (p + c) with p a double; TwoSum splits that sum
+// into a rounded double s and an exactly-representable error e, so the true
+// value is s + e with no information lost. Rounding s to float32 is correct
+// unless s sits EXACTLY on a float32 rounding midpoint, where the sign of e
+// decides (e == 0 is a genuine tie: round-to-even, i.e. what (float)s gives).
+//
+// Why not libm's fmaf: on Windows, mingw-w64's std::fmaf is NOT correctly
+// rounded. Measured 2026-09-06 (release full sweep): a=161.18603515625,
+// b=-2343.9921875, c=1.4512825012207031 — exact a*b+c = -377817.3558578…,
+// correctly rounded float32 = -377817.34375 (which cajeta's fmaf returned);
+// mingw's fmaf returned -377817.375, one ulp off. glibc's is correct, which
+// is why this test was green on Linux with std::fmaf as the oracle. The
+// product is the thing under test; the oracle has to be beyond doubt.
+static float exactFmaf(float a, float b, float c) {
+    const double p = (double) a * (double) b;   // exact
+    const double s = p + (double) c;            // rounded
+    // TwoSum (Knuth): e is exact, s + e == p + c exactly.
+    const double bb = s - p;
+    const double e = (p - (s - bb)) + ((double) c - bb);
+    const float r = (float) s;
+    if (e == 0.0) return r;
+    // Is s exactly halfway between r and its neighbour toward s's other side?
+    const float up = std::nextafter(r, (float) INFINITY);
+    const float dn = std::nextafter(r, (float) -INFINITY);
+    const double midUp = ((double) r + (double) up) * 0.5;
+    const double midDn = ((double) r + (double) dn) * 0.5;
+    if (s == midUp) return e > 0.0 ? up : r;
+    if (s == midDn) return e < 0.0 ? dn : r;
+    return r;   // s strictly inside r's rounding interval: e cannot move it
+}
+
 // fmaf reconstructs a single-rounding fused multiply-add exactly (2Sum +
-// round-to-odd); libm's fma is the oracle. A large sweep across mixed
-// magnitudes — any double-rounding defect shows up here.
+// round-to-odd); the oracle is the exact correctly-rounded value above. A
+// large sweep across mixed magnitudes — any double-rounding defect shows up
+// here. On glibc the exact oracle and std::fmaf must agree (a check on the
+// oracle itself); on mingw they do not, and mingw is the one that is wrong.
 TEST(SfuMathTests, fmafMatchesLibmExactly) {
     clearCaptureEnv();
     auto jit = CajetaJit::compile(SRC, "test.D");
@@ -125,7 +160,13 @@ TEST(SfuMathTests, fmafMatchesLibmExactly) {
         };
         float a = next(), b = next(), c = next();
         float got = fma3(a, b, c);
-        float ref = std::fmaf(a, b, c);
+        float ref = exactFmaf(a, b, c);
+#if !defined(_WIN32)
+        // glibc's fmaf is correctly rounded: it must agree with the exact
+        // oracle, or the oracle is what's broken.
+        ASSERT_EQ(std::fmaf(a, b, c), ref) << "oracle self-check a=" << a
+                                           << " b=" << b << " c=" << c;
+#endif
         ASSERT_EQ(std::isnan(got), std::isnan(ref));
         if (!std::isnan(ref))
             ASSERT_EQ(got, ref) << "a=" << a << " b=" << b << " c=" << c;

@@ -524,6 +524,43 @@ static void __cajeta_install_host_triple(void) {
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(_WIN32)
+#  include <io.h>   // _fstat64 / _lseeki64 / _chsize_s — the 64-bit CRT forms
+#endif
+
+// 64-bit file metadata on every platform. On mingw-w64 the plain
+// stat/fstat/off_t/lseek/ftruncate family is 32-bit unless the whole
+// translation unit is compiled with _FILE_OFFSET_BITS=64 ahead of its first
+// system include — and this file is #included into cajeta_runtime.c after
+// <stdio.h> et al., so that macro cannot be applied here. Past 2 GiB the
+// 32-bit fstat fails with EOVERFLOW (or truncates), which made
+// __cajeta_file_size_of() answer -1 for a 2 GiB + 16 file and
+// FileIo64Tests.readHonorsLengthPastBit31 return -1 at its size guard on
+// Windows (release full sweep, 2026-09-06). Linux was never affected (64-bit
+// off_t by default on x86-64). The explicit _fstat64 / _lseeki64 / _chsize_s
+// forms are the CRT's 64-bit API; using them directly is what the Windows CRT
+// documents and needs no include-order magic.
+static int cajeta_file_stat64(int fd, int64_t* size, bool* isRegular) {
+#if defined(_WIN32)
+    struct _stat64 st;
+    if (_fstat64(fd, &st) != 0) return -1;
+    if (size) *size = (int64_t) st.st_size;
+    if (isRegular) *isRegular = (st.st_mode & _S_IFMT) == _S_IFREG;
+#else
+    struct stat st;
+    if (fstat(fd, &st) != 0) return -1;
+    if (size) *size = (int64_t) st.st_size;
+    if (isRegular) *isRegular = S_ISREG(st.st_mode);
+#endif
+    return 0;
+}
+
+// One read(2)/_read call's ceiling. Linux caps a single read at 0x7ffff000
+// itself; the Windows CRT's _read takes an `unsigned int` count and rejects
+// requests past INT_MAX, so a 2 GiB + 16 request was -1 (EINVAL) there. 1 GiB
+// per call keeps every platform inside its limit; the fill loop below carries
+// the remainder, and the contract already permits a short return.
+#define CAJETA_FILE_READ_CHUNK ((int64_t) 0x40000000)
 
 // On Windows/MinGW, open() defaults to TEXT mode, which translates
 // \n <-> \r\n on read and write. That silently corrupts binary payloads
@@ -570,12 +607,12 @@ void* __cajeta_file_read_all(const char* path) {
     int fd = open(path, O_RDONLY | O_BINARY);
     if (fd < 0) return NULL;
 
-    struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+    int64_t size = 0;
+    bool isRegular = false;
+    if (cajeta_file_stat64(fd, &size, &isRegular) != 0 || !isRegular) {
         close(fd);
         return NULL;
     }
-    int64_t size = (int64_t) st.st_size;
     if (size < 0) size = 0;
 
     // Header layout matches __cajeta_new_array_header: 8-byte count +
@@ -690,19 +727,22 @@ int64_t __cajeta_file_read(int32_t fd, void* buf, int64_t max) {
     // files keep the fill-to-max loop — there a caller asking for `max` past
     // a short read wants the rest up to EOF. "Fills up to max" already permits
     // a short return, so streaming readers loop on the count themselves.
-    struct stat st;
-    bool fillToMax = (fstat(fd, &st) == 0 && S_ISREG(st.st_mode));
+    bool isRegular = false;
+    bool fillToMax = (cajeta_file_stat64(fd, NULL, &isRegular) == 0 && isRegular);
     if (!fillToMax) {
         ssize_t n;
+        int64_t want = max < CAJETA_FILE_READ_CHUNK ? max : CAJETA_FILE_READ_CHUNK;
         do {
-            n = read(fd, buf, (size_t) max);
+            n = read(fd, buf, (size_t) want);
         } while (n < 0 && errno == EINTR);
         if (n < 0) return -1;
         return (int64_t) n;  // 0 == EOF; otherwise bytes available now.
     }
     int64_t got = 0;
     while (got < max) {
-        ssize_t n = read(fd, ((char*) buf) + got, (size_t) (max - got));
+        int64_t left = max - got;
+        int64_t want = left < CAJETA_FILE_READ_CHUNK ? left : CAJETA_FILE_READ_CHUNK;
+        ssize_t n = read(fd, ((char*) buf) + got, (size_t) want);
         if (n < 0) {
             if (errno == EINTR) continue;
             return -1;
@@ -750,20 +790,30 @@ int64_t __cajeta_file_seek(int32_t fd, int64_t offset, int32_t whence) {
     int w = SEEK_SET;
     if (whence == 1) w = SEEK_CUR;
     else if (whence == 2) w = SEEK_END;
+#if defined(_WIN32)
+    // off_t is 32-bit on mingw; _lseeki64 is the CRT's 64-bit seek.
+    __int64 r = _lseeki64(fd, (__int64) offset, w);
+#else
     off_t r = lseek(fd, (off_t) offset, w);
+#endif
     return (int64_t) r;
 }
 
 int64_t __cajeta_file_size_of(int32_t fd) {
     if (fd < 0) return -1;
-    struct stat st;
-    if (fstat(fd, &st) != 0) return -1;
-    return (int64_t) st.st_size;
+    int64_t size = -1;
+    if (cajeta_file_stat64(fd, &size, NULL) != 0) return -1;
+    return size;
 }
 
 int32_t __cajeta_file_truncate(int32_t fd, int64_t size) {
     if (fd < 0 || size < 0) return -1;
+#if defined(_WIN32)
+    // ftruncate/off_t are 32-bit on mingw; _chsize_s takes a 64-bit size.
+    return _chsize_s(fd, (__int64) size) == 0 ? 0 : -1;
+#else
     return ftruncate(fd, (off_t) size) == 0 ? 0 : -1;
+#endif
 }
 
 int32_t __cajeta_file_sync(int32_t fd) {

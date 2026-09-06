@@ -288,8 +288,33 @@ int32_t __cajeta_net_listen(int32_t fd, int32_t backlog) {
 // out pointer may be NULL to discard the peer address. Returns the new
 // connection's int32 fd, or -1 on failure (incl. WouldBlock — the caller
 // checks `__cajeta_net_last_error()`).
+// Which intrinsic last produced a socket error, per thread — Windows only.
+// Winsock reuses WSAEWOULDBLOCK for two different things: "would block" from
+// recv/send/accept AND "connect in flight" from a non-blocking connect. errno
+// alone cannot tell them apart, so the non-throwing classifiers in
+// cajeta_net_nonblocking.c (is_wouldblock / is_in_progress) consult this note:
+// set by __cajeta_net_connect when its connect() fails, cleared by every other
+// error-producing intrinsic on entry. Before this, a would-block recv was ALSO
+// reported as an in-progress connect on Windows
+// (NetNonBlockingTests.wouldBlockClassifiedNotAsHardError, release full
+// sweep 2026-09-06). Thread-local because WSAGetLastError is. POSIX keeps its
+// distinct EAGAIN/EWOULDBLOCK vs EINPROGRESS codes and never reads it.
+#if defined(_WIN32)
+static _Thread_local int g_cajeta_net_last_op_connect = 0;
+static inline void cajeta_net_note_op(int is_connect) {
+    g_cajeta_net_last_op_connect = is_connect ? 1 : 0;
+}
+static inline int cajeta_net_last_op_was_connect(void) {
+    return g_cajeta_net_last_op_connect;
+}
+#else
+static inline void cajeta_net_note_op(int is_connect) { (void) is_connect; }
+static inline int cajeta_net_last_op_was_connect(void) { return 0; }
+#endif
+
 int32_t __cajeta_net_accept(int32_t fd, void* addr_out, int32_t* addrlen_inout) {
     if (fd < 0) return -1;
+    cajeta_net_note_op(0);
     cajeta_socklen_t len = 0;
     cajeta_socklen_t* lenp = NULL;
     if (addr_out && addrlen_inout && *addrlen_inout > 0) {
@@ -309,6 +334,7 @@ int32_t __cajeta_net_accept(int32_t fd, void* addr_out, int32_t* addrlen_inout) 
 // for writability and checks SO_ERROR.
 int32_t __cajeta_net_connect(int32_t fd, const void* addr, int32_t addrlen) {
     if (fd < 0 || !addr || addrlen <= 0) return -1;
+    cajeta_net_note_op(1);
     int r = connect(cajeta_net_from_fd(fd),
                     (const struct sockaddr*) addr,
                     (cajeta_socklen_t) addrlen);
@@ -350,6 +376,7 @@ int32_t __cajeta_net_connect_result(int32_t fd) {
 // supplies it).
 int64_t __cajeta_net_send(int32_t fd, const void* buf, int64_t len, int32_t flags) {
     if (fd < 0 || (!buf && len > 0) || len < 0) return -1;
+    cajeta_net_note_op(0);
 #if defined(_WIN32)
     // Winsock send() takes an `int` length; clamp to INT_MAX-safe chunk.
     int chunk = (len > 0x40000000) ? 0x40000000 : (int) len;
@@ -366,6 +393,7 @@ int64_t __cajeta_net_send(int32_t fd, const void* buf, int64_t len, int32_t flag
 // WouldBlock is the normal empty-non-blocking outcome).
 int64_t __cajeta_net_recv(int32_t fd, void* buf, int64_t len, int32_t flags) {
     if (fd < 0 || (!buf && len > 0) || len < 0) return -1;
+    cajeta_net_note_op(0);
 #if defined(_WIN32)
     int chunk = (len > 0x40000000) ? 0x40000000 : (int) len;
     int n = recv(cajeta_net_from_fd(fd), (char*) buf, chunk, (int) flags);
@@ -382,6 +410,7 @@ int64_t __cajeta_net_sendto(int32_t fd, const void* buf, int64_t len,
                             int32_t flags, const void* addr, int32_t addrlen) {
     if (fd < 0 || (!buf && len > 0) || len < 0) return -1;
     if (!addr || addrlen <= 0) return -1;
+    cajeta_net_note_op(0);
 #if defined(_WIN32)
     int chunk = (len > 0x40000000) ? 0x40000000 : (int) len;
     int n = sendto(cajeta_net_from_fd(fd), (const char*) buf, chunk, (int) flags,
@@ -401,6 +430,7 @@ int64_t __cajeta_net_sendto(int32_t fd, const void* buf, int64_t len,
 int64_t __cajeta_net_recvfrom(int32_t fd, void* buf, int64_t len, int32_t flags,
                               void* addr_out, int32_t* addrlen_inout) {
     if (fd < 0 || (!buf && len > 0) || len < 0) return -1;
+    cajeta_net_note_op(0);
     cajeta_socklen_t alen = 0;
     cajeta_socklen_t* alenp = NULL;
     if (addr_out && addrlen_inout && *addrlen_inout > 0) {

@@ -16,7 +16,9 @@
 #include "cajeta/jit/CajetaSymbolIndex.h"
 #include "cajeta/jit/LazyCodegen.h"
 #include "cajeta/method/Method.h"
+#include "JitWinSymbols.h"
 
+#include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/TargetSelect.h"
@@ -139,6 +141,29 @@ struct LazyJit {
         jd.addGenerator(llvm::cantFail(
             llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
                 out.jit->getDataLayout().getGlobalPrefix())));
+#ifdef _WIN32
+        // The process generator dlsym's the exe, but on MinGW the CRT/libgcc
+        // functions and the natively linked runtime (__cajeta_alloc,
+        // __cajeta_string_slice_borrow, __mingw_fprintf, ...) are not in the
+        // PE export table, so every runtime-dependent body failed to
+        // materialize (measured 2026-09-06, release full sweep:
+        // sharedInstantiationDoesNotDuplicateDefine). Bind the same explicit
+        // table JitTestHelper installs for the main JIT. None of these names
+        // is a generatable cajeta body, so defining them up front cannot
+        // shadow the lazy generator.
+        {
+            size_t n = 0;
+            const CajetaJitWinSym* syms = cajeta_jit_win_symbols(&n);
+            auto& es = out.jit->getExecutionSession();
+            llvm::orc::SymbolMap map;
+            for (size_t i = 0; i < n; ++i) {
+                map[es.intern(syms[i].name)] = llvm::orc::ExecutorSymbolDef(
+                    llvm::orc::ExecutorAddr::fromPtr(syms[i].addr),
+                    llvm::JITSymbolFlags::Exported);
+            }
+            llvm::cantFail(jd.define(llvm::orc::absoluteSymbols(std::move(map))));
+        }
+#endif
         return out;
     }
 
