@@ -330,7 +330,7 @@ public final class JsonObject {
     public Optional<String> getString(String key) {
         JsonValue v = this.get(key);
         if (v == null || v.kind() != 3) {
-            return stack Optional<String>(false, #null);
+            return stack Optional<String>(false);
         }
         return stack Optional<String>(true, v.asString());
     }
@@ -366,7 +366,7 @@ public final class JsonObject {
     public Optional<JsonArray> getArray(String key) {
         JsonValue v = this.get(key);
         if (v == null || v.kind() != 4) {
-            return stack Optional<JsonArray>(false, #null);
+            return stack Optional<JsonArray>(false);
         }
         return stack Optional<JsonArray>(true, v.array());
     }
@@ -375,7 +375,7 @@ public final class JsonObject {
     public Optional<JsonObject> getObject(String key) {
         JsonValue v = this.get(key);
         if (v == null || v.kind() != 5) {
-            return stack Optional<JsonObject>(false, #null);
+            return stack Optional<JsonObject>(false);
         }
         return stack Optional<JsonObject>(true, v.object());
     }

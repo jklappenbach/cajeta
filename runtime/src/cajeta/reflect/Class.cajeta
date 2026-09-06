@@ -192,7 +192,7 @@ public final class Class<T> {
         int8[] nb #= name.toBytes();
         Class<?> c = forNameNative(nb);
         if (c == null) {
-            return stack Optional<Class<?>>(false, #null);
+            return stack Optional<Class<?>>(false);
         }
         return stack Optional<Class<?>>(true, c);
     }
@@ -229,10 +229,10 @@ public final class Class<T> {
         int8[] nb #= name.toBytes();
         Class<?> c = forNameNative(nb);
         if (c == null) {
-            return stack Optional<T>(false, #null);
+            return stack Optional<T>(false);
         }
         if (isSubtype(c.rtti, bound.rtti) == 0) {
-            return stack Optional<T>(false, #null);
+            return stack Optional<T>(false);
         }
         return stack Optional<T>(true, #(T) c.heapInstance(0));
     }

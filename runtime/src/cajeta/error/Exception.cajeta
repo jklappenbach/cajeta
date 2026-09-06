@@ -65,7 +65,7 @@ public class Exception extends Throwable {
      */
     public Optional<Throwable> getCause() {
         if (this.cause == null) {
-            return stack Optional<Throwable>(false, #null);
+            return stack Optional<Throwable>(false);
         }
         return stack Optional<Throwable>(true, this.cause);
     }

@@ -115,7 +115,7 @@ public class Throwable {
      * this to wrap its `cause` field; the bare hierarchy root never has one.
      */
     public Optional<Throwable> getCause() {
-        return stack Optional<Throwable>(false, #null);
+        return stack Optional<Throwable>(false);
     }
 
     // Category affordances (diagnostic-exceptions §3). Overridable; the base
@@ -133,9 +133,9 @@ public class Throwable {
     // which case the JSON `remediation` object is omitted entirely.
 
     /** A short human/agent-readable fix hint; empty when none. */
-    public Optional<String> hint() { return stack Optional<String>(false, #null); }
+    public Optional<String> hint() { return stack Optional<String>(false); }
     /** A documentation URL for this error, or `null` when none. */
-    public Optional<String> docUrl() { return stack Optional<String>(false, #null); }
+    public Optional<String> docUrl() { return stack Optional<String>(false); }
 
     /** JSON-string-escape `s` (shared escaping with the compiler emitter). */
     private static #String jsonEscape(String s) {
