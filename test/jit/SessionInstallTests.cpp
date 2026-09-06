@@ -186,6 +186,16 @@ TEST(SessionInstallTests, collidingArchiveIsRejectedAndSessionSurvives) {
 // 1.1.4 / spec 4.4 — spliced bodies arrive through the lazy generator,
 // not an eager wave at install time.
 TEST(SessionInstallTests, splicedBodiesDeliverLazily) {
+    // Lazy delivery is what this test measures, so force the mode on for its
+    // lifetime: COFF and Mach-O hosts default to EAGER (LazyCodegen.cpp), and
+    // under eager the dep body is generated at install and never crosses the
+    // generator — the counter assertion below then fails for a reason that
+    // has nothing to do with splicing (measured on Windows, 2026-09-06).
+    struct ModeGuard {
+        bool saved = cajeta::lazyCodegenEnabled();
+        ~ModeGuard() { cajeta::setLazyCodegenEnabled(saved); }
+    } modeGuard;
+    cajeta::setLazyCodegenEnabled(true);
     auto root = freshRoot("lazy");
     auto cja = buildDep(root, "Answer", "depx.Answer",
         "package depx;\n"
