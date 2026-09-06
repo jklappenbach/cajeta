@@ -190,12 +190,12 @@ public final class KernelManifest {
     }
     /** The launch parameter that sizes dynamic shared memory (§3.5). */
     public Optional<String> ldsDynamicParam() {
-        if (this.ldsDynamicParamValue == null) { return stack Optional<String>(false, #null); }
+        if (this.ldsDynamicParamValue == null) { return stack Optional<String>(false); }
         return stack Optional<String>(true, this.ldsDynamicParamValue);
     }
     /** `registers`, `lds`, `waveSlots` or `unknown`. */
     public Optional<String> occupancyLimiter() {
-        if (this.occupancyLimiterValue == null) { return stack Optional<String>(false, #null); }
+        if (this.occupancyLimiterValue == null) { return stack Optional<String>(false); }
         return stack Optional<String>(true, this.occupancyLimiterValue);
     }
     /** True when the block is a launch argument and the picker enumerated sizes. */
