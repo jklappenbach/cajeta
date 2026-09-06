@@ -21,8 +21,10 @@ import cajeta.lang.String;
  *       §4 rows: one per (workload, shape, KPI, backend) present in both
  *       files, with delta, the before row's noise band, and a verdict:
  *       `keep` when the after median is inside the before band or better,
- *       `worse` when it is outside the band in the bad direction. Better
- *       is lower for durations and misses, higher for rates.
+ *       `worse` when it is outside the band in the bad direction, `single`
+ *       when the before row has no band (n < 2) — reported, not gated
+ *       (Verdict.cajeta). Better is lower for durations and misses, higher
+ *       for rates. Exit 1 when any row is `worse`.
  *
  * Numbers exist once, in the rows; this tool only formats.
  */
@@ -296,6 +298,7 @@ public final class Report {
         System.stdout.println("| Trial | Date | Plan / unit | Workload | Device | KPI | Before | After | Delta | Noise band | Commit | Verdict | Note |");
         System.stdout.println("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
         int32 worse = 0;
+        int32 single = 0;
         int32 x = 0;
         while (x < b.count()) {
             Row rb = b.get(x);
@@ -314,12 +317,12 @@ public final class Report {
                 }
                 float64 delta = ra.median - rb.median;
                 float64 pct = rb.median != 0.0 ? delta / rb.median * 100.0 : 0.0;
-                boolean lower = Report.lowerIsBetter(rb);
-                boolean inside = ra.median >= rb.lo && ra.median <= rb.hi;
-                boolean better = lower ? ra.median < rb.lo : ra.median > rb.hi;
-                String verdict = (inside || better) ? "keep" : "worse";
-                if (verdict.equals("worse")) {
+                int32 v = Verdict.of(Report.lowerIsBetter(rb), rb.lo, rb.hi, rb.n, ra.median);
+                String verdict = Verdict.name(v);
+                if (v == Verdict.WORSE) {
                     worse = worse + 1;
+                } else if (v == Verdict.SINGLE) {
+                    single = single + 1;
                 }
                 String dateCell = date.byteLength() > 0 ? date : ra.date;
                 String bm #= Report.fmt(rb.median);
@@ -336,9 +339,18 @@ public final class Report {
             }
         }
         System.stdout.println("");
-        System.stdout.println(worse == 0
-            ? "not-worse: every paired KPI is inside its noise band or better"
-            : "not-worse FAILED: " + worse + " KPI(s) regressed beyond the noise band");
+        String singles = "";
+        if (single > 0) {
+            singles = "; " + single + " single-sample KPI(s) carry no verdict (no noise band "
+                + "before the day-apart rerun, scheduling 0.3.3)";
+        }
+        if (worse == 0) {
+            System.stdout.println("not-worse: every paired KPI with a noise band is inside it or better"
+                + singles);
+        } else {
+            System.stdout.println("not-worse FAILED: " + worse
+                + " KPI(s) regressed beyond the noise band" + singles);
+        }
         return worse == 0 ? 0 : 1;
     }
 

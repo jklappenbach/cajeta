@@ -40,18 +40,20 @@ Two facts about the set, both measured on 2026-09-06:
   first cuts used a same-address float atomic and were contention-bound on
   HIP: 446 µs for 1M elements, 2.3 GFLOP/s, a bimodal band at 16M. That was
   the kernel, not any scheduler, so the baseline carries the two-stage form.
-- **The CPU backend declines three of them.** `reduceSum`, `finalSum2` and
-  `matmulTiled` carry a workgroup barrier inside a loop, which the CPU
-  barrier fission rejects as unstructured control flow; the kernel gets no
-  CPU code and its launch prints `no registered CPU kernel` and returns. The
-  harness snapshots `Device.launchFailures()` around every workload and
-  emits **pending** rows, with the reason, instead of numbers when it moves.
-  On this leg that makes `dot`, `reduceSum`, `matmulTiled` and `cg` pending
-  on the CPU backend. Two things were silent before this unit and are not
-  now: the build prints `[xpu-kernel-skipped] … barrier fission: …` for the
-  declined shape, and the runtime counts the failed launch
-  (`XpuCpuBarrierFissionNoteTests`). Lifting the fission limit is a
-  compiler item, filed from the report's residuals.
+- **Declined CPU kernels become pending rows.** The CPU barrier fission
+  declines, by name, any barrier shape it cannot run correctly (per-work-item
+  code in the latch of a barrier loop, a barrier under divergent control
+  flow, a work-item-dependent trip count); the kernel gets no CPU code and
+  its launch prints `no registered CPU kernel` and returns. The harness
+  snapshots `Device.launchFailures()` around every workload and emits
+  **pending** rows, with the reason, instead of numbers when it moves. The
+  build prints `[xpu-kernel-skipped] … barrier fission: …` for the declined
+  shape and the runtime counts the failed launch
+  (`XpuCpuBarrierFissionNoteTests`). The first CPU leg (2026-09-06) had
+  `dot`, `reduceSum`, `matmulTiled`, `cg` and `degenerate` pending because
+  the fission declined a uniform loop whose code after its last barrier was
+  the latch itself (`reduceSum`, `finalSum2`, `matmulTiled`); that was fixed
+  the same day (`XpuCpuBarrierFissionLoopTests`) and the leg reran.
 
 ## Discipline
 

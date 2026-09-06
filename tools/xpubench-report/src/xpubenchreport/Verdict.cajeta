@@ -1,0 +1,50 @@
+package xpubenchreport;
+
+import cajeta.lang.String;
+
+/**
+ * The trial verdict (report §1 "Verdict rule"), factored out of the trial
+ * loop so it can be tested on its own (XpuBenchHarnessTests.trialVerdictRule).
+ *
+ *   keep    the after median is inside the before row's noise band, or
+ *           better than it (lower for durations, misses and costs; higher
+ *           for rates).
+ *   worse   outside the band in the bad direction — the gate fails.
+ *   single  the before row has no band (n < 2: a nearest-rank p99 over one
+ *           run's frames, a seam kernel_time, a pair ratio). Any change at
+ *           all would read as a regression against a zero-width band — the
+ *           first real trial (cpu-barrier-fission-loops 1.3.3, 2026-09-06)
+ *           read twelve phantom regressions that way — so the row is
+ *           reported with its delta and NOT gated. The run-to-run band for
+ *           these KPIs comes from the day-apart rerun (xpu-tile-scheduling
+ *           0.3.3); until then they carry no verdict.
+ */
+public final class Verdict {
+    private Verdict() { }
+
+    public static final int32 KEEP = 0;
+    public static final int32 WORSE = 1;
+    public static final int32 SINGLE = 2;
+
+    public static int32 of(boolean lowerIsBetter, float64 lo, float64 hi, int64 n, float64 after) {
+        if (n < (int64) 2) {
+            return Verdict.SINGLE;
+        }
+        boolean inside = after >= lo && after <= hi;
+        boolean better = lowerIsBetter ? after < lo : after > hi;
+        if (inside || better) {
+            return Verdict.KEEP;
+        }
+        return Verdict.WORSE;
+    }
+
+    public static String name(int32 v) {
+        if (v == Verdict.KEEP) {
+            return "keep";
+        }
+        if (v == Verdict.WORSE) {
+            return "worse";
+        }
+        return "single";
+    }
+}

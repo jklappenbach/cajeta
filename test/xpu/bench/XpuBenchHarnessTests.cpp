@@ -230,3 +230,55 @@ TEST(XpuBenchHarness, idleGateLive) {
     EXPECT_GE(during, 1) << "a live process named xpubench-* must make the gate refuse";
     EXPECT_EQ(after, 0) << "with it gone the gate must not refuse (self is excluded by pid)";
 }
+
+// ── The trial verdict (report §1 "Verdict rule") ─────────────────────────
+//
+// `keep` inside the before row's band or better, `worse` outside it in the
+// bad direction, and `single` when the before row has no band at all (n < 2).
+// The first real trial (cpu-barrier-fission-loops 1.3.3, 2026-09-06) read
+// twelve phantom regressions because derived and single-sample rows carried
+// a zero-width band, so any delta at all was "worse". The report tool's own
+// Verdict source is compiled from disk, like the harness sources above.
+namespace {
+
+const char* kVerdictDriver =
+    "package xpubenchreport;\n"
+    "public class DriveV {\n"
+    // a duration (lower is better) with a five-block band [40, 50]
+    "    public static int32 keepInside()  { return Verdict.of(true, 40.0, 50.0, (int64) 5, 45.0); }\n"
+    "    public static int32 keepBetter()  { return Verdict.of(true, 40.0, 50.0, (int64) 5, 39.0); }\n"
+    "    public static int32 worseSlower() { return Verdict.of(true, 40.0, 50.0, (int64) 5, 50.5); }\n"
+    // a rate (higher is better)
+    "    public static int32 rateBetter()  { return Verdict.of(false, 40.0, 50.0, (int64) 5, 51.0); }\n"
+    "    public static int32 rateWorse()   { return Verdict.of(false, 40.0, 50.0, (int64) 5, 39.0); }\n"
+    // a single-sample before row (a frame p99): zero-width band, any delta
+    "    public static int32 singleUp()    { return Verdict.of(true, 5.184, 5.184, (int64) 1, 5.5); }\n"
+    "    public static int32 singleDown()  { return Verdict.of(true, 5.184, 5.184, (int64) 1, 4.9); }\n"
+    "}\n";
+
+std::unique_ptr<CajetaJit> compileVerdict() {
+    std::map<std::string, std::string> sources;
+    sources["xpubenchreport.Verdict"] =
+        readFile(here() + "/../../../tools/xpubench-report/src/xpubenchreport/Verdict.cajeta");
+    sources["xpubenchreport.DriveV"] = kVerdictDriver;
+    return CajetaJit::compile(sources, "xpubenchreport.DriveV", cpuOptions());
+}
+
+} // namespace
+
+// cpu-barrier-fission-loops 1.3.4 — keep / worse / single, both directions.
+TEST(XpuBenchHarness, trialVerdictRule) {
+    auto jit = compileVerdict();
+    ASSERT_NE(jit, nullptr);
+    auto call = [&](const char* name) {
+        auto f = jit->lookup<int (*)()>(name);
+        return f ? f() : -1;
+    };
+    EXPECT_EQ(call("keepInside"), 0);
+    EXPECT_EQ(call("keepBetter"), 0);
+    EXPECT_EQ(call("worseSlower"), 1) << "outside the band, slower: the gate must fail";
+    EXPECT_EQ(call("rateBetter"), 0);
+    EXPECT_EQ(call("rateWorse"), 1) << "outside the band, lower rate: the gate must fail";
+    EXPECT_EQ(call("singleUp"), 2) << "a zero-width band must not read a delta as a regression";
+    EXPECT_EQ(call("singleDown"), 2) << "nor as an improvement: no band, no verdict";
+}

@@ -320,6 +320,11 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             if (llvm::isa<llvm::ReturnInst>(term)) { R.reachedRet = true; continue; }
             for (llvm::BasicBlock* s : llvm::successors(bb)) {
                 if (boundarySet.count(s)) { R.barrier = s; continue; }
+                // The latch is scaffold, never part of a region: it runs
+                // once per iteration on the scalar side, and the region's
+                // exit edge is redirected to it (step 8). The walk applies
+                // the same rule when the block after the last barrier IS
+                // the latch, so a latch is never a region's start either.
                 if (encLoop && s == encLoop->getLoopLatch()) {
                     R.reachedLatch = true; continue;
                 }
@@ -362,6 +367,30 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         llvm::BasicBlock* cur = start;
         llvm::BasicBlock* pred = predBlock;
         while (cur) {
+            // The block after a loop's LAST barrier is often the loop's own
+            // latch — `stride = stride / 2` in an LDS tree reduce, `k0 = k0 +
+            // 16` in a tiled GEMM: block-uniform code that belongs to the
+            // scalar scaffold, which already runs the latch once per
+            // iteration. Starting a region here collected the latch, flowed
+            // through the header and around the loop until a block was
+            // reached twice, and declined three baseline kernels as
+            // "unstructured barrier control flow" (cpu-barrier-fission-loops
+            // spec §1). A uniform latch ends this level with no region job:
+            // the barrier's `br latch` edge is in place and nothing else
+            // needs redirecting. A latch that holds a per-work-item
+            // instruction is declined by name — the scaffold has no
+            // work-item context to run it in, and running it once per
+            // iteration would be wrong (spec 2.3).
+            if (encLoop && cur == encLoop->getLoopLatch()) {
+                for (llvm::Instruction& in : *cur)
+                    if (!in.isTerminator() && tainted.count(&in)) {
+                        std::string where = cur->hasName()
+                            ? " (" + cur->getName().str() + ")" : "";
+                        unsupported("per-work-item code in the latch of a barrier "
+                                    "loop, after its last barrier" + where);
+                    }
+                return;
+            }
             if (!regioned.insert(cur).second)
                 unsupported("unstructured barrier control flow (a block is "
                             "reached by more than one region path)");
