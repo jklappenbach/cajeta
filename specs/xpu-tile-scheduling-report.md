@@ -24,7 +24,8 @@ instrument.
 | Arm order | alternated A/B/B/A across runs (a fixed order let a decaying load fake a speedup once); `Stats.abbaOrder`, tested |
 | Storage | harness rows under repo `tmp/bench/` (never `/tmp`), one JSON object per line per (workload, shape, KPI), each carrying device / backend / driver / compiler / power mode / date / arm; tables rendered by `tools/xpubench-report` (`baseline` and `trial` verbs) |
 | Harness | `test/xpu/bench/run.sh` (`all`, `hip`, `cpu`, `smoke`); sources `test/xpu/bench/src/xpubench/`; the workload table is in its README |
-| Verdict rule | "not worse" = every KPI within its noise band of the previous accepted row; a regression blocks the unit or ships gated off with the residual in §5 |
+| Verdict rule | "not worse" = every KPI within its noise band of the previous accepted row; a regression blocks the unit or ships gated off with the residual in §5. Frame stand-in: verdicts read `frame_p99` and `missed_frames_per_10000`; `frame_p50` is informational (developer, 2026-09-06: power mode stays `auto`, what a game gets on this part; a unit claiming a jitter reduction shows it over several runs) |
+| Power mode | `auto`, recorded per row; never pinned for a baseline or a verdict |
 
 ### 1.1 KPIs per workload
 
