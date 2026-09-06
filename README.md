@@ -1,6 +1,14 @@
 # Cajeta
 
-Cajeta is a hybrid systems / application language combining C++-style true templates, multiple-inheritance, and operator overloading.  It's also Java-style class semantics and annotations, It's Rust-inspired ownership for memory management — with a single explicit allocation idiom that lets the caller pick stack or heap at initialization.
+Cajeta is a hybrid systems and application language. It pairs C++-style true templates (monomorphized, not erased), multiple inheritance, and operator overloading with Java-style class semantics and annotations, and Rust-inspired single-owner memory management — expressed through one explicit allocation idiom that lets the caller choose stack or heap at initialization and an `#` operator that transfers ownership. Developers coming from C++, Java, C#, Kotlin, TypeScript, or Rust find the grammar familiar on day one.
+
+Its defining attributes:
+
+- **One ownership model, no reference counting.** A single-owner heap with static move checking, scope-based drops, and path-level borrow tracking — a memory model that stays out of your way.
+- **True zero-copy `view`s and wire formats.** Read structured bytes in place, no deserialization pass.
+- **Templates with C++ semantics.** Monomorphized specialization, wildcards, and operator overloading — not type erasure.
+- **A fast, allocation-light runtime.** A lightning-fast networking stack and predictable, GC-free performance.
+- **Agent-native from the ground up** (see below).
 
 The compiler is LLVM-backed (LLVM 23) and produces either IR — distributed in compressed archives and executed by an optimized, caching JIT — or native binaries per target (see [Compilation and execution](#compilation-and-execution)).
 
@@ -16,13 +24,9 @@ and verbose, prescriptive error messages that walk a human *or* a model to the
 fix. See [Built for agents](#built-for-agents).
 
 
-Cajeta may not be your choice for embedded, but it's lean enough to perform that role.  A future roadmap will produce a version that will be able to exist even in the most austere environments.
+Cajeta is lean enough for embedded work, and a future roadmap targets even the most austere environments. It doesn't claim the compiler-enforced "safety" of Rust; in return it offers a memory model that won't fight you, a grammar that welcomes developers from across the C-family and managed-language worlds, and true zero-copy semantics without the borrow-checker tax.
 
-It doesn't have the "safety" of Rust, but it offers many benefits in return:  a memory model that won't fight you.  Syntax and grammar that will make C#, Java, Javascript, and Typescript developers feel at home.
-
-Comfort, all while offering true zero-copy semantics with Views, a lightening fast networking stack, and memory management free of reference counting.
-
-Create amazing things with Cajeta.  
+Create amazing things with Cajeta.
 
 > **Status.** Compiler is in active development; the language design is past v1. The full test suite runs over 4,800 tests across 32 shards. As of **v0.8.0** the compiler is **re-entrant / thread-safe** — independent compiles run concurrently on their own threads (each with its own `LLVMContext`), the substrate for multi-tenant, on-demand JIT compute. The list of working features below is exercised by tests; anything not on the list is either in progress or under design.
 
@@ -30,7 +34,7 @@ Create amazing things with Cajeta.
 
 ## Version
 
-**Current:** `0.19.1` &nbsp;·&nbsp; baked into the binary at configure time — `cajeta --version` reports it.
+**Current:** `0.27.0` &nbsp;·&nbsp; baked into the binary at configure time — `cajeta --version` reports it.
 
 Versioning is manual and tied to releases. The flow:
 
@@ -389,6 +393,23 @@ cooperative-matrix / tensor-core matmul). On top of that core, registry
 libraries cover the applied layers: `dev.cajeta.ml` (the
 scikit-learn/statsmodels + torch roles), `dev.cajeta.graph` (network
 analysis), `dev.cajeta.xgboost`, and more.
+
+**A growing library ecosystem.** Beyond the stdlib, a widening set of
+first-party libraries is maturing on the registry — each a signed `.cja`
+archive that ships its own agent skills. Highlights across the stack:
+
+| Library | Package | Role |
+|---|---|---|
+| **Logging** | `dev.cajeta.logging` | Structured, leveled logging with pluggable appenders. |
+| **Unit** | `dev.cajeta.unit` | The unit-testing framework — reflective discovery, package-pattern selection. |
+| **Coverage** | `dev.cajeta.coverage` | A build-tool plugin that measures what actually ran. |
+| **ML** | `dev.cajeta.ml` | Machine learning — the scikit-learn / statsmodels and torch roles, on `cajeta.math` + `cajeta.xpu`. |
+| **LLM** | `dev.cajeta.llm` | A decoder-only LLM inference engine — the llama.cpp architecture rebuilt on `cajeta.math` and `cajeta.xpu`, with GGUF loading and k-quant support. |
+| **Cloud** | `dev.cajeta.cloud` | Cloud services — object store and content-addressed storage, the substrate for the distributed stack. |
+| **Cabra** | `dev.cajeta.cabra` | A web front-end framework for building interfaces in Cajeta. |
+
+Each is resolved the same way — name it in `cajeta.json`, and the toolchain
+fetches, verifies, caches, and pulls in its skills alongside its bitcode.
 
 **IDE support** is currently limited to the IntelliJ-family IDEs — the
 plugin ships embedded in the compiler (`cajeta ide install`, see
