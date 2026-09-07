@@ -87,6 +87,13 @@ namespace cajeta {
                                  // classes into the consumer's compile.
             NativeArtifact = 4,  // per-platform native lib / header / metadata
                                  // under the `native/` tree (native-deps).
+            KernelManifest = 5,  // xpu-tile-manifest §12.4: one tile-manifest-v1
+                                 // JSON per (kernel, target) under
+                                 // `xpu/manifests/<kernel>.<target>.manifest.json`,
+                                 // beside the class bitcode that carries the
+                                 // device code. Read-only, never consumed by
+                                 // the linker; a tool reads it without loading
+                                 // bitcode.
         };
 
         // Origin tags written as a single byte on each entry. Cja

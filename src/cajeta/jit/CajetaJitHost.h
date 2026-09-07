@@ -12,6 +12,7 @@
 #pragma once
 
 #include "cajeta/xpu/XpuTarget.h"
+#include "cajeta/xpu/core/KernelManifest.h"
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -134,6 +135,11 @@ namespace cajeta::jit {
         // cacheDir is unset (no pools).
         int moduleObjectsServed = 0;
         int moduleObjectsCompiled = 0;
+        // xpu-tile-manifest §12.4 (Unit 2.2.2): the kernel manifests the
+        // launch embedded into the lowered module, as the JIT-side in-memory
+        // record. Empty for a host-only run or a cache hit (the cached module
+        // still carries them in its constant data; the runtime serves those).
+        std::vector<cajeta::xpu::KernelManifest> kernelManifests;
     };
 
     // Compile + JIT + run. Returns the process-style exit code (0 on success,

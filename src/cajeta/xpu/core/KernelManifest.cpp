@@ -19,6 +19,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/SHA256.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include <cstdio>
 
@@ -160,11 +161,28 @@ namespace xpu {
         return true;
     }
 
+    namespace {
+        std::string sanitizedTarget(const KernelManifest& m) {
+            std::string target = m.target;
+            for (char& c : target)
+                if (c == '/' || c == ':' || c == ' ' || c == ',') c = '-';
+            return target;
+        }
+    } // namespace
+
     std::string manifestFileName(const KernelManifest& m) {
-        std::string target = m.target;
-        for (char& c : target)
-            if (c == '/' || c == ':' || c == ' ' || c == ',') c = '-';
-        return m.simpleName() + "." + target + ".manifest.json";
+        return m.simpleName() + "." + sanitizedTarget(m) + ".manifest.json";
+    }
+
+    std::string manifestArchiveMemberName(const KernelManifest& m) {
+        return "xpu/manifests/" + m.kernel + "." + sanitizedTarget(m) + ".manifest.json";
+    }
+
+    const char* manifestSectionName(const llvm::Module& host) {
+        const llvm::Triple& t = host.getTargetTriple();
+        if (t.isOSBinFormatMachO()) return "__DATA,__cajeta_mf";
+        if (t.isOSBinFormatCOFF())  return ".cajmf";
+        return ".cajeta.manifest";
     }
 
     void fillOccupancy(KernelManifest& m, const std::string& archName,
@@ -219,6 +237,12 @@ namespace xpu {
             host, init->getType(), /*isConstant=*/true,
             llvm::GlobalValue::PrivateLinkage, init, "xpu.manifest." + tag);
         gv->setAlignment(llvm::MaybeAlign(1));
+        // §12.4: a NAMED data section, so the artifact carries the manifest
+        // where a tool can find it (`llvm-readelf -p .cajeta.manifest prog`)
+        // and the runtime reads it from the loaded image — no file, no
+        // storage. The ctor below references the global, so it is never
+        // dropped by the linker's dead-stripping.
+        gv->setSection(manifestSectionName(host));
         llvm::Value* archStr = b.CreateGlobalString(arch, "xpu.march." + tag);
 
         // void __cajeta_xpu_register_kernel_manifest(i8* name, i32 backend,

@@ -3453,9 +3453,14 @@ namespace cajeta {
                     std::filesystem::create_directories(
                         std::filesystem::path(base).parent_path(), ec);
                     for (const auto& m : manifests) {
+                        std::string json = cajeta::xpu::toJson(m);
                         std::ofstream out(base + "." + cajeta::xpu::manifestFileName(m),
                                           std::ios::binary);
-                        out << cajeta::xpu::toJson(m);
+                        out << json;
+                        // ...and the same bytes as an archive member when this
+                        // build emits a .cja / uber (emitArchive drains this).
+                        xpuManifestMembers.emplace_back(
+                            cajeta::xpu::manifestArchiveMemberName(m), std::move(json));
                     }
                 }
                 // Graphics shaders register alongside kernels — a no-op for the
@@ -5022,6 +5027,20 @@ namespace cajeta {
                 e.data.assign(body.begin(), body.end());
                 arc.addEntry(std::move(e));
             }
+        }
+
+        // xpu-tile-manifest §12.4: every kernel manifest this build produced
+        // rides in the archive beside the class bitcode that carries its
+        // device code — `xpu/manifests/<kernel>.<target>.manifest.json`, the
+        // same bytes the registration ctor embeds and the JSON copy holds. A
+        // tool reads it without loading bitcode; the linker never consumes it.
+        for (const auto& [memberName, json] : xpuManifestMembers) {
+            CajetaArchiveEntry e;
+            e.name = memberName;
+            e.originTag = (uint8_t) CajetaArchive::Origin::User;
+            e.kindTag = CajetaArchive::EntryKind::KernelManifest;
+            e.data.assign(json.begin(), json.end());
+            arc.addEntry(std::move(e));
         }
 
         arc.writeTo(outPath);

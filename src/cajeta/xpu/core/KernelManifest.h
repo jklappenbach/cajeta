@@ -106,6 +106,18 @@ namespace xpu {
     // copy's file name beside the artifact (§12.4).
     std::string manifestFileName(const KernelManifest& m);
 
+    // "xpu/manifests/<qualified kernel>.<target with '/' -> '-'>.manifest.json"
+    // — the .cja member name (§12.4; CajetaArchive::EntryKind::KernelManifest).
+    // Qualified, because one archive holds every class's kernels.
+    std::string manifestArchiveMemberName(const KernelManifest& m);
+
+    // The object section the embedded manifest JSON lands in, by object format
+    // (§12.4 "a data section of an --emit=exe binary"): ".cajeta.manifest" on
+    // ELF, ".cajmf" on COFF (8-character section names), "__DATA,__cajeta_mf"
+    // on Mach-O. Concatenated NUL-terminated tile-manifest-v1 documents; a tool
+    // can read them without running the program.
+    const char* manifestSectionName(const llvm::Module& host);
+
     // Fill the §3.3 occupancy fields from the arch table for `archName`
     // (DeviceProfile::lookupArch). `pinnedThreads` set = the block is pinned
     // (an @Occupancy clamp or one constant launch block): records

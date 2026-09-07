@@ -205,6 +205,7 @@ const char* kindName(CajetaArchive::EntryKind k) {
         case CajetaArchive::EntryKind::Resource:       return "resource";
         case CajetaArchive::EntryKind::RuntimeBitcode: return "runtime_bitcode";
         case CajetaArchive::EntryKind::ClassSource:    return "class_source";
+        case CajetaArchive::EntryKind::KernelManifest: return "kernel_manifest";
     }
     return "?";
 }

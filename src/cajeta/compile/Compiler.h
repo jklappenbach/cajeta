@@ -220,6 +220,11 @@ namespace cajeta {
         vector<XpuBackend> xpuBackends;
         XpuEmit xpuEmit = XpuEmit::None;
         string xpuArch = "sm_89";
+        // xpu-tile-manifest §12.4 — the manifests emitXpuKernels produced this
+        // compile, as (archive member name, JSON text): emitArchive writes each
+        // as a KernelManifest member beside the class bitcode so a .cja carries
+        // the record next to the device code it describes.
+        vector<std::pair<string, string>> xpuManifestMembers;
         // Optional output path override for single-file builds (--output / -o).
         // When empty, .ll/.o files land in the archive root mirroring the source tree
         // and executables land at <archive-root>/<entry-name>.

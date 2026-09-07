@@ -13,6 +13,7 @@
 //
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
+#include "cajeta/xpu/core/KernelManifest.h"
 #include "cajeta/xpu/XpuTarget.h"
 
 #include "cajeta/error/Diagnostics.h"
@@ -310,6 +311,11 @@ struct BuiltJit {
     bool objectCacheHit = false;    // ALL modules materialized from pool (6.1.1)
     int moduleObjectsServed = 0;    // pool serves this launch (2.1.3)
     int moduleObjectsCompiled = 0;  // pool compiles this launch (2.1.3)
+    // xpu-tile-manifest §12.4 / Unit 2.2.2: the manifests the backends
+    // embedded into the lowered module this launch, kept in memory beside it
+    // (the runtime serves k.manifest() from the module's constant data; this
+    // is the same record for the host's own tooling). No file is written.
+    std::vector<cajeta::xpu::KernelManifest> kernelManifests;
     // The ObjectCache wired into the LLJIT's compiler (null when cacheDir is
     // empty). The LLJIT holds a raw pointer, so it must live as long as the
     // JIT — late materialization is legal even if today's flow front-loads it.
@@ -1470,7 +1476,8 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                       : be == cajeta::xpu::Backend::Amdgpu ? "gfx1151"
                       : be == cajeta::xpu::Backend::Spirv  ? "vulkan1.3"
                       :                                      "";
-                    cajeta::xpu::emitKernelRegistration(be, kernels, *pm, arch);
+                    cajeta::xpu::emitKernelRegistration(be, kernels, *pm, arch, {},
+                                                        &out.kernelManifests);
                 }
             }
         }
@@ -1634,6 +1641,7 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
 
     llvm::orc::LLJIT* jit = built.jit.get();
     if (result) {
+        result->kernelManifests = built.kernelManifests;
         result->entrySafepointsEmitted = built.entrySafepointsEmitted;
         result->phases = built.phases;
         result->cacheHit = built.cacheHit;
