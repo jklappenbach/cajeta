@@ -27,7 +27,6 @@
 #include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "jit/CoffSafeJit.h"
-#include "jit/JitWinSymbols.h"   // Windows native-symbol bridge (header is empty on POSIX)
 #include "llvm/ExecutionEngine/Orc/Mangling.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
@@ -47,6 +46,13 @@
 // The runtime CPU kernel registry — same symbols CpuDriver / the registration
 // ctor speak, linked into the test binary via cajeta_lib.
 extern "C" void __cajeta_xpu_register_cpu_kernel(const char* name, void* fn);
+// Also called by the registration ctor (KernelManifest registration). Native
+// runtime function, bound below exactly like __cajeta_xpu_register_cpu_kernel.
+extern "C" void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
+                                                      int32_t backend,
+                                                      const char* arch,
+                                                      const void* json,
+                                                      uint64_t len);
 
 using cajeta::Compiler;
 using cajeta::CajetaModulePtr;
@@ -122,36 +128,20 @@ std::unique_ptr<llvm::orc::LLJIT> registerKernel(Compiler& compiler,
     syms[mangle("__cajeta_xpu_register_cpu_kernel")] = llvm::orc::ExecutorSymbolDef(
         llvm::orc::ExecutorAddr::fromPtr(&__cajeta_xpu_register_cpu_kernel),
         llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
+    // Same treatment for the manifest registration the ctor also calls. On
+    // Windows nothing else can supply it: this bare LLJIT consults neither
+    // CajetaJitHost's nor JitTestHelper's bridge table, and it must NOT be
+    // added to those shared tables — the modules they load link the full
+    // runtime bitcode, which already DEFINES this symbol, so a table entry
+    // is a "duplicate definition" abort for every other JIT test (measured:
+    // it took down ViewSafeConsumerTests). This host module only calls it.
+    syms[mangle("__cajeta_xpu_register_kernel_manifest")] = llvm::orc::ExecutorSymbolDef(
+        llvm::orc::ExecutorAddr::fromPtr(&__cajeta_xpu_register_kernel_manifest),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
     if (auto err = JD.define(llvm::orc::absoluteSymbols(std::move(syms)))) {
         failure = llvm::toString(std::move(err));
         return nullptr;
     }
-
-#ifdef _WIN32
-    // The registration ctor ALSO calls __cajeta_xpu_register_kernel_manifest
-    // (native runtime, not in the core bitcode, absent from the PE export
-    // table). This bare LLJIT goes through neither CajetaJitHost nor
-    // JitTestHelper, so neither of their bridge tables reaches it and the
-    // v0.27.0 Windows release leg failed with "Symbols not found". Install the
-    // test-side Windows bridge here — the same absoluteSymbols idiom
-    // JitTestHelper uses. POSIX resolves these via -rdynamic and needs nothing.
-    {
-        size_t winSymCount = 0;
-        const CajetaJitWinSym* winSyms = cajeta_jit_win_symbols(&winSymCount);
-        auto& execSession = jit->getExecutionSession();
-        llvm::orc::SymbolMap winSymMap;
-        for (size_t i = 0; i < winSymCount; ++i) {
-            winSymMap[execSession.intern(winSyms[i].name)] =
-                llvm::orc::ExecutorSymbolDef(
-                    llvm::orc::ExecutorAddr::fromPtr(winSyms[i].addr),
-                    llvm::JITSymbolFlags::Exported);
-        }
-        if (auto err = JD.define(llvm::orc::absoluteSymbols(std::move(winSymMap)))) {
-            failure = llvm::toString(std::move(err));
-            return nullptr;
-        }
-    }
-#endif
 
     if (auto err = jit->addIRModule(
             llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)))) {

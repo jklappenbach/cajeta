@@ -83,18 +83,6 @@ extern int      cajeta_xpu_optix_launch_tri(const char* ptx, uint64_t ptxLen,
                                             const void* paramsHost, uint64_t paramsLen,
                                             unsigned width);
 
-// XPU kernel-manifest registration (runtime/native/cajeta_xpu_launch.c). A
-// CPU-driver module's static initializer (__orc_init_func.xpu_cpu_driver)
-// calls this to register its kernel manifest; it lives in the native runtime
-// but NOT the core bitcode the JIT harness links, so — like the libm/libgcc
-// families — it is absent from the PE export table and the JIT's process
-// generator can't see it. Without this bridge entry XpuCpuDriverTests fail on
-// Windows with "Symbols not found: [ __cajeta_xpu_register_kernel_manifest ]".
-extern void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
-                                                  int backend, const char* arch,
-                                                  const void* json,
-                                                  unsigned long long len);
-
 // libmingwex printf-family / strtod: the runtime's fprintf/snprintf/strtod
 // calls lower to these under ANSI stdio. Bind them by their real names so we
 // don't depend on whether the header exposes fprintf as an inline wrapper.
@@ -245,9 +233,6 @@ static const CajetaJitWinSym kSymbols[] = {
     CJ_SYM("cajeta_xpu_optix_accel_boxes",            &cajeta_xpu_optix_accel_boxes),
     CJ_SYM("cajeta_xpu_optix_launch",                 &cajeta_xpu_optix_launch),
     CJ_SYM("cajeta_xpu_optix_launch_tri",             &cajeta_xpu_optix_launch_tri),
-    // XPU kernel-manifest registration — native runtime, not in the core
-    // bitcode; a CPU-driver module's static init calls it (see extern above).
-    CJ_SYM("__cajeta_xpu_register_kernel_manifest",   &__cajeta_xpu_register_kernel_manifest),
     // Packages.install bridge — DATA symbols defined in KernelSession.cpp.
     // cajeta_rt_session.c is part of the STANDARD embedded runtime, so every
     // JIT module references these, not just the notebook ones. See the extern

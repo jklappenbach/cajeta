@@ -167,11 +167,6 @@ extern "C" void cajeta_xpu_optix_accel_boxes();
 extern "C" void cajeta_xpu_optix_accel_free();
 extern "C" void cajeta_xpu_optix_launch();
 extern "C" void cajeta_xpu_optix_launch_tri();
-// XPU kernel-manifest registration (runtime/native/cajeta_xpu_launch.c): a
-// CPU-driver module's static init calls it, and it lives in the native runtime
-// but not the core bitcode, so it is absent from the PE export table like the
-// libm/libgcc families. Keep in step with test/jit/JitWinSymbols.c.
-extern "C" void __cajeta_xpu_register_kernel_manifest();
 
 // sjlj exception machinery. Codegen's try/catch and the runtime bitcode's
 // session guard capture with `_setjmp(frame, NULL)` on COFF (non-unwinding —
@@ -272,7 +267,6 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("cajeta_xpu_optix_accel_free", &cajeta_xpu_optix_accel_free),
     CJ_SYM("cajeta_xpu_optix_launch", &cajeta_xpu_optix_launch),
     CJ_SYM("cajeta_xpu_optix_launch_tri", &cajeta_xpu_optix_launch_tri),
-    CJ_SYM("__cajeta_xpu_register_kernel_manifest", &__cajeta_xpu_register_kernel_manifest),
     // Stateful CRT functions that maintain process-global tables — must resolve
     // to the same CRT instance as the host binary (see JitWinSymbols.c).
     CJ_SYM("_commit",          &::_commit),
