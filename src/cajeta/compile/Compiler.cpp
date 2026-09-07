@@ -4498,9 +4498,84 @@ namespace cajeta {
         for (auto& m : modules) consider(m);
         for (auto& m : externalModules) consider(m);
         if (auto stdlib = CajetaModule::getStdlibModule()) consider(stdlib);
+
+        // IR-level --gc-sections (COFF completeness). Deleting a method body
+        // above turns it into an extern decl and RELIES on the linker's
+        // --gc-sections to strip the now-unreachable structures that still
+        // reference it (vtables, reflect adapters, spawn trampolines, drop
+        // glue, RTTI). ld.lld on COFF does NOT do this — it keeps an
+        // unreferenced section, and NOT EVEN internalizing to a local symbol
+        // makes it GC-droppable (measured 2026-09-06: StringBuilder#VTable and
+        // its reflect_invoke thunk, reduced to `d`/`t` locals, STILL left
+        // `undefined symbol: cajeta.lang.StringBuilder::count`; a second layer of
+        // __cajeta_spawn_trampoline_N and per-class ::drop then surfaced). So
+        // reproduce --gc-sections at the IR level here: erase EVERY defined
+        // global the reachability walk did not reach.
+        //
+        // `reached` is the transitive closure from the same roots --gc-sections
+        // honors (main, global_ctors, llvm.used), and a global's initializer /
+        // a function's body edges are followed — so a live class keeps its
+        // vtable, its vtable keeps its slots, and a method that drops an
+        // interface field keeps __cajeta_iface_drop. Everything outside `reached`
+        // is genuinely dead: erasing it is exactly what ELF already does via
+        // section-GC (and ELF binaries are correct), only done platform-
+        // independently and before codegen. It stays LOUD, not silent — an
+        // unsound miss becomes an undefined symbol at link, never a miscompile.
+        // NEVER touch the LLVM special globals: appending-linkage pins
+        // (llvm.used, llvm.compiler.used) and the static-init/teardown arrays
+        // (llvm.global_ctors / llvm.global_dtors), plus anything else named
+        // `llvm.*`. The reach walk already folded their contents into the roots
+        // (main, ctor entries, used pins); their own structure must survive, or
+        // nulling llvm.global_ctors would silently disable every clinit.
+        auto isReservedGlobal = [](const GlobalValue& gv) {
+            return gv.hasAppendingLinkage() || gv.getName().starts_with("llvm.");
+        };
+        std::vector<GlobalVariable*> deadGlobals;
+        std::vector<Function*>       deadFns;
+        std::vector<GlobalAlias*>    deadAliases;
+        for (auto* lm : lmods) {
+            for (auto& f : lm->functions())
+                if (!f.isDeclaration() && !isReservedGlobal(f)
+                        && !reached.count(f.getName().str()))
+                    deadFns.push_back(&f);
+            for (auto& g : lm->globals())
+                if (g.hasInitializer() && !isReservedGlobal(g)
+                        && !reached.count(g.getName().str()))
+                    deadGlobals.push_back(&g);
+            for (auto& a : lm->aliases())
+                if (!isReservedGlobal(a) && !reached.count(a.getName().str()))
+                    deadAliases.push_back(&a);
+        }
+        // Drop every dead entity's outgoing references FIRST, so nothing dead
+        // still points at a pruned method or another dead global. This is the
+        // load-bearing invariant for COFF: a symbol that keeps a reference to a
+        // deleted-body method becomes an undefined symbol at link, and COFF
+        // never GCs it away — so once every dead body/initializer is emptied,
+        // no surviving symbol (erased or merely internalized) can reference a
+        // pruned method. Dead aliases are erased outright (an alias cannot hold
+        // a null aliasee); they are used only by other dead entities.
+        for (auto* f : deadFns)     f->deleteBody();
+        for (auto* g : deadGlobals) g->setInitializer(nullptr);
+        // Nulling a dead global's initializer orphans the old initializer
+        // Constant (a ConstantStruct/Array/Expr) but does not destroy it, so it
+        // lingers as a phantom user of the vtable/RTTI globals it aggregated and
+        // keeps use_empty() false. removeDeadConstantUsers() collapses exactly
+        // those dead constant chains, leaving the dead global genuinely use-free.
+        size_t erased = 0, internalized = 0;
+        auto disposeOf = [&](GlobalValue* gv) {
+            gv->removeDeadConstantUsers();
+            if (gv->use_empty()) { gv->eraseFromParent(); erased++; }
+            else { gv->setLinkage(GlobalValue::InternalLinkage); internalized++; }
+        };
+        for (auto* a : deadAliases) disposeOf(a);
+        for (auto* g : deadGlobals) disposeOf(g);
+        for (auto* f : deadFns)     disposeOf(f);
+
         std::cout << "tree-shake (--tree-shake=on): pruned " << pruned
                   << " of " << totalFns
-                  << " unreachable cajeta method bodies (kept " << keptFns << ")\n";
+                  << " unreachable cajeta method bodies (kept " << keptFns
+                  << ", erased " << erased << " dead globals, internalized "
+                  << internalized << ")\n";
     }
 
     // Rebuild a module's @llvm.global_ctors initializer, dropping every entry whose
