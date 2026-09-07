@@ -11,6 +11,7 @@
 // parameter), so every access shape the lowering emits — scalar, vector,
 // coop-matrix, atomic — is one walk; the CPU backend is used where the
 // device does not matter (GPU-free) and gfx1151 ISA emission where it does.
+#include <cstdlib>
 #include "gtest/gtest.h"
 
 #include "../jit/JitTestHelper.h"
@@ -274,9 +275,22 @@ TEST(XpuKernelAccess, drainsDeviceForConstantIndexedWrites) {
     }
 }
 
-// 3.1.3 — `@Streaming` on a read buffer: AMD lowers its loads non-temporal
-// (the ISA carries the cache-policy bit) and the manifest records streaming.
-TEST(XpuKernelAccess, streamingLowersNontemporalLoadsOnAmd) {
+// Scopes CAJETA_XPU_STREAMING_NONTEMPORAL for one test: the policy is off by
+// default (trial T-M3), so the mechanism is exercised with it forced on and
+// the default is asserted separately.
+struct NontemporalPolicy {
+    explicit NontemporalPolicy(bool on) {
+        if (on) setenv("CAJETA_XPU_STREAMING_NONTEMPORAL", "1", 1);
+        else unsetenv("CAJETA_XPU_STREAMING_NONTEMPORAL");
+    }
+    ~NontemporalPolicy() { unsetenv("CAJETA_XPU_STREAMING_NONTEMPORAL"); }
+};
+
+// 3.1.3 — `@Streaming` on a read buffer with the policy ON: AMD lowers its
+// loads non-temporal (the ISA carries the cache-policy bit) and the manifest
+// records streaming.
+TEST(XpuKernelAccess, streamingLowersNontemporalLoadsOnAmdWhenEnabled) {
+    NontemporalPolicy on(true);
     AmdLowered lw = amdLower(src(kStreaming), "stream");
     ASSERT_TRUE(lw.ok) << "gfx1151 lowering unavailable";
     const KernelAccessEntry* x = nullptr;
@@ -305,6 +319,27 @@ TEST(XpuKernelAccess, streamingLowersNontemporalLoadsOnAmd) {
     EXPECT_TRUE(storeLine.find(" nt") == std::string::npos
                 && storeLine.find("slc") == std::string::npos)
         << "the plain store must not be non-temporal: " << storeLine;
+}
+
+// 3.3.2 — the DEFAULT: non-temporal lowering shipped gated off after trial
+// T-M3 (protected p99 inside its band, cache-resident saxpy 3.2x slower), so
+// with the variable unset the streaming load is a plain load and the manifest
+// does not claim streaming. The mechanism stays one env var away.
+TEST(XpuKernelAccess, streamingStaysPlainByDefaultOnAmd) {
+    NontemporalPolicy off(false);
+    AmdLowered lw = amdLower(src(kStreaming), "stream");
+    ASSERT_TRUE(lw.ok) << "gfx1151 lowering unavailable";
+    const KernelAccessEntry* x = nullptr;
+    for (const auto& e : lw.access.entries) if (e.param == "x") x = &e;
+    ASSERT_NE(x, nullptr);
+    EXPECT_FALSE(x->streaming) << "policy off: the manifest must not claim streaming";
+    EXPECT_EQ(x->mode, "read");
+    size_t load = lw.isa.find("global_load");
+    ASSERT_NE(load, std::string::npos) << lw.isa;
+    std::string loadLine = lw.isa.substr(load, lw.isa.find('\n', load) - load);
+    EXPECT_TRUE(loadLine.find(" nt") == std::string::npos
+                && loadLine.find("slc") == std::string::npos)
+        << "policy off: the load must be plain: " << loadLine;
 }
 
 // The CPU backend does not lower non-temporal: the manifest must not claim it.

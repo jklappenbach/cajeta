@@ -552,6 +552,86 @@ row for the same (workload, device, KPI). Verdict per KPI is `keep`, `worse` or
 | T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | seam [200us] | cpu | isolated_overhead | -0.553 us | -0.297 us | 0.256 (-46.293%) | [-0.573, -0.483] | e0fa4871 | worse | launch + sync minus kernel_time |
 | T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | frame [8388608x12@16.667ms] | cpu | frame_p50 | 3.339 ms | 3.257 ms | -0.082 (-2.456%) | [1.986, 7.233] | e0fa4871 | keep | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
 | T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | pair [8388608x12@16.667ms] | cpu | frame_p50 | 53.318 ms | 53.177 ms | -0.141 (-0.264%) | [48.956, 60.047] | e0fa4871 | keep | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | frame [8388608x12@16.667ms] | hip | frame_p50 | 4.136 ms | 4.167 ms | 0.031 (0.749%) | [3.499, 5.784] | 650f326d | keep | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | frame [8388608x12@16.667ms] | hip | frame_p99 | 4.842 ms | 5.04 ms | 0.198 (4.089%) | [4.842, 5.296] | 650f326d | keep | nearest-rank over frames |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | frame [8388608x12@16.667ms] | hip | missed_frames_per_10000 | 0 frames | 0 frames | 0 (0%) | [0, 0] | 650f326d | keep | 0 of 600 frames exceeded the period |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | frame [8388608x12@16.667ms] | hip | sync_points_per_frame | 1 count | 1 count | 0 (0%) | [1, 1] | 650f326d | keep | one host sync per frame; the 11 intra-frame dependencies ride stream order |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | pair [8388608x12@16.667ms] | hip | frame_p50 | 9.329 ms | 9.194 ms | -0.135 (-1.447%) | [9.166, 12.257] | 650f326d | keep | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | pair [8388608x12@16.667ms] | hip | frame_p99 | 10.806 ms | 10.683 ms | -0.123 (-1.138%) | [10.806, 11.359] | 650f326d | keep | nearest-rank over frames |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | pair [8388608x12@16.667ms] | hip | missed_frames_per_10000 | 0 frames | 0 frames | 0 (0%) | [0, 0] | 650f326d | keep | 0 of 600 frames exceeded the period |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | pair [8388608x12@16.667ms] | hip | sync_points_per_frame | 1 count | 1 count | 0 (0%) | [1, 1] | 650f326d | keep | one host sync per frame; the 11 intra-frame dependencies ride stream order |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | pair [8388608x12@16.667ms] | hip | besteffort_throughput | 168.4 GB/s | 172.5 GB/s | 4.14 (2.459%) | [164.9, 168.4] | 650f326d | keep | 8592 saxpy(16M) launches on the second stream, batches of 24 refilled on completion |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | pair [8388608x12@16.667ms] | hip | protected_p99_slowdown | 123.2 % | 111.9 % | -11.3 (-9.172%) | [114.5, 123.2] | 650f326d | keep | frame p99 co-run vs solo 5.04 ms |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | pair [8388608x12@16.667ms] | hip | besteffort_pct_of_solo | 80.6 % | 77.6 % | -3 (-3.722%) | [74.4, 80.6] | 650f326d | keep | vs solo pipelined saxpy(16M) 222.21 GB/s |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | pair [8388608x12@16.667ms] | hip | goodput | 90.3 % | 88.8 % | -1.5 (-1.661%) | [87.2, 90.3] | 650f326d | keep | mean of protected on-time % and best-effort % of solo |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.saxpy [1048576] | hip | duration_isolated | 19.93 us | 74.1 us | 54.17 (271.8%) | [19.9, 65.35] | 650f326d | worse | launch+sync per sample; class memory-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.saxpy [1048576] | hip | duration_pipelined | 15.08 us | 47.82 us | 32.74 (217.1%) | [15.05, 15.23] | 650f326d | worse | 50 queued launches / count; class memory-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.saxpy [1048576] | hip | bytes_moved | 12582912 bytes | 12582912 bytes | 0 (0%) | [12582912, 12582912] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.saxpy [1048576] | hip | achieved_bandwidth | 834.5 GB/s | 263.1 GB/s | -571.3 (-68.468%) | [826.2, 836.0] | 650f326d | worse | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.saxpy [1048576] | hip | achieved_rate | 139.1 GFLOP/s | 43.85 GFLOP/s | -95.23 (-68.471%) | [137.7, 139.3] | 650f326d | worse | flops / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.saxpy [16777216] | hip | duration_isolated | 921.9 us | 895.9 us | -26.03 (-2.824%) | [891.3, 932.3] | 650f326d | keep | launch+sync per sample; class memory-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.saxpy [16777216] | hip | duration_pipelined | 917.9 us | 899.5 us | -18.35 (-1.999%) | [889.7, 938.9] | 650f326d | keep | 50 queued launches / count; class memory-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.saxpy [16777216] | hip | bytes_moved | 201326592 bytes | 201326592 bytes | 0 (0%) | [201326592, 201326592] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.saxpy [16777216] | hip | achieved_bandwidth | 219.3 GB/s | 223.8 GB/s | 4.47 (2.038%) | [214.4, 226.3] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.saxpy [16777216] | hip | achieved_rate | 36.56 GFLOP/s | 37.3 GFLOP/s | 0.74 (2.024%) | [35.74, 37.71] | 650f326d | keep | flops / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.dot [1048576] | hip | duration_isolated | 25.79 us | 25.64 us | -0.15 (-0.582%) | [25.33, 94.63] | 650f326d | keep | launch+sync per sample; class memory-bound+reduce |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.dot [1048576] | hip | duration_pipelined | 20.59 us | 20.53 us | -0.06 (-0.291%) | [20.43, 20.8] | 650f326d | keep | 50 queued launches / count; class memory-bound+reduce |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.dot [1048576] | hip | bytes_moved | 8388608 bytes | 8388608 bytes | 0 (0%) | [8388608, 8388608] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.dot [1048576] | hip | achieved_bandwidth | 407.4 GB/s | 408.6 GB/s | 1.25 (0.307%) | [403.4, 410.6] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.dot [1048576] | hip | achieved_rate | 101.8 GFLOP/s | 102.2 GFLOP/s | 0.31 (0.304%) | [100.8, 102.6] | 650f326d | keep | flops / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.dot [16777216] | hip | duration_isolated | 660.3 us | 657.0 us | -3.33 (-0.504%) | [640.3, 664.0] | 650f326d | keep | launch+sync per sample; class memory-bound+reduce |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.dot [16777216] | hip | duration_pipelined | 656.4 us | 651.2 us | -5.19 (-0.791%) | [635.4, 676.0] | 650f326d | keep | 50 queued launches / count; class memory-bound+reduce |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.dot [16777216] | hip | bytes_moved | 134217728 bytes | 134217728 bytes | 0 (0%) | [134217728, 134217728] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.dot [16777216] | hip | achieved_bandwidth | 204.5 GB/s | 206.1 GB/s | 1.63 (0.797%) | [198.6, 211.2] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.dot [16777216] | hip | achieved_rate | 51.12 GFLOP/s | 51.53 GFLOP/s | 0.41 (0.802%) | [49.64, 52.81] | 650f326d | keep | flops / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.stencil5 [1024x1024] | hip | duration_isolated | 22.15 us | 22.18 us | 0.03 (0.135%) | [21.95, 89.56] | 650f326d | keep | launch+sync per sample; class memory-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.stencil5 [1024x1024] | hip | duration_pipelined | 16.78 us | 16.83 us | 0.05 (0.298%) | [16.64, 17] | 650f326d | keep | 50 queued launches / count; class memory-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.stencil5 [1024x1024] | hip | bytes_moved | 8388608 bytes | 8388608 bytes | 0 (0%) | [8388608, 8388608] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.stencil5 [1024x1024] | hip | achieved_bandwidth | 499.8 GB/s | 498.4 GB/s | -1.42 (-0.284%) | [493.3, 504.2] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.stencil5 [1024x1024] | hip | achieved_rate | 499.8 GFLOP/s | 498.4 GFLOP/s | -1.42 (-0.284%) | [493.3, 504.2] | 650f326d | keep | flops / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.stencil5 [4096x4096] | hip | duration_isolated | 601.7 us | 603.6 us | 1.85 (0.307%) | [599.1, 605.8] | 650f326d | keep | launch+sync per sample; class memory-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.stencil5 [4096x4096] | hip | duration_pipelined | 595.7 us | 597.4 us | 1.71 (0.287%) | [595.3, 610.0] | 650f326d | keep | 50 queued launches / count; class memory-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.stencil5 [4096x4096] | hip | bytes_moved | 134217728 bytes | 134217728 bytes | 0 (0%) | [134217728, 134217728] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.stencil5 [4096x4096] | hip | achieved_bandwidth | 225.3 GB/s | 224.7 GB/s | -0.65 (-0.288%) | [220.0, 225.5] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.stencil5 [4096x4096] | hip | achieved_rate | 225.3 GFLOP/s | 224.7 GFLOP/s | -0.65 (-0.288%) | [220.0, 225.5] | 650f326d | keep | flops / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.reduceSum [1048576] | hip | duration_isolated | 36.78 us | 37.08 us | 0.3 (0.816%) | [31.72, 37.23] | 650f326d | keep | launch+sync per sample; class sync-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.reduceSum [1048576] | hip | duration_pipelined | 26.29 us | 26.42 us | 0.13 (0.494%) | [26.21, 26.45] | 650f326d | keep | 50 queued launches / count; class sync-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.reduceSum [1048576] | hip | bytes_moved | 4194304 bytes | 4194304 bytes | 0 (0%) | [4194304, 4194304] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.reduceSum [1048576] | hip | achieved_bandwidth | 159.5 GB/s | 158.8 GB/s | -0.76 (-0.476%) | [158.6, 160.1] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.reduceSum [1048576] | hip | achieved_rate | 39.88 GFLOP/s | 39.69 GFLOP/s | -0.19 (-0.476%) | [39.64, 40.01] | 650f326d | keep | flops / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.reduceSum [16777216] | hip | duration_isolated | 575.4 us | 551.7 us | -23.72 (-4.122%) | [540.3, 577.7] | 650f326d | keep | launch+sync per sample; class sync-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.reduceSum [16777216] | hip | duration_pipelined | 571.6 us | 547.5 us | -24.08 (-4.213%) | [533.1, 593.3] | 650f326d | keep | 50 queued launches / count; class sync-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.reduceSum [16777216] | hip | bytes_moved | 67108864 bytes | 67108864 bytes | 0 (0%) | [67108864, 67108864] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.reduceSum [16777216] | hip | achieved_bandwidth | 117.4 GB/s | 122.6 GB/s | 5.17 (4.404%) | [113.1, 125.9] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.reduceSum [16777216] | hip | achieved_rate | 29.35 GFLOP/s | 30.64 GFLOP/s | 1.29 (4.395%) | [28.28, 31.47] | 650f326d | keep | flops / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.matmulTiled [512^2] | hip | duration_isolated | 178.3 us | 179.3 us | 1 (0.561%) | [172.3, 180.4] | 650f326d | keep | launch+sync per sample; class compute-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.matmulTiled [512^2] | hip | duration_pipelined | 163.1 us | 162.9 us | -0.19 (-0.116%) | [160.9, 165.3] | 650f326d | keep | 50 queued launches / count; class compute-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.matmulTiled [512^2] | hip | bytes_moved | 3145728 bytes | 3145728 bytes | 0 (0%) | [3145728, 3145728] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.matmulTiled [512^2] | hip | achieved_bandwidth | 19.29 GB/s | 19.31 GB/s | 0.02 (0.104%) | [19.03, 19.55] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.matmulTiled [512^2] | hip | achieved_rate | 1645.8 GFLOP/s | 1647.7 GFLOP/s | 1.88 (0.114%) | [1623.7, 1668.1] | 650f326d | keep | flops / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.matmulTiled [2048^2] | hip | duration_isolated | 10208.9 us | 10308.5 us | 99.61 (0.976%) | [10186.6, 10538.9] | 650f326d | keep | launch+sync per sample; class compute-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.matmulTiled [2048^2] | hip | duration_pipelined | 10209.0 us | 10432.0 us | 223.1 (2.185%) | [10182.8, 10695.0] | 650f326d | keep | 50 queued launches / count; class compute-bound |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.matmulTiled [2048^2] | hip | bytes_moved | 50331648 bytes | 50331648 bytes | 0 (0%) | [50331648, 50331648] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.matmulTiled [2048^2] | hip | achieved_bandwidth | 4.93 GB/s | 4.82 GB/s | -0.11 (-2.231%) | [4.71, 4.94] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.matmulTiled [2048^2] | hip | achieved_rate | 1682.8 GFLOP/s | 1646.8 GFLOP/s | -35.98 (-2.138%) | [1606.3, 1687.1] | 650f326d | keep | flops / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.wmmaGemm [512^2] | hip | duration_isolated | 79.01 us | 79.17 us | 0.16 (0.203%) | [75.16, 305.9] | 650f326d | keep | launch+sync per sample; class matrix-core |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.wmmaGemm [512^2] | hip | duration_pipelined | 63.18 us | 61.23 us | -1.95 (-3.086%) | [60.61, 65.19] | 650f326d | keep | 50 queued launches / count; class matrix-core |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.wmmaGemm [512^2] | hip | bytes_moved | 2097152 bytes | 2097152 bytes | 0 (0%) | [2097152, 2097152] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.wmmaGemm [512^2] | hip | achieved_bandwidth | 33.19 GB/s | 34.25 GB/s | 1.06 (3.194%) | [32.17, 34.6] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.wmmaGemm [512^2] | hip | achieved_rate | 4248.8 GFLOP/s | 4384.1 GFLOP/s | 135.3 (3.184%) | [4117.9, 4429.2] | 650f326d | keep | flops / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.wmmaGemm [2048^2] | hip | duration_isolated | 3668.6 us | 3178.8 us | -489.8 (-13.35%) | [3275.6, 3685.8] | 650f326d | keep | launch+sync per sample; class matrix-core |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.wmmaGemm [2048^2] | hip | duration_pipelined | 3623.9 us | 3212.7 us | -411.2 (-11.347%) | [3294.5, 3694.3] | 650f326d | keep | 50 queued launches / count; class matrix-core |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.wmmaGemm [2048^2] | hip | bytes_moved | 33554432 bytes | 33554432 bytes | 0 (0%) | [33554432, 33554432] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.wmmaGemm [2048^2] | hip | achieved_bandwidth | 9.26 GB/s | 10.44 GB/s | 1.18 (12.743%) | [9.08, 10.19] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.wmmaGemm [2048^2] | hip | achieved_rate | 4740.7 GFLOP/s | 5347.5 GFLOP/s | 606.8 (12.799%) | [4650.4, 5214.8] | 650f326d | keep | flops / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.gather [1048576] | hip | duration_isolated | 107.8 us | 104.0 us | -3.83 (-3.552%) | [94.45, 108.1] | 650f326d | keep | launch+sync per sample; class indirect |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.gather [1048576] | hip | duration_pipelined | 87.6 us | 87.73 us | 0.13 (0.148%) | [87.47, 105.8] | 650f326d | keep | 50 queued launches / count; class indirect |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.gather [1048576] | hip | bytes_moved | 12582912 bytes | 12582912 bytes | 0 (0%) | [12582912, 12582912] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.gather [1048576] | hip | achieved_bandwidth | 143.6 GB/s | 143.4 GB/s | -0.21 (-0.146%) | [118.9, 143.9] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.gather [16777216] | hip | duration_isolated | 13228.6 us | 9835.9 us | -3392.7 (-25.647%) | [8326.3, 13273.0] | 650f326d | keep | launch+sync per sample; class indirect |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.gather [16777216] | hip | duration_pipelined | 13217.8 us | 9849.1 us | -3368.7 (-25.486%) | [8371.2, 16381.9] | 650f326d | keep | 50 queued launches / count; class indirect |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.gather [16777216] | hip | bytes_moved | 201326592 bytes | 201326592 bytes | 0 (0%) | [201326592, 201326592] | 650f326d | keep | ideal traffic: every element read/written once |
+| T-M3 | 2026-09-07T02:44:18Z | manifest U3 @Streaming | kernel.gather [16777216] | hip | achieved_bandwidth | 15.23 GB/s | 20.44 GB/s | 5.21 (34.209%) | [12.29, 24.05] | 650f326d | keep | bytes_moved / duration_pipelined; band from the duration band |
 
 T-001 — `cpu-barrier-fission-loops` Unit 1 on the CPU leg (before: the first
 leg, `8fea9b63`; after: the rerun on `e0fa4871`). Unit verdict: **keep**.
@@ -588,6 +668,20 @@ the union of its two quiet-box runs. A first attempt handed the trial the
 after run itself as the bands and read 129 of 129 `keep`; the tool now
 refuses a bands file carrying the after run's identity.
 
+
+T-M3 — `xpu-tile-manifest` Unit 3 (`@Streaming` → non-temporal loads and
+stores on AMD), gfx1151, control and streaming arm on the same Unit 3 build
+(650f326d), bands from the 2026-09-06 16:24 rerun. Verdict: **gate-off**.
+The protected frame's p99 did not move beyond noise — 4.84 → 5.04 ms solo
+(band [4.84, 5.30]) and 10.81 → 10.68 ms beside the best-effort stream —
+and the streaming kernel itself got worse where it was cache-resident:
+`saxpy` 1M pipelined 15.08 → 47.82 µs (+217 %, band [15.05, 15.23]),
+isolated 19.9 → 74.1 µs, achieved bandwidth 834 → 263 GB/s. The 16M shape,
+already DRAM-bound, was flat (+2 %, inside its band). Non-temporal traffic
+bypasses the cache the 12 MiB working set fit in; on this APU the cache is
+not the resource the protected kernel was losing. The lowering ships behind
+`CAJETA_XPU_STREAMING_NONTEMPORAL=1`; the manifest's `streaming` flag records
+what shipped (false by default). Residual in §5.
 ## 5. Residuals
 
 Changes that measured worse or flat and shipped gated off, with the row that
@@ -604,6 +698,7 @@ decided it and what would reopen it.
 | CLOSED 2026-09-06 — seam device-tier figure (§3.4) was a three-duration mix | baseline → 0.2.4 | one profiled pass per target, the calibration launches under their own kernel name: `seam device_span` 5.9 / 50.6 / 198.8 µs on gfx1151, 2–9 µs under the host-clocked pipelined time (§3.1) | closed |
 | Frame p50 band 3.5–6.6 ms solo | baseline | run-to-run jitter of the unscheduled frame; p99 and the miss count are the frame KPIs that verdicts read | a scheduler unit that claims to reduce jitter measures p50 with N runs, not one |
 | CLOSED 2026-09-06 — CG `queue-empty time` was not measured | baseline → 0.2.4 | a profiled CG pass: `queue_empty_time` 15.4% on gfx1151 (92.6 µs of device time in a 98.0 µs iteration), 74.5% for the degenerate loop; 0.5% and 16.7% on the CPU backend, where a launch is the kernel (§3.1) | closed |
+| `@Streaming` non-temporal lowering gated off | T-M3 | protected frame p99 inside its band (4.84 → 5.04 ms solo, 10.81 → 10.68 ms co-run); cache-resident `saxpy` 1M 3.2× slower pipelined (15.1 → 47.8 µs) — the traffic bypassed the cache its working set fit in; 16M flat | a device or workload where the protected kernel measurably loses cache to the best-effort stream; re-trial with `CAJETA_XPU_STREAMING_NONTEMPORAL=1` |
 
 ## 6. Closing summary (after the last unit)
 

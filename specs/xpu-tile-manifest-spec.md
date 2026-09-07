@@ -187,7 +187,14 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
   `@Streaming` (or the compiler proves is touch-once), loads and stores are
   lowered non-temporal where the target supports it and the manifest records it,
   so a best-effort kernel does not evict a protected kernel's working set
-  (MASK).
+  (MASK). Measured 2026-09-06 on gfx1151 (trial T-M3): the non-temporal
+  lowering shipped **gated off** — the protected frame's p99 stayed inside its
+  noise band and the cache-resident saxpy shape ran 3.2x slower pipelined,
+  because non-temporal traffic bypasses the cache its 12 MiB working set fit
+  in. `@Streaming` still classifies and the manifest still records `streaming`
+  as what shipped (false); `CAJETA_XPU_STREAMING_NONTEMPORAL=1` turns the
+  lowering on for a re-trial on a device where the cache is the contended
+  resource.
 - **6.4** When a kernel accumulates into a buffer, the manifest records that
   buffer as `accumulate`; two launches accumulating into one buffer are never
   co-run and the result is documented as order-dependent in float

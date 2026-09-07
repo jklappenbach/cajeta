@@ -24,6 +24,8 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Operator.h"
 
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <map>
 
@@ -350,14 +352,28 @@ KernelAccessSummary classifyKernelAccess(llvm::Function& kfn, const MethodPtr& m
     return out;
 }
 
+bool streamingNontemporalEnabled() {
+    const char* v = std::getenv("CAJETA_XPU_STREAMING_NONTEMPORAL");
+    return v && *v && std::strcmp(v, "0") != 0;
+}
+
 void applyAccessDeclarations(llvm::Function& kfn, const MethodPtr& method,
                              bool nontemporalSupported) {
     std::vector<BufferParam> params = bufferParams(method);
     if (params.empty()) return;
 
     // @Streaming: tag the parameter's loads and stores non-temporal where the
-    // backend lowers it. The manifest reads the tag back off the IR.
-    if (nontemporalSupported) {
+    // backend lowers it AND the policy is on. The manifest reads the tag back
+    // off the IR, so it records what shipped, not what was asked.
+    //
+    // The policy is OFF by default (xpu-tile-manifest 3.3.2, trial T-M3,
+    // 2026-09-06, gfx1151): non-temporal saxpy left the protected frame's p99
+    // inside its noise band (4.84 -> 5.04 ms solo, 10.81 -> 10.68 ms beside
+    // the best-effort stream) and made the cache-resident 1M shape 3.2x
+    // slower pipelined (15.1 -> 47.8 us): the traffic bypassed the cache the
+    // 12 MiB working set fit in. The DRAM-bound 16M shape was unchanged
+    // (+2%). CAJETA_XPU_STREAMING_NONTEMPORAL=1 turns it on for a re-trial.
+    if (nontemporalSupported && streamingNontemporalEnabled()) {
         llvm::LLVMContext& ctx = kfn.getContext();
         llvm::MDNode* nt = llvm::MDNode::get(
             ctx, llvm::ConstantAsMetadata::get(
