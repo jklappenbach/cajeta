@@ -21,8 +21,10 @@
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
-#include <sys/wait.h>
+#ifndef _WIN32
+#include <sys/wait.h>   // POSIX process-wait; absent on mingw
 #include <unistd.h>
+#endif
 
 using cajeta_test::CajetaJit;
 
@@ -187,6 +189,12 @@ TEST(XpuBenchHarness, idleGateLogic) {
 // is what keeps the "quiet" half honest: this process is excluded by pid,
 // and any OTHER cajeta_test (a parallel sweep) would make this test skip.
 TEST(XpuBenchHarness, idleGateLive) {
+#ifdef _WIN32
+    // The live-gate probe forks/execs a real named process and reaps it with
+    // waitpid — POSIX process primitives absent on mingw. POSIX behavior is
+    // unchanged; Windows simply skips this one probe.
+    GTEST_SKIP() << "fork/exec/waitpid live-gate probe is POSIX-only";
+#else
     auto jit = compileHarness();
     ASSERT_NE(jit, nullptr);
     auto live = jit->lookup<int (*)()>("liveHits");
@@ -229,6 +237,7 @@ TEST(XpuBenchHarness, idleGateLive) {
     ASSERT_EQ(alive, 1) << "the staged process must still be running when the gate is asked";
     EXPECT_GE(during, 1) << "a live process named xpubench-* must make the gate refuse";
     EXPECT_EQ(after, 0) << "with it gone the gate must not refuse (self is excluded by pid)";
+#endif  // _WIN32
 }
 
 // ── The trial verdict (report §1 "Verdict rule") ─────────────────────────
