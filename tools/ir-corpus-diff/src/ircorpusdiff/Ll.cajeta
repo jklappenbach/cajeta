@@ -70,11 +70,51 @@ public final class Ll {
         return heap String(#nb, n);
     }
 
+    static boolean isNameChar(int8 c) {
+        return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+            || c == 95 || c == 46 || c == 36 || c == 45;   // _ . $ -
+    }
+
+    /** Append the decimal digits of `v` (v >= 0) at out[n..]; returns the new n. */
+    static int32 appendInt(int8[] out, int32 n, int32 v) {
+        if (v == 0) { out[n] = (int8) 48; return n + 1; }
+        int32 digits = 0;
+        int32 t = v;
+        while (t > 0) { digits = digits + 1; t = t / 10; }
+        int32 k = n + digits - 1;
+        while (v > 0) {
+            out[k] = (int8) (48 + v - (v / 10) * 10);
+            v = v / 10;
+            k = k - 1;
+        }
+        return n + digits;
+    }
+
     /**
-     * Normalize one line into a fresh String. Returns null for a line that
-     * is empty after comment stripping.
+     * The alpha-rename index of a local name (`%foo`, `%12`, a block label):
+     * first occurrence in the function wins the next number, so two emissions
+     * of the same program compare equal whatever they called their values,
+     * while dataflow stays visible (`%v3 = add %v1, %v2`).
      */
-    static #String normLine(int8[] b, int32 s, int32 e) {
+    static int32 nameIndex(HashMap<String, int32> names, int8[] b, int32 s, int32 e) {
+        int32 n = e - s;
+        int8[] nb = heap int8[n];
+        int32 k = 0;
+        while (k < n) { nb[k] = b[s + k]; k = k + 1; }
+        String key #= heap String(#nb, n);
+        if (names.containsKey(key)) { return names.get(key); }
+        int32 idx = (int32) names.count();
+        names.put(#key, idx);
+        return idx;
+    }
+
+    /**
+     * Normalize one line into a fresh String: comments stripped, blanks
+     * trimmed, local values and labels alpha-renamed to `%vN` / `vN:`,
+     * metadata `!N` → `!_`, attribute groups `#N` → `#_`. Returns null for a
+     * line that is empty after comment stripping.
+     */
+    static #String normLine(int8[] b, int32 s, int32 e, HashMap<String, int32> names) {
         // Strip a trailing comment: the first `;` outside a string literal.
         boolean inStr = false;
         int32 end = e;
@@ -90,24 +130,45 @@ public final class Ll {
         while (end > s && (b[end - 1] == (int8) 32 || b[end - 1] == (int8) 9)) { end = end - 1; }
         while (s < end && (b[s] == (int8) 32 || b[s] == (int8) 9)) { s = s + 1; }
         if (end <= s) { return null; }
-        int8[] out = heap int8[end - s];
+        int8[] out = heap int8[(end - s) * 3 + 16];   // `%vNNN` may outgrow `%1`
         int32 n = 0;
         i = s;
-        // A numbered block label at the start of the line: `12:` → `_:`.
-        if (Ll.isDigit(b[i])) {
+        // A block label definition is the whole line: `name:` → `vN:`.
+        {
             int32 j = i;
-            while (j < end && Ll.isDigit(b[j])) { j = j + 1; }
-            if (j < end && b[j] == (int8) 58) {                  // ':'
-                out[n] = (int8) 95; n = n + 1;                  // '_'
-                i = j;
+            while (j < end && Ll.isNameChar(b[j])) { j = j + 1; }
+            if (j > i && j + 1 == end && b[j] == (int8) 58) {        // ':'
+                int32 idx = Ll.nameIndex(names, b, i, j);
+                out[n] = (int8) 118; n = n + 1;                      // 'v'
+                n = Ll.appendInt(out, n, idx);
+                out[n] = (int8) 58; n = n + 1;
+                return heap String(#out, n);
             }
         }
         while (i < end) {
             int8 c = b[i];
-            if ((c == (int8) 37 || c == (int8) 33 || c == (int8) 35)   // '%' '!' '#'
+            if (c == (int8) 37 && i + 1 < end) {                     // `%name` / `%"quoted"`
+                int32 j = i + 1;
+                if (b[j] == (int8) 34) {
+                    j = j + 1;
+                    while (j < end && b[j] != (int8) 34) { j = j + 1; }
+                    if (j < end) { j = j + 1; }
+                } else {
+                    while (j < end && Ll.isNameChar(b[j])) { j = j + 1; }
+                }
+                if (j > i + 1) {
+                    int32 idx = Ll.nameIndex(names, b, i + 1, j);
+                    out[n] = c; n = n + 1;
+                    out[n] = (int8) 118; n = n + 1;                  // 'v'
+                    n = Ll.appendInt(out, n, idx);
+                    i = j;
+                    continue;
+                }
+            }
+            if ((c == (int8) 33 || c == (int8) 35)                   // `!N` `#N`
                     && i + 1 < end && Ll.isDigit(b[i + 1])) {
                 out[n] = c; n = n + 1;
-                out[n] = (int8) 95; n = n + 1;                  // '_'
+                out[n] = (int8) 95; n = n + 1;                       // '_'
                 i = i + 1;
                 while (i < end && Ll.isDigit(b[i])) { i = i + 1; }
                 continue;
@@ -122,6 +183,7 @@ public final class Ll {
     public static #ArrayList<Fn> parse(int8[] b, int32 len) {
         ArrayList<Fn> fns = heap ArrayList<Fn>();
         Fn cur = null;
+        HashMap<String, int32> names = heap HashMap<String, int32>();
         int32 s = 0;
         while (s < len) {
             int32 e = s;
@@ -131,11 +193,25 @@ public final class Ll {
             if (Ll.startsWith(b, s, le, "define ")) {
                 cur = heap Fn(Ll.nameOf(b, s, le));
                 fns.add(#cur);
+                names = heap HashMap<String, int32>();   // a fresh alpha-rename space per function
+                // Parameters first, in signature order, so `%0` is `%v0`
+                // however the body happens to mention it.
+                int32 p = s;
+                while (p < le) {
+                    if (b[p] == (int8) 37 && p + 1 < le && Ll.isNameChar(b[p + 1])) {
+                        int32 q = p + 1;
+                        while (q < le && Ll.isNameChar(b[q])) { q = q + 1; }
+                        Ll.nameIndex(names, b, p + 1, q);
+                        p = q;
+                        continue;
+                    }
+                    p = p + 1;
+                }
             } else if (cur != null) {
                 if (le - s == 1 && b[s] == (int8) 125) {             // '}'
                     cur = null;
                 } else if (le > s && b[s] != (int8) 59) {            // not a ';' comment line
-                    String nl #= Ll.normLine(b, s, le);
+                    String nl #= Ll.normLine(b, s, le, names);
                     if (nl != null) {
                         int32 ln = nl.byteLength();
                         boolean label = ln > 0 && nl.byteAt(ln - 1) == 58;   // ends with ':'

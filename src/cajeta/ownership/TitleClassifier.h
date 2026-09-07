@@ -110,6 +110,7 @@ namespace cajeta::ownership {
         static constexpr uint16_t kArray = 1 << 10;
         static constexpr uint16_t kView = 1 << 11;
         static constexpr uint16_t kSharpStore = 1 << 12;
+        static constexpr uint16_t kOwnedDecl = 1 << 13;   ///< the callee is declared `#R`
 
         bool has(uint16_t f) const { return (flags & f) != 0; }
     };

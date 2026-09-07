@@ -103,7 +103,7 @@ public final class Main {
         // reused block as its opt path (measured 2026-09-07, probe Cmd; no
         // use-after-move diagnostic covers this shape —
         // ownership-title-classifier plan 5.1.4).
-        String[] argv = [optBin + "", "-passes=instcombine,simplifycfg", "-S", llPath + "", "-o", stem + ".opt.ll"];
+        String[] argv = [optBin + "", "-passes=instcombine<no-verify-fixpoint>,simplifycfg", "-S", llPath + "", "-o", stem + ".opt.ll"];
         Command cmd = heap Command(#argv);
         cmd.captureStdout();
         cmd.captureStderr();
@@ -205,6 +205,7 @@ public final class Main {
             ArrayList<Fn> baseOpt = null;
             ArrayList<Fn> candOpt = null;
             HashMap<String, int32> ciOpt = null;
+            boolean foldTried = false;   // one opt run per module, not per changed function
             int32 k = 0;
             while (k < base.count()) {
                 Fn a = base.get(k);
@@ -224,7 +225,8 @@ public final class Main {
                 }
                 boolean isFolded = false;
                 if (optBin != null) {
-                    if (baseOpt == null) {
+                    if (!foldTried) {
+                        foldTried = true;
                         String bo #= Main.fold(optBin, baseDir + "/" + rel);
                         String co #= Main.fold(optBin, candDir + "/" + rel);
                         if (bo != null && co != null) {

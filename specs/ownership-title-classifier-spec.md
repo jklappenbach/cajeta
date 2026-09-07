@@ -103,7 +103,7 @@ Peels reference casts, then classifies the expression by provenance:
 | `ArrayLiteral` | `Fresh{heap, stack, arena}` | heap → Owned; else StackBound |
 | String `+` concat | `Concat{arena}` | arena → Borrow (frame arena); else Owned |
 | `MoveExpression` | `Move{inner}` | Owned when the inner is a static owner; Runtime(DE / WORD / SLOT) otherwise |
-| `MethodCallExpression` | `CallResult{stance: owned / plain / view}` | owned → Owned; plain → Runtime(TLS); view (`^`) → Borrow; a callee that emits no flag (a native, an intrinsic) → its declared stance, statically; a callee unresolvable before codegen → Runtime(TLS) |
+| `MethodCallExpression` | `CallResult{stance: owned / plain / view}` | any callee that emits a return flag → Runtime(TLS), whether declared `#R` or plain: a plain return may carry a title (§2.1 ride) and a `#R` return may carry a borrow (`return #= x` is its sanctioned escape) — *measured 2026-09-07: folding a `#R` arm to a constant 1 dropped the flag read in `Report::baseline`*; the `#R` declaration travels as a flag (`kOwnedDecl`) for the checks that key on it; view (`^`) → Borrow; a callee that emits no flag (a native, an intrinsic) → its declared stance, statically; unresolvable before codegen → Runtime(TLS). A static Owned for `#R` callees needs a signature bit "no mode-carrying return" (plan 7.2.3) |
 | `CallExpression` (closure) | `ClosureCall` | Runtime(TLS) |
 | `BooleanSwitchExpression` | `Conditional{arms}` | the join of the arms: equal static answers fold; otherwise Runtime(PHI) |
 | `SwitchExpression` (expression form) | `Conditional{arms}` | the join of its case arms, exactly as the conditional |

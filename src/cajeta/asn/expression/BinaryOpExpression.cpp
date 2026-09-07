@@ -523,7 +523,7 @@ namespace cajeta {
         // ternary the phi IS the instance pointer — the class-ref catch-all
         // below would otherwise load through it and hand back the vtable word,
         // so `"x" + (cond ? "a" : "b")` rendered the operand empty.
-        if (dynamic_pointer_cast<BooleanSwitchExpression>(ast)) {
+        if (isConditionalKind(ast)) {   // a conditional or a switch expression: the phi IS the value
             return v;
         }
         // A `#x` MoveExpression has ALREADY loaded its operand to the
@@ -3633,9 +3633,8 @@ namespace cajeta {
                                 }
                             }
                         }
-                    } else if (auto rhsTern =
-                            dynamic_pointer_cast<BooleanSwitchExpression>(rhsAst)) {
-                        if (llvm::Value* tf = rhsTern->getRuntimeTitleFlag()) {
+                    } else if (isConditionalKind(rhsAst)) {
+                        if (llvm::Value* tf = conditionalTitleFlag(rhsAst)) {
                             if (auto* cf = llvm::dyn_cast<llvm::ConstantInt>(tf)) {
                                 if (!cf->isZero()) rhsTitle = rOne;
                             } else {

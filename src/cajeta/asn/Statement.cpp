@@ -2139,7 +2139,7 @@ namespace cajeta {
                 // ride, a `#x` of a runtime owner) pass here and meet the
                 // TITLE_MISS contract check after codegen, as `return #x` does.
                 if (!modeCarrying
-                        && dynamic_pointer_cast<BooleanSwitchExpression>(inner)) {
+                        && isConditionalKind(inner)) {
                     const char* borrowArm = nullptr;
                     BooleanSwitchExpression::forEachLeafArm(inner,
                         [&](const ExpressionPtr& arm) {
@@ -2429,7 +2429,7 @@ namespace cajeta {
                 // frame before the `ret`. forEachLeafArm visits a bare
                 // expression once, so one body serves both.
                 bool viaConditional =
-                    (bool) dynamic_pointer_cast<BooleanSwitchExpression>(expression);
+                    isConditionalKind(expression);
                 std::string armNote = viaConditional
                     ? " The value is an arm of the returned conditional "
                       "(`c ? a : b`): every arm is held to this rule."
@@ -3459,8 +3459,8 @@ namespace cajeta {
         // exactly as a tail call does (ownership §2.1); `return #=` carries
         // it as the mode. Before this a `#` return stored a constant 1 over
         // a borrow arm and a plain return dropped a fresh arm on the floor.
-        if (auto ternRet = dynamic_pointer_cast<BooleanSwitchExpression>(expression)) {
-            if (llvm::Value* tf = ternRet->getRuntimeTitleFlag()) {
+        if (isConditionalKind(expression)) {
+            if (llvm::Value* tf = conditionalTitleFlag(expression)) {
                 returnTitleFlag = tf;
                 emitTitleContract(tf);
             }

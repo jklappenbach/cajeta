@@ -92,8 +92,16 @@ namespace cajeta::ownership {
                                             & (TitleShape::kString | TitleShape::kArray
                                                | TitleShape::kInterface | TitleShape::kValue
                                                | TitleShape::kView)));
-            if (a.answer == b.answer && a.answer != TitleAnswer::Runtime) {
-                s.answer = a.answer;
+            // Borrow, StackBound and Scalar all mean "no title": two such arms
+            // fold to Borrow; two Owned arms to Owned; anything else is the phi.
+            auto hasTitle = [](TitleAnswer x) {
+                return x == TitleAnswer::Owned || x == TitleAnswer::Runtime;
+            };
+            if (!hasTitle(a.answer) && !hasTitle(b.answer)) {
+                s.answer = TitleAnswer::Borrow;
+                s.source = TitleSource::None;
+            } else if (a.answer == TitleAnswer::Owned && b.answer == TitleAnswer::Owned) {
+                s.answer = TitleAnswer::Owned;
                 s.source = TitleSource::None;
             }
             return s;
@@ -167,18 +175,23 @@ namespace cajeta::ownership {
                 return make(TitleFamily::CallResult, TitleAnswer::Borrow,
                             TitleSource::None, leaf, (uint16_t) (flags | TitleShape::kView));
             }
-            if (rm->isReturnsOwnership()) {
-                return make(TitleFamily::CallResult, TitleAnswer::Owned,
-                            TitleSource::None, leaf, flags);
-            }
-            // A plain return is NOT statically a borrow (ownership §2.1): the
-            // callee leaves its bit in the TLS. A callee that emits no flag (a
-            // native, an intrinsic) is its declared stance: plain → Borrow.
+            bool ownedDecl = rm->isReturnsOwnership();
+            if (ownedDecl) flags |= TitleShape::kOwnedDecl;
             if (rm->emitsReturnFlag() && rm->returnsClassPointer()) {
+                // The callee leaves its bit in the TLS, and that bit is the
+                // truth for BOTH stances: a plain return may carry a title
+                // (ownership §2.1, the tail-call ride), and a `#R` return may
+                // carry a borrow (`return #= x` is its sanctioned escape) —
+                // measured 2026-09-07 on the corpus: folding a `#R` arm to a
+                // constant 1 dropped the read in Report::baseline. A static
+                // Owned for `#R` callees needs a signature bit saying the
+                // method has no mode-carrying return (plan 7.2.3).
                 return make(TitleFamily::CallResult, TitleAnswer::Runtime,
                             TitleSource::ReturnFlag, leaf, flags);
             }
-            return make(TitleFamily::CallResult, TitleAnswer::Borrow,
+            // No flag emitted (a native, an intrinsic): the declared stance.
+            return make(TitleFamily::CallResult,
+                        ownedDecl ? TitleAnswer::Owned : TitleAnswer::Borrow,
                         TitleSource::None, leaf, flags);
         }
 
@@ -529,6 +542,14 @@ namespace cajeta::ownership {
             case TitleAnswer::Runtime:
                 break;
         }
+        // A move already read its source's flag BEFORE deactivating it (the
+        // entry now says 0); the stashed value is the truth, never a re-read.
+        if (s.family == TitleFamily::Move && s.leaf && s.leaf->kind() == ExprKind::Move) {
+            if (llvm::Value* mf = std::static_pointer_cast<MoveExpression>(s.leaf)->getRuntimeTitleFlag()) {
+                return mf;
+            }
+            return llvm::ConstantInt::get(i64, 1);
+        }
         llvm::Function* fn = builder->GetInsertBlock() ? builder->GetInsertBlock()->getParent() : nullptr;
         if (s.leaf && fn && s.leaf->titleFlagCacheFor(fn)) {
             return s.leaf->titleFlagCacheFor(fn);
@@ -563,10 +584,7 @@ namespace cajeta::ownership {
                 break;
             }
             case TitleSource::ArmPhi: {
-                if (!s.leaf) break;
-                if (s.leaf->kind() == ExprKind::BooleanSwitch) {
-                    v = std::static_pointer_cast<BooleanSwitchExpression>(s.leaf)->getRuntimeTitleFlag();
-                }
+                v = conditionalTitleFlag(s.leaf);   // either conditional kind
                 break;
             }
             case TitleSource::Slot: {

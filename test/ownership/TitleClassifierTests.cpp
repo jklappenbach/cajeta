@@ -177,8 +177,13 @@ TEST(TitleClassifierTests, producingShapesAreOwnedOrRuntime) {
         EXPECT_ROW(r, Fresh, StackBound, None);
         EXPECT_TRUE(r->flags & TitleShape::kStack);
     }
-    // `#=` wraps the call in a move; the move forwards the owned answer.
-    EXPECT_ROW(recordAt(lineOf(src, "ROW owned-call")), Move, Owned, None);
+    // `#=` wraps the call in a move; the move forwards the call's answer,
+    // which is the return flag even for a `#R` callee (it may `return #=`).
+    {
+        auto* r = recordAt(lineOf(src, "ROW owned-call"));
+        EXPECT_ROW(r, Move, Runtime, ReturnFlag);
+        EXPECT_TRUE(r->flags & TitleShape::kOwnedDecl);
+    }
     EXPECT_ROW(recordAt(lineOf(src, "ROW plain-call")), CallResult, Runtime, ReturnFlag);
     {
         auto* r = recordAt(lineOf(src, "ROW concat"));

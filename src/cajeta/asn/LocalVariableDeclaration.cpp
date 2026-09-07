@@ -620,7 +620,7 @@ namespace cajeta {
                     if (dynamic_pointer_cast<MoveExpression>(rhs)
                             || dynamic_pointer_cast<MethodCallExpression>(rhs)
                             || dynamic_pointer_cast<CallExpression>(rhs)
-                            || dynamic_pointer_cast<BooleanSwitchExpression>(rhs)) {
+                            || isConditionalKind(dynamic_pointer_cast<Expression>(rhs))) {
                         return true;
                     }
                     if (auto ne = dynamic_pointer_cast<NewExpression>(rhs)) {
@@ -927,9 +927,9 @@ namespace cajeta {
                 // arm's flag in its merge block (a constant when both arms
                 // decide statically); it stands in for the TLS read.
                 if (!kids.empty()) {
-                    if (auto ternInit = dynamic_pointer_cast<BooleanSwitchExpression>(
-                            kids[0])) {
-                        callResultFlag = ternInit->getRuntimeTitleFlag();
+                    if (llvm::Value* cf = conditionalTitleFlag(
+                            dynamic_pointer_cast<Expression>(kids[0]))) {
+                        callResultFlag = cf;
                     }
                 }
             }
@@ -1739,8 +1739,8 @@ namespace cajeta {
                                 initIsBorrow = true;
                             }
                         }
-                    } else if (dynamic_pointer_cast<BooleanSwitchExpression>(
-                                   children[0])) {
+                    } else if (isConditionalKind(
+                                   dynamic_pointer_cast<Expression>(children[0]))) {
                         // ternary-local-double-free — see initIsTernary.
                         if (rhsExpr) {
                             if (!rhsExpr->getResolvedType()) {

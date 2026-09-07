@@ -11131,8 +11131,7 @@ namespace cajeta {
                         return nullptr;
                     };
                     const char* borrowShape = nullptr;
-                    bool viaConditional = (bool) dynamic_pointer_cast<
-                        BooleanSwitchExpression>(argExpr);
+                    bool viaConditional = isConditionalKind(argExpr);
                     if (!scalarRead) {
                         BooleanSwitchExpression::forEachLeafArm(argExpr,
                             [&](const ExpressionPtr& leaf) {
@@ -11373,15 +11372,15 @@ namespace cajeta {
             // 2026-09-07, probe W argCellMixedTern). The arms' resolved type
             // stands in for the conditional's own, which is not reliably set.
             if (!stashed && !parameters[mmi].callerTransferred) {
-                if (auto ternArg = dynamic_pointer_cast<BooleanSwitchExpression>(
-                        parameters[mmi].expression)) {
+                if (isConditionalKind(parameters[mmi].expression)) {
+                    auto ternArg = parameters[mmi].expression;
                     CajetaTypePtr armTy;
                     BooleanSwitchExpression::forEachLeafArm(ternArg,
                         [&](const ExpressionPtr& leaf) {
                             if (!armTy && leaf) armTy = leaf->getResolvedType();
                         });
                     if (droppableTempClass(armTy)) {
-                        stashed = ternArg->getRuntimeTitleFlag();
+                        stashed = conditionalTitleFlag(ternArg);
                     }
                 }
             }
@@ -11593,14 +11592,14 @@ namespace cajeta {
                     // drop or nothing. The formal's declared type decides
                     // String-ness. Before this nothing reclaimed the shape and
                     // the fresh arm leaked (probe W argStrMixedTern, 2026-09-07).
-                    if (auto ternArg = dynamic_pointer_cast<BooleanSwitchExpression>(
-                            parameters[ai].expression)) {
+                    if (isConditionalKind(parameters[ai].expression)) {
+                        auto ternArg = parameters[ai].expression;
                         auto fCls = dynamic_pointer_cast<CajetaClass>(
                             fpl[fi]->getType());
                         bool formalIsString = fCls && fCls->getQName()
                             && fCls->getQName()->getTypeName() == "String"
                             && fCls->getQName()->getPackageName() == "cajeta.lang";
-                        llvm::Value* tf = ternArg->getRuntimeTitleFlag();
+                        llvm::Value* tf = conditionalTitleFlag(ternArg);
                         if (formalIsString && tf && tempV->getType()->isPointerTy()) {
                             if (auto* cf = llvm::dyn_cast<llvm::ConstantInt>(tf)) {
                                 if (!cf->isZero()) {

@@ -522,13 +522,13 @@ namespace cajeta {
 
         llvm::Value* getRuntimeTitleFlag() const { return runtimeTitleFlag; }
 
-        /// The leaf arms of a conditional, through nested conditionals, in
-        /// source order (then before else). The ownership consumers classify
-        /// each leaf the way they classify a bare expression in the same
-        /// position; the conditional itself is transparent.
-        static void forEachLeafArm(
-            const ExpressionPtr& e,
-            const std::function<void(const ExpressionPtr&)>& fn);
+        /// The leaf arms of a conditional or a switch expression, through
+        /// nesting, in source order. The ownership consumers classify each
+        /// leaf the way they classify a bare expression in the same position;
+        /// the conditional itself is transparent. A template (no
+        /// std::function): the visitor inlines. Defined after SwitchExpression.
+        template <class F>
+        static void forEachLeafArm(const ExpressionPtr& e, F&& fn);
     };
 
     /**
@@ -801,8 +801,15 @@ namespace cajeta {
     private:
         ExpressionPtr discriminator;
         list<Case> cases;
+        // ownership-title-classifier Unit 2 — the title flag of the arm TAKEN,
+        // an i64 in the merge block (a constant when every arm decides the
+        // same way statically), exactly as BooleanSwitchExpression's: a switch
+        // expression is a conditional with more arms (spec §2.1). Null for
+        // non-pointer results. Reset per codegen.
+        llvm::Value* runtimeTitleFlag = nullptr;
     public:
         const list<Case>& getCases() const { return cases; }
+        llvm::Value* getRuntimeTitleFlag() const { return runtimeTitleFlag; }
         SwitchExpression(antlr4::Token* token,
                           ExpressionPtr discriminator,
                           list<Case> cases)
@@ -900,4 +907,44 @@ namespace cajeta {
     // paths (Statement.cpp, CajetaLlvmVisitor::visitVariableDeclarator).
     bool cajetaRhsCarriesRedundantSharp(
         CajetaParser::ExpressionContext* rhs);
+
+    // ownership-title-classifier — the leaf-arm walk over BOTH conditional
+    // kinds. Out of the class because it needs SwitchExpression complete.
+    template <class F>
+    void BooleanSwitchExpression::forEachLeafArm(const ExpressionPtr& e, F&& fn) {
+        if (!e) return;
+        if (e->kind() == ExprKind::BooleanSwitch) {
+            auto& ch = e->getChildren();
+            for (size_t i = 1; i < ch.size() && i < 3; ++i) {
+                forEachLeafArm(dynamic_pointer_cast<Expression>(ch[i]), fn);
+            }
+            return;
+        }
+        if (e->kind() == ExprKind::Switch) {
+            for (auto& c : static_cast<SwitchExpression*>(e.get())->getCases()) {
+                if (c.body) forEachLeafArm(c.body, fn);
+            }
+            return;
+        }
+        fn(e);
+    }
+
+    /// True for a conditional of either kind (`c ? a : b`, `switch (x) {…}`).
+    inline bool isConditionalKind(const ExpressionPtr& e) {
+        return e && (e->kind() == ExprKind::BooleanSwitch || e->kind() == ExprKind::Switch);
+    }
+
+    /// The title flag a conditional of either kind computed for its taken
+    /// arm; null for a non-conditional or a non-pointer result. One inline
+    /// test of the kind tag, so no consumer casts twice.
+    inline llvm::Value* conditionalTitleFlag(const ExpressionPtr& e) {
+        if (!e) return nullptr;
+        if (e->kind() == ExprKind::BooleanSwitch) {
+            return static_cast<BooleanSwitchExpression*>(e.get())->getRuntimeTitleFlag();
+        }
+        if (e->kind() == ExprKind::Switch) {
+            return static_cast<SwitchExpression*>(e.get())->getRuntimeTitleFlag();
+        }
+        return nullptr;
+    }
 }

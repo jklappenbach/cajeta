@@ -195,8 +195,12 @@ TEST(IrCorpusDiffToolTests, aRealChangeIsReportedWithItsLinesAndExitOne) {
     int code = t.run("diff " + base + " " + cand, out);
     EXPECT_EQ(code, 1) << out;
     EXPECT_NE(out.find("changed m.ll g ops 2 -> 3"), std::string::npos) << out;
-    EXPECT_NE(out.find("  - ret i32 %_"), std::string::npos) << out;
-    EXPECT_NE(out.find("  + %_ = mul i32 %_, 2"), std::string::npos) << out;
+    // Locals and labels share one alpha-rename space per function, numbered
+    // by first occurrence: the parameter `%0` → `%v0`, the `entry` label →
+    // `v1`, the add → `%v2`, the mul → `%v3`. Dataflow stays visible, names
+    // do not (measured, not assumed).
+    EXPECT_NE(out.find("  - ret i32 %v2"), std::string::npos) << out;
+    EXPECT_NE(out.find("  + %v3 = mul i32 %v2, 2"), std::string::npos) << out;
     EXPECT_NE(out.find("same=1 folded=0 changed=1"), std::string::npos) << out;
     EXPECT_NE(out.find("ops=8->9"), std::string::npos) << out;
 }

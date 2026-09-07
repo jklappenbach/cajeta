@@ -4,6 +4,7 @@
 
 #include "Expression.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/ownership/TitleClassifier.h"
 #include "cajeta/dbg/LineInfoCodegen.h"
 #include "cajeta/prof/ProfileCodegen.h"
 #include "cajeta/compile/ExcFrameSetjmp.h"
@@ -2639,63 +2640,15 @@ bool cajetaRhsCarriesRedundantSharp(
     // The title flag one ternary arm hands the merge (see the member's note
     // in Expression.h). Emitted in the arm's own block, right after the arm's
     // value, so a call arm's return-flag TLS is still that call's.
-    void BooleanSwitchExpression::forEachLeafArm(
-            const ExpressionPtr& e,
-            const std::function<void(const ExpressionPtr&)>& fn) {
-        auto tern = dynamic_pointer_cast<BooleanSwitchExpression>(e);
-        if (!tern) { fn(e); return; }
-        auto& ch = tern->getChildren();
-        for (size_t i = 1; i < ch.size() && i < 3; ++i) {
-            forEachLeafArm(dynamic_pointer_cast<Expression>(ch[i]), fn);
-        }
-    }
-
-    static llvm::Value* ternaryArmTitleFlag(CajetaModulePtr module,
-                                            const ExpressionPtr& arm,
-                                            llvm::IRBuilder<>* builder,
-                                            llvm::Type* i64) {
-        auto zero = llvm::ConstantInt::get(i64, 0);
-        auto one = llvm::ConstantInt::get(i64, 1);
-        if (!arm) return zero;
-        if (auto mv = dynamic_pointer_cast<MoveExpression>(arm)) {
-            if (llvm::Value* f = mv->getRuntimeTitleFlag()) return f;
-            return one;                          // static owner moved out
-        }
-        if (auto nested = dynamic_pointer_cast<BooleanSwitchExpression>(arm)) {
-            if (llvm::Value* f = nested->getRuntimeTitleFlag()) return f;
-            return zero;
-        }
-        if (dynamic_pointer_cast<MethodCallExpression>(arm)
-                || dynamic_pointer_cast<CallExpression>(arm)) {
-            // A plain return may still carry a title (ownership §2.1); the
-            // callee left its bit in the TLS a moment ago.
-            if (llvm::Function* getFlagFn =
-                    module->getRuntimeFunction("__cajeta_return_flag_get")) {
-                return builder->CreateCall(getFlagFn, {}, "tern_ret_flag");
-            }
-            return zero;
-        }
-        if (auto ne = dynamic_pointer_cast<NewExpression>(arm)) {
-            return ne->getStackAlloc() ? zero : one;
-        }
-        if (auto ag = dynamic_pointer_cast<AggregateInitializerExpression>(arm)) {
-            return ag->getStackAlloc() ? zero : one;
-        }
-        if (auto bo = dynamic_pointer_cast<BinaryOpExpression>(arm)) {
-            // A String concat materialises a fresh wrapper (the shape
-            // LocalVariableDeclaration's producesOwnedString names).
-            if (bo->getBinaryOp() == BINARY_OP_ADD) {
-                auto rt = bo->getResolvedType();
-                if (rt && rt->getQName()
-                        && rt->getQName()->getTypeName() == "String") {
-                    return one;
-                }
-            }
-            return zero;
-        }
-        // Literal, identifier, field read, element read, cast, `this`: a
-        // view of something that already has an owner.
-        return zero;
+    // ownership-title-classifier Unit 2 — the title flag of one arm, from THE
+    // classifier (spec §2.1), emitted in the arm's own block right after the
+    // arm's value so a call arm's return-flag TLS is still that call's. The
+    // per-arm shape chain this replaced was the sixth copy of the classifier.
+    static llvm::Value* armTitleFlag(CajetaModulePtr module, const ExpressionPtr& arm) {
+        if (!arm) return module->getBuilder()->getInt64(0);
+        ownership::TitleShape s = ownership::classify(arm, module);
+        llvm::Value* f = ownership::titleFlag(s, module);
+        return f ? f : (llvm::Value*) module->getBuilder()->getInt64(0);
     }
 
     llvm::Value* BooleanSwitchExpression::generateCode(CajetaModulePtr module) {
@@ -2738,7 +2691,7 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::Value* thenVal = loadIfLValue(module, children[1]->generateCode(module), thenAst);
         bool classLike = thenVal && thenVal->getType()->isPointerTy();
         llvm::Value* thenFlag = classLike
-            ? ternaryArmTitleFlag(module, thenAst, builder, i64) : nullptr;
+            ? armTitleFlag(module, thenAst) : nullptr;
         llvm::BasicBlock* thenEnd = builder->GetInsertBlock();
         builder->CreateBr(mergeBB);
 
@@ -2746,7 +2699,7 @@ bool cajetaRhsCarriesRedundantSharp(
         auto elseAst = dynamic_pointer_cast<Expression>(children[2]);
         llvm::Value* elseVal = loadIfLValue(module, children[2]->generateCode(module), elseAst);
         llvm::Value* elseFlag = classLike
-            ? ternaryArmTitleFlag(module, elseAst, builder, i64) : nullptr;
+            ? armTitleFlag(module, elseAst) : nullptr;
         // If types differ, narrow/extend the else side to match the then side. Mirrors
         // BinaryOpExpression's coerceArithPair logic at a single point of variance.
         if (elseVal->getType() != thenVal->getType()) {
@@ -3081,8 +3034,8 @@ bool cajetaRhsCarriesRedundantSharp(
         // treated the phi as a static transfer: a borrowed wrapper stored raw
         // with the own-bit set, freed twice when the record dropped
         // (measured 2026-09-07, probe W: storeStrBorrowTern / storeCellBorrowTern).
-        if (auto ternIn = dynamic_pointer_cast<BooleanSwitchExpression>(inner)) {
-            runtimeTitleFlag = ternIn->getRuntimeTitleFlag();
+        if (llvm::Value* cf = conditionalTitleFlag(inner)) {
+            runtimeTitleFlag = cf;
         }
         // title-tracking — `dst #= call()`: the callee's RETURN FLAG is the
         // only truth about whether that result carried a title. A plain (non-
@@ -3688,6 +3641,7 @@ bool cajetaRhsCarriesRedundantSharp(
     }
 
     llvm::Value* SwitchExpression::generateCode(CajetaModulePtr module) {
+        runtimeTitleFlag = nullptr;   // stale-value guard, as the conditional's
         auto* builder = module->getBuilder();
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         if (!discriminator) {
@@ -3755,6 +3709,7 @@ bool cajetaRhsCarriesRedundantSharp(
 
         // Collect each arm's result value and the BB it ends in for the phi node.
         vector<pair<llvm::Value*, llvm::BasicBlock*>> incoming;
+        vector<pair<llvm::Value*, llvm::BasicBlock*>> titleIncoming;
         llvm::Type* phiTy = nullptr;
 
         auto emitArm = [&](llvm::BasicBlock* bb, const ExpressionPtr& body) {
@@ -3764,8 +3719,15 @@ bool cajetaRhsCarriesRedundantSharp(
                 return;
             }
             llvm::Value* v = body->generateCode(module);
-            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
-                v = builder->CreateLoad(a->getAllocatedType(), v);
+            // An arm's value is an r-value: a field read yields a slot GEP, a
+            // local an alloca — load through it exactly as the conditional
+            // does, or the phi merges an ADDRESS with an object pointer
+            // (measured 2026-09-07: `switch (i) { case 1 -> h.a; … }` read
+            // garbage). Then the arm's title flag, right after its value.
+            v = loadIfLValue(module, v, body);
+            if (v && v->getType()->isPointerTy()) {
+                llvm::Value* tf = armTitleFlag(module, body);
+                titleIncoming.push_back({tf, builder->GetInsertBlock()});
             }
             if (v) {
                 if (!phiTy) phiTy = v->getType();
@@ -3803,6 +3765,25 @@ bool cajetaRhsCarriesRedundantSharp(
                 widened = tmp.CreateIntCast(v, phiTy, /*isSigned=*/true);
             }
             phi->addIncoming(widened, bb);
+        }
+        // ownership-title-classifier Unit 2 — the taken arm's title (spec
+        // §2.1, Conditional): a constant when every arm's flag is the same
+        // constant, else a phi beside the value's.
+        if (!titleIncoming.empty() && titleIncoming.size() == incoming.size()) {
+            auto* c0 = llvm::dyn_cast<llvm::ConstantInt>(titleIncoming[0].first);
+            bool allSame = c0 != nullptr;
+            for (auto& [f, bb] : titleIncoming) {
+                auto* c = llvm::dyn_cast<llvm::ConstantInt>(f);
+                if (!c || c->getZExtValue() != c0->getZExtValue()) { allSame = false; break; }
+            }
+            if (allSame) {
+                runtimeTitleFlag = titleIncoming[0].first;
+            } else {
+                llvm::PHINode* tphi = builder->CreatePHI(llvm::Type::getInt64Ty(ctx),
+                    (unsigned) titleIncoming.size(), "sw_title");
+                for (auto& [f, bb] : titleIncoming) tphi->addIncoming(f, bb);
+                runtimeTitleFlag = tphi;
+            }
         }
         return phi;
     }
