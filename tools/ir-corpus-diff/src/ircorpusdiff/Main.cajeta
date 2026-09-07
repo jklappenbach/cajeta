@@ -120,6 +120,7 @@ public final class Main {
     static int32 count(String dir) {
         ArrayList<String> mods #= Main.modulesOf(dir);
         int64 total = 0;
+        int64 calls = 0;
         int32 i = 0;
         int32 n = mods.count();
         while (i < n) {
@@ -133,13 +134,14 @@ public final class Main {
             int32 fc = fns.count();
             while (k < fc) {
                 Fn f = fns.get(k);
-                System.stdout.println("ops " + rel + " " + f.name + " " + f.ops);
+                System.stdout.println("ops " + rel + " " + f.name + " " + f.ops + " rtcalls " + f.rtcalls);
                 k = k + 1;
             }
             total = total + Ll.opsOf(fns);
+            calls = calls + Ll.rtcallsOf(fns);
             i = i + 1;
         }
-        System.stdout.println("total " + total);
+        System.stdout.println("total " + total + " rtcalls " + calls);
         return 0;
     }
 
@@ -179,6 +181,8 @@ public final class Main {
         int64 added = 0;
         int64 opsBase = 0;
         int64 opsCand = 0;
+        int64 callsBase = 0;
+        int64 callsCand = 0;
         int64 functions = 0;
         int32 i = 0;
         while (i < baseMods.count()) {
@@ -189,6 +193,7 @@ public final class Main {
                 return 1;
             }
             opsBase = opsBase + Ll.opsOf(base);
+            callsBase = callsBase + Ll.rtcallsOf(base);
             if (!candIndex.containsKey(rel)) {
                 System.stdout.println("missing-module " + rel);
                 missing = missing + (int64) base.count();
@@ -201,6 +206,7 @@ public final class Main {
                 return 1;
             }
             opsCand = opsCand + Ll.opsOf(cand);
+            callsCand = callsCand + Ll.rtcallsOf(cand);
             HashMap<String, int32> ci #= Ll.index(cand);
             ArrayList<Fn> baseOpt = null;
             ArrayList<Fn> candOpt = null;
@@ -277,7 +283,8 @@ public final class Main {
         System.stdout.println("summary modules=" + baseMods.count() + " functions=" + functions
             + " same=" + same + " folded=" + folded + " changed=" + changed
             + " missing=" + missing + " added=" + added
-            + " ops=" + opsBase + "->" + opsCand);
+            + " ops=" + opsBase + "->" + opsCand
+            + " rtcalls=" + callsBase + "->" + callsCand);
         return (changed > 0 || missing > 0 || added > 0) ? 1 : 0;
     }
 

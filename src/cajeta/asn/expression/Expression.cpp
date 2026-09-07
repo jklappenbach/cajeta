@@ -2800,11 +2800,18 @@ bool cajetaRhsCarriesRedundantSharp(
         // parsed `#expr`) delegates entirely: generate the inner Move and
         // propagate its captured/forwarded flag outward so the enclosing
         // store classification sees the truth.
-        if (auto nestedMv = dynamic_pointer_cast<MoveExpression>(children[0])) {
+        if (inner && inner->kind() == ExprKind::Move) {
+            auto nestedMv = std::static_pointer_cast<MoveExpression>(inner);
             llvm::Value* nv = nestedMv->generateCode(module);
             runtimeTitleFlag = nestedMv->getRuntimeTitleFlag();
             return nv;
         }
+        // ownership-title-classifier Unit 3 — the take protocols below are
+        // ACTIONS keyed on the source's kind and keep their own runtime reads
+        // (a slot's own-bit, an element take). Every flag they do not produce
+        // themselves comes from ONE classification of the source, taken AFTER
+        // its codegen (below): only then is a call's callee resolved and a
+        // conditional's arm typed.
         // title-tracking §6.3 (Unit 6, plan 6.2.1) — `#map[k]` on a CLASS
         // receiver binds to the author-provided `operator#[]` (the
         // title-extracting index; distinct canonical name because dispatch is
@@ -2816,7 +2823,8 @@ bool cajetaRhsCarriesRedundantSharp(
         // Without this branch the move silently degraded to a plain
         // operator[] READ while the assignee claimed the title anyway —
         // half a double-free waiting for the store side to work.
-        if (auto idxInner = dynamic_pointer_cast<ArrayIndexExpression>(inner)) {
+        if (inner && inner->kind() == ExprKind::ArrayIndex) {
+            auto idxInner = std::static_pointer_cast<ArrayIndexExpression>(inner);
             auto& ich = idxInner->getChildren();
             auto idxRecv = ich.size() >= 1
                 ? dynamic_pointer_cast<Expression>(ich[0]) : nullptr;
@@ -2872,7 +2880,8 @@ bool cajetaRhsCarriesRedundantSharp(
         // first-clause catchable like the NonNull check). This shape returns
         // the loaded r-value directly and deliberately does NOT demotePathToBorrow
         // (post-extraction reads are legal borrows).
-        if (auto dotInner = dynamic_pointer_cast<DotExpression>(inner)) {
+        if (inner && inner->kind() == ExprKind::Dot) {
+            auto dotInner = std::static_pointer_cast<DotExpression>(inner);
             if (!dotInner->getResolvedType()) dotInner->resolveTypes(module);
             auto& xch = dotInner->getChildren();
             auto xRecv = xch.empty() ? nullptr
@@ -3026,6 +3035,9 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
         llvm::Value* value = inner ? inner->generateCode(module) : nullptr;
+        ownership::TitleShape mvShape = inner
+            ? ownership::moveFrom(ownership::classify(inner, module), isSharpStore())
+            : ownership::TitleShape();
         // A conditional inner (`dst #= c ? a : b`, `#(c ? a : b)`) hands its
         // per-arm title flag through unchanged: the store then records the
         // TAKEN arm's mode — a resolve/borrow for a read arm, a transfer for
@@ -3034,8 +3046,11 @@ bool cajetaRhsCarriesRedundantSharp(
         // treated the phi as a static transfer: a borrowed wrapper stored raw
         // with the own-bit set, freed twice when the record dropped
         // (measured 2026-09-07, probe W: storeStrBorrowTern / storeCellBorrowTern).
-        if (llvm::Value* cf = conditionalTitleFlag(inner)) {
-            runtimeTitleFlag = cf;
+        if (isConditionalKind(inner)) {
+            // The taken arm's title — a constant when the arms agree, else
+            // the arm phi. Always set: a null flag reads as "static owner" to
+            // the consumers, which is exactly wrong for two borrow arms.
+            runtimeTitleFlag = ownership::titleFlag(mvShape, module);
         }
         // title-tracking — `dst #= call()`: the callee's RETURN FLAG is the
         // only truth about whether that result carried a title. A plain (non-
@@ -3048,16 +3063,13 @@ bool cajetaRhsCarriesRedundantSharp(
         // call, while it still holds this call's bit — anything later is
         // stale. Gated on emitsReturnFlag(): raw-IR synthesized bodies and
         // intrinsics never store the flag, so those keep the static answer.
+        // A call source: its flag is read HERE, right after the call, while
+        // the TLS still holds this call's bit — the classifier's ReturnFlag
+        // source, the same read for a plain and a `#R` callee.
         llvm::Value* innerCallReturnFlag = nullptr;
-        if (auto mceIn = dynamic_pointer_cast<MethodCallExpression>(inner)) {
-            MethodPtr rm = mceIn->getResolvedMethod();
-            if (rm && rm->emitsReturnFlag() && rm->returnsClassPointer()) {
-                if (llvm::Function* gf = module->getRuntimeFunction(
-                        "__cajeta_return_flag_get")) {
-                    innerCallReturnFlag = module->getBuilder()->CreateCall(
-                        gf, {}, "mv_ret_flag");
-                }
-            }
+        if (inner && inner->kind() == ExprKind::MethodCall
+                && mvShape.source == ownership::TitleSource::ReturnFlag) {
+            innerCallReturnFlag = ownership::titleFlag(mvShape, module);
         }
         // The wrapped expression typically yields an l-value (an alloca). The
         // consumer of a moved value wants the r-value — the pointer to the
@@ -3083,15 +3095,14 @@ bool cajetaRhsCarriesRedundantSharp(
         // `getelementptr ptr, ptr k, i64 1` faulted at k+8.
         if (value) {
             if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(value)) {
-                bool allocaIsSlot = !inner
-                    || dynamic_pointer_cast<IdentifierExpression>(inner) != nullptr;
+                bool allocaIsSlot = !inner || inner->kind() == ExprKind::Identifier;
                 if (allocaIsSlot) {
                     value = module->getBuilder()->CreateLoad(
                         a->getAllocatedType(), a);
                 }
             } else if (llvm::isa<llvm::GlobalVariable>(value)
-                    && (dynamic_pointer_cast<IdentifierExpression>(inner)
-                        || dynamic_pointer_cast<DotExpression>(inner))) {
+                    && (inner->kind() == ExprKind::Identifier
+                        || inner->kind() == ExprKind::Dot)) {
                 // title-stores §2.1 — `dst #= Type.staticField` (and the
                 // unqualified `dst #= staticField` inside the declaring
                 // class). A static field's slot is a GlobalVariable, never an
@@ -3125,7 +3136,8 @@ bool cajetaRhsCarriesRedundantSharp(
         // extraction above uses). Arrays without a sidecar (params, fields)
         // keep the prior behavior.
         bool slotTaken = false;
-        if (auto aixInner = dynamic_pointer_cast<ArrayIndexExpression>(inner)) {
+        if (inner && inner->kind() == ExprKind::ArrayIndex) {
+            auto aixInner = std::static_pointer_cast<ArrayIndexExpression>(inner);
             if (value && value->getType()->isPointerTy()
                     && !aixInner->getChildren().empty()) {
                 if (auto idBase = dynamic_pointer_cast<IdentifierExpression>(
@@ -3346,7 +3358,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 }
             }
         }
-        if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(inner)) {
+        if (inner && inner->kind() == ExprKind::Identifier) {
+            auto idExpr = std::static_pointer_cast<IdentifierExpression>(inner);
             auto scope = module->getScopeStack().peek();
             if (scope) {
                 // title-tracking §3.1.2 — `#x` demands a statically-active
@@ -3430,11 +3443,9 @@ bool cajetaRhsCarriesRedundantSharp(
                         // BEFORE deactivating so consuming sites (field store,
                         // return, call-arg word) forward what we actually held
                         // rather than an assumed 1.
-                        if (llvm::Function* flagFn = module->getRuntimeFunction(
-                                "__cajeta_drop_entry_flag")) {
-                            runtimeTitleFlag = module->getBuilder()
-                                ->CreateCall(flagFn, {entry}, "title_flag");
-                        }
+                        // The entry's active byte — inline (one load, one zext),
+                        // not a runtime call — read BEFORE the deactivation below.
+                        runtimeTitleFlag = ownership::titleFlag(mvShape, module);
                         if (llvm::Function* mark = module->getRuntimeFunction(
                                 "__cajeta_drop_mark_inactive")) {
                             module->getBuilder()->CreateCall(mark, {entry});
@@ -3466,11 +3477,7 @@ bool cajetaRhsCarriesRedundantSharp(
                                 }
                             }
                             if (fposMv >= 0 && fposMv < 64) {
-                                auto* bMv = module->getBuilder();
-                                runtimeTitleFlag = bMv->CreateAnd(
-                                    bMv->CreateLShr(inWordMv,
-                                        bMv->getInt64((uint64_t) fposMv)),
-                                    bMv->getInt64(1), "mv_word_bit");
+                                runtimeTitleFlag = ownership::titleFlag(mvShape, module);   // (word >> index) & 1
                             }
                         }
                     }
@@ -3491,12 +3498,12 @@ bool cajetaRhsCarriesRedundantSharp(
                 // use-after-free two entries in, and the SIGSEGV behind
                 // DnsCacheTests. Formals keep their word-bit path: their mode
                 // is decided at the call site, not here.
-                if (isSharpStore() && !runtimeTitleFlag) {
-                    FieldPtr srcF = scope->getField(mvName);
-                    if (srcF && !dynamic_pointer_cast<ParameterField>(srcF)
-                            && !scope->holdsStaticTitle(mvName)) {
-                        runtimeTitleFlag = module->getBuilder()->getInt64(0);
-                    }
+                if (isSharpStore() && !runtimeTitleFlag
+                        && mvShape.answer == ownership::TitleAnswer::Borrow) {
+                    // `#=` of an entry-less, non-formal local with no static
+                    // title records the BORROW it holds (the Cache.linkAtHead
+                    // rule): the classifier's Borrow answer, as a constant 0.
+                    runtimeTitleFlag = ownership::titleFlag(mvShape, module);
                 }
                 // script-units U4 (spec §4.2) — a session binding's title
                 // left the session: quiet its registry slot so drop_all
@@ -3504,7 +3511,7 @@ bool cajetaRhsCarriesRedundantSharp(
                 // on script-entry + session-binding name).
                 maybeEmitSessionDisarm(module, mvName);
             }
-        } else if (dynamic_pointer_cast<DotExpression>(inner)) {
+        } else if (inner && inner->kind() == ExprKind::Dot) {
             // Path-based move (`#person.address.city`). Build the dotted path
             // and record it on the scope so future reads through that path —
             // or any prefix — are rejected. See MemoryModel.md § Path-based
@@ -3522,7 +3529,8 @@ bool cajetaRhsCarriesRedundantSharp(
             auto scope = module->getScopeStack().peek();
             if (scope) {
                 bool bitCapableClassField = false;
-                if (auto dotInner2 = dynamic_pointer_cast<DotExpression>(inner)) {
+                {
+                    auto dotInner2 = std::static_pointer_cast<DotExpression>(inner);
                     if (!dotInner2->getResolvedType()) {
                         dotInner2->resolveTypes(module);
                     }
@@ -3568,22 +3576,11 @@ bool cajetaRhsCarriesRedundantSharp(
         // the callee. A `#=` that records a borrow reintroduces exactly the
         // ambiguity the rule removed, so it is a diagnostic rather than a
         // silent success. The fix is the same one word either way: plain `=`.
-        ExpressionPtr innerVw = inner;
-        // Identity reference casts are peeled (6.2.6c) so `v #= (Cell)
-        // h.peek()` cannot launder the stance past the check below.
-        while (auto castVw = dynamic_pointer_cast<CastExpression>(innerVw)) {
-            CajetaTypePtr dt = castVw->getDestType();
-            auto dc = dynamic_pointer_cast<CajetaClass>(dt);
-            auto dv = dynamic_pointer_cast<CajetaView>(dt);
-            bool refCast = (bool) dv
-                || (dc && !dc->isInterface() && !dc->isValueType());
-            if (!refCast || castVw->getChildren().empty()) break;
-            auto peeled =
-                dynamic_pointer_cast<Expression>(castVw->getChildren()[0]);
-            if (!peeled) break;
-            innerVw = peeled;
-        }
-        if (auto mceInner = dynamic_pointer_cast<MethodCallExpression>(innerVw)) {
+        // The classifier peeled the reference casts (6.2.6c) and resolved the
+        // callee: a `^` (view) result claimed with `#` has no title to take.
+        if (mvShape.leaf && mvShape.leaf->kind() == ExprKind::MethodCall
+                && mvShape.has(ownership::TitleShape::kView)) {
+            auto mceInner = std::static_pointer_cast<MethodCallExpression>(mvShape.leaf);
             if (MethodPtr vm = mceInner->getResolvedMethod()) {
                 if (vm->isReturnsView()) {
                     throw Exception(
@@ -3600,15 +3597,12 @@ bool cajetaRhsCarriesRedundantSharp(
                 }
             }
         }
-        if (isSharpStore() && !runtimeTitleFlag) {
-            if (auto mceInner = dynamic_pointer_cast<MethodCallExpression>(inner)) {
-                // Prefer the flag captured at the call above; fall back to the
-                // declared stance only for callees that never store one.
-                runtimeTitleFlag = innerCallReturnFlag
-                    ? innerCallReturnFlag
-                    : (llvm::Value*) module->getBuilder()->getInt64(
-                          mceInner->bindingTakesTitle() ? 1 : 0);
-            }
+        if (isSharpStore() && !runtimeTitleFlag && inner
+                && inner->kind() == ExprKind::MethodCall) {
+            // Prefer the flag read right after the call; a callee that emits
+            // none is its declared stance — the classifier's constant.
+            runtimeTitleFlag = innerCallReturnFlag
+                ? innerCallReturnFlag : ownership::titleFlag(mvShape, module);
         }
         return value;
     }

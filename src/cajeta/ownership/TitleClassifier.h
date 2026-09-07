@@ -111,6 +111,7 @@ namespace cajeta::ownership {
         static constexpr uint16_t kView = 1 << 11;
         static constexpr uint16_t kSharpStore = 1 << 12;
         static constexpr uint16_t kOwnedDecl = 1 << 13;   ///< the callee is declared `#R`
+        static constexpr uint16_t kStaticTitle = 1 << 14; ///< the scope says the local holds a static title
 
         bool has(uint16_t f) const { return (flags & f) != 0; }
     };
@@ -129,6 +130,13 @@ namespace cajeta::ownership {
     /// Total over ExprKind; never throws; never allocates beyond the returned
     /// record.
     TitleShape classify(const ExpressionPtr& e, const CajetaModulePtr& module);
+
+    /// The shape of a `#` move / `#=` store whose SOURCE has shape `inner`
+    /// (spec §2.1, Move): the inner's provenance decides the flag source —
+    /// a local's entry, a formal's word bit, a slot's own-bit, a call's
+    /// return flag, a conditional's arm phi — or a static answer. The leaf,
+    /// field and flags are the inner's, so titleFlag() reads the right slot.
+    TitleShape moveFrom(const TitleShape& inner, bool sharpStore);
 
     /// The policy table (spec §2.3), a pure function of (shape, role).
     TitleVerdict policy(const TitleShape& shape, ConsumerRole role);

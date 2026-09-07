@@ -208,7 +208,9 @@ TEST(TitleClassifierTests, movesForwardTheInnerSource) {
         "        Cell m2 #= p; // ROW move-formal\n"
         "        String ms #= s; // ROW move-string-formal\n"
         "        Cell m3 #= h.a; // ROW move-field\n"
-        "        return m1.v + m2.v + m3.v + ms.byteLength();\n"
+        "        Cell m5 #= A.lend(h); // ROW move-call\n"
+        "        int8[] mb #= s.toBytes(); // ROW move-native\n"
+        "        return m1.v + m2.v + m3.v + m5.v + ms.byteLength() + (int32) mb.count();\n"
         "    }\n"
         "    public static int32 run() {\n"
         "        Holder h = heap Holder();\n"
@@ -222,6 +224,10 @@ TEST(TitleClassifierTests, movesForwardTheInnerSource) {
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-formal")), Move, Runtime, DropEntry);
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-string-formal")), Move, Runtime, TransferWord);
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-field")), Move, Runtime, Slot);
+    EXPECT_ROW(recordAt(lineOf(src, "ROW move-call")), Move, Runtime, ReturnFlag);
+    // A `` (body-less) callee stores no return flag: its declared
+    // stance is the answer, statically — never a read of a stale TLS.
+    EXPECT_ROW(recordAt(lineOf(src, "ROW move-native")), Move, Owned, None);
 }
 
 // Conditionals: equal static arms fold; mixed arms are decided by the phi.

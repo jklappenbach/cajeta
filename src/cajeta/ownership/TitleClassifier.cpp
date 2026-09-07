@@ -156,6 +156,9 @@ namespace cajeta::ownership {
             } else if (auto m = module->getCurrentMethod()) {
                 if (m->isArenaEligibleLocal(name)) s.flags |= TitleShape::kArena;
             }
+            if (auto sc = module->getScopeStack().peek()) {
+                if (sc->holdsStaticTitle(name)) s.flags |= TitleShape::kStaticTitle;
+            }
             return s;
         }
 
@@ -177,7 +180,15 @@ namespace cajeta::ownership {
             }
             bool ownedDecl = rm->isReturnsOwnership();
             if (ownedDecl) flags |= TitleShape::kOwnedDecl;
-            if (rm->emitsReturnFlag() && rm->returnsClassPointer()) {
+            // A `@Native` forwarding body and a body-less intrinsic return
+            // without storing the flag (Method::emitNativeForwardingBody does a
+            // bare `ret`): reading the TLS after them would be a STALE read.
+            // Their declared stance is the answer. An abstract or interface
+            // method dispatches to a body that does store it.
+            bool storesFlag = rm->emitsReturnFlag() && rm->returnsClassPointer()
+                && !rm->findAnnotation("Native")
+                && (rm->getBlock() != nullptr || rm->isAbstract());
+            if (storesFlag) {
                 // The callee leaves its bit in the TLS, and that bit is the
                 // truth for BOTH stances: a plain return may carry a title
                 // (ownership §2.1, the tail-call ride), and a `#R` return may
@@ -224,6 +235,10 @@ namespace cajeta::ownership {
             }
             break;
         }
+        // The type decides several rows (a String concat, a scalar, a value
+        // type): resolve it if nothing has yet — a classification before the
+        // arms' resolution read a concat as a scalar (measured 2026-09-07).
+        if (!e->getResolvedType()) e->resolveTypes(module);
         // An ownership-less scalar is Scalar whatever produced it.
         if (isOwnershipLessScalar(e->getResolvedType())) return scalar(e);
 
@@ -368,10 +383,20 @@ namespace cajeta::ownership {
         TitleShape moveOf(const ExpressionPtr& leaf, const CajetaModulePtr& module) {
             auto mv = std::static_pointer_cast<MoveExpression>(leaf);
             auto inner = childOf(leaf, 0);
-            TitleShape s = make(TitleFamily::Move, TitleAnswer::Owned, TitleSource::None, leaf);
-            if (mv->isSharpStore()) s.flags |= TitleShape::kSharpStore;
-            if (!inner) return s;
-            TitleShape in = classify(inner, module);
+            if (!inner) {
+                TitleShape s = make(TitleFamily::Move, TitleAnswer::Owned, TitleSource::None, leaf);
+                if (mv->isSharpStore()) s.flags |= TitleShape::kSharpStore;
+                return s;
+            }
+            TitleShape s = moveFrom(classify(inner, module), mv->isSharpStore());
+            s.leaf = leaf;   // the move node itself: titleFlag() then reads its stashed flag
+            return s;
+        }
+    }  // namespace
+
+    TitleShape moveFrom(const TitleShape& in, bool sharpStore) {
+            TitleShape s = make(TitleFamily::Move, TitleAnswer::Owned, TitleSource::None, in.leaf);
+            if (sharpStore) s.flags |= TitleShape::kSharpStore;
             s.flags |= in.flags;
             s.field = in.field;
             s.paramIndex = in.paramIndex;
@@ -385,9 +410,11 @@ namespace cajeta::ownership {
                         } else {
                             s.answer = TitleAnswer::Runtime; s.source = TitleSource::TransferWord;
                         }
+                    } else if (in.has(TitleShape::kStaticTitle)) {
+                        s.answer = TitleAnswer::Owned;            // a static owner without an entry
                     } else {
-                        // No entry, not a formal: a borrow alias (the
-                        // Cache.linkAtHead rule) — `#=` records it as such.
+                        // No entry, not a formal, no static title: a borrow
+                        // alias (the Cache.linkAtHead rule) — `#=` records it.
                         s.answer = TitleAnswer::Borrow;
                     }
                     break;
@@ -415,8 +442,7 @@ namespace cajeta::ownership {
                     break;
             }
             return s;
-        }
-    }  // namespace
+    }
 
     TitleVerdict policy(const TitleShape& s, ConsumerRole role) {
         TitleVerdict v{s.answer, s.source, nullptr, s.label};

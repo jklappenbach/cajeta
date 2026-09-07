@@ -13,24 +13,30 @@ public final class Fn {
     public String name;
     public ArrayList<String> lines;
     public int32 ops;
+    public int32 rtcalls;   // calls into the cajeta runtime (`call … @__cajeta_`)
 
     public Fn(#String name) {
         this.name #= name;
         this.lines #= heap ArrayList<String>();
         this.ops = 0;
+        this.rtcalls = 0;
         return;
     }
 }
 
 /**
  * Textual LLVM IR, normalized so two emissions of the same program compare
- * equal whatever their SSA numbering did (ownership-title-classifier plan
- * 1.2.3). Per line: `%N` → `%_`, `!N` → `!_`, `#N` → `#_`, a numbered block
- * label `N:` → `_:`, a trailing `; ...` comment removed. A function is the
- * text from its `define` line to the closing `}`; everything outside a
- * function (globals, declarations, metadata) is not part of the diff. An
- * instruction is any non-empty, non-label line inside a function — the count
- * the plan tracks as "emitted ops".
+ * equal whatever they named their values (ownership-title-classifier plan
+ * 1.2.3). Per function, every local value and block label is alpha-renamed
+ * to `%vN` / `vN:` by first occurrence (parameters first), so names are not
+ * diffs but dataflow is; `!N` → `!_`, `#N` → `#_`; a trailing `; ...`
+ * comment and surrounding blanks are removed. A function is the text from
+ * its `define` line to the closing `}`; everything outside a function
+ * (globals, declarations, metadata) is not part of the diff. An instruction
+ * is any non-empty, non-label line inside a function — the count the plan
+ * tracks as "emitted ops" — and a `call … @__cajeta_` line is also a runtime
+ * call, counted separately: inlining a helper trades one call for a few
+ * instructions, and the two counts together tell the two stories.
  */
 public final class Ll {
 
@@ -215,7 +221,12 @@ public final class Ll {
                     if (nl != null) {
                         int32 ln = nl.byteLength();
                         boolean label = ln > 0 && nl.byteAt(ln - 1) == 58;   // ends with ':'
-                        if (!label) { cur.ops = cur.ops + 1; }
+                        if (!label) {
+                            cur.ops = cur.ops + 1;
+                            if (nl.contains("call ") && nl.contains("@__cajeta_")) {
+                                cur.rtcalls = cur.rtcalls + 1;
+                            }
+                        }
                         cur.lines.add(#nl);
                     }
                 }
@@ -230,6 +241,18 @@ public final class Ll {
         int8[] b #= File.readAllBytes(path);
         if (b == null) { return null; }
         return Ll.parse(b, (int32) b.count());
+    }
+
+    /** Total runtime-call count of a module. */
+    public static int64 rtcallsOf(ArrayList<Fn> fns) {
+        int64 total = 0;
+        int32 i = 0;
+        int32 n = fns.count();
+        while (i < n) {
+            total = total + (int64) fns.get(i).rtcalls;
+            i = i + 1;
+        }
+        return total;
     }
 
     /** Total instruction count of a module. */
