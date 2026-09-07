@@ -3581,49 +3581,80 @@ namespace cajeta {
                 // keyed on lhsWasMoved so a never-moved binding keeps its
                 // entry on the displaced value, today's behavior).
                 {
-                    bool rhsIsMove =
-                        (bool) dynamic_pointer_cast<MoveExpression>(rhsAst);
-                    bool rhsIsFreshOwner = false;
-                    if (auto rhsNew = dynamic_pointer_cast<NewExpression>(rhsAst)) {
-                        rhsIsFreshOwner = !rhsNew->getStackAlloc();
+                    // reassign-leak family (2026-09-07) — re-assignment of a
+                    // binding that HAS a drop entry: an owned initializer, a
+                    // formal, a bare declaration, or a borrow-initialized local
+                    // that LocalVariableDeclaration registered INACTIVE because
+                    // an assignment like this one exists. The NEW value's title
+                    // decides, and `__cajeta_drop_reassign` does the rest in one
+                    // step (release the displaced value if the entry still holds
+                    // a title, then follow the new value, armed):
+                    //   owned   — `#x`, a fresh heap/aggregate/array value, a
+                    //             non-arena concat, a `#R` call → constant 1;
+                    //   runtime — a plain call's return flag (read right here,
+                    //             before anything clobbers the TLS), a
+                    //             conditional's arm flag, a `#formal` → the flag;
+                    //             a 0 at runtime leaves the entry untouched;
+                    //   borrow  — a read, a literal, an arena concat → nothing:
+                    //             the old value stays registered until scope
+                    //             exit, so `n = n.next` over an owned head never
+                    //             frees the node it is reading through.
+                    // Before this the retarget fired for `= #x` only (orphaning
+                    // the displaced value) and for a fresh owner after a
+                    // move-out; `k = heap Cell(2)` over an owned `k` leaked
+                    // Cell(2) — measured 2026-09-07, probe X, pinned by
+                    // ReassignOwnershipTests.
+                    auto& rctx = *module->getLlvmContext();
+                    llvm::Type* rI64 = llvm::Type::getInt64Ty(rctx);
+                    llvm::Value* rOne = llvm::ConstantInt::get(rI64, 1);
+                    llvm::Value* rhsTitle = nullptr;
+                    if (auto mv = dynamic_pointer_cast<MoveExpression>(rhsAst)) {
+                        rhsTitle = mv->getRuntimeTitleFlag()
+                            ? mv->getRuntimeTitleFlag() : rOne;
+                    } else if (auto rhsNew = dynamic_pointer_cast<NewExpression>(rhsAst)) {
+                        if (!rhsNew->getStackAlloc() && !rhsNew->getSharedAlloc()) {
+                            rhsTitle = rOne;
+                        }
+                    } else if (auto rhsAgg = dynamic_pointer_cast<
+                                   AggregateInitializerExpression>(rhsAst)) {
+                        if (!rhsAgg->getStackAlloc()) rhsTitle = rOne;
                     } else if (auto rhsCall =
                             dynamic_pointer_cast<MethodCallExpression>(rhsAst)) {
-                        // Raw accessor, as above: not the title flag.
-                        rhsIsFreshOwner = rhsCall->isResolvedReturnsOwnership();
-                    }
-                    // A conditional RHS re-arms the binding from the TAKEN
-                    // arm's title: all-`#x` arms are a move; a constant flag
-                    // decides statically; a runtime flag lands in the entry's
-                    // active byte below (a borrow arm then re-arms nothing).
-                    // Before this the shape matched neither spelling and the
-                    // re-arm never fired (probe W assignCellMixedTern,
-                    // 2026-09-07) — the same reassign-leak family as a bare
-                    // `k = heap Cell()` on a never-moved binding, which this
-                    // does not change.
-                    llvm::Value* rhsTernFlag = nullptr;
-                    if (auto rhsTern = dynamic_pointer_cast<BooleanSwitchExpression>(rhsAst)) {
-                        if (llvm::Value* tf = rhsTern->getRuntimeTitleFlag()) {
-                            bool allMoves = true;
-                            BooleanSwitchExpression::forEachLeafArm(rhsAst,
-                                [&](const ExpressionPtr& leaf) {
-                                    if (!dynamic_pointer_cast<MoveExpression>(leaf)) {
-                                        allMoves = false;
-                                    }
-                                });
-                            if (allMoves) {
-                                rhsIsMove = true;
-                                if (!llvm::isa<llvm::ConstantInt>(tf)) rhsTernFlag = tf;
-                            } else if (auto* cf = llvm::dyn_cast<llvm::ConstantInt>(tf)) {
-                                rhsIsFreshOwner = !cf->isZero();
-                            } else {
-                                rhsIsFreshOwner = true;
-                                rhsTernFlag = tf;
+                        if (rhsCall->isResolvedReturnsOwnership()) {
+                            rhsTitle = rOne;
+                        } else if (MethodPtr rm = rhsCall->getResolvedMethod()) {
+                            // A plain return is NOT statically a borrow
+                            // (ownership §2.1): the callee left its flag in
+                            // the TLS a moment ago.
+                            if (rm->emitsReturnFlag() && rm->returnsClassPointer()) {
+                                if (llvm::Function* gf = module->getRuntimeFunction(
+                                        "__cajeta_return_flag_get")) {
+                                    rhsTitle = builder->CreateCall(gf, {}, "asg_ret_flag");
+                                }
                             }
                         }
+                    } else if (auto rhsTern =
+                            dynamic_pointer_cast<BooleanSwitchExpression>(rhsAst)) {
+                        if (llvm::Value* tf = rhsTern->getRuntimeTitleFlag()) {
+                            if (auto* cf = llvm::dyn_cast<llvm::ConstantInt>(tf)) {
+                                if (!cf->isZero()) rhsTitle = rOne;
+                            } else {
+                                rhsTitle = tf;
+                            }
+                        }
+                    } else if (MethodCallExpression::freshOwnedStringTemp(rhsAst)) {
+                        rhsTitle = rOne;
+                    } else if (auto rhsLit =
+                            dynamic_pointer_cast<ArrayLiteralExpression>(rhsAst)) {
+                        if (!rhsLit->isStackAlloc() && !rhsLit->isArenaEligible()) {
+                            rhsTitle = rOne;
+                        }
                     }
-                    if (rhsIsMove || (lhsWasMoved && rhsIsFreshOwner)) {
+                    if (rhsTitle) {
                     if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
                         auto lhsClass = dynamic_pointer_cast<CajetaClass>(
+                            lhsAst->getResolvedType());
+                        bool lhsIsArray = (bool) dynamic_pointer_cast<CajetaArray>(
                             lhsAst->getResolvedType());
                         bool lhsIsString = lhsClass && lhsClass->getQName()
                             && lhsClass->getQName()->getTypeName() == "String"
@@ -3632,30 +3663,16 @@ namespace cajeta {
                             && !lhsClass->isValueType()
                             && !lhsClass->isSharedCapableValue()
                             && !lhsClass->isInterface();
-                        if (lhsIsString || lhsIsClassRef) {
+                        if (lhsIsString || lhsIsClassRef || lhsIsArray) {
                             if (auto sc = module->getScopeStack().peek()) {
                                 FieldPtr dstField = sc->getField(lhsId->getTextValue());
                                 if (dstField && dstField->getDropEntry()
                                         && rhsVal && rhsVal->getType()->isPointerTy()) {
-                                    llvm::Value* entry = dstField->getDropEntry();
-                                    auto& ectx = *module->getLlvmContext();
-                                    builder->CreateStore(rhsVal, entry);
-                                    llvm::Value* activeSlot =
-                                        builder->CreateInBoundsGEP(
-                                            llvm::Type::getInt8Ty(ectx), entry,
-                                            llvm::ConstantInt::get(
-                                                llvm::Type::getInt64Ty(ectx), 24),
-                                            "mvassign.active");
-                                    llvm::Value* activeVal = rhsTernFlag
-                                        ? builder->CreateZExt(
-                                              builder->CreateICmpNE(rhsTernFlag,
-                                                  llvm::ConstantInt::get(
-                                                      rhsTernFlag->getType(), 0)),
-                                              llvm::Type::getInt8Ty(ectx),
-                                              "mvassign.owned")
-                                        : (llvm::Value*) llvm::ConstantInt::get(
-                                              llvm::Type::getInt8Ty(ectx), 1);
-                                    builder->CreateStore(activeVal, activeSlot);
+                                    if (llvm::Function* reFn = module->getRuntimeFunction(
+                                            "__cajeta_drop_reassign")) {
+                                        builder->CreateCall(reFn,
+                                            {dstField->getDropEntry(), rhsVal, rhsTitle});
+                                    }
                                 }
                             }
                         }

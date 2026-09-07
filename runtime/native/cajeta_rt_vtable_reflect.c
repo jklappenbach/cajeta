@@ -442,6 +442,33 @@ int64_t __cajeta_drop_entry_flag(struct cajeta_drop_entry* e) {
     return e ? (int64_t) e->active : 0;
 }
 
+// Re-assignment of an owning binding (`k = <owned rhs>`, BinaryOpExpression's
+// local-assign path). The displaced value is released HERE when the entry
+// still holds a title, and the entry follows the new value, armed — one step,
+// so the entry is never observed half-updated. `flag` is the new value's
+// title: a constant 1 for a fresh or moved value, a callee's return flag, a
+// conditional's arm flag, a `#formal`'s word bit. A 0 means the binding just
+// received a BORROW: the entry is left exactly as it was (the old value stays
+// registered until scope exit), so a walk such as `n = n.next` over an owned
+// head never frees the node it is reading through. Before this helper the
+// compiler retargeted only `= #x` (orphaning the displaced value) and a fresh
+// owner after a move-out; every other owned re-assignment leaked the new
+// value — the reassign-leak family (measured 2026-09-07).
+void __cajeta_drop_reassign(struct cajeta_drop_entry* e, void* new_obj, int64_t flag) {
+    if (e == NULL || !flag) return;
+    if (__cajeta_drop_chain_validate_enabled && e->active != 0 && e->active != 1) {
+        __cajeta_drop_chain_corruption(
+            "CAJETA_ERROR_DROP_CHAIN_BAD_ACTIVE",
+            "reassign on entry with bit-rotted active flag");
+    }
+    if (e->active && e->drop_fn && e->obj && e->obj != new_obj) {
+        __atomic_fetch_add(&__cajeta_drop_count, 1, __ATOMIC_SEQ_CST);
+        e->drop_fn(e->obj);
+    }
+    e->obj = new_obj;
+    e->active = 1;
+}
+
 // CP7-1c host accessor for the debug frame chain. Companion to the
 // __cajeta_dbg_local_* accessors defined up near the frame-chain helpers, but
 // placed here because it dereferences a cajeta_drop_entry (defined above; the

@@ -602,6 +602,48 @@ namespace cajeta {
         }
         return false;
     }
+    // reassign-leak family (2026-09-07) — does any assignment to `name` in
+    // this subtree carry an OWNED-shaped right-hand side? Shape-only and
+    // conservative: a call result or a conditional MAY carry a title at
+    // runtime, so they count. A false positive costs one inactive drop entry
+    // (a push/pop pair); a false negative would leak the assigned value.
+    static bool nameReassignedOwned(const AbstractSyntaxNodePtr& node,
+                                    const std::string& name) {
+        if (!node) return false;
+        if (auto bop = dynamic_pointer_cast<BinaryOpExpression>(node)) {
+            auto& bk = bop->getChildren();
+            if (bop->getBinaryOp() == BINARY_OP_ASSIGN && bk.size() >= 2) {
+                auto lhsId = dynamic_pointer_cast<IdentifierExpression>(bk[0]);
+                auto rhs = bk[1];
+                if (lhsId && lhsId->getTextValue() == name && rhs) {
+                    if (dynamic_pointer_cast<MoveExpression>(rhs)
+                            || dynamic_pointer_cast<MethodCallExpression>(rhs)
+                            || dynamic_pointer_cast<CallExpression>(rhs)
+                            || dynamic_pointer_cast<BooleanSwitchExpression>(rhs)) {
+                        return true;
+                    }
+                    if (auto ne = dynamic_pointer_cast<NewExpression>(rhs)) {
+                        if (!ne->getStackAlloc()) return true;
+                    }
+                    if (auto ag = dynamic_pointer_cast<AggregateInitializerExpression>(rhs)) {
+                        if (!ag->getStackAlloc()) return true;
+                    }
+                    if (auto rb = dynamic_pointer_cast<BinaryOpExpression>(rhs)) {
+                        if (rb->getBinaryOp() == BINARY_OP_ADD) return true;
+                    }
+                    if (auto al = dynamic_pointer_cast<ArrayLiteralExpression>(rhs)) {
+                        if (!al->isStackAlloc()) return true;
+                    }
+                }
+            }
+        }
+        std::vector<AbstractSyntaxNodePtr> subs;
+        collectSubNodes(node, subs);
+        for (auto& child : subs) {
+            if (nameReassignedOwned(child, name)) return true;
+        }
+        return false;
+    }
     static bool nameEscapesScope(const AbstractSyntaxNodePtr& node,
                                  const std::string& name) {
         if (!node) return false;
@@ -2277,6 +2319,37 @@ namespace cajeta {
                             }
                         }
                     }
+                }
+            }
+
+            // reassign-leak family (2026-09-07) — a local that holds a BORROW
+            // (or an arena value) now may be assigned an OWNED value later
+            // (`Cell k = h.a; ... k = heap Cell(7);`). The drop chain is
+            // strict LIFO, so the entry that assignment will re-arm has to
+            // exist in THIS frame: register it now, INACTIVE (a drop of a
+            // borrow is a double free), and let the assignment's
+            // `__cajeta_drop_reassign` arm it and release what it displaces.
+            // Only when some assignment to this name in the method body has
+            // an owned-shaped right-hand side — every other local pays
+            // nothing. Pinned by ReassignOwnershipTests.
+            if (!field->getDropEntry() && initializer && !isStructType
+                    && (isCajetaString || isArray
+                        || (klass && !klass->isInterface()
+                            && !klass->isValueType()
+                            && !klass->isSharedCapableValue()
+                            && klass->hasVtablePointerAtSlotZero()))) {
+                auto mR = module->getCurrentMethod();
+                BlockPtr bodyR = mR ? mR->getBlock() : nullptr;
+                if (bodyR && nameReassignedOwned(bodyR, declarator->getIdentifier())) {
+                    const char* reDrop = isCajetaString ? "__cajeta_string_drop"
+                        : isArray ? "__cajeta_free_array"
+                                  : "__cajeta_class_virtual_drop";
+                    if (!isCajetaString && !isArray) klass->patchVirtualTableDropFn();
+                    emitFlaggedDropEntryFor(module, field, reDrop,
+                        llvm::ConstantInt::get(
+                            llvm::Type::getInt64Ty(*module->getLlvmContext()), 0),
+                        getSourceLine());
+                    field->setRuntimeConditionalOwner(true);
                 }
             }
 

@@ -132,7 +132,7 @@ table for the action:
 | bind (`T x = e`) | no entry | armed entry | flagged entry | today's default (owned) |
 | `#=` store (String) | resolve a copy | move the wrapper | branch resolve / move | resolve |
 | `#=` store (class field / slot) | own-bit 0 | own-bit 1 | own-bit = flag | own-bit 0 |
-| `=` re-assign of a moved-out local | no re-arm | re-arm | re-arm with flag | no re-arm |
+| `=` re-assign of a binding with an entry | entry untouched (old value lives to scope exit) | release the displaced value, re-arm on the new | `__cajeta_drop_reassign` on the flag | entry untouched |
 | return under `#T` | **error** OWNED_RETURN_OF_BORROW | flag 1 | flag + TITLE_MISS contract | flag from method mode |
 | return under plain `T` | flag 0 | **error** FRESH_RETURN_NEEDS_TRANSFER | ride the flag | flag 0 |
 | argument to plain formal | word bit 0 | class: word bit 1; String: reclaim after the call | class: word bit = flag; String: guarded reclaim | word bit 0 |
