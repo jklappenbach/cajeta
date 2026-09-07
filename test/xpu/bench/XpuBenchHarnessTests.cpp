@@ -22,6 +22,7 @@
 #include <string>
 #include <sys/stat.h>
 #ifndef _WIN32
+#include <signal.h>     // kill(): glibc leaks it via <sys/wait.h>, Apple libc does not
 #include <sys/wait.h>   // POSIX process-wait; absent on mingw
 #include <unistd.h>
 #endif

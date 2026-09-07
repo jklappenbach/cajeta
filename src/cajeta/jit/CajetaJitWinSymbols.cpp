@@ -200,6 +200,14 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("closedir",         &::closedir),
     CJ_SYM("stat64i32",        &::stat),
     CJ_SYM("fstat64i32",       &::fstat),
+    // 64-bit-offset CRT calls the runtime makes since 4d8f47a7 (_fstat64 /
+    // _lseeki64 / _chsize_s). Unbridged they resolve to a CRT DLL export —
+    // a different CRT than the bridged host open() that owns the fd — and
+    // fast-fail (0xC0000409) on that foreign fd. See test/jit/JitWinSymbols.c;
+    // keep the two tables in step.
+    CJ_SYM("_fstat64",         &::_fstat64),
+    CJ_SYM("_lseeki64",        &::_lseeki64),
+    CJ_SYM("_chsize_s",        &::_chsize_s),
     CJ_SYM("__mingw_fprintf",  &__mingw_fprintf),
     CJ_SYM("__mingw_snprintf", &__mingw_snprintf),
     CJ_SYM("__mingw_strtod",   &__mingw_strtod),

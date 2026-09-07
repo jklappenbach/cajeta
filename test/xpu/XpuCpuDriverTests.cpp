@@ -46,6 +46,13 @@
 // The runtime CPU kernel registry — same symbols CpuDriver / the registration
 // ctor speak, linked into the test binary via cajeta_lib.
 extern "C" void __cajeta_xpu_register_cpu_kernel(const char* name, void* fn);
+// Also called by the registration ctor (KernelManifest registration). Native
+// runtime function, bound below exactly like __cajeta_xpu_register_cpu_kernel.
+extern "C" void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
+                                                      int32_t backend,
+                                                      const char* arch,
+                                                      const void* json,
+                                                      uint64_t len);
 
 using cajeta::Compiler;
 using cajeta::CajetaModulePtr;
@@ -120,6 +127,16 @@ std::unique_ptr<llvm::orc::LLJIT> registerKernel(Compiler& compiler,
     llvm::orc::SymbolMap syms;
     syms[mangle("__cajeta_xpu_register_cpu_kernel")] = llvm::orc::ExecutorSymbolDef(
         llvm::orc::ExecutorAddr::fromPtr(&__cajeta_xpu_register_cpu_kernel),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
+    // Same treatment for the manifest registration the ctor also calls. On
+    // Windows nothing else can supply it: this bare LLJIT consults neither
+    // CajetaJitHost's nor JitTestHelper's bridge table, and it must NOT be
+    // added to those shared tables — the modules they load link the full
+    // runtime bitcode, which already DEFINES this symbol, so a table entry
+    // is a "duplicate definition" abort for every other JIT test (measured:
+    // it took down ViewSafeConsumerTests). This host module only calls it.
+    syms[mangle("__cajeta_xpu_register_kernel_manifest")] = llvm::orc::ExecutorSymbolDef(
+        llvm::orc::ExecutorAddr::fromPtr(&__cajeta_xpu_register_kernel_manifest),
         llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
     if (auto err = JD.define(llvm::orc::absoluteSymbols(std::move(syms)))) {
         failure = llvm::toString(std::move(err));

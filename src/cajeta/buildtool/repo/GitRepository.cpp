@@ -23,16 +23,43 @@ namespace cajeta::buildtool {
         // Shell-escape a single argument for /bin/sh -c. Wraps the
         // value in single quotes and escapes embedded single quotes.
         // Used to assemble safe `git` invocations.
+        // Quote one argument for the shell std::system() hands the command to.
+        // On Windows that is cmd.exe, where a single quote is a LITERAL
+        // character: 'C:\a\b' reached git with the quotes attached, so every
+        // clone/checkout failed on the v0.27.0 Windows release leg. cmd.exe
+        // honors double quotes. POSIX keeps the original sh single-quote form
+        // byte-for-byte.
         std::string shEscape(const std::string& s) {
             std::string out;
             out.reserve(s.size() + 2);
+#ifdef _WIN32
+            out.push_back('"');
+            for (char c : s) {
+                if (c == '"') out += "\\\"";
+                else out.push_back(c);
+            }
+            out.push_back('"');
+#else
             out.push_back('\'');
             for (char c : s) {
                 if (c == '\'') out += "'\\''";
                 else out.push_back(c);
             }
             out.push_back('\'');
+#endif
             return out;
+        }
+
+        // Discard a command's output portably. A literal ">/dev/null" under
+        // cmd.exe tries to open the file \dev\null and fails with "The system
+        // cannot find the path specified" — which made the clone itself return
+        // exit 1 regardless of what git did. The Windows null device is NUL.
+        const char* nullRedirect() {
+#ifdef _WIN32
+            return " >NUL 2>&1";
+#else
+            return " >/dev/null 2>&1";
+#endif
         }
 
         // Run a `git` command in the given working directory. stdout
@@ -43,7 +70,7 @@ namespace cajeta::buildtool {
                            const std::string& diagPrefix) {
             std::ostringstream cmd;
             cmd << "git -C " << shEscape(cwd) << " " << gitArgs
-                << " >/dev/null 2>&1";
+                << nullRedirect();
             int rc = std::system(cmd.str().c_str());
             if (rc != 0) {
                 return err(diagPrefix + ": `git " + gitArgs +
@@ -119,7 +146,7 @@ namespace cajeta::buildtool {
             // checkout-able.
             std::ostringstream cmd;
             cmd << "git clone " << shEscape(cloneUrl_) << " "
-                << shEscape(cloneDir_) << " >/dev/null 2>&1";
+                << shEscape(cloneDir_) << nullRedirect();
             int rc = std::system(cmd.str().c_str());
             if (rc != 0) {
                 return err("git repository '" + name_ +

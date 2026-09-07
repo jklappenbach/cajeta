@@ -97,7 +97,13 @@ namespace {
 
         UpstreamRepo r;
         r.dir = dir;
-        r.url = "file://" + dir.string();
+        // Canonical local file URL — forward slashes + drive leading slash, so
+        // git can clone it on Windows (file:///C:/a/b, not file://C:\a\b which
+        // fails with "cannot find the path specified"). Byte-identical on POSIX.
+        {
+            std::string p = dir.generic_string();
+            r.url = (!p.empty() && p[0] == '/') ? "file://" + p : "file:///" + p;
+        }
         r.tag = tag;
         return r;
     }

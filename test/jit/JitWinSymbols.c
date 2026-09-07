@@ -180,6 +180,19 @@ static const CajetaJitWinSym kSymbols[] = {
     CJ_SYM("closedir",       &closedir),
     CJ_SYM("stat64i32",      &stat),
     CJ_SYM("fstat64i32",     &fstat),
+    // Explicit 64-bit-offset CRT calls the runtime makes since the 32-bit
+    // st_size/off_t fix (4d8f47a7): cajeta_file_stat64 -> _fstat64, seek ->
+    // _lseeki64, truncate -> _chsize_s. Bitcode CALLS these on an fd the
+    // bridged host open() owns; unbridged, the process generator resolves
+    // them to a CRT DLL export — a different CRT instance — and a 64-bit stat
+    // on that "foreign" fd is the invalid-parameter fast-fail (0xC0000409)
+    // that crashed ViewSafeConsumerTests.fileWriterView on the v0.27.0
+    // Windows release leg (green in v0.26.0, which still called plain fstat
+    // -> the bridged fstat64i32). Bind all three to the host CRT, same as
+    // fstat64i32/_commit above. Keep in step with CajetaJitWinSymbols.cpp.
+    CJ_SYM("_fstat64",       &_fstat64),
+    CJ_SYM("_lseeki64",      &_lseeki64),
+    CJ_SYM("_chsize_s",      &_chsize_s),
     CJ_SYM("__mingw_fprintf",  &__mingw_fprintf),
     CJ_SYM("__mingw_snprintf", &__mingw_snprintf),
     CJ_SYM("__mingw_strtod",   &__mingw_strtod),

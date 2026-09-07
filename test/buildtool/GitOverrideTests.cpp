@@ -146,7 +146,16 @@ namespace {
 
         Upstream u;
         u.dir = dir;
-        u.url = "file://" + dir.string();
+        // Canonical local file URL. path::string() is backslash+drive on
+        // Windows (C:\a\b), so "file://" + it yields file://C:\a\b which git
+        // cannot clone ("The system cannot find the path specified"). Use
+        // forward slashes (generic_string) and the drive-path leading slash:
+        // file:///C:/a/b on Windows, file:///a/b on POSIX (byte-identical
+        // there, since a POSIX generic path already starts with '/').
+        {
+            std::string p = dir.generic_string();
+            u.url = (!p.empty() && p[0] == '/') ? "file://" + p : "file:///" + p;
+        }
         u.tag = tag;
         return u;
     }
@@ -342,7 +351,7 @@ TEST(GitOverrideTests, projectResolutionWiresGitOverride) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << repoRoot.string() << R"(" }
+                  "path": ")" << repoRoot.generic_string() << R"(" }
             ],
             "dependencies": {
                 "e.direct": "1.0.0"

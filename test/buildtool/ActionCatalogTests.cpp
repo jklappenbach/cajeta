@@ -260,11 +260,16 @@ namespace {
         KeyPair k;
         k.priv = dir / "priv.pem";
         k.pub  = dir / "pub.pem";
-        std::string cmd = "openssl genpkey -algorithm ed25519 -out '" +
-                          k.priv.string() + "' > " CAJETA_PORTABLE_DEVNULL " 2>&1";
+        // Double-quote the paths: std::system on MinGW runs through cmd.exe,
+        // where a single quote is a literal character, so 'C:\..\priv.pem'
+        // made openssl write a file literally named with the quotes and the
+        // sign action then couldn't find the key (CI Windows: signed_ == false).
+        // sh honors double quotes too, so POSIX behavior is unchanged.
+        std::string cmd = "openssl genpkey -algorithm ed25519 -out \"" +
+                          k.priv.string() + "\" > " CAJETA_PORTABLE_DEVNULL " 2>&1";
         (void)std::system(cmd.c_str());
-        cmd = "openssl pkey -in '" + k.priv.string() + "' -pubout -out '" +
-              k.pub.string() + "' > " CAJETA_PORTABLE_DEVNULL " 2>&1";
+        cmd = "openssl pkey -in \"" + k.priv.string() + "\" -pubout -out \"" +
+              k.pub.string() + "\" > " CAJETA_PORTABLE_DEVNULL " 2>&1";
         (void)std::system(cmd.c_str());
         return k;
     }
@@ -315,9 +320,12 @@ TEST(ActionCatalogTests, signRejectsNonEd25519Key) {
 
     auto d = tempDir("sign-bad-key");
     auto key = d / "rsa.pem";
-    (void)std::system(("openssl genpkey -algorithm RSA -out '" +
+    // Double-quoted for cmd.exe (see generateEd25519): a single-quoted path
+    // left the RSA key at a quote-named file, so sign failed with "can't read
+    // key" instead of the "not ed25519" rejection this test asserts.
+    (void)std::system(("openssl genpkey -algorithm RSA -out \"" +
                        key.string() +
-                       "' -pkeyopt rsa_keygen_bits:2048 > " CAJETA_PORTABLE_DEVNULL " 2>&1")
+                       "\" -pkeyopt rsa_keygen_bits:2048 > " CAJETA_PORTABLE_DEVNULL " 2>&1")
                           .c_str());
     auto payload = d / "payload.bin";
     writeFile(payload, "x");
