@@ -4527,23 +4527,45 @@ namespace cajeta {
         // `llvm.*`. The reach walk already folded their contents into the roots
         // (main, ctor entries, used pins); their own structure must survive, or
         // nulling llvm.global_ctors would silently disable every clinit.
+        // GATE TO COFF. This IR-level GC only earns its keep — and its risk —
+        // where the linker won't do it: COFF. On ELF/Mach-O the linker's
+        // --gc-sections/-dead_strip already strips the same unreachable set
+        // soundly (per-section, per-module, pointer-based at link time), which
+        // is the proven path the library/RTTI builds rely on. Running the pass
+        // there was over-reach and regressed those builds (name-based reach is
+        // unsound for private per-module RTTI globals). So on non-COFF, do
+        // nothing here and let the linker finish the job.
+        size_t erased = 0, internalized = 0;
+        if (llvm::Triple(targetTriple).isOSBinFormatCOFF()) {
         auto isReservedGlobal = [](const GlobalValue& gv) {
             return gv.hasAppendingLinkage() || gv.getName().starts_with("llvm.");
+        };
+        // Only EXTERNAL-linkage symbols are eligible. Reachability here is by
+        // symbol NAME, which is sound only for symbols with a global name: two
+        // modules each carry their own private `.rtti.str.10` / `.L.rtti.methods`
+        // with unrelated contents, so a name reached (or missed) in one module
+        // must never decide the fate of a same-named private symbol in another.
+        // The COFF problem this pass exists for is external unreferenced COMDAT
+        // (vtables, reflect thunks, method bodies) — all external — so skipping
+        // locals keeps the fix while restoring the library/RTTI build path that
+        // name-erasing private per-module RTTI globals had broken.
+        auto ineligible = [&](const GlobalValue& gv) {
+            return isReservedGlobal(gv) || gv.hasLocalLinkage();
         };
         std::vector<GlobalVariable*> deadGlobals;
         std::vector<Function*>       deadFns;
         std::vector<GlobalAlias*>    deadAliases;
         for (auto* lm : lmods) {
             for (auto& f : lm->functions())
-                if (!f.isDeclaration() && !isReservedGlobal(f)
+                if (!f.isDeclaration() && !ineligible(f)
                         && !reached.count(f.getName().str()))
                     deadFns.push_back(&f);
             for (auto& g : lm->globals())
-                if (g.hasInitializer() && !isReservedGlobal(g)
+                if (g.hasInitializer() && !ineligible(g)
                         && !reached.count(g.getName().str()))
                     deadGlobals.push_back(&g);
             for (auto& a : lm->aliases())
-                if (!isReservedGlobal(a) && !reached.count(a.getName().str()))
+                if (!ineligible(a) && !reached.count(a.getName().str()))
                     deadAliases.push_back(&a);
         }
         // Drop every dead entity's outgoing references FIRST, so nothing dead
@@ -4561,7 +4583,6 @@ namespace cajeta {
         // lingers as a phantom user of the vtable/RTTI globals it aggregated and
         // keeps use_empty() false. removeDeadConstantUsers() collapses exactly
         // those dead constant chains, leaving the dead global genuinely use-free.
-        size_t erased = 0, internalized = 0;
         auto disposeOf = [&](GlobalValue* gv) {
             gv->removeDeadConstantUsers();
             if (gv->use_empty()) { gv->eraseFromParent(); erased++; }
@@ -4570,6 +4591,7 @@ namespace cajeta {
         for (auto* a : deadAliases) disposeOf(a);
         for (auto* g : deadGlobals) disposeOf(g);
         for (auto* f : deadFns)     disposeOf(f);
+        }   // end COFF gate
 
         std::cout << "tree-shake (--tree-shake=on): pruned " << pruned
                   << " of " << totalFns
