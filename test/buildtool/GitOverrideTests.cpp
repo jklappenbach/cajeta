@@ -351,7 +351,7 @@ TEST(GitOverrideTests, projectResolutionWiresGitOverride) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << repoRoot.string() << R"(" }
+                  "path": ")" << repoRoot.generic_string() << R"(" }
             ],
             "dependencies": {
                 "e.direct": "1.0.0"
