@@ -100,6 +100,25 @@ static inline std::string cajeta_env_prefix(
     return out;
 }
 
+// Path of the executable that `cajeta --emit=exe -o <base>` actually writes.
+// cajeta passes <base> straight to the mingw `cc` driver, which AUTO-APPENDS
+// `.exe` when the -o path carries no extension — so on Windows the produced
+// binary is `<base>.exe`, while POSIX writes `<base>` verbatim. A test that
+// builds with `-o <base>` must therefore stat / run THIS path, not <base>.
+static inline std::filesystem::path cajeta_exe_path(
+        const std::filesystem::path& base) {
+#if defined(_WIN32)
+    // mingw's `cc` appends `.exe` ONLY when the -o path has no extension; a
+    // path that already carries one (e.g. `t.app`, `foo.exe`) is left as-is.
+    if (base.has_extension()) return base;
+    std::filesystem::path p = base;
+    p += ".exe";
+    return p;
+#else
+    return base;
+#endif
+}
+
 // std::system()/popen() on Windows run the command through `cmd.exe /c
 // "<command>"`. cmd strips the OUTER quote pair, so a command that begins
 // with a quoted program AND contains another quoted argument (a redirect

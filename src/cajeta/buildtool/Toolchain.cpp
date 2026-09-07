@@ -226,14 +226,27 @@ namespace cajeta::buildtool {
         std::error_code ec;
         if (!std::filesystem::exists(layout.root, ec)) return out;
 
-        // Resolve the `current` symlink (if any) so we can mark
-        // the default toolchain.
+        // Resolve the `current` pointer (if any) so we can mark the default
+        // toolchain. It is a symlink where the platform supports it, and a
+        // plain marker file (containing the target install root) on platforms
+        // that do not — see toolchainDefaultCommand.
         std::string currentTarget;
         std::error_code lec;
         auto symlink = std::filesystem::path(layout.defaultSymlinkPath());
         if (std::filesystem::is_symlink(symlink, lec)) {
             auto target = std::filesystem::read_symlink(symlink, lec);
             if (!lec) currentTarget = target.string();
+        } else if (std::filesystem::is_regular_file(symlink, lec)) {
+            std::ifstream in(symlink, std::ios::binary);
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            std::string content = ss.str();
+            while (!content.empty() &&
+                   (content.back() == '\n' || content.back() == '\r' ||
+                    content.back() == ' ' || content.back() == '\t')) {
+                content.pop_back();
+            }
+            currentTarget = content;
         }
 
         for (auto& distEntry : std::filesystem::directory_iterator(

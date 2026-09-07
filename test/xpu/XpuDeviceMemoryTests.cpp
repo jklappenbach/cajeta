@@ -97,9 +97,14 @@ std::string buildAndRun(const std::string& source, const char* entry) {
         + " --release --emit=exe --xpu-backend=cpu"
         + " -o \"" + exe + "\" " + entry
         + " \"" + base.string() + "\" \"" + (base / "arch").string() + "\"";
-    capture(cmd + " 2>&1");
+    // Windows flake guard: the AV scanner can briefly lock the freshly-built
+    // .exe, so a single build-then-run occasionally reads back empty. Retry.
     std::string out;
-    if (fs::exists(exe)) out = capture("\"" + exe + "\"");
+    for (int attempt = 0; attempt < 3 && out.empty(); ++attempt) {
+        capture(cmd + " 2>&1");
+        if (fs::exists(cajeta_exe_path(exe)))
+            out = capture("\"" + cajeta_exe_path(exe).string() + "\"");
+    }
     std::error_code ec;
     fs::remove_all(base, ec);
     return out;

@@ -106,7 +106,9 @@ struct AotWorld {
         return rc;
     }
 
-    bool producedExe() const { return fs::exists(root / "out" / "prog"); }
+    bool producedExe() const {
+        return fs::exists(cajeta_exe_path(root / "out" / "prog"));
+    }
 };
 
 }  // namespace

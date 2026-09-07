@@ -6,9 +6,12 @@
 #include <cstdio>
 #include <iostream>
 #include <thread>
-#ifndef _WIN32
 #include <cerrno>
 #include <streambuf>
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#else
 #include <unistd.h>
 #endif
 
@@ -1206,11 +1209,35 @@ int DapServer::run(std::istream& in, std::ostream& out) {
     return exitCode_;
 }
 
-#ifndef _WIN32
 namespace {
+// Raw fd primitives, spelled per platform. The stdout-pump below owns the
+// debuggee's stdout on a pipe and re-frames it as DAP `output` events so the
+// program's prints never corrupt the protocol channel — and it must run on
+// Windows too (without it, the debuggee's bytes land inline in the protocol
+// stream). MinGW exposes the same calls under `_`-prefixed names in <io.h>.
+#ifdef _WIN32
+inline int rawDup(int fd)                       { return ::_dup(fd); }
+inline int rawDup2(int from, int to)            { return ::_dup2(from, to); }
+inline int rawClose(int fd)                     { return ::_close(fd); }
+inline int rawPipe(int fds[2])                  { return ::_pipe(fds, 1 << 16, _O_BINARY); }
+inline long rawWrite(int fd, const void* p, size_t n) { return ::_write(fd, p, (unsigned) n); }
+inline long rawRead(int fd, void* p, size_t n)  { return ::_read(fd, p, (unsigned) n); }
+constexpr int kStdoutFd = 1;
+#else
+inline int rawDup(int fd)                       { return ::dup(fd); }
+inline int rawDup2(int from, int to)            { return ::dup2(from, to); }
+inline int rawClose(int fd)                     { return ::close(fd); }
+inline int rawPipe(int fds[2])                  { return ::pipe(fds); }
+inline long rawWrite(int fd, const void* p, size_t n) { return ::write(fd, p, n); }
+inline long rawRead(int fd, void* p, size_t n)  { return ::read(fd, p, n); }
+constexpr int kStdoutFd = STDOUT_FILENO;
+#endif
+
 // Write-only streambuf over a raw fd. Replaces __gnu_cxx::stdio_filebuf, which
 // is a libstdc++ extension: libc++ (macOS) has no <ext/stdio_filebuf.h>, so the
-// old include broke the aarch64-apple-darwin build outright.
+// old include broke the aarch64-apple-darwin build outright. Writing the
+// protocol through a raw fd also keeps DAP's `\r\n` framing exact on Windows,
+// where a text-mode FILE* would rewrite `\n` to `\r\n`.
 class FdOutBuf : public std::streambuf {
 public:
     explicit FdOutBuf(int fd) : fd_(fd) {}
@@ -1219,7 +1246,7 @@ protected:
     std::streamsize xsputn(const char* s, std::streamsize n) override {
         std::streamsize done = 0;
         while (done < n) {
-            ssize_t w = ::write(fd_, s + done, (size_t) (n - done));
+            long w = rawWrite(fd_, s + done, (size_t) (n - done));
             if (w <= 0) {
                 if (w < 0 && errno == EINTR) { continue; }
                 break;
@@ -1239,16 +1266,14 @@ private:
     int fd_;
 };
 }  // namespace
-#endif
 
 int DapServer::runOverStdio() {
-#ifndef _WIN32
-    int protoFd = ::dup(STDOUT_FILENO);
+    int protoFd = rawDup(kStdoutFd);
     int pfd[2] = {-1, -1};
-    if (protoFd >= 0 && ::pipe(pfd) == 0) {
+    if (protoFd >= 0 && rawPipe(pfd) == 0) {
         // fd 1 now feeds the pump; the protocol owns a private descriptor.
-        ::dup2(pfd[1], STDOUT_FILENO);
-        ::close(pfd[1]);
+        rawDup2(pfd[1], kStdoutFd);
+        rawClose(pfd[1]);
         // The debuggee prints through FILE* stdout, and libc picks its
         // buffering from what fd 1 IS at first use: a TTY gets line
         // buffering, a PIPE gets 4KB block buffering. Redirecting to the
@@ -1257,7 +1282,15 @@ int DapServer::runOverStdio() {
         // (live 2026-07-22: tour printed nothing to the Console). Force line
         // buffering before any I/O touches the stream — the JIT runs
         // in-process, so this is the same stdout the debuggee uses.
+        // Windows has no true line buffering (_IOLBF is treated as full
+        // buffering), which would strand the debuggee's prints in the FILE*
+        // buffer until process exit and race the detached pump; go unbuffered
+        // there so each write reaches the pipe while the pump is still reading.
+#ifdef _WIN32
+        ::setvbuf(stdout, nullptr, _IONBF, 0);
+#else
         ::setvbuf(stdout, nullptr, _IOLBF, 0);
+#endif
         static FdOutBuf protoBuf(protoFd);
         static std::ostream protoStream(&protoBuf);
 
@@ -1269,7 +1302,7 @@ int DapServer::runOverStdio() {
         std::thread([this, rd]() {
             char buf[4096];
             for (;;) {
-                ssize_t n = ::read(rd, buf, sizeof buf);
+                long n = rawRead(rd, buf, sizeof buf);
                 if (n <= 0) break;
                 Json body = Json::object();
                 body["category"] = "stdout";
@@ -1282,8 +1315,7 @@ int DapServer::runOverStdio() {
 
         return run(std::cin, protoStream);
     }
-    if (protoFd >= 0) ::close(protoFd);
-#endif
+    if (protoFd >= 0) rawClose(protoFd);
     return run(std::cin, std::cout);
 }
 

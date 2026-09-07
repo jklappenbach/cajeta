@@ -132,7 +132,7 @@ TEST(PositionalArityCliTests, fourPositionalsRejected) {
 
     EXPECT_FALSE(w.hasBuildResidue(w.root / "srcB"))
         << "srcB was offered as a source root and must never be written to";
-    EXPECT_FALSE(fs::exists(w.root / "prog"))
+    EXPECT_FALSE(fs::exists(cajeta_exe_path(w.root / "prog")))
         << "no binary may be produced from a rejected command line";
 }
 
@@ -159,7 +159,7 @@ TEST(PositionalArityCliTests, threePositionalsStillCompile) {
                    out);
     EXPECT_EQ(0, rc) << "the documented 3-positional form must be unaffected;"
                         " output:\n" << out;
-    EXPECT_TRUE(fs::exists(w.root / "prog"))
+    EXPECT_TRUE(fs::exists(cajeta_exe_path(w.root / "prog")))
         << "the valid form must still produce its binary";
 }
 

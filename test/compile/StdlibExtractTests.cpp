@@ -179,9 +179,9 @@ TEST(StdlibExtract, ExtractionIsIdempotentAndPreservesUnrelatedFiles) {
     auto dir = freshTempDir("idem");
 
     // Unrelated files both beside and inside the extraction tree.
-    std::ofstream(dir / "notes.txt") << "mine\n";
+    std::ofstream(dir / "notes.txt", std::ios::binary) << "mine\n";
     fs::create_directories(dir / "cajeta/lang");
-    std::ofstream(dir / "cajeta/lang/scratch.txt") << "also mine\n";
+    std::ofstream(dir / "cajeta/lang/scratch.txt", std::ios::binary) << "also mine\n";
 
     std::string out, err;
     ASSERT_EQ(runCajeta("stdlib extract " + dir.string(), out, err), 0) << err;

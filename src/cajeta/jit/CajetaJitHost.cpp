@@ -385,6 +385,21 @@ void assignDbgLocRanges(const std::string& cacheDir,
 // jit/JitModulePrep.{h,cpp} — the kernel session (jupyter-kernel U1)
 // delivers a module per cell and needs the same preparation.
 
+// A module digest is spelled "sha256:<hex>" and doubles as the pool file name
+// (<digest>.bc / <digest>.o). The ':' is legal on POSIX but RESERVED in a
+// Windows path component (drive separator / NTFS alternate-data-stream syntax),
+// so an ofstream on "sha256:...bc" fails there — which then failed the whole
+// slot write, so `cajeta run` persisted no program.meta on Windows and every
+// launch re-compiled. Map the digest to a filesystem-safe stem before it
+// becomes a file name; the digest itself (in the manifest and the in-memory
+// module identifier) is untouched, so identity is unchanged.
+inline std::string digestFileStem(const std::string& digest) {
+    std::string s = digest;
+    for (char& c : s)
+        if (c == ':') c = '_';
+    return s;
+}
+
 // Content-addressed pools (resident-debug-server 2.2.3): every module's
 // bitcode and compiled object live under <cacheDir>/jit/{bcpool,objpool}/
 // keyed by the module's IR digest. The digest IS the identity, so serving a
@@ -403,7 +418,7 @@ public:
         std::error_code ec;
         fs::create_directories(pool_, ec);
         if (ec) return;
-        fs::path target = pool_ / (m->getModuleIdentifier() + ".o");
+        fs::path target = pool_ / (digestFileStem(m->getModuleIdentifier()) + ".o");
         fs::path tmp = target;
         tmp += ".tmp";
         {
@@ -417,7 +432,7 @@ public:
 
     std::unique_ptr<llvm::MemoryBuffer> getObject(const llvm::Module* m) override {
         auto buf = llvm::MemoryBuffer::getFile(
-            (pool_ / (m->getModuleIdentifier() + ".o")).string());
+            (pool_ / (digestFileStem(m->getModuleIdentifier()) + ".o")).string());
         if (!buf) return nullptr;
         served_++;
         return std::move(*buf);
@@ -512,10 +527,10 @@ void writeWholeProgramSlot(const WholeProgramSlot& slot, const BuiltJit& built,
                            const std::vector<ModuleBC>& modules,
                            bool debugInfo) {
     namespace fs = std::filesystem;
-    std::error_code ec;
+    std::error_code ec, ec2;
     fs::create_directories(slot.dir, ec);
-    fs::create_directories(slot.bcPool(), ec);
-    if (ec) return;
+    fs::create_directories(slot.bcPool(), ec2);
+    if (ec || ec2) return;   // check BOTH: only ec2 masked a slot.dir failure
 
     auto place = [](const fs::path& target, auto writeFn) -> bool {
         fs::path tmp = target;
@@ -528,7 +543,7 @@ void writeWholeProgramSlot(const WholeProgramSlot& slot, const BuiltJit& built,
 
     bool ok = true;
     for (const auto& m : modules) {
-        fs::path bc = slot.bcPool() / (m.digest + ".bc");
+        fs::path bc = slot.bcPool() / (digestFileStem(m.digest) + ".bc");
         if (fs::exists(bc, ec)) continue;   // content-addressed: idempotent
         ok = place(bc, [&](const fs::path& p) {
             std::ofstream out(p, std::ios::binary | std::ios::trunc);
@@ -856,7 +871,7 @@ bool tryLoadWholeProgramSlot(const WholeProgramSlot& slot,
     modules.reserve(digests.size());
     for (const auto& d : digests) {
         auto buf = llvm::MemoryBuffer::getFile(
-            (slot.bcPool() / (d + ".bc")).string());
+            (slot.bcPool() / (digestFileStem(d) + ".bc")).string());
         if (!buf) return false;
         // Verify the pool file really is its digest (a torn/corrupt pool
         // entry must MISS, not fail the launch downstream).
@@ -952,8 +967,12 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     };
     if (!opts.cacheDir.empty()) {
         endPhase(out.phases.collectSeconds);
+        // The program key is spelled "sha256:<hex>"; the ':' is illegal in a
+        // Windows path component (drive / NTFS-ADS separator), so the slot dir
+        // must be sanitized the same way pool file names are, or create_dirs
+        // fails and no program.meta is ever persisted (Windows had no slot cache).
         slot.dir = fs::path(opts.cacheDir) / "jit"
-                 / wholeProgramKey(opts, sourcePaths, sourceRoot);
+                 / digestFileStem(wholeProgramKey(opts, sourcePaths, sourceRoot));
         objCache = std::make_unique<PoolObjectCache>(slot.objPool());
         std::vector<std::string> hitDigests;
         if (tryLoadWholeProgramSlot(slot, opts, objCache.get(), out)) {

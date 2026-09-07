@@ -496,7 +496,7 @@ TEST(BuildOutputLayoutTests, projectNamedAfterItsTopLevelPackageStillLinks) {
     EXPECT_EQ(0, p->build(out))
         << "details.name == top-level package must not collide:\n" << out;
     EXPECT_EQ(std::string::npos, out.find("Is a directory")) << out;
-    EXPECT_TRUE(fs::exists(p->root / "build" / "exe" / "t"));
+    EXPECT_TRUE(fs::exists(cajeta_exe_path(p->root / "build" / "exe" / "t")));
 }
 
 // ─── unit 4 — consumer discovery, `cajeta artifact-path` ────────────────
@@ -570,8 +570,12 @@ TEST(BuildOutputLayoutTests, artifactPathHonorsTheRequestedFlavor) {
     ASSERT_EQ(0, p->artifactPath("--flavor=debug", dbg, errOut)) << errOut;
 
     EXPECT_NE(rel, dbg) << "--flavor changed nothing: " << rel;
-    EXPECT_NE(std::string::npos, rel.find("/release/")) << rel;
-    EXPECT_NE(std::string::npos, dbg.find("/debug/")) << dbg;
+    // Compare with forward slashes: cajeta reports a NATIVE path, so on Windows
+    // the flavor segment reads `\release\`, not `/release/`.
+    EXPECT_NE(std::string::npos, fs::path(rel).generic_string().find("/release/"))
+        << rel;
+    EXPECT_NE(std::string::npos, fs::path(dbg).generic_string().find("/debug/"))
+        << dbg;
 }
 
 // 4.1.2 — no artifact declared. A project can legitimately have tasks and no

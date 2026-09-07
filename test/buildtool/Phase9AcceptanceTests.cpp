@@ -112,15 +112,14 @@ TEST(Phase9AcceptanceTests, packageContainerThenUploadPutHittsRegistry) {
     EXPECT_EQ(pkg->outputs.at("format"), "container");
     EXPECT_TRUE(pkg->outputs.count("manifest"));
 
-    // Tar the image-layout dir into one blob for upload.
+    // Tar the image-layout dir into one blob for upload. Run from inside the
+    // parent dir with RELATIVE paths so no absolute "C:\..." reaches tar: GNU
+    // tar reads the drive colon as host:path (the reason --force-local was
+    // added), while Windows' built-in bsdtar rejects --force-local outright.
+    // Relative paths sidestep both, needing no tar-flavor-specific flag.
     auto tarBundle = d / "image.tar";
-    // --force-local on Windows: GNU tar parses "C:\..." as host:path.
-    std::string cmd = std::string("tar ")
-#ifdef _WIN32
-                      + "--force-local "
-#endif
-                      + "-cf " + tarBundle.string() +
-                      " -C " + d.string() + " image";
+    std::string cmd = std::string(CAJETA_PORTABLE_CD) + "\"" + d.string()
+                      + "\" && tar -cf image.tar image";
     EXPECT_EQ(std::system(cajeta_shell(cmd).c_str()), 0);
 
     // Mock registry — accepts the PUT.

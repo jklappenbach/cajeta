@@ -2589,16 +2589,26 @@ namespace cajeta::buildtool {
                 return 1;
             }
             auto symlink = layout.defaultSymlinkPath();
-            // Refresh the symlink atomically: remove + create.
+            // Refresh the `current` pointer: remove + recreate.
             if (fs::is_symlink(symlink, ec) || fs::exists(symlink, ec)) {
                 fs::remove(symlink, ec);
             }
+            ec.clear();
             fs::create_symlink(installRoot, symlink, ec);
             if (ec) {
-                std::cerr << "cajeta toolchain default: cannot create "
-                             "symlink " << symlink << ": "
-                          << ec.message() << "\n";
-                return 1;
+                // Windows (and any filesystem where the caller lacks the
+                // symlink privilege) fails here with ENOSYS / access-denied.
+                // Fall back to a plain marker file recording the target
+                // install root; listInstalledToolchains reads either form.
+                ec.clear();
+                std::ofstream marker(symlink, std::ios::binary | std::ios::trunc);
+                marker << installRoot;
+                marker.close();
+                if (marker.fail()) {
+                    std::cerr << "cajeta toolchain default: cannot record "
+                                 "default " << symlink << "\n";
+                    return 1;
+                }
             }
             std::cout << "Default is now " << dist << ":" << ver
                       << " (-> " << installRoot << ")\n";
