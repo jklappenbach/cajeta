@@ -12,6 +12,7 @@
 // coop-matrix, atomic — is one walk; the CPU backend is used where the
 // device does not matter (GPU-free) and gfx1151 ISA emission where it does.
 #include <cstdlib>
+#include "../PortableEnv.h"   // setenv/unsetenv — absent from the MinGW CRT
 #include "gtest/gtest.h"
 
 #include "../jit/JitTestHelper.h"
