@@ -163,6 +163,13 @@ public final class Harness {
         // a time, so a kernel's device spans in the trace belong to one row.
         String kernelShape #= Harness.opt(args, "--kernel-shape=", "both");
         String seamTargets #= Harness.opt(args, "--seam-targets=", "5,50,200");
+        // `--saxpy=streaming` (xpu-tile-manifest 3.3.2): the saxpy and pair
+        // workloads launch the `@Streaming` twin under the same row keys.
+        String saxpyArm #= Harness.opt(args, "--saxpy=", "plain");
+        Workloads.streamingSaxpy = saxpyArm.equals("streaming");
+        if (Workloads.streamingSaxpy) {
+            System.stdout.println("[xpubench] saxpy arm: streaming (saxpyStream, @Streaming buffers)");
+        }
 
         System.stdout.println("=== xpubench — xpu-tile baseline harness ===");
         String backend = Device.activeBackend();

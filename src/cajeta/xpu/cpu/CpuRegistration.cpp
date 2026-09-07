@@ -845,6 +845,10 @@ void foldWaveVariants(llvm::Function& f) {
             try {
                 kfn = lowerKernel(method, *mod);
             } catch (cajeta::Exception& e) {
+                // A contradicted @Access declaration is the author's error, not
+                // an unsupported construct: a compile error, never a skip.
+                if (e.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
+                        || e.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
                 // Unsupported construct (XPU-N01) — this kernel gets NO CPU
                 // code, and a @Kernel has no host path to fall back to: the
                 // launch finds nothing registered, prints one runtime line,
@@ -882,6 +886,9 @@ void foldWaveVariants(llvm::Function& f) {
                     reinterpret_cast<const uint8_t*>(ir.data()), ir.size());
                 manifest.compilerVersion = compilerVersionString();
                 manifest.xpuAbiVersion = CAJETA_XPU_ABI_VERSION;
+                // §6: access modes off the lowered body, before fission /
+                // vectorization rewrite it.
+                applyAccess(manifest, classifyKernelAccess(*kfn, method));
             }
 
             if (llvm::Linker::linkModules(hostModule, std::move(mod))) {

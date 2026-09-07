@@ -130,6 +130,13 @@ namespace xpu {
         // [count, h…] handle array as fn->getArg.
         virtual bool descriptorBoundParams() const { return false; }
 
+        // Does this backend honour `!nontemporal` on loads/stores with a real
+        // cache policy (xpu-tile-manifest §6.3 — a `@Streaming` buffer must not
+        // evict a protected kernel's working set)? AMDGPU (slc/nt) and NVPTX
+        // (.cs) do; the CPU and SPIR-V lowerings leave the tag off so the
+        // manifest never claims a streaming mode that was not lowered.
+        virtual bool supportsNontemporal() const { return false; }
+
         // Leaf coordinate reads (dim 0/1/2 = x/y/z). Build into `b`'s current
         // insert point; insert any intrinsic decls into `m`.
         virtual llvm::Value* threadId(llvm::IRBuilderBase& b, llvm::Module& m,

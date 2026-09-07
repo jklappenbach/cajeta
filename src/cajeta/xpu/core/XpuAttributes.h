@@ -43,6 +43,12 @@ namespace xpu {
         // params optional + vendor-neutral; lowered per-backend, no-op where
         // unsupported. Overrides the automatic workgroup-size budgeting (§2).
         static constexpr const char* Occupancy    = "Occupancy";
+        // Parameter attributes (xpu-tile-manifest §6). @Access(read|write|
+        // readwrite|accumulate|indirect) narrows a buffer parameter's mode; the
+        // body may not contradict it. @Streaming lowers the parameter's loads
+        // and stores non-temporal where the backend supports it (§6.3).
+        static constexpr const char* Access       = "Access";
+        static constexpr const char* Streaming    = "Streaming";
 
         // KernelArg trait marker (v1 simulates the trait via this
         // annotation; full structural-trait check lands later).

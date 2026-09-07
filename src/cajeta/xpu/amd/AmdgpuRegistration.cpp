@@ -96,6 +96,10 @@ namespace amd {
             try {
                 kfn = lowerKernel(method, devMod);
             } catch (cajeta::Exception& ex) {
+                // A contradicted @Access declaration is the author's error, not
+                // an unsupported construct: a compile error, never a skip.
+                if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
+                        || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
                 // Unsupported construct (XPU-N01) — this kernel gets NO device
                 // code for this backend; a launch that lands here at run time
                 // fails with "no registered kernel". Say so at build time —
@@ -107,6 +111,9 @@ namespace amd {
                 continue;
             }
             if (!kfn) continue;
+            // xpu-tile-manifest §6: what the lowered body does to each buffer —
+            // read off the IR now, before assembly transforms it.
+            KernelAccessSummary access = classifyKernelAccess(*kfn, method);
 
             // kernel-occupancy-autotune §2: pin the real launch workgroup size so
             // the backend budgets registers for the true (small) occupancy.
@@ -149,6 +156,7 @@ namespace amd {
                         m.waveWidth = fp.wavefrontSize;
                     }
                     fillOccupancy(m, ah.arch, pinned);
+                    applyAccess(m, access);
                     warnIfSpilling(m);
                     kernelManifests.push_back(std::move(m));
                 }

@@ -172,7 +172,12 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
   resident-pool handle, the manifest records its access mode: `read`,
   `write` (exclusive, previous contents discardable), `readwrite`,
   `accumulate` (atomic or order-dependent accumulation), or `indirect`
-  (holds launch bounds or work lists read by the runtime).
+  (holds launch bounds or work lists read by the runtime). The four
+  body-derived modes are classified on the lowered IR by pointer provenance
+  (every load, store and atomic walked back to the parameter it addresses), so
+  one rule covers scalar, vector, cooperative-matrix and atomic accesses on
+  every backend; `indirect` is recorded when the ragged surface (§7) names the
+  parameter.
 - **6.2** When the access mode is derived from the body (loads only, stores
   only, atomics), the manifest marks it `derived`; when the author narrows it
   (`@Access(write)` on a buffer the body only stores to in a subset), the
@@ -194,10 +199,17 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
 - **6.6** When the manifest is read at submit time, the submission's buffer
   sets are the manifest's parameter modes bound to the actual handles; the
   author does not restate them, so they cannot drift from what the kernel does.
+  The author names the kernel (`sub.kernel`) and binds the buffer handles in the
+  kernel's buffer-parameter order (`sub.bind(h)`); `readwrite` lands in both
+  sets, `accumulate` in the write and accumulate sets. A restated `reads()` /
+  `writes()` set that disagrees with the manifest is refused at submit.
 - **6.7** When a kernel is a global reduction whose result the host or a
   scalar decision consumes (a solver dot product, an all-reduce), the manifest
   marks it `drainsDevice`; the scheduler treats such a node as a barrier and
-  the window behind it as a placement opportunity (profiles spec §4.4.6).
+  the window behind it as a placement opportunity (profiles spec §4.4.6). The
+  compiler derives the mark from the body: every global store or atomic
+  addresses a compile-time-constant element, so the result is scalar-sized; the
+  host-consumption half is the scheduler's reading of that mark.
 
 ## 7. Ragged work and indirect bounds
 

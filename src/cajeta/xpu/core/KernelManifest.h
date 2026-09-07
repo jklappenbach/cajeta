@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include "KernelAccess.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -67,11 +69,17 @@ namespace xpu {
         std::vector<unsigned>   feasibleBlocks;       // empty = absent
         std::optional<std::string> occupancyLimiter;  // registers|lds|waveSlots|unknown
 
-        // ---- required by the schema; derived by later units ---------------- //
-        // Unit 3 derives `restartable` from the access sets (§6.5); Unit 7
-        // derives `captureSafe` (§8.3). Until then both are false — the
-        // conservative reading, never a claim.
+        // ---- access modes and the facts derived from them (§6) --------------- //
+        // One entry per buffer-like parameter, declaration order, classified on
+        // the lowered IR (KernelAccess.h). `restartable` (§6.5): no parameter is
+        // readwrite or accumulate. `drainsDevice` (§6.7): every global write is
+        // to a compile-time-constant element — a global reduction whose scalar
+        // result the host consumes.
+        std::vector<KernelAccessEntry> access;
         bool restartable = false;
+        bool drainsDevice = false;
+        // Unit 7 derives `captureSafe` (§8.3); false until then — the
+        // conservative reading, never a claim.
         bool captureSafe = false;
 
         bool hasFootprint() const {
@@ -85,6 +93,9 @@ namespace xpu {
 
     // "<declaring class canonical>.<method>" — the manifest's kernel key (§2.1).
     std::string qualifiedKernelName(const MethodPtr& kernel);
+
+    // Copy a lowered kernel's access classification (§6) into the record.
+    void applyAccess(KernelManifest& m, const KernelAccessSummary& access);
 
     // "sha256:<64 lowercase hex>" over `len` bytes.
     std::string sha256Hex(const uint8_t* data, std::size_t len);

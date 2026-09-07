@@ -42,6 +42,12 @@ namespace xpu {
         return kernel->getName();
     }
 
+    void applyAccess(KernelManifest& m, const KernelAccessSummary& access) {
+        m.access = access.entries;
+        m.restartable = access.restartable;
+        m.drainsDevice = access.drainsDevice;
+    }
+
     std::string sha256Hex(const uint8_t* data, std::size_t len) {
         llvm::SHA256 h;
         h.update(llvm::ArrayRef<uint8_t>(data, len));
@@ -101,10 +107,19 @@ namespace xpu {
         root["schemaVersion"] = (int64_t) KernelManifest::kSchemaVersion;
         root["identity"] = std::move(identity);
         root["footprint"] = std::move(footprint);
-        // Unit 3 fills the access list from the tile body; the empty list is
-        // "nothing derived yet", which the schema accepts.
-        root["access"] = llvm::json::Array();
+        llvm::json::Array access;
+        for (const KernelAccessEntry& e : m.access) {
+            llvm::json::Object o;
+            o["param"] = e.param;
+            o["kind"] = e.kind;
+            o["mode"] = e.mode;
+            o["origin"] = e.origin;
+            if (e.streaming) o["streaming"] = true;
+            access.push_back(std::move(o));
+        }
+        root["access"] = std::move(access);
         root["restartable"] = m.restartable;
+        root["drainsDevice"] = m.drainsDevice;
         root["captureSafe"] = m.captureSafe;
 
         std::string out;
@@ -155,7 +170,21 @@ namespace xpu {
                     if (auto n = v.getAsInteger()) m.feasibleBlocks.push_back((unsigned) *n);
             m.occupancyLimiter = getS(*fp, "occupancyLimiter");
         }
+        if (const llvm::json::Array* access = root->getArray("access")) {
+            for (const auto& v : *access) {
+                const llvm::json::Object* o = v.getAsObject();
+                if (!o) continue;
+                KernelAccessEntry e;
+                e.param = o->getString("param").value_or("").str();
+                e.kind = o->getString("kind").value_or("").str();
+                e.mode = o->getString("mode").value_or("").str();
+                e.origin = o->getString("origin").value_or("").str();
+                e.streaming = o->getBoolean("streaming").value_or(false);
+                m.access.push_back(std::move(e));
+            }
+        }
         m.restartable = root->getBoolean("restartable").value_or(false);
+        m.drainsDevice = root->getBoolean("drainsDevice").value_or(false);
         m.captureSafe = root->getBoolean("captureSafe").value_or(false);
         out = std::move(m);
         return true;

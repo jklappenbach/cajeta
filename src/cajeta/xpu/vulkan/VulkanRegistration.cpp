@@ -93,6 +93,10 @@ namespace vulkan {
             try {
                 kfn = lowerKernel(method, devMod, software, regName);
             } catch (cajeta::Exception& ex) {
+                // A contradicted @Access declaration is the author's error, not
+                // an unsupported construct: a compile error, never a skip.
+                if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
+                        || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
                 // Unsupported construct (XPU-N01) — this kernel gets NO device
                 // code for this backend; a launch that lands here at run time
                 // fails with "no registered kernel". Say so at build time —
@@ -104,6 +108,9 @@ namespace vulkan {
                 return false;
             }
             if (!kfn) return false;
+            // xpu-tile-manifest §6: access modes off the lowered IR, before the
+            // SPIR-V codegen transforms it.
+            KernelAccessSummary access = classifyKernelAccess(*kfn, method);
 
             std::vector<uint8_t> spirv = emitSpirv(devMod, *tm);
             if (spirv.empty()) return false;  // codegen error (logged)
@@ -120,6 +127,7 @@ namespace vulkan {
                 m.codeHash = sha256Hex(spirv.data(), spirv.size());
                 m.compilerVersion = compilerVersionString();
                 m.xpuAbiVersion = CAJETA_XPU_ABI_VERSION;
+                applyAccess(m, access);
                 manifest = std::move(m);
             }
 

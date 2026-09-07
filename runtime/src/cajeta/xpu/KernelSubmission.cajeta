@@ -39,9 +39,19 @@ public final class KernelSubmission {
     public SchedulePolicy policy;
     public ArithmeticCharacter character;
     // The buffers this kernel READS and WRITES, by handle identity — the raw
-    // material of the dependency DAG (§7.3). Owned lists, grown via reads/writes.
+    // material of the dependency DAG (§7.3). Owned lists, grown via reads/writes —
+    // or DERIVED by Scheduler.submit from the kernel's manifest when `kernel` is
+    // named and the buffers are bound in parameter order (xpu-tile-manifest
+    // §6.6); a restated set that disagrees with the manifest is refused.
     public ArrayList<int64> readSet;
     public ArrayList<int64> writeSet;
+    // Buffers the kernel accumulates into (atomics): never co-run with another
+    // launch accumulating into the same buffer, order-dependent in float (§6.4).
+    public ArrayList<int64> accumulateSet;
+    // The @Kernel's simple name, when the sets should come from its manifest.
+    public String kernel;
+    // Buffer handles in the kernel's buffer-PARAMETER order (see bind).
+    public ArrayList<int64> bound;
 
     /** A 1-D submission: `gridBlocks` blocks of `blockThreads` threads. */
     public KernelSubmission(int32 gridBlocks, int32 blockThreads) {
@@ -56,6 +66,19 @@ public final class KernelSubmission {
         this.character = ArithmeticCharacter.MemoryBound;
         this.readSet #= heap ArrayList<int64>();
         this.writeSet #= heap ArrayList<int64>();
+        this.accumulateSet #= heap ArrayList<int64>();
+        this.bound #= heap ArrayList<int64>();
+    }
+
+    /**
+     * Bind the next buffer-like PARAMETER of {@link #kernel} to `handle`, in
+     * the kernel's declaration order (scalars are skipped). With the kernel
+     * named, {@link Scheduler#submit} reads the manifest's mode for each bound
+     * parameter and fills the read / write / accumulate sets — the author does
+     * not restate what the body does (xpu-tile-manifest §6.6).
+     */
+    public void bind(int64 handle) {
+        this.bound.add(handle);
     }
 
     /** Record a buffer this kernel reads (pass {@link KernelBuffer#handle}). */

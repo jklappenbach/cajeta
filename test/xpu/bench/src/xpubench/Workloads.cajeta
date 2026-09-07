@@ -41,6 +41,11 @@ public final class Workloads {
     public static int32 blocks = 5;
     public static int32 perBlock = 20;
     public static int32 pipeCount = 50;
+    // `--saxpy=streaming` (xpu-tile-manifest 3.3.2): the saxpy and pair
+    // workloads launch `saxpyStream` — the same kernel with `@Streaming`
+    // buffers, lowered non-temporal — under the SAME row keys, so a trial
+    // pairs the streaming arm against the legs of record.
+    public static boolean streamingSaxpy = false;
 
     /** Arms are labels in Unit 0; later units switch the scheduler here. */
     public static void applyArm(String arm) {
@@ -135,7 +140,7 @@ public final class Workloads {
         KernelStream s #= KernelStream.create();
         int64 f0 = Device.launchFailures();
         int32 g = Workloads.grid(n);
-        saxpy.launch(s, grid: [g], block: [256])(y, x, 1.0001f, n);
+        Workloads.launchSaxpy(s, g, y, x, 1.0001f, n);
         s.sync();
 
         int32 isoN = Workloads.blocks * Workloads.perBlock;
@@ -148,7 +153,7 @@ public final class Workloads {
             int32 j = 0;
             while (j < Workloads.perBlock) {
                 int64 t0 = Clock.nanoTime();
-                saxpy.launch(s, grid: [g], block: [256])(y, x, 1.0001f, n);
+                Workloads.launchSaxpy(s, g, y, x, 1.0001f, n);
                 s.sync();
                 int64 t1 = Clock.nanoTime();
                 blk[j] = Workloads.usOf(t1 - t0);
@@ -159,7 +164,7 @@ public final class Workloads {
             int64 p0 = Clock.nanoTime();
             int32 k = 0;
             while (k < Workloads.pipeCount) {
-                saxpy.launch(s, grid: [g], block: [256])(y, x, 1.0001f, n);
+                Workloads.launchSaxpy(s, g, y, x, 1.0001f, n);
                 k = k + 1;
             }
             s.sync();
@@ -728,13 +733,13 @@ public final class Workloads {
         s.sync();
         float64 soloGbps = 0.0;
         if (besteffort) {
-            saxpy.launch(be, grid: [gb], block: [256])(by, bx, 1.0001f, bn);
+            Workloads.launchSaxpy(be, gb, by, bx, 1.0001f, bn);
             be.sync();
             // the best-effort stream's solo rate: the same launches, alone
             int64 s0 = Clock.nanoTime();
             int32 sk = 0;
             while (sk < 20) {
-                saxpy.launch(be, grid: [gb], block: [256])(by, bx, 1.0001f, bn);
+                Workloads.launchSaxpy(be, gb, by, bx, 1.0001f, bn);
                 sk = sk + 1;
             }
             be.sync();
@@ -754,7 +759,7 @@ public final class Workloads {
             if (besteffort && (beLaunches == 0 || beDone.query())) {
                 int32 k = 0;
                 while (k < beBatch) {
-                    saxpy.launch(be, grid: [gb], block: [256])(by, bx, 1.0001f, bn);
+                    Workloads.launchSaxpy(be, gb, by, bx, 1.0001f, bn);
                     k = k + 1;
                 }
                 beDone.recordOn(be);
@@ -763,7 +768,7 @@ public final class Workloads {
             if (besteffort && (beLaunches == (int64) beBatch || beDone2.query())) {
                 int32 k = 0;
                 while (k < beBatch) {
-                    saxpy.launch(be, grid: [gb], block: [256])(by, bx, 1.0001f, bn);
+                    Workloads.launchSaxpy(be, gb, by, bx, 1.0001f, bn);
                     k = k + 1;
                 }
                 beDone2.recordOn(be);
@@ -954,6 +959,33 @@ public final class Workloads {
         uint32 i = KernelThread.globalIdX();
         if (i < n) {
             y[i] = a * x[i] + y[i];
+        }
+    }
+
+    // The same kernel with both buffers `@Streaming` (xpu-tile-manifest §6.3):
+    // touch-once traffic lowered non-temporal, so a best-effort saxpy stream
+    // does not evict the protected frame's working set. Selected by
+    // `--saxpy=streaming`; every row keeps its `saxpy` key.
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void saxpyStream(@Streaming KernelBuffer<float32> y,
+                                   @Streaming KernelBuffer<float32> x,
+                                   float32 a, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            y[i] = a * x[i] + y[i];
+        }
+    }
+
+    // One launch of the saxpy arm the run selected (plain or streaming). A
+    // method, not a lambda: a kernel launch inside a lambda has no launch
+    // codegen for its captures.
+    public static void launchSaxpy(KernelStream s, int32 g, KernelBuffer<float32> y,
+                                   KernelBuffer<float32> x, float32 a, uint32 n) {
+        if (Workloads.streamingSaxpy) {
+            saxpyStream.launch(s, grid: [g], block: [256])(y, x, a, n);
+        } else {
+            saxpy.launch(s, grid: [g], block: [256])(y, x, a, n);
         }
     }
 

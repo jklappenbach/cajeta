@@ -61,6 +61,14 @@ Two facts about the set, both measured on 2026-09-06:
   two modes: *isolated* (one launch, one sync) for latency and *pipelined*
   (fifty queued, one sync) for the cost a full queue sees. The harness rows
   stay host-clocked so they mean the same thing on every backend.
+- **Streaming arm** (`--saxpy=streaming`, xpu-tile-manifest 3.3.2). The saxpy
+  and pair workloads launch `saxpyStream`, the same kernel with both buffers
+  `@Streaming` (loads and stores lowered non-temporal on AMD/NVPTX), under the
+  SAME row keys — so `xpubench-report trial <legs of record> <streaming run>
+  --bands=<rerun>` reads the streaming kernel's own duration (`kernel.saxpy`)
+  and the protected frame's `frame_p99` beside it (`pair`) as ordinary
+  verdicts. Run with `SPANS=0`: the profiled pass names kernels, and the
+  streaming twin's spans would land under `saxpyStream`.
 - **Profiled passes** (scheduling plan 0.2.4). After the timed run, `run.sh`
   runs each workload once more under `CAJETA_PROFILER=1` — one kernel shape
   and one seam target per pass, so every span in a trace belongs to one row

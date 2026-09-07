@@ -25,6 +25,9 @@ namespace {
 class AmdgpuTarget : public LoweringTarget {
 public:
     const char* name() const override { return "amdgpu"; }
+    // `!nontemporal` becomes the slc / nt cache policy on global loads and
+    // stores (SIMemoryLegalizer) — a `@Streaming` buffer streams past L2.
+    bool supportsNontemporal() const override { return true; }
 
     // No native inline ray query (cajeta has no AMDGPU RT seam — that path is
     // Vulkan/SPIR-V's OpRayQuery, or a vendor RT extension), so the Acceleration-

@@ -99,6 +99,10 @@ namespace nvidia {
             try {
                 kfn = lowerKernel(method, devMod);
             } catch (cajeta::Exception& ex) {
+                // A contradicted @Access declaration is the author's error, not
+                // an unsupported construct: a compile error, never a skip.
+                if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
+                        || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
                 // Unsupported construct (XPU-N01) — this kernel gets NO device
                 // code for this backend; a launch that lands here at run time
                 // fails with "no registered kernel". Say so at build time —
@@ -110,6 +114,9 @@ namespace nvidia {
                 continue;
             }
             if (!kfn) continue;
+            // xpu-tile-manifest §6: read the access modes off the lowered IR
+            // before codegen transforms it.
+            KernelAccessSummary access = classifyKernelAccess(*kfn, method);
 
             std::string ptx = emitPtx(devMod, *tm);
             if (ptx.empty()) continue;
@@ -141,6 +148,7 @@ namespace nvidia {
                     if (attr->maxThreads()) pinned = *attr->maxThreads();
                 fillOccupancy(manifest, arch, pinned);
             }
+            applyAccess(manifest, access);
             warnIfSpilling(manifest);
 
             // Embed the cubin as a private host-module constant.

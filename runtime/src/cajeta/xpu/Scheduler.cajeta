@@ -1,6 +1,9 @@
 package cajeta.xpu;
 
+import cajeta.collection.ArrayList;
+import cajeta.error.RecoverableException;
 import cajeta.xpu.Device;
+import cajeta.xpu.KernelManifest;
 
 /**
  * Scheduler — the reserved submit seam for the future multi-kernel scheduler
@@ -43,6 +46,52 @@ public final class Scheduler {
      * VGPR is the honest stub until the backend surfaces register counts (§5.2).
      */
     public static #KernelResourceDescriptor submit(KernelSubmission sub) {
+        // xpu-tile-manifest §6.6: with the kernel named and its buffers bound in
+        // parameter order, the sets come from the manifest — what the lowered
+        // body does, not what the author says it does. A restated set that
+        // disagrees is refused rather than trusted.
+        if (sub.kernel != null && sub.bound.count() > 0) {
+            KernelManifest m #= KernelManifest.of(sub.kernel);
+            if (m != null) {
+                ArrayList<int64> reads #= heap ArrayList<int64>();
+                ArrayList<int64> writes #= heap ArrayList<int64>();
+                ArrayList<int64> accs #= heap ArrayList<int64>();
+                int32 n = m.accessCount();
+                if (sub.bound.count() < n) { n = sub.bound.count(); }
+                int32 i = 0;
+                while (i < n) {
+                    int64 h = sub.bound.get(i);
+                    String mode = m.accessMode(i);
+                    if (mode.equals("read")) {
+                        reads.add(h);
+                    } else if (mode.equals("write")) {
+                        writes.add(h);
+                    } else if (mode.equals("readwrite")) {
+                        reads.add(h);
+                        writes.add(h);
+                    } else if (mode.equals("accumulate")) {
+                        writes.add(h);
+                        accs.add(h);
+                    }
+                    i = i + 1;
+                }
+                if (sub.readSet.count() > 0 && !Scheduler.sameSet(sub.readSet, reads)) {
+                    throw heap RecoverableException("Scheduler.submit: the restated "
+                        + "read set of `" + sub.kernel + "` disagrees with what its "
+                        + "body does (xpu-tile-manifest §6.6); drop the reads() calls "
+                        + "or fix them");
+                }
+                if (sub.writeSet.count() > 0 && !Scheduler.sameSet(sub.writeSet, writes)) {
+                    throw heap RecoverableException("Scheduler.submit: the restated "
+                        + "write set of `" + sub.kernel + "` disagrees with what its "
+                        + "body does (xpu-tile-manifest §6.6); drop the writes() calls "
+                        + "or fix them");
+                }
+                Scheduler.copyInto(sub.readSet, reads);
+                Scheduler.copyInto(sub.writeSet, writes);
+                Scheduler.copyInto(sub.accumulateSet, accs);
+            }
+        }
         // §7.1: record what the schedule already knows. waveCount from the
         // geometry and the active backend's wave width (1 on the CPU backend).
         int32 waveW = 1;
@@ -63,5 +112,34 @@ public final class Scheduler {
             sub.gridX, sub.gridY, sub.gridZ,
             sub.blockX, sub.blockY, sub.blockZ,
             sub.character);
+    }
+
+    // Same handles, any order, no multiplicity: the set comparison behind the
+    // §6.6 refusal.
+    private static boolean sameSet(ArrayList<int64> a, ArrayList<int64> b) {
+        if (a.count() != b.count()) { return false; }
+        int32 i = 0;
+        while (i < a.count()) {
+            int64 h = a.get(i);
+            boolean found = false;
+            int32 j = 0;
+            while (j < b.count()) {
+                if (b.get(j) == h) { found = true; }
+                j = j + 1;
+            }
+            if (!found) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    // Replace `dst`'s contents with `src`'s (the submission owns its lists).
+    private static void copyInto(ArrayList<int64> dst, ArrayList<int64> src) {
+        dst.clear();
+        int32 i = 0;
+        while (i < src.count()) {
+            dst.add(src.get(i));
+            i = i + 1;
+        }
     }
 }

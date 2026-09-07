@@ -4,6 +4,7 @@ import cajeta.codec.json.Json;
 import cajeta.codec.json.JsonArray;
 import cajeta.codec.json.JsonObject;
 import cajeta.codec.json.JsonValue;
+import cajeta.collection.ArrayList;
 import cajeta.lang.Optional;
 
 /**
@@ -42,10 +43,21 @@ public final class KernelManifest {
     public int32 schemaVersion;
     /** Completion instrumentation compiled in. */
     public boolean instrumented;
-    /** Derived: read and write sets disjoint (§6.5). */
+    /** Derived: no buffer is readwrite or accumulate (§6.5). */
     public boolean restartable;
+    /**
+     * Derived: every global write lands on a compile-time-constant element —
+     * a global reduction whose scalar result the host consumes; the scheduler
+     * treats the launch as a barrier node (§6.7).
+     */
+    public boolean drainsDevice;
     /** Derived: may enter a replayed graph (§8.3). */
     public boolean captureSafe;
+
+    // ---- access (§6): one entry per buffer-like parameter, declaration order --
+    private ArrayList<String> accessParamList;
+    private ArrayList<String> accessModeList;
+    private ArrayList<int32> accessStreamingList;
 
     // ---- footprint (§3): -1 / null = absent ---------------------------- //
     private int32 waveWidthValue;
@@ -71,7 +83,11 @@ public final class KernelManifest {
         this.schemaVersion = 0;
         this.instrumented = false;
         this.restartable = false;
+        this.drainsDevice = false;
         this.captureSafe = false;
+        this.accessParamList #= heap ArrayList<String>();
+        this.accessModeList #= heap ArrayList<String>();
+        this.accessStreamingList #= heap ArrayList<int32>();
     }
 
     /**
@@ -102,6 +118,27 @@ public final class KernelManifest {
         if (rs.isPresent()) { m.restartable = rs.get(); }
         Optional<boolean> cs = o.getBoolean("captureSafe");
         if (cs.isPresent()) { m.captureSafe = cs.get(); }
+        Optional<boolean> dd = o.getBoolean("drainsDevice");
+        if (dd.isPresent()) { m.drainsDevice = dd.get(); }
+        Optional<JsonArray> accOpt = o.getArray("access");
+        if (accOpt.isPresent()) {
+            JsonArray acc = accOpt.get();
+            int32 na = acc.count();
+            int32 ai = 0;
+            while (ai < na) {
+                JsonValue av = acc.get(ai);
+                if (av != null && av.kind() == JsonValue.OBJECT) {
+                    JsonObject e = av.object();
+                    m.accessParamList.add(KernelManifest.str(e, "param"));
+                    m.accessModeList.add(KernelManifest.str(e, "mode"));
+                    Optional<boolean> st = e.getBoolean("streaming");
+                    int32 flag = 0;
+                    if (st.isPresent() && st.get()) { flag = 1; }
+                    m.accessStreamingList.add(flag);
+                }
+                ai = ai + 1;
+            }
+        }
 
         Optional<JsonObject> idOpt = o.getObject("identity");
         if (idOpt.isPresent()) {
@@ -202,6 +239,17 @@ public final class KernelManifest {
     public boolean hasFeasibleBlocks() { return this.feasibleBlocksValue != null; }
     /** Feasible block sizes, best first (VIEW; `null` when absent). */
     public int32[] feasibleBlocks() { return this.feasibleBlocksValue; }
+
+    // ---- access entries (§6): buffer-like parameters, declaration order ---- //
+
+    /** Number of buffer-like parameters the manifest classified. */
+    public int32 accessCount() { return this.accessParamList.count(); }
+    /** Parameter name of entry `i` (VIEW). */
+    public String accessParam(int32 i) { return this.accessParamList.get(i); }
+    /** `read`, `write`, `readwrite` or `accumulate` for entry `i` (VIEW). */
+    public String accessMode(int32 i) { return this.accessModeList.get(i); }
+    /** True when entry `i`'s loads and stores were lowered non-temporal (§6.3). */
+    public boolean accessStreaming(int32 i) { return this.accessStreamingList.get(i) != 0; }
 
     // ---- helpers -------------------------------------------------------- //
 

@@ -35,6 +35,9 @@ namespace {
 class NvptxTarget : public LoweringTarget {
 public:
     const char* name() const override { return "nvptx"; }
+    // `!nontemporal` becomes the `.cs` (cache-streaming) qualifier on
+    // ld.global / st.global — a `@Streaming` buffer streams past L1/L2.
+    bool supportsNontemporal() const override { return true; }
 
     // No native inline ray query (cajeta has no NVPTX RT-core / OptiX seam), so
     // the AccelerationStructure noun is built as the portable software BVH and

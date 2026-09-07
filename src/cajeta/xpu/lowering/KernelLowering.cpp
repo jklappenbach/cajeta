@@ -21,6 +21,7 @@
 #include "../core/XpuAttributes.h"
 #include "../core/XpuKernelAttr.h"
 #include "../core/KernelArgTrait.h"
+#include "../core/KernelAccess.h"
 #include "../../error/Exception.h"
 
 #include "../../asn/AbstractSyntaxNode.h"
@@ -7183,6 +7184,13 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
     // the correctness companion to Wave.shuffle/ballot/reduce.
     if (lowerer.usedSubgroupOp())
         target.onSubgroupOpsUsed(fn, deviceModule);
+    // xpu-tile-manifest §6: honour the author's parameter declarations against
+    // the LOWERED body — `@Streaming` tags the parameter's loads/stores
+    // non-temporal where this backend lowers it, `@Access(m)` is checked for a
+    // contradiction (a compile error, not a skipped kernel — the registration
+    // emitters rethrow it). The manifest's access modes are then read off this
+    // IR by the same provenance walk (classifyKernelAccess).
+    applyAccessDeclarations(*fn, method, target.supportsNontemporal());
     return fn;
 }
 
