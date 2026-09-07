@@ -55,6 +55,13 @@ the GPU backends.
   the pending rows for `dot`, `reduceSum`, `matmulTiled`, `cg` and
   `degenerate` become measured rows in the report, with the same identity
   as the rest of the leg.
+- **2.6** When a loop that holds a barrier sits under control flow not every
+  work-item path enters (the WMMA GEMM kernels' `if (t0 < rows && i0 <
+  outDim) { while (b < blocksPerRow) { … barrier … } }`), the pass declines
+  the kernel by name: a barrier loop must be entered by every work-item,
+  exactly as a barrier must be reached by every work-item. Accepting it
+  regioned the `if`'s join block twice and shipped IR that failed the
+  verifier (RAGreedy SIGSEGV on every cajeta-llm suite build, 2026-09-06).
 
 ## 3. Acceptance
 
