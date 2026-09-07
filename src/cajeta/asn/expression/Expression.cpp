@@ -2636,10 +2636,69 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // The title flag one ternary arm hands the merge (see the member's note
+    // in Expression.h). Emitted in the arm's own block, right after the arm's
+    // value, so a call arm's return-flag TLS is still that call's.
+    static llvm::Value* ternaryArmTitleFlag(CajetaModulePtr module,
+                                            const ExpressionPtr& arm,
+                                            llvm::IRBuilder<>* builder,
+                                            llvm::Type* i64) {
+        auto zero = llvm::ConstantInt::get(i64, 0);
+        auto one = llvm::ConstantInt::get(i64, 1);
+        if (!arm) return zero;
+        if (auto mv = dynamic_pointer_cast<MoveExpression>(arm)) {
+            if (llvm::Value* f = mv->getRuntimeTitleFlag()) return f;
+            return one;                          // static owner moved out
+        }
+        if (auto nested = dynamic_pointer_cast<BooleanSwitchExpression>(arm)) {
+            if (llvm::Value* f = nested->getRuntimeTitleFlag()) return f;
+            return zero;
+        }
+        if (dynamic_pointer_cast<MethodCallExpression>(arm)
+                || dynamic_pointer_cast<CallExpression>(arm)) {
+            // A plain return may still carry a title (ownership §2.1); the
+            // callee left its bit in the TLS a moment ago.
+            if (llvm::Function* getFlagFn =
+                    module->getRuntimeFunction("__cajeta_return_flag_get")) {
+                return builder->CreateCall(getFlagFn, {}, "tern_ret_flag");
+            }
+            return zero;
+        }
+        if (auto ne = dynamic_pointer_cast<NewExpression>(arm)) {
+            return ne->getStackAlloc() ? zero : one;
+        }
+        if (auto ag = dynamic_pointer_cast<AggregateInitializerExpression>(arm)) {
+            return ag->getStackAlloc() ? zero : one;
+        }
+        if (auto bo = dynamic_pointer_cast<BinaryOpExpression>(arm)) {
+            // A String concat materialises a fresh wrapper (the shape
+            // LocalVariableDeclaration's producesOwnedString names).
+            if (bo->getBinaryOp() == BINARY_OP_ADD) {
+                auto rt = bo->getResolvedType();
+                if (rt && rt->getQName()
+                        && rt->getQName()->getTypeName() == "String") {
+                    return one;
+                }
+            }
+            return zero;
+        }
+        // Literal, identifier, field read, element read, cast, `this`: a
+        // view of something that already has an owner.
+        return zero;
+    }
+
     llvm::Value* BooleanSwitchExpression::generateCode(CajetaModulePtr module) {
+        // Stale-Value guard (as MoveExpression): this node re-generates per
+        // instantiation; a flag from a previous function must never leak.
+        runtimeTitleFlag = nullptr;
         if (children.size() < 3) return nullptr;
         auto* builder = module->getBuilder();
         llvm::LLVMContext& ctx = *module->getLlvmContext();
+        // The flag is computed for any pointer-valued result: only the
+        // class/String local paths consume it (views and value types are
+        // never pointer-valued here; an array's own path ignores it), and the
+        // node's own resolvedType is not reliably a class by codegen time.
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
 
         // Evaluate condition; coerce non-i1 (e.g. i32 0/non-0) to i1 via != 0.
         // Use loadIfLValue (not loadIfAllocaShared) so an l-value condition that
@@ -2666,12 +2725,17 @@ bool cajetaRhsCarriesRedundantSharp(
         builder->SetInsertPoint(thenBB);
         auto thenAst = dynamic_pointer_cast<Expression>(children[1]);
         llvm::Value* thenVal = loadIfLValue(module, children[1]->generateCode(module), thenAst);
+        bool classLike = thenVal && thenVal->getType()->isPointerTy();
+        llvm::Value* thenFlag = classLike
+            ? ternaryArmTitleFlag(module, thenAst, builder, i64) : nullptr;
         llvm::BasicBlock* thenEnd = builder->GetInsertBlock();
         builder->CreateBr(mergeBB);
 
         builder->SetInsertPoint(elseBB);
         auto elseAst = dynamic_pointer_cast<Expression>(children[2]);
         llvm::Value* elseVal = loadIfLValue(module, children[2]->generateCode(module), elseAst);
+        llvm::Value* elseFlag = classLike
+            ? ternaryArmTitleFlag(module, elseAst, builder, i64) : nullptr;
         // If types differ, narrow/extend the else side to match the then side. Mirrors
         // BinaryOpExpression's coerceArithPair logic at a single point of variance.
         if (elseVal->getType() != thenVal->getType()) {
@@ -2694,6 +2758,18 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::PHINode* phi = builder->CreatePHI(thenVal->getType(), 2);
         phi->addIncoming(thenVal, thenEnd);
         phi->addIncoming(elseVal, elseEnd);
+        if (classLike && thenFlag && elseFlag) {
+            auto* tc = llvm::dyn_cast<llvm::ConstantInt>(thenFlag);
+            auto* ec = llvm::dyn_cast<llvm::ConstantInt>(elseFlag);
+            if (tc && ec && tc->getZExtValue() == ec->getZExtValue()) {
+                runtimeTitleFlag = thenFlag;     // both arms decide statically
+            } else {
+                llvm::PHINode* fphi = builder->CreatePHI(i64, 2, "tern_title");
+                fphi->addIncoming(thenFlag, thenEnd);
+                fphi->addIncoming(elseFlag, elseEnd);
+                runtimeTitleFlag = fphi;
+            }
+        }
         return phi;
     }
 

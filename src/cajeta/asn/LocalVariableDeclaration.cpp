@@ -880,6 +880,15 @@ namespace cajeta {
                             getFlagFn, {}, "ret_flag");
                     }
                 }
+                // ternary-local-double-free — the ternary computed the taken
+                // arm's flag in its merge block (a constant when both arms
+                // decide statically); it stands in for the TLS read.
+                if (!kids.empty()) {
+                    if (auto ternInit = dynamic_pointer_cast<BooleanSwitchExpression>(
+                            kids[0])) {
+                        callResultFlag = ternInit->getRuntimeTitleFlag();
+                    }
+                }
             }
 
             // slice-spec §6.1 copy/drop hooks for shared-capable VALUE locals
@@ -1237,6 +1246,14 @@ namespace cajeta {
             // 5.2.3 — the initializer is a call whose class-pointer result
             // carries a runtime title flag (armed below, not statically).
             bool initIsFlaggedCall = false;
+            // ternary-local-double-free (2026-09-07) — the initializer is a
+            // class-typed ternary: the local owns exactly what the TAKEN arm
+            // produced, so its entry is armed from the ternary's title flag
+            // (BooleanSwitchExpression::getRuntimeTitleFlag) like a flagged
+            // call's, and a constant-zero flag (both arms borrow) pushes no
+            // entry at all. Unrecognised, the shape fell to the owned default
+            // and `String nm = c ? r.name : "-"` freed `r.name` at scope end.
+            bool initIsTernary = false;
             // P2a — `stack MyClass(args)` produces an instance owned by
             // the current frame (alloca-backed body); the class's heap
             // destructor would free a stack pointer if we registered the
@@ -1663,6 +1680,24 @@ namespace cajeta {
                             auto rhsClass = dynamic_pointer_cast<CajetaClass>(rhsExpr->getResolvedType());
                             if (rhsClass) {
                                 initIsBorrow = true;
+                            }
+                        }
+                    } else if (dynamic_pointer_cast<BooleanSwitchExpression>(
+                                   children[0])) {
+                        // ternary-local-double-free — see initIsTernary.
+                        if (rhsExpr) {
+                            if (!rhsExpr->getResolvedType()) {
+                                rhsExpr->resolveTypes(module);
+                            }
+                            auto rhsClass = dynamic_pointer_cast<CajetaClass>(
+                                rhsExpr->getResolvedType());
+                            bool rhsIsStruct = dynamic_pointer_cast<CajetaView>(
+                                rhsExpr->getResolvedType()) != nullptr;
+                            if (rhsClass && !rhsIsStruct
+                                    && !rhsClass->isValueType()) {
+                                initIsBorrow = true;       // static owner path off
+                                initIsFlaggedCall = true;  // the arm flag decides
+                                initIsTernary = true;
                             }
                         }
                     }
@@ -2200,6 +2235,24 @@ namespace cajeta {
                     "__cajeta_class_virtual_drop", callResultFlag,
                     getSourceLine());
                 field->setRuntimeConditionalOwner(true);
+            }
+            // ternary-local-double-free — the String twin of the block above.
+            // The string drop is mode-aware, so a flagged entry is exactly
+            // right; a constant flag collapses to the static answer: one ->
+            // the ordinary owned entry, zero (both arms borrow) -> no entry.
+            if (initIsTernary && initIsFlaggedCall && callResultFlag
+                    && isCajetaString && !isArray && !isStructType
+                    && !arenaEligible && !field->getDropEntry()) {
+                if (auto* cflag = llvm::dyn_cast<llvm::ConstantInt>(callResultFlag)) {
+                    if (cflag->getZExtValue() != 0) {
+                        emitDropEntryFor(module, field, "__cajeta_string_drop",
+                                         getSourceLine());
+                    }
+                } else {
+                    emitFlaggedDropEntryFor(module, field, "__cajeta_string_drop",
+                                            callResultFlag, getSourceLine());
+                    field->setRuntimeConditionalOwner(true);
+                }
             }
 
             // 7.2.5 — `T x = #src` where src is a RUNTIME owner (formal /

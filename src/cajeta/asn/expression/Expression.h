@@ -454,12 +454,29 @@ namespace cajeta {
      * Emits a conditional branch + phi pattern, same shape as &&/||.
      */
     class BooleanSwitchExpression : public Expression {
+    private:
+        // Ownership of the value a ternary yields (ternary-local-double-free,
+        // 2026-09-07). For a class-typed result this is the title flag of the
+        // arm actually TAKEN, as an i64 in the merge block: a constant 1 for
+        // an arm that materialises a fresh value (`heap`, a String concat, a
+        // `#x` move with a static owner), a constant 0 for an arm that only
+        // reads an existing one (literal, identifier, field, element, cast),
+        // the return-flag TLS read right after a call arm, a nested ternary's
+        // own flag — phi'd at the merge, or a constant when both arms decide
+        // the same way statically. LocalVariableDeclaration arms the receiving
+        // local's drop entry from it, so `T x = c ? this.f : "-"` never frees
+        // `this.f` (the shape that double-freed every Diag record under
+        // cajeta-llm's trace logging) and `T x = c ? heap T() : this.f` drops
+        // only what it owns. Null for non-class results. Reset per codegen.
+        llvm::Value* runtimeTitleFlag = nullptr;
     public:
         BooleanSwitchExpression(antlr4::Token* token) : Expression(token) { }
 
         void resolveTypes(CajetaModulePtr module) override;
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
+
+        llvm::Value* getRuntimeTitleFlag() const { return runtimeTitleFlag; }
     };
 
     /**
