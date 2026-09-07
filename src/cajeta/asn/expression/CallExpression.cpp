@@ -22,7 +22,7 @@ namespace cajeta {
 
     CallExpression::CallExpression(
         CajetaParser::ExpressionContext* ctx,
-        antlr4::Token* token) : Expression(token) {
+        antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Call;
         // Mirror MethodCallExpression's parameterList handling: each entry is
         // an optional label (kept with its trailing ':') plus an expression.
         if (auto* paramList = ctx->parameterList()) {

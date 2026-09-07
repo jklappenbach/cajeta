@@ -11,13 +11,13 @@ namespace cajeta {
     private:
         string identifier;
     public:
-        IdentifierExpression(CajetaParser::IdentifierContext* ctx, bool primary) : Expression(ctx->getStart()) {
+        IdentifierExpression(CajetaParser::IdentifierContext* ctx, bool primary) : Expression(ctx->getStart()) { exprKind = ExprKind::Identifier;
             this->primary = primary;
             identifier = ctx->getText();
         }
 
         IdentifierExpression(bool primary, CajetaParser::IdentifierContext* ctx) : Expression(primary,
-            ctx->getStart()) {
+            ctx->getStart()) { exprKind = ExprKind::Identifier;
             identifier = ctx->getText();
         }
 

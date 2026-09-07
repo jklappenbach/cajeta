@@ -72,9 +72,9 @@ namespace cajeta {
             AbstractSyntaxNode::forEachSubNode(fn);
         }
 
-        NewExpression(antlr4::Token* token) : Expression(token) { }
+        NewExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::New; }
 
-        NewExpression(CajetaParser::CreatorContext* creatorContext, antlr4::Token* token) : Expression(token) {
+        NewExpression(CajetaParser::CreatorContext* creatorContext, antlr4::Token* token) : Expression(token) { exprKind = ExprKind::New;
             // The leaf type-name token of `heap pkg.Point(...)` — the `Point`.
             // Captured so the created type can be recorded as an xref reference
             // at parse time (ide-symbol-index): lint stops before the codegen

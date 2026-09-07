@@ -649,13 +649,13 @@ bool cajetaRhsCarriesRedundantSharp(
     }
 
     ArrayIndexExpression::ArrayIndexExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token) : Expression(
-        token) {
+        token) { exprKind = ExprKind::ArrayIndex;
 
     }
 
     ArraySliceExpression::ArraySliceExpression(
         CajetaParser::ExpressionContext* ctx, antlr4::Token* token)
-        : Expression(token) {
+        : Expression(token) { exprKind = ExprKind::ArraySlice;
         // children [base, from, to] attach via fromContext's child loop.
     }
 
@@ -779,7 +779,7 @@ bool cajetaRhsCarriesRedundantSharp(
 
     ArrayLiteralExpression::ArrayLiteralExpression(
         vector<ExpressionPtr> elems, antlr4::Token* token)
-        : Expression(token), elements(std::move(elems)) {
+        : Expression(token), elements(std::move(elems)) { exprKind = ExprKind::ArrayLiteral;
         // Mirror into children so generic AST walks (free-variable scans, type
         // resolution) reach the elements too.
         for (auto& e : elements) addChild(e);
@@ -997,7 +997,7 @@ bool cajetaRhsCarriesRedundantSharp(
 
     MapLiteralExpression::MapLiteralExpression(
         vector<pair<ExpressionPtr, ExpressionPtr>> entries, antlr4::Token* token)
-        : Expression(token), entries(std::move(entries)) {
+        : Expression(token), entries(std::move(entries)) { exprKind = ExprKind::MapLiteral;
         // Mirror key/value expressions into children so AST walks reach them.
         for (auto& e : this->entries) {
             if (e.first) addChild(e.first);

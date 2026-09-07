@@ -247,7 +247,7 @@ namespace cajeta {
     // return type).
     MethodCallExpression::MethodCallExpression(
         CajetaParser::MethodCallContext* ctx,
-        antlr4::Token* token) : Expression(token) {
+        antlr4::Token* token) : Expression(token) { exprKind = ExprKind::MethodCall;
         // Default to the node's own position, then narrow to the identifier
         // where there is one (see the header note on nameLine/nameColumn).
         nameLine = getSourceLine();

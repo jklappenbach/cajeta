@@ -6,10 +6,16 @@
 
 #include <list>
 #include <string>
+#include <cstdint>
 #include <functional>
 #include "../AbstractSyntaxNode.h"
 #include "CajetaParser.h"
 #include "../../type/CajetaType.h"
+
+namespace llvm {
+    class Function;
+    class Value;
+}
 
 using namespace std;
 
@@ -115,9 +121,31 @@ namespace cajeta {
     // Expression is a sibling of Statement under AbstractSyntaxNode. When an expression
     // appears in statement position (e.g. `foo();`), wrap it in ExpressionStatement
     // rather than relying on inheritance — see Statement::fromContext.
+    // ownership-title-classifier 1.2.1 — the node-kind tag. One byte set by
+    // every concrete subclass constructor and read inline, so a consumer that
+    // must know what shape it holds asks `kind()` and switches once, instead
+    // of walking a chain of `dynamic_pointer_cast` probes. The classifier's
+    // switch over it has no default and builds with -Werror=switch, which is
+    // what makes the classification total (spec §2.1): a new subclass must
+    // name its kind here AND be handled there before the compiler builds.
+    // `Count` is the enumerator count for tables indexed by kind.
+    enum class ExprKind : uint8_t {
+        Unsupported = 0,
+        Primary, Literal, ClassLiteral, This, Super,
+        TextLiteral, IntegerLiteral, FloatLiteral,
+        Identifier, Dot, ArrayIndex, ArraySlice, ArrayLiteral, MapLiteral,
+        Aggregate, New, Cast, Postfix, Prefix, BinaryOp, BooleanSwitch,
+        InstanceOf, MethodCall, Call, MethodReference, Move, Await, Spawn,
+        Detach, Switch, Lambda,
+        Count
+    };
+
     class Expression : public AbstractSyntaxNode {
     protected:
         bool primary;
+        ExprKind exprKind = ExprKind::Unsupported;
+        llvm::Value* titleFlagCache = nullptr;
+        llvm::Function* titleFlagCacheFn = nullptr;
         // Set by the type-resolver pass; codegen consults this for situations where the
         // LLVM type alone is insufficient (e.g. fp8 stored as i8). May be null pre-resolution.
         CajetaTypePtr resolvedType;
@@ -130,6 +158,21 @@ namespace cajeta {
 
         CajetaTypePtr getResolvedType() const { return resolvedType; }
         void setResolvedType(CajetaTypePtr t) { resolvedType = t; }
+        /// The node-kind tag (see ExprKind): one byte, set by the subclass
+        /// constructor, never virtual.
+        ExprKind kind() const { return exprKind; }
+
+        /// ownership-title-classifier 1.2.2 — the runtime title flag this
+        /// node produced, cached for the rest of the function it was emitted
+        /// in (a node re-generates per instantiation, so the cache is keyed
+        /// by the emitting function, not cleared by each subclass).
+        llvm::Value* titleFlagCacheFor(llvm::Function* fn) const {
+            return titleFlagCacheFn == fn ? titleFlagCache : nullptr;
+        }
+        void setTitleFlagCache(llvm::Value* v, llvm::Function* fn) {
+            titleFlagCache = v;
+            titleFlagCacheFn = fn;
+        }
 
         virtual void addChild(ExpressionPtr expression) {
             children.push_back(expression);
@@ -149,7 +192,7 @@ namespace cajeta {
      */
     class PrimaryExpression : public Expression {
     public:
-        PrimaryExpression(antlr4::Token* token) : Expression(token) { }
+        PrimaryExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Primary; }
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
 
@@ -166,7 +209,7 @@ namespace cajeta {
     public:
         ClassLiteralExpression(std::string namedTypeName, antlr4::Token* token)
             : PrimaryExpression(token),
-              namedTypeName(std::move(namedTypeName)) { }
+              namedTypeName(std::move(namedTypeName)) { exprKind = ExprKind::ClassLiteral; }
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
@@ -183,13 +226,13 @@ namespace cajeta {
 
     class ThisExpression : public PrimaryExpression {
     public:
-        ThisExpression(CajetaParser::ExpressionContext* ctx) : PrimaryExpression(ctx->getStart()) { }
+        ThisExpression(CajetaParser::ExpressionContext* ctx) : PrimaryExpression(ctx->getStart()) { exprKind = ExprKind::This; }
         // Used by PrimaryExpression::fromContext, where `ctx` is a
         // PrimaryContext (not an ExpressionContext). Previously the
         // call site passed `ctx->expression()` which is null for the
         // THIS form — the result was a null-deref the moment ThisExpression
         // tried to read getStart(). Now we accept the Token directly.
-        ThisExpression(antlr4::Token* token) : PrimaryExpression(token) { }
+        ThisExpression(antlr4::Token* token) : PrimaryExpression(token) { exprKind = ExprKind::This; }
 
         void resolveTypes(CajetaModulePtr module) override;
 
@@ -225,7 +268,7 @@ namespace cajeta {
     // CajetaClass::adjustForUpcast before the call site reads it).
     class SuperExpression : public PrimaryExpression {
     public:
-        SuperExpression(antlr4::Token* token) : PrimaryExpression(token) { }
+        SuperExpression(antlr4::Token* token) : PrimaryExpression(token) { exprKind = ExprKind::Super; }
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
 
@@ -380,7 +423,7 @@ namespace cajeta {
         CajetaTypePtr destType;
     public:
         CastExpression(CajetaTypePtr destType, antlr4::Token* token)
-            : Expression(token), destType(destType) { }
+            : Expression(token), destType(destType) { exprKind = ExprKind::Cast; }
 
         // The cast's declared target type. Available even before resolveTypes()
         // runs (the XPU device lowerer walks the kernel AST directly and may
@@ -405,7 +448,7 @@ namespace cajeta {
     class PostfixExpression : public Expression {
         PostfixOp op;
     public:
-        PostfixExpression(PostfixOp op, antlr4::Token* token) : Expression(token) {
+        PostfixExpression(PostfixOp op, antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Postfix;
             this->op = op;
         }
 
@@ -430,7 +473,7 @@ namespace cajeta {
     private:
         PrefixOp op;
     public:
-        PrefixExpression(PrefixOp op, antlr4::Token* token) : Expression(token) {
+        PrefixExpression(PrefixOp op, antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Prefix;
             this->op = op;
         }
 
@@ -471,7 +514,7 @@ namespace cajeta {
         // only what it owns. Null for non-class results. Reset per codegen.
         llvm::Value* runtimeTitleFlag = nullptr;
     public:
-        BooleanSwitchExpression(antlr4::Token* token) : Expression(token) { }
+        BooleanSwitchExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::BooleanSwitch; }
 
         void resolveTypes(CajetaModulePtr module) override;
 
@@ -501,7 +544,7 @@ namespace cajeta {
         CajetaTypePtr type;
         string pattern;
     public:
-        InstanceOfExpression(CajetaTypePtr type, string pattern, antlr4::Token* token) : Expression(token) {
+        InstanceOfExpression(CajetaTypePtr type, string pattern, antlr4::Token* token) : Expression(token) { exprKind = ExprKind::InstanceOf;
             this->type = type;
             this->pattern = pattern;
         }
@@ -573,7 +616,7 @@ namespace cajeta {
               receiverType(std::move(receiverType)),
               receiverExpr(std::move(receiverExpr)),
               methodName(std::move(methodName)),
-              isCtor(isCtor) {
+              isCtor(isCtor) { exprKind = ExprKind::MethodReference;
             if (this->isCtor) kind = Kind::CONSTRUCTOR;
         }
 
@@ -616,7 +659,7 @@ namespace cajeta {
         // it. Null for static owners (compile-time truth stands).
         llvm::Value* runtimeTitleFlag = nullptr;
     public:
-        MoveExpression(antlr4::Token* token) : Expression(token) { }
+        MoveExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Move; }
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
@@ -684,7 +727,7 @@ namespace cajeta {
     // come in later phases; today these are straight-line lowerings.
     class AwaitExpression : public Expression {
     public:
-        AwaitExpression(antlr4::Token* token) : Expression(token) { }
+        AwaitExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Await; }
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
@@ -718,7 +761,7 @@ namespace cajeta {
         // joins (as before, via scope_register bookkeeping) and frees.
         bool discardedMode = false;
     public:
-        SpawnExpression(antlr4::Token* token) : Expression(token) { }
+        SpawnExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Spawn; }
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
         llvm::Value* getDropEntry() const { return dropEntry; }
@@ -730,7 +773,7 @@ namespace cajeta {
 
     class DetachExpression : public Expression {
     public:
-        DetachExpression(antlr4::Token* token) : Expression(token) { }
+        DetachExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Detach; }
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
@@ -759,12 +802,13 @@ namespace cajeta {
         ExpressionPtr discriminator;
         list<Case> cases;
     public:
+        const list<Case>& getCases() const { return cases; }
         SwitchExpression(antlr4::Token* token,
                           ExpressionPtr discriminator,
                           list<Case> cases)
             : Expression(token),
               discriminator(std::move(discriminator)),
-              cases(std::move(cases)) { }
+              cases(std::move(cases)) { exprKind = ExprKind::Switch; }
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
@@ -810,7 +854,7 @@ namespace cajeta {
             : Expression(token),
               paramNames(std::move(paramNames)),
               paramTypes(std::move(paramTypes)),
-              body(std::move(body)) { }
+              body(std::move(body)) { exprKind = ExprKind::Lambda; }
 
         const std::vector<std::string>& getParamNames() const { return paramNames; }
         const std::vector<CajetaTypePtr>& getParamTypes() const { return paramTypes; }
@@ -843,7 +887,7 @@ namespace cajeta {
         string constructName;
     public:
         UnsupportedExpression(string constructName, antlr4::Token* token)
-            : Expression(token), constructName(std::move(constructName)) { }
+            : Expression(token), constructName(std::move(constructName)) { exprKind = ExprKind::Unsupported; }
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };

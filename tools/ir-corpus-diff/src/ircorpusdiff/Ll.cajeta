@@ -1,0 +1,206 @@
+package ircorpusdiff;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.HashMap;
+import cajeta.io.file.File;
+import cajeta.lang.String;
+
+/**
+ * One function of a normalized `.ll` module: its name, its normalized body
+ * lines (labels included, comments stripped), and its instruction count.
+ */
+public final class Fn {
+    public String name;
+    public ArrayList<String> lines;
+    public int32 ops;
+
+    public Fn(#String name) {
+        this.name #= name;
+        this.lines #= heap ArrayList<String>();
+        this.ops = 0;
+        return;
+    }
+}
+
+/**
+ * Textual LLVM IR, normalized so two emissions of the same program compare
+ * equal whatever their SSA numbering did (ownership-title-classifier plan
+ * 1.2.3). Per line: `%N` → `%_`, `!N` → `!_`, `#N` → `#_`, a numbered block
+ * label `N:` → `_:`, a trailing `; ...` comment removed. A function is the
+ * text from its `define` line to the closing `}`; everything outside a
+ * function (globals, declarations, metadata) is not part of the diff. An
+ * instruction is any non-empty, non-label line inside a function — the count
+ * the plan tracks as "emitted ops".
+ */
+public final class Ll {
+
+    static boolean isDigit(int8 c) {
+        return c >= 48 && c <= 57;
+    }
+
+    static boolean startsWith(int8[] b, int32 s, int32 e, String prefix) {
+        int32 n = prefix.byteLength();
+        if (e - s < n) { return false; }
+        int32 i = 0;
+        while (i < n) {
+            if (b[s + i] != (int8) prefix.byteAt(i)) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    /** The function name of a `define` line: `@name(` or `@"quoted name"(`. */
+    static #String nameOf(int8[] b, int32 s, int32 e) {
+        int32 i = s;
+        while (i < e && b[i] != (int8) 64) { i = i + 1; }   // '@'
+        if (i >= e) { return "?"; }
+        i = i + 1;
+        int32 j = i;
+        if (i < e && b[i] == (int8) 34) {                   // '"'
+            i = i + 1;
+            j = i;
+            while (j < e && b[j] != (int8) 34) { j = j + 1; }
+        } else {
+            while (j < e && b[j] != (int8) 40) { j = j + 1; }  // '('
+        }
+        int32 n = j - i;
+        int8[] nb = heap int8[n];
+        int32 k = 0;
+        while (k < n) { nb[k] = b[i + k]; k = k + 1; }
+        return heap String(#nb, n);
+    }
+
+    /**
+     * Normalize one line into a fresh String. Returns null for a line that
+     * is empty after comment stripping.
+     */
+    static #String normLine(int8[] b, int32 s, int32 e) {
+        // Strip a trailing comment: the first `;` outside a string literal.
+        boolean inStr = false;
+        int32 end = e;
+        int32 i = s;
+        while (i < e) {
+            int8 c = b[i];
+            if (c == (int8) 34) { inStr = !inStr; }
+            if (!inStr && c == (int8) 59) { end = i; break; }   // ';'
+            i = i + 1;
+        }
+        // Trim trailing blanks, then leading ones: the diff reads better and
+        // indentation is not code.
+        while (end > s && (b[end - 1] == (int8) 32 || b[end - 1] == (int8) 9)) { end = end - 1; }
+        while (s < end && (b[s] == (int8) 32 || b[s] == (int8) 9)) { s = s + 1; }
+        if (end <= s) { return null; }
+        int8[] out = heap int8[end - s];
+        int32 n = 0;
+        i = s;
+        // A numbered block label at the start of the line: `12:` → `_:`.
+        if (Ll.isDigit(b[i])) {
+            int32 j = i;
+            while (j < end && Ll.isDigit(b[j])) { j = j + 1; }
+            if (j < end && b[j] == (int8) 58) {                  // ':'
+                out[n] = (int8) 95; n = n + 1;                  // '_'
+                i = j;
+            }
+        }
+        while (i < end) {
+            int8 c = b[i];
+            if ((c == (int8) 37 || c == (int8) 33 || c == (int8) 35)   // '%' '!' '#'
+                    && i + 1 < end && Ll.isDigit(b[i + 1])) {
+                out[n] = c; n = n + 1;
+                out[n] = (int8) 95; n = n + 1;                  // '_'
+                i = i + 1;
+                while (i < end && Ll.isDigit(b[i])) { i = i + 1; }
+                continue;
+            }
+            out[n] = c; n = n + 1;
+            i = i + 1;
+        }
+        return heap String(#out, n);
+    }
+
+    /** Parse a whole module's text into its normalized functions. */
+    public static #ArrayList<Fn> parse(int8[] b, int32 len) {
+        ArrayList<Fn> fns = heap ArrayList<Fn>();
+        Fn cur = null;
+        int32 s = 0;
+        while (s < len) {
+            int32 e = s;
+            while (e < len && b[e] != (int8) 10) { e = e + 1; }   // '\n'
+            int32 le = e;
+            if (le > s && b[le - 1] == (int8) 13) { le = le - 1; }   // '\r'
+            if (Ll.startsWith(b, s, le, "define ")) {
+                cur = heap Fn(Ll.nameOf(b, s, le));
+                fns.add(#cur);
+            } else if (cur != null) {
+                if (le - s == 1 && b[s] == (int8) 125) {             // '}'
+                    cur = null;
+                } else if (le > s && b[s] != (int8) 59) {            // not a ';' comment line
+                    String nl #= Ll.normLine(b, s, le);
+                    if (nl != null) {
+                        int32 ln = nl.byteLength();
+                        boolean label = ln > 0 && nl.byteAt(ln - 1) == 58;   // ends with ':'
+                        if (!label) { cur.ops = cur.ops + 1; }
+                        cur.lines.add(#nl);
+                    }
+                }
+            }
+            s = e + 1;
+        }
+        return fns;
+    }
+
+    /** Parse a module file; null when it cannot be read. */
+    public static #ArrayList<Fn> parseFile(String path) {
+        int8[] b #= File.readAllBytes(path);
+        if (b == null) { return null; }
+        return Ll.parse(b, (int32) b.count());
+    }
+
+    /** Total instruction count of a module. */
+    public static int64 opsOf(ArrayList<Fn> fns) {
+        int64 total = 0;
+        int32 i = 0;
+        int32 n = fns.count();
+        while (i < n) {
+            total = total + (int64) fns.get(i).ops;
+            i = i + 1;
+        }
+        return total;
+    }
+
+    /** Index functions by name. */
+    public static #HashMap<String, int32> index(ArrayList<Fn> fns) {
+        HashMap<String, int32> m = heap HashMap<String, int32>();
+        int32 i = 0;
+        int32 n = fns.count();
+        while (i < n) {
+            m.put(fns.get(i).name, i);
+            i = i + 1;
+        }
+        return m;
+    }
+
+    /** Index a list of names to their positions. */
+    public static #HashMap<String, int32> indexNames(ArrayList<String> names) {
+        HashMap<String, int32> m = heap HashMap<String, int32>();
+        int32 i = 0;
+        int32 n = names.count();
+        while (i < n) {
+            m.put(names.get(i), i);
+            i = i + 1;
+        }
+        return m;
+    }
+
+    /** True when two functions' normalized bodies are line-for-line equal. */
+    public static boolean sameBody(Fn a, Fn b) {
+        int32 n = a.lines.count();
+        if (n != b.lines.count()) { return false; }
+        int32 i = 0;
+        while (i < n) {
+            if (!a.lines.get(i).equals(b.lines.get(i))) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+}

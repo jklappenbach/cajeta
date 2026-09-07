@@ -72,7 +72,7 @@ namespace cajeta {
         MethodPtr overrideMethod;
         bool arenaEligible = false;
     public:
-        BinaryOpExpression(BinaryOp binaryOp, antlr4::Token* token) : Expression(token) {
+        BinaryOpExpression(BinaryOp binaryOp, antlr4::Token* token) : Expression(token) { exprKind = ExprKind::BinaryOp;
             overrideMethod = nullptr;
             this->binaryOp = binaryOp;
 

@@ -1,0 +1,368 @@
+package ircorpusdiff;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.HashMap;
+import cajeta.io.file.File;
+import cajeta.io.file.Path;
+import cajeta.lang.String;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
+
+/**
+ * ir-corpus-diff — the equivalence instrument of the ownership-title-classifier
+ * plan (1.2.3). A migrated consumer must emit the same IR for a fixed corpus,
+ * modulo constants the classifier folded; this tool says which functions are
+ * `same`, `folded` (equal once `opt` folds constant branches on both sides),
+ * `changed` (with the first differing lines), `missing` or `added`, and counts
+ * the emitted instructions per side — the plan's optimality gate.
+ *
+ * ```
+ * ir-corpus-diff count <dir>
+ * ir-corpus-diff diff <baseline-dir> <candidate-dir> [--opt <opt-binary>] [--verbose]
+ * ir-corpus-diff compile <cajeta-binary> <corpus-list> <out-dir>
+ * ```
+ *
+ * A corpus list is one program per line: `<entry> <source-root> [more roots]`;
+ * `compile` emits each with `--emit=ir` into `<out-dir>/<n>/`. Exit code 1
+ * when a `diff` finds anything but `same` or `folded`, or a `compile` fails.
+ */
+public final class Main {
+
+    static boolean lessThan(String a, String b) {
+        int32 na = a.byteLength();
+        int32 nb = b.byteLength();
+        int32 n = na < nb ? na : nb;
+        int32 i = 0;
+        while (i < n) {
+            int32 ca = a.byteAt(i);
+            int32 cb = b.byteAt(i);
+            if (ca != cb) { return ca < cb; }
+            i = i + 1;
+        }
+        return na < nb;
+    }
+
+    /** Every `*.ll` (not `*.opt.ll`) under `dir`, as paths relative to it, sorted. */
+    static void collect(Path dir, String prefix, ArrayList<String> out) {
+        ArrayList<Path> entries #= dir.list();
+        int32 i = 0;
+        int32 n = entries.count();
+        while (i < n) {
+            Path p = entries.get(i);
+            String nm #= p.name();
+            if (p.isDir()) {
+                Main.collect(p, prefix + nm + "/", out);
+            } else if (nm.endsWith(".ll") && !nm.endsWith(".opt.ll")) {
+                String rel #= prefix + nm;
+                out.add(#rel);
+            }
+            i = i + 1;
+        }
+        return;
+    }
+
+    static #ArrayList<String> modulesOf(String dir) {
+        ArrayList<String> rel = heap ArrayList<String>();
+        Path root #= Path.of(dir);
+        Main.collect(root, "", rel);
+        // Insertion sort over an index array: the listing is filesystem order,
+        // the report must not be.
+        int32 n = rel.count();
+        int32[] order = heap int32[n];
+        int32 i = 0;
+        while (i < n) { order[i] = i; i = i + 1; }
+        i = 1;
+        while (i < n) {
+            int32 j = i;
+            while (j > 0 && Main.lessThan(rel.get(order[j]), rel.get(order[j - 1]))) {
+                int32 t = order[j];
+                order[j] = order[j - 1];
+                order[j - 1] = t;
+                j = j - 1;
+            }
+            i = i + 1;
+        }
+        ArrayList<String> sorted = heap ArrayList<String>();
+        i = 0;
+        while (i < n) {
+            String s #= rel.get(order[i]) + "";
+            sorted.add(#s);
+            i = i + 1;
+        }
+        return sorted;
+    }
+
+    /** Run `opt` to fold constant branches; the folded file path, or null. */
+    static #String fold(String optBin, String llPath) {
+        String stem #= llPath.substring(0, llPath.byteLength() - 3);
+        String out #= stem + ".opt.ll";
+        // Every element is a FRESH concat: an array literal takes a bare local
+        // or formal that has a drop entry (the element store marks the slot
+        // owned), and the Command then frees it with the array — `optBin` was
+        // the caller's String, freed under it, and the next call read the
+        // reused block as its opt path (measured 2026-09-07, probe Cmd; no
+        // use-after-move diagnostic covers this shape —
+        // ownership-title-classifier plan 5.1.4).
+        String[] argv = [optBin + "", "-passes=instcombine,simplifycfg", "-S", llPath + "", "-o", stem + ".opt.ll"];
+        Command cmd = heap Command(#argv);
+        cmd.captureStdout();
+        cmd.captureStderr();
+        ProcessResult r #= cmd.run();
+        if (!r.exited() || r.exitCode() != 0) {
+            int8[] eb #= r.stderr();
+            String es #= heap String(#eb, (int32) eb.count());
+            System.stderr.println("ir-corpus-diff: opt failed on " + llPath + ": " + es);
+            return null;
+        }
+        return out;
+    }
+
+    static int32 count(String dir) {
+        ArrayList<String> mods #= Main.modulesOf(dir);
+        int64 total = 0;
+        int32 i = 0;
+        int32 n = mods.count();
+        while (i < n) {
+            String rel = mods.get(i);
+            ArrayList<Fn> fns #= Ll.parseFile(dir + "/" + rel);
+            if (fns == null) {
+                System.stderr.println("ir-corpus-diff: cannot read " + dir + "/" + rel);
+                return 1;
+            }
+            int32 k = 0;
+            int32 fc = fns.count();
+            while (k < fc) {
+                Fn f = fns.get(k);
+                System.stdout.println("ops " + rel + " " + f.name + " " + f.ops);
+                k = k + 1;
+            }
+            total = total + Ll.opsOf(fns);
+            i = i + 1;
+        }
+        System.stdout.println("total " + total);
+        return 0;
+    }
+
+    static void printDiff(Fn a, Fn b) {
+        int32 na = a.lines.count();
+        int32 nb = b.lines.count();
+        int32 n = na < nb ? na : nb;
+        int32 shown = 0;
+        int32 i = 0;
+        while (i < n && shown < 3) {
+            if (!a.lines.get(i).equals(b.lines.get(i))) {
+                System.stdout.println("  - " + a.lines.get(i));
+                System.stdout.println("  + " + b.lines.get(i));
+                shown = shown + 1;
+            }
+            i = i + 1;
+        }
+        if (shown < 3 && na != nb) {
+            System.stdout.println("  lines " + na + " -> " + nb);
+        }
+        return;
+    }
+
+    static int32 diff(String baseDir, String candDir, String optBin, boolean verbose) {
+        ArrayList<String> baseMods #= Main.modulesOf(baseDir);
+        ArrayList<String> candMods #= Main.modulesOf(candDir);
+        HashMap<String, int32> candIndex = heap HashMap<String, int32>();
+        int32 c = 0;
+        while (c < candMods.count()) {
+            candIndex.put(candMods.get(c), c);
+            c = c + 1;
+        }
+        int64 same = 0;
+        int64 folded = 0;
+        int64 changed = 0;
+        int64 missing = 0;
+        int64 added = 0;
+        int64 opsBase = 0;
+        int64 opsCand = 0;
+        int64 functions = 0;
+        int32 i = 0;
+        while (i < baseMods.count()) {
+            String rel = baseMods.get(i);
+            ArrayList<Fn> base #= Ll.parseFile(baseDir + "/" + rel);
+            if (base == null) {
+                System.stderr.println("ir-corpus-diff: cannot read " + baseDir + "/" + rel);
+                return 1;
+            }
+            opsBase = opsBase + Ll.opsOf(base);
+            if (!candIndex.containsKey(rel)) {
+                System.stdout.println("missing-module " + rel);
+                missing = missing + (int64) base.count();
+                i = i + 1;
+                continue;
+            }
+            ArrayList<Fn> cand #= Ll.parseFile(candDir + "/" + rel);
+            if (cand == null) {
+                System.stderr.println("ir-corpus-diff: cannot read " + candDir + "/" + rel);
+                return 1;
+            }
+            opsCand = opsCand + Ll.opsOf(cand);
+            HashMap<String, int32> ci #= Ll.index(cand);
+            ArrayList<Fn> baseOpt = null;
+            ArrayList<Fn> candOpt = null;
+            HashMap<String, int32> ciOpt = null;
+            int32 k = 0;
+            while (k < base.count()) {
+                Fn a = base.get(k);
+                functions = functions + 1;
+                if (!ci.containsKey(a.name)) {
+                    System.stdout.println("missing " + rel + " " + a.name);
+                    missing = missing + 1;
+                    k = k + 1;
+                    continue;
+                }
+                Fn b = cand.get(ci.get(a.name));
+                if (Ll.sameBody(a, b)) {
+                    same = same + 1;
+                    if (verbose) { System.stdout.println("same " + rel + " " + a.name); }
+                    k = k + 1;
+                    continue;
+                }
+                boolean isFolded = false;
+                if (optBin != null) {
+                    if (baseOpt == null) {
+                        String bo #= Main.fold(optBin, baseDir + "/" + rel);
+                        String co #= Main.fold(optBin, candDir + "/" + rel);
+                        if (bo != null && co != null) {
+                            baseOpt #= Ll.parseFile(bo);
+                            candOpt #= Ll.parseFile(co);
+                            if (candOpt != null) { ciOpt #= Ll.index(candOpt); }
+                        }
+                    }
+                    if (baseOpt != null && candOpt != null && ciOpt != null) {
+                        HashMap<String, int32> bi #= Ll.index(baseOpt);
+                        if (bi.containsKey(a.name) && ciOpt.containsKey(a.name)) {
+                            isFolded = Ll.sameBody(baseOpt.get(bi.get(a.name)),
+                                                   candOpt.get(ciOpt.get(a.name)));
+                        }
+                    }
+                }
+                if (isFolded) {
+                    folded = folded + 1;
+                    System.stdout.println("folded " + rel + " " + a.name + " ops " + a.ops + " -> " + b.ops);
+                } else {
+                    changed = changed + 1;
+                    System.stdout.println("changed " + rel + " " + a.name + " ops " + a.ops + " -> " + b.ops);
+                    Main.printDiff(a, b);
+                }
+                k = k + 1;
+            }
+            HashMap<String, int32> bi2 #= Ll.index(base);
+            int32 m = 0;
+            while (m < cand.count()) {
+                Fn b = cand.get(m);
+                if (!bi2.containsKey(b.name)) {
+                    System.stdout.println("added " + rel + " " + b.name);
+                    added = added + 1;
+                }
+                m = m + 1;
+            }
+            i = i + 1;
+        }
+        HashMap<String, int32> baseIndex #= Ll.indexNames(baseMods);
+        c = 0;
+        while (c < candMods.count()) {
+            if (!baseIndex.containsKey(candMods.get(c))) {
+                System.stdout.println("added-module " + candMods.get(c));
+                added = added + 1;
+            }
+            c = c + 1;
+        }
+        System.stdout.println("summary modules=" + baseMods.count() + " functions=" + functions
+            + " same=" + same + " folded=" + folded + " changed=" + changed
+            + " missing=" + missing + " added=" + added
+            + " ops=" + opsBase + "->" + opsCand);
+        return (changed > 0 || missing > 0 || added > 0) ? 1 : 0;
+    }
+
+    static int32 compile(String cajetaBin, String listPath, String outDir) {
+        int8[] b #= File.readAllBytes(listPath);
+        if (b == null) {
+            System.stderr.println("ir-corpus-diff: cannot read " + listPath);
+            return 1;
+        }
+        int32 len = (int32) b.count();
+        int32 s = 0;
+        int32 n = 0;
+        int32 failures = 0;
+        while (s < len) {
+            int32 e = s;
+            while (e < len && b[e] != (int8) 10) { e = e + 1; }
+            if (e > s) {
+                int8[] lb = heap int8[e - s];
+                int32 k = 0;
+                while (k < e - s) { lb[k] = b[s + k]; k = k + 1; }
+                String line #= heap String(#lb, e - s);
+                // `<entry> <root> [<root>...]` → cajeta --emit=ir <entry> <roots> <out>/<n>
+                ArrayList<String> words = heap ArrayList<String>();
+                int32 ws = 0;
+                int32 ll = line.byteLength();
+                int32 wi = 0;
+                while (wi <= ll) {
+                    if (wi == ll || line.byteAt(wi) == 32) {
+                        if (wi > ws) {
+                            String w #= line.substring(ws, wi);
+                            words.add(#w);
+                        }
+                        ws = wi + 1;
+                    }
+                    wi = wi + 1;
+                }
+                if (words.count() >= 2) {
+                    String out #= outDir + "/" + n;
+                    Path.of(out).mkdirs();
+                    String[] argv = heap String[words.count() + 3];
+                    argv[0] = cajetaBin;
+                    argv[1] = "--emit=ir";
+                    int32 a = 0;
+                    while (a < words.count()) {
+                        argv[2 + a] = words.get(a);
+                        a = a + 1;
+                    }
+                    argv[2 + words.count()] = out;
+                    Command cmd = heap Command(#argv);
+                    cmd.captureStdout();
+                    cmd.captureStderr();
+                    ProcessResult r #= cmd.run();
+                    boolean ok = r.exited() && r.exitCode() == 0;
+                    System.stdout.println((ok ? "compiled " : "FAILED ") + n + " " + line);
+                    if (!ok) { failures = failures + 1; }
+                    n = n + 1;
+                }
+            }
+            s = e + 1;
+        }
+        return failures > 0 ? 1 : 0;
+    }
+
+    public static int32 run(String[] args) {
+        int32 argc = (int32) args.count();
+        if (argc >= 2 && args[0].equals("count")) {
+            return Main.count(args[1]);
+        }
+        if (argc >= 3 && args[0].equals("diff")) {
+            String optBin = null;
+            boolean verbose = false;
+            int32 i = 3;
+            while (i < argc) {
+                if (args[i].equals("--opt") && i + 1 < argc) {
+                    optBin = args[i + 1];
+                    i = i + 2;
+                    continue;
+                }
+                if (args[i].equals("--verbose")) { verbose = true; }
+                i = i + 1;
+            }
+            return Main.diff(args[1], args[2], optBin, verbose);
+        }
+        if (argc >= 4 && args[0].equals("compile")) {
+            return Main.compile(args[1], args[2], args[3]);
+        }
+        System.stderr.println("usage: ir-corpus-diff count <dir> | diff <base> <cand> [--opt <opt>] [--verbose] | compile <cajeta> <list> <out>");
+        return 2;
+    }
+}

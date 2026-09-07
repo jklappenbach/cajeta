@@ -45,7 +45,7 @@ namespace cajeta {
         AggregateInitializerExpression(
                 CajetaParser::AggregateInitializerContext* ctx,
                 antlr4::Token* token)
-            : Expression(token) {
+            : Expression(token) { exprKind = ExprKind::Aggregate;
             // Prefixless form (`{ x: 1, y: 2 }`) has no identifier; typeName
             // stays empty and the type is inferred from expectedType.
             typeName = ctx->identifier() ? ctx->identifier()->getText() : "";

@@ -22,7 +22,7 @@ namespace cajeta {
     protected:
         string value;
     public:
-        LiteralExpression(antlr4::Token* token) : PrimaryExpression(token) { }
+        LiteralExpression(antlr4::Token* token) : PrimaryExpression(token) { exprKind = ExprKind::Literal; }
 
         const string& getRawValue() const { return value; }
 
@@ -33,7 +33,7 @@ namespace cajeta {
     private:
         LiteralType literalType;
     public:
-        TextLiteralExpression(CajetaParser::LiteralContext* ctx) : LiteralExpression(ctx->getStart()) {
+        TextLiteralExpression(CajetaParser::LiteralContext* ctx) : LiteralExpression(ctx->getStart()) { exprKind = ExprKind::TextLiteral;
             value = ctx->getText();
             if (ctx->BOOL_LITERAL()) {
                 literalType = LITERAL_TYPE_BOOL;
@@ -52,7 +52,7 @@ namespace cajeta {
         // string arg for classesAnnotated<@A>(). `rawValue` must already carry
         // the source form generateCode expects (quotes for STRING).
         TextLiteralExpression(string rawValue, LiteralType type)
-            : LiteralExpression(nullptr) {
+            : LiteralExpression(nullptr) { exprKind = ExprKind::TextLiteral;
             value = std::move(rawValue);
             literalType = type;
         }
@@ -77,7 +77,7 @@ namespace cajeta {
     public:
         IntegerLiteralType getIntegerLiteralType() const { return integerLiteralType; }
 
-        IntegerLiteralExpression(CajetaParser::IntegerLiteralContext* ctx) : LiteralExpression(ctx->getStart()) {
+        IntegerLiteralExpression(CajetaParser::IntegerLiteralContext* ctx) : LiteralExpression(ctx->getStart()) { exprKind = ExprKind::IntegerLiteral;
             value = ctx->getText();
             if (ctx->BINARY_LITERAL()) {
                 integerLiteralType = INTEGER_LITERAL_TYPE_BINARY;
@@ -103,7 +103,7 @@ namespace cajeta {
     private:
         FloatLiteralType floatLiteralType;
     public:
-        FloatLiteralExpression(CajetaParser::FloatLiteralContext* ctx) : LiteralExpression(ctx->getStart()) {
+        FloatLiteralExpression(CajetaParser::FloatLiteralContext* ctx) : LiteralExpression(ctx->getStart()) { exprKind = ExprKind::FloatLiteral;
             if (ctx->HEX_FLOAT_LITERAL()) {
                 floatLiteralType = FLOAT_LITERAL_HEX;
             } else {

@@ -8,6 +8,7 @@
 #include "../compile/ScriptUnitSynthesis.h"
 #include "cajeta/ownership/OwnedBindCheck.h"
 #include "cajeta/ownership/ReturnTitleAudit.h"
+#include "cajeta/ownership/TitleClassifier.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
@@ -1295,6 +1296,20 @@ namespace cajeta {
             // call's, and a constant-zero flag (both arms borrow) pushes no
             // entry at all. Unrecognised, the shape fell to the owned default
             // and `String nm = c ? r.name : "-"` freed `r.name` at scope end.
+            // ownership-title-classifier 1.2 — audit-only observation of the
+            // initializer's shape (one static-bool test when the audit is off;
+            // no behaviour). The tests measure every spec §2.1 row through it
+            // until this site migrates onto policy() in unit 4.
+            if (ownership::TitleShapeAudit::enabled() && initializer) {
+                AbstractSyntaxNodePtr initNode = initializer;
+                if (auto viObs = dynamic_pointer_cast<VariableInitializer>(initNode)) {
+                    initNode = viObs->getChildren().empty()
+                        ? nullptr : viObs->getChildren()[0];
+                }
+                if (auto initObs = dynamic_pointer_cast<Expression>(initNode)) {
+                    ownership::observeTitle(initObs, module, ownership::ConsumerRole::Bind);
+                }
+            }
             bool initIsTernary = false;
             // P2a — `stack MyClass(args)` produces an instance owned by
             // the current frame (alloca-backed body); the class's heap

@@ -21,7 +21,7 @@
 #include <llvm/IR/Intrinsics.h>
 
 namespace cajeta {
-    DotExpression::DotExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token) : Expression(token) {
+    DotExpression::DotExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Dot;
         // The DOT grammar allows several rhs forms (identifier, methodCall, THIS, etc.).
         // Only the identifier form is fully implemented; for other forms we capture an
         // empty name and rely on the lhs's codegen to surface the right error.
