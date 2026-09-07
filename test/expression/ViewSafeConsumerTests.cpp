@@ -10,14 +10,33 @@
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"   // cajeta_getpid
 
+#include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 
 using cajeta_test::CajetaJit;
 
 namespace {
+
+// Portable scratch file for run_fileWriterView. The body used to open a
+// hardcoded "/tmp/caj_viewsafe_fw.txt": on Windows the MinGW CRT maps that to
+// C:\tmp\..., which does not exist on the CI runner, so File.openWrite failed
+// and writing through the dead FileWriter crashed the shard (exit 127) — the
+// v0.27.0 Windows release leg. Derive the path from the real temp dir the way
+// FileIoTests::tmpRoot does; backslashes become '/' because the path is
+// embedded verbatim in a cajeta SOURCE string literal where '\' would start an
+// escape, and '/' is accepted by both the OS and cajeta's open(). POSIX still
+// lands under /tmp.
+std::string viewSafeTmpFile() {
+    std::string p = std::filesystem::temp_directory_path().string();
+    std::replace(p.begin(), p.end(), '\\', '/');
+    while (p.size() > 1 && p.back() == '/') p.pop_back();
+    return p + "/caj_viewsafe_fw_" + std::to_string(cajeta_getpid()) + ".txt";
+}
 
 // One module holding every test body as its own static entry (shared-compile
 // fixture — one JIT compile for the whole suite). Every run_* returns 0 on
@@ -187,7 +206,7 @@ const std::string MODULE_SRC =
     "        String b = \"0123456789\";\n"
     "        String s = a + b;\n"
     "        String v #= s.substring(10, 16);\n"
-    "        String path = \"/tmp/caj_viewsafe_fw.txt\";\n"
+    "        String path = \"" + viewSafeTmpFile() + "\";\n"
     "        FileWriter w #= File.openWrite(path, OpenMode.WRITE);\n"
     "        w.writeString(v);\n"
     "        w.close();\n"
