@@ -343,10 +343,19 @@ namespace cajeta {
         // excludeClinitRoots: drop the __cajeta_clinit_* entries from the
         // global_ctors roots — i.e. "what the program reaches if no static
         // initializer ran" (the oracle Tier-1.5 clinit-DCE queries).
+        // rootAllLocals: additionally seed EVERY local-linkage defined symbol as
+        // a root. Used on COFF, where pruneUnreachable declines to erase local
+        // symbols (name-based reach is unsound for per-module-private RTTI), so
+        // every surviving local's transitive callees must be kept too — else a
+        // kept-but-unreachable local (e.g. an internal __cajeta_spawn_trampoline_N
+        // whose spawn-caller was pruned) dangles onto an erased external worker
+        // body. On ELF/Mach-O the linker GCs the local and its callees together,
+        // so this stays false there and POSIX reachability is unchanged.
         std::unordered_set<std::string> computeReachableSymbols(
             const std::vector<llvm::Module*>& lmods,
             std::unordered_map<std::string, llvm::GlobalValue*>& defs,
-            bool excludeClinitRoots = false);
+            bool excludeClinitRoots = false,
+            bool rootAllLocals = false);
 
         // Phase A: diff reachable vs all defined functions and print what Phase B
         // would strip. Analysis only — emits nothing, mutates no IR.

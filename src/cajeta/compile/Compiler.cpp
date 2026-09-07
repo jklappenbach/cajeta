@@ -4280,7 +4280,7 @@ namespace cajeta {
     std::unordered_set<std::string> Compiler::computeReachableSymbols(
             const std::vector<llvm::Module*>& lmods,
             std::unordered_map<std::string, llvm::GlobalValue*>& defs,
-            bool excludeClinitRoots) {
+            bool excludeClinitRoots, bool rootAllLocals) {
         using namespace llvm;
 
         // Reachability is by SYMBOL NAME, not pointer: a callee is an extern decl
@@ -4333,6 +4333,28 @@ namespace cajeta {
                     if (u->hasInitializer())
                         collectConst(u->getInitializer(), rootNames);
         }
+
+        // COFF: every local-linkage defined symbol is a root. pruneUnreachable
+        // keeps all locals on COFF (name-based erase is unsound for per-module
+        // private RTTI), so a local that survives must pin its transitive
+        // callees. Without this, an internal __cajeta_spawn_trampoline_N whose
+        // spawn-caller was pruned survives (ineligible) yet references stdlib
+        // worker bodies (Server::serveConnection, ParallelDriver::find*Worker)
+        // and EH runtime symbols (__cajeta_exc_push/pop, __cajeta_get_thrown,
+        // __cajeta_fiber_handle_throw, __cajeta_task_complete) that the reach
+        // walk otherwise misses and erases — a link-time undefined symbol. On
+        // ELF/Mach-O --gc-sections drops the local trampoline and its callees
+        // together, so this is off there (rootAllLocals=false) and POSIX
+        // reachability is byte-identical.
+        if (rootAllLocals)
+            for (auto* lm : lmods) {
+                for (auto& f : lm->functions())
+                    if (!f.isDeclaration() && f.hasLocalLinkage())
+                        rootNames.push_back(f.getName().str());
+                for (auto& g : lm->globals())
+                    if (g.hasInitializer() && g.hasLocalLinkage())
+                        rootNames.push_back(g.getName().str());
+            }
 
         // BFS the by-name reference graph. A function references the globals used
         // in its instructions (direct calls, function-pointer refs, global loads);
@@ -4462,7 +4484,13 @@ namespace cajeta {
         std::vector<Module*> lmods;
         collectLinkModules(lmods);
         std::unordered_map<std::string, GlobalValue*> defs;
-        std::unordered_set<std::string> reached = computeReachableSymbols(lmods, defs);
+        // COFF keeps all local symbols (see the erase gate below), so on COFF
+        // the reachability walk must also root every local — the method-body
+        // deleteBody loop and the COFF erase then agree that a kept local's
+        // callees stay live. Off on ELF/Mach-O: POSIX reachability unchanged.
+        const bool isCoff = llvm::Triple(targetTriple).isOSBinFormatCOFF();
+        std::unordered_set<std::string> reached = computeReachableSymbols(
+            lmods, defs, /*excludeClinitRoots=*/false, /*rootAllLocals=*/isCoff);
 
         // The precise set of prunable functions = every cajeta METHOD body,
         // taken from Method->llvm::Function (NOT a name prefix). This covers all
@@ -4536,7 +4564,7 @@ namespace cajeta {
         // unsound for private per-module RTTI globals). So on non-COFF, do
         // nothing here and let the linker finish the job.
         size_t erased = 0, internalized = 0;
-        if (llvm::Triple(targetTriple).isOSBinFormatCOFF()) {
+        if (isCoff) {
         auto isReservedGlobal = [](const GlobalValue& gv) {
             return gv.hasAppendingLinkage() || gv.getName().starts_with("llvm.");
         };
