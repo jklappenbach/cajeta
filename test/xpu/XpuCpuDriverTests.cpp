@@ -27,6 +27,7 @@
 #include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "jit/CoffSafeJit.h"
+#include "jit/JitWinSymbols.h"   // Windows native-symbol bridge (header is empty on POSIX)
 #include "llvm/ExecutionEngine/Orc/Mangling.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
@@ -125,6 +126,32 @@ std::unique_ptr<llvm::orc::LLJIT> registerKernel(Compiler& compiler,
         failure = llvm::toString(std::move(err));
         return nullptr;
     }
+
+#ifdef _WIN32
+    // The registration ctor ALSO calls __cajeta_xpu_register_kernel_manifest
+    // (native runtime, not in the core bitcode, absent from the PE export
+    // table). This bare LLJIT goes through neither CajetaJitHost nor
+    // JitTestHelper, so neither of their bridge tables reaches it and the
+    // v0.27.0 Windows release leg failed with "Symbols not found". Install the
+    // test-side Windows bridge here — the same absoluteSymbols idiom
+    // JitTestHelper uses. POSIX resolves these via -rdynamic and needs nothing.
+    {
+        size_t winSymCount = 0;
+        const CajetaJitWinSym* winSyms = cajeta_jit_win_symbols(&winSymCount);
+        auto& execSession = jit->getExecutionSession();
+        llvm::orc::SymbolMap winSymMap;
+        for (size_t i = 0; i < winSymCount; ++i) {
+            winSymMap[execSession.intern(winSyms[i].name)] =
+                llvm::orc::ExecutorSymbolDef(
+                    llvm::orc::ExecutorAddr::fromPtr(winSyms[i].addr),
+                    llvm::JITSymbolFlags::Exported);
+        }
+        if (auto err = JD.define(llvm::orc::absoluteSymbols(std::move(winSymMap)))) {
+            failure = llvm::toString(std::move(err));
+            return nullptr;
+        }
+    }
+#endif
 
     if (auto err = jit->addIRModule(
             llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)))) {

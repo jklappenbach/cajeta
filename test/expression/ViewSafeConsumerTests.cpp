@@ -42,7 +42,14 @@ std::string viewSafeTmpFile() {
 // fixture — one JIT compile for the whole suite). Every run_* returns 0 on
 // success and a distinct nonzero code per failing sub-check. The common
 // preamble builds a 36-byte heap root and windows "klmnop" at offset 10.
-const std::string MODULE_SRC =
+// Built lazily on first use, NOT as a namespace-scope static: the source now
+// splices viewSafeTmpFile(), and temp_directory_path() can throw. Thrown from
+// a static initializer that is std::terminate → abort → exit 3 before main,
+// which crashed every ViewSafeConsumer test on the CI Windows runner. A
+// function-local static defers it to SetUpTestSuite, where a failure is a
+// gtest error rather than a dead process (same pattern as FileIoTests).
+const std::string& moduleSrc() {
+    static const std::string s =
     "package test;\n"
     "import cajeta.hash.XXHash3;\n"
     "import cajeta.hash.Sha256;\n"
@@ -231,11 +238,13 @@ const std::string MODULE_SRC =
     "    }\n"
 
     "}\n";
+    return s;
+}
 
 class ViewSafeConsumerTests : public ::testing::Test {
 protected:
     static void SetUpTestSuite() {
-        jit = CajetaJit::compile(MODULE_SRC, "test.D");
+        jit = CajetaJit::compile(moduleSrc(), "test.D");
     }
     static void TearDownTestSuite() {
         jit.reset();
