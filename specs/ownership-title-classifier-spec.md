@@ -74,6 +74,17 @@ reads both from the same source.
 - Every runtime read of the return-flag TLS happens **immediately** after the
   call whose flag it is (the next call clobbers it). The classifier reads it;
   consumers never do.
+- **As optimal as possible — inline, if possible** (Julian, 2026-09-07). On
+  the compiler side the classifier is header-`inline` and `constexpr` where
+  the language allows, dispatches on a node-kind tag in one `switch` (no
+  chain of `dynamic_pointer_cast`), takes no `std::function`, and allocates
+  nothing on a codegen path. In the emitted code the ownership bookkeeping
+  is IR where it is a few instructions — a drop-entry flag read is a load,
+  arming is a store, a re-assignment is compare / branch / indirect drop /
+  two stores — so a constant flag folds the branch away; a runtime call
+  remains only for what genuinely needs the runtime (a virtual drop, a
+  String resolve, chain validation). The emitted-instruction count per unit
+  may not rise (§7).
 
 ## 2. The classifier
 
@@ -293,6 +304,8 @@ nested-class short-name binding family, recorded there, not here.
   `cajeta-unit`, `cajeta-xgboost`, `cajeta-ml`, `cabra`) compile; `cajeta-llm`
   cpu suite green.
 - Emitted-instruction count on the corpus before and after, recorded in the
-  plan per unit and expected to fall (*Resolved 2026-09-07: informational —
-  the IR diff is the gate, the count is not*).
+  plan per unit. The IR diff is the correctness gate; the count is the
+  optimality gate: it may not rise for any unit, and an increase is fixed
+  before the unit closes (*Julian, 2026-09-07: "as optimal as possible —
+  inline, if possible"; this supersedes the review's "informational" note*).
 - The exhaustiveness test exists and passes.
