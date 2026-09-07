@@ -6,6 +6,7 @@
 #include "expression/Expression.h"
 #include "expression/MethodCallExpression.h"
 #include "expression/CallExpression.h"
+#include "expression/BinaryOpExpression.h"
 #include "expression/Identifier.h"
 #include "expression/DotExpression.h"
 #include "expression/LiteralExpression.h"
@@ -2128,6 +2129,75 @@ namespace cajeta {
                         }
                     }
                 }
+                // A conditional under a `#` declaration: the promise covers
+                // EVERY arm. An arm that only reads — a literal, a field or
+                // element read, a bare local or formal — has a constant-0
+                // title flag and would hand the caller a forged title when
+                // taken. Measured 2026-09-07 (probe W): `return c ? ("y" + 2)
+                // : r.name` under `#String` stored return_flag_set(1)
+                // unconditionally. Arms that decide at runtime (a call's
+                // ride, a `#x` of a runtime owner) pass here and meet the
+                // TITLE_MISS contract check after codegen, as `return #x` does.
+                if (!modeCarrying
+                        && dynamic_pointer_cast<BooleanSwitchExpression>(inner)) {
+                    const char* borrowArm = nullptr;
+                    BooleanSwitchExpression::forEachLeafArm(inner,
+                        [&](const ExpressionPtr& arm) {
+                            if (borrowArm || !arm) return;
+                            if (dynamic_pointer_cast<MoveExpression>(arm)
+                                    || dynamic_pointer_cast<MethodCallExpression>(arm)
+                                    || dynamic_pointer_cast<CallExpression>(arm)) {
+                                return;
+                            }
+                            if (auto ne = dynamic_pointer_cast<NewExpression>(arm)) {
+                                if (!ne->getStackAlloc()) return;
+                                borrowArm = "a `stack` construction";
+                                return;
+                            }
+                            if (auto ag = dynamic_pointer_cast<
+                                    AggregateInitializerExpression>(arm)) {
+                                if (!ag->getStackAlloc()) return;
+                                borrowArm = "a `stack` construction";
+                                return;
+                            }
+                            if (auto bo = dynamic_pointer_cast<BinaryOpExpression>(arm)) {
+                                auto rt = bo->getResolvedType();
+                                if (bo->getBinaryOp() == BINARY_OP_ADD && rt
+                                        && rt->getQName()
+                                        && rt->getQName()->getTypeName() == "String") {
+                                    return;
+                                }
+                            }
+                            if (dynamic_pointer_cast<TextLiteralExpression>(arm)) {
+                                borrowArm = "a literal";
+                            } else if (dynamic_pointer_cast<DotExpression>(arm)) {
+                                borrowArm = "a field read";
+                            } else if (dynamic_pointer_cast<ArrayIndexExpression>(arm)) {
+                                borrowArm = "an element read";
+                            } else if (dynamic_pointer_cast<IdentifierExpression>(arm)) {
+                                borrowArm = "a bare local or formal (no `#`)";
+                            } else {
+                                borrowArm = "a read of a value someone else owns";
+                            }
+                        });
+                    if (borrowArm) {
+                        throw Exception(
+                            "method `" + m->toCanonical(false)
+                            + "` promises ownership with a `#` return type, "
+                            "but returns a conditional (`c ? a : b`) one of "
+                            "whose arms is " + std::string(borrowArm)
+                            + " — a BORROW. When that arm is taken the "
+                            "caller arms a drop on a value someone else "
+                            "still owns and frees: a double free. Fix: make "
+                            "every arm produce a title (`heap ...`, a String "
+                            "concat, `#local` to surrender an owned local, "
+                            "or a call), return `#= (c ? a : b)` to carry "
+                            "whatever mode the taken arm actually holds, or "
+                            "drop the `#` from the return type. See "
+                            "specs/stdlib-ownership-convention-spec.md §4.5.",
+                            "CAJETA_ERROR_OWNED_RETURN_OF_BORROW");
+                    }
+                }
                 bool stackReturn = Method::exprIsStackConstruction(inner);
                 std::string what = "a `stack` construction";
                 if (!stackReturn) {
@@ -2353,7 +2423,19 @@ namespace cajeta {
                 // guard exists to close (found while probing whether the
                 // 8.1.5 leak population was really empty — it was, except
                 // through this hole).
-                ExpressionPtr frInner = expression;
+                // A conditional under a PLAIN return is held to both shapes
+                // below per LEAF ARM: a fresh `heap` arm leaks (the caller
+                // registers no drop), an owned-local arm is dropped by this
+                // frame before the `ret`. forEachLeafArm visits a bare
+                // expression once, so one body serves both.
+                bool viaConditional =
+                    (bool) dynamic_pointer_cast<BooleanSwitchExpression>(expression);
+                std::string armNote = viaConditional
+                    ? " The value is an arm of the returned conditional "
+                      "(`c ? a : b`): every arm is held to this rule."
+                    : "";
+                auto checkFreshArm = [&](const ExpressionPtr& armExpr) {
+                ExpressionPtr frInner = armExpr;
                 while (auto castE =
                         dynamic_pointer_cast<CastExpression>(frInner)) {
                     CajetaTypePtr dt = castE->getDestType();
@@ -2381,7 +2463,7 @@ namespace cajeta {
                         "and hands back a dangling pointer. Fix: change "
                         "the return type to `#T` so ownership transfers "
                         "to the caller. See docs/specification/"
-                        "MemoryModel.md § Function signatures.",
+                        "MemoryModel.md § Function signatures." + armNote,
                         "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
                 }
                 // Same hazard, named-local shape: `Foo c = new Foo();
@@ -2449,12 +2531,14 @@ namespace cajeta {
                                     "#= " + idExpr->getTextValue() + "` "
                                     "(which ships the frame's actual mode). "
                                     "See docs/specification/MemoryModel.md "
-                                    "§ Function signatures.",
+                                    "§ Function signatures." + armNote,
                                     "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
                             }
                         }
                     }
                 }
+                };
+                BooleanSwitchExpression::forEachLeafArm(expression, checkFreshArm);
             }
         }
         // Phase 3a of #68 (body-side borrow-escape check): returning a
@@ -3312,10 +3396,7 @@ namespace cajeta {
         if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
         // 5.2.2 — `return #x`: a runtime-owner source forwards its captured
         // flag; a static owner moved out is an unconditional surrender.
-        if (auto mvRet = dynamic_pointer_cast<MoveExpression>(expression)) {
-            returnTitleFlag = mvRet->getRuntimeTitleFlag()
-                ? mvRet->getRuntimeTitleFlag()
-                : (llvm::Value*) builder->getInt64(1);
+        auto emitTitleContract = [&](llvm::Value* flag) {
             // mode-carrying-claim §5.4 — a `#R`-declared return is a CONTRACT:
             // the caller is promised a title. A runtime flag of 0 here means
             // the frame only ever held a borrow (the mode-carrying claim
@@ -3327,12 +3408,11 @@ namespace cajeta {
             // sanctioned escape: it declares the return carries the mode.
             if (auto mM = module->getCurrentMethod()) {
                 if (mM->isReturnsOwnership() && !modeCarrying
-                        && returnTitleFlag
-                        && !llvm::isa<llvm::ConstantInt>(returnTitleFlag)) {
+                        && flag && !llvm::isa<llvm::ConstantInt>(flag)) {
                     auto& rctx = *module->getLlvmContext();
                     llvm::Value* hasTitle = builder->CreateICmpNE(
-                        returnTitleFlag,
-                        llvm::ConstantInt::get(returnTitleFlag->getType(), 0),
+                        flag,
+                        llvm::ConstantInt::get(flag->getType(), 0),
                         "ret_contract_ok");
                     llvm::Function* rfn =
                         builder->GetInsertBlock()->getParent();
@@ -3357,12 +3437,32 @@ namespace cajeta {
                     builder->SetInsertPoint(okBB);
                 }
             }
+        };
+        if (auto mvRet = dynamic_pointer_cast<MoveExpression>(expression)) {
+            returnTitleFlag = mvRet->getRuntimeTitleFlag()
+                ? mvRet->getRuntimeTitleFlag()
+                : (llvm::Value*) builder->getInt64(1);
+            emitTitleContract(returnTitleFlag);
         }
         // 6.2.2 — `return Cajeta.flagged(v, owned)`: the container's own
         // bookkeeping decides the flag.
         if (auto mcRet = dynamic_pointer_cast<MethodCallExpression>(expression)) {
             if (llvm::Value* f = mcRet->getFlaggedTitleValue()) {
                 returnTitleFlag = f;
+            }
+        }
+        // A returned conditional forwards the TAKEN arm's title flag: a
+        // `#` declaration already rejected every provably-borrow arm before
+        // codegen, so what reaches here is decided at runtime (a call arm's
+        // ride, a `#x` of a runtime owner) and meets the same TITLE_MISS
+        // contract as `return #x`; a plain return rides the flag through
+        // exactly as a tail call does (ownership §2.1); `return #=` carries
+        // it as the mode. Before this a `#` return stored a constant 1 over
+        // a borrow arm and a plain return dropped a fresh arm on the floor.
+        if (auto ternRet = dynamic_pointer_cast<BooleanSwitchExpression>(expression)) {
+            if (llvm::Value* tf = ternRet->getRuntimeTitleFlag()) {
+                returnTitleFlag = tf;
+                emitTitleContract(tf);
             }
         }
         // 7.2.5 — lambda-body returns: classify by shape. A fresh

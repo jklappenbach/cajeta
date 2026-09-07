@@ -2639,6 +2639,17 @@ bool cajetaRhsCarriesRedundantSharp(
     // The title flag one ternary arm hands the merge (see the member's note
     // in Expression.h). Emitted in the arm's own block, right after the arm's
     // value, so a call arm's return-flag TLS is still that call's.
+    void BooleanSwitchExpression::forEachLeafArm(
+            const ExpressionPtr& e,
+            const std::function<void(const ExpressionPtr&)>& fn) {
+        auto tern = dynamic_pointer_cast<BooleanSwitchExpression>(e);
+        if (!tern) { fn(e); return; }
+        auto& ch = tern->getChildren();
+        for (size_t i = 1; i < ch.size() && i < 3; ++i) {
+            forEachLeafArm(dynamic_pointer_cast<Expression>(ch[i]), fn);
+        }
+    }
+
     static llvm::Value* ternaryArmTitleFlag(CajetaModulePtr module,
                                             const ExpressionPtr& arm,
                                             llvm::IRBuilder<>* builder,
@@ -3062,6 +3073,17 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
         llvm::Value* value = inner ? inner->generateCode(module) : nullptr;
+        // A conditional inner (`dst #= c ? a : b`, `#(c ? a : b)`) hands its
+        // per-arm title flag through unchanged: the store then records the
+        // TAKEN arm's mode — a resolve/borrow for a read arm, a transfer for
+        // a fresh one — exactly as it would for that arm written alone.
+        // Before this the wrapper saw no shape it knew and the field store
+        // treated the phi as a static transfer: a borrowed wrapper stored raw
+        // with the own-bit set, freed twice when the record dropped
+        // (measured 2026-09-07, probe W: storeStrBorrowTern / storeCellBorrowTern).
+        if (auto ternIn = dynamic_pointer_cast<BooleanSwitchExpression>(inner)) {
+            runtimeTitleFlag = ternIn->getRuntimeTitleFlag();
+        }
         // title-tracking — `dst #= call()`: the callee's RETURN FLAG is the
         // only truth about whether that result carried a title. A plain (non-
         // `#`) return is NOT statically a borrow (CLAUDE.md §2.1 / spec §2.1):

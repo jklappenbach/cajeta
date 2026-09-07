@@ -6,6 +6,7 @@
 
 #include <list>
 #include <string>
+#include <functional>
 #include "../AbstractSyntaxNode.h"
 #include "CajetaParser.h"
 #include "../../type/CajetaType.h"
@@ -477,6 +478,14 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
 
         llvm::Value* getRuntimeTitleFlag() const { return runtimeTitleFlag; }
+
+        /// The leaf arms of a conditional, through nested conditionals, in
+        /// source order (then before else). The ownership consumers classify
+        /// each leaf the way they classify a bare expression in the same
+        /// position; the conditional itself is transparent.
+        static void forEachLeafArm(
+            const ExpressionPtr& e,
+            const std::function<void(const ExpressionPtr&)>& fn);
     };
 
     /**

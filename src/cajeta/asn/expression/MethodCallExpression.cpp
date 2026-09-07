@@ -11099,16 +11099,20 @@ namespace cajeta {
                     bool scalarRead = argExpr
                         && ownershipLessScalar(argExpr->getResolvedType());
 
-                    const char* borrowShape = nullptr;
-                    if (scalarRead) {
-                        borrowShape = nullptr;
-                    } else if (dynamic_pointer_cast<DotExpression>(argExpr)) {
-                        borrowShape = "a field read";
-                    } else if (dynamic_pointer_cast<ArrayIndexExpression>(argExpr)) {
-                        borrowShape = "an array-element read";
-                    } else if (auto argCall =
-                                   std::dynamic_pointer_cast<MethodCallExpression>(
-                                       argExpr)) {
+                    // One classifier, applied to the argument itself or to
+                    // every leaf arm of a conditional argument (`f(c ? a :
+                    // b)` to a `#T` formal): an arm the callee would own is
+                    // held to the same rule as a bare argument.
+                    auto borrowShapeOf = [&](const ExpressionPtr& e) -> const char* {
+                        if (!e) return nullptr;
+                        if (dynamic_pointer_cast<DotExpression>(e)) {
+                            return "a field read";
+                        }
+                        if (dynamic_pointer_cast<ArrayIndexExpression>(e)) {
+                            return "an array-element read";
+                        }
+                        if (auto argCall =
+                                std::dynamic_pointer_cast<MethodCallExpression>(e)) {
                         MethodPtr rm = resolveArgCalleeShallow(argCall, module);
                         // Skip only ownership-less SCALARS: arrays carry
                         // PRIMITIVE_FLAG in this type system but are
@@ -11121,14 +11125,28 @@ namespace cajeta {
                                    rm->getReturnType());
                         if (rm && !rm->isReturnsOwnership()
                                 && rm->getReturnType() && !scalarReturn) {
-                            borrowShape = "a call returning a borrow (no `#R`)";
+                            return "a call returning a borrow (no `#R`)";
                         }
+                        }
+                        return nullptr;
+                    };
+                    const char* borrowShape = nullptr;
+                    bool viaConditional = (bool) dynamic_pointer_cast<
+                        BooleanSwitchExpression>(argExpr);
+                    if (!scalarRead) {
+                        BooleanSwitchExpression::forEachLeafArm(argExpr,
+                            [&](const ExpressionPtr& leaf) {
+                                if (!borrowShape) borrowShape = borrowShapeOf(leaf);
+                            });
                     }
                     if (borrowShape) {
                         throw Exception(
                             "method `" + methodCallName + "` declares parameter `"
                                 + fp->getName() + "` as `#T` (ownership transfer "
-                                "required), but the argument is " + borrowShape
+                                "required), but "
+                                + (viaConditional
+                                       ? "an arm of the conditional argument is "
+                                       : "the argument is ") + borrowShape
                                 + " — a borrow. Pass a fresh copy (`#heap ...`) "
                                 "or an owned local surrendered with `#`. "
                                 "See docs/specification/lang/OwnershipTransfer.md.",
@@ -11346,6 +11364,27 @@ namespace cajeta {
             // window; a filled-in arg has no stashed flag.
             llvm::Value* stashed = mmi < argTitleFlags.size()
                 ? argTitleFlags[mmi] : nullptr;
+            // A conditional argument (`f(c ? heap X() : this.f)`) contributes
+            // its per-arm title flag as a runtime bit, exactly as a stashed
+            // call-result flag does — for a droppable class only; a String
+            // arm keeps the 3.4.3 dual-role protocol (bit 0, the caller
+            // reclaims a fresh arm after the call). Before this the word
+            // carried 0 for the shape and a fresh arm leaked (measured
+            // 2026-09-07, probe W argCellMixedTern). The arms' resolved type
+            // stands in for the conditional's own, which is not reliably set.
+            if (!stashed && !parameters[mmi].callerTransferred) {
+                if (auto ternArg = dynamic_pointer_cast<BooleanSwitchExpression>(
+                        parameters[mmi].expression)) {
+                    CajetaTypePtr armTy;
+                    BooleanSwitchExpression::forEachLeafArm(ternArg,
+                        [&](const ExpressionPtr& leaf) {
+                            if (!armTy && leaf) armTy = leaf->getResolvedType();
+                        });
+                    if (droppableTempClass(armTy)) {
+                        stashed = ternArg->getRuntimeTitleFlag();
+                    }
+                }
+            }
             if (!parameters[mmi].callerTransferred) {
                 if (stashed) {
                     // runtime-owned plain arg: forwards its flag below
@@ -11544,6 +11583,47 @@ namespace cajeta {
                     if (freshOwnedStringTemp(parameters[ai].expression)) {
                         if (tempV->getType()->isPointerTy()) {
                             builder->CreateCall(strDropFn, {tempV});
+                        }
+                        continue;
+                    }
+                    // A String-typed conditional argument (`f(c ? "x" + i :
+                    // this.name)`) is reclaimed when — and only when — the
+                    // TAKEN arm materialised a fresh wrapper: its per-arm
+                    // title flag says which. A constant flag folds to a plain
+                    // drop or nothing. The formal's declared type decides
+                    // String-ness. Before this nothing reclaimed the shape and
+                    // the fresh arm leaked (probe W argStrMixedTern, 2026-09-07).
+                    if (auto ternArg = dynamic_pointer_cast<BooleanSwitchExpression>(
+                            parameters[ai].expression)) {
+                        auto fCls = dynamic_pointer_cast<CajetaClass>(
+                            fpl[fi]->getType());
+                        bool formalIsString = fCls && fCls->getQName()
+                            && fCls->getQName()->getTypeName() == "String"
+                            && fCls->getQName()->getPackageName() == "cajeta.lang";
+                        llvm::Value* tf = ternArg->getRuntimeTitleFlag();
+                        if (formalIsString && tf && tempV->getType()->isPointerTy()) {
+                            if (auto* cf = llvm::dyn_cast<llvm::ConstantInt>(tf)) {
+                                if (!cf->isZero()) {
+                                    builder->CreateCall(strDropFn, {tempV});
+                                }
+                            } else {
+                                auto& tctx = *module->getLlvmContext();
+                                llvm::Function* tfn =
+                                    builder->GetInsertBlock()->getParent();
+                                auto* dropBB = llvm::BasicBlock::Create(
+                                    tctx, "tern_arg_drop", tfn);
+                                auto* contBB = llvm::BasicBlock::Create(
+                                    tctx, "tern_arg_cont", tfn);
+                                builder->CreateCondBr(
+                                    builder->CreateICmpNE(tf,
+                                        llvm::ConstantInt::get(tf->getType(), 0),
+                                        "tern_arg_owned"),
+                                    dropBB, contBB);
+                                builder->SetInsertPoint(dropBB);
+                                builder->CreateCall(strDropFn, {tempV});
+                                builder->CreateBr(contBB);
+                                builder->SetInsertPoint(contBB);
+                            }
                         }
                         continue;
                     }

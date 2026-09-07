@@ -3591,6 +3591,36 @@ namespace cajeta {
                         // Raw accessor, as above: not the title flag.
                         rhsIsFreshOwner = rhsCall->isResolvedReturnsOwnership();
                     }
+                    // A conditional RHS re-arms the binding from the TAKEN
+                    // arm's title: all-`#x` arms are a move; a constant flag
+                    // decides statically; a runtime flag lands in the entry's
+                    // active byte below (a borrow arm then re-arms nothing).
+                    // Before this the shape matched neither spelling and the
+                    // re-arm never fired (probe W assignCellMixedTern,
+                    // 2026-09-07) — the same reassign-leak family as a bare
+                    // `k = heap Cell()` on a never-moved binding, which this
+                    // does not change.
+                    llvm::Value* rhsTernFlag = nullptr;
+                    if (auto rhsTern = dynamic_pointer_cast<BooleanSwitchExpression>(rhsAst)) {
+                        if (llvm::Value* tf = rhsTern->getRuntimeTitleFlag()) {
+                            bool allMoves = true;
+                            BooleanSwitchExpression::forEachLeafArm(rhsAst,
+                                [&](const ExpressionPtr& leaf) {
+                                    if (!dynamic_pointer_cast<MoveExpression>(leaf)) {
+                                        allMoves = false;
+                                    }
+                                });
+                            if (allMoves) {
+                                rhsIsMove = true;
+                                if (!llvm::isa<llvm::ConstantInt>(tf)) rhsTernFlag = tf;
+                            } else if (auto* cf = llvm::dyn_cast<llvm::ConstantInt>(tf)) {
+                                rhsIsFreshOwner = !cf->isZero();
+                            } else {
+                                rhsIsFreshOwner = true;
+                                rhsTernFlag = tf;
+                            }
+                        }
+                    }
                     if (rhsIsMove || (lhsWasMoved && rhsIsFreshOwner)) {
                     if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
                         auto lhsClass = dynamic_pointer_cast<CajetaClass>(
@@ -3616,10 +3646,16 @@ namespace cajeta {
                                             llvm::ConstantInt::get(
                                                 llvm::Type::getInt64Ty(ectx), 24),
                                             "mvassign.active");
-                                    builder->CreateStore(
-                                        llvm::ConstantInt::get(
-                                            llvm::Type::getInt8Ty(ectx), 1),
-                                        activeSlot);
+                                    llvm::Value* activeVal = rhsTernFlag
+                                        ? builder->CreateZExt(
+                                              builder->CreateICmpNE(rhsTernFlag,
+                                                  llvm::ConstantInt::get(
+                                                      rhsTernFlag->getType(), 0)),
+                                              llvm::Type::getInt8Ty(ectx),
+                                              "mvassign.owned")
+                                        : (llvm::Value*) llvm::ConstantInt::get(
+                                              llvm::Type::getInt8Ty(ectx), 1);
+                                    builder->CreateStore(activeVal, activeSlot);
                                 }
                             }
                         }
