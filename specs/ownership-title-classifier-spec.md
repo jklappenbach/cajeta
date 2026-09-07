@@ -1,12 +1,14 @@
 # Spec: One ownership-title classifier for every consumer position (`ownership-title-classifier`)
 
-**draft** — filed 2026-09-07, for review with the developer. Measured basis:
+**active** — filed 2026-09-07, approved 2026-09-07 (every §5 decision resolved
+with the developer in the interactive review; the amendments are marked
+*Resolved*; plan in `agents/ownership-title-classifier-plan.md`). Measured basis:
 the classifier survey of the working tree on 2026-09-07 (six copies of the
 same shape classifier, a dozen disagreements; table in §3), the conditional
 (`c ? a : b`) defect family it produced
 (`ternary-local-double-free`: a local, a `#=` store, a `#` return, a call
 argument and a re-assignment each had to be fixed separately, in
-`27bd6c78` and the commit that follows), and probes
+`27bd6c78`, `96868d70` and `b15541b7`), and probes
 `tmp/probe-emit/src/probe/{T,U,V,W,X,Y}.cajeta`.
 
 ## 1. Definition
@@ -90,14 +92,25 @@ Peels reference casts, then classifies the expression by provenance:
 | `ArrayLiteral` | `Fresh{heap, stack, arena}` | heap → Owned; else StackBound |
 | String `+` concat | `Concat{arena}` | arena → Borrow (frame arena); else Owned |
 | `MoveExpression` | `Move{inner}` | Owned when the inner is a static owner; Runtime(DE / WORD / SLOT) otherwise |
-| `MethodCallExpression` | `CallResult{stance: owned / plain / view / unknown}` | owned → Owned; plain → Runtime(TLS); view (`^`) → Borrow; unknown → Unknown |
+| `MethodCallExpression` | `CallResult{stance: owned / plain / view}` | owned → Owned; plain → Runtime(TLS); view (`^`) → Borrow; a callee that emits no flag (a native, an intrinsic) → its declared stance, statically; a callee unresolvable before codegen → Runtime(TLS) |
 | `CallExpression` (closure) | `ClosureCall` | Runtime(TLS) |
 | `BooleanSwitchExpression` | `Conditional{arms}` | the join of the arms: equal static answers fold; otherwise Runtime(PHI) |
-| anything else | `Unknown` | Unknown |
+| `SwitchExpression` (expression form) | `Conditional{arms}` | the join of its case arms, exactly as the conditional |
+| `LambdaExpression` / `MethodReferenceExpression` | `Closure` | Owned (a fresh closure; `__cajeta_closure_drop`) |
+| any scalar-typed expression (numbers, booleans, comparisons, `instanceof`, arithmetic) | `Scalar` | NoTitle |
 
-`Unknown` is an answer: a consumer with a diagnostic passes, a consumer with a
-default keeps the default it has today, and an audit switch counts the
-population so it can be sized (as `CAJETA_AUDIT_RETURN_TITLES` sizes returns).
+**The classifier is total** (*Resolved 2026-09-07: there is no `Unknown`
+answer*). Every expression the language can produce has a determinate
+ownership answer — it reads a value someone else owns, makes a fresh one,
+moves one, or its title is decided at runtime by a protocol that already
+exists — so an unnamed shape is a defect in the compiler's source, not a
+property of the program. The exhaustiveness test (§4.4) enumerates every
+concrete `Expression` subclass and fails until each is named; a new subclass
+fails the compiler's own suite until it is classified. The static entry
+point's "cannot prove" answer is `Runtime` with a named flag source, never a
+default, and no consumer carries a polarity of its own any more (the
+`bindingTakesTitle` "unknown ⇒ owned" versus "unknown ⇒ do not reclaim"
+conflation that cost a release is exactly what this removes).
 
 The callee stance for a `CallResult` comes from a shallow, order-independent
 resolution (the existing `resolveArgCalleeShallow`), never from codegen state
@@ -127,17 +140,17 @@ arg / flagged-title values) become this one cache.
 Consumers do not re-classify. Each declares its **role** and asks the policy
 table for the action:
 
-| Role | Borrow | Owned | Runtime | Unknown |
+| Role | Borrow | Owned | Runtime | Scalar / StackBound |
 |---|---|---|---|---|
-| bind (`T x = e`) | no entry | armed entry | flagged entry | today's default (owned) |
-| `#=` store (String) | resolve a copy | move the wrapper | branch resolve / move | resolve |
+| bind (`T x = e`) | no entry | armed entry | flagged entry | none / stack-drop |
+| `#=` store (String) | resolve a copy | move the wrapper | branch resolve / move | n/a |
 | `#=` store (class field / slot) | own-bit 0 | own-bit 1 | own-bit = flag | own-bit 0 |
 | `=` re-assign of a binding with an entry | entry untouched (old value lives to scope exit) | release the displaced value, re-arm on the new | `__cajeta_drop_reassign` on the flag | entry untouched |
-| return under `#T` | **error** OWNED_RETURN_OF_BORROW | flag 1 | flag + TITLE_MISS contract | flag from method mode |
-| return under plain `T` | flag 0 | **error** FRESH_RETURN_NEEDS_TRANSFER | ride the flag | flag 0 |
+| return under `#T` | **error** OWNED_RETURN_OF_BORROW | flag 1 | flag + TITLE_MISS contract | **error** STACK_RETURN_ESCAPES / n/a |
+| return under plain `T` | flag 0 | **error** FRESH_RETURN_NEEDS_TRANSFER | ride the flag | flag 0 / n/a |
 | argument to plain formal | word bit 0 | class: word bit 1; String: reclaim after the call | class: word bit = flag; String: guarded reclaim | word bit 0 |
-| argument to `#T` formal | **error** TRANSFER_REQUIRED (provable shapes) | pass | pass | pass |
-| conditional arm | 0 | 1 | flag | 0 |
+| argument to `#T` formal | **error** TRANSFER_REQUIRED (a proven borrow: field read, element read, literal, borrow-returning call, entry-less local — *Resolved 5.8*) | pass | pass | n/a |
+| conditional / switch arm | 0 | 1 | flag | 0 |
 
 The labels for the two error rows ("a field read", "a literal", "a bare local
 or formal (no `#`)", "a call returning a borrow") come from the shape, in one
@@ -188,9 +201,9 @@ the call-argument sites.
 - **4.3** When both arms of a conditional classify the same way statically,
   the flag is a constant and the consumer's branch folds; no runtime test is
   emitted.
-- **4.4** When a shape is Unknown, a diagnostic consumer passes and a
-  defaulting consumer keeps today's default; the audit switch counts the
-  site so the Unknown population can be measured and shrunk.
+- **4.4** When a concrete `Expression` subclass has no named classification,
+  the exhaustiveness test fails; the compiler never emits code for an
+  unclassified shape. (*Resolved 2026-09-07: there is no Unknown answer.*)
 - **4.5** When a reference cast wraps the expression, it is peeled before
   classification, at every consumer.
 - **4.6** When a new `Expression` subclass is added, an exhaustiveness test
@@ -205,7 +218,11 @@ the call-argument sites.
   `dynamic_pointer_cast<MoveExpression>` in a consumer finds only the
   classifier.
 
-## 5. Decisions on the disagreements (proposed — to be reviewed)
+## 5. Decisions on the disagreements (resolved 2026-09-07 with the developer)
+
+*All of 5.1–5.7 adopted as proposed; 5.8 decided (reject); 5.9 superseded by
+totality (§2.1). Every adopted change ships with a witness test that fails on
+the current compiler.*
 
 - **5.1 Aggregate `heap` initialiser** stored to a class field, a tail slot or
   a re-armed local is Owned (today: borrow → leak).
@@ -222,14 +239,22 @@ the call-argument sites.
   own-bit sites (today: borrow → leak).
 - **5.7 Interface-slot kind** and the `operator[]=` word compose from the
   classifier (today: `#x` only).
-- **5.8 Identifier argument to a `#T` formal** — open. The `#T` check passes a
-  bare local (the callee assumes a title the local's entry still holds); the
-  `#` return check rejects the same shape. Options: (a) keep permissive
-  (documented, measured 2026-08-09 for *plain* formals only), (b) reject when
-  the local has an active entry (the return rule). Recommendation: (b), with
-  the arena-local carve-out the check already has.
-- **5.9 `bindingTakesTitle` (unknown ⇒ true)** survives only as the Unknown
-  default of the bind role; no other consumer reads it.
+- **5.8 Identifier argument to a `#T` formal** — *Resolved: reject a proven
+  borrow.* Measured 2026-09-07 (probe `srcZ/probe/Z.cajeta`): a bare local
+  that OWNS its value is already rejected today ("write `#k`"); a bare local
+  that holds a BORROW (no drop entry) compiles silently, the call passes a
+  transfer word of 0, and the callee's `#T` formal arms nothing — no double
+  free, but a method that declared `#T` because it stores the value now
+  stores a borrow that dangles once the caller's owner dies. An entry-less
+  local is a proven borrow (the declaration classified it so), so rejecting it
+  is within §7.2: `CAJETA_ERROR_TRANSFER_REQUIRED` naming the local and that
+  it holds a borrow; the fix is a copy, a fresh value, or an owned local. A
+  local with an inactive entry (a borrow-initialized local some later
+  assignment may arm) keeps the existing rule: `#k` forwards its flag. Pinned
+  by a fires-test and a does-not-fire test.
+- **5.9 `bindingTakesTitle` (unknown ⇒ true)** — *Superseded by totality
+  (§2.1)*: no consumer default survives; the accessor is deleted with the
+  last consumer that read it.
 
 ## 6. Related finding: the owned-bind check was never order-dependent
 
@@ -242,10 +267,14 @@ exports `CAJETA_OWNED_BIND=warn` (line 116: `CAJETA_CAPTURED_BORROW=warn`),
 which demotes both checks to notes that the script's `>/dev/null` discards.
 The same build with the notes captured reports **451 owned-bind and 9
 captured-borrow sites** across `cajeta-llm` (main and test sources). The
-check is deterministic; the harness is in migration mode. Two consequences
-for this spec: the fleet oracle in §7 runs with both switches at `error`, and
-the `cajeta-llm` migration (a `cajeta-llm` plan item, not this spec's)
-precedes the first consumer migration here so the oracle is meaningful.
+check is deterministic; the harness was in migration mode. *Resolved the
+same day:* the 388 owned-bind and 5 captured-borrow unique sites are migrated
+to `#=` and `run-tests.sh` defaults both switches to `error` (`cajeta-llm`
+`0a47d6d`, suite 360/0/1 on both legs), so the fleet oracle in §7 is
+meaningful from the first unit. The reassign-leak family the same probes
+exposed (an owned binding re-assigned an owned value leaked the new one) is
+fixed in cajeta `b15541b7` (`__cajeta_drop_reassign`; the policy row in §2.3
+describes it), so the re-assign consumer migrates onto a correct baseline.
 
 A second, unrelated defect surfaced from the same probes: two sibling files
 each declaring a nested `static class Cell` bind the bare name `Cell` inside
@@ -263,7 +292,7 @@ nested-class short-name binding family, recorded there, not here.
 - Fleet builds (`cajeta-llm`, `cajeta-jinja`, `cajeta-logging`,
   `cajeta-unit`, `cajeta-xgboost`, `cajeta-ml`, `cabra`) compile; `cajeta-llm`
   cpu suite green.
-- Emitted-instruction count on the corpus before and after, reported (the
-  consolidation must not grow the output; the folded constants should shrink
-  it).
+- Emitted-instruction count on the corpus before and after, recorded in the
+  plan per unit and expected to fall (*Resolved 2026-09-07: informational —
+  the IR diff is the gate, the count is not*).
 - The exhaustiveness test exists and passes.
