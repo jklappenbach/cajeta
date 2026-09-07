@@ -22,6 +22,11 @@
 //   TAINTED_LATCH  the tree reduce with a per-work-item accumulation after
 //                  the loop's last barrier, in the latch block — DECLINED by
 //                  name; running it once per iteration would be wrong.
+//   GUARDED_LOOP   the tree loop under `if (wg < groups) { … }` with every
+//                  barrier inside the loop (the WMMA GEMM kernels' shape) —
+//                  DECLINED by name: the loop must be entered by every
+//                  work-item. Accepting it regioned the `if`'s join block
+//                  twice and miscompiled (RAGreedy SIGSEGV, 2026-09-06).
 #pragma once
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
@@ -175,6 +180,34 @@ inline const char* TAINTED_LATCH =
     "            stride = stride / 2;\n"
     "        }\n"
     "        if (t == 0) { out[Workgroup.x()] = lds[0] + acc; }\n"
+    "    }\n";
+
+// The tree loop under a guard, every barrier inside the loop — the shape of
+// cajeta-llm's WMMA GEMM kernels (`if (t0 < rows && i0 < outDim) { while (b
+// < blocksPerRow) { … Barrier.workgroup(); … } }`). The barriers post-
+// dominate the loop's in-loop successor, so the per-barrier check passes; it
+// is the LOOP that not every work-item path enters. Declined by name.
+inline const char* GUARDED_LOOP =
+    "    @Kernel\n"
+    "    public static void treeGuarded(KernelBuffer<float32> out, KernelBuffer<float32> in,\n"
+    "                                   uint32 n, uint32 groups) {\n"
+    "        Shared<float32> lds = shared float32[256];\n"
+    "        uint32 t = KernelThread.x();\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        uint32 wg = i / 256;\n"
+    "        if (wg < groups) {\n"
+    "            float32 v = 0.0f;\n"
+    "            if (i < n) { v = in[i]; }\n"
+    "            lds[t] = v;\n"
+    "            uint32 stride = 128;\n"
+    "            while (stride > 0) {\n"
+    "                Barrier.workgroup();\n"
+    "                if (t < stride) { lds[t] = lds[t] + lds[t + stride]; }\n"
+    "                Barrier.workgroup();\n"
+    "                stride = stride / 2;\n"
+    "            }\n"
+    "            if (t == 0) { out[wg] = lds[0]; }\n"
+    "        }\n"
     "    }\n";
 
 } // namespace cajeta_fission_shapes

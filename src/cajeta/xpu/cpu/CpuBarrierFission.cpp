@@ -220,6 +220,29 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             unsupported("a barrier under work-item-divergent control flow "
                         "(all work-items must reach every barrier)");
     }
+    // A loop that holds a barrier must itself be reached by every work-item:
+    // its header post-dominates the enclosing level's entry, exactly as a
+    // barrier does. The check above looks only INSIDE the loop (the barrier
+    // against the loop's own in-loop successor), so a barrier loop under an
+    // `if` passed it — the WMMA GEMM kernels' `if (t0 < rows && i0 < outDim)
+    // { while (b < blocksPerRow) { … barrier … } }`. Once the latch-scaffold
+    // rule (66041f35) stopped declining that shape by accident, the region
+    // walk collected the `if`'s join block twice — as the pre-loop region's
+    // exit and again as the post-loop region's — and step 9 rewired its `ret`
+    // into the first nest's latch: `%wi.tx` no longer dominated `%wi.next`,
+    // the post-loop nest's latch had no predecessors, and RAGreedy crashed on
+    // the inlined copy three passes later (cajeta-llm, 2026-09-06). Declined
+    // by name instead; the host-stub fallback is what ran before.
+    for (llvm::Loop* top : LI)
+        for (llvm::Loop* L : llvm::depth_first(top)) {
+            if (!loopHasBarrier(L)) continue;
+            llvm::Loop* P = L->getParentLoop();
+            llvm::BasicBlock* levelEntry = P ? inLoopSuccOf(P) : bodyEntry;
+            if (!PDT.dominates(L->getHeader(), levelEntry))
+                unsupported("a barrier loop under work-item-divergent control "
+                            "flow (every work-item must enter a loop that holds "
+                            "a barrier)");
+        }
     // Wave ops compose with barriers: fission produces clean counted work-item
     // loops, and the caller forces VF=W + attaches the wave SIMD variants on each
     // (`workItemLatches`), so a wave op inside a region becomes W SIMD lanes while
@@ -407,6 +430,16 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                     continue;
                 }
             Collected R = collect(cur, encLoop);
+            // Every block a region collects is claimed, not only its start:
+            // a block two regions both reach (the join of an `if` whose one
+            // arm holds a barrier loop) gets its exit edge rewired by the
+            // first nest and left dangling by the second, which is a
+            // miscompile, not a decline. The post-dominance checks in step 4
+            // name the known shapes first; this is the net under them.
+            for (llvm::BasicBlock* b : R.blocks)
+                if (b != cur && !regioned.insert(b).second)
+                    unsupported("unstructured barrier control flow (a block is "
+                                "reached by more than one region path)");
             llvm::BasicBlock* done = nullptr;
             if (R.barrier) done = R.barrier;
             else if (R.subloop) done = R.subloop;

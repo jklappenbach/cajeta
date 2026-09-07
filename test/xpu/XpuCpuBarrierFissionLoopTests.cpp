@@ -150,6 +150,20 @@ const char* RUN_LATCH_LAUNCH =
     "        return (int32) (Device.launchFailures() - f0);\n"
     "    }\n";
 
+// Launch the guarded-loop kernel; return how far Device.launchFailures() moved.
+const char* RUN_GUARDED_LAUNCH =
+    "    public static int32 run() {\n"
+    "        KernelBuffer<float32> in = heap KernelBuffer<float32>(256);\n"
+    "        KernelBuffer<float32> out = heap KernelBuffer<float32>(4);\n"
+    "        KernelStream s #= KernelStream.current();\n"
+    "        int64 f0 = Device.launchFailures();\n"
+    "        uint32 n = 256;\n"
+    "        uint32 groups = 1;\n"
+    "        treeGuarded.launch(s, grid: [1], block: [256])(out, in, n, groups);\n"
+    "        s.sync();\n"
+    "        return (int32) (Device.launchFailures() - f0);\n"
+    "    }\n";
+
 } // namespace
 
 // 1.1.1 — spec 2.1: the stride-loop tree reduce lowers and matches.
@@ -199,6 +213,26 @@ TEST(XpuCpuBarrierFissionLoop, perWorkItemLatchIsDeclinedByName) {
     EXPECT_NE(err.find("barrier fission"), std::string::npos) << err;
     EXPECT_NE(err.find("per-work-item code in the latch of a barrier loop"), std::string::npos)
         << "the reason must name the latch, not the generic unstructured-flow message:\n" << err;
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    testing::internal::CaptureStderr();
+    int32_t delta = fn();
+    std::string runErr = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(delta, 1) << "one declined launch moves Device.launchFailures() by one:\n" << runErr;
+}
+
+// 1.1.6 — spec 2.5: a barrier loop under an `if` (the WMMA GEMM kernels'
+// guard) is declined by name, never fissioned. Before the check the walk
+// regioned the `if`'s join block twice and the block function failed the IR
+// verifier — this compile crashed in RAGreedy.
+TEST(XpuCpuBarrierFissionLoop, guardedBarrierLoopIsDeclinedNotMiscompiled) {
+    std::string err;
+    auto jit = compileCpu(std::string(PRE) + GUARDED_LOOP + RUN_GUARDED_LAUNCH + END, &err);
+    ASSERT_NE(jit, nullptr) << err;
+    EXPECT_NE(err.find("[xpu-kernel-skipped] treeGuarded"), std::string::npos)
+        << "the note must name the kernel:\n" << err;
+    EXPECT_NE(err.find("a barrier loop under work-item-divergent control flow"), std::string::npos)
+        << "the reason must name the loop, not the barrier or the generic message:\n" << err;
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
     testing::internal::CaptureStderr();

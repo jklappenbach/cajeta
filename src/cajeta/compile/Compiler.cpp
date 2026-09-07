@@ -3301,6 +3301,34 @@ namespace cajeta {
                 // SLP) over this user module before codegen.
                 optimizeModule(*module->getLlvmModule(), targetMachine, flags.opt);
 
+                // CAJETA_DUMP_CODEGEN_BC=<dir>: the module EXACTLY as handed to
+                // host codegen (after --opt), so a backend crash — RAGreedy on
+                // the cajeta-llm test module, 2026-09-06 — reproduces under the
+                // standalone `llc` with the function named. The per-class
+                // --emit=ir snapshot is taken earlier and missed it. Mirrors
+                // the AMD / Vulkan CAJETA_XPU_DUMP_BC instrument.
+                // CAJETA_DUMP_CODEGEN_BC=<dir>: write each module as it goes INTO host
+    // codegen (`<module>.codegen.bc` + `.ll`, after optimizeModule). The
+    // `--emit=ir` per-class dumps are taken earlier and miss the CPU kernel
+    // block functions, so a codegen crash (RAGreedy, 2026-09-06) had no IR
+    // to bisect; `opt -passes=verify` on these files names the bad block.
+    if (const char* dumpDir = std::getenv("CAJETA_DUMP_CODEGEN_BC")) {
+                    std::string mid = module->getLlvmModule()->getModuleIdentifier();
+                    for (char& ch : mid) if (ch == '/' || ch == ' ') ch = '_';
+                    std::error_code dec;
+                    llvm::raw_fd_ostream bcOut(
+                        std::string(dumpDir) + "/" + mid + ".codegen.bc", dec);
+                    if (!dec) llvm::WriteBitcodeToFile(*module->getLlvmModule(), bcOut);
+                    // And the text form: an ILL-TYPED instruction makes the bitcode
+                    // unreadable ("Invalid binary operator record"), while the
+                    // text still parses far enough for `opt -passes=verify` to
+                    // name the instruction.
+                    std::error_code lec;
+                    llvm::raw_fd_ostream llOut(
+                        std::string(dumpDir) + "/" + mid + ".codegen.ll", lec);
+                    if (!lec) module->getLlvmModule()->print(llOut, nullptr);
+                }
+
                 llvm::legacy::PassManager pm;
                 auto fileType = llvm::CodeGenFileType::ObjectFile;
                 if (targetMachine->addPassesToEmitFile(pm, dest, nullptr, fileType)) {
