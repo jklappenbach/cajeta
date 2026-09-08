@@ -4,13 +4,9 @@ This specification defines the Cajeta programming language: which programs are l
 
 ## 1.1 Scope
 
-This specification governs the language: lexical structure, types, allocation and ownership, declarations and names, statements and expressions, errors, concurrency, accelerated compute, script units, the notebook execution model, and program lifecycle. It defines the requirements a program must meet to compile and the behavior a compiled program exhibits.
+This specification defines the language itself — its capabilities and features: lexical structure, types, allocation and ownership, declarations and names, statements and expressions, errors, concurrency, accelerated compute, script units, the notebook execution model, and program lifecycle. It defines the requirements a program must meet to compile and the behavior a compiled program exhibits.
 
-The following are outside its scope:
-
-- **The runtime binary interface.** The layout of the drop chain, the transfer flag's encoding, the `.cja` archive format, and the accelerator launch interface belong to the Runtime & ABI companion. This specification states *that* a guarantee holds; the companion states *how* the runtime provides it.
-- **The standard library API.** Package-by-package reference for `cajeta.collection`, `cajeta.io`, `cajeta.math`, and the rest belongs to the Stdlib Reference. Where a library type carries language-level guarantees — `Mutex<T>`'s critical-section scoping (Concurrency §16), `Tile`'s role inference (Accelerated Compute §17) — this specification defines the guarantee and the reference defines the full API surface.
-- **Tooling.** `cajeta build`, emit flags, project manifests, and the agent surface are documented with the toolchain.
+Coverage of the standard library and of external libraries built as part of cajeta.dev is out of scope; they are documented in their own references. Where a library type carries a language-level guarantee — `Mutex<T>`'s critical-section scoping (Concurrency §16), `Tile`'s role inference (Accelerated Compute §17) — this specification defines the guarantee, and the library reference defines the API.
 
 > *Discussion.* The subdirectories of this documentation tree (`lang/`, `xpu/`, `concurrent/`, …) hold the internal design documents these chapters are distilled from. They record decisions and implementation detail, they remain reachable by direct link, and they are not normative: where an internal document and a chapter disagree, the chapter governs. The Runtime & ABI companion and the Stdlib Reference are being assembled from the same material.
 
