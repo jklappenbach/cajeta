@@ -1,6 +1,6 @@
 # 12 — Arrays, Views & Slices
 
-This chapter defines the three bulk-data forms: arrays, the indexed storage type; `view` types, zero-copy overlays that read and write a byte buffer in a declared wire layout; and slices, values that share an immutable backing buffer through the `shared` ownership state.
+This chapter defines the three bulk-data forms: arrays, the indexed storage type; `view` types, zero-copy overlays that read and write a byte buffer in a declared wire layout; and slices, values that co-own an immutable backing buffer through shared stakes.
 
 ## 12.1 Arrays
 
@@ -66,13 +66,13 @@ public final class C {
 System.stdout.println(C.run());
 ```
 
-## 12.3 Slices and the Shared State
+## 12.3 Slices and Shared Stakes
 
-A slice is a value that designates a range of another value's immutable backing buffer — `String.substring` is the canonical producer. A borrow cannot express a slice that outlives its source, and forcing a copy would tax the common case; the `shared` ownership state (Ownership §5.1) exists for exactly this.
+A slice is a value that designates a range of another value's immutable backing buffer — `String.substring` is the canonical producer. A borrow cannot express a slice that outlives its source, and forcing a copy would tax the common case; the shared stake exists for exactly this. A stake is a property of the buffer, not of any binding (Ownership §5.1): a runtime count co-owns the buffer, and the binding holding the slice remains a borrow.
 
 - **Escaping-borrow resolution.** When a borrow of an eligible source escapes its frame — returned, stored beyond the source's life — it does not error (the identity-object discipline of Ownership §5.6 does not apply): it resolves into a copy for small values, a shared stake in the backing buffer for large ones, and a copy for arena-backed ones.
-- **Eligibility** is immutable leaf buffers only — values with no identity, no mutation, and no outgoing references. The shared graph is therefore acyclic: no cycles, no weak references, no leaks.
-- **Promotion is one-way**, owned to shared. Moves of a shared value are count-neutral; the count lives in a side table keyed by buffer base, and a buffer that is never sliced-and-stored pays one predicted bit test at drop and nothing else. The last stake frees the buffer.
+- **Eligibility** is immutable leaf buffers only — values with no identity, no mutation, and no outgoing references. The graph of staked buffers is therefore acyclic: no cycles, no weak references, no leaks.
+- **Staking is one-way** — a staked buffer never returns to sole ownership, and only immutable leaf buffers are staked; identity objects and mutable values never are. Moves of a staked value are count-neutral; the count lives in a side table keyed by buffer base, and a buffer that is never sliced-and-stored pays one predicted bit test at drop and nothing else. The last stake frees the buffer.
 
 **Example 12.3-1.** A substring escaping its source's frame.
 

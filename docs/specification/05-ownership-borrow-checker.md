@@ -1,20 +1,19 @@
 # 5 — Ownership & the Borrow Checker
 
-This chapter defines Cajeta's ownership model — the owned, borrow, and shared states — and the static analysis that enforces it. Every heap value has one responsible owner; `=` always produces a borrow; `#` is a passthrough that hands along whatever title its source holds. All enforcement is at compile time, with no ownership annotations in the type system and no reference counting on the owned path.
+This chapter defines Cajeta's ownership model — the owned and borrow states — and the static analysis that enforces it. Every heap value has one responsible owner; `=` always produces a borrow; `#` is a passthrough that hands along whatever title its source holds. All enforcement is at compile time, with no ownership annotations in the type system and no reference counting on the owned path.
 
 ## 5.1 Ownership States
 
-A binding to a title-bearing value is in one of three states. The state is inferred; it is never written in source.
+A binding to a title-bearing value is in one of two states. The state is inferred; it is never written in source.
 
 | State | Discipline |
 |---|---|
 | **owned** | Exactly one responsible dropper. `#` passes the title on. |
 | **borrow** | Non-owning. Must not outlive its source; checked statically. |
-| **shared** | Co-owned immutable leaf buffers. Runtime count; freed at the last stake. |
 
-The **title** is the ownership stake in a value: the right and the obligation to drop it. A **borrow** is a reference without the title. The **shared** state exists for slices — values such as a `String` produced by `substring` that outlive the buffer they were sliced from, where a borrow must be rejected and a copy is not always wanted. Promotion is one-way, owned to shared, and applies only to immutable leaf buffers; identity objects and mutable values never become shared. Slices and the shared state are specified in Arrays, Views & Slices §12.
+The **title** is the ownership stake in a value: the right and the obligation to drop it. A **borrow** is a reference without the title.
 
-The rest of this chapter governs the owned and borrow states.
+One resolution operates beside the two states without adding a third: an escaping borrow of an immutable leaf buffer — a `String` produced by `substring` is the canonical case — resolves into a copy, or into a shared stake in the backing buffer. A stake is a property of the buffer, not of the binding: a runtime count co-owns the buffer, and the last stake frees it. The binding itself is a borrow. Stakes are specified in Arrays, Views & Slices §12.
 
 ## 5.2 Borrowing
 
