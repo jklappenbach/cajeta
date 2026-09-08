@@ -1439,6 +1439,20 @@ namespace cajeta {
                     // entry retarget below keys on lhsWasMoved.
                     lhsWasMoved = sc->isBorrow(lhsId->getTextValue());
                     if (lhsWasMoved) sc->restoreOwnership(lhsId->getTextValue());
+                    // Unit 7 (measured 2026-09-08, `CallArgOwnershipTests.
+                    // DISABLED_ownerReassignedToBorrowThenSurrenderedWitness`):
+                    // after `k = p` (a borrow right-hand side) the entry still
+                    // describes the displaced value — kept alive to scope
+                    // exit, correctly, so lends of it stay valid — but the
+                    // NAME holds a borrow, and a later `#k` forwards the
+                    // entry's title. Demoting the name here was tried and
+                    // reverted: the scope's move marking is flow-insensitive,
+                    // so a borrow re-assign in one `if` arm made every later
+                    // `#=` of the name a rejection, which §7.2 forbids (what
+                    // the analysis cannot prove is ALLOWED — pinned by
+                    // CapturedBorrowParamTests.unprovableCaptureIsAllowed).
+                    // The precise fix is flow-sensitive name state; filed in
+                    // the ownership-title-classifier plan's 8.2.2.
                 }
             }
         }

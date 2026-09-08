@@ -91,7 +91,11 @@ TEST(ReturnTitleAuditTests, plainReturnTailCallIsEnumerated) {
     auto recs = auditCompile(src);
     const ReturnTitleRecord* r = find(recs, "test.D", "viaPlain");
     ASSERT_NE(r, nullptr) << "the ride-through site was not enumerated";
-    EXPECT_EQ(r->carry, TitleCarry::RuntimeFlag);
+    // ownership-title-classifier 7.2.3: `D.fresh` is `#Cell` and its only
+    // return is `heap Cell(7)`, a kind-decidable title, so the tail call's
+    // answer is the constant 1 (no TLS read) — still the ride, still a title
+    // handed out through a plain signature, which is what the audit counts.
+    EXPECT_EQ(r->carry, TitleCarry::StaticTitle);
     EXPECT_EQ(r->via, TitleVia::CallRide);
     // WHICH callee is ridden is the difference between "a title escapes a
     // plain signature" and "the decision moved one frame along", so the count

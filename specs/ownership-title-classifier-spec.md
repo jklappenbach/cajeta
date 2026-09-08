@@ -408,6 +408,44 @@ Three more from the return statement's migration (Unit 6, 2026-09-08):
   confirmed for classes: `Cell f() { return stack Cell(i); }` compiles as an
   sret return and lands in the caller's frame — accepted, balanced, no title.
 
+And from the call arguments' migration (Unit 7, 2026-09-08):
+
+- **What a name HOLDS changes at a re-assignment, and nothing static says
+  so today.** `Cell k = f(); if (c) { k = p; } take(#k)` hands the callee a
+  title on `p`'s cell (measured, verdict 21): the entry still describes the
+  displaced value — kept alive to scope exit, correctly, lends of it stay
+  valid — but the name holds a borrow. Demoting the name at a borrow
+  re-assign (the classifier's answer for the right-hand side, Reassign
+  role) was tried and reverted: the scope's move marking is
+  flow-insensitive, so one arm's borrow re-assign made every later `#=` of
+  the name a rejection, which §7.2 forbids ("what the analysis cannot prove
+  is allowed", pinned by `CapturedBorrowParamTests.unprovableCaptureIs-
+  Allowed`). The precise fix is flow-sensitive name state at the join —
+  its own spec (plan 8.2.2); the witness stays as a DISABLED test.
+- **The `#T`-formal row keeps two idioms the table marked E.** A String
+  literal into a `#String` formal is the adoption of §6's third finding
+  (`heap SomeException("…")`); and `this` into a `#T` constructor formal is
+  the consumed-receiver idiom (`heap FilterStream<T>(this, pred)`, 48
+  stdlib instantiations of four stages): its word bit was 0 before the
+  migration, the `#` formal adopts regardless, and a named receiver's own
+  later drop is the runtime's idempotent no-op. Rejecting it would break
+  the Stream API for a hazard the runtime absorbs; the language gap is a
+  `#this` receiver spelling (plan 8.2.2). Everything else the row rejects —
+  a field or element read, an entry-less local (5.8), a borrowed formal, a
+  proven-borrow call, a `stack` value (5.11) — it rejects at the
+  constructor exactly as at the call: the constructor's own check had keyed
+  on "a class local with an active entry" alone, and `fromErrno(String
+  detail) { return heap XException(detail); }` (11 sites) handed each
+  exception a title on its caller's caller's String.
+- **A `#R` callee is statically Owned when its every return is a
+  kind-decidable title** (`Method::returnsStaticTitle`, an AST scan: a
+  `heap` construction, an aggregate, a `heap` array literal, a
+  concatenation, a String literal — never a name, a call, a conditional or
+  `#= x`). That is the §2.1 amendment 7.2.3 asked for, decided without a
+  signature bit: the callee's block is at hand in-module, and a `.cja`
+  callee (no block) stays Runtime. Corpus: 1,484 return-flag reads and 576
+  runtime entry armings folded.
+
 ## 7. Acceptance
 
 - Every ownership suite green; the 18 `TernaryOwnershipTests` and every

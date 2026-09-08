@@ -180,6 +180,35 @@ namespace cajeta::ownership {
     llvm::Value* verdictFlag(const TitleShape& shape, const TitleVerdict& v,
                              const CajetaModulePtr& module);
 
+    /// `verdictFlag` for a consumer that runs AFTER the expression's codegen:
+    /// a call whose own resolution is still null was lowered by an
+    /// intrinsic and stored no flag — reading the TLS would be stale (Unit
+    /// 6, 24 such reads measured) — so no flag is materialised for it.
+    llvm::Value* verdictFlagAfterCodegen(const TitleShape& shape, const TitleVerdict& v,
+                                         const CajetaModulePtr& module);
+
+    /// Unit 7 — one call or constructor argument, classified AFTER its
+    /// codegen. A `#x` argument (the parser's callerTransferred) is the
+    /// move of its name; a `stack` value moved into any formal is the
+    /// STACK_TRANSFER error (spec 5.11); a plain formal moved in a method
+    /// that carries no transfer word is BORROW_PARAM_ESCAPES. `flag` is the
+    /// argument's title bit — a constant, or a runtime value read here,
+    /// before anything deactivates its source — or null for no title.
+    struct ArgTitle {
+        TitleShape shape;
+        llvm::Value* flag = nullptr;
+    };
+    ArgTitle classifyArgument(const ExpressionPtr& e, bool callerTransferred,
+                              const CajetaModulePtr& module, const char* where);
+
+    /// Unit 7 — the `#T`-formal contract on one argument (spec 5.8, 5.11):
+    /// every leaf arm must tender a title. Throws TRANSFER_REQUIRED /
+    /// STACK_TRANSFER / ARRAY_SLOT_BORROWS_LOCAL with the site's texts.
+    void rejectOwnedFormalArgument(const ExpressionPtr& e, bool callerTransferred,
+                                   const CajetaModulePtr& module,
+                                   const std::string& callee, const std::string& formal,
+                                   int line);
+
     void rejectEscape(const ExpressionPtr& e, ConsumerRole role,
                       const CajetaModulePtr& module, const char* where);
 

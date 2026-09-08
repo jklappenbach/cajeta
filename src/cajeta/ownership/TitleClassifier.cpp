@@ -270,6 +270,16 @@ namespace cajeta::ownership {
             }
             bool ownedDecl = rm->isReturnsOwnership();
             if (ownedDecl) flags |= TitleShape::kOwnedDecl;
+            // 7.2.3 — a `#R` callee whose every return hands out a
+            // kind-decidable title (a `heap` construction, a concatenation,
+            // a String literal — never a name, a call, a conditional or
+            // `#= x`) is statically Owned: no mode can ride out, so the
+            // caller's flag read folds away. Decided from the callee's AST
+            // (`Method::returnsStaticTitle`), so it holds before its codegen.
+            if (ownedDecl && rm->returnsStaticTitle()) {
+                return withCallee(make(TitleFamily::CallResult, TitleAnswer::Owned,
+                                       TitleSource::None, leaf, flags));
+            }
             // Every path below names the callee too: the owned-bind check
             // (§4.6) and the `#local` provenance read it off the shape.
             // (First pass set it on two of four paths and both checks went
@@ -731,16 +741,44 @@ namespace cajeta::ownership {
             case ConsumerRole::ArgOwned:
                 // A `#T` formal is a promise the argument must keep: a proven
                 // borrow is rejected (spec 5.8); an owned or runtime-decided
-                // value passes and its bit rides the transfer word.
+                // value passes and its bit rides the transfer word. A
+                // `stack` value — constructed or moved — into a formal the
+                // callee may retain is the escape 5.11 rejects. A VALUE type
+                // moves by copy (`["o": {x: 3, y: 4}]` hands a record
+                // aggregate to `put`'s `#V` formal — measured 2026-09-08 in
+                // the sweep, CollectionLiteralTests.MapToAggregate): no
+                // frame address escapes, nothing to reject.
+                if (s.answer == TitleAnswer::StackBound && !s.has(TitleShape::kValue)) {
+                    v.error = "CAJETA_ERROR_STACK_TRANSFER";
+                    return v;
+                }
                 if (escapesBorrowedSlots()) {
                     v.error = "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL";
                     return v;
                 }
+                // A String literal's static wrapper is adopted (its drop is a
+                // no-op — Unit 6, 6.1.2 a): `heap SomeException("...")` into
+                // a `#String` formal is sound and the stdlib's idiom.
+                if (s.family == TitleFamily::Literal && s.has(TitleShape::kString)) {
+                    v.answer = TitleAnswer::Owned; v.source = TitleSource::None;
+                    return v;
+                }
                 switch (s.family) {
+                    case TitleFamily::ThisRead:
+                        // The consumed-receiver idiom: `filter()` returns
+                        // `heap FilterStream<T>(this, pred)` into a `#Stream
+                        // source` formal — the stage adopts its receiver
+                        // (measured 2026-09-08: 48 stdlib instantiations of
+                        // four stages; the word bit was 0 before this unit
+                        // and the `#` formal adopts regardless; a named
+                        // receiver's own drop is then the runtime's idempotent
+                        // no-op). The language has no `#this` receiver
+                        // spelling to say so — a gap recorded in the plan,
+                        // not a row this unit can reject.
+                        return v;
                     case TitleFamily::FieldRead:
                     case TitleFamily::ElementRead:
                     case TitleFamily::Literal:
-                    case TitleFamily::ThisRead:
                         v.error = "CAJETA_ERROR_TRANSFER_REQUIRED";
                         return v;
                     case TitleFamily::CallResult:
@@ -866,6 +904,106 @@ namespace cajeta::ownership {
         r.answer = v.answer;
         r.source = v.source;
         return titleFlag(r, module);
+    }
+
+    llvm::Value* verdictFlagAfterCodegen(const TitleShape& s, const TitleVerdict& v,
+                                         const CajetaModulePtr& module) {
+        if (v.answer == TitleAnswer::Runtime && v.source == TitleSource::ReturnFlag
+                && s.family == TitleFamily::CallResult && !s.callee) {
+            return nullptr;   // an intrinsic lowering: no flag was stored
+        }
+        return verdictFlag(s, v, module);
+    }
+
+    ArgTitle classifyArgument(const ExpressionPtr& e, bool callerTransferred,
+                              const CajetaModulePtr& module, const char* where) {
+        ArgTitle a;
+        a.shape = classify(e, module);
+        if (callerTransferred) a.shape = moveFrom(a.shape, /*sharpStore=*/false);
+        TitleVerdict v = policy(a.shape, ConsumerRole::ArgPlain);
+        if (callerTransferred && a.shape.answer == TitleAnswer::StackBound
+                && !a.shape.has(TitleShape::kValue)) {   // a value type moves by copy
+            TitleVerdict sv{a.shape.answer, a.shape.source, "CAJETA_ERROR_STACK_TRANSFER", a.shape.label};
+            throwVerdict(a.shape, sv, e, module, where);
+        }
+        a.flag = verdictFlagAfterCodegen(a.shape, v, module);
+        if (callerTransferred && !a.flag && a.shape.family == TitleFamily::Move
+                && a.shape.source == TitleSource::TransferWord && a.shape.field) {
+            // A plain formal moved on, in a method whose signature carries no
+            // transfer word. A value-type or interface formal moves by copy /
+            // by its kind word and carries no title to read: the old
+            // sites' default bit (1) stands. A class formal: this frame holds
+            // nothing to surrender.
+            if (a.shape.has(TitleShape::kValue) || a.shape.has(TitleShape::kInterface)) {
+                a.flag = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*module->getLlvmContext()), 1);
+                return a;
+            }
+            const std::string& name = a.shape.field->getName();
+            throw Exception(
+                "cannot transfer borrowed parameter `" + name + "` via `#` — its "
+                "formal is declared plain `T` (borrow), so this scope doesn't own "
+                "the value. Fix: mark the formal `#" + name + "` to receive "
+                "ownership at the outer call site, or restructure to not retain "
+                "the borrow.",
+                "CAJETA_ERROR_BORROW_PARAM_ESCAPES", module->getSourcePath(),
+                (int) e->getSourceLine(), (int) e->getSourceColumn());
+        }
+        return a;
+    }
+
+    void rejectOwnedFormalArgument(const ExpressionPtr& e, bool callerTransferred,
+                                   const CajetaModulePtr& module,
+                                   const std::string& callee, const std::string& formal,
+                                   int line) {
+        if (!e) return;
+        TitleShape top = classify(e, module);
+        const bool viaConditional = top.family == TitleFamily::Conditional && !callerTransferred;
+        auto oneArm = [&](const ExpressionPtr& arm) {
+            TitleShape sh = viaConditional ? classify(arm, module) : top;
+            if (callerTransferred) sh = moveFrom(sh, /*sharpStore=*/false);
+            TitleVerdict v = policy(sh, ConsumerRole::ArgOwned);
+            if (!v.error) return;
+            const std::string code = v.error;
+            if (code != "CAJETA_ERROR_TRANSFER_REQUIRED") {
+                throwVerdict(sh, v, arm, module, "a `#T` argument");
+            }
+            const std::string head = "method `" + callee + "` declares parameter `"
+                + formal + "` as `#T` (ownership transfer required)";
+            const std::string see = " See docs/specification/lang/OwnershipTransfer.md.";
+            const std::string name = sh.field ? sh.field->getName() : std::string();
+            std::string msg;
+            if (sh.family == TitleFamily::LocalRead && sh.has(TitleShape::kIsParam)) {
+                auto m = module->getCurrentMethod();
+                msg = head + ", but `" + name + "` is a BORROWED parameter of `"
+                    + (m ? m->getName() : std::string("?")) + "` — this frame holds no "
+                    "title to surrender, and `#" + name + "` would be rejected for the "
+                    "same reason. Declare the parameter `#" + name + "` to take "
+                    "ownership from your caller, or pass a value this frame owns." + see;
+            } else if (sh.family == TitleFamily::LocalRead && sh.has(TitleShape::kHasEntry)) {
+                msg = head + "; write `#" + name + "` at the call site to surrender "
+                    "ownership of the source local, or pass a fresh `heap T(...)` "
+                    "construction." + see;
+            } else if (sh.family == TitleFamily::LocalRead) {
+                // Spec 5.8 — an entry-less local is a proven borrow.
+                msg = head + ", but `" + name + "` holds a BORROW (it was bound without "
+                    "a title, so this frame never owned what it names): the callee "
+                    "would store a value that dangles once its owner dies. Pass a "
+                    "fresh copy (`#heap ...`), a fresh value, or an owned local "
+                    "surrendered with `#`." + see;
+            } else {
+                msg = head + ", but " + (viaConditional
+                        ? "an arm of the conditional argument is "
+                        : "the argument is ")
+                    + sh.label + " — a borrow. Pass a fresh copy (`#heap ...`) or an "
+                    "owned local surrendered with `#`." + see;
+            }
+            throw Exception(msg, code, module->getSourcePath(), line, -1);
+        };
+        if (viaConditional) {
+            BooleanSwitchExpression::forEachLeafArm(top.leaf, oneArm);
+        } else {
+            oneArm(top.leaf ? top.leaf : e);
+        }
     }
 
     llvm::Value* storeTitleFlagOf(const TitleShape& s, ConsumerRole role,

@@ -336,10 +336,11 @@ TEST(TransferOfBorrowTests, lendAtCallArgumentStillCompiles) {
 // memory (measured 2026-09-07 — h.c.v returns garbage once another call
 // reuses the frame). Same defect family as CAJETA_ERROR_DANGLING_LEND:
 // the receiver retains and escapes; only the surrender spelling differs.
-// DISABLED until the escape analysis reaches field-retained stack
-// transfers. The expected code below is the family's; adjust it if the
-// fix introduces a dedicated code, then delete the prefix.
-TEST(TransferOfBorrowTests, DISABLED_stackTransferRetainedByEscapingObjectRejected) {
+// ownership-title-classifier Unit 7 (spec 5.11): a `stack` value moved into
+// a `#T` constructor formal is CAJETA_ERROR_STACK_TRANSFER — the same row
+// that rejects `this.f #= stackLocal` (Unit 5) — with the two-alternative
+// fix-it (`heap`, or return it by value). Enabled with that unit.
+TEST(TransferOfBorrowTests, stackTransferRetainedByEscapingObjectRejected) {
     std::string src =
         "package test;\n"
         "public class Cell { public int32 v; public Cell(int32 v) { this.v = v; } }\n"
@@ -358,5 +359,5 @@ TEST(TransferOfBorrowTests, DISABLED_stackTransferRetainedByEscapingObjectReject
         "        return h.c.v;\n"
         "    }\n"
         "}\n";
-    compileExpectError(src, "CAJETA_ERROR_DANGLING_LEND");
+    compileExpectError(src, "CAJETA_ERROR_STACK_TRANSFER");
 }

@@ -280,6 +280,81 @@ namespace cajeta {
         return false;
     }
 
+    // ownership-title-classifier 7.2.3 — see Method.h. Kind-decidable titles
+    // only: a name may hold a borrow, a call may ride a mode, a conditional
+    // may mix, `#= x` carries a mode by design, `#x` needs the scope.
+    bool Method::exprIsStaticTitle(const ExpressionPtr& e) {
+        if (!e) return false;
+        if (auto ne = dynamic_pointer_cast<NewExpression>(e)) {
+            return !ne->getStackAlloc() && !ne->getSharedAlloc();
+        }
+        if (auto ai = dynamic_pointer_cast<AggregateInitializerExpression>(e)) {
+            return !ai->getStackAlloc();
+        }
+        if (auto al = dynamic_pointer_cast<ArrayLiteralExpression>(e)) {
+            return !al->isStackAlloc() && !al->isArenaEligible();
+        }
+        if (auto bop = dynamic_pointer_cast<BinaryOpExpression>(e)) {
+            if (bop->getBinaryOp() != BINARY_OP_ADD || bop->isArenaEligible()) return false;
+            auto cls = dynamic_pointer_cast<CajetaClass>(bop->getResolvedType());
+            return cls && cls->getQName()
+                && cls->getQName()->getTypeName() == "String"
+                && cls->getQName()->getPackageName() == "cajeta.lang";
+        }
+        if (auto tl = dynamic_pointer_cast<TextLiteralExpression>(e)) {
+            // A String literal's static wrapper is adopted (Unit 6, 6.1.2 a).
+            return tl->getLiteralType() == LITERAL_TYPE_STRING
+                || tl->getLiteralType() == LITERAL_TYPE_TEXT_BLOCK;
+        }
+        return false;
+    }
+
+    bool Method::nodeReturnsOnlyStaticTitles(const AbstractSyntaxNodePtr& node,
+                                             bool& sawReturn) {
+        if (!node) return true;
+        if (auto ret = dynamic_pointer_cast<ReturnStatement>(node)) {
+            ExpressionPtr e = ret->getExpression();
+            if (!e) return true;                       // bare `return;`
+            if (ret->isModeCarrying()) return false;   // `return #= x`
+            if (!exprIsStaticTitle(e)) return false;
+            sawReturn = true;
+            return true;
+        }
+        if (auto lbl = dynamic_pointer_cast<LabelStatement>(node)) {
+            return nodeReturnsOnlyStaticTitles(lbl->getBlock(), sawReturn);
+        }
+        if (auto sc = dynamic_pointer_cast<ScopeStatement>(node)) {
+            return nodeReturnsOnlyStaticTitles(sc->getBlock(), sawReturn);
+        }
+        if (auto iff = dynamic_pointer_cast<IfStatement>(node)) {
+            return nodeReturnsOnlyStaticTitles(iff->getThenBranch(), sawReturn)
+                && nodeReturnsOnlyStaticTitles(iff->getElseBranch(), sawReturn);
+        }
+        if (auto wh = dynamic_pointer_cast<WhileStatement>(node)) {
+            return nodeReturnsOnlyStaticTitles(wh->getBody(), sawReturn);
+        }
+        if (auto fr = dynamic_pointer_cast<ForStatement>(node)) {
+            return nodeReturnsOnlyStaticTitles(fr->getBody(), sawReturn);
+        }
+        if (auto efr = dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            return nodeReturnsOnlyStaticTitles(efr->getBody(), sawReturn);
+        }
+        if (auto dod = dynamic_pointer_cast<DoStatement>(node)) {
+            return nodeReturnsOnlyStaticTitles(dod->getBody(), sawReturn);
+        }
+        for (auto& c : node->getChildren()) {
+            if (!nodeReturnsOnlyStaticTitles(c, sawReturn)) return false;
+        }
+        return true;
+    }
+
+    bool Method::returnsStaticTitle() const {
+        if (!returnsOwnership || !block) return false;
+        bool sawReturn = false;
+        if (!nodeReturnsOnlyStaticTitles(block, sawReturn)) return false;
+        return sawReturn;
+    }
+
     bool Method::returnsInteriorView() const {
         if (returnsOwnership || !block) return false;
         bool sawView = false;

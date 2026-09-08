@@ -2791,9 +2791,10 @@ namespace cajeta {
                     if (m->returnsClassPointer()) {
                         if (llvm::Value* tf = own::verdictFlag(rs, v, module)) {
                             returnTitleFlag = tf;
-                            if (v.source == own::TitleSource::ReturnFlag) {
-                                via = own::TitleVia::CallRide;
-                            }
+                            // A tail call's title rides out whether the
+                            // callee's answer is the TLS bit or (7.2.3) a
+                            // constant — the audit files both as the ride.
+                            via = own::TitleVia::CallRide;
                         }
                     }
                     break;

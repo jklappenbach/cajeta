@@ -180,8 +180,14 @@ TEST(TitleClassifierTests, producingShapesAreOwnedOrRuntime) {
     // `#=` wraps the call in a move; the move forwards the call's answer,
     // which is the return flag even for a `#R` callee (it may `return #=`).
     {
+        // 7.2.3: `A.fresh` is `#Cell` and its only return is `heap Cell(v)`
+        // — a kind-decidable title, so the callee is statically Owned and
+        // the `#=` wrapper carries the constant (no TLS read). A `#R`
+        // callee that may ride a mode out (`return #= x`, a formal, a tail
+        // call) stays Runtime/ReturnFlag — see the plain-call row below and
+        // CallArgOwnershipTests.modeCarryingOwnedCalleeIntoPlainFormal.
         auto* r = recordAt(lineOf(src, "ROW owned-call"));
-        EXPECT_ROW(r, Move, Runtime, ReturnFlag);
+        EXPECT_ROW(r, Move, Owned, None);
         EXPECT_TRUE(r->flags & TitleShape::kOwnedDecl);
     }
     EXPECT_ROW(recordAt(lineOf(src, "ROW plain-call")), CallResult, Runtime, ReturnFlag);
