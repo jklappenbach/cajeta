@@ -523,7 +523,20 @@ namespace cajeta::ownership {
                     if (in.has(TitleShape::kStack)) {
                         s.answer = TitleAnswer::StackBound;      // the frame's body, no title
                     } else if (in.has(TitleShape::kHasEntry)) {
-                        s.answer = TitleAnswer::Runtime; s.source = TitleSource::DropEntry;
+                        // 6.2.2 — a STATIC owner's title is the constant 1: the
+                        // entry was armed by the push, not from a callee's flag
+                        // or a word bit (kRuntimeOwner), and the scope still
+                        // says it owns (kStaticTitle: no earlier move — a move
+                        // in either arm of an `if` stays recorded after the
+                        // join, a re-assignment restores — and no call-borrow
+                        // origin). A second `#x` of a transferred name is
+                        // rejected statically, so this is the first move in
+                        // flow. Anything else reads the entry's active byte.
+                        if (in.has(TitleShape::kStaticTitle) && !in.has(TitleShape::kRuntimeOwner)) {
+                            s.answer = TitleAnswer::Owned;
+                        } else {
+                            s.answer = TitleAnswer::Runtime; s.source = TitleSource::DropEntry;
+                        }
                     } else if (in.has(TitleShape::kIsParam)) {
                         if (in.has(TitleShape::kTransferredParam)) {
                             s.answer = TitleAnswer::Owned;           // `#`-formal: the frame's title

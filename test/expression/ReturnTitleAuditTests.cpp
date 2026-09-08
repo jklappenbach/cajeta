@@ -210,7 +210,10 @@ TEST(ReturnTitleAuditTests, moveReturnUnderPlainTypeIsEnumerated) {
     auto recs = auditCompile(src);
     const ReturnTitleRecord* r = find(recs, "test.D", "viaMove");
     ASSERT_NE(r, nullptr) << "`return #x` under a plain return was not enumerated";
-    EXPECT_EQ(r->carry, TitleCarry::RuntimeFlag);
+    // ownership-title-classifier 6.2.2: `#m` of a heap-bound local is the
+    // STATIC title (a constant 1, no entry read) — the scope proves the
+    // first move in flow. A runtime owner's move still reads its entry.
+    EXPECT_EQ(r->carry, TitleCarry::StaticTitle);
     EXPECT_EQ(r->via, TitleVia::Move);
 }
 
