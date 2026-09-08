@@ -8,7 +8,7 @@ import { splitChapters } from '../lib/chapters.mjs';
 import { fileChapters, sectionNav } from '../../scripts/lib/extract.mjs';
 import RefIndex from '../components/RefIndex.astro';
 
-export const REF_SECTIONS = ['specification', 'stdlib', 'benchmarks'];
+export const REF_SECTIONS = ['stdlib', 'benchmarks'];
 
 export async function getStaticPaths() {
   const entries = [...(await getCollection('docs')), ...(await getCollection('bench'))];

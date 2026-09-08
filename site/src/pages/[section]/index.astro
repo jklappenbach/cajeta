@@ -12,7 +12,7 @@ import RefIndex from '../../components/RefIndex.astro';
 import manifest from '../../data/manifest.json';
 import { fileChapters, sectionNav } from '../../../scripts/lib/extract.mjs';
 
-const REF_SECTIONS = ['specification', 'stdlib', 'benchmarks'];
+const REF_SECTIONS = ['stdlib', 'benchmarks'];
 
 export async function getStaticPaths() {
   return manifest.sections.map((s) => ({

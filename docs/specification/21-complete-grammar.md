@@ -1,0 +1,1344 @@
+# 21 — Complete Grammar
+
+The complete grammar of Cajeta, rendered from the ANTLR source of truth — `antlr4/CajetaLexer.g4` and `antlr4/CajetaParser.g4` — for compiler release **0.27.0**. The notation is Grammar §2.1. When this rendering and the grammar source disagree, the source governs; the rendering is regenerated with each release.
+
+Reserved words with no grammar role, and words reserved for future module syntax, are listed in Grammar §2.5.
+
+## 21.1 Production Index
+
+The chapters that define each construct's semantics:
+
+| Production family | Chapter |
+|---|---|
+| Lexical rules (keywords, literals, operators, comments) | Grammar & Lexical Structure §2 |
+| `classDeclaration`, `classBody`, constructors, destructors, `operatorOverloadDeclaration` | Classes §8 |
+| `interfaceDeclaration` | Interfaces §9 |
+| `annotationTypeDeclaration`, annotation application | Annotations & Aspects §10 |
+| `typeParameters`, wildcards | Templates & Wildcards §11 |
+| `viewDeclaration`, array types | Arrays, Views & Slices §12 |
+| Statements, `switch`, patterns, labels, `try` | Statements & Patterns §13 |
+| `expression`, lambdas, method references, `instanceof` | Expressions §14 |
+| `SHARP_ASSIGN` / `REFERENCE` semantics | Ownership §5 |
+| `async` / `await` / `spawn` / `scope` / `detach` | Concurrency §16 |
+| Script-unit shape | Script Units §18 |
+
+## 21.2 Lexical Grammar
+
+```text
+lexer grammar CajetaLexer;
+
+// Keywords
+
+ABSTRACT:           'abstract';
+ANNOTATION:         'annotation';
+ASSERT:             'assert';
+BOOLEAN:            'boolean';
+BREAK:              'break';
+CASE:               'case';
+CATCH:              'catch';
+CLASS:              'class';
+CONST:              'const';
+CONTINUE:           'continue';
+DEFAULT:            'default';
+DO:                 'do';
+ELSE:               'else';
+ENUM:               'enum';
+EXTENDS:            'extends';
+FINAL:              'final';
+CHAR:               'char';
+INT8:               'int8';
+UINT8:              'uint8';
+INT16:              'int16';
+UINT16:             'uint16';
+INT32:              'int32';
+UINT32:             'uint32';
+INT64:              'int64';
+UINT64:             'uint64';
+INT128:             'int128';
+UINT128:            'uint128';
+FINALLY:            'finally';
+FLOAT4E2M1:         'float4e2m1';
+FLOAT6E2M3:         'float6e2m3';
+FLOAT6E3M2:         'float6e3m2';
+FLOAT8E4M3:         'float8e4m3';
+FLOAT8E5M2:         'float8e5m2';
+FLOAT8E4M3FNUZ:     'float8e4m3fnuz';
+FLOAT8E5M2FNUZ:     'float8e5m2fnuz';
+FLOAT16:            'float16';
+FLOAT32:            'float32';
+FLOAT64:            'float64';
+FLOAT128:           'float128';
+FOR:                'for';
+IF:                 'if';
+GOTO:               'goto';
+HEAP:               'heap';
+IMPLEMENTS:         'implements';
+IMPORT:             'import';
+INSTANCEOF:         'instanceof';
+INTERFACE:          'interface';
+NATIVE:             'native';
+OPERATOR:           'operator';
+PACKAGE:            'package';
+PRIVATE:            'private';
+PROTECTED:          'protected';
+PUBLIC:             'public';
+RETURN:             'return';
+SHARED:             'shared';
+STACK:              'stack';
+STATIC:             'static';
+STRICTFP:           'strictfp';
+STRUCTURE:          'structure';
+SUPER:              'super';
+SWITCH:             'switch';
+THIS:               'this';
+THROW:              'throw';
+THROWS:             'throws';
+TRANSIENT:          'transient';
+TRY:                'try';
+VIEW:               'view';
+VOID:               'void';
+VOLATILE:           'volatile';
+WHILE:              'while';
+
+// Module related keywords
+MODULE:             'pModule';
+OPEN:               'open';
+REQUIRES:           'requires';
+EXPORTS:            'exports';
+OPENS:              'opens';
+TO:                 'to';
+USES:               'uses';
+PROVIDES:           'provides';
+WITH:               'with';
+TRANSITIVE:         'transitive';
+
+// Local Variable Type Inference
+VAR:                'var'; // reserved type canonical
+
+// Switch Expressions
+YIELD:              'yield';
+
+// Records
+RECORD:             'record';
+// Per-field mutation opt-in on records (records-spec §3.4). Soft keyword:
+// the parser's identifier rule also accepts it, so existing `mut` names parse.
+MUT:                'mut';
+
+// Sealed Classes
+SEALED:             'sealed';
+PERMITS:            'permits';
+NON_SEALED:         'non-sealed';
+
+// Structured concurrency (ThreadModel.md). `async` is a method modifier;
+// `scope { ... }` is a statement; `await`/`spawn`/`detach` are expression
+// prefixes that consume a method call.
+ASYNC:              'async';
+AWAIT:              'await';
+SPAWN:              'spawn';
+SCOPE:              'scope';
+DETACH:             'detach';
+
+// Literals
+
+DECIMAL_LITERAL:    ('0' | [1-9] (Digits? | '_'+ Digits)) [lL]?;
+HEX_LITERAL:        '0' [xX] [0-9a-fA-F] ([0-9a-fA-F_]* [0-9a-fA-F])? [lL]?;
+OCT_LITERAL:        '0' '_'* [0-7] ([0-7_]* [0-7])? [lL]?;
+BINARY_LITERAL:     '0' [bB] [01] ([01_]* [01])? [lL]?;
+
+FLOAT_LITERAL:      (Digits '.' Digits? | '.' Digits) ExponentPart? [fFdD]?
+             |       Digits (ExponentPart [fFdD]? | [fFdD])
+             ;
+
+HEX_FLOAT_LITERAL:  '0' [xX] (HexDigits '.'? | HexDigits? '.' HexDigits) [pP] [+-]? Digits [fFdD]?;
+
+BOOL_LITERAL:       'true'
+            |       'false'
+            ;
+
+CHAR_LITERAL:       '\'' (~['\\\r\n] | EscapeSequence) '\'';
+
+STRING_LITERAL:     '"' (~["\\\r\n] | EscapeSequence)* '"';
+
+TEXT_BLOCK:         '"""' [ \t]* [\r\n] (. | EscapeSequence)*? '"""';
+
+NULL_LITERAL:       'null';
+
+// Separators
+
+LPAREN:             '(';
+RPAREN:             ')';
+LBRACE:             '{';
+RBRACE:             '}';
+LBRACK:             '[';
+RBRACK:             ']';
+SEMI:               ';';
+COMMA:              ',';
+DOT:                '.';
+// title-stores §2 — fused title-assign. Declared BEFORE REFERENCE so the
+// lexer longest-matches '#=' as one token instead of '#' '='.
+SHARP_ASSIGN:       '#=';
+REFERENCE:          '#';
+
+// Operators
+
+ASSIGN:             '=';
+GT:                 '>';
+LT:                 '<';
+BANG:               '!';
+TILDE:              '~';
+QUESTION:           '?';
+COLON:              ':';
+EQUAL:              '==';
+LE:                 '<=';
+GE:                 '>=';
+NOTEQUAL:           '!=';
+AND:                '&&';
+OR:                 '||';
+INC:                '++';
+DEC:                '--';
+ADD:                '+';
+SUB:                '-';
+MUL:                '*';
+DIV:                '/';
+BITAND:             '&';
+BITOR:              '|';
+CARET:              '^';
+MOD:                '%';
+
+ADD_ASSIGN:         '+=';
+SUB_ASSIGN:         '-=';
+MUL_ASSIGN:         '*=';
+DIV_ASSIGN:         '/=';
+AND_ASSIGN:         '&=';
+OR_ASSIGN:          '|=';
+XOR_ASSIGN:         '^=';
+MOD_ASSIGN:         '%=';
+LSHIFT_ASSIGN:      '<<=';
+RSHIFT_ASSIGN:      '>>=';
+URSHIFT_ASSIGN:     '>>>=';
+
+// Cajeta 8 tokens
+
+ARROW:              '->';
+COLONCOLON:         '::';
+
+// Additional symbols not defined in the lexical specification
+
+AT:                 '@';
+ELLIPSIS:           '...';
+
+// Whitespace and comments
+
+WS:                 [ \t\r\n\u000C]+ -> channel(HIDDEN);
+// Block comments nest: a `/* ... */` inside a `/** ... */` doc comment (e.g. a
+// fenced cajeta example that shows an empty body `{ /* ... */ }`) must not
+// terminate the outer comment early. The recursive `COMMENT` reference is the
+// standard ANTLR idiom for balanced nested block comments.
+COMMENT:            '/*' (COMMENT | .)*? '*/'    -> channel(HIDDEN);
+LINE_COMMENT:       '//' ~[\r\n]*    -> channel(HIDDEN);
+
+// Identifiers
+
+IDENTIFIER:         Letter LetterOrDigit*;
+
+// Fragment rules
+
+fragment ExponentPart
+    : [eE] [+-]? Digits
+    ;
+
+fragment EscapeSequence
+    : '\\' [btnfr"'\\]
+    | '\\' ([0-3]? [0-7])? [0-7]
+    | '\\' 'u'+ HexDigit HexDigit HexDigit HexDigit
+    ;
+
+fragment HexDigits
+    : HexDigit ((HexDigit | '_')* HexDigit)?
+    ;
+
+fragment HexDigit
+    : [0-9a-fA-F]
+    ;
+
+fragment Digits
+    : [0-9] ([0-9_]* [0-9])?
+    ;
+
+fragment LetterOrDigit
+    : Letter
+    | [0-9]
+    ;
+
+fragment Letter
+    : [a-zA-Z$_] // these are the "code letters" below 0x7F
+    | ~[\u0000-\u007F\uD800-\uDBFF] // covers all characters above 0x7F which are not a surrogate
+    | [\uD800-\uDBFF] [\uDC00-\uDFFF] // covers UTF-16 surrogate pairs encodings for U+10000 to U+10FFFF
+    ;
+```
+
+## 21.3 Syntactic Grammar
+
+```text
+parser grammar CajetaParser;
+
+options { tokenVocab=CajetaLexer; }
+
+// Two unit shapes (script-units spec §2). The ordinary alternative is listed
+// first and unchanged in shape, so existing sources parse to the same tree;
+// the EOF anchors force full consumption (previously trailing input after the
+// last typeDeclaration was silently ignored). A unit containing at least one
+// loose statement or top-level method takes the script alternative and is a
+// SCRIPT UNIT — an implicit class + synthetic entry, synthesized in the
+// front end, never spelled in source.
+compilationUnit
+    : packageDeclaration? importDeclaration* typeDeclaration* EOF
+    | packageDeclaration? importDeclaration* scriptMember+ EOF
+    ;
+
+// typeDeclaration first so a top-level class in a script registers as a
+// normal type (spec §3.3) rather than a localTypeDeclaration; a method is
+// distinguished from a local variable declaration by its formalParameters.
+scriptMember
+    : typeDeclaration
+    | modifier* methodDeclaration
+    | blockStatement
+    ;
+
+packageDeclaration
+    : annotation* PACKAGE qualifiedName ';'
+    ;
+
+importDeclaration
+    : IMPORT STATIC? qualifiedName ('.' '*')? ';'
+    ;
+
+typeDeclaration
+    : classOrInterfaceModifier*
+      (classDeclaration | recordDeclaration | viewDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
+    | ';'
+    ;
+
+modifier
+    : classOrInterfaceModifier
+    | NATIVE
+    | TRANSIENT
+    | VOLATILE
+    | MUT  // record per-field mutation opt-in (records-spec §3.4)
+    ;
+
+classOrInterfaceModifier
+    : annotation
+    | PUBLIC
+    | PROTECTED
+    | PRIVATE
+    | STATIC
+    | ABSTRACT
+    | CONST
+    | FINAL    // FINAL for class only -- does not apply to interfaces
+    | STRICTFP
+    | SEALED // Java17
+    | NON_SEALED // Java17
+    | ASYNC // ThreadModel.md — async fn returns Task<T>
+    ;
+
+variableModifier
+    : FINAL
+    | annotation
+    ;
+
+classDeclaration
+    : CLASS identifier typeParameters?
+      (EXTENDS typeList)?
+      (IMPLEMENTS typeList)?
+      (PERMITS typeList)? // Java17
+      classBody
+    ;
+
+// Zero-copy memory overlay onto a byte buffer (Views.md). Fields restricted to
+// types directly encodable in bytes (primitives, fixed/variable arrays, nested
+// views). An endianness annotation (@BigEndian/@LittleEndian/@HostEndian) is
+// optional at the declaration; CajetaView defaults to host endianness when
+// absent. Body reuses classBody.
+viewDeclaration
+    : VIEW identifier typeParameters?
+      classBody
+    ;
+
+// Value-type record (docs/specification/nucleo/records-spec.md): lowers to a
+// @ValueType final class with no vtable. EXTENDS = static non-virtual
+// inheritance (single base, Unit 4). IMPLEMENTS parses only so the visitor
+// can reject it with a proper diagnostic — records never carry a
+// vtable/itable. Body reuses classBody.
+recordDeclaration
+    : RECORD identifier typeParameters?
+      (EXTENDS typeList)?
+      (IMPLEMENTS typeList)?
+      classBody
+    ;
+
+typeParameters
+    : '<' typeParameter (',' typeParameter)* '>'
+    ;
+
+// As with the type-argument `#` below, this prefix carries no meaning: a must-own
+// edge is spelled on the FORMAL (`f(#K x)`), which with `#T` returns is where `#`
+// legitimately appears. Parsed only so the compiler can reject it with
+// CAJETA_ERROR_TYPE_TRANSFER_RETIRED and name that fix.
+typeParameter
+    : annotation* REFERENCE? identifier (EXTENDS annotation* typeBound)? (ASSIGN typeType)?
+    | primitiveType identifier
+    ;
+
+typeBound
+    : typeType ('&' typeType)*
+    ;
+
+enumDeclaration
+    : ENUM identifier (IMPLEMENTS typeList)? '{' enumConstants? ','? enumBodyDeclarations? '}'
+    ;
+
+enumConstants
+    : enumConstant (',' enumConstant)*
+    ;
+
+enumConstant
+    : annotation* identifier arguments? classBody?
+    ;
+
+enumBodyDeclarations
+    : ';' classBodyDeclaration*
+    ;
+
+interfaceDeclaration
+    : INTERFACE identifier typeParameters? (EXTENDS typeList)? interfaceBody
+    ;
+
+classBody
+    : '{' classBodyDeclaration* '}'
+    ;
+
+interfaceBody
+    : '{' interfaceBodyDeclaration* '}'
+    ;
+
+classBodyDeclaration
+    : ';'
+    | STATIC? block
+    | modifier* memberDeclaration
+    ;
+
+// Method-level templates: instance + static methods may introduce
+// their own typeParameters via `<R>` immediately before the return
+// type (see methodDeclaration). Such methods are inherently NON-
+// virtual — the templating itself excludes them from the vtable
+// (the vtable would need one slot per (method, type-arg-list) and
+// the set of arg lists isn't knowable at vtable-build time, which
+// contradicts the monomorphization-per-instantiation design; C++
+// forbids the construct for the same reason).
+//
+// Calls to method-templated methods resolve statically on the
+// receiver's static type and emit direct calls to the monomorphized
+// symbol. Subclass declarations with the same name as a method-
+// templated parent method shadow rather than override (warning
+// emitted; same model Java applies to `static` shadowing). See
+// docs/specification/lang/MethodLevelTemplate.md for the dispatch model
+// and constraints.
+//
+// Constructor and operator declarations remain non-templated at the
+// method level (the construct/operator entry shapes don't compose
+// with per-call monomorphization).
+memberDeclaration
+    : methodDeclaration
+    | operatorOverloadDeclaration
+    | fieldDeclaration
+    | constructorDeclaration
+    | destructorDeclaration
+    | interfaceDeclaration
+    | annotationTypeDeclaration
+    | classDeclaration
+    | enumDeclaration
+    ;
+
+// Return type is `typeTypeOrVoid` (= `REFERENCE? typeType | VOID`),
+// so each alternative can declare either a concrete return (`#T` for
+// ownership transfer or bare `T` for value/borrow) or `void`.
+// `void` is the natural return for mutating-unary (`++`, `--`),
+// compound-assignment (`+=` etc.), and indexed-write (`[]=`) — the
+// expression value isn't the operator's "result," the receiver is.
+// Per-operator staticness + arity + return-type constraints are
+// enforced semantically in CajetaLlvmVisitor's
+// visitClassBodyDeclaration post-pass (see
+// docs/OperatorOverloading.md §10 — Option B).
+operatorOverloadDeclaration
+    : typeTypeOrVoid OPERATOR ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR GT formalParameters methodBody
+    | typeTypeOrVoid OPERATOR LT formalParameters methodBody
+    | typeTypeOrVoid OPERATOR EQUAL formalParameters methodBody
+    | typeTypeOrVoid OPERATOR LE formalParameters methodBody
+    | typeTypeOrVoid OPERATOR GE formalParameters methodBody
+    | typeTypeOrVoid OPERATOR NOTEQUAL formalParameters methodBody
+    | typeTypeOrVoid OPERATOR AND formalParameters methodBody
+    | typeTypeOrVoid OPERATOR OR formalParameters methodBody
+    | typeTypeOrVoid OPERATOR INC formalParameters methodBody
+    | typeTypeOrVoid OPERATOR DEC formalParameters methodBody
+    | typeTypeOrVoid OPERATOR ADD formalParameters methodBody
+    | typeTypeOrVoid OPERATOR SUB formalParameters methodBody
+    | typeTypeOrVoid OPERATOR MUL formalParameters methodBody
+    | typeTypeOrVoid OPERATOR DIV formalParameters methodBody
+    | typeTypeOrVoid OPERATOR BITAND formalParameters methodBody
+    | typeTypeOrVoid OPERATOR BITOR formalParameters methodBody
+    | typeTypeOrVoid OPERATOR CARET formalParameters methodBody
+    | typeTypeOrVoid OPERATOR MOD formalParameters methodBody
+    | typeTypeOrVoid OPERATOR ADD_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR SUB_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR MUL_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR DIV_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR AND_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR OR_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR XOR_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR MOD_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR LSHIFT_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR RSHIFT_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR URSHIFT_ASSIGN formalParameters methodBody
+    // Indexing operators (read + write) collapsed into a single
+    // alternative with optional ASSIGN — ANTLR4 LL(*) prediction
+    // gets confused by two separate alternatives both starting with
+    // `OPERATOR LBRACK RBRACK` and prints "mismatched input
+    // 'operator'" diagnostics even though it eventually recovers.
+    // The visitor branches on ctx->ASSIGN() to pick the method name
+    // (`operator[]` vs `operator[]=`).
+    //
+    // Return type is `typeTypeOrVoid` (not bare `typeType`) so the
+    // setter form can declare `void` — `void operator[]= (...)`.
+    // The read form's return type can't be void in practice
+    // (subscript-read producing nothing is nonsensical) but the
+    // grammar permits it; the type-check enforces the semantic
+    // shape elsewhere.
+    | typeTypeOrVoid OPERATOR LBRACK RBRACK ASSIGN? formalParameters methodBody
+    // title-tracking §6.3 — `operator#[]`, the title-extracting index.
+    // Distinct canonical name because dispatch is mode-erased: a `#`-only
+    // overload of operator[] would collide (TRANSFER_MODE_OVERLOAD). The
+    // REFERENCE here is a direct child (the one between OPERATOR and
+    // LBRACK); a `#V` return's REFERENCE lives inside typeTypeOrVoid.
+    | typeTypeOrVoid OPERATOR REFERENCE LBRACK RBRACK formalParameters methodBody
+    ;
+
+/* We use rule this even for void methods which cannot have [] after parameters.
+   This simplifies grammar and we can consider void to be a type, which
+   renders the [] matching as a llvmContext-sensitive issue or a semantic check
+   for invalid return type after parsing.
+
+   Optional `typeParameters` after the identifier introduces
+   method-level type parameters (docs/specification/lang/MethodLevelTemplate.md).
+   When present, the method is non-virtual and monomorphized per call
+   site over (receiver-class args x method-level args). The same
+   typeParameters nonterminal used for classDeclaration is reused
+   here. Position is post-identifier rather than pre-return-type
+   (Java-style) — mirrors call-site syntax `expr.method<T>(args)` and
+   matches C++ template-on-method convention.
+ */
+methodDeclaration
+    : typeTypeOrVoid identifier typeParameters? formalParameters ('[' ']')*
+      (THROWS qualifiedNameList)?
+      methodBody
+    ;
+
+methodBody
+    : block
+    | ';'
+    ;
+
+// Return type marker (spec §2.8's three stances). REFERENCE ('#') declares the
+// function transfers a title to its caller; CARET ('^') declares the result is
+// a VIEW interior to the receiver, which the caller must not free (§4.7); a
+// bare type carries whatever mode the return expression holds. See
+// MemoryModel.md § Borrow / transfer rules and § Function signatures.
+//
+// CARET is infix xor everywhere else. As a PREFIX it is unreachable in
+// expression position, so reading it here costs the grammar no ambiguity —
+// which is why plan 8.2.1 chose it over `&` (the intersection-type separator)
+// and `~` (the destructor sigil), both of which misread in type position.
+typeTypeOrVoid
+    : (REFERENCE | CARET)? typeType
+    | VOID
+    ;
+
+constructorDeclaration
+    : identifier formalParameters (THROWS qualifiedNameList)? constructorBody=block
+    ;
+
+// Destructor — C++-style `~ClassName()`. Mirrors the constructor's
+// shape (the identifier must match the enclosing class name; the
+// compiler validates that during the visit). The body becomes the
+// class's drop method internally — the synthesized __cajeta_<class>_drop
+// wrapper invokes it before freeing the instance, and the destructor
+// itself isn't callable from user code. See docs/MemoryModel.md
+// § Destructors.
+destructorDeclaration
+    : TILDE identifier '(' ')' destructorBody=block
+    ;
+
+fieldDeclaration
+    : typeType variableDeclarators ';'
+    ;
+
+interfaceBodyDeclaration
+    : modifier* interfaceMemberDeclaration
+    | ';'
+    ;
+
+// See the matching note above `memberDeclaration` — interface methods
+// can't carry their own typeParameters either, since the concrete class
+// implementing the interface has to populate a vtable slot per method
+// and there's no place for per-call template instantiations to land.
+interfaceMemberDeclaration
+    : constDeclaration
+    | interfaceMethodDeclaration
+    | interfaceDeclaration
+    | annotationTypeDeclaration
+    | classDeclaration
+    | enumDeclaration
+    ;
+
+constDeclaration
+    : typeType constantDeclarator (',' constantDeclarator)* ';'
+    ;
+
+constantDeclarator
+    : identifier ('[' ']')* '=' variableInitializer
+    | identifier ('[' expression ']')* '=' variableInitializer
+    ;
+
+// Early versions of Java allows brackets after the curMethod canonical, eg.
+// public int[] return2DArray() [] { ... }
+// is the same as
+// public int[][] return2DArray() { ... }
+interfaceMethodDeclaration
+    : interfaceMethodModifier* interfaceCommonBodyDeclaration
+    ;
+
+// Java8
+interfaceMethodModifier
+    : annotation
+    | PUBLIC
+    | ABSTRACT
+    | DEFAULT
+    | STATIC
+    | STRICTFP
+    ;
+
+// Accepts an optional `typeParameters` prefix so the visitor can detect
+// method-level generics on interface methods and reject them cleanly
+// with CAJETA_ERROR_INTERFACE_METHOD_GENERIC (S9.4). Without the rule
+// extension, the syntax would parse as a "no viable alternative" error
+// at the `<` token and the rest of the file would partial-recover —
+// giving the user an unhelpful diagnostic. v1 doesn't support method-
+// level generics on interface methods (or on concrete struct/class
+// methods either, but those don't go through this rule).
+interfaceCommonBodyDeclaration
+    : annotation* typeTypeOrVoid identifier typeParameters? formalParameters ('[' ']')* (THROWS qualifiedNameList)? methodBody
+    ;
+
+variableDeclarators
+    : variableDeclarator (',' variableDeclarator)*
+    ;
+
+variableDeclarator
+    : variableDeclaratorId (('=' | '#=') variableInitializer)?
+    ;
+
+variableDeclaratorId
+    : identifier ('[' ']')*
+    | identifier ('[' expression ']')*
+    ;
+
+variableInitializer
+    : arrayInitializer
+    | expression
+    ;
+
+arrayInitializer
+    : '{' (variableInitializer (',' variableInitializer)* (',')? )? '}'
+    ;
+
+classOrInterfaceType
+    : identifier typeArguments? ('.' identifier typeArguments?)*
+    ;
+
+// The optional REFERENCE ('#') prefix is NOT a feature — ownership is per-call in
+// Cajeta, spelled at the call or store site (`m.put(#k, #v)`, `xs.add(#x)`), never
+// in a type. It is parsed here for one reason: so the compiler can reject it with
+// CAJETA_ERROR_TYPE_TRANSFER_RETIRED and point at the fix, instead of failing with
+// "no viable alternative". Do not give it meaning — a type that declares ownership
+// still permits transfer OUT of the instance, which is why it does not exist.
+// The `#` is never infix, so this stays unambiguous.
+typeArgument
+    : REFERENCE? typeType
+    | primitiveType
+    | integerLiteral
+    | annotation* '?' ((EXTENDS | SUPER) typeType)?
+    ;
+
+qualifiedNameList
+    : qualifiedName (',' qualifiedName)*
+    ;
+
+formalParameters
+    : '(' ( receiverParameter?
+          | receiverParameter (',' formalParameterList)?
+          | formalParameterList?
+          ) ')'
+    ;
+
+receiverParameter
+    : typeType (identifier '.')* THIS
+    ;
+
+formalParameterList
+    : formalParameter (',' formalParameter)* (',' lastFormalParameter)?
+    | lastFormalParameter
+    ;
+
+// Optional REFERENCE ('#') prefix on the parameter type declares that this
+// parameter takes ownership of its argument. See MemoryModel.md § Borrow /
+// transfer rules.
+formalParameter
+    : variableModifier* REFERENCE? typeType variableDeclaratorId (ASSIGN expression)?
+    ;
+
+lastFormalParameter
+    : variableModifier* REFERENCE? typeType annotation* '...' variableDeclaratorId
+    ;
+
+// local variable type inference
+lambdaLVTIList
+    : lambdaLVTIParameter (',' lambdaLVTIParameter)*
+    ;
+
+lambdaLVTIParameter
+    : variableModifier* VAR identifier
+    ;
+
+qualifiedName
+    : identifier ('.' identifier)*
+    ;
+
+literal
+    : integerLiteral
+    | floatLiteral
+    | CHAR_LITERAL
+    | STRING_LITERAL
+    | BOOL_LITERAL
+    | NULL_LITERAL
+    | TEXT_BLOCK // Java17
+    ;
+
+integerLiteral
+    : DECIMAL_LITERAL
+    | HEX_LITERAL
+    | OCT_LITERAL
+    | BINARY_LITERAL
+    ;
+
+floatLiteral
+    : FLOAT_LITERAL
+    | HEX_FLOAT_LITERAL
+    ;
+
+// ANNOTATIONS
+altAnnotationQualifiedName
+    : (identifier DOT)* '@' identifier
+    ;
+
+annotation
+    : ('@' qualifiedName | altAnnotationQualifiedName) ('(' ( elementValuePairs | elementValue )? ')')?
+    ;
+
+elementValuePairs
+    : elementValuePair (',' elementValuePair)*
+    ;
+
+elementValuePair
+    : identifier ('=' | ':') elementValue
+    ;
+
+// The array form is listed FIRST, ahead of `expression`. collection-literals 2
+// gave `aggregateInitializer` a prefixless `'{' parameterList '}'` alternative,
+// and `parameterEntry`'s label is optional — so `{"a", "b"}` also matches an
+// aggregate expression. With `expression` first, every annotation array argument
+// (`@SuppressLint({"a","b"})`, `@JsonAlias({...})`, `@Profile({...})`) parsed as
+// an aggregate and silently lost its elements — no diagnostic, just an empty
+// list. Ordering the specific form ahead of the general one restores it.
+elementValue
+    // The array initializer must be tried BEFORE expression: since the
+    // prefixless aggregate literal (`'{' parameterList '}'`, collection-
+    // literals 2) an annotation's `{"a", "b"}` is ALSO a valid expression,
+    // and the expression alt silently swallowed every annotation list arg
+    // (captured as raw text -> String kind, not *List).
+    : elementValueArrayInitializer
+    | annotation
+    | expression
+    ;
+
+elementValueArrayInitializer
+    : '{' (elementValue (',' elementValue)*)? (',')? '}'
+    ;
+
+annotationTypeDeclaration
+    : ANNOTATION identifier annotationTypeBody
+    ;
+
+annotationTypeBody
+    : '{' (annotationTypeElementDeclaration)* '}'
+    ;
+
+annotationTypeElementDeclaration
+    : modifier* annotationTypeElementRest
+    | ';' // this is not allowed by the grammar, but apparently allowed by the actual compiler
+    ;
+
+annotationTypeElementRest
+    : typeType annotationMethodOrConstantRest ';'
+    | classDeclaration ';'?
+    | interfaceDeclaration ';'?
+    | enumDeclaration ';'?
+    | annotationTypeDeclaration ';'?
+    ;
+
+annotationMethodOrConstantRest
+    : annotationMethodRest
+    | annotationConstantRest
+    ;
+
+annotationMethodRest
+    : identifier '(' ')' defaultValue?
+    ;
+
+annotationConstantRest
+    : variableDeclarators
+    ;
+
+defaultValue
+    : DEFAULT elementValue
+    ;
+
+requiresModifier
+	: TRANSITIVE
+	| STATIC
+	;
+
+// STATEMENTS / BLOCKS
+
+block
+    : '{' blockStatement* '}'
+    ;
+
+blockStatement
+    : localVariableDeclaration ';'
+    | statement
+    | localTypeDeclaration
+    ;
+
+localVariableDeclaration
+    // Optional REFERENCE ('#') prefix mirrors parameter/return positions: an
+    // owned-transfer binding (`#String t = s.trim();`). Documented syntax that
+    // previously only parsed via ANTLR error recovery (single-token deletion) —
+    // the strict syntax gate made it a hard error, so it is now grammatical.
+    : variableModifier* (REFERENCE? typeType variableDeclarators | VAR identifier '=' expression)
+    ;
+
+identifier
+    : IDENTIFIER
+    | VAR
+    // Module-system soft keywords (docs/specification/Modules.md
+    // — pending). These tokens are reserved by the lexer for the
+    // future module declaration syntax but the parser never uses
+    // them in any rule today. Until the module surface lands,
+    // they're freely usable as ordinary identifiers (e.g.
+    // `File.open(...)`, `String s = "open"`). When module
+    // declarations gain grammar rules, they'll consume these
+    // tokens in their specific positions; the identifier rule
+    // keeps accepting them so user method names like `open` /
+    // `requires` / `provides` continue to parse.
+    | MODULE
+    | OPEN
+    | REQUIRES
+    | EXPORTS
+    | OPENS
+    | TO
+    | USES
+    | PROVIDES
+    | WITH
+    | TRANSITIVE
+    // `shared` is a contextual keyword: it has special meaning only in the
+    // token-led GPU placement form `SHARED (creator | aggregateInitializer)`
+    // (workgroup-shared memory inside an @Kernel body). Everywhere else it must
+    // remain a plain identifier so pre-existing code with a `shared`
+    // method/field/variable still parses — reserving it outright produced a
+    // parse error ("no viable alternative at input '... shared'") -> malformed
+    // tree -> bad any_cast at AST-build time. (Unlike its placement siblings
+    // HEAP/STACK, which are reserved, `shared` collides with real user code.)
+    | SHARED
+    // `mut` is likewise contextual: meaningful only as a record field
+    // modifier; everywhere else it stays a plain identifier.
+    | MUT
+    ;
+
+localTypeDeclaration
+    : classOrInterfaceModifier*
+      (classDeclaration | interfaceDeclaration)
+    | ';'
+    ;
+
+statement
+    : blockLabel=block
+    | IF parExpression statement (ELSE statement)?
+    | FOR '(' forControl ')' statement
+    | WHILE parExpression statement
+    | DO statement WHILE parExpression ';'
+    // No try-with-resources rule. Destructors fire deterministically
+    // at the closing `}` of the resource's declaring block, so
+    // `try (R r = …) { … }` is strictly redundant with
+    // `{ R r = …; … }`. See docs/MemoryModel.md § Destructors
+    // and docs/specification/io/file/Readme.md § Design tenets for
+    // the rationale.
+    | TRY block (catchClause+ finallyBlock? | finallyBlock)
+    | SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
+    // `return #= x` — the MODE-CARRYING return (argument-title-carry).
+    // `return x` lends, `return #x` forces ownership (and is a contract
+    // violation when the frame holds none); this third form releases
+    // WHATEVER title the frame holds, riding the runtime flag out to the
+    // caller. Needed because a collection slot may now hold either an
+    // owned value or a borrow, so remove-shaped returns (`Heap.pop`,
+    // `HashMap.remove`, `LinkedList.popHead`) cannot know statically.
+    // A separate alternative because the lexer longest-matches `#=` as
+    // SHARP_ASSIGN, so it can never reach the `REFERENCE expression` form.
+    | RETURN SHARP_ASSIGN expression ';'
+    | RETURN expression? ';'
+    | THROW expression ';'
+    | BREAK identifier? ';'
+    | CONTINUE identifier? ';'
+    | YIELD expression ';' // Java17
+    | SCOPE block  // ThreadModel.md — joins all child tasks before exiting
+    | SEMI
+    | statementExpression=expression ';'
+    | switchExpression ';'? // Java17
+    | identifierLabel=identifier ':' statement
+    ;
+
+catchClause
+    : CATCH '(' variableModifier* catchType identifier ')' block
+    ;
+
+catchType
+    : qualifiedName ('|' qualifiedName)*
+    ;
+
+finallyBlock
+    : FINALLY block
+    ;
+
+/** Matches cases then statements, both of which are mandatory.
+ *  To handle empty cases at the end, we add switchLabel* to statement.
+ */
+switchBlockStatementGroup
+    : switchLabel+ blockStatement+
+    ;
+
+switchLabel
+    : CASE (constantExpression=expression | enumConstantName=IDENTIFIER | typeType varName=identifier) ':'
+    | DEFAULT ':'
+    ;
+
+forControl
+    : enhancedForControl
+    | forInit? ';' expression? ';' forUpdate=expressionList?
+    ;
+
+forInit
+    : localVariableDeclaration
+    | expressionList
+    ;
+
+// Standard Java enhanced-for `for (T x : iterable)`. The optional `loopIterator ,`
+// prefix is a Cajeta extension that exposes the running index/iteration variable
+// alongside the element binding.
+enhancedForControl
+    : (loopIterator ',')? loopVariable
+    ;
+
+loopVariable
+    : variableModifier* (typeType | VAR) variableDeclaratorId ':' expression
+    ;
+
+loopIterator
+    : variableModifier* (typeType | VAR) variableDeclaratorId
+    ;
+
+// EXPRESSIONS
+
+parExpression
+    : '(' expression ')'
+    ;
+
+expressionList
+    : expression (',' expression)*
+    ;
+
+parameterLabel
+    : IDENTIFIER ':'
+    ;
+
+parameterEntry
+    : parameterLabel? REFERENCE? expression
+    ;
+
+parameterList
+    : parameterEntry (',' parameterEntry)*
+    ;
+
+// XPU launch dimensions and any list literal: `[e1, e2, ...]` (and `[]`).
+// Reachable from `primary`, so it only matches where a value is expected —
+// never colliding with the postfix index form `expression '[' expression ']'`,
+// which requires a preceding expression. See CajetaXPU.md §3.1.3 (`grid: [...]`).
+arrayLiteral
+    : '[' arrayLiteralEntries? ']'
+    ;
+
+// collection-literals §3 — the bracket list is either a sequence (`[1, 2, 3]`)
+// or a map (`[k1: v1, k2: v2]`, and the empty `[:]`). A single leading COLON is
+// the empty map; otherwise each entry is an expression optionally followed by
+// `: value`. The colon inside a ternary (`[cond ? a : b]`) is consumed by the
+// ternary expression, so that stays a one-element sequence (the visitor decides
+// map-vs-sequence per entry). The postfix slice `arr[a:b]` never reaches here —
+// it has a preceding expression (`expression '[' expression COLON expression ']'`).
+arrayLiteralEntries
+    : COLON                                             // empty map `[:]`
+    | arrayLiteralEntry (',' arrayLiteralEntry)* ','?
+    ;
+
+arrayLiteralEntry
+    : expression (COLON expression)?
+    ;
+
+// Method-level template call-site form: `identifier<TypeArgs>(args)`.
+// The optional `<typeList>` between the name and `(` carries explicit
+// type arguments for method-templated callees. Inference (no type
+// args) is the common case; explicit args are only required when
+// inference can't bind every type parameter (e.g. T appears only in
+// the return type). See docs/specification/lang/MethodLevelTemplate.md.
+//
+// This is the only call-site form: there is no Java-style
+// `Type.<TypeArgs>name(args)` alternative — that form was removed in
+// favor of one syntax that mirrors `Type<args>` at the type-use site.
+methodCall
+    // The optional type-arg list uses `typeArguments` (the same production as a
+    // type-use site `Foo<...>`), not `typeList`, so a method-level non-type
+    // (integer-constant) argument parses: `m<8>(args)` — `typeArgument` admits
+    // `integerLiteral` where `typeList`'s `typeType` does not. The visitor
+    // resolves an integerLiteral arg to a CajetaConstantType.
+    : identifier typeArguments? '(' parameterList? ')'
+    | THIS '(' parameterList? ')'
+    | SUPER '(' parameterList? ')'
+    ;
+
+expression
+    // methodCall is listed FIRST (ahead of `primary`) so a base call
+    // `foo(x)` matches the whole methodCall form before the general
+    // postfix-call suffix below can reinterpret it as primary(foo) applied
+    // to `(x)`. Without this ordering, adding `expression '(' parameterList?
+    // ')'` silently turns every ordinary call into a postfix call. A bare
+    // identifier (no `(`) cleanly falls through to `primary`; `a < b`
+    // comparisons still fall through because methodCall needs a trailing `(`.
+    : methodCall
+    | primary
+    | expression bop='.'
+      (
+         // methodCall MUST come before bare identifier — for inputs
+         // like `expr.name<TypeArg>(arg)`, both alternatives can
+         // produce a complete overall parse (identifier consumes just
+         // `name` and lets the outer expression rule absorb
+         // `<TypeArg>(arg)` as chained `<`/`>` comparison; methodCall
+         // consumes the whole call form). ANTLR's tie-break picks the
+         // first listed alternative, so listing identifier first
+         // ambiguates `<ClassName>(singleArg)` shapes into bogus
+         // comparison-chain ASTs and segfaults during codegen with a
+         // null operand. (Two-arg / zero-arg / primitive-type-arg
+         // forms work because the comma / empty parens / primitive
+         // keyword block the comparison alternative on independent
+         // grounds.) Trying methodCall first cleanly fails to match
+         // when no `(` follows and falls through to identifier — so
+         // the swap doesn't affect plain field-access syntax.
+         methodCall
+       | identifier
+       | THIS
+       | HEAP nonWildcardTypeArguments? innerCreator
+       | SUPER superSuffix
+      )
+    // Array/slice window (slice-spec §7.2): `arr[a:b]` yields Slice<T>.
+    // Listed before the plain index form so the longer bracketed shape wins.
+    | expression '[' expression COLON expression ']'
+    | expression '[' expression ']'
+    // XPU: postfix call applied to the result of an expression — the
+    // `(args)` that follows `kernel.launch(stream, grid:, block:)`. General
+    // by design: any expression yielding a callable can be invoked this way.
+    // Listed after the DOT/methodCall/index forms so established call shapes
+    // (`foo(x)`, `obj.foo(x)`) keep winning; this alternative only fires for a
+    // bare `(args)` trailing a non-identifier expression result. The
+    // classic cast-vs-call ambiguity on `(T)(x)` resolves to the earlier
+    // cast alternative below, which is the conventional choice.
+    | expression '(' parameterList? ')'
+    // Unified-class allocation prefixes (UnifiedClasses.md). `heap` and
+    // `stack` are mandatory at the allocation site — bare `MyClass(args)`
+    // is a compile error, and there is no `new` allocator (removed). Both
+    // forms wrap either a constructor call (via `creator`) or an aggregate-
+    // init expression. `heap` is the sole heap allocator; `stack` lowers to
+    // a stack alloca + ctor call.
+    | HEAP  (creator | aggregateInitializer | arrayLiteral)
+    | STACK (creator | aggregateInitializer | arrayLiteral)
+    // `shared` is a third placement (GPU workgroup-shared memory, NV addrspace
+    // 3). Device-only: legal only inside an @Kernel body, where the device
+    // lowerer (NvptxKernelLowering) turns `shared T[N]` into one per-block
+    // addrspace(3) global. The host codegen path rejects it. See CajetaXPU.md.
+    | SHARED (creator | aggregateInitializer | arrayLiteral)
+    | '(' annotation* typeType ('&' typeType)* ')' expression
+    | expression postfix=('++' | '--')
+    | prefix=('+'|'-'|'++'|'--') expression
+    | prefix=('~'|'!') expression
+    // Move/transfer operator: '#expr' transfers ownership of expr to the
+    // receiving site (assignment LHS, argument slot, return slot). See
+    // MemoryModel.md for full semantics.
+    | REFERENCE expression
+    // Structured concurrency (ThreadModel.md): await unwraps a Task<T> to
+    // T; spawn launches a Task<T> bound to the enclosing scope; detach
+    // launches one that outlives the current frame. Semantic checks
+    // (await only inside async, spawn only inside scope, detach requires
+    // # captures) live in the AST resolution pass.
+    | AWAIT expression
+    | SPAWN expression
+    | DETACH expression
+    | expression bop=('*'|'/'|'%') expression
+    | expression bop=('+'|'-') expression
+    | expression ('<' '<' | '>' '>' '>' | '>' '>') expression
+    | expression bop=('<=' | '>=' | '>' | '<') expression
+    | expression bop=INSTANCEOF (pattern | typeType)
+    | expression bop=('==' | '!=') expression
+    | expression bop='&' expression
+    | expression bop='^' expression
+    | expression bop='|' expression
+    | expression bop='&&' expression
+    | expression bop='||' expression
+    | <assoc=right> expression bop='?' expression ':' expression
+    | <assoc=right> expression
+      bop=('=' | '#=' | '+=' | '-=' | '*=' | '/=' | '&=' | '|=' | '^=' | '>>=' | '>>>=' | '<<=' | '%=')
+      expression
+    | lambdaExpression // Java8
+    | switchExpression // Java17
+
+    // Java 8 methodReference. A constructor reference is spelled `Type::heap`
+    // (it is a deferred, escaping factory returning an owned `#Type`, so the
+    // placement is necessarily `heap` — never `stack`/`shared`).
+    | expression '::' typeArguments? identifier
+    | typeType '::' (typeArguments? identifier | HEAP)
+    | classType '::' typeArguments? HEAP
+    ;
+
+// Java17
+pattern
+    : variableModifier* typeType annotation* identifier
+    ;
+
+// Java8
+lambdaExpression
+    : lambdaParameters '->' lambdaBody
+    ;
+
+// Java8
+lambdaParameters
+    : identifier
+    | '(' formalParameterList? ')'
+    | '(' identifier (',' identifier)* ')'
+    | '(' lambdaLVTIList? ')'
+    ;
+
+// Java8
+lambdaBody
+    : expression
+    | block
+    ;
+
+primary
+    : '(' expression ')'
+    // MultiClassing Phase 2 (docs/specification/lang/MultiClassing.md § P-2):
+    // parent-view selectors on THIS / SUPER use angle brackets,
+    // reusing template-instantiation syntax: `this<Base>.field`
+    // reaches the slot belonging to ancestor `Base`;
+    // `super<Base>.method()` direct-calls `Base`'s body bypassing the
+    // vtable. ANTLR commits to the selector alt only when it can
+    // match `<typeType>` followed by the trailing `.member`, so plain
+    // `<` comparisons against THIS / SUPER (which neither typecheck
+    // as numeric values anyway) continue to fall through to the bare
+    // alternatives. Listed BEFORE the bare THIS / SUPER alternatives
+    // so ANTLR takes the longer match when the next token is `<`.
+    | THIS '<' typeType '>'
+    | SUPER '<' typeType '>'
+    | THIS
+    | SUPER
+    | literal
+    | arrayLiteral
+    | aggregateInitializer
+    | identifier
+    | typeTypeOrVoid '.' CLASS
+    ;
+
+// S6.2 — struct aggregate initializer (Structs.md). Syntax mirrors Rust:
+// `Foo { field: expr, field: expr }`. Reuses parameterList (the same
+// `parameterLabel? expression` shape methodCall uses for keyword args)
+// so labeled bindings parse with no new lex tokens.
+//
+// Listed before `identifier` in the primary alternatives so ANTLR's
+// adaptive lookahead prefers the longer match — a bare `Foo` falls
+// back to the identifier alternative cleanly.
+aggregateInitializer
+    : identifier '{' parameterList? '}'
+    // collection-literals §4 — the prefixless, type-inferred form `{ x: 1,
+    // y: 2 }`: the aggregate type comes from context (declared / assigned /
+    // returned type, or an enclosing array's element type). A parameterList is
+    // required so a bare `{}` never shadows an empty block in the (unreached-
+    // by-primary) statement position.
+    | '{' parameterList '}'
+    ;
+
+// Java17
+switchExpression
+    : SWITCH parExpression '{' switchLabeledRule* '}'
+    ;
+
+// Java17
+switchLabeledRule
+    : CASE (expressionList | NULL_LITERAL | guardedPattern) (ARROW | COLON) switchRuleOutcome
+    | DEFAULT (ARROW | COLON) switchRuleOutcome
+    ;
+
+// Java17
+guardedPattern
+    : '(' guardedPattern ')'
+    | variableModifier* typeType annotation* identifier ('&&' expression)*
+    | guardedPattern '&&' expression
+    ;
+
+// Java17
+switchRuleOutcome
+    : block
+    | blockStatement*
+    ;
+
+classType
+    : (classOrInterfaceType '.')? annotation* identifier typeArguments?
+    ;
+
+creator
+    : nonWildcardTypeArguments createdName classCreatorRest
+    | createdName (arrayCreatorRest | classCreatorRest)
+    ;
+
+createdName
+    : identifier typeArgumentsOrDiamond? ('.' identifier typeArgumentsOrDiamond?)*
+    | primitiveType
+    ;
+
+innerCreator
+    : identifier nonWildcardTypeArgumentsOrDiamond? classCreatorRest
+    ;
+
+arrayCreatorRest
+    : '[' (']' ('[' ']')* arrayInitializer | expression ']' ('[' expression ']')* ('[' ']')*)
+    ;
+
+classCreatorRest
+    : arguments classBody?
+    ;
+
+typeArgumentsOrDiamond
+    : '<' '>'
+    | typeArguments
+    ;
+
+nonWildcardTypeArgumentsOrDiamond
+    : '<' '>'
+    | nonWildcardTypeArguments
+    ;
+
+nonWildcardTypeArguments
+    : '<' typeList '>'
+    ;
+
+typeList
+    : typeType (',' typeType)*
+    ;
+
+typeType
+    : functionType
+    // Parenthesized function type, optionally arrayed: `((T)->R)[]`. The grouping
+    // parens are what make an array-OF-function-type expressible — without them
+    // `(T)->R[]` binds the `[]` to the RETURN (a function returning `R[]`). The
+    // inner is restricted to `functionType` (not a general `'(' typeType ')'`) so
+    // the `(`...`)` here never collides with the C-style cast `'(' typeType ')' expr`:
+    // it only matches when a `->` proves the parens wrap a function type.
+    | '(' functionType ')' (annotation* '[' ']')*
+    | annotation* (classOrInterfaceType | primitiveType) (annotation* '[' ']')*
+    | annotation* (classOrInterfaceType | primitiveType) (annotation* '[' expression ']')*
+    ;
+
+// First-class function type: `(T1, T2) -> R`. See docs/Lambdas.md.
+// Distinct from Java's @FunctionalInterface SAM conversion; this is a real
+// type-former, callable directly, with no boxing for primitives. Return is
+// typeTypeOrVoid so `(T) -> void` is a legal type (Stream.forEach etc.).
+functionType
+    : '(' (typeType (',' typeType)*)? ')' '->' typeTypeOrVoid
+    ;
+
+primitiveType
+    : BOOLEAN
+    | CHAR
+    | INT8
+    | UINT8
+    | INT16
+    | UINT16
+    | INT32
+    | UINT32
+    | INT64
+    | UINT64
+    | INT128
+    | UINT128
+    | FLOAT4E2M1
+    | FLOAT6E2M3
+    | FLOAT6E3M2
+    | FLOAT8E4M3
+    | FLOAT8E5M2
+    | FLOAT8E4M3FNUZ
+    | FLOAT8E5M2FNUZ
+    | FLOAT16
+    | FLOAT32
+    | FLOAT64
+    | FLOAT128
+    ;
+
+typeArguments
+    : '<' typeArgument (',' typeArgument)* '>'
+    ;
+
+// `super.foo(args)` or Form C templated `super.foo<T>(args)`. The
+// type-args go AFTER the identifier (mirrors methodCall). Super
+// calls land in UnsupportedExpression in this release, so the
+// shape is grammar-only consistency.
+superSuffix
+    : arguments
+    | '.' identifier ('<' typeList '>')? arguments?
+    ;
+
+arguments
+    : '(' parameterList? ')'
+    ;
+```

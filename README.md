@@ -10,7 +10,7 @@ Its defining attributes:
 - **A fast, allocation-light runtime.** A lightning-fast networking stack and predictable, GC-free performance.
 - **Agent-native from the ground up** (see below).
 
-The compiler is LLVM-backed (LLVM 23) and produces either IR — distributed in compressed archives and executed by an optimized, caching JIT — or native binaries per target (see [Compilation and execution](#compilation-and-execution)).
+The compiler is LLVM-backed (LLVM 23) and produces either IR — distributed in compressed archives and executed by an optimized, caching JIT — or native binaries per target (see [Compilation and execution](#compilation-and-execution)). The same JIT makes Cajeta a first-class scripting language — `cajeta run` executes a file of loose statements directly, with `System.args` for argv (see [Scripting](#scripting)) — and powers a first-class Jupyter kernel: statically typed, borrow-checked cells in a persistent session, from `cajeta init --kernel` to Jupyter Lab, VS Code, or any frontend speaking Jupyter messaging v5.3 (see [Notebooks and Jupyter](#notebooks-and-jupyter)).
 
 **Cajeta is designed around agents from the ground up.** The compiler *is* an MCP
 server: `cajeta compiler-mcp` speaks Model Context Protocol over stdio — no
@@ -64,6 +64,8 @@ Supported binary targets (see [RELEASING.md](RELEASING.md) for the full matrix):
   - [The same discovery from the CLI](#the-same-discovery-from-the-cli)
   - [The rest of the agent surface](#the-rest-of-the-agent-surface)
 - [Compilation and execution](#compilation-and-execution)
+- [Scripting](#scripting)
+- [Notebooks and Jupyter](#notebooks-and-jupyter)
 - [Ecosystem](#ecosystem)
 - [Installing](#installing)
 - [Building](#building)
@@ -119,15 +121,8 @@ public final class App {
 `stack`/`heap` are mandatory at every allocation. `new` is removed.
 
 No class is required to get started — a file of loose statements is a
-[script unit](docs/specification/lang/ScriptUnits.md), and `cajeta run`
-executes it directly with the same type checking, borrow checking, and JIT
-as any program:
-
-```cajeta
-// tool.cajeta — cajeta run tool.cajeta
-int32 x = 40;
-System.stdout.println("answer = " + (x + 2));
-```
+script unit, and `cajeta run` executes it directly (see
+[Scripting](#scripting)).
 
 ---
 
@@ -357,19 +352,77 @@ ultimately to the CPU path, so kernel code always runs. Vendor-exclusive
 features (tensor-core peak paths and the like) live in explicit vendor
 libraries rather than the portable core.
 
-**Notebooks.** `cajeta kernel` is a Jupyter kernel over the same JIT. One
-kernel process hosts one persistent session; each cell compiles into it and
-sees everything the cells before it declared, so bindings, types, and methods
-persist across cells. Output streams while a cell runs, a trailing expression
-renders as `Out[N]`, tracebacks name cells (`In[3], line 2`) rather than the
-classes cells compile into, and a cell that throws or runs away does not take
-the session with it. `cajeta init --kernel` registers it with Jupyter; see
-[the kernel doc](docs/specification/tooling/Kernel.md).
-
 Throughout, linking is **lazy**: the runtime and standard library are linked
 as bitcode, and only what your program actually references is materialized
 into the output — which keeps both JIT working sets and native binaries
 small.
+
+---
+
+## Scripting
+
+Cajeta is a first-class scripting language. A file of loose statements —
+optionally mixed with methods and type declarations, none of them bound to a
+class — is a [script unit](docs/specification/lang/ScriptUnits.md), and
+`cajeta run` executes it directly. There is no mode flag and no special file
+extension; a script passes through the same pipeline as any program —
+statically typed, borrow-checked, monomorphized templates, the caching JIT.
+
+```cajeta
+// greet.cajeta — cajeta run greet.cajeta world
+int64 n = System.args.count();
+if (n == 0) { System.stdout.println("usage: greet <name>"); return 2; }
+System.stdout.println("hello, " + System.args.get(0));
+
+String shout(String s) { return s + "!"; }   // non-class-bound method
+```
+
+CLI arguments arrive through `System.args` — ambient and read-only, beside
+`System.env` and `System.property`, so a helper reads argv without it being
+threaded down. `count()` returns `int64`; `get(i)` returns a `String`, or
+null past the end. A class entry declared `static int32 main(String[] args)`
+reads the same store — the two spellings cannot disagree. A top-level
+`return <int32>` is the process exit code; a script without one exits 0.
+
+A script depends on classes, not on other scripts. Run inside a project —
+any ancestor directory holding `cajeta.json` — a script gets the manifest's
+resolved dependencies on its classpath, so it imports Olla libraries and
+project classes exactly as a compiled program would; a standalone script
+sees the stdlib. This is the same mechanism the notebook kernel uses, and
+the same source runs unchanged as a notebook cell (next section).
+
+---
+
+## Notebooks and Jupyter
+
+Cajeta runs as a first-class Jupyter kernel. `cajeta kernel` speaks Jupyter
+messaging v5.3, so it works with Jupyter Lab, classic Notebook,
+`jupyter console`, VS Code's notebook UI, and anything else that speaks the
+protocol:
+
+```sh
+cajeta init --kernel     # register with Jupyter
+jupyter lab              # pick "Cajeta" from the launcher
+```
+
+One kernel process hosts one persistent JIT session. A cell is a
+[script unit](docs/specification/lang/ScriptUnits.md) — loose statements,
+methods, and type declarations, no class required — and each cell compiles
+into the session and sees everything the cells before it declared: bindings,
+types, and methods persist across cells, and re-declaring a type in a later
+cell replaces it for subsequent cells. Every cell gets the full compiler —
+static typing, borrow checking, monomorphized templates — at interactive
+speed, because the session JIT is the same caching JIT that runs deployed
+`.cja` archives.
+
+Output streams while a cell runs. A trailing expression renders as `Out[N]`.
+Tracebacks name cells (`In[3], line 2`), not the classes cells compile into.
+A cell that throws or runs away does not take the session with it — interrupt
+stops it at the next statement boundary and the session survives. Launched
+from a project directory, the kernel applies that project's `cajeta.json`
+classpath, so notebooks import project dependencies and Olla libraries
+exactly as a compiled program would. Details, protocol conformance, and v1
+limits: [the kernel doc](docs/specification/tooling/Kernel.md).
 
 ---
 
@@ -575,17 +628,19 @@ MyClass f;                                       // null reference; rejected on 
 
 ### Ownership and `#`-transfer
 
-Every owned value has exactly one owner. Plain assignment is a borrow; a store transfers with `#=`, and `#name` transfers at call arguments and returns.
+Every owned value has exactly one owner. `=` is always a borrow — ownership stays with the right-hand side. `#` is a passthrough of whatever the right side holds: `dst #= v` at a store, `#v` at call arguments and returns, hand along `v`'s title — a transfer when `v` owns, a borrow when it doesn't.
 
 <!-- snippet: skip -->
 ```cajeta
 public void demo() {
     MyClass a = heap MyClass();
-    MyClass b = a;            // borrow — a still owns; b dangles after a's drop
-    MyClass c #= a;           // transfer — c owns; `a` is demoted to a borrow of the same instance
+    MyClass b = a;            // borrow — ownership stays with a; b dangles after a's drop
+    MyClass c #= a;           // passthrough — a owns here, so the title moves to c
     // reading a is still legal; transferring it again is CAJETA_ERROR_MOVE_OF_BORROW
 }
 ```
+
+Because `#` forwards whatever the source holds, mode-forwarding wrappers just work: a plain formal's ownership is decided at the call site (`f(x)` lends, `f(#x)` transfers), and `#p` — or `this.f #= p` — inside the callee hands along whichever mode actually arrived. Only a value the compiler can see is purely a borrow (a local borrowing another local, or a borrow returned by a plain method) refuses the `#` — that surrender would be a lie.
 
 The borrow checker is static. Transfer-from-a-borrow, borrow-escape-on-return, and definite-assignment violations are caught at compile time:
 

@@ -153,7 +153,7 @@ visual computing — written once, running across vendors and devices.
 - **Wiring up an agent?** [CompilerMcp](../specification/mcp/CompilerMcp.md) has
   the server and its tools; [Skills](../specification/mcp/Skills.md) covers the
   format, the authoring levels, and how to ship skills with your own library.
-- **Designing against the language?** The [specification index](../specification/README.md)
+- **Designing against the language?** The [language specification](../specification/01-introduction.md)
   holds the deep-dive documents behind every subsystem.
 - **Wondering about speed?** The [benchmarks](../../bench/README.md) compare
   Cajeta against incumbent runtimes on shared workloads.

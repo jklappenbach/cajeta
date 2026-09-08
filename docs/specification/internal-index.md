@@ -1,4 +1,9 @@
-# Specification index
+# Internal specification index
+
+The internal design and working documents behind every Cajeta subsystem —
+the material the numbered chapters of the public
+[language specification](01-introduction.md) are distilled from. These pages
+are unlisted; they remain reachable by direct link.
 
 The design and specification documents behind every Cajeta subsystem. Each
 group leads with its overview document. The [guide](../guide/README.md) teaches

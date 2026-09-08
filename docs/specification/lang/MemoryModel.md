@@ -3,7 +3,7 @@
 ## Goals
 
 - **Single-owner heap.** Every heap-allocated value has exactly one owning reference at any time.
-- **Implicit borrow, explicit transfer.** `=` borrows by default; `#` transfers ownership — `dst #= v` at a store, `#v` at a call argument, return, or slot extraction.
+- **Implicit borrow, explicit passthrough.** `=` is always a borrow — the title stays with the right-hand side. `#` hands along whatever title the source holds — a transfer when the source owns, a borrow when it doesn't — `dst #= v` at a store, `#v` at a call argument, return, or slot extraction.
 - **Static safety, no user-visible annotations.** All borrow/lifetime errors are compile-time. Scope-based inference; no lifetime syntax for users to write.
 - **Zero runtime cost in release.** Heap blocks are plain memory; drops happen at owner scope-end. A debug build flag adds runtime verification for testing the static checker.
 
@@ -103,16 +103,28 @@ argument at such an edge is `CAJETA_ERROR_TRANSFER_REQUIRED`.
 
 ## Borrow / transfer rules
 
-| Operation | Plain | Transfer |
-|-----------|-------|----------|
-| `T a = b` / `T a #= b` | a borrows b | a takes the title; b is moved |
-| `this.f = x` / `this.f #= x` | the field borrows x — the title stays with x and x still drops it | the field takes the title |
-| `this.data[i] = x` / `this.data[i] #= x` | the slot borrows x | the slot takes the title, and records it in the slot's own ownership bit |
-| `f(x)` / `f(#x)` | f borrows x for the call | f takes the title; x is moved |
+| Operation | Plain | Passthrough (`#`) |
+|-----------|-------|-------------------|
+| `T a = b` / `T a #= b` | a borrows b | a takes whatever title b holds (an owner's title moves; a formal's arrived mode is forwarded) |
+| `this.f = x` / `this.f #= x` | the field borrows x — the title stays with x and x still drops it | the field takes whatever title x holds |
+| `this.data[i] = x` / `this.data[i] #= x` | the slot borrows x | the slot takes whatever title x holds, and records it in the slot's own ownership bit |
+| `f(x)` / `f(#x)` | f borrows x for the call | f takes whatever title x holds; an owned x is moved |
 | `return x` / `return #x` | hands back whatever title x held (a lent value stays lent; an owned one transfers) | hands back the title |
 
-Stores (the first three rows) transfer with `#=`. Arguments and returns (the last
-two) transfer with `#x` — they are not assignments.
+Stores (the first three rows) pass through with `#=`. Arguments and returns (the
+last two) pass through with `#x` — they are not assignments.
+
+**`#` is a passthrough, not an unconditional move.** It hands along the title
+the source *actually* holds. From an owner, that is a transfer. From a plain
+formal — whose mode is fixed at the **call site** (`f(x)` lends, `f(#x)`
+transfers) and carried at run time by the transfer word — `#p`, or
+`this.f #= p`, forwards whichever mode arrived, and `#=` records the forwarded
+mode per slot. This is what makes mode-forwarding wrappers expressible; the
+static checker deliberately excludes plain formals from the move-of-borrow
+check (`test/expression/TransferOfBorrowTests.cpp`, 2.1.2). Only a value the
+compiler can prove is purely a borrow — a local borrowing another local, or a
+borrow returned by a plain (non-`#`) method — refuses `#` with
+`CAJETA_ERROR_MOVE_OF_BORROW`: that surrender would be a lie.
 
 Note the second row: **a plain field store lends.** It does not quietly take
 ownership. If a method stores a borrowed value into a field that outlives the

@@ -1,8 +1,10 @@
 # 11 — Ownership & borrowing
 
-Every heap value has exactly one owner at any time. Plain `=` borrows;
-the `#` operator transfers ownership. All of it is checked at compile time —
-no annotations, no runtime cost.
+Every heap value has exactly one owner at any time. `=` is always a borrow —
+ownership stays with the right-hand side. The `#` operator is a passthrough of
+whatever the source holds: a transfer when the source owns, a borrow handed
+along when it doesn't. All of it is checked at compile time — no annotations,
+no runtime cost.
 
 ```cajeta
 public class Point {
@@ -25,7 +27,7 @@ public class Point {
 ```cajeta
 Point a = heap Point(7, 24);
 Point b = a;                  // borrow — a still owns; b must not outlive a
-Point c #= a;                 // transfer — c owns now; a is moved
+Point c #= a;                 // passthrough — a owns here, so the title moves to c
 int32 d = c.distSq();
 ```
 
@@ -96,6 +98,17 @@ A plain `T` parameter can also *accept* an offered `#x` — the caller
 surrenders ownership and the value drops in the callee's frame. The tour's
 [OwnershipDemo](../../samples/tour/src/main/cajeta/tour/lang/OwnershipDemo.cajeta)
 uses exactly that shape.
+
+## `#` forwards the arrived mode
+
+Because `#` is a passthrough, wrappers forward ownership without knowing which
+mode they were handed. A plain formal's ownership is decided at the **call
+site** — `f(x)` lends, `f(#x)` transfers — and inside the callee, `#p` (or
+`this.f #= p`) hands along whichever mode actually arrived: a lent value stays
+lent, an owned one transfers. Only a value the compiler can see is purely a
+borrow — a local borrowing another local, or a borrow returned by a plain
+method — refuses the `#` with `CAJETA_ERROR_MOVE_OF_BORROW`: that surrender
+would be a lie.
 
 ## Drops at scope exit
 
