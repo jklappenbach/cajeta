@@ -4,38 +4,15 @@ This specification defines the Cajeta programming language: which programs are l
 
 ## 1.1 Scope
 
-This specification governs the language: lexical structure, types, allocation and ownership, declarations and names, statements and expressions, errors, concurrency, accelerated compute, script units, the notebook execution model, and program lifecycle. It defines the requirements a program must meet to compile and the behavior a compiled program exhibits.
+This specification defines the language itself — its capabilities and features: lexical structure, types, allocation and ownership, declarations and names, statements and expressions, errors, concurrency, accelerated compute, script units, the notebook execution model, and program lifecycle. It defines the requirements a program must meet to compile and the behavior a compiled program exhibits.
 
-The following are outside its scope:
-
-- **The runtime binary interface.** The layout of the drop chain, the transfer flag's encoding, the `.cja` archive format, and the accelerator launch interface belong to the Runtime & ABI companion. This specification states *that* a guarantee holds; the companion states *how* the runtime provides it.
-- **The standard library API.** Package-by-package reference for `cajeta.collection`, `cajeta.io`, `cajeta.math`, and the rest belongs to the Stdlib Reference. Where a library type carries language-level guarantees — `Mutex<T>`'s critical-section scoping (Concurrency §16), `Tile`'s role inference (Accelerated Compute §17) — this specification defines the guarantee and the reference defines the full API surface.
-- **Tooling.** `cajeta build`, emit flags, project manifests, and the agent surface are documented with the toolchain.
+Coverage of the standard library and of external libraries built as part of cajeta.dev is out of scope; they are documented in their own references. Where a library type carries a language-level guarantee — `Mutex<T>`'s critical-section scoping (Concurrency §16), `Tile`'s role inference (Accelerated Compute §17) — this specification defines the guarantee, and the library reference defines the API.
 
 > *Discussion.* The subdirectories of this documentation tree (`lang/`, `xpu/`, `concurrent/`, …) hold the internal design documents these chapters are distilled from. They record decisions and implementation detail, they remain reachable by direct link, and they are not normative: where an internal document and a chapter disagree, the chapter governs. The Runtime & ABI companion and the Stdlib Reference are being assembled from the same material.
 
 ## 1.2 Organization
 
-- **Chapter 2, Grammar & Lexical Structure** — the grammar notation used throughout, source encoding, tokens, literals, and comments.
-- **Chapter 3, Types, Values & Variables** — primitive and reference types, kinds of variables, null semantics, and definite assignment.
-- **Chapter 4, Allocation & Storage** — the `stack` and `heap` allocation expressions, the drop chain, and reclamation.
-- **Chapter 5, Ownership & the Borrow Checker** — the owned, borrow, and shared states; `=` as borrow; `#` as passthrough; the static analysis that enforces them.
-- **Chapter 6, Conversions & Contexts** — every conversion, organized by the context in which it applies.
-- **Chapter 7, Names, Scopes & Packages** — declarations, scoping, shadowing, packages, imports, and access control.
-- **Chapter 8, Classes** — class declarations and members; single inheritance of state, multiple inheritance of behavior; dispatch; destructors.
-- **Chapter 9, Interfaces** — interface declarations, implementation obligations, and dispatch through interface types.
-- **Chapter 10, Annotations & Aspects** — declared metadata and what acts on it: annotations, aspects and advice, dependency injection.
-- **Chapter 11, Templates & Wildcards** — the monomorphized template model, wildcards, deduction, and specialization.
-- **Chapter 12, Arrays, Views & Slices** — array types, zero-copy `view` types, and slices with the `shared` state.
-- **Chapter 13, Statements & Patterns** — every statement form and its borrow-checker obligations.
-- **Chapter 14, Expressions** — every expression form, evaluation order, and operators.
-- **Chapter 15, Errors & Stack Traces** — the throwable model, handler selection, traces, and the diagnostic philosophy.
-- **Chapter 16, Concurrency** — `async`, `scope`, `spawn`, ownership across tasks, and the synchronization primitives.
-- **Chapter 17, Accelerated Compute (XPU)** — kernels, the device subset, portable tiles, launch semantics, and the kernel scheduler.
-- **Chapter 18, Script Units** — compilation units of loose statements, `cajeta run`, `System.args`, and script dependencies.
-- **Chapter 19, Notebook Kernel & Jupyter Compatibility** — the persistent-session model, cells as script units, and protocol conformance.
-- **Chapter 20, Execution & Program Lifecycle** — program shapes, startup, initialization order, and exit.
-- **Chapter 21, Complete Grammar** — the full grammar, collected and cross-referenced.
+Chapters 2 through 14 define the core language: grammar and lexical structure, types, allocation, ownership, conversions, names and scopes, classes, interfaces, annotations and aspects, templates, arrays and views, statements, and expressions. Chapters 15 through 20 define errors, concurrency, accelerated compute, script units, the notebook kernel, and program lifecycle. Chapter 21 collects the complete grammar.
 
 ## 1.3 Notation
 
