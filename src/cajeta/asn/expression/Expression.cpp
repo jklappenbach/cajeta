@@ -991,7 +991,9 @@ bool cajetaRhsCarriesRedundantSharp(
                 }
             }
         }
-        return emitArrayFromElements(module, elementType, children, arenaEligible);
+        borrowedLocalSlots.clear();
+        return emitArrayFromElements(module, elementType, children, arenaEligible,
+                                     &borrowedLocalSlots);
     }
 
     // ---- MapLiteralExpression (collection-literals §3) ----------------------

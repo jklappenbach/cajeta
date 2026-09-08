@@ -163,6 +163,14 @@ table for the action:
 | argument to `#T` formal | **error** TRANSFER_REQUIRED (a proven borrow: field read, element read, literal, borrow-returning call, entry-less local — *Resolved 5.8*) | pass | pass | n/a |
 | conditional / switch arm | 0 | 1 | flag | 0 |
 
+Two store-role rows the table folds in (Unit 5): a `#`-declared formal
+stored by bare name (`take(#String s) { this.v = s; }`) is Owned — the frame
+holds that title unconditionally (no entry, the word bit is not consulted)
+and storing it consumes it; and a `stack` value moved into a String or class
+slot is the **error** STACK_TRANSFER (5.11), an array whose slots lend frame
+locals the **error** ARRAY_SLOT_BORROWS_LOCAL (5.10). A bare name that is not
+a `#` formal lends in every store role, the array slot included (5.10).
+
 The labels for the two error rows ("a field read", "a literal", "a bare local
 or formal (no `#`)", "a call returning a borrow") come from the shape, in one
 table.
@@ -266,6 +274,48 @@ the current compiler.*
 - **5.9 `bindingTakesTitle` (unknown ⇒ true)** — *Superseded by totality
   (§2.1)*: no consumer default survives; the accessor is deleted with the
   last consumer that read it.
+- **5.10 Array literal and element store of a bare owned local** — *Resolved
+  2026-09-08: LEND.* `#` only ever appears on a NAME that owns something;
+  fresh values and literals have nothing to mark. An array literal is a
+  fresh construction (`heap T[n]` followed by slot stores), so the binding
+  owns the array with plain `=`, and each element follows the store rule
+  exactly as `ArrayList.add` does: `[.., out]` and `a[i] = out` record a
+  borrow, `[.., #out]` and `a[i] = #out` transfer, a literal element is a
+  borrow of static storage, a `heap X()` element is owned by the slot. Today
+  the literal is the one position that moves a bare name silently (the
+  corpus tool's `Command` use-after-free, plan 5.1.4); that ends. The one
+  idiom the rule changes, `String[] r = [a, b]; return #r;` with owned
+  locals, gets a compile error: an array whose slots borrow frame locals may
+  not escape the frame (`CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL`, fix-it
+  `[#a, #b]`). The store site records "slot borrows local X" on the array's
+  field; a `#` return, a `#` argument or a `#=` store of that array checks
+  the set. Two refinements from building it (Unit 5, 2026-09-08): a String
+  slot never borrows — resident String slots always own, so a lent String
+  is resolved into the slot's own copy (a shared stake past 256 B), exactly
+  as a String field store does, and String arrays are exempt from the
+  escape check; and only a local that PROVABLY owns (a static entry) is
+  recorded — a runtime-flagged local (`Class<?> c = registryAt(i); arr[j] =
+  c; return #arr;` in `cajeta.reflect.Class`) is the borrow-collecting
+  idiom, and the callee's lend is the programmer's assertion there, as it is
+  for any plain return.
+- **5.11 Transfer of a `stack` value** — *Resolved 2026-09-08: compile
+  error in every transfer position, never a promotion or a copy.* `stack`
+  is a placement promise; promoting at the transfer would insert a malloc
+  exactly where the programmer asked for none, and a "shallow copy" of a
+  value with owned fields is a move-construct that leaves the still-in-scope
+  original hollow. The legitimate escape already exists with zero copies:
+  a plain `T` return of `stack X(...)` lands in the caller's frame (sret /
+  NRVO). So `#x` of a StackBound answer into a retaining position — a `#T`
+  return (`CAJETA_ERROR_STACK_RETURN_ESCAPES`, today), a `#=` store into a
+  field or slot, a `#T` argument — is rejected, with the fix-it naming both
+  alternatives ("construct with `heap`, or return it by value"). A `#=`
+  bind to another local in the same frame is not a transfer out of the
+  frame and stays legal. Allocation-site promotion ("this value is
+  transferred, so allocate it on the heap from the start") is the
+  principled ergonomic alternative — zero copies, decided at compile time —
+  but it changes what `stack` means and is its own spec item, not part of
+  this plan. Witness: Julian's `TransferOfBorrowTests` DISABLED test (a
+  stack instance retained by a field of an escaping heap object, 2026-09-07).
 
 ## 6. Related finding: the owned-bind check was never order-dependent
 

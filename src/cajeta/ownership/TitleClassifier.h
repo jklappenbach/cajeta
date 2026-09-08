@@ -152,13 +152,26 @@ namespace cajeta::ownership {
     /// keeps its own take protocol until it migrates).
     llvm::Value* titleFlag(const TitleShape& shape, const CajetaModulePtr& module);
 
-    /// The title a named local currently HOLDS, as an i64: its drop entry's
-    /// active byte read inline (one GEP, one load, one zext) when the entry is
-    /// runtime-conditional; the constant 1 for a static owner; the constant 0
-    /// for a local with no entry. This is what a take of the local may carry —
-    /// a store that takes a borrow-holding local as owned double-titles the
-    /// value (the Exec.apply schema UAF, twice).
-    llvm::Value* heldTitleFlag(const Field* f, const CajetaModulePtr& module);
+    /// The title a STORE of `e` in `role` carries into its slot, or null when
+    /// it carries none (a borrow, a scalar, a stack value): the constant 1 for
+    /// an Owned answer, the runtime flag for a Runtime one. One call per store
+    /// site replaces the per-node-type chains (spec §2.3; Unit 5). A policy
+    /// error (spec 5.11: a `stack` value moved into a retaining slot) is
+    /// thrown here as the CAJETA_ERROR the verdict names, with `where` in the
+    /// message.
+    llvm::Value* storeTitleFlag(const ExpressionPtr& e, ConsumerRole role,
+                                const CajetaModulePtr& module, const char* where);
+    /// The same, from a shape the caller already computed (one classify).
+    llvm::Value* storeTitleFlagOf(const TitleShape& shape, ConsumerRole role,
+                                  const ExpressionPtr& e, const CajetaModulePtr& module,
+                                  const char* where);
+
+    /// Throw the CAJETA_ERROR a policy verdict names for `e` in `role`
+    /// (spec 5.10 ARRAY_SLOT_BORROWS_LOCAL, 5.11 STACK_TRANSFER, …); no-op
+    /// when the verdict carries no error. The escaping positions that have
+    /// not migrated yet (a `#` return, a `#T` argument) call this directly.
+    void rejectEscape(const ExpressionPtr& e, ConsumerRole role,
+                      const CajetaModulePtr& module, const char* where);
 
     /// Constexpr label per family — one table, every diagnostic reads it.
     constexpr const char* labelOfFamily(TitleFamily f) noexcept {

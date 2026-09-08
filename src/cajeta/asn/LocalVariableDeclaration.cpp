@@ -1276,6 +1276,20 @@ namespace cajeta {
                 }
             }
 
+            // spec 5.10 — an array local remembers which of its slots lend
+            // frame locals: from the literal that built it, or from the array
+            // local a `#=` bind took it from. The escaping positions refuse
+            // such an array (ARRAY_SLOT_BORROWS_LOCAL).
+            if (initShape.leaf && initShape.leaf->kind() == ExprKind::ArrayLiteral) {
+                auto lit = static_pointer_cast<ArrayLiteralExpression>(initShape.leaf);
+                for (auto& p : lit->getBorrowedLocalSlots()) {
+                    field->addSlotBorrowedLocal(p.first, p.second);
+                }
+            } else if (initShape.family == ownership::TitleFamily::Move
+                       && initShape.field && initShape.field != field.get()) {
+                field->copySlotBorrowedLocalsFrom(*initShape.field);
+            }
+
             // ownership-title-classifier Unit 4 — the shape computed above
             // answered the ownership question. What remains here are the
             // side effects the shape does not carry: borrow provenance for
@@ -1553,6 +1567,22 @@ namespace cajeta {
                         emitArrayElemDropEntry(module, field, arrT,
                             "__cajeta_string_array_owned_drop",
                             getSourceLine(), arrFlag);
+                        // spec 5.10 — a literal initializer stored every
+                        // element through the always-own String slot store
+                        // before this sidecar existed: mark those slots as
+                        // the array's now, so the teardown walk frees them.
+                        if (initShape.leaf
+                                && initShape.leaf->kind() == ExprKind::ArrayLiteral
+                                && field->getElemOwnSidecar()) {
+                            if (llvm::Function* markFn = module->getRuntimeFunction(
+                                    "__cajeta_string_array_sidecar_mark_all")) {
+                                module->getBuilder()->CreateCall(markFn, {
+                                    field->getElemOwnSidecar(),
+                                    llvm::ConstantInt::get(
+                                        llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                                        (uint64_t) initShape.leaf->getChildren().size())});
+                            }
+                        }
                     }
                 }
             }

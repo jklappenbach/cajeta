@@ -71,6 +71,9 @@ namespace cajeta {
         // U3 — the plain parameter a local was initialised from (§7.2's
         // straight-line capture). Same identity-not-name rationale.
         string paramBorrowOrigin;
+        // spec 5.10 — (slot, local) pairs an ARRAY local's slots lend; see
+        // getSlotBorrowedLocals.
+        std::vector<std::pair<int, string>> slotBorrowedLocals;
         // script-units U4 — seeded into a script entry's root scope from the
         // SessionState table (a binding created by an earlier unit of the
         // same session). Carries a type but no alloca in this unit; moved
@@ -213,6 +216,22 @@ namespace cajeta {
 
         void setParamBorrowOrigin(const string& origin) {
             paramBorrowOrigin = origin;
+        }
+
+        // ownership-title-classifier spec 5.10 — for an ARRAY local: the
+        // slots that borrow a frame local (`[a, b]`, `arr[i] = a` with a
+        // bare name). Such an array may not leave the frame (a `#` return,
+        // a `#T` argument, a `#=` store), because the slots die with the
+        // locals: CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL names the first one.
+        // Slot -1 = an index not constant at compile time.
+        const std::vector<std::pair<int, string>>& getSlotBorrowedLocals() const {
+            return slotBorrowedLocals;
+        }
+        void addSlotBorrowedLocal(int slot, const string& local) {
+            slotBorrowedLocals.emplace_back(slot, local);
+        }
+        void copySlotBorrowedLocalsFrom(const Field& other) {
+            slotBorrowedLocals = other.slotBorrowedLocals;
         }
 
         const string& getHierarchicalName() {

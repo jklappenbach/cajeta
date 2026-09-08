@@ -31,6 +31,7 @@
 #include "../error/Exception.h"
 #include "../error/Diagnostics.h"
 #include "cajeta/ownership/ReturnTitleAudit.h"
+#include "cajeta/ownership/TitleClassifier.h"
 
 /**
  * statement
@@ -1759,6 +1760,13 @@ namespace cajeta {
 
     llvm::Value* ReturnStatement::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
+        // spec 5.10 — `return #arr` of an array whose slots lend frame locals
+        // is refused (the slots die here). Checked BEFORE any codegen: the
+        // scope is still intact, and the move has not yet touched the entry.
+        if (expression && expression->kind() == ExprKind::Move) {
+            cajeta::ownership::rejectEscape(expression,
+                cajeta::ownership::ConsumerRole::ReturnOwned, module, "a `#` return");
+        }
         // 5.2.2 — runtime title flag riding out with this return (formal
         // pass-through or `#x`); null -> emitReturnFlag uses the static mode.
         llvm::Value* returnTitleFlag = nullptr;

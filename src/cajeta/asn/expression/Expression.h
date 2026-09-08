@@ -365,6 +365,13 @@ namespace cajeta {
         void setArenaEligible(bool v) { arenaEligible = v; }
         bool isArenaEligible() const { return arenaEligible; }
 
+        // spec 5.10 — the (slot, local) pairs whose element was a bare frame
+        // local (a lend); filled by codegen, read by the declaration that
+        // binds this literal (Field::addSlotBorrowedLocal).
+        const vector<std::pair<int, string>>& getBorrowedLocalSlots() const {
+            return borrowedLocalSlots;
+        }
+
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     private:
@@ -374,6 +381,7 @@ namespace cajeta {
         CajetaTypePtr unifyElementType(CajetaModulePtr module);
 
         vector<ExpressionPtr> elements;
+        vector<std::pair<int, string>> borrowedLocalSlots;
         CajetaTypePtr elementType;  // target (§3.2) or unified (§3.3)
         bool stackAlloc = false;    // `stack [...]` — frame arena (§4)
         bool sharedAlloc = false;   // `shared [...]` — device workgroup (§4)

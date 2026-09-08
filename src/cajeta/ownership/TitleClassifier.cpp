@@ -17,6 +17,7 @@
 #include "cajeta/asn/expression/MethodCallExpression.h"
 #include "cajeta/asn/expression/NewExpression.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/error/Exception.h"
 #include "cajeta/field/Field.h"
 #include "cajeta/field/ParameterField.h"
 #include "cajeta/method/Method.h"
@@ -139,6 +140,10 @@ namespace cajeta::ownership {
             s.field = f.get();
             s.flags |= typeFlags(f->getType());
             if (f->getDropEntry()) s.flags |= TitleShape::kHasEntry;
+            // A `stack` instance: its body is the frame's; a move of it
+            // carries no title (spec 5.11) — kStack, checked before the
+            // entry (a stack local's entry is the field-walking stack drop).
+            if (f->isStackInstance()) s.flags |= TitleShape::kStack;
             if (!f->getCallBorrowOrigin().empty() || !f->getParamBorrowOrigin().empty()) {
                 s.flags |= TitleShape::kBorrowOrigin;
             }
@@ -491,7 +496,9 @@ namespace cajeta::ownership {
             s.paramIndex = in.paramIndex;
             switch (in.family) {
                 case TitleFamily::LocalRead:
-                    if (in.has(TitleShape::kHasEntry)) {
+                    if (in.has(TitleShape::kStack)) {
+                        s.answer = TitleAnswer::StackBound;      // the frame's body, no title
+                    } else if (in.has(TitleShape::kHasEntry)) {
                         s.answer = TitleAnswer::Runtime; s.source = TitleSource::DropEntry;
                     } else if (in.has(TitleShape::kIsParam)) {
                         if (in.has(TitleShape::kTransferredParam)) {
@@ -537,10 +544,35 @@ namespace cajeta::ownership {
         TitleVerdict v{s.answer, s.source, nullptr, s.label};
         // A scalar has no title in any role.
         if (s.answer == TitleAnswer::Scalar) return v;
+        // Spec 5.10 — an array whose slots lend frame locals may not leave
+        // the frame: a `#` move of it into a retaining slot, a `#T` argument
+        // or a `#` return. (A same-frame `#=` bind carries the record on.)
+        auto escapesBorrowedSlots = [&] {
+            return s.family == TitleFamily::Move && s.field
+                && !s.field->getSlotBorrowedLocals().empty();
+        };
         switch (role) {
-            case ConsumerRole::Bind:
             case ConsumerRole::StoreString:
             case ConsumerRole::StoreSlot:
+                // Spec 5.11 — a `stack` value moved into a retaining slot is
+                // rejected; a plain store of it is an ordinary borrow.
+                if (s.family == TitleFamily::Move && s.answer == TitleAnswer::StackBound) {
+                    v.error = "CAJETA_ERROR_STACK_TRANSFER";
+                } else if (escapesBorrowedSlots()) {
+                    v.error = "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL";
+                } else if (s.family == TitleFamily::LocalRead
+                           && s.has(TitleShape::kIsParam)
+                           && s.has(TitleShape::kTransferredParam)) {
+                    // A `#`-declared formal HOLDS the frame's title (no entry,
+                    // the word bit is not consulted): storing it by bare name
+                    // consumes it — the store adopts (uniform-transfer 2.3;
+                    // `take(#String s) { this.v = s; }` in
+                    // CallArgTempDropTests). The `#` is on the formal.
+                    v.answer = TitleAnswer::Owned;
+                    v.source = TitleSource::None;
+                }
+                return v;
+            case ConsumerRole::Bind:
             case ConsumerRole::Reassign:
             case ConsumerRole::ArgPlain:
             case ConsumerRole::Arm:
@@ -554,6 +586,10 @@ namespace cajeta::ownership {
                 // its word bit.
                 if (s.answer == TitleAnswer::StackBound) {
                     v.error = "CAJETA_ERROR_STACK_RETURN_ESCAPES";
+                    return v;
+                }
+                if (escapesBorrowedSlots()) {
+                    v.error = "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL";
                     return v;
                 }
                 if (s.family == TitleFamily::ThisRead) {
@@ -602,6 +638,10 @@ namespace cajeta::ownership {
                 // A `#T` formal is a promise the argument must keep: a proven
                 // borrow is rejected (spec 5.8); an owned or runtime-decided
                 // value passes and its bit rides the transfer word.
+                if (escapesBorrowedSlots()) {
+                    v.error = "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL";
+                    return v;
+                }
                 switch (s.family) {
                     case TitleFamily::FieldRead:
                     case TitleFamily::ElementRead:
@@ -659,11 +699,91 @@ namespace cajeta::ownership {
         }
     }  // namespace
 
-    llvm::Value* heldTitleFlag(const Field* f, const CajetaModulePtr& module) {
-        llvm::Type* i64 = llvm::Type::getInt64Ty(*module->getLlvmContext());
-        if (!f || !f->getDropEntry()) return llvm::ConstantInt::get(i64, 0);
-        if (!f->isRuntimeConditionalOwner()) return llvm::ConstantInt::get(i64, 1);
-        return entryActiveFlag(f->getDropEntry(), module);
+    namespace {
+        void throwVerdict(const TitleShape& s, const TitleVerdict& v, const ExpressionPtr& e,
+                          const CajetaModulePtr& module, const char* where) {
+            std::string what = v.error;
+            std::string msg;
+            if (what == "CAJETA_ERROR_STACK_TRANSFER") {
+                msg = std::string("`stack` value transferred into ") + where
+                    + ": a stack instance dies with its frame, so a `#` move into a "
+                      "field or slot that outlives it would dangle. Construct it "
+                      "with `heap` to transfer it, or return it by value (a plain "
+                      "`T` return of `stack T(...)` lands in the caller's frame). "
+                      "See docs/specification/lang/MemoryModel.md § Placement.";
+            } else if (what == "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL") {
+                const char* arr = s.field ? s.field->getName().c_str() : "the array";
+                std::string slotText;
+                std::string localsFix;
+                if (s.field) {
+                    for (auto& p : s.field->getSlotBorrowedLocals()) {
+                        if (slotText.empty()) {
+                            slotText = (p.first >= 0 ? "slot " + std::to_string(p.first)
+                                                     : std::string("a slot"))
+                                + " borrows local `" + p.second + "`";
+                        }
+                        if (!localsFix.empty()) localsFix += ", ";
+                        localsFix += "#" + p.second;
+                    }
+                }
+                msg = std::string("array `") + arr + "` leaves the frame through "
+                    + where + ", but " + slotText + ", which dies with this frame: "
+                      "the slot would dangle. A bare name in an array literal or "
+                      "element store LENDS (like `list.add(x)`); write `"
+                    + localsFix + "` to move the value into the array, or store a "
+                      "copy. See specs/ownership-title-classifier-spec.md 5.10.";
+            } else {
+                msg = std::string(v.error) + " at " + where + " (" + v.label + ")";
+            }
+            throw Exception(msg, what, module->getSourcePath(),
+                            (int) e->getSourceLine(), (int) e->getSourceColumn());
+        }
+    }  // namespace
+
+    void rejectEscape(const ExpressionPtr& e, ConsumerRole role,
+                      const CajetaModulePtr& module, const char* where) {
+        if (!e) return;
+        TitleShape s = classify(e, module);
+        // Only the escape rule (spec 5.10) is asked here: the return and
+        // argument sites keep their own title checks until Units 6 and 7
+        // migrate them, and a plain-return `#x` / `return #= x` must not be
+        // judged by the `#T`-return contract.
+        // A `#r` argument may arrive as the bare name with the call's
+        // transferred flag set, so a LocalRead counts here too: the array is
+        // leaving the frame whichever way the `#` was carried.
+        if ((s.family == TitleFamily::Move || s.family == TitleFamily::LocalRead)
+                && s.field && !s.field->getSlotBorrowedLocals().empty()) {
+            TitleVerdict v{s.answer, s.source, "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL", s.label};
+            throwVerdict(s, v, e, module, where);
+        }
+        (void) role;
+    }
+
+    llvm::Value* storeTitleFlag(const ExpressionPtr& e, ConsumerRole role,
+                                const CajetaModulePtr& module, const char* where) {
+        if (!e) return nullptr;
+        return storeTitleFlagOf(classify(e, module), role, e, module, where);
+    }
+
+    llvm::Value* storeTitleFlagOf(const TitleShape& s, ConsumerRole role,
+                                  const ExpressionPtr& e, const CajetaModulePtr& module,
+                                  const char* where) {
+        TitleVerdict v = policy(s, role);
+        if (v.error) throwVerdict(s, v, e, module, where);
+        switch (v.answer) {
+            case TitleAnswer::Owned:
+                // The VERDICT's answer, not the shape's: a policy row may
+                // promote (a `#` formal stored by bare name).
+                return llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(*module->getLlvmContext()), 1);
+            case TitleAnswer::Runtime:
+                return titleFlag(s, module);
+            case TitleAnswer::Borrow:
+            case TitleAnswer::StackBound:
+            case TitleAnswer::Scalar:
+                return nullptr;
+        }
+        return nullptr;
     }
 
     llvm::Value* titleFlag(const TitleShape& s, const CajetaModulePtr& module) {

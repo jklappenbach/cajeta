@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include "MethodCallExpression.h"
+#include "cajeta/ownership/TitleClassifier.h"
 #include "CallExpression.h"
 #include "../../error/DiagnosticEngine.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -11058,6 +11059,19 @@ namespace cajeta {
                     // Interfaces and non-class formals keep the old rule,
                     // which the retirement block above still applies.
                     if (!fp->isTransferred()) continue;
+                    // spec 5.10 — `#arr` into a `#T` formal: the callee may
+                    // retain it past this frame, so an array whose slots lend
+                    // frame locals is refused here (before the move-arg skips).
+                    // (`#r` arrives either as a MoveExpression or as the bare
+                    // name with callerTransferred set.)
+                    if (auto escArg = parameters[argIdx].expression) {
+                        if (escArg->kind() == ExprKind::Move
+                                || parameters[argIdx].callerTransferred) {
+                            ownership::rejectEscape(escArg,
+                                ownership::ConsumerRole::ArgOwned, module,
+                                "a `#T` argument");
+                        }
+                    }
                     if (parameters[argIdx].callerTransferred) continue;
                     auto argExpr = parameters[argIdx].expression;
                     if (dynamic_pointer_cast<MoveExpression>(argExpr)) continue;

@@ -1620,6 +1620,18 @@ void __cajeta_string_elem_store(void** slot, void* wrapper, int64_t takes) {
     }
 }
 
+// An array LITERAL stored every element through __cajeta_string_elem_store
+// (always-own: a `#x` / fresh element adopted, everything else a resolved
+// copy), so all `count` resident slots are the array's. The declaration
+// registers the local's sidecar after the literal ran; this marks the
+// slots it already owns (ownership-title-classifier spec 5.10 — before it,
+// `[.., #out]` adopted the wrapper into an unmarked slot and leaked it).
+void __cajeta_string_array_sidecar_mark_all(void* sidecar, int64_t count) {
+    cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
+    if (!sc) return;
+    for (int64_t i = 0; i < count; ++i) caj_arr_bit_put(sc, i, 1);
+}
+
 // `#arr[i]` — move an element OUT: hand the wrapper to the receiver, null
 // the slot, unmark. A take from an unmarked slot hands out an alias the
 // receiver will drop; claim-gating makes that free-once rather than UAF.
