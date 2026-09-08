@@ -1656,7 +1656,8 @@ namespace cajeta {
     // CAJETA_AUDIT_RETURN_TITLES is set; see ReturnTitleAudit.h.
     static void auditReturnTitle(CajetaModulePtr& module, llvm::Value* flag,
                                  const ExpressionPtr& expression,
-                                 int sourceLine) {
+                                 int sourceLine,
+                                 cajeta::ownership::TitleVia via) {
         namespace own = cajeta::ownership;
         auto m = module->getCurrentMethod();
         // Only a PLAIN class-pointer return can misreport: a `#` return
@@ -1696,30 +1697,17 @@ namespace cajeta {
         rec.carry = llvm::isa<llvm::ConstantInt>(flag)
             ? own::TitleCarry::StaticTitle : own::TitleCarry::RuntimeFlag;
 
-        // Which mechanism produced the flag. The runtime helper's name is the
-        // ground truth — each corresponds to exactly one assignment site above.
-        llvm::Value* src = flag;
-        if (auto* zext = llvm::dyn_cast<llvm::ZExtInst>(src)) {
-            src = zext->getOperand(0);
-        }
-        std::string helper;
-        if (auto* call = llvm::dyn_cast<llvm::CallInst>(src)) {
-            if (llvm::Function* callee = call->getCalledFunction()) {
-                helper = callee->getName().str();
-            }
-        }
-        // The SPELLING is checked before the helper, because `return #x` of a
-        // local forwards that local's own `__cajeta_drop_entry_flag` — the
-        // same helper a returned formal uses. Measured, not assumed
+        // Which mechanism produced the flag: the composition site says so
+        // (Unit 6 — the classifier's source, not the IR's shape, is the
+        // ground truth: a formal's entry read is an inline load now, and
+        // `return #x` of a local forwards that local's own entry flag through
+        // the same read a returned formal uses. Measured, not assumed
         // (ReturnTitleAuditTests.moveReturnUnderPlainTypeIsEnumerated): `#`
-        // does not assert a title in the return position any more than it does
-        // in the argument position, it forwards the mode the frame holds
-        // (CLAUDE.md §2.2). Classifying by helper alone would file every
-        // `return #x` as a pass-through and lose the shape the audit is for.
-        if (dynamic_pointer_cast<MoveExpression>(expression)) {
-            rec.via = own::TitleVia::Move;
-        } else if (helper == "__cajeta_return_flag_get") {
-            rec.via = own::TitleVia::CallRide;
+        // does not assert a title in the return position any more than it
+        // does in the argument position, it forwards the mode the frame
+        // holds — CLAUDE.md §2.2.)
+        rec.via = via;
+        if (via == own::TitleVia::CallRide) {
             // WHAT is tail-called decides how much the ride means: a callee
             // that declares `#` hands a title out through a plain signature
             // (the shape 8.1.1 counts), while a plain callee only defers the
@@ -1746,17 +1734,289 @@ namespace cajeta {
                     }
                 }
             }
-        } else if (helper == "__cajeta_drop_entry_flag") {
-            rec.via = own::TitleVia::FormalPassThrough;
-        } else if (helper == "__cajeta_drop_take_active") {
-            rec.via = own::TitleVia::ModeCarry;
-        } else {
-            auto mce = dynamic_pointer_cast<MethodCallExpression>(expression);
-            rec.via = (mce && mce->getFlaggedTitleValue() == flag)
-                ? own::TitleVia::Flagged : own::TitleVia::Other;
         }
         own::ReturnTitleAudit::record(std::move(rec));
     }
+
+    // ownership-title-classifier Unit 6 — the return contracts on the
+    // classifier. One shape per returned expression (a conditional: one per
+    // leaf arm, the promise covers every arm), each asked its return role's
+    // policy row; the shape's label, field and callee write the diagnostic.
+    // The pre-codegen pass runs with the scope intact; generateCode re-asks
+    // the call shapes after codegen, once their callee is exact.
+    namespace {
+        std::string stackWhat(const cajeta::ownership::TitleShape& sh) {
+            if (sh.family == cajeta::ownership::TitleFamily::LocalRead && sh.field) {
+                return "local '" + sh.field->getName() + "', a `stack` value,";
+            }
+            return "a `stack` construction";
+        }
+
+        [[noreturn]] void throwOwnedReturn(const MethodPtr& m,
+                                           const cajeta::ownership::TitleShape& sh,
+                                           const cajeta::ownership::TitleVerdict& v) {
+            namespace own = cajeta::ownership;
+            const std::string code = v.error ? v.error : "CAJETA_ERROR_OWNED_RETURN_OF_BORROW";
+            const std::string canonical = m->toCanonical(false);
+            if (code == "CAJETA_ERROR_STACK_RETURN_ESCAPES") {
+                throw Exception(
+                    "method `" + canonical + "` returns " + stackWhat(sh)
+                    + " through a `#` (ownership-transfer) return type. The "
+                    "stack instance is reclaimed when this frame exits, but "
+                    "`#` promises the caller an owned value that outlives "
+                    "the call — the caller would register a drop over freed "
+                    "stack memory. Fix: allocate with `heap` (the value "
+                    "must outlive the frame), or drop the `#` from the "
+                    "return type if you meant to return by value. See "
+                    "docs/specification/lang/MemoryModel.md § Function "
+                    "signatures.", code);
+            }
+            if (code == "CAJETA_ERROR_OWNED_RETURN_OF_BORROWED_THIS") {
+                // owned-return-of-borrowed-this §4: the receiver is a
+                // plain-borrow formal — the method holds NO title to
+                // transfer; the caller's temp drop would free the wrapper
+                // out from under the receiver local (UAF).
+                throw Exception(
+                    "method `" + canonical + "` returns "
+                    "`this` through a `#` (ownership-transfer) return "
+                    "type, but the receiver is a borrow — the method "
+                    "holds no title to transfer. The caller would own "
+                    "the receiver's wrapper and free it on drop, "
+                    "dangling the caller's own local (use-after-free). "
+                    "Fix: return a fresh owned value (e.g. an owned "
+                    "copy, or a zero-copy borrow window such as "
+                    "`Cajeta.stringSliceBorrow(this, 0, "
+                    "this.byteLength())` for String), or drop the `#` "
+                    "from the return type if the caller only borrows "
+                    "the result. See "
+                    "specs/owned-return-of-borrowed-this-spec.md.", code);
+            }
+            const std::string name = sh.field ? sh.field->getName() : std::string();
+            if (code == "CAJETA_ERROR_BORROW_PARAM_ESCAPES") {
+                // Phase 3a of #68: a plain formal without an entry (a
+                // String) holds nothing this frame could transfer.
+                throw Exception(
+                    "method `" + canonical + "` declares a `#T` return "
+                    "(ownership transfer) but returns borrowed parameter `"
+                    + name + "` declared without `#`. The caller "
+                    "would register a fresh drop entry on receipt and free a "
+                    "value the original owner still references. Fix: mark "
+                    "the parameter `#" + name + "` so the caller transfers "
+                    "ownership, or change the return type to plain `T` "
+                    "(borrow pass-through). See "
+                    "docs/specification/lang/OwnershipTransfer.md.", code);
+            }
+            // OWNED_RETURN_OF_BORROW — what lends, read off the shape. A `#`
+            // return is a CONTRACT THE CALLEE MUST KEEP (8.2.6 / §4.5): a
+            // shape that provably holds a borrow would hand the caller a
+            // forged title. Fires only where provenance PROVES the borrow.
+            std::string held;
+            std::string fix;
+            if (sh.family == own::TitleFamily::LocalRead && sh.field) {
+                std::string origin = sh.field->getCallBorrowOrigin();
+                if (!origin.empty()) {
+                    held = "`" + name + "` holds a BORROW — it came from the "
+                        "borrow-returning call `" + origin + "`, whose receiver "
+                        "still owns and frees the value";
+                } else if (!(origin = sh.field->getParamBorrowOrigin()).empty()) {
+                    held = "`" + name + "` holds a BORROW — it came from the "
+                        "plain parameter `" + origin + "`, whose title stays "
+                        "with the caller";
+                } else {
+                    held = "`" + name + "` holds a BORROW — it was bound "
+                        "without a title (a literal, an alias of another "
+                        "binding, or an arena value), so this frame never "
+                        "owned what it names";
+                }
+                fix = "return `#= " + name + "` to carry whatever mode the "
+                    "frame actually holds (the caller then registers a drop "
+                    "only when it really received a title), or produce an "
+                    "owned value, or drop the `#` from the return type";
+            } else if (sh.family == own::TitleFamily::CallResult && sh.callee) {
+                const std::string callee = sh.callee->toCanonical(false);
+                if (sh.callee->isReturnsView()) {
+                    held = "it returns the result of `" + callee + "`, which "
+                        "is declared `^` — a VIEW interior to its receiver, "
+                        "which still owns and frees it";
+                } else {
+                    held = "it returns the result of `" + callee + "`, whose "
+                        "every return is an interior read of its receiver — a "
+                        "BORROW the receiver still owns and frees";
+                }
+                fix = "declare this method `^` too and let the view travel "
+                    "(the caller then never frees it), or produce an owned "
+                    "value, or return `#= ` a local whose runtime mode you "
+                    "actually hold";
+            } else {
+                held = "it returns " + std::string(sh.label)
+                    + " — a BORROW of a value someone else owns and frees";
+                fix = "produce an owned value (`heap ...`, a String concat, "
+                    "`#local` to surrender an owned local, or a call), or "
+                    "drop the `#` from the return type";
+            }
+            throw Exception(
+                "method `" + canonical + "` promises ownership with a `#` "
+                "return type, but " + held + ". The `#` return asserts a title "
+                "this frame never held, so the caller arms a drop on a value "
+                "someone else still owns and frees: a double free on the "
+                "caller's scope exit. Fix: " + fix + ". See "
+                "specs/stdlib-ownership-convention-spec.md §4.5 and §4.7.",
+                "CAJETA_ERROR_OWNED_RETURN_OF_BORROW");
+        }
+
+        // The `#T` contract, pre-codegen.
+        void checkOwnedReturnShapes(CajetaModulePtr& module, const MethodPtr& m,
+                                    const ExpressionPtr& expression, bool modeCarrying) {
+            namespace own = cajeta::ownership;
+            // Spec 5.10 — an array whose slots lend frame locals may not
+            // leave the frame, moved or by bare name.
+            own::rejectEscape(expression, own::ConsumerRole::ReturnOwned, module, "a `#` return");
+            own::TitleShape sh = own::classify(expression, module);
+            // `return #this`: no move conjures a title for the receiver.
+            if (sh.family == own::TitleFamily::Move) {
+                auto& mch = expression->getChildren();
+                if (!mch.empty()) {
+                    if (auto in = dynamic_pointer_cast<Expression>(mch[0])) {
+                        own::TitleShape ish = own::classify(in, module);
+                        if (ish.family == own::TitleFamily::ThisRead) {
+                            own::TitleVerdict tv{ish.answer, ish.source,
+                                "CAJETA_ERROR_OWNED_RETURN_OF_BORROWED_THIS", ish.label};
+                            throwOwnedReturn(m, ish, tv);
+                        }
+                    }
+                }
+            }
+            if (sh.family == own::TitleFamily::Conditional) {
+                // `return #= (c ? a : b)` carries the taken arm's mode.
+                if (modeCarrying) return;
+                // The promise covers EVERY arm, in the ARM role: the taken
+                // arm's phi lends a bare name (spec 5.10), so an arm that
+                // only reads — a literal, a field or element read, a bare
+                // local or formal, a `stack` value — has a constant-0 flag
+                // and would hand the caller a forged title when taken.
+                // Arms that decide at run time (a call's ride, a `#x` of a
+                // runtime owner) pass here and meet the TITLE_MISS contract
+                // after codegen, as `return #x` does.
+                bool found = false;
+                own::TitleShape bad;
+                BooleanSwitchExpression::forEachLeafArm(sh.leaf,
+                    [&](const ExpressionPtr& arm) {
+                        if (found || !arm) return;
+                        own::TitleShape ash = own::classify(arm, module);
+                        own::TitleVerdict av = own::policy(ash, own::ConsumerRole::Arm);
+                        if (av.answer == own::TitleAnswer::Borrow
+                                || av.answer == own::TitleAnswer::StackBound) {
+                            bad = ash;
+                            found = true;
+                        }
+                    });
+                if (found) {
+                    throw Exception(
+                        "method `" + m->toCanonical(false)
+                        + "` promises ownership with a `#` return type, "
+                        "but returns a conditional (`c ? a : b`) one of "
+                        "whose arms is " + std::string(bad.label)
+                        + " — a BORROW. When that arm is taken the "
+                        "caller arms a drop on a value someone else "
+                        "still owns and frees: a double free. Fix: make "
+                        "every arm produce a title (`heap ...`, a String "
+                        "concat, `#local` to surrender an owned local, "
+                        "or a call), return `#= (c ? a : b)` to carry "
+                        "whatever mode the taken arm actually holds, or "
+                        "drop the `#` from the return type. See "
+                        "specs/stdlib-ownership-convention-spec.md §4.5.",
+                        "CAJETA_ERROR_OWNED_RETURN_OF_BORROW");
+                }
+                return;
+            }
+            own::TitleVerdict v = own::policy(sh, own::ConsumerRole::ReturnOwned);
+            if (!v.error) return;
+            // `return #= x` declares the return carries the MODE, not a
+            // title: only the frame-bound shapes stay rejected.
+            if (modeCarrying) {
+                const std::string code = v.error;
+                if (code != "CAJETA_ERROR_STACK_RETURN_ESCAPES"
+                        && code != "CAJETA_ERROR_OWNED_RETURN_OF_BORROWED_THIS") {
+                    return;
+                }
+            }
+            throwOwnedReturn(m, sh, v);
+        }
+
+        // The plain-return rules, pre-codegen: no fresh value (nobody
+        // registers a drop for it), no owned local (dropped before the ret),
+        // no class-typed `stack` value (reclaimed at the ret). Per leaf arm
+        // of a conditional; casts peeled by the classifier (5.5).
+        void checkPlainReturnShapes(CajetaModulePtr& module, const MethodPtr& m,
+                                    const ExpressionPtr& expression) {
+            namespace own = cajeta::ownership;
+            own::TitleShape top = own::classify(expression, module);
+            const bool viaConditional = top.family == own::TitleFamily::Conditional;
+            const std::string armNote = viaConditional
+                ? " The value is an arm of the returned conditional "
+                  "(`c ? a : b`): every arm is held to this rule."
+                : "";
+            BooleanSwitchExpression::forEachLeafArm(top.leaf,
+                [&](const ExpressionPtr& arm) {
+                    if (!arm) return;
+                    own::TitleShape sh = viaConditional ? own::classify(arm, module) : top;
+                    own::TitleVerdict v = own::policy(sh, own::ConsumerRole::ReturnPlain);
+                    if (!v.error) return;
+                    const std::string code = v.error;
+                    const std::string canonical = m->toCanonical(false);
+                    if (code == "CAJETA_ERROR_STACK_RETURN_ESCAPES") {
+                        throw Exception(
+                            "method `" + canonical + "` returns " + stackWhat(sh)
+                            + " through a plain class return. The stack "
+                            "instance is reclaimed when this frame exits, so "
+                            "the caller would hold a pointer into freed stack "
+                            "memory. Fix: allocate with `heap` and mark the "
+                            "return type `#T` so the title transfers, or make "
+                            "the type a value type to return it by copy." + armNote,
+                            code);
+                    }
+                    if (sh.family == own::TitleFamily::Fresh) {
+                        throw Exception(
+                            "method `" + canonical + "` returns a freshly "
+                            "allocated value but its return type isn't marked "
+                            "`#` for ownership transfer. Without `#`, the "
+                            "caller treats the return as a borrow tied to "
+                            "no source — the allocation either leaks or gets "
+                            "freed by this function's scope-exit drop chain "
+                            "and hands back a dangling pointer. Fix: change "
+                            "the return type to `#T` so ownership transfers "
+                            "to the caller. See docs/specification/"
+                            "MemoryModel.md § Function signatures." + armNote,
+                            code);
+                    }
+                    // A named local with an active drop entry (8.2.10: keyed
+                    // on the ENTRY, not the title — a local that merely holds
+                    // a call's borrow is rejected too, so the message names
+                    // both cases and both working spellings).
+                    const std::string name = sh.field ? sh.field->getName() : std::string();
+                    throw Exception(
+                        "method `" + canonical + "` returns local "
+                        "'" + name + "', which "
+                        "has an active drop entry, through a "
+                        "plain (non-`#`) return type. If the "
+                        "local OWNS its value, the return "
+                        "deactivates this scope's drop while the "
+                        "caller registers none — the allocation "
+                        "leaks; fix: mark the return type `#T`. "
+                        "If the local only holds a BORROW from a "
+                        "call, the compiler cannot tell (the drop "
+                        "entry is the only static evidence, and "
+                        "ownership is runtime state) — return the "
+                        "call directly (`return f(...)`, which "
+                        "rides the callee's flag) or use `return "
+                        "#= " + name + "` "
+                        "(which ships the frame's actual mode). "
+                        "See docs/specification/MemoryModel.md "
+                        "§ Function signatures." + armNote,
+                        code);
+                });
+        }
+    }  // namespace
 
     llvm::Value* ReturnStatement::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
@@ -1770,6 +2030,9 @@ namespace cajeta {
         // 5.2.2 — runtime title flag riding out with this return (formal
         // pass-through or `#x`); null -> emitReturnFlag uses the static mode.
         llvm::Value* returnTitleFlag = nullptr;
+        // Unit 6 — which composition produced it, for the return-title audit
+        // (the classifier's source is the ground truth, not the IR's shape).
+        cajeta::ownership::TitleVia via = cajeta::ownership::TitleVia::Other;
         // argument-title-carry — `return #= x`: release WHATEVER title this
         // frame holds. `__cajeta_drop_take_active` reads the local's drop
         // entry and disarms it in one step, so the prior value becomes the
@@ -1798,6 +2061,7 @@ namespace cajeta {
                                     was, llvm::Type::getInt64Ty(
                                         *module->getLlvmContext()),
                                     "title.release.i64");
+                                via = cajeta::ownership::TitleVia::ModeCarry;
                             }
                         }
                     }
@@ -2015,226 +2279,19 @@ namespace cajeta {
             if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
             return builder->CreateRetVoid();
         }
-        // stack-return-transfer-error-spec §2.1: a `#T` return type promises
-        // the caller an OWNED value that outlives this frame, but a `stack`
-        // instance dies with the frame. The pairing is always wrong — the
-        // caller registers a drop entry over reclaimed stack memory. Before
-        // this check the direct shape reached codegen and blew up in the IR
-        // verifier ("return type does not match operand type"), and the
-        // named-local shape (`Cell c = stack Cell(); return #c;`) compiled
-        // clean and returned clobbered memory. Both are now one diagnostic;
-        // the fix for both is `heap`.
+        // Unit 6 — the `#T` return contract on the classifier (spec §2.3):
+        // STACK_RETURN_ESCAPES (a `stack` construction, a bare or moved
+        // stack local — 5.11), OWNED_RETURN_OF_BORROWED_THIS, BORROW_PARAM
+        // _ESCAPES (a plain formal without an entry), OWNED_RETURN_OF_BORROW
+        // (a local with a borrow origin or no title, a literal, a field or
+        // element read, a `^` / interior-view call, a borrow arm of a
+        // conditional), 5.10's slot escape. Casts are peeled (5.5). `return
+        // #x` is judged by the move's own codegen (MOVE_OF_BORROW) except
+        // for `this` and a `stack` value; `return #= x` carries the mode
+        // and keeps only those two.
         if (auto m = module->getCurrentMethod()) {
             if (m->isReturnsOwnership() && expression) {
-                // Unwrap `return #c` to reach the moved-from identifier.
-                ExpressionPtr inner = expression;
-                if (auto mv = dynamic_pointer_cast<MoveExpression>(expression)) {
-                    auto& mch = mv->getChildren();
-                    if (!mch.empty()) {
-                        inner = dynamic_pointer_cast<Expression>(mch[0]);
-                        if (!inner) inner = expression;
-                    }
-                }
-                // owned-return-of-borrowed-this §4: the receiver is a
-                // plain-borrow formal — the method holds NO title to
-                // transfer, so `return this` under a `#` return would hand
-                // the caller ownership of the borrowed receiver: the
-                // caller's temp drop frees the wrapper out from under the
-                // receiver local (UAF, detonating when the block is
-                // reused). Matches the field-store-title-trap doctrine
-                // that plain formals never inherit ownership.
-                bool returnsBorrowedThis =
-                    dynamic_pointer_cast<ThisExpression>(inner) != nullptr;
-                if (!returnsBorrowedThis) {
-                    if (auto idExpr =
-                            dynamic_pointer_cast<IdentifierExpression>(inner)) {
-                        returnsBorrowedThis = idExpr->getTextValue() == "this";
-                    }
-                }
-                if (returnsBorrowedThis) {
-                    throw Exception(
-                        "method `" + m->toCanonical(false) + "` returns "
-                        "`this` through a `#` (ownership-transfer) return "
-                        "type, but the receiver is a borrow — the method "
-                        "holds no title to transfer. The caller would own "
-                        "the receiver's wrapper and free it on drop, "
-                        "dangling the caller's own local (use-after-free). "
-                        "Fix: return a fresh owned value (e.g. an owned "
-                        "copy, or a zero-copy borrow window such as "
-                        "`Cajeta.stringSliceBorrow(this, 0, "
-                        "this.byteLength())` for String), or drop the `#` "
-                        "from the return type if the caller only borrows "
-                        "the result. See "
-                        "specs/owned-return-of-borrowed-this-spec.md.",
-                        "CAJETA_ERROR_OWNED_RETURN_OF_BORROWED_THIS");
-                }
-                // 8.2.6 / spec §4.5 — the same doctrine one step out from
-                // `this`: a `#` return is a CONTRACT THE CALLEE MUST KEEP, and
-                // a plain return under a `#` declaration takes the static mode
-                // (flag 1) unchallenged. The existing TITLE_MISS guard only
-                // covers `return #x` with a RUNTIME flag, so a frame that
-                // never held a title could assert one and nothing said a word
-                // — which is exactly how `reduceParallelChain` handed callers
-                // a forged title over their own lent seed (8.4.2), found by a
-                // canary test rather than by the compiler.
-                //
-                // The split with Unit 2 is by FORM, not by provenance, and it
-                // took two baselines to get right: `return #x` is Unit 2's
-                // (`CAJETA_ERROR_MOVE_OF_BORROW` — the literal `#`-on-a-borrow
-                // it was built for, plus the runtime TITLE_MISS behind it),
-                // while a PLAIN return under a `#` declaration is diagnosed by
-                // nothing at all, whichever provenance the local carries. That
-                // silent case is this check's, and it covers both origins.
-                //
-                // Fires only where provenance PROVES the frame holds a borrow,
-                // never on "cannot prove" — spec §7.2's discipline, and the
-                // reason it should not repeat 3.3.3's gate breakage.
-                //
-                // `return #= x` is exempt by design: it declares the return
-                // carries the MODE rather than claiming a title, so there is
-                // no promise to break. It is also the fix this diagnostic
-                // prescribes, and what 8.4.2 landed.
-                if (!modeCarrying
-                        && !dynamic_pointer_cast<MoveExpression>(expression)) {
-                    if (auto borrowId =
-                            dynamic_pointer_cast<IdentifierExpression>(inner)) {
-                        FieldPtr rf;
-                        if (auto scope = module->getScopeStack().peek()) {
-                            rf = scope->getField(borrowId->getTextValue());
-                        }
-                        if (rf) {
-                            std::string origin = rf->getCallBorrowOrigin();
-                            std::string lender = "the borrow-returning call `"
-                                + origin + "`, whose receiver still owns and "
-                                "frees the value";
-                            if (origin.empty()) {
-                                origin = rf->getParamBorrowOrigin();
-                                lender = "the plain parameter `" + origin
-                                    + "`, whose title stays with the caller";
-                            }
-                            if (!origin.empty()) {
-                                throw Exception(
-                                    "method `" + m->toCanonical(false)
-                                    + "` promises ownership with a `#` return "
-                                    "type, but `"
-                                    + borrowId->getTextValue()
-                                    + "` holds a BORROW — it came from "
-                                    + lender + ". The `#` return asserts a "
-                                    "title this frame never held, so the "
-                                    "caller arms a drop on a value someone "
-                                    "else still owns and frees: a double free "
-                                    "on the caller's scope exit. Fix: return "
-                                    "`#= " + borrowId->getTextValue()
-                                    + "` to carry whatever mode the frame "
-                                    "actually holds (the caller then registers "
-                                    "a drop only when it really received a "
-                                    "title), or produce an owned value, or "
-                                    "drop the `#` from the return type. See "
-                                    "specs/stdlib-ownership-convention-spec.md "
-                                    "§4.5.",
-                                    "CAJETA_ERROR_OWNED_RETURN_OF_BORROW");
-                            }
-                        }
-                    }
-                }
-                // A conditional under a `#` declaration: the promise covers
-                // EVERY arm. An arm that only reads — a literal, a field or
-                // element read, a bare local or formal — has a constant-0
-                // title flag and would hand the caller a forged title when
-                // taken. Measured 2026-09-07 (probe W): `return c ? ("y" + 2)
-                // : r.name` under `#String` stored return_flag_set(1)
-                // unconditionally. Arms that decide at runtime (a call's
-                // ride, a `#x` of a runtime owner) pass here and meet the
-                // TITLE_MISS contract check after codegen, as `return #x` does.
-                if (!modeCarrying
-                        && isConditionalKind(inner)) {
-                    const char* borrowArm = nullptr;
-                    BooleanSwitchExpression::forEachLeafArm(inner,
-                        [&](const ExpressionPtr& arm) {
-                            if (borrowArm || !arm) return;
-                            if (dynamic_pointer_cast<MoveExpression>(arm)
-                                    || dynamic_pointer_cast<MethodCallExpression>(arm)
-                                    || dynamic_pointer_cast<CallExpression>(arm)) {
-                                return;
-                            }
-                            if (auto ne = dynamic_pointer_cast<NewExpression>(arm)) {
-                                if (!ne->getStackAlloc()) return;
-                                borrowArm = "a `stack` construction";
-                                return;
-                            }
-                            if (auto ag = dynamic_pointer_cast<
-                                    AggregateInitializerExpression>(arm)) {
-                                if (!ag->getStackAlloc()) return;
-                                borrowArm = "a `stack` construction";
-                                return;
-                            }
-                            if (auto bo = dynamic_pointer_cast<BinaryOpExpression>(arm)) {
-                                auto rt = bo->getResolvedType();
-                                if (bo->getBinaryOp() == BINARY_OP_ADD && rt
-                                        && rt->getQName()
-                                        && rt->getQName()->getTypeName() == "String") {
-                                    return;
-                                }
-                            }
-                            if (dynamic_pointer_cast<TextLiteralExpression>(arm)) {
-                                borrowArm = "a literal";
-                            } else if (dynamic_pointer_cast<DotExpression>(arm)) {
-                                borrowArm = "a field read";
-                            } else if (dynamic_pointer_cast<ArrayIndexExpression>(arm)) {
-                                borrowArm = "an element read";
-                            } else if (dynamic_pointer_cast<IdentifierExpression>(arm)) {
-                                borrowArm = "a bare local or formal (no `#`)";
-                            } else {
-                                borrowArm = "a read of a value someone else owns";
-                            }
-                        });
-                    if (borrowArm) {
-                        throw Exception(
-                            "method `" + m->toCanonical(false)
-                            + "` promises ownership with a `#` return type, "
-                            "but returns a conditional (`c ? a : b`) one of "
-                            "whose arms is " + std::string(borrowArm)
-                            + " — a BORROW. When that arm is taken the "
-                            "caller arms a drop on a value someone else "
-                            "still owns and frees: a double free. Fix: make "
-                            "every arm produce a title (`heap ...`, a String "
-                            "concat, `#local` to surrender an owned local, "
-                            "or a call), return `#= (c ? a : b)` to carry "
-                            "whatever mode the taken arm actually holds, or "
-                            "drop the `#` from the return type. See "
-                            "specs/stdlib-ownership-convention-spec.md §4.5.",
-                            "CAJETA_ERROR_OWNED_RETURN_OF_BORROW");
-                    }
-                }
-                bool stackReturn = Method::exprIsStackConstruction(inner);
-                std::string what = "a `stack` construction";
-                if (!stackReturn) {
-                    if (auto idExpr =
-                            dynamic_pointer_cast<IdentifierExpression>(inner)) {
-                        if (auto scope = module->getScopeStack().peek()) {
-                            FieldPtr f = scope->getField(idExpr->getTextValue());
-                            if (f && f->isStackInstance()) {
-                                stackReturn = true;
-                                what = "local '" + idExpr->getTextValue()
-                                     + "', a `stack` value,";
-                            }
-                        }
-                    }
-                }
-                if (stackReturn) {
-                    throw Exception(
-                        "method `" + m->toCanonical(false) + "` returns " + what
-                        + " through a `#` (ownership-transfer) return type. The "
-                        "stack instance is reclaimed when this frame exits, but "
-                        "`#` promises the caller an owned value that outlives "
-                        "the call — the caller would register a drop over freed "
-                        "stack memory. Fix: allocate with `heap` (the value "
-                        "must outlive the frame), or drop the `#` from the "
-                        "return type if you meant to return by value. See "
-                        "docs/specification/lang/MemoryModel.md § Function "
-                        "signatures.",
-                        "CAJETA_ERROR_STACK_RETURN_ESCAPES");
-                }
+                checkOwnedReturnShapes(module, m, expression, modeCarrying);
             }
         }
         // 8.2.8 / spec §4.7 — the `^T` BODY RESTRICTION, part 1: the arms
@@ -2373,231 +2430,32 @@ namespace cajeta {
                 }
             }
         }
-        // Memory-model § Function signatures: returning a fresh
-        // allocation (`return heap X(...)`, `return new X(...)`,
-        // `return heap X { ... }`) requires the enclosing method's
-        // return type to be marked `#` for ownership transfer. A plain
-        // return carries whatever the RETURN EXPRESSION holds (spec §2.8,
-        // §4.8) — a formal, a call result, or `#= local`. A fresh
-        // allocation is none of those: its title is held only by this
-        // frame's drop chain, so the allocation would either
-        // leak (caller doesn't drop) or get freed by the function's
-        // scope-exit drop chain and hand back a dangling pointer.
-        //
-        // Same story for `stack X(...)` returns: the stack memory
-        // dies on function return, so any return at all is a use-
-        // after-free hazard. Both shapes get the same diagnostic
-        // since the fix is the same: mark the return type with `#`
-        // for `heap` (the right form), and switch to `heap` for
-        // anything you wanted to escape the function.
+        // Memory-model § Function signatures: a plain return carries
+        // whatever the RETURN EXPRESSION holds (spec §2.8, §4.8) — a
+        // formal, a call result, or `#= local`. A fresh allocation is none
+        // of those (its title is held only by this frame's drop chain, so
+        // it would leak or be freed before the ret), and a class-typed
+        // `stack` value dies with the frame.
         if (auto m = module->getCurrentMethod()) {
-            // Skip lambdas — the (T) -> R type syntax doesn't carry a
-            // `#` for the return; treating lambda returns as borrow-by-
-            // default would block any lambda that constructs and
-            // returns a fresh value. When the lambda type syntax gains
-            // `#R` support, this carve-out can drop.
             bool isLambda = m->getName().rfind("__cajeta_lambda_", 0) == 0;
-            // @ValueType returns are by-value (Copy): `return stack Vec2(...)`
-            // copies the value into the caller's slot like a primitive — no
-            // ownership transfer, no dangling-borrow hazard. Exempt them so static
-            // value-type operators (Vec2 operator+(Vec2,Vec2)) need no `#`.
-            // See plans/value-type-overloading-plan.md (value types are Copy).
             auto rtype = m->getReturnType();
             bool returnsValueType = rtype && rtype->isValueType();
-            // Builtin by-value aggregates — Vector<T,N>, Matrix<T,R,C>,
-            // Quaternion<T> — are PRIMITIVE_FLAG: `return stack Matrix(...)`
-            // copies the value into the caller's slot exactly like a scalar or
-            // an @ValueType return, with no heap pointer and so no dangling-
-            // borrow hazard. They lack VALUE_TYPE_FLAG only because they are
-            // compiler builtins rather than @ValueType-annotated classes, so
-            // isValueType() above misses them. Exempt them here too — otherwise
-            // a math builder like cajeta.math.Camera.perspective() returning a
-            // freshly-constructed Matrix trips the fresh-return check spuriously.
+            // Primitives and the by-value math types (Vec3 / Matrix …)
+            // return by COPY: no title moves, so the plain-return rules do
+            // not apply — a math builder returning a freshly-constructed
+            // Matrix must not trip the fresh-return check.
             bool returnsByValuePrimitive =
                 rtype && (rtype->getTypeFlags() & PRIMITIVE_FLAG) != 0;
-            // argument-title-carry — `return #= x` is exempt from BOTH shapes
-            // below. The guard exists because a non-`#` signature makes the
-            // caller register no drop entry, so a released title would leak.
-            // The mode-carrying return closes exactly that hole: it ships the
-            // title's runtime bit in the return flag, and the caller's `#=`
-            // receipt registers a drop entry when the bit is 1. Without this
-            // exemption the guard rejects the very form built to satisfy it.
+            // `return #= x` ships the frame's actual mode in the return flag
+            // and the caller's `#=` receipt registers a drop when the bit is
+            // 1: it is the fix these diagnostics prescribe, so it is exempt.
+            // Unit 6 — the rules are the classifier's ReturnPlain row:
+            // FRESH_RETURN_NEEDS_TRANSFER for a fresh value or a local with
+            // an active entry, STACK_RETURN_ESCAPES for a class-typed
+            // `stack` value; per leaf arm of a conditional; casts peeled.
             if (!isLambda && !m->isReturnsOwnership() && !returnsValueType
                     && !returnsByValuePrimitive && !modeCarrying) {
-                // 8.1.5 — identity reference casts are peeled (6.2.6c) before
-                // BOTH shape arms. Without this, `return (Cell) x` of an
-                // owned local compiled while the uncast spelling was
-                // rejected: one cast reopened the exact leak/dangle this
-                // guard exists to close (found while probing whether the
-                // 8.1.5 leak population was really empty — it was, except
-                // through this hole).
-                // A conditional under a PLAIN return is held to both shapes
-                // below per LEAF ARM: a fresh `heap` arm leaks (the caller
-                // registers no drop), an owned-local arm is dropped by this
-                // frame before the `ret`. forEachLeafArm visits a bare
-                // expression once, so one body serves both.
-                bool viaConditional =
-                    isConditionalKind(expression);
-                std::string armNote = viaConditional
-                    ? " The value is an arm of the returned conditional "
-                      "(`c ? a : b`): every arm is held to this rule."
-                    : "";
-                auto checkFreshArm = [&](const ExpressionPtr& armExpr) {
-                ExpressionPtr frInner = armExpr;
-                while (auto castE =
-                        dynamic_pointer_cast<CastExpression>(frInner)) {
-                    CajetaTypePtr dt = castE->getDestType();
-                    auto dc = dynamic_pointer_cast<CajetaClass>(dt);
-                    auto dv = dynamic_pointer_cast<CajetaView>(dt);
-                    bool refCast = (bool) dv
-                        || (dc && !dc->isInterface() && !dc->isValueType());
-                    if (!refCast || castE->getChildren().empty()) break;
-                    auto peeled = dynamic_pointer_cast<Expression>(
-                        castE->getChildren()[0]);
-                    if (!peeled) break;
-                    frInner = peeled;
-                }
-                auto newExpr = dynamic_pointer_cast<NewExpression>(frInner);
-                auto aggExpr = dynamic_pointer_cast<AggregateInitializerExpression>(frInner);
-                if (newExpr || aggExpr) {
-                    std::string canonical = m->toCanonical(false);
-                    throw Exception(
-                        "method `" + canonical + "` returns a freshly "
-                        "allocated value but its return type isn't marked "
-                        "`#` for ownership transfer. Without `#`, the "
-                        "caller treats the return as a borrow tied to "
-                        "no source — the allocation either leaks or gets "
-                        "freed by this function's scope-exit drop chain "
-                        "and hands back a dangling pointer. Fix: change "
-                        "the return type to `#T` so ownership transfers "
-                        "to the caller. See docs/specification/"
-                        "MemoryModel.md § Function signatures." + armNote,
-                        "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
-                }
-                // Same hazard, named-local shape: `Foo c = new Foo();
-                // return c;` (or `#Foo p` parameter `return p;`). The
-                // local owns the allocation — its registered drop entry
-                // would deactivate at the return per the class-instance
-                // transfer block below, while the receiver treats the
-                // value as a borrow (post task #54 semantics: receive-
-                // side only registers a drop if the callee's return is
-                // `#`). Net result: the allocation silently leaks. The
-                // `return new X()` shape above caught only the inline
-                // construction; this catches the symmetric leak when
-                // the freshly-owned value flows through a named local
-                // first. Same fix: mark the return type `#T`.
-                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(frInner)) {
-                    if (auto scope = module->getScopeStack().peek()) {
-                        FieldPtr f = scope->getField(idExpr->getTextValue());
-                        // 5.2.2 — formals are RUNTIME owners: their entry is
-                        // armed per call, and a plain return is the legal
-                        // pass-through (flag rides the return-flag TLS).
-                        // Only statically-owned LOCALS demand the `#` return.
-                        if (dynamic_pointer_cast<ParameterField>(f)) {
-                            f = nullptr;
-                        }
-                        if (f && f->getDropEntry()) {
-                            auto klass = dynamic_pointer_cast<CajetaClass>(f->getType());
-                            auto view = dynamic_pointer_cast<CajetaView>(f->getType());
-                            // Value types are exempt: they return by COPY, and
-                            // a shared-capable value local's drop entry (slice-
-                            // spec §6.1) deactivates at return as a move-out —
-                            // no `#` needed for correctness.
-                            bool transferShape =
-                                (klass && !klass->isInterface()
-                                       && !klass->isValueType()) || (bool) view;
-                            if (transferShape) {
-                                // 8.2.10 — the check deliberately keys on the
-                                // DROP ENTRY, not on the title: ownership is
-                                // runtime state, so a local that merely holds
-                                // a borrow from a call is indistinguishable
-                                // here and is rejected too (pinned by
-                                // SignatureAbiTests.plainReturnOfBorrowed-
-                                // LocalIsAlsoRejected). That is the accepted
-                                // cost — the decision record says LEAVE IT —
-                                // but the MESSAGE must not claim "the
-                                // allocation leaks" unconditionally: for the
-                                // borrow case that sends the developer
-                                // hunting an allocation that is not theirs.
-                                // Name both cases and both working spellings.
-                                std::string canonical = m->toCanonical(false);
-                                throw Exception(
-                                    "method `" + canonical + "` returns local "
-                                    "'" + idExpr->getTextValue() + "', which "
-                                    "has an active drop entry, through a "
-                                    "plain (non-`#`) return type. If the "
-                                    "local OWNS its value, the return "
-                                    "deactivates this scope's drop while the "
-                                    "caller registers none — the allocation "
-                                    "leaks; fix: mark the return type `#T`. "
-                                    "If the local only holds a BORROW from a "
-                                    "call, the compiler cannot tell (the drop "
-                                    "entry is the only static evidence, and "
-                                    "ownership is runtime state) — return the "
-                                    "call directly (`return f(...)`, which "
-                                    "rides the callee's flag) or use `return "
-                                    "#= " + idExpr->getTextValue() + "` "
-                                    "(which ships the frame's actual mode). "
-                                    "See docs/specification/MemoryModel.md "
-                                    "§ Function signatures." + armNote,
-                                    "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
-                            }
-                        }
-                    }
-                }
-                };
-                BooleanSwitchExpression::forEachLeafArm(expression, checkFreshArm);
-            }
-        }
-        // Phase 3a of #68 (body-side borrow-escape check): returning a
-        // borrowed class parameter through a `#T`-return signature is
-        // a silent escape. The caller will register a fresh drop entry
-        // expecting ownership, but the value was the caller-of-caller's
-        // borrow — when the original owner drops, the receiver's drop
-        // fires on the same allocation and produces a double free. The
-        // borrow-param's formal is plain `T` (not `#T`), so the
-        // parameter doesn't own its value and can't transfer it.
-        if (auto m = module->getCurrentMethod()) {
-            if (m->isReturnsOwnership() && expression) {
-                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
-                    auto scope = module->getScopeStack().peek();
-                    if (scope) {
-                        FieldPtr fld = scope->getField(idExpr->getTextValue());
-                        auto pf = dynamic_pointer_cast<ParameterField>(fld);
-                        if (pf) {
-                            auto formal = pf->getFormalParameter();
-                            // 5.2.4 — RETIRED for class-typed formals: a plain
-                            // formal is a RUNTIME owner (5.2.2), so returning it
-                            // through a `#T` signature forwards its actual flag
-                            // (captured above) rather than forging ownership.
-                            bool runtimeOwner = fld && fld->getDropEntry();
-                            if (formal && !formal->isTransferred()
-                                    && !runtimeOwner) {
-                                auto klass = dynamic_pointer_cast<CajetaClass>(
-                                    fld->getType());
-                                if (klass && !klass->isInterface()) {
-                                    throw Exception(
-                                        "method `" + m->toCanonical(false)
-                                            + "` declares a `#T` return "
-                                            "(ownership transfer) but returns "
-                                            "borrowed parameter `"
-                                            + idExpr->getTextValue() + "` "
-                                            "declared without `#`. The caller "
-                                            "would register a fresh drop entry "
-                                            "on receipt and free a value the "
-                                            "original owner still references. "
-                                            "Fix: mark the parameter `#"
-                                            + idExpr->getTextValue() + "` so the "
-                                            "caller transfers ownership, or "
-                                            "change the return type to plain "
-                                            "`T` (borrow pass-through). See "
-                                            "docs/specification/lang/OwnershipTransfer.md.",
-                                        "CAJETA_ERROR_BORROW_PARAM_ESCAPES");
-                                }
-                            }
-                        }
-                    }
-                }
+                checkPlainReturnShapes(module, m, expression);
             }
         }
 
@@ -2662,44 +2520,42 @@ namespace cajeta {
         // the underlying local. Value casts (`(int64) obj`) don't move
         // the object out — the scope keeps its drop — so only casts to
         // a concrete class or view type are peeled.
-        AbstractSyntaxNodePtr returnee = expression;
-        while (auto castExpr = dynamic_pointer_cast<CastExpression>(returnee)) {
-            CajetaTypePtr dt = castExpr->getDestType();
-            auto destClass = dynamic_pointer_cast<CajetaClass>(dt);
-            auto destView = dynamic_pointer_cast<CajetaView>(dt);
-            bool refCast = (bool) destView
-                || (destClass && !destClass->isInterface()
-                    && !destClass->isValueType());
-            if (!refCast || castExpr->getChildren().empty()) break;
-            returnee = castExpr->getChildren()[0];
-        }
-        if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(returnee)) {
-            auto scope = module->getScopeStack().peek();
-            FieldPtr f = scope ? scope->getField(idExpr->getTextValue()) : nullptr;
+        // Unit 6 — the returned NAME, pre-codegen: its escape checks (a
+        // closure's borrow captures, a struct view's frame-local buffer) and
+        // its title. The classifier peels identity reference casts (5.5,
+        // 6.2.6c): `return (Stream<T>) newRoot;` is the pass-through
+        // `return newRoot;` is. The flag is read HERE, before the entry is
+        // deactivated — a static owner's is the constant 1, a runtime
+        // owner's (a plain formal armed from its word bit, an entry armed
+        // from a callee's flag) is its entry's active byte — and the return
+        // then hands the entry over: this scope's drop must not fire on a
+        // value the caller now owns. Arrays are not covered (they remain
+        // owned by the declaring scope, a pre-existing limitation); owning
+        // views are (their ctor pushed an entry paired with
+        // __cajeta_view_drop_owned).
+        {
+            namespace own = cajeta::ownership;
+            own::TitleShape nameShape = own::classify(expression, module);
+            Field* f = nameShape.family == own::TitleFamily::LocalRead ? nameShape.field : nullptr;
             if (f && f->hasBorrowCaptures()) {
                 throw Exception(
-                    "cannot return closure '" + idExpr->getTextValue()
+                    "cannot return closure '" + f->getName()
                     + "' — it captures one or more outer locals by borrow, "
                     "and those borrows would dangle past the function return; "
                     "transfer the captures via `#name` to give the closure "
                     "ownership it can carry past this scope",
                     "CAJETA_ERROR_BORROW_ESCAPE");
             }
-            // Struct view-aliasing escape check: returning a struct
-            // view whose underlying buffer is a function-scope local
-            // would leave the caller with a view of freed memory —
-            // the buffer drops as this function returns. View over
-            // a parameter (caller-owned buffer) or a field (some
-            // object's buffer that outlives the call) is fine; only
-            // function-locals end at return. Detected by walking
-            // viewSource and checking it's not a ParameterField.
             if (f && f->getViewSource()) {
+                // A view over a parameter (caller-owned buffer) or a field
+                // (some object's buffer that outlives the call) is fine; a
+                // function-local buffer drops as this function returns.
                 FieldPtr src = f->getViewSource();
                 bool srcIsParam =
                     dynamic_pointer_cast<ParameterField>(src) != nullptr;
                 if (!srcIsParam) {
                     throw Exception(
-                        "cannot return struct view '" + idExpr->getTextValue()
+                        "cannot return struct view '" + f->getName()
                         + "' — it aliases the buffer '" + src->getName()
                         + "' which is a function-scope local and would drop "
                         "as this function returns, leaving the caller with "
@@ -2709,51 +2565,36 @@ namespace cajeta {
                         "CAJETA_ERROR_VIEW_ESCAPE");
                 }
             }
-            // L3-3: returning a function-typed local transfers closure
-            // ownership to the caller. Deactivate the local's drop entry
-            // so this scope's exit pop doesn't free the closure out from
-            // under the receiving caller. The caller's own function-typed
-            // local will register a fresh drop entry on receipt.
-            if (f && dynamic_pointer_cast<CajetaFunctionType>(f->getType())) {
-                if (llvm::Value* entry = f->getDropEntry()) {
-                    if (llvm::Function* mark = module->getRuntimeFunction(
-                            "__cajeta_drop_mark_inactive")) {
-                        builder->CreateCall(mark, {entry});
+            if (f) {
+                // L3-3: a function-typed local hands its closure to the
+                // caller, whose own local registers a fresh entry on receipt.
+                if (dynamic_pointer_cast<CajetaFunctionType>(f->getType())) {
+                    if (llvm::Value* entry = f->getDropEntry()) {
+                        if (llvm::Function* mark = module->getRuntimeFunction(
+                                "__cajeta_drop_mark_inactive")) {
+                            builder->CreateCall(mark, {entry});
+                        }
                     }
                 }
-            }
-            // Same transfer semantics for class-instance locals.
-            // Returning the local moves the heap allocation up to the
-            // caller; this scope's drop entry must not fire or we'd
-            // free the instance the caller now owns. The caller's
-            // declared receiving local will get its own drop entry.
-            // Arrays aren't covered here — they remain owned by the
-            // declaring scope regardless of whether the array header
-            // is returned (a separate pre-existing limitation).
-            //
-            // Owning views (a view whose ctor took #-transferred bytes)
-            // DO have a drop entry — the owning ctor pushes one paired
-            // with __cajeta_view_drop_owned. When the function returns
-            // the view, ownership of the underlying buffer transfers
-            // to the caller and this scope must not free it. The
-            // generic `f->getDropEntry()` check covers both classes and
-            // owning views.
-            if (f) {
                 auto klass = dynamic_pointer_cast<CajetaClass>(f->getType());
                 auto view = dynamic_pointer_cast<CajetaView>(f->getType());
                 bool transferShape =
                     (klass && !view && !klass->isInterface()) || (bool) view;
                 if (transferShape) {
                     if (llvm::Value* entry = f->getDropEntry()) {
-                        // 5.2.2 — a returned formal is a pass-through: its
-                        // runtime flag rides out on the return-flag TLS
-                        // (captured before deactivation).
-                        if (dynamic_pointer_cast<ParameterField>(f)) {
-                            if (llvm::Function* flagFn =
-                                    module->getRuntimeFunction(
-                                        "__cajeta_drop_entry_flag")) {
-                                returnTitleFlag = builder->CreateCall(
-                                    flagFn, {entry}, "ret_title_flag");
+                        auto m = module->getCurrentMethod();
+                        // `return #= x` already took the entry's flag (and
+                        // disarmed it) above; nothing to read here.
+                        if (m && m->returnsClassPointer() && !modeCarrying) {
+                            own::TitleVerdict nv = own::policy(nameShape,
+                                m->isReturnsOwnership() ? own::ConsumerRole::ReturnOwned
+                                                        : own::ConsumerRole::ReturnPlain);
+                            if (llvm::Value* tf = own::verdictFlag(nameShape, nv, module)) {
+                                returnTitleFlag = tf;
+                                if (nv.source == own::TitleSource::DropEntry
+                                        && nameShape.has(own::TitleShape::kIsParam)) {
+                                    via = own::TitleVia::FormalPassThrough;
+                                }
                             }
                         }
                         if (llvm::Function* mark = module->getRuntimeFunction(
@@ -2765,6 +2606,9 @@ namespace cajeta {
             }
         }
         llvm::Value* val = expression->generateCode(module);
+        // Unit 6 — the returned value's shape AFTER codegen: a call's callee
+        // is exact now (overloads included), a name's scope is still open.
+        cajeta::ownership::TitleShape rs = cajeta::ownership::classify(expression, module);
         // 8.2.8 / spec §4.7 — the `^T` BODY RESTRICTION, part 2: the CALL
         // arm, deferred here because a MethodCallExpression's resolvedMethod
         // is null until it generates. Delegation through another `^` is the
@@ -2907,79 +2751,77 @@ namespace cajeta {
         // the same check written beside its sibling above silently passed
         // every program. That is exactly how 8.2.12's hook site enforced
         // nothing for a full unit — 604 calls, all `<unresolved>`.
+        // Unit 6 — the returned VALUE's title, post-codegen, on the
+        // classifier. A call's shape is exact now: a `^` / static
+        // interior-view callee under `#T` is the OWNED_RETURN_OF_BORROW the
+        // pre-codegen pass could not always prove (a shallow resolution
+        // answers only on a unique name+arity), and a flag-storing callee's
+        // bit is captured from the TLS HERE, before advice / finally / drop
+        // calls can overwrite it — emitReturnFlag re-sets it at the ret. For
+        // plain returns the static borrow default would clobber a flag-true
+        // result (the WsReadAction TITLE_MISS regression); for `#` returns it
+        // would forge ownership over a forwarded borrow. A callee that stores
+        // no flag (a `@Native`, an intrinsic) answers with its declared
+        // stance, statically — reading the TLS after one is a stale read.
+        // A fresh value, a concatenation, a literal and an interior read are
+        // constants (the plain static mode where the shape agrees with it).
+        // A name's flag was read above, before its entry was handed over; a
+        // `#` move's and a conditional's are composed at the ret.
         if (auto m = module->getCurrentMethod()) {
-            if (m->isReturnsOwnership() && expression
-                    && !dynamic_pointer_cast<MoveExpression>(expression)) {
-                // Identity reference casts are peeled (6.2.6c) so
-                // `return (Cell) h.peek();` cannot launder the stance.
-                ExpressionPtr innerB = expression;
-                while (auto castE =
-                        dynamic_pointer_cast<CastExpression>(innerB)) {
-                    CajetaTypePtr dt = castE->getDestType();
-                    auto dc = dynamic_pointer_cast<CajetaClass>(dt);
-                    auto dv = dynamic_pointer_cast<CajetaView>(dt);
-                    bool refCast = (bool) dv
-                        || (dc && !dc->isInterface() && !dc->isValueType());
-                    if (!refCast || castE->getChildren().empty()) break;
-                    auto peeled = dynamic_pointer_cast<Expression>(
-                        castE->getChildren()[0]);
-                    if (!peeled) break;
-                    innerB = peeled;
-                }
-                if (auto viewCall =
-                        dynamic_pointer_cast<MethodCallExpression>(innerB)) {
-                    if (MethodPtr vm = viewCall->getResolvedMethod()) {
-                        if (vm->isReturnsView()) {
-                            throw Exception(
-                                "method `" + m->toCanonical(false)
-                                + "` promises ownership with a `#` return "
-                                "type, but it returns the result of `"
-                                + vm->toCanonical(false) + "`, which is "
-                                "declared `^` — a VIEW interior to its "
-                                "receiver, which still owns and frees it. The "
-                                "`#` asserts a title this frame never held, so "
-                                "the caller arms a drop on someone else's "
-                                "value: a double free on the caller's scope "
-                                "exit. Fix: declare this method `^` too and "
-                                "let the view travel (the caller then never "
-                                "frees it), or produce an owned value, or "
-                                "return `#= ` a local whose runtime mode you "
-                                "actually hold. See "
-                                "specs/stdlib-ownership-convention-spec.md "
-                                "§4.5 and §4.7.",
-                                "CAJETA_ERROR_OWNED_RETURN_OF_BORROW");
+            namespace own = cajeta::ownership;
+            const own::ConsumerRole role = m->isReturnsOwnership()
+                ? own::ConsumerRole::ReturnOwned : own::ConsumerRole::ReturnPlain;
+            switch (rs.family) {
+                case own::TitleFamily::CallResult:
+                case own::TitleFamily::ClosureCall: {
+                    if (auto mceRet = dynamic_pointer_cast<MethodCallExpression>(rs.leaf)) {
+                        // Post-codegen the call's OWN resolution is the truth:
+                        // null means an intrinsic lowering (`Cajeta.string-
+                        // SliceBorrow`, `TcpStream.connectAsyncNative`) that
+                        // stored no flag — the static mode stands, a TLS read
+                        // would be stale (24 such reads measured in the corpus
+                        // 2026-09-08 when the shallow resolution was trusted).
+                        if (!mceRet->getResolvedMethod()) break;
+                        // `return Cajeta.flagged(v, owned)`: the container's
+                        // bookkeeping decides (composed at the ret) — no ride.
+                        if (mceRet->getFlaggedTitleValue()) break;
+                    }
+                    own::TitleVerdict v = own::policy(rs, role);
+                    if (v.error) throwOwnedReturn(m, rs, v);
+                    if (m->returnsClassPointer()) {
+                        if (llvm::Value* tf = own::verdictFlag(rs, v, module)) {
+                            returnTitleFlag = tf;
+                            if (v.source == own::TitleSource::ReturnFlag) {
+                                via = own::TitleVia::CallRide;
+                            }
                         }
                     }
+                    break;
                 }
-            }
-        }
-        // A returned CALL result rides the inner call's title flag out —
-        // for plain returns the static borrow default would clobber a
-        // flag-true result (the WsReadAction TITLE_MISS regression); for
-        // `#` returns it would forge ownership over a forwarded borrow.
-        // Capture the TLS here, before advice/finally/drop calls can
-        // overwrite it; emitReturnFlag re-sets it at the ret.
-        if (auto m = module->getCurrentMethod()) {
-            if (m->returnsClassPointer()) {
-                // MCE: only when the resolved callee actually stores the
-                // flag — a raw-IR synthesized body leaves a STALE value in
-                // the TLS (the sweep-4 JsonSynthesizer garbage reads).
-                // Closures (CallExpression) always participate post-7.2.5.
-                bool calleeParticipates = false;
-                if (auto mceRet =
-                        dynamic_pointer_cast<MethodCallExpression>(expression)) {
-                    MethodPtr callee = mceRet->getResolvedMethod();
-                    calleeParticipates = callee && callee->emitsReturnFlag();
-                } else if (dynamic_pointer_cast<CallExpression>(expression)) {
-                    calleeParticipates = true;
-                }
-                if (calleeParticipates) {
-                    if (llvm::Function* getFlagFn = module->getRuntimeFunction(
-                            "__cajeta_return_flag_get")) {
-                        returnTitleFlag = builder->CreateCall(
-                            getFlagFn, {}, "ret_flag_ride");
+                case own::TitleFamily::Fresh:
+                case own::TitleFamily::Concat:
+                case own::TitleFamily::Literal:
+                case own::TitleFamily::FieldRead:
+                case own::TitleFamily::ElementRead:
+                case own::TitleFamily::Closure: {
+                    if (m->returnsClassPointer() && !modeCarrying) {
+                        own::TitleVerdict v = own::policy(rs, role);
+                        if (!v.error) {
+                            if (llvm::Value* tf = own::verdictFlag(rs, v, module)) {
+                                returnTitleFlag = tf;
+                            }
+                        }
                     }
+                    break;
                 }
+                case own::TitleFamily::LocalRead:      // read before its entry was handed over
+                case own::TitleFamily::Move:           // composed at the ret (the stashed flag)
+                case own::TitleFamily::Conditional:    // composed at the ret (the arm phi)
+                case own::TitleFamily::ThisRead:       // the static borrow
+                case own::TitleFamily::Scalar:
+                case own::TitleFamily::Unsupported:
+                case own::TitleFamily::Count:
+                    break;
             }
         }
         // slice-spec §6.1 copy hook, return-of-lvalue form: returning a
@@ -3446,17 +3288,21 @@ namespace cajeta {
                 }
             }
         };
-        if (auto mvRet = dynamic_pointer_cast<MoveExpression>(expression)) {
-            returnTitleFlag = mvRet->getRuntimeTitleFlag()
-                ? mvRet->getRuntimeTitleFlag()
-                : (llvm::Value*) builder->getInt64(1);
+        // Unit 6 — `return #x`: the move already read its source's flag
+        // BEFORE deactivating it (a runtime owner forwards that stash; a
+        // static owner moved out is the constant 1 — titleFlag's Move row),
+        // and meets the TITLE_MISS contract under `#T`.
+        if (rs.family == cajeta::ownership::TitleFamily::Move) {
+            returnTitleFlag = cajeta::ownership::titleFlag(rs, module);
+            via = cajeta::ownership::TitleVia::Move;
             emitTitleContract(returnTitleFlag);
         }
         // 6.2.2 — `return Cajeta.flagged(v, owned)`: the container's own
         // bookkeeping decides the flag.
-        if (auto mcRet = dynamic_pointer_cast<MethodCallExpression>(expression)) {
+        if (auto mcRet = dynamic_pointer_cast<MethodCallExpression>(rs.leaf)) {
             if (llvm::Value* f = mcRet->getFlaggedTitleValue()) {
                 returnTitleFlag = f;
+                via = cajeta::ownership::TitleVia::Flagged;
             }
         }
         // A returned conditional forwards the TAKEN arm's title flag: a
@@ -3467,28 +3313,33 @@ namespace cajeta {
         // exactly as a tail call does (ownership §2.1); `return #=` carries
         // it as the mode. Before this a `#` return stored a constant 1 over
         // a borrow arm and a plain return dropped a fresh arm on the floor.
-        if (isConditionalKind(expression)) {
-            if (llvm::Value* tf = conditionalTitleFlag(expression)) {
+        if (rs.family == cajeta::ownership::TitleFamily::Conditional) {
+            if (llvm::Value* tf = conditionalTitleFlag(rs.leaf)) {
                 returnTitleFlag = tf;
                 emitTitleContract(tf);
             }
         }
-        // 7.2.5 — lambda-body returns: classify by shape. A fresh
-        // construction hands out a title; a returned CALL result lets the
-        // inner call's flag ride through untouched; anything else is the
-        // borrow default emitReturnFlag emits in lambda mode.
+        // 7.2.5 — lambda-body returns, by shape: a fresh value or a
+        // concatenation hands out a title; a returned CALL result lets the
+        // inner call's flag ride through untouched (no re-set: the TLS still
+        // holds it — kept over a capture+set for the executed cost, a
+        // lambda body's drops being the only thing that could overwrite it);
+        // anything else is the borrow default emitReturnFlag emits in lambda
+        // mode.
         if (!module->getCurrentMethod() && module->isLambdaClassPtrReturn()
                 && !returnTitleFlag) {
-            if (dynamic_pointer_cast<NewExpression>(expression)) {
+            if ((rs.family == cajeta::ownership::TitleFamily::Fresh
+                        && rs.answer == cajeta::ownership::TitleAnswer::Owned)
+                    || rs.family == cajeta::ownership::TitleFamily::Concat) {
                 returnTitleFlag = builder->getInt64(1);
-            } else if (dynamic_pointer_cast<MethodCallExpression>(expression)
-                    || dynamic_pointer_cast<CallExpression>(expression)) {
+            } else if (rs.family == cajeta::ownership::TitleFamily::CallResult
+                    || rs.family == cajeta::ownership::TitleFamily::ClosureCall) {
                 return builder->CreateRet(val);
             }
         }
         if (cajeta::ownership::ReturnTitleAudit::enabled()) {
             auditReturnTitle(module, returnTitleFlag, expression,
-                             getSourceLine());
+                             getSourceLine(), via);
         }
         emitReturnFlag(module, returnTitleFlag);
         return builder->CreateRet(val);

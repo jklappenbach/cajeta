@@ -92,30 +92,32 @@ namespace cajeta::ownership {
         TitleFamily family = TitleFamily::Unsupported;
         TitleAnswer answer = TitleAnswer::Scalar;
         TitleSource source = TitleSource::None;
-        uint16_t flags = 0;
+        uint32_t flags = 0;
         int8_t paramIndex = -1;      ///< index among non-`this` formals (TransferWord)
         const char* label = "";       ///< for diagnostics: "a field read", …
         ExpressionPtr leaf;          ///< the expression the answer is about (casts peeled)
         Field* field = nullptr;      ///< the named local / formal (LocalRead)
         Method* callee = nullptr;    ///< the resolved callee (CallResult), when known
 
-        static constexpr uint16_t kArena = 1 << 0;
-        static constexpr uint16_t kStack = 1 << 1;
-        static constexpr uint16_t kShared = 1 << 2;
-        static constexpr uint16_t kHasEntry = 1 << 3;
-        static constexpr uint16_t kIsParam = 1 << 4;
-        static constexpr uint16_t kTransferredParam = 1 << 5;
-        static constexpr uint16_t kBorrowOrigin = 1 << 6;
-        static constexpr uint16_t kString = 1 << 7;
-        static constexpr uint16_t kValue = 1 << 8;
-        static constexpr uint16_t kInterface = 1 << 9;
-        static constexpr uint16_t kArray = 1 << 10;
-        static constexpr uint16_t kView = 1 << 11;
-        static constexpr uint16_t kSharpStore = 1 << 12;
-        static constexpr uint16_t kOwnedDecl = 1 << 13;   ///< the callee is declared `#R`
-        static constexpr uint16_t kStaticTitle = 1 << 14; ///< the scope says the local holds a static title
+        static constexpr uint32_t kArena = 1 << 0;
+        static constexpr uint32_t kStack = 1 << 1;
+        static constexpr uint32_t kShared = 1 << 2;
+        static constexpr uint32_t kHasEntry = 1 << 3;
+        static constexpr uint32_t kIsParam = 1 << 4;
+        static constexpr uint32_t kTransferredParam = 1 << 5;
+        static constexpr uint32_t kBorrowOrigin = 1 << 6;
+        static constexpr uint32_t kString = 1 << 7;
+        static constexpr uint32_t kValue = 1 << 8;
+        static constexpr uint32_t kInterface = 1 << 9;
+        static constexpr uint32_t kArray = 1 << 10;
+        static constexpr uint32_t kView = 1 << 11;
+        static constexpr uint32_t kSharpStore = 1 << 12;
+        static constexpr uint32_t kOwnedDecl = 1 << 13;   ///< the callee is declared `#R`
+        static constexpr uint32_t kStaticTitle = 1 << 14; ///< the scope says the local holds a static title
+        static constexpr uint32_t kRuntimeOwner = 1 << 15; ///< the entry's active byte was armed at run time (a callee's flag, a formal's word bit)
+        static constexpr uint32_t kFunction = 1 << 16;    ///< a function-typed value (a closure: its own drop protocol)
 
-        bool has(uint16_t f) const { return (flags & f) != 0; }
+        bool has(uint32_t f) const { return (flags & f) != 0; }
     };
 
     /// What a consumer role does with a shape: the answer to act on, or the
@@ -170,6 +172,14 @@ namespace cajeta::ownership {
     /// (spec 5.10 ARRAY_SLOT_BORROWS_LOCAL, 5.11 STACK_TRANSFER, …); no-op
     /// when the verdict carries no error. The escaping positions that have
     /// not migrated yet (a `#` return, a `#T` argument) call this directly.
+    /// The flag a consumer stores for a policy VERDICT: the constant 1 for
+    /// an Owned answer (a row may promote), the runtime read for a Runtime
+    /// answer (the verdict's source over the shape's own — a LocalRead's
+    /// entry, a call's TLS), the constant 0 for a Borrow or StackBound,
+    /// nullptr for a Scalar or an error.
+    llvm::Value* verdictFlag(const TitleShape& shape, const TitleVerdict& v,
+                             const CajetaModulePtr& module);
+
     void rejectEscape(const ExpressionPtr& e, ConsumerRole role,
                       const CajetaModulePtr& module, const char* where);
 
@@ -212,7 +222,7 @@ namespace cajeta::ownership {
         TitleAnswer answer = TitleAnswer::Scalar;
         TitleSource source = TitleSource::None;
         ConsumerRole role = ConsumerRole::Bind;
-        uint16_t flags = 0;
+        uint32_t flags = 0;
     };
 
     class TitleShapeAudit {

@@ -200,6 +200,16 @@ namespace cajeta {
     static void armEntryFlag(CajetaModulePtr& module, FieldPtr& field,
                              llvm::Value* entryPtr, llvm::Value* flag) {
         if (!flag) return;
+        // Unit 6 — a CONSTANT 1 is the push's own state (an entry is pushed
+        // active): no call, and the local is a STATIC owner, not a runtime
+        // one — `String out #= this.caseFoldNative()` (a `#`-declared native
+        // answers Owned statically) was paying a `__cajeta_drop_set_flag`
+        // and then an entry read at every `return out` (29 sites in the
+        // corpus, measured 2026-09-08). A constant 0 keeps the call: it is
+        // the reassign-inactive entry's arming.
+        if (auto* k = llvm::dyn_cast<llvm::ConstantInt>(flag)) {
+            if (k->isOne()) return;
+        }
         if (llvm::Function* setFlagFn = module->getRuntimeFunction(
                 "__cajeta_drop_set_flag")) {
             module->getBuilder()->CreateCall(setFlagFn, {entryPtr, flag});

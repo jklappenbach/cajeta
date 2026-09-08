@@ -103,7 +103,7 @@ Peels reference casts, then classifies the expression by provenance:
 | `ArrayLiteral` | `Fresh{heap, stack, arena}` | heap → Owned; else StackBound |
 | String `+` concat | `Concat{arena}` | arena → Borrow (frame arena); else Owned |
 | `MoveExpression` | `Move{inner}` | Owned when the inner is a static owner; Runtime(DE / WORD / SLOT) otherwise |
-| `MethodCallExpression` | `CallResult{stance: owned / plain / view}` | any callee that emits a return flag → Runtime(TLS), whether declared `#R` or plain: a plain return may carry a title (§2.1 ride) and a `#R` return may carry a borrow (`return #= x` is its sanctioned escape) — *measured 2026-09-07: folding a `#R` arm to a constant 1 dropped the flag read in `Report::baseline`*; the `#R` declaration travels as a flag (`kOwnedDecl`) for the checks that key on it; view (`^`) → Borrow; a plain body whose every return is an interior read (`Method::returnsInteriorView`) → Borrow ONLY when the dispatch is static (static / private / final method, or final class) — through a virtual call the scan proves the base's returns and an override may ride a title out, so that stays Runtime(TLS) (*measured 2026-09-07 in Unit 4: `DynFrame sch = this.__schemaOf()` on the non-final `Table<T>` lost its flagged entry to a static Borrow*); the callee is the call's own resolution when its codegen has run (exact, overloads included), else the shallow name+arity resolution; a callee that stores no flag — a `@Native` (its forwarding body is a bare `ret`), a body-less intrinsic, a synthesized raw-IR method — → its declared stance, statically (*measured 2026-09-07: reading the TLS after one is a stale read*); an abstract or interface method dispatches to a body that stores it → Runtime(TLS); unresolvable before codegen → Runtime(TLS), so consumers classify AFTER the call's codegen. A static Owned for `#R` callees needs a signature bit "no mode-carrying return" (plan 7.2.3) |
+| `MethodCallExpression` | `CallResult{stance: owned / plain / view}` | any callee that emits a return flag → Runtime(TLS), whether declared `#R` or plain: a plain return may carry a title (§2.1 ride) and a `#R` return may carry a borrow (`return #= x` is its sanctioned escape) — *measured 2026-09-07: folding a `#R` arm to a constant 1 dropped the flag read in `Report::baseline`*; the `#R` declaration travels as a flag (`kOwnedDecl`) for the checks that key on it; view (`^`) → Borrow; a plain body whose every return is an interior read (`Method::returnsInteriorView`) → Borrow ONLY when the dispatch is static (static / private / final method, or final class) — through a virtual call the scan proves the base's returns and an override may ride a title out, so that stays Runtime(TLS) (*measured 2026-09-07 in Unit 4: `DynFrame sch = this.__schemaOf()` on the non-final `Table<T>` lost its flagged entry to a static Borrow*); the callee is the call's own resolution when its codegen has run (exact, overloads included), else the shallow name+arity resolution; a callee that stores no flag — a `@Native` (its forwarding body is a bare `ret`), a body-less intrinsic, a synthesized raw-IR method — → its declared stance, statically (*measured 2026-09-07: reading the TLS after one is a stale read*); an abstract or interface method dispatches to a body that stores it → Runtime(TLS); unresolvable before codegen → Runtime(TLS), so consumers classify AFTER the call's codegen; AFTER codegen a call whose own resolution is still null was lowered by an intrinsic (`Cajeta.stringSliceBorrow`, `TcpStream.connectAsyncNative` — a raw runtime call, the cajeta stub never runs, no flag stored): the consumer keeps its static mode, never a TLS read (*measured 2026-09-08 in Unit 6: 24 stale reads when the shallow answer was trusted post-codegen*). A static Owned for `#R` callees needs a signature bit "no mode-carrying return" (plan 7.2.3) |
 | `CallExpression` (closure), and a method-call-shaped invocation of a function-typed local or property (`maker()`, `c.supplier()` — the declaration's former M5b rule) | `ClosureCall` | the function type decides: sret return → StackBound; a non-class return → Scalar; a class pointer → Runtime(TLS) |
 | `BooleanSwitchExpression` | `Conditional{arms}` | the join of the arms: equal static answers fold; otherwise Runtime(PHI) |
 | `SwitchExpression` (expression form) | `Conditional{arms}` | the join of its case arms, exactly as the conditional |
@@ -380,6 +380,33 @@ as owned and the result frame freed it under the plan node. The store now asks
 for none — which is the per-role reading of the same fact the declaration
 armed the entry with. Every remaining "has an entry" test in the consumer sites
 (Units 5–7) is the same latent bug and migrates the same way.
+
+Three more from the return statement's migration (Unit 6, 2026-09-08):
+
+- **An intrinsic-lowered call stores no return flag.** `Cajeta.stringSliceBorrow`
+  and `TcpStream.connectAsyncNative` are replaced at the call site by raw
+  runtime calls; the cajeta stub (when there is one) never runs. The
+  classifier's shallow name+arity resolution is a pre-codegen aid only:
+  AFTER codegen the call's own resolution is the truth, and a null one means
+  "no flag was stored" — the consumer's static mode stands. Trusting the
+  shallow answer post-codegen rode a stale TLS at 24 corpus sites; the
+  declaration and store sites had 0 such reads, and the return site has 0
+  again. (§2.1's CallResult row is amended accordingly.)
+- **A constant title must not be armed at run time.** The declaration passed
+  the classifier's constant 1 to `__cajeta_drop_set_flag` and marked the local
+  a runtime owner, so `#=` from a `#`-declared native (`String.caseFold`'s
+  `out`) paid a call at the bind and an entry read at every `#` return. A
+  pushed entry is active already; the constant folds to nothing and the local
+  is a static owner. The general rule: a Runtime *source* is only for a value
+  the classifier could not decide — a policy row that promotes to Owned
+  produces a constant, and every consumer must let a constant fold.
+- **A String literal under a `#String` return is an adoption.** Its static
+  wrapper is never in the live set, so the caller's drop is a no-op; the enum
+  `toName()` idiom (`return "error";` from every arm) is sound and keeps the
+  static 1. A literal ARM of a conditional stays rejected: a mixed phi would
+  reach the TITLE_MISS contract with a 0. The by-value counterpart of 5.11 is
+  confirmed for classes: `Cell f() { return stack Cell(i); }` compiles as an
+  sret return and lands in the caller's frame — accepted, balanced, no title.
 
 ## 7. Acceptance
 

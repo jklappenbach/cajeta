@@ -253,7 +253,7 @@ TEST(TitleClassifierTests, conditionalsJoinTheirArms) {
 
 // The policy table's error rows (spec §2.3), on hand-built shapes.
 TEST(TitleClassifierTests, policyRejectsWhatEachRoleMustReject) {
-    auto shape = [](TitleFamily f, TitleAnswer a, uint16_t flags = 0) {
+    auto shape = [](TitleFamily f, TitleAnswer a, uint32_t flags = 0) {
         TitleShape s;
         s.family = f; s.answer = a; s.flags = flags; s.label = labelOfFamily(f);
         return s;
@@ -271,17 +271,42 @@ TEST(TitleClassifierTests, policyRejectsWhatEachRoleMustReject) {
                  "CAJETA_ERROR_STACK_RETURN_ESCAPES");
     EXPECT_STREQ(policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow, TitleShape::kBorrowOrigin), ConsumerRole::ReturnOwned).error,
                  "CAJETA_ERROR_OWNED_RETURN_OF_BORROW");
+    // Unit 6 rows: a static owner's entry is the constant title; an entry
+    // armed at run time (kRuntimeOwner) is read; a `#` formal holds the
+    // frame's title; a plain formal WITHOUT an entry (a String) holds
+    // nothing to transfer; a plain formal with one forwards its entry.
     {
         auto v = policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow, TitleShape::kHasEntry), ConsumerRole::ReturnOwned);
+        EXPECT_EQ(v.error, nullptr);
+        EXPECT_EQ(v.answer, TitleAnswer::Owned);
+    }
+    {
+        auto v = policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow,
+                              TitleShape::kHasEntry | TitleShape::kRuntimeOwner), ConsumerRole::ReturnOwned);
         EXPECT_EQ(v.error, nullptr);
         EXPECT_EQ(v.answer, TitleAnswer::Runtime);
         EXPECT_EQ(v.source, TitleSource::DropEntry);
     }
     {
-        auto v = policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow, TitleShape::kIsParam), ConsumerRole::ReturnOwned);
+        auto v = policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow,
+                              TitleShape::kIsParam | TitleShape::kTransferredParam), ConsumerRole::ReturnOwned);
         EXPECT_EQ(v.error, nullptr);
-        EXPECT_EQ(v.source, TitleSource::TransferWord);
+        EXPECT_EQ(v.answer, TitleAnswer::Owned);
     }
+    EXPECT_STREQ(policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow, TitleShape::kIsParam), ConsumerRole::ReturnOwned).error,
+                 "CAJETA_ERROR_BORROW_PARAM_ESCAPES");
+    {
+        auto v = policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow,
+                              TitleShape::kIsParam | TitleShape::kHasEntry | TitleShape::kRuntimeOwner), ConsumerRole::ReturnOwned);
+        EXPECT_EQ(v.error, nullptr);
+        EXPECT_EQ(v.source, TitleSource::DropEntry);
+    }
+    EXPECT_STREQ(policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow, TitleShape::kStack | TitleShape::kHasEntry), ConsumerRole::ReturnOwned).error,
+                 "CAJETA_ERROR_STACK_RETURN_ESCAPES");
+    EXPECT_STREQ(policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow), ConsumerRole::ReturnOwned).error,
+                 "CAJETA_ERROR_OWNED_RETURN_OF_BORROW");   // no entry, no origin: a lend
+    EXPECT_EQ(policy(shape(TitleFamily::Literal, TitleAnswer::Borrow, TitleShape::kString), ConsumerRole::ReturnOwned).error,
+              nullptr);                                    // a String literal is adopted (static wrapper)
     EXPECT_EQ(policy(shape(TitleFamily::Fresh, TitleAnswer::Owned), ConsumerRole::ReturnOwned).error, nullptr);
     // Plain return: a fresh value and an owned local are rejected; a call
     // rides; a borrow is a borrow.
