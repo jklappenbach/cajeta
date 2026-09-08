@@ -40,7 +40,9 @@ A class is one type regardless of where its instances are placed: `stack MyClass
 
 Class instances always pass and return by pointer, never by value — there is no object slicing, no implicit copy construction, and no implicit boxing. A stack-allocated instance returned by value travels through a caller-allocated slot (Allocation §4).
 
-## 3.3 Kinds of Variables
+## 3.3 Kinds of Variables and Scope
+
+A **scope** is the region of a program a variable lives in. For a local variable it is a method invocation, or a scope block (`{ … }`) inside a method: the scope runs from the declaration to the closing brace of the declaring block, and one invocation of a method is one instance of every scope in its body. A static variable is scoped for the lifetime of the application, from program start to exit (Execution §20). A session binding is scoped to the session (Script Units §18). Reaching the end of a scope is what triggers a drop (Allocation §4); name resolution and shadowing within scopes are Names §7.
 
 - **Local variables** — declared in a block; dropped at the closing brace of the declaring block when they own (Allocation §4).
 - **Fields** — instance and static members of a class (Classes §8); a field's ownership status is resolved at drop time (Ownership §5.7).
