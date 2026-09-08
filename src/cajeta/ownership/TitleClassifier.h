@@ -42,6 +42,7 @@ namespace llvm {
 namespace cajeta {
     class CajetaModule;
     class Field;
+    class Method;
 }
 
 namespace cajeta::ownership {
@@ -96,6 +97,7 @@ namespace cajeta::ownership {
         const char* label = "";       ///< for diagnostics: "a field read", …
         ExpressionPtr leaf;          ///< the expression the answer is about (casts peeled)
         Field* field = nullptr;      ///< the named local / formal (LocalRead)
+        Method* callee = nullptr;    ///< the resolved callee (CallResult), when known
 
         static constexpr uint16_t kArena = 1 << 0;
         static constexpr uint16_t kStack = 1 << 1;
@@ -149,6 +151,14 @@ namespace cajeta::ownership {
     /// TitleSource::Slot on a node that has not generated yet (the move site
     /// keeps its own take protocol until it migrates).
     llvm::Value* titleFlag(const TitleShape& shape, const CajetaModulePtr& module);
+
+    /// The title a named local currently HOLDS, as an i64: its drop entry's
+    /// active byte read inline (one GEP, one load, one zext) when the entry is
+    /// runtime-conditional; the constant 1 for a static owner; the constant 0
+    /// for a local with no entry. This is what a take of the local may carry —
+    /// a store that takes a borrow-holding local as owned double-titles the
+    /// value (the Exec.apply schema UAF, twice).
+    llvm::Value* heldTitleFlag(const Field* f, const CajetaModulePtr& module);
 
     /// Constexpr label per family — one table, every diagnostic reads it.
     constexpr const char* labelOfFamily(TitleFamily f) noexcept {

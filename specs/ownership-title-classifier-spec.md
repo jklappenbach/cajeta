@@ -103,8 +103,8 @@ Peels reference casts, then classifies the expression by provenance:
 | `ArrayLiteral` | `Fresh{heap, stack, arena}` | heap → Owned; else StackBound |
 | String `+` concat | `Concat{arena}` | arena → Borrow (frame arena); else Owned |
 | `MoveExpression` | `Move{inner}` | Owned when the inner is a static owner; Runtime(DE / WORD / SLOT) otherwise |
-| `MethodCallExpression` | `CallResult{stance: owned / plain / view}` | any callee that emits a return flag → Runtime(TLS), whether declared `#R` or plain: a plain return may carry a title (§2.1 ride) and a `#R` return may carry a borrow (`return #= x` is its sanctioned escape) — *measured 2026-09-07: folding a `#R` arm to a constant 1 dropped the flag read in `Report::baseline`*; the `#R` declaration travels as a flag (`kOwnedDecl`) for the checks that key on it; view (`^`) → Borrow; a callee that stores no flag — a `@Native` (its forwarding body is a bare `ret`), a body-less intrinsic, a synthesized raw-IR method — → its declared stance, statically (*measured 2026-09-07: reading the TLS after one is a stale read*); an abstract or interface method dispatches to a body that stores it → Runtime(TLS); unresolvable before codegen → Runtime(TLS), so consumers classify AFTER the call's codegen. A static Owned for `#R` callees needs a signature bit "no mode-carrying return" (plan 7.2.3) |
-| `CallExpression` (closure) | `ClosureCall` | Runtime(TLS) |
+| `MethodCallExpression` | `CallResult{stance: owned / plain / view}` | any callee that emits a return flag → Runtime(TLS), whether declared `#R` or plain: a plain return may carry a title (§2.1 ride) and a `#R` return may carry a borrow (`return #= x` is its sanctioned escape) — *measured 2026-09-07: folding a `#R` arm to a constant 1 dropped the flag read in `Report::baseline`*; the `#R` declaration travels as a flag (`kOwnedDecl`) for the checks that key on it; view (`^`) → Borrow; a plain body whose every return is an interior read (`Method::returnsInteriorView`) → Borrow ONLY when the dispatch is static (static / private / final method, or final class) — through a virtual call the scan proves the base's returns and an override may ride a title out, so that stays Runtime(TLS) (*measured 2026-09-07 in Unit 4: `DynFrame sch = this.__schemaOf()` on the non-final `Table<T>` lost its flagged entry to a static Borrow*); the callee is the call's own resolution when its codegen has run (exact, overloads included), else the shallow name+arity resolution; a callee that stores no flag — a `@Native` (its forwarding body is a bare `ret`), a body-less intrinsic, a synthesized raw-IR method — → its declared stance, statically (*measured 2026-09-07: reading the TLS after one is a stale read*); an abstract or interface method dispatches to a body that stores it → Runtime(TLS); unresolvable before codegen → Runtime(TLS), so consumers classify AFTER the call's codegen. A static Owned for `#R` callees needs a signature bit "no mode-carrying return" (plan 7.2.3) |
+| `CallExpression` (closure), and a method-call-shaped invocation of a function-typed local or property (`maker()`, `c.supplier()` — the declaration's former M5b rule) | `ClosureCall` | the function type decides: sret return → StackBound; a non-class return → Scalar; a class pointer → Runtime(TLS) |
 | `BooleanSwitchExpression` | `Conditional{arms}` | the join of the arms: equal static answers fold; otherwise Runtime(PHI) |
 | `SwitchExpression` (expression form) | `Conditional{arms}` | the join of its case arms, exactly as the conditional |
 | `LambdaExpression` / `MethodReferenceExpression` | `Closure` | Owned (a fresh closure; `__cajeta_closure_drop`) |
@@ -293,6 +293,43 @@ one outer to the other file's class (`W.cajeta` + `X.cajeta` in one root:
 `W.sinkCell(c ? heap Cell(8) : r.a)` fails `NO_MATCHING_OVERLOAD` with
 candidate `sinkCell(probe.W.Cell)`; `W` alone compiles). That is the
 nested-class short-name binding family, recorded there, not here.
+
+A third surfaced writing Unit 4's tests (2026-09-07): an interface local bound
+from an interface-typed field read (`Shape v = b.s`) aliased the owner's own
+fat-pointer body and still pushed an active `__cajeta_iface_drop` entry on it,
+so the borrowing frame freed the owner's square (`free(): double free
+detected` at the owner's drop). The declaration's interface-entry rule was
+"every interface local", with the kind word expected to make a borrow's drop a
+no-op — true for a body the local builds itself, false for a body it aliases.
+Under the classifier the rule is the policy answer: a Borrow pushes no entry.
+Pinned by `DeclarationOwnershipTests.interfaceLocalFromFieldReadBorrows`.
+
+A fourth, from the first Unit 4 sweep: `HashMapEntryStream.next()` built its
+yielded pair with the OWNING constructor from the map's own slot key and
+value (`heap Pair<K,V>(k, v)`). `Pair(#K, #V)` is a contract — the stores set
+the own-bits regardless of the transfer word — so every entry pair claimed
+the map's Strings. It never showed because `Optional<Pair<K,V>> o #= s.next()`
+armed the local's entry from a constant 0 (the `#=`-of-an-sret-call rule), so
+no pair was ever dropped: a leak per entry. The classifier's StackBound answer
+arms the Optional's stack drop, the pair drops, and the map's Strings were
+freed under it (PluginEmitter's `ActionResult.outputs`). The fix is a
+borrowing constructor, `Pair(K, V, boolean borrowed)`, whose plain formals let
+`#=` record what the caller tendered; the call the stream made is exactly the
+shape decision 5.8 rejects once Unit 7 lands. The general lesson is the one
+§1.1 states: a consumer armed correctly for the first time exposes every
+upstream claim of title that was never true.
+
+A fifth is the mirror image, and it is the reason a classifier must answer
+"what title does this local HOLD" rather than "does it have an entry": the
+String element store took a bare local as owned whenever the local had a drop
+entry, which was a sound proxy only while borrow-holding locals had none. Once
+a local bound from a plain call carries a flagged entry (armed by the callee's
+flag), `names[0] = tsName` in `Exec.applyResample` took a borrowed column name
+as owned and the result frame freed it under the plan node. The store now asks
+`heldTitleFlag` — the entry's flag for a runtime owner, 1 for a static owner, 0
+for none — which is the per-role reading of the same fact the declaration
+armed the entry with. Every remaining "has an entry" test in the consumer sites
+(Units 5–7) is the same latent bug and migrates the same way.
 
 ## 7. Acceptance
 

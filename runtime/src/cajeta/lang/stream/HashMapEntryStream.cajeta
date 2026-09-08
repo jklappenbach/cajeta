@@ -73,7 +73,11 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Spli
                 K k = this.slots[this.idx].key;
                 V v = this.slots[this.idx].val;
                 this.idx = this.idx + 1;
-                Pair<K, V> p = heap Pair<K, V>(k, v);
+                // A BORROWING pair: the map keeps its key and value, the
+                // consumer owns only the pair object (through the Optional).
+                // The owning constructor here claimed the map's Strings and
+                // an armed `Optional<Pair>` drop freed them under the map.
+                Pair<K, V> p #= heap Pair<K, V>(k, v, true);
                 return stack Optional<Pair<K, V>>(true, #p);
             }
             this.idx = this.idx + 1;

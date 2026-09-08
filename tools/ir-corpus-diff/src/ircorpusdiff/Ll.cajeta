@@ -29,7 +29,10 @@ public final class Fn {
  * equal whatever they named their values (ownership-title-classifier plan
  * 1.2.3). Per function, every local value and block label is alpha-renamed
  * to `%vN` / `vN:` by first occurrence (parameters first), so names are not
- * diffs but dataflow is; `!N` → `!_`, `#N` → `#_`; a trailing `; ...`
+ * diffs but dataflow is; a compiler-numbered private constant (`@.str.207`,
+ * `@.cajeta.framedesc.86670`) is alpha-renamed the same way to `@.gN`, since
+ * its number is a module-wide counter that one added method shifts for every
+ * function after it; `!N` → `!_`, `#N` → `#_`; a trailing `; ...`
  * comment and surrounding blanks are removed. A function is the text from
  * its `define` line to the closing `}`; everything outside a function
  * (globals, declarations, metadata) is not part of the diff. An instruction
@@ -153,6 +156,29 @@ public final class Ll {
         }
         while (i < end) {
             int8 c = b[i];
+            // `@.name.N` — a compiler-numbered private constant (`@.str.207`,
+            // `@.cajeta.framedesc.86670`, `@.str.inst.12`). The number is a
+            // module-wide emission counter: adding one method anywhere
+            // renumbers every constant after it, and 15,044 functions read
+            // as changed for a two-line stdlib fix (measured 2026-09-07).
+            // Alpha-rename per function like a local (`@.gN`): two functions
+            // that reference the same constants in the same order compare
+            // equal whatever the module numbered them. Named globals
+            // (`@"pkg.Class::m(...)"`, `@__cajeta_…`, `@class.…VTable`) are
+            // not renamed — their names ARE the dataflow.
+            if (c == (int8) 64 && i + 1 < end && b[i + 1] == (int8) 46) {   // `@.`
+                int32 j = i + 2;
+                while (j < end && Ll.isNameChar(b[j])) { j = j + 1; }
+                if (j > i + 2) {
+                    int32 idx = Ll.nameIndex(names, b, i, j);
+                    out[n] = c; n = n + 1;
+                    out[n] = (int8) 46; n = n + 1;                   // '.'
+                    out[n] = (int8) 103; n = n + 1;                  // 'g'
+                    n = Ll.appendInt(out, n, idx);
+                    i = j;
+                    continue;
+                }
+            }
             if (c == (int8) 37 && i + 1 < end) {                     // `%name` / `%"quoted"`
                 int32 j = i + 1;
                 if (b[j] == (int8) 34) {

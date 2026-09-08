@@ -22,6 +22,7 @@
 #include "../../util/MemoryManager.h"
 #include "cajeta/ownership/ReturnTitleAudit.h"
 #include "cajeta/ownership/OwnedBindCheck.h"
+#include "cajeta/ownership/TitleClassifier.h"
 #include "Expression.h"
 #include "DotExpression.h"
 #include "MethodCallExpression.h"
@@ -179,6 +180,37 @@ namespace cajeta {
     //     class→interface param-passing upcast in CajetaClass.cpp.
     //   - interface value (rhsVal is already a ptr to a 24-byte body, e.g.
     //     `ArrayList.add(backend)` storing its interface param) → memcpy the body in.
+    // ownership-title-classifier Unit 4 (spec 5.7) — the kind word a stored
+    // interface value gets is the SOURCE's title, asked of the classifier:
+    // Owned (`#heap X()`, a `#x` of a static owner) → OWNED; Runtime (a `#x`
+    // of a formal or of an entry-holding local, a call riding its flag) →
+    // select on the flag; anything else → BORROWED. Before this a `#=` of a
+    // plain interface FORMAL copied the source body's kind verbatim, so once
+    // `Encoder<K> ke = heap I32Enc()` owned its body (5.7), `this.keyEncB #=
+    // keyEnc` made the field a second owner and LtmBPlusTree's drop freed
+    // the caller's encoder (LtmBPlusTreeTests, 2026-09-07).
+    static llvm::Value* interfaceKindFor(CajetaModulePtr module,
+                                         const ExpressionPtr& rhsAst,
+                                         llvm::Type* i64Ty) {
+        llvm::Constant* ownedK = llvm::ConstantInt::get(
+            i64Ty, (uint64_t) IFACE_KIND_OWNED_CLASS);
+        llvm::Constant* borrowedK = llvm::ConstantInt::get(
+            i64Ty, (uint64_t) IFACE_KIND_BORROWED_CLASS);
+        if (!rhsAst) return borrowedK;
+        ownership::TitleShape s = ownership::classify(rhsAst, module);
+        ownership::TitleVerdict v = ownership::policy(s, ownership::ConsumerRole::StoreSlot);
+        if (v.answer == ownership::TitleAnswer::Owned) return ownedK;
+        if (v.answer != ownership::TitleAnswer::Runtime) return borrowedK;
+        llvm::Value* flag = ownership::titleFlag(s, module);
+        if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(flag)) {
+            return c->isZero() ? borrowedK : ownedK;
+        }
+        auto* builder = module->getBuilder();
+        return builder->CreateSelect(
+            builder->CreateICmpNE(flag, llvm::ConstantInt::get(i64Ty, 0)),
+            ownedK, borrowedK, "iface_kind");
+    }
+
     static void storeInterfaceInlineBody(CajetaModulePtr module, llvm::Value* slot,
             llvm::Value* rhsVal, const std::shared_ptr<CajetaClass>& ifaceClass,
             ExpressionPtr rhsAst) {
@@ -220,12 +252,7 @@ namespace cajeta {
             // so the fat body's kind must record OWNED or the instance
             // leaks (and an owned store dropped as BORROWED would never
             // free). Mirrors LocalVariableDeclaration's kind selection.
-            bool rhsIsMove =
-                std::dynamic_pointer_cast<MoveExpression>(rhsAst) != nullptr;
-            builder->CreateStore(
-                llvm::ConstantInt::get(i64Ty, (uint64_t) (rhsIsMove
-                    ? IFACE_KIND_OWNED_CLASS : IFACE_KIND_BORROWED_CLASS)),
-                kindSlot);
+            builder->CreateStore(interfaceKindFor(module, rhsAst, i64Ty), kindSlot);
         } else if (llvm::isa<llvm::ConstantPointerNull>(rhsVal)) {
             // `arr[i] = null` (the assignment-based drop idiom): zero the
             // 24-byte fat-pointer body (null vtable / borrowed) — do NOT memcpy
@@ -241,11 +268,13 @@ namespace cajeta {
             uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
             builder->CreateMemCpy(slot, llvm::MaybeAlign(8),
                 rhsVal, llvm::MaybeAlign(8), bodyBytes);
-            // A plain (non-move) copy is a BORROW: copying the source's
-            // OWNED kind verbatim would make two owners of one instance —
-            // both drops would free it. Downgrade the copy's kind unless
-            // the RHS transferred (`#=`).
-            if (!std::dynamic_pointer_cast<MoveExpression>(rhsAst)) {
+            // The copy's kind is the SOURCE's title, never the source body's
+            // word verbatim: a plain copy is a BORROW (two OWNED words would
+            // be two owners of one instance — both drops would free it), a
+            // `#=` records what the source actually held (a formal's word
+            // bit, an entry's flag, a static owner's title). A null data
+            // pointer keeps kind 0.
+            {
                 llvm::Value* kindSlot = builder->CreateStructGEP(
                     bodyTy, slot, 2, "iface_kind");
                 llvm::Value* dataSlot0 = builder->CreateStructGEP(
@@ -254,8 +283,7 @@ namespace cajeta {
                 llvm::Value* isNull = builder->CreateIsNull(dataVal);
                 llvm::Value* kindVal = builder->CreateSelect(isNull,
                     llvm::ConstantInt::get(i64Ty, 0),
-                    llvm::ConstantInt::get(i64Ty,
-                        (uint64_t) IFACE_KIND_BORROWED_CLASS));
+                    interfaceKindFor(module, rhsAst, i64Ty));
                 builder->CreateStore(kindVal, kindSlot);
             }
         }
@@ -3208,8 +3236,23 @@ namespace cajeta {
                                     if (auto sc2 = module->getScopeStack().peek()) {
                                         FieldPtr srcF = sc2->getField(
                                             rid->getTextValue());
-                                        takesOwnership = srcF
-                                            && srcF->getDropEntry() != nullptr;
+                                        // ownership-title-classifier Unit 4 —
+                                        // "has an entry" no longer means "holds
+                                        // title": a local bound from a plain
+                                        // call now carries a flagged entry
+                                        // (armed only if the callee handed a
+                                        // title over). Take what the local
+                                        // HOLDS: a static owner's 1, a runtime
+                                        // owner's entry flag (the
+                                        // `names[0] = tsName` Exec.applyResample
+                                        // UAF, 2026-09-07), nothing for none.
+                                        llvm::Value* held = ownership::heldTitleFlag(
+                                            srcF.get(), module);
+                                        if (auto* hc = llvm::dyn_cast<llvm::ConstantInt>(held)) {
+                                            takesOwnership = !hc->isZero();
+                                        } else {
+                                            takesRt = held;
+                                        }
                                     }
                                 }
                             }
@@ -3280,8 +3323,15 @@ namespace cajeta {
                                     if (auto sc2 = module->getScopeStack().peek()) {
                                         FieldPtr srcF = sc2->getField(
                                             rid->getTextValue());
-                                        seTakes = srcF
-                                            && srcF->getDropEntry() != nullptr;
+                                        // Same rule as the sidecar branch: the
+                                        // local's HELD title, not "has an entry".
+                                        llvm::Value* held = ownership::heldTitleFlag(
+                                            srcF.get(), module);
+                                        if (auto* hc = llvm::dyn_cast<llvm::ConstantInt>(held)) {
+                                            seTakes = !hc->isZero();
+                                        } else {
+                                            seTakesRt = held;
+                                        }
                                     }
                                 }
                             }

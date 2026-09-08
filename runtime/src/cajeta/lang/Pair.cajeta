@@ -66,6 +66,28 @@ public final class Pair<K, V> {
         this.second #= second;
     }
 
+    /**
+     * A pair that BORROWS its components — the entry-view shape a container
+     * hands out over its own storage (`HashMap.entries()`): the pair object
+     * is the receiver's to drop, the two components stay the container's.
+     * `first()` / `second()` read as usual; `takeFirst()` / `takeSecond()`
+     * carry the borrow out and never take the container's title.
+     *
+     * The `borrowed` word only discriminates the overload (an overload that
+     * differs in `#` mode alone is rejected); pass `true`. The formals are
+     * plain, so `#=` records what the caller actually tendered — a `#x`
+     * argument still makes that component owned.
+     *
+     * Before this constructor existed `HashMapEntryStream` built its pairs
+     * with the owning one from lent slot values; the pair then claimed the
+     * map's keys and values, and the first consumer whose `Optional<Pair>`
+     * drop was armed correctly freed them under the map (2026-09-07).
+     */
+    public Pair(K first, V second, boolean borrowed) {
+        this.first #= first;
+        this.second #= second;
+    }
+
     /** Borrowing reads — the pair keeps its components. */
     @Inline
     public K first()  { return this.first; }

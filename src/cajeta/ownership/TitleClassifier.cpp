@@ -22,6 +22,7 @@
 #include "cajeta/method/Method.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/FormalParameter.h"
 #include "cajeta/type/Scope.h"
@@ -162,11 +163,68 @@ namespace cajeta::ownership {
             return s;
         }
 
+        // What a call through a FUNCTION TYPE hands back — a closure call, or
+        // a method-call-shaped invocation of a function-typed local or
+        // property (`maker()`, `c.supplier()`): a by-value struct (sret) is
+        // StackBound, a class pointer rides the synthesized callee's flag,
+        // anything else has no title. The declaration's former M5b rule.
+        TitleShape closureCallShape(const CajetaFunctionTypePtr& fnTy,
+                                    const ExpressionPtr& leaf) {
+            uint16_t flags = typeFlags(leaf->getResolvedType());
+            if (fnTy && fnTy->usesSret()) {
+                return make(TitleFamily::ClosureCall, TitleAnswer::StackBound, TitleSource::None,
+                            leaf, (uint16_t) (flags | TitleShape::kStack));
+            }
+            if (fnTy && !std::dynamic_pointer_cast<CajetaClass>(fnTy->getReturnType())) {
+                return scalar(leaf);
+            }
+            return make(TitleFamily::ClosureCall, TitleAnswer::Runtime, TitleSource::ReturnFlag,
+                        leaf, flags);
+        }
+
+        // The function type a method-call-shaped invocation goes through when
+        // its name is a function-typed local (bare call) or a function-typed
+        // property of the receiver's class; null when it is a real method.
+        CajetaFunctionTypePtr functionTypeOfCall(
+                const std::shared_ptr<MethodCallExpression>& mce, const CajetaModulePtr& module) {
+            const std::string& name = mce->getMethodCallName();
+            auto& kids = mce->getChildren();
+            if (kids.empty()) {
+                if (auto sc = module->getScopeStack().peek()) {
+                    if (FieldPtr f = sc->getField(name)) {
+                        return std::dynamic_pointer_cast<CajetaFunctionType>(f->getType());
+                    }
+                }
+                return nullptr;
+            }
+            auto recv = std::dynamic_pointer_cast<Expression>(kids[0]);
+            if (!recv) return nullptr;
+            if (!recv->getResolvedType()) recv->resolveTypes(module);
+            auto recvCls = std::dynamic_pointer_cast<CajetaClass>(recv->getResolvedType());
+            if (!recvCls) return nullptr;
+            auto& props = recvCls->getProperties();
+            auto it = props.find(name);
+            if (it == props.end() || !it->second) return nullptr;
+            return std::dynamic_pointer_cast<CajetaFunctionType>(it->second->getType());
+        }
+
         TitleShape callResult(const ExpressionPtr& leaf, const CajetaModulePtr& module) {
             auto mce = std::static_pointer_cast<MethodCallExpression>(leaf);
             uint16_t flags = typeFlags(leaf->getResolvedType());
-            MethodPtr rm = MethodCallExpression::resolveArgCalleeShallow(mce, module);
+            // The DI intrinsic hands out the container's singleton: a borrow
+            // with no callee to resolve (the declaration's A9 rule).
+            if (mce->getMethodCallName() == "__cajeta_inject") {
+                return make(TitleFamily::CallResult, TitleAnswer::Borrow, TitleSource::None, leaf, flags);
+            }
+            // After the call's own codegen its callee is exact (overloads
+            // included); before it, the shallow resolution answers only on a
+            // unique name+arity match.
+            MethodPtr rm = mce->getResolvedMethod();
+            if (!rm) rm = MethodCallExpression::resolveArgCalleeShallow(mce, module);
             if (!rm) {
+                if (CajetaFunctionTypePtr fnTy = functionTypeOfCall(mce, module)) {
+                    return closureCallShape(fnTy, leaf);
+                }
                 // Unresolvable before codegen: the callee's own flag decides
                 // at run time (spec §2.1, CallResult).
                 return make(TitleFamily::CallResult, TitleAnswer::Runtime,
@@ -174,12 +232,36 @@ namespace cajeta::ownership {
             }
             flags |= typeFlags(rm->getReturnType());
             if (isOwnershipLessScalar(rm->getReturnType())) return scalar(leaf);
-            if (rm->isReturnsView()) {
-                return make(TitleFamily::CallResult, TitleAnswer::Borrow,
-                            TitleSource::None, leaf, (uint16_t) (flags | TitleShape::kView));
+            auto withCallee = [&](TitleShape s) { s.callee = rm.get(); return s; };
+            // A by-value struct return lands in the caller's frame: StackBound.
+            if (rm->returnsStackValue()) {
+                return withCallee(make(TitleFamily::CallResult, TitleAnswer::StackBound,
+                                       TitleSource::None, leaf, (uint16_t) (flags | TitleShape::kStack)));
+            }
+            // A `^` view (a signature contract every override keeps), or a
+            // plain method whose every return is an interior read
+            // (Method::returnsInteriorView) AND whose dispatch is static — a
+            // borrow of its receiver, statically, no flag to read. Through a
+            // VIRTUAL call the body scan proves only the base's returns: an
+            // override may ride a title out, so that stays Runtime (measured
+            // 2026-09-07: `DynFrame sch = this.__schemaOf()` on the non-final
+            // `Table<T>` lost its flagged entry to a static Borrow).
+            auto& mods = rm->getModifiers();
+            bool staticDispatch = rm->isStatic()
+                || mods.count(PRIVATE) > 0 || mods.count(FINAL) > 0
+                || (rm->getParent() && rm->getParent()->getModifiers().count(FINAL) > 0);
+            if (rm->isReturnsView()
+                    || (!rm->isReturnsOwnership() && staticDispatch && rm->returnsInteriorView())) {
+                return withCallee(make(TitleFamily::CallResult, TitleAnswer::Borrow,
+                                       TitleSource::None, leaf, (uint16_t) (flags | TitleShape::kView)));
             }
             bool ownedDecl = rm->isReturnsOwnership();
             if (ownedDecl) flags |= TitleShape::kOwnedDecl;
+            // Every path below names the callee too: the owned-bind check
+            // (§4.6) and the `#local` provenance read it off the shape.
+            // (First pass set it on two of four paths and both checks went
+            // silent — OwnedResultTransferTests / OwnedReturnOfBorrowTests
+            // caught it, 2026-09-07.)
             // A `@Native` forwarding body and a body-less intrinsic return
             // without storing the flag (Method::emitNativeForwardingBody does a
             // bare `ret`): reading the TLS after them would be a STALE read.
@@ -197,13 +279,13 @@ namespace cajeta::ownership {
                 // constant 1 dropped the read in Report::baseline. A static
                 // Owned for `#R` callees needs a signature bit saying the
                 // method has no mode-carrying return (plan 7.2.3).
-                return make(TitleFamily::CallResult, TitleAnswer::Runtime,
-                            TitleSource::ReturnFlag, leaf, flags);
+                return withCallee(make(TitleFamily::CallResult, TitleAnswer::Runtime,
+                                       TitleSource::ReturnFlag, leaf, flags));
             }
             // No flag emitted (a native, an intrinsic): the declared stance.
-            return make(TitleFamily::CallResult,
-                        ownedDecl ? TitleAnswer::Owned : TitleAnswer::Borrow,
-                        TitleSource::None, leaf, flags);
+            return withCallee(make(TitleFamily::CallResult,
+                                   ownedDecl ? TitleAnswer::Owned : TitleAnswer::Borrow,
+                                   TitleSource::None, leaf, flags));
         }
 
         TitleShape moveOf(const ExpressionPtr& leaf, const CajetaModulePtr& module);
@@ -359,9 +441,16 @@ namespace cajeta::ownership {
             }
             case ExprKind::MethodCall:
                 return callResult(e, module);
-            case ExprKind::Call:
-                return make(TitleFamily::ClosureCall, TitleAnswer::Runtime, TitleSource::ReturnFlag,
-                            e, typeFlags(e->getResolvedType()));
+            case ExprKind::Call: {
+                // A closure call: its function type says what comes back.
+                auto ce = std::static_pointer_cast<CallExpression>(e);
+                CajetaFunctionTypePtr fnTy;
+                if (auto callee = ce->getCallee()) {
+                    if (!callee->getResolvedType()) callee->resolveTypes(module);
+                    fnTy = std::dynamic_pointer_cast<CajetaFunctionType>(callee->getResolvedType());
+                }
+                return closureCallShape(fnTy, e);
+            }
             case ExprKind::MethodReference:
             case ExprKind::Lambda:
                 return make(TitleFamily::Closure, TitleAnswer::Owned, TitleSource::None, e);
@@ -554,6 +643,29 @@ namespace cajeta::ownership {
         return v;
     }
 
+    namespace {
+        // The entry's active byte (offset 24: obj, drop_fn, prev, active),
+        // read inline — one GEP, one load, one zext.
+        llvm::Value* entryActiveFlag(llvm::Value* entry, const CajetaModulePtr& module) {
+            auto* builder = module->getBuilder();
+            auto& ctx = *module->getLlvmContext();
+            llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+            llvm::Value* activePtr = builder->CreateInBoundsGEP(
+                llvm::Type::getInt8Ty(ctx), entry,
+                llvm::ConstantInt::get(i64, 24), "title.active.ptr");
+            llvm::Value* active = builder->CreateLoad(
+                llvm::Type::getInt8Ty(ctx), activePtr, "title.active");
+            return builder->CreateZExt(active, i64, "title.flag");
+        }
+    }  // namespace
+
+    llvm::Value* heldTitleFlag(const Field* f, const CajetaModulePtr& module) {
+        llvm::Type* i64 = llvm::Type::getInt64Ty(*module->getLlvmContext());
+        if (!f || !f->getDropEntry()) return llvm::ConstantInt::get(i64, 0);
+        if (!f->isRuntimeConditionalOwner()) return llvm::ConstantInt::get(i64, 1);
+        return entryActiveFlag(f->getDropEntry(), module);
+    }
+
     llvm::Value* titleFlag(const TitleShape& s, const CajetaModulePtr& module) {
         auto* builder = module->getBuilder();
         auto& ctx = *module->getLlvmContext();
@@ -583,15 +695,8 @@ namespace cajeta::ownership {
         llvm::Value* v = nullptr;
         switch (s.source) {
             case TitleSource::DropEntry: {
-                // The entry's active byte (offset 24: obj, drop_fn, prev,
-                // active), read inline — one load, one zext.
                 if (!s.field || !s.field->getDropEntry()) break;
-                llvm::Value* activePtr = builder->CreateInBoundsGEP(
-                    llvm::Type::getInt8Ty(ctx), s.field->getDropEntry(),
-                    llvm::ConstantInt::get(i64, 24), "title.active.ptr");
-                llvm::Value* active = builder->CreateLoad(
-                    llvm::Type::getInt8Ty(ctx), activePtr, "title.active");
-                v = builder->CreateZExt(active, i64, "title.flag");
+                v = entryActiveFlag(s.field->getDropEntry(), module);
                 break;
             }
             case TitleSource::TransferWord: {
