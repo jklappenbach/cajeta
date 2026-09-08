@@ -979,7 +979,11 @@ void __cajeta_fiber_context_free(void* snapshot) {
 // (i.e. an active entry pops or unwinds). Tests can read it to assert that
 // owned resources are freed at expected program points. Atomic so drops
 // fired on the carrier thread are visible to tests reading from main.
-static int64_t __cajeta_drop_count = 0;
+// Exported (not static): the compiler's inline re-arm sequence bumps it with
+// an `atomicrmw add` on the release branch (ownership-title-classifier 5.2.3)
+// instead of calling __cajeta_drop_count_add — the count is observable
+// through the accessors below, so an inline release must tick it too.
+int64_t __cajeta_drop_count = 0;
 
 int64_t __cajeta_drop_count_get(void) {
     return __atomic_load_n(&__cajeta_drop_count, __ATOMIC_SEQ_CST);

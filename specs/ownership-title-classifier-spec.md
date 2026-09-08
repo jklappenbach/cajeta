@@ -390,9 +390,19 @@ armed the entry with. Every remaining "has an entry" test in the consumer sites
 - Fleet builds (`cajeta-llm`, `cajeta-jinja`, `cajeta-logging`,
   `cajeta-unit`, `cajeta-xgboost`, `cajeta-ml`, `cabra`) compile; `cajeta-llm`
   cpu suite green.
-- Emitted-instruction count on the corpus before and after, recorded in the
-  plan per unit. The IR diff is the correctness gate; the count is the
-  optimality gate: it may not rise for any unit, and an increase is fixed
-  before the unit closes (*Julian, 2026-09-07: "as optimal as possible —
-  inline, if possible"; this supersedes the review's "informational" note*).
+- Emitted-instruction and runtime-call counts on the corpus before and
+  after, recorded in the plan per unit, itemized by protocol call. The IR
+  diff is the correctness gate. The optimality gate is EXECUTED cost
+  (*Julian, 2026-09-08: "I want executed cost to be the dominant metric"*):
+  what the hot path pays in instructions, calls and branches, with a
+  constant flag folding the whole sequence. The emitted count is a proxy
+  for that — it catches protocol calls that appear or vanish between units
+  — and it is not a reason to decline an inline: a call counts as one
+  emitted op while its inline body counts as many, which is backwards for
+  what the program pays (5.2.3 was declined on the count and reversed on
+  this rule). A unit may raise the emitted count only for protocol it
+  reaches for the first time (a title recorded where a borrow was assumed),
+  itemized; anything else is fixed before the unit closes. Where executed
+  cost is in doubt, measure it (`perf stat -e instructions:u` on the corpus
+  programs built as executables, Unit 8).
 - The exhaustiveness test exists and passes.

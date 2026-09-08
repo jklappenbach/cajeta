@@ -3677,10 +3677,76 @@ namespace cajeta {
                                 FieldPtr dstField = sc->getField(lhsId->getTextValue());
                                 if (dstField && dstField->getDropEntry()
                                         && rhsVal && rhsVal->getType()->isPointerTy()) {
-                                    if (llvm::Function* reFn = module->getRuntimeFunction(
-                                            "__cajeta_drop_reassign")) {
-                                        builder->CreateCall(reFn,
-                                            {dstField->getDropEntry(), rhsVal, rhsTitle});
+                                    // 5.2.3 — the re-arm inline (the former
+                                    // __cajeta_drop_reassign, one call): on
+                                    // the hot path three loads, four compares
+                                    // and two stores; the displaced value's
+                                    // release — the observable drop counter
+                                    // and the indirect drop — on a cold
+                                    // branch. A constant flag folds the outer
+                                    // test away. Entry layout: obj @0,
+                                    // drop_fn @8, prev @16, active (i8) @24.
+                                    auto& rc = *module->getLlvmContext();
+                                    llvm::Type* i8 = llvm::Type::getInt8Ty(rc);
+                                    llvm::Type* i1 = llvm::Type::getInt1Ty(rc);
+                                    llvm::PointerType* pty = llvm::PointerType::get(rc, 0);
+                                    llvm::Value* entry = dstField->getDropEntry();
+                                    llvm::Function* fnOwner =
+                                        builder->GetInsertBlock()->getParent();
+                                    llvm::BasicBlock* contBB = nullptr;
+                                    if (!llvm::isa<llvm::ConstantInt>(rhsTitle)) {
+                                        auto* doBB = llvm::BasicBlock::Create(rc, "reasg_do", fnOwner);
+                                        contBB = llvm::BasicBlock::Create(rc, "reasg_cont", fnOwner);
+                                        builder->CreateCondBr(
+                                            builder->CreateICmpNE(rhsTitle,
+                                                llvm::ConstantInt::get(rhsTitle->getType(), 0)),
+                                            doBB, contBB);
+                                        builder->SetInsertPoint(doBB);
+                                    }
+                                    llvm::Value* activePtr = builder->CreateInBoundsGEP(
+                                        i8, entry, llvm::ConstantInt::get(rI64, 24), "reasg.active.ptr");
+                                    llvm::Value* dropFnPtr = builder->CreateInBoundsGEP(
+                                        i8, entry, llvm::ConstantInt::get(rI64, 8), "reasg.dropfn.ptr");
+                                    llvm::Value* active = builder->CreateLoad(i8, activePtr, "reasg.active");
+                                    llvm::Value* oldObj = builder->CreateLoad(pty, entry, "reasg.old");
+                                    llvm::Value* dropFn = builder->CreateLoad(pty, dropFnPtr, "reasg.dropfn");
+                                    llvm::Value* need = builder->CreateAnd(
+                                        builder->CreateAnd(
+                                            builder->CreateICmpNE(active, llvm::ConstantInt::get(i8, 0)),
+                                            builder->CreateIsNotNull(oldObj)),
+                                        builder->CreateAnd(
+                                            builder->CreateICmpNE(oldObj, rhsVal),
+                                            builder->CreateIsNotNull(dropFn)),
+                                        "reasg.release");
+                                    (void) i1;
+                                    auto* relBB = llvm::BasicBlock::Create(rc, "reasg_release", fnOwner);
+                                    auto* storeBB = llvm::BasicBlock::Create(rc, "reasg_store", fnOwner);
+                                    builder->CreateCondBr(need, relBB, storeBB);
+                                    builder->SetInsertPoint(relBB);
+                                    // The observable drop counter, ticked
+                                    // inline: one atomic add on the exported
+                                    // runtime global, no call.
+                                    {
+                                        llvm::Module* lm =
+                                            builder->GetInsertBlock()->getParent()->getParent();
+                                        llvm::Constant* cnt = lm->getOrInsertGlobal(
+                                            "__cajeta_drop_count", rI64);
+                                        builder->CreateAtomicRMW(
+                                            llvm::AtomicRMWInst::Add, cnt,
+                                            llvm::ConstantInt::get(rI64, 1),
+                                            llvm::MaybeAlign(8),
+                                            llvm::AtomicOrdering::SequentiallyConsistent);
+                                    }
+                                    llvm::FunctionType* dropTy = llvm::FunctionType::get(
+                                        llvm::Type::getVoidTy(rc), {pty}, false);
+                                    builder->CreateCall(dropTy, dropFn, {oldObj});
+                                    builder->CreateBr(storeBB);
+                                    builder->SetInsertPoint(storeBB);
+                                    builder->CreateStore(rhsVal, entry);
+                                    builder->CreateStore(llvm::ConstantInt::get(i8, 1), activePtr);
+                                    if (contBB) {
+                                        builder->CreateBr(contBB);
+                                        builder->SetInsertPoint(contBB);
                                     }
                                 }
                             }
