@@ -38,7 +38,7 @@ A term is defined at first use and used identically thereafter. Five terms recur
 
 - **title** — the ownership stake in a value (Ownership §5).
 - **borrow** — a non-owning reference; `=` always produces one (Ownership §5).
-- **passthrough** — what `#` does: it hands along whatever title the source holds — a transfer when the source owns, a borrow otherwise (Ownership §5).
+- **passthrough** — what `#=` does: it hands along whatever title the source holds — a transfer when the source owns, a borrow otherwise (Ownership §5).
 - **drop** — the reclamation of an owned value at scope exit or claim time (Allocation §4).
 - **formal** — a declared parameter; its ownership mode is fixed at the call site (Ownership §5).
 
