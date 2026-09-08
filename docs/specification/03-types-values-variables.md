@@ -68,4 +68,6 @@ public final class C {
 
 ## 3.5 Type Parameters and Wildcards
 
-A class or method may declare type parameters, instantiated per type argument under the template model, and a wildcard `?` may stand for an unknown type argument at a use site. The full rules — declaration, bounds, deduction, specialization, and instantiation across archive boundaries — are Templates & Wildcards §11.
+A class or method may declare type parameters. Parameterized classes are not genericized, and there is no run-time type erasure: as in C++, each combination of type arguments instantiates a distinct type with its own generated code and layout. `Box<int32>` and `Box<float64>` are two types, and neither is assignable to the other. A wildcard `?` may stand for an unknown type argument at a use site. The full rules — declaration, bounds, deduction, specialization, and instantiation across archive boundaries — are Templates & Wildcards §11.
+
+> *Discussion.* As of 0.27.0 the local-declaration path does not yet enforce initializer compatibility between distinct reference types — a cross-parameterization assignment such as `Box<float64> b = a` with `a : Box<int32>` compiles, and reading through it reinterprets the source's layout (the distinct layouts are why the read is wrong). Static-field initializers already reject this as `CAJETA_ERROR_INITIALIZER_TYPE_MISMATCH`. The gap is recorded as disabled pinning tests in `test/type/AssignmentCompatibilityTests.cpp`.

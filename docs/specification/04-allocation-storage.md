@@ -4,15 +4,19 @@ This chapter defines Cajeta's allocation model: the `stack` and `heap` allocatio
 
 ## 4.1 Allocation Expressions
 
-Every class and array allocation names its placement at the allocation site:
+Every class and array allocation is written with `heap` or `stack` at the allocation site:
 
 ```cajeta
-MyClass a = heap MyClass();      // heap: outlives the frame if its owner does
+MyClass a = heap MyClass();      // heap: lives until its owner releases it
 MyClass b = stack MyClass();     // stack: lives in the current frame
 int8[] buf = heap int8[4096];
 ```
 
-Placement is mandatory — there is no `new`, and no default. Placement is the caller's choice and is not part of the type: `stack MyClass()` and `heap MyClass()` produce the same type `MyClass` (Types §3.2), and a method receiving a `MyClass` does not know or care where it was allocated.
+`heap` directly replaces `new`: it allocates on the heap and reads the same way at the use site. Where other languages leave stack allocation to compiler analysis or a separate mode, Cajeta introduces `stack` as an explicit keyword for stack-based objects. Calling the choice out at every allocation aids readability: a reader — and especially a beginning developer — sees where each instance lives, and how its code will behave, without consulting anything outside the line.
+
+A `heap` variable implies ownership: the variable that receives the allocation owns the instance, and the developer decides the owning scope by deciding where that variable lives. Ownership of a heap object can be transferred between variables, and a heap object can be borrowed without moving ownership; Ownership §5 defines both. The instance is released when its owner drops (§4.2).
+
+The keyword is not part of the type: `stack MyClass()` and `heap MyClass()` produce the same type `MyClass` (Types §3.2), and a method receiving a `MyClass` does not know or care where it was allocated.
 
 Allocation is always explicit at the use site. There is no implicit boxing, no implicit copy construction, and no implicit heap traffic.
 
@@ -20,7 +24,9 @@ An anonymous `heap T(...)` expression in transfer position — a field store, an
 
 ## 4.2 The Drop Chain
 
-Owned values are reclaimed through a per-thread chain of drop entries. Declaring an owning local arms an entry; the entries of a lexical block fire at the block's closing brace, in reverse declaration order. Firing an entry runs the instance's destructor chain and, for a heap instance, frees its memory (Classes §8 specifies destructors; Ownership §5.8 specifies how transfer moves an entry's obligation).
+Owned values are reclaimed through a per-thread chain of drop entries. Declaring an owning local arms an entry; the entries of a lexical block fire at the block's closing brace, in reverse declaration order. Firing an entry runs the instance's destructors and, for a heap instance, frees its memory (Ownership §5.8 specifies how transfer moves an entry's obligation).
+
+A class may declare a destructor, `~ClassName()`, to release resources the instance holds — close a file, return a connection. It is not user-callable; only the drop chain invokes it, exactly once per instance, and chaining is automatic: the class's own destructor body runs, then each ancestor's. Classes §8.7 gives the full rules. A class with no destructor still drops — its owned fields are released as part of the drop (Ownership §5.7).
 
 Drops fire on the exceptional path too: a `throw` unwinds the chain to the enclosing try frame's watermark, so every owning local between the throw and the handler is dropped before the handler runs.
 
