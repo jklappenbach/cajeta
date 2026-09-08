@@ -16,11 +16,9 @@ Chapters 2 through 14 define the core language: grammar and lexical structure, t
 
 ## 1.3 Notation
 
-### 1.3.1 Normative and informative text
+### 1.3.1 Reading conventions
 
-Plain paragraphs are normative. Text in a block quote labeled *Discussion* is informative: it motivates, compares, or records status, and it imposes no requirement.
-
-A feature that is designed but not yet implemented appears only in discussion text and is identified there as unimplemented. Normative text describes the shipped language.
+A plain paragraph is normative: it states a requirement or a defined behavior of the shipped language. A tinted panel — a quoted block opening with *Discussion.* — is informative: it motivates, compares, or records status, and imposes no requirement; a feature that is designed but not yet implemented appears only in a panel and is identified there as unimplemented. A bold phrase opening a paragraph names the rule that paragraph states.
 
 ### 1.3.2 Compile-time errors and diagnostic codes
 
