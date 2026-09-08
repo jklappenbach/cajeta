@@ -191,3 +191,38 @@ TEST(SessionBindingTests, DISABLED_probeElementArrayRebindDropsOldElements) {
     s.dropAll();
     EXPECT_EQ(2, s.dropCount()) << "rebound array's element leaked at session end";
 }
+
+// Top-level `#=` — the move-of-borrow check does not reach session
+// bindings. Inside a method body, `T b #= a; T c #= a;` is
+// CAJETA_ERROR_MOVE_OF_BORROW (the store path is checked there —
+// verified against 0.27.0/c705bc48); the same two stores at script top
+// level compile, and the broken program runs. MemoryModel.md's rule
+// ("transferring twice IS transferring from a borrow") names no scope
+// exception. Found 2026-09-07 while verifying spec chapter 1's rejected
+// example. DISABLED until the session-binding path joins the
+// move-of-borrow check; delete the prefix when it lands.
+TEST(SessionBindingTests, DISABLED_topLevelDoubleStoreTransferRejected) {
+    EXPECT_EQ("CAJETA_ERROR_MOVE_OF_BORROW", errorOf(
+        std::string(kProbe) +
+        "Probe a = heap Probe(1);\n"
+        "Probe b #= a;\n"
+        "Probe c #= a;\n"
+        "return 0;\n"));
+}
+
+// Top-level `#=`, array shape — the transferred buffer's contents are
+// lost. `int8[] b #= a` at script top level compiles, but reading
+// `b[0]` afterward returns 0 where a method-body version of the same
+// program returns the stored 7 (both measured 2026-09-07 on
+// 0.27.0/c705bc48). The class shape is unaffected: a class-typed
+// top-level `#=` carries its fields. DISABLED until array session
+// bindings survive a store transfer; delete the prefix when it lands.
+TEST(SessionBindingTests, DISABLED_topLevelArrayStoreTransferCarriesValue) {
+    Session s(
+        "int8[] a = heap int8[4];\n"
+        "a[0] = (int8) 7;\n"
+        "int8[] b #= a;\n"
+        "return (int32) b[0];\n");
+    ASSERT_TRUE(s.ok());
+    EXPECT_EQ(7, s.entry()) << "transferred array read back the wrong contents";
+}

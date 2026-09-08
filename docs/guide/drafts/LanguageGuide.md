@@ -162,14 +162,16 @@ memory (§16). See [`specification/lang/UnifiedClasses.md`](../../specification/
 
 ## 6. Ownership, borrowing, and `#`-transfer
 
-Every owned value has exactly one owner. **Plain assignment borrows; `#name`
-transfers ownership.**
+Every owned value has exactly one owner. **`=` is always a borrow — ownership
+stays with the right-hand side. `#` is a passthrough of whatever the source
+holds: a transfer when the source owns, a borrow handed along when it
+doesn't.**
 
 ```cajeta
 public void demo() {
     MyClass a = heap MyClass();
-    MyClass b = a;        // borrow — `a` still owns; `b` must not outlive a's scope
-    MyClass c #= a;       // transfer — `c` owns; `a` is demoted to a borrow (still readable, no longer transferable)
+    MyClass b = a;        // borrow — ownership stays with `a`; `b` must not outlive a's scope
+    MyClass c #= a;       // passthrough — `a` owns here, so the title moves to `c` (`a` stays readable, no longer transferable)
 }
 ```
 

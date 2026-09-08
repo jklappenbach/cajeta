@@ -327,3 +327,36 @@ TEST(TransferOfBorrowTests, lendAtCallArgumentStillCompiles) {
     compileExpectOk(src);
     EXPECT_EQ(runI32(src), 7);
 }
+
+// A stack instance surrendered into an ESCAPING heap object. The escape
+// checks cover a `#`-return of a stack local
+// (CAJETA_ERROR_STACK_RETURN_ESCAPES, TitleClassifierTests), but not a
+// stack value retained by a field of an object that then escapes: this
+// program compiles on 0.27.0/c705bc48, and the caller reads freed frame
+// memory (measured 2026-09-07 — h.c.v returns garbage once another call
+// reuses the frame). Same defect family as CAJETA_ERROR_DANGLING_LEND:
+// the receiver retains and escapes; only the surrender spelling differs.
+// DISABLED until the escape analysis reaches field-retained stack
+// transfers. The expected code below is the family's; adjust it if the
+// fix introduces a dedicated code, then delete the prefix.
+TEST(TransferOfBorrowTests, DISABLED_stackTransferRetainedByEscapingObjectRejected) {
+    std::string src =
+        "package test;\n"
+        "public class Cell { public int32 v; public Cell(int32 v) { this.v = v; } }\n"
+        "public class Holder {\n"
+        "    public Cell c;\n"
+        "    public Holder(#Cell x) { this.c #= x; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static #Holder build() {\n"
+        "        Cell s = stack Cell(5);\n"
+        "        Holder h = heap Holder(#s);\n"
+        "        return #h;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Holder h #= D.build();\n"
+        "        return h.c.v;\n"
+        "    }\n"
+        "}\n";
+    compileExpectError(src, "CAJETA_ERROR_DANGLING_LEND");
+}
