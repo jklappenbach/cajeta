@@ -37,7 +37,7 @@ Two further rules protect borrows:
 - **A store** — `dst #= v` at a local binding, a field, or an element. `#=` is one token; an ownership store cannot be half-written. The destination takes whatever title `v` holds, and a field or element store records the arrived mode in the slot's own ownership bit.
 - **A move expression** — `#v` at a call argument, a return, or a slot extraction. These positions are not assignments; the source's title travels with the value.
 
-After a transfer, the source is demoted to a borrow of the same live instance. The instance did not die: reading through the old name remains legal, and only the new owner's drop fires the destructor. Transferring it again is a compile-time error (§5.5).
+After a transfer, the source is demoted to a borrow of the same instance. A previously owning variable remains valid, and reading through it stays legal. When it drops from scope it does not free the memory it once owned — that obligation traveled with the title, and only the new owner's drop fires the destructor. Transferring it again is a compile-time error (§5.5).
 
 A fresh `heap T(...)` expression in transfer position promotes implicitly, with no `#` written; the temporary is an unnamed owner with no prior identity (Allocation §4).
 
