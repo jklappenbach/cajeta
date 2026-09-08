@@ -1,6 +1,6 @@
 # 5 — Ownership & the Borrow Checker
 
-This chapter defines Cajeta's ownership model — the owned and borrow states — and the static analysis that enforces it. Every heap value has one responsible owner; `=` always produces a borrow; `#` is a passthrough that hands along whatever title its source holds. All enforcement is at compile time, with no ownership annotations in the type system and no reference counting on the owned path.
+This chapter defines Cajeta's ownership model — the owned and borrow states — and the static analysis that enforces it. Every heap value has one responsible owner; `=` always produces a borrow; `#=` is a passthrough that hands along whatever title its source holds. All enforcement is at compile time, with no ownership annotations in the type system and no reference counting on the owned path.
 
 ## 5.1 Ownership States
 
@@ -32,7 +32,7 @@ Two further rules protect borrows:
 
 ## 5.3 The Passthrough Operator
 
-`#` is a passthrough: it hands along whatever title its source actually holds — a transfer when the source owns, a borrow when it does not. It appears in two positions:
+`#=` is a passthrough: it hands along whatever title its source actually holds — a transfer when the source owns, a borrow when it does not. The sigil appears in two positions:
 
 - **A store** — `dst #= v` at a local binding, a field, or an element. `#=` is one token; an ownership store cannot be half-written. The destination takes whatever title `v` holds, and a field or element store records the arrived mode in the slot's own ownership bit.
 - **A move expression** — `#v` at a call argument, a return, or a slot extraction. These positions are not assignments; the source's title travels with the value.
