@@ -93,11 +93,13 @@ if (mode !== 'h2') {
 const chapter = chapters?.[index];
 const pageTitle = chapter && index > 0 ? `${chapter.title} · ${title}` : title;
 
-// file-mode guides are named for the section ("The Cajeta Guide" README title)
+// file-mode guides are named for their README ("The Cajeta Guide"). A section
+// with no README leads with chapter 1, whose title does not name the document,
+// so the section label is used instead ("Specification").
+const introDoc = mode === 'file' ? manifest.docs.find((d) => d.slug === chapters[0].slug) : null;
+const introIsReadme = introDoc != null && introDoc.order == null;
 const guideTitle =
-  mode === 'file'
-    ? (manifest.docs.find((d) => d.slug === chapters[0].slug)?.title ?? section?.label)
-    : title;
+  mode === 'file' ? (introIsReadme ? introDoc.title : (section?.label ?? introDoc?.title)) : title;
 ---
 
 <Base
