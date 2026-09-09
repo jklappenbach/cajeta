@@ -46,7 +46,7 @@ What may cross into a task follows from the ownership model, with no separate `S
 - A value **borrowed** into a scoped task is sound: the borrow's lifetime is the scope's lifetime, and the scope blocks until the task finishes, so the source outlives every use.
 - A value handed to a **detached** task, or stored anywhere that outlives the spawning frame, must be **transferred** (`#`) — the task becomes the owner and drops it.
 
-The last-use advisory (Ownership §5.9) exists for exactly this boundary: a lend at a local's final use before a spawn is usually a transfer the author did not spell.
+The last-use advisory (Ownership §5.10) exists for exactly this boundary: a lend at a local's final use before a spawn is usually a transfer the author did not spell.
 
 ## 16.5 Synchronization Primitives
 

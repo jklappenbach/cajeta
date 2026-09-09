@@ -14,9 +14,9 @@ The operator set over primitives: arithmetic `+ - * / %`, bitwise `& | ^ ~`, shi
 
 ## 14.3 Method Invocation
 
-An invocation names a receiver (or a class, for statics), a method, and arguments. Overload selection is by name and parameter types; transfer mode is not part of the signature (Ownership §5.4.1).
+An invocation names a receiver (or a class, for statics), a method, and arguments. Overload selection is by name and parameter types; transfer mode is not part of the signature (Ownership §5.5.1).
 
-Each class-typed argument travels with the caller's ownership decision: `f(x)` lends, `f(#x)` transfers, and the hidden per-call flag tells the callee which it got (Ownership §5.4). A call result binds per the callee's return spelling: a `#T` result must be received with `#=` (Ownership §5.4.2).
+Each class-typed argument travels with the caller's ownership decision: `f(x)` lends, `f(#x)` transfers, and the hidden per-call flag tells the callee which it got (Ownership §5.5). A call result binds per the callee's return spelling: a `#T` result must be received with `#=` (Ownership §5.5.2).
 
 ## 14.4 Instantiation Expressions
 
@@ -64,4 +64,4 @@ System.stdout.println(sum);          // 72
 
 ## 14.7 Ownership Spellings in Expressions
 
-`#v` marks a move at a call argument, a return operand, or a slot extraction; `dst #= v` is the store form (Ownership §5.3). The historical store spelling `dst = #v` still compiles, warns, and is scheduled for removal; the positional flag accessor `Cajeta.moveMask()` is retired (`CAJETA_ERROR_MOVEMASK_RETIRED`) in favor of `Cajeta.owned(formal)`.
+`#v` surrenders the title its source holds, written at a store, a call argument, or a return (Ownership §5.3). `dst #= v` is the passthrough store, which hands along whatever title the source holds (Ownership §5.4). The positional flag accessor `Cajeta.moveMask()` is retired (`CAJETA_ERROR_MOVEMASK_RETIRED`) in favor of `Cajeta.owned(formal)`.

@@ -45,9 +45,9 @@ Class instances always pass and return by pointer, never by value — there is n
 A **scope** is the region of a program a variable lives in. For a local variable it is a method invocation, or a scope block (`{ … }`) inside a method: the scope runs from the declaration to the closing brace of the declaring block, and one invocation of a method is one instance of every scope in its body. A static variable is scoped for the lifetime of the application, from program start to exit (Execution §20). A session binding is scoped to the session (Script Units §18). Reaching the end of a scope is what triggers a drop (Allocation §4); name resolution and shadowing within scopes are Names §7.
 
 - **Local variables** — declared in a block; dropped at the closing brace of the declaring block when they own (Allocation §4).
-- **Fields** — instance and static members of a class (Classes §8); a field's ownership status is resolved at drop time (Ownership §5.7).
-- **Formals** — declared parameters; a formal's ownership mode is fixed at the call site and carried at run time (Ownership §5.4).
-- **Array elements and slots** — indexed storage; a slot records its own ownership bit (Ownership §5.3, Arrays §12).
+- **Fields** — instance and static members of a class (Classes §8); a field's ownership status is resolved at drop time (Ownership §5.8).
+- **Formals** — declared parameters; a formal's ownership mode is fixed at the call site and carried at run time (Ownership §5.5).
+- **Array elements and slots** — indexed storage; a slot records its own ownership bit (Ownership §5.4, Arrays §12).
 - **Session bindings** — top-level declarations of a script unit; they bind into the session scope and outlive the entry frame (Script Units §18).
 
 ## 3.4 Definite Assignment

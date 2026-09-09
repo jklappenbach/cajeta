@@ -22,7 +22,7 @@ Modifiers (`public`, `final`, `abstract`, …) precede the declaration. A class 
 
 A class body declares fields, methods, constructors, at most one destructor (§8.6), and operator declarations (§8.5). Members are in scope throughout the class body regardless of order. Instance members are reached through a receiver (`this.field`, `obj.method()`); static members belong to the class and are reached through the class name.
 
-Methods may be overloaded: two methods of the same name with different parameter types are distinct. Transfer mode is not part of a signature — declaring overloads that differ only in `#` is a compile-time error (Ownership §5.4).
+Methods may be overloaded: two methods of the same name with different parameter types are distinct. Transfer mode is not part of a signature — declaring overloads that differ only in `#` is a compile-time error (Ownership §5.5.1).
 
 **Example 8.2-1.** Static state and methods.
 
@@ -104,6 +104,6 @@ A class may declare one destructor, `~ClassName()`:
 - The identifier must match the class; a parameter list or return type is a parse error.
 - It is not user-callable; only the drop chain invokes it (Allocation §4).
 - Inside the body, `this` is live: fields, methods, and intrinsics all work. The instance's memory is reclaimed after the body returns.
-- It runs exactly once per instance, at whichever drop entry ends up owning the instance (Ownership §5.8).
+- It runs exactly once per instance, at whichever drop entry ends up owning the instance (Ownership §5.9).
 
 Destructor chaining is automatic and non-suppressible: the drop runs the class's own destructor body and field auto-drops, then every transitive ancestor's, each ancestor exactly once even in a diamond. Dispatch on drop is virtual for heap instances — `Base b = heap Derived()` fires `~Derived()` — while stack instances use static dispatch, since the allocation site fixes the dynamic type.

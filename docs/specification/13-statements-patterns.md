@@ -86,4 +86,4 @@ There is no try-with-resources form: destructors already guarantee deterministic
 
 ## 13.6 `return`
 
-`return expr;` ends the method with a value; `return;` ends a `void` method. A plain `return x` hands back whatever title `x` holds; `return #x` surrenders it (Ownership §5.4.2). In a script unit, a top-level `return <int32>` is the process exit code (Script Units §18).
+`return expr;` ends the method with a value; `return;` ends a `void` method. A plain `return x` hands back whatever title `x` holds; `return #x` surrenders it (Ownership §5.5.2). In a script unit, a top-level `return <int32>` is the process exit code (Script Units §18).

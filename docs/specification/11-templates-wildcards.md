@@ -25,7 +25,7 @@ Boxed wrappers (Types §3.1) exist only for the boundary where a template slot r
 
 ## 11.2 Template Declarations
 
-Type parameters appear on class declarations (`class Box<T>`) and on methods. A template's type parameters are in scope throughout the declaring body, in field types, method signatures, and ownership spellings (`#T` formals and returns work per Ownership §5.4). At a template method's call site, type arguments are spelled explicitly in angle brackets — `stream.map<int32>((pt) -> pt.dist2())`.
+Type parameters appear on class declarations (`class Box<T>`) and on methods. A template's type parameters are in scope throughout the declaring body, in field types, method signatures, and ownership spellings (`#T` formals and returns work per Ownership §5.5). At a template method's call site, type arguments are spelled explicitly in angle brackets — `stream.map<int32>((pt) -> pt.dist2())`.
 
 > *Discussion.* Call-site deduction of method type arguments from argument types, and an explicit specialization syntax (a user-provided body for a particular instantiation), are not yet specified here.
 
