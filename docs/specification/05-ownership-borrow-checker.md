@@ -34,7 +34,9 @@ Two further rules protect borrows:
 
 `#=` is a passthrough. It hands along whatever title its source actually holds — a transfer when the source owns, a borrow when it does not. `#=` is one token; an ownership store cannot be half-written. The destination may be a local binding, a field, or an element, and a field or element store records the arrived mode in the slot's own ownership bit.
 
-The `#` sigil marks the same surrender wherever a value leaves its source. `#v` at a call argument or a return hands the source's title along with the value, and writing the sigil on the source of a plain assignment, `x = #v`, has the meaning of `x #= v`.
+The `#` sigil marks the same surrender where a value leaves through a call argument or a return. `#v` in those positions hands the source's title along with the value. A store has one spelling; `#v` as the right side of a plain `=` is a compile-time error.
+
+> *Discussion.* 0.27.0 still accepts `x = #v` and gives it the meaning of `x #= v`. The single-spelling rule is enforced under the ownership consolidation in progress; the gap is pinned by disabled tests in `test/ownership/StoreSpellingTests.cpp`.
 
 After a transfer, the source is demoted to a borrow of the same instance. A previously owning variable remains valid, and reading through it stays legal. When it drops from scope it does not free the memory it once owned — that obligation traveled with the title, and only the new owner's drop fires the destructor. Transferring it again is a compile-time error (§5.5).
 
