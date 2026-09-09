@@ -154,16 +154,18 @@ test('fileChapters builds README intro + numerically ordered chapters', () => {
   assert.ok(!chapters.some((c) => c.slug === 'guide/drafts/x'));
 });
 
-test('fileChapters does not double-number titles that already lead with the number', () => {
+test('fileChapters labels chapters "N. Name", normalizing a dash separator', () => {
   const docs = [
     { slug: 'g/09-a', url: '/g/09-a/', group: '', title: '9 — Type kinds', order: 9 },
     { slug: 'g/10-b', url: '/g/10-b/', group: '', title: '10 — Allocation', order: 10 },
     { slug: 'g/11-c', url: '/g/11-c/', group: '', title: 'Ownership', order: 11 },
+    { slug: 'g/12-d', url: '/g/12-d/', group: '', title: '12. Statements', order: 12 },
+    { slug: 'g/13-e', url: '/g/13-e/', group: '', title: '13 - Expressions', order: 13 },
   ];
   const chapters = fileChapters(docs);
   assert.deepEqual(
     chapters.map((c) => c.title),
-    ['9 — Type kinds', '10 — Allocation', '11. Ownership']
+    ['9. Type kinds', '10. Allocation', '11. Ownership', '12. Statements', '13. Expressions']
   );
 });
 
