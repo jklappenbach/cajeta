@@ -20,7 +20,7 @@ Modifiers (`public`, `final`, `abstract`, …) precede the declaration. A class 
 
 ## 8.2 Members
 
-A class body declares fields, methods, constructors, at most one destructor (§8.6), and operator declarations (§8.5). Members are in scope throughout the class body regardless of order. Instance members are reached through a receiver (`this.field`, `obj.method()`); static members belong to the class and are reached through the class name.
+A class body declares fields, methods, constructors, at most one destructor (§8.8), and operator declarations (§8.7). Members are in scope throughout the class body regardless of order. Instance members are reached through a receiver (`this.field`, `obj.method()`); static members belong to the class and are reached through the class name.
 
 Methods may be overloaded: two methods of the same name with different parameter types are distinct. Transfer mode is not part of a signature — declaring overloads that differ only in `#` is a compile-time error (Ownership §5.5.1).
 
@@ -72,18 +72,84 @@ System.stdout.println(e.age(150) + " " + e.describe());    // 50 <ev>
 
 > *Discussion.* A bare collision — two parents declaring the same member name, uninvolved in any override — is not yet diagnosed: as of 0.27.0 the resolution silently picks one parent's member. The intended rule is strict-by-default (a collision is an error until the program disambiguates with the qualified selectors); it is bound here when the diagnostic lands.
 
-## 8.5 Method Dispatch
+## 8.5 Abstract Classes and Methods
+
+An **abstract method** is declared with the `abstract` modifier and no body. It contributes a signature and a dispatch slot, and it obligates every concrete descendant to supply an implementation. An **abstract class** is a class declared `abstract`. It is a type that bindings and parameters may name, and it is not instantiable.
+
+A class that inherits an abstract method and does not override it is a compile-time error, `CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED`. The obligation is inherited through every parent, so a class must satisfy the abstract methods of each of its bases (§8.4).
+
+**Example 8.5-1.** An abstract base, a concrete subclass, and dispatch through a base-typed binding.
+
+```cajeta
+public abstract class Shape {
+    public Shape() { return; }
+    public abstract int32 area();
+    public int32 twice() { return this.area() * 2; }
+}
+public class Square extends Shape {
+    int32 side;
+    public Square(int32 s) { this.side = s; }
+    public int32 area() { return this.side * this.side; }
+}
+public final class C {
+    public static int32 run() {
+        Shape sh = heap Square(3);
+        return sh.twice();      // 18 — twice() calls the derived area()
+    }
+}
+```
+
+**Example 8.5-2.** A rejected program. `Blob` is concrete and inherits `area()` without implementing it.
+
+<!-- snippet: skip -->
+```cajeta
+public abstract class Shape {
+    public Shape() { return; }
+    public abstract int32 area();
+}
+public class Blob extends Shape {
+    public Blob() { return; }   // CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED
+}
+```
+
+**Satisfaction across parents.** Under multiple inheritance, an abstract method inherited from one parent is satisfied by a concrete method of the same signature inherited from another. The obligation belongs to the class, not to the branch that declared it, and dispatch through the abstract declaration lands on the concrete implementation.
+
+**Example 8.5-3.** The obligation from `A` is discharged by the implementation in `B`, and a call through the `A`-typed binding reaches it.
+
+```cajeta
+public abstract class A {
+    public A() { return; }
+    public abstract int32 step();
+}
+public class B {
+    public B() { return; }
+    public int32 step() { return 42; }
+}
+public class Both extends A, B {
+    public Both() { return; }
+}
+public final class C {
+    public static int32 run() {
+        A a = heap Both();
+        return a.step();        // 42
+    }
+}
+```
+
+> *Discussion.* Three checks around `abstract` are unenforced as of 0.27.0, recorded as disabled pinning tests in `test/type/AbstractClassTests.cpp`. Allocating a class that has an unimplemented abstract method compiles and faults at run time when the empty slot is called, rather than being rejected at the allocation site. An abstract method declared with a body is accepted, and the body is ignored. A class that declares an abstract method is not required to carry the `abstract` modifier. The rules above are the intended behavior and bind when the diagnostics land.
+
+## 8.6 Method Dispatch
 
 Instance method calls dispatch virtually: the runtime selects the most-derived override for the receiver's dynamic type, regardless of the receiver expression's static type. Assigning a derived instance to a base-typed binding adjusts the reference to the base's sub-object; calls through it still reach the derived overrides.
 
-## 8.6 Operator Declarations
+## 8.7 Operator Declarations
 
 Two shapes, by mutation:
 
 1. **Binary operators are `public static`**, both operands explicit, no implicit `this`; the operator returns a fresh value and mutates neither operand. Shipped: `+ - * / % & | ^ << >>` and the comparisons `== != < > <= >=`.
 2. **Indexed access is an instance member** — `[]` and `[]=` — because it targets the receiver; the call site must hold a mutable borrow for `[]=`.
 
-**Example 8.6-1.** A static binary operator.
+**Example 8.7-1.** A static binary operator.
 
 ```cajeta
 public final class Vec2 {
@@ -97,7 +163,7 @@ System.stdout.println("" + v.x + "," + v.y);    // 4,6
 
 > *Discussion.* Deferred operator forms — unary `+`/`-`, mutating `++`/`--`, compound assignment, and `operator!`/`operator~` — have grammar coverage in part but are not lowered; they are specified in the internal operator document and bound here as they ship.
 
-## 8.7 Destructors
+## 8.8 Destructors
 
 A class may declare one destructor, `~ClassName()`:
 

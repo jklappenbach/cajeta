@@ -10,7 +10,7 @@ Operator precedence follows the C family, as fixed by the expression grammar: un
 
 ## 14.2 Operators
 
-The operator set over primitives: arithmetic `+ - * / %`, bitwise `& | ^ ~`, shifts `<< >> >>>`, comparisons `== != < > <= >=`, logical `! && ||`, increment and decrement `++ --`, and the compound assignments `+= -= *= /= %= &= |= ^= <<= >>= >>>=`. `n += 3` and `n++` mutate their target in place. Class types may declare their own binary and index operators (Classes §8.6). String concatenation and its conversions are Conversions §6.4.
+The operator set over primitives: arithmetic `+ - * / %`, bitwise `& | ^ ~`, shifts `<< >> >>>`, comparisons `== != < > <= >=`, logical `! && ||`, increment and decrement `++ --`, and the compound assignments `+= -= *= /= %= &= |= ^= <<= >>= >>>=`. `n += 3` and `n++` mutate their target in place. Class types may declare their own binary and index operators (Classes §8.7). String concatenation and its conversions are Conversions §6.4.
 
 ## 14.3 Method Invocation
 
