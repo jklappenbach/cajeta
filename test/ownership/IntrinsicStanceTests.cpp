@@ -234,3 +234,43 @@ TEST(IntrinsicStanceTests, arrayStreamTempReceiverIsReclaimedAfterAScalarTermina
         "        return xs.stream().count();\n", "4", 90);
     EXPECT_EQ(runVerdict(src), 0) << "90 = wrong count; 91 = the array stream leaked (or was freed twice)";
 }
+
+// The rule's other edge (found by the close-out sweep, ParallelStreamP1Tests.
+// filterDispatchMerged SIGSEGV): a CLOSURE call has no resolved method after
+// codegen either, but it is not an intrinsic — the closure's own body stores
+// the return flag right before it returns, so its result rides that flag
+// (spec 5.2). Treating it as an intrinsic gave `Stream.fold`'s `acc = fn(acc,
+// x)` a constant OWNED stance for a lambda that returns its own parameter — a
+// borrow — and the accumulator was freed twice. The seed stays the frame's;
+// the fold's result is a borrow of it.
+TEST(IntrinsicStanceTests, closureCallResultReturningItsParameterStaysABorrow) {
+    // ParallelDriver.foldWorker's shape: a BORROW-initialized accumulator
+    // re-assigned from a `#R` lambda that returns its own parameter (flag 0,
+    // the mode it was handed). The accumulator stays a borrow and the frame
+    // frees nothing. A constant OWNED stance armed it, and the frame freed the
+    // caller's cell (measured on the pre-fix compiler with
+    // tmp/u8/closure2: keep.n read the reused allocation — 1004, not 44).
+    std::string src = loop(
+        "    static int32 bump(Cell keep, (Cell, int32) -> #Cell fn) {\n"
+        "        Cell acc = keep;\n"                       // a borrow
+        "        acc = fn(acc, 1);\n"                      // rides the closure's flag: 0
+        "        acc = fn(acc, 2);\n"
+        "        return acc.n;\n"
+        "    }\n", "unused",
+        "        Cell keep = heap Cell(1);\n"
+        "        int32 v = A.bump(keep, (acc, x) -> { acc.n = acc.n + x; return acc; });\n"
+        "        Cell other = heap Cell(100);\n"           // would reuse a freed keep
+        "        return keep.n * 10 + v;\n", "44", 100);
+    EXPECT_EQ(runVerdict(src), 0) << "100 = keep was freed under the borrow (or a wrong sum); 101 = a cell leaked or was freed twice";
+}
+
+// And the owned side of the same closure-call rule, for symmetry: a lambda
+// returning a fresh value hands its title out through the flag.
+TEST(IntrinsicStanceTests, closureCallResultReturningAFreshValueIsOwned) {
+    std::string src = loop("", "unused",
+        "        () -> #Cell mk = () -> heap Cell(3);\n"
+        "        Cell a #= mk();\n"
+        "        Cell b #= mk();\n"
+        "        return a.n + b.n;\n", "6", 110);
+    EXPECT_EQ(runVerdict(src), 0) << "110 = wrong sum; 111 = a fresh cell leaked (constant borrow) or was freed twice";
+}

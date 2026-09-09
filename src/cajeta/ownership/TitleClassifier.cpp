@@ -234,11 +234,23 @@ namespace cajeta::ownership {
             // unique name+arity match.
             MethodPtr rm = mce->getResolvedMethod();
             if (!rm) {
+                // A call on a function-typed value has no method to resolve
+                // before OR after codegen and is NOT an intrinsic: the
+                // closure's own body stores the return flag right before it
+                // returns, so its result rides that flag (spec 5.2). Ask
+                // first — 8.2.4's intrinsic branch below must never see one
+                // (the close-out sweep found it: `Stream.fold`'s `acc = fn(acc,
+                // x)` took a constant OWNED stance for an identity-returning
+                // lambda and the accumulator was freed twice —
+                // ParallelStreamP1Tests.filterDispatchMerged, SIGSEGV).
+                if (CajetaFunctionTypePtr fnTy = functionTypeOfCall(mce, module)) {
+                    return closureCallShape(fnTy, leaf);
+                }
                 MethodPtr decl = MethodCallExpression::resolveArgCalleeShallow(mce, module);
                 // 8.2.4 — AFTER the call's codegen a null resolution is an
                 // intrinsic lowering (`File.readAllBytes` emits
                 // __cajeta_file_read_all and returns before any method is
-                // resolved) or a closure call. The lowering stores NO return
+                // resolved). The lowering stores NO return
                 // flag, so the TLS after it holds whatever the previous
                 // class-pointer call left — a stale read (cajeta-llm leaked
                 // one config buffer per model on it, 2026-09-08, whenever a
@@ -270,9 +282,6 @@ namespace cajeta::ownership {
                 if (!mce->hasGenerated()) rm = decl;
             }
             if (!rm) {
-                if (CajetaFunctionTypePtr fnTy = functionTypeOfCall(mce, module)) {
-                    return closureCallShape(fnTy, leaf);
-                }
                 // Unresolvable before codegen — or an intrinsic with no
                 // declaration after it: the callee's own flag decides at
                 // run time (spec §2.1, CallResult); for the intrinsic there
