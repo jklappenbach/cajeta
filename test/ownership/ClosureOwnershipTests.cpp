@@ -238,3 +238,67 @@ TEST(ClosureOwnershipTests, titledFormalForwardedWithSharpIntoAKeeperIsOwnedOnce
         "        return a.call(1) + b.call(2);\n", "9", 120);
     EXPECT_EQ(runVerdict(src), 0) << "120 = a keeper read a freed record; 121 = a closure leaked or was freed twice";
 }
+
+// 9.1.12 (spec 5.14, the edge 9.2.6 recorded) — a parallel reduce whose
+// combiner hands back its RIGHT input after fresh-producing steps. The
+// workers' fresh partials are owned by the partials array; the merge's
+// `acc = fn(acc, partials[ci])` returned a BORROW of a slot's value, `return
+// acc` rode that borrow out, and the chain's frame freed the array under the
+// caller. The merge now moves each partial into the combiner
+// (`fn(acc, #partials[ci])`): returning `b` hands its title out, returning a
+// fresh value drops it. `pad` reuses a freed cell so a dangling `best`
+// reads a wrong value rather than a stale right one.
+TEST(ClosureOwnershipTests, parallelReduceCombinerReturningItsRightInputOwnsTheResult) {
+    // The chain root (`xs.stream()` under a class-returning terminal) is a
+    // known bounded leak (6.2.5), so the live count is not asserted here:
+    // the witness is the VALUE. Thirty-two sentinel cells allocated after
+    // the reduce reuse a freed cell, so a dangling `best` reads a sentinel.
+    std::string src = std::string(PRE)
+        + "    static #Cell keepMax(Cell a, Cell b) {\n"
+        + "        if (b.n > a.n) { return b; }\n"           // its right input: a borrow under #Cell
+        + "        return heap Cell(a.n);\n"                 // fresh: owned
+        + "    }\n"
+        + "    static int32 probe() {\n"
+        + "        Cell[] xs = heap Cell[256];\n"
+        + "        int32 i = 0;\n"
+        + "        while (i < 256) { xs[i] = heap Cell((i * 37) % 200); i = i + 1; }\n"
+        + "        xs[0] = heap Cell(250);\n"    // the max FIRST: the tail is the array's front after the back-half splits,
+        + "        xs[1] = heap Cell(0);\n"      // and its last step copies the max fresh; that partial merges last and wins
+        + "        Cell seed = heap Cell(-1);\n"
+        + "        Cell best #= xs.stream().parallel().reduce(seed, (a, b) -> A.keepMax(a, b));\n"
+        + "        Cell[] pads = heap Cell[32];\n"
+        + "        int32 k = 0;\n"
+        + "        while (k < 32) { pads[k] = heap Cell(-100 - k); k = k + 1; }\n"
+        + "        return best.n;\n"
+        + "    }\n"
+        + "    public static int32 run() {\n"
+        + "        int32 i = 0;\n"
+        + "        while (i < 8) {\n"
+        + "            if (A.probe() != 250) { return 130; }\n"
+        + "            i = i + 1;\n"
+        + "        }\n"
+        + "        return 0;\n"
+        + "    }\n"
+        + "}\n";
+    EXPECT_EQ(runVerdict(src), 0) << "130 = best read a freed (reused) cell";
+}
+
+// 9.1.13 (spec 5.14, the 8.2.2 flow gap at run time) — a borrow re-assign
+// leaves the local's entry registered on the DISPLACED value (by design:
+// `n = n.next` keeps reading through it). A reader then took that entry's
+// flag as the local's title: `#k` handed a callee a title on an object the
+// frame never owned, and the callee freed it under its real owner. The
+// readers now count the flag only while the entry describes the local's
+// current object; the displaced value is still freed at scope exit.
+TEST(ClosureOwnershipTests, staleEntryAfterABorrowReassignLendsNoTitle) {
+    std::string src = loop(
+        "    static #Cell pick(Cell a, Cell b) { return b; }\n"     // hands back its right input: a borrow at run time
+        "    static int32 consume(#Cell c) { return c.n; }\n",      // owns what it is handed
+        "        Cell k = heap Cell(1);\n"                            // k owns cell 1
+        "        Cell o = heap Cell(5);\n"                            // o owns cell 5
+        "        k #= A.pick(k, o);\n"                                // a borrow arrives at run time (flag 0): the entry stays on cell 1
+        "        int32 v = A.consume(#k);\n"                          // forwards k's MODE on cell 5: none — a lend
+        "        Cell pad = heap Cell(-7);\n"                         // would reuse a freed cell 5
+        "        return v + o.n;\n", "10", 140);
+    EXPECT_EQ(runVerdict(src), 0) << "140 = the callee freed o under its owner (a forged title); 141 = leaked or freed twice";
+}

@@ -152,6 +152,15 @@ namespace cajeta::ownership {
     /// is ReturnFlag: the next call clobbers the TLS. Returns nullptr only for
     /// TitleSource::Slot on a node that has not generated yet (the move site
     /// keeps its own take protocol until it migrates).
+    /// Unit 9 (spec 5.14, the 8.2.2 flow gap) — deactivate a local's drop
+    /// entry after a move of its value. A local re-assigned to a borrow keeps
+    /// its entry on the DISPLACED value by design; a runtime-conditional local
+    /// therefore deactivates only if the entry still describes its current
+    /// object (`__cajeta_drop_mark_inactive_if`), so the displaced value is not
+    /// orphaned. A static owner's entry is deactivated as before.
+    void deactivateLocalEntry(const CajetaModulePtr& module, const FieldPtr& field);
+    void deactivateLocalEntry(const CajetaModulePtr& module, Field* field);
+
     llvm::Value* titleFlag(const TitleShape& shape, const CajetaModulePtr& module);
 
     /// The title a STORE of `e` in `role` carries into its slot, or null when

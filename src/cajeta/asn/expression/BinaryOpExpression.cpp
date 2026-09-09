@@ -1547,7 +1547,14 @@ namespace cajeta {
             // than claiming a title: a borrow link stays a borrow, a title
             // moves. Claiming (`T x #= slot`, into a local) is unchanged.
             auto fwdDotLhs = dynamic_pointer_cast<DotExpression>(children[0]);
-            if ((fwdLhs || fwdDotLhs) && fwdMv && !fwdMv->getChildren().empty()) {
+            // Unit 9 (spec 5.14) — a LOCAL re-assigned with `#=` from a slot
+            // forwards too, as its declaration form (`T x #= src[i]`, LVD)
+            // already does: the slot's title if it has one, a borrow
+            // otherwise — never a panic. The parallel merges' alias take
+            // (`if (acc == partials[ci]) acc #= partials[ci]`) needs exactly
+            // that on a worker's partial that was an element.
+            auto fwdIdLhs = dynamic_pointer_cast<IdentifierExpression>(children[0]);
+            if ((fwdLhs || fwdDotLhs || fwdIdLhs) && fwdMv && !fwdMv->getChildren().empty()) {
                 auto srcNode = fwdMv->getChildren()[0];
                 bool srcIsSlot = dynamic_pointer_cast<ArrayIndexExpression>(srcNode) != nullptr
                     || dynamic_pointer_cast<DotExpression>(srcNode) != nullptr;
@@ -1561,7 +1568,7 @@ namespace cajeta {
                             || CajetaClass::arrayElementCarriesArraySlotBits(t);
                     };
                     if (fwdL && fwdS
-                            && fwdBits(fwdL->getResolvedType())
+                            && (fwdIdLhs || fwdBits(fwdL->getResolvedType()))
                             && fwdBits(fwdS->getResolvedType())) {
                         fwdMv->setForwardingSlotMove(true);
                     }
@@ -3575,13 +3582,8 @@ namespace cajeta {
                                 FieldPtr srcField = sc->getField(
                                     idExpr->getTextValue());
                                 if (srcField) {
-                                    if (llvm::Value* entry =
-                                            srcField->getDropEntry()) {
-                                        if (llvm::Function* mark =
-                                                module->getRuntimeFunction(
-                                                    "__cajeta_drop_mark_inactive")) {
-                                            builder->CreateCall(mark, {entry});
-                                        }
+                                    if (srcField->getDropEntry()) {
+                                        ownership::deactivateLocalEntry(module, srcField);   // Unit 9 (spec 5.14): only if the entry still describes the local
                                     }
                                 }
                             }
@@ -3769,6 +3771,26 @@ namespace cajeta {
                     if (auto* rc0 = llvm::dyn_cast_or_null<llvm::ConstantInt>(rhsTitle)) {
                         if (rc0->isZero()) rhsTitle = nullptr;
                         else rhsTitle = rOne;
+                    }
+                    // Unit 9 (spec 5.14, the 8.2.2 flow gap) — a re-assigned
+                    // local whose new title is not the constant 1 (a borrow, a
+                    // runtime flag) is a RUNTIME owner from here on: its entry
+                    // may describe the displaced value, and every later reader
+                    // (`#x`, `#= x`, a return) must consult the entry — which
+                    // now answers only for the object it describes — instead
+                    // of the static "still owns" picture. Measured: `k #=
+                    // pick(k, o)` then `consume(#k)` passed a constant 1 and
+                    // the callee freed `o` under its owner.
+                    if (!rhsTitle || !llvm::isa<llvm::ConstantInt>(rhsTitle)) {
+                        if (auto rcId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
+                            if (auto rcSc = module->getScopeStack().peek()) {
+                                FieldPtr rcField = rcSc->getField(rcId->getTextValue());
+                                if (rcField && rcField->getDropEntry()) {
+                                    rcField->setRuntimeConditionalOwner(true);
+                                    rcField->setEntryMayBeStale(true);
+                                }
+                            }
+                        }
                     }
                     if (rhsTitle) {
                     if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {

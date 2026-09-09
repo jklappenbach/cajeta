@@ -864,7 +864,13 @@ namespace cajeta::ownership {
     namespace {
         // The entry's active byte (offset 24: obj, drop_fn, prev, active),
         // read inline — one GEP, one load, one zext.
-        llvm::Value* entryActiveFlag(llvm::Value* entry, const CajetaModulePtr& module) {
+        // Unit 9 (spec 5.14, the 8.2.2 flow gap) — `current`, when given, is
+        // the local's present value: a borrow re-assign leaves the entry
+        // registered on the DISPLACED value (obj ), and its flag is that
+        // value's title, not the local's. The flag counts only while the entry
+        // still describes the local (one more load and a compare).
+        llvm::Value* entryActiveFlag(llvm::Value* entry, const CajetaModulePtr& module,
+                                     llvm::Value* current = nullptr) {
             auto* builder = module->getBuilder();
             auto& ctx = *module->getLlvmContext();
             llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
@@ -873,7 +879,14 @@ namespace cajeta::ownership {
                 llvm::ConstantInt::get(i64, 24), "title.active.ptr");
             llvm::Value* active = builder->CreateLoad(
                 llvm::Type::getInt8Ty(ctx), activePtr, "title.active");
-            return builder->CreateZExt(active, i64, "title.flag");
+            llvm::Value* flag = builder->CreateZExt(active, i64, "title.flag");
+            if (current && current->getType()->isPointerTy()) {
+                llvm::Value* described = builder->CreateLoad(
+                    llvm::PointerType::get(ctx, 0), entry, "title.obj");
+                llvm::Value* same = builder->CreateICmpEQ(described, current, "title.describes");
+                flag = builder->CreateSelect(same, flag, llvm::ConstantInt::get(i64, 0), "title.flag.own");
+            }
+            return flag;
         }
     }  // namespace
 
@@ -959,6 +972,29 @@ namespace cajeta::ownership {
             return nullptr;   // an intrinsic lowering: no flag was stored
         }
         return verdictFlag(s, v, module);
+    }
+
+    void deactivateLocalEntry(const CajetaModulePtr& module, const FieldPtr& field) {
+        deactivateLocalEntry(module, field.get());
+    }
+
+    void deactivateLocalEntry(const CajetaModulePtr& module, Field* field) {
+        if (!field) return;
+        llvm::Value* entry = field->getDropEntry();
+        if (!entry) return;
+        auto* builder = module->getBuilder();
+        if (field->isEntryMayBeStale() && field->getOrCreateAllocation()) {
+            if (llvm::Function* markIf = module->getRuntimeFunction("__cajeta_drop_mark_inactive_if")) {
+                llvm::Value* current = builder->CreateLoad(
+                    llvm::PointerType::get(*module->getLlvmContext(), 0),
+                    field->getOrCreateAllocation(), "title.current");
+                builder->CreateCall(markIf, {entry, current});
+                return;
+            }
+        }
+        if (llvm::Function* mark = module->getRuntimeFunction("__cajeta_drop_mark_inactive")) {
+            builder->CreateCall(mark, {entry});
+        }
     }
 
     ArgTitle classifyArgument(const ExpressionPtr& e, bool callerTransferred,
@@ -1103,7 +1139,12 @@ namespace cajeta::ownership {
         switch (s.source) {
             case TitleSource::DropEntry: {
                 if (!s.field || !s.field->getDropEntry()) break;
-                v = entryActiveFlag(s.field->getDropEntry(), module);
+                llvm::Value* current = nullptr;
+                if (llvm::Value* slot = s.field->isEntryMayBeStale() ? s.field->getOrCreateAllocation() : nullptr) {
+                    current = builder->CreateLoad(
+                        llvm::PointerType::get(*module->getLlvmContext(), 0), slot, "title.current");
+                }
+                v = entryActiveFlag(s.field->getDropEntry(), module, current);
                 break;
             }
             case TitleSource::TransferWord: {

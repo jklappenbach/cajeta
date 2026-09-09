@@ -376,7 +376,16 @@ the current compiler.*
   release fires only when the object differs, and the bit written keeps
   the old bit when it is the same object. `foldWorker` itself spells the
   re-store `#=`: the identity case records the borrow it holds (and the
-  slot keeps its title), a fresh accumulator moves its title into the slot.
+  slot keeps its title), a fresh accumulator moves its title into the slot. Two
+  more rules the parallel merges needed (2026-09-09): a LOCAL re-assigned
+  with `#=` from a slot forwards the slot's bit as its declaration form
+  does (a borrow slot records a borrow, never a panic), so a merge that was
+  handed back the slot's own value can take the slot (`if (acc ==
+  partials[ci]) acc #= partials[ci]`); and a drop entry lends its title
+  only while it still describes the local's current object — a borrow
+  re-assign leaves it on the displaced value by design, and `#x` / `#= x` /
+  a return read 0 for the new object instead of forging a title (the
+  displaced value is still freed at scope exit).
 
 ## 6. Related finding: the owned-bind check was never order-dependent
 

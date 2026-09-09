@@ -2053,10 +2053,22 @@ namespace cajeta {
                 if (auto scope = module->getScopeStack().peek()) {
                     if (FieldPtr mcFld = scope->getField(mcId->getTextValue())) {
                         if (llvm::Value* mcEntry = mcFld->getDropEntry()) {
-                            if (llvm::Function* takeFn = module->getRuntimeFunction(
-                                    "__cajeta_drop_take_active")) {
-                                llvm::Value* was = builder->CreateCall(
-                                    takeFn, {mcEntry}, "title.release");
+                            // Unit 9 (spec 5.14) — take the entry only if it still
+                            // describes this local's current value (a borrow
+                            // re-assign leaves it on the displaced one).
+                            llvm::Function* takeFn = module->getRuntimeFunction(
+                                mcFld->isEntryMayBeStale() ? "__cajeta_drop_take_active_if"
+                                                            : "__cajeta_drop_take_active");
+                            if (takeFn) {
+                                llvm::Value* was = nullptr;
+                                if (mcFld->isEntryMayBeStale()) {
+                                    llvm::Value* mcCur = builder->CreateLoad(
+                                        llvm::PointerType::get(*module->getLlvmContext(), 0),
+                                        mcFld->getOrCreateAllocation(), "title.current");
+                                    was = builder->CreateCall(takeFn, {mcEntry, mcCur}, "title.release");
+                                } else {
+                                    was = builder->CreateCall(takeFn, {mcEntry}, "title.release");
+                                }
                                 returnTitleFlag = builder->CreateZExt(
                                     was, llvm::Type::getInt64Ty(
                                         *module->getLlvmContext()),
@@ -2557,11 +2569,8 @@ namespace cajeta {
                 // L3-3: a function-typed local hands its closure to the
                 // caller, whose own local registers a fresh entry on receipt.
                 if (dynamic_pointer_cast<CajetaFunctionType>(f->getType())) {
-                    if (llvm::Value* entry = f->getDropEntry()) {
-                        if (llvm::Function* mark = module->getRuntimeFunction(
-                                "__cajeta_drop_mark_inactive")) {
-                            builder->CreateCall(mark, {entry});
-                        }
+                    if (f->getDropEntry()) {
+                        ownership::deactivateLocalEntry(module, f);   // Unit 9 (spec 5.14)
                     }
                 }
                 auto klass = dynamic_pointer_cast<CajetaClass>(f->getType());
@@ -2585,10 +2594,7 @@ namespace cajeta {
                                 }
                             }
                         }
-                        if (llvm::Function* mark = module->getRuntimeFunction(
-                                "__cajeta_drop_mark_inactive")) {
-                            builder->CreateCall(mark, {entry});
-                        }
+                        ownership::deactivateLocalEntry(module, f);   // Unit 9 (spec 5.14)
                     }
                 }
             }

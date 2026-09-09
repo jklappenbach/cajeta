@@ -3378,11 +3378,8 @@ namespace cajeta {
                         if (auto scope = module->getScopeStack().peek()) {
                             FieldPtr field = scope->getField(idExpr->getTextValue());
                             if (field) {
-                                if (llvm::Value* entry = field->getDropEntry()) {
-                                    if (llvm::Function* mark = module->getRuntimeFunction(
-                                            "__cajeta_drop_mark_inactive")) {
-                                        builder->CreateCall(mark, {entry});
-                                    }
+                                if (field->getDropEntry()) {
+                                    ownership::deactivateLocalEntry(module, field);   // Unit 9 (spec 5.14)
                                 }
                             }
                         }
@@ -5256,13 +5253,8 @@ namespace cajeta {
                         if (auto dvScope = module->getScopeStack().peek()) {
                             if (FieldPtr dvField = dvScope->getField(
                                     dvId->getTextValue())) {
-                                if (llvm::Value* dvEntry =
-                                        dvField->getDropEntry()) {
-                                    if (llvm::Function* mark =
-                                            module->getRuntimeFunction(
-                                                "__cajeta_drop_mark_inactive")) {
-                                        builder->CreateCall(mark, {dvEntry});
-                                    }
+                                if (dvField->getDropEntry()) {
+                                    ownership::deactivateLocalEntry(module, dvField);   // Unit 9 (spec 5.14)
                                 }
                             }
                         }
@@ -5296,11 +5288,8 @@ namespace cajeta {
                                 parameters[0].expression)) {
                             if (auto scope = module->getScopeStack().peek()) {
                                 if (FieldPtr fld = scope->getField(idExpr->getTextValue())) {
-                                    if (llvm::Value* entry = fld->getDropEntry()) {
-                                        if (llvm::Function* mark = module->getRuntimeFunction(
-                                                "__cajeta_drop_mark_inactive")) {
-                                            builder->CreateCall(mark, {entry});
-                                        }
+                                    if (fld->getDropEntry()) {
+                                        ownership::deactivateLocalEntry(module, fld);   // Unit 9 (spec 5.14)
                                     }
                                 }
                             }
@@ -10810,11 +10799,8 @@ namespace cajeta {
                 if (!scope) return;
                 FieldPtr field = scope->getField(idExpr->getTextValue());
                 if (!field) return;
-                if (llvm::Value* entry = field->getDropEntry()) {
-                    if (llvm::Function* mark = module->getRuntimeFunction(
-                            "__cajeta_drop_mark_inactive")) {
-                        builder->CreateCall(mark, {entry});
-                    }
+                if (field->getDropEntry()) {
+                    ownership::deactivateLocalEntry(module, field);   // Unit 9 (spec 5.14): only if the entry still describes the local
                 }
                 // script-units U4 (spec §4.2) — a promoted session binding
                 // has no frame drop entry; its transfer must quiet the

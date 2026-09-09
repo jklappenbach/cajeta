@@ -3468,10 +3468,10 @@ bool cajetaRhsCarriesRedundantSharp(
                         // The entry's active byte — inline (one load, one zext),
                         // not a runtime call — read BEFORE the deactivation below.
                         runtimeTitleFlag = ownership::titleFlag(mvShape, module);
-                        if (llvm::Function* mark = module->getRuntimeFunction(
-                                "__cajeta_drop_mark_inactive")) {
-                            module->getBuilder()->CreateCall(mark, {entry});
-                        }
+                        // Unit 9 (spec 5.14) — deactivate only if the entry still
+                        // describes this local (a borrow re-assign leaves it on the
+                        // displaced value, which must not be orphaned).
+                        ownership::deactivateLocalEntry(module, field);
                     } else if (auto pfMv =
                             dynamic_pointer_cast<ParameterField>(field)) {
                         // 6.2.1's store-form twin — an ENTRY-LESS plain formal

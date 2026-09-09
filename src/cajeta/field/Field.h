@@ -58,6 +58,10 @@ namespace cajeta {
         llvm::AllocaInst* alloca;
         llvm::Value* dropEntry = nullptr;
         bool runtimeConditionalOwner = false;
+        // Unit 9 (spec 5.14) — set by a re-assign whose title is not the constant
+        // 1: the drop entry may now describe the DISPLACED value, so readers
+        // compare the entry's object with the local's before trusting its flag.
+        bool entryMayBeStale = false;
         bool stackInstance = false;
         // stdlib-ownership-convention U2 — when this local was initialised
         // from a BORROW-returning call (a callee whose return type is not
@@ -290,6 +294,8 @@ namespace cajeta {
         // a plain retaining store of it is the loud-plain-store hazard.
         bool isRuntimeConditionalOwner() const { return runtimeConditionalOwner; }
         void setRuntimeConditionalOwner(bool v) { runtimeConditionalOwner = v; }
+        bool isEntryMayBeStale() const { return entryMayBeStale; }
+        void setEntryMayBeStale(bool v) { entryMayBeStale = v; }
         // 6.2.1 exclusion — the body read `Cajeta.owned(<this formal>)`, so
         // its plain stores are branch-guarded by the author (the container
         // dual-store idiom, spec §3.3.1); the loud-plain-store stays quiet.

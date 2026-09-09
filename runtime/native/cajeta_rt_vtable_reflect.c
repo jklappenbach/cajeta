@@ -434,6 +434,31 @@ int8_t __cajeta_drop_take_active(struct cajeta_drop_entry* e) {
     return was != 0 ? 1 : 0;
 }
 
+// ownership-title-classifier Unit 9 (spec 5.14, the 8.2.2 flow gap) — the
+// take that asks first whether the entry still describes `obj`. A borrow
+// re-assign leaves the entry registered on the DISPLACED value (so
+// `n = n.next` keeps reading through it); a reader that then took the
+// entry's flag as the local's title forged one for a different object and
+// orphaned the displaced value. Same object: take (and disarm) as before.
+// Another object: the frame holds no title on `obj` — answer 0 and leave
+// the entry to free the displaced value at scope exit.
+int8_t __cajeta_drop_take_active_if(struct cajeta_drop_entry* e, void* obj) {
+    if (e == NULL || e->obj != obj) {
+        return 0;
+    }
+    int8_t was = e->active;
+    e->active = 0;
+    return was != 0 ? 1 : 0;
+}
+
+// Unit 9 (spec 5.14) — deactivate only if the entry still describes `obj`
+// (see __cajeta_drop_take_active_if): a move of a local whose entry sits on
+// the displaced value must not orphan that value.
+void __cajeta_drop_mark_inactive_if(struct cajeta_drop_entry* e, void* obj) {
+    if (e == NULL || e->obj != obj) return;
+    e->active = 0;
+}
+
 void __cajeta_drop_mark_inactive(struct cajeta_drop_entry* e) {
     if (__cajeta_drop_chain_validate_enabled) {
         if (e == NULL) {
