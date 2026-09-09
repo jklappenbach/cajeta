@@ -28,7 +28,7 @@ Two consequences are compile-time errors:
 - A top-level binding cannot hold a borrow — the borrowed owner may drop or rebind in a later unit (`CAJETA_ERROR_SESSION_BORROW_ESCAPE`). Transfer instead (`#=`), bind a fresh value, or borrow inside a block.
 - A `stack` allocation cannot bind at top level — session bindings outlive the frame (`CAJETA_ERROR_SESSION_STACK_BINDING`; Allocation §4.3).
 
-> *Discussion.* Two session-scope ownership gaps are open as of 0.27.0, recorded as disabled pinning tests in `test/jit/SessionBindingTests.cpp`: the move-of-borrow check does not yet reach top-level `#=` stores (Ownership §5.5), and an array-typed top-level `#=` loses the transferred buffer's contents. Both are in scope of the ownership consolidation under way.
+> *Discussion.* Two session-scope ownership gaps are open as of 0.27.0, recorded as disabled pinning tests in `test/jit/SessionBindingTests.cpp`: the move-of-borrow check does not yet reach top-level `#=` stores (Ownership §5.6), and an array-typed top-level `#=` loses the transferred buffer's contents. Both are in scope of the ownership consolidation under way.
 
 ## 18.3 Arguments — `System.args`
 

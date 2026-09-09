@@ -8,7 +8,7 @@ This chapter defines the three bulk-data forms: arrays, the indexed storage type
 
 Index access is bounds-checked at run time: an out-of-bounds access reports the index and the dimension size and terminates the program. It is not an exception a program can catch.
 
-An element store participates in ownership: a plain store lends into the slot, `#=` passes the source's title into it, and the slot records the arrived mode in its own ownership bit (Ownership §5.3). Storing a plain formal into an element is rejected like the field case (Ownership §5.6).
+An element store participates in ownership: a plain store lends into the slot, `#=` passes the source's title into it, and the slot records the arrived mode in its own ownership bit (Ownership §5.4). Storing a plain formal into an element is rejected like the field case (Ownership §5.7).
 
 **Example 12.1-1.** Creation, length, and indexing.
 
@@ -70,7 +70,7 @@ System.stdout.println(C.run());
 
 A slice is a value that designates a range of another value's immutable backing buffer — `String.substring` is the canonical producer. A borrow cannot express a slice that outlives its source, and forcing a copy would tax the common case; the shared stake exists for exactly this. A stake is a property of the buffer, not of any binding (Ownership §5.1): a runtime count co-owns the buffer, and the binding holding the slice remains a borrow.
 
-- **Escaping-borrow resolution.** When a borrow of an eligible source escapes its frame — returned, stored beyond the source's life — it does not error (the identity-object discipline of Ownership §5.6 does not apply): it resolves into a copy for small values, a shared stake in the backing buffer for large ones, and a copy for arena-backed ones.
+- **Escaping-borrow resolution.** When a borrow of an eligible source escapes its frame — returned, stored beyond the source's life — it does not error (the identity-object discipline of Ownership §5.7 does not apply): it resolves into a copy for small values, a shared stake in the backing buffer for large ones, and a copy for arena-backed ones.
 - **Eligibility** is immutable leaf buffers only — values with no identity, no mutation, and no outgoing references. The graph of staked buffers is therefore acyclic: no cycles, no weak references, no leaks.
 - **Staking is one-way** — a staked buffer never returns to sole ownership, and only immutable leaf buffers are staked; identity objects and mutable values never are. Moves of a staked value are count-neutral; the count lives in a side table keyed by buffer base, and a buffer that is never sliced-and-stored pays one predicted bit test at drop and nothing else. The last stake frees the buffer.
 

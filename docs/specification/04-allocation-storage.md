@@ -26,9 +26,9 @@ An anonymous `heap T(...)` expression in transfer position — a field store, an
 
 Both owning and `stack` objects are dropped when they reach the end of their scope — a method invocation, or a scope block inside a method (Types §3.3). There is no explicit method call to delete an object: destruction and reclamation are handled entirely as part of the drop.
 
-The mechanism is a per-thread chain of drop entries. Declaring an owning or `stack` local arms an entry; the entries of a lexical block fire at the block's closing brace, in reverse declaration order. Firing an entry runs the instance's destructors and, for a heap instance, frees its memory (Ownership §5.8 specifies how transfer moves an entry's obligation).
+The mechanism is a per-thread chain of drop entries. Declaring an owning or `stack` local arms an entry; the entries of a lexical block fire at the block's closing brace, in reverse declaration order. Firing an entry runs the instance's destructors and, for a heap instance, frees its memory (Ownership §5.9 specifies how transfer moves an entry's obligation).
 
-A class may declare a destructor, `~ClassName()`, to release resources the instance holds — close a file, return a connection. It is not user-callable; only the drop chain invokes it, exactly once per instance, and chaining is automatic: the class's own destructor body runs, then each ancestor's. Classes §8.7 gives the full rules. A class with no destructor still drops — its owned fields are released as part of the drop (Ownership §5.7).
+A class may declare a destructor, `~ClassName()`, to release resources the instance holds — close a file, return a connection. It is not user-callable; only the drop chain invokes it, exactly once per instance, and chaining is automatic: the class's own destructor body runs, then each ancestor's. Classes §8.7 gives the full rules. A class with no destructor still drops — its owned fields are released as part of the drop (Ownership §5.8).
 
 Drops fire on the exceptional path too: a `throw` unwinds the chain to the enclosing try frame's watermark, so every owning local between the throw and the handler is dropped before the handler runs.
 
