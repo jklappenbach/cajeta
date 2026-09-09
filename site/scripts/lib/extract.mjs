@@ -128,6 +128,18 @@ export function orderFromPath(relPath) {
 }
 
 /**
+ * Sidebar label for one chapter: '<order>. <name>'. A title that already
+ * leads with its number keeps the name and gets the separator normalized,
+ * so a page headed '5 — Ownership' lists as '5. Ownership'. A title with no
+ * number is prefixed with one.
+ */
+function chapterLabel(order, title) {
+  const lead = new RegExp(`^0*${order}\\s*(?:[—–-]|\\.)?\\s*`).exec(title);
+  const name = lead ? title.slice(lead[0].length) : title;
+  return name ? `${order}. ${name}` : `${order}. ${title}`;
+}
+
+/**
  * Chapters-as-files: from one section's manifest docs, build the ordered
  * chapter list — the section-root README as "Introduction", then the
  * numerically prefixed section-root files. Docs in subdirectories are not
@@ -144,7 +156,7 @@ export function fileChapters(sectionDocs) {
     ...(readme ? [{ slug: readme.slug, title: 'Introduction', url: readme.url }] : []),
     ...numbered.map((d) => ({
       slug: d.slug,
-      title: new RegExp(`^0*${d.order}\\b`).test(d.title) ? d.title : `${d.order}. ${d.title}`,
+      title: chapterLabel(d.order, d.title),
       url: d.url,
     })),
   ];
