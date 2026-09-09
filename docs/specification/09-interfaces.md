@@ -18,7 +18,7 @@ An interface may extend one or more interfaces; the extending interface's contra
 
 ## 9.2 Implementing Classes
 
-`class C implements I, J` obligates `C` to a concrete, accessible implementation of every method in each listed interface's contract, including inherited ones. Leaving any method unimplemented in a non-`abstract` class is a compile-time error.
+`class C implements I, J` obligates `C` to a concrete, accessible implementation of every method in each listed interface's contract, including inherited ones. Leaving any method unimplemented in a non-`abstract` class is a compile-time error. An `abstract` class may leave part of a contract unimplemented and pass the obligation to its descendants (Classes §8.5).
 
 **Example 9.2-1.** A rejected program: an unimplemented contract.
 
