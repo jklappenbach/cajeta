@@ -186,6 +186,12 @@ int32_t __cajeta_dump_drop_chain(void) {
         fprintf(stderr,
             "  ... (more entries; cap reached, raise MAX_ENTRIES to see them)\n");
     }
+    // An empty chain (a compiler front-end thread, a fiber with no owned
+    // locals) used to print the header and nothing — indistinguishable from
+    // a walk that re-faulted (the device-tests runner, 2026-09-09). Say so.
+    if (count == 0) {
+        fprintf(stderr, "  (empty)\n");
+    }
     return count;
 }
 
@@ -307,7 +313,19 @@ void __cajeta_install_sigabrt_handler(void) {
 static struct sigaction __cajeta_prev_sigsegv;
 static struct sigaction __cajeta_prev_sigbus;
 
+// A fault while this handler is dumping (a walk through a corrupt chain, a
+// bad frame) used to re-enter it and destroy the diagnostic on every crash it
+// touched; the second fault now ends the process with the original signal's
+// status (device-tests runner, 2026-09-09).
+static volatile sig_atomic_t __cajeta_in_segv_handler = 0;
+
 static void __cajeta_segv_handler(int signo, siginfo_t* info, void* uctx) {
+    if (__cajeta_in_segv_handler) {
+        static const char msg[] = "cajeta: fault inside the crash handler — diagnostic cut short\n";
+        (void) !write(2, msg, sizeof(msg) - 1);
+        _exit(128 + signo);
+    }
+    __cajeta_in_segv_handler = 1;
     (void) uctx;
     const char* name = (signo == SIGBUS) ? "SIGBUS" : "SIGSEGV";
     fprintf(stderr, "\ncajeta: %s caught — fault addr %p\n",
