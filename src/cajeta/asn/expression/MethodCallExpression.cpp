@@ -1966,6 +1966,7 @@ namespace cajeta {
     }
 
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
+        codegenRan = true;   // 8.2.4 — hasGenerated(): a null resolution from here on is an intrinsic's
         // xref (ide-symbol-index §2): open this call site for the duration of its
         // codegen. CajetaClass::resolveMethod — the choke point every callee
         // resolution passes through — attributes whatever it resolves to the
@@ -5144,10 +5145,8 @@ namespace cajeta {
                         ExpressionPtr dvArg = dynamic_pointer_cast<Expression>(
                             parameters[0].expression);
                         bool dvSharp = parameters[0].callerTransferred;
-                        if (auto dvMv = dynamic_pointer_cast<MoveExpression>(dvArg)) {
-                            auto& dvKids = dvMv->getChildren();
-                            dvArg = dvKids.empty() ? nullptr
-                                : dynamic_pointer_cast<Expression>(dvKids[0]);
+                        if (isMoveKind(dvArg)) {   // the `#x` wrapper: its operand, spelled transferred
+                            dvArg = moveInner(dvArg);
                             dvSharp = true;
                         }
                         auto dvAix = dvSharp

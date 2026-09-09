@@ -621,7 +621,7 @@ namespace cajeta {
                 auto lhsId = dynamic_pointer_cast<IdentifierExpression>(bk[0]);
                 auto rhs = bk[1];
                 if (lhsId && lhsId->getTextValue() == name && rhs) {
-                    if (dynamic_pointer_cast<MoveExpression>(rhs)
+                    if (isMoveKind(rhs)
                             || dynamic_pointer_cast<MethodCallExpression>(rhs)
                             || dynamic_pointer_cast<CallExpression>(rhs)
                             || isConditionalKind(dynamic_pointer_cast<Expression>(rhs))) {
@@ -653,7 +653,7 @@ namespace cajeta {
                                  const std::string& name) {
         if (!node) return false;
         bool blocking = dynamic_pointer_cast<ReturnStatement>(node)
-            || dynamic_pointer_cast<MoveExpression>(node)
+            || isMoveKind(node)
             || dynamic_pointer_cast<LambdaExpression>(node);
         if (blocking) return subtreeUsesName(node, name);
         // A `#name` transfer at argument position is a move, but lands as
@@ -809,11 +809,7 @@ namespace cajeta {
                         // rewritten call still satisfies the receipt.)
                         auto init0 = kids.empty() ? nullptr
                             : dynamic_pointer_cast<Expression>(kids[0]);
-                        if (auto mvWrap = dynamic_pointer_cast<MoveExpression>(init0)) {
-                            auto& mvKids = mvWrap->getChildren();
-                            init0 = mvKids.empty() ? nullptr
-                                : dynamic_pointer_cast<Expression>(mvKids[0]);
-                        }
+                        if (isMoveKind(init0)) init0 = moveInner(init0);   // the `#=` wrapper's operand
                         auto mc = dynamic_pointer_cast<MethodCallExpression>(init0);
                         const std::string mcName = mc ? mc->getMethodCallName() : "";
                         if (mc && (mcName == "substring" || mcName == "trim")) {
@@ -867,8 +863,8 @@ namespace cajeta {
                     declarator->getInitializer())) {
                 auto& fwdKids = fwdVi->getChildren();
                 if (!fwdKids.empty()) {
-                    if (auto outerMv = dynamic_pointer_cast<MoveExpression>(
-                            fwdKids[0])) {
+                    if (auto outerMv = isMoveKind(fwdKids[0])
+                            ? std::static_pointer_cast<MoveExpression>(fwdKids[0]) : nullptr) {
                         if (!outerMv->getChildren().empty()) {
                             // Walk down any nested moves: `#= src[i]` gives
                             // one MoveExpression, the redundant `#= #src[i]`
@@ -883,7 +879,7 @@ namespace cajeta {
                                     slotMv->setForwardingSlotMove(true);
                                     break;
                                 }
-                                slotMv = dynamic_pointer_cast<MoveExpression>(src);
+                                slotMv = isMoveKind(src) ? std::static_pointer_cast<MoveExpression>(src) : nullptr;
                             }
                         }
                     }
@@ -1268,7 +1264,7 @@ namespace cajeta {
                             // signal is the owning-form discriminator.
                             bool isOwning =
                                 mceParams[0].callerTransferred
-                                || dynamic_pointer_cast<MoveExpression>(argExpr) != nullptr;
+                                || isMoveKind(argExpr);
                             field->setIsOwningView(isOwning);
                             if (!isOwning) {
                                 if (auto idArg = dynamic_pointer_cast<IdentifierExpression>(argExpr)) {
@@ -1952,7 +1948,7 @@ namespace cajeta {
             // strict LIFO, so the entry that assignment will re-arm has to
             // exist in THIS frame: register it now, INACTIVE (a drop of a
             // borrow is a double free), and let the assignment's
-            // `__cajeta_drop_reassign` arm it and release what it displaces.
+            // the inline re-arm (5.2.3) arms it and releases what it displaces.
             // Only when some assignment to this name in the method body has
             // an owned-shaped right-hand side — every other local pays
             // nothing. Pinned by ReassignOwnershipTests.

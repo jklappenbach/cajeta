@@ -607,7 +607,7 @@ namespace cajeta {
         // vtable address and every later dispatch / field read through
         // the field reads garbage. Same shape as the NewExpression /
         // MethodCallExpression carve-outs.
-        if (dynamic_pointer_cast<MoveExpression>(ast)) {
+        if (isMoveKind(ast)) {
             return v;
         }
         // MethodCallExpression: the return value of a call IS the
@@ -1212,6 +1212,20 @@ namespace cajeta {
                         if (!valAst->getResolvedType()) valAst->resolveTypes(module);
                         CajetaTypePtr idxType = idxAst->getResolvedType();
                         CajetaTypePtr valType = valAst->getResolvedType();
+                        // Spec 5.12 — `m[k] #= call()`: the `#=` wrapper's
+                        // operand is a call whose return type is not resolved
+                        // before its codegen, so `valType` was null and the
+                        // store fell through to the ARRAY element path, which
+                        // read the map as an array header (SIGSEGV, measured
+                        // 2026-09-08). The callee's declared return type is
+                        // the value's type; the classifier's shallow resolution
+                        // finds it.
+                        if (!valType) {
+                            ExpressionPtr valLeaf = moveInner(valAst);   // the wrapper's operand
+                            ownership::TitleShape vs = ownership::classify(
+                                valLeaf ? valLeaf : valAst, module);
+                            if (vs.callee) valType = vs.callee->getReturnType();
+                        }
                         if (idxType && valType) {
                             // Generate values fresh — recv as the `this`
                             // pointer for the call, idx and val as the
@@ -1260,47 +1274,19 @@ namespace cajeta {
                                     && opFormals.front()->getName() == "this";
                                 size_t opOff = (opStatic || !opHasThis) ? 0 : 1;
                                 ExpressionPtr opArgs[2] = { idxAst, valAst };
+                                // Unit 8 (spec 4.9 audit) — the operator
+                                // call's `#T` formals are the call site's
+                                // contract, on the classifier (spec 5.8, 5.11;
+                                // a `#v` value is the move of its name).
                                 for (size_t a = 0; a < 2; ++a) {
                                     size_t fi = opOff + a;
                                     if (fi >= opFormals.size()) break;
                                     auto& ofp = opFormals[fi];
                                     if (!ofp || !ofp->isTransferred()) continue;
-                                    auto oa = opArgs[a];
-                                    if (dynamic_pointer_cast<MoveExpression>(oa))
-                                        continue;
-                                    if (dynamic_pointer_cast<NewExpression>(oa))
-                                        continue;
-                                    auto oid = dynamic_pointer_cast<
-                                        IdentifierExpression>(oa);
-                                    if (!oid) continue;
-                                    auto oscope = module->getScopeStack().peek();
-                                    if (!oscope) continue;
-                                    FieldPtr ofield =
-                                        oscope->getField(oid->getTextValue());
-                                    if (!ofield) continue;
-                                    bool owns = ofield->getDropEntry() != nullptr;
-                                    if (!owns) {
-                                        if (auto cm = module->getCurrentMethod()) {
-                                            owns = cm->isArenaEligibleLocal(
-                                                oid->getTextValue());
-                                        }
-                                    }
-                                    if (!owns) continue;
-                                    throw Exception(
-                                        "method `" + opName + "` declares "
-                                        "parameter `" + ofp->getName()
-                                        + "` as `#T` (ownership transfer "
-                                          "required); write `#"
-                                        + oid->getTextValue() + "` at the call "
-                                          "site to surrender ownership of the "
-                                          "source local, or pass a fresh "
-                                          "`heap T(...)` / `stack T(...)` "
-                                          "construction. See "
-                                          "docs/specification/lang/"
-                                          "OwnershipTransfer.md.",
-                                        "CAJETA_ERROR_TRANSFER_REQUIRED",
-                                        module->getSourcePath(),
-                                        (int) getSourceLine(), -1);
+                                    if (!opArgs[a]) continue;
+                                    ownership::rejectOwnedFormalArgument(opArgs[a],
+                                        /*callerTransferred=*/false, module, opName,
+                                        ofp->getName(), (int) getSourceLine());
                                 }
                             }
                             // title-tracking 6.2.1 — the transfer word for the
@@ -1312,6 +1298,39 @@ namespace cajeta {
                             // two user params); a runtime-owner source (`#s`
                             // where s is a formal) forwards its captured flag,
                             // per the MCE word-composition rule.
+                            // 5.2.8's LAST-USE ADVISORY for the indexed store
+                            // (decided 2026-09-08: `m[k] = v` LENDS — the
+                            // sink model — so a bare owned local at its final
+                            // use is the transfer the author most likely
+                            // meant: `m[k] = #v`). A warning with the fix-it,
+                            // never an error; the same rule the call site
+                            // applies to its plain arguments.
+                            for (ExpressionPtr advAst : { idxAst, valAst }) {
+                                auto advId = std::dynamic_pointer_cast<IdentifierExpression>(advAst);
+                                if (!advId) continue;
+                                auto advScope = module->getScopeStack().peek();
+                                if (!advScope) continue;
+                                FieldPtr advF = advScope->getField(advId->getTextValue());
+                                bool advIsLocalOwner = advF && advF->getDropEntry()
+                                    && !std::dynamic_pointer_cast<ParameterField>(advF);
+                                if (!advIsLocalOwner) continue;
+                                auto advM = module->getCurrentMethod();
+                                if (!advM || !advM->isFinalUseOfLocal(advId->getTextValue(),
+                                        advId->getSourceLine(), advId->getSourceColumn())) {
+                                    continue;
+                                }
+                                if (auto* eng = DiagnosticEngine::active()) {
+                                    eng->report("warning", "CAJETA_WARN_LAST_USE_TRANSFER",
+                                        "`" + advId->getTextValue() + "` is lent here at its "
+                                        "final use (an indexed store lends, like `put`), so "
+                                        "nothing in this scope reads it again — if the map is "
+                                        "meant to KEEP it, spell `#" + advId->getTextValue()
+                                            + "` to transfer the title. As written the title "
+                                        "stays with the local and is released at scope exit.",
+                                        module->getSourcePath(),
+                                        advId->getSourceLine(), advId->getSourceColumn() + 1);
+                                }
+                            }
                             llvm::Value* opxWord = builder->getInt64(0);
                             {
                                 int64_t constBits = 0;
@@ -1370,6 +1389,30 @@ namespace cajeta {
                                 // and `m[k] = n[k] = v` chain correctly.
                                 return valVal;
                             }
+                        }
+                        // A class that DECLARES `operator[]=` and still did not
+                        // dispatch here (no overload for these types, or an
+                        // argument whose type is unresolved) must not fall
+                        // through to the ARRAY element store below: that read
+                        // the map as an array header (SIGSEGV, measured
+                        // 2026-09-08 on `m[k] #= call()`). Receivers without
+                        // the operator (views, Strings) keep their own paths.
+                        bool declaresIndexedStore = false;
+                        for (auto& dm : recvClass->getMethodList()) {
+                            if (dm && dm->getName() == "operator[]=") { declaresIndexedStore = true; break; }
+                        }
+                        if (declaresIndexedStore) {
+                            throw Exception(
+                                "indexed store on `" + recvClass->toCanonical()
+                                + "`: no `operator[]=` takes (`"
+                                + (idxType ? idxType->toCanonical() : std::string("?"))
+                                + "`, `" + (valType ? valType->toCanonical() : std::string("?"))
+                                + "`)" + (valType ? std::string() : std::string(
+                                    " — the value's type is not resolved here (a call "
+                                    "whose callee is not yet known?); bind it to a typed "
+                                    "local first")) + ".",
+                                "CAJETA_ERROR_UNRESOLVED_METHOD",
+                                module->getSourcePath(), (int) getSourceLine(), -1);
                         }
                     }
                 }
@@ -1487,19 +1530,29 @@ namespace cajeta {
         // must reach the same innermost node.
         if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2) {
             auto fwdLhs = dynamic_pointer_cast<ArrayIndexExpression>(children[0]);
-            auto fwdMv = dynamic_pointer_cast<MoveExpression>(children[1]);
+            std::shared_ptr<MoveExpression> fwdMv = isMoveKind(children[1])
+                ? std::static_pointer_cast<MoveExpression>(children[1]) : nullptr;
             while (fwdMv && !fwdMv->getChildren().empty()) {
-                auto deeper = dynamic_pointer_cast<MoveExpression>(
-                    fwdMv->getChildren()[0]);
+                auto deeper = isMoveKind(fwdMv->getChildren()[0])
+                    ? std::static_pointer_cast<MoveExpression>(fwdMv->getChildren()[0]) : nullptr;
                 if (!deeper) break;
                 fwdMv = deeper;
             }
-            if (fwdLhs && fwdMv && !fwdMv->getChildren().empty()) {
-                if (auto fwdSrc = dynamic_pointer_cast<ArrayIndexExpression>(
-                        fwdMv->getChildren()[0])) {
+            // Spec 5.12 (2026-09-08): a `#=` from one SLOT into another —
+            // element→element (the shift/sift primitive, forwarding since
+            // Unit 3) and now field→field (`x.right #= y.left`, the tree's
+            // rotations: every link is a mode-carrying `#=` over a registry
+            // that owns the nodes) — FORWARDS the source slot's bit rather
+            // than claiming a title: a borrow link stays a borrow, a title
+            // moves. Claiming (`T x #= slot`, into a local) is unchanged.
+            auto fwdDotLhs = dynamic_pointer_cast<DotExpression>(children[0]);
+            if ((fwdLhs || fwdDotLhs) && fwdMv && !fwdMv->getChildren().empty()) {
+                auto srcNode = fwdMv->getChildren()[0];
+                bool srcIsSlot = dynamic_pointer_cast<ArrayIndexExpression>(srcNode) != nullptr
+                    || dynamic_pointer_cast<DotExpression>(srcNode) != nullptr;
+                if (srcIsSlot) {
                     auto fwdL = dynamic_pointer_cast<Expression>(children[0]);
-                    auto fwdS = dynamic_pointer_cast<Expression>(
-                        fwdMv->getChildren()[0]);
+                    auto fwdS = dynamic_pointer_cast<Expression>(srcNode);
                     if (fwdL && !fwdL->getResolvedType()) fwdL->resolveTypes(module);
                     if (fwdS && !fwdS->getResolvedType()) fwdS->resolveTypes(module);
                     auto fwdBits = [](const CajetaTypePtr& t) {
@@ -3640,7 +3693,7 @@ namespace cajeta {
                     // formal, a bare declaration, or a borrow-initialized local
                     // that LocalVariableDeclaration registered INACTIVE because
                     // an assignment like this one exists. The NEW value's title
-                    // decides, and `__cajeta_drop_reassign` does the rest in one
+                    // decides, and the inline re-arm (5.2.3) does the rest in one
                     // step (release the displaced value if the entry still holds
                     // a title, then follow the new value, armed):
                     //   owned   — `#x`, a fresh heap/aggregate/array value, a
@@ -3692,7 +3745,7 @@ namespace cajeta {
                                 if (dstField && dstField->getDropEntry()
                                         && rhsVal && rhsVal->getType()->isPointerTy()) {
                                     // 5.2.3 — the re-arm inline (the former
-                                    // __cajeta_drop_reassign, one call): on
+                                    // the inline re-arm of 5.2.3, formerly one call): on
                                     // the hot path three loads, four compares
                                     // and two stores; the displaced value's
                                     // release — the observable drop counter

@@ -409,13 +409,16 @@ public final class HashMap<K, V> {
         return this.get(key);
     }
 
-    /** Subscript write: `m[key] = value` → `put(key, value)`. The `#`
-     *  forwards are what thread the CALLER's transfer word through to put
-     *  (an entry-less formal — String / primitive K — forwards its incoming
-     *  word bit; a droppable class formal forwards its entry flag): a plain
-     *  forward would read all-borrow and record every indexed store as
-     *  borrowed regardless of the caller's spelling. */
-    public void operator[]= (#K key, #V value) {
+    /** Subscript write: `m[key] = value` → `put(key, value)`, the sink
+     *  model — the CALLER chooses. `m[k] = v` lends both, `m[k] = #v` and
+     *  `m[k] #= v` hand the value's title on, `m[#k] = …` the key's. The
+     *  formals are PLAIN so that `#key` / `#value` below forward the mode
+     *  that arrived (a plain formal's `#` forwards its word bit — the
+     *  transfer word the lowering composes from each argument's title); a
+     *  `#`-declared formal would be the frame's own title, a constant 1, and
+     *  every indexed store adopted whatever it was handed (decided 2026-09-08
+     *  with the developer: an indexed store must not force the transfer). */
+    public void operator[]= (K key, V value) {
         this.put(#key, #value);
     }
 

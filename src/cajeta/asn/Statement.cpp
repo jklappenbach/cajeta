@@ -2319,14 +2319,7 @@ namespace cajeta {
         if (auto m = module->getCurrentMethod()) {
             if (m->isReturnsView() && expression) {
                 ExpressionPtr inner = expression;
-                if (auto mv = dynamic_pointer_cast<MoveExpression>(expression)) {
-                    auto& mch = mv->getChildren();
-                    if (!mch.empty()) {
-                        if (auto e = dynamic_pointer_cast<Expression>(mch[0])) {
-                            inner = e;
-                        }
-                    }
-                }
+                if (auto mvIn = moveInner(expression)) inner = mvIn;   // the `#x` wrapper's operand
                 // Identity REFERENCE casts are peeled exactly as the
                 // disarm/escape checks peel them (6.2.6c): `(Cell) h.peek()`
                 // must reach the same verdict as `h.peek()`, or a cast is a
@@ -2468,12 +2461,7 @@ namespace cajeta {
         // holder), which records no edge.
         {
             ExpressionPtr escapee = expression;
-            if (auto mvEsc = dynamic_pointer_cast<MoveExpression>(escapee)) {
-                auto& mch = mvEsc->getChildren();
-                if (!mch.empty()) {
-                    escapee = dynamic_pointer_cast<Expression>(mch[0]);
-                }
-            }
+            if (auto mvIn = moveInner(escapee)) escapee = mvIn;
             if (auto escId = dynamic_pointer_cast<IdentifierExpression>(escapee)) {
                 if (auto sc = module->getScopeStack().peek()) {
                     set<string> lends = sc->lendsOf(escId->getTextValue());
@@ -2621,14 +2609,7 @@ namespace cajeta {
         if (auto m = module->getCurrentMethod()) {
             if (m->isReturnsView() && expression) {
                 ExpressionPtr innerV = expression;
-                if (auto mv = dynamic_pointer_cast<MoveExpression>(expression)) {
-                    auto& mch = mv->getChildren();
-                    if (!mch.empty()) {
-                        if (auto e = dynamic_pointer_cast<Expression>(mch[0])) {
-                            innerV = e;
-                        }
-                    }
-                }
+                if (auto mvIn = moveInner(expression)) innerV = mvIn;   // the `#x` wrapper's operand
                 // Same reference-cast peel as part 1 (6.2.6c).
                 while (auto castE = dynamic_pointer_cast<CastExpression>(innerV)) {
                     CajetaTypePtr dt = castE->getDestType();
@@ -2781,7 +2762,11 @@ namespace cajeta {
                         // stored no flag — the static mode stands, a TLS read
                         // would be stale (24 such reads measured in the corpus
                         // 2026-09-08 when the shallow resolution was trusted).
-                        if (!mceRet->getResolvedMethod()) break;
+                        // 8.2.4: a DECLARED stance now composes as the
+                        // classifier's constant (source None); only an
+                        // intrinsic with no declaration keeps the static mode.
+                        if (!mceRet->getResolvedMethod()
+                                && rs.source == own::TitleSource::ReturnFlag) break;
                         // `return Cajeta.flagged(v, owned)`: the container's
                         // bookkeeping decides (composed at the ret) — no ride.
                         if (mceRet->getFlaggedTitleValue()) break;
@@ -3183,9 +3168,17 @@ namespace cajeta {
                     // A `#Interface` return hands ownership out, and so does a
                     // fresh construction or an explicit `#x` through a plain
                     // return type. Anything else leaves the callee owning it.
+                    // Unit 8 (spec 4.9 audit) — the kind word of an interface
+                    // returned BY VALUE, from the classifier's shape: a fresh
+                    // value or a `#x` is the frame's title going out (today's
+                    // constant; a runtime `#x` would deserve a select on its
+                    // flag, as Unit 4's interface locals do — not this plan's
+                    // site, recorded in 8.2.1).
+                    cajeta::ownership::TitleShape ifSh = cajeta::ownership::classify(expression, module);
                     bool ownedOut = m->isReturnsOwnership()
-                        || dynamic_pointer_cast<NewExpression>(expression)
-                        || dynamic_pointer_cast<MoveExpression>(expression);
+                        || (ifSh.family == cajeta::ownership::TitleFamily::Fresh
+                            && ifSh.answer == cajeta::ownership::TitleAnswer::Owned)
+                        || ifSh.family == cajeta::ownership::TitleFamily::Move;
                     builder->CreateStore(
                         llvm::ConstantInt::get(i64Ty,
                             (uint64_t) (ownedOut ? IFACE_KIND_OWNED_CLASS

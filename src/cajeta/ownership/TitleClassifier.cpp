@@ -233,13 +233,50 @@ namespace cajeta::ownership {
             // included); before it, the shallow resolution answers only on a
             // unique name+arity match.
             MethodPtr rm = mce->getResolvedMethod();
-            if (!rm) rm = MethodCallExpression::resolveArgCalleeShallow(mce, module);
+            if (!rm) {
+                MethodPtr decl = MethodCallExpression::resolveArgCalleeShallow(mce, module);
+                // 8.2.4 — AFTER the call's codegen a null resolution is an
+                // intrinsic lowering (`File.readAllBytes` emits
+                // __cajeta_file_read_all and returns before any method is
+                // resolved) or a closure call. The lowering stores NO return
+                // flag, so the TLS after it holds whatever the previous
+                // class-pointer call left — a stale read (cajeta-llm leaked
+                // one config buffer per model on it, 2026-09-08, whenever a
+                // borrow-returning call preceded `ModelConfig.parse`'s
+                // `raw #= File.readAllBytes(path)`). The stance is a constant:
+                // what the lowering recorded, else owned (below). The stub
+                // declaration, when there is one, names the callee for the
+                // §4.6 check and the diagnostics.
+                if (mce->hasGenerated() && !mce->getFlaggedTitleValue()) {
+                    if (decl && isOwnershipLessScalar(decl->getReturnType())) return scalar(leaf);
+                    // The stance the lowering recorded, else OWNED: an intrinsic
+                    // produces a fresh allocation (a file's bytes, an env
+                    // String's wrapper, `Cajeta.allocBytes`, a slice's wrapper)
+                    // — MethodCallExpression::bindingTakesTitle, the rule before
+                    // Unit 3. A stub's own `#` is a type-resolution shape, not a
+                    // stance (measured on the corpus 2026-09-08: `Cajeta.
+                    // allocBytes` and `System.env.get` have no declaration at
+                    // all, and answering "no flag" for them dropped the entry
+                    // that frees their result).
+                    bool owned = mce->bindingTakesTitle();
+                    if (decl) flags |= typeFlags(decl->getReturnType());
+                    if (owned) flags |= TitleShape::kOwnedDecl;
+                    TitleShape s = make(TitleFamily::CallResult,
+                                        owned ? TitleAnswer::Owned : TitleAnswer::Borrow,
+                                        TitleSource::None, leaf, flags);
+                    s.callee = decl.get();
+                    return s;
+                }
+                if (!mce->hasGenerated()) rm = decl;
+            }
             if (!rm) {
                 if (CajetaFunctionTypePtr fnTy = functionTypeOfCall(mce, module)) {
                     return closureCallShape(fnTy, leaf);
                 }
-                // Unresolvable before codegen: the callee's own flag decides
-                // at run time (spec §2.1, CallResult).
+                // Unresolvable before codegen — or an intrinsic with no
+                // declaration after it: the callee's own flag decides at
+                // run time (spec §2.1, CallResult); for the intrinsic there
+                // is none to read (titleFlag, ReturnFlag).
                 return make(TitleFamily::CallResult, TitleAnswer::Runtime,
                             TitleSource::ReturnFlag, leaf, flags);
             }
@@ -1070,6 +1107,10 @@ namespace cajeta::ownership {
                 break;
             }
             case TitleSource::ReturnFlag: {
+                // 8.2.4 — a call that resolved no callee after its codegen is
+                // an intrinsic lowering: nothing stored the flag, so a read
+                // here would be stale. No flag; the consumer's default stands.
+                if (s.family == TitleFamily::CallResult && !s.callee) break;
                 if (llvm::Function* gf = module->getRuntimeFunction("__cajeta_return_flag_get")) {
                     v = builder->CreateCall(gf, {}, "title.ret.flag");
                 }

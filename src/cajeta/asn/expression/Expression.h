@@ -942,6 +942,21 @@ namespace cajeta {
         return e && (e->kind() == ExprKind::BooleanSwitch || e->kind() == ExprKind::Switch);
     }
 
+    /// True for the `#x` / `#=` wrapper — a SPELLING test on the kind tag, for
+    /// the structural unwraps that need the wrapped operand; what the move
+    /// carries is the classifier's question (ownership::classify).
+    inline bool isMoveKind(const AbstractSyntaxNodePtr& n) {
+        auto e = std::dynamic_pointer_cast<Expression>(n);
+        return e && e->kind() == ExprKind::Move;
+    }
+
+    /// The operand of a `#x` / `#=` wrapper, or null when `n` is not one.
+    inline ExpressionPtr moveInner(const AbstractSyntaxNodePtr& n) {
+        if (!isMoveKind(n)) return nullptr;
+        auto& kids = n->getChildren();
+        return kids.empty() ? nullptr : std::dynamic_pointer_cast<Expression>(kids[0]);
+    }
+
     /// The title flag a conditional of either kind computed for its taken
     /// arm; null for a non-conditional or a non-pointer result. One inline
     /// test of the kind tag, so no consumer casts twice.

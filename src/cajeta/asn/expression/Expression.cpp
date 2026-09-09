@@ -3069,9 +3069,29 @@ bool cajetaRhsCarriesRedundantSharp(
         // the TLS still holds this call's bit — the classifier's ReturnFlag
         // source, the same read for a plain and a `#R` callee.
         llvm::Value* innerCallReturnFlag = nullptr;
-        if (inner && inner->kind() == ExprKind::MethodCall
-                && mvShape.source == ownership::TitleSource::ReturnFlag) {
-            innerCallReturnFlag = ownership::titleFlag(mvShape, module);
+        if (inner && inner->kind() == ExprKind::MethodCall) {
+            if (mvShape.source == ownership::TitleSource::ReturnFlag) {
+                innerCallReturnFlag = ownership::titleFlag(mvShape, module);
+            } else if (mvShape.source == ownership::TitleSource::None
+                       && mvShape.answer == ownership::TitleAnswer::Borrow) {
+                // 8.2.4 — a callee declared plain that stores no flag (an
+                // intrinsic's stub, the DI singleton): the borrow it hands
+                // out, as the constant 0. An Owned constant stays the null
+                // "static owner" the consumers below already fold.
+                innerCallReturnFlag = module->getBuilder()->getInt64(0);
+            }
+            if (!innerCallReturnFlag && !mvShape.callee
+                    && mvShape.source == ownership::TitleSource::ReturnFlag) {
+                // 8.2.4 — an intrinsic with neither a declaration nor a
+                // recorded stance stored no flag (titleFlag read nothing):
+                // unknown answers OWNED (MethodCallExpression::binding-
+                // TakesTitle, the rule before Unit 3) — null IS the static
+                // owner here; a recorded borrow is the constant 0.
+                auto mceIn = std::static_pointer_cast<MethodCallExpression>(inner);
+                if (!mceIn->bindingTakesTitle()) {
+                    innerCallReturnFlag = module->getBuilder()->getInt64(0);
+                }
+            }
         }
         // The wrapped expression typically yields an l-value (an alloca). The
         // consumer of a moved value wants the r-value — the pointer to the
@@ -4915,13 +4935,18 @@ bool cajetaRhsCarriesRedundantSharp(
                                 if (cx->getChildren().empty()) break;
                                 shape = cx->getChildren()[0];
                             }
-                            bool rides =
-                                std::dynamic_pointer_cast<MethodCallExpression>(shape)
-                                || std::dynamic_pointer_cast<CallExpression>(shape);
+                            // Unit 8 (spec 4.9 audit) — the expression-bodied lambda's
+                                // return, on the classifier (the statement-bodied rule of Unit 6's
+                                // lambda mode): a call rides its own flag; a fresh value, a move or a
+                                // concatenation is the title going out; anything else the borrow 0.
+                                ownership::TitleShape lamSh = ownership::classify(std::dynamic_pointer_cast<Expression>(shape), module);
+                                bool rides = lamSh.family == ownership::TitleFamily::CallResult
+                                    || lamSh.family == ownership::TitleFamily::ClosureCall;
                             if (!rides) {
-                                bool owned =
-                                    std::dynamic_pointer_cast<NewExpression>(shape)
-                                    || std::dynamic_pointer_cast<MoveExpression>(shape);
+                                bool owned = (lamSh.family == ownership::TitleFamily::Fresh
+                                        && lamSh.answer == ownership::TitleAnswer::Owned)
+                                    || lamSh.family == ownership::TitleFamily::Move
+                                    || lamSh.family == ownership::TitleFamily::Concat;
                                 if (llvm::Function* fsFn = module->getRuntimeFunction(
                                         "__cajeta_return_flag_set")) {
                                     lambdaBuilder->CreateCall(fsFn,
@@ -6903,7 +6928,8 @@ bool cajetaRhsCarriesRedundantSharp(
     // heap pointer without an explicit transfer marker is rejected:
     // the detached fiber outlives the spawning scope, so a borrow's
     // lifetime can't be guaranteed.
-    static void enforceDetachMoveOnlyCaptures(const std::shared_ptr<MethodCallExpression>& innerCall) {
+    static void enforceDetachMoveOnlyCaptures(const std::shared_ptr<MethodCallExpression>& innerCall,
+                                              const CajetaModulePtr& module) {
         for (auto& param : innerCall->getParameters()) {
             auto expr = param.expression;
             if (!expr) continue;
@@ -6916,12 +6942,14 @@ bool cajetaRhsCarriesRedundantSharp(
             // still appears in non-argument contexts (assignment RHS,
             // return expressions).
             if (param.callerTransferred) continue;
-            if (dynamic_pointer_cast<MoveExpression>(expr)) continue;
-            // (b) Fresh allocator — anonymous new, auto-promoted.
-            if (dynamic_pointer_cast<NewExpression>(expr)) continue;
-            // (c) Primitive value — pass-by-value, no aliasing.
+            // Unit 8 (spec 4.9 audit) — on the classifier: a move, a fresh
+            // owned value or a scalar is capturable; anything else is a borrow.
+            ownership::TitleShape dSh = ownership::classify(expr, module);
+            if (dSh.family == ownership::TitleFamily::Move
+                    || (dSh.family == ownership::TitleFamily::Fresh
+                        && dSh.answer == ownership::TitleAnswer::Owned)
+                    || dSh.answer == ownership::TitleAnswer::Scalar) continue;
             auto t = expr->getResolvedType();
-            if (t && (t->getTypeFlags() & PRIMITIVE_FLAG)) continue;
             // Anything else: heap class without an explicit transfer.
             // Surface a clean error with the offending argument's
             // expression text where we can extract it.
@@ -6952,7 +6980,7 @@ bool cajetaRhsCarriesRedundantSharp(
                 param.expression->resolveTypes(module);
             }
         }
-        enforceDetachMoveOnlyCaptures(innerCall);
+        enforceDetachMoveOnlyCaptures(innerCall, module);
         // Reuse SpawnExpression's full lowering — same trampoline, same
         // fiber enqueue, same Task struct. Detach-mode flag skips
         // scope_register and drop_push so the task escapes scope-anchored

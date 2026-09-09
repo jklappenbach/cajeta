@@ -316,6 +316,30 @@ the current compiler.*
   but it changes what `stack` means and is its own spec item, not part of
   this plan. Witness: Julian's `TransferOfBorrowTests` DISABLED test (a
   stack instance retained by a field of an escaping heap object, 2026-09-07).
+- **5.12 The indexed store is the sink model** — *Resolved 2026-09-08 with
+  Julian: `m[k] = v` lends; `m[k] = #v` and `m[k] #= v` carry the value's
+  title; an indexed store must not force the transfer.* `HashMap.operator[]=`
+  took `#K key, #V value` "to forward the caller's word to `put`", but a
+  `#`-declared formal is the frame's own title, a constant 1, so every
+  indexed store adopted whatever it was handed (the audit corpus found the
+  tour's `freq[w] = …` on a borrowed key, 8.2.1). The forwarding the doc
+  meant is what a PLAIN formal's `#` does — it forwards the word bit that
+  arrived — so the fix is the signature: `operator[]= (K key, V value) {
+  this.put(#key, #value); }`. The lowering already composes the word from
+  each argument's classified title (`m[k] = v` → 0, `m[k] = #v` → the
+  value's flag, `m[k] #= v` → its mode, a fresh value → 1). Consequences:
+  `m[k] = ownedCall()` is now `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`
+  like every plain receipt of a `#R` result (spell `m[k] #= …`), and a bare
+  owned local at its final use in an indexed store gets the last-use
+  advisory the call site already gives. Fleet sites that relied on the
+  adoption are found by the compiler, not by a sweep.
+  The same principle in `RedBlackTree`: the registry (`nodes`) owns every
+  node and every link is a borrow — the developer's "we don't need
+  parent-to-child ownership" — so every link store is `#=`, mode-carrying,
+  and no local ever owns a node (a fresh node goes straight into the
+  registry; the frame keeps a borrow from it). A `#=` from a name that still
+  owns would move the title into the link, and a `#=` from a name the
+  registry add had spent is a use after move: both rejected, both measured.
 
 ## 6. Related finding: the owned-bind check was never order-dependent
 
@@ -445,6 +469,59 @@ And from the call arguments' migration (Unit 7, 2026-09-08):
   signature bit: the callee's block is at hand in-module, and a `.cja`
   callee (no block) stays Runtime. Corpus: 1,484 return-flag reads and 576
   runtime entry armings folded.
+
+And from the close-out's grep audit (Unit 8, 2026-09-08):
+
+- **`m[k] = v` transfers, whatever its doc says.** `HashMap.operator[]=(#K
+  key, #V value) { this.put(#key, #value); }` documents its `#` formals as
+  the way to FORWARD the caller's transfer word to `put` — so that an
+  indexed store lends when the caller lends. Measured through the
+  classifier: `#key` of a `#`-declared formal is the constant 1 (Unit 3's
+  row, the frame owns a `#` formal unconditionally), so every indexed store
+  adopts its key and value whatever the caller passed, and the tour's
+  `freq[w] = …` with a borrowed `w` is exactly 5.8's rejection. The two
+  readings cannot both hold. Decided the same day: 5.12 — plain formals,
+  the indexed store is the sink model; the tour's `freq[w] = …` is the lend
+  it always meant.
+- **A `#=` between two slots forwards; a `#=` into a local claims.** The
+  element→element `#=` (`dst[i] #= src[j]`, the shift/sift primitive) has
+  forwarded the source slot's bit since Unit 3; the field→field `#=`
+  (`x.right #= y.left`, a tree rotation over borrow links) was still a
+  claim, and the field take panicked TITLE_MISS on a borrow (measured:
+  `uncaught exception (value=0x3)` in `RedBlackTree.rotateLeft` once every
+  link became `#=`). Slot→slot `#=` now forwards for fields too — a borrow
+  link stays a borrow, a title moves — and `T x #= slot` into a local keeps
+  the claim (the Unit 3 doctrine: take a plain borrow when that is what you
+  meant). One rule, stated once: `#=` records what the source holds; only a
+  NAME receiving it demands that this be a title.
+- **An indexed store on a class must dispatch or fail, never fall through.**
+  `m[k] #= call()` had no resolved value type before the call's codegen, so
+  the `operator[]=` dispatch was skipped and the store ran the ARRAY element
+  path over a `HashMap` (SIGSEGV, measured). The callee's declared return
+  type is the value's type (the classifier's shallow resolution), and a class
+  that declares `operator[]=` but did not dispatch is an error, not an array.
+- **An intrinsic lowering stores no return flag; reading the TLS after one
+  is a stale read.** `File.readAllBytes(path)` is a stub declaration whose
+  call site is lowered to `__cajeta_file_read_all` directly, and the
+  classifier's shallow resolution found the stub AFTER that codegen and
+  answered Runtime(TLS). The flag it then read was whatever the previous
+  class-pointer call had left — so `ModelConfig.parse`'s `raw #=
+  File.readAllBytes(path)` recorded a title when a `#R` call preceded it and
+  a BORROW when a borrow-returning read did, and cajeta-llm leaked one
+  config buffer per model exactly when its prefill had touched a
+  `hostBuffer()` first (measured 2026-09-08: `BenchTest.loadFreeCycles-
+  ReturnResidentToBaseline` 110 vs 116; bisected to Unit 3 by commit,
+  then to the preceding call's stance by probe). The classifier now knows
+  when a call has been generated (`MethodCallExpression::hasGenerated`): a
+  null resolution after codegen is an intrinsic, and its stance is a
+  CONSTANT: what the lowering recorded, else owned — an intrinsic produces
+  a fresh allocation (the pre-Unit-3 `bindingTakesTitle` rule). The stub's
+  own `#` is a type-resolution shape, not a stance: `Cajeta.allocBytes` and
+  `System.env.get` have no declaration at all and allocate (measured on the
+  corpus: answering "no flag" for them dropped the entry that frees their
+  result in `Utf8.toString` and `BackendRegistry.select*`). The 8.2.2
+  "intrinsic-stance table" gap stays open for a borrow-returning intrinsic,
+  which this rule would over-claim exactly as before Unit 3.
 
 ## 7. Acceptance
 

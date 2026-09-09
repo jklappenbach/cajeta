@@ -438,10 +438,6 @@ void __cajeta_drop_set_flag(struct cajeta_drop_entry* e, int64_t flag) {
     e->active = flag ? 1 : 0;
 }
 
-int64_t __cajeta_drop_entry_flag(struct cajeta_drop_entry* e) {
-    return e ? (int64_t) e->active : 0;
-}
-
 
 // CP7-1c host accessor for the debug frame chain. Companion to the
 // __cajeta_dbg_local_* accessors defined up near the frame-chain helpers, but
