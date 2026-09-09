@@ -1,10 +1,4 @@
-//
-// ownership-title-classifier — the one classifier (see the header).
-//
-// Every rule here is a row of spec §2.1 / §2.3 and is pinned by
-// test/ownership/TitleClassifierTests.cpp through the audit. Consumers do
-// not re-derive any of it; they ask policy() for their role.
-//
+// ownership-title-classifier — the one classifier (see the header); every rule here is a row of spec §2.1 / §2.3.
 
 #include "TitleClassifier.h"
 
@@ -37,7 +31,6 @@ namespace cajeta::ownership {
         bool g_auditEnabled = false;
         std::vector<TitleShapeRecord> g_records;
 
-        // The type predicates the six sites used to spell out one by one.
         inline bool isLangString(const CajetaTypePtr& t) {
             auto cls = std::dynamic_pointer_cast<CajetaClass>(t);
             return cls && cls->getQName()
@@ -45,9 +38,7 @@ namespace cajeta::ownership {
                 && cls->getQName()->getPackageName() == "cajeta.lang";
         }
 
-        // An ownership-less scalar: PRIMITIVE_FLAG without being an array
-        // (arrays carry the flag in this type system but are droppable
-        // buffers — the `int8[]` consuming-native hazard).
+        // PRIMITIVE_FLAG but not an array: arrays carry the flag yet are droppable buffers.
         inline bool isOwnershipLessScalar(const CajetaTypePtr& t) {
             return t && (t->getTypeFlags() & PRIMITIVE_FLAG)
                 && !std::dynamic_pointer_cast<CajetaArray>(t);
@@ -85,8 +76,7 @@ namespace cajeta::ownership {
             return s;
         }
 
-        // The join of two arms (spec §2.1, Conditional): equal static answers
-        // fold to that answer; anything else is decided by the arm phi.
+        // The join of two arms (§2.1, Conditional): equal static answers fold; else the phi.
         inline TitleShape join(const TitleShape& a, const TitleShape& b,
                                const ExpressionPtr& leaf) {
             TitleShape s = make(TitleFamily::Conditional, TitleAnswer::Runtime,
@@ -95,8 +85,7 @@ namespace cajeta::ownership {
                                             & (TitleShape::kString | TitleShape::kArray
                                                | TitleShape::kInterface | TitleShape::kValue
                                                | TitleShape::kView)));
-            // Borrow, StackBound and Scalar all mean "no title": two such arms
-            // fold to Borrow; two Owned arms to Owned; anything else is the phi.
+            // Borrow, StackBound and Scalar all mean "no title".
             auto hasTitle = [](TitleAnswer x) {
                 return x == TitleAnswer::Owned || x == TitleAnswer::Runtime;
             };
@@ -110,8 +99,7 @@ namespace cajeta::ownership {
             return s;
         }
 
-        // A read of a value that already has an owner — the same answer for a
-        // literal, `this`, a field, an element: Borrow.
+        // A read of a value that already has an owner is a Borrow.
         inline TitleShape read(TitleFamily fam, const ExpressionPtr& leaf) {
             return make(fam, TitleAnswer::Borrow, TitleSource::None, leaf,
                         typeFlags(leaf->getResolvedType()));
@@ -126,12 +114,10 @@ namespace cajeta::ownership {
             return i < ch.size() ? std::dynamic_pointer_cast<Expression>(ch[i]) : nullptr;
         }
 
-        // The named slot: local, formal, or nothing (a class name, a static).
         TitleShape localRead(const ExpressionPtr& leaf, const CajetaModulePtr& module) {
             auto id = std::static_pointer_cast<IdentifierExpression>(leaf);
             const std::string& name = id->getTextValue();
-            // `this` spelled as an identifier (the receiver's formal) is the
-            // receiver read, not a local.
+            // `this` spelled as an identifier is the receiver read, not a local.
             if (name == "this") return read(TitleFamily::ThisRead, leaf);
             TitleShape s = make(TitleFamily::LocalRead, TitleAnswer::Borrow,
                                 TitleSource::None, leaf);
@@ -144,13 +130,9 @@ namespace cajeta::ownership {
             s.field = f.get();
             s.flags |= typeFlags(f->getType());
             if (f->getDropEntry()) s.flags |= TitleShape::kHasEntry;
-            // An entry armed at run time (from a callee's flag or a plain
-            // formal's word bit) must be READ; a statically armed one is a
-            // constant title.
+            // An entry armed at run time must be READ; a statically armed one is a constant.
             if (f->isRuntimeConditionalOwner()) s.flags |= TitleShape::kRuntimeOwner;
-            // A `stack` instance: its body is the frame's; a move of it
-            // carries no title (spec 5.11) — kStack, checked before the
-            // entry (a stack local's entry is the field-walking stack drop).
+            // A `stack` instance's body is the frame's, so a move of it carries no title (5.11).
             if (f->isStackInstance()) s.flags |= TitleShape::kStack;
             if (!f->getCallBorrowOrigin().empty() || !f->getParamBorrowOrigin().empty()) {
                 s.flags |= TitleShape::kBorrowOrigin;
@@ -176,11 +158,7 @@ namespace cajeta::ownership {
             return s;
         }
 
-        // What a call through a FUNCTION TYPE hands back — a closure call, or
-        // a method-call-shaped invocation of a function-typed local or
-        // property (`maker()`, `c.supplier()`): a by-value struct (sret) is
-        // StackBound, a class pointer rides the synthesized callee's flag,
-        // anything else has no title. The declaration's former M5b rule.
+        // A call through a FUNCTION TYPE: sret is StackBound, a class pointer rides the callee's flag.
         TitleShape closureCallShape(const CajetaFunctionTypePtr& fnTy,
                                     const ExpressionPtr& leaf) {
             uint32_t flags = typeFlags(leaf->getResolvedType());
@@ -195,9 +173,7 @@ namespace cajeta::ownership {
                         leaf, flags);
         }
 
-        // The function type a method-call-shaped invocation goes through when
-        // its name is a function-typed local (bare call) or a function-typed
-        // property of the receiver's class; null when it is a real method.
+        // The function type a method-call-shaped invocation goes through; null for a real method.
         CajetaFunctionTypePtr functionTypeOfCall(
                 const std::shared_ptr<MethodCallExpression>& mce, const CajetaModulePtr& module) {
             const std::string& name = mce->getMethodCallName();
@@ -224,52 +200,23 @@ namespace cajeta::ownership {
         TitleShape callResult(const ExpressionPtr& leaf, const CajetaModulePtr& module) {
             auto mce = std::static_pointer_cast<MethodCallExpression>(leaf);
             uint32_t flags = typeFlags(leaf->getResolvedType());
-            // The DI intrinsic hands out the container's singleton: a borrow
-            // with no callee to resolve (the declaration's A9 rule).
+            // The DI intrinsic hands out the container's singleton: a borrow.
             if (mce->getMethodCallName() == "__cajeta_inject") {
                 return make(TitleFamily::CallResult, TitleAnswer::Borrow, TitleSource::None, leaf, flags);
             }
-            // After the call's own codegen its callee is exact (overloads
-            // included); before it, the shallow resolution answers only on a
-            // unique name+arity match.
             MethodPtr rm = mce->getResolvedMethod();
             if (!rm) {
-                // A call on a function-typed value has no method to resolve
-                // before OR after codegen and is NOT an intrinsic: the
-                // closure's own body stores the return flag right before it
-                // returns, so its result rides that flag (spec 5.2). Ask
-                // first — 8.2.4's intrinsic branch below must never see one
-                // (the close-out sweep found it: `Stream.fold`'s `acc = fn(acc,
-                // x)` took a constant OWNED stance for an identity-returning
-                // lambda and the accumulator was freed twice —
-                // ParallelStreamP1Tests.filterDispatchMerged, SIGSEGV).
+                // A call on a function-typed value resolves no method but is NOT an
+                // intrinsic: the closure body stores the flag its result rides (5.2).
                 if (CajetaFunctionTypePtr fnTy = functionTypeOfCall(mce, module)) {
                     return closureCallShape(fnTy, leaf);
                 }
                 MethodPtr decl = MethodCallExpression::resolveArgCalleeShallow(mce, module);
-                // 8.2.4 — AFTER the call's codegen a null resolution is an
-                // intrinsic lowering (`File.readAllBytes` emits
-                // __cajeta_file_read_all and returns before any method is
-                // resolved). The lowering stores NO return
-                // flag, so the TLS after it holds whatever the previous
-                // class-pointer call left — a stale read (cajeta-llm leaked
-                // one config buffer per model on it, 2026-09-08, whenever a
-                // borrow-returning call preceded `ModelConfig.parse`'s
-                // `raw #= File.readAllBytes(path)`). The stance is a constant:
-                // what the lowering recorded, else owned (below). The stub
-                // declaration, when there is one, names the callee for the
-                // §4.6 check and the diagnostics.
+                // 8.2.4 — AFTER codegen a null resolution is an intrinsic lowering,
+                // which stores no flag, so its stance is a constant, not a stale TLS read.
                 if (mce->hasGenerated() && !mce->getFlaggedTitleValue()) {
                     if (decl && isOwnershipLessScalar(decl->getReturnType())) return scalar(leaf);
-                    // The stance the lowering recorded, else OWNED: an intrinsic
-                    // produces a fresh allocation (a file's bytes, an env
-                    // String's wrapper, `Cajeta.allocBytes`, a slice's wrapper)
-                    // — MethodCallExpression::bindingTakesTitle, the rule before
-                    // Unit 3. A stub's own `#` is a type-resolution shape, not a
-                    // stance (measured on the corpus 2026-09-08: `Cajeta.
-                    // allocBytes` and `System.env.get` have no declaration at
-                    // all, and answering "no flag" for them dropped the entry
-                    // that frees their result).
+                    // The stance the lowering recorded, else OWNED: an intrinsic produces a fresh allocation.
                     bool owned = mce->bindingTakesTitle();
                     if (decl) flags |= typeFlags(decl->getReturnType());
                     if (owned) flags |= TitleShape::kOwnedDecl;
@@ -282,10 +229,7 @@ namespace cajeta::ownership {
                 if (!mce->hasGenerated()) rm = decl;
             }
             if (!rm) {
-                // Unresolvable before codegen — or an intrinsic with no
-                // declaration after it: the callee's own flag decides at
-                // run time (spec §2.1, CallResult); for the intrinsic there
-                // is none to read (titleFlag, ReturnFlag).
+                // Unresolvable: the callee's own flag decides at run time (§2.1).
                 return make(TitleFamily::CallResult, TitleAnswer::Runtime,
                             TitleSource::ReturnFlag, leaf, flags);
             }
@@ -297,14 +241,7 @@ namespace cajeta::ownership {
                 return withCallee(make(TitleFamily::CallResult, TitleAnswer::StackBound,
                                        TitleSource::None, leaf, (uint32_t) (flags | TitleShape::kStack)));
             }
-            // A `^` view (a signature contract every override keeps), or a
-            // plain method whose every return is an interior read
-            // (Method::returnsInteriorView) AND whose dispatch is static — a
-            // borrow of its receiver, statically, no flag to read. Through a
-            // VIRTUAL call the body scan proves only the base's returns: an
-            // override may ride a title out, so that stays Runtime (measured
-            // 2026-09-07: `DynFrame sch = this.__schemaOf()` on the non-final
-            // `Table<T>` lost its flagged entry to a static Borrow).
+            // A `^` view, or a statically dispatched all-interior-read method, is a static borrow.
             auto& mods = rm->getModifiers();
             bool staticDispatch = rm->isStatic()
                 || mods.count(PRIVATE) > 0 || mods.count(FINAL) > 0
@@ -316,38 +253,19 @@ namespace cajeta::ownership {
             }
             bool ownedDecl = rm->isReturnsOwnership();
             if (ownedDecl) flags |= TitleShape::kOwnedDecl;
-            // 7.2.3 — a `#R` callee whose every return hands out a
-            // kind-decidable title (a `heap` construction, a concatenation,
-            // a String literal — never a name, a call, a conditional or
-            // `#= x`) is statically Owned: no mode can ride out, so the
-            // caller's flag read folds away. Decided from the callee's AST
-            // (`Method::returnsStaticTitle`), so it holds before its codegen.
+            // 7.2.3 — a `#R` callee with only kind-decidable titles is statically Owned.
             if (ownedDecl && rm->returnsStaticTitle()) {
                 return withCallee(make(TitleFamily::CallResult, TitleAnswer::Owned,
                                        TitleSource::None, leaf, flags));
             }
-            // Every path below names the callee too: the owned-bind check
-            // (§4.6) and the `#local` provenance read it off the shape.
-            // (First pass set it on two of four paths and both checks went
-            // silent — OwnedResultTransferTests / OwnedReturnOfBorrowTests
-            // caught it, 2026-09-07.)
-            // A `@Native` forwarding body and a body-less intrinsic return
-            // without storing the flag (Method::emitNativeForwardingBody does a
-            // bare `ret`): reading the TLS after them would be a STALE read.
-            // Their declared stance is the answer. An abstract or interface
-            // method dispatches to a body that does store it.
+            // A `@Native` forwarding body and a body-less intrinsic return without
+            // storing the flag, so the declared stance is the answer, not a stale TLS.
             bool storesFlag = rm->emitsReturnFlag() && rm->returnsClassPointer()
                 && !rm->findAnnotation("Native")
                 && (rm->getBlock() != nullptr || rm->isAbstract());
             if (storesFlag) {
-                // The callee leaves its bit in the TLS, and that bit is the
-                // truth for BOTH stances: a plain return may carry a title
-                // (ownership §2.1, the tail-call ride), and a `#R` return may
-                // carry a borrow (`return #= x` is its sanctioned escape) —
-                // measured 2026-09-07 on the corpus: folding a `#R` arm to a
-                // constant 1 dropped the read in Report::baseline. A static
-                // Owned for `#R` callees needs a signature bit saying the
-                // method has no mode-carrying return (plan 7.2.3).
+                // The callee's TLS bit is the truth for BOTH stances — a plain return may
+                // carry a title and a `#R` one a borrow — so neither folds to a constant.
                 return withCallee(make(TitleFamily::CallResult, TitleAnswer::Runtime,
                                        TitleSource::ReturnFlag, leaf, flags));
             }
@@ -361,16 +279,14 @@ namespace cajeta::ownership {
 
     }  // namespace
 
-    // The total switch. No default: -Werror=switch turns an unnamed ExprKind
-    // into a build failure, which is what makes the classification total.
+    // No default: -Werror=switch makes an unnamed ExprKind a build failure, so this is total.
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic error "-Wswitch"
 #endif
     TitleShape classify(const ExpressionPtr& e0, const CajetaModulePtr& module) {
         if (!e0) return make(TitleFamily::Unsupported, TitleAnswer::Scalar, TitleSource::None, e0);
-        // Peel parenthesised primaries and reference casts (spec 5.5): the
-        // value is the inner expression's.
+        // Peel parenthesised primaries and reference casts (5.5): the value is the inner's.
         ExpressionPtr e = e0;
         for (;;) {
             if (e->kind() == ExprKind::Primary) {
@@ -386,15 +302,9 @@ namespace cajeta::ownership {
             }
             break;
         }
-        // The type decides several rows (a String concat, a scalar, a value
-        // type): resolve it if nothing has yet — a classification before the
-        // arms' resolution read a concat as a scalar (measured 2026-09-07).
+        // The type decides several rows, so resolve it if nothing has yet.
         if (!e->getResolvedType()) {
-            // A resolution can fail BEFORE codegen (an array literal whose
-            // elements are calls the conditional has not resolved yet —
-            // measured 2026-09-08 on a `#T` return's arm walk); the KIND
-            // still decides the family, only the type flags go unread.
-            // classify never throws.
+            // A resolution can fail BEFORE codegen; the kind still decides the family.
             try {
                 e->resolveTypes(module);
             } catch (Exception&) {
@@ -553,7 +463,7 @@ namespace cajeta::ownership {
 #endif
 
     namespace {
-        // `#x` / the `#=` wrapper: the inner shape decides the source.
+        // `#x` / `#=`: the inner shape decides the source.
         TitleShape moveOf(const ExpressionPtr& leaf, const CajetaModulePtr& module) {
             auto mv = std::static_pointer_cast<MoveExpression>(leaf);
             auto inner = childOf(leaf, 0);
@@ -579,15 +489,9 @@ namespace cajeta::ownership {
                     if (in.has(TitleShape::kStack)) {
                         s.answer = TitleAnswer::StackBound;      // the frame's body, no title
                     } else if (in.has(TitleShape::kHasEntry)) {
-                        // 6.2.2 — a STATIC owner's title is the constant 1: the
-                        // entry was armed by the push, not from a callee's flag
-                        // or a word bit (kRuntimeOwner), and the scope still
-                        // says it owns (kStaticTitle: no earlier move — a move
-                        // in either arm of an `if` stays recorded after the
-                        // join, a re-assignment restores — and no call-borrow
-                        // origin). A second `#x` of a transferred name is
-                        // rejected statically, so this is the first move in
-                        // flow. Anything else reads the entry's active byte.
+                        // 6.2.2 — a STATIC owner's title is the constant 1: the entry was
+                        // armed by the push and the scope still says it owns. Anything
+                        // else reads the entry's active byte.
                         if (in.has(TitleShape::kStaticTitle) && !in.has(TitleShape::kRuntimeOwner)) {
                             s.answer = TitleAnswer::Owned;
                         } else {
@@ -602,8 +506,7 @@ namespace cajeta::ownership {
                     } else if (in.has(TitleShape::kStaticTitle)) {
                         s.answer = TitleAnswer::Owned;            // a static owner without an entry
                     } else {
-                        // No entry, not a formal, no static title: a borrow
-                        // alias (the Cache.linkAtHead rule) — `#=` records it.
+                        // No entry, not a formal, no static title: a borrow alias.
                         s.answer = TitleAnswer::Borrow;
                     }
                     break;
@@ -637,9 +540,7 @@ namespace cajeta::ownership {
         TitleVerdict v{s.answer, s.source, nullptr, s.label};
         // A scalar has no title in any role.
         if (s.answer == TitleAnswer::Scalar) return v;
-        // Spec 5.10 — an array whose slots lend frame locals may not leave
-        // the frame: a `#` move of it into a retaining slot, a `#T` argument
-        // or a `#` return. (A same-frame `#=` bind carries the record on.)
+        // 5.10 — an array whose slots lend frame locals may not leave the frame.
         auto escapesBorrowedSlots = [&] {
             return s.family == TitleFamily::Move && s.field
                 && !s.field->getSlotBorrowedLocals().empty();
@@ -647,8 +548,7 @@ namespace cajeta::ownership {
         switch (role) {
             case ConsumerRole::StoreString:
             case ConsumerRole::StoreSlot:
-                // Spec 5.11 — a `stack` value moved into a retaining slot is
-                // rejected; a plain store of it is an ordinary borrow.
+                // 5.11 — a `stack` value moved into a retaining slot is rejected.
                 if (s.family == TitleFamily::Move && s.answer == TitleAnswer::StackBound) {
                     v.error = "CAJETA_ERROR_STACK_TRANSFER";
                 } else if (escapesBorrowedSlots()) {
@@ -656,11 +556,7 @@ namespace cajeta::ownership {
                 } else if (s.family == TitleFamily::LocalRead
                            && s.has(TitleShape::kIsParam)
                            && s.has(TitleShape::kTransferredParam)) {
-                    // A `#`-declared formal HOLDS the frame's title (no entry,
-                    // the word bit is not consulted): storing it by bare name
-                    // consumes it — the store adopts (uniform-transfer 2.3;
-                    // `take(#String s) { this.v = s; }` in
-                    // CallArgTempDropTests). The `#` is on the formal.
+                    // A `#` formal HOLDS the frame's title, so a bare-name store adopts.
                     v.answer = TitleAnswer::Owned;
                     v.source = TitleSource::None;
                 }
@@ -672,11 +568,7 @@ namespace cajeta::ownership {
             case ConsumerRole::Count:
                 return v;
             case ConsumerRole::ReturnOwned:
-                // A `#T` return is a contract: every shape must establish a
-                // title (spec §2.3). The frame-bound shapes first — no
-                // spelling fixes them: a `stack` value (5.11, as a
-                // construction, a moved or bare stack local, or an sret
-                // call) and the borrowed receiver.
+                // A `#T` return is a contract: every shape must establish a title (§2.3).
                 if (s.answer == TitleAnswer::StackBound
                         || (s.family == TitleFamily::LocalRead && s.has(TitleShape::kStack))) {
                     v.error = "CAJETA_ERROR_STACK_RETURN_ESCAPES";
@@ -690,9 +582,7 @@ namespace cajeta::ownership {
                     v.error = "CAJETA_ERROR_OWNED_RETURN_OF_BORROWED_THIS";
                     return v;
                 }
-                // `return #x`: the move's own codegen diagnoses a borrow
-                // source (MOVE_OF_BORROW, Unit 3); its stashed flag is the
-                // answer here.
+                // `return #x`: the move's codegen diagnoses a borrow; its flag answers here.
                 if (s.family == TitleFamily::Move) return v;
                 if (s.family == TitleFamily::LocalRead) {
                     if (s.has(TitleShape::kBorrowOrigin)) {
@@ -700,10 +590,7 @@ namespace cajeta::ownership {
                         return v;
                     }
                     if (s.has(TitleShape::kHasEntry)) {
-                        // The entry IS the frame's title. Armed statically it
-                        // is a constant; armed at run time (a callee's flag,
-                        // a plain formal's word bit) it is read before the
-                        // return deactivates it.
+                        // The entry IS the frame's title: a constant when armed statically.
                         if (s.has(TitleShape::kRuntimeOwner)) {
                             v.answer = TitleAnswer::Runtime; v.source = TitleSource::DropEntry;
                         } else {
@@ -712,11 +599,7 @@ namespace cajeta::ownership {
                         return v;
                     }
                     if (s.has(TitleShape::kIsParam)) {
-                        // A `#` formal holds the frame's title unconditionally
-                        // (Unit 5's store rule). An interface formal has no
-                        // entry today and keeps the static mode (finding
-                        // 6.1.x). A plain class formal without an entry (a
-                        // String) holds nothing to transfer.
+                        // A `#` formal holds the frame's title unconditionally.
                         if (s.has(TitleShape::kTransferredParam) || s.has(TitleShape::kInterface)) {
                             v.answer = TitleAnswer::Owned; v.source = TitleSource::None;
                             return v;
@@ -724,17 +607,11 @@ namespace cajeta::ownership {
                         v.error = "CAJETA_ERROR_BORROW_PARAM_ESCAPES";
                         return v;
                     }
-                    // No entry, not a formal: the local lends someone else's
-                    // value (a literal bind, an alias of another local).
+                    // No entry, not a formal: the local lends someone else's value.
                     v.error = "CAJETA_ERROR_OWNED_RETURN_OF_BORROW";
                     return v;
                 }
-                // A String literal's static wrapper is adopted, not
-                // borrowed: `__cajeta_string_drop` is a no-op on it (the
-                // live-set claim fails), so the caller's drop entry costs
-                // nothing and frees nothing — the enum `toName()` idiom
-                // (`return "error";` under `#String`). Measured 2026-09-08:
-                // the stdlib's every enum returns one.
+                // A String literal's wrapper is adopted, not borrowed: its drop is a no-op.
                 if (s.family == TitleFamily::Literal && s.has(TitleShape::kString)) {
                     v.answer = TitleAnswer::Owned; v.source = TitleSource::None;
                     return v;
@@ -744,11 +621,8 @@ namespace cajeta::ownership {
                 }
                 return v;
             case ConsumerRole::ReturnPlain:
-                // A plain return hands out no fresh value (nobody registers a
-                // drop for it), no owned local (dropped before the ret) and
-                // no class-typed `stack` value (reclaimed at the ret); a
-                // formal forwards its entry flag; a call's flag rides
-                // through; a borrow is a borrow.
+                // A plain return hands out no fresh value, no owned local and no `stack`
+                // value — all three die at the ret; a formal forwards its entry flag.
                 if (s.family == TitleFamily::Fresh) {
                     if (s.answer == TitleAnswer::StackBound) {
                         v.error = "CAJETA_ERROR_STACK_RETURN_ESCAPES";
@@ -759,10 +633,7 @@ namespace cajeta::ownership {
                 }
                 if (s.family == TitleFamily::LocalRead) {
                     if (s.has(TitleShape::kIsParam)) {
-                        // The pass-through: a plain formal's entry carries the
-                        // caller's mode out. A `#` formal or an entry-less
-                        // formal keeps the static borrow (unchecked today —
-                        // finding 6.1.x).
+                        // The pass-through: a plain formal's entry carries the caller's mode out.
                         if (s.has(TitleShape::kHasEntry)) {
                             v.answer = TitleAnswer::Runtime; v.source = TitleSource::DropEntry;
                         }
@@ -772,11 +643,7 @@ namespace cajeta::ownership {
                         v.error = "CAJETA_ERROR_STACK_RETURN_ESCAPES";
                         return v;
                     }
-                    // Keys on the ENTRY, not the title (8.2.10): a local that
-                    // merely holds a call's borrow is indistinguishable here
-                    // and is rejected too — the accepted cost. Value locals
-                    // return by copy, closures have their own protocol, and
-                    // an interface local's entry is its kind word.
+                    // Keys on the ENTRY, not the title (8.2.10): a borrow-holding local is rejected too.
                     if (s.has(TitleShape::kHasEntry) && !s.has(TitleShape::kValue)
                             && !s.has(TitleShape::kFunction) && !s.has(TitleShape::kInterface)) {
                         v.error = "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER";
@@ -785,15 +652,9 @@ namespace cajeta::ownership {
                 }
                 return v;
             case ConsumerRole::ArgOwned:
-                // A `#T` formal is a promise the argument must keep: a proven
-                // borrow is rejected (spec 5.8); an owned or runtime-decided
-                // value passes and its bit rides the transfer word. A
-                // `stack` value — constructed or moved — into a formal the
-                // callee may retain is the escape 5.11 rejects. A VALUE type
-                // moves by copy (`["o": {x: 3, y: 4}]` hands a record
-                // aggregate to `put`'s `#V` formal — measured 2026-09-08 in
-                // the sweep, CollectionLiteralTests.MapToAggregate): no
-                // frame address escapes, nothing to reject.
+                // A `#T` formal is a promise the argument must keep: a proven borrow is
+                // rejected (5.8), and a `stack` value the callee may retain escapes (5.11).
+                // A VALUE type moves by copy, so no frame address escapes.
                 if (s.answer == TitleAnswer::StackBound && !s.has(TitleShape::kValue)) {
                     v.error = "CAJETA_ERROR_STACK_TRANSFER";
                     return v;
@@ -802,25 +663,14 @@ namespace cajeta::ownership {
                     v.error = "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL";
                     return v;
                 }
-                // A String literal's static wrapper is adopted (its drop is a
-                // no-op — Unit 6, 6.1.2 a): `heap SomeException("...")` into
-                // a `#String` formal is sound and the stdlib's idiom.
+                // A String literal's static wrapper is adopted: its drop is a no-op.
                 if (s.family == TitleFamily::Literal && s.has(TitleShape::kString)) {
                     v.answer = TitleAnswer::Owned; v.source = TitleSource::None;
                     return v;
                 }
                 switch (s.family) {
                     case TitleFamily::ThisRead:
-                        // The consumed-receiver idiom: `filter()` returns
-                        // `heap FilterStream<T>(this, pred)` into a `#Stream
-                        // source` formal — the stage adopts its receiver
-                        // (measured 2026-09-08: 48 stdlib instantiations of
-                        // four stages; the word bit was 0 before this unit
-                        // and the `#` formal adopts regardless; a named
-                        // receiver's own drop is then the runtime's idempotent
-                        // no-op). The language has no `#this` receiver
-                        // spelling to say so — a gap recorded in the plan,
-                        // not a row this unit can reject.
+                        // The consumed-receiver idiom has no `#this` spelling, so it stands.
                         return v;
                     case TitleFamily::FieldRead:
                     case TitleFamily::ElementRead:
@@ -862,13 +712,10 @@ namespace cajeta::ownership {
     }
 
     namespace {
-        // The entry's active byte (offset 24: obj, drop_fn, prev, active),
-        // read inline — one GEP, one load, one zext.
-        // Unit 9 (spec 5.14, the 8.2.2 flow gap) — `current`, when given, is
-        // the local's present value: a borrow re-assign leaves the entry
-        // registered on the DISPLACED value (obj ), and its flag is that
-        // value's title, not the local's. The flag counts only while the entry
-        // still describes the local (one more load and a compare).
+        // The entry's active byte (offset 24), read inline. Unit 9 (spec 5.14):
+        // `current`, when given, is the local's present value, and the flag counts
+        // only while the entry still describes it — a borrow re-assign leaves the
+        // entry on the DISPLACED value, whose title is not the local's.
         llvm::Value* entryActiveFlag(llvm::Value* entry, const CajetaModulePtr& module,
                                      llvm::Value* current = nullptr) {
             auto* builder = module->getBuilder();
@@ -935,13 +782,8 @@ namespace cajeta::ownership {
                       const CajetaModulePtr& module, const char* where) {
         if (!e) return;
         TitleShape s = classify(e, module);
-        // Only the escape rule (spec 5.10) is asked here: the return and
-        // argument sites keep their own title checks until Units 6 and 7
-        // migrate them, and a plain-return `#x` / `return #= x` must not be
-        // judged by the `#T`-return contract.
-        // A `#r` argument may arrive as the bare name with the call's
-        // transferred flag set, so a LocalRead counts here too: the array is
-        // leaving the frame whichever way the `#` was carried.
+        // Only the escape rule (5.10) is asked here. A `#r` argument may arrive as the
+        // bare name with the transferred flag set, so a LocalRead counts too.
         if ((s.family == TitleFamily::Move || s.family == TitleFamily::LocalRead)
                 && s.field && !s.field->getSlotBorrowedLocals().empty()) {
             TitleVerdict v{s.answer, s.source, "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL", s.label};
@@ -1011,11 +853,8 @@ namespace cajeta::ownership {
         a.flag = verdictFlagAfterCodegen(a.shape, v, module);
         if (callerTransferred && !a.flag && a.shape.family == TitleFamily::Move
                 && a.shape.source == TitleSource::TransferWord && a.shape.field) {
-            // A plain formal moved on, in a method whose signature carries no
-            // transfer word. A value-type or interface formal moves by copy /
-            // by its kind word and carries no title to read: the old
-            // sites' default bit (1) stands. A class formal: this frame holds
-            // nothing to surrender.
+            // A plain formal moved on in a method with no transfer word: a value or
+            // interface formal keeps the default bit, a class formal owns nothing.
             if (a.shape.has(TitleShape::kValue) || a.shape.has(TitleShape::kInterface)) {
                 a.flag = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*module->getLlvmContext()), 1);
                 return a;
@@ -1095,8 +934,7 @@ namespace cajeta::ownership {
         if (v.error) throwVerdict(s, v, e, module, where);
         switch (v.answer) {
             case TitleAnswer::Owned:
-                // The VERDICT's answer, not the shape's: a policy row may
-                // promote (a `#` formal stored by bare name).
+                // The VERDICT's answer, not the shape's: a policy row may promote.
                 return llvm::ConstantInt::get(
                     llvm::Type::getInt64Ty(*module->getLlvmContext()), 1);
             case TitleAnswer::Runtime:
@@ -1123,8 +961,8 @@ namespace cajeta::ownership {
             case TitleAnswer::Runtime:
                 break;
         }
-        // A move already read its source's flag BEFORE deactivating it (the
-        // entry now says 0); the stashed value is the truth, never a re-read.
+        // A move read its source's flag BEFORE deactivating it, so the stashed
+        // value is the truth and the entry must never be re-read.
         if (s.family == TitleFamily::Move && s.leaf && s.leaf->kind() == ExprKind::Move) {
             if (llvm::Value* mf = std::static_pointer_cast<MoveExpression>(s.leaf)->getRuntimeTitleFlag()) {
                 return mf;
@@ -1157,9 +995,8 @@ namespace cajeta::ownership {
                 break;
             }
             case TitleSource::ReturnFlag: {
-                // 8.2.4 — a call that resolved no callee after its codegen is
-                // an intrinsic lowering: nothing stored the flag, so a read
-                // here would be stale. No flag; the consumer's default stands.
+                // 8.2.4 — a call with no callee after codegen is an intrinsic
+                // lowering: nothing stored the flag, so a read here would be stale.
                 if (s.family == TitleFamily::CallResult && !s.callee) break;
                 if (llvm::Function* gf = module->getRuntimeFunction("__cajeta_return_flag_get")) {
                     v = builder->CreateCall(gf, {}, "title.ret.flag");

@@ -939,10 +939,7 @@ namespace cajeta {
         if (auto arr = dynamic_pointer_cast<CajetaArray>(t)) {
             return !arr->isInlineArray();
         }
-        // ownership-title-classifier Unit 9 (spec 5.13) — a function-typed
-        // field holds a closure record (heap, live-set tracked when it
-        // captures) and records the mode `#=` carried in, like any class
-        // field; the holder's drop releases an owned one.
+        // Unit 9 (spec 5.13) — a function-typed field holds a closure record and is title-bearing like a class field.
         if (dynamic_pointer_cast<CajetaFunctionType>(t)) return true;
         auto cls = dynamic_pointer_cast<CajetaClass>(t);
         if (!cls) return false;
@@ -3830,12 +3827,8 @@ namespace cajeta {
                 continue;
             }
 
-            // ownership-title-classifier Unit 9 (spec 5.13) — a function-typed
-            // field: release the closure record when this object owns it
-            // (its bit is set: a lambda literal moved in through `#=`); a
-            // lent closure (a local passed bare) is its frame's and the bit
-            // is 0. __cajeta_closure_drop no-ops on a non-capturing closure's
-            // stack record (drop_fn null) and on null.
+            // Unit 9 (spec 5.13) — release the closure record only when the
+            // ownership bit says this object owns it; a lent closure is its frame's.
             if (dynamic_pointer_cast<CajetaFunctionType>(fieldType)) {
                 llvm::Function* closureDropFn = cajModule->getRuntimeFunction(
                     "__cajeta_closure_drop", bodyModule);

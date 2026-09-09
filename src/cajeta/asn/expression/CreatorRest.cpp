@@ -222,10 +222,7 @@ namespace cajeta {
         // immediately after its generation (the next arg's call clobbers
         // it) and forward it into the ctor word below, exactly as
         // MethodCallExpression's arg loop does.
-        // Unit 7 — each constructor argument's classified title (shape +
-        // flag), filled right after its codegen; the two flag vectors keep
-        // the bits that ride the constructor's transfer word (a plain
-        // argument's, a `#x` argument's).
+        // Unit 7 — each argument's classified title, plus the flags that ride the transfer word.
         std::vector<ownership::ArgTitle> ctorArgTitles(parameters.size());
         std::vector<llvm::Value*> plainArgTempFlags(parameters.size(), nullptr);
         std::vector<llvm::Value*> ctorArgTitleFlags(parameters.size(), nullptr);
@@ -236,12 +233,7 @@ namespace cajeta {
                 param.expression->resolveTypes(module);
             }
             llvm::Value* value = param.expression->generateCode(module);
-            // Unit 7 — the argument's title, on the classifier, AFTER its
-            // codegen (see MethodCallExpression's argument loop): a call's
-            // TLS is read now, a `#x` name's entry is read now, a static
-            // owner and a fresh value are constants, an intrinsic lowering
-            // stores no flag. Only a class or array title rides the word; a
-            // `#x` always composes.
+            // Unit 7 — the argument's title, classified AFTER its codegen so a call's flag is the one just stored.
             if (ctorArgIndex < ctorArgTitles.size()) {
                 ctorArgTitles[ctorArgIndex] = ownership::classifyArgument(
                     param.expression, param.callerTransferred, module, "a `#` argument");
@@ -249,8 +241,7 @@ namespace cajeta {
                 bool wordCarrier = param.callerTransferred
                     || MethodCallExpression::droppableTempClass(argTy) != nullptr
                     || dynamic_pointer_cast<CajetaArray>(argTy) != nullptr
-                    // Unit 9 (spec 5.13) — a closure rides the word too (a lambda
-                    // literal is a fresh owner, a name lends).
+                    // Unit 9 (spec 5.13) — a closure rides the word too.
                     || dynamic_pointer_cast<CajetaFunctionType>(argTy) != nullptr;
                 if (wordCarrier && ctorArgTitles[ctorArgIndex].flag) {
                     if (param.callerTransferred) {
@@ -341,8 +332,7 @@ namespace cajeta {
                         if (auto scope = module->getScopeStack().peek()) {
                             const string& nm = idExpr->getTextValue();
                             FieldPtr field = scope->getField(nm);
-                            // Unit 7 — the scope's move bookkeeping, as
-                            // MoveExpression does it (see the call site).
+                            // Unit 7 — the scope's move bookkeeping, as MoveExpression does it.
                             if (field && !std::dynamic_pointer_cast<ParameterField>(field)) {
                                 scope->rejectTransferOfBorrow(nm, /*modeCarrying=*/false);
                                 auto kls = std::dynamic_pointer_cast<CajetaClass>(
@@ -360,8 +350,7 @@ namespace cajeta {
                     }
                     deactivateIfClassLocal(i);
                 }
-                // Unit 7 — the `#T`-formal contract on the classifier (spec
-                // 5.8, 5.11, 5.10), the constructor twin of the call site.
+                // Unit 7 (spec 5.8) — the `#T`-formal contract, the constructor twin of the call site.
                 MethodPtr xferTarget = klass->resolveMethod(
                     ctorName, entries, /*isConstructor=*/true,
                     /*floatingParams=*/false);
@@ -391,9 +380,7 @@ namespace cajeta {
                     }
                 }
             }
-            // Unit 7 — the constructor's transfer word, one answer per
-            // argument (ownership::classifyArgument): a constant title is a
-            // static bit, a runtime one is OR'd in; no title, no bit.
+            // Unit 7 — the constructor's transfer word: a constant title is a static bit, a runtime one is OR'd in.
             auto* twBuilder = module->getBuilder();
             int64_t ctorTransferWord = 0;
             llvm::Value* ctorWordVal = nullptr;
@@ -450,10 +437,7 @@ namespace cajeta {
                         if (parameters[ai].callerTransferred) continue;
                         llvm::Value* tempV = entries[ai].value;
                         if (!tempV) continue;
-                        // Unit 7 — a String temp the constructor only
-                        // borrowed is the caller's to release: a static title
-                        // drops now, a runtime one drops on its flag (see the
-                        // call site's reclaim).
+                        // Unit 7 — a String temp the constructor only borrowed is the caller's to release.
                         if (ai < ctorArgTitles.size()
                                 && ctorArgTitles[ai].shape.has(ownership::TitleShape::kString)
                                 && ctorArgTitles[ai].shape.family != ownership::TitleFamily::Literal

@@ -55,12 +55,7 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
 // surviving contract is the simpler one — everything is owned, everything is
 // reclaimed once.
 
-// 6.1.1b — `map[k] = v` is a LEND (decided 2026-09-08 with the developer:
-// an indexed store is the sink model and must not force the transfer —
-// `HashMap.operator[]=` takes plain formals and forwards the caller's word to
-// `put`). Before this the operator's `#K, #V` formals made every indexed
-// store adopt, and this test pinned the resulting rejection of a bare owned
-// local; it now pins the lend: the local keeps its title, the map holds a
+// 6.1.1b — `map[k] = v` is a LEND: the local keeps its title, the map holds a
 // borrow, and the value is freed exactly once. `m[1] = #mine` is the transfer.
 TEST(ContainerTitleTests, indexedStoreLendsABareOwnedLocal) {
     std::string src = std::string(kCellMapSrc) +

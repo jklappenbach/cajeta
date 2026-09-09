@@ -1,33 +1,6 @@
 #pragma once
-//
-// ownership-title-classifier — ONE answer to "what title does this value
-// carry?" for every consumer position (specs/ownership-title-classifier-spec.md).
-//
-// Six consumer sites used to answer that question with their own if/else
-// chain over AST node types, and disagreed on a dozen shapes (spec §3). This
-// header is the single classifier they migrate onto, unit by unit:
-//
-//   classify(expr, module)  — the STATIC shape: provenance family, answer,
-//                             flag source, diagnostic label. Usable before any
-//                             IR exists. TOTAL over ExprKind (spec §2.1): the
-//                             switch in TitleClassifier.cpp has no default and
-//                             builds with -Werror=switch, so a new Expression
-//                             subclass fails the compiler's build until named.
-//   policy(shape, role)     — what the answer means for a consumer ROLE: the
-//                             answer to act on, or the diagnostic code the role
-//                             rejects this shape with (spec §2.3).
-//   titleFlag(expr, ...)    — the RUNTIME flag for a Runtime answer, as an i64
-//                             read once and cached on the node; constants for
-//                             static answers so a consumer's branch folds
-//                             (spec §2.2).
-//
-// Optimality (spec §1.4): the kind dispatch is one switch on a one-byte tag
-// (Expression::kind()), the tables are constexpr, nothing here allocates or
-// takes a std::function, and the runtime reads are emitted as loads and bit
-// operations, not runtime calls, wherever the read is a few instructions.
-// classify()'s body is out of line on purpose: a 200-line switch inlined at
-// each consumer would be code growth, not speed — the call is once per node.
-//
+// ownership-title-classifier — ONE answer to "what title does this value carry?"
+// for every consumer position (specs/ownership-title-classifier-spec.md).
 
 #include <cstdint>
 #include <string>
@@ -120,8 +93,7 @@ namespace cajeta::ownership {
         bool has(uint32_t f) const { return (flags & f) != 0; }
     };
 
-    /// What a consumer role does with a shape: the answer to act on, or the
-    /// diagnostic code that rejects it (`error` non-null).
+    /// What a role does with a shape: the answer, or the code that rejects it.
     struct TitleVerdict {
         TitleAnswer answer;
         TitleSource source;
@@ -129,47 +101,29 @@ namespace cajeta::ownership {
         const char* label;
     };
 
-    /// The static shape of `e` in the current codegen context of `module`
-    /// (scope for names, the current method for formals and arena locals).
-    /// Total over ExprKind; never throws; never allocates beyond the returned
-    /// record.
+    /// The static shape of `e`; total over ExprKind, never throws.
     TitleShape classify(const ExpressionPtr& e, const CajetaModulePtr& module);
 
-    /// The shape of a `#` move / `#=` store whose SOURCE has shape `inner`
-    /// (spec §2.1, Move): the inner's provenance decides the flag source —
-    /// a local's entry, a formal's word bit, a slot's own-bit, a call's
-    /// return flag, a conditional's arm phi — or a static answer. The leaf,
-    /// field and flags are the inner's, so titleFlag() reads the right slot.
+    /// The shape of a `#` move / `#=` store over `inner`: the inner's provenance
+    /// decides the flag source, and its leaf/field/flags carry over (§2.1, Move).
     TitleShape moveFrom(const TitleShape& inner, bool sharpStore);
 
     /// The policy table (spec §2.3), a pure function of (shape, role).
     TitleVerdict policy(const TitleShape& shape, ConsumerRole role);
 
-    /// The i64 title flag for `shape` — a constant for static answers, the
-    /// named runtime read for Runtime ones — emitted at the builder's current
-    /// point and cached on the leaf node for the rest of that function's
-    /// codegen. Call it IMMEDIATELY after the value's codegen when the source
-    /// is ReturnFlag: the next call clobbers the TLS. Returns nullptr only for
-    /// TitleSource::Slot on a node that has not generated yet (the move site
-    /// keeps its own take protocol until it migrates).
-    /// Unit 9 (spec 5.14, the 8.2.2 flow gap) — deactivate a local's drop
-    /// entry after a move of its value. A local re-assigned to a borrow keeps
-    /// its entry on the DISPLACED value by design; a runtime-conditional local
-    /// therefore deactivates only if the entry still describes its current
-    /// object (`__cajeta_drop_mark_inactive_if`), so the displaced value is not
-    /// orphaned. A static owner's entry is deactivated as before.
+    /// Unit 9 (spec 5.14) — deactivate a local's drop entry after a move. A
+    /// runtime-conditional local deactivates only if the entry still describes
+    /// its current object, so a displaced value is not orphaned.
     void deactivateLocalEntry(const CajetaModulePtr& module, const FieldPtr& field);
     void deactivateLocalEntry(const CajetaModulePtr& module, Field* field);
 
+    /// The i64 title flag for `shape`: a constant for static answers, the named
+    /// runtime read for Runtime ones. Call it IMMEDIATELY after the value's
+    /// codegen for a ReturnFlag source — the next call clobbers the TLS.
     llvm::Value* titleFlag(const TitleShape& shape, const CajetaModulePtr& module);
 
-    /// The title a STORE of `e` in `role` carries into its slot, or null when
-    /// it carries none (a borrow, a scalar, a stack value): the constant 1 for
-    /// an Owned answer, the runtime flag for a Runtime one. One call per store
-    /// site replaces the per-node-type chains (spec §2.3; Unit 5). A policy
-    /// error (spec 5.11: a `stack` value moved into a retaining slot) is
-    /// thrown here as the CAJETA_ERROR the verdict names, with `where` in the
-    /// message.
+    /// The title a STORE of `e` in `role` carries into its slot, or null for none
+    /// (a borrow, a scalar, a stack value). A policy error throws here (§2.3).
     llvm::Value* storeTitleFlag(const ExpressionPtr& e, ConsumerRole role,
                                 const CajetaModulePtr& module, const char* where);
     /// The same, from a shape the caller already computed (one classify).
@@ -177,32 +131,18 @@ namespace cajeta::ownership {
                                   const ExpressionPtr& e, const CajetaModulePtr& module,
                                   const char* where);
 
-    /// Throw the CAJETA_ERROR a policy verdict names for `e` in `role`
-    /// (spec 5.10 ARRAY_SLOT_BORROWS_LOCAL, 5.11 STACK_TRANSFER, …); no-op
-    /// when the verdict carries no error. The escaping positions that have
-    /// not migrated yet (a `#` return, a `#T` argument) call this directly.
-    /// The flag a consumer stores for a policy VERDICT: the constant 1 for
-    /// an Owned answer (a row may promote), the runtime read for a Runtime
-    /// answer (the verdict's source over the shape's own — a LocalRead's
-    /// entry, a call's TLS), the constant 0 for a Borrow or StackBound,
-    /// nullptr for a Scalar or an error.
+    /// The flag a consumer stores for a policy VERDICT: 1 for Owned, the verdict's
+    /// runtime read for Runtime, 0 for Borrow/StackBound, null for Scalar or error.
     llvm::Value* verdictFlag(const TitleShape& shape, const TitleVerdict& v,
                              const CajetaModulePtr& module);
 
-    /// `verdictFlag` for a consumer that runs AFTER the expression's codegen:
-    /// a call whose own resolution is still null was lowered by an
-    /// intrinsic and stored no flag — reading the TLS would be stale (Unit
-    /// 6, 24 such reads measured) — so no flag is materialised for it.
+    /// `verdictFlag` for a consumer that runs AFTER codegen: a call with no
+    /// resolution was lowered by an intrinsic and stored no flag (a stale TLS).
     llvm::Value* verdictFlagAfterCodegen(const TitleShape& shape, const TitleVerdict& v,
                                          const CajetaModulePtr& module);
 
-    /// Unit 7 — one call or constructor argument, classified AFTER its
-    /// codegen. A `#x` argument (the parser's callerTransferred) is the
-    /// move of its name; a `stack` value moved into any formal is the
-    /// STACK_TRANSFER error (spec 5.11); a plain formal moved in a method
-    /// that carries no transfer word is BORROW_PARAM_ESCAPES. `flag` is the
-    /// argument's title bit — a constant, or a runtime value read here,
-    /// before anything deactivates its source — or null for no title.
+    /// Unit 7 — one call or constructor argument, classified AFTER its codegen;
+    /// `flag` is its title bit, read before anything deactivates the source.
     struct ArgTitle {
         TitleShape shape;
         llvm::Value* flag = nullptr;
@@ -210,9 +150,7 @@ namespace cajeta::ownership {
     ArgTitle classifyArgument(const ExpressionPtr& e, bool callerTransferred,
                               const CajetaModulePtr& module, const char* where);
 
-    /// Unit 7 — the `#T`-formal contract on one argument (spec 5.8, 5.11):
-    /// every leaf arm must tender a title. Throws TRANSFER_REQUIRED /
-    /// STACK_TRANSFER / ARRAY_SLOT_BORROWS_LOCAL with the site's texts.
+    /// Unit 7 — the `#T`-formal contract (5.8, 5.11): every leaf arm must tender a title.
     void rejectOwnedFormalArgument(const ExpressionPtr& e, bool callerTransferred,
                                    const CajetaModulePtr& module,
                                    const std::string& callee, const std::string& formal,
@@ -249,8 +187,7 @@ namespace cajeta::ownership {
     const char* toString(ConsumerRole r) noexcept;
     const char* toString(ExprKind k) noexcept;
 
-    /// One classification, as the audit records it (tests read these; the
-    /// switch costs one static-bool test when off, as ReturnTitleAudit does).
+    /// One classification, as the audit records it (tests read these).
     struct TitleShapeRecord {
         std::string file;
         std::string holder;   ///< `pkg.Class.method` the site is in
@@ -272,9 +209,7 @@ namespace cajeta::ownership {
         static void clear();
     };
 
-    /// Audit-only observation of a classification at a consumer site: no
-    /// behaviour, one branch on the audit switch. Sites call this until they
-    /// migrate onto policy(); tests measure every §2.1 row through it.
+    /// Audit-only observation at a consumer site: no behaviour, one branch.
     void observeTitle(const ExpressionPtr& e, const CajetaModulePtr& module,
                       ConsumerRole role);
 

@@ -1,21 +1,6 @@
-//
-// ownership-title-classifier Unit 1 — the classifier, measured.
-//
-// spec §2.1 has one row per shape; each row here is a `T x = <shape>;` line
-// in a JIT-compiled program, observed by the audit-only hook in
-// LocalVariableDeclaration (role Bind) and looked up by its line number. The
-// assertion is the STATIC answer (family / answer / flag source / flags) the
-// classifier produced for that node in that context — never reasoned from
-// the row, always read from a compile.
-//
-// The policy table (spec §2.3) is a pure function of (shape, role); its
-// error rows are asserted directly on hand-built shapes.
-//
-// Totality (spec §2.1, no Unknown): the switch in TitleClassifier.cpp has no
-// default and builds with -Werror=switch, so an ExprKind the classifier does
-// not name fails the compiler's build; the test below walks every ExprKind
-// value and asserts each has a name, which pins the enumerator list itself.
-//
+// ownership-title-classifier Unit 1 — the classifier (spec §2.1): each row is a
+// `T x = <shape>;` line whose STATIC answer is read out of the audit hook. The
+// policy table (§2.3) is asserted directly on hand-built shapes.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -32,7 +17,6 @@ using cajeta::ExprKind;
 
 namespace {
 
-// 1-based line of the first line containing `needle`.
 int lineOf(const std::string& src, const std::string& needle) {
     size_t pos = src.find(needle);
     if (pos == std::string::npos) return -1;
@@ -48,7 +32,6 @@ const TitleShapeRecord* recordAt(int line, ConsumerRole role = ConsumerRole::Bin
     return nullptr;
 }
 
-// Every record, for a failure message.
 std::string dumpRecords() {
     std::string out;
     for (const auto& r : TitleShapeAudit::records()) {
@@ -102,8 +85,7 @@ const char* PRE =
 
 } // namespace
 
-// The read shapes: literal, bare local (with and without an entry), formal,
-// `this`, field, element, and a reference cast peeled to the field read.
+// The read shapes: literal, local, formal, `this`, field, element, cast.
 TEST(TitleClassifierTests, readShapesAreBorrows) {
     AuditScope audit;
     std::string src = std::string(PRE) +
@@ -152,8 +134,7 @@ TEST(TitleClassifierTests, readShapesAreBorrows) {
     EXPECT_ROW(recordAt(lineOf(src, "ROW scalar")), Scalar, Scalar, None);
 }
 
-// The producing shapes: heap / stack construction, a concat, an owned call,
-// a plain call (rides its flag), a map literal.
+// The producing shapes: heap, stack, a concat, an owned call, a plain call.
 TEST(TitleClassifierTests, producingShapesAreOwnedOrRuntime) {
     AuditScope audit;
     std::string src = std::string(PRE) +
@@ -177,15 +158,8 @@ TEST(TitleClassifierTests, producingShapesAreOwnedOrRuntime) {
         EXPECT_ROW(r, Fresh, StackBound, None);
         EXPECT_TRUE(r->flags & TitleShape::kStack);
     }
-    // `#=` wraps the call in a move; the move forwards the call's answer,
-    // which is the return flag even for a `#R` callee (it may `return #=`).
     {
-        // 7.2.3: `A.fresh` is `#Cell` and its only return is `heap Cell(v)`
-        // — a kind-decidable title, so the callee is statically Owned and
-        // the `#=` wrapper carries the constant (no TLS read). A `#R`
-        // callee that may ride a mode out (`return #= x`, a formal, a tail
-        // call) stays Runtime/ReturnFlag — see the plain-call row below and
-        // CallArgOwnershipTests.modeCarryingOwnedCalleeIntoPlainFormal.
+        // 7.2.3: `A.fresh` returns a kind-decidable title, so the `#=` carries a constant.
         auto* r = recordAt(lineOf(src, "ROW owned-call"));
         EXPECT_ROW(r, Move, Owned, None);
         EXPECT_TRUE(r->flags & TitleShape::kOwnedDecl);
@@ -202,9 +176,7 @@ TEST(TitleClassifierTests, producingShapesAreOwnedOrRuntime) {
     }
 }
 
-// Moves: the inner shape decides the runtime source — a local's entry, a
-// formal's word bit, a field's slot; a `#=` of an entry-less local records a
-// borrow.
+// Moves: the inner shape decides the source — entry, word bit, or slot.
 TEST(TitleClassifierTests, movesForwardTheInnerSource) {
     AuditScope audit;
     std::string src = std::string(PRE) +
@@ -225,14 +197,12 @@ TEST(TitleClassifierTests, movesForwardTheInnerSource) {
         "}\n";
     ASSERT_NE(CajetaJit::compile(src.c_str(), "test.A"), nullptr);
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-local")), Move, Runtime, DropEntry);
-    // A class formal has its own drop entry (armed from the word at entry), so
-    // the move reads THAT; a String formal has none, so it reads the word bit.
+    // A class formal has an entry and the move reads THAT; a String formal has none.
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-formal")), Move, Runtime, DropEntry);
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-string-formal")), Move, Runtime, TransferWord);
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-field")), Move, Runtime, Slot);
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-call")), Move, Runtime, ReturnFlag);
-    // A `` (body-less) callee stores no return flag: its declared
-    // stance is the answer, statically — never a read of a stale TLS.
+    // A body-less callee stores no return flag: its declared stance is the answer.
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-native")), Move, Owned, None);
 }
 
@@ -264,9 +234,7 @@ TEST(TitleClassifierTests, policyRejectsWhatEachRoleMustReject) {
         s.family = f; s.answer = a; s.flags = flags; s.label = labelOfFamily(f);
         return s;
     };
-    // `#T` return: a field read, a literal, an element read, `this`, a stack
-    // value, a borrow-origin local are rejected; an owned local forwards its
-    // entry; a formal its word bit; a fresh value passes.
+    // `#T` return: reads, `this`, stack and borrow-origin locals are rejected.
     EXPECT_STREQ(policy(shape(TitleFamily::FieldRead, TitleAnswer::Borrow), ConsumerRole::ReturnOwned).error,
                  "CAJETA_ERROR_OWNED_RETURN_OF_BORROW");
     EXPECT_STREQ(policy(shape(TitleFamily::Literal, TitleAnswer::Borrow), ConsumerRole::ReturnOwned).error,
@@ -277,10 +245,7 @@ TEST(TitleClassifierTests, policyRejectsWhatEachRoleMustReject) {
                  "CAJETA_ERROR_STACK_RETURN_ESCAPES");
     EXPECT_STREQ(policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow, TitleShape::kBorrowOrigin), ConsumerRole::ReturnOwned).error,
                  "CAJETA_ERROR_OWNED_RETURN_OF_BORROW");
-    // Unit 6 rows: a static owner's entry is the constant title; an entry
-    // armed at run time (kRuntimeOwner) is read; a `#` formal holds the
-    // frame's title; a plain formal WITHOUT an entry (a String) holds
-    // nothing to transfer; a plain formal with one forwards its entry.
+    // Unit 6 rows: a static owner's entry is the constant title, kRuntimeOwner is read.
     {
         auto v = policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow, TitleShape::kHasEntry), ConsumerRole::ReturnOwned);
         EXPECT_EQ(v.error, nullptr);
@@ -314,16 +279,14 @@ TEST(TitleClassifierTests, policyRejectsWhatEachRoleMustReject) {
     EXPECT_EQ(policy(shape(TitleFamily::Literal, TitleAnswer::Borrow, TitleShape::kString), ConsumerRole::ReturnOwned).error,
               nullptr);                                    // a String literal is adopted (static wrapper)
     EXPECT_EQ(policy(shape(TitleFamily::Fresh, TitleAnswer::Owned), ConsumerRole::ReturnOwned).error, nullptr);
-    // Plain return: a fresh value and an owned local are rejected; a call
-    // rides; a borrow is a borrow.
+    // Plain return: a fresh value and an owned local are rejected; a call rides.
     EXPECT_STREQ(policy(shape(TitleFamily::Fresh, TitleAnswer::Owned), ConsumerRole::ReturnPlain).error,
                  "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
     EXPECT_STREQ(policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow, TitleShape::kHasEntry), ConsumerRole::ReturnPlain).error,
                  "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
     EXPECT_EQ(policy(shape(TitleFamily::CallResult, TitleAnswer::Runtime), ConsumerRole::ReturnPlain).error, nullptr);
     EXPECT_EQ(policy(shape(TitleFamily::FieldRead, TitleAnswer::Borrow), ConsumerRole::ReturnPlain).error, nullptr);
-    // `#T` formal: proven borrows are rejected (5.8 includes an entry-less
-    // local and a borrowed parameter); owned and runtime values pass.
+    // `#T` formal: proven borrows are rejected (5.8); owned and runtime pass.
     EXPECT_STREQ(policy(shape(TitleFamily::FieldRead, TitleAnswer::Borrow), ConsumerRole::ArgOwned).error,
                  "CAJETA_ERROR_TRANSFER_REQUIRED");
     EXPECT_STREQ(policy(shape(TitleFamily::LocalRead, TitleAnswer::Borrow), ConsumerRole::ArgOwned).error,
@@ -344,9 +307,7 @@ TEST(TitleClassifierTests, policyRejectsWhatEachRoleMustReject) {
     }
 }
 
-// Totality: every ExprKind enumerator has a name (the list itself is pinned;
-// the classifier's switch over it is enforced at build time by -Werror=switch),
-// and every family has a label.
+// Totality (spec §2.1, no Unknown): every ExprKind and family is named.
 TEST(TitleClassifierTests, everyKindAndFamilyIsNamed) {
     for (int k = 0; k < (int) ExprKind::Count; ++k) {
         EXPECT_STRNE(toString((ExprKind) k), "?") << "ExprKind " << k;
@@ -358,8 +319,7 @@ TEST(TitleClassifierTests, everyKindAndFamilyIsNamed) {
     }
 }
 
-// The audit is off by default and costs nothing: no records without the
-// switch.
+// The audit is off by default: no records without the switch.
 TEST(TitleClassifierTests, auditIsOffByDefault) {
     TitleShapeAudit::clear();
     std::string src = std::string(PRE) +

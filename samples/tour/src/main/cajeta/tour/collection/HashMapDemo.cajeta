@@ -22,9 +22,7 @@ public class HashMapDemo extends DemoClass {
         int32 i = 0;
         while (i < 8) {
             String w = words[i];           // a borrow of the array's element
-            // `freq[w] = …` LENDS the key, like `put(w, …)`: the caller
-            // chooses — `freq[#w] = …` or `freq[w] #= …` would hand a title
-            // on. The words array outlives the map, so lending is right.
+            // `freq[w] = …` lends the key; the words array outlives the map.
             if (freq.containsKey(w)) {
                 freq[w] = freq[w] + 1;     // operator[] read + []= write
             } else {

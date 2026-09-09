@@ -1,23 +1,6 @@
-//
-// ownership-title-classifier Unit 7 — call arguments on the classifier
-// (MethodCallExpression: the argument stash, the `#x` flags, the `#T` formal
-// check, the transfer-word composition, the after-call reclaim, the receiver
-// temp; ClassCreatorRest: the same for constructor arguments). Written RED,
-// before the sites migrate; the pins guard what must not move.
-//
-//   7.1.2  spec 5.8 — a bare local holding a proven borrow (no entry) passed
-//          to a `#T` formal is rejected; an owned local surrendered with `#k`
-//          and an inactive-entry local (a later assignment may arm it) pass
-//   7.1.3  spec 5.11 — a `stack` value transferred into a `#T` formal (a
-//          method's and a constructor's) is rejected
-//   7.1.4  a `#R` callee that carries a BORROW out (`return #= x`) passed to
-//          a plain formal must hand the callee the runtime bit, not the
-//          constant 1 the fresh-call rule assumes (double free today)
-//   7.1.5  pins — an owned call result to a plain formal moves (balanced), a
-//          concatenation and an owned String call to a plain String formal
-//          are reclaimed after the call, a field read to a `#T` formal is
-//          rejected, and the constructor twins of each
-//
+// ownership-title-classifier Unit 7 — call arguments on the classifier: the
+// argument stash, the `#x` flags, the `#T` formal check, the transfer-word
+// composition, the after-call reclaim, and the constructor twin of each.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -139,8 +122,7 @@ TEST(CallArgOwnershipTests, ownedLocalSurrenderedToOwnedFormalPasses) {
 
 TEST(CallArgOwnershipTests, inactiveEntryLocalSurrenderedForwardsItsFlag) {
     // Spec 5.8's does-not-fire: a borrow-initialised local gets an INACTIVE
-    // entry so a later assignment can arm it; `#k` forwards whatever the
-    // entry says on each path (1 after `k = heap`, 0 on the borrow path).
+    // entry, and `#k` forwards whatever that entry says on each path.
     std::string src = loop("",
         "        Cell p = heap Cell(i + 100);\n"
         "        Cell k = p;\n"                          // a borrow: inactive entry
@@ -152,17 +134,9 @@ TEST(CallArgOwnershipTests, inactiveEntryLocalSurrenderedForwardsItsFlag) {
     EXPECT_EQ(runVerdict(src), 0) << "20 = wrong value; 21 = the even path leaked or the odd path double-freed";
 }
 
-// FOUND writing the test above (MEASURED 2026-09-08, verdict 21 — live count
-// moved): an OWNED local re-assigned to a borrow keeps its entry (the
-// displaced value lives to scope exit, so lends of it stay valid), but the
-// NAME now holds a borrow — and `#k` forwards the entry's title for the
-// displaced value, handing the keeper a title on `p`'s cell. Demoting the
-// name at the re-assign was tried and reverted: the scope's move marking is
-// flow-insensitive, so a borrow re-assign in one `if` arm made every later
-// `#=` of the name a rejection, which §7.2 forbids (what the analysis
-// cannot prove is ALLOWED — CapturedBorrowParamTests.unprovableCapture-
-// IsAllowed pins that line). The precise fix is flow-sensitive name state;
-// filed in the plan's 8.2.2. DISABLED: it fails by design until then.
+// An OWNED local re-assigned to a borrow keeps its entry, so `#k` forwards a
+// title for the DISPLACED value. The fix is flow-sensitive name state (plan
+// 8.2.2); DISABLED because it fails by design until then.
 TEST(CallArgOwnershipTests, DISABLED_ownerReassignedToBorrowThenSurrenderedWitness) {
     std::string src = loop("",
         "        Cell p = heap Cell(i + 100);\n"
@@ -249,12 +223,8 @@ TEST(CallArgOwnershipTests, fieldReadToOwnedCtorFormalRejected) {
         "    }\n"), "CAJETA_ERROR_TRANSFER_REQUIRED");
 }
 
-// The two stdlib idioms the `#T`-formal row keeps (measured 2026-09-08 on
-// the stdlib compile): a String literal into a `#String` constructor formal
-// (`heap SomeException("...")` — the literal's static wrapper is adopted, its
-// drop a no-op) and a stage adopting its receiver (`heap FilterStream<T>(this,
-// pred)` inside `filter()`: the `#Stream source` formal adopts `this`; the
-// language has no `#this` spelling to say so).
+// The two stdlib idioms the `#T`-formal row keeps: a String literal into a
+// `#String` ctor formal (its wrapper is adopted), and a stage adopting `this`.
 TEST(CallArgOwnershipTests, stringLiteralToOwnedCtorFormalIsAdopted) {
     std::string src = loop(
         "    static class Msg {\n"

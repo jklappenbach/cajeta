@@ -1,19 +1,6 @@
-//
 // ownership-title-classifier Unit 9 (spec 5.13, 5.14) — closures are titled
 // like class values; a store of a borrow of the slot's own value keeps the
-// slot's title.
-//
-// Measured before the unit (main and the branch alike): a capturing lambda
-// passed straight as an argument leaked its record and capture block (two
-// live objects per call) because a function-typed argument never rode the
-// transfer word and a function-typed formal never got a drop entry; a
-// field self-store through a borrow released the value and stored a borrow
-// of freed memory; an element self-store cleared the slot's bit and leaked
-// (ParallelDriver.foldWorker's `partials[slot] = acc`).
-//
-// Each verdict program returns 0 on pass; `Cajeta.liveCount()` is balanced
-// over 8 calls when every value is dropped exactly once.
-//
+// slot's title. Each verdict program returns 0 on pass.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -90,8 +77,7 @@ std::string compileExpectError(const std::string& src, const std::string& expect
 
 } // namespace
 
-// 9.1.1 — a capturing literal to a transient callee: the title moves in on
-// the transfer word and the callee's formal drops it on exit.
+// 9.1.1 — a capturing literal: the callee's formal takes the title and drops it.
 TEST(ClosureOwnershipTests, lambdaLiteralToATransientFormalIsDroppedByTheCallee) {
     std::string src = loop("",
         "        Cell c = heap Cell(3);\n"
@@ -108,8 +94,7 @@ TEST(ClosureOwnershipTests, lambdaLiteralWithTwoCapturesIsDroppedOnce) {
     EXPECT_EQ(runVerdict(src), 0) << "20 = wrong value; 21 = the closure leaked or was freed twice";
 }
 
-// 9.1.3 — a closure local lends: the callee arms nothing, the local still
-// drops it, and it is callable after the call. (A control.)
+// 9.1.3 — control: a closure local lends; it stays the caller's and callable.
 TEST(ClosureOwnershipTests, closureLocalLentToAFormalStaysTheCallers) {
     std::string src = loop("",
         "        Cell c = heap Cell(3);\n"
@@ -119,8 +104,7 @@ TEST(ClosureOwnershipTests, closureLocalLentToAFormalStaysTheCallers) {
     EXPECT_EQ(runVerdict(src), 0) << "30 = wrong value (the callee freed the caller's closure); 31 = leaked or freed twice";
 }
 
-// 9.1.4 — a keeper: `this.f #= f` records the arriving title and the
-// holder's drop releases the closure with the object.
+// 9.1.4 — a keeper: `this.f #= f` takes the title; the holder's drop releases it.
 TEST(ClosureOwnershipTests, lambdaLiteralKeptWithASharpStoreIsDroppedWithTheHolder) {
     std::string src = loop("",
         "        Cell c = heap Cell(3);\n"
@@ -129,8 +113,7 @@ TEST(ClosureOwnershipTests, lambdaLiteralKeptWithASharpStoreIsDroppedWithTheHold
     EXPECT_EQ(runVerdict(src), 0) << "40 = wrong value; 41 = the kept closure leaked or was freed twice";
 }
 
-// 9.1.5 — a plain `=` of a function-typed parameter into a field is the
-// captured borrow it is for any class parameter.
+// 9.1.5 — a plain `=` of a function-typed parameter into a field is a captured borrow.
 TEST(ClosureOwnershipTests, plainStoreOfAFunctionParameterIsACapturedBorrow) {
     std::string src = std::string(PRE)
         + "    static class KPlain {\n"
@@ -146,8 +129,7 @@ TEST(ClosureOwnershipTests, plainStoreOfAFunctionParameterIsACapturedBorrow) {
     EXPECT_NE(msg.find("#="), std::string::npos) << "the fix names the sink spelling: " << msg;
 }
 
-// 9.1.6 — a closure local kept through `#=` records the borrow: the local
-// drops it once, the holder releases nothing, both can still call it.
+// 9.1.6 — a closure local kept through `#=` records the borrow; the holder frees nothing.
 TEST(ClosureOwnershipTests, closureLocalKeptThroughASharpStoreRecordsTheBorrow) {
     std::string src = loop("",
         "        Cell c = heap Cell(3);\n"
@@ -167,8 +149,7 @@ TEST(ClosureOwnershipTests, sharpMoveOfAClosureLocalIntoAKeeperTransfers) {
     EXPECT_EQ(runVerdict(src), 0) << "70 = wrong value; 71 = the moved closure leaked or was freed twice";
 }
 
-// 9.1.8 — spec 5.14 at a class field: storing a borrow of the field's own
-// value over it changes no hands; the field keeps its title.
+// 9.1.8 — spec 5.14 at a class field: a self-store through a borrow keeps the title.
 TEST(ClosureOwnershipTests, fieldSelfStoreThroughABorrowKeepsTheTitle) {
     std::string src = loop(
         "    static class H {\n"
@@ -193,11 +174,8 @@ TEST(ClosureOwnershipTests, slotSelfStoreThroughABorrowKeepsTheTitle) {
     EXPECT_EQ(runVerdict(src), 0) << "90 = wrong value; 91 = the slot lost its title and leaked (or freed twice)";
 }
 
-// 9.1.10 — the parallel collect with an accumulator that returns a NEW list
-// each step: the worker's `partials[slot] #= acc` moves the fresh title into
-// the slot (and the identity case keeps the slot's own). The merged value is
-// the witness; the chain root's reclaim is out of this unit's scope, so the
-// live count is not asserted here.
+// 9.1.10 — a parallel collect whose accumulator returns a NEW list each step:
+// the worker's `partials[slot] #= acc` moves the fresh title into the slot.
 TEST(ClosureOwnershipTests, parallelCollectWithAFreshAccumulatorIsRight) {
     std::string src = std::string(PRE)
         + "    public static int32 run() {\n"
@@ -218,15 +196,8 @@ TEST(ClosureOwnershipTests, parallelCollectWithAFreshAccumulatorIsRight) {
     EXPECT_EQ(runVerdict(src), 2080) << "the merged partials must be 1..64 exactly once each";
 }
 
-// 9.1.11 — a factory hands its titled function-typed formal on with `#fn`,
-// as a class formal is forwarded: the keeper takes the title that arrived
-// (a literal's), the factory's own entry is deactivated by the move. Passed
-// on PLAINLY the keeper records a borrow and the factory's exit frees the
-// record under it — cabra's WebFront crashed on exactly that through
-// `Middleware.of(fn) { return heap Middleware(fn); }` (measured 2026-09-09:
-// the freed record's memory was reused by the next capture block, so the
-// handler jumped to a Middleware object). Both a `#`-declared and a plain
-// formal forward the same way.
+// 9.1.11 — a factory forwarding its function-typed formal with `#fn` hands the
+// title on once; a `#`-declared and a plain formal forward the same way.
 TEST(ClosureOwnershipTests, titledFormalForwardedWithSharpIntoAKeeperIsOwnedOnce) {
     std::string src = loop(
         "    static #K ofSharp(#(int32) -> int32 fn) { return heap K(#fn); }\n"
@@ -239,20 +210,10 @@ TEST(ClosureOwnershipTests, titledFormalForwardedWithSharpIntoAKeeperIsOwnedOnce
     EXPECT_EQ(runVerdict(src), 0) << "120 = a keeper read a freed record; 121 = a closure leaked or was freed twice";
 }
 
-// 9.1.12 (spec 5.14, the edge 9.2.6 recorded) — a parallel reduce whose
-// combiner hands back its RIGHT input after fresh-producing steps. The
-// workers' fresh partials are owned by the partials array; the merge's
-// `acc = fn(acc, partials[ci])` returned a BORROW of a slot's value, `return
-// acc` rode that borrow out, and the chain's frame freed the array under the
-// caller. The merge now moves each partial into the combiner
-// (`fn(acc, #partials[ci])`): returning `b` hands its title out, returning a
-// fresh value drops it. `pad` reuses a freed cell so a dangling `best`
-// reads a wrong value rather than a stale right one.
+// 9.1.12 (spec 5.14) — a parallel reduce whose combiner hands back its RIGHT
+// input: the merge moves each partial in, so the result is owned. The sentinel
+// cells reuse a freed one, so a dangling `best` reads a wrong value.
 TEST(ClosureOwnershipTests, parallelReduceCombinerReturningItsRightInputOwnsTheResult) {
-    // The chain root (`xs.stream()` under a class-returning terminal) is a
-    // known bounded leak (6.2.5), so the live count is not asserted here:
-    // the witness is the VALUE. Thirty-two sentinel cells allocated after
-    // the reduce reuse a freed cell, so a dangling `best` reads a sentinel.
     std::string src = std::string(PRE)
         + "    static #Cell keepMax(Cell a, Cell b) {\n"
         + "        if (b.n > a.n) { return b; }\n"           // its right input: a borrow under #Cell
@@ -283,13 +244,8 @@ TEST(ClosureOwnershipTests, parallelReduceCombinerReturningItsRightInputOwnsTheR
     EXPECT_EQ(runVerdict(src), 0) << "130 = best read a freed (reused) cell";
 }
 
-// 9.1.13 (spec 5.14, the 8.2.2 flow gap at run time) — a borrow re-assign
-// leaves the local's entry registered on the DISPLACED value (by design:
-// `n = n.next` keeps reading through it). A reader then took that entry's
-// flag as the local's title: `#k` handed a callee a title on an object the
-// frame never owned, and the callee freed it under its real owner. The
-// readers now count the flag only while the entry describes the local's
-// current object; the displaced value is still freed at scope exit.
+// 9.1.13 (spec 5.14) — after a borrow re-assign the local's drop entry stays on
+// the DISPLACED value, so `#k` must forge no title on the object it now names.
 TEST(ClosureOwnershipTests, staleEntryAfterABorrowReassignLendsNoTitle) {
     std::string src = loop(
         "    static #Cell pick(Cell a, Cell b) { return b; }\n"     // hands back its right input: a borrow at run time

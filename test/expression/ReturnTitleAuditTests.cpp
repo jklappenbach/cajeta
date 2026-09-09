@@ -91,10 +91,8 @@ TEST(ReturnTitleAuditTests, plainReturnTailCallIsEnumerated) {
     auto recs = auditCompile(src);
     const ReturnTitleRecord* r = find(recs, "test.D", "viaPlain");
     ASSERT_NE(r, nullptr) << "the ride-through site was not enumerated";
-    // ownership-title-classifier 7.2.3: `D.fresh` is `#Cell` and its only
-    // return is `heap Cell(7)`, a kind-decidable title, so the tail call's
-    // answer is the constant 1 (no TLS read) — still the ride, still a title
-    // handed out through a plain signature, which is what the audit counts.
+    // Spec 7.2.3: `D.fresh` returns a kind-decidable title, so the tail call
+    // folds to the constant — still a title through a plain signature.
     EXPECT_EQ(r->carry, TitleCarry::StaticTitle);
     EXPECT_EQ(r->via, TitleVia::CallRide);
     // WHICH callee is ridden is the difference between "a title escapes a
@@ -214,9 +212,6 @@ TEST(ReturnTitleAuditTests, moveReturnUnderPlainTypeIsEnumerated) {
     auto recs = auditCompile(src);
     const ReturnTitleRecord* r = find(recs, "test.D", "viaMove");
     ASSERT_NE(r, nullptr) << "`return #x` under a plain return was not enumerated";
-    // ownership-title-classifier 6.2.2: `#m` of a heap-bound local is the
-    // STATIC title (a constant 1, no entry read) — the scope proves the
-    // first move in flow. A runtime owner's move still reads its entry.
     EXPECT_EQ(r->carry, TitleCarry::StaticTitle);
     EXPECT_EQ(r->via, TitleVia::Move);
 }

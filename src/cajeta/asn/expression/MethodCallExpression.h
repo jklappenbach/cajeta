@@ -149,14 +149,8 @@ namespace cajeta {
         // resolvedReturnsOwnership); lets statement-position consumers ask
         // shape questions (returnsClassPointer) without re-resolving.
         MethodPtr resolvedMethod;
-        // ownership-title-classifier 8.2.4 — true once generateCode has run.
-        // Post-codegen a null `resolvedMethod` then means an INTRINSIC
-        // lowering (`File.readAllBytes` → __cajeta_file_read_all) or a
-        // closure call: the site emitted its IR and stored NO return flag,
-        // so the classifier answers with the declared stance instead of a
-        // stale TLS read (measured 2026-09-08: cajeta-llm leaked one config
-        // buffer per model whenever the call before `ModelConfig.parse`'s
-        // `raw #= File.readAllBytes(path)` had left a 0 in the TLS).
+        // 8.2.4 — set once generateCode ran: a null `resolvedMethod` after
+        // that is an intrinsic lowering, which stores no return flag.
         bool codegenRan = false;
     public:
         bool isResolvedReturnsOwnership() const { return resolvedReturnsOwnership; }

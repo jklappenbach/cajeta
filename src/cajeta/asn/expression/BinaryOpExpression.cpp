@@ -181,15 +181,8 @@ namespace cajeta {
     //     class→interface param-passing upcast in CajetaClass.cpp.
     //   - interface value (rhsVal is already a ptr to a 24-byte body, e.g.
     //     `ArrayList.add(backend)` storing its interface param) → memcpy the body in.
-    // ownership-title-classifier Unit 4 (spec 5.7) — the kind word a stored
-    // interface value gets is the SOURCE's title, asked of the classifier:
-    // Owned (`#heap X()`, a `#x` of a static owner) → OWNED; Runtime (a `#x`
-    // of a formal or of an entry-holding local, a call riding its flag) →
-    // select on the flag; anything else → BORROWED. Before this a `#=` of a
-    // plain interface FORMAL copied the source body's kind verbatim, so once
-    // `Encoder<K> ke = heap I32Enc()` owned its body (5.7), `this.keyEncB #=
-    // keyEnc` made the field a second owner and LtmBPlusTree's drop freed
-    // the caller's encoder (LtmBPlusTreeTests, 2026-09-07).
+    // Unit 4 (spec 5.7) — a stored interface value's kind word is the SOURCE's
+    // title: Owned → OWNED, Runtime → select on the flag, anything else BORROWED.
     static llvm::Value* interfaceKindFor(CajetaModulePtr module,
                                          const ExpressionPtr& rhsAst,
                                          llvm::Type* i64Ty) {
@@ -213,17 +206,14 @@ namespace cajeta {
     }
 
     // spec 5.10 — `arr[i] = local` with a bare frame local: the slot lends it.
-    // Record (slot, local) on the ARRAY LOCAL's field so the array is refused
-    // an escape from the frame. `lhsIndex` is the `arr[i]` node; the receiver
-    // must be a named local (a field-held array is someone else's book).
+    // Record (slot, local) on the array local so it cannot escape the frame.
     static void recordSlotBorrowOnArray(CajetaModulePtr module,
                                         const ExpressionPtr& lhsIndex,
                                         const ExpressionPtr& rhsAst) {
         if (!lhsIndex || !rhsAst || lhsIndex->kind() != ExprKind::ArrayIndex) return;
         if (rhsAst->kind() != ExprKind::Identifier) return;
-        // Only a droppable element can dangle: a scalar lends nothing, and a
-        // String slot resolves its own copy (resident String slots always
-        // own), so neither is recorded.
+        // Only a droppable element can dangle: a scalar lends nothing and a
+        // String slot resolves its own copy, so neither is recorded.
         CajetaTypePtr rt = rhsAst->getResolvedType();
         if (!rt || ((rt->getTypeFlags() & PRIMITIVE_FLAG)
                     && !std::dynamic_pointer_cast<CajetaArray>(rt))) {
@@ -247,10 +237,8 @@ namespace cajeta {
             std::static_pointer_cast<IdentifierExpression>(rhsAst)->getTextValue());
         if (!arrF || !srcF) return;
         if (std::dynamic_pointer_cast<ParameterField>(srcF)) return;   // the caller's
-        // Only a local that PROVABLY owns (a static entry): an entry-less
-        // local holds someone else's value, and a runtime-flagged one is the
-        // borrow-collecting idiom (`Class<?> c = registryAt(i); arr[j] = c;`
-        // in cajeta.reflect.Class) whose callee's lend is the assertion.
+        // Only a local that PROVABLY owns (a static entry): an entry-less or
+        // runtime-flagged local holds a value whose owner is elsewhere.
         if (!srcF->getDropEntry() || srcF->isRuntimeConditionalOwner()) return;
         arrF->addSlotBorrowedLocal(-1, srcF->getName());               // index: run time
     }
@@ -312,12 +300,8 @@ namespace cajeta {
             uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
             builder->CreateMemCpy(slot, llvm::MaybeAlign(8),
                 rhsVal, llvm::MaybeAlign(8), bodyBytes);
-            // The copy's kind is the SOURCE's title, never the source body's
-            // word verbatim: a plain copy is a BORROW (two OWNED words would
-            // be two owners of one instance — both drops would free it), a
-            // `#=` records what the source actually held (a formal's word
-            // bit, an entry's flag, a static owner's title). A null data
-            // pointer keeps kind 0.
+            // The copy's kind is the SOURCE's title, not the source body's word
+            // verbatim (two OWNED words free one instance twice); null keeps 0.
             {
                 llvm::Value* kindSlot = builder->CreateStructGEP(
                     bodyTy, slot, 2, "iface_kind");
@@ -1213,14 +1197,8 @@ namespace cajeta {
                         if (!valAst->getResolvedType()) valAst->resolveTypes(module);
                         CajetaTypePtr idxType = idxAst->getResolvedType();
                         CajetaTypePtr valType = valAst->getResolvedType();
-                        // Spec 5.12 — `m[k] #= call()`: the `#=` wrapper's
-                        // operand is a call whose return type is not resolved
-                        // before its codegen, so `valType` was null and the
-                        // store fell through to the ARRAY element path, which
-                        // read the map as an array header (SIGSEGV, measured
-                        // 2026-09-08). The callee's declared return type is
-                        // the value's type; the classifier's shallow resolution
-                        // finds it.
+                        // Spec 5.12 — in `m[k] #= call()` the operand's type is not
+                        // resolved yet; the callee's declared return type is it.
                         if (!valType) {
                             ExpressionPtr valLeaf = moveInner(valAst);   // the wrapper's operand
                             ownership::TitleShape vs = ownership::classify(
@@ -1275,10 +1253,8 @@ namespace cajeta {
                                     && opFormals.front()->getName() == "this";
                                 size_t opOff = (opStatic || !opHasThis) ? 0 : 1;
                                 ExpressionPtr opArgs[2] = { idxAst, valAst };
-                                // Unit 8 (spec 4.9 audit) — the operator
-                                // call's `#T` formals are the call site's
-                                // contract, on the classifier (spec 5.8, 5.11;
-                                // a `#v` value is the move of its name).
+                                // Unit 8 (spec 4.9) — the operator call's `#T`
+                                // formals are the call site's contract.
                                 for (size_t a = 0; a < 2; ++a) {
                                     size_t fi = opOff + a;
                                     if (fi >= opFormals.size()) break;
@@ -1299,13 +1275,8 @@ namespace cajeta {
                             // two user params); a runtime-owner source (`#s`
                             // where s is a formal) forwards its captured flag,
                             // per the MCE word-composition rule.
-                            // 5.2.8's LAST-USE ADVISORY for the indexed store
-                            // (decided 2026-09-08: `m[k] = v` LENDS — the
-                            // sink model — so a bare owned local at its final
-                            // use is the transfer the author most likely
-                            // meant: `m[k] = #v`). A warning with the fix-it,
-                            // never an error; the same rule the call site
-                            // applies to its plain arguments.
+                            // 5.2.8 last-use advisory: an indexed store LENDS, so a
+                            // bare owned local at its final use warns, never errors.
                             for (ExpressionPtr advAst : { idxAst, valAst }) {
                                 auto advId = std::dynamic_pointer_cast<IdentifierExpression>(advAst);
                                 if (!advId) continue;
@@ -1336,14 +1307,8 @@ namespace cajeta {
                             {
                                 int64_t constBits = 0;
                                 llvm::Value* dynWord = nullptr;
-                                // Unit 5 (spec 5.7) — each argument's word
-                                // bit is the title it tenders: 1 for a fresh
-                                // `heap X()` value or a static owner's `#x`,
-                                // the flag for a runtime owner or a call
-                                // riding its callee's flag, 0 for a borrow.
-                                // Before this only a `#x` set a bit, so
-                                // `m[k] = heap X()` stored a borrow of a temp
-                                // (StoreOwnershipTests, verdict 81).
+                                // Unit 5 (spec 5.7) — each argument's word bit is
+                                // the title it tenders: 1 owner, flag runtime, 0 borrow.
                                 auto wordBit = [&](ExpressionPtr ast, int bit) {
                                     if (!ast) return;
                                     ownership::TitleShape ws =
@@ -1391,13 +1356,8 @@ namespace cajeta {
                                 return valVal;
                             }
                         }
-                        // A class that DECLARES `operator[]=` and still did not
-                        // dispatch here (no overload for these types, or an
-                        // argument whose type is unresolved) must not fall
-                        // through to the ARRAY element store below: that read
-                        // the map as an array header (SIGSEGV, measured
-                        // 2026-09-08 on `m[k] #= call()`). Receivers without
-                        // the operator (views, Strings) keep their own paths.
+                        // A class that DECLARES `operator[]=` but matched no overload
+                        // must not fall through: the array store misreads the receiver.
                         bool declaresIndexedStore = false;
                         for (auto& dm : recvClass->getMethodList()) {
                             if (dm && dm->getName() == "operator[]=") { declaresIndexedStore = true; break; }
@@ -1483,20 +1443,8 @@ namespace cajeta {
                     // entry retarget below keys on lhsWasMoved.
                     lhsWasMoved = sc->isBorrow(lhsId->getTextValue());
                     if (lhsWasMoved) sc->restoreOwnership(lhsId->getTextValue());
-                    // Unit 7 (measured 2026-09-08, `CallArgOwnershipTests.
-                    // DISABLED_ownerReassignedToBorrowThenSurrenderedWitness`):
-                    // after `k = p` (a borrow right-hand side) the entry still
-                    // describes the displaced value — kept alive to scope
-                    // exit, correctly, so lends of it stay valid — but the
-                    // NAME holds a borrow, and a later `#k` forwards the
-                    // entry's title. Demoting the name here was tried and
-                    // reverted: the scope's move marking is flow-insensitive,
-                    // so a borrow re-assign in one `if` arm made every later
-                    // `#=` of the name a rejection, which §7.2 forbids (what
-                    // the analysis cannot prove is ALLOWED — pinned by
-                    // CapturedBorrowParamTests.unprovableCaptureIsAllowed).
-                    // The precise fix is flow-sensitive name state; filed in
-                    // the ownership-title-classifier plan's 8.2.2.
+                    // Unit 7 — after `k = p` the entry still describes the displaced
+                    // value; demoting the name needs flow-sensitive state (plan 8.2.2).
                 }
             }
         }
@@ -1539,20 +1487,11 @@ namespace cajeta {
                 if (!deeper) break;
                 fwdMv = deeper;
             }
-            // Spec 5.12 (2026-09-08): a `#=` from one SLOT into another —
-            // element→element (the shift/sift primitive, forwarding since
-            // Unit 3) and now field→field (`x.right #= y.left`, the tree's
-            // rotations: every link is a mode-carrying `#=` over a registry
-            // that owns the nodes) — FORWARDS the source slot's bit rather
-            // than claiming a title: a borrow link stays a borrow, a title
-            // moves. Claiming (`T x #= slot`, into a local) is unchanged.
+            // Spec 5.12 — a `#=` from one SLOT into another (element→element,
+            // field→field) FORWARDS the source's bit rather than claiming a title.
             auto fwdDotLhs = dynamic_pointer_cast<DotExpression>(children[0]);
             // Unit 9 (spec 5.14) — a LOCAL re-assigned with `#=` from a slot
-            // forwards too, as its declaration form (`T x #= src[i]`, LVD)
-            // already does: the slot's title if it has one, a borrow
-            // otherwise — never a panic. The parallel merges' alias take
-            // (`if (acc == partials[ci]) acc #= partials[ci]`) needs exactly
-            // that on a worker's partial that was an element.
+            // forwards too: the slot's title if it has one, a borrow otherwise.
             auto fwdIdLhs = dynamic_pointer_cast<IdentifierExpression>(children[0]);
             if ((fwdLhs || fwdDotLhs || fwdIdLhs) && fwdMv && !fwdMv->getChildren().empty()) {
                 auto srcNode = fwdMv->getChildren()[0];
@@ -2682,30 +2621,19 @@ namespace cajeta {
                             // `slots[i].key #= key` adopted the caller's
                             // concat temp, the reclaim freed it, and the
                             // rehash surfaced the recycled bytes).
-                            // Unit 5 (spec 5.3) — the classifier's answer for
-                            // the source decides adopt-vs-resolve: a runtime
-                            // title (a `#x` of a formal or entry-holding
-                            // local, a plain call riding its callee's flag)
-                            // branches on the flag; a static owner adopts; a
-                            // borrow or a proven borrow-returning call
-                            // resolves its own copy. Before this a plain call
-                            // result was adopted whatever it held.
+                            // Unit 5 (spec 5.3) — the classifier's answer for the
+                            // source decides adopt-vs-resolve; a runtime title branches.
                             llvm::Value* mvBit = nullptr;
-                            // fldResolve: the field takes its own copy (a
-                            // borrow — an lvalue, a literal, a call that
-                            // proved a borrow); otherwise a static owner
-                            // (`#x` of an owner, a fresh temp, a `#R` result)
-                            // is adopted as-is.
+                            // fldResolve: the field takes its own copy (a borrow);
+                            // otherwise a static owner is adopted as-is.
                             bool fldResolve = false;
                             {
                                 llvm::Value* ft = ownership::storeTitleFlag(
                                     rhsAst, ownership::ConsumerRole::StoreString,
                                     module, "a String field");
                                 if (!ft) {
-                                    // A String literal is static storage: the
-                                    // field aliases it (the string drop is a
-                                    // no-op on a static wrapper), exactly what
-                                    // resolve would hand back — minus the call.
+                                    // A String literal is static storage: the field
+                                    // aliases it, which is what resolve would return.
                                     fldResolve = rhsAst->kind() != ExprKind::TextLiteral;
                                 } else if (!llvm::isa<llvm::ConstantInt>(ft)) {
                                     mvBit = ft;
@@ -3027,12 +2955,8 @@ namespace cajeta {
                 // 5.2.2 — non-null when the `#x` source is a runtime owner
                 // (formal): the bit written below is this flag, not const 1.
                 llvm::Value* fobRuntimeFlag = nullptr;
-                // Unit 9 (spec 5.13, 5.14) — a function-typed field releases
-                // through __cajeta_closure_drop; and storing the slot's OWN
-                // value back as a borrow changes no hands: no release, the
-                // old bit kept (measured: `h.f = b` with `b` borrowing `h.f`
-                // released the value first and stored a borrow of freed
-                // memory).
+                // Unit 9 (spec 5.13, 5.14) — a function-typed field releases through
+                // __cajeta_closure_drop; the slot's own value stored back: no release.
                 bool fobFieldIsClosure = false;
                 llvm::Value* fobSameObj = nullptr;
                 if (auto fobDot = dynamic_pointer_cast<DotExpression>(lhsAst)) {
@@ -3047,17 +2971,8 @@ namespace cajeta {
                                 CajetaArray>(fobProp->getType());
                             fobFieldIsClosure = (bool) dynamic_pointer_cast<
                                 CajetaFunctionType>(fobProp->getType());
-                            // ownership-title-classifier Unit 5 (spec 5.1–5.3,
-                            // 5.6, 5.11) — the title the store carries in is
-                            // the classifier's answer for the source: 1 for
-                            // an owner (`heap`, an aggregate, an array
-                            // literal, a `#R` call with no flag, a `#x` of a
-                            // static owner), a runtime flag for a `#x` of a
-                            // formal or entry-holding local, a call riding
-                            // its callee's flag, a closure call, a
-                            // conditional; nothing for a borrow. RHS codegen
-                            // already ran, so a move's stashed flag and a
-                            // call's TLS bit are both current.
+                            // Unit 5 (spec 5.1–5.3, 5.6, 5.11) — the title carried in
+                            // is the classifier's answer for the source; a borrow: none.
                             if (llvm::Value* fobTitle = ownership::storeTitleFlag(
                                     rhsAst, ownership::ConsumerRole::StoreSlot,
                                     module, "a class field")) {
@@ -3081,12 +2996,8 @@ namespace cajeta {
                                 ptrTy, lhs, "own_old_val");
                             llvm::Value* wasOwned = builder->CreateICmpNE(
                                 oldBit, llvm::ConstantInt::get(i64Ty, 0));
-                            // A FRESH right side (a `heap`, a concatenation, a
-                            // lambda literal, an owned call result) cannot be the
-                            // field's current value: no guard for those — the
-                            // common constructor store pays nothing (measured
-                            // 2026-09-09: the guard on every bit-carrying field
-                            // store was most of Unit 9's emitted-op rise).
+                            // A FRESH right side cannot be the field's current value,
+                            // so it needs no alias guard and the store pays nothing.
                             bool fobRhsCanAlias = true;
                             {
                                 ownership::TitleShape rs = ownership::classify(rhsAst, module);
@@ -3379,15 +3290,8 @@ namespace cajeta {
                             // frees it under the real owner (the nucleo-frame
                             // U7 Exec.apply schema UAF). Those route to the
                             // alias/resolve-copy store instead.
-                            // Unit 5 (spec 5.10) — the slot takes the wrapper
-                            // only when the source hands a title over: `#x`
-                            // (its stashed flag: a formal's word bit, an
-                            // entry's flag, a static owner's 1), a fresh temp,
-                            // a call riding its flag. A bare name LENDS — the
-                            // slot resolves its own copy and the local keeps
-                            // its title — which is what "has an entry" used to
-                            // be a proxy for until borrow-holding locals got
-                            // entries too (Unit 4's `names[0] = tsName` UAF).
+                            // Unit 5 (spec 5.10) — the slot takes the wrapper only when
+                            // the source tenders a title; a bare name LENDS (resolve).
                             bool takesOwnership = false;
                             llvm::Value* takesRt = nullptr;
                             if (llvm::Value* t = ownership::storeTitleFlag(
@@ -3510,13 +3414,8 @@ namespace cajeta {
                         && (elemType->getTypeFlags() & PRIMITIVE_FLAG);
                     bool elemStoresAsPointer = elemClass
                         && (elemIsArr || !elemIsPrim) && !elemIsIface;
-                    // Unit 5 (spec 5.10) — `arr[i] = local` LENDS: the slot's
-                    // bit is 0 (the tail store above) and the source keeps its
-                    // entry, so the value is freed exactly once, by its owner.
-                    // The identifier-source deactivation that used to sit here
-                    // made every such store a silent take with a 0 bit — a
-                    // leak — and `#x` already deactivates through
-                    // MoveExpression.
+                    // Unit 5 (spec 5.10) — `arr[i] = local` LENDS: the slot's bit is 0
+                    // and the source keeps its entry, so its owner frees it once.
                     (void) elemStoresAsPointer;
                 }
                 // title-tracking Unit 4 close-out discovery — STATIC fields
@@ -3760,11 +3659,8 @@ namespace cajeta {
                     auto& rctx = *module->getLlvmContext();
                     llvm::Type* rI64 = llvm::Type::getInt64Ty(rctx);
                     llvm::Value* rOne = llvm::ConstantInt::get(rI64, 1);
-                    // Unit 5 — one classifier answer replaces the per-node
-                    // chain: null for a borrow (the entry is untouched and
-                    // the old value lives to scope exit), 1 for an owner, a
-                    // runtime flag for a `#x` of a runtime owner, a call
-                    // riding its callee's flag, a closure call, a conditional.
+                    // Unit 5 — one classifier answer: null for a borrow (the entry
+                    // is untouched), 1 for an owner, else a runtime flag.
                     llvm::Value* rhsTitle = ownership::storeTitleFlag(
                         rhsAst, ownership::ConsumerRole::Reassign, module,
                         "a re-assigned local");
@@ -3772,15 +3668,8 @@ namespace cajeta {
                         if (rc0->isZero()) rhsTitle = nullptr;
                         else rhsTitle = rOne;
                     }
-                    // Unit 9 (spec 5.14, the 8.2.2 flow gap) — a re-assigned
-                    // local whose new title is not the constant 1 (a borrow, a
-                    // runtime flag) is a RUNTIME owner from here on: its entry
-                    // may describe the displaced value, and every later reader
-                    // (`#x`, `#= x`, a return) must consult the entry — which
-                    // now answers only for the object it describes — instead
-                    // of the static "still owns" picture. Measured: `k #=
-                    // pick(k, o)` then `consume(#k)` passed a constant 1 and
-                    // the callee freed `o` under its owner.
+                    // Unit 9 (spec 5.14) — a re-assigned local whose new title is not
+                    // the constant 1 is a RUNTIME owner: later readers must ask the entry.
                     if (!rhsTitle || !llvm::isa<llvm::ConstantInt>(rhsTitle)) {
                         if (auto rcId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
                             if (auto rcSc = module->getScopeStack().peek()) {
@@ -3810,15 +3699,8 @@ namespace cajeta {
                                 FieldPtr dstField = sc->getField(lhsId->getTextValue());
                                 if (dstField && dstField->getDropEntry()
                                         && rhsVal && rhsVal->getType()->isPointerTy()) {
-                                    // 5.2.3 — the re-arm inline (the former
-                                    // the inline re-arm of 5.2.3, formerly one call): on
-                                    // the hot path three loads, four compares
-                                    // and two stores; the displaced value's
-                                    // release — the observable drop counter
-                                    // and the indirect drop — on a cold
-                                    // branch. A constant flag folds the outer
-                                    // test away. Entry layout: obj @0,
-                                    // drop_fn @8, prev @16, active (i8) @24.
+                                    // 5.2.3 — the re-arm, inline (release is cold).
+                                    // Entry: obj @0, drop_fn @8, prev @16, active (i8) @24.
                                     auto& rc = *module->getLlvmContext();
                                     llvm::Type* i8 = llvm::Type::getInt8Ty(rc);
                                     llvm::Type* i1 = llvm::Type::getInt1Ty(rc);
@@ -3856,9 +3738,7 @@ namespace cajeta {
                                     auto* storeBB = llvm::BasicBlock::Create(rc, "reasg_store", fnOwner);
                                     builder->CreateCondBr(need, relBB, storeBB);
                                     builder->SetInsertPoint(relBB);
-                                    // The observable drop counter, ticked
-                                    // inline: one atomic add on the exported
-                                    // runtime global, no call.
+                                    // The observable drop counter, ticked inline.
                                     {
                                         llvm::Module* lm =
                                             builder->GetInsertBlock()->getParent()->getParent();

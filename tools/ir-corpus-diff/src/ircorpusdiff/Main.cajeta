@@ -9,22 +9,9 @@ import cajeta.process.Command;
 import cajeta.process.ProcessResult;
 
 /**
- * ir-corpus-diff — the equivalence instrument of the ownership-title-classifier
- * plan (1.2.3). A migrated consumer must emit the same IR for a fixed corpus,
- * modulo constants the classifier folded; this tool says which functions are
- * `same`, `folded` (equal once `opt` folds constant branches on both sides),
- * `changed` (with the first differing lines), `missing` or `added`, and counts
- * the emitted instructions per side — the plan's optimality gate.
- *
- * ```
- * ir-corpus-diff count <dir>
- * ir-corpus-diff diff <baseline-dir> <candidate-dir> [--opt <opt-binary>] [--verbose]
- * ir-corpus-diff compile <cajeta-binary> <corpus-list> <out-dir>
- * ```
- *
- * A corpus list is one program per line: `<entry> <source-root> [more roots]`;
- * `compile` emits each with `--emit=ir` into `<out-dir>/<n>/`. Exit code 1
- * when a `diff` finds anything but `same` or `folded`, or a `compile` fails.
+ * ir-corpus-diff — a migrated consumer must emit the same IR for a fixed corpus.
+ * Reports each function as `same`, `folded`, `changed`, `missing` or `added` and
+ * counts the emitted instructions per side; exits 1 on anything else.
  */
 public final class Main {
 
@@ -65,8 +52,7 @@ public final class Main {
         ArrayList<String> rel = heap ArrayList<String>();
         Path root #= Path.of(dir);
         Main.collect(root, "", rel);
-        // Insertion sort over an index array: the listing is filesystem order,
-        // the report must not be.
+        // Insertion sort over an index array: the listing is filesystem order.
         int32 n = rel.count();
         int32[] order = heap int32[n];
         int32 i = 0;
@@ -96,13 +82,7 @@ public final class Main {
     static #String fold(String optBin, String llPath) {
         String stem #= llPath.substring(0, llPath.byteLength() - 3);
         String out #= stem + ".opt.ll";
-        // Every element is a FRESH concat: an array literal takes a bare local
-        // or formal that has a drop entry (the element store marks the slot
-        // owned), and the Command then frees it with the array — `optBin` was
-        // the caller's String, freed under it, and the next call read the
-        // reused block as its opt path (measured 2026-09-07, probe Cmd; no
-        // use-after-move diagnostic covers this shape —
-        // ownership-title-classifier plan 5.1.4).
+        // Every element is a FRESH concat: an array literal claims a bare local, and the Command frees it with the array.
         String[] argv = [optBin + "", "-passes=instcombine<no-verify-fixpoint>,simplifycfg", "-S", llPath + "", "-o", stem + ".opt.ll"];
         Command cmd = heap Command(#argv);
         cmd.captureStdout();

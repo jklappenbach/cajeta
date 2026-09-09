@@ -110,10 +110,7 @@ public final class RedBlackTree<K, V> {
         // as `put(#k, #v)` is released when this call returns. Keys and
         // values must outlive the entry on the caller's own account.
         if (this.root == null) {
-            // The registry owns every node: a fresh node goes straight in, and
-            // the name this frame keeps is a BORROW from the registry, so every
-            // link `#=` records a borrow (a named owner would either move its
-            // title into the link or be spent by the registry add).
+            // The registry owns every node; `r` is a borrow, so links record borrows.
             this.nodes.add(heap RedBlackNode<K, V>(#key, #value));
             RedBlackNode<K, V> r = this.nodes.get(this.nodes.count() - 1);
             r.red = false;
@@ -149,8 +146,7 @@ public final class RedBlackTree<K, V> {
                 return;
             }
         }
-        // Registry first (it owns the node); z is a borrow from it, so each
-        // link `#=` below records a borrow.
+        // Registry first; `z` is a borrow of it, so the links record borrows.
         this.nodes.add(heap RedBlackNode<K, V>(#key, #value));
         RedBlackNode<K, V> z = this.nodes.get(this.nodes.count() - 1);
         z.parent #= parent;

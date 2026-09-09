@@ -107,12 +107,8 @@ public class BufferPool {
     public #ByteBuffer acquire() {
         if (this.idleCount > 0) {
             this.idleCount = this.idleCount - 1;
-            // TAKE the slot's title (`#=` from an element moves the slot's
-            // own-bit onto the local), then null the slot so the pool no
-            // longer aliases the buffer it just handed off — the caller is
-            // now the sole owner. A plain `=` bind lent the buffer and the
-            // `#` return then asserted a title this frame never held
-            // (OWNED_RETURN_OF_BORROW since the classifier's Unit 6).
+            // `#=` takes the slot's title, then the slot is nulled: the caller
+            // is the sole owner. A plain `=` lends, so the `#` return would lie.
             ByteBuffer reused #= this.freeList[this.idleCount];
             this.freeList[this.idleCount] = null;
             reused.clear();

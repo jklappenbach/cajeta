@@ -58,9 +58,8 @@ namespace cajeta {
         llvm::AllocaInst* alloca;
         llvm::Value* dropEntry = nullptr;
         bool runtimeConditionalOwner = false;
-        // Unit 9 (spec 5.14) — set by a re-assign whose title is not the constant
-        // 1: the drop entry may now describe the DISPLACED value, so readers
-        // compare the entry's object with the local's before trusting its flag.
+        // Unit 9 (spec 5.14) — the drop entry may describe a DISPLACED value, so
+        // readers compare the entry's object with the local's before trusting it.
         bool entryMayBeStale = false;
         bool stackInstance = false;
         // stdlib-ownership-convention U2 — when this local was initialised
@@ -75,8 +74,6 @@ namespace cajeta {
         // U3 — the plain parameter a local was initialised from (§7.2's
         // straight-line capture). Same identity-not-name rationale.
         string paramBorrowOrigin;
-        // spec 5.10 — (slot, local) pairs an ARRAY local's slots lend; see
-        // getSlotBorrowedLocals.
         std::vector<std::pair<int, string>> slotBorrowedLocals;
         // script-units U4 — seeded into a script entry's root scope from the
         // SessionState table (a binding created by an earlier unit of the
@@ -222,12 +219,7 @@ namespace cajeta {
             paramBorrowOrigin = origin;
         }
 
-        // ownership-title-classifier spec 5.10 — for an ARRAY local: the
-        // slots that borrow a frame local (`[a, b]`, `arr[i] = a` with a
-        // bare name). Such an array may not leave the frame (a `#` return,
-        // a `#T` argument, a `#=` store), because the slots die with the
-        // locals: CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL names the first one.
-        // Slot -1 = an index not constant at compile time.
+        // spec 5.10 — slots of an ARRAY local that lend a frame local, so the array may not leave the frame (slot -1 = non-constant index).
         const std::vector<std::pair<int, string>>& getSlotBorrowedLocals() const {
             return slotBorrowedLocals;
         }

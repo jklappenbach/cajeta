@@ -1,26 +1,6 @@
-//
-// ownership-title-classifier Unit 6 — the return statement on the classifier
-// (Statement.cpp `ReturnStatement::generateCode`: the `#T` static checks,
-// the plain-return checks and the return-flag composition). Written RED,
-// before the site migrates; the pins (GREEN today) guard what must not move.
-//
-//   6.1.1  spec 5.5 — casts are peeled everywhere in the return position: a
-//          borrowed local, a `stack` local, a borrow arm behind `(T)` are
-//          rejected under `#T`; a call behind `(T)` rides its flag under a
-//          plain return (today the cast hides all four)
-//   6.1.2  a runtime-conditional local (its entry armed from a callee's
-//          flag) returned under `#T` forwards ITS ENTRY FLAG, not the static
-//          mode (today: a forged title over the callee's lend, double free)
-//   6.1.3  a String concatenation under a plain return carries its title
-//          (the classifier's Owned constant, not the plain static 0)
-//   6.1.4  spec 5.11 — a class-typed `stack` construction under a plain
-//          class return lands in the caller's frame by value (sret): accepted,
-//          balanced, no title (only a `#T` return of it is the escape)
-//   6.1.5  a bare local with neither entry nor borrow origin (a literal
-//          bind) under `#T` is a proven borrow: rejected (today: forged)
-//   6.1.6–6.1.9  pins — an owned local, a `#` formal, `return #this`, and a
-//          `heap` array-literal arm (spec 5.6) under `#T`
-//
+// Unit 6 (spec 5.5–5.11) — the return statement on the title classifier: the
+// `#T` static checks, the plain-return checks, and the return-flag
+// composition, plus pins on what must not move.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -162,10 +142,7 @@ TEST(ReturnOwnershipTests, plainReturnOfConcatCarriesItsTitle) {
 }
 
 // ── 6.1.4 — spec 5.11: `stack` under a plain class return is BY VALUE ─────
-// The sanctioned zero-copy escape: a plain `T` return of `stack X(...)`
-// lands in the caller's frame (sret / NRVO), so it is accepted and needs no
-// title. (Measured 2026-09-08: the method compiles as an sret return and the
-// plain-return rules never see it; only a `#T` return of it is the escape.)
+// A plain `T` return of `stack X(...)` is by value (sret): accepted, no title.
 
 TEST(ReturnOwnershipTests, stackConstructionUnderPlainClassReturnLandsByValue) {
     std::string src = loop(
@@ -215,10 +192,7 @@ TEST(ReturnOwnershipTests, moveOfThisUnderOwnedReturnRejected) {
 TEST(ReturnOwnershipTests, heapArrayLiteralArmUnderOwnedReturnAccepted) {
     std::string src = loop(
         "    static #Cell[] f(boolean c, int32 i) {\n"
-        // spec 5.6: a fresh arm, owned. (Elements are constructions, not
-        // calls: a conditional resolves its arms before codegen, and an
-        // array literal of calls has no element type until then — a
-        // front-end limit unrelated to titles, measured 2026-09-08.)
+        // spec 5.6: a fresh arm, owned (elements are constructions, not calls).
         "        return c ? [heap Cell(i)] : [heap Cell(i + 100)];\n"
         "    }\n",
         "        Cell[] r #= A.f(i % 2 == 0, i);\n"

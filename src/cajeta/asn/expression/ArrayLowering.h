@@ -31,9 +31,7 @@ namespace cajeta {
     // arena allocator takes the identical (headerBytes, elemBytes, count)
     // signature; only the callee differs. Arena arrays are primitive-element
     // only, so they never combine with the droppable-bits allocator.
-    // `borrowedLocals`, when given, receives the (slot, local) pairs whose
-    // element was a bare frame local — a lend (spec 5.10): the binding
-    // records them so the array is refused an escape from the frame.
+    // spec 5.10 — receives (slot, local) pairs for slots that lend a frame local.
     llvm::Value* emitArrayFromElements(
         CajetaModulePtr module,
         CajetaTypePtr elementType,

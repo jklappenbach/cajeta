@@ -673,14 +673,8 @@ namespace cajeta {
         // transfer-of-a-borrow check may only fire on a PROVEN view. See the
         // commentary in Method.cpp.
         bool returnsInteriorView() const;
-        /// ownership-title-classifier 7.2.3 — a `#R` method whose EVERY
-        /// return hands out a title decidable from the expression's kind
-        /// alone (a `heap` construction, an aggregate, a `heap` array or map
-        /// literal, a String concatenation, a String literal — never a name,
-        /// a call, a conditional or `#= x`): its result is statically Owned
-        /// and a caller's return-flag read folds away. Anything else may ride
-        /// a runtime mode out (`return #= x`, a formal, a tail call), so the
-        /// caller keeps the read. Decided from the AST, no codegen needed.
+        /// 7.2.3 — true when every return is a kind-decidable title (a fresh
+        /// value or a concatenation), so the caller's flag read folds away.
         bool returnsStaticTitle() const;
         static bool exprIsStaticTitle(const ExpressionPtr& e);
         static bool nodeReturnsOnlyStaticTitles(const AbstractSyntaxNodePtr& node,

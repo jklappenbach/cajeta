@@ -121,14 +121,8 @@ namespace cajeta {
     // Expression is a sibling of Statement under AbstractSyntaxNode. When an expression
     // appears in statement position (e.g. `foo();`), wrap it in ExpressionStatement
     // rather than relying on inheritance — see Statement::fromContext.
-    // ownership-title-classifier 1.2.1 — the node-kind tag. One byte set by
-    // every concrete subclass constructor and read inline, so a consumer that
-    // must know what shape it holds asks `kind()` and switches once, instead
-    // of walking a chain of `dynamic_pointer_cast` probes. The classifier's
-    // switch over it has no default and builds with -Werror=switch, which is
-    // what makes the classification total (spec §2.1): a new subclass must
-    // name its kind here AND be handled there before the compiler builds.
-    // `Count` is the enumerator count for tables indexed by kind.
+    // 1.2.1 — the node-kind tag, one byte per node, so a consumer switches once
+    // instead of chaining casts; the classifier's switch is -Werror=switch, so it stays total.
     enum class ExprKind : uint8_t {
         Unsupported = 0,
         Primary, Literal, ClassLiteral, This, Super,
@@ -158,14 +152,10 @@ namespace cajeta {
 
         CajetaTypePtr getResolvedType() const { return resolvedType; }
         void setResolvedType(CajetaTypePtr t) { resolvedType = t; }
-        /// The node-kind tag (see ExprKind): one byte, set by the subclass
-        /// constructor, never virtual.
+        /// The node-kind tag (see ExprKind), set by the subclass constructor.
         ExprKind kind() const { return exprKind; }
 
-        /// ownership-title-classifier 1.2.2 — the runtime title flag this
-        /// node produced, cached for the rest of the function it was emitted
-        /// in (a node re-generates per instantiation, so the cache is keyed
-        /// by the emitting function, not cleared by each subclass).
+        /// 1.2.2 — the runtime title flag this node produced, cached per emitting function.
         llvm::Value* titleFlagCacheFor(llvm::Function* fn) const {
             return titleFlagCacheFn == fn ? titleFlagCache : nullptr;
         }
@@ -365,9 +355,7 @@ namespace cajeta {
         void setArenaEligible(bool v) { arenaEligible = v; }
         bool isArenaEligible() const { return arenaEligible; }
 
-        // spec 5.10 — the (slot, local) pairs whose element was a bare frame
-        // local (a lend); filled by codegen, read by the declaration that
-        // binds this literal (Field::addSlotBorrowedLocal).
+        // spec 5.10 — the (slot, local) pairs this literal lends; filled by codegen, read by the binding declaration.
         const vector<std::pair<int, string>>& getBorrowedLocalSlots() const {
             return borrowedLocalSlots;
         }
@@ -530,11 +518,7 @@ namespace cajeta {
 
         llvm::Value* getRuntimeTitleFlag() const { return runtimeTitleFlag; }
 
-        /// The leaf arms of a conditional or a switch expression, through
-        /// nesting, in source order. The ownership consumers classify each
-        /// leaf the way they classify a bare expression in the same position;
-        /// the conditional itself is transparent. A template (no
-        /// std::function): the visitor inlines. Defined after SwitchExpression.
+        /// The leaf arms of a conditional or switch, through nesting, in source order: the conditional itself is transparent.
         template <class F>
         static void forEachLeafArm(const ExpressionPtr& e, F&& fn);
     };
@@ -809,11 +793,7 @@ namespace cajeta {
     private:
         ExpressionPtr discriminator;
         list<Case> cases;
-        // ownership-title-classifier Unit 2 — the title flag of the arm TAKEN,
-        // an i64 in the merge block (a constant when every arm decides the
-        // same way statically), exactly as BooleanSwitchExpression's: a switch
-        // expression is a conditional with more arms (spec §2.1). Null for
-        // non-pointer results. Reset per codegen.
+        // Unit 2 — the title flag of the arm TAKEN, an i64 in the merge block; null for a non-pointer result.
         llvm::Value* runtimeTitleFlag = nullptr;
     public:
         const list<Case>& getCases() const { return cases; }
@@ -916,8 +896,7 @@ namespace cajeta {
     bool cajetaRhsCarriesRedundantSharp(
         CajetaParser::ExpressionContext* rhs);
 
-    // ownership-title-classifier — the leaf-arm walk over BOTH conditional
-    // kinds. Out of the class because it needs SwitchExpression complete.
+    // The leaf-arm walk over both conditional kinds; out of the class because it needs SwitchExpression complete.
     template <class F>
     void BooleanSwitchExpression::forEachLeafArm(const ExpressionPtr& e, F&& fn) {
         if (!e) return;
@@ -942,9 +921,7 @@ namespace cajeta {
         return e && (e->kind() == ExprKind::BooleanSwitch || e->kind() == ExprKind::Switch);
     }
 
-    /// True for the `#x` / `#=` wrapper — a SPELLING test on the kind tag, for
-    /// the structural unwraps that need the wrapped operand; what the move
-    /// carries is the classifier's question (ownership::classify).
+    /// True for the `#x` / `#=` wrapper — a SPELLING test; what the move carries is ownership::classify's question.
     inline bool isMoveKind(const AbstractSyntaxNodePtr& n) {
         auto e = std::dynamic_pointer_cast<Expression>(n);
         return e && e->kind() == ExprKind::Move;
@@ -957,9 +934,7 @@ namespace cajeta {
         return kids.empty() ? nullptr : std::dynamic_pointer_cast<Expression>(kids[0]);
     }
 
-    /// The title flag a conditional of either kind computed for its taken
-    /// arm; null for a non-conditional or a non-pointer result. One inline
-    /// test of the kind tag, so no consumer casts twice.
+    /// The title flag a conditional computed for its taken arm; null for a non-conditional or non-pointer result.
     inline llvm::Value* conditionalTitleFlag(const ExpressionPtr& e) {
         if (!e) return nullptr;
         if (e->kind() == ExprKind::BooleanSwitch) {

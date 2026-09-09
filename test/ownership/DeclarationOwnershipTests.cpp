@@ -1,14 +1,4 @@
-//
-// ownership-title-classifier Unit 4 — the local declaration on the classifier.
-//
-// 4.1.1 (spec 5.7): an interface-typed local bound from a fresh construction
-// or a `#R` call OWNS it. The declaration's interface-slot rule counted only a
-// `#x` move as owned, so `Shape s = heap Square(3);` recorded a BORROWED kind
-// and the square leaked with the frame.
-//
-// Verdicts read back through the runtime: Cajeta.liveCount() balanced over a
-// loop of calls.
-//
+// Unit 4 (spec 5.7) — the local declaration on the title classifier.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -116,10 +106,7 @@ TEST(DeclarationOwnershipTests, interfaceLocalFromFieldReadBorrows) {
         << "5 = wrong value (the borrowed square was freed); 6 = live count moved";
 }
 
-// 4.1.2 — a String bound from a PLAIN call rides the callee's flag: a
-// tail call through a plain wrapper hands out a title (ownership §2.1), and
-// the binding now arms the string drop from that flag. Before this the
-// binding had no entry at all and every such String leaked.
+// 4.1.2 — a String bound from a PLAIN call rides the callee's flag.
 TEST(DeclarationOwnershipTests, stringFromPlainCallRideIsFreed) {
     std::string src = std::string(PRE) +
         "    static #String mkS(int32 i) { return \"v\" + i; }\n"
@@ -149,8 +136,7 @@ TEST(DeclarationOwnershipTests, stringFromPlainCallRideIsFreed) {
            "9 = the lent String was freed";
 }
 
-// 4.1.2 — closure locals: a fresh lambda OWNS its record, an alias (`fn g =
-// f`) borrows it, a `#=` of the owner moves it. One drop per record.
+// 4.1.2 — closure locals: fresh owns, alias borrows, `#=` moves. One drop.
 TEST(DeclarationOwnershipTests, closureAliasBorrowsAndMoveTransfers) {
     std::string src = std::string(PRE) +
         "    static int32 probe(int32 cap) {\n"
@@ -173,8 +159,7 @@ TEST(DeclarationOwnershipTests, closureAliasBorrowsAndMoveTransfers) {
         << "10 = wrong value (a double free would abort the process)";
 }
 
-// 4.1.2 — arrays: a field read borrows (the owner's array survives the
-// borrowing frame), a plain-call ride is freed, a plain-call lend is not.
+// 4.1.2 — arrays: a field read borrows; a plain-call ride is freed, a lend not.
 TEST(DeclarationOwnershipTests, arrayLocalBorrowAndRideShapes) {
     std::string src = std::string(PRE) +
         "    static class Box { public int32[] data; public Box() { this.data #= heap int32[4]; this.data[0] = 7; return; } }\n"
@@ -204,10 +189,7 @@ TEST(DeclarationOwnershipTests, arrayLocalBorrowAndRideShapes) {
         << "11 = wrong value; 12 = the borrowed array was freed under its owner";
 }
 
-// 4.1.4(e) — a local bound from a PLAIN call now carries a flagged entry;
-// storing it into a String array must take what the local HOLDS (the entry's
-// flag), not "it has an entry". The borrowed column name survives the frame
-// that stored it; the fresh one is owned exactly once.
+// 4.1.4(e) — an array store takes what the local HOLDS, not "it has an entry".
 TEST(DeclarationOwnershipTests, stringElementStoreTakesOnlyAHeldTitle) {
     std::string src = std::string(PRE) +
         "    static class Node { public String name; public Node() { this.name #= \"ts\" + 1; return; } }\n"

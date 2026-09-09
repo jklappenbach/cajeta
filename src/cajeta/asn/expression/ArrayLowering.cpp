@@ -81,17 +81,10 @@ namespace cajeta {
             llvm::ConstantInt::get(i64Ty, count),
         });
 
-        // ownership-title-classifier spec 5.10 — an element is a STORE into
-        // the fresh array's slot and follows the store rule, exactly as
-        // `a[i] = e` does: a bare name lends (a String slot resolves its own
-        // copy — resident String slots always own), `#x` transfers, a fresh
-        // value is the slot's, a literal is a borrow of static storage, a
-        // call rides its flag. One classifier answer per element decides
-        // the title the slot records; before this the literal stored raw
-        // pointers, so `[heap Cell(1)]` leaked its cell (5.6) and `[.., #out]`
-        // adopted a wrapper into an unmarked slot and leaked it (5.10's
-        // witness). An arena literal (primitive elements only) keeps the raw
-        // store.
+        // spec 5.10 — an element is a STORE into the fresh array's slot and
+        // follows the store rule, exactly as `a[i] = e` does; a raw store
+        // instead would leak an owned element. An arena literal (primitive
+        // elements only) keeps the raw store.
         const bool elemIsString = [&] {
             auto ec = std::dynamic_pointer_cast<CajetaClass>(elementType);
             return ec && !std::dynamic_pointer_cast<CajetaView>(elementType)
@@ -136,15 +129,8 @@ namespace cajeta {
                         es, strStoreFn ? ownership::ConsumerRole::StoreString
                                        : ownership::ConsumerRole::StoreSlot,
                         elemExpr, module, "an array literal element");
-                    // A bare frame local that OWNS its value lends it: the
-                    // slot dies with the local, so remember which slot and
-                    // the binding refuses the array an escape (spec 5.10).
-                    // Not for a String slot (it resolved its own copy), and
-                    // only for a local that PROVABLY owns (a static entry):
-                    // an entry-less local holds someone else's value, and a
-                    // runtime-flagged one (`Class<?> c = registryAt(i)`) is
-                    // the borrow-collecting idiom — the callee's lend is the
-                    // programmer's assertion, as it is for any plain return.
+                    // A bare frame local that PROVABLY owns lends the slot, so
+                    // record it and refuse the array an escape (spec 5.10).
                     if (borrowedLocals && !strStoreFn
                             && es.family == ownership::TitleFamily::LocalRead
                             && es.field && es.field->getDropEntry()

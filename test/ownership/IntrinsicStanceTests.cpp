@@ -1,20 +1,6 @@
-//
-// ownership-title-classifier 8.2.4 — an intrinsic lowering's result takes
-// its DECLARED stance, never a return-flag read.
-//
-// `File.readAllBytes(path)` is a stub declaration (`#int8[]`) whose call
-// site is lowered to `__cajeta_file_read_all` directly: the stub never runs
-// and nothing stores the paired return flag. Reading the TLS after such a
-// call is a STALE read — it holds whatever the previous class-pointer call
-// left. Measured 2026-09-08 in cajeta-llm: `ModelConfig.parse`'s
-// `int8[] raw #= File.readAllBytes(path)` recorded a BORROW whenever the
-// call before it had returned a borrow (a `hostBuffer()` read), and the
-// config buffer leaked once per model (BenchTest.loadFreeCyclesReturn-
-// ResidentToBaseline, 110 vs 116).
-//
-// Each program returns 0 on pass; `Cajeta.liveCount()` is balanced over 8
-// calls when the buffer is dropped exactly once.
-//
+// ownership-title-classifier 8.2.4 — an intrinsic lowering's result takes its
+// DECLARED stance, never a return-flag read: the stub never runs, so the flag
+// left in the TLS is the previous call's. Each program returns 0 on pass.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -34,8 +20,7 @@ using cajeta_test::CajetaJit;
 
 namespace {
 
-// A 16-byte fixture under the test tmp root (TEST_TMPDIR, else TMPDIR, else
-// a `tmp` directory beside the binary — never the system /tmp by default).
+// A 16-byte fixture under the test tmp root — never the system /tmp by default.
 std::string fixturePath(const char* name) {
     std::string root;
     if (const char* r = std::getenv("TEST_TMPDIR"); r && *r) root = r;
@@ -78,8 +63,7 @@ int32_t runVerdict(const std::string& src) {
     }
 }
 
-// `probeBody` computes an int32 the loop checks against `want`; two probes
-// warm the JIT paths, eight are measured.
+// `probeBody` computes an int32 the loop checks against `want`, twice to warm.
 std::string loop(const std::string& members, const std::string& path,
                  const std::string& probeBody, const std::string& want, int failBase) {
     return std::string(PRE) + members
@@ -111,9 +95,7 @@ TEST(IntrinsicStanceTests, staleBorrowFlagDoesNotLeakAnOwnedIntrinsicBind) {
     EXPECT_EQ(runVerdict(src), 0) << "10 = wrong bytes; 11 = the buffer leaked (a stale TLS read said borrow)";
 }
 
-// The control: a title-returning call right before it (the TLS said 1
-// anyway). Balanced before and after the fix — it shows the instrument sees
-// the buffer at all.
+// The control: a title-returning call before it — the instrument sees the buffer.
 TEST(IntrinsicStanceTests, ownedFlagBeforeAnIntrinsicBindIsBalancedToo) {
     std::string src = loop("", fixturePath("bind1"),
         "        Cell c #= A.mk();\n"                        // TLS <- 1
@@ -141,9 +123,8 @@ TEST(IntrinsicStanceTests, staleBorrowFlagDoesNotLeakAnOwnedIntrinsicFieldStore)
     EXPECT_EQ(runVerdict(src), 0) << "30 = wrong bytes; 31 = the buffer leaked (the store recorded a borrow)";
 }
 
-// Returned through a wrapper: the declared title composes into the
-// wrapper's return flag (a `#` wrapper) and rides out of a plain one, so the
-// caller's `#=` owns the buffer either way — no stale read in between.
+// Returned through a wrapper: the declared title rides out of a `#` and a
+// plain return alike, so the caller's `#=` owns the buffer either way.
 TEST(IntrinsicStanceTests, intrinsicResultReturnedThroughWrappersKeepsItsTitle) {
     std::string src = loop(
         "    static #int8[] loadOwned(String p) { return File.readAllBytes(p); }\n"
@@ -158,11 +139,8 @@ TEST(IntrinsicStanceTests, intrinsicResultReturnedThroughWrappersKeepsItsTitle) 
     EXPECT_EQ(runVerdict(src), 0) << "40 = wrong bytes; 41 = a buffer leaked (a wrapper's return flag went stale)";
 }
 
-// An intrinsic with NO declaration at all (`Cajeta.allocBytes`, `System.env.
-// get` — the compiler recognises the name): its result is a fresh
-// allocation, owned, whatever the TLS holds. Measured on the corpus
-// 2026-09-08: answering "no flag" for these dropped the entry that frees the
-// buffer in `Utf8.toString` and the env String in `BackendRegistry.select*`.
+// An intrinsic with NO declaration at all (`Cajeta.allocBytes`, `System.env.get`):
+// its result is a fresh allocation, owned, whatever the TLS holds.
 TEST(IntrinsicStanceTests, undeclaredIntrinsicArrayResultIsOwned) {
     std::string src = loop("", fixturePath("alloc0"),
         "        Cell c = heap Cell(1);\n"
@@ -183,8 +161,8 @@ TEST(IntrinsicStanceTests, undeclaredIntrinsicStringResultIsOwned) {
     EXPECT_EQ(runVerdict(src), 0) << "60 = PATH unset or wrong; 61 = the env String leaked";
 }
 
-// The declaration still feeds the owned-bind rule (§4.6): a plain `=` of
-// the `#int8[]` intrinsic is rejected before codegen, as for any `#R` call.
+// The declaration still feeds the owned-bind rule (§4.6): a plain `=` of the
+// `#int8[]` intrinsic is rejected, as for any `#R` call.
 TEST(IntrinsicStanceTests, plainBindOfAnOwnedIntrinsicStillNeedsTransfer) {
     cajeta::ownership::setOwnedBindWarns(false);
     std::string src = std::string(PRE)
@@ -205,14 +183,8 @@ TEST(IntrinsicStanceTests, plainBindOfAnOwnedIntrinsicStillNeedsTransfer) {
     EXPECT_TRUE(rejected) << "a plain `=` of an owned intrinsic result compiled";
 }
 
-// The corpus catch of the same rule (u8b → u8d, four tour functions): an
-// ARRAY's `xs.stream()` is compiler sugar — a fresh `ArrayStream<T>` with no
-// resolved method — so as a temp receiver (`xs.stream().forEach(…)`) its
-// reclaim asked the classifier and, since Unit 3, got a Runtime shape with
-// no flag to read: the stream leaked per terminal (u8b's IR never drops it;
-// measured 48 bytes per call with `tmp/u8/streamleak` on the Unit 7
-// compiler). A generated call with no resolution is a constant owned
-// receiver; the reclaim drops it.
+// An ARRAY's `xs.stream()` is compiler sugar with no resolved method, so as a
+// temp receiver it is a constant owned one and the reclaim drops it.
 TEST(IntrinsicStanceTests, arrayStreamTempReceiverIsReclaimedAfterAVoidTerminal) {
     std::string src = loop(
         "    static class Acc {\n"
@@ -235,21 +207,10 @@ TEST(IntrinsicStanceTests, arrayStreamTempReceiverIsReclaimedAfterAScalarTermina
     EXPECT_EQ(runVerdict(src), 0) << "90 = wrong count; 91 = the array stream leaked (or was freed twice)";
 }
 
-// The rule's other edge (found by the close-out sweep, ParallelStreamP1Tests.
-// filterDispatchMerged SIGSEGV): a CLOSURE call has no resolved method after
-// codegen either, but it is not an intrinsic — the closure's own body stores
-// the return flag right before it returns, so its result rides that flag
-// (spec 5.2). Treating it as an intrinsic gave `Stream.fold`'s `acc = fn(acc,
-// x)` a constant OWNED stance for a lambda that returns its own parameter — a
-// borrow — and the accumulator was freed twice. The seed stays the frame's;
-// the fold's result is a borrow of it.
+// A CLOSURE call has no resolved method either, but it is not an intrinsic: its
+// body stores the return flag, so a lambda returning its parameter stays a
+// borrow (foldWorker's shape) and the frame frees nothing.
 TEST(IntrinsicStanceTests, closureCallResultReturningItsParameterStaysABorrow) {
-    // ParallelDriver.foldWorker's shape: a BORROW-initialized accumulator
-    // re-assigned from a `#R` lambda that returns its own parameter (flag 0,
-    // the mode it was handed). The accumulator stays a borrow and the frame
-    // frees nothing. A constant OWNED stance armed it, and the frame freed the
-    // caller's cell (measured on the pre-fix compiler with
-    // tmp/u8/closure2: keep.n read the reused allocation — 1004, not 44).
     std::string src = loop(
         "    static int32 bump(Cell keep, (Cell, int32) -> #Cell fn) {\n"
         "        Cell acc = keep;\n"                       // a borrow
@@ -264,8 +225,7 @@ TEST(IntrinsicStanceTests, closureCallResultReturningItsParameterStaysABorrow) {
     EXPECT_EQ(runVerdict(src), 0) << "100 = keep was freed under the borrow (or a wrong sum); 101 = a cell leaked or was freed twice";
 }
 
-// And the owned side of the same closure-call rule, for symmetry: a lambda
-// returning a fresh value hands its title out through the flag.
+// The owned side: a lambda returning a fresh value hands its title out.
 TEST(IntrinsicStanceTests, closureCallResultReturningAFreshValueIsOwned) {
     std::string src = loop("", "unused",
         "        () -> #Cell mk = () -> heap Cell(3);\n"

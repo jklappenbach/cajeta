@@ -1,17 +1,5 @@
-//
-// ownership-title-classifier 1.1.3 — the corpus instrument, tested as a
-// program: build `tools/ir-corpus-diff` with the compiler under test, then
-// run it on fixture `.ll` trees.
-//
-//   identical inputs (modulo SSA numbering)      → every function `same`, exit 0
-//   a real instruction change                    → `changed`, the - / + lines, exit 1
-//   a constant branch the baseline computed at
-//   run time and the candidate folded            → `folded`, not `changed` (needs `opt`)
-//   `count`                                      → the instruction total
-//
-// The fixtures live under the repo's tmp/ (never /tmp), one directory per
-// test process.
-//
+// Unit 1 (spec 1.1.3) — `tools/ir-corpus-diff` tested as a program: same /
+// changed / folded verdicts and `count`, over fixture `.ll` trees under tmp/.
 
 #include "gtest/gtest.h"
 
@@ -108,8 +96,7 @@ const char* BASE_LL =
     "  ret i32 %1\n"
     "}\n";
 
-// The same program, renumbered: what a second emission of identical code
-// looks like when an unrelated instruction moved the SSA counter.
+// The same program, renumbered by an unrelated instruction moving the counter.
 const char* SAME_RENUMBERED_LL =
     "; ModuleID = 'm'\n"
     "define i32 @f(i32 %0, i1 %1) {\n"
@@ -149,8 +136,7 @@ const char* CHANGED_LL =
     "  ret i32 %2\n"
     "}\n";
 
-// `f` with the branch condition already a constant — the shape a classifier
-// that folds a static title flag emits. Different text, same program.
+// `f` with the branch condition already a constant — a static title fold.
 const char* FOLDED_LL =
     "define i32 @f(i32 %0, i1 %1) {\n"
     "entry:\n"
@@ -195,10 +181,7 @@ TEST(IrCorpusDiffToolTests, aRealChangeIsReportedWithItsLinesAndExitOne) {
     int code = t.run("diff " + base + " " + cand, out);
     EXPECT_EQ(code, 1) << out;
     EXPECT_NE(out.find("changed m.ll g ops 2 -> 3"), std::string::npos) << out;
-    // Locals and labels share one alpha-rename space per function, numbered
-    // by first occurrence: the parameter `%0` → `%v0`, the `entry` label →
-    // `v1`, the add → `%v2`, the mul → `%v3`. Dataflow stays visible, names
-    // do not (measured, not assumed).
+    // Locals and labels share one alpha-rename space, numbered by first use.
     EXPECT_NE(out.find("  - ret i32 %v2"), std::string::npos) << out;
     EXPECT_NE(out.find("  + %v3 = mul i32 %v2, 2"), std::string::npos) << out;
     EXPECT_NE(out.find("same=1 folded=0 changed=1"), std::string::npos) << out;
@@ -218,8 +201,7 @@ TEST(IrCorpusDiffToolTests, aFoldedConstantBranchIsFoldedNotChanged) {
     EXPECT_EQ(code, 0) << out;
     EXPECT_NE(out.find("folded m.ll f ops 6 -> 5"), std::string::npos) << out;
     EXPECT_NE(out.find("same=1 folded=1 changed=0"), std::string::npos) << out;
-    // Without opt the same pair is a change: the fold is the instrument's
-    // judgement, not a looser comparison.
+    // Without opt the same pair is a change, not a fold.
     int code2 = t.run("diff " + base + " " + cand, out);
     EXPECT_EQ(code2, 1) << out;
     EXPECT_NE(out.find("changed m.ll f"), std::string::npos) << out;

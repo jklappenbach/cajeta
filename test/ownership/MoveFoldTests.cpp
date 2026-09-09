@@ -1,21 +1,7 @@
-//
-// ownership-title-classifier 6.2.2 — `#x` of a STATIC owner folds to the
-// constant title (no entry read). The fold is sound because the scope records
-// a move flow-insensitively (a move in either arm of an `if` stays recorded
-// after the join; a re-assignment restores ownership) and a second `#x` of a
-// transferred name is rejected statically, so the one `#x` site that folds is
-// the first move in flow. The loop-carried move (a site that executes twice)
-// is the one shape neither the read nor the constant makes safe — measured
-// here so the failure mode is on record.
-//
-//   1  `return #c` of a heap-bound local: balanced (the corpus shows the
-//      constant; this pins the behaviour)
-//   2  `x #= #y` of a heap-bound local: balanced, the title moved once
-//   3  a move in one arm of an `if` then `#c` after the join: rejected
-//      (MOVE_OF_BORROW) — the fold never sees a second move
-//   4  a conditional move then `return #= c` reads the entry (mode-carry):
-//      balanced on both paths
-//
+// Spec 6.2.2 — `#x` of a STATIC owner folds to the constant title (no entry
+// read). The fold is sound because the scope records a move flow-insensitively
+// and a second `#x` of a transferred name is rejected statically, so the site
+// that folds is always the first move in flow.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -119,13 +105,9 @@ TEST(MoveFoldTests, secondMoveAfterConditionalMoveIsRejected) {
         "    }\n"), "CAJETA_ERROR_MOVE_OF_BORROW");
 }
 
-// 5 — the loop-carried move: one `#y` site, executed twice, of a `y` declared
-// outside the loop. MEASURED 2026-09-08 on the fold build: verdict 40 — the
-// second iteration's `x.n` read a freed cell (no abort, no diagnostic). The
-// site is accepted because the scope records the move once, in codegen
-// order; the language needs a static rejection of a move whose site
-// re-executes while its source's declaration does not (a defect to file —
-// not this plan's). DISABLED: it fails by design until then.
+// The loop-carried move: one `#y` site executed twice, of a `y` declared
+// outside the loop. Neither the entry read nor the constant makes it safe, and
+// the static rejection it needs does not exist yet, so this is DISABLED.
 TEST(MoveFoldTests, DISABLED_loopCarriedMoveWitness) {
     std::string src = loop("",
         "        Cell y = heap Cell(i);\n"

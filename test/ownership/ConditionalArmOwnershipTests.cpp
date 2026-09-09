@@ -1,19 +1,5 @@
-//
-// ownership-title-classifier Unit 2 — the arms of a conditional and of a
-// switch expression, classified by the one classifier.
-//
-// A `switch` expression is a conditional with more arms (spec §2.1): a local
-// bound from it owns exactly what the TAKEN arm produced, and the `#T` return
-// and `#T` formal checks walk its arms as they walk the conditional's. Before
-// this unit the switch expression carried no title flag at all, so a mixed
-// switch was the ternary double-free all over again.
-//
-// A String concat arm allocated in the frame arena (spec 5.4) is not a title:
-// the local must arm nothing for it and the arena reclaims it with the frame.
-//
-// Verdicts read back through the runtime: Cajeta.liveCount() balanced over a
-// loop of calls, the lent field's bytes intact.
-//
+// Unit 2 (spec §2.1) — the arms of a conditional and of a switch expression,
+// classified by the one classifier: a local owns what the TAKEN arm produced.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -70,8 +56,7 @@ const char* PRE =
 
 } // namespace
 
-// A class local from a switch expression with a borrow arm and a fresh arm:
-// the fresh cell is dropped when taken, the field never.
+// A switch with a borrow arm and a fresh arm: only the fresh cell is dropped.
 TEST(ConditionalArmOwnershipTests, switchExpressionLocalOwnsOnlyTheTakenArm) {
     std::string src = std::string(PRE) +
         "    static int32 pick(Holder h, int32 i) {\n"
@@ -103,8 +88,8 @@ TEST(ConditionalArmOwnershipTests, switchExpressionLocalOwnsOnlyTheTakenArm) {
            "cells leaked or a field was freed twice";
 }
 
-// A String local from a switch expression over a field read, a literal and a
-// concat: only the concat is ever dropped.
+// A String switch over a field read, a literal and a concat: only the concat
+// is ever dropped.
 TEST(ConditionalArmOwnershipTests, switchExpressionStringLocalOwnsOnlyTheConcat) {
     std::string src = std::string(PRE) +
         "    static int32 pick(Holder h, int32 i) {\n"
@@ -161,8 +146,7 @@ TEST(ConditionalArmOwnershipTests, sharpFormalRejectsSwitchWithBorrowArm) {
     expectRejected(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
 }
 
-// A concat arm that lives in the frame arena is not a title (spec 5.4): the
-// local arms nothing for it, the arena reclaims it, the field survives.
+// A frame-arena concat arm is not a title (spec 5.4): the local arms nothing.
 TEST(ConditionalArmOwnershipTests, arenaConcatArmArmsNoDrop) {
     std::string src = std::string(PRE) +
         "    static int32 probe(Holder h, boolean c, int32 n) {\n"

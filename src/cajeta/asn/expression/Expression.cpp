@@ -2642,10 +2642,6 @@ bool cajetaRhsCarriesRedundantSharp(
     // The title flag one ternary arm hands the merge (see the member's note
     // in Expression.h). Emitted in the arm's own block, right after the arm's
     // value, so a call arm's return-flag TLS is still that call's.
-    // ownership-title-classifier Unit 2 — the title flag of one arm, from THE
-    // classifier (spec §2.1), emitted in the arm's own block right after the
-    // arm's value so a call arm's return-flag TLS is still that call's. The
-    // per-arm shape chain this replaced was the sixth copy of the classifier.
     static llvm::Value* armTitleFlag(CajetaModulePtr module, const ExpressionPtr& arm) {
         if (!arm) return module->getBuilder()->getInt64(0);
         ownership::TitleShape s = ownership::classify(arm, module);
@@ -2808,12 +2804,8 @@ bool cajetaRhsCarriesRedundantSharp(
             runtimeTitleFlag = nestedMv->getRuntimeTitleFlag();
             return nv;
         }
-        // ownership-title-classifier Unit 3 — the take protocols below are
-        // ACTIONS keyed on the source's kind and keep their own runtime reads
-        // (a slot's own-bit, an element take). Every flag they do not produce
-        // themselves comes from ONE classification of the source, taken AFTER
-        // its codegen (below): only then is a call's callee resolved and a
-        // conditional's arm typed.
+        // Unit 3 — the take protocols below are ACTIONS keyed on the source's kind;
+        // every flag they do not produce comes from ONE classification, taken AFTER codegen.
         // title-tracking §6.3 (Unit 6, plan 6.2.1) — `#map[k]` on a CLASS
         // receiver binds to the author-provided `operator#[]` (the
         // title-extracting index; distinct canonical name because dispatch is
@@ -3049,9 +3041,7 @@ bool cajetaRhsCarriesRedundantSharp(
         // with the own-bit set, freed twice when the record dropped
         // (measured 2026-09-07, probe W: storeStrBorrowTern / storeCellBorrowTern).
         if (isConditionalKind(inner)) {
-            // The taken arm's title — a constant when the arms agree, else
-            // the arm phi. Always set: a null flag reads as "static owner" to
-            // the consumers, which is exactly wrong for two borrow arms.
+            // Always set: a null flag reads as "static owner", which is wrong for two borrow arms.
             runtimeTitleFlag = ownership::titleFlag(mvShape, module);
         }
         // title-tracking — `dst #= call()`: the callee's RETURN FLAG is the
@@ -3065,28 +3055,20 @@ bool cajetaRhsCarriesRedundantSharp(
         // call, while it still holds this call's bit — anything later is
         // stale. Gated on emitsReturnFlag(): raw-IR synthesized bodies and
         // intrinsics never store the flag, so those keep the static answer.
-        // A call source: its flag is read HERE, right after the call, while
-        // the TLS still holds this call's bit — the classifier's ReturnFlag
-        // source, the same read for a plain and a `#R` callee.
+        // A call source: its flag is read HERE, right after the call, while the TLS
+        // still holds this call's bit — the same read for a plain and a `#R` callee.
         llvm::Value* innerCallReturnFlag = nullptr;
         if (inner && inner->kind() == ExprKind::MethodCall) {
             if (mvShape.source == ownership::TitleSource::ReturnFlag) {
                 innerCallReturnFlag = ownership::titleFlag(mvShape, module);
             } else if (mvShape.source == ownership::TitleSource::None
                        && mvShape.answer == ownership::TitleAnswer::Borrow) {
-                // 8.2.4 — a callee declared plain that stores no flag (an
-                // intrinsic's stub, the DI singleton): the borrow it hands
-                // out, as the constant 0. An Owned constant stays the null
-                // "static owner" the consumers below already fold.
+                // 8.2.4 — a callee declared plain that stores no flag hands out a borrow: the constant 0.
                 innerCallReturnFlag = module->getBuilder()->getInt64(0);
             }
             if (!innerCallReturnFlag && !mvShape.callee
                     && mvShape.source == ownership::TitleSource::ReturnFlag) {
-                // 8.2.4 — an intrinsic with neither a declaration nor a
-                // recorded stance stored no flag (titleFlag read nothing):
-                // unknown answers OWNED (MethodCallExpression::binding-
-                // TakesTitle, the rule before Unit 3) — null IS the static
-                // owner here; a recorded borrow is the constant 0.
+                // 8.2.4 — an intrinsic with no declaration and no recorded stance stored no flag: unknown answers OWNED.
                 auto mceIn = std::static_pointer_cast<MethodCallExpression>(inner);
                 if (!mceIn->bindingTakesTitle()) {
                     innerCallReturnFlag = module->getBuilder()->getInt64(0);
@@ -3465,12 +3447,9 @@ bool cajetaRhsCarriesRedundantSharp(
                         // BEFORE deactivating so consuming sites (field store,
                         // return, call-arg word) forward what we actually held
                         // rather than an assumed 1.
-                        // The entry's active byte — inline (one load, one zext),
-                        // not a runtime call — read BEFORE the deactivation below.
+                        // The entry's active byte, read BEFORE the deactivation below.
                         runtimeTitleFlag = ownership::titleFlag(mvShape, module);
-                        // Unit 9 (spec 5.14) — deactivate only if the entry still
-                        // describes this local (a borrow re-assign leaves it on the
-                        // displaced value, which must not be orphaned).
+                        // Unit 9 (spec 5.14) — deactivate only if the entry still describes this local.
                         ownership::deactivateLocalEntry(module, field);
                     } else if (auto pfMv =
                             dynamic_pointer_cast<ParameterField>(field)) {
@@ -3522,9 +3501,7 @@ bool cajetaRhsCarriesRedundantSharp(
                 // is decided at the call site, not here.
                 if (isSharpStore() && !runtimeTitleFlag
                         && mvShape.answer == ownership::TitleAnswer::Borrow) {
-                    // `#=` of an entry-less, non-formal local with no static
-                    // title records the BORROW it holds (the Cache.linkAtHead
-                    // rule): the classifier's Borrow answer, as a constant 0.
+                    // `#=` of an entry-less, non-formal local with no static title records the BORROW it holds.
                     runtimeTitleFlag = ownership::titleFlag(mvShape, module);
                 }
                 // script-units U4 (spec §4.2) — a session binding's title
@@ -3598,8 +3575,7 @@ bool cajetaRhsCarriesRedundantSharp(
         // the callee. A `#=` that records a borrow reintroduces exactly the
         // ambiguity the rule removed, so it is a diagnostic rather than a
         // silent success. The fix is the same one word either way: plain `=`.
-        // The classifier peeled the reference casts (6.2.6c) and resolved the
-        // callee: a `^` (view) result claimed with `#` has no title to take.
+        // The classifier peeled the casts and resolved the callee: a `^` (view) result has no title to take.
         if (mvShape.leaf && mvShape.leaf->kind() == ExprKind::MethodCall
                 && mvShape.has(ownership::TitleShape::kView)) {
             auto mceInner = std::static_pointer_cast<MethodCallExpression>(mvShape.leaf);
@@ -3621,8 +3597,7 @@ bool cajetaRhsCarriesRedundantSharp(
         }
         if (isSharpStore() && !runtimeTitleFlag && inner
                 && inner->kind() == ExprKind::MethodCall) {
-            // Prefer the flag read right after the call; a callee that emits
-            // none is its declared stance — the classifier's constant.
+            // Prefer the flag read right after the call; a callee that emits none is its declared stance.
             runtimeTitleFlag = innerCallReturnFlag
                 ? innerCallReturnFlag : ownership::titleFlag(mvShape, module);
         }
@@ -3735,11 +3710,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 return;
             }
             llvm::Value* v = body->generateCode(module);
-            // An arm's value is an r-value: a field read yields a slot GEP, a
-            // local an alloca — load through it exactly as the conditional
-            // does, or the phi merges an ADDRESS with an object pointer
-            // (measured 2026-09-07: `switch (i) { case 1 -> h.a; … }` read
-            // garbage). Then the arm's title flag, right after its value.
+            // An arm's value is an r-value: load through the field GEP or alloca as the
+            // conditional does, or the phi merges an ADDRESS with an object pointer.
             v = loadIfLValue(module, v, body);
             if (v && v->getType()->isPointerTy()) {
                 llvm::Value* tf = armTitleFlag(module, body);
@@ -3782,9 +3754,7 @@ bool cajetaRhsCarriesRedundantSharp(
             }
             phi->addIncoming(widened, bb);
         }
-        // ownership-title-classifier Unit 2 — the taken arm's title (spec
-        // §2.1, Conditional): a constant when every arm's flag is the same
-        // constant, else a phi beside the value's.
+        // Unit 2 — the taken arm's title: a constant when every arm agrees, else a phi beside the value's.
         if (!titleIncoming.empty() && titleIncoming.size() == incoming.size()) {
             auto* c0 = llvm::dyn_cast<llvm::ConstantInt>(titleIncoming[0].first);
             bool allSame = c0 != nullptr;
@@ -4935,10 +4905,7 @@ bool cajetaRhsCarriesRedundantSharp(
                                 if (cx->getChildren().empty()) break;
                                 shape = cx->getChildren()[0];
                             }
-                            // Unit 8 (spec 4.9 audit) — the expression-bodied lambda's
-                                // return, on the classifier (the statement-bodied rule of Unit 6's
-                                // lambda mode): a call rides its own flag; a fresh value, a move or a
-                                // concatenation is the title going out; anything else the borrow 0.
+                            // Unit 8 (spec 4.9) — the expression-bodied lambda's return: a call rides its own flag, a fresh value or move is the title, anything else a borrow.
                                 ownership::TitleShape lamSh = ownership::classify(std::dynamic_pointer_cast<Expression>(shape), module);
                                 bool rides = lamSh.family == ownership::TitleFamily::CallResult
                                     || lamSh.family == ownership::TitleFamily::ClosureCall;
@@ -6942,8 +6909,7 @@ bool cajetaRhsCarriesRedundantSharp(
             // still appears in non-argument contexts (assignment RHS,
             // return expressions).
             if (param.callerTransferred) continue;
-            // Unit 8 (spec 4.9 audit) — on the classifier: a move, a fresh
-            // owned value or a scalar is capturable; anything else is a borrow.
+            // Unit 8 (spec 4.9) — a move, a fresh owned value or a scalar is capturable; anything else is a borrow.
             ownership::TitleShape dSh = ownership::classify(expr, module);
             if (dSh.family == ownership::TitleFamily::Move
                     || (dSh.family == ownership::TitleFamily::Fresh

@@ -1,31 +1,6 @@
-//
-// ownership-title-classifier Unit 5 — the stores on the classifier
-// (BinaryOpExpression: class-field own-bit, tail slot, sidecar / field-array
-// element, local re-arm, interface slot kind, `operator[]=` word, and the
-// array literal's element stores). Written RED, before the sites migrate.
-//
-// Each verdict program returns 0 on pass and a distinct non-zero code
-// otherwise; `Cajeta.liveCount()` is balanced over a loop of calls when the
-// stored value is dropped exactly once. Rejection tests pin the two new
-// diagnostics of spec 5.10 / 5.11.
-//
-//   5.1.1  spec 5.1 — an aggregate `heap` initialiser stored into a field, a
-//          tail slot or a re-armed local is OWNED (leaks today)
-//   5.1.2  spec 5.2 / 5.3 — a closure-call (`-> #Cell`: a plain `-> Cell`
-//          closure returns the class BY VALUE, sret) and a plain-callee
-//          result in the same sites ride the callee's flag (leak today)
-//   5.1.3  spec 5.7 — `map[k] = heap X()` tenders the title (the
-//          `operator[]=` word bit is 1)
-//   5.1.4  spec 5.10 — an array literal / element store LENDS a bare owned
-//          local and takes only `#x`; a literal element is a borrow of static
-//          storage, a `heap X()` element is owned by the slot
-//   5.1.5  spec 5.10 — an escaping CLASS-element array whose slots borrow
-//          frame locals that provably own is rejected (fires / does not
-//          fire); a String slot resolves its own copy, so String arrays
-//          never dangle this way
-//   5.1.6  spec 5.11 — a `stack` value transferred into a field or slot is
-//          rejected; a same-frame `#=` bind and a by-value return are not
-//
+// Unit 5 (spec 5.1–5.11) — the store sites on the title classifier: field
+// own-bit, tail slot, field-array element, local re-arm, `operator[]=`, and
+// array-literal element stores, plus the 5.10 / 5.11 rejections.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -316,10 +291,8 @@ TEST(StoreOwnershipTests, stackValueSameFrameBindAndByValueReturnAreAccepted) {
     EXPECT_EQ(runVerdict(src), 0);
 }
 
-// 5.1.4 witnesses in the corpus tool's exact shapes: a STATIC owner (a
-// `heap String` bound with `=`) and a FORMAL (the caller's String) placed
-// in a literal by bare name. Both are lends: the array's drop frees nothing
-// of theirs, and both are readable after the array is gone.
+// 5.1.4: a static owner and a formal placed in a literal by bare name are
+// both lends — readable after the array is gone.
 TEST(StoreOwnershipTests, arrayLiteralLendsAStaticOwnerAndAFormal) {
     std::string src = loop(
         "        int8[] bs = heap int8[3];\n"

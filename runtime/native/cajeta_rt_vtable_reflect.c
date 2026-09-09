@@ -68,22 +68,18 @@ void __cajeta_drop_push(struct cajeta_drop_entry* e, void* obj, void (*drop_fn)(
     *top = e;
 }
 
-// Tracks whether any debug-shape entry has been pushed in this process.
-// Flipped by __cajeta_drop_push_debug; read by the SIGABRT handler so it
-// knows whether reading the extended (alloc_file, alloc_line) fields is
-// safe. Release-mode builds never call push_debug, so this stays 0 and
-// the handler dumps just the base fields.
-// ownership-title-classifier Unit 9 — push + arm in one call. A formal's
-// entry is pushed and its armed state set from the transfer-word bit in the
-// same prologue; two runtime calls per formal were one too many (measured
-// 2026-09-09: 5,700 set_flag calls in one stdlib copy). Same body as push,
-// the active byte from `flag`.
+// Unit 9 — push + arm in one call: the active byte comes from `flag`, so a formal's prologue needs one runtime call, not two.
 void __cajeta_drop_push_flag(struct cajeta_drop_entry* e, void* obj,
                              void (*drop_fn)(void*), int64_t flag) {
     __cajeta_drop_push(e, obj, drop_fn);
     e->active = flag ? 1 : 0;
 }
 
+// Tracks whether any debug-shape entry has been pushed in this process.
+// Flipped by __cajeta_drop_push_debug; read by the SIGABRT handler so it
+// knows whether reading the extended (alloc_file, alloc_line) fields is
+// safe. Release-mode builds never call push_debug, so this stays 0 and
+// the handler dumps just the base fields.
 static int __cajeta_has_debug_entries = 0;
 
 // Debug variant — same wiring as __cajeta_drop_push, plus alloc-site source
@@ -186,9 +182,7 @@ int32_t __cajeta_dump_drop_chain(void) {
         fprintf(stderr,
             "  ... (more entries; cap reached, raise MAX_ENTRIES to see them)\n");
     }
-    // An empty chain (a compiler front-end thread, a fiber with no owned
-    // locals) used to print the header and nothing — indistinguishable from
-    // a walk that re-faulted (the device-tests runner, 2026-09-09). Say so.
+    // Say so: an empty chain printing nothing is indistinguishable from a walk that re-faulted.
     if (count == 0) {
         fprintf(stderr, "  (empty)\n");
     }
@@ -313,10 +307,8 @@ void __cajeta_install_sigabrt_handler(void) {
 static struct sigaction __cajeta_prev_sigsegv;
 static struct sigaction __cajeta_prev_sigbus;
 
-// A fault while this handler is dumping (a walk through a corrupt chain, a
-// bad frame) used to re-enter it and destroy the diagnostic on every crash it
-// touched; the second fault now ends the process with the original signal's
-// status (device-tests runner, 2026-09-09).
+// A fault while this handler is dumping used to re-enter it and destroy the
+// diagnostic; the second fault now exits with the original signal's status.
 static volatile sig_atomic_t __cajeta_in_segv_handler = 0;
 
 static void __cajeta_segv_handler(int signo, siginfo_t* info, void* uctx) {
@@ -452,14 +444,8 @@ int8_t __cajeta_drop_take_active(struct cajeta_drop_entry* e) {
     return was != 0 ? 1 : 0;
 }
 
-// ownership-title-classifier Unit 9 (spec 5.14, the 8.2.2 flow gap) — the
-// take that asks first whether the entry still describes `obj`. A borrow
-// re-assign leaves the entry registered on the DISPLACED value (so
-// `n = n.next` keeps reading through it); a reader that then took the
-// entry's flag as the local's title forged one for a different object and
-// orphaned the displaced value. Same object: take (and disarm) as before.
-// Another object: the frame holds no title on `obj` — answer 0 and leave
-// the entry to free the displaced value at scope exit.
+// Unit 9 (spec 5.14) — take (and disarm) only when the entry still describes
+// `obj`; on another object the frame holds no title, so answer 0.
 int8_t __cajeta_drop_take_active_if(struct cajeta_drop_entry* e, void* obj) {
     if (e == NULL || e->obj != obj) {
         return 0;
@@ -469,9 +455,7 @@ int8_t __cajeta_drop_take_active_if(struct cajeta_drop_entry* e, void* obj) {
     return was != 0 ? 1 : 0;
 }
 
-// Unit 9 (spec 5.14) — deactivate only if the entry still describes `obj`
-// (see __cajeta_drop_take_active_if): a move of a local whose entry sits on
-// the displaced value must not orphan that value.
+// Unit 9 (spec 5.14) — the mark_inactive twin of __cajeta_drop_take_active_if.
 void __cajeta_drop_mark_inactive_if(struct cajeta_drop_entry* e, void* obj) {
     if (e == NULL || e->obj != obj) return;
     e->active = 0;
@@ -1653,12 +1637,7 @@ void __cajeta_string_elem_store(void** slot, void* wrapper, int64_t takes) {
     }
 }
 
-// An array LITERAL stored every element through __cajeta_string_elem_store
-// (always-own: a `#x` / fresh element adopted, everything else a resolved
-// copy), so all `count` resident slots are the array's. The declaration
-// registers the local's sidecar after the literal ran; this marks the
-// slots it already owns (ownership-title-classifier spec 5.10 — before it,
-// `[.., #out]` adopted the wrapper into an unmarked slot and leaked it).
+// An array literal stores every element as owned, so mark all `count` resident slots as the array's.
 void __cajeta_string_array_sidecar_mark_all(void* sidecar, int64_t count) {
     cajeta_string_array_sidecar* sc = (cajeta_string_array_sidecar*) sidecar;
     if (!sc) return;
@@ -1789,9 +1768,7 @@ void __cajeta_tail_elem_store(void* hdr, uint64_t header_size, uint64_t elem_siz
     if (old && old != obj && ((bits[idx >> 3] >> (idx & 7)) & 1)) {
         __cajeta_class_virtual_drop(old);
     }
-    // Unit 9 (spec 5.14) — storing a borrow of the slot's OWN value back
-    // over it changes no hands: the slot keeps its title (foldWorker's
-    // `partials[slot] = acc` had cleared the bit and leaked the partial).
+    // Unit 9 (spec 5.14) — storing a borrow of the slot's OWN value back over it changes no hands: the slot keeps its title.
     if (old == obj && old && !(owned & 1)) owned = (bits[idx >> 3] >> (idx & 7)) & 1;
     if (owned & 1) bits[idx >> 3] |= (uint8_t) (1 << (idx & 7));
     else           bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));
@@ -1878,9 +1855,7 @@ void __cajeta_tail_arrelem_store(void* hdr, uint64_t header_size,
     if (old && old != obj && ((bits[idx >> 3] >> (idx & 7)) & 1)) {
         caj_arrelem_release(old, inner_kind);
     }
-    // Unit 9 (spec 5.14) — storing a borrow of the slot's OWN value back
-    // over it changes no hands: the slot keeps its title (foldWorker's
-    // `partials[slot] = acc` had cleared the bit and leaked the partial).
+    // Unit 9 (spec 5.14) — storing a borrow of the slot's OWN value back over it changes no hands: the slot keeps its title.
     if (old == obj && old && !(owned & 1)) owned = (bits[idx >> 3] >> (idx & 7)) & 1;
     if (owned & 1) bits[idx >> 3] |= (uint8_t) (1 << (idx & 7));
     else           bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));

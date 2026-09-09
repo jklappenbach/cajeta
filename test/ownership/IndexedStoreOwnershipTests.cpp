@@ -1,17 +1,7 @@
-//
-// ownership-title-classifier 8.2.3 — the indexed store is the sink model
-// (decided 2026-09-08 with the developer: `m[k] = v` must not force the
-// transfer). `HashMap.operator[]=` takes PLAIN formals and forwards the
-// caller's word into `put`, so the CALLER chooses:
-//
-//   m[k] = v     lends the key and the value — the caller keeps both titles
-//   m[k] = #v    hands the value's title on (the key still lends)
-//   m[k] #= v    mode-carrying: a title if `v` owns, a borrow if it does not
-//   m[k] = heap  a fresh value is the slot's
-//
-// Each verdict program returns 0 on pass; `Cajeta.liveCount()` is balanced
-// over 64 calls when every value is dropped exactly once.
-//
+// Spec 8.2.3 — the indexed store is the sink model: `operator[]=` takes plain
+// formals and forwards the caller's word, so `m[k] = v` lends, `m[k] = #v`
+// hands the value's title on, `m[k] #= v` carries whatever mode `v` holds,
+// and `m[k] = heap X()` gives the slot a fresh value.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -110,8 +100,7 @@ TEST(IndexedStoreOwnershipTests, freshValueIndexedStoreIsTheSlots) {
 }
 
 TEST(IndexedStoreOwnershipTests, ownedCallResultSharpIndexedStoreIsTheSlots) {
-    // A plain `=` here is OWNED_RESULT_NEEDS_TRANSFER (§4.6), as for any plain
-    // receipt of a `#R` result; `#=` records the title the call handed out.
+    // A plain `=` here is OWNED_RESULT_NEEDS_TRANSFER (§4.6); `#=` records it.
     std::string src = loop("",
         "        HashMap<int32, Cell> m = heap HashMap<int32, Cell>(4);\n"
         "        m[4] #= A.mk(i + 1);\n"
@@ -120,8 +109,7 @@ TEST(IndexedStoreOwnershipTests, ownedCallResultSharpIndexedStoreIsTheSlots) {
 }
 
 TEST(IndexedStoreOwnershipTests, borrowedStringKeyIndexedStoreLendsTheKey) {
-    // The tour's HashMapDemo shape: keys are borrows of a literal array's
-    // elements and the map counts them — nothing to give, nothing forced.
+    // Keys that are borrows of array elements: nothing to give, nothing forced.
     std::string src = loop("",
         "        String[] words = [\"the\", \"fox\", \"the\"];\n"
         "        HashMap<String, int32> freq = heap HashMap<String, int32>(4);\n"

@@ -1983,9 +1983,7 @@ namespace cajeta {
         // 5.2.4 — per-`#`-arg title flags, read from the source's drop entry
         // before any deactivation and OR'd into the transfer word below.
         std::vector<llvm::Value*> argTitleFlags(parameters.size(), nullptr);
-        // Unit 7 — each argument's classified title (shape + flag), filled in
-        // the argument loop after its codegen; argTitleFlags keeps the bits
-        // that ride the transfer word.
+        // Unit 7 — each argument's classified title; argTitleFlags keeps the bits that ride the transfer word.
         std::vector<ownership::ArgTitle> argTitles(parameters.size());
         // Stale-value guard (mirrors MoveExpression::runtimeTitleFlag).
         flaggedTitleValue = nullptr;
@@ -6142,10 +6140,8 @@ namespace cajeta {
                 recvTempStatic = true;
             } else if (auto rmce = dynamic_pointer_cast<MethodCallExpression>(
                     children[0])) {
-                // Unit 7 — the receiver temp's title on the classifier: a
-                // `#R` callee with a kind-decidable title is static (7.2.3),
-                // a flag-storing callee's bit is read now, a proven view is
-                // no temp, an intrinsic lowering stores no flag.
+                // Unit 7 — the receiver temp's title: static when the callee's `#R`
+                // is kind-decidable, otherwise the flag it just stored.
                 if ((recvTempClass = droppableTempClass(rmce->getResolvedType()))) {
                     ownership::TitleShape rsh = ownership::classify(rmce, module);
                     ownership::TitleVerdict rv = ownership::policy(
@@ -8409,14 +8405,8 @@ namespace cajeta {
             // (`sink(make())`, `.collect(Collectors.toList())`) surrenders
             // to the callee's formal instead of leaking. Read the TLS now —
             // the next arg's call would clobber it.
-            // Unit 7 — the argument's title, on the classifier, AFTER its
-            // codegen: a call's TLS is read now (the next argument's call
-            // would clobber it), a `#x` name's entry is read now (the move
-            // deactivates it below), a static owner and a fresh value are
-            // constants, an intrinsic lowering stores no flag. Only a class
-            // or array title rides the transfer word — a String's never does
-            // (the callee arms no entry for a String formal; the reclaim
-            // after the call is its counterpart); a `#x` always composes.
+            // Unit 7 — the argument's title, classified AFTER its codegen: the next argument's
+            // call would clobber the flag, and the move below deactivates a `#x` source.
             if (argIndex < argTitles.size()) {
                 argTitles[argIndex] = ownership::classifyArgument(
                     param.expression, param.callerTransferred, module, "a `#` argument");
@@ -8424,9 +8414,7 @@ namespace cajeta {
                 bool wordCarrier = param.callerTransferred
                     || droppableTempClass(argTy) != nullptr
                     || dynamic_pointer_cast<CajetaArray>(argTy) != nullptr
-                    // Unit 9 (spec 5.13) — a closure rides the word too: a
-                    // lambda literal is a fresh owner (1), a bare local or
-                    // field read lends (0), `#p` moves the local's title.
+                    // Unit 9 (spec 5.13) — a closure rides the word too.
                     || dynamic_pointer_cast<CajetaFunctionType>(argTy) != nullptr;
                 if (wordCarrier && argTitles[argIndex].flag
                         && argIndex < argTitleFlags.size()) {
@@ -10685,9 +10673,7 @@ namespace cajeta {
         // either don't have a drop entry or have it managed by their
         // own emission path. See MemoryModel.md § Borrow / transfer.
         {
-            // Unit 7 — a `#x` argument's flag was read in the argument loop
-            // above (ownership::classifyArgument), before anything here
-            // deactivates its source.
+            // Unit 7 — a `#x` argument's flag was read in the argument loop above, before its source is deactivated.
             // 5.2.8 (spec §7.1) — LAST-USE ADVISORY. A plain (lending) argument
             // that is the final use of a local owner is very often a transfer
             // the author forgot to spell: the local dies at scope exit anyway,
@@ -10827,12 +10813,8 @@ namespace cajeta {
                     if (auto scope = module->getScopeStack().peek()) {
                         const string& nm = idExpr->getTextValue();
                         FieldPtr field = scope->getField(nm);
-                        // Unit 7 — the scope's move bookkeeping, as
-                        // MoveExpression does it: a second `#x`, or a `#x` of
-                        // a borrow, is rejected (formals excepted — they
-                        // forward their mode; a plain formal in a method with
-                        // no transfer word was rejected at classification),
-                        // then the name is demoted.
+                        // Unit 7 — the scope's move bookkeeping, as MoveExpression does it:
+                        // reject a second `#x` or a `#x` of a borrow, then demote the name.
                         if (field && !std::dynamic_pointer_cast<ParameterField>(field)) {
                             scope->rejectTransferOfBorrow(nm, /*modeCarrying=*/false);
                             auto klass = std::dynamic_pointer_cast<CajetaClass>(
@@ -10884,10 +10866,8 @@ namespace cajeta {
                     if (!fp->isTransferred()) continue;
                     auto escArg = parameters[argIdx].expression;
                     if (!escArg) continue;
-                    // Unit 7 — the `#T`-formal contract on the classifier
-                    // (spec 5.8 a proven-borrow local, 5.11 a `stack` value,
-                    // 5.10 an array whose slots lend frame locals), per leaf
-                    // arm of a conditional; casts peeled (5.5).
+                    // Unit 7 — the `#T`-formal contract (spec 5.8, 5.10, 5.11), per
+                    // leaf arm of a conditional, with casts peeled.
                     if (escArg->kind() == ExprKind::Move
                             || parameters[argIdx].callerTransferred) {
                         ownership::rejectEscape(escArg,
@@ -11004,9 +10984,7 @@ namespace cajeta {
         int64_t moveMask = 0;
         llvm::Value* transferWordVal = nullptr;
         for (size_t mmi = 0; mmi < parameters.size(); ++mmi) {
-            // Unit 7 — one answer per argument (ownership::classifyArgument,
-            // read after its codegen): a constant title is a static bit of
-            // the word, a runtime one is OR'd in; no title, no bit.
+            // Unit 7 — the transfer word: a constant title is a static bit, a runtime one is OR'd in.
             llvm::Value* rf = mmi < argTitleFlags.size() ? argTitleFlags[mmi] : nullptr;
             if (!rf) continue;
             if (auto* k = llvm::dyn_cast<llvm::ConstantInt>(rf)) {
@@ -11137,14 +11115,8 @@ namespace cajeta {
                     if (parameters[ai].callerTransferred) continue;
                     llvm::Value* tempV = entries[ai].value;
                     if (!tempV) continue;
-                    // Unit 7 — a String temp the callee only borrowed (a
-                    // plain formal arms no entry for a String) is the
-                    // caller's to release: a static title (a concatenation,
-                    // a `#R` callee with a kind-decidable title, a String
-                    // literal is NOT one — its wrapper is static) drops now;
-                    // a runtime one (a `#R` callee that may carry a borrow
-                    // out, a conditional with a borrow arm) drops on its
-                    // flag. Anything else was lent and stays the lender's.
+                    // Unit 7 — a String temp the callee only borrowed is the caller's to
+                    // release: a static title drops now, a runtime one drops on its flag.
                     if (ai < argTitles.size()
                             && argTitles[ai].shape.has(ownership::TitleShape::kString)
                             && argTitles[ai].shape.family != ownership::TitleFamily::Literal

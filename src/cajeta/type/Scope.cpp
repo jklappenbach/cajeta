@@ -254,11 +254,7 @@ namespace cajeta {
         if (fp && fp->isTransferred()) return;
 
         auto klass = dynamic_pointer_cast<CajetaClass>(field->getType());
-        // ownership-title-classifier Unit 9 (spec 5.13) — a function-typed
-        // parameter is title-bearing too: a lambda literal moves its record
-        // in, a closure local lends it; a plain `=` into a field keeps a
-        // borrow the caller may free (measured: the same leak / dangle as a
-        // class parameter, hidden until closures rode the transfer word).
+        // Unit 9 (spec 5.13) — a function-typed parameter is title-bearing too.
         auto fnTy = dynamic_pointer_cast<CajetaFunctionType>(field->getType());
         bool titleBearing = (klass && !klass->isValueType()
                 && !klass->isSharedCapableValue()) || fnTy != nullptr;

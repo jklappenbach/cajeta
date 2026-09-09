@@ -167,10 +167,7 @@ public class ParallelDriver {
         int32 ci = 0;
         while (ci < shareCount + 1) {
             acc = fn(acc, partials[ci]);
-            // Unit 9 (spec 5.14) — the combiner may hand back its RIGHT input, a
-            // borrow of the slot's own value (a closure call carries no title
-            // in either direction): then take the slot, so `acc` owns what it
-            // aliases and the frame's array frees nothing under the caller.
+            // Unit 9 (spec 5.14) — take the slot when the combiner handed back its right input.
             if (acc == partials[ci]) { acc #= partials[ci]; }
             ci = ci + 1;
         }
@@ -564,10 +561,7 @@ public class ParallelDriver {
         int32 ci = 0;
         while (ci < shareCount + 1) {
             acc = fn(acc, partials[ci]);
-            // Unit 9 (spec 5.14) — the combiner may hand back its RIGHT input, a
-            // borrow of the slot's own value (a closure call carries no title
-            // in either direction): then take the slot, so `acc` owns what it
-            // aliases and the frame's array frees nothing under the caller.
+            // Unit 9 (spec 5.14) — take the slot when the combiner handed back its right input.
             if (acc == partials[ci]) { acc #= partials[ci]; }
             ci = ci + 1;
         }
@@ -688,8 +682,7 @@ public class ParallelDriver {
         int32 ci = 0;
         while (ci < shareCount + 1) {
             acc = combiner(acc, partials[ci]);
-            // Unit 9 (spec 5.14) — see reduceParallelChain: take the slot when the
-            // combiner handed back its right input.
+            // Unit 9 (spec 5.14) — take the slot when the combiner handed back its right input.
             if (acc == partials[ci]) { acc #= partials[ci]; }
             ci = ci + 1;
         }
@@ -709,10 +702,7 @@ public class ParallelDriver {
             acc = fn(acc, o.get());
             o = share.next();
         }
-        // ownership-title-classifier Unit 9 (spec 5.14) — mode-carrying: the
-        // identity accumulator hands back the slot's own value as a borrow and
-        // the slot keeps its title; a fresh accumulator moves its title in and
-        // the displaced partial is released by the store.
+        // Unit 9 (spec 5.14) — mode-carrying: a fresh accumulator moves its title in, the identity case lends.
         partials[slot] #= acc;
         return 0;
     }
@@ -798,8 +788,7 @@ public class ParallelDriver {
         int32 ci = 1;
         while (ci < shareCount + 1) {
             acc = combiner(acc, partials[ci]);
-            // Unit 9 (spec 5.14) — see reduceParallelChain: take the slot when the
-            // combiner handed back its right input.
+            // Unit 9 (spec 5.14) — take the slot when the combiner handed back its right input.
             if (acc == partials[ci]) { acc #= partials[ci]; }
             ci = ci + 1;
         }
