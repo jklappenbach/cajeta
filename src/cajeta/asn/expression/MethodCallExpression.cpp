@@ -8434,7 +8434,11 @@ namespace cajeta {
                 CajetaTypePtr argTy = param.expression->getResolvedType();
                 bool wordCarrier = param.callerTransferred
                     || droppableTempClass(argTy) != nullptr
-                    || dynamic_pointer_cast<CajetaArray>(argTy) != nullptr;
+                    || dynamic_pointer_cast<CajetaArray>(argTy) != nullptr
+                    // Unit 9 (spec 5.13) — a closure rides the word too: a
+                    // lambda literal is a fresh owner (1), a bare local or
+                    // field read lends (0), `#p` moves the local's title.
+                    || dynamic_pointer_cast<CajetaFunctionType>(argTy) != nullptr;
                 if (wordCarrier && argTitles[argIndex].flag
                         && argIndex < argTitleFlags.size()) {
                     argTitleFlags[argIndex] = argTitles[argIndex].flag;

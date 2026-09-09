@@ -2817,6 +2817,8 @@ namespace cajeta {
                     bool ok = false;
                     try {
                         ok = replayObligation(line, err);
+                    } catch (cajeta::Exception& e) {
+                        err = e.getErrorId() + ": " + e.getMessage();
                     } catch (const std::exception& e) {
                         err = e.what();
                     } catch (...) {

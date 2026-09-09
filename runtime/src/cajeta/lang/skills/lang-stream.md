@@ -86,7 +86,7 @@ public class TapStream<T> extends Stream<T> {
 
     public TapStream(#Stream<T> source, (T) -> void tap) {
         this.source #= source;         // takes ownership of the upstream
-        this.tap = tap;
+        this.tap #= tap;   // a keeper stores with `#=`: a lambda literal moves in, a name lends
     }
 
     public Optional<T> next() {

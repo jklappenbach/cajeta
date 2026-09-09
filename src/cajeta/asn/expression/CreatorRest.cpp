@@ -6,6 +6,7 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/xref/XrefIndex.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/util/MemoryManager.h"
 #include "cajeta/asn/expression/DotExpression.h"
@@ -247,7 +248,10 @@ namespace cajeta {
                 CajetaTypePtr argTy = param.expression->getResolvedType();
                 bool wordCarrier = param.callerTransferred
                     || MethodCallExpression::droppableTempClass(argTy) != nullptr
-                    || dynamic_pointer_cast<CajetaArray>(argTy) != nullptr;
+                    || dynamic_pointer_cast<CajetaArray>(argTy) != nullptr
+                    // Unit 9 (spec 5.13) — a closure rides the word too (a lambda
+                    // literal is a fresh owner, a name lends).
+                    || dynamic_pointer_cast<CajetaFunctionType>(argTy) != nullptr;
                 if (wordCarrier && ctorArgTitles[ctorArgIndex].flag) {
                     if (param.callerTransferred) {
                         ctorArgTitleFlags[ctorArgIndex] = ctorArgTitles[ctorArgIndex].flag;

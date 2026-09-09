@@ -341,6 +341,43 @@ the current compiler.*
   owns would move the title into the link, and a `#=` from a name the
   registry add had spent is a use after move: both rejected, both measured.
 
+- **5.13 Closures are titled like class values** — *Decided 2026-09-09:
+  Julian asked for the closure-argument leak to be fixed; the sink model
+  is the rule already in force for every other keeper.* A lambda literal is
+  a fresh owner (its record and capture block are `__cajeta_alloc`ed and
+  live-set tracked). Measured before this unit: passed straight to any
+  formal it was never dropped — two live objects per call — because a
+  function-typed argument never rode the transfer word and a function-typed
+  formal never got a drop entry; a closure held in a local was dropped by
+  the local. The rule: a function-typed formal takes part in the hidden
+  transfer word exactly as a class formal does, and the callee arms a
+  `__cajeta_closure_drop` entry from its bit. So `forEach((x) -> …)` moves
+  the literal into the callee, whose formal drops it on exit; `forEach(p)`
+  lends `p` and the local keeps dropping it; `forEach(#p)` moves the local.
+  A keeper stores with `#=` (the ArrayList model — `this.pred #= pred`
+  records the mode that arrived, a field ownership bit like any class
+  field, and the holder's drop releases an owned closure); a plain `=` of
+  a function-typed parameter into a field is
+  `CAJETA_ERROR_CAPTURED_BORROW_PARAM` like any class parameter. Callers
+  do not change spelling: literals transfer by being fresh, names lend. A
+  FACTORY that hands its function-typed formal on to a keeper forwards it
+  with `#fn` (`return heap FilterStream<T>(this, #pred)`), exactly as a
+  class formal is forwarded: the keeper takes the title that arrived and
+  the factory's entry is deactivated by the move. Handed on plainly, the
+  keeper records a borrow and the factory's exit frees the record under it
+  (measured: cabra's WebFront through `Middleware.of`).
+- **5.14 A store of a borrow of the slot's own value keeps the slot's
+  title** — *Decided 2026-09-09.* `slot = b` where `b` borrows the value the
+  slot already owns cannot revoke the slot's title: nothing changed
+  hands. Measured before this unit: an element slot cleared its bit and
+  leaked the value (`ParallelDriver.foldWorker`'s `partials[slot] =
+  acc`), and a class field released the displaced value first and then
+  stored a borrow of freed memory (a use-after-free). The displaced
+  release fires only when the object differs, and the bit written keeps
+  the old bit when it is the same object. `foldWorker` itself spells the
+  re-store `#=`: the identity case records the borrow it holds (and the
+  slot keeps its title), a fresh accumulator moves its title into the slot.
+
 ## 6. Related finding: the owned-bind check was never order-dependent
 
 `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER` was recorded on 2026-09-06 as

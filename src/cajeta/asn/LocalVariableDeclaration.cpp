@@ -242,15 +242,34 @@ namespace cajeta {
 
         // Load the owner pointer to pass as the drop function's `obj` arg.
         llvm::Value* ownerPtr = builder->CreateLoad(ptrTy, field->getOrCreateAllocation());
+        // Unit 9 — a flag that is not the constant 1 arms the entry in the
+        // SAME call as the push (__cajeta_drop_push_flag); the push + set_flag
+        // pair was two runtime calls per entry.
+        bool fuse = flag != nullptr;
+        if (auto* k = llvm::dyn_cast_or_null<llvm::ConstantInt>(flag)) {
+            if (k->isOne()) fuse = false;
+        }
+        llvm::Function* pushFn = push.pushFn;
+        if (fuse) {
+            if (llvm::Function* f = module->getRuntimeFunction(
+                    push.debug ? "__cajeta_drop_push_flag_debug" : "__cajeta_drop_push_flag")) {
+                pushFn = f;
+            } else {
+                fuse = false;
+            }
+        }
         if (push.debug) {
             llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
                 module->getSourcePath());
             llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, allocLine);
-            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, dropFn, fileConst, lineConst});
+            if (fuse) builder->CreateCall(pushFn, {entryPtr, ownerPtr, dropFn, fileConst, lineConst, flag});
+            else      builder->CreateCall(pushFn, {entryPtr, ownerPtr, dropFn, fileConst, lineConst});
         } else {
-            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, dropFn});
+            if (fuse) builder->CreateCall(pushFn, {entryPtr, ownerPtr, dropFn, flag});
+            else      builder->CreateCall(pushFn, {entryPtr, ownerPtr, dropFn});
         }
-        armEntryFlag(module, field, entryPtr, flag);
+        if (fuse) field->setRuntimeConditionalOwner(true);
+        else armEntryFlag(module, field, entryPtr, flag);
 
         field->setDropEntry(entryPtr);
         if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
@@ -397,19 +416,33 @@ namespace cajeta {
         builder->CreateStore(llvm::ConstantInt::get(i64Ty, headerBytes),
             slotAt(5, "sc.header"));
 
-        if (push.debug) {
-            llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
-                module->getSourcePath());
-            llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, allocLine);
-            builder->CreateCall(push.pushFn,
-                {entryPtr, sidecar, dropFn, fileConst, lineConst});
-        } else {
-            builder->CreateCall(push.pushFn, {entryPtr, sidecar, dropFn});
-        }
-        if (flag) {
-            if (llvm::Function* setFlagFn = module->getRuntimeFunction(
-                    "__cajeta_drop_set_flag")) {
-                builder->CreateCall(setFlagFn, {entryPtr, flag});
+        {
+            // Unit 9 — push + arm in one call when a flag arrives.
+            llvm::Function* pushFn = push.pushFn;
+            bool fuse = flag != nullptr;
+            if (fuse) {
+                if (llvm::Function* f = module->getRuntimeFunction(
+                        push.debug ? "__cajeta_drop_push_flag_debug" : "__cajeta_drop_push_flag")) {
+                    pushFn = f;
+                } else {
+                    fuse = false;
+                }
+            }
+            if (push.debug) {
+                llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
+                    module->getSourcePath());
+                llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, allocLine);
+                if (fuse) builder->CreateCall(pushFn, {entryPtr, sidecar, dropFn, fileConst, lineConst, flag});
+                else      builder->CreateCall(pushFn, {entryPtr, sidecar, dropFn, fileConst, lineConst});
+            } else {
+                if (fuse) builder->CreateCall(pushFn, {entryPtr, sidecar, dropFn, flag});
+                else      builder->CreateCall(pushFn, {entryPtr, sidecar, dropFn});
+            }
+            if (!fuse && flag) {
+                if (llvm::Function* setFlagFn = module->getRuntimeFunction(
+                        "__cajeta_drop_set_flag")) {
+                    builder->CreateCall(setFlagFn, {entryPtr, flag});
+                }
             }
         }
         if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);

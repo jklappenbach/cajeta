@@ -5,6 +5,7 @@
 #include "../error/Exception.h"
 #include "../ownership/MigrationSwitch.h"
 #include "CajetaClass.h"
+#include "CajetaFunctionType.h"
 
 namespace cajeta {
     Scope::Scope(string name, CajetaModulePtr module, ScopePtr parent) {
@@ -253,22 +254,36 @@ namespace cajeta {
         if (fp && fp->isTransferred()) return;
 
         auto klass = dynamic_pointer_cast<CajetaClass>(field->getType());
-        bool titleBearing = klass && !klass->isValueType()
-                && !klass->isSharedCapableValue();
+        // ownership-title-classifier Unit 9 (spec 5.13) — a function-typed
+        // parameter is title-bearing too: a lambda literal moves its record
+        // in, a closure local lends it; a plain `=` into a field keeps a
+        // borrow the caller may free (measured: the same leak / dangle as a
+        // class parameter, hidden until closures rode the transfer word).
+        auto fnTy = dynamic_pointer_cast<CajetaFunctionType>(field->getType());
+        bool titleBearing = (klass && !klass->isValueType()
+                && !klass->isSharedCapableValue()) || fnTy != nullptr;
         if (!titleBearing) return;
 
         string what = (origin == srcName)
             ? ("parameter `" + origin + "`")
             : ("parameter `" + origin + "` (via `" + srcName + "`)");
-        string message =
-            "cannot keep " + what + " in " + intoDesc
+        string message = fnTy
+            ? ("cannot keep " + what + " in " + intoDesc
+                + ": a plain parameter is a BORROW — a closure local passed here "
+                  "stays the caller's and is freed with its frame, so this object "
+                  "would be left pointing at freed memory. Fix: store with `#=`, "
+                  "which records the title that arrived (a lambda literal moves "
+                  "in, a name lends — the ArrayList model), or spell the "
+                  "parameter with a leading `#` on its function type so the call "
+                  "site must surrender ownership.")
+            : ("cannot keep " + what + " in " + intoDesc
                 + ": a plain parameter is a BORROW — the caller keeps the "
                   "title and frees it, so this object would be left pointing "
                   "at freed memory once the call returns. Fix: spell the "
                   "parameter `#" + klass->toCanonical() + "` so the call site "
                   "must surrender ownership, or store with `#=` if this type "
                   "is a container whose caller chooses (the ArrayList model), "
-                  "or copy the value.";
+                  "or copy the value.");
 
         if (!capturedBorrowWarns()) {
             throw Exception(message, "CAJETA_ERROR_CAPTURED_BORROW_PARAM");
@@ -291,7 +306,7 @@ namespace cajeta {
             "[captured-borrow] " + className + "." + methodName + ":"
                 + std::to_string(sourceLine) + " param=" + origin
                 + " src=" + srcName + " into=" + intoDesc
-                + " type=" + klass->toCanonical(),
+                + " type=" + (klass ? klass->toCanonical() : string("(function)")),
             "CAJETA_WARN_CAPTURED_BORROW_PARAM", message,
             module ? module->getSourcePath() : string(), sourceLine);
     }

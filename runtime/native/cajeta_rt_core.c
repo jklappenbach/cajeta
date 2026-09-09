@@ -2270,4 +2270,19 @@ void __cajeta_closure_drop(void* p) {
     if (c->drop_fn) c->drop_fn(p);
 }
 
+// ownership-title-classifier Unit 9 — the around-advice chain's drop. The
+// weaver allocates one record per advice (captures = the next record, the
+// innermost's null) and hands the OUTERMOST advice its `proceed` with the
+// title; the inner advices lend theirs (an advice may call proceed twice,
+// so no inner frame may free the record it was handed). This frees the
+// whole chain once, from the record the outer advice owns.
+void __cajeta_closure_chain_free(void* p) {
+    struct cajeta_closure_record* c = (struct cajeta_closure_record*) p;
+    while (c) {
+        struct cajeta_closure_record* next = (struct cajeta_closure_record*) c->captures;
+        __cajeta_free(c);
+        c = next;
+    }
+}
+
 // --- Threading sync primitives: Lock --------------------------------------

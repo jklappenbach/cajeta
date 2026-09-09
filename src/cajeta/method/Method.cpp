@@ -908,6 +908,12 @@ namespace cajeta {
             if (isClassLike && (isArr || !isPrim) && !pt->isValueType()) {
                 return true;
             }
+            // ownership-title-classifier Unit 9 (spec 5.13) — a function-typed
+            // formal takes part: a closure is a heap record like any class
+            // instance, and its title arrives on the same word.
+            if (dynamic_pointer_cast<CajetaFunctionType>(pt)) {
+                return true;
+            }
         }
         return false;
     }
@@ -967,11 +973,11 @@ namespace cajeta {
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         bool debug = module->getFlags().sourceTags;
+        // Unit 9 — push + arm in ONE runtime call (the pair was two per
+        // formal, ~5,700 set_flag calls in one stdlib copy).
         llvm::Function* pushFn = module->getRuntimeFunction(
-            debug ? "__cajeta_drop_push_debug" : "__cajeta_drop_push");
-        llvm::Function* setFlagFn = module->getRuntimeFunction(
-            "__cajeta_drop_set_flag");
-        if (!pushFn || !setFlagFn) return;
+            debug ? "__cajeta_drop_push_flag_debug" : "__cajeta_drop_push_flag");
+        if (!pushFn) return;
         unsigned entryBytes = debug ? 40 : 32;
         auto scope = module->getScopeStack().peek();
         if (!scope) return;
@@ -1008,6 +1014,18 @@ namespace cajeta {
                     dropFnName = "__cajeta_class_virtual_drop";
                 }
             }
+            // ownership-title-classifier Unit 9 (spec 5.13) — a function-typed
+            // formal: its entry drops the closure record (a no-op on a
+            // non-capturing closure's stack record, drop_fn null) when the
+            // caller's word bit says the title moved in — a lambda literal
+            // passed straight to this formal, or `#p`. A closure local passed
+            // bare lends (bit 0) and keeps dropping it itself. Measured before
+            // this unit: the literal's record and capture block leaked on
+            // every call (two live objects), to transient and keeping callees
+            // alike.
+            if (!dropFnName && dynamic_pointer_cast<CajetaFunctionType>(pt)) {
+                dropFnName = "__cajeta_closure_drop";
+            }
             if (!dropFnName) continue;
             llvm::Function* dropFn = module->getRuntimeFunction(dropFnName);
             if (!dropFn) continue;
@@ -1020,21 +1038,20 @@ namespace cajeta {
                 llvm::ArrayType::get(i8Ty, entryBytes));
             llvm::Value* obj = builder->CreateLoad(
                 ptrTy, pf->getOrCreateAllocation());
+            llvm::Value* flag = builder->CreateAnd(
+                builder->CreateLShr(word,
+                    llvm::ConstantInt::get(i64Ty, bit)),
+                llvm::ConstantInt::get(i64Ty, 1), "formal_title");
             if (debug) {
                 llvm::Constant* fileConst =
                     module->getOrCreateSourceFileConstant(
                         module->getSourcePath());
                 llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, 0);
                 builder->CreateCall(pushFn,
-                    {entryPtr, obj, dropFn, fileConst, lineConst});
+                    {entryPtr, obj, dropFn, fileConst, lineConst, flag});
             } else {
-                builder->CreateCall(pushFn, {entryPtr, obj, dropFn});
+                builder->CreateCall(pushFn, {entryPtr, obj, dropFn, flag});
             }
-            llvm::Value* flag = builder->CreateAnd(
-                builder->CreateLShr(word,
-                    llvm::ConstantInt::get(i64Ty, bit)),
-                llvm::ConstantInt::get(i64Ty, 1), "formal_title");
-            builder->CreateCall(setFlagFn, {entryPtr, flag});
             pf->setDropEntry(entryPtr);
             pf->setRuntimeConditionalOwner(true);
             registerDropEntry(entryPtr);
@@ -3631,6 +3648,38 @@ namespace cajeta {
         }
     }
 
+    // ownership-title-classifier Unit 9 (spec 5.13) — an around advice
+    // `around((T) -> R proceed, args…)` has a function-typed formal, so its
+    // LLVM signature carries the hidden transfer word. `args` holds
+    // (proceed, the target's LLVM params…), where the target's own word, if
+    // it has one, is the last element: it becomes the advice's word with
+    // its bits shifted up one (the advice's formal i+1 mirrors the target's
+    // formal i) and bit 0 = proceed's title. With no target word a fresh
+    // word is appended.
+    static void appendAdviceTransferWord(llvm::IRBuilder<>& b, const MethodPtr& advice,
+                                         std::vector<llvm::Value*>& args,
+                                         bool proceedOwned) {
+        if (!advice || !advice->needsTransferWord()) return;
+        llvm::Function* fn = advice->getLlvmFunction();
+        if (!fn) return;
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(b.getContext());
+        llvm::Value* proceedBit = llvm::ConstantInt::get(i64Ty, proceedOwned ? 1 : 0);
+        size_t want = fn->arg_size();
+        if (args.size() == want) {
+            // The target's word rode in as the last argument: rebase it.
+            llvm::Value* tw = args.back();
+            if (tw->getType() == i64Ty) {
+                args.back() = b.CreateOr(
+                    b.CreateShl(tw, llvm::ConstantInt::get(i64Ty, 1)), proceedBit,
+                    "advice_title_word");
+                return;
+            }
+        }
+        if (args.size() + 1 == want) {
+            args.push_back(proceedBit);
+        }
+    }
+
     void Method::emitAroundWrapper() {
         auto& llvmFunction = llvmFunctionRef();                  // U6.3b: frozen-aware
         auto& llvmFunctionType = llvmFunctionTypeRef();          // U6.3b
@@ -3725,6 +3774,13 @@ namespace cajeta {
                 std::vector<llvm::Value*> nextArgs;
                 nextArgs.push_back(capturesArg);
                 for (auto* v : fwd) nextArgs.push_back(v);
+                // Unit 9 (spec 5.13) — the advice's `proceed` is a function-
+                // typed formal, so the advice carries a transfer word: the
+                // target's bits shift up one behind `proceed` (bit 0), and an
+                // INNER advice is only LENT its proceed (an advice may call
+                // proceed twice; the outer advice owns the whole chain).
+                appendAdviceTransferWord(adBuilder, aroundChain[k + 1],
+                                         nextArgs, /*proceedOwned=*/false);
                 inner = adBuilder.CreateCall(
                     aroundChain[k + 1]->getLlvmFunctionType(),
                     aroundChain[k + 1]->getLlvmFunction(),
@@ -3774,8 +3830,18 @@ namespace cajeta {
             wrapBuilder.CreateStore(capValue, capSlot);
             llvm::Value* dropSlot = wrapBuilder.CreateStructGEP(
                 closureTy, closure, 2, "closure.drop_fn");
-            wrapBuilder.CreateStore(
-                llvm::ConstantPointerNull::get(ptrTy), dropSlot);
+            // Unit 9 — the OUTERMOST record's drop frees the whole chain
+            // (the outer advice owns it through its `proceed` formal); the
+            // inner records carry no drop of their own (they are lent).
+            // Before this the N records leaked on every advised call.
+            llvm::Value* dropFnV = llvm::ConstantPointerNull::get(ptrTy);
+            if (k == 0) {
+                if (llvm::Function* chainFree = module->getRuntimeFunction(
+                        "__cajeta_closure_chain_free")) {
+                    dropFnV = chainFree;
+                }
+            }
+            wrapBuilder.CreateStore(dropFnV, dropSlot);
             closures[k] = closure;
         }
 
@@ -3786,6 +3852,10 @@ namespace cajeta {
         for (auto& arg : llvmFunction->args()) {
             callArgs.push_back(&arg);
         }
+        // Unit 9 (spec 5.13) — the outer advice OWNS its proceed (bit 0):
+        // its formal entry frees the chain on exit.
+        appendAdviceTransferWord(wrapBuilder, aroundChain[0], callArgs,
+                                 /*proceedOwned=*/true);
 
         // @Before / @After / @AfterReturning emit at the wrapper
         // level (flatten — spec's "Multiple aspects on one method").

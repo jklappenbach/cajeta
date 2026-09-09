@@ -939,6 +939,11 @@ namespace cajeta {
         if (auto arr = dynamic_pointer_cast<CajetaArray>(t)) {
             return !arr->isInlineArray();
         }
+        // ownership-title-classifier Unit 9 (spec 5.13) — a function-typed
+        // field holds a closure record (heap, live-set tracked when it
+        // captures) and records the mode `#=` carried in, like any class
+        // field; the holder's drop releases an owned one.
+        if (dynamic_pointer_cast<CajetaFunctionType>(t)) return true;
         auto cls = dynamic_pointer_cast<CajetaClass>(t);
         if (!cls) return false;
         if (dynamic_pointer_cast<CajetaView>(t)) return false;
@@ -3822,6 +3827,43 @@ namespace cajeta {
                     b.CreateBr(ownCont);
                     b.SetInsertPoint(ownCont);
                 }
+                continue;
+            }
+
+            // ownership-title-classifier Unit 9 (spec 5.13) — a function-typed
+            // field: release the closure record when this object owns it
+            // (its bit is set: a lambda literal moved in through `#=`); a
+            // lent closure (a local passed bare) is its frame's and the bit
+            // is 0. __cajeta_closure_drop no-ops on a non-capturing closure's
+            // stack record (drop_fn null) and on null.
+            if (dynamic_pointer_cast<CajetaFunctionType>(fieldType)) {
+                llvm::Function* closureDropFn = cajModule->getRuntimeFunction(
+                    "__cajeta_closure_drop", bodyModule);
+                if (!closureDropFn) continue;
+                int bitIdx = ownershipBitIndexOf(property);
+                int wordIdx = getOwnershipWordLlvmIndex();
+                if (bitIdx < 0 || wordIdx < 0 || !b.GetInsertBlock()) continue;
+                llvm::Type* gi64 = llvm::Type::getInt64Ty(ctx);
+                llvm::Function* fn = b.GetInsertBlock()->getParent();
+                llvm::Value* wordSlot = b.CreateStructGEP(
+                    rawLlvmType(), instance, (unsigned) wordIdx, "own_bits_slot");
+                llvm::Value* w = b.CreateLoad(gi64, wordSlot);
+                llvm::Value* bit = b.CreateAnd(
+                    b.CreateLShr(w, llvm::ConstantInt::get(gi64, bitIdx)),
+                    llvm::ConstantInt::get(gi64, 1));
+                llvm::Value* owned = b.CreateICmpNE(bit, llvm::ConstantInt::get(gi64, 0));
+                llvm::BasicBlock* dropBB = llvm::BasicBlock::Create(ctx, "own_drop_fn", fn);
+                llvm::BasicBlock* ownCont = llvm::BasicBlock::Create(ctx, "own_cont_fn", fn);
+                b.CreateCondBr(owned, dropBB, ownCont);
+                b.SetInsertPoint(dropBB);
+                llvm::Value* slot = b.CreateStructGEP(
+                    rawLlvmType(), instance, fieldIdx,
+                    std::string("drop_fn_slot_") + property->getName());
+                llvm::Value* recPtr = b.CreateLoad(ptrTy, slot,
+                    std::string("drop_fn_ptr_") + property->getName());
+                b.CreateCall(closureDropFn, {recPtr});
+                b.CreateBr(ownCont);
+                b.SetInsertPoint(ownCont);
                 continue;
             }
         }

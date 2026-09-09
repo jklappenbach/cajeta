@@ -33,7 +33,7 @@ public final class FilterStream<T> extends Stream<T> {
      */
     public FilterStream(#Stream<T> source, (T) -> boolean pred) {
         this.source #= source;
-        this.pred = pred;
+        this.pred #= pred;   // Unit 9 (spec 5.13): the sink model — a literal moves in, a name lends
     }
 
     /**

@@ -104,7 +104,7 @@ public class Server {
      */
     public Server(TcpListener listener, (TcpStream) -> void handler) {
         this.listener #= listener;
-        this.handler = handler;
+        this.handler #= handler;   // Unit 9 (spec 5.13): the sink model — a literal moves in, a name lends
         this.state = heap AtomicInt32(ServerState.NEW);
         this.inflight = heap AtomicInt32(0);
     }
@@ -165,7 +165,7 @@ public class Server {
         // `#l` moves the listener into the new Server: without the move the
         // local is dropped when this factory returns and the server's
         // `listener` field dangles (closed fd + freed object).
-        return heap Server(#l, handler);
+        return heap Server(#l, #handler);   // Unit 9 (spec 5.13): forward the title that arrived — a literal moves on, a name stays lent
     }
 
     /**
@@ -180,7 +180,7 @@ public class Server {
     public static #Server bindWithBacklog(SocketAddress addr, int32 backlog,
                                           (TcpStream) -> void handler) {
         TcpListener l #= TcpListener.bindWithBacklog(addr, backlog);
-        return heap Server(#l, handler);
+        return heap Server(#l, #handler);   // Unit 9 (spec 5.13): forward the title that arrived — a literal moves on, a name stays lent
     }
 
     // ----- accept loop (NET-3.3 / NET-4.1) ---------------------------------

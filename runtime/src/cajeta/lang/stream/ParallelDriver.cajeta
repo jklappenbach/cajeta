@@ -162,7 +162,7 @@ public class ParallelDriver {
             tail = fn(tail, o.get());
             o = source.next();
         }
-        partials[shareCount] = tail;
+        partials[shareCount] #= tail;   // Unit 9 (spec 5.14): a fresh tail moves its title into the slot; the identity case lends and the slot keeps its own
         T acc = seed;
         int32 ci = 0;
         while (ci < shareCount + 1) {
@@ -187,7 +187,7 @@ public class ParallelDriver {
             acc = fn(acc, o.get());
             o = share.next();
         }
-        partials[slot] = acc;
+        partials[slot] #= acc;   // Unit 9 (spec 5.14): mode-carrying, as foldWorker
         return 0;
     }
 
@@ -554,7 +554,7 @@ public class ParallelDriver {
             tail = fn(tail, ot.get());
             ot = head.next();
         }
-        partials[shareCount] = tail;
+        partials[shareCount] #= tail;   // Unit 9 (spec 5.14): a fresh tail moves its title into the slot; the identity case lends and the slot keeps its own
         T acc #= seed;
         int32 ci = 0;
         while (ci < shareCount + 1) {
@@ -673,7 +673,7 @@ public class ParallelDriver {
             tail = fn(tail, ot.get());
             ot = head.next();
         }
-        partials[shareCount] = tail;
+        partials[shareCount] #= tail;   // Unit 9 (spec 5.14): a fresh tail moves its title into the slot; the identity case lends and the slot keeps its own
         R acc #= seed;
         int32 ci = 0;
         while (ci < shareCount + 1) {
@@ -696,7 +696,11 @@ public class ParallelDriver {
             acc = fn(acc, o.get());
             o = share.next();
         }
-        partials[slot] = acc;
+        // ownership-title-classifier Unit 9 (spec 5.14) — mode-carrying: the
+        // identity accumulator hands back the slot's own value as a borrow and
+        // the slot keeps its title; a fresh accumulator moves its title in and
+        // the displaced partial is released by the store.
+        partials[slot] #= acc;
         return 0;
     }
 
@@ -776,8 +780,8 @@ public class ParallelDriver {
             tail = accumulator(tail, ot.get());
             ot = head.next();
         }
-        partials[shareCount] = tail;
-        R acc = partials[0];
+        partials[shareCount] #= tail;   // Unit 9 (spec 5.14): a fresh tail moves its title into the slot; the identity case lends and the slot keeps its own
+        R acc = #partials[0];   // Unit 9 (spec 5.14): TAKE the first partial — the slots own their lists now, and the frame frees what it still owns on exit
         int32 ci = 1;
         while (ci < shareCount + 1) {
             acc = combiner(acc, partials[ci]);

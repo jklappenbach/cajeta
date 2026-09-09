@@ -14,6 +14,7 @@
 #include "../../type/CajetaView.h"
 #include "../../type/CajetaArray.h"
 #include "../../type/CajetaVector.h"
+#include "../../type/CajetaFunctionType.h"
 #include "../../type/VectorOps.h"
 #include "../../type/CajetaMatrix.h"
 #include "../../type/CajetaQuaternion.h"
@@ -3019,6 +3020,14 @@ namespace cajeta {
                 // 5.2.2 — non-null when the `#x` source is a runtime owner
                 // (formal): the bit written below is this flag, not const 1.
                 llvm::Value* fobRuntimeFlag = nullptr;
+                // Unit 9 (spec 5.13, 5.14) — a function-typed field releases
+                // through __cajeta_closure_drop; and storing the slot's OWN
+                // value back as a borrow changes no hands: no release, the
+                // old bit kept (measured: `h.f = b` with `b` borrowing `h.f`
+                // released the value first and stored a borrow of freed
+                // memory).
+                bool fobFieldIsClosure = false;
+                llvm::Value* fobSameObj = nullptr;
                 if (auto fobDot = dynamic_pointer_cast<DotExpression>(lhsAst)) {
                     StructurePropertyPtr fobProp;
                     if (locateFieldOwnershipBit(module, builder, fobDot, lhs,
@@ -3029,6 +3038,8 @@ namespace cajeta {
                             llvm::Type* i64Ty = llvm::Type::getInt64Ty(fobCtx);
                             fobFieldIsArray = (bool) dynamic_pointer_cast<
                                 CajetaArray>(fobProp->getType());
+                            fobFieldIsClosure = (bool) dynamic_pointer_cast<
+                                CajetaFunctionType>(fobProp->getType());
                             // ownership-title-classifier Unit 5 (spec 5.1–5.3,
                             // 5.6, 5.11) — the title the store carries in is
                             // the classifier's answer for the source: 1 for
@@ -3063,9 +3074,33 @@ namespace cajeta {
                                 ptrTy, lhs, "own_old_val");
                             llvm::Value* wasOwned = builder->CreateICmpNE(
                                 oldBit, llvm::ConstantInt::get(i64Ty, 0));
+                            // A FRESH right side (a `heap`, a concatenation, a
+                            // lambda literal, an owned call result) cannot be the
+                            // field's current value: no guard for those — the
+                            // common constructor store pays nothing (measured
+                            // 2026-09-09: the guard on every bit-carrying field
+                            // store was most of Unit 9's emitted-op rise).
+                            bool fobRhsCanAlias = true;
+                            {
+                                ownership::TitleShape rs = ownership::classify(rhsAst, module);
+                                if (rs.family == ownership::TitleFamily::Fresh
+                                        || rs.family == ownership::TitleFamily::Concat
+                                        || rs.family == ownership::TitleFamily::Closure
+                                        || (rs.family == ownership::TitleFamily::CallResult
+                                            && rs.answer == ownership::TitleAnswer::Owned)) {
+                                    fobRhsCanAlias = false;
+                                }
+                            }
+                            if (fobRhsCanAlias && rhsVal && rhsVal->getType()->isPointerTy()) {
+                                fobSameObj = builder->CreateICmpEQ(
+                                    oldVal, rhsVal, "own_same_obj");
+                                wasOwned = builder->CreateAnd(wasOwned,
+                                    builder->CreateNot(fobSameObj), "own_displaced");
+                            }
                             llvm::Function* relFn = module->getRuntimeFunction(
                                 fobFieldIsArray ? "__cajeta_free_array"
-                                                : "__cajeta_class_virtual_drop");
+                                : fobFieldIsClosure ? "__cajeta_closure_drop"
+                                                    : "__cajeta_class_virtual_drop");
                             if (relFn) {
                                 llvm::Function* fobFn =
                                     builder->GetInsertBlock()->getParent();
@@ -3570,6 +3605,7 @@ namespace cajeta {
                     llvm::Value* w = builder->CreateLoad(
                         i64Ty2, fobWordPtr, "own_bits");
                     uint64_t mask = 1ULL << fobBitIdx;
+                    llvm::Value* wOld = w;
                     if (fobOwnedSpelling && fobRuntimeFlag) {
                         // 5.2.2 — `#formal` source: the field's bit is the
                         // formal's flag (surrendered → owned, lent → borrow).
@@ -3586,6 +3622,14 @@ namespace cajeta {
                     } else {
                         w = builder->CreateAnd(w,
                             llvm::ConstantInt::get(i64Ty2, ~mask));
+                    }
+                    // Unit 9 (spec 5.14) — the same object stored back keeps
+                    // whatever title the slot already held.
+                    if (fobSameObj) {
+                        llvm::Value* keep = builder->CreateSelect(fobSameObj,
+                            builder->CreateAnd(wOld, llvm::ConstantInt::get(i64Ty2, mask)),
+                            llvm::ConstantInt::get(i64Ty2, 0), "own_keep");
+                        w = builder->CreateOr(w, keep);
                     }
                     builder->CreateStore(w, fobWordPtr);
                     // 5.2.7 — a PLAIN store LENDS: the field borrows, the

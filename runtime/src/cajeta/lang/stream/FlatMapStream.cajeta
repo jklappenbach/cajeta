@@ -54,7 +54,7 @@ public class FlatMapStream<T, R> extends Stream<R> {
      */
     public FlatMapStream(#Stream<T> source, (T) -> #Stream<R> fn) {
         this.source #= source;
-        this.fn = fn;
+        this.fn #= fn;   // Unit 9 (spec 5.13): the sink model — a literal moves in, a name lends
         this.primed = false;
     }
 

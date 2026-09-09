@@ -44,7 +44,7 @@ public class MapOrFallbackStream<T, R> extends Stream<R> {
      */
     public MapOrFallbackStream(#Stream<T> source, (T) -> #R fn, R fallback) {
         this.source #= source;
-        this.fn = fn;
+        this.fn #= fn;   // Unit 9 (spec 5.13): the sink model — a literal moves in, a name lends
         this.fallback #= fallback;
     }
 

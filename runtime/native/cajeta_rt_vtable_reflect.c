@@ -73,6 +73,17 @@ void __cajeta_drop_push(struct cajeta_drop_entry* e, void* obj, void (*drop_fn)(
 // knows whether reading the extended (alloc_file, alloc_line) fields is
 // safe. Release-mode builds never call push_debug, so this stays 0 and
 // the handler dumps just the base fields.
+// ownership-title-classifier Unit 9 — push + arm in one call. A formal's
+// entry is pushed and its armed state set from the transfer-word bit in the
+// same prologue; two runtime calls per formal were one too many (measured
+// 2026-09-09: 5,700 set_flag calls in one stdlib copy). Same body as push,
+// the active byte from `flag`.
+void __cajeta_drop_push_flag(struct cajeta_drop_entry* e, void* obj,
+                             void (*drop_fn)(void*), int64_t flag) {
+    __cajeta_drop_push(e, obj, drop_fn);
+    e->active = flag ? 1 : 0;
+}
+
 static int __cajeta_has_debug_entries = 0;
 
 // Debug variant — same wiring as __cajeta_drop_push, plus alloc-site source
@@ -105,6 +116,15 @@ void __cajeta_drop_push_debug(struct cajeta_drop_entry_debug* e, void* obj,
     e->alloc_file = alloc_file;
     *top = (struct cajeta_drop_entry*) e;
     __cajeta_has_debug_entries = 1;
+}
+
+// The debug-shape twin of __cajeta_drop_push_flag.
+void __cajeta_drop_push_flag_debug(struct cajeta_drop_entry_debug* e, void* obj,
+                                   void (*drop_fn)(void*),
+                                   const char* alloc_file, int32_t alloc_line,
+                                   int64_t flag) {
+    __cajeta_drop_push_debug(e, obj, drop_fn, alloc_file, alloc_line);
+    e->active = flag ? 1 : 0;
 }
 
 // Diagnostic accessors used by the SIGABRT handler and by tests. Reads the
@@ -1680,7 +1700,7 @@ void __cajeta_class_array_elem_set_alias(void* sidecar, void** slot,
     if (old && old != obj && caj_arr_bit_get(sc, idx)) {
         __cajeta_class_virtual_drop(old);
     }
-    caj_arr_bit_put(sc, idx, 0);
+    caj_arr_bit_put(sc, idx, (old == obj && old) ? caj_arr_bit_get(sc, idx) : 0);
     *slot = obj;
 }
 
@@ -1726,6 +1746,10 @@ void __cajeta_tail_elem_store(void* hdr, uint64_t header_size, uint64_t elem_siz
     if (old && old != obj && ((bits[idx >> 3] >> (idx & 7)) & 1)) {
         __cajeta_class_virtual_drop(old);
     }
+    // Unit 9 (spec 5.14) — storing a borrow of the slot's OWN value back
+    // over it changes no hands: the slot keeps its title (foldWorker's
+    // `partials[slot] = acc` had cleared the bit and leaked the partial).
+    if (old == obj && old && !(owned & 1)) owned = (bits[idx >> 3] >> (idx & 7)) & 1;
     if (owned & 1) bits[idx >> 3] |= (uint8_t) (1 << (idx & 7));
     else           bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));
     *slot = obj;
@@ -1811,6 +1835,10 @@ void __cajeta_tail_arrelem_store(void* hdr, uint64_t header_size,
     if (old && old != obj && ((bits[idx >> 3] >> (idx & 7)) & 1)) {
         caj_arrelem_release(old, inner_kind);
     }
+    // Unit 9 (spec 5.14) — storing a borrow of the slot's OWN value back
+    // over it changes no hands: the slot keeps its title (foldWorker's
+    // `partials[slot] = acc` had cleared the bit and leaked the partial).
+    if (old == obj && old && !(owned & 1)) owned = (bits[idx >> 3] >> (idx & 7)) & 1;
     if (owned & 1) bits[idx >> 3] |= (uint8_t) (1 << (idx & 7));
     else           bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));
     *slot = obj;
