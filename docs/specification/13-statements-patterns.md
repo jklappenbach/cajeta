@@ -80,7 +80,7 @@ Labeled `break`/`continue` are also part of the kernel device subset (Accelerate
 
 ## 13.5 `try`, `catch`, `finally`
 
-`try` guards a block; a `throw` inside it unwinds to the nearest frame whose `catch` clause matches the thrown type (selection is Errors §15), dropping every owning local between the throw and the handler on the way (Allocation §4). A `finally` block runs on every exit from the `try` — normal completion, a matched throw, or a `return` out of the block.
+`try` guards a block; a `throw` inside it unwinds to the nearest frame whose `catch` clause matches the thrown type (selection is Errors §15.2), dropping every owning local between the throw and the handler on the way (Allocation §4). A `finally` block runs on every exit from the `try` — normal completion, a `return` out of the block, a matched throw, or a throw that passes through unhandled. A `try` may carry a `finally` with no `catch`. Drop order, and a throw raised inside a `finally`, are Errors §15.3.
 
 There is no try-with-resources form: destructors already guarantee deterministic release at the declaring block's closing brace, in LIFO order, on the exceptional path included. Declaring the resource is the pattern.
 

@@ -17,7 +17,7 @@ $ cajeta run greet.cajeta world
 hello, world
 ```
 
-**The desugaring model.** A script unit compiles as an implicit final class with an implicit static entry method: the wrapper the author would otherwise write, synthesized. The wrapper is invisible — diagnostics carry the host file and the user's line numbers, and stack traces render script frames as `<script>` (Errors §15.4); the synthesized names never appear.
+**The desugaring model.** A script unit compiles as an implicit final class with an implicit static entry method: the wrapper the author would otherwise write, synthesized. The wrapper is invisible — diagnostics carry the host file and the user's line numbers, and stack traces render script frames as `<script>` (Errors §15.5); the synthesized names never appear.
 
 ## 18.2 Session Bindings
 

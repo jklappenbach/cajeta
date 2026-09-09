@@ -127,3 +127,19 @@ TEST(CatchMatchingTests, exactLeafBeatsSiblingThenSupertype) {
         "}\n"
         "return 0;"), 3);
 }
+
+// Multi-catch: `catch (A | B e)` must match either alternative. Measured
+// 2026-09-09 on 0.27.0 — Statement.cpp keeps only the first qualifiedName
+// of a catchType ("we take just the first qualifiedName for now"), so a
+// throw of the second alternative's type passes the clause by and escapes
+// to the enclosing frame. The clause reads as a handler and is not one.
+// RED until multi-catch lowering lands (spec Errors §15.2).
+TEST(CatchMatchingTests, DISABLED_multiCatchMatchesEitherAlternative) {
+    EXPECT_EQ(runBody(
+        "try {\n"
+        "    throw heap Denied();\n"
+        "} catch (NotFound | Denied e) {\n"
+        "    return 5;\n"
+        "}\n"
+        "return 0;"), 5);
+}
