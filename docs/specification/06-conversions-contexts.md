@@ -1,6 +1,6 @@
 # 6 — Conversions & Contexts
 
-This chapter defines the conversions between Cajeta types and the contexts in which each applies. Cajeta's primitives are explicit-width (Types §3.1), so numeric conversion is a visible part of the language rather than a background activity; the cast expression is its primary spelling.
+This chapter defines the conversions between Cajeta types and the contexts in which each applies. Cajeta's primitives are explicit-width (Types §3.1), so numeric conversion is a visible part of the language rather than a background activity. The cast expression is its primary spelling.
 
 ## 6.1 Conversion Contexts
 
@@ -29,14 +29,14 @@ float32 g = 3;                    // integer to float
 System.stdout.println("" + C.takes32(small) + " " + wide + " " + d + " " + g);
 ```
 
-> *Discussion.* **The implicit-conversion policy beyond widening is TBD.** The design intent recorded in the internal primitives specification is that every cross-width conversion is an explicit cast; as of 0.27.0 the compiler also accepts narrowing and sign-crossing conversions implicitly, truncating silently (`int8 n = wide` compiles and wraps). That permissiveness is not a stable guarantee: programs should spell every narrowing or sign-crossing conversion with a cast, and this section will bind the policy when it is settled.
+> *Discussion.* **The implicit-conversion policy beyond widening is TBD.** The design intent recorded in the internal primitives specification is that every cross-width conversion is an explicit cast. As of 0.27.0 the compiler also accepts narrowing and sign-crossing conversions implicitly, truncating silently (`int8 n = wide` compiles and wraps). That permissiveness is not a stable guarantee: programs should spell every narrowing or sign-crossing conversion with a cast, and this section will bind the policy when it is settled.
 
 ## 6.3 Cast Expressions
 
 `(T) expr` converts `expr` to type `T`.
 
 - **Numeric casts** are always available between numeric types. A float-to-integer cast truncates toward zero. An integer narrowing cast keeps the low-order bits.
-- **Reference upcasts** — to a superclass or implemented interface — need no cast; the conversion is implicit in every context.
+- **Reference upcasts** — to a superclass or implemented interface — need no cast, and the conversion is implicit in every context.
 - **Reference downcasts** — `(Derived) base` — denote the same instance viewed at the narrower type. Method dispatch remains virtual through the result.
 
 **Example 6.3-1.** Numeric truncation and a guarded downcast.
@@ -64,6 +64,6 @@ When either operand of `+` is a `String`, the other operand converts to a `Strin
 
 ## 6.5 Conversions and Ownership
 
-A reference conversion — an upcast, or a downcast — denotes the same instance: it does not create a value and does not move a title; the result is a reference in the same ownership state as its source. Numeric and string conversions produce new values, owned according to the receiving context (a concatenation result is a fresh owned `String`).
+A reference conversion — an upcast, or a downcast — denotes the same instance. It does not create a value and does not move a title, and the result is a reference in the same ownership state as its source. Numeric and string conversions produce new values, owned according to the receiving context (a concatenation result is a fresh owned `String`).
 
-> *Discussion.* Overload-resolution ranking across applicable conversions — which of several convertible-to overloads a call selects — is not yet specified; it will be bound together with the invocation rules of Expressions §14.
+> *Discussion.* Overload-resolution ranking across applicable conversions — which of several convertible-to overloads a call selects — is not yet specified. It will be bound together with the invocation rules of Expressions §14.

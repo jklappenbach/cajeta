@@ -1,6 +1,6 @@
 # 12 — Arrays, Views & Slices
 
-This chapter defines the three bulk-data forms: arrays, the indexed storage type; `view` types, zero-copy overlays that read and write a byte buffer in a declared wire layout; and slices, values that co-own an immutable backing buffer through shared stakes.
+This chapter defines the three bulk-data forms. Arrays are the indexed storage type, `view` types are zero-copy overlays that read and write a byte buffer in a declared wire layout, and slices are values that co-own an immutable backing buffer through shared stakes.
 
 ## 12.1 Arrays
 
@@ -23,11 +23,11 @@ public final class C {
 System.stdout.println(C.run());
 ```
 
-There is no `byte` type; `int8[]` (or `uint8[]`) is the byte buffer (Types §3.1).
+There is no `byte` type. `int8[]` (or `uint8[]`) is the byte buffer (Types §3.1).
 
 ## 12.2 Views
 
-A `view` declares a byte-exact overlay onto a buffer: every field's value is encoded directly in the buffer's bytes, at the declared offset, in the declared endianness. Reading a view field reads the buffer; writing one writes it. Nothing is copied, allocated, or owned — a view borrows the buffer it is constructed over.
+A `view` declares a byte-exact overlay onto a buffer: every field's value is encoded directly in the buffer's bytes, at the declared offset, in the declared endianness. Reading a view field reads the buffer, and writing one writes it. Nothing is copied, allocated, or owned — a view borrows the buffer it is constructed over.
 
 ```text
 viewDeclaration
@@ -40,8 +40,8 @@ What keeps the bytes-are-the-value guarantee:
 
 - A view field is a primitive, a `String`, an array of primitives, or a nested view — never a class reference: a pointer in untrusted bytes is a wild pointer.
 - A view implements no interfaces, inherits from nothing, and has no virtual methods and no vtable.
-- Layout is declared, not compiler-chosen: fields lay out in declaration order, packed by default; `@Align(natural)` opts into ABI-natural padding. Endianness is declared with `@BigEndian`, `@LittleEndian`, or `@HostEndian` (Annotations §10.3).
-- `String` and array fields are variable-size and lay out inline as a length prefix plus data; fields after one have their offsets resolved once at construction and cached, so every access remains a constant-offset read.
+- Layout is declared, not compiler-chosen: fields lay out in declaration order, packed by default, and `@Align(natural)` opts into ABI-natural padding. Endianness is declared with `@BigEndian`, `@LittleEndian`, or `@HostEndian` (Annotations §10.3).
+- `String` and array fields are variable-size and lay out inline as a length prefix plus data. Fields after one have their offsets resolved once at construction and cached, so every access remains a constant-offset read.
 
 A view is constructed by calling its name with the buffer: `Header h = Header(buf)`. Construction verifies the buffer covers the fixed prefix and that every variable-size length prefix stays in bounds, throwing a parse error otherwise — after construction, field access needs no further validation.
 
@@ -68,11 +68,11 @@ System.stdout.println(C.run());
 
 ## 12.3 Slices and Shared Stakes
 
-A slice is a value that designates a range of another value's immutable backing buffer — `String.substring` is the canonical producer. A borrow cannot express a slice that outlives its source, and forcing a copy would tax the common case; the shared stake exists for exactly this. A stake is a property of the buffer, not of any binding (Ownership §5.1): a runtime count co-owns the buffer, and the binding holding the slice remains a borrow.
+A slice is a value that designates a range of another value's immutable backing buffer — `String.substring` is the canonical producer. A borrow cannot express a slice that outlives its source, and forcing a copy would tax the common case, so the shared stake exists for exactly this. A stake is a property of the buffer, not of any binding (Ownership §5.1) — a runtime count co-owns the buffer, and the binding holding the slice remains a borrow.
 
 - **Escaping-borrow resolution.** When a borrow of an eligible source escapes its frame — returned, stored beyond the source's life — it does not error (the identity-object discipline of Ownership §5.7 does not apply): it resolves into a copy for small values, a shared stake in the backing buffer for large ones, and a copy for arena-backed ones.
 - **Eligibility** is immutable leaf buffers only — values with no identity, no mutation, and no outgoing references. The graph of staked buffers is therefore acyclic: no cycles, no weak references, no leaks.
-- **Staking is one-way** — a staked buffer never returns to sole ownership, and only immutable leaf buffers are staked; identity objects and mutable values never are. Moves of a staked value are count-neutral; the count lives in a side table keyed by buffer base, and a buffer that is never sliced-and-stored pays one predicted bit test at drop and nothing else. The last stake frees the buffer.
+- **Staking is one-way** — a staked buffer never returns to sole ownership, and only immutable leaf buffers are staked, while identity objects and mutable values never are. Moves of a staked value are count-neutral. The count lives in a side table keyed by buffer base, and a buffer that is never sliced-and-stored pays one predicted bit test at drop and nothing else. The last stake frees the buffer.
 
 **Example 12.3-1.** A substring escaping its source's frame.
 
@@ -86,4 +86,4 @@ public final class C {
 System.stdout.println(C.tail());     // world
 ```
 
-> *Discussion.* `Slice<T>` — the generalization of the mechanism beyond `String` — is designed but not shipped; when it lands, this section governs it with `String` as one producer among several.
+> *Discussion.* `Slice<T>` — the generalization of the mechanism beyond `String` — is designed but not shipped. When it lands, this section governs it with `String` as one producer among several.

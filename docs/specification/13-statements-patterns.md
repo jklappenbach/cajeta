@@ -4,7 +4,7 @@ This chapter defines the statement forms: blocks and local declarations, conditi
 
 ## 13.1 Blocks and Local Declarations
 
-A block is a brace-enclosed statement sequence. Declaring an owning local arms a drop entry that fires at the block's closing brace (Allocation §4); a block-nested declaration may shadow an enclosing name (Names §7.1). A live borrow into a value blocks mutation through that value's path for the borrow's extent, and iteration is a borrow construct: mutating a collection inside its own `for`-each body is a compile-time error (Ownership §5.2).
+A block is a brace-enclosed statement sequence. Declaring an owning local arms a drop entry that fires at the block's closing brace (Allocation §4). A block-nested declaration may shadow an enclosing name (Names §7.1). A live borrow into a value blocks mutation through that value's path for the borrow's extent, and iteration is a borrow construct: mutating a collection inside its own `for`-each body is a compile-time error (Ownership §5.2).
 
 ## 13.2 `if` and Pattern `instanceof`
 
@@ -29,7 +29,7 @@ System.stdout.println(C.run());    // 5
 
 `switch` has two forms.
 
-**The statement form** uses `case label:` arms. Control falls through from one arm into the next unless `break` (or another transfer) ends it; `default:` catches everything unmatched.
+**The statement form** uses `case label:` arms. Control falls through from one arm into the next unless `break` (or another transfer) ends it, and `default:` catches everything unmatched.
 
 **Example 13.3-1.** Fallthrough and `break`.
 
@@ -64,7 +64,7 @@ System.stdout.println(C.pick(2));    // 200
 
 ## 13.4 Loops
 
-The loop forms: `for (init; cond; update) stmt`; `for (T v : source) stmt` over an array or an iterable collection, binding each element in turn; `while (cond) stmt`; and `do stmt while (cond);`.
+The loop forms are `for (init; cond; update) stmt`, `for (T v : source) stmt` over an array or an iterable collection binding each element in turn, `while (cond) stmt`, and `do stmt while (cond);`.
 
 A loop statement may carry a label, and `break label;` / `continue label;` transfer to the labeled loop from any nesting depth inside it:
 
@@ -80,10 +80,10 @@ Labeled `break`/`continue` are also part of the kernel device subset (Accelerate
 
 ## 13.5 `try`, `catch`, `finally`
 
-`try` guards a block; a `throw` inside it unwinds to the nearest frame whose `catch` clause matches the thrown type (selection is Errors §15.2), dropping every owning local between the throw and the handler on the way (Allocation §4). A `finally` block runs on every exit from the `try` — normal completion, a `return` out of the block, a matched throw, or a throw that passes through unhandled. A `try` may carry a `finally` with no `catch`. Drop order, and a throw raised inside a `finally`, are Errors §15.3.
+`try` guards a block. A `throw` inside it unwinds to the nearest frame whose `catch` clause matches the thrown type (selection is Errors §15.2), dropping every owning local between the throw and the handler on the way (Allocation §4). A `finally` block runs on every exit from the `try` — normal completion, a `return` out of the block, a matched throw, or a throw that passes through unhandled. A `try` may carry a `finally` with no `catch`. Drop order, and a throw raised inside a `finally`, are Errors §15.3.
 
 There is no try-with-resources form: destructors already guarantee deterministic release at the declaring block's closing brace, in LIFO order, on the exceptional path included. Declaring the resource is the pattern.
 
 ## 13.6 `return`
 
-`return expr;` ends the method with a value; `return;` ends a `void` method. A plain `return x` hands back whatever title `x` holds; `return #x` surrenders it (Ownership §5.5.2). In a script unit, a top-level `return <int32>` is the process exit code (Script Units §18).
+`return expr;` ends the method with a value, and `return;` ends a `void` method. A plain `return x` hands back whatever title `x` holds, and `return #x` surrenders it (Ownership §5.5.2). In a script unit, a top-level `return <int32>` is the process exit code (Script Units §18).

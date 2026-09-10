@@ -1,6 +1,6 @@
 # 21 — Complete Grammar
 
-The complete grammar of Cajeta, rendered from the ANTLR source of truth — `antlr4/CajetaLexer.g4` and `antlr4/CajetaParser.g4` — for compiler release **0.27.0**. The notation is Grammar §2.1. When this rendering and the grammar source disagree, the source governs; the rendering is regenerated with each release.
+The complete grammar of Cajeta, rendered from the ANTLR source of truth — `antlr4/CajetaLexer.g4` and `antlr4/CajetaParser.g4` — for compiler release **0.27.0**. The notation is Grammar §2.1. When this rendering and the grammar source disagree, the source governs. The rendering is regenerated with each release.
 
 Reserved words with no grammar role, and words reserved for future module syntax, are listed in Grammar §2.5.
 

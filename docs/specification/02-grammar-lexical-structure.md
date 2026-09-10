@@ -4,17 +4,17 @@ This chapter defines the notation grammar productions use throughout the specifi
 
 ## 2.1 Grammar Notation
 
-The grammar's source of truth is the ANTLR grammar pair `antlr4/CajetaLexer.g4` and `antlr4/CajetaParser.g4`; productions in this specification are taken from it and presented in its notation:
+The grammar's source of truth is the ANTLR grammar pair `antlr4/CajetaLexer.g4` and `antlr4/CajetaParser.g4`. Productions in this specification are taken from it and presented in its notation:
 
 - A production names a rule, a colon, and one or more alternatives separated by `|`, ending with `;`.
-- Lexical rules are written in upper case (`IDENTIFIER`, `DECIMAL_LITERAL`); syntactic rules in camel case (`classDeclaration`).
+- Lexical rules are written in upper case (`IDENTIFIER`, `DECIMAL_LITERAL`), and syntactic rules in camel case (`classDeclaration`).
 - `'…'` quotes a literal terminal. `x?` is optional, `x*` zero or more, `x+` one or more. `~[…]` matches any character not in the set. `fragment` rules exist only to build other lexical rules and produce no tokens.
 
 The complete grammar, collected, is Complete Grammar §21.
 
 ## 2.2 Source Text
 
-Source text is Unicode; the reference implementation reads source files as UTF-8. The language is case-sensitive. Whitespace — space, tab, carriage return, line feed, and form feed — separates tokens and has no other meaning.
+Source text is Unicode, and the reference implementation reads source files as UTF-8. The language is case-sensitive. Whitespace — space, tab, carriage return, line feed, and form feed — separates tokens and has no other meaning.
 
 ## 2.3 Tokenization
 
@@ -61,7 +61,7 @@ The primitive type names are also keywords: `int8` `uint8` `int16` `uint16` `int
 Three groups carry qualifications:
 
 - **Reserved, no grammar role today:** `goto` and `structure` appear in no parser rule. `var` is reserved for local type inference.
-- **Soft keyword:** `mut` is also accepted where an identifier is expected, so existing names continue to parse; its keyword role is per-field mutation opt-in on records.
+- **Soft keyword:** `mut` is also accepted where an identifier is expected, so existing names continue to parse. Its keyword role is per-field mutation opt-in on records.
 - **Module words:** `open`, `requires`, `exports`, `opens`, `to`, `uses`, `provides`, `with`, `transitive` (and the module-declaration token itself) are reserved for future module syntax but are consumed by no rule today, and remain freely usable as ordinary identifiers so that names like `open` and `requires` parse.
 
 ## 2.6 Literals
@@ -75,7 +75,7 @@ OCT_LITERAL:        '0' '_'* [0-7] ([0-7_]* [0-7])? [lL]?;
 BINARY_LITERAL:     '0' [bB] [01] ([01_]* [01])? [lL]?;
 ```
 
-Decimal, hexadecimal (`0x`), octal (leading `0`), and binary (`0b`) forms. Underscores may separate digits for readability; they carry no value. The `l`/`L` suffix marks a 64-bit literal.
+Decimal, hexadecimal (`0x`), octal (leading `0`), and binary (`0b`) forms. Underscores may separate digits for readability, and they carry no value. The `l`/`L` suffix marks a 64-bit literal.
 
 ### 2.6.2 Floating-point literals
 
@@ -85,7 +85,7 @@ FLOAT_LITERAL:      (Digits '.' Digits? | '.' Digits) ExponentPart? [fFdD]?
 HEX_FLOAT_LITERAL:  '0' [xX] (HexDigits '.'? | HexDigits? '.' HexDigits) [pP] [+-]? Digits [fFdD]?;
 ```
 
-Decimal forms with optional exponent (`1.5e3`), and hexadecimal forms with a binary exponent (`0x1.8p3`). The `f`/`F` suffix marks `float32`; `d`/`D` marks `float64`.
+Decimal forms with optional exponent (`1.5e3`), and hexadecimal forms with a binary exponent (`0x1.8p3`). The `f`/`F` suffix marks `float32`, and `d`/`D` marks `float64`.
 
 ### 2.6.3 Boolean, character, string, and null literals
 
@@ -126,7 +126,7 @@ Operators:
 +=  -=  *=  /=  &=  |=  ^=  %=  <<=  >>=  >>>=
 ```
 
-`->` introduces a lambda body (Expressions §14); `::` forms a method reference. Operator semantics and precedence are Expressions §14; overloadable operators are Classes §8.
+`->` introduces a lambda body (Expressions §14), and `::` forms a method reference. Operator semantics and precedence are Expressions §14. Overloadable operators are Classes §8.
 
 ## 2.8 Comments
 
@@ -135,7 +135,7 @@ COMMENT:            '/*' (COMMENT | .)*? '*/';
 LINE_COMMENT:       '//' ~[\r\n]*;
 ```
 
-A line comment runs to end of line. Block comments **nest**: `/*` inside a block comment opens an inner comment that must close before the outer one ends. A comment whose opener is `/**` is a documentation comment by convention; the lexer does not distinguish it, and documentation tooling consumes the convention.
+A line comment runs to end of line. Block comments **nest**: `/*` inside a block comment opens an inner comment that must close before the outer one ends. A comment whose opener is `/**` is a documentation comment by convention. The lexer does not distinguish it, and documentation tooling consumes the convention.
 
 **Example 2.8-1.** A nested block comment.
 

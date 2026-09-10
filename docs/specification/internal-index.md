@@ -92,7 +92,7 @@ Core semantics: types, ownership, memory, dispatch.
   `Vector`, `Quaternion`, and `Matrix<T,R,C>` are compiler-defined value types, not stdlib
   source; no import needed. They lower to flat LLVM vectors — native SIMD instructions where
   the host CPU has them — and lower the same way inside XPU kernels on the device backends.
-- [sorting-spec](sorting/sorting-spec.md) — the comparison seam, host sort, Tensor sort.
+- [sorting-spec](sorting/sorting-spec.md) — the comparison interface, host sort, Tensor sort.
 - [Núcleo](nucleo/README.md) — the Python scientific-stack port (own index).
 - Caramelo (formerly Toffee) — the PyTorch-successor ML framework — is a
   *consumer* of the foundation and lives in its own repo (`cajeta-caramelo`);
