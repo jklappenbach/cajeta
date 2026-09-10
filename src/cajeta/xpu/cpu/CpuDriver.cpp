@@ -1,12 +1,8 @@
-//
-// CpuDriver — see header. The serial grid→threads loop over a registered
-// launcher thunk.
-//
+// CpuDriver — see header: the serial grid→threads loop over a registered launcher thunk.
 
 #include "CpuDriver.h"
 
-// The runtime CPU kernel registry (runtime/native/cajeta_runtime.c), linked into
-// the program via cajeta_lib. Returns the launcher-thunk pointer, or null.
+// The runtime CPU kernel registry; returns the launcher-thunk pointer, or null.
 extern "C" void* __cajeta_xpu_lookup_cpu_kernel(const char* name);
 
 namespace cajeta {
@@ -21,14 +17,9 @@ namespace cpu {
         if (!fnptr) return false;   // no kernel registered under `name`
         auto fn = reinterpret_cast<CpuLaunchFn>(fnptr);
 
-        // The launcher thunk is the per-BLOCK wrapper (Inc 5B) — it loops the
-        // block's work-items internally (vectorized). So we call it once per
-        // BLOCK, setting only ctaid + ntid; tid is the wrapper's loop var.
-        // coord layout: [tid.xyz (unused here), ctaid.xyz, ntid.xyz, nctaid.xyz,
-        // dynShared]. nctaid (grid block-count = gridX/Y/Z) feeds the kernel's
-        // gridSize() for grid-stride for-each. coord[12] is the dynamic
-        // shared-memory byte count; this direct driver doesn't carry one (its
-        // kernels use static shared), so it stays 0.
+        // The launcher thunk is the per-BLOCK wrapper, called once per block with
+        // ctaid + ntid only, since tid is its own loop var. coord layout is
+        // [tid.xyz, ctaid.xyz, ntid.xyz, nctaid.xyz, dynShared]; dynShared stays 0.
         std::int32_t coord[13] = {0, 0, 0, 0, 0, 0,
                                   static_cast<std::int32_t>(blockX),
                                   static_cast<std::int32_t>(blockY),

@@ -1,13 +1,6 @@
-//
-// Representation-agnostic binary-operator dispatch + comparison derivation
-// (value-type-overloading-plan.md S6). Extracted from BinaryOpExpression so the
-// SAME operator-lookup + derivation policy serves both the host expression
-// codegen and the device kernel lowering (S8) — the two differ only in HOW an
-// operator is resolved and invoked (host: resolveMethod/invokeMethod + CreateNot;
-// device: the @Device-operator lowering), which the caller supplies as
-// callbacks. The op→symbol map and the !=/>/>=/<= derivation table live here,
-// once.
-//
+// Binary-operator dispatch + comparison derivation: one lookup and derivation
+// policy for both host codegen and device lowering, which differ only in the
+// resolve/invoke callbacks they pass.
 #pragma once
 
 #include <string>
@@ -20,10 +13,7 @@
 namespace cajeta {
 namespace opdispatch {
 
-// The overloadable symbol for a binary operator ("+", "==", "<", …), or nullptr
-// for ops with no user-overloadable static form (assignment, logical &&/||,
-// shifts — handled on their own paths). Single source of truth for both the host
-// dispatch gate and device lowering.
+// The overloadable symbol, or nullptr for assignment, logical &&/|| and shifts.
 inline const char* binaryOpSymbol(BinaryOp op) {
     switch (op) {
         case BINARY_OP_ADD:    return "+";
@@ -44,12 +34,8 @@ inline const char* binaryOpSymbol(BinaryOp op) {
     }
 }
 
-// A comparison-derivation plan: synthesize an unprovided comparison from a base
-// operator the user DID define (OperatorOverloading.md §7):
-//   a != b  ≡  !(a == b)
-//   a >  b  ≡   (b <  a)      [swap operands]
-//   a >= b  ≡  !(a <  b)
-//   a <= b  ≡  !(b <  a)      [swap operands]
+// A plan for synthesizing an unprovided comparison from one the user DID define:
+//   a != b ≡ !(a == b);  a > b ≡ (b < a);  a >= b ≡ !(a < b);  a <= b ≡ !(b < a)
 // baseSym == nullptr means the operator derives nothing (try direct only).
 struct Derivation {
     const char* baseSym;
@@ -67,14 +53,9 @@ inline Derivation binaryOpDerivation(BinaryOp op) {
     }
 }
 
-// Try the direct operator, then its comparison derivation.
-//   tryInvoke(opName, swapOperands) -> {resolved, result}: resolve + invoke the
-//       named operator with operands in the given order; resolved==false means
-//       the operator isn't defined (so a derivation may be attempted).
-//   negate(v) -> the boolean negation of v.
-// Returns {handled, value}: handled==true iff a direct or derived operator
-// applied; the caller then returns `value`, otherwise it falls through to its
-// built-in path. Representation-agnostic: works for any pair of callbacks.
+// Try the direct operator, then its derivation. `tryInvoke(opName, swap)` returns
+// {resolved, result}, resolved==false meaning undefined; `negate(v)` inverts a
+// boolean. Returns {handled, value}; !handled means fall through to the built-in.
 template <typename TryInvoke, typename Negate>
 std::pair<bool, llvm::Value*> dispatchBinaryOperator(
         BinaryOp op, const TryInvoke& tryInvoke, const Negate& negate) {

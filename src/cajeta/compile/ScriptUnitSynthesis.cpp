@@ -67,9 +67,7 @@ namespace cajeta {
 
     namespace {
 
-        // Collect the declared names of a scriptMember-level local variable
-        // declaration — the session bindings (spec §4). Handles both grammar
-        // alternatives: `typeType variableDeclarators` and `var ident = expr`.
+        // The names a top-level local declaration binds (the session bindings).
         void collectBindingNames(CajetaParser::BlockStatementContext* bs,
                                  std::vector<std::string>* out) {
             if (bs == nullptr || out == nullptr) return;
@@ -92,8 +90,7 @@ namespace cajeta {
 
     namespace {
 
-        // A wrapper segment: spliced host text (hostStart > 0) or synthetic
-        // glue (hostStart == 0). Text always ends in '\n'.
+        // Spliced host text (hostStart > 0) or synthetic glue; ends in '\n'.
         struct WrapperSeg {
             std::string text;
             int hostStart = 0;
@@ -133,10 +130,8 @@ namespace cajeta {
             header.push_back({textOf(tokens, imp) + "\n", hostLineOf(imp)});
         }
 
-        // One pass over the members, in order: types hoist to top level
-        // (relative order preserved), methods become static members, loose
-        // statements form the entry body. Hoisting types above the wrapper
-        // is safe — top-level siblings have no ordering constraint.
+        // Types hoist to top level, methods become static members, loose
+        // statements form the entry body, all in source order.
         std::vector<WrapperSeg> hoistedTypes;
         std::vector<WrapperSeg> methods;
         std::vector<WrapperSeg> body;
@@ -154,8 +149,8 @@ namespace cajeta {
                     line += m->getText();
                     line += " ";
                 }
-                // The injected modifiers ride the member's FIRST line, so
-                // the whole segment still maps 1:1 from its host start.
+                // Injected modifiers ride the member's FIRST line, so the
+                // segment still maps 1:1 from its host start.
                 line += textOf(tokens, md);
                 line += "\n";
                 methods.push_back({std::move(line), hostLineOf(md)});
@@ -167,15 +162,12 @@ namespace cajeta {
             }
         }
 
-        // Append the default return only when the body's last statement is
-        // not already a return (an appended statement after `return` would
-        // be unreachable).
+        // A statement appended after `return` would be unreachable.
         bool endsWithReturn = lastStatement != nullptr
             && lastStatement->getStart() != nullptr
             && lastStatement->getStart()->getType() == CajetaParser::RETURN;
 
-        // Assemble in wrapper order, recording where each spliced segment
-        // lands (U5 line map — spans stay sorted by construction).
+        // Wrapper order, which is what keeps the line map's spans sorted.
         std::string out;
         int wrapperLine = 1;
         auto append = [&](const WrapperSeg& seg) {
@@ -206,9 +198,8 @@ namespace cajeta {
 
     namespace {
 
-        // Shared gate: the module is a script unit compiling into a session
-        // AND the current method is the synthesized entry. Returns the
-        // session (or null when the gate fails).
+        // The session when this module is a script unit compiling into one and
+        // the current method is its synthesized entry; null otherwise.
         SessionState* sessionOfEntry(const CajetaModulePtr& module) {
             if (!module || !module->isScriptUnit()) return nullptr;
             SessionState* session = module->getSessionState();
@@ -220,17 +211,14 @@ namespace cajeta {
             return session;
         }
 
-        // Tag a transfer-site note with the unit it happened in, so a later
-        // unit's diagnostic can point back across the seam.
+        // Tag a transfer-site note with its unit, for later units' diagnostics.
         std::string decorateSite(const std::string& note,
                                  const std::string& hostName) {
             if (note.empty() || hostName.empty()) return note;
             return note + " in unit " + hostName;
         }
 
-        // 2.1.3a — the generation suffix a type carries, or "" for a type
-        // that is not a redefinable class. `$g2`, `$g3`, ... for later
-        // generations; the FIRST declaration carries no suffix.
+        // A type's generation suffix (`$g2`, ...); "" for a first declaration.
         std::string generationOf(const CajetaTypePtr& type) {
             auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
             return klass ? klass->getGenerationSuffix() : std::string();
@@ -248,11 +236,8 @@ namespace cajeta {
                                   const ExpressionPtr& expr,
                                   const std::string& position) {
         if (!module || !expr) return;
-        // Cheapest gate first, and it settles the cost question: only a script
-        // unit compiling into a session can HAVE a stale binding, so ordinary
-        // compiles pay two null checks per argument and per assignment rather
-        // than a scope walk. (The stdlib compiled inside a kernel session is
-        // not a script unit, so it takes the same early exit.)
+        // Cheapest gate first: only a script unit in a session can hold a stale
+        // binding, so any other compile pays two null checks, not a walk.
         if (!module->isScriptUnit() || !module->getSessionState()) return;
         auto id = std::dynamic_pointer_cast<IdentifierExpression>(expr);
         if (!id) return;
@@ -282,45 +267,20 @@ namespace cajeta {
         ScopePtr scope = module->getScopeStack().peek();
         if (!scope) return;
         for (auto& fact : session->all()) {
-            // Resolve the recorded canonical in THIS unit's type world; a
-            // miss seeds name-only — the ownership checks don't need the
-            // type, and a live read rejects before touching it.
-            // Resolve by canonical, as every host does — EXCEPT for a class
-            // in a SHARED-TYPE-WORLD session, where the recorded type wins.
-            // After a later cell redefines `Point` the canonical names the
-            // NEWEST generation, which is not what an older value is:
-            // re-resolving by name would reinterpret it under the new layout
-            // and dispatch into the new bodies. (Verified by removing the
-            // preference: `typeRedefinitionIsGenerational` SIGSEGVs without
-            // it, so a redefinition does mint a new class object here — the
-            // "a redeclaration reuses the same instance" reading recorded in
-            // 2.1.4 does not hold for this path.)
-            //
-            // The `sharedTypeWorld` gate is the load-bearing part, and it has
-            // to be a fact the HOST states rather than one this code derives:
-            // across worlds the recorded object outlives its context (it is a
-            // shared_ptr) while the `llvm::Type*` inside it dangles, so
-            // `getLlvmType()` returns a dangling pointer instead of null and
-            // even the is-this-usable question reads freed memory. That was
-            // SessionOwnershipTests.moveStateSpansUnits's SIGSEGV.
+            // Resolve by canonical, EXCEPT for a class in a shared-type-world
+            // session, where the recorded type wins: the canonical now names
+            // the newest generation, which is not what an older value is.
             CajetaTypePtr type = CajetaType::find(fact.typeCanonical);
-            // Primitives are CajetaClass too, and their recorded type can be
-            // an adorned variant of the canonical one — which would defeat the
-            // primitive/StackField decision below. Generations only ever apply
-            // to declared classes, so exclude them explicitly.
+            // Primitives are CajetaClass too, and excluding them explicitly is
+            // what keeps the StackField choice below correct.
             if (session->hasSharedTypeWorld()
                     && fact.boundType
                     && !(fact.boundType->getTypeFlags() & PRIMITIVE_FLAG)
                     && std::dynamic_pointer_cast<CajetaClass>(fact.boundType)) {
                 type = fact.boundType;
             }
-            // Match the field KIND to what the name holds. A HeapField's slot
-            // is pointer-shaped whatever it contains, which is right for an
-            // owner (the slot holds the instance pointer) and wrong for a
-            // primitive: consumers would load a pointer's worth of bytes out
-            // of a 4-byte value. A primitive is an inline value, so it seeds
-            // as a StackField — and the box `__cajeta_session_get` returns is
-            // then exactly the l-value shape the read path hands back.
+            // The field KIND must match what the name holds: a HeapField slot is
+            // pointer-shaped, so a primitive in one is read a pointer's width.
             FieldPtr field;
             if (type && (type->getTypeFlags() & PRIMITIVE_FLAG)) {
                 field = std::make_shared<StackField>(module, fact.name, type);
@@ -328,24 +288,9 @@ namespace cajeta {
                 field = std::make_shared<HeapField>(module, fact.name, type);
             }
             field->setSessionSeeded(true);
-            // 2.1.3a — did the class this name was bound under get REDEFINED
-            // since? The comparison is recorded-suffix against the suffix the
-            // canonical carries NOW, because that is what a use of this name
-            // would be checked against. `type` above is the value's own type,
-            // so the field still LOADS and DISPATCHES as its own generation
-            // (2.1.3's contract, and `p.get()` keeps returning the old body's
-            // answer); the mark only rejects positions that would reinterpret
-            // it as the newer one.
-            //
-            // Shared-world sessions only, for the same reason the type
-            // preference above is: with a fresh world per unit the two
-            // suffixes come from different registries and are not comparable.
-            // A unit that re-declares a class the session has seen counts as
-            // a redefinition there — which is true of the SESSION but says
-            // nothing about the value, since seeding just typed it from this
-            // unit's own world. Comparing anyway made every such binding look
-            // stale (`SessionOwnershipTests.moveStateSpansUnits` reported a
-            // generation clash where its subject is a moved binding).
+            // Was the class this name was bound under redefined since? The mark
+            // rejects only positions that would reinterpret the value as the
+            // newer one, and shared worlds only: suffixes must be comparable.
             if (session->hasSharedTypeWorld()
                     && std::dynamic_pointer_cast<CajetaClass>(type)) {
                 const std::string current =
@@ -364,9 +309,8 @@ namespace cajeta {
         if (!session) return;
         ScopePtr scope = module->getScopeStack().peek();
         if (!scope) return;
-        // Earlier units' bindings: carry this unit's move-state changes.
-        // The transfer note is (re)recorded only on a fresh move — a
-        // still-moved binding keeps the note of the unit that moved it.
+        // Earlier units' bindings: only a fresh move re-records the site, so a
+        // still-moved one keeps the note of the unit that moved it.
         for (auto& fact : session->all()) {
             bool nowMoved = scope->isBorrow(fact.name);
             if (nowMoved && !fact.moved) {
@@ -378,9 +322,7 @@ namespace cajeta {
             }
             fact.moved = nowMoved;
         }
-        // This unit's own top-level bindings (a redeclared seeded name lands
-        // here too — its Field replaced the seed). put() keeps first-binding
-        // order for names that already exist.
+        // This unit's own top-level bindings, a redeclared seeded name included.
         for (auto& name : module->getScriptBindingNames()) {
             FieldPtr field = scope->localBinding(name);
             if (!field || field->isSessionSeeded()) continue;
@@ -391,9 +333,7 @@ namespace cajeta {
                     field->getType()->getQName()->toCanonical();
             }
             fact.boundType = field->getType();
-            // 2.1.3a — the generation as of THIS unit. Read now, while the
-            // class still carries it: a later cell's redefinition overwrites
-            // the suffix on the same CajetaClass instance.
+            // Read now: a later redefinition overwrites the suffix in place.
             fact.generation = generationOf(field->getType());
             fact.moved = scope->isBorrow(name);
             fact.transferSite = decorateSite(scope->transferSiteOf(name),
@@ -406,9 +346,8 @@ namespace cajeta {
 
     namespace {
 
-        // FNV-1a 64-bit — the vtable lookup key. Same constants as the
-        // runtime's `__cajeta_vtable_lookup` and SynthesizedToStringMethod,
-        // which is the whole point: the keys must agree byte-for-byte.
+        // FNV-1a 64, the vtable lookup key: these constants MUST stay those of
+        // `__cajeta_vtable_lookup` and SynthesizedToStringMethod.
         int64_t scriptSignatureHash(const std::string& s) {
             uint64_t h = 0xcbf29ce484222325ULL;
             for (unsigned char c : s) {
@@ -433,13 +372,8 @@ namespace cajeta {
             return b->CreateInBoundsGEP(data->getType(), g, {zero, zero});
         }
 
-        // The no-arg `toString` on `klass` or any ancestor. Mirrors
-        // SynthesizedToStringMethod's lookup, including the post-prototype
-        // shape where `this` sits at parameter 0.
-        // `cajeta.lang.Object` DECLARES toString and returns null from it — a
-        // documented placeholder until the String surface stabilizes. Finding
-        // that one means the class has no rendering of its own, which is the
-        // degrade-to-type-name case, not a dispatch case.
+        // The no-arg `toString` on `klass` or an ancestor, `this` at parameter 0
+        // included. Object's own returns null and does not count as a rendering.
         MethodPtr findScriptToString(const CajetaClassPtr& klass) {
             if (!klass) return nullptr;
             if (auto qn = klass->getQName()) {
@@ -472,18 +406,8 @@ namespace cajeta {
         llvm::BasicBlock* insertBB = builder->GetInsertBlock();
         if (!insertBB || insertBB->hasTerminator()) return;
 
-        // Not every expression records its type during the pre-pass — a bare
-        // identifier or a binary op over locals resolves against the scope,
-        // which is only populated once codegen has run the declarations. Ask
-        // again here, where it can succeed; the same retry MethodCallExpression
-        // does for a receiver.
-        // An ASSIGNMENT is a statement, not a result. `x = 1` displays
-        // nothing in any notebook, and it is not a near-miss here: the assign
-        // arms hand back several different things (the assigned r-value, a
-        // staked copy, the destination slot), so treating one as a renderable
-        // value read a String's vtable word as its object pointer and
-        // SIGSEGV'd inside the cell. Compound assigns (`+=`) are assignments
-        // too — `isAssignment` covers all of them.
+        // An assignment is a statement, not a result: its arms hand back
+        // several shapes (r-value, staked copy, slot), not one renderable value.
         if (auto binOp = std::dynamic_pointer_cast<BinaryOpExpression>(expr)) {
             if (binOp->isAssignment()) return;
         }
@@ -494,10 +418,7 @@ namespace cajeta {
             type = expr->getResolvedType();
         }
         if (!type) return;
-        // `void` carries PRIMITIVE_FLAG too (VOID_TYPE_ID), so it has to be
-        // excluded before the primitive branch — this is the case the whole
-        // codegen-side decision exists for: `xs.add(1);` as a cell's last
-        // statement is a statement, not a result.
+        // `void` carries PRIMITIVE_FLAG too, so it must go before that branch.
         if ((type->getTypeFlags() & TYPE_ID_MASK) == VOID_ID) return;
 
         llvm::Function* store = module->getRuntimeFunction(
@@ -517,17 +438,8 @@ namespace cajeta {
         auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
         bool isArray = std::dynamic_pointer_cast<CajetaArray>(type) != nullptr;
 
-        // The value as an r-value. NOT via loadIfLValue: it decides from the
-        // expression's TYPE, so for any class-typed pointer it loads — and a
-        // trailing expression that is already an r-value (`tag = "x";` hands
-        // back the assigned value, `heap Point(1,2);` the instance) then gets
-        // its first word read as if it were a slot. That is the String's
-        // vtable pointer, and rendering through it walked off a mapping:
-        // a page-aligned SIGSEGV inside the cell.
-        //
-        // Decide from the VALUE's shape instead, which is unambiguous: an
-        // alloca, a global, or a GEP is storage to load through (a local, a
-        // static field, a struct field); anything else is already the value.
+        // Decide from the VALUE's shape, not loadIfLValue's TYPE test: alloca,
+        // global and GEP are storage, anything else is already the value.
         llvm::Value* rv = value;
         if (value->getType()->isPointerTy()
                 && (llvm::isa<llvm::AllocaInst>(value)
@@ -537,12 +449,8 @@ namespace cajeta {
         }
         if (!rv) return;
 
-        // Park the type-name placeholder FIRST (spec 4, "rendering failures
-        // degrade to a type-name placeholder"). Every branch below overwrites
-        // it on success; what this buys is the failure path — a `toString`
-        // that throws unwinds out of the entry without ever reaching its
-        // store, and the payload the host collects is the placeholder rather
-        // than the previous cell's result or nothing at all.
+        // Park the placeholder FIRST: a throwing `toString` unwinds past the
+        // store below, and the host must not collect the last cell's result.
         std::string placeholder = canonical.empty() ? "<value>" : canonical;
         builder->CreateCall(store,
                             {scriptLiteralPtr(builder, lmod, placeholder)});
@@ -590,8 +498,7 @@ namespace cajeta {
                     break;  // 128-bit, extended float, bare pointer: degrade
             }
         } else if (isString) {
-            // A String is an object; its bytes are behind the mode-aware
-            // accessor, never at the pointer itself.
+            // A String's bytes are behind the accessor, not at the pointer.
             if (llvm::Function* cstr =
                     module->getRuntimeFunction("__cajeta_string_cstr")) {
                 text = builder->CreateCall(cstr, {rv});
@@ -603,10 +510,7 @@ namespace cajeta {
             llvm::Function* cstr =
                 module->getRuntimeFunction("__cajeta_string_cstr");
             if (ts && vtLookup && cstr) {
-                // Virtual dispatch, so an override on the runtime class wins
-                // over the static type — the same lookup @ToString emits.
-                // Null renders as "null"; a null receiver must not fault a
-                // cell that otherwise succeeded.
+                // Virtual dispatch, as @ToString emits it; null renders "null".
                 llvm::Function* curFn = insertBB->getParent();
                 auto* nullBB = llvm::BasicBlock::Create(ctx, "res.null", curFn);
                 auto* callBB = llvm::BasicBlock::Create(ctx, "res.call", curFn);
@@ -641,9 +545,7 @@ namespace cajeta {
             }
         }
 
-        // Nothing rendered it — an array, an interface, a class with no
-        // toString. The placeholder above already stands, so there is
-        // nothing left to do; display never fails a cell that ran.
+        // Nothing rendered it; the placeholder stands.
         if (text) builder->CreateCall(store, {text});
     }
 

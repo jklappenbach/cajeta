@@ -45,10 +45,8 @@ ValueInspector::ValueInspector(const llvm::DataLayout& dl,
     : dl_(dl), table_(table), symbols_(symbols) {}
 
 namespace {
-// Could this word be a real heap/stack instance pointer? Rejects the null
-// page (0x2 and friends) and misaligned words. Not a proof of validity — no
-// portable probe is — but it turns the common "slot held data, not a pointer"
-// case from a fatal fault into a declared-type fallback row.
+/// Could this word be a real instance pointer? Rejects the null page and
+/// misaligned words. Not proof of validity; no portable probe is.
 bool plausibleInstance(const void* p) {
     auto v = reinterpret_cast<uintptr_t>(p);
     constexpr uintptr_t kNullPage = 0x10000;   // first 64K is never mapped
@@ -56,12 +54,6 @@ bool plausibleInstance(const void* p) {
 }
 } // namespace
 
-// The one narrowing seam (§2.1.3/2.1.5). Applies only to Pointer-storage
-// object/collection rows: value types have no vtable word and their declared
-// type is exact; leaves (String included) never narrow. The slot deref is the
-// SAME one objectChildren always did — no new memory is trusted, only the
-// already-read instance's first word is consulted, and an unmatched word
-// changes nothing (§2.1.4).
 ValueInspector::ResolvedObject
 ValueInspector::resolveObject(const std::string& declared, void* addr) {
     ResolvedObject out;
@@ -73,13 +65,8 @@ ValueInspector::resolveObject(const std::string& declared, void* addr) {
 
     out.inst = out.rec->isValueType ? addr : *reinterpret_cast<void**>(addr);
     if (!out.inst || out.rec->isValueType || !symbols_) return out;
-    // The word we just read is DATA, not a vouched pointer: an uninitialized
-    // slot, a mis-typed row, or a field whose recorded layout does not match
-    // the object yields garbage, and dereferencing it took the whole debug
-    // server down with a SIGSEGV (fault addr 0x2, Julian 2026-07-30, expanding
-    // a dependency-typed value). Refuse to deref anything that cannot be a
-    // real instance; the row then renders under its declared type, which is
-    // exactly the documented silent-fallback behavior (§2.1.4).
+    // The word just read is DATA, not a vouched pointer: an uninitialized slot
+    // or a stale layout yields garbage, and dereferencing it faults the server.
     if (!plausibleInstance(out.inst)) {
         out.inst = nullptr;
         return out;
@@ -117,11 +104,9 @@ bool ValueInspector::canResolve(const std::string& type) const {
 
 std::string ValueInspector::decodeString(void* slot) {
     if (!slot) return "<null>";
-    // The slot holds the String pointer; the instance carries the fields.
     void* inst = *reinterpret_cast<void**>(slot);
     if (!inst) return "<null>";
-    // The String ABI rides the table (spec §2.1.4), so the decode survives a
-    // cache hit where no type world exists to re-derive it from.
+    // The String ABI rides the table, surviving a cache hit with no type world.
     const StringAbi& abi = table_.stringAbi();
     if (!abi.valid) return "<string?>";
 
@@ -129,19 +114,17 @@ std::string ValueInspector::decodeString(void* slot) {
     uint32_t lenTag = *reinterpret_cast<uint32_t*>(base + abi.offLenTag);
     uint32_t byteLen = lenTag & 0x1FFFFFFFu;  // high bits are rc/borrow/static.
 
-    // Cap an implausible length rather than read unbounded memory (§2.4.3).
     constexpr uint32_t kMaxDecode = 4096;
     bool truncated = byteLen > kMaxDecode;
     uint32_t take = truncated ? kMaxDecode : byteLen;
 
     std::string text;
     if (byteLen <= 12) {
-        // Inline: the ≤12 payload bytes span {aux, base} contiguously.
+        // Inline: the payload bytes span {aux, base} contiguously.
         const char* p = base + abi.offAux;
         text.assign(p, p + take);
     } else {
-        // Windowed: aux = window byte offset into the root array's data,
-        // base field = root array header {i64 count, data}; text at data+aux.
+        // Windowed: aux is a byte offset into the root array's {count, data}.
         int32_t aux = *reinterpret_cast<int32_t*>(base + abi.offAux);
         void* root = *reinterpret_cast<void**>(base + abi.offBase);
         if (!root) return "<null>";
@@ -150,15 +133,10 @@ std::string ValueInspector::decodeString(void* slot) {
     }
 
     std::string quoted = escapeAndQuote(text);
-    if (truncated) quoted.insert(quoted.size() - 1, "…");  // before closing "
+    if (truncated) quoted.insert(quoted.size() - 1, "…");
     return quoted;
 }
 
-// Element geometry straight off the array's table record — the stride stored
-// there was resolved from the element's LLVM type when the table was built, so
-// it is the stride the JIT'd code stores at. A type the table does not carry
-// yields ok=false: the decoder shows no children rather than walking a guessed
-// stride over live memory.
 ValueInspector::ArrayInfo
 ValueInspector::resolveArrayElement(const std::string& arrayType) {
     ArrayInfo info;
@@ -174,7 +152,6 @@ ValueInspector::resolveArrayElement(const std::string& arrayType) {
 
 bool ValueInspector::openArray(void* addr, char** data, int64_t* length) {
     if (!addr) return false;
-    // The slot holds the array header pointer (`T[]` is a heap reference).
     void* header = *reinterpret_cast<void**>(addr);
     if (!header) return false;
     // Header: { i64 size, [0 x T] data }; length at offset 0, data past it.
@@ -187,7 +164,6 @@ bool ValueInspector::openArray(void* addr, char** data, int64_t* length) {
 
 std::string ValueInspector::arraySummary(const ArrayInfo& info, char* data,
                                           int64_t length) {
-    // >5 elements collapse to a count (§4.1.3).
     if (length > 5) return "{" + std::to_string(length) + " elements}";
     constexpr size_t kMaxInline = 60;
     std::string out = "[";
@@ -195,7 +171,7 @@ std::string ValueInspector::arraySummary(const ArrayInfo& info, char* data,
         if (i) out += ", ";
         void* slot = data + static_cast<uint64_t>(i) * info.stride;
         out += inspect(info.elemType, slot).summary;
-        if (out.size() > kMaxInline)  // fall back to the count past the cap.
+        if (out.size() > kMaxInline)
             return "{" + std::to_string(length) + " elements}";
     }
     out += "]";
@@ -205,8 +181,6 @@ std::string ValueInspector::arraySummary(const ArrayInfo& info, char* data,
 std::vector<InspectedChild>
 ValueInspector::objectChildren(const std::string& type, void* addr) {
     std::vector<InspectedChild> out;
-    // Runtime narrowing (§2.1.5): the effective record is the RUNTIME type's,
-    // and `inst` is already rebased for a base-view interior pointer.
     ResolvedObject ro = resolveObject(type, addr);
     if (!ro.rec || !ro.inst) return out;
 
@@ -215,25 +189,19 @@ ValueInspector::objectChildren(const std::string& type, void* addr) {
         child.name = f.name;
         child.type = f.type;
         child.storage = f.storage;
-        // The record's offset came from the DataLayout when the table was
-        // built — never index*8 — so a field after an interior secondary-vtable
-        // word lands on its own bytes.
+        // The offset came from the DataLayout, never index*8, so a field past
+        // an interior secondary-vtable word lands on its own bytes.
         child.addr = reinterpret_cast<char*>(ro.inst) + f.offset;
         narrowRow(child);
         out.push_back(std::move(child));
     }
 
-    // Static rows, inline after the instance fields (§4.1.3), under the
-    // RUNTIME type's view (§4.1.5) — ro.rec is already narrowed. The address
-    // is the session-resolved global; an unresolved symbol drops the row.
+    // Static rows follow the fields; their address is the resolved global.
     if (symbols_) {
         for (const auto& sf : ro.rec->statics) {
             auto it = symbols_->staticAddrs.find(sf.symbol);
             if (it == symbols_->staticAddrs.end() || !it->second) continue;
-            // The static global stores primitives inline and everything else
-            // as a pointer slot (getOrCreateStaticFieldGlobal). A @ValueType
-            // static would need a deref-first shape the row model lacks —
-            // skipped rather than misread.
+            // A static global holds a primitive inline, everything else by slot.
             const TypeRecord* tr = table_.find(sf.type);
             bool isPrim = isPrimitiveTypeName(sf.type);
             if (!isPrim && tr && tr->isValueType) continue;
@@ -251,8 +219,7 @@ ValueInspector::objectChildren(const std::string& type, void* addr) {
 }
 
 namespace {
-    // Read a small integer field (a backing size/capacity) by primitive type.
-    // -1 for a non-integer (a fail-safe signal the view checks).
+    /// Reads an integer field by primitive type name; -1 for a non-integer.
     int64_t readIntByType(const std::string& t, void* addr) {
         if (!addr) return -1;
         if (t == "int32")  return *reinterpret_cast<int32_t*>(addr);
@@ -276,8 +243,6 @@ namespace {
 std::optional<ChildPage>
 ValueInspector::collectionChildren(const std::string& type, void* addr,
                                    size_t start, size_t pageSize) {
-    // The record carries the collection kind — the logical view is selected
-    // from the table, not by matching the type name at a stop.
     const TypeRecord* rec = table_.find(type);
     if (!rec) return std::nullopt;
     if (rec->collectionKind == CollectionKind::ArrayList)
@@ -290,8 +255,7 @@ ValueInspector::collectionChildren(const std::string& type, void* addr,
 std::optional<ChildPage>
 ValueInspector::arrayListChildren(const std::string& type, void* addr,
                                   size_t start, size_t pageSize) {
-    // Read the backing store BY DECLARED NAME (§8.3): `data` (the T[]) and
-    // `sizeCount` (the logical length). Any missing field → fail safe.
+    // The backing store is found BY DECLARED NAME; a missing field fails safe.
     auto fields = objectChildren(type, addr);
     const auto* dataF = findChild(fields, "data");
     const auto* sizeF = findChild(fields, "sizeCount");
@@ -306,8 +270,7 @@ ValueInspector::arrayListChildren(const std::string& type, void* addr,
     if (!info.ok || !openArray(dataF->addr, &dataBase, &headerLen))
         return std::nullopt;
 
-    // Enumerate data[0..sizeCount) — the logical elements, not the capacity —
-    // clamped to the real backing length for safety.
+    // The logical elements, not the capacity, clamped to the real length.
     int64_t count = std::min<int64_t>(size, headerLen);
     if (pageSize == 0) pageSize = kDefaultPageSize;
 
@@ -321,7 +284,7 @@ ValueInspector::arrayListChildren(const std::string& type, void* addr,
         child.type = info.elemType;
         child.storage = info.storage;
         child.addr = dataBase + i * info.stride;
-        narrowRow(child);   // element rows report their RUNTIME type (§2.1.5)
+        narrowRow(child);
         page.children.push_back(std::move(child));
     }
     page.nextStart = static_cast<size_t>(end);
@@ -332,9 +295,8 @@ ValueInspector::arrayListChildren(const std::string& type, void* addr,
 std::optional<ChildPage>
 ValueInspector::hashMapChildren(const std::string& type, void* addr,
                                 size_t start, size_t pageSize) {
-    // Backing by declared name: `slots` (MapEntry<K,V>[] inline), `ctrl` (the
-    // SwissTable control bytes, one per slot), `cap` (slot count). Missing any
-    // → fail safe to the object-field view.
+    // Backing by declared name: `slots` (MapEntry<K,V>[] inline), `ctrl` (one
+    // SwissTable control byte per slot), `cap` (slot count).
     auto fields = objectChildren(type, addr);
     const auto* slotsF = findChild(fields, "slots");
     const auto* ctrlF = findChild(fields, "ctrl");
@@ -353,7 +315,7 @@ ValueInspector::hashMapChildren(const std::string& type, void* addr,
 
     // A slot is live when its control byte has the high bit clear (FULL); EMPTY
     // (0x80) and DELETED (0xFE) both have it set. Only the first `cap` ctrl
-    // bytes are real slots (the tail 16 mirror the head).
+    // bytes are real slots, the tail 16 mirroring the head.
     int64_t n = std::min<int64_t>(cap, std::min<int64_t>(ctrlLen, slotsLen));
     std::vector<int64_t> live;
     for (int64_t i = 0; i < n; i++)
@@ -372,11 +334,11 @@ ValueInspector::hashMapChildren(const std::string& type, void* addr,
         const auto* valF = findChild(entry, "val");
         if (!keyF || !valF) continue;   // layout drift → skip, never misread.
         InspectedChild child;
-        child.name = inspect(keyF->type, keyF->addr).summary;  // labelled by key
+        child.name = inspect(keyF->type, keyF->addr).summary;
         child.type = valF->type;
         child.addr = valF->addr;
         child.storage = valF->storage;
-        narrowRow(child);   // value rows report their RUNTIME type (§2.1.5)
+        narrowRow(child);
         page.children.push_back(std::move(child));
     }
     page.nextStart = end;
@@ -385,16 +347,14 @@ ValueInspector::hashMapChildren(const std::string& type, void* addr,
 }
 
 std::string ValueInspector::objectSummary(const std::string& type, void* addr) {
-    // A brief field peek: the first few scalar (primitive) fields as {x=3, y=4},
-    // length-capped; {…} when there is no cheap scalar (§4.1.4).
     auto fields = objectChildren(type, addr);
     constexpr size_t kMaxFields = 4;
     constexpr size_t kMaxLen = 60;
     std::string out = "{";
     size_t shown = 0;
     for (const auto& f : fields) {
-        if (f.isStatic) continue;   // the peek is the INSTANCE's state (§4.1.3)
-        if (!isPrimitiveTypeName(f.type)) continue;  // cheap scalars only
+        if (f.isStatic) continue;   // the peek is the INSTANCE's state
+        if (!isPrimitiveTypeName(f.type)) continue;
         if (shown) out += ", ";
         out += f.name + "=" + inspect(f.type, f.addr).summary;
         if (++shown >= kMaxFields || out.size() > kMaxLen) break;
@@ -407,15 +367,12 @@ std::string ValueInspector::objectSummary(const std::string& type, void* addr) {
 InspectedValue ValueInspector::inspect(const std::string& type, void* addr) {
     InspectedValue r;
 
-    // Scalar leaf: rendered by width, exactly as today (§4.1.1).
     if (isPrimitiveTypeName(type)) {
         r.kind = ValueKind::Leaf;
         r.summary = formatValue(type, addr);
         return r;
     }
 
-    // An array is an aggregate regardless of whether its name resolves in the
-    // registry — the `[]` suffix is authoritative.
     if (!type.empty() && type.back() == ']') {
         r.kind = ValueKind::Aggregate;
         char* data = nullptr;
@@ -431,14 +388,12 @@ InspectedValue ValueInspector::inspect(const std::string& type, void* addr) {
 
     const TypeRecord* rec = table_.find(type);
     if (!rec) {
-        // Not carried by the table: an honest unknown, never a guessed layout.
         r.kind = ValueKind::Unknown;
         r.summary = "<unknown>";
         return r;
     }
 
-    // String is a leaf that renders its text (§2.4) — identified by the record's
-    // own flag, not by matching a stdlib type name at a stop.
+    // A String is identified by the record's own flag, never by type name.
     if (rec->kind == TypeKind::Leaf) {
         r.kind = ValueKind::Leaf;
         r.summary = rec->isString ? decodeString(addr)
@@ -446,11 +401,8 @@ InspectedValue ValueInspector::inspect(const std::string& type, void* addr) {
         return r;
     }
 
-    // Any other class/interface is an aggregate.
     r.kind = ValueKind::Aggregate;
 
-    // A registered collection summarizes by its logical contents: an ArrayList
-    // inline-or-counts its elements like an array; a HashMap counts its entries.
     if (rec->collectionKind != CollectionKind::None) {
         if (auto page = collectionChildren(type, addr, 0, 6)) {
             int64_t count = static_cast<int64_t>(page->children.size()) +
@@ -473,7 +425,6 @@ InspectedValue ValueInspector::inspect(const std::string& type, void* addr) {
         }
     }
 
-    // Otherwise a brief object field peek.
     r.summary = objectSummary(type, addr);
     return r;
 }
@@ -483,15 +434,10 @@ ChildPage ValueInspector::children(const std::string& type, void* addr,
     ChildPage page;
     page.nextStart = start;
 
-    // Objects: fields decoded in one shot (a class has few fields, no paging).
     if (type.empty() || type.back() != ']') {
-        if (isPrimitiveTypeName(type)) return page;  // leaf, no children
+        if (isPrimitiveTypeName(type)) return page;
         const TypeRecord* rec = table_.find(type);
-        // A leaf (String renders its text) and an uncarried type both have no
-        // children to enumerate.
         if (!rec || rec->kind == TypeKind::Leaf) return page;
-        // A registered collection gets its logical, paged view; otherwise (or
-        // on a layout mismatch) fall back to the raw object fields.
         if (auto coll = collectionChildren(type, addr, start, pageSize))
             return *coll;
         if (start == 0) page.children = objectChildren(type, addr);
@@ -514,11 +460,9 @@ ChildPage ValueInspector::children(const std::string& type, void* addr,
         child.name = "[" + std::to_string(i) + "]";
         child.type = info.elemType;
         child.storage = info.storage;
-        // The child address is always the slot (data + i*stride); a Pointer
-        // slot holds the instance pointer, an Inline slot holds the bytes.
-        // inspect(child.type, child.addr) decodes either uniformly.
+        // The address is the slot: a Pointer holds a pointer, an Inline bytes.
         child.addr = data + i * info.stride;
-        narrowRow(child);   // element rows report their RUNTIME type (§2.1.5)
+        narrowRow(child);
         page.children.push_back(std::move(child));
     }
     page.nextStart = static_cast<size_t>(end);

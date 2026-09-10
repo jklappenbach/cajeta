@@ -7,22 +7,14 @@
 
 namespace cajeta {
 
-    // Populate a @GenerateMock-generated `Mock<Name>` class by synthesizing its
-    // body (a dev.cajeta.unit.MockEngine field, a ctor, and a forwarding override
-    // of every overridable target method) as Cajeta SOURCE and re-parsing it into
-    // `mock` — reusing the whole front-end instead of hand-writing LLVM IR per
-    // signature. `mock` already extends `target` (set by synthesizeMock via
-    // fillFromDeclaration). The caller runs `mock->generatePrototype()` afterward.
-    //
-    // See specs/archive/mock-codegen-spec.md.
+    // Populates a @GenerateMock `Mock<Name>` by synthesizing its body — a MockEngine field,
+    // a ctor, forwarding overrides — as Cajeta SOURCE and re-parsing it into `mock`.
     void fillMockClassBody(const CajetaClassPtr& mock,
                            const CajetaClassPtr& target,
                            const CajetaModulePtr& module);
 
-    // M6: synthesize a no-arg constructor on `owner` that auto-initializes each
-    // field-level @Mock field — `this.<field> = heap <mockCanonical>();`. Pairs
-    // are (fieldName, mockClassCanonicalName). The synthesized default ctor does
-    // not run field initializers, so the init must live in an explicit ctor.
+    // Synthesizes a no-arg constructor on `owner` initializing each field-level @Mock field
+    // from (fieldName, mockCanonicalName) pairs, since the default ctor runs no initializers.
     void addMockFieldInitCtor(
         const CajetaClassPtr& owner,
         const std::vector<std::pair<std::string, std::string>>& inits,

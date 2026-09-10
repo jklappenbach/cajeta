@@ -19,21 +19,9 @@ namespace cajeta::dbg {
             return builder;
         }
 
-        // cajeta-profiler 4.2.e (spec §2.5). The profiler must refuse to arm on
-        // a --line-info=off binary rather than produce an empty trace, and the
-        // runtime cannot infer the flag: an empty shadow stack is what an idle
-        // program looks like too, and counting probe calls would put a cost on
-        // the hot path §2.9 forbids. So codegen says so, once per module.
-        //
-        // A ctor, NOT a weak extern. cajeta_rt_core.c's loc-table note has the
-        // reason: the runtime bitcode is linked into each module long before
-        // codegen emits its definition, so a weak default there and a strong one
-        // here collide in one module and LLVM silently renames the second. A
-        // ctor behaves identically under LLJIT and a native link — the shape the
-        // loc table and the XPU kernel registry both already use.
-        //
-        // Idempotent by construction: emitLineEnter runs per method, and the
-        // presence of the ctor function is the "already done" flag.
+        // Tells the runtime, once per module, that line probes were compiled in, so
+        // the profiler can refuse to arm on a --line-info=off binary. A ctor rather
+        // than a weak extern, which the linked-in runtime bitcode would collide with.
         void ensureLineInfoRegistered(llvm::Module* mod,
                                       const cajeta::CajetaModulePtr& module) {
             static const char* kCtorName = "__cajeta.lineinfo.register";
@@ -61,15 +49,13 @@ namespace cajeta::dbg {
         if (!fn) return;
         auto& ctx = *module->getLlvmContext();
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
-        // #FrameDesc { i8* typeName, i8* methodName, i8* fileName } — one private
-        // constant per method, program lifetime; matches CajetaFrameDesc in
-        // cajeta_rt_core.c. The strings land in the builder's current module.
+        // { i8* typeName, i8* methodName, i8* fileName }, matching CajetaFrameDesc
+        // in cajeta_rt_core.c: one private constant per method, program lifetime.
         llvm::Constant* tC = builder->CreateGlobalString(typeName);
         llvm::Constant* mC = builder->CreateGlobalString(methodName);
         llvm::Constant* fC = builder->CreateGlobalString(fileName);
         llvm::StructType* descTy = llvm::StructType::get(ctx, {ptrTy, ptrTy, ptrTy});
         llvm::Module* mod = builder->GetInsertBlock()->getModule();
-        // First probe in this module also records that probes exist at all.
         ensureLineInfoRegistered(mod, module);
         auto* desc = new llvm::GlobalVariable(
             *mod, descTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
@@ -86,37 +72,9 @@ namespace cajeta::dbg {
     }
 
     void emitLineMark(cajeta::CajetaModulePtr module, int line) {
-        // The per-STATEMENT mark is the entire runtime cost of the shadow
-        // stack, and it is not close. Measured 2026-08-22 at -O3:
-        //
-        //                       off     enter/leave    + marks
-        //   realistic body     0.11 s      0.11 s       0.39 s   (3.5x)
-        //   tiny callee        0.05 s      0.15 s       0.47 s   (9.4x)
-        //
-        // Per-CALL enter/leave is at parity with an uninstrumented build on
-        // ordinary code; per-statement marks cost 3.5-9.4x. And the cost is
-        // NOT the probe's work — with the bodies emptied the figure is
-        // unchanged, because an opaque call at every statement boundary
-        // forbids inlining and folding. There is no cheap version to engineer
-        // toward, only a decision about when to emit them at all.
-        //
-        // So they are now a --debug-info=full feature. `line` (the default,
-        // and what the release flavor selects) keeps the frame identity that
-        // makes a trace name Type.method(File.cajeta) and that the profiler
-        // samples; `full` adds the exact line. This is what the flag's own
-        // note in CompilerMode.h asked for: "measure before relying on
-        // default-on in release."
-        //
-        // EITHER flag, derived at the USE site — the same rule Block.cpp
-        // applies to `__cajeta_dbg_safepoint`, and for the same reason. A mark
-        // and a safepoint are both per-statement, so a consumer that has
-        // already accepted the per-statement cost should not then have to
-        // discover that its line numbers went missing. Gating on `debugInfo`
-        // alone did exactly that to the Jupyter kernel, which asks for
-        // `safepoints` (and deliberately NOT `debugInfo`, whose keep-all class
-        // retention broke the first cell — see KernelSession): every notebook
-        // traceback silently lost its line and reported `cell:0`, which is the
-        // one thing `everyDiagnosticNamesTheCellAndLine` exists to prevent.
+        // A per-statement mark costs 3.5-9.4x an uninstrumented build — an opaque
+        // call at every statement boundary forbids inlining — so it is emitted only
+        // under debugInfo OR safepoints, either of which already accepts that cost.
         const auto& f = module->getFlags();
         if (!f.debugInfo && !f.safepoints) return;
         llvm::IRBuilder<>* builder = lineGuard(module);
@@ -127,17 +85,9 @@ namespace cajeta::dbg {
     }
 
     int fileLineFor(const cajeta::CajetaModulePtr& module, int snippetLine) {
-        // The two deltas COMPOSE; they are not alternatives. A generic method
-        // on a generic class is re-parsed twice: the class body from a class
-        // snippet, then the method from a method snippet cut out of THAT. So
-        // the method's delta maps method-snippet -> class-snippet, and the
-        // class's maps class-snippet -> file. Taking one or the other left
-        // `Holder<?>.boom` (and `Column<?>.of`) short by exactly the class
-        // delta, landing on the `/**` that opens the method's doc comment.
-        //
-        // Summing is safe for the single-snippet cases because the other term
-        // is zero: an ordinary method of a class template has no delta of its
-        // own, and a generic method on a plain class has no class delta.
+        // The two deltas COMPOSE, not alternate: a generic method on a generic class
+        // is re-parsed twice, so the method's delta maps method-snippet to class-
+        // snippet and the class's maps class-snippet to file. Either alone is short.
         int delta = 0;
         if (auto method = module->getCurrentMethod()) {
             delta += method->getDbgLineDelta();

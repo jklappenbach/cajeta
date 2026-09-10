@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 2/20/22.
-//
+// HeapField - a Field whose value lives in heap storage.
 
 #pragma once
 

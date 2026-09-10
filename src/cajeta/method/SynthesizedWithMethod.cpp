@@ -27,9 +27,6 @@ namespace cajeta {
             CajetaModulePtr module, CajetaClassPtr parent,
             StructurePropertyPtr field)
         : Method(module, buildWithMethodName(field->getName()),
-                 // The with method returns the SAME class type, by-pointer
-                 // (class-pass-by-pointer rule). Method's return-type
-                 // computation honors that convention.
                  std::static_pointer_cast<CajetaType>(parent),
                  parent),
           field(field) {
@@ -38,9 +35,6 @@ namespace cajeta {
 
     void SynthesizedWithMethod::initParameter() {
         if (!parameterList.empty()) return;  // idempotent
-        // Parameter named after the field for self-documentation; the
-        // user calling `p.withX(value)` doesn't see the name, so this
-        // is purely for the generated IR.
         auto valueParam = make_shared<FormalParameter>(
             field->getName(), field->getType());
         valueParam->setParent(shared_from_this());
@@ -50,13 +44,11 @@ namespace cajeta {
 
     void SynthesizedWithMethod::generateCode() {
         auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
-        // Idempotent — Phase 2 codegen passes loop until quiescent and may
-        // revisit this method. Without this guard, a second visit appends a
-        // duplicate `entry` block to the function and the JIT bitcode parse
-        // rejects "Found return instr followed by another block with no preds".
+        // Idempotent: Phase 2 codegen loops until quiescent and may revisit this
+        // method; a second visit would append a duplicate `entry` block, which the
+        // JIT bitcode parse rejects.
         if (llvmFunction && !llvmFunction->empty()) return;
-        // Signature post-prototype: (this, value) -> ptr (to new instance).
-        // arg(0) is this; arg(1) is the field's new value.
+        // Signature post-prototype: (this, value) -> ptr, arg(0) this, arg(1) the value.
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
@@ -73,8 +65,8 @@ namespace cajeta {
                 "CAJETA_ERROR_WITH_RUNTIME");
         }
 
-        // Memcpy intrinsic — preserves the vtable pointer at slot 0 and
-        // every field bit-for-bit. We then overwrite the targeted field.
+        // memcpy preserves the vtable pointer at slot 0 and every field bit-for-bit;
+        // the targeted field is overwritten afterwards.
         llvm::Function* memcpyFn = llvm::Intrinsic::getOrInsertDeclaration(
             lmod, llvm::Intrinsic::memcpy,
             {ptrTy, ptrTy, i64Ty});
@@ -85,12 +77,10 @@ namespace cajeta {
         llvm::Value* thisPtr = llvmFunction->getArg(0);
         llvm::Value* newValue = llvmFunction->getArg(1);
 
-        // Allocate a fresh instance via __cajeta_alloc(size).
         llvm::Value* sizeArg = llvm::ConstantInt::get(i64Ty, instSize);
         llvm::Value* newInst = b.CreateCall(allocFn, {sizeArg},
             std::string("with.alloc.") + field->getName());
 
-        // memcpy(newInst, this, instSize, isvolatile=false).
         b.CreateCall(memcpyFn, {
             newInst,
             thisPtr,
@@ -98,7 +88,6 @@ namespace cajeta {
             llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx), 0)
         });
 
-        // Overwrite the named field.
         int idx = parent->getFieldLlvmIndex(field);
         if (idx < 0) {
             throw Exception(

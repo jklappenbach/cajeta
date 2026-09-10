@@ -1,7 +1,4 @@
-//
-// Front-matter Markdown splitting. See FrontMatter.h and
-// specs/archive/yaml-frontmatter-spec.md §2.
-//
+// Front-matter Markdown splitting. See FrontMatter.h and specs/archive/yaml-frontmatter-spec.md §2.
 #include "cajeta/buildtool/FrontMatter.h"
 
 #include "cajeta/buildtool/Yaml.h"
@@ -15,17 +12,13 @@ namespace cajeta::buildtool {
 
         constexpr std::string_view kBom = "\xEF\xBB\xBF";
 
-        // A single line read out of the source.
         struct Line {
             std::string_view content; // line text, trailing '\r' removed (for fence compares)
             size_t next;              // index just past the line's '\n' (or source size)
         };
 
-        // Read the line beginning at `pos`. The returned `content` has any trailing
-        // '\r' stripped so CRLF and LF fences compare equal; `next` always points at
-        // the first byte of the following line (or the end of source). These byte
-        // scans are isolated so a SIMD newline scan can replace them later
-        // (spec §5) without touching the split logic.
+        // Reads the line at `pos`; `content` has any trailing '\r' stripped so CRLF
+        // and LF fences compare equal, and `next` points at the following line.
         Line readLine(std::string_view s, size_t pos) {
             size_t nl = s.find('\n', pos);
             if (nl == std::string_view::npos) {
@@ -59,7 +52,6 @@ namespace cajeta::buildtool {
 
         Line first = readLine(source, start);
         if (first.content != "---") {
-            // No frontmatter: the entire input is the body, byte-for-byte.
             out.present = false;
             out.body.assign(source.data(), source.size());
             return out;
@@ -72,7 +64,6 @@ namespace cajeta::buildtool {
         while (pos < source.size()) {
             Line line = readLine(source, pos);
             if (isClosingFence(line.content)) {
-                // Header is the raw bytes between the fences (fence excluded).
                 out.header.assign(source.data() + headerStart, pos - headerStart);
                 pos = line.next;
                 closed = true;
@@ -87,7 +78,6 @@ namespace cajeta::buildtool {
                 "front matter: opening '---' fence has no closing fence");
         }
 
-        // Body is everything after the closing fence line, byte-for-byte.
         out.body.assign(source.data() + pos, source.size() - pos);
         return out;
     }
@@ -101,12 +91,11 @@ namespace cajeta::buildtool {
         FrontMatter out;
         out.body = std::move(split->body);
         if (!split->present) {
-            // No fence: empty frontmatter, whole input is the body.
             return out;
         }
 
-        // The header's first line is the document line after the opening `---`
-        // fence (line 1), so YAML errors report document-absolute lines.
+        // The header's first line is the document line after the opening `---`, so
+        // YAML errors report document-absolute lines.
         auto value = parseYaml(split->header, 2);
         if (!value) {
             return value.takeError();
@@ -125,7 +114,6 @@ namespace cajeta::buildtool {
 
         auto parsed = parseFrontMatter((*buffer)->getBuffer());
         if (!parsed) {
-            // Prefix the path so file-level errors carry their source.
             return llvm::createStringError(
                 llvm::inconvertibleErrorCode(),
                 (path + ": " + llvm::toString(parsed.takeError())).str());

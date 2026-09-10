@@ -1,24 +1,5 @@
-// Compiler-synthesized methods for the @Builder annotation
-// (docs/specification/reflect/Annotations.md § Builders). Three method shapes:
-//
-//   - SynthesizedBuilderSetterMethod  — `Outer.Builder fieldName(T v)`
-//     chained setter on the Builder. Stores the value to the matching
-//     Builder field and returns `this` for chaining.
-//
-//   - SynthesizedBuildMethod          — `Outer build()` on the Builder.
-//     Allocates a fresh Outer instance, initializes its vtable slot,
-//     calls Outer's all-args ctor with the Builder's accumulated
-//     field values, and returns the new instance.
-//
-//   - SynthesizedBuilderFactoryMethod — `static Outer.Builder builder()`
-//     on Outer. Allocates a Builder, initializes its vtable slot,
-//     and returns it. (No call to Builder's ctor — Builder's ctor
-//     is the synthesized no-arg one, which zero-inits all fields;
-//     the alloc itself zero-fills.)
-//
-// All three are added during CajetaClass::synthesizeBuilder, which
-// also creates the Builder CajetaClass and registers it in
-// canonicalMap as `<outer-canonical>.Builder`.
+// Compiler-synthesized methods for @Builder: the chained setters, build() on
+// the Builder, and the static builder() factory. Added by synthesizeBuilder.
 
 #pragma once
 
@@ -31,9 +12,9 @@ namespace cajeta {
 
     class SynthesizedBuilderSetterMethod : public Method {
     public:
-        // `methodName` is the chained setter's name on Builder. With
-        // @Builder(setterPrefix="with") on a field `name`, the caller
-        // passes `withName`; otherwise the bare field name.
+        // Chained setter `Outer.Builder methodName(T v)`: stores to the matching
+        // Builder field and returns `this`. @Builder(setterPrefix) decides
+        // whether `methodName` is prefixed or the bare field name.
         SynthesizedBuilderSetterMethod(CajetaModulePtr module,
                                         CajetaClassPtr builder,
                                         StructurePropertyPtr field,
@@ -49,8 +30,8 @@ namespace cajeta {
 
     class SynthesizedBuildMethod : public Method {
     public:
-        // `methodName` defaults to "build" (Lombok parity) but
-        // @Builder(buildMethodName="...") renames it.
+        // `Outer methodName()` on the Builder: allocates an Outer, initializes its
+        // vtable slot, and calls Outer's all-args ctor with the Builder's slots.
         SynthesizedBuildMethod(CajetaModulePtr module,
                                 CajetaClassPtr builder,
                                 CajetaClassPtr outer,
@@ -65,23 +46,16 @@ namespace cajeta {
 
     class SynthesizedBuilderFactoryMethod : public Method {
     public:
-        // Per-field default to apply at builder() time. The mirror
-        // field is the Builder's struct slot to write; the initializer
-        // is the outer's parsed `field = expr` AST node (only
-        // populated for fields annotated @Builder.Default).
+        // One @Builder.Default: the Builder slot to write, and the outer's
+        // parsed `field = expr` node that builder() evaluates into it.
         struct DefaultEntry {
             StructurePropertyPtr mirrorField;
             AbstractSyntaxNodePtr initializer;
         };
 
-        // `methodName` defaults to "builder" but
-        // @Builder(builderMethodName="...") renames it.
-        // `defaults` carries the @Builder.Default field initializers
-        // that the factory body evaluates and stores into the
-        // freshly-allocated Builder. The user-facing semantic:
-        // builder() returns a Builder whose @Builder.Default slots
-        // already hold their declared defaults; setter calls overwrite
-        // them; build() consumes whatever's in the slots.
+        // `static Outer.Builder methodName()`: allocates a Builder, initializes
+        // its vtable slot, and stores `defaults` into the matching slots. The
+        // alloc zero-fills, so no call to Builder's ctor is emitted.
         SynthesizedBuilderFactoryMethod(CajetaModulePtr module,
                                          CajetaClassPtr outer,
                                          CajetaClassPtr builder,

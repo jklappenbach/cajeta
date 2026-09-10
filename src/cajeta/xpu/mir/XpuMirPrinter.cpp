@@ -1,7 +1,4 @@
-//
 // XpuMirPrinter — see header.
-//
-
 #include "XpuMirPrinter.h"
 
 #include "../core/AddressSpace.h"

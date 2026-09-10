@@ -46,36 +46,23 @@
 #include "ArrayLowering.h"
 
 namespace cajeta {
-    // collection-literals §2 (Unit 1) — see the declaration in Expression.h.
     ExpressionPtr collectionLiteralFromArray(CajetaTypePtr target,
                                              const ExpressionPtr& literal) {
         auto lit = dynamic_pointer_cast<ArrayLiteralExpression>(literal);
         if (!lit) return nullptr;
-        // Array targets keep the array path (their element type is pushed by
-        // the caller); only a reference class — a collection — is rewritten to
-        // a from-array constructor call.
         if (dynamic_pointer_cast<CajetaArray>(target)) return nullptr;
         auto cls = dynamic_pointer_cast<CajetaClass>(target);
         if (!cls) return nullptr;
 
-        // 1.2.2 — the element type T is the target's first type argument, so the
-        // inner literal builds the `T[]` the ctor expects (e.g. `ArrayList<int64>
-        // = [1,2,3]` builds int64[], widening past the int32 unify would give).
         const auto& targs = cls->getTypeArguments();
         if (!targs.empty()) {
             lit->setElementType(targs[0]);
         }
-        // Carry the literal's placement prefix to the instance construction; the
-        // inner array becomes a plain heap ctor argument. Bare `[...]` → heap.
         bool stackAlloc = lit->isStackAlloc();
         bool sharedAlloc = lit->isSharedAlloc();
         lit->setStackAlloc(false);
         lit->setSharedAlloc(false);
 
-        // Rebuild what the parser produces for the spelled `heap
-        // ArrayList<int32>([...])`: the template SHORT name (strip any `<...>`
-        // off the instantiation's name) + the resolved type arguments, so
-        // resolveTypes re-resolves the base template and re-instantiates.
         string shortName = cls->getQName()->getTypeName();
         auto lt = shortName.find('<');
         if (lt != string::npos) shortName = shortName.substr(0, lt);
@@ -96,60 +83,15 @@ namespace cajeta {
         return neu;
     }
 
-// `#= #x` — does the right-hand side of a `#=` carry its own `#`? The store
-// already IS the transfer, so a second sharp is redundant WHATEVER the source's
-// shape, and the three `#=` sites reject it (CAJETA_ERROR_DOUBLE_TRANSFER).
-//
-// uniform-transfer-semantics Unit 3 widened this. It used to answer the
-// narrower "is the operand a BARE IDENTIFIER", because a FIELD or ELEMENT
-// source needed the double sharp for the "fused claim": a forward of whatever
-// mode the source slot held, owned or borrowed, VERBATIM, where a plain `#=`
-// into a LOCAL demands a title. That existed for exactly one reason — a
-// container slot MIGHT hold a borrow. That premise is BACK: collections are not
-// containers and do not own by default (the stdlib collection insertion formals
-// were relaxed `#T` -> `T`), so a slot can legitimately hold a borrow. The
-// `#= #` exemption was nonetheless retired in Unit 3.
-//
-// ELEMENT→ELEMENT stores keep forwarding under the SINGLE sharp: the
-// fwdLhs/fwdSrc arm in BinaryOpExpression::generateCode never required the
-// double, so `dst[i] #= src[j]` is still the shift/sift primitive.
-//
-// What DOES go away is claiming a possibly-titleless slot into a LOCAL:
-// `T x #= #slot` used to forward the slot's mode, so a borrowed slot yielded a
-// borrow. `T x #= slot` does not — it demands a title, and a slot without one
-// panics CAJETA_PANIC_TITLE_MISS. That is the honest reading of what the code
-// says, and it is the intended consequence: the old spelling let "claim" mean
-// "borrow if that's all there is". Take a plain borrow (`T x = slot`) when that
-// is what you meant.
 bool cajetaRhsCarriesRedundantSharp(
         CajetaParser::ExpressionContext* rhs) {
-    // `REFERENCE expression` is the only expression alternative carrying a
-    // REFERENCE token, so the size check is belt-and-braces against a grammar
-    // change quietly widening this into other productions.
     if (!rhs || rhs->REFERENCE() == nullptr) return false;
     return rhs->expression().size() == 1;
 }
 
-    // `(Name)(operand)` — is this postfix-call node actually a CAST whose
-    // destination names a type? Returns the destination type when so, null to
-    // leave the node a call.
-    //
-    // Shape first, resolution second, and both must hold:
-    //
-    //   - the callee is a PARENTHESIZED SINGLE IDENTIFIER. `kernel.launch(d)(a)`
-    //     has a method-call callee and is excluded here, before any lookup —
-    //     the XPU launch form never reaches the resolver.
-    //   - exactly ONE argument, unlabelled and not `#`-transferred. A cast has
-    //     one operand; `(f)(a, b)` and `(f)(#a)` stay calls.
-    //   - the identifier RESOLVES to a type in the current scope. This is the
-    //     only semantic step, and it is deliberately last: a name that is not
-    //     a type falls through and behaves exactly as it did before.
-    //
-    // Resolution runs through the ordinary resolver, so a class-level or
-    // method-level type parameter binds through the module's substitution
-    // stack when the template body is walked for an instantiation — which is
-    // the only time a template body IS walked. That is why the check cannot
-    // be hoisted into the grammar or done purely on the name.
+    // `(Name)(operand)` — returns the destination type when this postfix-call node is
+    // really a CAST (parenthesized single identifier, one plain argument, and the name
+    // resolves to a type), else null to leave it a call. Shape first, resolution last.
     static CajetaTypePtr castDestOfParenCallee(
             CajetaParser::ExpressionContext* ctx) {
         if (ctx->expression().size() != 1 || !ctx->parameterList()) {
@@ -161,16 +103,12 @@ bool cajetaRhsCarriesRedundantSharp(
         if (!only->expression() || only->REFERENCE() || only->parameterLabel()) {
             return nullptr;
         }
-        // Callee must be `'(' identifier ')'` — a primary holding parens whose
-        // inner expression is a primary holding just an identifier.
         auto* calleePrim = ctx->expression(0)->primary();
         if (!calleePrim || !calleePrim->LPAREN() || !calleePrim->expression()) {
             return nullptr;
         }
         auto* innerPrim = calleePrim->expression()->primary();
         if (!innerPrim || !innerPrim->identifier()) return nullptr;
-        // A bare identifier primary carries nothing else; anything richer
-        // (`(a.b)(x)`, `(a[0])(x)`) is a call, not a cast destination.
         if (innerPrim->getText() != innerPrim->identifier()->getText()) {
             return nullptr;
         }
@@ -180,6 +118,9 @@ bool cajetaRhsCarriesRedundantSharp(
             nullptr);
     }
 
+    // Builds the Expression node for one parser expression context: the operator or
+    // keyword present on `ctx` selects the node kind, then the loop at the bottom
+    // attaches the child expressions (a `#=` RHS is wrapped in a mode-carrying Move).
     ExpressionPtr Expression::fromContext(CajetaParser::ExpressionContext* ctx) {
         antlr4::Token* token = ctx->getStart();
         ExpressionPtr result = nullptr;
@@ -188,24 +129,14 @@ bool cajetaRhsCarriesRedundantSharp(
         if (ctx->ASSIGN()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
         } else if (ctx->SHARP_ASSIGN()) {
-            // title-stores §2.1 — `dst #= v` builds one assignment node with
-            // the RHS wrapped in a MoveExpression at the attach loop below.
-            // It is a MODE-CARRYING store, NOT an unconditional `dst = #v`:
-            // the destination slot's title bit is armed only when a title was
-            // actually tendered (e.g. a plain formal whose caller passed `#`);
-            // when no title was tendered the store records a borrow. Measured:
-            // with a plain (borrowing) formal, `m.put(#k, i)` keeps 200/200
-            // keys alive, `m.put(k, i)` keeps 2/200.
+            // `dst #= v` builds one assignment node with the RHS wrapped in a MoveExpression
+            // below. It is MODE-CARRYING, not an unconditional `dst = #v`: the slot's title
+            // bit is armed only when a title was actually tendered.
             result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
             sharpAssign = true;
         } else if (ctx->COLONCOLON()) {
-            // Method reference: `expr::id`, `Type::id`, or `Type::heap`
-            // (constructor reference). Check before the identifier form so we
-            // don't mis-route the token-bearing ctor form. Detect the LHS:
-            //   - typeType form (`Type::id` / `Type::heap`): grammar
-            //     captured a typeType in front of the COLONCOLON.
-            //   - expression form (`obj::id`): grammar captured an
-            //     expression in front.
+            // Method reference `expr::id` / `Type::id` / `Type::heap`. Checked before the
+            // identifier form so the token-bearing constructor form is not mis-routed.
             CajetaTypePtr methodRefRecvType;
             ExpressionPtr methodRefRecvExpr;
             std::string methodRefName;
@@ -225,33 +156,21 @@ bool cajetaRhsCarriesRedundantSharp(
         } else if (ctx->primary()) {
             result = PrimaryExpression::fromContext(ctx->primary());
         } else if (ctx->DOT()) {
-            // DOT-as-binary-op consumes all six suffix forms. Check before methodCall
-            // because `obj.foo()` matches both DOT and methodCall — DOT must win.
+            // DOT consumes all six suffix forms and is checked before methodCall, because
+            // `obj.foo()` matches both and DOT must win.
             if (ctx->SUPER() || ctx->superSuffix()) {
                 result = make_shared<UnsupportedExpression>("super call", token);
             } else if (ctx->innerCreator()) {
                 result = make_shared<UnsupportedExpression>(
                     "inner-class instantiation (obj.heap Inner())", token);
             } else if (ctx->methodCall()) {
-                // `obj.foo(args)` — method invocation on a receiver. The receiver is the
-                // lhs expression captured by the children-add loop at the bottom of this
-                // function (ctx->expression() returns [lhs] here).
                 result = make_shared<MethodCallExpression>(ctx->methodCall(), token);
             } else {
                 result = make_shared<DotExpression>(ctx, token);
             }
         } else if (ctx->methodCall()) {
-            // Bare standalone call `foo(...)` (no DOT). With-DOT calls are routed by the
-            // branch above.
             result = make_shared<MethodCallExpression>(ctx->methodCall(), token);
         } else if (ctx->HEAP()) {
-            // Unified-class allocation prefix (docs/specification/lang/UnifiedClasses.md). Phase 2a:
-            // both forms codegen.
-            // - `heap MyClass(args)` routes through NewExpression (today's
-            //   `NEW creator` path; malloc + ctor).
-            // - `heap MyClass { ... }` routes through AggregateInitializer-
-            //   Expression with stackAlloc=false; malloc + memset + vtable
-            //   init (for classes with vtables) + per-field stores.
             if (ctx->creator()) {
                 result = make_shared<NewExpression>(ctx->creator(), token);
             } else if (ctx->aggregateInitializer()) {
@@ -260,19 +179,10 @@ bool cajetaRhsCarriesRedundantSharp(
                 agg->setStackAlloc(false);
                 result = agg;
             } else if (ctx->arrayLiteral()) {
-                // `heap [1,2,3]` / `heap ["a":1]` — explicit heap placement (the
-                // default for a bare `[...]`); array/collection/map (§3/§4).
                 result = arrayOrMapLiteralFromContext(
                     ctx->arrayLiteral(), token, /*stack=*/false, /*shared=*/false);
             }
         } else if (ctx->STACK()) {
-            // Unified-class allocation prefix (docs/specification/lang/UnifiedClasses.md). Phase 2a:
-            // both forms now codegen.
-            // - `stack MyClass { ... }` routes through aggregate-init
-            //   (today's bare aggregate-init path; stack-allocated body).
-            // - `stack MyClass(args)` routes through NewExpression with
-            //   stackAlloc=true; ClassCreatorRest emits an entry-block
-            //   alloca + vtable init + ctor invocation instead of malloc.
             if (ctx->aggregateInitializer()) {
                 result = make_shared<AggregateInitializerExpression>(
                     ctx->aggregateInitializer(), token);
@@ -281,18 +191,12 @@ bool cajetaRhsCarriesRedundantSharp(
                 newExpr->setStackAlloc(true);
                 result = newExpr;
             } else if (ctx->arrayLiteral()) {
-                // `stack [1,2,3]` — frame-arena placement (array-literals §4);
-                // a `stack [...]` map carries the prefix to the HashMap instance.
                 result = arrayOrMapLiteralFromContext(
                     ctx->arrayLiteral(), token, /*stack=*/true, /*shared=*/false);
             }
         } else if (ctx->SHARED()) {
-            // `shared` placement — GPU workgroup-shared memory (NV addrspace 3),
-            // a sibling of heap/stack (CajetaXPU.md §3.1.2). Device-only: the
-            // NVPTX kernel lowerer turns `shared T[N]` into one per-block
-            // addrspace(3) global; the host generateCode path rejects it.
-            // v1 supports only the array-creation form (`shared T[N]`); the
-            // aggregate / class-creator forms parse but are rejected downstream.
+            // `shared` is GPU workgroup memory (device-only): the kernel lowerer turns
+            // `shared T[N]` into one addrspace(3) global, and the host path rejects it.
             if (ctx->creator()) {
                 auto newExpr = make_shared<NewExpression>(ctx->creator(), token);
                 newExpr->setSharedAlloc(true);
@@ -303,68 +207,38 @@ bool cajetaRhsCarriesRedundantSharp(
                 agg->setStackAlloc(false);
                 result = agg;  // host path rejects; v1 has no shared-aggregate
             } else if (ctx->arrayLiteral()) {
-                // `shared [1,2,3]` — device workgroup memory (array-literals §4);
-                // device-lowered, host path rejects.
                 result = arrayOrMapLiteralFromContext(
                     ctx->arrayLiteral(), token, /*stack=*/false, /*shared=*/true);
             }
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), ctx->primary() != nullptr);
         } else if (ctx->LPAREN()) {
-            // Two expression forms carry a top-level LPAREN:
-            //   - Cast:         '(' annotation* typeType ('&' typeType)* ')' expression
-            //   - Postfix call: expression '(' parameterList? ')'   (XPU launch)
-            // The cast carries a typeType; the postfix call does not. (A bare
-            // standalone call `foo(...)` lives inside a MethodCallContext, so
-            // its LPAREN never surfaces at this level.)
+            // Two forms carry a top-level LPAREN: a cast (`'(' typeType ')' expression`) and
+            // a postfix call. The cast carries a typeType; the call does not. A bare
+            // `foo(...)` lives inside a MethodCallContext and never surfaces here.
             if (!ctx->typeType().empty()) {
                 // Intersection casts (multiple typeTypes) aren't supported yet; take the first.
                 CajetaTypePtr destType = CajetaType::fromContext(ctx->typeType(0), nullptr);
                 result = make_shared<CastExpression>(destType, token);
             } else if (CajetaTypePtr namedDest = castDestOfParenCallee(ctx)) {
-                // `(Name)(expr)` — a cast whose destination NAMES a type and
-                // whose operand is parenthesized. The grammar's postfix-call
-                // alternative wins it, because `(Name)` is itself a valid
-                // parenthesized identifier expression, and the cast
-                // alternative is listed later. A PRIMITIVE destination cannot
-                // match that alternative (`(int64)` is not an expression),
-                // which is why `(int64) (mm & 65535)` always worked and
-                // `(E) (acc / 2.0)` did not — the dominant idiom in generic
-                // numeric code ("reduce in float64, narrow to E on store").
-                //
-                // Reinterpreted here rather than in the grammar so cast
-                // PRECEDENCE cannot move: `(T) a.b()` has an unparenthesized
-                // operand, never parses as a postfix call, and so never
-                // reaches this arm. Reordering the grammar alternatives would
-                // lift the cast above every suffix operator between them and
-                // regress it to `((T) a).b()`.
-                //
-                // Resolution failure falls through to the call, so an
-                // identifier that is not a type behaves exactly as before.
-                // See specs/typeparam-cast-of-paren-spec.md.
+                // `(Name)(expr)` — the postfix-call alternative wins this in the grammar, so the
+                // cast is reinterpreted HERE: reordering the alternatives would lift casts above
+                // every suffix operator between them and regress `(T) a.b()` to `((T) a).b()`.
                 result = make_shared<CastExpression>(namedDest, token);
                 castOfParenCallee = true;
             } else {
-                // `<callee>(args)` — the callee expression is attached as
-                // children[0] by the child loop at the bottom of this function.
                 result = make_shared<CallExpression>(ctx, token);
             }
         } else if (ctx->LBRACK() && ctx->COLON() && !ctx->QUESTION()) {
-            // `base[a:b]` — the window form (slice-spec §7.2). COLON + LBRACK
-            // on the SAME ctx only occurs for the slice alternative (a ternary
-            // carries QUESTION; a ternary/index inside the brackets is a child
-            // context).
+            // COLON with LBRACK on the SAME ctx only occurs for the slice alternative — a
+            // ternary carries QUESTION, and a nested index/ternary is a child context.
             result = make_shared<ArraySliceExpression>(ctx, token);
         } else if (ctx->LBRACK()) {
             result = make_shared<ArrayIndexExpression>(ctx, token);
-        // Grammar artifacts (annotation/creator/typeType-alone/RPAREN) are sub-rules that
-        // never appear as standalone expressions; their parent expression form has
-        // already been matched by a prior branch (NEW, LPAREN cast, etc.).
         } else if (!ctx->BITAND().empty()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_BITAND, token);
         } else if (ctx->ADD()) {
-            // The same ADD/SUB tokens cover both binary and prefix unary forms; the
-            // grammar tags unary with `ctx->prefix`.
+            // The same ADD/SUB tokens cover binary and prefix unary; `ctx->prefix` tags unary.
             result = ctx->prefix
                 ? static_pointer_cast<Expression>(make_shared<PrefixExpression>(PREFIX_OP_POSITIVE, token))
                 : static_pointer_cast<Expression>(make_shared<BinaryOpExpression>(BINARY_OP_ADD, token));
@@ -395,14 +269,8 @@ bool cajetaRhsCarriesRedundantSharp(
         } else if (ctx->BANG()) {
             result = make_shared<PrefixExpression>(PREFIX_OP_LOGNOT, token);
         } else if (ctx->lambdaExpression()) {
-            // L1 (typed params) + L1.5 (bare-identifier params with
-            // target-type inference). Parameter forms recognized:
-            //   `(T1 a, T2 b) -> expr`          — explicit types
-            //   `() -> expr`                    — zero params
-            //   `(a, b) -> expr`                — bare names, types from context
-            //   `a -> expr`                     — single bare name, type from context
-            // The `var`-list form parses but lands on UnsupportedExpression;
-            // block bodies likewise stub out until L2.
+            // Parameter forms: explicit types, `()`, a bare-name list, and a single bare name
+            // (those two take their types from context). Other forms fall through below.
             auto* lx = ctx->lambdaExpression();
             auto* lp = lx->lambdaParameters();
             std::vector<std::string> names;
@@ -410,11 +278,8 @@ bool cajetaRhsCarriesRedundantSharp(
             bool acceptable = false;
             if (lp) {
                 if (auto* fpl = lp->formalParameterList()) {
-                    // `var`-list params (`(var a, var b) -> ...`) must fall
-                    // through to UnsupportedExpression, not reach
-                    // FormalParameter::fromContext — its unresolved-type
-                    // diagnostic would throw UNRESOLVED_TYPE for `var`
-                    // before the NOT_IMPLEMENTED funnel below.
+                    // `var`-list params must fall through to UnsupportedExpression: FormalParameter::
+                    // fromContext throws UNRESOLVED_TYPE for `var` before the NOT_IMPLEMENTED funnel.
                     bool varForm = false;
                     for (auto* fp : fpl->formalParameter()) {
                         if (fp->typeType() && fp->typeType()->getText() == "var") {
@@ -432,23 +297,15 @@ bool cajetaRhsCarriesRedundantSharp(
                         acceptable = !names.empty() || fpl->formalParameter().empty();
                     }
                 } else if (lp->LPAREN() && lp->RPAREN() && !lp->lambdaLVTIList()) {
-                    // Parens form. Either empty `()` or bare-identifier list
-                    // `(a, b)`. Names captured; types filled in at resolve
-                    // time from the lambda's expectedType (set by the
-                    // surrounding LocalVariableDeclaration).
                     for (auto* id : lp->identifier()) {
                         names.push_back(id->getText());
                     }
                     acceptable = true;
                 } else if (!lp->identifier().empty() && !lp->LPAREN()) {
-                    // Single bare identifier `x -> expr`. Same inference
-                    // path as the parens-list form.
                     names.push_back(lp->identifier(0)->getText());
                     acceptable = true;
                 }
             }
-            // Body: expression form (L1/L1.5) or block form (L2-4). The
-            // var-list parameter form is still unsupported.
             auto* lb = lx->lambdaBody();
             AbstractSyntaxNodePtr body;
             if (lb && lb->expression()) {
@@ -465,9 +322,7 @@ bool cajetaRhsCarriesRedundantSharp(
                     "still unsupported in L2)", token);
             }
         } else if (ctx->switchExpression()) {
-            // switch expression — arrow form with single-expression bodies. Anything
-            // more elaborate (colon form, yield, guarded patterns) is rejected at
-            // codegen with NOT_IMPLEMENTED.
+            // Arrow form with single-expression bodies; richer forms reject at codegen.
             auto* sx = ctx->switchExpression();
             ExpressionPtr disc = sx->parExpression()
                 ? Expression::fromContext(sx->parExpression()->expression())
@@ -482,9 +337,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 }
                 auto outcome = rule->switchRuleOutcome();
                 if (outcome) {
-                    // Arrow form: the rule body is `blockStatement* statementExpression ;`.
-                    // We accept exactly the shape `expression ;` — i.e. a single
-                    // ExpressionStatement — and pull out its expression.
                     auto bs = outcome->blockStatement();
                     if (bs.size() == 1) {
                         auto* stmt = bs[0]->statement();
@@ -526,9 +378,8 @@ bool cajetaRhsCarriesRedundantSharp(
         } else if (ctx->OR()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_LOGOR, token);
         } else if (ctx->QUESTION()) {
-            // `cond ? then : else`. The grammar matches QUESTION and COLON together; we
-            // pick QUESTION as the discriminator. Children populated later by the loop
-            // at the bottom of this function as [cond, then, else].
+            // The grammar matches QUESTION and COLON together; QUESTION is the discriminator.
+            // Children are populated as [cond, then, else] by the loop at the bottom.
             result = make_shared<BooleanSwitchExpression>(token);
         } else if (ctx->ADD_ASSIGN()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_ADD_EQUALS, token);
@@ -555,24 +406,17 @@ bool cajetaRhsCarriesRedundantSharp(
         } else if (ctx->THIS()) {
             result = make_shared<ThisExpression>(ctx);
         } else if (ctx->REFERENCE()) {
-            // `#expr` — transfer ownership of expr at the surrounding consumption
-            // site (assignment LHS, method-call argument, or return). Wrapped in
-            // MoveExpression so consumers can detect it via dynamic_pointer_cast.
+            // `#expr` — wrapped in MoveExpression so consumers detect it by cast.
             result = make_shared<MoveExpression>(token);
         } else if (ctx->AWAIT()) {
-            // `await expr` — unwrap Task<T> to T (sync MVP just reads .value).
             result = make_shared<AwaitExpression>(token);
         } else if (ctx->SPAWN()) {
-            // `spawn expr` — run inner call now, return a completed Task<T>.
             result = make_shared<SpawnExpression>(token);
         } else if (ctx->DETACH()) {
-            // `detach expr` — run inner call now, discard the resulting Task.
             result = make_shared<DetachExpression>(token);
         } else if (ctx->INSTANCEOF()) {
-            // `expr instanceof Type` (plain) or `expr instanceof Type id` (the
-            // pattern form, which binds `id : Type` in the matched region —
-            // reified-capture §4). In the pattern form the type + identifier
-            // live inside `pattern` (the top-level typeType list is empty).
+            // In the PATTERN form (`expr instanceof Type id`) the type and identifier live
+            // inside `pattern`, and the top-level typeType list is empty.
             CajetaTypePtr targetType;
             string patternName;
             if (!ctx->typeType().empty()) {
@@ -590,10 +434,8 @@ bool cajetaRhsCarriesRedundantSharp(
         }
 
         if (result && castOfParenCallee) {
-            // `(Name)(operand)` reinterpreted as a cast. The operand is the
-            // postfix call's single ARGUMENT, not a child expression — the
-            // node's only `expression()` child is the callee `(Name)`, which
-            // is the destination type and must NOT become the cast's operand.
+            // The operand is the postfix call's single ARGUMENT: the node's only
+            // `expression()` child is the callee `(Name)`, which is the destination type.
             auto* only = ctx->parameterList()->parameterEntry(0);
             result->addChild(Expression::fromContext(only->expression()));
         } else if (result) {
@@ -603,12 +445,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     ExpressionPtr child = Expression::fromContext(childContext);
                     if (sharpAssign && childIndex == 1
                             && cajetaRhsCarriesRedundantSharp(childContext)) {
-                        // `x #= #y` — the transfer spelled twice. TECHNICALLY
-                        // VALID: it means exactly what `x #= y` means, since
-                        // `#=` already carries the source's mode. So it warns
-                        // rather than rejects — flagged here, reported from
-                        // MoveExpression::generateCode where the module (and
-                        // therefore the source path) is in hand.
+                        // `x #= #y` is valid and means `x #= y`, so it warns rather than rejects; the
+                        // report itself fires from MoveExpression::generateCode, which has the module.
                         if (auto redMv = dynamic_pointer_cast<MoveExpression>(child)) {
                             redMv->setRedundantSharp(true);
                         }
@@ -617,25 +455,14 @@ bool cajetaRhsCarriesRedundantSharp(
                         auto mv = make_shared<MoveExpression>(
                             childContext->getStart());
                         mv->addChild(child);
-                        // U3 — mark this wrapper MODE-CARRYING. `#=` is not a
-                        // claim of title (see the SHARP_ASSIGN comment above:
-                        // "when no title was tendered the store records a
-                        // borrow"), so the U2 transfer-of-a-borrow rejection
-                        // must not fire on it. Without this the two checks
-                        // collide head-on: U3 prescribes `#=` as the fix for a
-                        // borrow-alias capture, and U2 then rejects that very
-                        // `#=` because the source is a borrow. `#x` at a call
-                        // argument or a return still carries its own claim and
-                        // stays checked.
+                        // Mark the wrapper MODE-CARRYING: `#=` claims no title, only forwards the mode
+                        // the source holds, so the transfer-of-a-borrow rejection must not fire on it.
                         mv->setModeCarrying(true);
                         mv->setSharpStore(true);
                         child = mv;
                     }
-                    // title-stores §2.3 Phase 2 (plan 7.2.2) — the legacy
-                    // `dst = #v`: a plain ASSIGN whose RHS is itself a parsed
-                    // `#expr`. Only reachable when !sharpAssign, so `dst #= #v`
-                    // (whose inner move hangs off the wrapper above, not off
-                    // the assignment) is correctly left alone.
+                    // The legacy `dst = #v`: a plain ASSIGN whose RHS is itself a parsed `#expr`.
+                    // Only reachable when !sharpAssign, so `dst #= #v` is correctly left alone.
                     if (!sharpAssign && childIndex == 1 && ctx->ASSIGN()) {
                         if (auto rhsMove = dynamic_pointer_cast<MoveExpression>(child)) {
                             rhsMove->setLegacyTransferAssign(true);
@@ -657,9 +484,11 @@ bool cajetaRhsCarriesRedundantSharp(
     ArraySliceExpression::ArraySliceExpression(
         CajetaParser::ExpressionContext* ctx, antlr4::Token* token)
         : Expression(token) { exprKind = ExprKind::ArraySlice;
-        // children [base, from, to] attach via fromContext's child loop.
     }
 
+    // Types `base[a:b]` as `Slice<E>`; sub-slicing a Slice keeps its type. Leaves
+    // resolvedType null when the base is not resolvable yet — generateCode re-resolves
+    // against the live scope and hard-errors there.
     void ArraySliceExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         if (resolvedType || children.empty()) return;
@@ -674,18 +503,17 @@ bool cajetaRhsCarriesRedundantSharp(
                 resolvedType = sliceTmpl->instantiate({arr->getElementType()});
             }
         } else if (auto cls = dynamic_pointer_cast<CajetaClass>(bt)) {
-            // Sub-slicing a Slice<T> keeps the type (O(1) composition).
             if (cls->getQName()
                     && cls->getQName()->getPackageName() == "cajeta.lang"
                     && cls->getQName()->getTypeName().rfind("Slice", 0) == 0) {
                 resolvedType = bt;
             }
         }
-        // A null resolution here is tolerated: pre-pass sweeps run without
-        // the method scope, so the base identifier may not resolve yet.
-        // generateCode re-resolves with the live scope and hard-errors there.
     }
 
+    // Emits the window value: clamps `from`/`to` against the base's length and builds a
+    // `{ store, off, len }` Slice in an entry-block alloca, returning its address.
+    // Throws CAJETA_ERROR_SLICE_BASE when the base is neither an array nor a Slice.
     llvm::Value* ArraySliceExpression::generateCode(CajetaModulePtr module) {
         if (!resolvedType) resolveTypes(module);
         if (!resolvedType) {
@@ -754,8 +582,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 builder->CreateStructGEP(bodyTy, baseAddr, lenIdx), "sub_len");
         }
 
-        // Clamp like String.substring: from = max(from, 0); to = min(to, limit);
-        // to = max(to, from).
         from = builder->CreateSelect(
             builder->CreateICmpSLT(from, zero), zero, from, "slice_from");
         to = builder->CreateSelect(
@@ -781,17 +607,13 @@ bool cajetaRhsCarriesRedundantSharp(
     ArrayLiteralExpression::ArrayLiteralExpression(
         vector<ExpressionPtr> elems, antlr4::Token* token)
         : Expression(token), elements(std::move(elems)) { exprKind = ExprKind::ArrayLiteral;
-        // Mirror into children so generic AST walks (free-variable scans, type
-        // resolution) reach the elements too.
         for (auto& e : elements) addChild(e);
     }
 
-    // collection-literals §3 — parse a bracket list into a sequence or a map.
     ExpressionPtr arrayOrMapLiteralFromContext(
             CajetaParser::ArrayLiteralContext* ctx, antlr4::Token* token,
             bool stackAlloc, bool sharedAlloc) {
         auto* entriesCtx = ctx->arrayLiteralEntries();
-        // `[]` — empty sequence.
         if (!entriesCtx) {
             auto lit = make_shared<ArrayLiteralExpression>(
                 vector<ExpressionPtr>{}, token);
@@ -800,9 +622,7 @@ bool cajetaRhsCarriesRedundantSharp(
             return lit;
         }
         auto entryCtxs = entriesCtx->arrayLiteralEntry();
-        // `[:]` — empty map (a lone COLON, no entries).
         bool emptyMap = entriesCtx->COLON() != nullptr && entryCtxs.empty();
-        // Classify: an entry with its own COLON is a `key: value` map entry.
         bool anyMap = emptyMap, anySeq = false;
         for (auto* e : entryCtxs) {
             (e->COLON() != nullptr ? anyMap : anySeq) = true;
@@ -829,7 +649,6 @@ bool cajetaRhsCarriesRedundantSharp(
             lit->setSharedAlloc(sharedAlloc);
             return lit;
         }
-        // Sequence.
         vector<ExpressionPtr> elems;
         for (auto* e : entryCtxs) {
             elems.push_back(Expression::fromContext(e->expression()[0]));
@@ -856,8 +675,6 @@ bool cajetaRhsCarriesRedundantSharp(
             auto ca = dynamic_pointer_cast<CajetaClass>(a);
             auto cb = dynamic_pointer_cast<CajetaClass>(b);
             if (!ca || !cb) return nullptr;
-            // Collect a's ancestor set (including a itself). The `seen` guards
-            // keep a pathological cyclic/diamond hierarchy from looping forever.
             vector<CajetaClassPtr> aChain;
             std::set<std::string> aSeen;
             vector<CajetaClassPtr> stack{ca};
@@ -867,7 +684,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 aChain.push_back(c);
                 for (auto& s : c->getSuperClasses()) if (s) stack.push_back(s);
             }
-            // Walk b upward; the first ancestor found in a's set wins.
             std::set<std::string> bSeen;
             vector<CajetaClassPtr> bStack{cb};
             while (!bStack.empty()) {
@@ -903,7 +719,6 @@ bool cajetaRhsCarriesRedundantSharp(
             CajetaTypeFlags rf = result->getTypeFlags();
             CajetaTypeFlags tf = t->getTypeFlags();
             if ((rf & NUMBER_FLAG) && (tf & NUMBER_FLAG)) {
-                // Widest numeric: float beats int; otherwise more bits win.
                 bool rFloat = (rf & FLOAT_FLAG) != 0;
                 bool tFloat = (tf & FLOAT_FLAG) != 0;
                 if (rFloat != tFloat) {
@@ -926,14 +741,10 @@ bool cajetaRhsCarriesRedundantSharp(
         return result;
     }
 
+    // Resolves the elements, then infers the element type unless a target type was
+    // already pushed. An empty literal with no target stays unresolved here and is
+    // decided, or diagnosed, at generateCode once the target has arrived.
     void ArrayLiteralExpression::resolveTypes(CajetaModulePtr module) {
-        // Resolve the elements first, then infer the element type. A target
-        // type pushed before resolve (§3.2) pre-empts unify. An empty literal
-        // with no target is left unresolved here and decided at generateCode,
-        // where the target (e.g. `int32[] xs = []`) has by then been pushed;
-        // if none arrives, generateCode raises the empty diagnostic. A pushed
-        // target also overrides a non-empty unify result at generateCode
-        // (setElementType overwrites), so widening still applies.
         AbstractSyntaxNode::resolveTypes(module);
         if (!elementType && !elements.empty()) {
             elementType = unifyElementType(module);
@@ -943,28 +754,18 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // Allocates the array and stores each element, first pushing the element type into
+    // nested `[...]` and prefixless `{...}` elements. Rejects `shared` placement:
+    // workgroup memory is emitted only by the @Kernel device lowerer.
     llvm::Value* ArrayLiteralExpression::generateCode(CajetaModulePtr module) {
-        // `shared [...]` is device-only workgroup memory; the host codegen path
-        // rejects it (the @Kernel device lowerer handles it), mirroring the
-        // NewExpression shared guard (array-literals §4).
         if (sharedAlloc) {
             throw Exception(
                 "`shared` placement is only valid inside an @Kernel body "
                 "(GPU workgroup-shared memory)", "XPU-K03");
         }
-        // Allocate the array and populate each slot through the shared store
-        // loop (array-literals §2/§7). A `stack [...]` literal proven
-        // non-escaping (arenaEligible, set by Method::computeArenaEligibility)
-        // routes through the frame arena; otherwise heap. The XPU launch path
-        // never reaches here — it reads the elements directly off the AST.
         if (!elementType) {
             elementType = unifyElementType(module);
         }
-        // Nested literals (array-literals §5): when the element type is itself
-        // an array, push its element type into each inner `[...]` before it
-        // generates, so a target-typed outer (`int64[][]`) lays out the inner
-        // arrays at the right width rather than the narrower unify result. This
-        // recurses one level per nesting depth (each inner does the same).
         if (auto innerArr = dynamic_pointer_cast<CajetaArray>(elementType)) {
             for (auto& e : elements) {
                 if (auto innerLit =
@@ -974,14 +775,8 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         } else if (auto elemClass =
                        dynamic_pointer_cast<CajetaClass>(elementType)) {
-            // collection-literals §4/§5 — when the element type is a class, push
-            // it into each prefixless `{…}` element so `Point[] pts = [{x:1,
-            // y:2}, …]` infers each aggregate's type from the array. (CajetaArray
-            // is a CajetaClass subtype, so this is the else of the array case.)
-            // A reference-class element escapes into the array (stored as a
-            // pointer), so its aggregate must be heap-allocated — a bare `{…}`
-            // defaults to stack, which would dangle. A value-type element is
-            // copied inline, so it stays (no escape).
+            // A reference-class element escapes into the array, so its aggregate must be heap:
+            // a bare `{...}` defaults to stack and would dangle. Value types copy inline.
             bool elemIsValueType = elemClass->isValueType();
             for (auto& e : elements) {
                 if (auto aggLit =
@@ -1001,18 +796,16 @@ bool cajetaRhsCarriesRedundantSharp(
     MapLiteralExpression::MapLiteralExpression(
         vector<pair<ExpressionPtr, ExpressionPtr>> entries, antlr4::Token* token)
         : Expression(token), entries(std::move(entries)) { exprKind = ExprKind::MapLiteral;
-        // Mirror key/value expressions into children so AST walks reach them.
         for (auto& e : this->entries) {
             if (e.first) addChild(e.first);
             if (e.second) addChild(e.second);
         }
     }
 
+    // Exposes the pushed target type, if any, so a slot-sizing consumer sees
+    // `HashMap<K,V>`; the concrete map type is decided at generateCode.
     void MapLiteralExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
-        // The concrete map type is decided at generateCode (it needs the pushed
-        // target or a unify over entries); expose the pushed target if any so a
-        // slot-sizing consumer sees `HashMap<K,V>`.
         if (!resolvedType) resolvedType = expectedType;
     }
 
@@ -1033,15 +826,15 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     } // namespace
 
+    // Lowers `["k": v, ...]` to `heap HashMap<K,V>(Pair<K,V>[])`: resolves K and V from
+    // the pushed target or by unifying the entries, builds one `heap Pair(k, v)` per
+    // entry, then generates that construction. Rejects `shared` placement.
     llvm::Value* MapLiteralExpression::generateCode(CajetaModulePtr module) {
         if (sharedAlloc) {
             throw Exception(
                 "`shared` placement is only valid inside an @Kernel body "
                 "(GPU workgroup-shared memory)", "XPU-K03");
         }
-        // Resolve K, V and the target map's short name. A pushed target
-        // (`HashMap<K,V> m = [...]`) wins; otherwise unify over the entries and
-        // default to HashMap (§3.4).
         CajetaTypePtr keyType, valType;
         string mapName = "HashMap";
         if (auto cls = dynamic_pointer_cast<CajetaClass>(expectedType)) {
@@ -1055,7 +848,6 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
         if (!keyType || !valType) {
-            // No target — unify (empty `[:]` with no target cannot infer).
             if (entries.empty()) {
                 throw locatedException(getSourceLine(), getSourceColumn() + 1,
                     "cannot infer the type of an empty map literal `[:]`; give "
@@ -1074,8 +866,6 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
 
-        // Instantiate Pair<K,V> for the array's element type (the ctor arg type
-        // HashMap<K,V>(Pair<K,V>[]) expects).
         CajetaTypePtr pairBase = CajetaType::of("Pair");
         auto pairClass = dynamic_pointer_cast<CajetaClass>(pairBase);
         if (!pairClass || !pairClass->isTemplate()) {
@@ -1088,13 +878,8 @@ bool cajetaRhsCarriesRedundantSharp(
         }
         CajetaTypePtr pairType = pairClass->instantiate({keyType, valType});
 
-        // Build one `heap Pair<K,V>(k, v)` per entry. Aggregate keys/values
-        // (`["o": {x:0,y:0}]`) infer their type from K / V (composes with §4).
         vector<ExpressionPtr> pairCreators;
-        // A prefixless `{…}` key/value infers its type from K / V (composes with
-        // §4). A reference-class aggregate escapes into the map, so it must be
-        // heap-allocated — a bare `{…}` defaults to stack, which would dangle.
-        // A value-type aggregate is copied inline (no escape), so it stays.
+        // A reference-class key/value escapes into the map, so its aggregate must be heap.
         auto pushAgg = [](const ExpressionPtr& e, const CajetaTypePtr& t) {
             if (auto agg = dynamic_pointer_cast<AggregateInitializerExpression>(e)) {
                 if (auto cls = dynamic_pointer_cast<CajetaClass>(t)) {
@@ -1118,7 +903,6 @@ bool cajetaRhsCarriesRedundantSharp(
             pairCreators.push_back(pairNew);
         }
 
-        // Assemble the `Pair<K,V>[]` and the `HashMap<K,V>(Pair<K,V>[])` call.
         auto pairArray = make_shared<ArrayLiteralExpression>(
             std::move(pairCreators), nullptr);
         pairArray->setElementType(pairType);
@@ -1140,12 +924,11 @@ bool cajetaRhsCarriesRedundantSharp(
         return mapNew->generateCode(module);
     }
 
+    // One index level unwraps one array or vector layer (a matrix row yields
+    // Vector<T,C>); for a class receiver the type is its `operator[]` return, which
+    // needs the index expression resolved first.
     void ArrayIndexExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
-        // One level of indexing unwraps one CajetaArray layer. `int[][]` indexed once
-        // yields `int[]`; indexed again yields `int`. For a non-array receiver
-        // (a class with operator[] overload), the resolved type is the
-        // operator's return type — look up the method to find out.
         if (!children.empty()) {
             if (auto exprChild = dynamic_pointer_cast<Expression>(children[0])) {
                 CajetaTypePtr lhsType = exprChild->getResolvedType();
@@ -1154,15 +937,11 @@ bool cajetaRhsCarriesRedundantSharp(
                 } else if (auto vecT = dynamic_pointer_cast<CajetaVector>(lhsType)) {
                     resolvedType = vecT->getElementType();
                 } else if (auto matT = dynamic_pointer_cast<CajetaMatrix>(lhsType)) {
-                    // Matrix m[r] selects a row -> Vector<T, C> (B1). m[r][c] then
-                    // resolves via the CajetaVector branch above on this row type.
                     resolvedType = CajetaVector::getOrCreate(
                         module, matT->getElementType(), matT->getCols());
                 } else if (auto klass = dynamic_pointer_cast<CajetaClass>(lhsType)) {
-                    // Try to find operator[] on the class. parameterList
-                    // computation needs the index expression's resolved
-                    // type; resolve children[1] first so the lookup has
-                    // a real parameter type.
+                    // Resolve the index expression first: the operator[] lookup needs a real
+                    // parameter type to match against.
                     if (children.size() >= 2) {
                         if (auto idxExpr = dynamic_pointer_cast<Expression>(children[1])) {
                             if (!idxExpr->getResolvedType()) {
@@ -1188,12 +967,9 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
-    // Evaluate a compile-time-constant integer index from the AST: an integer
-    // literal, or a unary +/- applied to one. Returns true + the value when
-    // constant-foldable. Used for the static inline-array bounds check, which
-    // must catch `f[-1]` — under overflow checking the negation lowers to a
-    // checked-sub intrinsic, so the post-codegen LLVM value is not a folded
-    // ConstantInt.
+    // Constant-folds an integer index off the AST — an integer literal, or unary +/- on
+    // one — into `out`, returning whether it folded. Reads the AST because a checked
+    // negation lowers to an intrinsic, so `f[-1]` is no folded ConstantInt.
     static bool tryEvalConstIntIndex(const AbstractSyntaxNodePtr& node, int64_t& out) {
         if (auto lit = dynamic_pointer_cast<IntegerLiteralExpression>(node)) {
             string raw = lit->getRawValue();
@@ -1221,12 +997,10 @@ bool cajetaRhsCarriesRedundantSharp(
         return false;
     }
 
+    // Emits ONE index level: children[0] is the indexed expression, children[1] the
+    // index, and `a[i][j]` nests two nodes. Covers operator[] classes, vector lanes,
+    // matrix rows and view element arrays; otherwise GEPs into the array header.
     llvm::Value* ArrayIndexExpression::generateCode(CajetaModulePtr module) {
-        // Each ArrayIndexExpression handles exactly one index level. children[0] is the
-        // array expression (a ptr to a header `{ i64 size, [0 x T] data }`); children[1]
-        // is the index expression. For `arr[i][j]` the AST is nested:
-        //   (ArrayIndex (ArrayIndex arr i) j)
-        // matching the Java grammar `expression '[' expression ']'` recursively.
         if (children.size() < 2) {
             return nullptr;
         }
@@ -1235,9 +1009,7 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
 
-        // Vector index read: v[i] -> extractelement (dynamic index ok). The
-        // assignment form v[i] = x is handled by BinaryOpExpression's
-        // assignment path (it needs the vector's slot, not this value).
+        // `v[i]` reads via extractelement; the assignment form lives in BinaryOpExpression.
         if (auto lhsVecExpr = dynamic_pointer_cast<Expression>(children[0])) {
             if (!lhsVecExpr->getResolvedType()) lhsVecExpr->resolveTypes(module);
             if (auto vecT = dynamic_pointer_cast<CajetaVector>(
@@ -1249,9 +1021,6 @@ bool cajetaRhsCarriesRedundantSharp(
                     dynamic_pointer_cast<Expression>(children[1]));
                 resolvedType = vecT->getElementType();
                 llvm::Value* elt = vecops::extractLane(*builder, vecVal, idx);
-                // Wrap in a slot so consumers (which loadIfLValue an
-                // ArrayIndex result as a pointer) read the element correctly —
-                // mirrors the operator[] GET path below.
                 llvm::AllocaInst* slot = module->createEntryAlloca(
                     elt->getType(), "vec.idx.slot");
                 builder->CreateStore(elt, slot);
@@ -1259,11 +1028,7 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
 
-        // Matrix single-index read: m[r] -> the row Vector<T,C> (flat lanes
-        // [r*C, r*C+C)). m[r][c] composes — the outer index sees this row's
-        // CajetaVector type and the vector branch above extracts lane c. The
-        // assignment form m[r][c] = x is handled in BinaryOpExpression's
-        // assignment path (it writes into the matrix's slot, not a row temp).
+        // `m[r]` yields the row Vector<T,C> (flat lanes [r*C, r*C+C)); `m[r][c]` composes.
         if (auto lhsMatExpr = dynamic_pointer_cast<Expression>(children[0])) {
             if (!lhsMatExpr->getResolvedType()) lhsMatExpr->resolveTypes(module);
             if (auto matT = dynamic_pointer_cast<CajetaMatrix>(
@@ -1287,13 +1052,6 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
 
-        // View element-array access (view v1.1,
-        // specs/view-element-arrays-spec.md): `m.ds[i]` where `ds` is a
-        // `V[]` / `String[]` field on a view. No owned-array materialization
-        // — compute the element's buffer offset and hand back a view value
-        // (V) or an owned String. Fixed-size element views use stride math;
-        // var-size elements walk i self-delimiting elements (offset-table
-        // O(1) upgrade tracked in the plan).
         if (auto dotChild = dynamic_pointer_cast<DotExpression>(children[0])) {
             if (auto eaProp = dotChild->resolveViewElementArrayProperty(module)) {
                 dotChild->setElementArrayPrefixMode(true);
@@ -1314,8 +1072,6 @@ bool cajetaRhsCarriesRedundantSharp(
                     idx = builder->CreateIntCast(idx, i64Ty, /*isSigned=*/true,
                         "earr_idx");
                 }
-                // Bounds: 0 <= idx < count, else throw (catchable, same
-                // mechanism as the view-ctor checks).
                 llvm::Value* inBounds = builder->CreateAnd(
                     builder->CreateICmpSGE(idx,
                         llvm::ConstantInt::get(i64Ty, 0)),
@@ -1340,11 +1096,9 @@ bool cajetaRhsCarriesRedundantSharp(
                 auto arrT = dynamic_pointer_cast<CajetaArray>(eaProp->getType());
                 auto elemView = arrT ? dynamic_pointer_cast<CajetaView>(
                     arrT->getElementType()) : nullptr;
-                // O(1) path (view v1.1 offset table): the prefix-mode dot
-                // stashed the descriptor's data base + table + slot. Element
-                // offset = table[region + i] (absolute), where region =
-                // table[slot+1]. Fixed-stride elements skip the region and
-                // use stride math off the field start.
+                // Offset table: an element's offset is table[region + i] (absolute), where
+                // region = table[slot + 1]. Fixed-stride elements skip the region and use
+                // stride math off the field start (table[slot] + 4).
                 if (dotChild->getEarrTable()) {
                     llvm::Value* tbl = dotChild->getEarrTable();
                     llvm::Value* dataBase = dotChild->getEarrDataBase();
@@ -1402,19 +1156,14 @@ bool cajetaRhsCarriesRedundantSharp(
                     builder->CreateStore(str2, sSlot2);
                     return sSlot2;
                 }
-                // Fallback (non-descriptor views can't reach here in
-                // practice — element-array fields imply a descriptor —
-                // but keep the walk for safety).
                 llvm::Value* elemOff;
                 if (elemView && elemView->getVariableSizeFieldCount() == 0) {
-                    // Fixed-size elements: constant stride.
                     elemOff = builder->CreateAdd(
                         llvm::ConstantInt::get(i64Ty, 4),
                         builder->CreateMul(idx, llvm::ConstantInt::get(
                             i64Ty, elemView->getFixedSize())),
                         "earr_stride_off");
                 } else {
-                    // Var-size elements: walk idx elements.
                     llvm::BasicBlock* preBB = builder->GetInsertBlock();
                     llvm::BasicBlock* hdrBB = llvm::BasicBlock::Create(
                         ctx, "earr_walk_hdr", parentFn);
@@ -1460,17 +1209,12 @@ bool cajetaRhsCarriesRedundantSharp(
                 llvm::Value* elemPtr = builder->CreateInBoundsGEP(
                     i8Ty, prefixPtr, elemOff, "earr_elem");
                 if (elemView) {
-                    // A view value borrowing the outer's buffer. Wrap in a
-                    // slot so consumers (loadIfLValue shape) read the
-                    // pointer correctly — mirrors the vector branch above.
                     resolvedType = elemView;
                     llvm::AllocaInst* slot = builder->CreateAlloca(
                         llvm::PointerType::get(ctx, 0), nullptr, "earr.slot");
                     builder->CreateStore(elemPtr, slot);
                     return slot;
                 }
-                // String[] element: materialize the owned String, same
-                // helper pair the String view-field read uses.
                 llvm::Value* sLen = builder->CreateIntCast(
                     CajetaView::emitSwapIfNeeded(module, earrE,
                         builder->CreateLoad(i32Ty, elemPtr, "earr_str_len32")),
@@ -1485,8 +1229,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 llvm::Value* cstr = builder->CreateCall(toOwned, {sData, sLen});
                 llvm::Value* str = wrapCStringIntoClassString(
                     module, cstr, "earr_str");
-                // Slot-wrap like the element-view path: ArrayIndex consumers
-                // loadIfLValue the result as an address.
                 llvm::AllocaInst* sSlot = builder->CreateAlloca(
                     llvm::PointerType::get(ctx, 0), nullptr, "earr.str.slot");
                 builder->CreateStore(str, sSlot);
@@ -1494,20 +1236,11 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
 
-        // Operator overload dispatch: if the LHS resolves to a class with
-        // an `operator[]` method, route through it instead of the native-
-        // array path. Mirrors BinaryOpExpression's operator-method
-        // dispatch shape (operator+, operator==, ...). v1 covers GET
-        // only — `arr[i]` reading. The assignment form `arr[i] = v` is
-        // handled by BinaryOpExpression's assignment path, which still
-        // assumes a native-array LHS; supporting operator[]-typed
-        // assignment targets is a separate cut.
+        // A class LHS with `operator[]` routes through it. GET only: `arr[i] = v` is
+        // BinaryOpExpression's assignment path, which still assumes a native array.
         auto lhsExprForOp = dynamic_pointer_cast<Expression>(children[0]);
-        // Receiver value generated EARLY when the pre-pass couldn't type the
-        // receiver (method-call and dot receivers resolve their type during
-        // codegen — `holder.getMap()[k]`). Both the operator path and the
-        // native-array path below consume this instead of re-generating,
-        // so the receiver's side effects happen exactly once.
+        // Generate the receiver EARLY when the pre-pass could not type it, and let both
+        // paths below consume it, so the receiver's side effects happen exactly once.
         llvm::Value* lhsPregen = nullptr;
         if (lhsExprForOp) {
             if (!lhsExprForOp->getResolvedType()) {
@@ -1536,19 +1269,12 @@ bool cajetaRhsCarriesRedundantSharp(
                     idxType = CajetaType::of(idxForOp);
                 }
                 if (!idxType) {
-                    // Without a usable index type the canonical lookup
-                    // crashes; fall through to native-array path.
+                    // Without a usable index type the canonical lookup crashes.
                     goto fall_through_to_native_array;
                 }
-                // l-value → r-value coercion for `this`. loadIfLValue handles
-                // every receiver shape: identifier allocas load the heap
-                // pointer, field-access GEPs (holder.map[k]) load the field
-                // slot — passing the raw GEP was the field-receiver SIGSEGV —
-                // and call results pass through as values. EXCEPT a @ValueType
-                // receiver, whose storage address IS `this` (instance methods
-                // take value-type receivers by reference): pass the alloca/GEP
-                // through, only loading an alloca that holds a `ptr` to the
-                // aggregate. Mirrors the DotExpression value-type guard (S2).
+                // A @ValueType receiver's storage address IS `this` (instance methods take them
+                // by reference), so pass the alloca/GEP through and load only an alloca that
+                // holds a `ptr` to the aggregate. Every other receiver shape loads normally.
                 if (lhsClass->isValueType()) {
                     if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(lhsForOp)) {
                         if (a->getAllocatedType()->isPointerTy()) {
@@ -1574,23 +1300,13 @@ bool cajetaRhsCarriesRedundantSharp(
                         /*isConstructor=*/false, lhsForOp,
                         /*callerModule=*/module);
                     if (!callResult) return nullptr;
-                    // Wrap the call result in an alloca so consumers
-                    // (ReturnStatement, assignment LHS, nested
-                    // expressions) see the same "load from this
-                    // address" shape they get from the native-array
-                    // GEP path. Native ArrayIndex returns a GEP
-                    // pointer; the caller loads to read. Without the
-                    // wrapper they'd issue a `load i32, i32 <value>`
-                    // on the raw value and the verifier rejects it.
+                    // Wrap the call result in an alloca: consumers expect the native path's `load
+                    // from this address` shape, and a load off a raw value is rejected by verify.
                     llvm::AllocaInst* slot = builder->CreateAlloca(
                         callResult->getType(), nullptr, "opidx.slot");
                     builder->CreateStore(callResult, slot);
                     return slot;
                 }
-                // A class receiver with no matching operator[] can never be
-                // served by the native-array path — falling through used to
-                // return nullptr and let the consumer emit malformed IR
-                // (a null-operand load). Fail with a real diagnostic.
                 throw Exception(
                     "no matching `operator[](" + idxType->toCanonical()
                         + ")` on `" + lhsClass->toCanonical()
@@ -1600,25 +1316,12 @@ bool cajetaRhsCarriesRedundantSharp(
         }
         fall_through_to_native_array:;
 
-        // Resolve the array value (the header pointer).
-        //   - Local-variable arrays: an alloca holding a `ptr` to the header. Load to get
-        //     the header pointer.
-        //   - Nested ArrayIndex (`arr[i][j]`): the parent ArrayIndex gave us a slot whose
-        //     element is a `ptr` to the inner header — load `ptr` to get that.
-        //   - Class-field array (`obj.field`): DotExpression hands back a GEP to the
-        //     field slot, which holds a `ptr` to the heap header (per
-        //     CajetaClass::generatePrototype's `fieldLayoutType` rule that stores
-        //     array fields as pointers, not inline). Load the slot to get the header
-        //     pointer, same way the local-variable path does for an alloca.
-        //   - Anything else (e.g. method-call returning an array): the value already IS
-        //     the header pointer.
+        // The array value is a header pointer `{ i64 size, [0 x T] data }`. A local's
+        // alloca, a nested index slot and a class-field GEP all hold a POINTER to it
+        // and must be loaded through; a call result already IS the header pointer.
         llvm::Value* arrayVal = lhsPregen
             ? lhsPregen : children[0]->generateCode(module);
         auto lhsExpr = dynamic_pointer_cast<Expression>(children[0]);
-        // Fail loud: a receiver that didn't lower (e.g. a property that no
-        // longer exists — `s.bytes[i]` against the post-slice String) used
-        // to null-cascade into an LLVM dyn_cast assert with no source
-        // location (the tools/mcp build crash).
         if (!arrayVal) {
             throw Exception(
                 "indexed expression's receiver did not lower to a value — "
@@ -1628,11 +1331,9 @@ bool cajetaRhsCarriesRedundantSharp(
                 "CAJETA_ERROR_INDEX_RECEIVER_INVALID");
         }
 
-        // Fixed-size inline array field (`obj.f[i]` where f is `T[N]`): the
-        // field slot GEP from DotExpression ALREADY points at the inline
-        // `[N x T]` storage embedded in the object — there is no header
-        // pointer to load through. Loading it (as the heap-`T[]` path does)
-        // would read the first inline element as a pointer and SIGSEGV.
+        // A `T[N]` field's slot GEP already addresses the inline storage — there is no
+        // header pointer. Loading it, as the heap `T[]` path does, would read the first
+        // inline element as a pointer.
         bool inlineArrayAccess = false;
         if (lhsExpr) {
             if (!lhsExpr->getResolvedType()) lhsExpr->resolveTypes(module);
@@ -1655,14 +1356,9 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
 
-        // Resolve element type from the CajetaArray annotation on the lhs. With opaque
-        // pointers the LLVM type alone tells us nothing; we lean on the type resolver
-        // having pinned children[0]->resolvedType to the CajetaArray.
-        //
-        // The pre-pass resolver runs before LocalVariableDeclaration populates the
-        // scope, so identifier-based lhses are commonly null at resolveTypes time. We
-        // re-run resolveTypes here (now that the scope is populated by codegen) and
-        // also publish *our* element type so consumers like ReturnStatement see it.
+        // With opaque pointers the LLVM type says nothing, so the element type comes from
+        // children[0]'s CajetaArray. The pre-pass ran before the scope was populated, so
+        // re-resolve here and publish our element type for consumers.
         CajetaArrayPtr arrayType;
         if (auto exprChild = dynamic_pointer_cast<Expression>(children[0])) {
             if (!exprChild->getResolvedType()) {
@@ -1678,10 +1374,8 @@ bool cajetaRhsCarriesRedundantSharp(
         }
         llvm::Type* headerTy = arrayType->getLlvmType();
 
-        // TBAA access kind for this array's elements: i8 (byte buffer) is
-        // reinterpretation-prone -> alias-all Char; any other element type gets
-        // the disjoint array-element tag so the optimizer can hoist enclosing
-        // object-field loads across element stores.
+        // TBAA kind for this array's elements: i8 buffers are reinterpretation-prone and
+        // alias-all as Char; every other element type gets the disjoint array tag.
         auto tbaaElemKind = [&]() -> CajetaModule::TbaaKind {
             llvm::Type* et = resolvedType ? resolvedType->getLlvmType() : nullptr;
             if (et && et->isIntegerTy(8)) {
@@ -1690,12 +1384,7 @@ bool cajetaRhsCarriesRedundantSharp(
             return CajetaModule::TbaaKind::ArrayElem;
         };
 
-        // Resolve the index expression. Same l-value-to-r-value coercion
-        // needed for class-field indices (`this.data[this.idx]`) — the
-        // DotExpression for `this.idx` returns a GEP, not an AllocaInst,
-        // and without loadIfLValue the GEP stays a ptr and CreateIntCast
-        // sext'd it as a pointer (LLVM verify error: "SExt only operates
-        // on integer").
+        // Load through a field or element index GEP first, or the width cast sees a ptr.
         llvm::Value* idx = children[1]->generateCode(module);
         auto idxAst = dynamic_pointer_cast<Expression>(children[1]);
         idx = loadIfLValue(module, idx, idxAst);
@@ -1703,18 +1392,10 @@ bool cajetaRhsCarriesRedundantSharp(
             idx = builder->CreateIntCast(idx, i64Ty, /*isSigned=*/true);
         }
 
-        // Inline fixed-size array field (`T[N]`): address the element directly
-        // in the embedded `[N x T]` storage — `&inline[idx]` via GEP {0, idx},
-        // no header, no DATA_FIELD indirection. Bounds are against the
-        // compile-time constant N.
         if (arrayType->isInlineArray()) {
             int64_t n = arrayType->getFixedLength();
-            // Static bounds check: the length N is known at compile time, so a
-            // constant index proven out of [0, N) is a compile error (spec
-            // 2.1.7) rather than a runtime trap. Evaluate the constant from the
-            // AST (catches `f[-1]`, whose checked negation isn't a folded
-            // ConstantInt); fall back to a folded LLVM constant for constant
-            // expressions the AST walk doesn't cover.
+            // N is known at compile time, so a constant index proven outside [0, N) is a
+            // compile error rather than a runtime trap.
             int64_t civ = 0;
             bool indexIsConst = tryEvalConstIntIndex(children[1], civ);
             if (!indexIsConst) {
@@ -1764,20 +1445,12 @@ bool cajetaRhsCarriesRedundantSharp(
                 idx,
             };
             llvm::Value* inlineElemPtr = builder->CreateGEP(inlineTy, arrayVal, inlineGep);
-            // TBAA: this address feeds an array-element load/store. Byte (i8)
-            // buffers are reinterpretation-prone (String/SWAR/memcpy) so they get
-            // the alias-all Char tag; other element types get the disjoint
-            // array-element tag. See CajetaModule TBAA section.
             module->recordTbaaProvenance(inlineElemPtr, tbaaElemKind());
             return inlineElemPtr;
         }
 
-        // Bounds check (when enabled by the compiler flag and the runtime helper is
-        // linked): load the size field and branch to fail if `idx >= size` under
-        // unsigned comparison (catches negatives). Disabled via `cajeta --bounds=off`.
-        // `--bounds=trap` swaps the abort-helper call for @llvm.trap so the failure
-        // surfaces as SIGILL with no message (matches release builds that don't
-        // want the helper-symbol footprint).
+        // `--bounds=off` drops the check; `--bounds=trap` swaps the abort helper for
+        // @llvm.trap, so the failure surfaces as SIGILL with no message.
         BoundsCheck boundsMode = module->getFlags().bounds;
         if (boundsMode != BoundsCheck::Off) {
             llvm::Value* sizePtr = builder->CreateStructGEP(headerTy, arrayVal,
@@ -1808,15 +1481,12 @@ bool cajetaRhsCarriesRedundantSharp(
             builder->SetInsertPoint(okBB);
         }
 
-        // Element address: &header->data[idx]. GEP walks ptr -> struct -> data array -> element.
         vector<llvm::Value*> gepIndices = {
             llvm::ConstantInt::get(i64Ty, 0),
             llvm::ConstantInt::get(i32Ty, CajetaArray::DATA_FIELD_INDEX),
             idx,
         };
         llvm::Value* elemPtr = builder->CreateGEP(headerTy, arrayVal, gepIndices);
-        // TBAA: array-element access (i8 buffers -> alias-all Char; else the
-        // disjoint array-element tag). See CajetaModule TBAA section.
         module->recordTbaaProvenance(elemPtr, tbaaElemKind());
         return elemPtr;
     }
@@ -1832,31 +1502,19 @@ bool cajetaRhsCarriesRedundantSharp(
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(raw)) {
             return {a, module->getBuilder()->CreateLoad(a->getAllocatedType(), a)};
         }
-        // P3+ Optional fix — child may be a DotExpression returning a
-        // GEP into a class field (e.g. `!this.flag`). loadIfLValue
-        // recognizes the field-load shape via the AST's resolvedType
-        // and loads the field at the right element type. Without this,
-        // PrefixExpression LOGNOT/BITNOT/etc. saw a ptr and produced
-        // an ICmpEQ(ptr, i?-zero) → LLVM type mismatch.
         auto exprAst = std::dynamic_pointer_cast<Expression>(child);
         if (exprAst) {
             llvm::Value* loaded = loadIfLValue(module, raw, exprAst);
-            // l-value address is `raw` only when it's an alloca slot;
-            // for GEP-into-field, the slot isn't writable through the
-            // same primitive (the existing increment/decrement uses
-            // `addr` which is alloca-only — that's fine; increment
-            // through a field is a DotExpression-write concern).
+            // The l-value address is `raw` only for an alloca slot; writing back through a
+            // field GEP is a DotExpression concern, so those return a null address.
             return {nullptr, loaded};
         }
         return {nullptr, raw};
     }
 
-    // Dispatch a unary operator to a user-defined overload on a class
-    // operand. For `++ --` (mutating), the lookup is for an INSTANCE
-    // method taking 0 params; for `- + ! ~` (non-mutating), the lookup
-    // is for a STATIC method taking 1 param. Returns the call's result
-    // when dispatched, nullptr to fall through to the primitive path
-    // (docs/OperatorOverloading.md §§3-4 + §8 dispatch table).
+    // Dispatches a unary operator on a class operand to a user overload: `++`/`--` to a
+    // zero-param INSTANCE method, `- + ! ~` to a one-param STATIC method. Returns the
+    // call's result, or null to fall through to the primitive path.
     static llvm::Value* tryDispatchUnaryClassOperator(
             CajetaModulePtr module, AbstractSyntaxNodePtr operandAst,
             llvm::Value* operandVal, const char* opSym, bool mutating) {
@@ -1873,9 +1531,6 @@ bool cajetaRhsCarriesRedundantSharp(
         std::string opName = std::string("operator") + opSym;
         std::vector<ParameterEntry> entries;
         if (mutating) {
-            // x++ / x-- → x.operator++() (no explicit params; the
-            // receiver IS the target). Borrow checker enforces a
-            // mutable borrow at the call site.
             if (!opClass->resolveMethod(opName, entries,
                     /*isConstructor=*/false, /*floatingParams=*/false)) {
                 return nullptr;
@@ -1885,7 +1540,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 /*thisInstance=*/operandVal,
                 /*callerModule=*/module);
         }
-        // -x / +x / !x / ~x → T.operator-(x) (static, one param).
         entries.push_back(ParameterEntry(opExprAst->getResolvedType(),
             "", operandVal));
         if (!opClass->resolveMethod(opName, entries,
@@ -1898,6 +1552,7 @@ bool cajetaRhsCarriesRedundantSharp(
             /*callerModule=*/module);
     }
 
+    // `!x` resolves to boolean; every other prefix operator keeps the operand's type.
     void PrefixExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         if (children.empty()) return;
@@ -1905,7 +1560,6 @@ bool cajetaRhsCarriesRedundantSharp(
         if (!operand) return;
         CajetaTypePtr operandType = operand->getResolvedType();
         if (!operandType) return;
-        // !x → boolean; +/-/~/++/-- preserve the operand's primitive type.
         if (op == PREFIX_OP_LOGNOT) {
             resolvedType = CajetaType::of("boolean");
         } else {
@@ -1913,6 +1567,9 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // Emits the prefix operator, trying a class-operator overload before the primitive
+    // lowering. Signed `-`, `++` and `--` route through the checked intrinsics when
+    // overflow checking is on.
     llvm::Value* PrefixExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) return nullptr;
         auto* builder = module->getBuilder();
@@ -1920,11 +1577,8 @@ bool cajetaRhsCarriesRedundantSharp(
         if (!val) return nullptr;
         llvm::Type* ty = val->getType();
 
-        // Class-type operator dispatch — runs BEFORE the primitive
-        // switch so a class with `static T operator-(T)` or instance
-        // `void operator++()` takes priority over the (nonsensical)
-        // primitive lowering on a class pointer. Primitive operands
-        // fall through with opSym == nullptr or the class-resolve miss.
+        // Class-operator dispatch runs BEFORE the primitive switch, so a class with its
+        // own operator wins over the (nonsensical) primitive lowering on a pointer.
         const char* opSym = nullptr;
         bool mutating = false;
         switch (op) {
@@ -1947,10 +1601,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 return val;
             case PREFIX_OP_NEGATIVE: {
                 if (ty->isFloatingPointTy()) return builder->CreateFNeg(val);
-                // Signed-overflow check: -INT_MIN can't fit in a signed
-                // int of the same width. Equivalent to ssub(0, x), so
-                // route through llvm.ssub.with.overflow when the
-                // operand's AST type is signed and overflowChecks=On.
+                // -INT_MIN does not fit: route unary minus through llvm.ssub.with.overflow when
+                // the operand's AST type is signed and overflow checking is on.
                 bool isSigned = false;
                 if (!children.empty()) {
                     if (auto ce = dynamic_pointer_cast<Expression>(children[0])) {
@@ -1975,7 +1627,6 @@ bool cajetaRhsCarriesRedundantSharp(
             case PREFIX_OP_BITNOT:
                 return builder->CreateNot(val);
             case PREFIX_OP_LOGNOT: {
-                // !x ≡ (x == 0). Produces i1.
                 llvm::Value* zero = ty->isFloatingPointTy()
                     ? (llvm::Value*) llvm::ConstantFP::getZero(ty)
                     : (llvm::Value*) llvm::ConstantInt::get(ty, 0);
@@ -1989,8 +1640,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 llvm::Value* one = ty->isFloatingPointTy()
                     ? (llvm::Value*) llvm::ConstantFP::get(ty, 1.0)
                     : (llvm::Value*) llvm::ConstantInt::get(ty, 1);
-                // Same signed-overflow gate as unary -: trap on
-                // INT_MAX++ / INT_MIN--. Unsigned wraps modularly.
                 bool isSignedOperand = false;
                 if (!children.empty()) {
                     if (auto ce = dynamic_pointer_cast<Expression>(children[0])) {
@@ -2021,27 +1670,19 @@ bool cajetaRhsCarriesRedundantSharp(
         return nullptr;
     }
 
-    // Erased base of a canonical template name (defined later in this TU);
-    // forward-declared so the capture-cast guard below can use it.
+    // Defined later in this TU; forward-declared for the capture-cast guards below.
     static std::string erasedBaseOf(const std::string& canonical);
 
-    // Detect a class-bounded-wildcard capture target `Base<? extends Bound>`
-    // (reified-capture-spec.md §5). Returns true and fills baseCanon (the erased
-    // container base, e.g. "test.Box"), argIndex (the bounded arg's position),
-    // and boundCanon (the bound's canonical name, e.g. "test.Animal") iff `type`
-    // is a class instantiation whose sole type argument is a bounded-EXTENDS
-    // wildcard. Single-arg only for now — multi-arg / mixed-arg targets fall
-    // through to the existing concrete-target handling. Defined later in this TU.
+    // True when `type` is a class instantiation whose sole type argument is a bounded
+    // EXTENDS wildcard, filling baseCanon, argIndex and boundCanon. Single-argument
+    // targets only; defined later in this TU.
     static bool boundedWildcardTarget(const CajetaTypePtr& type,
                                       std::string& baseCanon, int& argIndex,
                                       std::string& boundCanon);
 
-    // Materialize a compile-time std::string as a static cajeta.lang.String
-    // (view-mode) instance, returning the instance global. Mirrors the
-    // LITERAL_TYPE_TEXT_BLOCK path in LiteralExpression so synthesized codegen
-    // sites (the throwing capture cast) can build a String message without
-    // re-running the parser. Falls back to a bare C-string global before class
-    // String is registered (bootstrap).
+    // Emits a compile-time std::string as a static view-mode cajeta.lang.String and
+    // returns its global, so synthesized codegen can build a message without the
+    // parser. Falls back to a bare C-string global before class String is registered.
     static llvm::Value* materializeStringConstant(CajetaModulePtr module,
                                                   const std::string& text) {
         llvm::LLVMContext& ctx = *module->getLlvmContext();
@@ -2062,9 +1703,8 @@ bool cajetaRhsCarriesRedundantSharp(
         if (auto* vt = klass->getVirtualTableGlobal()) {
             vtableRef = CajetaModule::ensureGlobalInModule(mod, vt);
         }
-        // 6.2.2 tagged core — mirrors LiteralExpression: <= 12 B packs the
-        // text into the aux/base constant slots (Inline); longer emits a
-        // Static pointer form over a byte global.
+        // Tagged core, as LiteralExpression builds it: <= 12 B packs the text into the
+        // aux/base constant slots (Inline); longer emits the Static pointer form.
         llvm::Constant* lenTagC;
         llvm::Constant* auxC;
         llvm::Constant* baseC;
@@ -2118,11 +1758,9 @@ bool cajetaRhsCarriesRedundantSharp(
         return instGv;
     }
 
-    // Shared tail of a reified capture-cast guard: branch on `matchBit`, throw
-    // cajeta.error.ClassCastException("... <msgDetail>") on the false edge, and
-    // leave the builder positioned in the match-true block (so the caller returns
-    // the reused pointer there). Thrown via the same __cajeta_throw path as a
-    // user `throw`, so owned-local unwinding behaves identically.
+    // Branches on `matchBit` and throws ClassCastException("... <msgDetail>") on the
+    // false edge, leaving the builder in the match-true block for the caller. Throws
+    // through __cajeta_throw, so owned-local unwinding matches a user `throw`.
     static void emitCaptureCastThrowBranch(CajetaModulePtr module,
                                            llvm::Value* matchBit,
                                            const std::string& msgDetail) {
@@ -2183,10 +1821,9 @@ bool cajetaRhsCarriesRedundantSharp(
             "value is not a " + targetCanon);
     }
 
-    // Reified guard for a class-bounded-wildcard capture downcast
-    // `(Base<? extends Bound>) w` (reified-capture-spec.md §5): throw
-    // ClassCastException unless w is a `baseCanon<...>` whose reified element type
-    // at `argIndex` conforms to `boundCanon`.
+    // Reified guard for `(Base<? extends Bound>) w`: throws ClassCastException unless w
+    // is a `baseCanon<...>` whose reified type argument at `argIndex` conforms to
+    // `boundCanon`.
     static void emitBoundedCaptureCastGuard(CajetaModulePtr module,
                                             llvm::Value* objPtr,
                                             const std::string& baseCanon,
@@ -2211,29 +1848,22 @@ bool cajetaRhsCarriesRedundantSharp(
             "element of " + baseCanon + " is not a " + boundCanon);
     }
 
+    // Emits the cast: an interface source unwraps the fat body, a record upcast slices
+    // the base prefix, a reified downcast is guarded, and primitives convert by the
+    // SOURCE's signedness. A primitive crossing a `?` is a bit reinterpretation.
     llvm::Value* CastExpression::generateCode(CajetaModulePtr module) {
         if (children.empty() || !destType) return nullptr;
         auto* builder = module->getBuilder();
-        // loadOperand only unwraps AllocaInst, which leaves field-access
-        // GEPs (DotExpression, implicit-this) as raw pointers — `(int64)
-        // obj.field` would then ptrtoint the GEP address instead of
-        // loading + extending the field value. loadIfLValue uses the
-        // ast's resolvedType to load through GEPs at the right element
-        // type.
+        // loadOperand unwraps only allocas, so a field GEP would be ptrtoint'd instead of
+        // loaded; loadIfLValue loads through it at the ast's resolved element type.
         llvm::Value* raw = children[0]->generateCode(module);
         if (!raw) return nullptr;
         auto childAst = dynamic_pointer_cast<Expression>(children[0]);
         llvm::Value* val = loadIfLValue(module, raw, childAst);
         if (!val) return nullptr;
-        // iface→class downcast. When the operand is a value of an
-        // interface type and the destination is a concrete (non-iface)
-        // class, the operand is a pointer to the 24-byte fat-pointer
-        // body { data, vtable, kind }. Strip the body by loading slot 0
-        // (the data pointer) — that's the heap class instance pointer
-        // we want. The destination's LLVM type is the body struct (per
-        // CajetaClass::getLlvmType), but storage for class references
-        // is `ptr` so returning the loaded data ptr matches what other
-        // class-typed value sites expect.
+        // An interface value points at the 24-byte fat body `{ data, vtable, kind }`, and
+        // slot 0 is the class instance. Class references are stored as `ptr`, so the
+        // loaded data pointer is what every class-typed value site expects.
         if (childAst) {
             if (!childAst->getResolvedType()) {
                 childAst->resolveTypes(module);
@@ -2241,11 +1871,8 @@ bool cajetaRhsCarriesRedundantSharp(
             CajetaTypePtr srcCajetaType = childAst->getResolvedType();
             auto srcClass = dynamic_pointer_cast<CajetaClass>(srcCajetaType);
             auto dstClass = dynamic_pointer_cast<CajetaClass>(destType);
-            // Record upcast (records-spec §2.6.3 / plan 4.2.3): explicit
-            // `(Base) derived` SLICES — copies the base-field prefix (the
-            // flat layout embeds ancestors first) into a fresh Base value.
-            // Any other record-to-record cast has no meaning (no vtable, no
-            // reinterpretation) and rejects.
+            // A record upcast SLICES: the flat layout embeds ancestors first, so `(Base) d`
+            // copies the base-field prefix into a fresh Base value. No other pair casts.
             if (srcClass && dstClass
                     && srcClass->isRecordType() && dstClass->isRecordType()
                     && srcClass.get() != dstClass.get()) {
@@ -2302,12 +1929,8 @@ bool cajetaRhsCarriesRedundantSharp(
         }
         llvm::Type* srcTy = val->getType();
         llvm::Type* dstTy = destType->getLlvmType();
-        // Class-typed destinations store as `ptr` at runtime even though
-        // getLlvmType() returns the class body struct. If the source is
-        // already a `ptr`, the cast is a no-op at the LLVM level — both
-        // sides are heap class pointers, just with different declared
-        // Cajeta types. Without this, the fallback bitcast tries to
-        // convert `ptr` to a struct type and JIT-verify rejects it.
+        // Class-typed destinations store as `ptr` though getLlvmType() is the body struct,
+        // so a `ptr` source needs no cast — the fallback bitcast would be rejected.
         if (srcTy->isPointerTy()) {
             auto dstClass = dynamic_pointer_cast<CajetaClass>(destType);
             bool dstIsArr =
@@ -2319,14 +1942,9 @@ bool cajetaRhsCarriesRedundantSharp(
                 && (dstIsArr || !dstIsPrim)
                 && !dstIsIface;
             if (dstStoresAsPointer) {
-                // Reified capture-downcast guard. When the source is a wildcard
-                // (`Foo<?>`) or a different instantiation of the same generic
-                // base, and the destination is a concrete instantiation, this
-                // is a genuine reified downcast: verify w's runtime
-                // instantiation matches and throw ClassCastException on
-                // mismatch (the guarded `instanceof` / pattern-binding forms
-                // skip the throw by branching first). Plain upcasts and
-                // same-type casts don't qualify, so they're untouched.
+                // A wildcard source, or a different instantiation of the same base, against a
+                // concrete destination is a genuine reified downcast. Plain upcasts and
+                // same-type casts do not qualify and stay untouched.
                 CajetaTypePtr srcType = childAst ? childAst->getResolvedType()
                                                  : nullptr;
                 std::string dstCanon = destType->toCanonical();
@@ -2338,9 +1956,6 @@ bool cajetaRhsCarriesRedundantSharp(
                     && erasedBaseOf(srcCanon) == erasedBaseOf(dstCanon);
                 bool captureDowncast = dstClass && dstConcrete && srcType
                     && srcCanon != dstCanon && (srcIsWildcard || sameBase);
-                // Class-bounded-wildcard downcast `(Base<? extends Bound>) w`
-                // (§5): the dst isn't concrete, so it's a bounded reified check —
-                // the captured element must conform to Bound or the cast throws.
                 std::string boundBaseCanon, boundCanon;
                 int boundArgIdx = -1;
                 bool boundedDowncast = srcType
@@ -2366,12 +1981,8 @@ bool cajetaRhsCarriesRedundantSharp(
         bool dstPtr = dstTy->isPointerTy();
         unsigned long destFlags = destType->getTypeFlags();
         bool destSigned = (destFlags & SIGNED_FLAG) != 0;
-        // Integer WIDENING and int→fp conversion must follow the SOURCE
-        // operand's signedness, not the destination's: a `uint8` zero-extends to
-        // `int32` (sign-extending it — the old `destSigned` behavior — turned
-        // 200 into -56), and a `uint64` converts to fp via UIToFP. Truncation
-        // ignores the flag, and fp→int (below) correctly keys off the
-        // destination integer's signedness, so only these two cases change.
+        // Integer widening and int->fp follow the SOURCE operand's signedness (a `uint8`
+        // zero-extends); truncation ignores it, and fp->int keys off the destination.
         bool srcSigned = destSigned;
         if (childAst && childAst->getResolvedType()) {
             srcSigned = (childAst->getResolvedType()->getTypeFlags()
@@ -2401,21 +2012,9 @@ bool cajetaRhsCarriesRedundantSharp(
         if (srcInt && dstPtr) {
             return builder->CreateIntToPtr(val, dstTy);
         }
-        // FLOATING-POINT ↔ POINTER, i.e. a primitive crossing a WILDCARD.
-        //
-        // A `?`-typed slot is one pointer-sized word holding a primitive's
-        // BITS inline, so `(float64) t` on a `?` — and the store back the
-        // other way — are bit REINTERPRETATIONS, not conversions. A bitcast
-        // cannot express one: LLVM rejects a bitcast with a pointer on
-        // exactly one side, and both directions were reaching the fallback
-        // below. That is how `dev.cajeta.ml.grad.GradTape` came out
-        // unverifiable ("Invalid bitcast double -> ptr" / "ptr -> double")
-        // and took every module referencing it down with it.
-        //
-        // Route through the integer domain, which is what a reinterpretation
-        // means, sizing the hop to the POINTER WORD rather than assuming the
-        // two are the same width — `float32` through a 64-bit slot is the
-        // common case and it is a zext/trunc, not a bitcast.
+        // A `?` slot holds a primitive's BITS in one pointer-sized word, so this crossing
+        // is a reinterpretation. LLVM rejects a bitcast with a pointer on exactly one
+        // side, so route through the integer domain, sized to the POINTER word.
         if ((srcFp && dstPtr) || (srcPtr && dstFp)) {
             const llvm::DataLayout& dl =
                 module->getLlvmModule()->getDataLayout();
@@ -2434,23 +2033,19 @@ bool cajetaRhsCarriesRedundantSharp(
                                             dstTy->getPrimitiveSizeInBits()));
             return builder->CreateBitCast(bits, dstTy, "slot.fp");
         }
-        // Fallback to bitcast for anything that's bit-compatible.
         return builder->CreateBitCast(val, dstTy);
     }
 
+    // Emits `x++` / `x--`, dispatching to a class `operator++` first. The primitive path
+    // stores the updated value back through the operand's alloca and yields the
+    // ORIGINAL value.
     llvm::Value* PostfixExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) return nullptr;
         auto* builder = module->getBuilder();
         auto [addr, val] = loadOperand(module, children[0]);
         if (!val) return nullptr;
-        // Class-type ++/-- dispatch. For primitives, the existing
-        // pre/post distinction matters because the expression value is
-        // a scalar. For classes, the operator mutates `this` and the
-        // expression value is the receiver pointer in either case —
-        // postfix vs prefix collapse semantically. Try dispatch
-        // BEFORE the alloca-only addr requirement that the primitive
-        // path needs (a class operand often lacks a writable alloca
-        // when fed by a method call).
+        // Try class dispatch BEFORE the alloca-only address the primitive path needs: on
+        // a class the operator mutates `this`, so prefix and postfix collapse.
         const char* opSym = (op == POSTFIX_OP_INC) ? "++"
                           : (op == POSTFIX_OP_DEC) ? "--"
                           : nullptr;
@@ -2465,7 +2060,6 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::Value* one = ty->isFloatingPointTy()
             ? (llvm::Value*) llvm::ConstantFP::get(ty, 1.0)
             : (llvm::Value*) llvm::ConstantInt::get(ty, 1);
-        // Same signed-overflow gate as prefix INC/DEC.
         bool isSignedOperand = false;
         if (!children.empty()) {
             if (auto ce = dynamic_pointer_cast<Expression>(children[0])) {
@@ -2490,22 +2084,13 @@ bool cajetaRhsCarriesRedundantSharp(
             else newVal = builder->CreateSub(val, one);
         }
         builder->CreateStore(newVal, addr);
-        // Postfix yields the *original* value, not the updated one.
         return val;
     }
 
 
-//    antlr4::tree::TerminalNode *LPAREN();
-//    ExpressionContext *expression();
-//    antlr4::tree::TerminalNode *RPAREN();
-//    antlr4::tree::TerminalNode *THIS();
-//    antlr4::tree::TerminalNode *SUPER();
-//    LiteralContext *literal();
-//    IdentifierContext *identifier();
-//    TypeTypeOrVoidContext *typeTypeOrVoid();
-//    antlr4::tree::TerminalNode *DOT();
-//    antlr4::tree::TerminalNode *CLASS();
-//    ArgumentsContext *arguments();
+    // Builds the node for a `primary` context: aggregate initializer, bracket literal,
+    // `T.class`, `this`/`super` (with an optional `<Base>` ancestor), a literal, an
+    // identifier, or a parenthesized expression.
     ExpressionPtr PrimaryExpression::fromContext(CajetaParser::PrimaryContext* ctx) {
         ExpressionPtr result = nullptr;
         if (ctx->LPAREN()) {
@@ -2513,52 +2098,31 @@ bool cajetaRhsCarriesRedundantSharp(
         } else if (ctx->literal()) {
             result = LiteralExpression::fromContext(ctx->literal());
         } else if (ctx->aggregateInitializer()) {
-            // S6.2 — `Foo { field: expr, ... }`. Matched before the
-            // identifier alternative so the parser picks the longer form;
-            // a bare `Foo` still routes through the identifier branch
-            // below because aggregateInitializer requires the trailing
-            // `{ ... }`.
+            // Matched before the identifier alternative so the longer form wins; a bare `Foo`
+            // still takes the identifier branch, since this one requires the `{ ... }`.
             result = make_shared<AggregateInitializerExpression>(
                 ctx->aggregateInitializer(), ctx->getStart());
         } else if (ctx->arrayLiteral()) {
-            // `[e1, e2, ...]` sequence or `["k": v, ...]` / `[:]` map literal
-            // (collection-literals §3; XPU launch dims are colon-free sequences).
             result = arrayOrMapLiteralFromContext(
                 ctx->arrayLiteral(), ctx->getStart(), /*stack=*/false, /*shared=*/false);
         } else if (ctx->typeTypeOrVoid() && ctx->CLASS()) {
-            // REFL-1.5: `T.class` — the statically-known type's reflective Class.
-            // Capture the type's text now (the ANTLR context is freed before
-            // codegen); the class is resolved by name at resolveTypes time.
+            // Capture the type's text now — the ANTLR context is freed before codegen; the
+            // class itself is resolved by name at resolveTypes time.
             result = make_shared<ClassLiteralExpression>(
                 ctx->typeTypeOrVoid()->getText(), ctx->getStart());
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), true);
         } else if (ctx->THIS()) {
-            // Pass the Token directly — ctx is a PrimaryContext here, so
-            // ctx->expression() is null for the THIS form and the old
-            // ThisExpression(ctx->expression()) overload would null-deref
-            // on getStart(). The token-taking overload sidesteps that.
+            // Pass the Token directly: `ctx->expression()` is null for the THIS form, so the
+            // expression-taking ThisExpression overload would null-deref on getStart().
             auto thisExpr = make_shared<ThisExpression>(ctx->getStart());
             if (ctx->typeType()) {
-                // MultiClassing Phase 2: `this<Base>` — record the
-                // bracketed ancestor name. resolveTypes validates it's
-                // a real ancestor and pins resolvedType so DotExpression
-                // routes through the chosen sub-object.
                 thisExpr->setChosenAncestorName(ctx->typeType()->getText());
             }
             result = thisExpr;
         } else if (ctx->SUPER()) {
-            // `super` as a primary expression (e.g. `super.foo()`). The
-            // call dispatch lives in MethodCallExpression — when its
-            // receiver is a SuperExpression, the call bypasses vtable
-            // lookup and direct-calls the parent's method.
             auto superExpr = make_shared<SuperExpression>(ctx->getStart());
             if (ctx->typeType()) {
-                // MultiClassing Phase 2: `super<Base>` — record the
-                // bracketed ancestor name. Same validation + adjustment
-                // as `this<Base>`; method calls additionally force-direct
-                // (MethodCallExpression keys off the SuperExpression
-                // receiver type unchanged from the unbracketed form).
                 superExpr->setChosenAncestorName(ctx->typeType()->getText());
             }
             result = superExpr;
@@ -2566,28 +2130,23 @@ bool cajetaRhsCarriesRedundantSharp(
         return result;
     }
 
+    // Never emits: fromContext always yields a concrete expression node, so a
+    // PrimaryExpression reaching codegen produces no value.
     llvm::Value* PrimaryExpression::generateCode(CajetaModulePtr module) {
         return nullptr;
     }
 
-    // REFL-1.5: `T.class`.
+    // Resolves `T.class`. A type parameter binds through the module's substitution
+    // stack, which is live only during an instantiation walk — hence resolved and
+    // cached eagerly here; otherwise the name is looked up in the canonical map.
     void ClassLiteralExpression::resolveTypes(CajetaModulePtr module) {
         if (resolvedType) return;
-        // Template type-parameter substitution first: inside an instantiation
-        // body walk, a bare `T.class` names a type parameter, which must resolve
-        // to the concrete argument bound for this instantiation — consulted via
-        // the module's active substitution stack (the same path
-        // CajetaType::fromContext uses). The stack is live only during the walk
-        // (IR emits between push/popTypeSubstitution), so resolve + cache the
-        // binding eagerly here; `namedType`/`resolvedType` persist to codegen.
         auto& cmap = CajetaType::getCanonicalMap();
         if (module) {
             if (auto bound = module->lookupTypeParameter(namedTypeName)) {
                 namedType = bound;
             }
         }
-        // Otherwise resolve the named type by name from canonicalMap (keyed by
-        // both short typeName and full canonical), now that every class is registered.
         if (!namedType) {
             auto nit = cmap.find(namedTypeName);
             if (nit != cmap.end()) {
@@ -2595,8 +2154,6 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
         if (!namedType) return;   // unresolved type — generateCode reports it
-        // resolvedType = Class<T> (the wildcard-phantom template instantiated
-        // with the named type). Requires cajeta.reflect.Class on the path.
         auto it = cmap.find("cajeta.reflect.Class");
         auto classTmpl = (it != cmap.end())
             ? dynamic_pointer_cast<CajetaClass>(it->second) : nullptr;
@@ -2605,6 +2162,9 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // Returns the address of the class's cached #ClassObject, a process-lifetime
+    // constant, so the result is a borrow that is never freed. Throws when the type is
+    // a primitive or its reflection metadata was not emitted.
     llvm::Value* ClassLiteralExpression::generateCode(CajetaModulePtr module) {
         if (!resolvedType) resolveTypes(module);
         auto klass = dynamic_pointer_cast<CajetaClass>(namedType);
@@ -2614,9 +2174,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 "Class object; use a reference type before `.class`",
                 "CAJETA_ERROR_CLASS_LITERAL");
         }
-        // The cached #ClassObject IS the Class<T> instance: a process-lifetime
-        // constant { Class<?>#VTable, rtti }. Its ADDRESS is the borrow we hand
-        // back (never freed). Mirror obj.getClass()/Class.of, but statically.
         llvm::GlobalVariable* co = klass->getClassObjectGlobal();
         if (!co) {
             throw Exception(
@@ -2627,11 +2184,10 @@ bool cajetaRhsCarriesRedundantSharp(
         return CajetaModule::ensureGlobalInModule(module->emitTargetLlvmModule(), co);
     }
 
+    // Types the ternary from the `then` arm; there is no least-upper-bound across arms
+    // yet, so codegen coerces the `else` arm to match.
     void BooleanSwitchExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
-        // Result type = the `then` branch's resolved type. A full implementation would
-        // unify with the `else` branch (least common ancestor); we leave that to
-        // codegen-time coercion since the type system doesn't yet have promotion.
         if (children.size() >= 2) {
             if (auto thenExpr = dynamic_pointer_cast<Expression>(children[1])) {
                 resolvedType = thenExpr->getResolvedType();
@@ -2649,6 +2205,8 @@ bool cajetaRhsCarriesRedundantSharp(
         return f ? f : (llvm::Value*) module->getBuilder()->getInt64(0);
     }
 
+    // Emits the ternary as two arm blocks and a phi, coercing the `else` arm's width to
+    // the `then` arm's, and merges the arms' title flags alongside the value.
     llvm::Value* BooleanSwitchExpression::generateCode(CajetaModulePtr module) {
         // Stale-Value guard (as MoveExpression): this node re-generates per
         // instantiation; a flag from a previous function must never leak.
@@ -2656,19 +2214,12 @@ bool cajetaRhsCarriesRedundantSharp(
         if (children.size() < 3) return nullptr;
         auto* builder = module->getBuilder();
         llvm::LLVMContext& ctx = *module->getLlvmContext();
-        // The flag is computed for any pointer-valued result: only the
-        // class/String local paths consume it (views and value types are
-        // never pointer-valued here; an array's own path ignores it), and the
-        // node's own resolvedType is not reliably a class by codegen time.
+        // The flag is computed for any pointer-valued result: only the class/String local
+        // paths consume it, and resolvedType is not reliably a class by codegen time.
         llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
 
-        // Evaluate condition; coerce non-i1 (e.g. i32 0/non-0) to i1 via != 0.
-        // Use loadIfLValue (not loadIfAllocaShared) so an l-value condition that
-        // isn't a plain alloca — a boolean class FIELD (`this.flag` → a GEP),
-        // an array element, a static field — is loaded to its r-value. Loading
-        // only allocas left a field GEP as a pointer, and the i1 coercion below
-        // then built an ICmp with a pointer operand (malformed IR / verifier
-        // assertion).
+        // Use loadIfLValue, not the alloca-only load: a condition that is a boolean FIELD
+        // or an element is a GEP, and the i1 coercion would build an ICmp on a pointer.
         auto condAst = dynamic_pointer_cast<Expression>(children[0]);
         llvm::Value* cond = loadIfLValue(module, children[0]->generateCode(module), condAst);
         llvm::Type* i1Ty = llvm::Type::getInt1Ty(ctx);
@@ -2698,8 +2249,6 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::Value* elseVal = loadIfLValue(module, children[2]->generateCode(module), elseAst);
         llvm::Value* elseFlag = classLike
             ? armTitleFlag(module, elseAst) : nullptr;
-        // If types differ, narrow/extend the else side to match the then side. Mirrors
-        // BinaryOpExpression's coerceArithPair logic at a single point of variance.
         if (elseVal->getType() != thenVal->getType()) {
             llvm::Type* tt = thenVal->getType();
             llvm::Type* et = elseVal->getType();
@@ -2735,11 +2284,9 @@ bool cajetaRhsCarriesRedundantSharp(
         return phi;
     }
 
+    // `#x` carries x's type: the sharp is an ownership operation, not a coercion.
     void MoveExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
-        // Our resolvedType mirrors the wrapped expression's — `#x` carries the
-        // same type as `x` for typing purposes; the `#` is purely an ownership
-        // operation, not a coercion.
         if (!children.empty()) {
             if (auto inner = dynamic_pointer_cast<Expression>(children[0])) {
                 resolvedType = inner->getResolvedType();
@@ -2747,20 +2294,17 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // Emits `#expr`: a take protocol chosen by the source's kind (element, member,
+    // static, identifier, call result), then ONE classification taken after codegen,
+    // leaving runtimeTitleFlag holding the mode the consuming store or return records.
     llvm::Value* MoveExpression::generateCode(CajetaModulePtr module) {
         // Stale-Value guard: this node re-generates per instantiation, and a
         // flag captured in a previous function must never leak into this one.
         runtimeTitleFlag = nullptr;
         if (children.empty()) return nullptr;
-        // title-stores §2.3 Phase 2 (plan 7.2.2) — deprecate the legacy
-        // `dst = #v` assignment spelling. WARNING only: the store still
-        // transfers and the program still runs; Phase 3 turns this into an
-        // error once the trigger in the plan is met.
-        //
-        // Reported here rather than at the store because this is the one node
-        // that both spellings do NOT share: `dst #= v` synthesises its own
-        // wrapper and never sets the flag. Deliberately silent at call args,
-        // returns, and extraction reads (spec §2.3) — nothing marks those.
+        // The legacy `dst = #v` spelling warns and still transfers. Reported here because
+        // this is the one node both spellings do not share; call args and returns are
+        // deliberately silent.
         if (redundantSharp) {
             if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
                 eng->report("warning", "CAJETA_WARN_REDUNDANT_TRANSFER",
@@ -2785,38 +2329,20 @@ bool cajetaRhsCarriesRedundantSharp(
                     module->getSourcePath(), (int) getSourceLine(), -1);
             }
         }
-        // Evaluate the wrapped expression FIRST (while the source is still
-        // readable), then mark the source as moved. Marking before evaluating
-        // would trip the use-after-move check on the very read that performs
-        // the transfer.
-        //
-        // Only direct identifier sources are tracked today; chain forms
-        // (`#person.name`) require path-based borrow tracking, which lands in
-        // a later step of Session 3.
+        // Evaluate the wrapped expression BEFORE marking the source moved, or the
+        // use-after-move check trips on the very read that performs the transfer.
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
-        // title-stores §2.1 — a nested Move (the `#=` desugar wrapping a
-        // parsed `#expr`) delegates entirely: generate the inner Move and
-        // propagate its captured/forwarded flag outward so the enclosing
-        // store classification sees the truth.
+        // A nested Move (the `#=` desugar wrapping a parsed `#expr`) delegates entirely:
+        // generate the inner Move and propagate its flag outward.
         if (inner && inner->kind() == ExprKind::Move) {
             auto nestedMv = std::static_pointer_cast<MoveExpression>(inner);
             llvm::Value* nv = nestedMv->generateCode(module);
             runtimeTitleFlag = nestedMv->getRuntimeTitleFlag();
             return nv;
         }
-        // Unit 3 — the take protocols below are ACTIONS keyed on the source's kind;
-        // every flag they do not produce comes from ONE classification, taken AFTER codegen.
-        // title-tracking §6.3 (Unit 6, plan 6.2.1) — `#map[k]` on a CLASS
-        // receiver binds to the author-provided `operator#[]` (the
-        // title-extracting index; distinct canonical name because dispatch is
-        // mode-erased). The operator is TOTAL: title out with the entry
-        // staying resident, or a panic (Recoverable) when the entry holds no
-        // title. The receiver itself is NOT marked moved — extracting one
-        // entry does not consume the container. Declared `#V`, so the
-        // assignee's static-owner claim (the LVD `= #x` path) is correct.
-        // Without this branch the move silently degraded to a plain
-        // operator[] READ while the assignee claimed the title anyway —
-        // half a double-free waiting for the store side to work.
+        // `#map[k]` on a class receiver binds the author's `operator#[]` — the
+        // title-extracting index, a distinct canonical name because dispatch is
+        // mode-erased. It is TOTAL: a title out, or a panic. The receiver is not moved.
         if (inner && inner->kind() == ExprKind::ArrayIndex) {
             auto idxInner = std::static_pointer_cast<ArrayIndexExpression>(inner);
             auto& ich = idxInner->getChildren();
@@ -2866,14 +2392,9 @@ bool cajetaRhsCarriesRedundantSharp(
                 return out;
             }
         }
-        // title-tracking §6.3 / §5 (Unit 3 slice 3C) — `#place` EXTRACTION on
-        // a bit-carrying field (`#h.f`): if the field's ownership bit is set,
-        // the title moves to the assignee and the bit decays to borrowed (the
-        // field stays resident and readable); if the bit is clear, panic —
-        // extraction from a place that holds no title (integer-coded throw,
-        // first-clause catchable like the NonNull check). This shape returns
-        // the loaded r-value directly and deliberately does NOT demotePathToBorrow
-        // (post-extraction reads are legal borrows).
+        // `#h.f` on a bit-carrying field: a set bit moves the title and the bit decays to
+        // borrowed (the field stays resident and readable), a clear bit panics. Returns
+        // the loaded r-value and deliberately does NOT demote the path to a borrow.
         if (inner && inner->kind() == ExprKind::Dot) {
             auto dotInner = std::static_pointer_cast<DotExpression>(inner);
             if (!dotInner->getResolvedType()) dotInner->resolveTypes(module);
@@ -2904,12 +2425,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     };
                 xFind(xRecvClass);
             }
-            // A `#x.f` Move of a PRIMITIVE member is identity — load the
-            // value so the enclosing store writes bytes, not the member
-            // slot's address (the ArrayIndex twin of this guard caught the
-            // BPlus int32 corruption; this shape appears in `#=` member
-            // forwarding with a primitive instantiation, e.g. HashMap
-            // rehash with K=int32).
+            // A `#x.f` move of a PRIMITIVE member is identity: load the value so the
+            // enclosing store writes bytes, not the member slot's address.
             if (xProp && xDecl && !CajetaClass::fieldHasOwnershipBit(xProp)
                     && xProp->getType()
                     && !dynamic_pointer_cast<CajetaClass>(xProp->getType())) {
@@ -2918,17 +2435,9 @@ bool cajetaRhsCarriesRedundantSharp(
                 resolvedType = xProp->getType();
                 return pv;
             }
-            // title-stores 6.3.2 — String MEMBER of a value-struct slot
-            // (`#this.slots[s].key`, the rehash forward): the Dot twin of
-            // the ArrayIndex String take. Members carry no ownership bit
-            // (shared-capable exclusion) but the member walk drops resident
-            // wrappers unconditionally — so the move must TAKE: load the
-            // wrapper, NULL the member (the walk skips nulls), hand the
-            // wrapper to the receiving store. Falling through here returned
-            // the member GEP: the new table stored slot ADDRESSES while the
-            // old table's walk freed every wrapper (the thousand-String-key
-            // rehash crash). Scoped to value-type receivers; heap-class
-            // String fields keep the legacy path.
+            // A String MEMBER of a value-struct slot carries no ownership bit, but the member
+            // walk drops resident wrappers unconditionally — so the move must TAKE: load the
+            // wrapper and NULL the member, or the old table frees what the new one stored.
             if (xProp && xDecl && xRecvClass && xRecvClass->isValueType()
                     && !CajetaClass::fieldHasOwnershipBit(xProp)) {
                 auto xPropCls = dynamic_pointer_cast<CajetaClass>(
@@ -2986,10 +2495,8 @@ bool cajetaRhsCarriesRedundantSharp(
                             b->CreateLShr(w,
                                 llvm::ConstantInt::get(i64Ty, bitIdx)),
                             llvm::ConstantInt::get(i64Ty, 1));
-                        // title-stores §2.1/§3.3.2 — the FUSED claim
-                        // (`V out #= #slots[i].val`, double-Move shape)
-                        // forwards the bit VERBATIM: borrow forwards as
-                        // borrow, no panic. Bare `= #x.f` keeps the guard.
+                        // The fused claim (`V out #= #slots[i].val`) forwards the bit VERBATIM, so a
+                        // borrow forwards as a borrow with no panic. Bare `= #x.f` keeps the guard.
                         if (isForwardingSlotMove()) {
                             runtimeTitleFlag = bit;
                             llvm::Value* fwdW = b->CreateAnd(w,
@@ -3024,79 +2531,39 @@ bool cajetaRhsCarriesRedundantSharp(
                         return b->CreateLoad(ptrTy, slot, "xtract_title");
                     }
                 }
-                // Fall through to the legacy path when layout info is
-                // unavailable (opaque type during bootstrap).
             }
         }
         llvm::Value* value = inner ? inner->generateCode(module) : nullptr;
         ownership::TitleShape mvShape = inner
             ? ownership::moveFrom(ownership::classify(inner, module), isSharpStore())
             : ownership::TitleShape();
-        // A conditional inner (`dst #= c ? a : b`, `#(c ? a : b)`) hands its
-        // per-arm title flag through unchanged: the store then records the
-        // TAKEN arm's mode — a resolve/borrow for a read arm, a transfer for
-        // a fresh one — exactly as it would for that arm written alone.
-        // Before this the wrapper saw no shape it knew and the field store
-        // treated the phi as a static transfer: a borrowed wrapper stored raw
-        // with the own-bit set, freed twice when the record dropped
-        // (measured 2026-09-07, probe W: storeStrBorrowTern / storeCellBorrowTern).
+        // A conditional inner (`dst #= c ? a : b`) hands its per-arm title flag through,
+        // so the store records the TAKEN arm's mode.
         if (isConditionalKind(inner)) {
-            // Always set: a null flag reads as "static owner", which is wrong for two borrow arms.
             runtimeTitleFlag = ownership::titleFlag(mvShape, module);
         }
-        // title-tracking — `dst #= call()`: the callee's RETURN FLAG is the
-        // only truth about whether that result carried a title. A plain (non-
-        // `#`) return is NOT statically a borrow (CLAUDE.md §2.1 / spec §2.1):
-        // a plain-return wrapper that tail-calls a `#` method rides the inner
-        // flag through, and `Json.parse<T>(String)` is exactly that shape.
-        // Baking `bindingTakesTitle()` into a constant below therefore
-        // disarmed the assignee's drop entry for every such call and leaked
-        // the whole result graph. Read the TLS HERE, immediately after the
-        // call, while it still holds this call's bit — anything later is
-        // stale. Gated on emitsReturnFlag(): raw-IR synthesized bodies and
-        // intrinsics never store the flag, so those keep the static answer.
-        // A call source: its flag is read HERE, right after the call, while the TLS
-        // still holds this call's bit — the same read for a plain and a `#R` callee.
+        // A plain (non-`#`) return is not statically a borrow — a plain-return wrapper
+        // that tail-calls a `#` method rides the inner flag through. Read the TLS HERE,
+        // right after the call, while it still holds this call's bit; later is stale.
         llvm::Value* innerCallReturnFlag = nullptr;
         if (inner && inner->kind() == ExprKind::MethodCall) {
             if (mvShape.source == ownership::TitleSource::ReturnFlag) {
                 innerCallReturnFlag = ownership::titleFlag(mvShape, module);
             } else if (mvShape.source == ownership::TitleSource::None
                        && mvShape.answer == ownership::TitleAnswer::Borrow) {
-                // 8.2.4 — a callee declared plain that stores no flag hands out a borrow: the constant 0.
                 innerCallReturnFlag = module->getBuilder()->getInt64(0);
             }
             if (!innerCallReturnFlag && !mvShape.callee
                     && mvShape.source == ownership::TitleSource::ReturnFlag) {
-                // 8.2.4 — an intrinsic with no declaration and no recorded stance stored no flag: unknown answers OWNED.
                 auto mceIn = std::static_pointer_cast<MethodCallExpression>(inner);
                 if (!mceIn->bindingTakesTitle()) {
                     innerCallReturnFlag = module->getBuilder()->getInt64(0);
                 }
             }
         }
-        // The wrapped expression typically yields an l-value (an alloca). The
-        // consumer of a moved value wants the r-value — the pointer to the
-        // owned heap block, not the address of the local slot that holds it.
-        // Load through the alloca so the destination receives the actual heap
-        // pointer.
-        //
-        // Only a variable SLOT may be loaded through. A producer expression
-        // hands back a freshly built body whose alloca IS the value: a call
-        // returning an interface (MethodCallExpression's S9.5.5 repack),
-        // `stack Foo()`, an aggregate initializer, a record upcast, a slice.
-        // `isa<AllocaInst>` cannot tell those apart from a slot, so gate on the
-        // AST shape — the same rule loadIfLValue uses for its own alloca branch
-        // (`treatAllocaAsSlot`), which is why every one of those producers has a
-        // carve-out there. This shortcut predates loadIfLValue and had none.
-        //
-        // Symptom: `Face f #= D.make(10)` where `make` returns `#Face`. The load
-        // yielded the 24-byte fat-pointer body BY VALUE, which the declaration
-        // then stored into f's 8-byte `ptr` slot — so the slot held the body's
-        // first word (the implementer's data ptr) where a body POINTER belongs,
-        // and it overran the slot by 16 bytes. Dispatch read the body fields out
-        // of the implementer: `iface_vtable` became field `k`, and
-        // `getelementptr ptr, ptr k, i64 1` faulted at k+8.
+        // Load through a variable SLOT only. A producer (interface repack, `stack Foo()`,
+        // aggregate init, record upcast, slice) hands back an alloca that IS the value,
+        // so gate on the AST shape as loadIfLValue's `treatAllocaAsSlot` does.
         if (value) {
             if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(value)) {
                 bool allocaIsSlot = !inner || inner->kind() == ExprKind::Identifier;
@@ -3107,38 +2574,14 @@ bool cajetaRhsCarriesRedundantSharp(
             } else if (llvm::isa<llvm::GlobalVariable>(value)
                     && (inner->kind() == ExprKind::Identifier
                         || inner->kind() == ExprKind::Dot)) {
-                // title-stores §2.1 — `dst #= Type.staticField` (and the
-                // unqualified `dst #= staticField` inside the declaring
-                // class). A static field's slot is a GlobalVariable, never an
-                // AllocaInst, so the alloca-only load above never fired and
-                // the store received the SLOT ADDRESS instead of the
-                // reference it holds. Plain `=` was always correct here
-                // because it goes through loadIfLValue, which has carried a
-                // "static fields land here too" branch for exactly this
-                // shape; only the move path had its own narrower rule.
-                //
-                // Silent wrong code, not a crash: the destination then held
-                // `&slot`, and every read through it returned whatever the
-                // neighbouring statics happened to contain. Measured in
-                // cajeta-llm as `Linear.btXhSrc #= Linear.btXf`, where the
-                // aliased KernelBuffer's `elementCount` read back as
-                // 17592186044448 while the source read 131072 on the same
-                // line, and every Vulkan launch binding it failed to resolve
-                // its buffer — a whole prefill of wrong logits with no error
-                // until the driver refused the dispatch.
+                // A static field's slot is a GlobalVariable, never an alloca, so the load above
+                // never fires for it and the store would receive the slot ADDRESS.
                 value = loadIfLValue(module, value, inner);
             }
         }
-        // slices 9.2.1 — `#arr[i]`: move an element OUT of an owning local
-        // String[]. The runtime take hands back the wrapper, NULLS the slot
-        // (the element walk skips it) and unmarks its owned bit; ownership
-        // rides to the receiving site.
-        // title-tracking §6.3.3 (Unit 4) — for a slot-bit class element the
-        // take moves the TITLE only: the slot stays resident and readable
-        // (§6.3.2), its bit decays, and a take from a borrowed or empty slot
-        // panics (CAJETA_PANIC_TITLE_MISS, the integer-coded throw the field
-        // extraction above uses). Arrays without a sidecar (params, fields)
-        // keep the prior behavior.
+        // `#arr[i]` takes the element OUT: the runtime take hands back the value, NULLs
+        // the slot (the element walk then skips it) and decays its owned bit, so the
+        // slot stays resident and readable while the title rides to the new owner.
         bool slotTaken = false;
         if (inner && inner->kind() == ExprKind::ArrayIndex) {
             auto aixInner = std::static_pointer_cast<ArrayIndexExpression>(inner);
@@ -3173,18 +2616,8 @@ bool cajetaRhsCarriesRedundantSharp(
                                             taken,
                                             llvm::ConstantPointerNull::get(tptr),
                                             "slot.take.miss");
-                                        // MODE-CARRYING claim (`T x #= src[i]`):
-                                        // a miss means the slot held a BORROW,
-                                        // which is legitimate now that
-                                        // collections do not own by default —
-                                        // hand back the element unchanged and
-                                        // let the local arm from the slot's
-                                        // actual bit. A select, not a branch:
-                                        // the take is a no-op on a miss.
-                                        //
-                                        // Only the DEMANDING claim still panics,
-                                        // which is what a declared `#R` / `#T`
-                                        // contract needs (ArrayList.operator#[]).
+                                        // A MODE-CARRYING claim tolerates a miss — the slot held a borrow, which is legal
+                                        // — so it selects rather than branches. Only a demanding `#R`/`#T` claim panics.
                                         if (isForwardingSlotMove()) {
                                             value = b->CreateSelect(
                                                 miss, value, taken, "slot.fwd");
@@ -3200,7 +2633,6 @@ bool cajetaRhsCarriesRedundantSharp(
                                                 tctx, "slot_take_ok", fn);
                                         b->CreateCondBr(miss, panicBB, okBB);
                                         b->SetInsertPoint(panicBB);
-                                        // CAJETA_PANIC_TITLE_MISS = 3
                                         if (llvm::Function* throwFn =
                                                 module->getRuntimeFunction(
                                                     "__cajeta_throw")) {
@@ -3226,32 +2658,14 @@ bool cajetaRhsCarriesRedundantSharp(
                         }
                     }
                 }
-                // title-stores §3.2 (plan 3.2.2) — the TAIL-BITMAP take:
-                // sidecar-less arrays (fields, params, and locals under the
-                // one-mechanism reconcile). The slot stays resident and
-                // readable (§6.3.2 lend); the bit decays; a take from a
-                // borrowed/vacant slot panics TITLE_MISS, mirroring the
-                // guarded field detach. Receiver regenerates only for
-                // side-effect-free shapes (identifier / field path).
                 if (!slotTaken) {
                     if (!aixInner->getResolvedType()) {
                         aixInner->resolveTypes(module);
                     }
-                    // Elements without slot bits (primitives, Strings,
-                    // value types) have no tail take — the Move must still
-                    // hand the enclosing store a LOADED element, exactly
-                    // what the plain-read RHS would. Handing back the slot
-                    // GEP stored the slot's ADDRESS: through a stride-4
-                    // int32[] (the BPlus split heap-corruption) and into
-                    // string_array_elem_set_owned, whose src is a wrapper
-                    // ptr (the ArrayList<String> grow +512 leak), both
-                    // 3.3.1. loadIfLValue knows the per-family element
-                    // shapes (interface GEPs stay GEPs).
+                    // Elements without slot bits (primitives, Strings, value types) have no tail take,
+                    // but the Move must still hand back a LOADED element: returning the slot GEP
+                    // stores the slot's ADDRESS instead of its contents.
                     auto mvElemT = aixInner->getResolvedType();
-                    // String elements (title-stores Unit 5): the move is a
-                    // TAKE — load the wrapper and NULL the slot, so the
-                    // unconditional String teardown walk skips what the
-                    // caller now holds (extraction and grow-forward alike).
                     {
                         auto mvElemCls = dynamic_pointer_cast<CajetaClass>(
                             mvElemT);
@@ -3313,17 +2727,11 @@ bool cajetaRhsCarriesRedundantSharp(
                             b->CreateSub(b->CreateSub(slotInt, hdrInt),
                                 llvm::ConstantInt::get(ti64, ths)),
                             llvm::ConstantInt::get(ti64, tes));
-                        // Load the element BEFORE the bit decays: the slot
-                        // stays resident as a lend.
                         llvm::Value* elem = b->CreateLoad(tptr, value,
                             "slot.take.val");
                         llvm::Function* takeFn = module->getRuntimeFunction(
                             "__cajeta_tail_elem_take_flag");
                         if (takeFn && isForwardingSlotMove()) {
-                            // §2.1 fused forwarding: the bit rides out
-                            // verbatim (borrow forwards as borrow); the
-                            // enclosing slot store consumes it via
-                            // getRuntimeTitleFlag(). No panic.
                             runtimeTitleFlag = b->CreateCall(takeFn,
                                 {hdr, llvm::ConstantInt::get(ti64, ths),
                                  llvm::ConstantInt::get(ti64, tes), tIdx},
@@ -3346,7 +2754,6 @@ bool cajetaRhsCarriesRedundantSharp(
                                 tctx, "tail_take_ok", fn);
                             b->CreateCondBr(miss, panicBB, okBB);
                             b->SetInsertPoint(panicBB);
-                            // CAJETA_PANIC_TITLE_MISS = 3
                             if (llvm::Function* throwFn =
                                     module->getRuntimeFunction(
                                         "__cajeta_throw")) {
@@ -3366,103 +2773,32 @@ bool cajetaRhsCarriesRedundantSharp(
             auto idExpr = std::static_pointer_cast<IdentifierExpression>(inner);
             auto scope = module->getScopeStack().peek();
             if (scope) {
-                // title-tracking §3.1.2 — `#x` demands a statically-active
-                // owner. A borrow-shaped class local (no drop entry) owns no
-                // title; moving out of it would mint a second active owner.
-                // Formals keep their own path (BORROW_PARAM_ESCAPES); shared-
-                // capable values (String/Slice) transfer by share-bump, not
-                // title move (§5.1.6).
+                // `#x` demands a statically active owner: a borrow-shaped class local owns no
+                // title, and moving out of it would mint a second active owner.
                 const string& mvName = idExpr->getTextValue();
-                // U2 (plan 2.2.3) — all three rejections now live in
-                // Scope::rejectTransferOfBorrow so this spelling and the
-                // CALL-ARGUMENT spelling (a `callerTransferred` flag, which
-                // never builds this node) cannot drift apart again. The
-                // per-case reasoning moved with the code.
-                //
-                // A MODE-CARRYING `#=` store is PARTIALLY exempt, and the flag
-                // says which part: it records whatever mode the source holds
-                // rather than claiming a title, so a lent source records a
-                // borrow and nothing is double-freed. The provenance
-                // rejections are for a claim that is false; `#=` makes no
-                // claim. (U3: this is also what lets `#=` be the prescribed
-                // fix for a borrow-alias capture without the two checks
-                // contradicting each other.) The DOUBLE-TRANSFER rejection
-                // still applies — a source already transferred in this frame
-                // has no mode left to forward.
-                //
-                // Passing the flag rather than skipping the call is what keeps
-                // the two LHS positions honest. `#=` only reaches this node
-                // with modeCarrying set from the ASSIGNMENT spelling
-                // (`h.c #= t`); the DECLARATION spelling (`Tag b #= t`) builds
-                // its wrapper elsewhere and never set it, so the same store
-                // rejected as a declaration and compiled as a field assignment.
+                // A mode-carrying `#=` is partially exempt, and the flag says which part: it
+                // records the source's mode rather than claiming a title, so only the
+                // double-transfer rejection can apply to it.
                 scope->rejectTransferOfBorrow(mvName, isModeCarrying());
-                // A mode-carrying `#=` CONSUMES its source only when the
-                // source statically holds a title. A borrowed source has none
-                // to hand over: the store records a borrow and the source is
-                // unchanged, so one lent local can legitimately feed several
-                // slots — `Cache.linkAtHead` threads a borrowed `node` into
-                // prev, head and tail. Demoting on the first of those made the
-                // second read as a double transfer of a title that never
-                // moved. A `#x` claim still demotes unconditionally.
-                //
-                // 8.2.23 — gated on isSharpStore(), NOT isModeCarrying().
-                // Whether the source is CONSUMED is a fact about the SOURCE, so
-                // it cannot depend on which side of the `#=` the destination
-                // sits. `modeCarrying` marks only the assignment spelling, so
-                // the declaration spelling kept demoting unconditionally and
-                // the two positions answered differently for one source:
-                //
-                //     void f(Cell n) { this.a #= n; this.b #= n; }  // compiles
-                //     int32 g(Cell n) { Cell x #= n; Cell y #= n; } // MOVE_OF_BORROW
-                //
-                // A plain formal is conditional acquisition — its mode arrives
-                // at run time in the transfer word — so demoting it on the
-                // first store is wrong in BOTH positions. That is the dual-role
-                // shape TransferFromBorrowTests 3.1.6 pins for the field
-                // position; the local position had no pin and no fix.
-                //
-                // The REJECTION above deliberately keeps isModeCarrying():
-                // cases (b)/(c) are intent checks, not safety checks, and the
-                // two positions genuinely differ there — a declaration off a
-                // borrow alias is pinned as an error (3.1.4), while the field
-                // store must stay legal because it is what CAPTURED_BORROW
-                // prescribes as the fix.
+                // A `#=` CONSUMES its source only when the source statically holds a title: a
+                // borrowed one has none to hand over, so a single lent local may feed several
+                // slots. Gated on isSharpStore(), since consumption is a fact about the SOURCE.
                 if (!isSharpStore() || scope->holdsStaticTitle(mvName)) {
                     scope->demoteToBorrow(mvName,
                         "moved by `#" + mvName + "` at line "
                             + std::to_string(getSourceLine()));
                 }
-                // If the moved-out identifier has a drop entry, flag it inactive
-                // so scope-exit doesn't re-free the value the new owner holds.
-                // 5.2.2: a formal's entry is runtime truth (armed from the
-                // transfer word) — capture the flag first so the consuming
-                // store/return can seed its own bit from it.
                 if (FieldPtr field = scope->getField(idExpr->getTextValue())) {
                     if (llvm::Value* entry = field->getDropEntry()) {
-                        // 5.2.4 — the entry's flag IS the title's truth at this
-                        // point: 1 for a static owner (armed at push), the
-                        // call/caller-supplied bit for a runtime owner (formal
-                        // per 5.2.2, call-result local per 5.2.3). Capture it
-                        // BEFORE deactivating so consuming sites (field store,
-                        // return, call-arg word) forward what we actually held
-                        // rather than an assumed 1.
-                        // The entry's active byte, read BEFORE the deactivation below.
+                        // The entry's flag IS the title's truth here — 1 for a static owner, the
+                        // call- or caller-supplied bit for a runtime one. Capture it BEFORE deactivating,
+                        // so the consuming store or return forwards what was actually held.
                         runtimeTitleFlag = ownership::titleFlag(mvShape, module);
-                        // Unit 9 (spec 5.14) — deactivate only if the entry still describes this local.
                         ownership::deactivateLocalEntry(module, field);
                     } else if (auto pfMv =
                             dynamic_pointer_cast<ParameterField>(field)) {
-                        // 6.2.1's store-form twin — an ENTRY-LESS plain formal
-                        // moved by `#=`/`= #v` (String: emitFormalDropEntries
-                        // deliberately skips it) still has runtime truth in the
-                        // enclosing function's transfer word. Capture that bit
-                        // so the consuming store carries the CALLER's mode
-                        // instead of a constant 1 — the constant is what let
-                        // `data[i] #= v` take a lent String's wrapper (and let
-                        // the 3.4.3 temp reclaim free a wrapper a slot had just
-                        // adopted). A `#`-declared formal keeps the static 1:
-                        // its ownership is the contract, not the word.
+                        // An entry-less plain formal still has runtime truth in the enclosing function's
+                        // transfer word; a `#`-declared formal keeps the static 1, its contract.
                         auto fpMv = pfMv->getFormalParameter();
                         auto cmMv = module->getCurrentMethod();
                         llvm::Value* inWordMv =
@@ -3483,48 +2819,19 @@ bool cajetaRhsCarriesRedundantSharp(
                         }
                     }
                 }
-                // A mode-carrying `#=` off a source that statically holds NO
-                // title must record a BORROW. Every consumer of this flag
-                // defaults a null one to const-1 (owned) — correct for a `#x`
-                // CLAIM, wrong for `#=`, which only forwards what the source
-                // has. A borrow alias reaches neither branch above (no drop
-                // entry to read, not a formal with a transfer-word bit), so
-                // the flag stayed null and the slot silently claimed the
-                // object.
-                //
-                // That is what `Cache.linkAtHead` hit: `this.mruHead #= n`
-                // with `n` aliasing a lent formal recorded OWNED, so
-                // `unlinkOnly`'s later plain `this.mruHead = node.next`
-                // displaced-released a node the map still owned — a
-                // use-after-free two entries in, and the SIGSEGV behind
-                // DnsCacheTests. Formals keep their word-bit path: their mode
-                // is decided at the call site, not here.
+                // Every consumer reads a null flag as owned, which is right for a `#x` CLAIM and
+                // wrong for `#=`. A borrow alias reaches neither branch above, so the flag must
+                // be set explicitly or the slot silently claims the object.
                 if (isSharpStore() && !runtimeTitleFlag
                         && mvShape.answer == ownership::TitleAnswer::Borrow) {
-                    // `#=` of an entry-less, non-formal local with no static title records the BORROW it holds.
                     runtimeTitleFlag = ownership::titleFlag(mvShape, module);
                 }
-                // script-units U4 (spec §4.2) — a session binding's title
-                // left the session: quiet its registry slot so drop_all
-                // doesn't re-drop what the new owner now holds (self-gated
-                // on script-entry + session-binding name).
                 maybeEmitSessionDisarm(module, mvName);
             }
         } else if (inner && inner->kind() == ExprKind::Dot) {
-            // Path-based move (`#person.address.city`). Build the dotted path
-            // and record it on the scope so future reads through that path —
-            // or any prefix — are rejected. See MemoryModel.md § Path-based
-            // borrow tracking.
-            //
-            // title-tracking rev 2 (Unit 8): a BIT-CAPABLE class field is the
-            // guarded-detach shape — the field's ownership bit governs at
-            // runtime and the slot stays readable as a lend (LinkedList/Cache
-            // pop idioms), so it must NOT be statically marked. Deciding by
-            // the field's TYPE (not fieldHasOwnershipBit) keeps this
-            // deterministic across codegen passes — the bit index isn't
-            // computed until layout, and marking on a pass-1 miss made the
-            // lint fire nondeterministically. Strings and value types keep
-            // the static rule (no runtime bit to govern them).
+            // Path-based move (`#a.b.c`): record the path so later reads through it, or any
+            // prefix of it, are rejected. A bit-capable class FIELD is exempt (its runtime
+            // bit governs), decided by the field's TYPE so codegen passes agree.
             auto scope = module->getScopeStack().peek();
             if (scope) {
                 bool bitCapableClassField = false;
@@ -3547,35 +2854,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 }
             }
         }
-        // 8.2.18's TWIN, for CALL RESULTS. The identifier branch above reads
-        // the source's mode off its scope entry, but a call result has no
-        // scope entry to read — so the flag stayed null and every consumer
-        // applied its const-1 (owned) default. A `#=` receipt of a
-        // BORROW-returning call therefore claimed a title over memory the
-        // callee's receiver still owns:
-        //
-        //     Cell borrowed #= h.peek();   // peek() returns a plain `Cell`
-        //
-        // freed `h`'s field at the receipt's scope exit, and `h.c` then read
-        // garbage. The callee's DECLARED return stance is the answer and the
-        // compiler already has it — `#T` transfers, plain `T` lends — so read
-        // it here rather than defaulting. Non-mode-carrying `#x` keeps its own
-        // path: that spelling is a CLAIM, and a false one is what
-        // MOVE_OF_BORROW case (c) exists to reject.
-        // 8.2.8 / spec §4.7 — `#` over a `^T` result, caught AT THE LINE that
-        // makes the mistake. This is the `keyAt` bug the spec opened with, and
-        // it is the payoff for making the stance signature-level: no
-        // provenance, no callee body, just the declared return.
-        //
-        // Both spellings are refused, and the second one deliberately. `#x` is
-        // a CLAIM and false here, which is uncontroversial. `#=` is
-        // MODE-CARRYING and would in fact record a borrow and be memory-safe —
-        // but §4.6 spent this unit making `#=` mean "a title moved here" so
-        // that a reader can tell an acquisition from a view without opening
-        // the callee. A `#=` that records a borrow reintroduces exactly the
-        // ambiguity the rule removed, so it is a diagnostic rather than a
-        // silent success. The fix is the same one word either way: plain `=`.
-        // The classifier peeled the casts and resolved the callee: a `^` (view) result has no title to take.
+        // A `^` (view) result has no title to take, so both spellings are refused — `#=`
+        // deliberately, to keep it meaning `a title moved here`.
         if (mvShape.leaf && mvShape.leaf->kind() == ExprKind::MethodCall
                 && mvShape.has(ownership::TitleShape::kView)) {
             auto mceInner = std::static_pointer_cast<MethodCallExpression>(mvShape.leaf);
@@ -3597,13 +2877,14 @@ bool cajetaRhsCarriesRedundantSharp(
         }
         if (isSharpStore() && !runtimeTitleFlag && inner
                 && inner->kind() == ExprKind::MethodCall) {
-            // Prefer the flag read right after the call; a callee that emits none is its declared stance.
             runtimeTitleFlag = innerCallReturnFlag
                 ? innerCallReturnFlag : ownership::titleFlag(mvShape, module);
         }
         return value;
     }
 
+    // Types the switch expression from the first non-default case body; there is no
+    // least-upper-bound across arms, so a caller needing one shape casts at the use.
     void SwitchExpression::resolveTypes(CajetaModulePtr module) {
         if (discriminator) discriminator->resolveTypes(module);
         for (auto& c : cases) {
@@ -3612,9 +2893,6 @@ bool cajetaRhsCarriesRedundantSharp(
             }
             if (c.body) c.body->resolveTypes(module);
         }
-        // Result type tracks the first non-default case body's resolvedType. Cajeta
-        // doesn't yet do a least-upper-bound across arms — callers that need a
-        // specific shape can cast at the use site.
         for (auto& c : cases) {
             if (!c.labels.empty() && c.body) {
                 resolvedType = c.body->getResolvedType();
@@ -3631,6 +2909,9 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // Lowers the arrow-form switch to an LLVM switch plus a phi over the arm values,
+    // widening integer arms to a common width. A missing default gets a synthetic
+    // unreachable block, so the phi needs no entry for it.
     llvm::Value* SwitchExpression::generateCode(CajetaModulePtr module) {
         runtimeTitleFlag = nullptr;   // stale-value guard, as the conditional's
         auto* builder = module->getBuilder();
@@ -3653,7 +2934,6 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::BasicBlock* mergeBB = llvm::BasicBlock::Create(ctx, "sw_expr_merge", parentFn);
         llvm::BasicBlock* defaultBB = nullptr;
 
-        // Separate cases into non-default and default for ordering.
         struct LoweredCase { llvm::BasicBlock* bb; ExpressionPtr body; vector<llvm::ConstantInt*> labels; };
         vector<LoweredCase> nonDefault;
         ExpressionPtr defaultBody;
@@ -3672,9 +2952,7 @@ bool cajetaRhsCarriesRedundantSharp(
                 llvm::Value* v = lab ? lab->generateCode(module) : nullptr;
                 if (auto* ci = llvm::dyn_cast_or_null<llvm::ConstantInt>(v)) {
                     if (ci->getType() != discTy) {
-                        // Sign-extend or truncate the label constant to match the
-                        // discriminator's width — needed for cases like a `byte`
-                        // discriminator with an `int` literal label.
+                        // Sign-extend or truncate the label to the discriminator's width.
                         ci = llvm::ConstantInt::get(llvm::cast<llvm::IntegerType>(discTy),
                             ci->getSExtValue(), /*isSigned=*/true);
                     }
@@ -3687,8 +2965,6 @@ bool cajetaRhsCarriesRedundantSharp(
             nonDefault.push_back(std::move(lc));
         }
         if (!defaultBB) {
-            // Java requires a default in switch expressions for exhaustiveness; emit a
-            // synthetic unreachable so we don't have to insert a phi entry for nothing.
             defaultBB = llvm::BasicBlock::Create(ctx, "sw_default_unreachable", parentFn);
         }
 
@@ -3698,7 +2974,6 @@ bool cajetaRhsCarriesRedundantSharp(
             for (auto* l : lc.labels) sw->addCase(l, lc.bb);
         }
 
-        // Collect each arm's result value and the BB it ends in for the phi node.
         vector<pair<llvm::Value*, llvm::BasicBlock*>> incoming;
         vector<pair<llvm::Value*, llvm::BasicBlock*>> titleIncoming;
         llvm::Type* phiTy = nullptr;
@@ -3710,8 +2985,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 return;
             }
             llvm::Value* v = body->generateCode(module);
-            // An arm's value is an r-value: load through the field GEP or alloca as the
-            // conditional does, or the phi merges an ADDRESS with an object pointer.
+            // An arm's value must be an r-value, or the phi merges a slot ADDRESS with an
+            // object pointer.
             v = loadIfLValue(module, v, body);
             if (v && v->getType()->isPointerTy()) {
                 llvm::Value* tf = armTitleFlag(module, body);
@@ -3720,7 +2995,6 @@ bool cajetaRhsCarriesRedundantSharp(
             if (v) {
                 if (!phiTy) phiTy = v->getType();
                 else if (phiTy != v->getType() && phiTy->isIntegerTy() && v->getType()->isIntegerTy()) {
-                    // Widen integer arms to a common width — pick the larger.
                     if (phiTy->getScalarSizeInBits() < v->getType()->getScalarSizeInBits()) {
                         phiTy = v->getType();
                     }
@@ -3740,7 +3014,6 @@ bool cajetaRhsCarriesRedundantSharp(
 
         builder->SetInsertPoint(mergeBB);
         if (incoming.empty() || !phiTy) {
-            // All arms unreachable — nothing to return.
             builder->CreateUnreachable();
             return nullptr;
         }
@@ -3754,7 +3027,6 @@ bool cajetaRhsCarriesRedundantSharp(
             }
             phi->addIncoming(widened, bb);
         }
-        // Unit 2 — the taken arm's title: a constant when every arm agrees, else a phi beside the value's.
         if (!titleIncoming.empty() && titleIncoming.size() == incoming.size()) {
             auto* c0 = llvm::dyn_cast<llvm::ConstantInt>(titleIncoming[0].first);
             bool allSame = c0 != nullptr;
@@ -3774,6 +3046,8 @@ bool cajetaRhsCarriesRedundantSharp(
         return phi;
     }
 
+    // Always throws CAJETA_ERROR_NOT_IMPLEMENTED, naming the construct and its source
+    // position: the parser accepts these shapes so the error lands at codegen.
     llvm::Value* UnsupportedExpression::generateCode(CajetaModulePtr module) {
         char buf[256];
         snprintf(buf, sizeof(buf),
@@ -3786,20 +3060,9 @@ bool cajetaRhsCarriesRedundantSharp(
 
     static thread_local int64_t lambdaCounter = 0;  // per-thread (threadsafe U4)
 
-    // Walk the lambda body's AST collecting names of free identifiers — names
-    // referenced inside the body that aren't bound by the lambda's parameter
-    // list. The walker has to know about a few AST shapes where sub-nodes
-    // live outside `children`:
-    //   - MethodCallExpression: args in `parameters` (children[0] is the
-    //     receiver).
-    //   - IdentifierExpression: terminate; the identifier name is the target.
-    //   - LocalVariableDeclaration / ReturnStatement / IfStatement /
-    //     ExpressionStatement: sub-expressions are in private fields
-    //     reached via dedicated getters. Block-body lambdas would otherwise
-    //     skip every identifier on a statement's RHS.
-    // Identifiers that don't resolve to a local Field (class names, namespace
-    // tokens like `Math` / `System`) get filtered later when the caller looks
-    // up the outer scope, so it's fine to over-collect here.
+    // Collects the names a lambda body references that its parameter list does not bind.
+    // Statement subclasses and MethodCallExpression keep sub-nodes outside `children`,
+    // so each needs its own descent; over-collecting is filtered by the caller.
     static void collectFreeIdentifiers(
             const AbstractSyntaxNodePtr& node,
             const std::set<std::string>& bound,
@@ -3847,16 +3110,8 @@ bool cajetaRhsCarriesRedundantSharp(
             collectFreeIdentifiers(es->getExpression(), bound, seen, out);
             return;
         }
-        // Statement types whose inner block / sub-statements live as
-        // private members rather than in `children` need explicit
-        // handlers, or the generic getChildren() fallback below skips
-        // them — leaving free identifiers inside the nested body
-        // uncaptured. The visible bug: a captured-class identifier
-        // inside an if-branch block (LabelStatement wrapper) is never
-        // collected, the lambda's captures-struct doesn't include it,
-        // and at codegen the body's IdentifierExpression lookup
-        // returns null — the resulting instance-method call drops
-        // `this`.
+        // Statement subclasses whose inner blocks live outside `children` need explicit
+        // handlers, or free identifiers nested inside them are never captured.
         if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
             collectFreeIdentifiers(ls->getBlock(), bound, seen, out);
             return;
@@ -3894,31 +3149,20 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
-    // Find the leftmost (receiver-side) identifier in an expression's
-    // subtree. The grammar groups `#c.next()` as `#(c.next())` — REFERENCE
-    // binds looser than `.` — so the name being transferred isn't the
-    // MoveExpression's immediate child but lives one level deeper, as the
-    // method call's receiver. Walking to the leftmost leaf via known
-    // expression shapes (method call → receiver, dot/array-index → lhs,
-    // identifier → that identifier) gives the receiver-side name.
+    // Walks to the leftmost (receiver-side) identifier of an expression. `#c.next()`
+    // parses as `#(c.next())` — REFERENCE binds looser than `.` — so the transferred
+    // name sits one level deeper than the move's immediate child.
     static std::string firstIdentifierIn(const AbstractSyntaxNodePtr& node) {
         if (!node) return "";
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(node)) {
             return id->getTextValue();
         }
         if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
-            // children[0] is the receiver, when there is one. A bare
-            // `foo(x)` has no receiver and no transfer candidate at this
-            // level — `#foo(x)` would mean "transfer the call's return",
-            // which isn't meaningful for capture-by-transfer.
             if (!mc->getChildren().empty()) {
                 return firstIdentifierIn(mc->getChildren()[0]);
             }
             return "";
         }
-        // Generic fallback: first non-empty leftmost identifier. Handles
-        // DotExpression, ArrayIndexExpression, parens, etc., which all
-        // place the receiver/lhs in children[0].
         for (auto& c : node->getChildren()) {
             auto r = firstIdentifierIn(c);
             if (!r.empty()) return r;
@@ -3926,14 +3170,9 @@ bool cajetaRhsCarriesRedundantSharp(
         return "";
     }
 
-    // Collect the names of outer-scope identifiers transferred into the
-    // closure via `#name` in the lambda body. Rule 3 from
-    // docs/specification/lang/Lambdas.md: ownership moves into the closure and the
-    // outer name becomes unreadable afterwards. Uses the same statement-
-    // shape recursion as collectFreeIdentifiers so block bodies pick up
-    // `#name` anywhere it appears (return value, initializer, condition,
-    // arg). The transferred name is the receiver-side leaf of the move's
-    // subtree (see firstIdentifierIn).
+    // Collects the outer names a lambda body transfers in with `#name` (Lambdas.md rule
+    // 3). Same statement-shape recursion as collectFreeIdentifiers; the transferred
+    // name is the move subtree's receiver-side leaf.
     static void collectTransferNames(
             const AbstractSyntaxNodePtr& node,
             std::set<std::string>& out) {
@@ -3943,7 +3182,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 std::string name = firstIdentifierIn(mv->getChildren()[0]);
                 if (!name.empty()) out.insert(name);
             }
-            // Still recurse — nested `#` (rare but possible).
             for (auto& c : mv->getChildren()) {
                 collectTransferNames(c, out);
             }
@@ -3974,10 +3212,6 @@ bool cajetaRhsCarriesRedundantSharp(
             collectTransferNames(es->getExpression(), out);
             return;
         }
-        // Same gap as collectFreeIdentifiers — Statement subclasses
-        // whose inner blocks aren't in `children` need explicit
-        // descents so `#name` transfers nested inside their bodies
-        // are not silently demoted to borrows.
         if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
             collectTransferNames(ls->getBlock(), out);
             return;
@@ -4013,13 +3247,9 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
-    // Rule 5 from docs/specification/lang/Lambdas.md: writing to a primitive that was
-    // captured by value is a compile error — the lambda is mutating a
-    // private copy, so the write would silently fail to propagate. The
-    // user must use a mutable wrapper (Cell-style) to opt into shared
-    // mutability. Walks the body looking for assignment-form
-    // BinaryOpExpressions whose LHS resolves to a value-captured name.
-    // Throws with a precise message naming the offending identifier.
+    // Rejects a write to a by-value captured primitive (Lambdas.md rule 5) — the lambda
+    // would be mutating a private copy. Walks the body for assignment-form
+    // BinaryOpExpressions whose LHS names a value capture, throwing on the first.
     static void enforceValueCaptureImmutability(
             const AbstractSyntaxNodePtr& node,
             const std::set<std::string>& valueCapturedNames) {
@@ -4071,11 +3301,6 @@ bool cajetaRhsCarriesRedundantSharp(
             enforceValueCaptureImmutability(es->getExpression(), valueCapturedNames);
             return;
         }
-        // Same gap as collectFreeIdentifiers — without these descents
-        // a value-captured primitive assigned inside an if-branch
-        // block / loop body / scope block would slip past the check
-        // (the assignment is the LHS of a BinaryOpExpression hidden
-        // inside the LabelStatement / WhileStatement / etc.).
         if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
             enforceValueCaptureImmutability(ls->getBlock(), valueCapturedNames);
             return;
@@ -4113,24 +3338,12 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
-    // Walk a lambda's block body for ReturnStatement nodes (skipping
-    // nested lambdas — their returns belong to a different function)
-    // and yield the first explicit return's resolved expression type.
-    // A bare `return;` (no expression) yields `void`. If no return is
-    // found, returns nullptr — the lambda is "falls through to end" and
-    // the caller treats that as void.
-    //
-    // Only the FIRST return's type is consulted. Multi-arm lambdas that
-    // return different types from different branches are already a
-    // type error (the user would need to annotate the lambda's return
-    // type explicitly via the LHS function type); this helper exists to
-    // recover the common case where there's a single explicit return
-    // and no contextual expectedType.
+    // Yields the type of the FIRST explicit return in a lambda's block body; `return;`
+    // is void and no return at all is null. Nested lambdas are skipped, since their
+    // returns belong to another function.
     static CajetaTypePtr inferLambdaReturnFromBody(
             const AbstractSyntaxNodePtr& node) {
         if (!node) return nullptr;
-        // Don't descend into nested lambdas — their returns are routed
-        // to a separate synthesized function, not this lambda.
         if (std::dynamic_pointer_cast<LambdaExpression>(node)) {
             return nullptr;
         }
@@ -4139,12 +3352,6 @@ bool cajetaRhsCarriesRedundantSharp(
             if (!expr) return CajetaType::of("void");
             return expr->getResolvedType();
         }
-        // Same Statement-subtype gap the capture walkers have: nested
-        // block / sub-statement members live as private fields rather
-        // than in `children`, so the generic getChildren() fallback
-        // silently skips them. Explicit handlers descend into the
-        // bodies so returns inside if-branches, loops, scope blocks,
-        // etc. participate in lambda return-type inference.
         if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
             if (auto t = inferLambdaReturnFromBody(ifs->getThenBranch())) return t;
             if (auto t = inferLambdaReturnFromBody(ifs->getElseBranch())) return t;
@@ -4176,22 +3383,9 @@ bool cajetaRhsCarriesRedundantSharp(
         return nullptr;
     }
 
-    // Walk the body for top-level LocalVariableDeclarations and
-    // collect their (name, declared-type) pairs. Used by
-    // LambdaExpression::resolveTypes to pre-populate the body's
-    // resolve-time scope so IdentifierExpression lookups for body
-    // locals (`return t;` where `int32 t = ...;` declares `t`) find
-    // a type instead of returning null. Without this the lambda's
-    // return-type inference falls through to void for any lambda
-    // whose return references a body-local rather than a parameter.
-    //
-    // Top-level only on purpose: locals declared inside nested blocks
-    // (if/for/while bodies) have block scope and shouldn't leak into
-    // the lambda's outer name space at resolve time. Returns from
-    // inside those nested blocks already reference identifiers the
-    // standard scope chain won't find at resolve time either; the
-    // typed-local workaround on the caller side remains the
-    // intended idiom for that case.
+    // Collects the name and declared type of the body's TOP-LEVEL local declarations, so
+    // resolveTypes can pre-populate the lambda's scope and return-type inference finds
+    // a type. Block-scoped locals are deliberately excluded.
     static void collectTopLevelBodyLocals(
             const AbstractSyntaxNodePtr& body,
             std::vector<std::pair<std::string, CajetaTypePtr>>& out) {
@@ -4207,37 +3401,16 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // Resolves the body under a temporary scope holding the declared parameters and the
+    // top-level body locals, then pins the CajetaFunctionType — expectedType first,
+    // else the body's type or first return, else void — and with it the return ABI.
     void LambdaExpression::resolveTypes(CajetaModulePtr module) {
-        // L1: bodies can't reference outer-scope locals (captures are L2),
-        // so the lambda's body resolution doesn't need access to the
-        // surrounding scope's fields beyond what resolveTypes naturally
-        // walks. Identifier resolution to lambda-local params happens at
-        // generateCode time when the parameter scope is pushed.
         if (!module) module = CajetaModule::getActiveModule();
         if (!module) return;
 
-        // Push a temporary scope holding the lambda's declared
-        // parameters so the body's resolveTypes can resolve bare
-        // identifiers (`acc`, `c`) to their declared types. Without
-        // this, expressions like `acc + c.v` resolve `acc` to null
-        // and `c` to null, and the BinaryOpExpression's fallback
-        // path picks the wrong return type — surfaced by templated-
-        // method calls that infer R from the lambda's return type
-        // (Stream<T>.fold<R> with class-typed T, or Collector ctors
-        // with function-typed second arg). Skip when paramTypes
-        // aren't yet pinned (bare-identifier lambdas waiting for
-        // target-type inference at generateCode time).
         bool pushedScope = false;
-        // xref-lint-emission-gap 5.1.2. A bare-identifier lambda parses with
-        // EMPTY paramTypes, so the guard below never fired for one and its
-        // body went unresolved — leaving `(acc, p) -> acc + p.x` with no field
-        // reference for `p.x`, the last one missing across the whole tour.
-        // Under lint the types are available early: MethodCallExpression::
-        // resolveTypes resolves the callee BEFORE its arguments and pins the
-        // formal here via setExpectedType. Derived exactly as generateCode
-        // derives it, but into a LOCAL vector — assigning `paramTypes` (as
-        // generateCode does) is real state the build path owns, and this pass
-        // must not touch it.
+        // Derive into a LOCAL vector: `paramTypes` is real state the build path owns, and
+        // this resolve pass must not touch it.
         std::vector<CajetaTypePtr> effectiveParamTypes = paramTypes;
         if (module->isResolutionOnly()
                 && effectiveParamTypes.size() < paramNames.size()) {
@@ -4252,24 +3425,10 @@ bool cajetaRhsCarriesRedundantSharp(
             auto paramScope = std::make_shared<Scope>(
                 std::string("__lambda_resolve"), module);
             for (size_t i = 0; i < paramNames.size(); ++i) {
-                // StackField is a concrete leaf with the simple
-                // (module, name, type) ctor. Allocation never runs
-                // (this scope is dropped after resolveTypes), so the
-                // codegen-only branches of StackField stay unused.
                 auto fld = std::make_shared<StackField>(
                     module, paramNames[i], effectiveParamTypes[i]);
                 paramScope->putField(fld);
             }
-            // Pre-register top-level body locals so body resolveTypes
-            // can resolve `return t;` (where `int32 t = ...;` declares
-            // `t`) to t's declared type instead of leaving the
-            // identifier unresolved. Without this, inferLambdaReturnFromBody
-            // gets a null type back from `t.getResolvedType()` and the
-            // lambda's return type falls through to void — surfaces as
-            // "JIT verify: Function of void return type" at codegen.
-            // Body-locals are normally registered at generateCode time;
-            // this is a resolve-time pre-registration that mirrors what
-            // codegen would do, just for type inference.
             std::vector<std::pair<std::string, CajetaTypePtr>> bodyLocals;
             collectTopLevelBodyLocals(body, bodyLocals);
             for (auto& nt : bodyLocals) {
@@ -4286,25 +3445,7 @@ bool cajetaRhsCarriesRedundantSharp(
             module->getScopeStack().pop();
         }
 
-        // Determine the lambda's CajetaFunctionType. Preferred order:
-        //   1. expectedType (a CajetaFunctionType from the surrounding
-        //      context, e.g. the LHS of a function-typed variable
-        //      declaration that called setExpectedType before resolveTypes).
-        //   2. Expression body: the body's resolvedType (works for
-        //      identifiers, literals, method calls — arithmetic
-        //      expressions sometimes leave it null).
-        //   3. Block body: walk the body for explicit return statements
-        //      and take the first one's resolved expression type. This
-        //      covers the common case where a typed-param block-body
-        //      lambda is passed as a constructor / method argument
-        //      without the call-site propagating an expectedType (e.g.
-        //      `new Holder(seed, (T acc, U x) -> { ...; return acc; })`).
-        //   4. Fallback: void. A nonsensical lambda surfaces at codegen.
         CajetaTypePtr ret;
-        // M5(b) — function-type return ABI is sret form iff the body yields a
-        // stack value (an expression body that IS `stack X(...)`, or a block
-        // body whose returns are `return stack X(...)`). An expectedType from
-        // the LHS pins the ABI; otherwise infer it the same way Method does.
         bool returnsOwn = true;
         bool abiPinnedByExpected = false;
         if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
@@ -4321,18 +3462,14 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
         if (!ret) {
-            // Block body — walk for the first explicit return statement.
-            // Returns void if the body has no `return` at all.
             ret = inferLambdaReturnFromBody(body);
             if (Method::nodeHasStackReturn(body)) {
                 returnsOwn = false;
             }
         }
-        // Type-driven, as Method::returnsStackValue decides for methods: an
-        // INFERRED lambda returning the value-shape class (Optional<T>) is
-        // sret whatever its body does — a body that relays an Optional call
-        // (`(v) -> S.opt(v)`) has no `stack` for the scans above to see. An
-        // explicit fn-type on the LHS stays authoritative.
+        // Type-driven, as Method::returnsStackValue decides for methods: an INFERRED
+        // lambda returning a value-shape class is sret whatever its body does. An
+        // explicit function type on the LHS stays authoritative.
         if (!abiPinnedByExpected && ret && Method::isValueShapeReturnType(ret)) {
             returnsOwn = false;
         }
@@ -4350,21 +3487,18 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // Emits the lambda as its own internal function plus a closure record
+    // `{ fn, captures, drop_fn }`, after classifying each free identifier as a value,
+    // borrow or `#`-transfer capture. Restores the outer builder before returning.
     llvm::Value* LambdaExpression::generateCode(CajetaModulePtr module) {
-        // L1.5 target-type inference: bare-identifier lambda params (parsed
-        // with empty `paramTypes`) borrow their types from the surrounding
-        // context's expectedType. The expectedType is set by
-        // LocalVariableDeclaration::generateCode before this generateCode
-        // runs, so we infer here rather than in resolveTypes (which runs
-        // earlier, before the context wiring has happened).
+        // Bare-identifier params take their types from the surrounding expectedType, which
+        // LocalVariableDeclaration sets just before this call — hence here, not in
+        // resolveTypes, which runs before that wiring happens.
         if (paramTypes.size() < paramNames.size()) {
             auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType);
             if (expectedFn
                     && expectedFn->getParameterTypes().size() == paramNames.size()) {
                 paramTypes = expectedFn->getParameterTypes();
-                // Stale resolvedType (which was computed without the now-
-                // known param types) — recompute so the synthesized
-                // function uses the right signature.
                 resolvedType.reset();
             } else {
                 throw Exception(
@@ -4375,9 +3509,6 @@ bool cajetaRhsCarriesRedundantSharp(
                     "CAJETA_ERROR_TYPE_INFERENCE");
             }
         }
-        // Ensure resolvedType (the CajetaFunctionType) is computed — body
-        // may not have been pre-resolved if this lambda is itself a
-        // sub-expression of an unresolved context.
         if (!resolvedType) resolveTypes(module);
         auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(resolvedType);
         if (!fnType) {
@@ -4385,32 +3516,18 @@ bool cajetaRhsCarriesRedundantSharp(
                 "CAJETA_ERROR_NOT_IMPLEMENTED");
         }
 
-        // Synthesize a unique name for the LLVM function. The lambda body
-        // becomes the function body; the function is registered in the
-        // current module's IR module and returned as a `ptr` value.
         if (synthesizedName.empty()) {
             synthesizedName = std::string("__cajeta_lambda_")
                 + std::to_string(lambdaCounter++);
         }
 
         auto* lmod = module->emitTargetLlvmModule();
-        // Already emitted? (Re-entering codegen for the same lambda — rare,
-        // but harmless to return the existing function pointer.)
         if (auto* existing = lmod->getFunction(synthesizedName)) {
             return existing;
         }
 
-        // ---- L2 capture analysis (run while outer scope is still on top
-        //      of the stack — before we push the lambda's own scope). Walk
-        //      the body for free identifiers, then for each candidate look
-        //      up the outer scope. Primitive Fields → capture-by-value
-        //      (L2-2). Non-primitive Fields → capture-by-borrow (L2-3): we
-        //      copy the outer slot's pointer value into the captures
-        //      struct, so the lambda sees the same heap object. `#name`
-        //      transfers + lifetime/escape checks remain L3 territory.
-        //      Identifiers that don't resolve to a Field (class names,
-        //      namespaces) are left for the body's normal lookup; they
-        //      don't go through captures.
+        // Capture analysis runs while the OUTER scope is still on top of the stack, before
+        // the lambda's own scope is pushed.
         std::set<std::string> bound(paramNames.begin(), paramNames.end());
         std::set<std::string> seen;
         std::vector<std::string> freeNames;
@@ -4421,14 +3538,10 @@ bool cajetaRhsCarriesRedundantSharp(
             CajetaTypePtr type;
             bool byValue;     // true: primitive copy; false: pointer slot
             bool byTransfer;  // true: `#name` transfer (only meaningful when
-                              //       !byValue); false: borrow (default)
         };
         std::vector<Capture> captures;
         ScopePtr outerScope = module->getScopeStack().isEmpty()
             ? nullptr : module->getScopeStack().peek();
-        // Names that appeared inside `#name` somewhere in the body — these
-        // are transfer captures (Rule 3), not the default borrow. Computed
-        // up-front so the categorization loop below can consult it.
         std::set<std::string> transferNames;
         collectTransferNames(body, transferNames);
         if (outerScope) {
@@ -4437,16 +3550,9 @@ bool cajetaRhsCarriesRedundantSharp(
                 if (!f) continue;  // class name, namespace, or unresolved
                 CajetaTypePtr t = f->getType();
                 if (!t) continue;
-                // Function-typed captures. A function value is a single
-                // `ptr` to a closure record `{ fn, captures }`, so a *borrow*
-                // capture is just the usual pointer copy (the borrow path
-                // below): the closure record outlives the capturing closure
-                // exactly as any borrowed heap object does, and the escape
-                // check (hasBorrowCaptures) ties the lifetimes the same way.
-                // Only a `#`-*transfer* capture of a closure stays deferred —
-                // surrendering the record means the capturing closure's
-                // synthesized drop_fn must free it, which L2 drop synthesis
-                // doesn't model yet.
+                // A function value is one `ptr` to a closure record, so a BORROW capture of one is
+                // the ordinary pointer copy. Only a `#`-transfer of a closure stays deferred:
+                // the capturing closure's drop_fn would have to free the record.
                 if (std::dynamic_pointer_cast<CajetaFunctionType>(t)) {
                     if (transferNames.find(name) != transferNames.end()) {
                         throw Exception(
@@ -4456,43 +3562,27 @@ bool cajetaRhsCarriesRedundantSharp(
                             "so the closure is not moved",
                             "CAJETA_ERROR_NOT_IMPLEMENTED");
                     }
-                    // else: fall through to the pointer-slot borrow path.
                 }
-                // Source-of-truth for "is this a value or a pointer slot"
-                // is the outer field's existing alloca, not the type
-                // flags. A few language types (CajetaArray in particular)
-                // are flagged PRIMITIVE but live behind a pointer slot
-                // because they're heap-allocated; relying on the flag
-                // alone would mis-route the capture. Pointer slot →
-                // borrow capture (copy the ptr); value slot → primitive
-                // capture (copy the value).
+                // Decide value-vs-pointer capture from the outer field's existing alloca, not the
+                // type flags: CajetaArray is flagged PRIMITIVE yet lives behind a pointer slot,
+                // so the flag alone mis-routes the capture.
                 llvm::AllocaInst* outerSlot = f->getOrCreateAllocation();
                 bool slotIsPointer = outerSlot
                     && outerSlot->getAllocatedType()->isPointerTy();
                 bool byValue = !slotIsPointer;
-                // `#name` only makes sense for heap values (pointer slot).
-                // On a primitive, `#` is just a no-op marker and the
-                // capture stays by-value — Rule 1 wins because there's
-                // nothing to transfer.
+                // On a primitive `#` is a no-op marker — there is nothing to transfer — so the
+                // capture stays by value.
                 bool byTransfer = !byValue
                     && transferNames.find(name) != transferNames.end();
                 captures.push_back({name, t, byValue, byTransfer});
-                // L3-2: any borrow capture (heap reference held by the
-                // closure without an explicit transfer) ties the
-                // closure's lifetime to the enclosing scope. The escape
-                // check at ReturnStatement consults this flag to reject
-                // returning such a closure.
+                // Any borrow capture ties the closure's lifetime to the enclosing scope; the
+                // escape check at ReturnStatement reads this flag.
                 if (!byValue && !byTransfer) {
                     hasBorrowCaptures = true;
                 }
             }
         }
 
-        // L2-5: writes to value-captured primitives are a compile error
-        // (the lambda would be mutating a private copy invisibly). Build
-        // the set of value-capture names from `captures` and walk the
-        // body checking assignment LHSes against it. Throws on the first
-        // offender so the error message stays precise.
         if (!captures.empty()) {
             std::set<std::string> valueCapturedNames;
             for (auto& c : captures) {
@@ -4503,12 +3593,8 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
 
-        // Build the captures struct LLVM type. Anonymous; LLVM unifies
-        // structurally identical literal struct types so the type used at
-        // the alloc site (outer code) matches the type used by GEPs inside
-        // the lambda body. Primitive captures occupy their natural LLVM
-        // type slot; borrow captures occupy a `ptr` slot (matches the
-        // outer StackField's alloca shape for non-primitives).
+        // The captures struct is anonymous: LLVM unifies structurally identical literal
+        // structs, so the alloc site's type matches the GEPs inside the lambda body.
         auto& llvmCtx = *module->getLlvmContext();
         llvm::StructType* capturesTy = nullptr;
         if (!captures.empty()) {
@@ -4522,23 +3608,9 @@ bool cajetaRhsCarriesRedundantSharp(
             capturesTy = llvm::StructType::get(llvmCtx, capLlvmTypes);
         }
 
-        // A non-capturing lambda's synthesized function is referenced ONLY
-        // through its (private constant) closure record — never by external
-        // symbol name — so it can have INTERNAL linkage. That lets the
-        // optimizer treat it as the sole definition: when the constant closure
-        // record flows into a generic callee (e.g. `Sort.sort`'s `cmp`),
-        // IPSCCP / function-specialization can fold the loaded `fn` to this
-        // constant and devirtualize the indirect closure call to a direct,
-        // inlinable call (the monomorphization C++/Rust get for free). Indirect
-        // calls go through the fn's ADDRESS (held in the record), which stays
-        // valid across modules in the final binary regardless of linkage.
-        // Capturing closures are ALSO internal: the fn is referenced only by
-        // ADDRESS through the heap closure record, never by symbol name — and
-        // their names come from a thread_local counter, so two modules
-        // compiled on different threads mint the SAME external name for
-        // DIFFERENT bodies (duplicate-symbol at link, or worse, a silent
-        // wrong-body merge). Internal linkage keeps each module's lambdas
-        // private; the stored address stays valid in the final binary.
+        // Internal linkage: a lambda's function is reached only through its closure
+        // record's ADDRESS, and its name comes from a thread_local counter — external
+        // linkage lets two modules mint the same name for different bodies.
         llvm::GlobalValue::LinkageTypes lambdaLinkage =
             llvm::Function::InternalLinkage;
         llvm::Function* fn = llvm::Function::Create(
@@ -4547,11 +3619,8 @@ bool cajetaRhsCarriesRedundantSharp(
             synthesizedName,
             lmod);
 
-        // M5(b) — sret form: arg 0 is the caller-allocated result slot,
-        // captures and user params shift by one. The sret attribute carries
-        // the struct type so the backend / optimizer can reason about the
-        // pointer's role (and CallInst sites use it too). The shift offset
-        // `sretOffset` is reused for every fn->getArg() index that follows.
+        // sret form: arg 0 is the caller-allocated result slot, so captures and user
+        // params shift by one; `sretOffset` is that shift for every getArg() below.
         unsigned sretOffset = 0;
         if (fnType->usesSret()) {
             auto retClass = std::dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
@@ -4563,19 +3632,12 @@ bool cajetaRhsCarriesRedundantSharp(
             sretOffset = 1;
         }
 
-        // Save current insertion state — we're going to emit the lambda's
-        // body into its own function, then restore the outer cursor so the
-        // surrounding expression continues building.
         auto* outerBuilder = module->getBuilder();
         llvm::BasicBlock* outerInsertBlock = outerBuilder->GetInsertBlock();
         MethodPtr outerMethod = module->getCurrentMethod();
 
-        // ---- Allocate + populate the captures struct. Heap-allocate when
-        //      there are captures so the struct can outlive the producing
-        //      method's stack frame; the matching free is in the lambda's
-        //      synthesized drop function (built below). Each primitive
-        //      capture loads its current value from the outer field's slot
-        //      and stores it into the captures struct.
+        // Heap-allocate the captures struct so it can outlive the producing frame; the
+        // matching free is in the synthesized drop function built below.
         llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
         llvm::Value* capturesPtr = nullptr;
         const llvm::DataLayout& dl = lmod->getDataLayout();
@@ -4595,10 +3657,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 auto& cap = captures[i];
                 FieldPtr outerField = outerScope->getField(cap.name);
                 llvm::AllocaInst* outerSlot = outerField->getOrCreateAllocation();
-                // Primitive capture: load the value itself.
-                // Borrow capture: load the pointer the outer slot holds
-                // (StackField allocs `ptr` for non-primitives, so the load
-                // type is `ptr` — same as the captures-struct field).
                 llvm::Type* loadTy = cap.byValue
                     ? cap.type->getLlvmType()
                     : (llvm::Type*) llvm::PointerType::get(llvmCtx, 0);
@@ -4608,13 +3666,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     capturesTy, capturesPtr, (unsigned) i,
                     std::string("cap.") + cap.name);
                 outerBuilder->CreateStore(outerVal, slot);
-                // Rule 3 (`#name` transfer): mark the outer binding as
-                // moved and deactivate its drop entry. The closure now
-                // owns the transferred value — its synthesized drop_fn
-                // (below) will free the heap object when the closure
-                // itself drops. Without the deactivation, both the
-                // outer and the closure would attempt to free the same
-                // memory.
+                // A `#name` transfer hands ownership to the closure, whose drop_fn frees it, so
+                // the outer binding's drop entry must be deactivated or both would free it.
                 if (cap.byTransfer && outerScope) {
                     outerScope->demoteToBorrow(cap.name);
                     if (llvm::Value* entry = outerField->getDropEntry()) {
@@ -4632,35 +3685,13 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::IRBuilder<>* lambdaBuilder = new llvm::IRBuilder<>(entryBB);
         module->setBuilder(lambdaBuilder);
 
-        // U10: the lambda's instrumentation probe pair, closed alongside the
-        // shadow frame in the `ret` walk below.
         prof::ProfileFrame lambdaProfFrame;
-        // cajeta-profiler 6.4.C: push a line-info shadow frame for the lambda,
-        // exactly as Method::generateCode's prologue does for an ordinary
-        // method (no-op unless --line-info). This body is codegen'd inline
-        // here rather than through that prologue, so without this a lambda is
-        // absent from every profile and stack trace: a stream pipeline showed
-        // the terminal and the element work with nothing between them naming
-        // the user's own callback.
-        //
-        // The frame is named for the DECLARING class with method `<lambda>`,
-        // and its line is stamped at the push (see below) so a frame renders as
-        // `pkg.Type.<lambda>(File.cajeta:NN)` and two lambdas in one method stay
-        // distinguishable by line. This previously relied on the statement marks
-        // the body emits, which an EXPRESSION body never emits — see the mark
-        // itself for the measurement. Both the frame and the probe are closed in
-        // the walk over this function's `ret`s, before the builder is restored.
+        // Push a line-info shadow frame, as Method::generateCode's prologue does: this
+        // body is emitted inline rather than through that prologue, so without it a
+        // lambda is absent from every profile and stack trace.
         {
             CajetaClassPtr lambdaOwner = outerMethod ? outerMethod->getParent()
                                                      : nullptr;
-            // lambda-frame-line 2.7 — a lambda NESTED in another lambda has no
-            // outer METHOD to be named from: the enclosing body clears the
-            // module's current method just below (the L1 dummy context), so
-            // `outerMethod` is null by the time the inner lambda generates.
-            // Without this the inner frame rendered `.<lambda>(App.cajeta:0)`
-            // with an empty declaring class. The structure stack still holds
-            // the class being compiled, and is the same source Identifier
-            // resolution and Scope naming already fall back to.
             if (!lambdaOwner && !module->getStructureStack().empty()) {
                 lambdaOwner = module->getStructureStack().back();
             }
@@ -4670,54 +3701,23 @@ bool cajetaRhsCarriesRedundantSharp(
                                                : std::string();
             if (fileName.empty()) fileName = module->remappedSourcePath();
             dbg::emitLineEnter(module, typeName, "<lambda>", fileName);
-            // lambda-frame-line 2.1/2.2 — stamp the line HERE, at the push,
-            // rather than leaving it to the body. Block::generateCode is the
-            // only site that emits a statement mark, so an expression body
-            // emitted none at all and the frame kept the zero it was pushed
-            // with: `(x) -> f(x)` rendered `<lambda>(File.cajeta:0)` on every
-            // surface that reads the shadow stack, while the block form beside
-            // it rendered a real line. Marking at the push also closes the
-            // window in a BLOCK body between this push and its first statement.
-            // A block's own marks still run after this one and advance the
-            // frame per statement, which is what 2.3 asks for.
-            //
-            // No gating needed: emitLineMark is already a no-op unless full
-            // debug info (or safepoints) is on, so a default build still
-            // reports no line, and unless `line > 0`, so the fallback below is
-            // safe when neither node carries a position.
+            // Stamp the line at the PUSH: Block is the only site that emits statement marks,
+            // so an expression body emits none and the frame would keep the 0 it got.
             int lambdaLine = body ? body->getSourceLine() : 0;
             if (lambdaLine <= 0) lambdaLine = getSourceLine();
-            // A lambda inside a generic is inside a re-parsed snippet too, so
-            // it needs the same 9.2 correction the statement marks get. Guarded
-            // on > 0 because fileLineFor clamps to 1, and 1 is a real line
-            // whereas 0 means "no line".
             if (lambdaLine > 0) lambdaLine = dbg::fileLineFor(module, lambdaLine);
             dbg::emitLineMark(module, lambdaLine);
-            // U10 (spec §3.1): the lambda gets its own instrumentation probe
-            // for the same reason it gets its own shadow frame — a callback is
-            // the user's code, and a profile that folds it into the terminal
-            // operation reports the wrong method. Selection is by the
-            // DECLARING class, so a lambda is in or out with its owner.
             lambdaProfFrame = prof::emitProfileEnter(module, typeName,
                                                      "<lambda>", fileName);
         }
 
-        // Open a fresh scope for the lambda's parameters + captures. After
-        // adding to the stack, sever the parent link so identifier lookups
-        // inside the body never walk up into the outer method's scope —
-        // every cross-scope use must come through the explicit captures
-        // mechanism. Missed captures surface as missing-identifier errors
-        // at body codegen rather than emitting invalid cross-function IR.
+        // The lambda's scope is severed from its parent so a body lookup can never reach
+        // an outer local: every cross-scope use must come through captures, and a miss
+        // surfaces as a missing identifier instead of invalid cross-function IR.
         module->getScopeStack().add(make_shared<Scope>(synthesizedName, module));
         module->getScopeStack().peek()->setParent(nullptr);
 
-        // L1 dummy method context — we need *some* MethodPtr on the module
-        // because some helpers (e.g. drop-chain bookkeeping) read it, even
-        // though a lambda body in L1 has no drop chain of its own.
         module->setCurrentMethod(nullptr);
-        // 7.2.5 — closure returns ride the same paired return flag as
-        // ordinary methods. Mark class-POINTER-returning lambdas (non-sret)
-        // so ReturnStatement / the epilogue below emit the flag.
         bool savedLambdaRet = module->isLambdaClassPtrReturn();
         bool lambdaClassPtrRet = sretOffset == 0
             && fn->getReturnType()->isPointerTy()
@@ -4726,28 +3726,16 @@ bool cajetaRhsCarriesRedundantSharp(
         module->setLambdaClassPtrReturn(lambdaClassPtrRet);
 
         for (size_t i = 0; i < paramNames.size(); ++i) {
-            // Bind each LLVM arg into an alloca-backed ParameterField so
-            // identifier lookups inside the body load through it (same
-            // pattern as method params). LLVM arg 0 is the implicit
-            // `captures` pointer (L2 ABI), so user param i lives at LLVM
-            // arg i + 1. Under sret form the sret slot precedes captures,
-            // adding `sretOffset` to every LLVM arg index.
+            // LLVM arg 0 is the implicit captures pointer, so user param i lives at arg i + 1
+            // (plus sretOffset when the sret slot precedes captures).
             auto formal = std::make_shared<FormalParameter>(
                 paramNames[i], paramTypes[i]);
             auto field = std::make_shared<ParameterField>(
                 module, formal, fn, (int) i + 1 + (int) sretOffset);
-            // Force the alloca + store now so getOrCreateAllocation later
-            // returns the populated slot.
             field->getOrCreateAllocation();
             module->getScopeStack().peek()->putField(field);
         }
 
-        // ---- Unpack captures inside the lambda function. LLVM arg 0 is
-        //      the captures pointer; for each captured primitive, GEP into
-        //      the captures struct, load the value, and stash it in a
-        //      local alloca. Register a StackField pointing at that alloca
-        //      so the body's identifier lookups find the captured value as
-        //      if it were a normal local.
         if (capturesTy) {
             llvm::Value* capArg = fn->getArg(sretOffset);
             llvm::Type* ptrLlvmTy = llvm::PointerType::get(llvmCtx, 0);
@@ -4756,10 +3744,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 llvm::Value* slot = lambdaBuilder->CreateStructGEP(
                     capturesTy, capArg, (unsigned) i,
                     std::string("cap.") + cap.name);
-                // Primitive: load the value (e.g. i32). Borrow: load the
-                // captured `ptr`. Local alloca shape mirrors StackField's
-                // own shape for the corresponding type so the body's
-                // identifier-lookup-and-load matches.
                 llvm::Type* slotTy = cap.byValue
                     ? cap.type->getLlvmType()
                     : ptrLlvmTy;
@@ -4775,34 +3759,24 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
 
-        // Generate the body. Expression bodies produce a single value that
-        // becomes the implicit return; block bodies produce no value and
-        // contain their own ReturnStatement(s).
+        // An expression body's value becomes the implicit return; a block body emits its
+        // own ReturnStatements.
         bool blockBody = std::dynamic_pointer_cast<Block>(body) != nullptr;
-        // M5(b) NRVO — when the lambda is sret-shaped and the expression
-        // body IS a `stack X(...)` construction, redirect the construction
-        // target at the sret slot so the ctor writes its fields straight
-        // into the caller's memory (zero copy). For block bodies the same
-        // redirection happens inside ReturnStatement (Statement.cpp).
+        // NRVO: when the sret-shaped body IS a `stack X(...)`, redirect the construction
+        // at the sret slot so the ctor writes into the caller's memory.
         if (sretOffset && !blockBody) {
             if (auto nx = std::dynamic_pointer_cast<NewExpression>(body)) {
                 if (nx->getStackAlloc()) nx->setNrvoTarget(fn->getArg(0));
             }
         }
-        // Isolate the enclosing method's try-finally stack: this lambda body is
-        // codegen'd inline, but its `return`s must only unwind try frames the
-        // lambda itself pushed, not the enclosing method's open try frames.
+        // Isolate the enclosing method's try-finally stack: this body is emitted inline,
+        // but its returns must unwind only the frames the lambda itself pushed.
         std::vector<std::shared_ptr<void>> savedTryFrames = module->takeTryFinally();
         llvm::Value* bodyVal = body->generateCode(module);
 
         if (blockBody) {
-            // The block's own ReturnStatement emits the terminator. If the
-            // user wrote a block that falls through to the closing brace
-            // without returning, the current insertion block has no
-            // terminator yet — emit a default return so LLVM verify is
-            // satisfied (RetVoid for void lambdas, undef of the return
-            // type otherwise; matches how a malformed regular method
-            // would surface).
+            // A block that falls through to its closing brace leaves the insertion block
+            // without a terminator; emit a default return so verify is satisfied.
             llvm::BasicBlock* tail = lambdaBuilder->GetInsertBlock();
             if (tail && !tail->hasTerminator()) {
                 llvm::Type* retTy = fn->getReturnType();
@@ -4813,12 +3787,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 }
             }
         } else {
-            // L-value-to-r-value coercion. The expression body's value
-            // flows directly into the return instruction below, so an
-            // l-value (alloca, array-slot GEP, struct/class field GEP)
-            // needs to be loaded first. Mirrors the same conversions
-            // ReturnStatement does — keep them in sync when one grows a
-            // new case.
+            // L-value to r-value coercion, mirroring ReturnStatement's conversions — keep the
+            // two in sync when either grows a case.
             if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(bodyVal)) {
                 bodyVal = lambdaBuilder->CreateLoad(a->getAllocatedType(), a);
             } else if (auto idx = std::dynamic_pointer_cast<ArrayIndexExpression>(body)) {
@@ -4853,9 +3823,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 }
             }
             if (bodyVal) {
-                // M5(b) sret form: body already wrote into the caller-
-                // owned slot (NRVO when body was a `stack` construction;
-                // otherwise bodyVal is a pointer to copy in). RetVoid.
                 if (sretOffset) {
                     llvm::Value* sretPtr = fn->getArg(0);
                     if (bodyVal != sretPtr) {
@@ -4879,9 +3846,6 @@ bool cajetaRhsCarriesRedundantSharp(
                     }
                     lambdaBuilder->CreateRetVoid();
                 } else {
-                    // Coerce to the function return type if width differs
-                    // (literal i64 going to an i32 return slot, etc.) —
-                    // mirrors what invokeMethod does at the call site.
                     llvm::Type* retTy = fn->getReturnType();
                     if (retTy && !retTy->isVoidTy() && bodyVal->getType() != retTy) {
                         if (retTy->isIntegerTy() && bodyVal->getType()->isIntegerTy()) {
@@ -4895,9 +3859,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     if (retTy->isVoidTy()) {
                         lambdaBuilder->CreateRetVoid();
                     } else {
-                        // 7.2.5 — expression-body return flag, by shape:
-                        // fresh construction/`#x` → owned; a tail CALL's
-                        // own flag rides through untouched; else borrow.
+                        // Return flag by shape: a fresh construction or `#x` is owned, a tail call's own
+                        // flag rides through untouched, anything else is a borrow.
                         if (lambdaClassPtrRet) {
                             AbstractSyntaxNodePtr shape = body;
                             while (auto cx = std::dynamic_pointer_cast<
@@ -4905,7 +3868,6 @@ bool cajetaRhsCarriesRedundantSharp(
                                 if (cx->getChildren().empty()) break;
                                 shape = cx->getChildren()[0];
                             }
-                            // Unit 8 (spec 4.9) — the expression-bodied lambda's return: a call rides its own flag, a fresh value or move is the title, anything else a borrow.
                                 ownership::TitleShape lamSh = ownership::classify(std::dynamic_pointer_cast<Expression>(shape), module);
                                 bool rides = lamSh.family == ownership::TitleFamily::CallResult
                                     || lamSh.family == ownership::TitleFamily::ClosureCall;
@@ -4934,28 +3896,13 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
 
-        // Restore outer state.
         module->setLambdaClassPtrReturn(savedLambdaRet);
         module->restoreTryFinally(std::move(savedTryFrames));
         module->getScopeStack().pop();
         delete lambdaBuilder;
-        // 6.4.C: pop the lambda's shadow frame on EVERY exit. A lambda has
-        // many terminating paths — each `return` in a block body, the block's
-        // fall-through, and four separate expression-body epilogues (sret,
-        // void, value, and the null-bodyVal fallback) — and
-        // emitScopeExitToWatermark cannot serve them: it bails on a null
-        // current method, and a lambda body deliberately runs with none
-        // (setCurrentMethod(nullptr) above). Rather than place a leave at each
-        // site and rely on the next one being remembered, walk the finished
-        // function and put it before every `ret`. Paths that leave by throwing
-        // end in `unreachable`, not `ret`, and are handled the same way an
-        // ordinary method's are: __cajeta_throw restores the catching frame's
-        // watermark.
-        //
-        // This runs AFTER the epilogue's __cajeta_return_flag_set (the leave
-        // touches only the shadow stack, never the flag), and after any drops
-        // the body fires — so a drop_fn invoked on the way out is attributed
-        // inside the lambda rather than to its caller.
+        // Pop the shadow frame at EVERY `ret`: a lambda has many exits and
+        // emitScopeExitToWatermark cannot serve them (it bails on the null current
+        // method a lambda body deliberately runs with). Throwing paths end unreachable.
         if (module->getFlags().lineInfo) {
             if (llvm::Function* leaveFn =
                     module->getRuntimeFunction("__cajeta_line_leave")) {
@@ -4968,31 +3915,21 @@ bool cajetaRhsCarriesRedundantSharp(
                 }
             }
         }
-        // U10: and close the instrumentation span at the same `ret`s, for the
-        // same reason — a lambda's exits are not reachable from
-        // emitScopeExitToWatermark.
         prof::emitProfileExitAtReturns(module, fn, lambdaProfFrame);
 
         module->setBuilder(outerBuilder);
         module->setCurrentMethod(outerMethod);
         outerBuilder->SetInsertPoint(outerInsertBlock);
 
-        // L3-3 closure layout: `{ ptr fn, ptr captures, ptr drop_fn }`.
-        // The drop_fn slot lets the runtime's __cajeta_closure_drop find
-        // the per-lambda free routine without needing static type info at
-        // the call site. Heap-alloc when there are captures so the
-        // closure can outlive the producing method's stack frame
-        // (escape); stack-alloc for non-capturing closures (drop_fn=null,
-        // safe because nothing to free).
+        // Closure layout `{ ptr fn, ptr captures, ptr drop_fn }`; the drop_fn slot lets
+        // __cajeta_closure_drop find the free routine with no static type at the site.
+        // Heap when there are captures (it may outlive the frame), stack when none.
         llvm::StructType* closureTy = llvm::StructType::get(llvmCtx,
             {(llvm::Type*) ptrTy, (llvm::Type*) ptrTy, (llvm::Type*) ptrTy});
         uint64_t closureBytes = dl.getTypeAllocSize(closureTy);
 
-        // Synthesize the per-lambda drop function for capturing closures.
-        // It frees each transferred capture's heap object, then the
-        // captures struct, then the closure record itself. Borrow and
-        // value (primitive) captures need nothing — the closure didn't
-        // own them. Only transfer captures (`#name`) require freeing.
+        // The per-lambda drop function frees each transferred capture, then the captures
+        // struct, then the record. Borrow and value captures are not owned.
         llvm::Value* dropFnValue = llvm::ConstantPointerNull::get(ptrTy);
         if (capturesTy) {
             llvm::Function* freeArrayFn = module->getRuntimeFunction("__cajeta_free_array");
@@ -5012,9 +3949,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 ptrTy, capLoadSlot, "captures");
             for (size_t i = 0; i < captures.size(); ++i) {
                 if (!captures[i].byTransfer) continue;
-                // Today only CajetaArray transfer captures have a known
-                // drop function. Non-array transfers compile but leak —
-                // tracked alongside the existing emitDropEntryFor coverage.
+                // Only CajetaArray transfer captures have a known drop function today; other
+                // transferred types compile but leak.
                 if (!std::dynamic_pointer_cast<CajetaArray>(captures[i].type)) continue;
                 if (!freeArrayFn) continue;
                 llvm::Value* slot = dropBuilder.CreateStructGEP(
@@ -5032,15 +3968,8 @@ bool cajetaRhsCarriesRedundantSharp(
             dropFnValue = dropFn;
         }
 
-        // Materialize the closure record. Two paths:
-        //   - Non-capturing: emit a private global constant
-        //     `{ fn, null, null }`. Globals live for the program's
-        //     lifetime, so the closure can safely escape its declaring
-        //     scope without a heap allocation — most non-capturing
-        //     lambdas are tiny constants and never freed anyway.
-        //   - Capturing: heap-allocate the record so the closure can
-        //     outlive the producing method's frame. The synthesized
-        //     drop_fn frees the closure when ownership runs out.
+        // Non-capturing closures get a private global record — program lifetime, so they
+        // may escape without a heap allocation; capturing ones are heap-allocated.
         llvm::Value* closure;
         if (!capturesTy) {
             llvm::Constant* nullPtr = llvm::ConstantPointerNull::get(ptrTy);
@@ -5077,17 +4006,9 @@ bool cajetaRhsCarriesRedundantSharp(
 
     static thread_local int64_t methodRefCounter = 0;  // per-thread (threadsafe U4)
 
-    // Resolve a MethodReferenceExpression's LHS to a target class.
-    // Returns the class plus whether the LHS resolved as a runtime VALUE
-    // (a local of class type, suitable for binding) or as a TYPE-NAME
-    // (the class itself, suitable for unbound / static refs).
-    //
-    // The grammar parses `Util::method` (where Util is a bare class name)
-    // as `expression '::' identifier` — IdentifierExpression's scope
-    // lookup leaves resolvedType null. When that happens we fall back to
-    // scanning the type registry for a class whose short name matches,
-    // and flag the result as a type-name resolution so the caller can
-    // pick UNBOUND_INSTANCE over BOUND_INSTANCE.
+    // Resolves a method reference's LHS to a target class, reporting whether it resolved
+    // as a runtime VALUE (a bindable receiver) or as a TYPE NAME. `Util::m` parses as
+    // an expression, so a bare class name falls back to a registry scan.
     struct MethodRefTargetResolution {
         CajetaClassPtr targetClass;
         bool receiverIsValue;
@@ -5099,7 +4020,6 @@ bool cajetaRhsCarriesRedundantSharp(
         MethodRefTargetResolution out{nullptr, false};
         if (receiverType) {
             out.targetClass = std::dynamic_pointer_cast<CajetaClass>(receiverType);
-            // typeType form is always type-name; receiverIsValue stays false.
             return out;
         }
         if (!receiverExpr) return out;
@@ -5111,7 +4031,6 @@ bool cajetaRhsCarriesRedundantSharp(
             out.receiverIsValue = true;
             return out;
         }
-        // Class-name fallback for bare identifiers naming a class type.
         auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(receiverExpr);
         if (!idExpr) return out;
         const std::string& shortName = idExpr->getTextValue();
@@ -5121,7 +4040,6 @@ bool cajetaRhsCarriesRedundantSharp(
             auto qn = klass->getQName();
             if (qn && qn->getTypeName() == shortName) {
                 out.targetClass = klass;
-                // receiverIsValue stays false — the LHS named a type, not an instance.
                 return out;
             }
         }
@@ -5136,11 +4054,8 @@ bool cajetaRhsCarriesRedundantSharp(
         return resolveMethodRefTarget(receiverType, receiverExpr, module).targetClass;
     }
 
-    // Find a method on `klass` by name. The lookup currently doesn't
-    // overload-resolve — L4-1 assumes one method per name on the
-    // referenced class. When multiple methods share the name, the first
-    // one found wins; overload-aware method references will follow once
-    // we have a target-type-driven resolution pass.
+    // First method on `klass` with this name and staticness. No overload resolution yet
+    // — one method per name is assumed, and the first match wins.
     static MethodPtr findMethodByName(CajetaClassPtr klass,
                                        const std::string& name,
                                        bool wantStatic) {
@@ -5155,13 +4070,13 @@ bool cajetaRhsCarriesRedundantSharp(
         return nullptr;
     }
 
+    // Classifies the reference (constructor, static, bound or unbound instance) and
+    // derives its function-value type, including the sret-versus-ownership return ABI.
+    // Rejects a `^` (view-returning) target: function types carry no view stance.
     void MethodReferenceExpression::resolveTypes(CajetaModulePtr module) {
         if (!module) module = CajetaModule::getActiveModule();
         if (!module) return;
 
-        // Decide the kind. L4-1 only implements the STATIC form; the
-        // others land on a NOT_IMPLEMENTED at codegen so the parser
-        // still accepts every shape the grammar covers.
         MethodRefTargetResolution res = resolveMethodRefTarget(
             receiverType, receiverExpr, module);
         CajetaClassPtr targetClass = res.targetClass;
@@ -5169,11 +4084,6 @@ bool cajetaRhsCarriesRedundantSharp(
         if (isCtor) {
             kind = Kind::CONSTRUCTOR;
             if (!targetClass) return;
-            // Find any constructor on the class (L4-4 doesn't yet
-            // overload-resolve — first ctor wins). Build the function-
-            // value type from the ctor's user-facing params (skip the
-            // synthesized `this` at index 0) and the class instance
-            // type as the return.
             MethodPtr ctor;
             for (auto& entry : targetClass->getMethods()) {
                 if (entry.second && entry.second->isConstructor()) {
@@ -5188,10 +4098,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 paramTypes.push_back(pl[i]->getType());
             }
             CajetaTypePtr ret = std::static_pointer_cast<CajetaType>(targetClass);
-            // Constructor returns ownership of a heap instance — always
-            // ownership-form function type. Assigning a constructor ref to
-            // an sret-form slot would leak the heap instance after the
-            // adapter copy, so reject upfront per the matrix.
+            // A constructor reference returns ownership of a heap instance, so it is always
+            // ownership-form; an sret slot would discard the owner role and leak.
             bool returnsOwn = true;
             if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
                 if (!expectedFn->isReturnsOwnership() && expectedFn->usesSret()) {
@@ -5220,31 +4128,15 @@ bool cajetaRhsCarriesRedundantSharp(
         MethodPtr staticMethod = findMethodByName(targetClass, methodName, /*wantStatic=*/true);
         if (staticMethod) {
             kind = Kind::STATIC;
-            // Derive the function-value type from the method's
-            // parameter and return types. Static methods don't have an
-            // implicit `this`, so the parameter list IS the user-
-            // declared one.
             std::vector<CajetaTypePtr> paramTypes;
             for (auto& p : staticMethod->getParameterList()) {
                 paramTypes.push_back(p->getType());
             }
             CajetaTypePtr ret = staticMethod->getReturnType();
-            // Function-type ABI: sret form iff the target method returns
-            // by stack value (M5(b)). Borrow and `#R` returns both produce
-            // the ownership-form pointer-return signature today, so they
-            // share the `returnsOwn=true` shape. When the LHS pins an
-            // sret-form callback type, override to sret — the adapter in
-            // generateCode bridges a borrow method into the sret slot.
-            // Ownership-returning methods can't adapt: an sret target
-            // would discard the heap pointer's owner role and leak.
+            // sret form iff the target returns by stack value. An LHS-pinned sret type wins,
+            // and generateCode bridges a borrow method into the slot; an ownership-returning
+            // method cannot adapt.
             bool returnsOwn = !staticMethod->returnsStackValue();
-            // 8.2.8 / spec §4.7 — a `^` method cannot be referenced yet: the
-            // function-type surface has no view stance, so the reference seam
-            // would erase the one fact `^` exists to make unforgeable. A
-            // `(P) -> #R` binding would even make the CALLER contractually
-            // right to `#=` the result — a title forged over the receiver's
-            // interior through the seam. Rejected until `^` has a
-            // reference-stance story (the spec's recorded open question).
             if (staticMethod->isReturnsView()) {
                 throw Exception(
                     "method reference '" + methodName + "' targets a `^` "
@@ -5291,36 +4183,22 @@ bool cajetaRhsCarriesRedundantSharp(
             return;
         }
 
-        // Instance method — BOUND_INSTANCE if the LHS resolved as a
-        // runtime value (a local of class type), UNBOUND_INSTANCE if it
-        // named a type (typeType form or class-name fallback from a bare
-        // identifier).
         MethodPtr instanceMethod = findMethodByName(targetClass, methodName, /*wantStatic=*/false);
         if (instanceMethod) {
             kind = res.receiverIsValue
                 ? Kind::BOUND_INSTANCE
                 : Kind::UNBOUND_INSTANCE;
-            // Compute the function-value type. instanceMethod's
-            // parameterList includes the synthesized `this` at index 0
-            // (per Method::generatePrototype).
+            // An instance method's parameterList carries the synthesized `this` at index 0.
             std::vector<CajetaTypePtr> paramTypes;
             auto pl = instanceMethod->getParameterList();
             if (kind == Kind::UNBOUND_INSTANCE) {
-                // Receiver becomes the function-value's first param;
-                // user-facing args follow.
                 paramTypes.push_back(targetClass);
             }
             for (size_t i = 1; i < pl.size(); ++i) {
                 paramTypes.push_back(pl[i]->getType());
             }
             CajetaTypePtr ret = instanceMethod->getReturnType();
-            // M5(b) — sret form iff the target method returns by stack
-            // value. Same shape rule + LHS-pinned override + matrix
-            // checks as the static case above.
             bool returnsOwn = !instanceMethod->returnsStackValue();
-            // 8.2.8 / spec §4.7 — same rejection as the static half above:
-            // no view stance on function types yet, so a `^` method cannot
-            // cross the reference seam without erasing its contract.
             if (instanceMethod->isReturnsView()) {
                 throw Exception(
                     "method reference '" + methodName + "' targets a `^` "
@@ -5370,14 +4248,13 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // Emits a thunk matching the closure ABI `(ptr captures, params...)` plus the closure
+    // record: a private global for static, unbound and constructor references, a heap
+    // record with a drop function for a bound instance whose receiver is captured.
     llvm::Value* MethodReferenceExpression::generateCode(CajetaModulePtr module) {
         if (!resolvedType) resolveTypes(module);
 
         if (kind == Kind::CONSTRUCTOR) {
-            // Resolve the class + its constructor again at codegen time
-            // — we need both the LLVM struct type (for sizing the
-            // allocation and the vtable slot) and the ctor's LLVM
-            // function pointer for the thunk's call.
             auto& llvmCtx = *module->getLlvmContext();
             auto* lmod = module->emitTargetLlvmModule();
             llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
@@ -5405,11 +4282,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     "CAJETA_ERROR_NOT_IMPLEMENTED");
             }
 
-            // Synthesize the thunk:
-            //   (ptr captures, ctor_args...) -> ptr instance
-            // Body mirrors what CreatorRest::generateCode does for
-            // `new Foo(args)`: malloc the struct, write the vtable,
-            // call the ctor, return the instance pointer.
+            // The thunk body mirrors ClassCreatorRest: malloc the struct, write the vtable,
+            // call the ctor, return the instance.
             if (thunkName.empty()) {
                 thunkName = std::string("__cajeta_method_ref_")
                     + std::to_string(methodRefCounter++);
@@ -5432,11 +4306,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 llvm::CallInst* instance = MemoryManager::createMallocInstruction(
                     module, allocSize, tbb);
 
-                // Write the vtable pointer at slot 0 (required for any
-                // virtual dispatch on the new instance). Same cross-
-                // module fixup as CreatorRest — targetClass's vtable
-                // global may live in a different llvm::Module than
-                // where this thunk is being emitted.
+                // The vtable pointer goes in slot 0. Same cross-module fixup as CreatorRest: the
+                // vtable global may live in a different llvm::Module than this thunk.
                 if (llvm::GlobalVariable* vtable = targetClass->getVirtualTableGlobal()) {
                     llvm::Constant* vtableRef = CajetaModule::ensureGlobalInModule(
                         lmod, vtable);
@@ -5445,16 +4316,12 @@ bool cajetaRhsCarriesRedundantSharp(
                     tb.CreateStore(vtableRef, vptrSlot);
                 }
 
-                // Pass the new instance as `this`, then the thunk's
-                // explicit args (1..) as the user-facing ctor params.
                 std::vector<llvm::Value*> ctorArgs;
                 ctorArgs.push_back(instance);
                 unsigned thunkArgCount = thunk->arg_size();
                 for (unsigned i = 1; i < thunkArgCount; ++i) {
                     ctorArgs.push_back(thunk->getArg(i));
                 }
-                // title-tracking Unit 5: ctor-reference thunks lend
-                // (all-borrow 0), same as method-reference thunks above.
                 if (ctor->needsTransferWord()) {
                     ctorArgs.push_back(llvm::ConstantInt::get(
                         llvm::Type::getInt64Ty(llvmCtx), 0));
@@ -5465,7 +4332,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 tb.CreateRet(instance);
             }
 
-            // Non-capturing — private global closure record.
             llvm::StructType* closureTy = llvm::StructType::get(llvmCtx,
                 {(llvm::Type*) ptrTy, (llvm::Type*) ptrTy, (llvm::Type*) ptrTy});
             llvm::Constant* nullPtr = llvm::ConstantPointerNull::get(ptrTy);
@@ -5486,9 +4352,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 "CAJETA_ERROR_NOT_IMPLEMENTED");
         }
 
-        // Look up the target method again at codegen time — we need its
-        // LLVM function for the thunk's call instruction. resolveTypes
-        // confirmed it exists.
         CajetaClassPtr targetClass = resolveMethodRefTargetClass(
             receiverType, receiverExpr, module);
         MethodPtr target = findMethodByName(targetClass, methodName,
@@ -5504,13 +4367,8 @@ bool cajetaRhsCarriesRedundantSharp(
         auto* lmod = module->emitTargetLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
 
-        // Synthesize a thunk function matching the closure ABI:
-        //   (ptr captures, <user-facing method params>) -> <return>
-        // For STATIC: captures is ignored; args forward straight to the
-        //   underlying static method.
-        // For BOUND_INSTANCE: load the captured receiver from captures[0]
-        //   and pass it as `this` (the underlying instance method's first
-        //   arg) along with the rest of the user args.
+        // Thunk ABI `(ptr captures, user params...) -> return`. STATIC ignores captures;
+        // BOUND_INSTANCE loads the receiver from captures[0] and passes it as `this`.
         if (thunkName.empty()) {
             thunkName = std::string("__cajeta_method_ref_")
                 + std::to_string(methodRefCounter++);
@@ -5520,9 +4378,8 @@ bool cajetaRhsCarriesRedundantSharp(
             ? existing
             : llvm::Function::Create(fnType->getLlvmFunctionType(),
                 llvm::Function::InternalLinkage, thunkName, lmod);
-        // M5(b) — when the function-type is sret-shaped the thunk also takes
-        // a hidden sret slot at arg 0; mirror the attribute on its parameter
-        // and shift captures/user-arg indices by 1.
+        // An sret-shaped thunk takes the hidden result slot at arg 0, shifting the
+        // captures and user-arg indices by one.
         unsigned sretOffset = 0;
         if (!existing && fnType->usesSret()) {
             auto retClass = std::dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
@@ -5533,29 +4390,19 @@ bool cajetaRhsCarriesRedundantSharp(
             }
             sretOffset = 1;
         }
-        // M5(b) adapter — the thunk is sret-shaped but the target method
-        // returns by pointer (borrow). The call doesn't take an sret slot;
-        // instead capture its returned R* and memcpy into the thunk's sret
-        // slot before ret void. Matrix-rejected combinations (ownership
-        // method → sret target, sret method → ownership target) are
-        // already filtered in resolveTypes above.
+        // Adapter: the thunk is sret-shaped but the target returns a pointer, so capture
+        // its result and memcpy into the sret slot before `ret void`.
         bool sretAdapter = sretOffset && !target->returnsStackValue();
         if (!existing) {
             llvm::BasicBlock* tbb = llvm::BasicBlock::Create(
                 llvmCtx, "entry", thunk);
             llvm::IRBuilder<> tb(tbb);
             std::vector<llvm::Value*> callArgs;
-            // When the target method itself is sret-shaped, its arg 0 IS the
-            // sret slot — forward the thunk's sret arg straight through. In
-            // the adapter case the target has no sret arg; skip the prepend
-            // and copy the call result into the sret slot after the call.
             if (sretOffset && !sretAdapter) {
                 callArgs.push_back(thunk->getArg(0));
             }
             if (kind == Kind::BOUND_INSTANCE) {
-                // Captures struct is `{ ptr receiver }` at thunk arg
-                // `sretOffset`. Load the receiver and pass it as `this`,
-                // then user args at thunk arg `sretOffset + 1..`.
+                // The captures struct is `{ ptr receiver }` at thunk arg `sretOffset`.
                 std::vector<llvm::Type*> capFields = {(llvm::Type*) ptrTy};
                 llvm::StructType* capStructTy = llvm::StructType::get(
                     llvmCtx, capFields);
@@ -5569,24 +4416,19 @@ bool cajetaRhsCarriesRedundantSharp(
                     callArgs.push_back(thunk->getArg(i));
                 }
             } else if (kind == Kind::UNBOUND_INSTANCE) {
-                // Thunk arg `sretOffset + 1` IS the receiver. Pass it as
-                // `this`, then args from `sretOffset + 2..`.
                 callArgs.push_back(thunk->getArg(sretOffset + 1));
                 unsigned thunkArgCount = thunk->arg_size();
                 for (unsigned i = sretOffset + 2; i < thunkArgCount; ++i) {
                     callArgs.push_back(thunk->getArg(i));
                 }
             } else {
-                // STATIC — captures is unused; forward args from
-                // `sretOffset + 1..`.
                 unsigned thunkArgCount = thunk->arg_size();
                 for (unsigned i = sretOffset + 1; i < thunkArgCount; ++i) {
                     callArgs.push_back(thunk->getArg(i));
                 }
             }
-            // title-tracking Unit 5: the target's trailing hidden transfer
-            // word. A method reference has no `#` spelling — every call
-            // through the thunk lends (all-borrow 0).
+            // A method reference has no `#` spelling, so every call through the thunk lends:
+            // the trailing transfer word is the all-borrow 0.
             if (target->needsTransferWord()) {
                 callArgs.push_back(llvm::ConstantInt::get(
                     llvm::Type::getInt64Ty(llvmCtx), 0));
@@ -5596,9 +4438,6 @@ bool cajetaRhsCarriesRedundantSharp(
             llvm::CallInst* call = tb.CreateCall(
                 target->getLlvmFunctionType(), targetFn, callArgs);
             if (sretOffset && !sretAdapter) {
-                // Matched sret-to-sret — mirror the sret call-site
-                // attribute (LLVM verify wants it on indirect calls; for
-                // direct calls it's redundant but harmless).
                 auto retClass = std::dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
                 llvm::Type* structTy = retClass ? retClass->getLlvmType() : nullptr;
                 if (structTy) {
@@ -5607,9 +4446,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 }
             }
             if (sretAdapter) {
-                // Adapter: borrow method returned a `ptr` (R*). Copy the
-                // bytes into the thunk's sret slot — caller-owned memory —
-                // so it acts like a value-return at the closure boundary.
                 auto retClass = std::dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
                 llvm::Type* structTy = retClass ? retClass->getLlvmType() : nullptr;
                 if (structTy && call) {
@@ -5632,10 +4468,6 @@ bool cajetaRhsCarriesRedundantSharp(
             {(llvm::Type*) ptrTy, (llvm::Type*) ptrTy, (llvm::Type*) ptrTy});
 
         if (kind == Kind::STATIC || kind == Kind::UNBOUND_INSTANCE) {
-            // Non-capturing — closure record can be a private global
-            // constant `{ thunk, null, null }`. Globals live for the
-            // whole program, so a static or unbound-instance method
-            // reference can be returned / stored without escape worries.
             llvm::Constant* nullPtr = llvm::ConstantPointerNull::get(ptrTy);
             llvm::Constant* init = llvm::ConstantStruct::get(closureTy,
                 {static_cast<llvm::Constant*>(thunk), nullPtr, nullPtr});
@@ -5645,11 +4477,6 @@ bool cajetaRhsCarriesRedundantSharp(
             return gv;
         }
 
-        // BOUND_INSTANCE — heap-allocate the captures struct + closure
-        // record, populate with the evaluated receiver, and synthesize
-        // a drop function that frees both at scope exit. Mirrors the
-        // L3-3 lambda heap-closure path; the captured receiver is a
-        // borrow (we don't free the receiver object itself).
         auto* outerBuilder = module->getBuilder();
         const llvm::DataLayout& dl = lmod->getDataLayout();
         llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
@@ -5660,7 +4487,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 "CAJETA_ERROR_RUNTIME");
         }
 
-        // 1. Allocate captures struct and store the evaluated receiver.
         std::vector<llvm::Type*> bindFields = {(llvm::Type*) ptrTy};
         llvm::StructType* capStructTy = llvm::StructType::get(
             llvmCtx, bindFields);
@@ -5669,9 +4495,6 @@ bool cajetaRhsCarriesRedundantSharp(
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(llvmCtx), capBytes),
         }, "captures");
         llvm::Value* recvValue = receiverExpr->generateCode(module);
-        // L-value coerce the receiver: an IdentifierExpression yields its
-        // alloca, which holds the heap pointer — load through to get the
-        // actual ptr.
         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(recvValue)) {
             recvValue = outerBuilder->CreateLoad(
                 a->getAllocatedType(), a);
@@ -5680,9 +4503,6 @@ bool cajetaRhsCarriesRedundantSharp(
             capStructTy, capturesPtr, 0, "captures.this");
         outerBuilder->CreateStore(recvValue, recvStoreSlot);
 
-        // 2. Synthesize the per-ref drop function. Frees the captures
-        //    struct and the closure record; the receiver itself isn't
-        //    freed (borrow capture, original owner still has the entry).
         std::string dropName = thunkName + "_drop";
         llvm::FunctionType* dropFnTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(llvmCtx), {ptrTy}, /*isVarArg=*/false);
@@ -5701,7 +4521,6 @@ bool cajetaRhsCarriesRedundantSharp(
             db.CreateRetVoid();
         }
 
-        // 3. Allocate the closure record and populate fn / captures / drop_fn.
         uint64_t closureBytes = dl.getTypeAllocSize(closureTy);
         llvm::Value* closure = outerBuilder->CreateCall(allocFn, {
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(llvmCtx), closureBytes),
@@ -5718,6 +4537,7 @@ bool cajetaRhsCarriesRedundantSharp(
         return closure;
     }
 
+    // `instanceof` always types as boolean, whatever the operands.
     void InstanceOfExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         resolvedType = CajetaType::of("boolean");
@@ -5750,13 +4570,10 @@ bool cajetaRhsCarriesRedundantSharp(
         return true;
     }
 
+    // Emits the type test. cajeta monomorphizes, so a static type that pins the answer
+    // folds to a constant while a wildcard or differing instantiation asks the RTTI.
+    // A pattern name binds the object on a match and null otherwise.
     llvm::Value* InstanceOfExpression::generateCode(CajetaModulePtr module) {
-        // cajeta monomorphizes, so a value widened to a template wildcard
-        // (`Tensor<?>`) is, at runtime, still its concrete instantiation. When the
-        // static lhs type already pins the answer we fold it at compile time; when
-        // the lhs is a wildcard (or a different instantiation of the same base —
-        // i.e. a genuine reified downcast question) we emit a runtime RTTI check
-        // (`__cajeta_instanceof_named`, reified-capture-spec.md §1–2).
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvm::Type* i1 = llvm::Type::getInt1Ty(ctx);
 
@@ -5769,9 +4586,6 @@ bool cajetaRhsCarriesRedundantSharp(
             children[0]->generateCode(module);
             return llvm::ConstantInt::getFalse(i1);
         }
-        // The pre-pass resolver runs before LocalVariableDeclaration populates the scope,
-        // so the lhs's resolvedType may be null. Re-run resolveTypes now — at codegen
-        // time the scope is fully populated.
         if (!lhsExpr->getResolvedType()) {
             lhsExpr->resolveTypes(module);
         }
@@ -5782,24 +4596,14 @@ bool cajetaRhsCarriesRedundantSharp(
         bool lhsIsWildcard = lhsCanon.find('?') != std::string::npos;
         bool targetConcrete = targetCanon.find('?') == std::string::npos;
         bool sameBase = lhsType && erasedBaseOf(lhsCanon) == erasedBaseOf(targetCanon);
-        // A reified runtime check is warranted (and sound) when the lhs is a
-        // wildcard, or a different instantiation of the same generic base, and the
-        // target is a concrete class instantiation we can name.
-        // nucleo-nn U2 widened this: a CLASS-typed lhs whose static type differs
-        // from the target is the plain downcast question (`Object o` from a
-        // reflective walk, a base-typed ref) — the static type cannot pin the
-        // answer, so it must also ask the RTTI (previously it folded to FALSE,
-        // which made `o instanceof Parameter` on an Object-typed value lie).
+        // A CLASS-typed lhs whose static type differs from the target is the plain
+        // downcast question, so it must also ask the RTTI rather than folding to false.
         auto targetClass = dynamic_pointer_cast<CajetaClass>(type);
         bool lhsIsClass = (bool) dynamic_pointer_cast<CajetaClass>(lhsType);
         bool wantRuntime = targetClass && targetConcrete && lhsType
             && lhsCanon != targetCanon
             && (lhsIsWildcard || sameBase || lhsIsClass);
 
-        // Class-bounded-wildcard target `Base<? extends Bound>` (§5): not a
-        // concrete instantiation (so `wantRuntime` is false), but still a real
-        // reified question — does the container's reified element type conform to
-        // the bound? Resolved at runtime by __cajeta_instanceof_bounded.
         std::string boundBaseCanon, boundCanon;
         int boundArgIdx = -1;
         bool wantBounded = boundedWildcardTarget(type, boundBaseCanon,
@@ -5808,26 +4612,18 @@ bool cajetaRhsCarriesRedundantSharp(
 
         auto* builder = module->getBuilder();
 
-        // We need the lhs object pointer for the runtime match and/or the
-        // pattern binding; otherwise we only evaluate it for side-effects.
         bool needObj = wantRuntime || wantBounded || !pattern.empty();
         llvm::Value* objPtr = nullptr;
         if (needObj) {
             llvm::Value* raw = children[0]->generateCode(module);
             objPtr = loadIfLValue(module, raw, lhsExpr);
-            // Interface-typed lhs: the value is a pointer to the fat body
-            // { data, vtable, kind } — strip to the data pointer before any
-            // runtime type question or pattern binding (the same recipe as
-            // CastExpression's iface→class arm). Handing the fat body to
-            // __cajeta_instanceof_named read the data pointer as a vtable
-            // and faulted (specs/instanceof-interface-lhs).
+            // An interface-typed lhs points at the fat body `{ data, vtable, kind }`; strip to
+            // the data pointer before any runtime type question or pattern binding.
             auto lhsIfaceClass = dynamic_pointer_cast<CajetaClass>(lhsType);
             if (objPtr && objPtr->getType()->isPointerTy() && lhsIfaceClass
                     && lhsIfaceClass->isInterface()) {
-                // The body pointer itself can be null (`Shape s = null;`
-                // stores a plain null, not a body with a null data slot),
-                // so the data-slot load must be null-guarded: branch, load
-                // on the non-null arm, rejoin through a phi.
+                // The body pointer itself can be null (`Shape s = null` stores a plain null), so
+                // the data-slot load is null-guarded: branch, load on the non-null arm, phi.
                 llvm::Type* bodyTy = lhsIfaceClass->getLlvmType();
                 llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
                 llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
@@ -5856,8 +4652,6 @@ bool cajetaRhsCarriesRedundantSharp(
             children[0]->generateCode(module);
         }
 
-        // Compute the match bit. Runtime reified check when the static type
-        // doesn't pin the answer; otherwise the folded compile-time constant.
         llvm::Value* matchBit;
         if (wantBounded && objPtr && objPtr->getType()->isPointerTy()) {
             llvm::Function* fn =
@@ -5897,14 +4691,9 @@ bool cajetaRhsCarriesRedundantSharp(
                                : llvm::ConstantInt::getFalse(i1);
         }
 
-        // Pattern binding (`w instanceof Foo<int32> f`): introduce `f : Foo<int32>`
-        // bound to the captured pointer — representation-identical because cajeta
-        // monomorphizes. Sound by construction: bind the object on a match, null
-        // otherwise, so a use outside the matched region NPEs rather than reading a
-        // mis-typed object. The binding aliases an existing object (no creator /
-        // drop_push), so it is a borrow and never double-frees. The `if` evaluates
-        // its condition before the then-block, so registering the field in the
-        // current scope makes it visible to the guarded body.
+        // The binding is representation-identical because cajeta monomorphizes: bind the
+        // object on a match and null otherwise, so a use outside the matched region NPEs.
+        // It aliases an existing object, so it is a borrow and never double-frees.
         if (!pattern.empty() && type && objPtr && objPtr->getType()->isPointerTy()) {
             llvm::PointerType* ptrTy =
                 llvm::PointerType::get(*module->getLlvmContext(), 0);
@@ -5927,12 +4716,9 @@ bool cajetaRhsCarriesRedundantSharp(
         return matchBit;
     }
 
-    // Resolve a bracketed ancestor name (`this<Base>` / `super<Base>`)
-    // against the current class's transitive ancestor closure. Returns
-    // the resolved class pointer, or throws CAJETA_ERROR_NOT_AN_ANCESTOR
-    // if the name doesn't match any reachable ancestor of `here`.
-    // Comparison uses both canonical and short type names because the
-    // bracket contents may be written either way at the call site.
+    // Resolves `this<Base>` / `super<Base>` against `here`'s transitive ancestors,
+    // matching canonical or short name. Throws CAJETA_ERROR_NOT_AN_ANCESTOR when the
+    // name is not a reachable ancestor.
     static CajetaClassPtr resolveBracketedAncestor(
             const std::string& name, CajetaClassPtr here) {
         if (!here) return nullptr;
@@ -5949,8 +4735,7 @@ bool cajetaRhsCarriesRedundantSharp(
                 }
                 return nullptr;
             };
-        // Self is not its own ancestor for bracket purposes — `this<Self>`
-        // is a no-op that's also a code smell; only allow real ancestors.
+        // A class is not its own ancestor here: `this<Self>` is a no-op and a code smell.
         for (auto& sup : here->getSuperClasses()) {
             if (auto match = walk(sup)) return match;
         }
@@ -5962,10 +4747,9 @@ bool cajetaRhsCarriesRedundantSharp(
             "CAJETA_ERROR_NOT_AN_ANCESTOR");
     }
 
+    // `this` types as the class on the structure stack; `this<Base>` types as the named
+    // ancestor, so DotExpression and MethodCallExpression see a Base-typed receiver.
     void ThisExpression::resolveTypes(CajetaModulePtr module) {
-        // `this` resolves to the current class type on the structure stack.
-        // `this<Base>` resolves to the chosen ancestor instead — DotExpression
-        // / MethodCallExpression then treat the receiver as Base-typed.
         if (module->getStructureStack().empty()) return;
         auto here = std::dynamic_pointer_cast<CajetaClass>(
             module->getStructureStack().back());
@@ -5980,26 +4764,18 @@ bool cajetaRhsCarriesRedundantSharp(
         resolvedType = resolveBracketedAncestor(chosenAncestorName, here);
     }
 
+    // Returns the `this` parameter's alloca as an l-value. `this<Base>` instead loads it
+    // and adds Base's sub-object offset, returning that r-value — DotExpression detects
+    // the load-through and GEPs from there.
     llvm::Value* ThisExpression::generateCode(CajetaModulePtr module) {
-        // Method::generateCode registers a ParameterField named "this" in the active scope
-        // for non-static methods. We return its alloca (l-value style); consumers can
-        // loadIfLValue if they need the pointer itself.
-        //
-        // Plain `this` returns the raw alloca (l-value). `this<Base>` must
-        // return a Base-typed pointer adjusted to the sub-object — loaded
-        // from the alloca and shifted by getSubObjectByteOffset(Base).
-        // Returning the adjusted r-value (not an alloca) is fine because
-        // DotExpression's class-receiver path detects the load-through and
-        // GEPs from there.
+        // Method::generateCode registers a ParameterField named `this` for every non-static
+        // method; its alloca is the l-value returned here.
         FieldPtr thisField = module->getScopeStack().peek()->getField("this");
         if (!thisField) return nullptr;
         auto alloca = thisField->getOrCreateAllocation();
         if (chosenAncestorName.empty()) {
-            // In an ENUM body `this` is the i32 ordinal, not an object
-            // address, so type it from the method's declared `this` formal.
-            // Otherwise the l-value is treated as an object pointer and never
-            // loaded, and `this == Verb.GET` compares a ptr against an i32 —
-            // an LLVM ICmp same-type assertion.
+            // In an ENUM body `this` is the i32 ordinal, not an object address, so its type
+            // comes from the method's declared `this` formal.
             if (MethodPtr cur = module->getCurrentMethod()) {
                 auto formals = cur->getParameterList();
                 if (!formals.empty() && formals.front()
@@ -6012,16 +4788,7 @@ bool cajetaRhsCarriesRedundantSharp(
             }
             return static_cast<llvm::Value*>(alloca);
         }
-        // Self-resolve when the pre-pass didn't (e.g., for expressions
-        // inside LocalVariableDeclaration initializers — those aren't
-        // visited by the pre-pass, so the first generateCode call
-        // observes resolvedType == null). Without this, we'd fall
-        // through to "return alloca" and the adjustment would be
-        // silently skipped — `this<C>` would behave like plain `this`.
         if (!resolvedType) resolveTypes(module);
-        // Load the current `this` pointer, then adjust to the chosen
-        // ancestor sub-object. The adjustment is a no-op for the first-
-        // parent chain (offset = 0) and for self.
         if (module->getStructureStack().empty()) return alloca;
         auto here = std::dynamic_pointer_cast<CajetaClass>(
             module->getStructureStack().back());
@@ -6034,13 +4801,10 @@ bool cajetaRhsCarriesRedundantSharp(
         return CajetaClass::adjustForUpcast(module, loaded, here, ancestor);
     }
 
+    // Plain `super` resolves to the first declared parent; `super<Base>` resolves to the
+    // named ancestor, validated against the transitive parent set. The instance pointer
+    // is `this` either way — only the dispatch target differs.
     void SuperExpression::resolveTypes(CajetaModulePtr module) {
-        // Plain `super` resolves to the current class's first declared
-        // parent (matches Java's single-parent rule). `super<Base>`
-        // resolves to the named ancestor, validated against the current
-        // class's transitive parent set. In both forms the instance
-        // pointer is `this` (possibly adjusted at codegen for non-first
-        // parents); only the dispatch target differs.
         if (module->getStructureStack().empty()) {
             throw Exception(
                 "`super` used outside of a class context",
@@ -6067,15 +4831,10 @@ bool cajetaRhsCarriesRedundantSharp(
         resolvedType = resolveBracketedAncestor(chosenAncestorName, here);
     }
 
+    // Returns the raw `this` alloca for plain `super` (invokeMethod adjusts the pointer
+    // later); `super<Base>` returns a pointer already adjusted to Base's sub-object,
+    // which the receiving call force-directs into Base's method.
     llvm::Value* SuperExpression::generateCode(CajetaModulePtr module) {
-        // Plain `super` returns the raw `this` alloca (Phase 1 single-
-        // parent case; pointer adjustment happens later in invokeMethod
-        // when the declaring class differs from the receiver class).
-        //
-        // `super<Base>` returns a pointer adjusted to Base's sub-object
-        // — same machinery as `this<Base>`. The downstream MCE detects
-        // a SuperExpression receiver and force-direct-calls, so the
-        // adjusted pointer flows straight into Base's method.
         auto scope = module->getScopeStack().peek();
         FieldPtr thisField = scope ? scope->getField("this") : nullptr;
         if (!thisField) {
@@ -6087,9 +4846,6 @@ bool cajetaRhsCarriesRedundantSharp(
         if (chosenAncestorName.empty()) {
             return static_cast<llvm::Value*>(alloca);
         }
-        // Same self-resolve guard as ThisExpression — initializer
-        // sites bypass the pre-pass, so the bracketed form's
-        // resolvedType may still be null on the first generateCode.
         if (!resolvedType) resolveTypes(module);
         if (module->getStructureStack().empty()) return alloca;
         auto here = std::dynamic_pointer_cast<CajetaClass>(
@@ -6103,19 +4859,9 @@ bool cajetaRhsCarriesRedundantSharp(
         return CajetaClass::adjustForUpcast(module, loaded, here, ancestor);
     }
 
-    // Sync-lowering MVP for the three concurrency expressions. They all wrap a
-    // single inner expression in children[0]. resolveTypes mirrors the inner
-    // expression's type so the outer context picks up the right type without
-    // a Task<T> wrapper. generateCode just forwards to the inner expression
-    // (await/spawn) or evaluates-and-discards (detach). The async runtime
-    // (scheduler, state machines, Task<T> struct) layers on top later; the
-    // AST surface stays stable.
-
-    // R1 contract: `await` unwraps Task<T>* to T. If the inner expression
-    // already resolved to T (a bare call to an async fn that hasn't been
-    // wrapped, or a sync-compat pass-through), await acts as the identity.
-    // The strict "await only on Task<T>" check lands in R3 when the type
-    // rewrite for async fn returns is in place.
+    // `await` unwraps Task<T> to T; an inner that already resolved to T — a bare async
+    // call, or a sync pass-through — makes await the identity. The strict
+    // `await only on Task<T>` check waits on the async return-type rewrite.
     void AwaitExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         if (children.empty()) return;
@@ -6129,36 +4875,27 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // Waits on the task's done flag, then re-raises a stored exception or loads
+    // `.value`. A non-Task inner is loaded through and returned unchanged.
     llvm::Value* AwaitExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) return nullptr;
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
         if (!inner) return nullptr;
         llvm::Value* v = inner->generateCode(module);
         if (!v) return nullptr;
-        // Re-resolve the inner at codegen time. For an identifier referring
-        // to a local Task<T> declared later in the same method, the pre-
-        // pass resolveTypes ran before the local was in scope and left
-        // resolvedType null — the dynamic_pointer_cast below would then
-        // miss and we'd fall into the sync-compat branch, returning the
-        // raw Task ptr instead of unwrapping. Same pattern DotExpression
-        // and BinaryOpExpression ASSIGN use for their receiver lookups.
+        // Re-resolve the inner at codegen time: a local Task declared later in the method
+        // was not in scope when the pre-pass ran, and the cast below would miss.
         if (!inner->getResolvedType()) {
             inner->resolveTypes(module);
         }
         auto innerType = inner->getResolvedType();
         auto task = dynamic_pointer_cast<CajetaTask>(innerType);
         if (!task) {
-            // Sync-compat: inner is a plain value (not a Task wrapper).
-            // Identity-load through allocas so the caller sees the value.
             if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(v)) {
                 return module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
             }
             return v;
         }
-        // Task<T>* in hand. R2: block until the worker has flipped the
-        // done flag, then load .value. The Task ptr may be in an alloca
-        // slot (when the spawn result was bound to a local) — load
-        // through to get the heap ptr first.
         auto* builder = module->getBuilder();
         auto* ctx = module->getLlvmContext();
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(v)) {
@@ -6169,11 +4906,6 @@ bool cajetaRhsCarriesRedundantSharp(
         if (llvm::Function* waitFn = module->getRuntimeFunction("__cajeta_task_wait")) {
             builder->CreateCall(waitFn, {doneSlot});
         }
-        // R5/Error-model #205: post-wait, check the task's exception slot.
-        // If non-null, re-raise into the awaiter's frame — the thrown
-        // value flows up via the existing setjmp/longjmp machinery, same
-        // as a direct throw. If NULL (success path), load .value and
-        // return the unwrapped result.
         llvm::Type* ptrTy = llvm::PointerType::get(*ctx, 0);
         llvm::Value* excSlot = builder->CreateStructGEP(
             task->getLlvmType(), v, CajetaTask::EXCEPTION_FIELD_INDEX,
@@ -6190,20 +4922,14 @@ bool cajetaRhsCarriesRedundantSharp(
         builder->CreateCondBr(hasExc, rethrowBB, normalBB);
 
         builder->SetInsertPoint(rethrowBB);
-        // Clear the exception slot BEFORE throwing so the surrounding
-        // scope_exit_to doesn't re-raise the same exception when the
-        // user has already caught it via try/catch around the await.
-        // Without this, function-return-after-handled-throw triggers a
-        // ghost re-raise from the scope frame's exception walk.
+        // Clear the exception slot BEFORE throwing, or the surrounding scope walk re-raises
+        // an exception the user has already caught.
         builder->CreateStore(
             llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy)),
             excSlot);
         if (llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw")) {
             builder->CreateCall(throwFn, {excPtr});
         }
-        // Throw is noreturn from the user's POV; the runtime longjmps. Emit
-        // unreachable so LLVM knows this path doesn't continue. The
-        // normal-path block has the actual return value.
         builder->CreateUnreachable();
 
         builder->SetInsertPoint(normalBB);
@@ -6214,17 +4940,14 @@ bool cajetaRhsCarriesRedundantSharp(
             valueSlot);
     }
 
+    // `spawn call()` types as Task<T> over the inner call's T, keeping an existing
+    // wrapper when the inner already returns a Task rather than double-boxing.
     void SpawnExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         if (children.empty()) return;
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
         if (!inner) return;
         auto innerType = inner->getResolvedType();
-        // spawn `T-returning-call` materializes a Task<T>. If T is itself
-        // already Task<T'> (i.e., calling a hypothetically-typed async fn
-        // that returned a Task), keep the existing wrapper — don't double-
-        // box. For sync MVP backward-compat (the inner fn returns plain T),
-        // we synthesize the Task<T> here.
         if (auto task = dynamic_pointer_cast<CajetaTask>(innerType)) {
             resolvedType = task;
         } else if (innerType) {
@@ -6232,30 +4955,9 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
-    // R3-A spawn lowering: lift R2's zero-argument restriction. Each arg is
-    // evaluated at the spawn site (outer/main thread) so any side effects
-    // happen there, not on the worker. The values are packed into a heap-
-    // allocated context struct alongside the Task<T> pointer; the trampoline
-    // loads from this context and routes the call through the target class's
-    // invokeMethod path (same dispatch as a regular method call would emit,
-    // minus MethodCallExpression's outer-thread arg evaluation).
-    //
-    // Two inner-call shapes are supported:
-    //   - Bare class-method (`spawn compute(args)`): trampoline routes
-    //     through the enclosing class's invokeMethod.
-    //   - Spawn-of-lambda (`spawn body(args)` where `body` is a function-
-    //     typed scope field — local, parameter, or capture): trampoline
-    //     loads the closure record at fn+captures (L3-3 ABI) and
-    //     indirect-dispatches. Lets `withTimeout(d, () -> compute())`
-    //     work — see docs/specification/concurrent/Concurrency.md § withTimeout, and the
-    //     #-transfer lifetime invariant in docs/specification/concurrent/AsyncStatus.md
-    //     § Plan: Task<T>.
-    //   - Instance-method dispatch (`spawn obj.method()`) is still
-    //     deferred — it needs the receiver captured into the ctx struct
-    //     and a dispatch through the class's vtable; not in scope here.
-    //
-    // Pure intrinsics inside spawn are also out of scope (no useful
-    // semantics).
+    // Lowers `spawn f(args)`: the arguments are evaluated HERE, so their side effects
+    // stay on this thread, then packed into a heap ctx struct with the Task, and a
+    // synthesized trampoline dispatches the bare call or the closure on the worker.
     llvm::Value* SpawnExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) return nullptr;
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
@@ -6267,8 +4969,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 "its operand",
                 "CAJETA_ERROR_ASYNC_R3A");
         }
-        // Instance-method dispatch (`spawn obj.method()`) needs the receiver
-        // captured into the context struct too — deferred.
+        // `spawn obj.method()` is deferred: the receiver would have to be captured into
+        // the ctx struct and dispatched through the class's vtable.
         if (!innerCall->getChildren().empty()) {
             throw Exception(
                 "spawn currently doesn't support instance-method calls; use "
@@ -6276,13 +4978,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 "CAJETA_ERROR_ASYNC_R3A");
         }
 
-        // Detect spawn-of-lambda: methodCallName resolves to a function-
-        // typed scope field (local, parameter, or capture). The body's
-        // trampoline will indirect-call through the closure instead of
-        // invokeMethod. The detection has to run before arg evaluation so
-        // the closure value gets captured at the spawn site (outer thread),
-        // matching the same-thread-side-effects rule the regular spawn
-        // observes for its method-args.
+        // Detect spawn-of-lambda BEFORE arg evaluation, so the closure value is captured at
+        // the spawn site like every other argument.
         CajetaFunctionTypePtr lambdaFnType;
         FieldPtr lambdaClosureField;
         if (!module->getScopeStack().isEmpty()) {
@@ -6299,11 +4996,8 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
 
-        // v1 spawn-of-lambda restriction: only the heap-ownership ABI
-        // (`(P) -> #R`) and primitive-return shapes. The sret form would
-        // need the result slot to outlive the worker's trampoline frame,
-        // which today's Task<T>::value slot layout (which holds either a
-        // primitive or a heap pointer, not a struct) doesn't carry.
+        // Spawn-of-lambda takes only the heap-ownership and primitive-return shapes: an
+        // sret result slot would have to outlive the worker's trampoline frame.
         if (lambdaFnType && lambdaFnType->usesSret()) {
             throw Exception(
                 "spawn-of-lambda v1 supports only heap-ownership return "
@@ -6318,23 +5012,9 @@ bool cajetaRhsCarriesRedundantSharp(
         auto* lmod = module->emitTargetLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
 
-        // Step 1: Evaluate every arg at the spawn site. Any side effects
-        // (mutation through `#`, calls with effects, etc.) happen on the
-        // calling thread; the worker only sees the resulting values via
-        // the context struct. Each capture records both the LLVM value
-        // and the CajetaType, since invokeMethod's overload resolution
-        // walks the latter.
         vector<llvm::Value*> capturedArgs;
         vector<CajetaTypePtr> capturedArgTypes;
 
-        // Spawn-of-lambda: also capture the closure record ptr from the
-        // lambdaClosureField's slot. This becomes capturedArgs[0]; the
-        // trampoline reads it from ctx[1] (ctx[0] is the task ptr) and
-        // GEPs fn/captures off the closure. CajetaType for the closure
-        // is the function type itself — capturedArgTypes positionally
-        // tracks types but the lambda path doesn't use invokeMethod's
-        // overload resolution, so the stored type is decorative beyond
-        // round-tripping the LLVM ptr.
         if (lambdaFnType && lambdaClosureField) {
             llvm::AllocaInst* slot =
                 lambdaClosureField->getOrCreateAllocation();
@@ -6350,15 +5030,8 @@ bool cajetaRhsCarriesRedundantSharp(
             }
             llvm::Value* v = param.expression->generateCode(module);
             if (!v) return nullptr;
-            // l-value → r-value coercion. The narrow AllocaInst-only load
-            // covers the IdentifierExpression case, but argument expressions
-            // can also be ArrayIndexExpression (a GEP into the array's data
-            // region) or DotExpression (a GEP into a struct field). In both
-            // cases what's returned is a slot pointer and the call site
-            // wants the stored value. Without this, e.g. `spawn f(arr[0])`
-            // for a Counter[] would pass the SLOT ADDRESS to the worker
-            // (not the heap Counter pointer), and the worker's c.inc()
-            // would mutate the slot bytes rather than the Counter.
+            // Coerce args to r-values: an element or field argument yields a SLOT pointer, and
+            // the worker would then mutate the slot rather than the object.
             auto exprAst = dynamic_pointer_cast<Expression>(param.expression);
             v = loadIfLValue(module, v, exprAst);
             CajetaTypePtr t = param.expression->getResolvedType();
@@ -6367,19 +5040,9 @@ bool cajetaRhsCarriesRedundantSharp(
             capturedArgTypes.push_back(t);
         }
 
-        // Ownership transfer for `#`-moved spawn arguments. A `spawn
-        // f(#owned)` MOVES the owned value into the spawned fiber (which
-        // becomes its sole owner and frees it when its frame exits), so the
-        // SPAWNER must relinquish it — exactly as a normal call `f(#owned)`
-        // does. Without this the spawner keeps an active drop entry for the
-        // moved local and frees it at scope exit (for a loop-body local, at
-        // each iteration's end), racing the just-spawned fiber that now
-        // owns and reads it — an intermittent use-after-free (the
-        // serve()-accept-loop crash: `spawn serveConnection(..., #conn)`
-        // with the connection fiber's reader+writer borrowing the freed
-        // conn). Mirrors MethodCallExpression's caller-side `#x` deactivation
-        // (its `deactivateIfClassLocal`), emitted here on the spawn site's
-        // (outer) builder AFTER the arg value was captured above.
+        // `spawn f(#owned)` moves the value into the fiber, so the spawner must relinquish
+        // it here — otherwise its scope exit frees what the running fiber now owns.
+        // Mirrors the caller-side deactivation an ordinary call emits.
         {
             auto scope = module->getScopeStack().isEmpty()
                 ? nullptr : module->getScopeStack().peek();
@@ -6401,21 +5064,13 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
 
-        // Capture the outer block AFTER arg evaluation. An arg expression
-        // may have emitted its own basic blocks (e.g. ArrayIndexExpression's
-        // bounds-check ok/fail split), leaving the builder positioned on a
-        // fresh BB. The spawn-site setup that runs after the trampoline
-        // body must continue from THAT block, not the BB that was current
-        // before arg eval (which is already terminated by the args' own
-        // control flow). Without this, the post-trampoline restore lands
-        // on the pre-args BB whose terminator we just emitted, and the
-        // ok-branch from the bounds check is left without a terminator —
-        // JIT verify fails with "Basic Block ... does not have terminator".
+        // Capture the outer block AFTER arg evaluation: an arg may have emitted its own
+        // blocks (a bounds-check split), and resuming on the pre-args block would leave
+        // the arg's ok-branch without a terminator.
         llvm::BasicBlock* outerInsertBlock = outerBuilder->GetInsertBlock();
 
-        // Step 2: Build the context struct {ptr task, arg0, arg1, ...}.
-        // Anonymous literal struct — LLVM unifies structurally identical
-        // ones so the spawn-site stores and trampoline-side loads agree.
+        // Context struct `{ ptr task, arg0, arg1, ... }` — an anonymous literal struct, so
+        // LLVM unifies the spawn-site stores with the trampoline-side loads.
         vector<llvm::Type*> ctxFieldTypes = {ptrTy};
         for (auto* v : capturedArgs) {
             ctxFieldTypes.push_back(v->getType());
@@ -6423,23 +5078,16 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::StructType* ctxStructTy =
             llvm::StructType::get(llvmCtx, ctxFieldTypes);
 
-        // Step 3: Resolve the target class (bare-call form): the enclosing
-        // class from the structure stack, same heuristic MethodCallExpression
-        // uses for receiver-less invocations.
         if (module->getStructureStack().empty()) return nullptr;
         CajetaClassPtr targetClass = module->getStructureStack().back();
 
-        // Step 4: Synthesize the trampoline. Signature: void (ptr ctx).
-        // The runtime is type-agnostic — it just calls trampoline(ctx).
         static thread_local uint64_t trampolineCounter = 0;  // per-thread (threadsafe U4)
         string trampName = string("__cajeta_spawn_trampoline_")
             + std::to_string(trampolineCounter++);
         llvm::FunctionType* trampTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(llvmCtx), {ptrTy}, false);
-        // Internal, like lambdas: only ever reached through the address the
-        // spawn site takes in this same module. External linkage made the
-        // counter-numbered name a cross-object collision under incremental
-        // builds (a cached module's frozen trampoline_N vs a fresh module's).
+        // Internal, like lambdas: the counter-numbered name collides across a cached and a
+        // fresh module under incremental builds, and only its address is ever used.
         llvm::Function* trampFn = llvm::Function::Create(
             trampTy, llvm::Function::InternalLinkage, trampName, lmod);
         llvm::BasicBlock* trampEntry = llvm::BasicBlock::Create(
@@ -6447,30 +5095,22 @@ bool cajetaRhsCarriesRedundantSharp(
         outerBuilder->SetInsertPoint(trampEntry);
 
         llvm::Value* ctxParam = trampFn->arg_begin();
-        // Load task ptr from ctx[0].
         llvm::Value* taskSlot = outerBuilder->CreateStructGEP(
             ctxStructTy, ctxParam, 0, "ctx_task_slot");
         llvm::Value* taskPtr = outerBuilder->CreateLoad(
             ptrTy, taskSlot, "task_ptr");
 
-        // R5/Error-model #205: wrap the inner call in a try/catch inside
-        // the trampoline so a thrown RecoverableException is captured onto
-        // the Task's exception slot rather than escaping the fiber's
-        // stack and crashing the carrier. Matches the TryStatement
-        // setjmp/__cajeta_exc_push pattern, but with a synthetic body:
-        // the try-body is the invokeMethod + result store; the catch
-        // reads the thrown ptr and stashes it on task->exception.
+        // The inner call runs inside a try/catch so a throw lands on the Task's exception
+        // slot instead of escaping the fiber and crashing the carrier.
         llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
         llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
         llvm::Function* excPushFn = module->getRuntimeFunction("__cajeta_exc_push");
         llvm::Function* excPopFn  = module->getRuntimeFunction("__cajeta_exc_pop");
         llvm::Function* getThrownFn = module->getRuntimeFunction("__cajeta_get_thrown");
 
-        // Exception frame at trampoline entry — 512-byte blob covers
-        // jmp_buf + prev + thrown_value on the targets we support; same
-        // sizing TryStatement uses. 16-byte-aligned: MSVCRT's _setjmp stores
-        // XMM registers into the _JUMP_BUFFER with aligned stores
-        // (ExcFrameSetjmp.h).
+        // 512 bytes covers jmp_buf + prev + thrown_value on every supported target.
+        // 16-byte aligned because MSVCRT's _setjmp stores XMM registers into the
+        // _JUMP_BUFFER with aligned stores (ExcFrameSetjmp.h).
         constexpr unsigned frameBytes = 512;
         llvm::IRBuilder<> trampEntryBuilder(trampEntry, trampEntry->begin());
         llvm::AllocaInst* trampFrame = trampEntryBuilder.CreateAlloca(
@@ -6497,13 +5137,6 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::Value* innerResult = nullptr;
         CajetaTypePtr innerType;
         if (lambdaFnType) {
-            // Spawn-of-lambda: load the closure ptr from ctx[1], GEP
-            // fn+captures (L3-3 closure layout: { ptr fn, ptr captures,
-            // ptr drop_fn }), build the indirect-call arg list, dispatch.
-            // Mirrors MethodCallExpression's function-typed-local
-            // invocation lowering (the `add(3, 4)` case) but inside the
-            // worker frame and reading the closure from ctx instead of
-            // the caller's scope field.
             llvm::Type* closureTy = llvm::StructType::get(
                 llvmCtx, {ptrTy, ptrTy, ptrTy});
             llvm::Value* closureSlot = outerBuilder->CreateStructGEP(
@@ -6518,9 +5151,7 @@ bool cajetaRhsCarriesRedundantSharp(
                 closureTy, closurePtr, 1, "closure.captures");
             llvm::Value* captures = outerBuilder->CreateLoad(
                 ptrTy, capSlot, "captures_ptr");
-            // Build args: [captures, user_arg0, user_arg1, ...]. The
-            // L3-3 ABI puts captures at position 0 in the closure's
-            // function signature.
+            // The closure ABI puts captures at position 0, then the user args.
             llvm::FunctionType* sig = lambdaFnType->getLlvmFunctionType();
             vector<llvm::Value*> indirectArgs;
             indirectArgs.push_back(captures);
@@ -6532,8 +5163,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 llvm::Value* loaded = outerBuilder->CreateLoad(
                     capturedArgs[i]->getType(), slot,
                     string("arg") + std::to_string(i - 1));
-                // Width-coerce to match the signature, mirroring the
-                // MCE direct-closure-call path.
                 size_t sigIdx = i;  // 0 is captures, then user args
                 if (sig && sigIdx < sig->getNumParams() && loaded
                         && loaded->getType() != sig->getParamType(sigIdx)) {
@@ -6550,9 +5179,6 @@ bool cajetaRhsCarriesRedundantSharp(
             innerResult = outerBuilder->CreateCall(sig, fnPtr, indirectArgs);
             innerType = lambdaFnType->getReturnType();
         } else {
-            // Bare class-method dispatch — the original lowering path.
-            // Load each arg from ctx[i+1] and build the entries
-            // invokeMethod expects.
             vector<ParameterEntry> entries;
             for (size_t i = 0; i < capturedArgs.size(); ++i) {
                 llvm::Value* slot = outerBuilder->CreateStructGEP(
@@ -6565,18 +5191,9 @@ bool cajetaRhsCarriesRedundantSharp(
                     /*label=*/string(), loaded));
             }
             string methodNameCopy = innerCall->getMethodCallName();
-            // Transfer word (title-tracking Unit 5): a `#`-moved spawn
-            // argument transfers OWNERSHIP into the fiber, so the worker's
-            // `#`-formal must be ARMED to drop (free/close) it on exit —
-            // the fiber is the sole owner (the spawn site already
-            // deactivated the caller's own drop entry above). Without the
-            // word invokeMethod passes 0 (all-borrow) and the worker's
-            // `#conn` is never freed: e.g. Server.serveConnection's
-            // accepted TcpStream leaks and its socket stays open, wedging
-            // any peer waiting on the server to close (the ServerDeadline
-            // drip hang). Bare static call → arg index == formal index, so
-            // bit i is set for each `#`-transferred parameter i. Emitted as
-            // a compile-time constant on the trampoline's builder.
+            // Transfer word: bit i is set for each `#`-transferred parameter i (a bare static
+            // call means arg index == formal index), so the worker's `#` formal is armed to
+            // drop what the spawn site has already handed over.
             int64_t twBits = 0;
             {
                 auto& sparams = innerCall->getParameters();
@@ -6589,14 +5206,9 @@ bool cajetaRhsCarriesRedundantSharp(
             llvm::Value* spawnTransferWord =
                 llvm::ConstantInt::get(llvm::Type::getInt64Ty(llvmCtx),
                                        (uint64_t) twBits);
-            // For static methods, thisValue is nullptr. Pass `module` as the
-            // caller module so the worker call is emitted with THIS module's
-            // builder/insert point (the trampoline we just built) — not the
-            // receiver class's. For a stdlib-template worker resolved via the
-            // uninstantiated `ParallelDriver` template (structureStack.back()),
-            // the class's own emit module is the cached stdlib, whose builder
-            // points at some unrelated stdlib function; using it would emit the
-            // call into the wrong function ("instruction in another function").
+            // Pass `module` as the caller module so the call is emitted on the trampoline's
+            // builder: a stdlib-template worker's own emit module points at an unrelated
+            // function, and the call would land in it.
             innerResult = targetClass->invokeMethod(
                 methodNameCopy, entries, /*isConstructor=*/false,
                 /*thisValue=*/nullptr, /*callerModule=*/module,
@@ -6604,14 +5216,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 /*sretTarget=*/nullptr, /*transferWord=*/spawnTransferWord);
             if (innerResult) {
                 innerType = CajetaType::of(innerResult);
-                // CajetaType::of can't recover a class type from an opaque-
-                // pointer call result: a method returning `#SomeClass` lowers
-                // to a bare `ptr`, so of() yields null. Ask the receiver class
-                // for the method's DECLARED return type instead. Without this,
-                // spawn of ANY object-returning method tripped the `!innerType`
-                // bail below, which abandoned tramp_try unterminated and JIT
-                // verify rejected the module ("Basic Block %tramp_try does not
-                // have terminator").
+                // A method returning `#SomeClass` lowers to a bare `ptr`, so CajetaType::of cannot
+                // recover the class — take the DECLARED return type from the receiver instead.
                 if (!innerType) {
                     if (MethodPtr m = targetClass->resolveMethod(
                             methodNameCopy, entries, /*isConstructor=*/false,
@@ -6622,11 +5228,8 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
         if (!innerResult || !innerType) {
-            // Resolution failed after the trampoline shell (entry + try/catch/
-            // finish blocks) was already emitted. Returning nullptr here would
-            // leave tramp_try unterminated and fail JIT verify with a confusing
-            // message; throw a clear diagnostic instead (the partial module is
-            // discarded with the failed compile).
+            // The trampoline shell is already emitted, so returning null would leave tramp_try
+            // unterminated; throw a clear diagnostic instead.
             outerBuilder->SetInsertPoint(outerInsertBlock);
             throw Exception(
                 "spawn target `" + innerCall->getMethodCallName()
@@ -6635,12 +5238,7 @@ bool cajetaRhsCarriesRedundantSharp(
         }
         auto task = CajetaTask::getOrCreate(module, innerType);
         llvm::Type* taskTy = task->getLlvmType();
-        // For void-returning inner functions there's nothing to store
-        // (LLVM forbids store of a void value). The Task<void> wrapper
-        // still tracks done/exception/fiber; the value slot just stays
-        // at its zero placeholder. await on a void Task already does
-        // the right thing — the value GEP is unused on that path
-        // because the result type has no LLVM representation.
+        // LLVM forbids storing a void value; Task<void> leaves its value slot at zero.
         if (!innerResult->getType()->isVoidTy()) {
             llvm::Value* trampValueSlot = outerBuilder->CreateStructGEP(
                 taskTy, taskPtr, CajetaTask::VALUE_FIELD_INDEX,
@@ -6656,11 +5254,8 @@ bool cajetaRhsCarriesRedundantSharp(
             ? outerBuilder->CreateCall(getThrownFn, {})
             : (llvm::Value*) llvm::ConstantPointerNull::get(ptrTy);
         if (excPopFn) outerBuilder->CreateCall(excPopFn, {});
-        // Error-model #210: if the thrown value is Unrecoverable, the
-        // runtime helper aborts the process (alarm semantics — runtime
-        // invariant violations must not propagate through await). If
-        // Recoverable, the helper returns and we store on the Task slot
-        // for await to re-raise.
+        // An Unrecoverable throw aborts inside the runtime helper; a Recoverable one is
+        // stored on the Task slot for await to re-raise.
         if (llvm::Function* fhFn = module->getRuntimeFunction(
                 "__cajeta_fiber_handle_throw")) {
             outerBuilder->CreateCall(fhFn, {thrownPtr});
@@ -6686,12 +5281,9 @@ bool cajetaRhsCarriesRedundantSharp(
         }
         outerBuilder->CreateRetVoid();
 
-        // Trampoline complete — restore outer cursor and emit the spawn-
-        // site setup (task + ctx allocations, store captured args, enqueue).
         outerBuilder->SetInsertPoint(outerInsertBlock);
         resolvedType = task;
         const llvm::DataLayout& dl = lmod->getDataLayout();
-        // Allocate the Task<T> on the heap.
         llvm::Constant* taskAllocSize = llvm::ConstantInt::get(
             llvm::Type::getInt64Ty(llvmCtx), dl.getTypeAllocSize(taskTy));
         llvm::CallInst* taskInstance = MemoryManager::createMallocInstruction(
@@ -6702,49 +5294,22 @@ bool cajetaRhsCarriesRedundantSharp(
         outerBuilder->CreateStore(
             llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(llvmCtx), 0), doneInit);
-        // R5/Error-model #205: zero the exception slot so the success path
-        // (no throw) leaves NULL there. The trampoline only writes this
-        // slot on the catch branch.
+        // Zero the exception slot: the trampoline writes it only on the catch branch.
         llvm::Value* excInit = outerBuilder->CreateStructGEP(
             taskTy, taskInstance, CajetaTask::EXCEPTION_FIELD_INDEX,
             "task_exception_init");
         outerBuilder->CreateStore(
             llvm::ConstantPointerNull::get(ptrTy), excInit);
-        // R5-C: zero the fiber slot too. __cajeta_task_run writes the
-        // freshly-allocated fiber here so scope's cancellation walk can
-        // find it.
         llvm::Value* fiberSlot = outerBuilder->CreateStructGEP(
             taskTy, taskInstance, CajetaTask::FIBER_FIELD_INDEX,
             "task_fiber_init");
         outerBuilder->CreateStore(
             llvm::ConstantPointerNull::get(ptrTy), fiberSlot);
-        // Wire the Task into the drop chain. Without this, the heap
-        // struct malloced above leaks until process exit (documented in
-        // AsyncStatus.md § Known gaps before this commit). The drop fn
-        // CajetaTask::getOrCreateDropFunction synthesizes waits for the
-        // task to complete before freeing — safe under both the normal
-        // fall-through path (where __cajeta_scope_exit_to has already
-        // joined the task) and the exception-unwind path (where it
-        // hasn't). Drop-entry alloca lives in the function entry block
-        // so its address is stable across the function's lifetime;
-        // re-execution of the spawn site (e.g. a loop body) pushes and
-        // pops the same entry per iteration, which is the same pattern
-        // array-local drops already use.
-        //
-        // detachMode skips this — `detach` deliberately opts out of
-        // scope-anchored cleanup (docs/specification/concurrent/Concurrency.md § detach semantics).
-        // The Task wrapper leaks for the process lifetime; the body's
-        // own locals still drop normally on the carrier-side chain.
+        // Wire the Task into the drop chain, or the heap struct leaks; its drop function
+        // waits for completion before freeing. detach opts out of scope-anchored cleanup.
         if (!detachMode && !discardedMode) {
-            // Pick the push variant + entry size based on the CompilerFlags
-            // (docs/CompilerModes.md). Mirrors the LVD path's choice
-            // so the chain has uniformly-shaped entries within a build.
-            // discardedMode skips this too: a statement-position spawn's
-            // Task is scope-owned (registered below via scope_register_owned
-            // — the runtime scope frame joins AND frees it), because a
-            // per-site drop-entry alloca cannot represent N tasks live at
-            // once from a loop, and its wait-on-drop joined at the innermost
-            // brace, serializing spawn loops the spec promises concurrent.
+            // A statement-position spawn is scope-owned instead: a per-site drop entry cannot
+            // represent N tasks live from a loop, and it joins at the innermost brace.
             bool debugTags = module->getFlags().sourceTags;
             llvm::Function* dropPush = module->getRuntimeFunction(
                 debugTags ? "__cajeta_drop_push_debug" : "__cajeta_drop_push");
@@ -6772,14 +5337,10 @@ bool cajetaRhsCarriesRedundantSharp(
                     if (auto m = module->getCurrentMethod()) {
                         m->registerDropEntry(dropEntryPtr);
                     }
-                    // Publish for ownership-transfer call sites — assignment
-                    // to a named local marks this entry inactive so the
-                    // local's class-instance drop becomes the canonical owner.
                     dropEntry = dropEntryPtr;
                 }
             }
         }
-        // Allocate the ctx struct on the heap and populate it.
         llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
         if (!allocFn) {
             throw Exception(
@@ -6801,19 +5362,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 string("ctx_arg") + std::to_string(i) + "_init");
             outerBuilder->CreateStore(capturedArgs[i], field);
         }
-        // R5-A: register the task with the innermost enclosing scope so
-        // its closing `}` will wait for this task before returning.
-        // R5-D: also pass the exception slot so scope_exit can walk it
-        // post-wait and re-raise any caught throw via the doc's first-
-        // throw-wins escalation. R5-C: also the fiber slot so scope can
-        // cancel remaining siblings when one throws.
-        //
-        // detachMode skips scope_register (the whole point of detach is
-        // to escape the enclosing scope). The fiber-slot GEP stays —
-        // __cajeta_task_run needs the slot address whether or not the
-        // scope is waiting on it. Cancellation via scope's first-throw
-        // walk is silently inapplicable for detached tasks: nothing
-        // registered them, so scope's iteration never finds them.
+        // Register with the innermost scope so its closing brace waits for the task, and
+        // pass the exception and fiber slots so it can re-raise and cancel siblings.
         llvm::Value* fiberRegSlot = outerBuilder->CreateStructGEP(
             taskTy, taskInstance, CajetaTask::FIBER_FIELD_INDEX,
             "scope_register_fiber");
@@ -6824,11 +5374,8 @@ bool cajetaRhsCarriesRedundantSharp(
             llvm::Value* excRegSlot = outerBuilder->CreateStructGEP(
                 taskTy, taskInstance, CajetaTask::EXCEPTION_FIELD_INDEX,
                 "scope_register_exc");
-            // --lazy-scope: the prologue skipped the implicit function-body
-            // frame, so ensure one exists before this (possibly bare) spawn
-            // registers. No-op when an enclosing `scope { }` or an earlier bare
-            // spawn already pushed a frame (the runtime compares *top to the
-            // method's entry watermark). Off by default → identical codegen.
+            // --lazy-scope skipped the implicit body frame, so ensure one exists before a bare
+            // spawn registers; a no-op when an enclosing scope already pushed one.
             if (module->getFlags().lazyScope) {
                 if (auto mth = module->getCurrentMethod()) {
                     if (llvm::AllocaInst* wm = mth->getScopeWatermark()) {
@@ -6843,10 +5390,6 @@ bool cajetaRhsCarriesRedundantSharp(
                 }
             }
             if (discardedMode) {
-                // Scope-owned: the frame joins on the done flag as usual and
-                // ALSO frees the task struct at release (scope_exit /
-                // scope_exit_to / the throw unwind), replacing the drop
-                // entry skipped above.
                 if (llvm::Function* regFn = module->getRuntimeFunction(
                         "__cajeta_scope_register_owned")) {
                     outerBuilder->CreateCall(regFn,
@@ -6858,27 +5401,19 @@ bool cajetaRhsCarriesRedundantSharp(
                     {doneRegSlot, excRegSlot, fiberRegSlot});
             }
         }
-        // R5-C: __cajeta_task_run writes the freshly-allocated fiber's
-        // pointer into the task's fiber slot before enqueueing — so
-        // scope's later cancellation walk can find the fiber. Pass the
-        // slot address.
         if (llvm::Function* runFn = module->getRuntimeFunction(
                 "__cajeta_task_run")) {
             outerBuilder->CreateCall(runFn,
                 {ctxInstance, trampFn, fiberRegSlot});
         }
-        // detach is fire-and-forget — no Task handle escapes back to
-        // user code (DetachExpression::resolveTypes already typed the
-        // surrounding expression as void).
         if (detachMode) return nullptr;
         return taskInstance;
     }
 
+    // `detach` is fire-and-forget, so the expression types as void; the inner is still
+    // resolved so its method-call shape is validated.
     void DetachExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
-        // `detach` is fire-and-forget — the surrounding expression context
-        // gets no value (void). The inner is still type-resolved so its
-        // method-call shape is valid.
         if (!children.empty()) {
             if (auto inner = dynamic_pointer_cast<Expression>(children[0])) {
                 inner->resolveTypes(module);
@@ -6887,38 +5422,23 @@ bool cajetaRhsCarriesRedundantSharp(
         resolvedType = CajetaType::of("void");
     }
 
-    // docs/specification/concurrent/Concurrency.md § detach semantics requires every argument to the
-    // detached call to be either a #-transferred value, a primitive,
-    // or a fresh allocator (NewExpression — auto-promoted in transfer
-    // position per MemoryModel.md § Borrow / transfer rules). A bare
-    // class-typed identifier or any other expression that yields a
-    // heap pointer without an explicit transfer marker is rejected:
-    // the detached fiber outlives the spawning scope, so a borrow's
-    // lifetime can't be guaranteed.
+    // Requires every argument of a detached call to be `#`-transferred, a primitive, or a
+    // fresh allocation: the fiber outlives the spawning scope, so a borrow's lifetime
+    // cannot be guaranteed. Throws naming the offending argument.
     static void enforceDetachMoveOnlyCaptures(const std::shared_ptr<MethodCallExpression>& innerCall,
                                               const CajetaModulePtr& module) {
         for (auto& param : innerCall->getParameters()) {
             auto expr = param.expression;
             if (!expr) continue;
-            // (a) Explicit caller-side #-transfer at the argument slot
-            // (Phase 1 of #68 — the canonical shape). Pre-Phase-1 the
-            // REFERENCE was parsed as a MoveExpression-wrapped child;
-            // post-Phase-1 it's captured on the MethodCallParameter
-            // itself via callerTransferred. Accept both: the new flag
-            // is authoritative going forward, and the legacy wrapping
-            // still appears in non-argument contexts (assignment RHS,
-            // return expressions).
+            // A caller-side `#` reaches here either as the parameter's own flag or as a
+            // MoveExpression-wrapped child; both spellings count as a transfer.
             if (param.callerTransferred) continue;
-            // Unit 8 (spec 4.9) — a move, a fresh owned value or a scalar is capturable; anything else is a borrow.
             ownership::TitleShape dSh = ownership::classify(expr, module);
             if (dSh.family == ownership::TitleFamily::Move
                     || (dSh.family == ownership::TitleFamily::Fresh
                         && dSh.answer == ownership::TitleAnswer::Owned)
                     || dSh.answer == ownership::TitleAnswer::Scalar) continue;
             auto t = expr->getResolvedType();
-            // Anything else: heap class without an explicit transfer.
-            // Surface a clean error with the offending argument's
-            // expression text where we can extract it.
             string detail = t ? t->toCanonical() : string("<unresolved>");
             throw Exception(
                 "detach argument must be #-transferred, primitive, or a fresh "
@@ -6928,6 +5448,9 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // Reuses SpawnExpression's lowering in detach mode — same trampoline and fiber
+    // enqueue, minus scope_register and drop_push — after checking that every captured
+    // argument is move-only. Yields no value.
     llvm::Value* DetachExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) return nullptr;
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
@@ -6939,22 +5462,12 @@ bool cajetaRhsCarriesRedundantSharp(
                 "its operand",
                 "CAJETA_ERROR_ASYNC_R3A");
         }
-        // Resolve types on the inner first so the capture check sees
-        // each argument's resolved type. resolveTypes is idempotent.
         for (auto& param : innerCall->getParameters()) {
             if (param.expression && !param.expression->getResolvedType()) {
                 param.expression->resolveTypes(module);
             }
         }
         enforceDetachMoveOnlyCaptures(innerCall, module);
-        // Reuse SpawnExpression's full lowering — same trampoline, same
-        // fiber enqueue, same Task struct. Detach-mode flag skips
-        // scope_register and drop_push so the task escapes scope-anchored
-        // cleanup. See docs/specification/concurrent/Concurrency.md § detach semantics for the
-        // implementation-vs-spawn delta. Passing nullptr for the token
-        // is fine: SpawnExpression doesn't retain it beyond extracting
-        // source-position metadata for diagnostics, which here would
-        // duplicate this DetachExpression's metadata anyway.
         auto spawn = make_shared<SpawnExpression>(nullptr);
         spawn->addChild(innerCall);
         spawn->setDetachMode(true);

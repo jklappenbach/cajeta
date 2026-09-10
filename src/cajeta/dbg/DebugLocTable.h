@@ -1,16 +1,6 @@
-//
-// Debug location table for the in-process debugger (CP2+).
-//
-// When `--debug-info` is on, statement-boundary codegen emits a call to
-// `__cajeta_dbg_safepoint(loc_id)` before each statement. `loc_id` is a dense
-// small integer assigned here; this table maps it back to the source position
-// `{file, line, col, function}`. CP3 projects an armed-breakpoint bitset over
-// these ids; CP4's `stackTrace`/`scopes` read file+line from them.
-//
-// There is one active compile per process during codegen (single-threaded), so
-// a process-global table (globalDbgLocTable) backs the emission sites. Call
-// clear() at the start of a debug compile to drop a previous run's entries.
-//
+// Debug location table for the in-process debugger (CP2+): statement-boundary codegen
+// emits `__cajeta_dbg_safepoint(loc_id)`, and this maps that dense id back to
+// {file, line, col, function}. One active compile per process backs the global table.
 #pragma once
 
 #include <cstdint>
@@ -29,41 +19,28 @@ namespace cajeta::dbg {
 
     class DbgLocTable {
     public:
-        // Append a location and return its id. Ids are dense and sequential
-        // (0, 1, 2, ...), one per emission site (one per statement) — NOT
-        // deduplicated, so two statements on the same line get distinct ids
-        // (both map to the same (file,line) for breakpoint arming).
-        // After setAt() replay, appends continue past the max replayed id, so
-        // fresh codegen can never collide with a cached module's baked ids.
+        // Append a location and return its id. Ids are dense, sequential and NOT
+        // deduplicated; after setAt() replay, appends continue past the max replayed id.
         int32_t add(const std::string& file, int line, int col,
                     const std::string& function);
 
-        // Sparse replay (fast-debug-launch 3.2.1): place `loc` at exactly
-        // `id`, growing the table with HOLES as needed. A hole is a default
-        // DbgLoc (empty file, line 0); at() returns it harmlessly and
-        // idsForLine() never matches one. Used to restore a cached module's
-        // loc ids, which are baked into its safepoint calls as constants.
+        // Place `loc` at exactly `id`, growing the table with HOLES as needed (a hole is
+        // a default DbgLoc that at() returns harmlessly and idsForLine() never matches).
         void setAt(int32_t id, DbgLoc loc);
 
         // Look up by id. Caller must pass a valid id (< size()).
         const DbgLoc& at(int32_t id) const;
 
-        // One past the highest assigned id (holes included) — the dense
-        // "table extent", NOT the entry count. Storage is SPARSE
-        // (resident-debug-server 3.2.1): per-module id ranges put real
-        // entries megabytes apart, and a dense vector would materialize
-        // every hole.
+        // One past the highest assigned id, holes included - the table EXTENT, not the
+        // entry count. Storage is SPARSE: per-module id ranges sit megabytes apart.
         size_t size() const { return (size_t) nextId; }
         bool empty() const { return locs.empty(); }
         void clear() { locs.clear(); nextId = 0; }
 
-        // All ids whose (file, line) match — the loc_ids a line breakpoint on
-        // (file, line) should arm (CP3). `file` matches by exact string.
+        // All ids whose (file, line) match, to arm a line breakpoint; `file` is exact.
         std::vector<int32_t> idsForLine(const std::string& file, int line) const;
 
-        // Every assigned id, ascending. THE iteration surface under sparse
-        // per-module ranges — size() is an extent (possibly tens of
-        // millions), so 0..size() scans are forbidden.
+        // Every assigned id, ascending. THE iteration surface - never scan 0..size().
         std::vector<int32_t> assignedIds() const;
 
     private:
@@ -71,16 +48,11 @@ namespace cajeta::dbg {
         int32_t nextId = 0;   // max assigned id + 1
     };
 
-    // Process-global table backing codegen emission sites for the active
-    // debug compile. Single-threaded codegen, so no synchronization.
+    // Process-global table backing codegen's emission sites; codegen is single-threaded.
     DbgLocTable& globalDbgLocTable();
 
-    // Loc-table sidecar (fast-debug-launch 3.2.2) — the persistence pair for
-    // cache slots. The format is sparse-native (one line per NON-hole entry,
-    // strings escaped for tab/newline/backslash), so holes round-trip for
-    // free. write returns false on I/O failure; load returns false on a
-    // missing/malformed file and leaves `into` in an unspecified partial
-    // state — callers treat false as "no sidecar, fall back to compiling".
+    // Loc-table sidecar: sparse-native (one line per NON-hole entry), so holes round-trip
+    // for free. False means no usable sidecar, and callers fall back to compiling.
     bool writeDbgLocSidecar(const std::string& path, const DbgLocTable& table);
     bool loadDbgLocSidecar(const std::string& path, DbgLocTable& into);
 

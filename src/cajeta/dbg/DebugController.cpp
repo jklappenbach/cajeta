@@ -6,10 +6,9 @@
 
 #include <iostream>
 
-// CP6f-2d: the process-global stop coordinator lives in the C runtime
-// (cajeta_runtime.c). The controller drives it: open a stop round before the
-// primary blocks so the other carriers quiesce at their safepoints/hand-off,
-// and clear it on resume to release them all together.
+// The process-global stop coordinator lives in the C runtime. This controller
+// drives it: open a stop round before the primary blocks so the other carriers
+// quiesce at their safepoints, and clear it on resume to release them together.
 extern "C" {
     int  __cajeta_stop_request(void);
     void __cajeta_stop_clear(void);
@@ -78,36 +77,21 @@ namespace cajeta::dbg {
     void DebugController::onSafepoint(int32_t locId, long fiberId,
                                      void* frameTop) {
         std::unique_lock<std::mutex> lock(mutex);
-        // stopOnEntry: the first safepoint reached IS the entry method's first
-        // executable statement, so an entry stop needs no line resolution.
-        // Consumed here under the lock so it fires exactly once.
+        // The entry arm is consumed here, under the lock, so it fires once.
         const bool entryStop = entryArmed;
         if (entryStop) entryArmed = false;
         const bool breakpointStop = armed.count(locId) != 0;
 
-        // dap-stepping: does this safepoint satisfy the pending step? Only on
-        // the origin fiber, only at a different line (multi-statement lines
-        // stop once), depth per verb. An armed breakpoint at this safepoint
-        // wins over the step (checked first below). No providers -> never.
         bool stepStop = false;
         if (!entryStop && !breakpointStop && stepPending && depthOfFrame
             && lineOfLoc) {
-            // Every candidate is traced with WHY it was rejected — a silent
-            // gate is how 9.1 hid (no trace at all meant no candidate ever
-            // reached evaluation).
             const int depth = depthOfFrame(frameTop);
             int reason = 0;
             if (fiberId != stepFiber) reason = 1;
             else if (lineOfLoc(locId) == stepOriginLine) reason = 2;
-            // Chain identity guards against a FOREIGN chain stealing the stop
-            // — but only while we are still at or below the origin frame. A
-            // step that RETURNS PAST the origin (step-out, or step-over whose
-            // method returns) legitimately leaves that frame behind, so
-            // demanding containment there made those steps unsatisfiable: the
-            // program ran to exit and the session died (found live 2026-07-22,
-            // "stepping up crashes debug"). Same-fiber is already required,
-            // and carriers no longer impersonate fiber 0, so a shallower
-            // candidate on this fiber is genuinely our caller.
+            // Chain identity keeps a foreign chain from stealing the stop, but
+            // only at or below the origin depth: a step that returns PAST the
+            // origin leaves that frame behind and would never be satisfiable.
             else if (containsFrame && stepOriginFrame
                      && depth >= stepOriginDepth
                      && !containsFrame(frameTop, stepOriginFrame)) reason = 3;
@@ -125,29 +109,17 @@ namespace cajeta::dbg {
         }
         if (!entryStop && !breakpointStop && !stepStop) return;
 
-        // CP6f-2d: open the cross-carrier stop round BEFORE blocking so every
-        // other carrier observes it (__cajeta_stop_is_requested) at its next
-        // safepoint / scheduler hand-off and parks too. This carrier is the
-        // primary; it blocks below via the controller rendezvous as before.
-        // §4.3 determinism: if a stop is already in flight (another carrier hit
-        // an armed safepoint first this round), request() returns 0 — we are NOT
-        // the primary. Don't publish a competing stop; return so the runtime
-        // safepoint parks us as an ordinary secondary (__cajeta_stop_park).
+        // Open the cross-carrier round BEFORE blocking, so every other carrier
+        // parks at its next safepoint. A 0 means another carrier is already the
+        // primary this round: take no stop here and park as an ordinary secondary.
         if (__cajeta_stop_request() == 0) {
-            // Not the primary this round, so we did NOT take the stop. Put the
-            // entry arm back rather than swallowing it.
             if (entryStop) entryArmed = true;
             return;
         }
-        // How many carriers must quiesce before inspection: every OTHER carrier
-        // in the pool (this primary parks here, in the controller, not the
-        // coordinator). <=0 (single carrier / no pool) makes the barrier a
-        // no-op. The debugger thread reads this in awaitQuiesce().
+        // Every OTHER carrier must quiesce; this primary parks in the controller,
+        // not the coordinator, and <=0 makes awaitQuiesce's barrier a no-op.
         __cajeta_stop_set_expected(__cajeta_carrier_count_get() - 1);
 
-        // Park: publish the stop, wake the debugger thread, wait for resume.
-        // Any park consumes the pending step (breakpoint/entry parks clear it;
-        // a step park is it completing).
         stepPending = false;
         stopped = true;
         resumeRequested = false;
@@ -172,10 +144,8 @@ namespace cajeta::dbg {
         std::unique_lock<std::mutex> lock(mutex);
         if (!exceptionArmed) return;
 
-        // CP6f-2d §3.6: an armed exception quiesces the whole pool, exactly like
-        // a breakpoint. Open the stop round so other carriers park at their
-        // safepoints/hand-off. If a stop is already in flight this round, park as
-        // a secondary (the throw resumes after continue) — no competing stop.
+        // An armed exception quiesces the pool exactly like a breakpoint; when a
+        // round is already in flight this thread parks as a plain secondary.
         if (__cajeta_stop_request() == 0) {
             lock.unlock();
             __cajeta_stop_park();
@@ -183,9 +153,8 @@ namespace cajeta::dbg {
         }
         __cajeta_stop_set_expected(__cajeta_carrier_count_get() - 1);
 
-        // Park with reason=Exception. locId is -1 (no safepoint loc); the DAP
-        // layer reads the throwing line from the innermost frame's current_loc.
-        stepPending = false;   // an exception park clears any pending step
+        // locId -1: the DAP layer reads the throwing line from the frame instead.
+        stepPending = false;
         stopped = true;
         resumeRequested = false;
         current = StopEvent{-1, fiberId, frameTop,
@@ -201,12 +170,9 @@ namespace cajeta::dbg {
     }
 
     void DebugController::awaitQuiesce() {
-        // CP6f-2d quiesce barrier (spec §2.3). The primary has parked and
-        // published expected_count; block until every other carrier parks or
-        // the bound elapses, then record how many never quiesced so the DAP
-        // layer can flag their fibers. Run WITHOUT the controller mutex (the
-        // coordinator has its own leaf lock; carriers parking must not contend
-        // on ours), then take the mutex briefly to stamp `current`.
+        // Blocks until every other carrier parks or the bound elapses, recording
+        // the stragglers. Runs WITHOUT the controller mutex — parking carriers
+        // must not contend on it — and takes it only to stamp `current`.
         long timeoutNs =
             static_cast<long>(quiesceTimeout.count()) * 1000L * 1000L;
         int unquiesced = __cajeta_stop_wait_converged(timeoutNs);
@@ -240,20 +206,14 @@ namespace cajeta::dbg {
 
     void DebugController::resume() {
         std::lock_guard<std::mutex> lock(mutex);
-        // Clear `stopped` here, under the lock, so a debugger thread that calls
-        // waitForStop() right after resume() does NOT re-observe this same stop
-        // (the parked carrier clears it too when it wakes, but that happens
-        // asynchronously — without clearing here there's a window where the
-        // stale stop is seen again, manifesting as a phantom second `stopped`).
+        // Clear `stopped` here, not only in the waking carrier: that clear is
+        // asynchronous, and the window would show as a phantom second stop.
         stopped = false;
         resumeRequested = true;
-        // A plain continue cancels any pending step (a park already cleared
-        // it in the normal flow; this covers a continue issued in between).
         stepPending = false;
         resumeCv.notify_all();
-        // CP6f-2d: release every secondary/hand-off-parked carrier together
-        // (resume-all, spec §2.5). Clears stop_requested so no carrier re-parks
-        // at its next safepoint, and wakes all parked carriers.
+        // Resume-all: clears stop_requested so no carrier re-parks, and wakes
+        // every parked one.
         __cajeta_stop_clear();
     }
 
@@ -268,17 +228,13 @@ namespace cajeta::dbg {
         stepOriginLine = originLine;
         stepOriginFrame = originFrame;
         {
-            // Debugger chatter, verbatim (compiler-jsonl 9.2): under the flag
-            // it becomes a `log` record the console can filter to debug level;
-            // without it, the same line it has always printed.
             std::ostringstream armed;
             armed << "[step-armed] kind=" << (int) kind << " fiber=" << fiberId
                   << " originDepth=" << originDepth
                   << " originFrame=" << originFrame << "\n";
             cajeta::logLine("debug", armed.str());
         }
-        // Same release sequence as resume() (which we can't call here — it
-        // would clear the step we just armed).
+        // resume()'s release sequence, inlined: calling it would clear the step.
         stopped = false;
         resumeRequested = true;
         resumeCv.notify_all();

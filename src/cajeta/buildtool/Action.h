@@ -1,10 +1,5 @@
-// Cajeta build-tool action runtime.
-//
-// An Action is an executable verb invoked from a task. Each
-// Action ships its own implementation; the registry holds the
-// catalog by name (`exec`, `build`, `copy`, ...). Phase 3a
-// ships the infrastructure + `exec`; the rest of the catalog
-// lands in subsequent phases per plans/buildtool/build-tool-plan.md.
+// Cajeta build-tool action runtime: an Action is an executable verb invoked
+// from a task, and the registry holds the catalog by name.
 
 #pragma once
 
@@ -21,76 +16,46 @@
 
 namespace cajeta::buildtool {
 
-    // The lookup table feeding ${...} substitution during action
-    // invocation. Combines:
-    //   1. resolved manifest properties (Properties.h)
-    //   2. the current task's params (CLI-bound + defaults)
-    //   3. outputs published by prior actions in the same task,
-    //      keyed by `${id.field}`
-    //
-    // Cleared / rebuilt per task invocation.
+    // The ${...} lookup table for one task invocation: resolved manifest
+    // properties, the task's own params, and the outputs prior actions published
+    // under `${id.field}`. Rebuilt per invocation.
     class TaskContext {
     public:
         TaskContext(const ResolvedProperties& props,
                     const Manifest* manifest = nullptr);
 
-        // The manifest the task is running against. Null if the
-        // context was constructed without one (e.g. for unit tests
-        // that don't need build-action functionality).
         const Manifest* manifest() const { return manifest_; }
 
-        // The resolved property table the context was built with.
-        // Exposed for actions that consult it directly (e.g. the
-        // reproducible-build helpers read
-        // `cajeta.source-date-epoch`).
         const ResolvedProperties& properties() const { return props_; }
 
-        // Bind a task parameter. Available as ${params.<name>}.
+        // Binds a task parameter, reachable as ${params.<name>}.
         void setParam(const std::string& name, const std::string& value);
 
-        // CLI `-p name=value` overrides for THIS task's action params.
-        //
-        // A task's params block only declares what the task itself takes, so a
-        // `-p` naming something a task never declared used to be dropped on the
-        // floor — including every param of a builtin action (`cajeta clean
-        // -p keep-cache=true` silently did nothing, because the builtin clean
-        // task is just `{"action": "clean"}` with no params block to bind into).
-        // These are overlaid onto each action invocation's params, so an action's
-        // documented params are reachable from the command line without every
-        // project having to re-declare them in cajeta.json.
-        //
-        // Set on the invoked task's context only — a called task (run-task) gets
-        // its own context and its own explicitly-passed params, so overrides
-        // don't leak sideways into a dependency's actions.
+        // CLI `-p name=value` overrides, overlaid onto EVERY action invocation's
+        // params so a builtin action's params are reachable without the task
+        // declaring them. This task's context only; a called task gets its own.
         void setCliParams(const std::map<std::string, std::string>& values);
         const std::map<std::string, std::string>& cliParams() const { return cliParams_; }
 
-        // Publish an action's outputs under its `id`. Available as
-        // ${id.<field>}.
+        // Publishes an action's outputs under its `id`, as ${id.<field>}.
         void publishOutputs(const std::string& id,
                             const std::map<std::string, std::string>& outputs);
 
-        // Look up a property name following the ${...} rules.
+        // Looks a name up following the ${...} resolution rules.
         std::optional<std::string> lookup(const std::string& name) const;
 
-        // Substitute every ${...} reference in a string. Errors when
-        // a reference doesn't resolve.
+        // Substitutes every ${...} in `s`; an unresolved one errors, citing
+        // `whereContext` as the site.
         llvm::Expected<std::string> substitute(
             const std::string& s,
             const std::string& whereContext) const;
 
-        // Take a snapshot of the current context. Mutations on the
-        // snapshot do not propagate to the original; the snapshot
-        // sees a frozen view of params + already-published outputs.
-        // Used to give parallel-group children isolated contexts that
-        // merge back into the parent after they all complete.
+        // A frozen copy whose mutations do not propagate back; parallel-group
+        // children each get one and merge into the parent once all complete.
         TaskContext snapshot() const;
 
-        // Merge another context's published action outputs into this
-        // one (parallel-group join). Caller is responsible for
-        // ordering merges so the final state is deterministic — by
-        // convention, this is "merge children in declaration order
-        // after all children join."
+        // The parallel-group join. The caller orders merges for determinism — by
+        // convention, children in declaration order once all have joined.
         void mergeOutputs(const TaskContext& other);
 
     private:
@@ -98,21 +63,12 @@ namespace cajeta::buildtool {
         const Manifest* manifest_;
         std::map<std::string, std::string> params_;
         std::map<std::string, std::string> cliParams_;
-        // id → outputs map; outputs is field-name → value
         std::map<std::string, std::map<std::string, std::string>> actionOutputs_;
     };
 
-    // One structured finding emitted by an action. Plugins stream
-    // findings as `{"kind": "finding", ...}` records on stdout; the
-    // PluginRuntime parses each into one of these. Native actions
-    // that produce findings (lint, etc.) populate this list
-    // directly. The `lint` task aggregates findings across every
-    // action it runs and surfaces them in one unified report.
-    //
-    // Severity matches the Severity enum in the plugin API:
-    //   - "error":   blocks the task (treat as failure)
-    //   - "warning": surfaced but non-blocking
-    //   - "info":    advisory
+    // One structured finding from an action: plugins stream them as
+    // `{"kind": "finding", ...}` stdout records, native actions fill them in
+    // directly. Severity "error" blocks the task; "warning" and "info" do not.
     struct ActionFinding {
         std::string rule;
         std::string severity;   // "error" | "warning" | "info"
@@ -122,19 +78,12 @@ namespace cajeta::buildtool {
         std::string message;
     };
 
-    // The result of running one action invocation.
     struct ActionResult {
-        // Outputs the action published. Get exposed under the
-        // invocation's `id` via TaskContext::publishOutputs.
+        // Exposed under the invocation's `id` by TaskContext::publishOutputs.
         std::map<std::string, std::string> outputs;
-        // Captured stdout/stderr (for actions like exec that produce
-        // them; empty otherwise). Used by --verbose flows.
         std::string stdoutLog;
         std::string stderrLog;
-        // Structured findings the action emitted (plugins via the
-        // `kind: "finding"` JSON-line record; native actions populate
-        // directly). The lint task aggregates these across every
-        // action; the test task uses the count as a gating signal.
+        // The lint task aggregates these; the test task gates on the count.
         std::vector<ActionFinding> findings;
     };
 
@@ -146,33 +95,25 @@ namespace cajeta::buildtool {
         // The action's name as it appears in `{"action": "<name>"}`.
         virtual std::string name() const = 0;
 
-        // Execute the action. `params` is the action's invocation
-        // params with `${...}` already substituted; `ctx` is the
-        // task context (for logging / further substitution if the
-        // action does anything fancy). Errors abort the task.
+        // Runs the action: `params` is the invocation's params with `${...}`
+        // already substituted, `ctx` the task context. An error aborts the task.
         virtual llvm::Expected<ActionResult> run(
             const llvm::json::Object& params,
             TaskContext& ctx) const = 0;
     };
 
-    // Registry of action names → implementations. Phase 3a registers
-    // built-ins on construction; later phases add more.
+    // Registry of action names to implementations; built-ins on construction.
     class ActionRegistry {
     public:
         ActionRegistry();
 
-        // Look up an action by name. Returns nullptr if not registered.
+        // The action registered under `name`, or nullptr.
         const Action* get(const std::string& name) const;
 
-        // List the registered action names (for `cajeta tasks` /
-        // `cajeta task --show` output).
         std::vector<std::string> list() const;
 
-        // Register a new action by name. Overwrites any prior
-        // registration for the same name (silent — the caller is
-        // expected to manage namespace conflicts before reaching
-        // here; plugin-action collisions surface earlier as a
-        // resolvePlugins error).
+        // Registers an action by name, silently overwriting a prior registration:
+        // plugin-action collisions have already surfaced in resolvePlugins.
         void registerAction(std::unique_ptr<Action> action);
 
     private:

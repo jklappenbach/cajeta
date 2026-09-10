@@ -1,17 +1,6 @@
-//
-// MatrixOps — shared LLVM-IR builders for the Matrix<T, R, C> value type (B1).
-//
-// A Matrix is a flat row-major `<R*C x T>` value (element (r,c) at lane r*C+c).
-// Both codegen paths emit identical matrix IR through these helpers: the host
-// expression codegen and the device kernel walker (xpu/lowering/KernelLowering).
-// The flat lane mechanics delegate to `vecops` (extract/insert/build/splat) so
-// the Matrix path can never drift from the Vector path it is built on.
-//
-// All helpers take an llvm::IRBuilderBase& so they serve both the host
-// IRBuilder<> and the device builder. R, C, K are compile-time dimensions;
-// r/c element indices may be runtime i32 values (the matrix lives in registers,
-// but lane math is plain integer arithmetic). Row-major throughout.
-//
+// Shared IR builders for `Matrix<T, R, C>`, a flat row-major `<R*C x T>` value
+// with element (r,c) at lane r*C+c. R, C and K are compile-time; r and c may be
+// runtime i32. IRBuilderBase& so the host and device builders share one path.
 
 #pragma once
 
@@ -26,29 +15,25 @@
 namespace cajeta {
 namespace matops {
 
-    // Build a row-major `<R*C x T>` from R*C scalar elements (row 0 first).
     inline llvm::Value* buildMatrix(llvm::IRBuilderBase& b, llvm::Type* elemTy,
                                     unsigned rows, unsigned cols,
                                     const std::vector<llvm::Value*>& elems) {
         return vecops::buildVector(b, elemTy, rows * cols, elems);
     }
 
-    // Flat lane index of element (r, c) in a row-major R x C matrix: r*C + c.
-    // r, c are i32 runtime values; cols is the compile-time column count.
+    // Flat lane index of element (r, c): r*cols + c.
     inline llvm::Value* flatLane(llvm::IRBuilderBase& b, unsigned cols,
                                  llvm::Value* r, llvm::Value* c) {
         llvm::Value* rc = b.CreateMul(r, b.getInt32(cols), "mat.rowbase");
         return b.CreateAdd(rc, c, "mat.lane");
     }
 
-    // m[r][c] read -> scalar element.
     inline llvm::Value* getElement(llvm::IRBuilderBase& b, llvm::Value* m,
                                    unsigned /*rows*/, unsigned cols,
                                    llvm::Value* r, llvm::Value* c) {
         return vecops::extractLane(b, m, flatLane(b, cols, r, c));
     }
 
-    // m[r][c] = val -> updated matrix value (insertelement at flat lane).
     inline llvm::Value* setElement(llvm::IRBuilderBase& b, llvm::Value* m,
                                    unsigned /*rows*/, unsigned cols,
                                    llvm::Value* r, llvm::Value* c,
@@ -56,8 +41,7 @@ namespace matops {
         return vecops::insertLane(b, m, val, flatLane(b, cols, r, c));
     }
 
-    // Row r -> `<C x T>` (flat lanes [r*C, r*C+C)). r may be runtime; the C
-    // lanes are gathered by extract/insert so a dynamic row works.
+    // Row r -> `<C x T>`, gathered lane by lane so a runtime r works.
     inline llvm::Value* row(llvm::IRBuilderBase& b, llvm::Value* m,
                             unsigned /*rows*/, unsigned cols, llvm::Value* r) {
         llvm::Type* elemTy =
@@ -73,7 +57,6 @@ namespace matops {
         return acc;
     }
 
-    // Column c -> `<R x T>` (flat lanes c, c+C, ..., c+(R-1)*C). c may be runtime.
     inline llvm::Value* col(llvm::IRBuilderBase& b, llvm::Value* m,
                             unsigned rows, unsigned cols, llvm::Value* c) {
         llvm::Type* elemTy =
@@ -89,8 +72,7 @@ namespace matops {
         return acc;
     }
 
-    // Transpose an R x C matrix -> a C x R matrix (`<C*R x T>`): result element
-    // (j, i) = source element (i, j), i.e. result lane j*R+i = source lane i*C+j.
+    // R x C -> C x R: result lane j*R+i takes source lane i*C+j.
     inline llvm::Value* transpose(llvm::IRBuilderBase& b, llvm::Value* m,
                                   unsigned rows, unsigned cols) {
         llvm::Type* elemTy =
@@ -106,7 +88,7 @@ namespace matops {
         return acc;
     }
 
-    // N x N identity matrix as a constant `<N*N x T>` (1 on the diagonal).
+    // N x N identity as a constant `<N*N x T>`.
     inline llvm::Value* identity(llvm::IRBuilderBase& b, llvm::Type* elemTy,
                                  unsigned n) {
         std::vector<llvm::Constant*> cs;
@@ -124,14 +106,12 @@ namespace matops {
         return llvm::ConstantVector::get(cs);
     }
 
-    // Element-wise (Hadamard) product of two same-shape flat matrices.
     inline llvm::Value* hadamard(llvm::IRBuilderBase& b, llvm::Value* a,
                                  llvm::Value* c, bool isFloat) {
         return isFloat ? b.CreateFMul(a, c, "mat.hadamard")
                        : b.CreateMul(a, c, "mat.hadamard");
     }
 
-    // Scale every element by a scalar -> same-shape matrix.
     inline llvm::Value* scale(llvm::IRBuilderBase& b, llvm::Value* m,
                               llvm::Value* scalar, bool isFloat) {
         unsigned lanes =
@@ -141,7 +121,7 @@ namespace matops {
                        : b.CreateMul(m, s, "mat.scale");
     }
 
-    // Matrix multiply: A (R x K) * B (K x C) -> (R x C). C(i,j) = sum_k A(i,k)*B(k,j).
+    // A (R x K) * B (K x C) -> R x C, unrolled at compile time.
     inline llvm::Value* matmul(llvm::IRBuilderBase& b, llvm::Value* a,
                                unsigned rows, unsigned inner, llvm::Value* c,
                                unsigned cols, bool isFloat) {
@@ -167,7 +147,7 @@ namespace matops {
         return acc;
     }
 
-    // Matrix-vector: M (R x C) * v (`<C x T>`) -> `<R x T>`. out(i) = sum_j M(i,j)*v(j).
+    // M (R x C) * v (`<C x T>`) -> `<R x T>`.
     inline llvm::Value* matVec(llvm::IRBuilderBase& b, llvm::Value* m,
                                unsigned rows, unsigned cols, llvm::Value* v,
                                bool isFloat) {
@@ -191,8 +171,7 @@ namespace matops {
         return acc;
     }
 
-    // Determinant of an n x n matrix given as row-major element values, by
-    // cofactor expansion along row 0 (compile-time unrolled). Float element.
+    // Determinant of row-major elements `e`, by cofactor expansion along row 0.
     inline llvm::Value* detElems(llvm::IRBuilderBase& b,
                                  const std::vector<llvm::Value*>& e, unsigned n) {
         if (n == 1) return e[0];
@@ -213,7 +192,7 @@ namespace matops {
         return acc;
     }
 
-    // determinant(m) -> scalar. Square n in {2,3,4}; float element.
+    // Scalar determinant of a square float matrix, n in {2,3,4}.
     inline llvm::Value* determinant(llvm::IRBuilderBase& b, llvm::Value* m,
                                     unsigned n) {
         std::vector<llvm::Value*> e;
@@ -223,9 +202,7 @@ namespace matops {
         return detElems(b, e, n);
     }
 
-    // inverse(m) -> `<n*n x T>` = adjugate(m) / det(m). adjugate(i,j) =
-    // (-1)^(i+j) * minor(j,i) (the transposed cofactor). Square n in {2,3,4};
-    // float element. A singular matrix yields inf/nan (det == 0), not an error.
+    // adjugate(m) / det(m); a singular m yields inf/nan rather than an error.
     inline llvm::Value* inverse(llvm::IRBuilderBase& b, llvm::Value* m,
                                 unsigned n) {
         std::vector<llvm::Value*> e;

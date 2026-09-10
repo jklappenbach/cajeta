@@ -16,8 +16,7 @@ bool writeMessage(std::ostream& out, const Json& msg) {
 
 namespace {
 
-// Read a single header line terminated by \r\n (the \r\n is consumed, not
-// returned). Returns false on EOF before a complete line.
+// Reads one \r\n-terminated header line, consuming the terminator; false at EOF.
 bool readHeaderLine(std::istream& in, std::string& line) {
     line.clear();
     int c;
@@ -25,7 +24,6 @@ bool readHeaderLine(std::istream& in, std::string& line) {
         if (c == '\r') {
             int n = in.get();
             if (n == '\n') return true;
-            // Lone \r — treat as part of the line (be lenient).
             line += '\r';
             if (n == EOF) return false;
             line += static_cast<char>(n);
@@ -41,7 +39,6 @@ bool readHeaderLine(std::istream& in, std::string& line) {
 } // namespace
 
 bool readMessage(std::istream& in, Json* out) {
-    // Parse headers until a blank line; capture Content-Length.
     long contentLength = -1;
     std::string line;
     while (true) {
@@ -51,10 +48,8 @@ bool readMessage(std::istream& in, Json* out) {
         if (colon == std::string::npos) continue;  // skip malformed header
         std::string key = line.substr(0, colon);
         std::string val = line.substr(colon + 1);
-        // trim leading spaces in value
         size_t vs = val.find_first_not_of(" \t");
         if (vs != std::string::npos) val = val.substr(vs);
-        // case-insensitive compare for "Content-Length"
         std::string lkey;
         for (char ch : key) lkey += static_cast<char>(std::tolower(ch));
         if (lkey == "content-length") {

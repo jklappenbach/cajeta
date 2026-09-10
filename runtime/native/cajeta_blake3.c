@@ -1,13 +1,5 @@
-// cajeta_blake3.c — BLAKE3 cryptographic hash, native bridge for cajeta.hash.Blake3.
-//
-// This is a faithful port of the official BLAKE3 reference implementation
-// (the compact, portable, single-file version from the spec appendix): chunk
-// chaining + the binary tree of parent nodes, the 7-round compression function,
-// and an extendable (XOF) root output. Scalar/portable here — correct on every
-// architecture and the oracle for the SIMD path; an AVX-512 hash-many path is
-// added separately (gated by a CPUID probe), mirroring the SHA-NI sha256 bridge.
-//
-// #included by cajeta_runtime.c (single-TU runtime). Symbols are __cajeta_blake3_*.
+// cajeta_blake3.c — BLAKE3 hash, native bridge for cajeta.hash.Blake3. A portable
+// port of the reference implementation, and the oracle for the AVX-512 path below.
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -28,7 +20,6 @@ static const uint32_t B3_IV[8] = {
     0x510E527FUL, 0x9B05688CUL, 0x1F83D9ABUL, 0x5BE0CD19UL,
 };
 
-// The 7 per-round message permutations (official MSG_SCHEDULE).
 static const uint8_t B3_MSG[7][16] = {
     { 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15},
     { 2,  6,  3, 10,  7,  0,  4, 13,  1, 11, 12,  5,  9, 14, 15,  8},
@@ -63,8 +54,7 @@ static void b3_round(uint32_t* st, const uint32_t* m, int r) {
     b3_g(st, 3, 4,  9, 14, m[s[14]], m[s[15]]);
 }
 
-// Full 16-word compression output (out[0..7] = chaining value; out[0..15] are
-// used for root/XOF output blocks).
+// Full 16-word compression output: out[0..7] is the CV, out[0..15] the XOF block.
 static void b3_compress(const uint32_t cv[8], const uint8_t block[64],
                         uint32_t block_len, uint64_t counter, uint32_t flags,
                         uint32_t out[16]) {
@@ -82,7 +72,6 @@ static void b3_compress(const uint32_t cv[8], const uint8_t block[64],
     }
 }
 
-// --- chunk state ----------------------------------------------------
 
 typedef struct {
     uint32_t cv[8];
@@ -100,9 +89,7 @@ static void b3_chunk_reset(b3_chunk* c, const uint32_t key[8], uint64_t counter,
     memset(c->block, 0, B3_BLOCK_LEN);
     c->block_len = 0;
     c->blocks_compressed = 0;
-    c->flags = flags;   // domain-separation flags (0 for plain hashing). MUST be
-                        // set — b3_chunk_output/_update read it; leaving it
-                        // uninitialized yields stack-garbage-dependent digests.
+    c->flags = flags;   // MUST be set: an uninitialized value yields garbage digests.
 }
 
 static size_t b3_chunk_len(const b3_chunk* c) {
@@ -113,8 +100,6 @@ static uint32_t b3_chunk_start_flag(const b3_chunk* c) {
     return c->blocks_compressed == 0 ? B3_CHUNK_START : 0;
 }
 
-// An "output": the compression inputs that produce either a chaining value or
-// the root bytes.
 typedef struct {
     uint32_t cv[8];
     uint32_t block_words[16];
@@ -123,8 +108,6 @@ typedef struct {
     uint32_t flags;
 } b3_output;
 
-// Outputs are filled via an out-param rather than returned by value (cheaper —
-// no large-struct copy on the hot chunk path).
 static void b3_chunk_output(const b3_chunk* c, b3_output* o) {
     memcpy(o->cv, c->cv, 32);
     for (int i = 0; i < 16; i++) memcpy(&o->block_words[i], c->block + 4 * i, 4);
@@ -141,8 +124,7 @@ static void b3_output_cv(const b3_output* o, uint32_t cv[8]) {
     memcpy(cv, out, 32);
 }
 
-// Extendable root output: stream `out_len` bytes, one 64-byte output block per
-// counter, with the ROOT flag.
+// Extendable root output: stream `out_len` bytes, one 64-byte block per counter.
 static void b3_output_root(const b3_output* o, uint8_t* out, size_t out_len) {
     uint8_t block[64];
     for (int i = 0; i < 16; i++) memcpy(block + 4 * i, &o->block_words[i], 4);
@@ -179,7 +161,7 @@ static void b3_chunk_update(b3_chunk* c, const uint8_t* input, size_t len) {
     }
 }
 
-// Compress two child CVs into a parent output (out-param; see note above).
+// Compress two child CVs into a parent output.
 static void b3_parent_output(const uint32_t left[8], const uint32_t right[8],
                              const uint32_t key[8], uint32_t flags, b3_output* o) {
     memcpy(o->cv, key, 32);
@@ -197,7 +179,6 @@ static void b3_parent_cv(const uint32_t left[8], const uint32_t right[8],
     b3_output_cv(&o, cv);
 }
 
-// --- hasher ---------------------------------------------------------
 
 typedef struct {
     b3_chunk chunk;
@@ -219,8 +200,7 @@ static void b3_push_cv(b3_hasher* h, const uint32_t cv[8]) {
     h->cv_stack_len++;
 }
 
-// Add a completed chunk's CV, merging up the tree wherever the total chunk count
-// makes a left-subtree complete (popcount trick: merge while counter is even).
+// Add a completed chunk's CV, merging up the tree while the chunk counter is even.
 static void b3_add_chunk_cv(b3_hasher* h, uint32_t cv[8], uint64_t total_chunks) {
     uint32_t new_cv[8];
     memcpy(new_cv, cv, 32);
@@ -257,7 +237,6 @@ static void b3_hasher_update(b3_hasher* h, const uint8_t* input, size_t len) {
 static void b3_hasher_finalize(const b3_hasher* h, uint8_t* out, size_t out_len) {
     b3_output o;
     b3_chunk_output(&h->chunk, &o);
-    // Fold the current chunk's output with the CV stack, right to left.
     int parent_nodes_remaining = h->cv_stack_len;
     while (parent_nodes_remaining > 0) {
         parent_nodes_remaining--;
@@ -269,8 +248,7 @@ static void b3_hasher_finalize(const b3_hasher* h, uint8_t* out, size_t out_len)
     b3_output_root(&o, out, out_len);
 }
 
-// A single chunk's chaining value (no ROOT) — the scalar leaf used by the SIMD
-// driver for the tail / sub-16 remainder chunks.
+// A single chunk's chaining value (no ROOT), the scalar leaf the SIMD driver uses.
 static void b3_scalar_chunk_cv(const uint8_t* input, size_t len, uint64_t counter,
                                uint32_t flags, uint32_t out[8]) {
     b3_chunk ch;
@@ -281,8 +259,7 @@ static void b3_scalar_chunk_cv(const uint8_t* input, size_t len, uint64_t counte
     b3_output_cv(&o, out);
 }
 
-// Reduce chunk CVs [lo,hi) into a single CV via the BLAKE3 tree (non-root
-// internal parents). Splits at the largest power-of-two chunk count < (hi-lo).
+// Reduce chunk CVs [lo,hi) to one CV, splitting at the largest power-of-two count.
 static void b3_subtree_cv(const uint32_t (*cvs)[8], size_t lo, size_t hi,
                           uint32_t flags, uint32_t out[8]) {
     if (hi - lo == 1) { memcpy(out, cvs[lo], 32); return; }
@@ -294,9 +271,7 @@ static void b3_subtree_cv(const uint32_t (*cvs)[8], size_t lo, size_t hi,
     b3_parent_cv(left, right, B3_IV, flags, out);
 }
 
-// ====================================================================
-//  AVX-512 hash16 — hash 16 chunks in parallel (16x uint32 lanes).
-// ====================================================================
+// --- AVX-512 hash16: 16 chunks in parallel across 16 uint32 lanes ---------
 #if defined(__x86_64__) || defined(__i386__)
 #define CAJETA_BLAKE3_X86 1
 #include <immintrin.h>
@@ -325,9 +300,7 @@ static inline void b3_g16(__m512i* v, int a, int b, int c, int d,
     v[b] = _mm512_ror_epi32(_mm512_xor_si512(v[b], v[c]), 7);
 }
 
-// 16x16 uint32 transpose: out[k] holds word k across all 16 chunks (the message
-// schedule layout) from in[L] = chunk L's 16-word block. Standard AVX-512
-// unpack/shuffle ladder — far faster than per-word gathers.
+// 16x16 transpose into message-schedule layout: out[k] is word k across all 16 chunks.
 __attribute__((target("avx512f")))
 static void b3_transpose16(const __m512i in[16], __m512i out[16]) {
     __m512i a[16];
@@ -366,8 +339,7 @@ static void b3_round16(__m512i* v, __m512i* m, int r) {
     b3_g16(v, 3, 4,  9, 14, m[s[14]], m[s[15]]);
 }
 
-// Hash 16 contiguous full (1024-byte) chunks at `input` (chunk L at +L*1024,
-// counter = counter_base + L). Writes 16 chaining values into out_cvs.
+// Hash 16 contiguous 1024-byte chunks (L at +L*1024, counter_base + L) into out_cvs.
 __attribute__((target("avx512f")))
 static void b3_hash16_avx512(const uint8_t* input, uint64_t counter_base,
                              uint32_t base_flags, uint32_t out_cvs[16][8]) {
@@ -392,8 +364,6 @@ static void b3_hash16_avx512(const uint8_t* input, uint64_t counter_base,
         uint32_t flags = base_flags;
         if (blk == 0)  flags |= B3_CHUNK_START;
         if (blk == 15) flags |= B3_CHUNK_END;
-        // Load each chunk's 64-byte block, then transpose so m[k] holds word k
-        // across all 16 chunks.
         __m512i blocks[16], m[16];
         for (int L = 0; L < 16; L++) {
             blocks[L] = _mm512_loadu_si512(
@@ -408,7 +378,6 @@ static void b3_hash16_avx512(const uint8_t* input, uint64_t counter_base,
         for (int r = 0; r < 7; r++) b3_round16(v, m, r);
         for (int i = 0; i < 8; i++) cv[i] = _mm512_xor_si512(v[i], v[i + 8]);
     }
-    // Un-transpose: out_cvs[L][i] = cv[i] lane L.
     for (int i = 0; i < 8; i++) {
         uint32_t tmp[16];
         _mm512_storeu_si512((void*) tmp, cv[i]);
@@ -416,9 +385,7 @@ static void b3_hash16_avx512(const uint8_t* input, uint64_t counter_base,
     }
 }
 
-// SIMD one-shot driver: len > CHUNK_LEN (>= 2 nodes). Hashes all chunk CVs
-// (hash16 for aligned groups of 16, scalar for the <16 remainder + the partial
-// tail), then reduces to the ROOT output (XOF-capable via out_len).
+// SIMD one-shot for len > CHUNK_LEN, reducing every chunk CV to the ROOT output.
 static void b3_hash_oneshot_simd(const uint8_t* input, size_t len,
                                  uint8_t* out, size_t out_len) {
     size_t full_chunks = len / B3_CHUNK_LEN;
@@ -474,7 +441,6 @@ static void b3_hash_oneshot(const uint8_t* in, size_t len, uint8_t* out, size_t 
     b3_hasher_finalize(&h, out, out_len);
 }
 
-// --- @Native bridges ------------------------------------------------
 // Cajeta arrays arrive as a header pointer; the payload starts at +8.
 
 void __cajeta_blake3_oneshot(const void* data_hdr, int64_t len, void* out_hdr) {
@@ -537,8 +503,7 @@ int64_t __cajeta_blake3_finish_int64(void* st) {
     return v;
 }
 
-// Width-named folders — feed the raw LE bytes of a primitive into the hash
-// (same approach as MD5 / SipHash). Each is a 1..8-byte update.
+// Width-named folders: feed the raw LE bytes of a primitive in as a 1..8-byte update.
 void __cajeta_blake3_write_i8(void* st, int8_t v) {
     if (st) b3_hasher_update((b3_hasher*) st, (const uint8_t*) &v, 1);
 }

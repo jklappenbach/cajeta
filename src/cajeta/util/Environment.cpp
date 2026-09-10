@@ -28,12 +28,10 @@ void unsetEnvVar(const std::string& name) {
 
 namespace {
 
-// Every variable name currently in the environment. Collected up front because
-// unsetting mutates the strip we would otherwise be iterating.
+// Every variable name currently in the environment, collected up front because unsetting mutates the strip being walked.
 std::vector<std::string> currentNames() {
     std::vector<std::string> names;
 #if defined(_WIN32)
-    // The CRT exposes the block as `environ` too (via <stdlib.h>).
     for (char** e = _environ; e && *e; ++e) {
 #else
     for (char** e = environ; e && *e; ++e) {
@@ -56,9 +54,6 @@ void EnvironmentScope::remember(const std::string& name) {
 void EnvironmentScope::apply(const std::map<std::string, std::string>& vars,
                              bool inheritParent) {
     if (!inheritParent) {
-        // Suppress everything the configuration does not declare. Names are
-        // collected before the first unset, since unsetenv rewrites `environ`
-        // underneath an in-flight walk.
         for (const auto& name : currentNames()) {
             if (vars.count(name)) continue;  // about to be set below anyway
             remember(name);
@@ -72,8 +67,7 @@ void EnvironmentScope::apply(const std::map<std::string, std::string>& vars,
 }
 
 void EnvironmentScope::restore() {
-    // Backwards: if a name was touched more than once, the FIRST snapshot is
-    // the true original, and applying it last is what makes it win.
+    // Backwards: for a name touched more than once the FIRST snapshot is the original, so applying it last makes it win.
     for (auto it = saved_.rbegin(); it != saved_.rend(); ++it) {
         if (it->second) setEnvVar(it->first, *it->second);
         else unsetEnvVar(it->first);

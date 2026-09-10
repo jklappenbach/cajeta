@@ -30,8 +30,7 @@ namespace cajeta::buildtool {
             "type", "default", "required", "doc",
         };
 
-        // Recognized non-param keys on an action-invocation entry.
-        // Anything else is treated as an action-specific param.
+        // Non-param keys on an action entry; anything else is an action param.
         const std::set<std::string> kActionMetaFields = {
             "action", "id", "when", "skip-when",
         };
@@ -76,7 +75,6 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
-        // Forward decl; parseActionEntry recurses into parallel groups.
         llvm::Error parseActionEntry(const std::string& taskName,
                                      const std::string& breadcrumb,
                                      const llvm::json::Value& v,
@@ -96,7 +94,6 @@ namespace cajeta::buildtool {
             if (auto w  = obj.getString("when"))      out.whenExpr     = w->str();
             if (auto sw = obj.getString("skip-when")) out.skipWhenExpr = sw->str();
 
-            // Everything else is an action-specific param.
             for (const auto& kv : obj) {
                 if (kActionMetaFields.count(kv.first.str())) continue;
                 out.params[kv.first] = kv.second;
@@ -108,8 +105,6 @@ namespace cajeta::buildtool {
                                        const std::string& breadcrumb,
                                        const llvm::json::Object& obj,
                                        ParallelGroup& out) {
-            // The `parallel` field is the array of children. Other
-            // fields aren't allowed on a parallel entry.
             for (const auto& kv : obj) {
                 if (kv.first.str() != "parallel") {
                     return err("task '" + taskName + "': " + breadcrumb +
@@ -140,7 +135,6 @@ namespace cajeta::buildtool {
                                      const std::string& breadcrumb,
                                      const llvm::json::Object& obj,
                                      RunTaskCall& out) {
-            // Allowed fields: run-task, params, id, when, skip-when.
             static const std::set<std::string> kRunTaskFields = {
                 "run-task", "params", "id", "when", "skip-when",
             };
@@ -294,8 +288,6 @@ namespace cajeta::buildtool {
                 }
             }
 
-            // 'actions' is required (a task with no actions is
-            // ill-formed — what would it do?).
             const auto* actionsArr = tobj->getArray("actions");
             if (!actionsArr) {
                 return err("task '" + name +
@@ -338,9 +330,8 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // DFS-based cycle detector. `path` carries the current
-        // exploration chain so a cycle error names its members.
-        // White / gray / black coloring: not-seen / visiting / done.
+        // DFS cycle detector, colored white/gray/black as not-seen/visiting/done.
+        // `path` carries the chain so a cycle error can name its members.
         bool detectCycle(const std::string& name,
                          const std::map<std::string, Task>& tasks,
                          std::unordered_set<std::string>& gray,
@@ -349,8 +340,6 @@ namespace cajeta::buildtool {
                          std::vector<std::string>& cycleOut) {
             if (black.count(name)) return false;
             if (gray.count(name)) {
-                // Found a cycle. Walk back through `path` until we hit
-                // `name` to record the cycle members.
                 auto it = std::find(path.begin(), path.end(), name);
                 if (it != path.end()) {
                     cycleOut.assign(it, path.end());
@@ -360,8 +349,6 @@ namespace cajeta::buildtool {
             }
             auto it = tasks.find(name);
             if (it == tasks.end()) {
-                // Reference to a task that doesn't exist — different
-                // error class; caller flags it separately.
                 return false;
             }
             gray.insert(name);
@@ -380,8 +367,7 @@ namespace cajeta::buildtool {
     } // namespace
 
     llvm::Error validateTaskGraph(const std::map<std::string, Task>& tasks) {
-        // First: undefined-dep check. A task referencing a depends-on
-        // target that isn't in the table is a load-time error.
+        // Undefined dependencies first: they are a load-time error.
         for (const auto& kv : tasks) {
             for (const auto& dep : kv.second.dependsOn) {
                 if (!tasks.count(dep)) {
@@ -390,7 +376,6 @@ namespace cajeta::buildtool {
                 }
             }
         }
-        // Then: cycle detection.
         std::unordered_set<std::string> gray, black;
         std::vector<std::string> path;
         std::vector<std::string> cycle;
@@ -409,10 +394,8 @@ namespace cajeta::buildtool {
     }
 
     namespace {
-        // Whether a task produces a runnable native artifact, and (if the build
-        // action declares one) its output-path. Lets `tasks --json` tell the IDE
-        // which tasks can be Run-as-Debug and what binary to launch under
-        // `cajeta dap` (widget spec §3, §5.2.2). Scans nested parallel groups.
+        // Whether a task produces a runnable native artifact and, when the build
+        // action declares one, its path — so the IDE knows what Debug would launch.
         struct TaskRunInfo {
             bool runnable = false;
             std::optional<std::string> artifact;
@@ -455,10 +438,8 @@ namespace cajeta::buildtool {
         llvm::json::Object root;
         root["manifest"] = manifestPath;
 
-        // Project-level debug-launch coordinates (widget §5.2.2, unit 7): only
-        // when an entry method is known can `cajeta dap` JIT-run the project, so
-        // we gate the whole `build` object on it. The IDE forms a runnable
-        // task's Debug launch from these; without them it disables Debug.
+        // The whole `build` object is gated on an entry method: without one
+        // `cajeta dap` cannot JIT-run the project, and the IDE disables Debug.
         if (debugCoords.entryMethod && !debugCoords.entryMethod->empty()) {
             llvm::json::Object build;
             build["entryMethod"] = *debugCoords.entryMethod;
@@ -473,8 +454,6 @@ namespace cajeta::buildtool {
             to["name"] = t.name;
             if (t.description) to["description"] = *t.description;
 
-            // §3 (widget §5.2.2): expose whether the task yields a runnable
-            // artifact (so the IDE can offer Debug) and, when declared, where.
             TaskRunInfo ri = computeTaskRunInfo(t);
             to["runnable"] = ri.runnable;
             if (ri.artifact) to["artifact"] = *ri.artifact;

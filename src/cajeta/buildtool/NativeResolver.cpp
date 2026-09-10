@@ -57,8 +57,6 @@ namespace cajeta::buildtool {
             for (const auto& id : meta->requiredLibs) out.required.insert(id);
             for (auto& kv : meta->libraries) {
                 out.versionConstraints[kv.first].push_back(kv.second.version);
-                // First declaration's metadata wins the payload slot; unit 5
-                // resolves the concrete version across versionConstraints.
                 out.libraries.emplace(kv.first, kv.second);
             }
         }
@@ -100,7 +98,6 @@ namespace cajeta::buildtool {
             return v;
         }
 
-        // Order by (major, minor, patch); -1 sorts below any concrete value.
         bool higher(const SemVer& a, const SemVer& b) {
             if (a.major != b.major) return a.major > b.major;
             if (a.minor != b.minor) return a.minor > b.minor;
@@ -113,7 +110,6 @@ namespace cajeta::buildtool {
         if (constraints.empty())
             return llvm::createStringError(
                 llvm::inconvertibleErrorCode(), "no version constraints");
-        // Incompatible majors → conflict.
         int major = -2;
         for (const auto& c : constraints) {
             int m = parseSemVer(c).major;
@@ -123,7 +119,6 @@ namespace cajeta::buildtool {
                     llvm::inconvertibleErrorCode(),
                     "incompatible native version constraints (major mismatch)");
         }
-        // Pick the highest (most specific) constraint.
         const std::string* best = &constraints.front();
         SemVer bestV = parseSemVer(*best);
         for (const auto& c : constraints) {
@@ -144,7 +139,6 @@ namespace cajeta::buildtool {
             const NativeOverride* ov = ovIt != overrides.end()
                 ? &ovIt->second : nullptr;
 
-            // Version: override wins; else select from constraints.
             std::string version;
             if (ov && ov->version) {
                 version = *ov->version;
@@ -152,7 +146,6 @@ namespace cajeta::buildtool {
                 auto vcIt = reqs.versionConstraints.find(id);
                 if (vcIt == reqs.versionConstraints.end()
                         || vcIt->second.empty()) {
-                    // No metadata. An override path can still satisfy it.
                     if (!(ov && ov->path)) {
                         out.unresolved[id] =
                             "no resolution metadata for '" + id +
@@ -173,7 +166,6 @@ namespace cajeta::buildtool {
             auto libIt = reqs.libraries.find(id);
             if (libIt != reqs.libraries.end()) link = libIt->second.link;
 
-            // Override path short-circuits the provider chain.
             if (ov && ov->path) {
                 out.resolved[id] = ResolvedNative{
                     id, version, platform, *ov->path, link, "override-path"};
@@ -246,7 +238,6 @@ namespace cajeta::buildtool {
             bool slim) {
         NativePackagingResult result;
 
-        // What resolved on at least one platform (independent of slim).
         std::set<std::string> resolvedAnywhere;
         for (const auto& plKv : perPlatform)
             for (const auto& rk : plKv.second.resolved)
@@ -279,8 +270,6 @@ namespace cajeta::buildtool {
             }());
         }
 
-        // Required libs that resolved on no platform are reported (never
-        // silently dropped) — in both slim and baked modes.
         for (const auto& id : reqs.required) {
             if (!resolvedAnywhere.count(id)) result.missing.push_back(id);
         }

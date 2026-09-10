@@ -1,22 +1,6 @@
-// The `clean` action — removes build artifacts AND the caches.
-//
-// Spec (BuildTool.md action catalog `clean` row):
-//   Optional: keep-cache
-//   Outputs:  removed-bytes, removed-entries, cache-cleaned
-//
-// Behavior:
-//   - default            → remove `build/` and `.cajeta/cache/`.
-//   - `keep-cache: true` → remove `build/` only, preserving the IR +
-//                          artifact caches for a fast incremental rebuild.
-//
-// Clean means clean. Until 2026-07-11 the cache wipe was opt-in (`deep`) and
-// prompted [y/N] on a TTY; a non-interactive spawn (the IDE's Clean) hit EOF,
-// answered "no", and left the artifact cache intact — so the next build simply
-// RE-PUBLISHED the cached binary in ~100ms without running the compiler, which
-// presents as an instant green check under an empty phase tree.
-//
-// Paths are taken from `settings.build.outputDir` (defaults to
-// "build") and a fixed `.cajeta/cache` location.
+// The `clean` action: removes `build/` and `.cajeta/cache/`, or with `keep-cache: true`
+// only `build/`, preserving the IR and artifact caches for a fast incremental rebuild.
+// Reports removed-bytes, removed-entries and cache-cleaned.
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/Manifest.h"
@@ -37,8 +21,8 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Count + remove a directory tree. Returns (entries, bytes)
-        // so the action can report what was reclaimed.
+        // Remove a directory tree, returning the entries and bytes reclaimed so the
+        // action can report them.
         struct WipeResult {
             uint64_t entries = 0;
             uint64_t bytes = 0;
@@ -79,25 +63,13 @@ namespace cajeta::buildtool {
             TaskContext& ctx) const override {
             namespace fs = std::filesystem;
 
-            // `keep-cache=true` preserves .cajeta/cache/ (the IR + artifact
-            // caches) — the old `deep` opt-IN, inverted.
-            //
-            // Clean now means clean: it wipes the caches too, unprompted. The old
-            // behavior wiped only build/ unless `deep` was set, and gated the
-            // cache wipe behind a [y/N] prompt that a non-interactive spawn (the
-            // IDE's Clean action) answered "no" by silently hitting EOF. The next
-            // build then RE-PUBLISHED the cached artifact in ~100ms without
-            // running the compiler — an instant green check and an empty phase
-            // tree, indistinguishable from a broken build.
+            // Clean means clean: the caches go too, unprompted. `keep-cache=true` is the
+            // opt-out that keeps .cajeta/cache/, the IR and artifact caches.
             bool keepCache = false;
             if (auto v = params.getBoolean("keep-cache")) keepCache = *v;
 
-            // Resolve the build directory from settings.build, then let
-            // settings.output override it (spec §3.3). Clean MUST follow the
-            // same resolution the build action uses — a clean that wipes
-            // `build/` while the build writes to `out/` silently leaves
-            // everything behind, which is the failure mode `clean` exists to
-            // prevent.
+            // Resolve from settings.build, then let settings.output override it. Clean MUST
+            // follow the build action's resolution, or it wipes a directory nothing writes to.
             std::string outputDir = "build";
             SettingsOutput so;
             if (ctx.manifest()) {
@@ -113,9 +85,8 @@ namespace cajeta::buildtool {
             auto buildWipe = wipeTree(fs::path(outputDir));
             if (!buildWipe) return buildWipe.takeError();
 
-            // A key pointed OUTSIDE the root is still this project's output,
-            // so clean owns it too. Skipped when it already sits under the
-            // root, so the common case wipes exactly one tree.
+            // A key pointed OUTSIDE the root is still this project's output, so clean owns
+            // it; skipped when already under the root, so the common case wipes one tree.
             std::vector<std::string> extraRootsWiped;
             {
                 fs::path rootPath = fs::path(outputDir).lexically_normal();
@@ -124,10 +95,9 @@ namespace cajeta::buildtool {
                     if (!*p) continue;
                     fs::path candidate = fs::path(**p).lexically_normal();
                     auto rel = candidate.lexically_relative(rootPath);
-                    // Compare the first COMPONENT, not a string prefix:
-                    // path::native() is wstring on Windows (so a narrow
-                    // compare() does not even compile there), and a prefix
-                    // test would also misread a sibling named "..foo".
+                    // Compare the first COMPONENT, not a string prefix: path::native() is
+                    // wstring on Windows, where a narrow compare() does not even compile,
+                    // and a prefix test would also misread a sibling named "..foo".
                     bool insideRoot = !rel.empty() && *rel.begin() != "..";
                     if (insideRoot) continue;
                     auto w = wipeTree(candidate);
@@ -151,12 +121,8 @@ namespace cajeta::buildtool {
             r.outputs["removed-entries"] = std::to_string(totalEntries);
             r.outputs["removed-bytes"]   = std::to_string(totalBytes);
             r.outputs["cache-cleaned"] = keepCache ? "false" : "true";
-            // Say what was removed — `clean` used to print nothing at all, so
-            // there was no way to tell it apart from a no-op. NAME EVERY ROOT
-            // actually wiped: with settings.output pointing a key outside the
-            // root, clean removes trees this line would otherwise not mention,
-            // and "removed 15 entries from build" while also deleting an
-            // absolute scratch directory is a report that hides a deletion.
+            // Name EVERY root actually wiped: reporting only `build` would hide the
+            // deletion of a tree settings.output pointed outside it.
             std::string roots = outputDir;
             for (const auto& extra : extraRootsWiped) roots += ", " + extra;
             if (!keepCache) roots += " and .cajeta/cache";

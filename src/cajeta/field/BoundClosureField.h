@@ -1,22 +1,6 @@
-//
 // BoundClosureField — a function-typed scope entry bound to a statically-known
-// function (cajeta-ir Unit 4, Approach A).
-//
-// When the closure-specialization factory materializes a specialized method
-// instance F$<fn>, the function-typed parameter P is dropped from the signature
-// and replaced, in the instance's body scope, by one of these: the name P now
-// resolves to a known llvm::Function (the non-capturing lambda's synthesized
-// fn). A call `P(args)` therefore lowers to a DIRECT call (emitClosureCall with
-// a known target) — the front-end realization of the comparator devirtualization.
-//
-// P may also be FORWARDED (passed on to another call) rather than invoked — e.g.
-// Sort.binarySearch hands its comparator to lowerBound. For that the field still
-// behaves like an ordinary closure value: reads yield the lambda's constant
-// closure RECORD `{ fn, null, null }`, materialized through a real slot, so a
-// forwarded comparator dispatches correctly (indirect on a constant) while
-// direct invocations remain direct. This keeps specialization SOUND regardless
-// of whether the parameter escapes — no escape gate needed.
-//
+// function: an invocation `P(args)` lowers to a direct call, while a forwarded P
+// reads as the lambda's constant closure record `{ fn, null, null }`.
 
 #pragma once
 

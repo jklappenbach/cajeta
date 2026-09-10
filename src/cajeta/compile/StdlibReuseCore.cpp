@@ -1,6 +1,4 @@
-// See StdlibReuseCore.h. The prime/restore sequences here are the ones the
-// JIT test harness proved under the full suite (StdlibReuseCache); comments
-// on the non-obvious steps live with the machinery they guard.
+// See StdlibReuseCore.h; comments here sit with the machinery they guard.
 
 #include "cajeta/compile/StdlibReuseCore.h"
 
@@ -26,15 +24,9 @@ namespace cajeta {
     void StdlibReuseCore::ensurePrimed() {
         if (isPrimed) return;
         Compiler::setSharedContext(&sharedContext);
-        // Arm xref capture for the stdlib parse: template members are only
-        // recordable AS the stdlib parses, and a warm lint that asks for the
-        // xref stream needs them in its restored logs exactly as a fresh
-        // process (which parses the stdlib with capture armed) would have
-        // them. Costs a few vectors of records when no one ever asks.
+        // Template members are recordable only AS the stdlib parses.
         xref::resetCapture();
         xref::setCaptureEnabled(true);
-        // First Compiler under the shared context primes the global type
-        // tables (resetGlobals + init) in that context.
         prime = std::make_unique<Compiler>();
         prime->ensureStdlibModule();   // front-end: parse + prototype layout
         xref::setCaptureEnabled(false);
@@ -47,8 +39,7 @@ namespace cajeta {
             const std::function<void(Compiler&)>& layer) {
         ensurePrimed();
         if (isCodegenLayered) return;
-        // Front-end-only users (warm lint) may have run requests already;
-        // return to the pristine post-front-end state before layering.
+        // A front-end-only user may have run requests; return to pristine first.
         restoreBaseline();
         Compiler::setSharedContext(&sharedContext);
         layer(*prime);
@@ -60,34 +51,16 @@ namespace cajeta {
         CajetaType::captureBaseline();
         CajetaModule::captureBaseline();
         baselineStructures = stdlibModule->getStructures();
-        // Snapshot each baseline stdlib class's module-bound llvm bindings
-        // (drop/vtable/RTTI/static-field globals + method functions) so
-        // restoreBaseline can reset any that a reusing run lazily generated
-        // into its own per-run module — the cross-module-reference leak.
+        // Snapshot the module-bound bindings a reusing run must be reset out of.
         for (auto& [canon, klass] : baselineStructures)
             if (klass) klass->captureReuseBaseline();
         captureLlvmBaseline();
         xref::captureBaseline();
     }
 
-    // --- the stdlib llvm::Module's own baseline (spec §4.1) ----------------
-    //
-    // Everything above restores the COMPILER's world — type registry, module
-    // structures, per-class llvm bindings. None of it touches the persistent
-    // stdlib llvm::Module, which a session can and does add to: a stdlib
-    // template instantiated over a USER type emits into that user's module
-    // (TemplateInstantiator's emitOwner rule), and the stdlib module is then
-    // given `external global` DECLARATIONS of the instantiation's symbols so
-    // its own references resolve at link time.
-    //
-    // Those declarations outlived the session that justified them. The next
-    // session's user module defines nothing by those names, so materialization
-    // failed with `Symbols not found: cajeta.collection.ArrayList<demo.Prog>
-    // #ClassObject` — the leak behind ResidentWorld's suite-order failure.
-    //
-    // Snapshot the module's global values at capture time, then let
-    // restoreLlvmBaseline decide what a session may take back. Not everything
-    // it added is its own: see the reachability rule there.
+    // --- the stdlib llvm::Module's own baseline -----------------------------
+    // Snapshots the persistent stdlib module's global values, which the restores
+    // above do not touch though a session adds declarations to them.
     void StdlibReuseCore::captureLlvmBaseline() {
         baselineLlvmValues.clear();
         llvm::Module* m = stdlibModule ? stdlibModule->getLlvmModule() : nullptr;
@@ -106,10 +79,7 @@ namespace cajeta {
                 collectReferencedGlobals(opc, out);
     }
 
-    // The global values that REFER to `v`, walking through constant
-    // expressions and aggregates to whatever named thing ultimately holds
-    // them: the function whose body contains an instruction, or the global
-    // whose initializer contains a constant.
+    // The global values REFERRING to `v`, however deeply nested.
     static void collectReferringGlobals(llvm::Value* v,
                                         std::set<llvm::GlobalValue*>& out) {
         for (llvm::User* u : v->users()) {
@@ -123,25 +93,15 @@ namespace cajeta {
         }
     }
 
-    // An appending global (llvm.global_ctors and friends) is a LIST each
-    // session appends its own entries to, not an ordinary reference. It comes
-    // from the baseline, so the erase pass can't touch it — and every entry it
-    // holds would otherwise look like a live baseline reference to the session
-    // value it names. Prune it to entries whose referents all survive.
-    //
-    // The pruned array has a different type, so this replaces the global and
-    // hands its identity (name, and its place in the baseline set) to the
-    // replacement.
+    // Prunes an appending global to entries whose referents all survive; the
+    // pruned array retypes it, so the global is replaced under the same name.
     void StdlibReuseCore::pruneAppendingGlobal(
             llvm::Module& m, const char* name,
             const std::set<llvm::GlobalValue*>& surviving) {
         llvm::GlobalVariable* gv = m.getNamedGlobal(name);
         if (!gv || !gv->hasInitializer()) return;
-        // A session-added list is erased wholesale by the caller's normal
-        // path. Replacing it here as well would leave the caller holding a
-        // freed pointer — which it then dereferences (SIGSEGV in
-        // removeDeadConstantUsers, seen the first time this ran under the
-        // full ResidentWorld suite).
+        // The caller erases a session-added list itself; freeing it here too
+        // leaves that caller dereferencing a freed pointer.
         if (!baselineLlvmValues.count(gv)) return;
         auto* init = llvm::dyn_cast<llvm::ConstantArray>(gv->getInitializer());
         if (!init) return;                           // empty (zeroinitializer)
@@ -171,6 +131,8 @@ namespace cajeta {
         baselineLlvmValues.insert(replacement);
     }
 
+    // Gives back what the session added, by reachability rather than authorship:
+    // an added value the BASELINE still refers to has been adopted and stays.
     void StdlibReuseCore::restoreLlvmBaseline() {
         llvm::Module* m = stdlibModule ? stdlibModule->getLlvmModule() : nullptr;
         if (!m) return;
@@ -179,28 +141,11 @@ namespace cajeta {
             if (!baselineLlvmValues.count(&gv)) added.push_back(&gv);
         if (added.empty()) return;
 
-        // Constants outlive the code that built them: the previous session's
-        // `{i32 65535, ptr @ctor, ptr null}` global_ctors entry stays uniqued
-        // in the shared LLVMContext, and still counts as a use of @ctor, long
-        // after the module holding it is gone. Drop those first or nothing
-        // added ever looks unused.
+        // A prior session's constants stay uniqued, so nothing looks unused yet.
         for (llvm::GlobalValue* gv : added) gv->removeDeadConstantUsers();
 
-        // Not everything a session added is the session's to take back. The
-        // drop-thunk backfill, for one, generates thunks for BASELINE stdlib
-        // classes and writes them into those classes' baseline vtables: the
-        // stdlib legitimately owns them now, and erasing them would leave the
-        // vtable pointing at nothing.
-        //
-        // So the rule is reachability, not authorship: an added value that the
-        // BASELINE still refers to (directly, or through another such value)
-        // has been adopted and stays intact. Everything else is the session's
-        // own accretion — its user-typed instantiations, their #ClassObject
-        // declarations, the constructors registering them — and goes.
-        //
-        // The appending globals are deliberately NOT roots here: they are
-        // lists, and treating a session's own entry in one as a baseline
-        // reference would make every session value look adopted.
+        // The appending globals are deliberately NOT roots below: they are
+        // lists, so a session's own entry would make its values look adopted.
         std::set<llvm::GlobalValue*> addedSet(added.begin(), added.end());
         std::set<llvm::GlobalValue*> appending;
         for (const char* name : {"llvm.global_ctors", "llvm.global_dtors",
@@ -247,9 +192,7 @@ namespace cajeta {
                 ifunc->setResolver(nullptr);
             }
         }
-        // Erase to fixpoint: one doomed value can hold the last use of
-        // another through a constant expression, which only drops when the
-        // holder goes.
+        // To fixpoint: a doomed value can hold the last use of another.
         size_t stillUsed = 0;
         bool progress = true;
         while (progress) {
@@ -265,9 +208,8 @@ namespace cajeta {
             }
         }
         if (stillUsed > 0) {
-            // Unreachable by construction (a still-used value would have been
-            // adopted). Report rather than force-erase: a dangling use is a
-            // verifier failure at launch, and the cause belongs in the log.
+            // Unreachable by construction, and reported rather than force-erased
+            // because a dangling use is a verifier failure at launch.
             std::ostringstream msg;
             msg << "cajeta: resident stdlib kept " << stillUsed
                 << " session-added symbol(s) that could not be released\n";
@@ -277,24 +219,18 @@ namespace cajeta {
 
     void StdlibReuseCore::restoreBaseline() {
         if (!isPrimed) return;
-        // Advance the reuse generation so per-template method-instantiation
-        // caches (held on persistent stdlib Methods) invalidate stale entries
-        // bound to the previous run's now-freed user emit module.
+        // Advancing the generation invalidates per-template instantiation caches
+        // bound to the previous run's now-freed emit module.
         CajetaModule::bumpReuseEpoch();
         CajetaType::restoreBaseline();
         CajetaModule::restoreBaseline();   // re-pins the stdlib singleton
         stdlibModule->getStructures() = baselineStructures;
-        // Lazy stdlib: the baseline was captured before any on-demand package
-        // (cajeta.math) was parsed, and the restore above drops those types.
-        // Clear the lazy bookkeeping too, so a later run importing the package
-        // re-parses it instead of skipping it as "already parsed".
+        // The restore above dropped any lazily parsed package's types, so the
+        // lazy bookkeeping must go too or a later import skips re-parsing it.
         Compiler::resetLazyStdlibState();
-        // Drop every method-template instantiation a PRIOR run registered on
-        // a persistent stdlib class. Such a class outlives the per-run user
-        // module its instantiations were codegen'd into; left registered, the
-        // next run's resolveMethod finds the stale entry and skips re-emitting
-        // the body into ITS module. Collect-then-remove to avoid mutating the
-        // maps mid-iteration.
+        // A prior run's method-template instantiations must be dropped from the
+        // persistent classes, or the next run's resolveMethod finds the stale
+        // entry and never emits the body into ITS module.
         for (auto& [canonical, klass] : stdlibModule->getStructures()) {
             if (!klass) continue;
             std::vector<MethodPtr> stale;
@@ -302,15 +238,12 @@ namespace cajeta {
                 if (m && m->isMethodTemplateInstantiation()) stale.push_back(m);
             }
             for (auto& m : stale) klass->removeMethod(m);
-            // Reset this class's module-bound llvm bindings that a reusing
-            // run generated into its own per-run module, so the next run
-            // regenerates into its module rather than referencing a freed one.
+            // Reset bindings a reusing run generated into its own module, so
+            // the next run regenerates rather than referencing a freed one.
             klass->restoreReuseBaseline();
         }
-        // ...and the same discipline one level down, in the IR itself: drop
-        // whatever the previous session added to the persistent stdlib module.
-        // Runs LAST, after the per-class bindings above are reset, so nothing
-        // still points at a value about to be erased.
+        // LAST, after the per-class bindings above are reset, so nothing still
+        // points at a value about to be erased.
         restoreLlvmBaseline();
     }
 
@@ -318,11 +251,8 @@ namespace cajeta {
         if (!isPrimed) return;
         CajetaType::captureContextBaseline();
         CajetaModule::captureContextBaseline();
-        // The stdlib module gains classes only when a swept sibling pulled a
-        // lazy package (cajeta.math) into it; snapshot the post-sweep set so a
-        // warm restore reinstates them (the pristine baselineStructures does
-        // not). Siblings themselves are EXTERNAL modules — their classes live
-        // in the canonical/structure maps captured above, not here.
+        // The post-sweep set, which pristine baselineStructures does not hold:
+        // the module gains classes when a swept sibling pulls in a lazy package.
         contextStructures = stdlibModule->getStructures();
         contextLazyState = Compiler::captureLazyStdlibState();
         hasContextBaseline = true;
@@ -330,11 +260,8 @@ namespace cajeta {
 
     void StdlibReuseCore::restoreContextBaseline() {
         if (!hasContextBaseline) return;
-        // Lint never codegens, so there are no per-template method
-        // instantiations or per-class llvm bindings to unwind (unlike
-        // restoreBaseline) — this is a pure reinstatement of the captured
-        // registries. Reassigning the maps drops the previous request's target
-        // (its entries were never in the snapshot).
+        // Lint never codegens, so unlike restoreBaseline this is a pure
+        // reinstatement: reassigning the maps drops the last request's target.
         CajetaType::restoreContextBaseline();
         CajetaModule::restoreContextBaseline();
         stdlibModule->getStructures() = contextStructures;

@@ -1,6 +1,4 @@
-//
-// transform-intrinsics Unit 5 — Vmap batching rules + Tier-A batched source.
-//
+// Vmap batching rules and the Tier-A batched source. See VmapBatch.h.
 #include "cajeta/transform/VmapBatch.h"
 
 namespace cajeta {

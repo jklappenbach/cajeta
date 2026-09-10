@@ -77,8 +77,7 @@ namespace cajeta::buildtool {
         const auto* tc = settings->getObject("toolchain");
         if (!tc) return std::optional<ToolchainPin>{};
 
-        // Allowed subfields. Mirrors the strict shape we use at
-        // the top level — unknown keys catch typos early.
+        // Allowed subfields; unknown keys catch typos early.
         static const std::set<std::string> allowed = {
             "version", "distribution", "channel",
             "sha256", "fetch", "from",
@@ -146,8 +145,7 @@ namespace cajeta::buildtool {
             return err("'" + p.string() + "': empty distribution or "
                        "version in '" + body + "'");
         }
-        // Override files don't carry fetch policy — they always
-        // request the default (auto).
+        // Override files carry no fetch policy — they always request the default.
         pin.fetch = FetchPolicy::Auto;
         return std::optional<ToolchainPin>{pin};
     }
@@ -156,7 +154,7 @@ namespace cajeta::buildtool {
         const Manifest* manifest,
         const std::string& projectRoot) {
         ResolvedToolchain out;
-        // 1. .cajeta-toolchain override (highest precedence).
+        // Precedence: .cajeta-toolchain override, then settings.toolchain, then no pin.
         auto override_ = readToolchainOverrideFile(projectRoot);
         if (!override_) return override_.takeError();
         if (override_->has_value()) {
@@ -166,7 +164,6 @@ namespace cajeta::buildtool {
                               ".cajeta-toolchain").string();
             return out;
         }
-        // 2. settings.toolchain manifest block.
         if (manifest) {
             auto pin = parseToolchainPin(*manifest);
             if (!pin) return pin.takeError();
@@ -177,7 +174,6 @@ namespace cajeta::buildtool {
                 return out;
             }
         }
-        // 3. No pin — caller dispatches to the running binary.
         return out;
     }
 
@@ -226,10 +222,8 @@ namespace cajeta::buildtool {
         std::error_code ec;
         if (!std::filesystem::exists(layout.root, ec)) return out;
 
-        // Resolve the `current` pointer (if any) so we can mark the default
-        // toolchain. It is a symlink where the platform supports it, and a
-        // plain marker file (containing the target install root) on platforms
-        // that do not — see toolchainDefaultCommand.
+        // The `current` pointer is a symlink where the platform supports one, and a
+        // plain marker file holding the target install root where it does not.
         std::string currentTarget;
         std::error_code lec;
         auto symlink = std::filesystem::path(layout.defaultSymlinkPath());
@@ -261,8 +255,6 @@ namespace cajeta::buildtool {
                 it.distribution = distName;
                 it.version      = verEntry.path().filename().string();
                 it.installRoot  = verEntry.path().string();
-                // Match the current-symlink target (we accept both
-                // absolute paths and `<dist>/<ver>` relative forms).
                 if (!currentTarget.empty()) {
                     auto rel = (std::filesystem::path(distName) /
                                 it.version).string();
@@ -331,7 +323,6 @@ namespace cajeta::buildtool {
             d.resolvedBinaryPath = pinned;
             return d;
         }
-        // Pinned binary not installed.
         std::string installCmd = "cajeta toolchain install " +
                                   tc.pin.distribution + ":" +
                                   tc.pin.version;

@@ -1,7 +1,4 @@
-//
 // BoundClosureField — slot-backed forwarded reads. See BoundClosureField.h.
-//
-
 #include "BoundClosureField.h"
 
 #include "cajeta/compile/CajetaModule.h"
@@ -12,8 +9,7 @@ namespace cajeta {
         if (slot || !closureRecord) return slot;
         auto* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
         slot = module->createEntryAlloca(ptrTy, name + ".bound");
-        // Store the constant record right after the alloca (entry block) so it
-        // dominates every forwarded use in the body.
+        // Store right after the alloca so the record dominates every forwarded use.
         llvm::IRBuilder<> entryBuilder(slot->getParent(), std::next(slot->getIterator()));
         entryBuilder.CreateStore(closureRecord, slot);
         return slot;

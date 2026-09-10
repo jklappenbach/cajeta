@@ -1,15 +1,8 @@
 #pragma once
 
-// lazy-codegen 2.2.3 — generate one method's body and package it for ORC.
-//
-// Follows the kernel's delivery discipline: the front-end keeps owning its
-// llvm::Module (later cells keep mutating it), so ORC only ever receives a
-// bitcode SNAPSHOT reparsed into its own context. Here the snapshot holds one
-// definition: the requested method's body, everything else a declaration whose
-// materialization cascades back through the generator (spec 3.4).
-//
-// Call with the CompilerGate held — generateCode() touches the compiler's
-// process-wide state. CajetaDefinitionGenerator::tryToGenerate already does.
+// Generate one method's body and package it for ORC. The front-end keeps owning
+// its llvm::Module, so ORC only ever receives a bitcode SNAPSHOT reparsed into
+// its own context. Call with the CompilerGate held: codegen touches global state.
 
 #include "cajeta/method/Method.h"
 
@@ -23,32 +16,22 @@ namespace llvm { class GlobalValue; class Module; }
 
 namespace cajeta {
 
+    // A snapshot defining `method`'s body alone, everything else a declaration.
     llvm::Expected<llvm::orc::ThreadSafeModule>
     emitMethodModule(const MethodPtr& method);
 
-    // A definition codegen synthesized outside the method table — a drop
-    // thunk, a vtable or #ClassObject global — snapshotted as-is; no
-    // generateCode, it already exists in a live module.
+    // A definition synthesized outside the method table, snapshotted as-is.
     llvm::Expected<llvm::orc::ThreadSafeModule>
     snapshotLiveDefinition(llvm::GlobalValue* gv);
 
-    // 4.2.4 — the init surface of an accumulating module: every
-    // llvm.global_ctors entry not in `deliveredCtors`, its reference
-    // closure, and a rebuilt llvm.global_ctors naming exactly those. The
-    // names of the ctors taken are added to `deliveredCtors` on success.
-    // Returns a FALSE (empty) ThreadSafeModule when nothing is new —
-    // deliver nothing, run nothing. Everything the extract references but
-    // does not define arrives later through the generator (spec 2.1); this
-    // is what keeps a delivered module from binding every class's
-    // vtable/RTTI/thunk chain at cell 1.
+    // The init surface an accumulating module has gained: every llvm.global_ctors
+    // entry not in `deliveredCtors` plus its reference closure, added to that set
+    // on success. A FALSE (empty) module means nothing is new — run nothing.
     llvm::Expected<llvm::orc::ThreadSafeModule>
     extractInitDelta(llvm::Module* live,
                      std::set<std::string>& deliveredCtors);
 
-    // Mark every ctor `live` currently defines as delivered — called when a
-    // module is delivered WHOLE, so a later init delta over it carries only
-    // ctors born afterwards (a late keep's registration), never a re-run of
-    // what the whole delivery already initialized.
+    // Mark every ctor `live` defines as delivered, for a WHOLE-module delivery.
     void recordDeliveredCtors(llvm::Module* live,
                               std::set<std::string>& deliveredCtors);
 

@@ -26,8 +26,7 @@ namespace cajeta {
         this->parent = parent;
         // Static: no implicit `this` insertion in Method::generatePrototype.
         this->addModifier(STATIC);
-        // The factory returns a freshly-malloc'd heap instance; signal
-        // ownership transfer so the caller's drop chain handles it.
+        // The factory returns a freshly-malloc'd instance, so ownership transfers to the caller's drop chain.
         this->setReturnsOwnership(true);
     }
 
@@ -43,9 +42,7 @@ namespace cajeta {
 
     void SynthesizedStaticFactoryMethod::generateCode() {
         auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
-        // Static: (arg1, ..., argN) -> ptr (parent). Alloc the parent
-        // class on the heap, init its vtable, call the wrapped ctor
-        // with `(instance, arg1, ..., argN)`, return the instance.
+        // Static shape: (arg1..argN) -> ptr — alloc the parent, init its vtable, call the wrapped ctor, return it.
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
@@ -61,10 +58,6 @@ namespace cajeta {
                 "CAJETA_ERROR_STATIC_FACTORY_NO_LAYOUT");
         }
 
-        // Alloc + vtable init — mirrors ComponentInjectMethod's
-        // fresh-allocation path and ClassCreatorRest's `heap T(...)`
-        // codegen. The malloc lands in the per-thread live-set so the
-        // drop chain reclaims it when ownership terminates.
         llvm::Constant* allocSize = llvm::ConstantInt::get(
             llvm::Type::getInt64Ty(ctx), dl.getTypeAllocSize(parentTy));
         llvm::CallInst* instance = MemoryManager::createMallocInstruction(
@@ -78,10 +71,7 @@ namespace cajeta {
             b.CreateStore(vtRef, vtSlot);
         }
 
-        // Direct call to the wrapped ctor's LLVM function. The ctor's
-        // signature is `(ptr this, arg1, ..., argN)`. Cross-module
-        // safe via ensureFunctionInModule (matches the @Encoding
-        // synth's encode/decode call shape).
+        // The wrapped ctor's signature is `(ptr this, arg1..argN)`; ensureFunctionInModule keeps the call cross-module safe.
         llvm::Function* ctorFn = ctor ? ctor->getLlvmFunction() : nullptr;
         if (!ctorFn) {
             throw Exception(

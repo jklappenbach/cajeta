@@ -1,3 +1,5 @@
+// The ORC definition generator that serves lazily-emitted cajeta bodies.
+
 #include "cajeta/jit/CajetaDefinitionGenerator.h"
 
 #include "cajeta/jit/CajetaLazyEmitter.h"
@@ -76,20 +78,15 @@ namespace cajeta {
             symbols.push_back((*entry.first).str());
         }
 
-        // ErrorAsOutParameter: assigning over an unchecked Error asserts, and
-        // the lambda below assigns on the failure path.
+        // The lambda assigns over `result`, and that asserts unless it is checked.
         llvm::Error result = llvm::Error::success();
         llvm::ErrorAsOutParameter guard(&result);
         CompilerGate::instance().run([&] {
-            // Without a host deliverer the generator can decide but not act;
-            // fall through exactly as today rather than failing the lookup —
-            // the generator must not be able to break a session it is not
-            // driving.
+            // With no deliverer, fall through rather than fail the lookup.
             if (!deliver) return;
             auto t0 = std::chrono::steady_clock::now();
             size_t claimed = 0;
-            // The full claim chain for one symbol, nullopt on a miss. Split
-            // out because a miss gets a SECOND attempt after index.refresh().
+            // The claim chain for one symbol; a miss gets a SECOND attempt below.
             auto claim = [&](const std::string& symbol)
                     -> std::optional<
                            llvm::Expected<llvm::orc::ThreadSafeModule>> {
@@ -101,8 +98,6 @@ namespace cajeta {
                     else thunk->klass->emitReflectNewBody();
                     auto* gv = index.findLiveDefinition(symbol);
                     if (!gv) {
-                        // spec 5.3 — the thunk was indexed but its emitter
-                        // left no definition; not an ordinary missing symbol.
                         return llvm::Expected<llvm::orc::ThreadSafeModule>(
                             llvm::createStringError(
                                 llvm::inconvertibleErrorCode(),
@@ -112,18 +107,11 @@ namespace cajeta {
                     return snapshotLiveDefinition(gv);
                 }
                 if (auto* gv = index.findLiveDefinition(symbol)) {
-                    // Codegen synthesizes definitions outside the method
-                    // table — drop thunks, vtable globals — including DURING
-                    // a lazy generateCode a moment ago; searched live for
-                    // exactly that reason.
                     return snapshotLiveDefinition(gv);
                 }
-                // Emulated TLS: a thread_local IR variable X reaches the
-                // object level ONLY as __emutls_v.X (control block) and
-                // __emutls_t.X (initial value) — lookups arrive under those
-                // names, never X. Serve X's IR definition once; it lowers
-                // to both, so the sibling name must not deliver a second
-                // copy ("duplicate definition of __emutls_v...").
+                // Emulated TLS: a thread_local X reaches the object level only as
+                // __emutls_v.X and __emutls_t.X, and one IR definition lowers to
+                // both, so the sibling name must not deliver a second copy.
                 for (const char* pre : {"__emutls_v.", "__emutls_t."}) {
                     if (symbol.rfind(pre, 0) != 0) continue;
                     std::string base = symbol.substr(11);
@@ -139,10 +127,6 @@ namespace cajeta {
                 if (symbol.empty()) continue;
                 auto attempt = claim(symbol);
                 if (!attempt) {
-                    // A template instantiated DURING this cascade defines
-                    // methods the host's index build could not see
-                    // (spec 3.5). refresh() is a no-op unless a structure
-                    // appeared, so genuinely foreign symbols stay cheap.
                     index.refresh();
                     attempt = claim(symbol);
                 }
@@ -167,7 +151,6 @@ namespace cajeta {
             emitNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - t0).count();
             if (std::getenv("CAJETA_PRIME_TIMING")) {
-                // spec 5.2 — comparable with [cell] codegen on one instrument.
                 std::fprintf(stderr,
                              "[lazy] generated %zu body(ies); %zu total, "
                              "%lld ms\n",

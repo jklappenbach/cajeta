@@ -28,7 +28,6 @@ namespace cajeta::buildtool {
     } // namespace
 
     bool isFirstPartyPluginName(const std::string& pluginName) {
-        // The `cajeta.*` namespace (plus the literal "cajeta").
         if (pluginName == "cajeta") return true;
         return pluginName.size() > 7 &&
                pluginName.compare(0, 7, "cajeta.") == 0;
@@ -44,20 +43,12 @@ namespace cajeta::buildtool {
 
     llvm::Expected<std::vector<PluginSpec>> parsePlugins(const Manifest& m) {
         std::vector<PluginSpec> out;
-        // `plugins` is the top-level block, not a sub-block of settings.
         if (m.pluginsRaw.empty()) return out;
         for (const auto& kv : m.pluginsRaw) {
             PluginSpec p;
             p.name = kv.first.str();
-            // String shorthand: `"acme.thing": "1.0.*"` means exactly
-            // `{ "version": "1.0.*" }`. It is the form `cajeta init`'s
-            // archetypes ship and it mirrors how `dependencies` is spelled,
-            // so rejecting it made every fresh project unbuildable:
-            //   plugins.cajeta.lint.security: value must be an object …
-            // ManifestEditor already treated the shorthand as accepted (it
-            // rewrites it in place for `cajeta coverage ignore`, calling a
-            // refusal "refusing a manifest the plugin resolver itself
-            // accepts") — this is what makes that true.
+            // String shorthand: `"acme.thing": "1.0.*"` means `{ "version": "1.0.*" }`,
+            // the form `cajeta init` archetypes ship, so it must stay accepted.
             if (auto shorthand = kv.second.getAsString()) {
                 p.versionConstraint = shorthand->str();
                 out.push_back(std::move(p));
@@ -102,11 +93,8 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Pick the highest version of `name` satisfying `constraint`.
-        // Returns the (version, repo, artifactPath, manifestJson) tuple
-        // on success; empty version when no repo carries a satisfying
-        // version. Mirrors the dep resolver's resolveOne but
-        // single-shot for the plugin layer.
+        // One resolved plugin pick: the chosen version plus the repo, artifact path
+        // and sidecar JSON carrying it. Empty version when nothing satisfied.
         struct PluginPick {
             std::string version;
             std::string resolvedFromRepo;
@@ -115,15 +103,7 @@ namespace cajeta::buildtool {
             std::string manifestJson;
         };
 
-        // Forward decl: the resolver exposes these. Defined in
-        // Resolver.cpp.
-        // (Reuse rather than re-implement so plugin resolution stays
-        // honest about the same version-constraint semantics deps use.)
     } // namespace
-
-    // Implemented inline (instead of pulling Resolver.cpp internals)
-    // to keep the dependency edge minimal. Uses highestSatisfying
-    // semantics from the public Resolver.h surface.
 
 } // namespace cajeta::buildtool
 
@@ -137,6 +117,7 @@ namespace cajeta::buildtool {
             std::string version;
         };
 
+        // Highest candidate version satisfying `constraint`; empty when none does.
         std::string highestSat(
             const std::vector<std::string>& candidates,
             const std::string& constraint) {
@@ -166,10 +147,6 @@ namespace cajeta::buildtool {
                            ": declared twice in the manifest");
             }
 
-            // Choose the per-plugin allowlist. First-party plugins
-            // get the wider default; user plugins use the consumer's
-            // explicit set (falling back to defaultUserPluginAllowlist
-            // when none was declared).
             std::set<std::string> allowed;
             if (allowedCapabilities.empty()) {
                 auto base = isFirstPartyPluginName(spec.name)
@@ -181,8 +158,6 @@ namespace cajeta::buildtool {
                                allowedCapabilities.end());
             }
 
-            // Walk priority-ordered repos for the highest satisfying
-            // version. First repo with a satisfying version wins.
             ResolvedPlugin r;
             r.name = spec.name;
             std::string manifestJson;
@@ -228,13 +203,11 @@ namespace cajeta::buildtool {
                            (repoList.empty() ? "<none>" : repoList) + ")");
             }
 
-            // Parse the plugin's sidecar to read its declared caps.
             auto pluginManifest = loadManifestString(
                 manifestJson, spec.name + "@" + r.version);
             if (!pluginManifest) return pluginManifest.takeError();
             auto pluginCaps = capabilitiesFromManifest(*pluginManifest);
 
-            // Enforce: every declared cap must be in the allowlist.
             for (const auto& c : pluginCaps) {
                 if (!allowed.count(c)) {
                     return err("plugins." + spec.name +
@@ -245,20 +218,15 @@ namespace cajeta::buildtool {
             }
             r.capabilities = std::move(pluginCaps);
 
-            // Read `details.plugin.{binary,actions,entries}` so the
-            // runtime knows how to dispatch this plugin. Absent when
-            // the sidecar predates the plugin protocol (e.g. a pure
-            // library); plugins lacking a binary parse OK but can't
-            // be invoked (PluginAction surfaces the error at run).
+            // `details.plugin` is absent for sidecars predating the plugin protocol;
+            // such plugins parse but cannot be invoked.
             const auto& pluginObj = pluginManifest->details.pluginRaw;
             if (auto s = pluginObj.getString("main")) {
                 r.mainEntry = s->str();
             }
             r.manifestJson = manifestJson;
-            // Resolve the plugin's own dependencies (flat, v1 — a plugin
-            // flattens its transitive closure into its manifest) so the
-            // compile-from-cja path has its classpath. Parsed from the raw
-            // sidecar JSON: settings.dependencies { name: constraint }.
+            // A plugin flattens its transitive closure into its own manifest (v1),
+            // so its classpath comes from the raw sidecar's settings.dependencies.
             {
                 auto parsedSidecar = llvm::json::parse(manifestJson);
                 if (parsedSidecar) {
@@ -301,10 +269,8 @@ namespace cajeta::buildtool {
                 }
             }
             if (auto s = pluginObj.getString("binary")) {
-                // Resolve relative paths against the artifact's
-                // own directory. The artifact lives in the local
-                // cache; binaries shipped inside the plugin's
-                // published archive land alongside.
+                // Relative binaries resolve against the artifact's own directory,
+                // where a binary shipped in the published archive lands.
                 std::string bin = s->str();
                 if (!bin.empty() && bin[0] != '/') {
                     auto slash = r.artifactPath.find_last_of('/');

@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 3/30/23.
-//
+// Exception for an operator applied to incompatible operand types.
 
 #pragma once
 

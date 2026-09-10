@@ -14,48 +14,20 @@ namespace cajeta {
     struct MethodCallParameter {
         string label;
         ExpressionPtr expression;
-        // Phase 1 of two-sided transfer (docs/specification/lang/OwnershipTransfer.md).
-        // `#x` at the argument position sets this. ONLY this flag fires the
-        // drop deactivation in MethodCallExpression.cpp / CreatorRest.cpp —
-        // the call-site `#` always transfers and is always sufficient. A `#T`
-        // FORMAL never transfers on its own: when the formal is `#T` and this
-        // flag is false, the callee-side pass raises
-        // CAJETA_ERROR_TRANSFER_REQUIRED, compelling the caller to write `#`.
-        // The two sides are asymmetric — the formal's `#` is an obligation,
-        // not an acknowledgement.
+        // Set by `#x` at the argument position, the only thing that deactivates the
+        // source's drop entry: a `#T` formal obliges the caller, but never transfers.
         bool callerTransferred = false;
     };
 
-    // stdlib-ownership-convention U2 (spec 3.1, 4.1; plan 2.2.3) — apply the
-    // transfer-of-a-borrow rejection to every `#`-marked ARGUMENT.
-    //
-    // `#x` takes two different routes through the compiler. An assignment or
-    // a return builds a MoveExpression node; an ARGUMENT instead sets the
-    // `callerTransferred` flag above and leaves a BARE IDENTIFIER as the
-    // child, so no MoveExpression is ever constructed. Every borrow check
-    // lived in MoveExpression::generateCode, which made argument position a
-    // blind spot shared by the PRE-EXISTING checks — and argument position is
-    // exactly where the cajeta-llama corruption lived (`heap String(#kb, kl)`,
-    // a borrowed key surrendered to a String that then freed it twice).
-    //
-    // Called from both argument-bearing paths: MethodCallExpression (calls)
-    // and ClassCreatorRest (`heap T(...)` / `stack T(...)`).
+    // Applies the transfer-of-a-borrow rejection to every `#`-marked ARGUMENT, for calls
+    // and construction alike: an argument's `#` builds no MoveExpression, where the rest
+    // of the borrow checks live.
     void rejectTransferOfBorrowArgs(CajetaModulePtr module,
                                     const vector<MethodCallParameter>& args);
 
-    // Emit an indirect call through a closure value of function type `fnType`.
-    // `closurePtr` is a `ptr` to the closure record `{ ptr fn, ptr captures,
-    // ptr drop }` (the L3-3 ABI). `args` are the source-level argument
-    // expressions (labels ignored). On an sret value-return this allocates the
-    // result slot, threads it as the hidden arg 0, sets `outResolvedType` to the
-    // function's return type, and returns the slot; otherwise it returns the
-    // call result. Shared by the bare-identifier indirect call
-    // (`op(args)` in MethodCallExpression) and the postfix expression/indexed
-    // call (`arr[i](args)` in CallExpression) so the closure ABI lives in one
-    // place. See docs/specification/lang/Lambdas.md.
-    // When `directFn` is non-null the call targets that known function directly
-    // (closure-specialization fast path, cajeta-ir Unit 4): captures fold to
-    // null and `closurePtr` is ignored — no indirect load-through-record.
+    // Emits an indirect call through the closure record `{ ptr fn, ptr captures, ptr
+    // drop }` at `closurePtr`, allocating and threading the sret slot for a value return
+    // and setting `outResolvedType`. A non-null `directFn` is called directly instead.
     llvm::Value* emitClosureCall(CajetaModulePtr module,
                                  llvm::Value* closurePtr,
                                  const std::shared_ptr<CajetaFunctionType>& fnType,
@@ -67,90 +39,42 @@ namespace cajeta {
         string methodCallName;
         vector<MethodCallParameter> parameters;
     public:
-        // transform-intrinsics U7 — a compiler-built bare combinator call (the
-        // annotation-sugar desugar). No parser context; the caller stamps the
-        // desugared call site's span via setSourceSpan.
-        // WHERE THE CALLED NAME IS WRITTEN, as distinct from where the call
-        // EXPRESSION starts. For `c.value()` the node begins at `c`; the token
-        // a developer Ctrl-clicks is `value`. The xref `references` relation
-        // has always exported the identifier's own position, and `calls`
-        // exported the node's, so the two relations disagreed about what `col`
-        // meant and the IDE's lookup — which is keyed on the clicked
-        // identifier — missed every call edge. Measured 2026-08-30 on
-        // `ClassesDemo.cajeta:18`: the export said col 19 (`c`), the plugin
-        // asked for col 21 (`value`). Defaults to the node's own position for
-        // the forms with no identifier context (`super`, `this`).
+        // WHERE THE CALLED NAME IS WRITTEN, as distinct from where the call expression
+        // starts: for `c.value()` the node begins at `c`, but the IDE's lookup is keyed
+        // on `value`. Defaults to the node's own position for `super` and `this`.
         int nameLine = 0;
         int nameColumn = 0;
 
+        // A compiler-built call with no parser context; the caller stamps the desugared
+        // call site's span with setSourceSpan.
         MethodCallExpression(string name, vector<MethodCallParameter> params)
             : Expression(nullptr), methodCallName(std::move(name)),
               parameters(std::move(params)) { }
     private:
-        // title-tracking 6.2.2 — set by the Cajeta.flagged(v, owned)
-        // intrinsic: the runtime i64 title flag paired with this call's
-        // value. ReturnStatement reads it to thread a container's MANUAL
-        // ownership bookkeeping (HashMap's owned[] bits) onto the return
-        // flag — cajeta code cannot otherwise mint "owned iff my bit says
-        // so". Null for every ordinary call.
+        // The runtime i64 title flag Cajeta.flagged(v, owned) pairs with this call's
+        // value — how cajeta code mints "owned iff my bit says so". Null otherwise.
         llvm::Value* flaggedTitleValue = nullptr;
-        // True for the `super(args)` methodCall alternative (CajetaParser.g4:630).
-        // The ordinary identifier path doesn't set this; the SUPER form does so
-        // generateCode can route through the parent class's constructor instead
-        // of doing identifier-based dispatch (and ctx->identifier() is null in
-        // this case so the usual `getText()` call would null-deref).
+        // True for the `super(args)` alternative, which routes to the parent's
+        // constructor: that form has no identifier context to dispatch on.
         bool superCtorCall = false;
-        // Explicit method-level template type arguments from the
-        // `identifier<TypeArgs>(args)` call-site syntax (Form C). Empty
-        // for ordinary calls (type args inferred via unification at
-        // resolveMethod time). See docs/specification/lang/templates/MethodLevelTemplate.md.
+        // Type args from `identifier<TypeArgs>(args)`; empty when they are inferred.
         vector<CajetaTypePtr> explicitMethodTypeArgs;
-        // Capture identity for the read-back pattern. `resolvedType` is
-        // the projected bound (via captureProject) for user-facing
-        // chained-member resolution; `preProjectionReturnType` is the
-        // un-projected wildcard sentinel. The outer call site uses
-        // the latter to detect "value came from the same wildcard
-        // receiver" — wildcard meets wildcard at the parameter check
-        // and the call resolves cleanly. v1 scope: syntactic
-        // receiver-identifier equality.
+        // The un-projected wildcard sentinel behind `resolvedType`'s projected bound: an
+        // outer call site compares it to detect a value from the same wildcard receiver.
         CajetaTypePtr preProjectionReturnType;
-        // REFL-12: idempotency guard for the bounded-reflection lowering.
-        // `Class.newInstance<Shape>(name)` / `Class.forName<Shape>(name)` are
-        // rewritten by appending the bound (`Shape.class`) as a synthesized
-        // second argument so the call resolves to the 2-arg bounded overload.
-        // generateCode may run more than once; this ensures the arg is injected
-        // exactly once.
+        // generateCode may run more than once, so this guards the bounded-reflection
+        // rewrite that appends `Shape.class` as a synthesized second argument.
         bool boundedReflInjected = false;
-        // element-ownership 3.4.3: whether the resolved callee declares an
-        // ownership-transferring (`#T`) return. Set during generateCode's
-        // resolution; an enclosing call site consults it to classify this
-        // call's result as a fresh owned temporary that the enclosing
-        // statement must reclaim when consumed as a borrow argument.
-        // Stays false on intrinsic paths that never resolve a user
-        // method — conservative (no reclamation).
+        // Whether the resolved callee declares a `#T` return, so an enclosing site can
+        // treat this result as a fresh owned temporary it must reclaim.
         bool resolvedReturnsOwnership = false;
-        // Whether the line above is an ANSWER or merely its default.
-        //
-        // The two meanings were conflated and it cost a release. `false` was
-        // documented as conservative-for-reclamation ("don't reclaim"), and
-        // 8.2.22 then read the same field as "definitely a borrow" when
-        // deciding whether a `#=` bind takes a title. For intrinsic-lowered
-        // calls — which emit their IR and return from generateCode before any
-        // method is resolved — false meant neither: it meant nobody had looked.
-        // An owned intrinsic result therefore arrived with no title, and
-        // forwarding one across a return boundary died (FileReader.readString,
-        // File.readAllBytes, Command.run all measured; released in 0.21.0).
-        //
-        // Set only where a declared stance was actually determined, so
-        // "unknown" is answerable and each consumer can pick its own safe
-        // default instead of inheriting someone else's.
+        // Whether the line above is an ANSWER or merely its default. Set only where a
+        // declared stance was determined, so a consumer can pick its own default rather
+        // than read "nobody looked" as "borrow".
         bool resolvedReturnsOwnershipKnown = false;
-        // 6.2.2 — the method this call resolved to (set beside
-        // resolvedReturnsOwnership); lets statement-position consumers ask
-        // shape questions (returnsClassPointer) without re-resolving.
+        // The method this call resolved to, so consumers ask shape questions once.
         MethodPtr resolvedMethod;
-        // 8.2.4 — set once generateCode ran: a null `resolvedMethod` after
-        // that is an intrinsic lowering, which stores no return flag.
+        // Once this is set, a null `resolvedMethod` means an intrinsic lowering.
         bool codegenRan = false;
     public:
         bool isResolvedReturnsOwnership() const { return resolvedReturnsOwnership; }
@@ -158,22 +82,9 @@ namespace cajeta {
         /** True when [isResolvedReturnsOwnership] reflects a real declaration. */
         bool hasKnownReturnStance() const { return resolvedReturnsOwnershipKnown; }
 
-        /**
-         * "Does binding this call's result take a title?"
-         *
-         * Unknown answers OWNED, which is what every consumer assumed before
-         * 8.2.22 made the question answerable. Intrinsic lowerings are the only
-         * paths that reach here unknown, and they overwhelmingly produce fresh
-         * allocations — the stdlib's `#`-returning intrinsics are exactly the
-         * file, process and socket constructors.
-         *
-         * Not a complete answer, and deliberately not dressed as one: a
-         * borrow-returning intrinsic would still over-claim here. Closing that
-         * needs the intrinsic families to declare their stance (the seeding
-         * block in generateCode does it for those with a resolved target class);
-         * until then this restores the pre-regression behaviour for the paths
-         * that never resolve, without touching the ones that do.
-         */
+        /** "Does binding this call's result take a title?" Unknown answers OWNED: only
+         *  intrinsic lowerings arrive unknown, and those allocate. A borrow-returning
+         *  intrinsic would still over-claim here. */
         bool bindingTakesTitle() const {
             return resolvedReturnsOwnershipKnown ? resolvedReturnsOwnership : true;
         }
@@ -182,40 +93,32 @@ namespace cajeta {
         /** True once generateCode has run (see codegenRan). */
         bool hasGenerated() const { return codegenRan; }
 
-        // element-ownership 3.4.3 / slices 9.4.1 — statement-end temp
-        // classification, shared with the ctor-arg site (ClassCreatorRest).
-        // freshOwnedStringTemp: anonymous owned-String rvalue (inline concat
-        // or #String-returning call). freshSharedValueTempClass: a call
-        // result of a shared-capable VALUE type (Utf8 / Slice / aggregates
-        // embedding them) — every such rvalue carries its stakes with the
-        // bytes; returns the class for the release emit, or null.
+        // Statement-end temp classification, shared with the ctor-arg site: an anonymous
+        // owned-String rvalue, and a shared-capable value result whose class is returned.
         static bool freshOwnedStringTemp(const AbstractSyntaxNodePtr& e);
         static shared_ptr<CajetaClass> freshSharedValueTempClass(
             const AbstractSyntaxNodePtr& e);
-        // title-tracking 6.2.5 — temps whose title rides the transfer word /
-        // caller-side reclaim: concrete vtable classes only (Strings keep
-        // 3.4.3, values 9.4.1, interfaces have no entry to take a title).
+        // Temps whose title rides the transfer word: concrete vtable classes only, since
+        // an interface has no drop entry that could take a title.
         static shared_ptr<CajetaClass> droppableTempClass(
             const CajetaTypePtr& t);
-        // A plain `heap X(...)` creator — an anonymous owned rvalue that
-        // surrenders per spec §4.1.1. stack/shared placements never do.
+        // A plain `heap X(...)` creator, an anonymous owned rvalue that surrenders;
+        // stack and shared placements never do.
         static shared_ptr<CajetaClass> freshHeapCreatorTempClass(
             const AbstractSyntaxNodePtr& e);
-        // The array-typed twin: a heap `[1, 2]` literal argument is equally an
-        // anonymous owned rvalue. stack/arena literals never surrender — the
-        // frame reclaims their storage.
+        // The array-typed twin; a stack or arena literal never surrenders, as the frame
+        // reclaims its storage.
         static bool freshHeapArrayLiteralArg(const AbstractSyntaxNodePtr& e);
         CajetaTypePtr getPreProjectionReturnType() const {
             return preProjectionReturnType;
         }
         MethodCallExpression(CajetaParser::MethodCallContext* ctx, antlr4::Token* token);
 
-        // Method-call args aren't in `children` (children[0] is the receiver,
-        // if any). The free-variable walk in LambdaExpression uses this to
-        // recurse into the args when scanning a lambda body for captures.
+        // Arguments are not in `children`, whose [0] is the receiver: a walk that must
+        // see them (the lambda capture scan) comes through here.
         const vector<MethodCallParameter>& getParameters() const { return parameters; }
 
-        // 7.2.4 — args are private; children[0] is only the receiver.
+        // Visits the arguments too, which `children` does not hold.
         void forEachSubNode(
                 const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
             for (auto& p : parameters) {
@@ -226,24 +129,14 @@ namespace cajeta {
 
         const string& getMethodCallName() const { return methodCallName; }
 
-        // Conservative callee peek for ARGUMENT-position calls, used by the
-        // `#T`-formal transfer checks (here and CreatorRest) to classify a
-        // call-result argument as owned-returning (`-> #R`) or a borrow
-        // BEFORE the arg has generated (resolvedMethod is only set during
-        // the call's own codegen). Resolves the receiver class (bare call ->
-        // enclosing class; `X.m()` -> X as a type name; `expr.m()` -> expr's
-        // resolved type) and answers ONLY on a unique name+arity match —
-        // ambiguity or an unresolvable receiver returns null so the caller
-        // stays conservative (no false rejections).
+        // Conservative callee peek for an argument-position call, classifying its return
+        // stance before that argument generates. Unique name+arity match or null.
         static MethodPtr resolveArgCalleeShallow(
             const std::shared_ptr<MethodCallExpression>& call,
             CajetaModulePtr module);
 
-        // The receiver half of the above, shared with the xref
-        // overload-discrimination path so both apply the same rules.
-        // `allowSuper` additionally resolves a `super.m()` receiver to the
-        // parent class; the ownership checks leave it off so their
-        // conservatism is unchanged.
+        // The receiver half of the above, shared with xref so both apply the same rules.
+        // `allowSuper` also resolves a `super.m()` receiver to the parent class.
         static shared_ptr<CajetaClass> resolveReceiverClassShallow(
             const std::shared_ptr<MethodCallExpression>& call,
             CajetaModulePtr module, bool allowSuper = false);
@@ -253,43 +146,25 @@ namespace cajeta {
             return explicitMethodTypeArgs;
         }
 
-        // xref-lint-emission-gap 4.2.1/4.2.2. Two jobs, both of which the
-        // default (children-only) walk cannot do:
-        //
-        //  1. Walk the ARGUMENTS. They are not in `children` (see
-        //     getParameters above), so the default walk never visits them and
-        //     a field access like `f(b.v)` is never recorded — while the same
-        //     access in `x = b.v` is. That was Unit 3's residual gap (3.3.2).
-        //  2. Resolve the callee under an open CallSiteScope, so lint records
-        //     a call edge where previously only codegen could.
-        //
-        // Deliberately does NOT cache into `resolvedMethod`: that member is
-        // codegen's, set from full overload resolution over resolved argument
-        // types, whereas this pass resolves by unique name+arity and is
-        // allowed to answer "don't know". Writing a weaker answer where
-        // codegen expects its own would change what a BUILD compiles.
+        // Walks the arguments, which `children` does not hold, and resolves the callee
+        // under an open CallSiteScope so lint records a call edge. It must NOT cache
+        // into `resolvedMethod`: that is codegen's full resolution, not this weaker one.
         void resolveTypes(CajetaModulePtr module) override;
 
     private:
-        // 4.2.4 — break a same-arity overload tie by the arguments' resolved
-        // types. Unique-or-nothing; an unresolved argument type disqualifies
-        // the attempt rather than acting as a wildcard.
+        // Breaks a same-arity overload tie by the arguments' resolved types, unique-or-
+        // nothing: an unresolved argument type disqualifies the attempt, never matches.
         MethodPtr resolveCalleeByArgTypes(CajetaModulePtr module);
 
-        // 5.1.6 — rebind a generic method's METHOD type parameters into its
-        // return type from this call site's explicit type args, so a chain
-        // continues past `map<int64>(...)`. Returns `declared` untouched for
-        // every shape that is not an exact match. Lint-only: called only from
-        // resolveTypes, which is gated on resolution-only mode.
+        // Rebinds a generic method's type parameters into `declared` from this call
+        // site's explicit type args, so a chain continues past `map<int64>(...)`.
+        // Lint-only, and returns `declared` untouched for any shape that is not exact.
         CajetaTypePtr rebindMethodTypeArgs(const CajetaTypePtr& declared,
                                            const MethodPtr& callee);
     public:
 
-        /**
-         * First, get the full name of the object.
-         * @param module
-         * @return
-         */
+        /** Resolves the callee and emits the call — intrinsic lowering, closure call,
+         *  virtual dispatch or direct call — with the caller-side ownership work. */
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

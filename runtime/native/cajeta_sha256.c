@@ -1,25 +1,6 @@
-// SHA-256 (FIPS 180-4) native runtime primitives for `cajeta.hash.Sha256`.
-//
-// This file is **#include'd** into `cajeta_runtime.c` near the MD5
-// section — it is NOT a standalone translation unit. The runtime is
-// compiled as a single TU to one LLVM bitcode module that the codegen
-// embeds + Linker-merges into JIT output; a separate .o would never be
-// seen by `@Native` symbol resolution. Including here keeps SHA-256 in
-// the same module as MD5 / SipHash / XXHash3, matching how every other
-// `cajeta.hash` algorithm is wired. All <stdint.h>/<string.h> headers
-// the body needs are already included by cajeta_runtime.c above.
-//
-// The C ABI mirrors the MD5 bridges one-for-one (alloc/free/reset/
-// update/finalize_into/finish_int64/write_iN/write_fN/oneshot_into/
-// oneshot_hex_into) so the cajeta Sha256 class is a structural twin of
-// MD5 — same field-index + live-set workarounds. Differences from MD5:
-// the digest is 32 bytes (not 16), the word order is **big-endian**
-// (SHA-2 is big-endian; MD5 is little-endian), and the padding length
-// field is a 64-bit big-endian bit count.
-//
-// Cross-checked against the FIPS 180-4 worked examples + NIST CAVP
-// short-message vectors (empty / "abc" / the 56-byte two-block
-// message). See test/parser/Sha256Tests.cpp for the pinned vectors.
+// SHA-256 (FIPS 180-4) for `cajeta.hash.Sha256`. #include'd into
+// cajeta_runtime.c, NOT a standalone TU: @Native resolution only sees the one
+// merged module. The C ABI mirrors MD5's, but the digest is 32 big-endian bytes.
 
 struct cajeta_sha256_state {
     uint32_t s[8];          // H0..H7
@@ -28,8 +9,6 @@ struct cajeta_sha256_state {
     int32_t  buf_len;
 };
 
-// First 32 bits of the fractional parts of the cube roots of the first
-// 64 primes (FIPS 180-4 §4.2.2).
 static const uint32_t SHA256_K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -53,13 +32,9 @@ static inline uint32_t sha256_rotr(uint32_t x, uint32_t n) {
     return (x >> n) | (x << (32u - n));
 }
 
-// ── Hardware SHA path (x86 SHA-NI: sha256rnds2/msg1/msg2) ───────────────────
-// The crown-holders (rust sha2, OpenSSL, Go crypto/sha256) all dispatch to the
-// CPU SHA extensions, hitting ~2.0-2.4 GB/s; a scalar transform tops out near
-// ~0.5 GB/s. We do the same: a SHA-NI multi-block transform gated by a one-shot
-// CPUID probe, with the scalar transform as the fallback (non-x86, or x86
-// without SHA). The probe uses inline `cpuid` (<cpuid.h>) — no external
-// __cpu_model/__cpu_indicator_init symbols, which the LLJIT can't materialize.
+// ── Hardware SHA path (x86 SHA-NI: sha256rnds2/msg1/msg2) ──────────────────
+// The probe is inline `cpuid`: the LLJIT cannot materialize the external
+// __cpu_model / __cpu_indicator_init symbols a compiler builtin would emit.
 #if defined(__x86_64__) || defined(__i386__)
 #define CAJETA_SHA256_X86 1
 #include <immintrin.h>
@@ -75,10 +50,8 @@ static int cajeta_cpu_has_sha(void) {
     return v;
 }
 
-// SHA-NI multi-block transform. Message schedule kept in four rotating 128-bit
-// windows (verified against the scalar schedule); two sha256rnds2 per 4-round
-// group. Big-endian message load via the byte-shuffle MASK. The full unroll
-// keeps the windows in registers (array indices are compile-time constants).
+// SHA-NI multi-block transform; the full unroll is what keeps the four rotating
+// message windows in registers, since the indices then become constants.
 __attribute__((target("sha,sse4.1,ssse3")))
 static void sha256_shani(uint32_t state[8], const uint8_t* data, size_t blocks) {
     const __m128i MASK = _mm_set_epi64x(0x0c0d0e0f08090a0bULL, 0x0405060700010203ULL);
@@ -102,7 +75,6 @@ static void sha256_shani(uint32_t state[8], const uint8_t* data, size_t blocks) 
             __m128i cur = M[g & 3];
             MSG = _mm_add_epi32(cur, _mm_loadu_si128((const __m128i*)&SHA256_K[g*4]));
             STATE1 = _mm_sha256rnds2_epu32(STATE1, STATE0, MSG);
-            // Produce the window for group g+4 while the first rnds2 retires.
             if (g < 12) {
                 __m128i o = M[g & 3], a = M[(g+1) & 3], b = M[(g+2) & 3], c = M[(g+3) & 3];
                 o = _mm_sha256msg1_epu32(o, a);
@@ -130,7 +102,6 @@ static int cajeta_cpu_has_sha(void) { return 0; }
 
 static void sha256_transform_scalar(uint32_t state[8], const uint8_t block[64]) {
     uint32_t W[64];
-    // Message schedule: first 16 words are the block read big-endian.
     for (int i = 0; i < 16; i++) {
         W[i] = ((uint32_t) block[i*4 + 0] << 24)
              | ((uint32_t) block[i*4 + 1] << 16)
@@ -172,8 +143,7 @@ static void sha256_transform_scalar(uint32_t state[8], const uint8_t block[64]) 
     state[7] += h;
 }
 
-// Process `blocks` complete 64-byte blocks, dispatching to SHA-NI when the CPU
-// advertises the SHA extensions, else the scalar transform.
+// Processes `blocks` whole 64-byte blocks on SHA-NI when the CPU has it.
 static void sha256_blocks(uint32_t state[8], const uint8_t* data, size_t blocks) {
 #ifdef CAJETA_SHA256_X86
     if (cajeta_cpu_has_sha()) { sha256_shani(state, data, blocks); return; }
@@ -182,8 +152,7 @@ static void sha256_blocks(uint32_t state[8], const uint8_t* data, size_t blocks)
 }
 
 static void sha256_init(struct cajeta_sha256_state* s) {
-    // First 32 bits of the fractional parts of the square roots of the
-    // first 8 primes (FIPS 180-4 §5.3.3).
+    // The FIPS 180-4 §5.3.3 initial hash value.
     s->s[0] = 0x6a09e667;
     s->s[1] = 0xbb67ae85;
     s->s[2] = 0x3c6ef372;
@@ -199,7 +168,6 @@ static void sha256_init(struct cajeta_sha256_state* s) {
 static void sha256_update(struct cajeta_sha256_state* s,
                           const uint8_t* data, size_t len) {
     s->bits += (uint64_t) len * 8u;
-    // 1. Top off any partial buffer to a full block first.
     if (s->buf_len > 0) {
         size_t need = (size_t) (64 - s->buf_len);
         size_t take = need < len ? need : len;
@@ -208,14 +176,11 @@ static void sha256_update(struct cajeta_sha256_state* s,
         data += take; len -= take;
         if (s->buf_len == 64) { sha256_blocks(s->s, s->buf, 1); s->buf_len = 0; }
     }
-    // 2. Hash whole blocks straight from the caller's buffer — no per-block
-    //    memcpy, and SHA-NI keeps the digest state in registers across them.
     if (len >= 64) {
         size_t nb = len >> 6;
         sha256_blocks(s->s, data, nb);
         data += nb << 6; len -= nb << 6;
     }
-    // 3. Stash the sub-block tail for next time.
     if (len > 0) {
         memcpy(s->buf, data, len);
         s->buf_len = (int32_t) len;
@@ -223,8 +188,7 @@ static void sha256_update(struct cajeta_sha256_state* s,
 }
 
 static void sha256_finalize(struct cajeta_sha256_state* s, uint8_t out[32]) {
-    // Append 0x80, pad with zeros to 56 mod 64, append the 8-byte
-    // big-endian bit count, transform.
+    // Pad: 0x80, zeros to 56 mod 64, then the 8-byte big-endian bit count.
     s->buf[s->buf_len++] = 0x80;
     if (s->buf_len > 56) {
         memset(s->buf + s->buf_len, 0, (size_t)(64 - s->buf_len));
@@ -244,9 +208,7 @@ static void sha256_finalize(struct cajeta_sha256_state* s, uint8_t out[32]) {
     }
 }
 
-// --- SHA-256 C ABI bridges -------------------------------------------------
-// Streaming state — opaque to cajeta. Allocator + finalizer match the
-// destructor / ctor pattern the cajeta Sha256 class uses (mirrors MD5).
+// --- SHA-256 C ABI bridges: the state is opaque to cajeta ------------------
 
 void* __cajeta_sha256_alloc(void) {
     struct cajeta_sha256_state* s = (struct cajeta_sha256_state*) malloc(sizeof *s);
@@ -263,25 +225,22 @@ void __cajeta_sha256_reset(void* state) {
     if (state) sha256_init((struct cajeta_sha256_state*) state);
 }
 
-// `data_hdr` is a cajeta int8[] header — { i64 count, [N x i8] data }.
-// Caller passes the explicit `len`; bytes are read from offset 8.
+// `data_hdr` is a cajeta int8[] header ({ i64 count, data }), bytes at +8.
 void __cajeta_sha256_update(void* state, const void* data_hdr, int64_t len) {
     if (!state || !data_hdr || len <= 0) return;
     const uint8_t* data = ((const uint8_t*) data_hdr) + 8;
     sha256_update((struct cajeta_sha256_state*) state, data, (size_t) len);
 }
 
-// out_hdr is a cajeta int8[32] header. Writes 32 bytes starting at
-// offset 8. Caller sizes the array.
+// Writes 32 digest bytes at `out_hdr` + 8; the caller sizes the int8[32].
 void __cajeta_sha256_finalize_into(void* state, void* out_hdr) {
     if (!state || !out_hdr) return;
     uint8_t* out = ((uint8_t*) out_hdr) + 8;
     sha256_finalize((struct cajeta_sha256_state*) state, out);
 }
 
-// Width-named primitive folders — little-endian byte representation,
-// matching the MD5 Hasher contract (so swapping algorithm classes keeps
-// the same byte sequence per primitive).
+// Width-named folders, little-endian like MD5's, so swapping the algorithm
+// class keeps the same byte sequence per primitive.
 void __cajeta_sha256_write_i8 (void* state, int8_t  v) {
     if (state) sha256_update((struct cajeta_sha256_state*) state, (const uint8_t*) &v, 1);
 }
@@ -318,9 +277,8 @@ void __cajeta_sha256_write_bool(void* state, int8_t v) {
     __cajeta_sha256_write_i8(state, v ? 1 : 0);
 }
 
-// finish() Hasher projection: first 8 digest bytes as a little-endian
-// int64. Mutates the state (calls sha256_finalize), so a second finish()
-// returns garbage — Hasher.finish() is terminal by contract.
+// The first 8 digest bytes as a little-endian int64. Finalizes the state, so a
+// second call returns garbage: Hasher.finish() is terminal by contract.
 int64_t __cajeta_sha256_finish_int64(void* state) {
     if (!state) return 0;
     uint8_t digest[32];
@@ -332,9 +290,8 @@ int64_t __cajeta_sha256_finish_int64(void* state) {
     return (int64_t) v;
 }
 
-// One-shot variants. Caller pre-allocates the output array on the cajeta
-// side (since @Native return of int8[] isn't ABI-bridged in v1). These
-// helpers fill the caller's buffer at `out_hdr + 8`.
+// One-shot digest into the caller's pre-allocated buffer at `out_hdr` + 8:
+// an @Native return of int8[] is not ABI-bridged.
 void __cajeta_sha256_oneshot_into(const void* data_hdr, int64_t len, void* out_hdr) {
     if (!out_hdr) return;
     struct cajeta_sha256_state s;
@@ -363,9 +320,8 @@ void __cajeta_sha256_oneshot_hex_into(const void* data_hdr, int64_t len, void* o
     }
 }
 
-// Finalize a streaming state into a caller-supplied int8[64] hex buffer.
-// Lets the cajeta `Sha256.digestHex()` / `hex()` surface produce hex
-// without a separate raw-digest round-trip.
+// Finalizes a streaming state straight into a caller-supplied int8[64] hex
+// buffer, so `Sha256.digestHex()` needs no raw-digest round-trip.
 void __cajeta_sha256_finalize_hex_into(void* state, void* out_hdr) {
     if (!state || !out_hdr) return;
     uint8_t digest[32];

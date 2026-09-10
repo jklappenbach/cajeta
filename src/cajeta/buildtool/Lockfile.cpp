@@ -86,9 +86,6 @@ namespace cajeta::buildtool {
         lf.generatorVersion = CAJETA_VERSION;
         lf.resolvedAt = nowIso;
         lf.properties = props.values;
-        // packages/melts/plugins/overrides stay empty until callers
-        // either populate the typed slots (composeLockfileWithResolution)
-        // or fill the raw escape hatches.
         return lf;
     }
 
@@ -134,8 +131,7 @@ namespace cajeta::buildtool {
             pe.version = rp.version;
             pe.resolvedFromRepo = rp.resolvedFromRepo;
             pe.checksum = rp.sha256;
-            // Capability list lands sorted so the lockfile is stable
-            // across hash-set iteration order.
+            // Sorted, so a hash-set's iteration order cannot reach the lockfile.
             pe.capabilities.assign(rp.capabilities.begin(),
                                    rp.capabilities.end());
             std::sort(pe.capabilities.begin(), pe.capabilities.end());
@@ -168,9 +164,7 @@ namespace cajeta::buildtool {
                 }
                 lf.workspaceMembers.push_back(std::move(e));
             }
-            // Flatten per-member resolutions in declaration order so
-            // the on-disk lockfile is stable across hash-map
-            // iteration order.
+            // Declaration order, so a hash map's order cannot reach the lockfile.
             for (const auto& m : workspace->members) {
                 auto memberName = memberShortName(m);
                 auto it = inputs.perMemberDeps.find(memberName);
@@ -200,9 +194,8 @@ namespace cajeta::buildtool {
     }
 
     llvm::Error writeLockfile(const std::string& path, const Lockfile& lf) {
-        // Build the JSON document with deterministic key order so
-        // round-tripping a lockfile produces byte-identical output —
-        // useful for VCS-friendly diffs and reproducibility checks.
+        // Key order here is deterministic so that round-tripping a lockfile is
+        // byte-identical, which the VCS diff and reproducibility checks rely on.
         llvm::json::Object root;
         root["lockfile-version"] = lf.lockfileVersion;
         root["manifest-checksum"] = lf.manifestChecksum;
@@ -212,20 +205,14 @@ namespace cajeta::buildtool {
         };
         root["resolved-at"] = lf.resolvedAt;
 
-        // Properties — emit in sorted key order so the on-disk shape
-        // is stable across runs that resolve the same property set in
-        // different evaluation orders.
         llvm::json::Object propsObj;
         for (const auto& kv : lf.properties) {
             propsObj[kv.first] = kv.second;
         }
         root["properties"] = std::move(propsObj);
 
-        // Packages array: typed entries get a deterministic shape
-        // (name, version, resolved-from, checksum, provided-by). When
-        // no typed entries are present, fall back to whatever was in
-        // packagesRaw (Phase 2 compatibility path — composeLockfile
-        // before melt resolution left it empty).
+        // Typed entries get a fixed shape; with none, whatever `packagesRaw` holds
+        // is written through unchanged, which is the pre-melt compatibility path.
         {
             llvm::json::Array a;
             if (!lf.packagesTyped.empty()) {
@@ -239,9 +226,7 @@ namespace cajeta::buildtool {
                                           ? std::string("explicit")
                                           : p.providedBy},
                     };
-                    // Workspace discriminator — omitted on
-                    // single-package lockfiles so their disk shape
-                    // stays byte-identical to the pre-Phase-12 form.
+                    // Omitted on a single-package lockfile, whose shape must not move.
                     if (!p.memberOwner.empty()) {
                         obj["member"] = p.memberOwner;
                     }
@@ -252,8 +237,6 @@ namespace cajeta::buildtool {
             }
             root["packages"] = llvm::json::Value(std::move(a));
         }
-        // Melts array: typed entries get their own shape per spec
-        // (name, version, resolved-from, checksum, transitive-melts).
         {
             llvm::json::Array a;
             if (!lf.meltsTyped.empty()) {
@@ -276,8 +259,6 @@ namespace cajeta::buildtool {
             }
             root["melts"] = llvm::json::Value(std::move(a));
         }
-        // Plugins array: typed entries when populated, raw fallback
-        // otherwise (Phase 2 schema slot stayed an empty array).
         {
             llvm::json::Array a;
             if (!lf.pluginsTyped.empty()) {
@@ -342,8 +323,8 @@ namespace cajeta::buildtool {
             return err("cannot open lockfile '" + path + "': " +
                        buf.getError().message());
         }
-        // Strict JSON — no JSONC preprocessing here. The lockfile is
-        // machine-only; comments would create merge conflicts.
+        // Strict JSON, never JSONC: the lockfile is machine-written, and comments
+        // in it would only create merge conflicts.
         auto val = llvm::json::parse((*buf)->getBuffer());
         if (!val) {
             std::string msg;
@@ -383,9 +364,8 @@ namespace cajeta::buildtool {
         }
         if (const auto* a = root->getArray("packages")) {
             lf.packagesRaw = *a;
-            // Also parse into typed entries when the shape matches.
-            // Unknown fields are preserved via the raw fallback so
-            // round-trips don't drop schema additions.
+            // The raw copy above preserves unknown fields, so a round-trip through
+            // the typed entries cannot drop a later schema addition.
             for (size_t i = 0; i < a->size(); ++i) {
                 const auto* o = (*a)[i].getAsObject();
                 if (!o) continue;

@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 10/5/22.
-//
+// DefaultBlock - a Block placeholder that emits no code.
 
 #pragma once
 

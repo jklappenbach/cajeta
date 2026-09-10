@@ -16,46 +16,33 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // The valid top-level blocks in a manifest. Six core blocks
-        // plus two specialty blocks (workspace + melt) that are
-        // mutually exclusive with `tasks`/source content. See
-        // BuildTool.md "Manifest — cajeta.json". Phase 6c adds the
-        // typed parsers for `workspace` + `melt`; today they parse
-        // through as raw objects on the manifest.
+        // The valid top-level blocks. `workspace` and `melt` are specialty
+        // blocks, mutually exclusive with `tasks`/source content.
         const std::set<std::string> kTopLevelBlocks = {
             "details", "properties", "settings",
             "actions", "plugins", "tasks",
             "workspace", "melt",
         };
 
-        // Fields recognized inside the `details` block. Phase 0 is
-        // strict here: an unknown field is a load error, because the
-        // identity block's schema should be stable. Other blocks
-        // tolerate unknown fields during Phase 0 (modeled raw).
+        // Fields recognized inside `details`. Strict: an unknown field is a load
+        // error here, while other blocks tolerate unknown fields and model raw.
         const std::set<std::string> kDetailsFields = {
             "name", "version", "description", "license",
             "authors", "repository-url", "cajeta-lang-version",
-            // `plugin` carries the plugin-specific sub-block
-            // (id / actions / entries / binary) for packages that
-            // ship as plugins. Present only on plugin sidecars;
-            // captured raw because each runtime version owns the
-            // shape of that block.
+            // Captured raw: each runtime version owns that block's shape.
             "plugin",
         };
 
-        // Build a citation-style error. `where` is a human-readable
-        // location prefix (file/source label); `msg` is the actual
-        // explanation. Returned as an llvm::Error suitable for
-        // propagation through Expected<>.
+        // Build a citation-style llvm::Error, `where` being a human-readable
+        // location prefix (file/source label) and `msg` the explanation.
         llvm::Error cite(const std::string& where, const std::string& msg) {
             return llvm::createStringError(
                 llvm::inconvertibleErrorCode(),
                 where + ": " + msg);
         }
 
-        // Type predicates: the spec rejects null where a value is
-        // expected, and requires the block-typed values to actually be
-        // objects (not arrays, strings, etc.).
+        // Read required field `field` into `out`, erroring when it is absent or
+        // is not a string; null is rejected where a value is expected.
         llvm::Error requireString(const std::string& where,
                                   const std::string& field,
                                   const llvm::json::Value* v,
@@ -71,14 +58,13 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
+        // Read optional block `block` into `out`, erroring only when present and
+        // not an object; an absent block leaves `out` at its empty default.
         llvm::Error requireObject(const std::string& where,
                                   const std::string& block,
                                   const llvm::json::Value* v,
                                   llvm::json::Object& out) {
             if (!v) {
-                // Missing optional blocks are allowed; caller decides
-                // whether to call this. When the block is missing
-                // entirely we leave `out` as the empty default.
                 return llvm::Error::success();
             }
             const auto* o = v->getAsObject();
@@ -89,8 +75,8 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
-        // Load the `details` block. Required block; the manifest is
-        // ill-formed without it.
+        // Load the required `details` block into `out`; the manifest is
+        // ill-formed without it, and an unknown field in it is an error.
         llvm::Error loadDetails(const std::string& where,
                                 const llvm::json::Object& root,
                                 ManifestDetails& out) {
@@ -103,8 +89,6 @@ namespace cajeta::buildtool {
                 return cite(where, "'details' must be an object");
             }
 
-            // Reject unknown details fields — keeps the identity schema
-            // pinned.
             for (const auto& kv : *d) {
                 if (!kDetailsFields.count(kv.first.str())) {
                     return cite(where,
@@ -123,7 +107,6 @@ namespace cajeta::buildtool {
                 return e;
             }
 
-            // Optional string fields.
             auto getOptionalString = [&](const char* field,
                                          std::optional<std::string>& dst) -> llvm::Error {
                 const auto* v = d->get(field);
@@ -141,7 +124,6 @@ namespace cajeta::buildtool {
             if (auto e = getOptionalString("repository-url", out.repositoryUrl)) return e;
             if (auto e = getOptionalString("cajeta-lang-version", out.cajetaLangVersion)) return e;
 
-            // Authors array — optional, each entry must be a string.
             if (const auto* a = d->get("authors")) {
                 const auto* arr = a->getAsArray();
                 if (!arr) {
@@ -157,9 +139,7 @@ namespace cajeta::buildtool {
                 }
             }
 
-            // Plugin sub-block — optional. Captured raw because the
-            // shape is owned by the plugin protocol, not the
-            // manifest schema (Plugin.cpp's resolvePlugins reads it).
+            // Raw: the plugin protocol owns this shape, not the manifest schema.
             if (const auto* p = d->get("plugin")) {
                 const auto* obj = p->getAsObject();
                 if (!obj) {
@@ -201,9 +181,6 @@ namespace cajeta::buildtool {
             return cite(sourceLabel, "manifest root must be a JSON object");
         }
 
-        // Reject unknown top-level blocks. This catches typos
-        // (e.g. "settigns" for "settings") early rather than letting
-        // the field silently disappear.
         for (const auto& kv : *root) {
             if (!kTopLevelBlocks.count(kv.first.str())) {
                 return cite(sourceLabel,
@@ -220,8 +197,6 @@ namespace cajeta::buildtool {
             return std::move(e);
         }
 
-        // Other blocks: store raw and let later phases type them.
-        // Validate they're objects when present.
         if (auto e = requireObject(
                 sourceLabel, "properties",
                 root->get("properties"), m.propertiesRaw)) return std::move(e);
@@ -250,16 +225,10 @@ namespace cajeta::buildtool {
                     root->get("workspace"), m.workspaceRaw)) return std::move(e);
         }
 
-        // Phase 8: custom-flavor validation at load time. Walks every
-        // settings.build.custom-flavors entry — unknown property keys
-        // and base-chain cycles surface here rather than mid-build.
         if (const auto* settings = root->getObject("settings")) {
             if (const auto* build = settings->getObject("build")) {
                 if (const auto* cf = build->getObject("custom-flavors")) {
                     if (auto e = validateCustomFlavors(*cf)) {
-                        // Prepend the source label so the error
-                        // points at the manifest, not just the
-                        // offending custom-flavor entry.
                         std::string msg;
                         llvm::raw_string_ostream os(msg);
                         os << e;
@@ -270,12 +239,6 @@ namespace cajeta::buildtool {
             }
         }
 
-        // Melt mutual exclusion. A melt package's purpose is to export
-        // curated configuration — it has no source, no tasks, and
-        // can't simultaneously be a workspace root. Per BuildTool.md
-        // "Anatomy of a melt package" + Phase 6c plan: reject these
-        // combinations early so consumers can't accidentally publish
-        // a hybrid.
         if (m.hasMelt) {
             if (!m.tasksRaw.empty()) {
                 return cite(sourceLabel,
@@ -298,13 +261,9 @@ namespace cajeta::buildtool {
         const auto* output = m.settingsRaw.getObject("output");
         if (!output) return out;   // absent → defaults; valid
 
-        // One validator for all four keys, so they cannot drift apart.
-        // ABSOLUTE PATHS ARE LEGAL (§3.3 says values are relative to the
-        // project root "unless absolute", and §3.3.1 wants intermediates
-        // redirected to tmpfs) — what is rejected is a value that is not a
-        // string, is empty, or ESCAPES the project root. An escape is the
-        // real hazard: `../..` would put generated files somewhere the
-        // project does not own and `clean` would never find them again.
+        // One validator for all four keys, so they cannot drift apart. An
+        // ABSOLUTE path is legal; what is rejected is a non-string, an empty
+        // value, or one that escapes the project root, which `clean` never finds.
         auto read = [&](const char* key,
                         std::optional<std::string>& slot)
                 -> llvm::Error {

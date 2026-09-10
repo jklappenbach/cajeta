@@ -11,9 +11,8 @@ namespace cajeta::kernel {
 
     namespace {
 
-        // Records only what the verdict turns on: whether there was an error
-        // at all, and whether the FIRST one was the parser running out of
-        // input. Later errors are recovery noise from the first.
+        // Records only what the verdict turns on: whether there was an error at all,
+        // and whether the FIRST one was the parser running out of input.
         class FirstErrorListener : public antlr4::BaseErrorListener {
         public:
             bool sawError = false;
@@ -37,14 +36,9 @@ namespace cajeta::kernel {
             int braceDepth = 0;
         };
 
-        // Only two constructs in the grammar may legally span a line break: a
-        // TEXT_BLOCK and a block comment (CajetaLexer.g4:163-167 — both
-        // STRING_LITERAL and CHAR_LITERAL exclude \r\n). Those are exactly
-        // the two an "is the parser at EOF" test cannot see, because the
-        // LEXER reports them at the opening token rather than at the end of
-        // input. An unterminated ordinary string is not incomplete at all: no
-        // further line can close it, so it falls through to the parser and
-        // comes back invalid, which is the right answer.
+        // Only a TEXT_BLOCK and a block comment may legally span a line break, and the
+        // LEXER reports both at their opening token, so an "is the parser at EOF" test
+        // cannot see them. An unterminated ordinary string is invalid, not incomplete.
         Scan scanSource(const std::string& s) {
             Scan out;
             enum { Code, LineComment, BlockComment, Str, Chr, TextBlock } state = Code;
@@ -109,8 +103,6 @@ namespace cajeta::kernel {
         for (char c : source) {
             if (!std::isspace(static_cast<unsigned char>(c))) { blank = false; break; }
         }
-        // An empty prompt submits — the frontend clears it and moves on.
-        // Calling it incomplete traps the user in a prompt they cannot leave.
         if (blank) return Completeness::Complete;
 
         Scan scan = scanSource(source);
@@ -135,7 +127,6 @@ namespace cajeta::kernel {
         parser.compilationUnit();
 
         if (!listener.sawError) return Completeness::Complete;
-        // The parser stopped wanting more: another line can still save this.
         if (listener.firstAtEof || scan.braceDepth > 0) return continuation();
         return Completeness::Invalid;
     }

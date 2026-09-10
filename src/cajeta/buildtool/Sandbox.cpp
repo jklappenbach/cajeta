@@ -17,9 +17,7 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Canonical capability list shipped in capabilities-v1.
-        // Mirrors what plugins declare via `settings.capabilities`
-        // and what the sandbox layer enforces.
+        // The canonical capability names, as plugins declare them in the manifest.
         const std::map<std::string, Capability>& capByName() {
             static const std::map<std::string, Capability> m = {
                 {"filesystem", Capability::Filesystem},
@@ -57,10 +55,8 @@ namespace cajeta::buildtool {
     std::optional<std::set<Capability>>
     nativeActionCapabilities(const std::string& actionName) {
         using C = Capability;
-        // Hand-tabulated catalog — one entry per action registered in
-        // ActionRegistry (Action.cpp). Keep in sync with that registry and
-        // docs/BuildTool.md "Native action catalog". (Planned actions such as
-        // lint/doc/fmt are intentionally absent until they register.)
+        // Hand-tabulated: one entry per action registered in ActionRegistry, which
+        // this must be kept in step with. An unregistered action is absent by design.
         static const std::map<std::string, std::set<C>> table = {
             {"exec",       {C::Filesystem, C::Process, C::Env}},
             {"copy",       {C::Filesystem}},
@@ -93,21 +89,9 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Build the bwrap argv for a single confined invocation.
-        // The shape we emit:
-        //
-        //   bwrap --die-with-parent
-        //         --new-session
-        //         --proc /proc
-        //         --dev /dev
-        //         --tmpfs /tmp
-        //         --bind <projectRoot> <projectRoot>
-        //         [--ro-bind <ro> <ro> …]
-        //         [--bind <rw> <rw> …]
-        //         [--unshare-net]                   (when !network)
-        //         [--clearenv]
-        //         [--setenv K V …]
-        //         -- <inner argv>
+        // The bwrap argv for one confined invocation: a private proc/dev/tmp, the
+        // project bound rw, the policy's extra ro and rw binds, --unshare-net unless
+        // the policy grants Network, then a cleared env and the inner argv.
         std::vector<std::string> buildBwrapArgv(
             const SandboxPolicy& policy,
             const std::vector<std::string>& innerArgv,
@@ -122,11 +106,8 @@ namespace cajeta::buildtool {
             out.push_back("/dev");
             out.push_back("--tmpfs");
             out.push_back("/tmp");
-            // System read-only mounts so the compiler can find its
-            // own libraries. The Linux sandbox spec calls for the
-            // build to see only the project + dep cache; bwrap
-            // doesn't ship a usable libc/loader so we mount /usr +
-            // /lib + /etc/alternatives read-only.
+            // The build should see only the project and dep cache, but bwrap ships
+            // no usable libc or loader, so the system dirs are mounted read-only.
             for (const char* sys : {"/usr", "/lib", "/lib64", "/bin",
                                      "/sbin", "/etc/alternatives"}) {
                 if (std::filesystem::exists(sys)) {
@@ -153,11 +134,9 @@ namespace cajeta::buildtool {
             if (!policy.capabilities.count(Capability::Network)) {
                 out.push_back("--unshare-net");
             }
-            // Always start from a clean environment; explicit
-            // passthrough below.
+            // A clean environment, then explicit passthrough. HOME is faked to /tmp
+            // so a tool that consults it cannot reach the host's.
             out.push_back("--clearenv");
-            // PATH and HOME are baseline. HOME is faked to /tmp so
-            // tools that consult $HOME don't reach the host's.
             out.push_back("--setenv");
             out.push_back("PATH");
             out.push_back("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");

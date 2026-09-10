@@ -20,10 +20,8 @@ namespace cajeta {
             keep->insert(canon);
             if (keptBy) keptBy->emplace(canon, reason);
         };
-        // Key by toCanonical(): the canonicalMap reaches a class via both
-        // its short-name alias and its FQ name, but keepsClass() (and the
-        // reg-ctor) only ever uses toCanonical() — so dedup to that, or the
-        // keep-set/keepset.json over-report aliases that never register.
+        // Key by toCanonical(): the canonical map reaches a class by both short alias and FQ
+        // name, but keepsClass() uses only toCanonical(), so dedup or the keep-set over-reports.
         std::vector<std::pair<std::string, CajetaClassPtr>> classes;
         for (auto& [mapKey, type] : CajetaType::getCanonicalMap()) {
             if (auto k = std::dynamic_pointer_cast<CajetaClass>(type)) {
@@ -78,10 +76,7 @@ namespace cajeta {
                     }
                     break;
                 case RS::MethodAnnotated:
-                    // Any METHOD carrying the annotation keeps the
-                    // declaring class — the bounded form of the
-                    // allClasses() + per-method-filter discovery
-                    // idiom (cajeta-unit's @Test runner).
+                    // Any METHOD carrying the annotation keeps its declaring class.
                     for (auto& [canon, k] : classes) {
                         bool hit = false;
                         for (auto& [mk, m] : k->getMethods()) {

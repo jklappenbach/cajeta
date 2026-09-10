@@ -1,10 +1,4 @@
-//
-// CLI adapter helpers for skill discovery (skill-discovery spec §1.5.1). Pure,
-// transport-agnostic glue: argument parsing, output formatting, and assembling a
-// SkillSearchContext from resolved archives. The build-tool subcommands
-// (search-skill / list-skills / get-skills) are thin wrappers over these + the
-// Search/List/Get cores, so the same logic is reachable by a future MCP adapter.
-//
+// Transport-agnostic CLI glue for skill discovery: args, formatting, context.
 #pragma once
 
 #include <optional>
@@ -40,45 +34,33 @@ namespace cajeta::buildtool::skill {
         bool valid = true;
     };
 
-    // Parse args after the subcommand name (argv[0] is the subcommand). Flags:
-    // --version <v>/=<v>, --from <m>/=<m>, --exact (search only). First bare arg
-    // is the name (search, required) / scope (list, optional).
+    // Parse args after the subcommand name. Flags: --version, --from, --exact
+    // (search only); the first bare arg is the name / scope.
     SearchSkillArgs parseSearchSkillArgs(llvm::ArrayRef<std::string> args);
     ListSkillsArgs parseListSkillsArgs(llvm::ArrayRef<std::string> args);
 
-    // Split a comma-delimited URI list (the get-skills CLI form), trimming
-    // whitespace and dropping empties.
     std::vector<std::string> splitCommaUris(llvm::StringRef arg);
 
     // --- output formatting ---
 
-    // One line per result: "<uri>\t<matchedName>".
     std::string formatSearchResults(llvm::ArrayRef<SkillSearchResult> results);
-    // One line per entry: "<uri>\t<title>".
     std::string formatListEntries(llvm::ArrayRef<SkillListEntry> entries);
 
-    // The `--json` shapes, shared verbatim by the CLI subcommands and the
-    // compiler-mcp tools (parity is a spec requirement, compiler-mcp §3.1.4):
-    // search → [{uri, matchedName, tier, distance}], list → [{uri, title,
-    // names}], get → [{uri, ok, payload|error}].
+    // The `--json` shapes, shared verbatim with the compiler-mcp tools: search →
+    // [{uri, matchedName, tier, distance}], list → [{uri, title, names}].
     cajeta::dap::Json searchResultsJsonValue(
         llvm::ArrayRef<SkillSearchResult> results);
     cajeta::dap::Json listEntriesJsonValue(llvm::ArrayRef<SkillListEntry> entries);
     cajeta::dap::Json getResultsJsonValue(llvm::ArrayRef<SkillGetResult> results);
 
-    // Usage strings.
     std::string searchSkillUsage();
     std::string listSkillsUsage();
     std::string getSkillsUsage();
 
     // --- context assembly ---
 
-    // Build a SkillSearchContext from resolved lockfile packages: for each
-    // package, resolve its `.cja` via `lookupArtifact`, read `skills/index.json`,
-    // and add a ResolvedSkillArchive. Packages not cached, or with no skill
-    // index, are skipped; a corrupt index is an error. `moduleVersions` is built
-    // from workspace `memberOwner` groupings so `--from <member>` resolves the
-    // version that member sees (the settled module-identifier form, D.5.2).
+    // Build a context from resolved lockfile packages. An uncached or index-less
+    // package is skipped, but a corrupt `skills/index.json` is an error.
     llvm::Expected<SkillSearchContext> loadSkillSearchContext(
         llvm::ArrayRef<ResolvedPackageEntry> packages,
         llvm::function_ref<std::optional<std::string>(llvm::StringRef checksum)>

@@ -1,7 +1,4 @@
-//
-// CajetaCapture — see header for the design. This translation unit
-// hosts the monotonic ID counter and the factory implementations.
-//
+// CajetaCapture — see header; this TU hosts the monotonic ID counter and the factories.
 
 #include "CajetaCapture.h"
 
@@ -26,9 +23,7 @@ namespace cajeta {
     }
 
     static QualifiedNamePtr makeCaptureName(int64_t id) {
-        // Captures live in a synthetic package so their qNames can't
-        // collide with anything the user writes. The simple name carries
-        // the ID for readability in diagnostics / dumps.
+        // Captures live in a synthetic package so their qNames cannot collide with user names; the simple name carries the ID.
         std::string simple = "capture#" + std::to_string(id);
         return QualifiedName::getOrInsert(simple, "__cajeta_capture__");
     }
@@ -37,10 +32,8 @@ namespace cajeta {
             CajetaModulePtr module, CajetaTypePtr upperBound) {
         int64_t id = nextCaptureId();
         auto qName = makeCaptureName(id);
-        // Register as a wildcard-flavored type so existing wildcard
-        // machinery (isWildcard, wildcardKind, wildcardBound,
-        // isWildcardInstantiation, substitution-stable hashes,
-        // PECS check) accepts captures uniformly.
+        // Registered as a wildcard-flavored type, so the existing wildcard machinery
+        // (bounds, substitution-stable hashes, the PECS check) accepts captures uniformly.
         CajetaType::registerWildcardInfo(
             qName->toCanonical(), WildcardKind::Extends, upperBound);
         return make_shared<CajetaCapture>(

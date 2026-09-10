@@ -1,12 +1,5 @@
-// cajeta.lang String normalization wrappers over the UCD core
-// (stdlib-completion U7; spec §7). Pure algorithms + tables live in
-// cajeta_rt_ucd_core.c (compiled standalone by the conformance suite);
-// this layer only adapts the tagged String layout and follows
-// __cajeta_string_replace's convention: NULL result = "no change", so the
-// .cajeta side hands back `this` — §7.4's no-copy fast path.
-//
-// Included from cajeta_runtime.c after cajeta_rt_string.c (uses
-// cajeta_string_layout + caj_str_* helpers + __cajeta_alloc).
+// cajeta.lang String normalization over the UCD core (cajeta_rt_ucd_core.c holds
+// the tables); a NULL result means "no change" and the .cajeta side returns `this`.
 
 int32_t __cajeta_ucd_utf8_valid_buf(const uint8_t* p, int64_t n);
 int32_t __cajeta_ucd_is_normalized_buf(const uint8_t* p, int64_t n, int32_t form);
@@ -23,9 +16,7 @@ int32_t __cajeta_ucd_utf8_valid(void* s_v) {
                                        (int64_t) caj_str_len(s));
 }
 
-// EXACT membership: quick-check "yes" answers immediately; a No/Maybe
-// falls back to transform-and-compare, so the public boolean never lies
-// on a QC-Maybe string that happens to be normalized already.
+// A quick-check No/Maybe falls back to transform-and-compare, so the boolean never lies.
 int32_t __cajeta_ucd_is_normalized(void* s_v, int32_t form) {
     const cajeta_string_layout* s = (const cajeta_string_layout*) s_v;
     const uint8_t* p = (const uint8_t*) caj_str_ptr(s);
@@ -55,9 +46,7 @@ static void* caj_ucd_wrap(const cajeta_string_layout* like,
     return out;
 }
 
-// Normalize into `form` (0=NFC 1=NFD 2=NFKC 3=NFKD). NULL = already
-// normalized (fast path, no copy). The .cajeta side validates UTF-8 first
-// and throws EncodingException, so -1 from the core cannot happen here.
+// Normalizes into `form` (0=NFC 1=NFD 2=NFKC 3=NFKD); NULL when already normalized.
 void* __cajeta_ucd_normalize(void* s_v, int32_t form) {
     const cajeta_string_layout* s = (const cajeta_string_layout*) s_v;
     const uint8_t* p = (const uint8_t*) caj_str_ptr(s);
@@ -101,8 +90,7 @@ void* __cajeta_ucd_casefold(void* s_v) {
     return out;
 }
 
-// Strip Default_Ignorable_Code_Point characters (§7.5). NULL = nothing
-// stripped.
+// Strips Default_Ignorable_Code_Point characters; NULL when none were stripped.
 void* __cajeta_ucd_strip_ignorable(void* s_v) {
     const cajeta_string_layout* s = (const cajeta_string_layout*) s_v;
     const uint8_t* p = (const uint8_t*) caj_str_ptr(s);

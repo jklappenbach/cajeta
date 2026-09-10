@@ -1,21 +1,8 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
 // === (single-TU build; not a standalone compilation unit).
 // ---- @Inject runtime override registry (test-only DI substitution) ---------
-//
-// Lets a test bind a substitute instance for a type so that a `@Inject` site
-// whose field type matches resolves to the substitute instead of the
-// statically-wired provider. Keyed by the type's `reflect.Class` object pointer
-// — what `T.class` lowers to (the named, linker-unified `<type>#ClassObject`
-// global) — so matching is pointer identity, no string compare.
-//
-// The compiler only emits the lookup in TEST builds (activeProfile == "test"),
-// so production injection paths carry zero overhead and don't link this at all
-// unless used. Entries hold BORROWED pointers: the test owns the substitute for
-// its lifetime; clear() forgets entries, it never frees the instances.
-//
-// v1 scope: singleton-mode, class-typed `@Inject` fields (mock by subclassing
-// and overriding virtuals). Interface-typed fields need a fat-pointer-aware
-// path and are not yet overridable.
+// Binds a substitute instance for a type, keyed by `reflect.Class` object pointer, in
+// test builds only. Entries are BORROWED: clear() forgets them, it never frees them.
 typedef struct CajetaInjectOverride {
     void* classObj;
     void* instance;
@@ -74,13 +61,8 @@ void __cajeta_inject_override_clear(void) {
     pthread_mutex_unlock(&__cajeta_inject_override_mutex);
 }
 
-// REFL-4 typed FP return paths. The per-class invoke adapter already stores a
-// float/double result into the 8-byte `ret` buffer (emitReflectInvokeBody
-// marshals floating-point returns); these variants read that buffer in the FP
-// register so the value crosses the native boundary as a real float/double
-// instead of as raw bits widened to int64. `argArray` is the same int64[]
-// element-region convention as the scalar path. Resolve the adapter once via a
-// shared helper to avoid duplicating the vtable->classObject->rtti walk.
+// Resolves a class's reflective invoke adapter through vtable -> classObject -> rtti. The
+// typed variants below read its 8-byte ret buffer in the float, double or pointer register.
 static void* cajeta_resolve_invoke_adapter(void* obj) {
     if (!obj) return NULL;
     void* vtable = *(void**) obj;
@@ -96,7 +78,6 @@ float __cajeta_object_invoke_f32(void* obj, int32_t idx, void* argArray) {
         (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
     if (!adapter) return 0.0f;
     void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
-    // 8-byte buffer; the adapter stores a 4-byte float into its low bytes.
     int64_t retBits = 0;
     adapter(obj, idx, args, &retBits);
     float out;
@@ -112,13 +93,7 @@ double __cajeta_object_invoke_f64(void* obj, int32_t idx, void* argArray) {
     adapter(obj, idx, args, &ret);
     return ret;
 }
-// REFL-4: invoke a method whose return type is a reference (object/pointer).
-// The per-class adapter stores the returned pointer to the ret buffer (the
-// marshaller accepts isPointerTy returns); we read it back whole. Ownership
-// transfers per the invoked method's signature — a method returning `heap T`
-// hands the caller an owned reference (Method.invokeObject is typed #Object so
-// the result is drop-tracked); a method returning a borrow would be unsafe to
-// reflect this way (documented on Method.invokeObject).
+// Invokes a reference-returning method; ownership transfers per that method's signature.
 void* __cajeta_object_invoke_obj(void* obj, int32_t idx, void* argArray) {
     void (*adapter)(void*, int32_t, void*, void*) =
         (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
@@ -129,15 +104,8 @@ void* __cajeta_object_invoke_obj(void* obj, int32_t idx, void* argArray) {
     return ret;
 }
 
-// REFL-4.4 (Strategy 6): fiber-stack argument buffers. For a small, statically
-// known argument count the caller hands the raw args as discrete int64
-// parameters instead of building a heap int64[]. Each native assembles the
-// adapter's 8-byte-strided arg buffer (`buf`) on its own C stack frame — which
-// IS the calling fiber's stack — so there is no heap allocation and no count
-// header to skip past. Result is widened to int64; the cajeta layer narrows to
-// int32 where wanted, exactly as the int64[]-path variants do. (FP-return and
-// reference-return stack-arg siblings are a mechanical extension of this same
-// `buf` pattern, reading the ret buffer as float/double/pointer instead.)
+// Fiber-stack argument buffers: the caller passes a statically known count of discrete
+// int64 args, assembled here into the adapter's buffer with no heap int64[] and no header.
 int64_t __cajeta_object_invoke_scalar1(void* obj, int32_t idx, int64_t a0) {
     void (*adapter)(void*, int32_t, void*, void*) =
         (void (*)(void*, int32_t, void*, void*)) cajeta_resolve_invoke_adapter(obj);
@@ -167,9 +135,7 @@ int64_t __cajeta_object_invoke_scalar3(void* obj, int32_t idx,
     return ret;
 }
 
-// REFL-4 parameter introspection. `isCtor` selects the constructor table vs
-// the method table; memberIdx is the method/constructor index; paramIdx is the
-// USER parameter index (the implicit `this` is excluded from the table).
+// One parameter descriptor; paramIdx is the USER index, `this` being absent from the table.
 static const CajetaParamDesc* cajeta_param_desc(
         void* rtti, int32_t isCtor, int32_t memberIdx, int32_t paramIdx) {
     if (!rtti) return NULL;
@@ -181,6 +147,8 @@ static const CajetaParamDesc* cajeta_param_desc(
     if (!m->parameters || paramIdx < 0 || paramIdx >= m->parameterCount) return NULL;
     return &m->parameters[paramIdx];
 }
+// Copies `s` into the cajeta byte array `out`, whose capacity is its header and whose
+// payload starts at +8; the copy truncates to that capacity.
 static void cajeta_copy_into(const char* s, void* out) {
     if (!out) return;
     if (!s) s = "";
@@ -206,20 +174,8 @@ void __cajeta_rtti_param_type_into(void* rtti, int32_t isCtor, int32_t mIdx, int
     cajeta_copy_into(p ? p->type : "", out);
 }
 
-// REFL-6a annotation NAME reflection. Every annotatable owner stores its
-// annotation type names as a (count, const char**) pair in the RTTI; this one
-// resolver addresses any of them so the cajeta side needs a single native
-// family. `ownerKind` selects the owner:
-//   0 = class, 1 = field[ownerIndex], 2 = method[ownerIndex],
-//   3 = constructor[ownerIndex],
-//   4 = parameter subIndex of method[ownerIndex],
-//   5 = parameter subIndex of constructor[ownerIndex].
-// `ownerIndex` is the field/method/ctor index (ignored for the class); for the
-// parameter kinds it is the owning member's index and `subIndex` is the
-// user-visible parameter position. Returns the name array and writes its length
-// to *outCount; NULL (count 0) for an out-of-range owner. Each descriptor
-// carries the annotation's canonical name (REFL-6a) plus its captured argument
-// values (REFL-6b).
+// An owner's annotation descriptors, with the count written to *outCount. `ownerKind`:
+// 0 class, 1 field, 2 method, 3 ctor, 4/5 parameter `subIndex` of method/ctor `ownerIndex`.
 static const CajetaAnnotationDesc* cajeta_annotation_list(void* rtti, int32_t ownerKind,
         int32_t ownerIndex, int32_t subIndex, int32_t* outCount) {
     *outCount = 0;
@@ -262,8 +218,7 @@ int32_t __cajeta_rtti_annotation_count(void* rtti, int32_t ownerKind,
     cajeta_annotation_list(rtti, ownerKind, ownerIndex, subIndex, &n);
     return n;
 }
-// Resolve one annotation descriptor by its locator (rtti + ownerKind/
-// ownerIndex/subIndex + annIdx). NULL when out of range.
+// One annotation descriptor by its owner locator plus `annIdx`; NULL when out of range.
 static const CajetaAnnotationDesc* cajeta_annotation_desc(void* rtti, int32_t ownerKind,
         int32_t ownerIndex, int32_t subIndex, int32_t annIdx) {
     int32_t n = 0;
@@ -289,10 +244,8 @@ void __cajeta_rtti_annotation_name_into(void* rtti, int32_t ownerKind,
         cajeta_annotation_name(rtti, ownerKind, ownerIndex, subIndex, annIdx), out);
 }
 
-// REFL-6b annotation ARGUMENT VALUE reflection. Indexed by the same owner
-// locator as the name natives, plus `annIdx` (which annotation) and `argIdx`
-// (which argument within it). All return a sentinel (0 / "" / kind -1) for an
-// out-of-range locator so the cajeta side reads uniformly.
+// Annotation ARGUMENT values, by owner locator plus `annIdx` and `argIdx`; out of range
+// answers a sentinel (0, "" or kind -1).
 static const CajetaAnnotationArgDesc* cajeta_annotation_arg(void* rtti, int32_t ownerKind,
         int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
     const CajetaAnnotationDesc* d =
@@ -357,10 +310,7 @@ void __cajeta_rtti_annotation_arg_str_into(void* rtti, int32_t ownerKind,
         cajeta_annotation_arg_str(rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx), out);
 }
 
-// REFL-6b list-valued arguments (`@SuppressLint({"a","b"})`, `@Sizes({1,2})`,
-// `@Flags({true,false})`). Element data lives in arg->listData, shaped by the
-// arg's kind: int64[] (Int64List), char*[] (StringList), int8[] (BoolList).
-// elemIdx selects within the list; out-of-range reads return a sentinel.
+// List-valued arguments: arg->listData is int64[], char*[] or int8[] by the arg's kind.
 int32_t __cajeta_rtti_annotation_arg_list_count(void* rtti, int32_t ownerKind,
         int32_t ownerIndex, int32_t subIndex, int32_t annIdx, int32_t argIdx) {
     const CajetaAnnotationArgDesc* a =
@@ -403,9 +353,8 @@ void __cajeta_rtti_annotation_arg_list_str_into(void* rtti, int32_t ownerKind,
         rtti, ownerKind, ownerIndex, subIndex, annIdx, argIdx, elemIdx), out);
 }
 
-// REFL-7 template reflection. A template instantiation (Box<int32>) carries its
-// declared template parameters (the `<T>`) and the concrete template arguments
-// it was materialized with (int32). Both are read by index off the #Rtti.
+// Template reflection: the declared parameters and the concrete arguments an
+// instantiation was materialized with, each read by index off the #Rtti.
 int32_t __cajeta_rtti_template_param_count(void* rtti) {
     return rtti ? (int32_t) ((CajetaRtti*) rtti)->templateParamCount : 0;
 }
@@ -473,14 +422,9 @@ void __cajeta_rtti_template_arg_name_into(void* rtti, int32_t idx, void* out) {
     cajeta_copy_into(cajeta_template_arg_name(rtti, idx), out);
 }
 
-// REFL-4.1 (boxing, plan W5): classify a method's return type into a compact
-// kind so Method.invokeBoxed can pick the right wrapper / invoke path without
-// re-parsing the type string in cajeta. The kinds the W1 wrapper family boxes
-// exactly map to their own value; OTHER is a primitive with no W1 wrapper yet
-// (int8/16/128, unsigned, char, ML floats, raw pointer) — invokeBoxed throws
-// for those until W2-W4 land. A non-primitive return is REFERENCE (boxed via
-// the existing invokeObject path). Keep these constants in sync with the
-// REFLECT_KIND_* mirror in Method.cajeta.
+// Classifies a return type so invokeBoxed can pick a wrapper without re-parsing the type
+// string: OTHER is a wrapper-less primitive, a non-primitive is REFERENCE. Mirrored by
+// REFLECT_KIND_* in Method.cajeta.
 #define CAJETA_RK_VOID       0
 #define CAJETA_RK_BOOLEAN    1
 #define CAJETA_RK_INT32      2
@@ -489,8 +433,7 @@ void __cajeta_rtti_template_arg_name_into(void* rtti, int32_t idx, void* out) {
 #define CAJETA_RK_FLOAT64    5
 #define CAJETA_RK_REFERENCE  6
 #define CAJETA_RK_OTHER      7
-// W2 widths (box through the 64-bit invoke/field machinery + truncation; the
-// 8/16-bit field reads use dedicated width-correct natives below).
+// W2 widths: boxed through the 64-bit machinery with truncation.
 #define CAJETA_RK_INT8       8
 #define CAJETA_RK_INT16      9
 #define CAJETA_RK_UINT8      10
@@ -513,9 +456,7 @@ static int32_t cajeta_return_kind(const char* t) {
     if (!strcmp(t, "uint32"))  return CAJETA_RK_UINT32;
     if (!strcmp(t, "uint64"))  return CAJETA_RK_UINT64;
     if (!strcmp(t, "char"))    return CAJETA_RK_CHAR;
-    // Primitives still without a wrapper — 128-bit ints (don't fit the 64-bit
-    // paths) and the half/quad/ML floats + raw pointer. Not boxable yet
-    // (honest, rather than widening and lying about the boxed type's identity).
+    // Primitives with no wrapper: widening would lie about the boxed type's identity.
     if (!strcmp(t, "int128")  || !strcmp(t, "uint128")  || !strcmp(t, "float16") ||
         !strcmp(t, "bfloat16")|| !strcmp(t, "float128") || !strcmp(t, "pointer") ||
         !strcmp(t, "float4e2m1")     || !strcmp(t, "float6e2m3")     ||
@@ -530,11 +471,7 @@ int32_t __cajeta_rtti_method_return_kind(void* rtti, int32_t idx) {
     if (idx < 0 || idx >= r->methodCount || !r->methods) return CAJETA_RK_REFERENCE;
     return cajeta_return_kind(r->methods[idx].returnType);
 }
-// W5b: same classification for a field's declared type, so Field.getBoxed can
-// pick the wrapper / refuse a reference field (which can't be handed back as an
-// owned #Object without a borrow-return surface). Reuses the field-desc `type`
-// string (CajetaFieldDesc also carries typeFlags, but the string keeps one
-// shared classifier with the method path).
+// The same classification for a field, so Field.getBoxed refuses a reference field.
 int32_t __cajeta_rtti_field_kind(void* rtti, int32_t idx) {
     if (!rtti) return CAJETA_RK_REFERENCE;
     CajetaRtti* r = (CajetaRtti*) rtti;
@@ -552,10 +489,7 @@ int32_t __cajeta_rtti_constructor_param_count(void* rtti, int32_t idx) {
     if (idx < 0 || idx >= r->constructorCount || !r->constructors) return -1;
     return r->constructors[idx].parameterCount;
 }
-// Reflectively construct an instance via the class's newInstance adapter
-// (no-arg constructor path). `rtti` is the class's #Rtti pointer (a Class
-// instance's `rtti` field). Returns the new object (owned by the caller) or
-// NULL if there's no adapter / the index isn't a marshallable constructor.
+// Constructs through the class's no-arg newInstance adapter; the object is the caller's.
 void* __cajeta_class_new0(void* rtti, int32_t ctorIdx) {
     if (!rtti) return NULL;
     void* (*adapter)(int32_t, void*) =
@@ -566,8 +500,8 @@ void* __cajeta_class_new0(void* rtti, int32_t ctorIdx) {
                 ((CajetaRtti*) rtti)->typeName, ctorIdx, (void*) adapter);
     return adapter(ctorIdx, NULL);
 }
-// REFL-4 reflective construction WITH arguments. `argArray` is a cajeta
-// int64[] ({ count, elems }) or NULL; hand the adapter the element region.
+// Reflective construction WITH arguments: `argArray` is a cajeta int64[] of the form
+// { count, elems } or NULL, and the adapter is handed the element region.
 void* __cajeta_class_new(void* rtti, int32_t ctorIdx, void* argArray) {
     if (!rtti) return NULL;
     void* (*adapter)(int32_t, void*) =
@@ -580,36 +514,18 @@ void* __cajeta_class_new(void* rtti, int32_t ctorIdx, void* argArray) {
     return adapter(ctorIdx, args);
 }
 
-// UnrecoverableException's vtable address, published by codegen.
-// __cajeta_is_unrecoverable compares each ancestor vtable against this.
-//
-// Codegen (Compiler::emitUnrecoverableMarker) emits a module global ctor
-// that calls __cajeta_set_unrecoverable_vtable with
-// cajeta.lang.UnrecoverableException#VTable. A ctor + plain runtime call
-// resolves identically on ELF/MachO/COFF and in both JIT (LLJIT runs
-// llvm.global_ctors at initialize()) and AOT (the C runtime runs them
-// before main) — unlike the previous weak-global-override scheme, which
-// only bound under ELF and left JIT detection reading NULL on MachO/COFF.
+// UnrecoverableException's vtable, published by a codegen-emitted global ctor: a ctor plus
+// a plain call binds identically on ELF/MachO/COFF and under both JIT and AOT.
 static void* g_unrecoverable_vtable = NULL;
 
 void __cajeta_set_unrecoverable_vtable(void* vtable) {
     g_unrecoverable_vtable = vtable;
 }
 
-// Walk a Throwable's vtable chain to determine whether it's an
-// UnrecoverableException (or any descendant thereof). Returns 1 if so,
-// 0 otherwise. Driven by the parent_vtable pointer at offset 8 of each
-// vtable global; walks until either a match is found or the chain hits
-// NULL (root).
+// 1 when a Throwable's vtable parent chain reaches the UnrecoverableException vtable.
 int32_t __cajeta_is_unrecoverable(void* throwable) {
     if (!throwable) return 0;
-    // Defensive: the legacy `throw 42` idiom IntToPtrs an integer into
-    // the runtime; the resulting "pointer" is the integer's bit pattern
-    // and is virtually never a real heap address. Dereferencing it for
-    // the vtable read would SIGSEGV. Filter anything below the
-    // typical zero-page boundary so we treat legacy int throws as
-    // (definitely-not-)Unrecoverable. Long-term: phase out int throws
-    // in favor of real Throwable instances.
+    // A legacy `throw 42` arrives IntToPtr'd; reading a vtable through it would SIGSEGV.
     if ((uintptr_t) throwable < 4096) return 0;
     void* vtable = *(void**) throwable;   // instance slot 0 = vtable ptr
     if (!g_unrecoverable_vtable) return 0;
@@ -620,24 +536,14 @@ int32_t __cajeta_is_unrecoverable(void* throwable) {
     return 0;
 }
 
-// __cajeta_exc_matches — does the thrown object's runtime type match (is-a)
-// the catch clause's declared type? Generalizes __cajeta_is_unrecoverable: the
-// caller passes the catch type's #VTable global; we walk the thrown object's
-// vtable parent chain (parent at CAJETA_VTABLE_PARENT_OFFSET, the same chain the
-// unrecoverable check uses) and return 1 iff `catch_vtable` appears anywhere in
-// it — i.e. the thrown class IS the catch class or a descendant of it. This is
-// the runtime half of try/catch type dispatch (TryStatement emits one call per
-// catch clause, in source order, first match wins). A null `catch_vtable`
-// (a non-class / catch-all clause) is handled at the codegen level, not here.
+// 1 iff `catch_vtable` is in the thrown object's vtable parent chain, so the thrown class
+// is the catch class or a descendant. A catch-all's null vtable is handled in codegen.
 int32_t __cajeta_exc_matches(void* throwable, void* catch_vtable) {
     if (!throwable || !catch_vtable) return 0;
-    // Same low-address guard as the unrecoverable walk: a legacy `throw 42`
-    // int-as-pointer must never be dereferenced for its vtable slot.
+    // The same zero-page guard as the unrecoverable walk.
     if ((uintptr_t) throwable < 4096) return 0;
     void* vtable = *(void**) throwable;   // instance slot 0 = vtable ptr
-    // Defensive walk: cap the depth and sanity-check each vtable pointer is a
-    // real (high) address before dereferencing its parent slot. A malformed or
-    // uninitialized chain returns no-match rather than segfaulting the matcher.
+    // A capped, address-checked walk: a malformed chain answers no-match, never faults.
     for (int depth = 0; depth < 256; ++depth) {
         if ((uintptr_t) vtable < 4096) break;
         if (vtable == catch_vtable) return 1;
@@ -649,12 +555,7 @@ int32_t __cajeta_exc_matches(void* throwable, void* catch_vtable) {
 // Forward decl — defined alongside __cajeta_throw further down.
 static void __cajeta_emit_uncaught(void* value, int is_unrec);
 
-// Called by the fiber trampoline's catch block (per Error-model #205 and
-// #210). If the thrown value is an Unrecoverable, print + abort the
-// whole process — propagating into the Task slot would let a runtime
-// invariant violation hide behind await suspension. Recoverable returns
-// normally; the trampoline's caller stores it on the Task's exception
-// slot for await to re-raise.
+// The fiber trampoline's catch: an Unrecoverable aborts rather than hide behind await.
 void __cajeta_fiber_handle_throw(void* thrown) {
     if (__cajeta_is_unrecoverable(thrown)) {
         __cajeta_emit_uncaught(thrown, /*is_unrec=*/1);
@@ -665,48 +566,26 @@ void __cajeta_fiber_handle_throw(void* thrown) {
 struct cajeta_exception_frame {
     jmp_buf buf;
     struct cajeta_exception_frame* prev;
-    // R5/Error-model #202: the thrown value is now a void* — typed at the
-    // codegen level as a Throwable*, but the runtime is type-agnostic so we
-    // store it as a bare pointer. Backwards-compatible with the old int64-
-    // throw idiom: ThrowStatement converts integer literals via IntToPtr,
-    // TryStatement's catch binding reads back via PtrToInt when the
-    // declared catch type is integer-shaped.
+    // A bare pointer here, a Throwable* to codegen; the legacy int-throw idiom
+    // round-trips through IntToPtr and PtrToInt.
     void* thrown_value;
     // Drop-chain watermark snapshotted at try-entry. On throw, the runtime
     // unwinds drops between the current top and this watermark before longjmp.
     struct cajeta_drop_entry* drop_watermark;
-    // Line-info shadow-stack depth at try-entry (diagnostic-exceptions U3). A
-    // throw doesn't run __cajeta_line_leave for the frames it unwinds, so on
-    // catch __cajeta_throw restores the live shadow top to this value.
+    // Line-info shadow depth at try-entry; unwound frames run no __cajeta_line_leave.
     int32_t shadow_watermark;
-    // cajeta-profiler U10 (§3.11): the instrumentation probe depth, restored
-    // on catch for the same reason as the shadow watermark above — an unwound
-    // frame never runs its exit probe.
+    // Instrumentation probe depth, restored on catch for the same reason.
     int32_t instr_watermark;
-    // Debug frame-chain head at try-entry (resident-debug-server 9.1). Same
-    // problem, same cure: a throw runs no __cajeta_dbg_frame_leave for the
-    // frames it unwinds, so their nodes LEAKED onto the chain — every later
-    // safepoint in the catching method then reported an inflated depth and
-    // attributed its line to a dead frame. Step-over compares depths, so a
-    // single leaked frame made every subsequent step run away (live: tour
-    // line 132). __cajeta_throw trims back to this on catch.
+    // Debug frame-chain head at try-entry; unwound frames run no dbg_frame_leave either.
     struct cajeta_dbg_frame* dbg_watermark;
 };
 
-// Exposed as a compile-time-known size for the IR side; the compiler allocates a
-// blob of this size for each try-frame. Using a fixed 512-byte buffer in IR is
-// portable enough for x86-64 and aarch64 glibc/musl, but we expose the actual
-// size here so the JIT helper can sanity-check.
+// The per-try-frame blob size the IR side allocates, exposed so the JIT can check it.
 size_t __cajeta_exc_frame_size(void) {
     return sizeof(struct cajeta_exception_frame);
 }
 
-// Exception chain head — per-thread (main has its own __thread slot;
-// carrier-hosted fibers each own a slot inside their cajeta_fiber
-// struct). Same rationale as the drop chain head above. The
-// drop_watermark stored in each frame snapshots the per-thread drop
-// top at try-entry time, so an unwind through __cajeta_throw works
-// against the same chain the user code pushed into.
+// Exception chain head for the main thread; a fiber uses the slot in its own struct.
 static __thread struct cajeta_exception_frame* __cajeta_main_exc_top = NULL;
 
 static struct cajeta_exception_frame** __cajeta_exc_top_ptr(void) {
@@ -721,13 +600,9 @@ void __cajeta_exc_push(struct cajeta_exception_frame* f) {
     struct cajeta_drop_entry** dropTop = __cajeta_drop_top_ptr();
     f->prev = *top;
     f->thrown_value = NULL;
-    // Snapshot the current drop-chain top so a throw can unwind back to here.
     f->drop_watermark = *dropTop;
-    // Snapshot the shadow line-stack depth so a caught throw restores it (U3).
     f->shadow_watermark = __cajeta_shadow_get_top();
-    // U10: same snapshot for the instrumentation depth.
     f->instr_watermark = __cajeta_prof_instr_depth();
-    // Snapshot the debug frame-chain head (9.1) — see the field's comment.
     f->dbg_watermark = *__cajeta_dbg_top_ptr();
     *top = f;
 }

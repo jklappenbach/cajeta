@@ -1,20 +1,5 @@
-//
-// SPIR-V backend — LLVM device-module → Vulkan compute SPIR-V.
-//
-// The Vulkan analog of NvptxBackend / AmdgpuBackend (cajeta-xpu.md "Vulkan
-// third backend"). Where NVPTX goes LLVM → PTX → ptxas → cubin and AMDGPU goes
-// LLVM → AMDGCN object → lld → hsaco, SPIR-V is the SIMPLEST of the three:
-// LLVM 23's in-tree SPIR-V backend emits the final Khronos SPIR-V binary
-// directly — no external assembler or linker. SPIR-V text (emitSpirvText) is
-// the GPU-free Tier-0 hook the emit tests assert against; the binary
-// (emitSpirv) is what the on-device launch hands to vkCreateShaderModule.
-//
-// The triple targets the Vulkan-flavor SPIR-V (OpCapability Shader, GLCompute,
-// Logical GLSL450 memory model) — NOT the OpenCL-Kernel flavor. That choice is
-// why the kernel signature + buffer access fork (see SpirvKernelLowering): in
-// the Logical model buffers are descriptor-bound storage buffers, not raw
-// pointers.
-//
+// SPIR-V backend: an LLVM device module emitted straight to Vulkan-flavor SPIR-V
+// (Shader/GLCompute/Logical GLSL450) by LLVM's in-tree backend, with no external tool.
 
 #pragma once
 
@@ -35,36 +20,21 @@ namespace vulkan {
     // The device triple: 32-bit logical SPIR-V for a Vulkan 1.3 compute env.
     inline constexpr const char* kSpirvTriple = "spirv-unknown-vulkan1.3-compute";
 
-    // Compute workgroup size baked into every kernel's `OpExecutionMode
-    // LocalSize` (via the hlsl.numthreads attribute). Unlike CUDA/HIP, Vulkan
-    // fixes the local size at SPIR-V compile time, not per-dispatch — so this
-    // is a backend constant the driver must match as the launch block dim. (A
-    // spec-constant LocalSizeId is a later refinement; see cajeta-xpu-matrix.md.)
+    // Vulkan fixes the local size at SPIR-V compile time rather than per-dispatch,
+    // so this constant is what the driver must use as the launch block dim.
     inline constexpr unsigned kVulkanLocalSizeX = 64;
 
-    // Create a SPIR-V TargetMachine. `arch` is the SPIR-V target env (e.g.
-    // "vulkan1.3"); unused by the in-tree backend today but kept for parity
-    // with the nvptx/amdgpu arch knob. Returns nullptr if the spirv target
-    // isn't registered. Self-initializes the LLVM target registry. Equivalent to
-    // createSpirvTargetMachineForStage(ShaderStage::Compute, arch).
+    // Create a SPIR-V TargetMachine for `arch` (the SPIR-V target env), registering
+    // the LLVM target on first use; nullptr when the spirv target is not built in.
     std::unique_ptr<llvm::TargetMachine>
     createSpirvTargetMachine(const std::string& arch = "vulkan1.3");
 
     // Set the SPIR-V triple + the TargetMachine's DataLayout on `m`.
     void configureDeviceModule(llvm::Module& m, llvm::TargetMachine& tm);
 
-    // --- Per-stage knob (cajeta-gfx §4.a) ----------------------------------
-    //
-    // The SPIR-V backend is no longer compute-only: each shader stage rides its
-    // OWN triple environment (the trailing "-<env>" of the triple), so each is
-    // emitted as its own module / .spv — exactly how Vulkan binds shader stages
-    // (proven feasible in test/gfx/GfxSpirvEmitProbeTests). The execution model
-    // is selected by BOTH the triple env AND the entry function's `hlsl.shader`
-    // attribute, which the in-tree backend turns into the OpEntryPoint model.
+    // --- Per-stage knob: each shader stage rides its own triple env and module ---
 
-    // The shader stages emitted as standalone SPIR-V modules. Compute is the
-    // existing path; Vertex/Fragment are §4.a; the rest generalize the knob and
-    // land their emission goldens under §4.e.
+    // The shader stages emitted as standalone SPIR-V modules.
     enum class ShaderStage {
         Compute,
         Vertex,
@@ -76,24 +46,18 @@ namespace vulkan {
         Task,
     };
 
-    // The triple ENVIRONMENT token for a stage — the trailing field of
-    // "spirv-unknown-<arch>-<env>": compute / vertex / pixel / geometry / hull /
-    // domain / mesh / amplification (the LLVM/HLSL stage spellings).
+    // The triple ENVIRONMENT token of "spirv-unknown-<arch>-<env>" for `stage`.
     const char* spirvStageEnv(ShaderStage stage);
 
-    // The full per-stage SPIR-V triple, "spirv-unknown-<arch>-<env>" (arch e.g.
-    // "vulkan1.3"). For (Compute, "vulkan1.3") this equals kSpirvTriple.
+    // The full per-stage triple; for (Compute, "vulkan1.3") this is kSpirvTriple.
     std::string spirvStageTriple(ShaderStage stage,
                                  const std::string& arch = "vulkan1.3");
 
-    // The `hlsl.shader` function-attribute value the in-tree SPIR-V backend
-    // turns into the OpEntryPoint execution model. Set this on the entry
-    // function (e.g. fn->addFnAttr("hlsl.shader", hlslShaderAttr(stage))). The
-    // spelling coincides with the triple env token.
+    // The `hlsl.shader` attribute value the backend turns into the OpEntryPoint
+    // execution model; set it on the entry function. Spelled like the triple env.
     const char* hlslShaderAttr(ShaderStage stage);
 
-    // Create a SPIR-V TargetMachine for `stage` (its per-stage triple). Returns
-    // nullptr if that stage's target env isn't available in this LLVM build.
+    // Per-stage counterpart of createSpirvTargetMachine; nullptr if unavailable.
     std::unique_ptr<llvm::TargetMachine>
     createSpirvTargetMachineForStage(ShaderStage stage,
                                      const std::string& arch = "vulkan1.3");
@@ -103,13 +67,10 @@ namespace vulkan {
                                        ShaderStage stage,
                                        const std::string& arch = "vulkan1.3");
 
-    // Emit SPIR-V assembly (disassembly) text for `deviceModule`. GPU-free;
-    // what the emit tests grep for OpEntryPoint / OpExecutionMode. Empty on
-    // failure.
+    // SPIR-V assembly text for `deviceModule`, GPU-free; empty on failure.
     std::string emitSpirvText(llvm::Module& deviceModule, llvm::TargetMachine& tm);
 
-    // Emit the Khronos SPIR-V binary for `deviceModule` (the .spv handed to
-    // vkCreateShaderModule). No external tool. Empty on failure.
+    // The Khronos SPIR-V binary for `deviceModule`; empty on failure.
     std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
                                    llvm::TargetMachine& tm);
 

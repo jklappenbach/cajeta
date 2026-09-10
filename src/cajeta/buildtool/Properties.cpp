@@ -12,10 +12,8 @@
 #include <unordered_set>
 #include <vector>
 
-// The global environ pointer. On POSIX it's `environ` (declared extern at file
-// scope so the reference resolves to ::environ, not cajeta::buildtool::environ);
-// on Windows the CRT exposes it as `_environ` via <stdlib.h>, where `environ`
-// itself is a macro and cannot be redeclared.
+// Declared at file scope so it resolves to ::environ, never a namespaced one.
+// Windows has it as `_environ`, `environ` there being an unredeclarable macro.
 #if !defined(_WIN32)
 extern char** environ;
 #endif
@@ -33,13 +31,8 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // The set of property names cajeta provides as built-ins.
-        // User property declarations that collide with any of these are
-        // hard errors at manifest-load time.
-        //
-        // `env.<NAME>` and `details.*` use dotted lookup; the prefix
-        // (everything before the first `.`) is what matters for
-        // collision detection.
+        // The built-in names; a user property colliding with one is an error at
+        // manifest load. Dotted names collide on their prefix alone.
         const std::set<std::string> kBuiltinPrefixes = {
             "details", "flavor", "profile", "target",
             "env", "artifact", "workspace", "cajeta",
@@ -53,9 +46,7 @@ namespace cajeta::buildtool {
             return kBuiltinPrefixes.count(prefix) > 0;
         }
 
-        // Resolve a built-in property name to its value. Returns
-        // nullopt if `name` isn't a recognized built-in (caller falls
-        // through to user-property lookup).
+        // A built-in's value, or nullopt when `name` is not one of them.
         std::optional<std::string> resolveBuiltin(
             const std::string& name,
             const Manifest& manifest,
@@ -71,34 +62,24 @@ namespace cajeta::buildtool {
             if (name == "workspace.root") return ov.workspaceRoot.value_or("");
             if (name == "cajeta.version") return std::string(CAJETA_VERSION);
 
-            // env.<NAME> — look up the OS env variable. Missing env
-            // resolves to empty string with a warning (today we silently
-            // resolve to empty; an env-var-warning surface is on the
-            // followup list).
+            // A missing env variable resolves to the empty string, silently.
             if (name.size() > 4 && name.compare(0, 4, "env.") == 0) {
                 std::string envName = name.substr(4);
                 const char* v = std::getenv(envName.c_str());
                 return std::string(v ? v : "");
             }
 
-            // artifact.* properties only resolve in distribution-action
-            // context (Phase 9). For now: present but empty.
+            // artifact.* is present but empty outside a distribution action.
             if (name.size() > 9 && name.compare(0, 9, "artifact.") == 0) {
                 return std::string("");
             }
 
-            // Not a known built-in.
             (void)error;
             return std::nullopt;
         }
 
-        // Find every `${NAME}` reference in a string. Returns the
-        // names in order of appearance (duplicates included). Does
-        // not validate that each name resolves — that's the caller's
-        // job, since "X references Y" is needed for the dep graph
-        // whether or not Y exists.
-        //
-        // Escape: `$$` is a literal `$` and does not start a reference.
+        // Every `${NAME}` in `s`, in order, duplicates included and none checked
+        // for resolvability — the dep graph needs them either way. `$$` escapes.
         std::vector<std::string> referencedNames(const std::string& s) {
             std::vector<std::string> out;
             for (size_t i = 0; i + 1 < s.size(); ) {
@@ -118,9 +99,8 @@ namespace cajeta::buildtool {
             return out;
         }
 
-        // Substitute all ${NAME} occurrences in `s`. Each lookup goes
-        // through `lookup`; if `lookup` returns nullopt the substitution
-        // fails with the missing name in `missing`.
+        // Substitutes every `${NAME}` in `s` through `lookup`; false when one
+        // returns nullopt, naming it in `missing`.
         bool substituteOnce(
             const std::string& s,
             const std::function<std::optional<std::string>(const std::string&)>& lookup,
@@ -137,8 +117,7 @@ namespace cajeta::buildtool {
                 if (i + 1 < s.size() && s[i] == '$' && s[i + 1] == '{') {
                     size_t close = s.find('}', i + 2);
                     if (close == std::string::npos) {
-                        // Unterminated reference — treat as literal so
-                        // diagnostics can surface it at a higher layer.
+                        // Unterminated: kept literal for a higher layer to flag.
                         r += s.substr(i);
                         i = s.size();
                         continue;
@@ -159,10 +138,8 @@ namespace cajeta::buildtool {
             return true;
         }
 
-        // Try to read a string-valued property from the manifest's
-        // properties block. Returns nullopt if the key is absent or
-        // not a string; in the latter case sets `typeError` so the
-        // caller can produce a useful error message.
+        // A string property from the manifest's properties block; nullopt when
+        // absent or non-string, the latter also setting `typeError`.
         std::optional<std::string> manifestProperty(
             const Manifest& m,
             const std::string& name,
@@ -183,15 +160,13 @@ namespace cajeta::buildtool {
         const std::string& name) const {
         auto it = values.find(name);
         if (it != values.end()) return it->second;
-        // Lazy `env.*` resolution — the open namespace can't be
-        // materialized into `values` ahead of time.
+        // env.* stays lazy: an open namespace cannot be materialized ahead.
         if (name.size() > 4 && name.compare(0, 4, "env.") == 0) {
             std::string envName = name.substr(4);
             const char* v = std::getenv(envName.c_str());
             return std::string(v ? v : "");
         }
-        // Lazy `artifact.*` resolution — Phase 9 will populate these
-        // when actions publish them; for now they return empty.
+        // artifact.* likewise, and empty until an action publishes one.
         if (name.size() > 9 && name.compare(0, 9, "artifact.") == 0) {
             return std::string("");
         }
@@ -223,8 +198,7 @@ namespace cajeta::buildtool {
             std::string envSuffix = entry.substr(prefix.size(),
                                                  eq - prefix.size());
             std::string value = entry.substr(eq + 1);
-            // CAJETA_PROPERTY_STACK_VERSION → "stack-version"
-            // (underscores become hyphens; case lowered).
+            // CAJETA_PROPERTY_STACK_VERSION becomes "stack-version".
             std::string propName;
             propName.reserve(envSuffix.size());
             for (char c : envSuffix) {
@@ -239,9 +213,7 @@ namespace cajeta::buildtool {
         const Manifest& manifest,
         const PropertyOverrides& overrides) {
 
-        // Step 1: validate that no user property collides with a
-        // built-in. We do this up front because the collision is a
-        // structural error, not a per-evaluation one.
+        // A collision with a built-in is structural, so it is caught up front.
         for (const auto& kv : manifest.propertiesRaw) {
             std::string name = kv.first.str();
             if (isBuiltinName(name)) {
@@ -250,20 +222,13 @@ namespace cajeta::buildtool {
             }
         }
 
-        // Step 2: walk the dep graph via DFS, materializing values
-        // bottom-up. A property's deps are the ${NAME}s referenced in
-        // its value. We use post-order traversal with cycle detection
-        // via a "visiting" set.
+        // Values materialize bottom-up, post-order over the ${NAME} references.
         ResolvedProperties out;
 
         std::unordered_set<std::string> visiting;
 
-        // Look up a property's *unresolved* source text. Precedence:
-        // CLI override > env override > manifest properties.
-        // (Profiles are layered into the manifest before this point —
-        // they merge into propertiesRaw during profile activation,
-        // which lands in Phase 8. Today the profile slot is reserved
-        // but unused.)
+        // A property's UNRESOLVED source text, by precedence: CLI override, then
+        // env override, then the manifest (profiles merge in before this point).
         auto sourceFor = [&](const std::string& name,
                              bool* foundOut) -> std::string {
             if (auto it = overrides.cli.find(name); it != overrides.cli.end()) {
@@ -287,17 +252,14 @@ namespace cajeta::buildtool {
             return "";
         };
 
-        // Recursive resolver. Returns the resolved value of `name`,
-        // or propagates an error.
+        // Resolves `name`, recursing through its references.
         std::function<llvm::Expected<std::string>(const std::string&)> resolve;
         resolve = [&](const std::string& name) -> llvm::Expected<std::string> {
-            // Already done?
             if (auto it = out.values.find(name); it != out.values.end()) {
                 return it->second;
             }
 
-            // Built-in? Resolve directly; built-ins never reference
-            // other properties.
+            // Built-ins never reference other properties, so no recursion.
             std::string biErr;
             if (auto bi = resolveBuiltin(name, manifest, overrides, biErr)) {
                 out.values[name] = *bi;
@@ -305,7 +267,6 @@ namespace cajeta::buildtool {
                 return *bi;
             }
 
-            // Cycle?
             if (visiting.count(name)) {
                 std::string cycle;
                 for (const auto& v : visiting) {
@@ -317,8 +278,6 @@ namespace cajeta::buildtool {
                 return err("cyclic property reference: " + cycle);
             }
 
-            // User-defined? Find the source text and recurse on its
-            // referenced names.
             bool found = false;
             std::string raw = sourceFor(name, &found);
             if (!found) {
@@ -339,7 +298,6 @@ namespace cajeta::buildtool {
             }
             visiting.erase(name);
 
-            // Now substitute the dependencies into our raw value.
             std::string resolved;
             std::string missing;
             bool ok = substituteOnce(raw,
@@ -358,9 +316,7 @@ namespace cajeta::buildtool {
             return resolved;
         };
 
-        // Resolve every user-declared property eagerly. This catches
-        // cycles and undefined references at load time rather than
-        // deferring them to first-use.
+        // Eager, so a cycle or undefined reference fails at load, not at use.
         for (const auto& kv : manifest.propertiesRaw) {
             std::string name = kv.first.str();
             if (auto e = resolve(name); !e) {
@@ -368,10 +324,8 @@ namespace cajeta::buildtool {
             }
         }
 
-        // Eagerly materialize the fixed built-ins so substitute() can
-        // resolve them without re-deriving on every call. Open-
-        // namespace built-ins (env.*, artifact.*) stay lazy — see
-        // ResolvedProperties::lookup().
+        // The fixed built-ins materialize too, so substitute() need not
+        // re-derive them; the open namespaces stay lazy in lookup().
         auto putBuiltin = [&](const std::string& name) {
             if (out.values.count(name)) return;
             std::string biErr;
@@ -414,9 +368,7 @@ namespace cajeta::buildtool {
                                          const ResolvedProperties& props,
                                          const std::string& where);
 
-        // Recursive ${...} rewrite over one JSON value. Strings are
-        // substituted; objects and arrays are walked; everything else is
-        // left alone.
+        // Rewrites `${...}` in every string reachable from one JSON value.
         llvm::Error substituteJsonValue(llvm::json::Value& v,
                                         const ResolvedProperties& props,
                                         const std::string& where) {
@@ -457,34 +409,9 @@ namespace cajeta::buildtool {
 
     llvm::Error substituteManifestProperties(
         Manifest& m, const ResolvedProperties& props) {
-        // `settings` and `plugins` ONLY, deliberately.
-        //
-        // BuildTool.md says substitution reaches "any string in the
-        // manifest", and until this existed it reached exactly one place:
-        // a task's action params, rewritten by TaskContext as each action
-        // runs. Everything else took `${...}` literally, so
-        // `"dev.cajeta.unit": "${unit-version}"` under
-        // settings.dependencies failed resolution with the property name
-        // quoted back as if it were a version constraint —
-        //
-        //   no version of 'dev.cajeta.unit' satisfies constraints
-        //   [${unit-version}]
-        //
-        // — and a plugin's `config` block reached the plugin verbatim,
-        // which is worse: the plugin has no property table and no way to
-        // know it was handed a placeholder rather than a path.
-        //
-        // `tasks` is NOT substituted here and must not be. Action params
-        // carry late-bound references a property table cannot answer —
-        // `${ci.path}` is another action's output, `${params.profile}` is
-        // an invocation argument — and both resolve at run time against
-        // TaskContext, which layers them over these same properties.
-        // Rewriting them eagerly would turn every one into "references
-        // undefined property".
-        //
-        // `details` is skipped because the built-ins (${package.name},
-        // ${package.version}) are derived FROM it; substituting it would
-        // be circular.
+        // `settings` and `plugins` ONLY: `tasks` carries late-bound references
+        // that resolve at run time against TaskContext, and `details` is what
+        // the built-ins derive from, so substituting it would be circular.
         if (auto e = substituteJsonObject(m.settingsRaw, props, "settings")) {
             return e;
         }

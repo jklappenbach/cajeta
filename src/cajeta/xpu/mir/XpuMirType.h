@@ -1,16 +1,6 @@
-//
-// XPU MIR type wrapper.
-//
-// Wraps a CajetaTypePtr with an explicit address-space qualifier.
-// Per CajetaXPU.md §3.1.2, the address-space is part of the type;
-// step 5's AddressSpaceLowerPass will inspect these to emit the
-// right `addrspace(N)` decoration on the LLVM-IR side.
-//
-// v1 type is a value type — no allocation, fits in a couple of
-// pointers. Builder code stores them in XpuMirKernel::signature
-// (one per parameter) and in the lowering ops that need an
-// address-space-qualified operand.
-//
+// XPU MIR type wrapper: a CajetaTypePtr plus an explicit address-space qualifier,
+// which CajetaXPU.md §3.1.2 makes part of the type — AddressSpaceLowerPass reads it
+// to emit the right `addrspace(N)`. A value type, cheap enough to copy freely.
 
 #pragma once
 

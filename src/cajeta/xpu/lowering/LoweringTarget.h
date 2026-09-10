@@ -1,21 +1,5 @@
-//
-// LoweringTarget — the device-backend variance surface (cajeta-amd.md §2).
-//
-// The kernel-body lowerer (DeviceLowerer in KernelLowering.cpp) walks the
-// @Kernel AST and emits device LLVM IR that is ~90% target-neutral: buffer
-// GEPs in addrspace(1), shared globals in addrspace(3), the full int/float
-// operator set, control flow, casts. Only a handful of decisions actually
-// differ between NVIDIA and AMD — and THIS interface is exactly that list.
-//
-// It was extracted empirically by threading a second backend (AMDGPU)
-// through the originally NVIDIA-only lowerer: the methods that ended up here
-// ARE the measured NVIDIA∩AMD variance, not a guess. Anything NOT on this
-// vtable stayed shared.
-//
-// Coordinate reads return an i32 value. globalId has a shared default
-// (workgroupId*workgroupDim + threadId) since that identity holds on both
-// backends; only the three leaf reads + barrier + kernel decoration fork.
-//
+// LoweringTarget — the device-backend variance surface: the measured list of
+// decisions that differ between backends. Everything else lowers target-neutral.
 
 #pragma once
 
@@ -38,12 +22,9 @@ namespace xpu {
 
     class XpuKernelAttr;   // @Occupancy override view (applyOccupancy hook)
 
-    // Block-padded LDS tile (BlockPadded<T,Block,Pad> / Tensile LdsBlockSizePerPad):
-    // the physical element slot is `logical + (logical/period)*pad`. Unlike the XOR
-    // swizzle, additive padding does NOT distribute over base+offset, so for a block-
-    // padded tile the coop-load `ptr` is the BARE tile base (offset 0) and `baseOffset`
-    // carries the logical sub-tile offset — the fragment coord pads `baseOffset +
-    // fragLocal` and GEPs from the base. `period`==0 means not block-padded (default).
+    // Block-padded LDS tile (BlockPadded<T,Block,Pad>): the physical slot is
+    // `logical + (logical/period)*pad`. Additive padding does NOT distribute over
+    // base+offset, so `ptr` is the bare base and `baseOffset` the logical offset.
     struct LdsBlockPad {
         uint32_t period = 0;                // block size in elements (0 = none)
         uint32_t pad = 0;                   // padding elements per block
@@ -57,84 +38,43 @@ namespace xpu {
         // Lowercase backend name (diagnostics).
         virtual const char* name() const = 0;
 
-        // --- the degrade seam, named (cajeta-gpu inc-4 brick #4) -------------
-        //
-        // The internal face of the "impl-layer / SPIR-V-degrade framework"
-        // (CajetaGPU.md §1.5): a capability has a Native lowering where the
-        // silicon has it and a Portable degrade everywhere else, selected by a
-        // capability heuristic with an explicit override (default ≠ law). Core
-        // is just the in-tree "vendor library" that has a fallback for
-        // everything — same shape an external vendor library will use, which is
-        // why this concept is named here rather than re-invented per feature.
-        //
-        // Two core features answer through this one enum:
-        //   - the coop-matrix VERB tier (coopMatrixTier — Native MMA vs the
-        //     portable flat-tile matmul), and
-        //   - the ray-query verb tier (rayQueryTier — native OpRayQuery vs the
-        //     SoftwareRayQuery walk), derived from the noun's recorded impl.
-        // The explicit override is the CAJETA_GPU_<FEATURE>_IMPL family
-        // (resolveImplTier, this header's .cpp side; CAJETA_GPU_AS_IMPL is the
-        // runtime-side instance for the AS noun in cajeta_runtime.c).
-        //
-        // Native and Portable are DIFFERENT realizations, not the same code two
-        // ways — so for an arithmetic feature like coop-matrix they need not be
-        // bit-identical (the hardware MMA and the triple-loop tile accumulate in
-        // a different order); both are validated against the reference, not
-        // against each other.
+        // --- the degrade seam -------------------------------------------------
+        // A capability has a Native lowering where the silicon has it and a
+        // Portable degrade elsewhere, per backend + a CAJETA_GPU_<F>_IMPL override.
         enum class ImplTier { Native, Portable };
 
-        // Memory-fence scope (Stage 9): the visibility/ordering reach of a
-        // scoped memory fence (Barrier.workgroupMemory / .deviceMemory) — a
-        // memory barrier WITHOUT the thread rendezvous of workgroupBarrier.
-        // Workgroup = LDS/shared + global visibility within the block; Device =
-        // global-memory visibility across the whole device.
+        // Reach of a scoped memory fence: Workgroup = LDS/shared + global within
+        // the block; Device = global memory across the whole device.
         enum class FenceScope { Workgroup, Device };
 
-        // User-selectable memory ordering for a kernel atomic / fence (mirrors
-        // the cajeta cajeta.xpu.MemoryOrder enum — ordinals MUST match).
-        // `Default` = no explicit order given: each backend keeps its
-        // established default (Monotonic on the portable seam, AcquireRelease on
-        // Vulkan). LLVM bakes ordering at IR-build time, so the value is always
-        // a compile-time constant.
+        // User-selectable ordering for a kernel atomic or fence — ordinals MUST
+        // match cajeta.xpu.MemoryOrder; `Default` keeps the backend's own default.
         enum class MemoryOrder {
             Relaxed = 0, Acquire = 1, Release = 2, AcqRel = 3, SeqCst = 4,
             Default = -1
         };
 
-        // Map a user MemoryOrder to an LLVM AtomicOrdering; `Default` falls back
-        // to `fallback` (the backend's established default). The CAS failure
-        // ordering is derived from the success ordering per LLVM's rule (no
-        // stronger than success; never Release/AcqRel).
+        // Map a user MemoryOrder to an LLVM AtomicOrdering, `Default` falling back
+        // to `fallback`. The CAS failure ordering is derived per LLVM's rule.
         static llvm::AtomicOrdering toAtomicOrdering(MemoryOrder o,
                                                      llvm::AtomicOrdering fallback);
         static llvm::AtomicOrdering casFailureOrdering(llvm::AtomicOrdering success);
 
-        // User specialization-constant slots (Stage 11) map to SpecId
-        // kFirstUserSpecId + slot. SpecId 0/1/2 are the workgroup-size dims and
-        // SpecId 3 is the dynamic-shared length — the runtime's reserved bank
-        // (see SpirvBackend's inject* patches) — so user slots start at 4.
+        // User spec-constant slots map to SpecId kFirstUserSpecId + slot; SpecId
+        // 0-3 are the runtime's reserved bank (workgroup dims, dynamic-shared).
         static constexpr unsigned kFirstUserSpecId = 4;
         static constexpr unsigned kMaxUserSpecConstants = 16;
 
-        // Address space for entry-block allocas (the mutable scalar-slot model
-        // — loop counters, reassigned locals). NVPTX: 0 (generic). AMDGPU: 5
-        // (private). Getting this wrong on AMDGPU is the classic first bug
-        // (cajeta-amd.md §2) — an AS-0 alloca there is invalid.
+        // Address space for entry-block allocas (the mutable scalar-slot model).
+        // NVPTX: 0 (generic). AMDGPU: 5 (private) — an AS-0 alloca is invalid there.
         virtual unsigned allocaAddressSpace() const = 0;
 
-        // True when kernel params arrive as DESCRIPTORS bound in the kernel body
-        // (Vulkan: a no-param `void main()`, args via handlefrombinding), false
-        // when they are real function arguments (CPU/NVPTX/AMDGPU: fn->getArg).
-        // Drives the bindless buffer-array base: a descriptor-bound backend binds
-        // per-access (no prologue value), an fn-arg backend takes the marshalled
-        // [count, h…] handle array as fn->getArg.
+        // True when kernel params arrive as DESCRIPTORS bound in the body (Vulkan:
+        // a no-param `void main()`), false when they are real function arguments.
         virtual bool descriptorBoundParams() const { return false; }
 
-        // Does this backend honour `!nontemporal` on loads/stores with a real
-        // cache policy (xpu-tile-manifest §6.3 — a `@Streaming` buffer must not
-        // evict a protected kernel's working set)? AMDGPU (slc/nt) and NVPTX
-        // (.cs) do; the CPU and SPIR-V lowerings leave the tag off so the
-        // manifest never claims a streaming mode that was not lowered.
+        // Does this backend honour `!nontemporal` with a real cache policy? AMDGPU
+        // and NVPTX do; CPU/SPIR-V leave it off, so the manifest cannot overclaim.
         virtual bool supportsNontemporal() const { return false; }
 
         // Leaf coordinate reads (dim 0/1/2 = x/y/z). Build into `b`'s current
@@ -146,16 +86,13 @@ namespace xpu {
         virtual llvm::Value* workgroupDim(llvm::IRBuilderBase& b, llvm::Module& m,
                                           unsigned dim) = 0; // block dim (ntid)
 
-        // Global thread index. Default: workgroupId*workgroupDim + threadId,
-        // which is correct on both backends. Virtual so a backend with a
-        // native global-id intrinsic can override.
+        // Global thread index. Default workgroupId*workgroupDim + threadId, correct
+        // on both backends; virtual for a native global-id intrinsic.
         virtual llvm::Value* globalId(llvm::IRBuilderBase& b, llvm::Module& m,
                                       unsigned dim);
 
-        // Total work-items in dim (= gridDim·blockDim) — the grid-stride loop's
-        // stride (Item 6). NVPTX: nctaid·ntid. AMDGPU: the HSA dispatch packet's
-        // grid_size field (already the total). SPIR-V: NumWorkgroups·WorkgroupSize.
-        // CPU: gx·bx, threaded through the coord ABI. Returns i32.
+        // Total work-items in dim (gridDim·blockDim) — the grid-stride loop's
+        // stride. Returns i32.
         virtual llvm::Value* gridSize(llvm::IRBuilderBase& b, llvm::Module& m,
                                       unsigned dim) = 0;
 
@@ -164,25 +101,14 @@ namespace xpu {
         virtual void workgroupBarrier(llvm::IRBuilderBase& b,
                                       llvm::Module& m) = 0;
 
-        // Scoped memory fence (Stage 9): order/make-visible memory accesses at
-        // `scope`, with NO thread rendezvous (unlike workgroupBarrier). `order`
-        // selects the ordering (MemoryOrder.Default = AcquireRelease, the safe
-        // fence default; Relaxed is treated as AcqRel since a relaxed fence is a
-        // no-op). Default emits a system-scope acq_rel `fence` (the CPU oracle);
-        // GPU backends override with the native op (SPIR-V OpMemoryBarrier,
-        // AMDGPU scoped fence, NVPTX membar).
+        // Scoped memory fence: order and make visible the accesses at `scope`, with
+        // NO thread rendezvous. Default: a system-scope acq_rel `fence`.
         virtual void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m,
                                  FenceScope scope,
                                  MemoryOrder order = MemoryOrder::Default);
 
-        // Async global->shared copy (xpu-pipelined-gemm-primitives §2): issue a
-        // direct global->LDS transfer of `count` elements, the workgroup striping
-        // it across its threads (dst[dstOffset+e] = src[srcOffset+e] for
-        // e = tid, tid+nthreads, ...). `dst`/`src` are resolved buffer bases (a
-        // Shared<T> local + a Buffer<T> param); elem types match (same T). The
-        // DEFAULT is a SYNCHRONOUS strided copy — bit-identical, no overlap — so
-        // every backend is correct before its native async path lands; AMDGPU
-        // overrides with `global_load_lds` tracked under vmcnt (NVPTX cp.async).
+        // Async global->shared copy of `count` elements, striped across the
+        // workgroup. The DEFAULT is a SYNCHRONOUS strided copy — correct, not fast.
         virtual void asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* dstBase, llvm::Type* dstElem,
                                llvm::Value* dstOffset, llvm::Value* srcBase,
@@ -190,23 +116,15 @@ namespace xpu {
                                llvm::Value* count);
 
         // Close the current async-copy group (the unit `asyncWait` counts).
-        // Default no-op (the synchronous fallback already landed the data).
         virtual void asyncCommit(llvm::IRBuilderBase& b, llvm::Module& m);
 
-        // Block until at most `groupsInFlight` committed async-copy groups remain
-        // outstanding. Default no-op (synchronous fallback). AMDGPU lowers to
-        // `s_waitcnt vmcnt(groupsInFlight)`; NVPTX to `cp.async.wait_group`.
+        // Block until at most `groupsInFlight` committed groups remain outstanding.
+        // Default no-op (synchronous fallback); AMDGPU: s_waitcnt vmcnt.
         virtual void asyncWait(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* groupsInFlight);
 
-        // Instruction-scheduling hints (xpu-kernel-scheduling-hints §2): steer how
-        // the backend interleaves matrix-core / LDS / global-memory instructions.
-        // Operands are compile-time constants (ImmArg), validated + range-checked
-        // at the call site, so the seams take plain integers. The DEFAULT is a
-        // NO-OP on every seam — a scheduling hint is an optimization directive, so
-        // omitting it is always correct (spec §1.3.2). AMDGPU overrides each with
-        // the native intrinsic (sched_barrier / sched_group_barrier / s_setprio /
-        // iglp_opt); NVPTX / SPIR-V / CPU keep the no-op (spec §4).
+        // Instruction-scheduling hints: steer how the backend interleaves matrix-
+        // core / LDS / global instructions. ImmArg operands; the DEFAULT is a NO-OP.
         virtual void schedBarrier(llvm::IRBuilderBase& b, llvm::Module& m,
                                   uint32_t mask);
         virtual void schedGroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m,
@@ -217,96 +135,51 @@ namespace xpu {
         virtual void schedPipelineOpt(llvm::IRBuilderBase& b, llvm::Module& m,
                                       uint32_t strategy);
 
-        // Conflict-free LDS swizzle (xpu-pipelined-gemm-primitives §3): permute a
-        // flat element index `idx` (i64) into a `Swizzled<T,S>` tile so that
-        // consecutive rows land in different banks. `stride` is the tile's row
-        // width S (a power of two). The permutation is an involution
-        // (`row*S + (col ^ (row & (S-1)))`), applied identically at every access
-        // of the tile, so it is transparent at the logical-index level. The
-        // DEFAULT is the IDENTITY (no swizzle — correct, just unaccelerated); a
-        // non-power-of-two `stride` also falls back to identity. AMDGPU emits the
-        // XOR. Returns the physical index (i64).
+        // Conflict-free LDS swizzle of flat index `idx` (i64) in a `Swizzled<T,S>`
+        // tile: `row*S + (col ^ (row & (S-1)))`, an involution. DEFAULT: identity.
         virtual llvm::Value* swizzleAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
                                          uint32_t stride);
 
-        // Block padding: map a flat element index `idx` into a
-        // `BlockPadded<T,Block,Pad>` tile to its physical slot
-        // `idx + (idx/period)*pad` (Tensile LdsBlockSizePerPad). `period`/`pad` are
-        // in elements; `period`==0 is the identity. Applied identically at every
-        // direct/staging access so it is transparent at the logical-index level.
-        // The DEFAULT is the IDENTITY (correct, unaccelerated); AMDGPU emits the
-        // additive pad. Returns the physical index.
+        // Block padding: map flat index `idx` to its physical slot
+        // `idx + (idx/period)*pad`; `period`==0 is the identity. DEFAULT: identity.
         virtual llvm::Value* blockPadAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
                                           uint32_t period, uint32_t pad);
 
-        // Device printf (Stage 11): `fmt` is an i8* constant format string;
-        // `args` are the already-lowered scalar arguments (Path A — explicit
-        // args, no C varargs in the language). CPU calls host printf (the kernel
-        // runs as host code); NVPTX emits `vprintf`. The default REJECTS —
-        // AMD (__ockl_printf hostcall) and Vulkan (NonSemantic.DebugPrintf) need
-        // runtime integration and are deferred.
+        // Device printf: `fmt` is an i8* constant format string, `args` the already
+        // lowered scalars (no C varargs in the language). The default REJECTS.
         virtual void devicePrintf(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* fmt,
                                   llvm::ArrayRef<llvm::Value*> args);
 
-        // Specialization constant (Stage 11): `Spec.geti(slot, default)` → i32.
-        // `slot` selects SpecId (kFirstUserSpecId + slot); `defaultValue` is its
-        // compile-time default. The DEFAULT bakes the value as an i32 literal —
-        // correct for CPU/AMD/NVPTX, which (re)compile the kernel per launch and
-        // have no late pipeline-time binding. Vulkan overrides with a genuine
-        // OpSpecConstant so the value is override-able at pipeline creation (the
-        // host override is the deferred launch contract; for now it reads the
-        // default).
+        // Specialization constant `Spec.geti(slot, default)` → i32. The DEFAULT
+        // bakes an i32 literal; Vulkan emits an override-able OpSpecConstant.
         virtual llvm::Value* specConstantI32(llvm::IRBuilderBase& b,
                                              llvm::Module& m, unsigned slot,
                                              int32_t defaultValue);
 
-        // f32 companion of specConstantI32 (`Spec.getf(slot, default)` → f32).
-        // Same model: Vulkan emits a genuine float OpSpecConstant (override-able
-        // at pipeline creation); CPU/AMD/NVPTX bake the default literal.
+        // f32 companion of specConstantI32 (`Spec.getf(slot, default)`), same model:
+        // Vulkan a real float OpSpecConstant, the others bake the literal.
         virtual llvm::Value* specConstantF32(llvm::IRBuilderBase& b,
                                              llvm::Module& m, unsigned slot,
                                              float defaultValue);
 
-        // Decorate a freshly-created kernel function: calling convention +
-        // any kernel-marker metadata. NVPTX: ptx_kernel CC + nvvm.annotations.
-        // AMDGPU: amdgpu_kernel CC, no metadata.
+        // Decorate a freshly-created kernel function: calling convention plus any
+        // marker metadata. NVPTX: ptx_kernel + nvvm.annotations. AMDGPU: the CC.
         virtual void decorateKernel(llvm::Function* fn, llvm::Module& m) = 0;
 
-        // Called once at kernel finalization IFF the body used a cross-lane
-        // subgroup op (Wave.shuffle/ballot/reduce). A hook for backends that can
-        // request maximal reconvergence — the guarantee that source-converged
-        // lanes stay converged, so the subgroup op sees the lanes the source
-        // implies. Vulkan sets the "enable-maximal-reconvergence" fn-attr
-        // (→ OpExecutionMode MaximallyReconvergesKHR, SPV_KHR_maximal_
-        // reconvergence). Default no-op: NVPTX/AMDGPU/CPU model wave-op
-        // convergence through their own ISA semantics + LLVM convergence, with
-        // no equivalent module-level mode to set.
+        // Called once at finalization IFF the body used a cross-lane subgroup op: a
+        // hook for requesting maximal reconvergence (Vulkan). Default no-op.
         virtual void onSubgroupOpsUsed(llvm::Function* /*fn*/,
                                        llvm::Module& /*m*/) {}
 
-        // Apply an @Occupancy override (kernel-occupancy-autotune §3) to a
-        // freshly-lowered kernel. Portable, vendor-neutral logistics: AMDGPU maps
-        // maxThreads→flat-work-group-size + minResident→waves-per-eu; NVPTX maps
-        // them to maxntid/minctasm/maxnreg. Default no-op (Vulkan/CPU: no
-        // equivalent). Runs before the §2 auto budgeting, so an explicit override
-        // wins (the auto path skips a function that already carries the attr).
+        // Apply an @Occupancy override to a freshly-lowered kernel. Runs before the
+        // auto budgeting, so an explicit override wins.
         virtual void applyOccupancy(llvm::Function* /*fn*/,
                                     const XpuKernelAttr& /*attr*/) {}
 
-        // --- kernel signature / parameter model (the Vulkan fork) -----------
-        //
-        // NVPTX/AMDGPU take kernel arguments as a flat parameter list: buffers
-        // as addrspace(1) pointers, scalars by value, matching the cuLaunch/
-        // hipModuleLaunch kernelParams ABI. Vulkan/SPIR-V has NO raw-pointer
-        // kernel ABI — its compute entry is `void main()` and arguments arrive
-        // through descriptor-bound storage buffers (resource.handlefrombinding
-        // + getpointer). That divergence is exactly these three hooks; their
-        // defaults reproduce the NVPTX/AMDGPU pointer-arg model, so those
-        // backends are behavior-preserving and only Vulkan overrides them.
-        // (This is the "bigger fork than AMD" measured by the Vulkan bring-up:
-        // unlike AMD, the kernel SIGNATURE and BUFFER ACCESS fork, not just the
-        // coordinate leaf reads.)
+        // --- kernel signature / parameter model (the Vulkan fork) -------------
+        // NVPTX/AMDGPU take kernel arguments as a flat parameter list; Vulkan has no
+        // raw-pointer kernel ABI, so it alone overrides the three hooks below.
 
         // One admitted kernel parameter, as seen by the signature/prologue hooks.
         struct KernelParam {
@@ -316,124 +189,65 @@ namespace xpu {
                                  // the {i32 filterMode, i32 addressMode} struct
             bool isSigned;       // scalar signedness / buffer-element signedness
             bool isTexture = false;  // Texture2D<T>/Texture3D<T> — a sampled-image
-                                     // handle (Item 8). Carried as a backend handle
-                                     // (ptr on CPU, image descriptor on Vulkan,
-                                     // image rsrc on AMD); `type` is the texel
-                                     // scalar T (float for float/UNORM/half formats,
-                                     // i32 for the raw-integer formats; `isSigned`
-                                     // tracks int32 vs uint32). The Vulkan image
-                                     // binding and fetchTexture's result vector use it.
+                                     // handle carried per backend; `type` is the
+                                     // texel scalar (i32 for raw-integer formats).
             bool isSampler = false;  // Sampler — filter/address descriptor (Item 8).
-                                     // `type` is the {i32,i32} mode struct; bound
-                                     // by value (CPU/SIMT) or as an OpTypeSampler
-                                     // descriptor (Vulkan).
+                                     // `type` is the {i32,i32} mode struct.
             bool isAccelStruct = false;  // AccelerationStructure — a descriptor-
-                                     // bound BVH (cajeta-gpu Part C). Carried as a
-                                     // backend handle; on Vulkan an
-                                     // OpTypeAccelerationStructureKHR bound via
-                                     // resource.handlefrombinding. `type` unused
-                                     // (the AS handle is opaque). Ray-query only.
+                                     // bound BVH, carried as a backend handle;
+                                     // `type` unused. Ray-query only.
             bool isImage = false;    // Image2D — a writable 2-D storage image
-                                     // (the writable twin of Texture2D). Carried
-                                     // as a backend handle; on Vulkan a STORAGE_IMAGE
-                                     // descriptor bound in GENERAL layout. `type` is
-                                     // the texel scalar (f32); written by
-                                     // `img.store(x, y, v)` (OpImageWrite).
+                                     // carried as a backend handle; `type` is the
+                                     // texel scalar (f32), written by img.store().
             int textureDim = 2;      // texture KIND for isTexture params: 1 = Texture1D,
-                                     // 2 = Texture2D, 3 = Texture3D, 4 = Texture2DArray,
-                                     // 5 = TextureCube. Selects the image dimensionality
-                                     // (Vulkan spirv.Image Dim + image-type), the
-                                     // coord arity, and the 2-D vs 3-D sample/fetch
-                                     // seam. Kept ahead of the trailing defaulted
-                                     // fields so the 6/8-field positional KernelParam
-                                     // inits keep their layout.
+                                     // 2 = Texture2D, 3 = Texture3D, 4 = 2DArray,
+                                     // 5 = TextureCube. Selects dimensionality/arity.
             bool isBufferArray = false;  // Buffer<T>[] — a bindless descriptor ARRAY of
-                                     // buffers (`bufs[idx][i]`). isBuffer is ALSO true
-                                     // (the element type / per-buffer access is identical
-                                     // to a lone Buffer<T>); isBufferArray adds the outer
-                                     // descriptor-array binding + the first subscript
-                                     // selecting a descriptor. The runtime binds N
-                                     // descriptors into one binding (descriptorCount = N
-                                     // from the launch); on Vulkan an OpTypeRuntimeArray
-                                     // indexed with NonUniformEXT. Appended last (after
-                                     // textureDim) so existing positional inits are
-                                     // unaffected.
+                                     // buffers (`bufs[idx][i]`). isBuffer is ALSO
+                                     // true; this adds the outer array binding.
             bool isPushConstant = false;  // @PushConstant (cajeta-gfx §4.b-rest) — a
-                                     // by-value scalar/vector/matrix that, on a GRAPHICS
-                                     // stage, rides the stage's single PushConstant block
-                                     // (the small per-draw uniforms) instead of a
-                                     // per-vertex Location interface variable. Vulkan-only;
-                                     // the compute path and non-Spirv backends ignore it
-                                     // and keep the ordinary by-value param. Set only on
-                                     // non-resource params (a Buffer/Texture/… @PushConstant
-                                     // is rejected upstream). Appended last so positional
-                                     // KernelParam inits are unaffected.
+                                     // by-value scalar riding a graphics stage's
+                                     // PushConstant block. Vulkan-only.
         };
 
-        // Create the kernel function for `name`. Default: a void-returning
-        // function taking ptr addrspace(1) per buffer + the scalar type per
-        // primitive, then decorateKernel(). Vulkan overrides to build `void()`
-        // + its HLSL compute markers (no parameters).
+        // Create the kernel function for `name`. Default: void-returning, one ptr
+        // addrspace(1) per buffer + the scalar type per primitive, + decorateKernel.
         virtual llvm::Function* createKernel(
             llvm::Module& m, const std::string& name,
             const std::vector<KernelParam>& params);
 
-        // Materialize parameter `idx` into `b`'s current (entry) block and
-        // return its runtime value: a scalar value (the caller stores it into a
-        // mutable slot) or a buffer base/handle (kept in bufferBases). Default:
-        // fn->getArg(idx). Vulkan binds descriptor resources here instead.
+        // Materialize parameter `idx` into `b`'s entry block: a scalar value, or a
+        // buffer base/handle for bufferBases. Default fn->getArg; Vulkan binds here.
         virtual llvm::Value* materializeParam(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Function* fn,
             unsigned idx, const KernelParam& p);
 
-        // --- graphics shader output (cajeta-gfx §4.b) -----------------------
-        //
-        // A compute @Kernel returns void and a @Device helper `ret`s its value,
-        // but a graphics @Vertex/@Fragment shader has a `void main()` entry that
-        // writes its result into an OUTPUT interface variable (gl_Position, a
-        // fragment color, …). When `shaderOutputReturn()` is true the body
-        // lowerer, on a `return <expr>`, evaluates the expression, calls
-        // `storeShaderOutput` to write it to that variable, and emits `ret void`
-        // (instead of `ret <value>`). The default is the compute/helper behavior.
+        // --- graphics shader output -------------------------------------------
+        // A graphics entry is `void main()` writing an output interface variable, so
+        // when this is true `return <expr>` becomes storeShaderOutput + `ret void`.
         virtual bool shaderOutputReturn() const { return false; }
 
-        // Store a graphics shader's evaluated `return` value into its stage
-        // output interface variable (the SpirvGraphicsTarget creates the right
-        // one: BuiltIn Position for a vertex stage, a Location color for a
-        // fragment stage). Only called when shaderOutputReturn() is true.
+        // Store a graphics shader's evaluated `return` value into its stage output
+        // variable. Only called when shaderOutputReturn() is true.
         virtual void storeShaderOutput(llvm::IRBuilderBase& /*b*/,
                                        llvm::Module& /*m*/, llvm::Function* /*fn*/,
                                        llvm::Value* /*value*/) {}
 
-        // Pointer to buffer element `index` of `base` (element type `elemTy`,
-        // `index` already widened to i64). Default: an addrspace-preserving GEP
-        // (correct for NVPTX/AMDGPU global+shared and for Vulkan shared-mem
-        // globals). Vulkan routes descriptor-buffer handles through
-        // resource.getpointer instead, self-dispatching on the base's type.
+        // Pointer to buffer element `index` of `base` (`index` already i64). Default
+        // is a GEP; Vulkan routes descriptor handles through resource.getpointer.
         virtual llvm::Value* bufferElementPtr(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
             llvm::Type* elemTy, llvm::Value* index);
 
-        // Bindless descriptor array (Buffer<T>[]): select descriptor `descIndex`
-        // of the buffer-array param bound at `binding`, returning a per-buffer
-        // base the caller then feeds to bufferElementPtr for the inner `[i]`. The
-        // first subscript of `bufs[idx][i]`. `arrayBase` is the materialized arg
-        // for pointer backends (the [count, h…] handle array; null on Vulkan
-        // where the descriptor is bound here via resource.handlefrombinding).
-        // Default: unsupported (XPU-N01) — Vulkan + CPU override. `descIndex` is
-        // i32.
+        // Bindless descriptor array (Buffer<T>[]): select descriptor `descIndex` of
+        // the array bound at `binding`, returning a base for bufferElementPtr.
         virtual llvm::Value* bufferArrayElement(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Function* fn,
             unsigned binding, llvm::Value* arrayBase, llvm::Type* elemTy,
             llvm::Value* descIndex);
 
-        // Kernel-aware vectorized load/store: `buf.vload<N>(i)` reads `lanes`
-        // contiguous elements from element `index` into a packed `<N x T>`;
-        // `buf.vstore(i, v)` writes one back. Default routes through
-        // bufferElementPtr + a packed vector load/store (correct on CPU / NVPTX
-        // / AMD where the buffer is a raw pointer); Vulkan/SPIR-V overrides to
-        // split for the <=4-component OpTypeVector cap. `index` is i64.
-        // (kernel-vector-loadstore-spec.md §3, §4, §6.)
+        // Kernel-aware vectorized load/store over `lanes` contiguous elements
+        // (`index` i64). Default: bufferElementPtr + a packed vector op.
         virtual llvm::Value* vectorLoad(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
             llvm::Type* elemTy, unsigned lanes, llvm::Value* index);
@@ -442,55 +256,22 @@ namespace xpu {
             llvm::Type* elemTy, unsigned lanes, llvm::Value* index,
             llvm::Value* value);
 
-        // Sample the 2-D texture `texHandle` at normalized coords (u, v) in
-        // [0, 1] through `samplerHandle`, returning the filtered texel (f32) —
-        // the lowering of `tex.sample(sampler, u, v)` (Item 8). `texHandle` and
-        // `samplerHandle` are exactly the values materializeParam produced for
-        // the texture and sampler kernel params, so their representation is the
-        // backend's own (CPU: a host texobj ptr + the {i32,i32} sampler struct;
-        // Vulkan: image + sampler descriptors; AMD: image rsrc + sampler rsrc).
-        // Default: unsupported (XPU-N01) — only backends with image sampling
-        // override. Sampling at explicit LOD 0 (compute-valid; Vulkan requires
-        // explicit LOD outside a fragment shader).
-        // `lod` is the explicit mip level (float): the plain `tex.sample` passes
-        // a constant 0.0; `tex.sampleLod(s, u, v, lod)` passes the user value.
+        // Sample 2-D texture `texHandle` at normalized (u, v) through
+        // `samplerHandle` at explicit mip `lod`. Default: unsupported (XPU-N01).
         virtual llvm::Value* sampleTexture(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* samplerHandle,
             llvm::Value* u, llvm::Value* v, llvm::Value* lod);
 
-        // Fetch (texelFetch) the 2-D texture `texHandle` at the EXACT integer
-        // coordinate (x, y), mip level 0, unfiltered and WITHOUT a sampler,
-        // returning the texel as a <4 x `texelTy`> — the lowering of
-        // `tex.fetch(x, y)` on a Texture2D<T> (`texelTy` is T's scalar LLVM type:
-        // float for the float/UNORM/half formats, i32 for the raw-integer
-        // formats R32I/R32UI/RGBA32I/RGBA32UI). The unfiltered twin of
-        // sampleTexture: same texture descriptor (`texHandle` from
-        // materializeParam; a *sampled* image, not a storage image — that
-        // distinguishes this from loadImage), no sampler, no addressing mode.
-        // `x`/`y` are i32 texel indices (NOT normalized).
-        // Default: unsupported (XPU-N01) — only backends with an unfiltered
-        // image read override. Vulkan emits OpImageFetch (+ Lod 0) via
-        // llvm.spv.resource.load.level (the sampled-image Sampled=1 branch of
-        // the read/fetch selection); AMD via __ockl_image_load_2D (the float4
-        // result bitcast to <4 x i32> for integer formats — the HW image_load is
-        // raw for a non-normalized integer image); CPU via the exact texel read.
-        // (NVPTX emit-deferred.) sampleTexture takes no texelTy — sampling is
-        // float-only (integer textures are rejected at the call site).
-        // `lod` is the explicit mip level (i32): `tex.fetch` passes a constant 0;
-        // `tex.fetchLod(x, y, lod)` passes the user value.
+        // texelFetch: the unfiltered, sampler-less twin of sampleTexture — exact
+        // texel (x, y) at mip `lod` as <4 x texelTy>. Default: unsupported.
         virtual llvm::Value* fetchTexture(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* x, llvm::Value* y,
             llvm::Type* texelTy, llvm::Value* lod);
 
-        // Texture3D — the 3-D (volumetric) twins of sampleTexture/fetchTexture.
-        // Same handle/contract, but a 3-component coordinate (u, v, w) / (x, y, z)
-        // and a 3-D image. `sampleTexture3D` is the trilinear filtered read
-        // (float-only); `fetchTexture3D` the unfiltered exact-voxel read returning
-        // <4 x texelTy>. Default: unsupported (XPU-N01) — only backends with 3-D
-        // image support override (CPU runtime, Vulkan 3-D OpImageSample/Fetch, AMD
-        // __ockl_image_{sample,load}_3D). NVPTX 3-D emit-deferred.
+        // Texture3D — the volumetric twins of sampleTexture/fetchTexture: a
+        // 3-component coordinate and a 3-D image. Default: unsupported.
         virtual llvm::Value* sampleTexture3D(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* samplerHandle,
@@ -501,14 +282,8 @@ namespace xpu {
             llvm::Value* texHandle, llvm::Value* x, llvm::Value* y, llvm::Value* z,
             llvm::Type* texelTy);
 
-        // Texture1D — the 1-D (linear) twins of sampleTexture/fetchTexture. Same
-        // handle/contract, but a single-component coordinate (u) / (x) and a 1-D
-        // image. `sampleTexture1D` is the linear filtered read (float-only);
-        // `fetchTexture1D` the unfiltered exact-texel read returning <4 x texelTy>.
-        // No `lod` operand — mipmaps are 2-D only. Default: unsupported (XPU-N01) —
-        // only backends with 1-D image support override (CPU runtime reuse of the
-        // 2-D path with height=1, Vulkan 1-D OpImageSample/Fetch, AMD
-        // __ockl_image_{sample,load}_1D — scalar coords). NVPTX 1-D emit-deferred.
+        // Texture1D — the linear twins: a single-component coordinate and a 1-D
+        // image. No `lod` operand (mipmaps are 2-D only). Default: unsupported.
         virtual llvm::Value* sampleTexture1D(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* samplerHandle, llvm::Value* u);
@@ -517,16 +292,8 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* x, llvm::Type* texelTy);
 
-        // Texture2DArray — the layered twins of sampleTexture/fetchTexture. Like a
-        // 2-D texture but with an extra `layer` selecting one of N planes: the
-        // sample/fetch is 2-D within that layer (NO cross-layer filtering — unlike
-        // Texture3D's trilinear). `layer` is an INTEGER array index (i32), not a
-        // normalized coord; backends that want a float layer coordinate convert it.
-        // `sampleTexture2DArray` is the bilinear filtered read (float-only) at the
-        // nearest layer; `fetchTexture2DArray` the unfiltered exact-texel read →
-        // <4 x texelTy>. Default: unsupported (XPU-N01). On the image side a layered
-        // image is Dim=2D, Arrayed=1 (Vulkan VIEW_TYPE_2D_ARRAY, AMD
-        // __ockl_image_{sample,load}_2Da, CPU reuse of the 2-D path per layer).
+        // Texture2DArray — 2-D twins with an extra INTEGER `layer` (i32) selecting
+        // one plane; NO cross-layer filtering. Default: unsupported.
         virtual llvm::Value* sampleTexture2DArray(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* samplerHandle,
@@ -537,197 +304,103 @@ namespace xpu {
             llvm::Value* texHandle, llvm::Value* x, llvm::Value* y,
             llvm::Value* layer, llvm::Type* texelTy);
 
-        // TextureCube — sampled by a DIRECTION vector (x, y, z), not a planar
-        // coordinate: the hardware picks the face the vector points at and projects
-        // onto it. The filtered read (float-only); a cube has NO fetch (no single
-        // integer texel for a direction). Default: unsupported (XPU-N01). On the
-        // image side a cube is Dim=Cube (Vulkan VIEW_TYPE_CUBE + CUBE_COMPATIBLE,
-        // AMD __ockl_image_sample_CM, CPU direction→face projection + bilinear).
+        // TextureCube — sampled by a DIRECTION vector (x, y, z), the hardware
+        // picking the face it points at. No fetch. Default: unsupported.
         virtual llvm::Value* sampleTextureCube(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* samplerHandle,
             llvm::Value* x, llvm::Value* y, llvm::Value* z);
 
-        // Store `value` into the 2-D storage image `imgHandle` at INTEGER texel
-        // coordinate (x, y) — the lowering of `img.store(x, y, value)` (writable
-        // images, the gfx bridge / twin of sampleTexture). `imgHandle` is exactly
-        // the value materializeParam produced for the Image2D kernel param (Vulkan:
-        // a STORAGE_IMAGE descriptor bound in GENERAL layout). `x`/`y` are i32
-        // texel indices (NOT normalized); `value` is the f32 texel.
-        // Default: unsupported (XPU-N01) — only backends with storage-image write
-        // override. Vulkan emits a single OpImageWrite via
-        // llvm.spv.resource.store.2d (a <4 x f32> texel, value in .x; the image's
-        // R32 format keeps lane 0).
+        // Store f32 `value` into 2-D storage image `imgHandle` at integer texel
+        // (x, y) — `img.store(x, y, value)`. Default: unsupported (XPU-N01).
         virtual void storeImage(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* imgHandle, llvm::Value* x, llvm::Value* y,
             llvm::Value* value);
 
-        // Read the texel of the 2-D storage image `imgHandle` at INTEGER texel
-        // coordinate (x, y), returning it as an f32 — the lowering of
-        // `img.load(x, y)` (the read twin of storeImage; together they make
-        // Image2D read-modify-write and image->image passes possible). Same
-        // STORAGE_IMAGE descriptor as storeImage (no sampler; GENERAL layout).
-        // Default: unsupported (XPU-N01) — only backends with storage-image read
-        // override. Vulkan emits a single OpImageRead via
-        // llvm.spv.resource.load.2d (a scalar result is read as a <4 x f32> texel
-        // and component 0 extracted; the R32f image keeps lane 0).
+        // Read the texel of storage image `imgHandle` at integer (x, y) as an f32 —
+        // the read twin of storeImage. Default: unsupported (XPU-N01).
         virtual llvm::Value* loadImage(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* imgHandle, llvm::Value* x, llvm::Value* y);
 
-        // --- transcendental math (B2 increment 2) ---------------------------
-        // sin/cos/tan/asin/acos/atan (unary), pow/atan2 (binary), rsqrt. The
-        // DEFAULT emits the matching `llvm.*` intrinsic — correct on CPU (libm)
-        // and Vulkan (the SPIR-V backend maps it to OpExtInst GLSL.std.450). The
-        // AMD backend OVERRIDES it to emit `__ocml_<name>_f32` device-library
-        // calls (AMDGPU mis-lowers `llvm.sin` without ocml range reduction); the
-        // AMD backend then links ocml.bc. `name` is the cajeta Math name; `args`
-        // is 1 element (unary/rsqrt) or 2 (pow/atan2), already in an FP type.
+        // --- transcendental math ----------------------------------------------
+        // The DEFAULT emits the matching `llvm.*` intrinsic; AMD OVERRIDES to
+        // `__ocml_<name>_f32` (AMDGPU mis-lowers llvm.sin without range reduction).
         virtual llvm::Value* transcendental(
             llvm::IRBuilderBase& b, llvm::Module& m, const std::string& name,
             llvm::ArrayRef<llvm::Value*> args);
 
-        // --- integer dot product (SPV_KHR_integer_dot_product, DP4a) ---------
-        // `Vector<int8,4>` / `Vector<uint8,4>` dot -> int32, with int32
-        // accumulation. `a`/`c` are <4 x i8> vectors; `acc` is the i32
-        // accumulator (i32 0 for a plain dot, the third method arg for the
-        // `a.dot(b, acc)` fused form). DEFAULT: a portable widening reduce
-        // (vecops::idotWiden — sext/zext each lane to i32, mul, sum, + acc),
-        // correct on CPU/AMD/NVIDIA. Vulkan OVERRIDES to pack the four lanes
-        // into an i32 and emit llvm.spv.dot4add.{i8,u8}packed (the DP4a op:
-        // OpSDot/OpUDot PackedVectorFormat4x8Bit + OpIAdd). `isSigned` picks
-        // signed vs unsigned.
+        // --- integer dot product (DP4a) ---------------------------------------
+        // <4 x i8> dot -> i32 with i32 accumulation (`acc` is 0 for a plain dot).
+        // DEFAULT: a portable widening reduce; Vulkan emits llvm.spv.dot4add.
         virtual llvm::Value* integerDot4x8(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
             llvm::Value* c, llvm::Value* acc, bool aSigned, bool cSigned);
 
-        // WIDE `dotAccum` for targets whose ISA has a wide fused int8 dot.
-        //
-        // `integerDot4x8` above is the per-lane seam, and slicing a 32-lane
-        // dotAccum into eight 4-lane dots is the right shape on a GPU, where
-        // each thread does scalar work. It is the WRONG shape on the CPU
-        // backend, whose ISA is the host's: x86's `vpdpbusd` consumes 16 or
-        // 64 int8 lanes at once, so the per-lane slicing destroys the very
-        // shape the instruction needs. Measured — a @Kernel doing the exact
-        // dotAccum an ordinary method does got `vpmaddwd` while the method
-        // got `vpdpbusd`, and the CPU arm of a decode ran 1.19x instead of
-        // what VNNI is worth.
-        //
-        // Returns nullptr when the target has no wide form, and the caller
-        // then falls back to the per-lane loop — so GPU backends inherit
-        // exactly the behaviour they had.
+        // WIDE `dotAccum` for an ISA with a wide fused int8 dot (x86 vpdpbusd takes
+        // 16 or 64 lanes at once, which the per-lane slicing destroys). nullptr = none.
         virtual llvm::Value* integerDotWide(
             llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/,
             llvm::Value* /*w*/, llvm::Value* /*a*/, llvm::Value* /*acc*/,
             bool /*wUnsigned*/) { return nullptr; }
 
-        // `Vector<int8,N>.lut4(table)` -> <N x i8>: a 16-entry int8 table
-        // lookup by 4-bit index, out[i] = table[indices[i] & 15]. `indices`
-        // is <N x i8>, `table` is <16 x i8>. DEFAULT: spill the table and
-        // gather per lane (vecops::lut4Portable), correct on every backend.
-        // AMDGPU OVERRIDES to emit v_perm_b32 (llvm.amdgcn.perm) as a
-        // byte-permute LUT — the cheap decode for nonlinear 4-bit dequant
-        // tables (MXFP4's kvalues), replacing a per-element arithmetic remap.
+        // `Vector<int8,N>.lut4(table)` -> out[i] = table[indices[i] & 15]. DEFAULT:
+        // spill + per-lane gather; AMDGPU emits v_perm_b32 as a byte-permute LUT.
         virtual llvm::Value* byteLut16(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* indices,
             llvm::Value* table);
 
-        // --- float atomics (SPV_EXT_shader_atomic_float_add / _min_max) ------
-        // `Buffer<float32>.atomic{Add,Min,Max}(i, v)`: an atomic read-modify-
-        // write on the element pointer, returning the OLD value. DEFAULT: a
-        // relaxed (monotonic), system-scope `atomicrmw` — selects the native
-        // global FP atomic on AMDGPU/NVPTX and a lock/cmpxchg on CPU. Vulkan
-        // OVERRIDES to AcquireRelease + Device scope and emits OpAtomicFAddEXT /
-        // FMinEXT / FMaxEXT (spirv-val rejects SequentiallyConsistent and
-        // relaxed-with-storage-class semantics on OpAtomicF*EXT, and CrossDevice
-        // scope, so the Vulkan path uses Device scope + AcquireRelease).
-        // `order` selects the memory ordering (MemoryOrder.Default keeps the
-        // backend's established default — see toAtomicOrdering).
+        // --- float atomics -----------------------------------------------------
+        // `Buffer<float32>.atomic{Add,Min,Max}(i, v)` — an atomic RMW returning the
+        // OLD value. DEFAULT monotonic/system; Vulkan Device + AcquireRelease.
         enum class AtomicFloatOp { Add, Min, Max };
         virtual llvm::Value* atomicFloatRMW(
             llvm::IRBuilderBase& b, llvm::Module& m, AtomicFloatOp op,
             llvm::Value* ptr, llvm::Value* value,
             MemoryOrder order = MemoryOrder::Default);
 
-        // --- integer atomics (core SPIR-V — no extension) --------------------
-        // `Buffer<int32|uint32>.atomic{Add,Sub,Min,Max,And,Or,Xor,Exchange}(i, v)`:
-        // an atomic read-modify-write on the element pointer, returning the OLD
-        // value. Unlike the float atomics these are CORE (no SPV_EXT), so the
-        // generic `atomicrmw` maps to OpAtomicIAdd/ISub/SMin/UMin/SMax/UMax/And/Or/
-        // Xor/Exchange directly (the backend picks the opcode from the BinOp;
-        // `isSigned` selects S vs U min/max). DEFAULT: relaxed (monotonic),
-        // system-scope — native global atomic on AMDGPU/NVPTX, lock-prefixed on
-        // CPU. Vulkan OVERRIDES to Device scope + AcquireRelease (same memory-model
-        // constraint as the float path). The universal concurrency primitive:
-        // counters, histograms, lock-free allocation (pairs with Wave.prefixSum).
+        // --- integer atomics (core SPIR-V) ------------------------------------
+        // `Buffer<int32|uint32>.atomic{Add,...,Exchange}(i, v)` — RMW returning the
+        // OLD value; `isSigned` picks S vs U min/max. DEFAULT monotonic/system.
         enum class AtomicIntOp { Add, Sub, Min, Max, And, Or, Xor, Exchange };
         virtual llvm::Value* atomicIntRMW(
             llvm::IRBuilderBase& b, llvm::Module& m, AtomicIntOp op,
             llvm::Value* ptr, llvm::Value* value, bool isSigned,
             MemoryOrder order = MemoryOrder::Default);
 
-        // `Buffer<int32|uint32>.atomicCompareExchange(i, expected, desired)`: the
-        // universal lock-free primitive — atomically set element `i` to `desired`
-        // iff it currently equals `expected`, returning the OLD value (compare the
-        // result to `expected` to learn if the swap happened). Lowers to a
-        // `cmpxchg` → OpAtomicCompareExchange; returns the loaded value (element 0
-        // of the {value, success} pair). DEFAULT monotonic; Vulkan Device scope +
-        // AcquireRelease/Acquire (success/failure orderings).
+        // `atomicCompareExchange(i, expected, desired)`: set element `i` to
+        // `desired` iff it equals `expected`, returning the OLD value.
         virtual llvm::Value* atomicCompareExchange(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
             llvm::Value* expected, llvm::Value* desired,
             MemoryOrder order = MemoryOrder::Default);
 
-        // --- shader clock (SPV_KHR_shader_clock) -----------------------------
-        // `Thread.clock()` — read a free-running hardware counter for in-kernel
-        // timing/profiling, returning the 64-bit tick. DEFAULT: llvm.readcycle-
-        // counter (CPU rdtsc). Vulkan emits OpReadClockKHR at Subgroup scope via
-        // the fork's llvm.spv.read.clock intrinsic; AMD takes the default
-        // llvm.readcyclecounter, which the AMDGPU backend lowers to
-        // s_getreg HW_REG_SHADER_CYCLES; NVPTX uses clock64. Ticks are for
-        // *relative* measurement (diff two reads), not wall-clock seconds.
+        // --- shader clock ------------------------------------------------------
+        // `Thread.clock()` — a free-running 64-bit hardware counter for in-kernel
+        // timing. Ticks are for RELATIVE measurement, not wall-clock seconds.
         virtual llvm::Value* readClock(llvm::IRBuilderBase& b, llvm::Module& m);
 
-        // --- ray query (SPV_KHR_ray_query) — the Vulkan-only fork ------------
-        //
-        // A RayQuery kernel-body local is a function-local opaque object; its
-        // ops lower to the llvm.spv.ray.query.* intrinsics (the texture-style
-        // intrinsic path, since the __spirv_* builtin path is shader-gated to
-        // OpenCL and ray query is [EnvVulkan]-only). Only the Vulkan backend
-        // overrides these; the defaults reject a RayQuery in a kernel lowered
-        // for a backend without ray-query support (XPU-N02).
+        // --- ray query (the Vulkan-only fork) ---------------------------------
+        // A RayQuery local is a function-local opaque object whose ops lower to the
+        // llvm.spv.ray.query.* intrinsics; every default rejects it (XPU-N02).
 
-        // The noun seam's compile-time face (cajeta-gpu inc-4 brick #2): the impl
-        // this backend builds an AccelerationStructure as. The noun's impl
-        // determines the verb's lowering (CajetaGPU.md §1.4) — so this one method
-        // is the single source the RayQuery verb path derives from, instead of the
-        // backend being re-inferred. Ordinals MUST match CajetaAsImpl in
-        // runtime/native/cajeta_noun_impl.h (comment-synced, like CAJETA_KP_*).
-        // Today impl == backend: Vulkan builds the native BLAS, CPU the portable
-        // software BVH. The capability-heuristic brick lets one backend pick either.
-        // This is the ray-query noun's ABI-pinned encoding of the degrade choice;
-        // it feeds rayQueryTier() below (the unified ImplTier face).
+        // The impl this backend builds an AccelerationStructure as: the noun's impl
+        // determines the verb's lowering, so this is the single source rayQueryTier
+        // derives from. Ordinals MUST match CajetaAsImpl in cajeta_noun_impl.h.
         enum class NounImpl { SoftwareBvh = 0, VulkanNative = 1, Optix = 2 };
         virtual NounImpl accelImpl() const { return NounImpl::VulkanNative; }
 
-        // The ray-query verb tier in the unified ImplTier vocabulary: SoftwareBvh
-        // ⇒ Portable (the SoftwareRayQuery walk), VulkanNative ⇒ Native
-        // (OpRayQuery). Derived from the noun's recorded impl so the verb follows
-        // the noun (one source). The coop-matrix counterpart is coopMatrixTier;
-        // both features answer "which tier?" through ImplTier.
+        // The ray-query verb tier in the unified ImplTier vocabulary, derived from
+        // the noun's recorded impl so the verb follows the noun (one source).
         ImplTier rayQueryTier() const {
             return accelImpl() == NounImpl::SoftwareBvh ? ImplTier::Portable
                                                         : ImplTier::Native;
         }
 
-        // True when this backend has no native inline ray query and uses the
-        // portable Software tier instead (cajeta-gpu ray-query-to-core): a
-        // RayQuery lowers to the cajeta.xpu.SoftwareRayQuery @Device walk over
-        // a software BVH `Buffer<float32>`, not to the native rayQuery* seams. Thin
-        // alias over rayQueryTier() — the call site (KernelLowering) reads this to
-        // pick the verb lowering, and the noun (AccelerationStructure) is
-        // materialized as the BVH buffer base.
+        // True when this backend has no native inline ray query and takes the
+        // portable tier: a RayQuery lowers to the cajeta.xpu.SoftwareRayQuery walk
+        // over a BVH `Buffer<float32>`. Thin alias over rayQueryTier().
         bool softwareRayQuery() const { return rayQueryTier() == ImplTier::Portable; }
 
         // The LLVM type to alloca for a `RayQuery` local. Vulkan:
@@ -735,9 +408,8 @@ namespace xpu {
         virtual llvm::Type* rayQueryType(llvm::Module& m);
 
         // rq.initialize(as, rayFlags, cullMask, origin<3xf32>, tMin,
-        //               direction<3xf32>, tMax). `rqPtr` is the RayQuery alloca;
-        // `asHandle` the materialized AccelerationStructure descriptor.
-        // Void op (→ OpRayQueryInitializeKHR).
+        // direction<3xf32>, tMax): `rqPtr` is the RayQuery alloca, `asHandle` the
+        // materialized AccelerationStructure descriptor. Void op.
         virtual void rayQueryInitialize(
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* rqPtr, llvm::Value* asHandle,
@@ -749,25 +421,19 @@ namespace xpu {
         virtual llvm::Value* rayQueryProceed(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr);
 
-        // rq.committedType()/candidateType() → i32. `intersection` is the i32
-        // intersection selector (1 = committed, 0 = candidate).
-        // (→ OpRayQueryGetIntersectionTypeKHR.)
+        // rq.committedType()/candidateType() → i32; `intersection` selects
+        // committed (1) or candidate (0).
         virtual llvm::Value* rayQueryIntersectionType(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
             llvm::Value* intersection);
 
-        // rq.candidatePrimitiveIndex() → i32 — which indexed primitive the
-        // candidate intersection hit (RTNN exact-distance refinement).
-        // (→ OpRayQueryGetIntersectionPrimitiveIndexKHR.)
+        // rq.candidatePrimitiveIndex() → i32 — which indexed primitive was hit.
         virtual llvm::Value* rayQueryIntersectionPrimitiveIndex(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
             llvm::Value* intersection);
 
-        // Nearest-hit getters + commit (inc 3b). `intersection` selects candidate
-        // (0) or committed (1). The getters → OpRayQueryGetIntersection{T,
-        // Barycentrics,FrontFace}KHR; confirm/generate → OpRayQuery{Confirm,
-        // Generate}IntersectionKHR (void). Default throws (software-only via
-        // SoftwareRayQuery; only SpirvTarget overrides, fork-gated).
+        // Nearest-hit getters + commit; `intersection` selects candidate (0) or
+        // committed (1). Default throws — only SpirvTarget overrides.
 
         // rq distance `t` → f32.
         virtual llvm::Value* rayQueryIntersectionT(
@@ -789,76 +455,42 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
             llvm::Value* tHit);
 
-        // Cooperative matrix (cajeta-gpu Part C, CM4). Device-only subgroup
-        // matrix-core tiles. Vulkan lowers these to the SPV_KHR_cooperative_matrix
-        // ops via the llvm.spv.cooperative.matrix.* intrinsics; every other
-        // backend's default throws (XPU-N03). All matrices are at Subgroup scope.
+        // --- cooperative matrix -----------------------------------------------
+        // Device-only subgroup matrix-core tiles, all at Subgroup scope. Vulkan
+        // lowers them to SPV_KHR_cooperative_matrix; other defaults throw (XPU-N03).
 
-        // Which lowering a `CooperativeMatrix<T,Rows,Cols,Use>` gets on this
-        // backend for the given element/shape — answered in the unified ImplTier
-        // vocabulary (the coop-matrix instance of the degrade seam):
-        //   Native    — a hardware matrix-core path (Vulkan SPV_KHR_cooperative_
-        //               matrix for the dtype configs the driver advertises; AMD
-        //               amdgcn WMMA; NVIDIA wmma).
-        //   Portable  — a portable flat-tile matmul (the DeviceLowerer emits a
-        //               `[Rows*Cols x T]` tile + a strided gather/scatter + an
-        //               f32/i32 triple-loop multiply-add). Correct on every
-        //               backend; not matrix-core accelerated.
-        // This is the per-backend BASE decision, static per (backend, dtype,
-        // shape) — known at compile time, so no runtime branch is emitted. The
-        // explicit CAJETA_GPU_COOPMATRIX_IMPL override is layered on top of it by
-        // resolveImplTier at the call site (KernelLowering). The default is
-        // Portable, so a backend with no native MMA seam still RUNS cooperative
-        // matrix (it does not throw); a backend overrides this to claim Native
-        // where it can.
+        // Which lowering a `CooperativeMatrix<T,Rows,Cols,Use>` gets here: Native (a
+        // hardware matrix core) or Portable (a flat-tile loop). Static, no branch.
         virtual ImplTier coopMatrixTier(llvm::Type* /*elem*/,
                                         uint32_t /*rows*/, uint32_t /*cols*/,
                                         uint32_t /*use*/) {
             return ImplTier::Portable;
         }
 
-        // The LLVM type to alloca for a `CooperativeMatrix<T,Rows,Cols,Use>`
-        // local: target("spirv.CooperativeMatrixKHR", elem, 3, rows, cols, use).
-        // Only called for the Native tier; the Portable tier uses a flat tile.
+        // The LLVM type to alloca for a `CooperativeMatrix<T,Rows,Cols,Use>`. Only
+        // called on the Native tier; the Portable tier uses a flat tile.
         virtual llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type* elem,
                                            uint32_t rows, uint32_t cols,
                                            uint32_t use);
 
-        // m.load(src, layout, stride) → the loaded tile value (result type
-        // `matrixType`). `ptr` is the Buffer<T> element-0 pointer; `layout`/
-        // `stride` are i32. `rows`/`cols`/`use` describe the tile shape — the
-        // Vulkan seam ignores them (the opaque matrixType already carries them);
-        // a per-lane backend (AMD WMMA) needs them to gather the right fragment
-        // (→ OpCooperativeMatrixLoadKHR).
-        // `swizzleStride` (0 = none) addresses a Swizzled<T,S> LDS tile: each
-        // per-element fragment coord is permuted by the conflict-free XOR with
-        // stride S (xpu-pipelined-gemm-primitives §3). WMMA sub-tile offsets are
-        // multiples of S², so the absolute swizzle reduces to the fragment-local
-        // one — `ptr` stays the pre-offset pointer. Only a per-element backend
-        // (AMD WMMA) / the software tile can honor it; a hardware whole-tile load
-        // (SPIR-V/NVPTX native) rejects a non-zero stride (can't per-element swizzle).
+        // m.load(src, layout, stride) → the loaded tile. `rows`/`cols`/`use` serve
+        // per-lane backends; a whole-tile hardware load rejects swizzle/blockPad.
         virtual llvm::Value* coopMatrixLoad(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
             llvm::Value* layout, llvm::Value* stride, llvm::Type* matrixType,
             uint32_t rows, uint32_t cols, uint32_t use,
             uint32_t swizzleStride = 0, LdsBlockPad blockPad = {});
 
-        // m.store(dst, layout, stride): store `matrixVal` to `ptr`. Void op.
-        // `rows`/`cols`/`use`/`swizzleStride` as in coopMatrixLoad
-        // (→ OpCooperativeMatrixStoreKHR).
+        // m.store(dst, layout, stride): store `matrixVal` to `ptr`. Shape and
+        // swizzle operands as in coopMatrixLoad. Void op.
         virtual void coopMatrixStore(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
             llvm::Value* matrixVal, llvm::Value* layout, llvm::Value* stride,
             uint32_t rows, uint32_t cols, uint32_t use,
             uint32_t swizzleStride = 0, LdsBlockPad blockPad = {});
 
-        // c.mma(a, b) → a*b+c (result type `matrixType`, the accumulator type)
-        // (→ OpCooperativeMatrixMulAddKHR).
-        // `signFlags` is the SPV_KHR_cooperative_matrix operands mask
-        // (A signed 0x1, B 0x2, C 0x4, Result 0x8): int types are signless in
-        // both LLVM and SPIR-V, so the multiply's signedness must travel as
-        // DATA. Vulkan emits it as the MulAdd operands literal; AMD folds it
-        // into the signed/unsigned booleans its WMMA intrinsics take.
+        // c.mma(a, b) → a*b+c. `signFlags` (A 0x1, B 0x2, C 0x4, Result 0x8) carries
+        // the multiply's signedness as DATA — int types are signless in LLVM/SPIR-V.
         virtual llvm::Value* coopMatrixMulAdd(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
             llvm::Value* bMat, llvm::Value* c, llvm::Type* matrixType,
@@ -870,40 +502,18 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value,
             llvm::Type* matrixType);
 
-        // Fused GEMM-epilogue verbs (xpu-coopmatrix-epilogue, Option B):
-        // whether this backend can lower `scaledAccumInto`/`rank1Accum` on
-        // its NATIVE tier. When false, the tier scan demotes any kernel
-        // using the verbs to the portable tile (loudly, via the
-        // [mma-epilogue] note) — so coopMatrixEpilogueAccum is only ever
-        // called on a backend that returned true here.
+        // Whether this backend lowers the fused GEMM-epilogue verbs on its NATIVE
+        // tier; when false the tier scan demotes the kernel to the portable tile, so
+        // coopMatrixEpilogueAccum is only ever called where this returned true.
         virtual bool coopMatrixEpilogueSupported() const { return false; }
 
-        // CooperativeMatrix.fromWords (xpu-coopmatrix-fromwords): whether
-        // this backend's int8 operand fragment is an EXPLICIT per-lane
-        // encoding the generic lowering may build from four i32 words
-        // (AMD WMMA: <4 x i32>, k packed 4-per-word little-endian). False
-        // means the fragment is opaque (SPIR-V) and the verb is rejected
-        // on the native tier with a named diagnostic.
+        // Whether this backend's int8 operand fragment is an EXPLICIT per-lane
+        // encoding the generic lowering may build from four i32 words (AMD WMMA).
+        // False = opaque (SPIR-V), and the verb is rejected on the native tier.
         virtual bool coopMatrixFromWordsSupported() const { return false; }
 
-        // facc[r][c] += (rowF[r] * colF[c]) * acc[r][c], per fragment
-        // element of the CURRENT lane — the k-quant dequant seam, run in
-        // the accumulator's registers. `accVal` is the int32/f32
-        // accumulator fragment, or null for the rank-1 form (no C term).
-        // `rowFPtr`/`colFPtr` are element-0 pointers of the Shared
-        // scale vectors. The multiply association `(rowF*colF)*C` is the
-        // cross-tier CONTRACT (consumers assert bit-exactness against
-        // the software tile). Returns the updated facc fragment.
-        // rowGPtr/colGPtr non-null = the DUAL form (scaledAccumInto2):
-        // facc[r][c] += rowF[r]*colF[c]*acc[r][c] + rowG[r]*colG[c] —
-        // the k-quant dmin term folded into the same per-element pass.
-        // colFScalar/colGScalar non-null = the SCALAR-column variants
-        // (scaledAccumIntoS / scaledAccumInto2S, 10.12.31): the column
-        // factor is a per-lane register value (the caller's contract:
-        // it is the factor for this lane's column) and the matching
-        // colFPtr/colGPtr is null. NATIVE-ONLY — the software tile has
-        // no lane-column mapping, so its lowering rejects these with a
-        // named diagnostic rather than lowering them wrong.
+        // facc[r][c] += (rowF[r]*colF[c])*acc[r][c] per fragment element of the
+        // CURRENT lane; that association is the cross-tier CONTRACT.
         virtual llvm::Value* coopMatrixEpilogueAccum(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
             llvm::Value* faccVal, llvm::Value* rowFPtr, llvm::Type* rowETy,
@@ -912,68 +522,44 @@ namespace xpu {
             llvm::Value* colFScalar = nullptr,
             llvm::Value* colGScalar = nullptr);
 
-        // Called once on the enclosing kernel function the first time a NATIVE
-        // cooperative-matrix tile is allocated in its body. A backend whose
-        // matrix-core path has ABI requirements on the kernel (AMD RDNA3 WMMA is
-        // wave32-only) sets them here; the default is a no-op (Vulkan needs none).
+        // Called once on the kernel the first time a NATIVE coop-matrix tile is
+        // allocated: a backend with ABI requirements (AMD WMMA is wave32) sets them.
         virtual void prepareNativeCoopMatrix(llvm::Function* /*fn*/) {}
 
-        // The LLVM type of a Buffer<T> when passed BY VALUE as a @Device helper
-        // argument — i.e. the type of the buffer base held in bufferBases. A
-        // kernel buffer param arrives via the backend's mechanism (a pointer arg
-        // on NVPTX/AMDGPU/CPU, a descriptor handle on Vulkan), but a helper takes
-        // that already-materialized base as a plain function argument, so its
-        // param type must match. Default: ptr addrspace(1) (NVPTX/AMDGPU global).
-        // CPU overrides to a flat addrspace(0) pointer; Vulkan to the
-        // storage-buffer handle (spirv.VulkanBuffer) it keeps in bufferBases.
+        // The LLVM type of a Buffer<T> passed BY VALUE to a @Device helper — the
+        // base held in bufferBases, which must match how the kernel materialized it.
+        // Default: ptr addrspace(1); CPU flat, Vulkan the storage-buffer handle.
         virtual llvm::Type* bufferParamType(llvm::Module& m, llvm::Type* elemTy);
 
-        // The LLVM type of a Texture2D when passed as a kernel parameter in the
-        // flat pointer-arg model (Item 8 Stage C/D). AMDGPU: ptr addrspace(4) to
-        // the HIP texture object (image obj at +0, sampler obj at +48), consumed
-        // by sampleTexture via __ockl_image_sample_2D. NVPTX (emit-only): i64
-        // (cudaTextureObject_t handle by value). Default: i64. CPU/Vulkan override
-        // createKernel/materializeParam and never consult this.
+        // The LLVM type of a Texture2D as a kernel parameter in the flat pointer-arg
+        // model. AMDGPU: ptr addrspace(4) to the HIP texture object. Default: i64.
         virtual llvm::Type* textureParamType(llvm::Module& m);
 
-        // --- wave / subgroup ops (the @Wave variance-shaped feature) ---------
-        //
-        // All three backends have hardware wave ops, but they diverge in
-        // intrinsic, lane-width, and ballot shape — so these are pure-virtual
-        // seam points, the headline test of whether the abstraction holds for a
-        // genuinely divergent capability (cajeta-amd.md §2).
+        // --- wave / subgroup ops ----------------------------------------------
+        // Every backend has hardware wave ops but they diverge in intrinsic, lane
+        // width and ballot shape, so these are pure-virtual seam points.
 
         // Lanes per wave: i32. NVPTX warpsize sreg (32); AMDGPU wavefrontsize
         // intrinsic; Vulkan spv.wave.get_lane_count.
         virtual llvm::Value* waveWidth(llvm::IRBuilderBase& b,
                                        llvm::Module& m) = 0;
 
-        // The COOPERATIVE-GROUP width: i32, the number of lanes that cooperate
-        // in one Group on the cajeta.xpu cooperative surface (xpu-cooperative-
-        // tile §3, §5). On every GPU it equals the wave/subgroup width, so the
-        // default delegates to waveWidth(). The CPU backend OVERRIDES it to the
-        // constant 1: the cooperative unit there is one work-item and SIMD is
-        // exploited below this abstraction (§3.5), which is the one place the
-        // group width must diverge from Wave.width() (host SIMD width on CPU).
-        // This is what TargetDescriptor.waveWidth() lowers to.
+        // The COOPERATIVE-GROUP width: on a GPU it is the wave width, so the default
+        // delegates. The CPU backend OVERRIDES it to 1 — its cooperative unit is one
+        // work-item, and SIMD is exploited below this abstraction.
         virtual llvm::Value* groupWidth(llvm::IRBuilderBase& b,
                                         llvm::Module& m) {
             return waveWidth(b, m);
         }
 
-        // The lane's index WITHIN its cooperative group, in [0, groupWidth())
-        // (xpu-cooperative-tile §3). On a GPU it equals waveLaneId(). The CPU
-        // backend OVERRIDES it to the constant 0: the group is one work-item,
-        // so its single lane is lane 0. With groupWidth()==1 this makes
-        // Group.stripe() degrade to a full serial loop (i = 0; i < n; i += 1),
-        // which is the correct CPU shape (the work-item loop vectorizes ACROSS
-        // groups/rows beneath this abstraction).
+        // The lane's index within its cooperative group, in [0, groupWidth()). A GPU
+        // takes waveLaneId(); CPU OVERRIDES to 0, degrading Group.stripe() to the
+        // serial loop that is the correct CPU shape.
         virtual llvm::Value* groupLaneId(llvm::IRBuilderBase& b,
                                          llvm::Module& m) {
             return waveLaneId(b, m);
         }
-        // NOTE: groupReduceF32 / groupReduceF32Segmented are declared below,
-        // after WaveReduceFOp and waveReduceF32Segmented are in scope.
+        // NOTE: groupReduceF32* are declared below, once WaveReduceFOp is in scope.
 
         // Read i32 `value` from lane `srcLane` (i32), broadcast across the wave
         // (shuffle-by-index / readlane). Returns i32.
@@ -986,13 +572,9 @@ namespace xpu {
         virtual llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m,
                                         llvm::Value* pred) = 0;
 
-        // Like waveShuffle, but `srcLane` may be DIVERGENT (per-lane different).
-        // waveShuffle is uniform-index on some backends (AMDGPU readlane needs an
-        // SGPR source), so cross-lane patterns with a computed per-lane source
-        // (rotate, scan) use this instead. Default = waveShuffle (correct where
-        // the native shuffle already takes a divergent index — NVPTX shfl, Vulkan
-        // OpGroupNonUniformShuffle, the CPU gather); AMDGPU overrides to
-        // ds_bpermute.
+        // Like waveShuffle, but `srcLane` may be DIVERGENT. waveShuffle is
+        // uniform-index on some backends (AMDGPU readlane needs an SGPR), so a
+        // computed per-lane source uses this. Default = waveShuffle.
         virtual llvm::Value* waveShuffleDivergent(llvm::IRBuilderBase& b,
                                                   llvm::Module& m,
                                                   llvm::Value* value,
@@ -1000,81 +582,47 @@ namespace xpu {
             return waveShuffle(b, m, value, srcLane);
         }
 
-        // Wave-wide reduction (sum) over i32 across active lanes; returns i32.
-        // The "comprehensiveness-inversion" probe found this maps 1:1 like
-        // shuffle/ballot — a single hardware intrinsic on all three backends
-        // (the guessed shuffle/DPP-sequence fork did not materialize). NVPTX's
-        // redux.sync is gated on sm_80+; below that a butterfly-shuffle fallback
-        // would be needed (out of scope).
+        // Wave-wide sum over i32 across the active lanes → i32. A single hardware
+        // intrinsic on all three backends (NVPTX redux.sync needs sm_80+).
         virtual llvm::Value* waveReduceSum(llvm::IRBuilderBase& b,
                                            llvm::Module& m,
                                            llvm::Value* value) = 0;
 
-        // The wave-reduction family beyond sum: a single i32 (unsigned) value
-        // reduced across the active lanes; every lane receives the same result.
-        // Max/Min are UNSIGNED (the uint32 surface). Native on every backend —
-        // Vulkan OpGroupNonUniform{UMax,UMin,BitwiseAnd,BitwiseOr,BitwiseXor}
-        // (the GroupNonUniformArithmetic family, already Shader-reachable — NOT
-        // the OpenCL-only SPV_KHR_uniform_group_instructions); AMDGPU
-        // wave.reduce.{umax,umin,and,or,xor}; NVPTX redux.sync.{...} (sm_80+);
-        // CPU a VFABI reduce variant. Product is intentionally absent (no AMD/
-        // NVPTX hardware reduce — a shuffle-tree follow-on).
+        // The reduction family beyond sum: one i32 reduced across the active lanes,
+        // every lane receiving the result. Max/Min are UNSIGNED. Product is
+        // intentionally absent (no AMD/NVPTX hardware reduce).
         enum class WaveReduceOp { Max, Min, And, Or, Xor };
         virtual llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
                                         WaveReduceOp op, llvm::Value* value) = 0;
 
-        // FLOAT wave reduction (10.12.38): sum (fadd) and max (maxnum) of an
-        // f32 across the active lanes; every lane receives the same result.
-        // NOT pure-virtual: the default (out-of-line in KernelLowering.cpp) is
-        // a width-agnostic XOR butterfly on waveShuffleDivergent with f32↔i32
-        // bit punning — correct on any backend with a divergent shuffle (NVPTX
-        // takes it: no float redux.sync before sm_100). AMDGPU overrides to
-        // wave.reduce.{fadd,fmax}; Vulkan to the any-ty spv wave-reduce
-        // intrinsics (→ OpGroupNonUniformF{Add,Max} Reduce); CPU to f32 VFABI
-        // reduce variants.
+        // FLOAT wave reduction (sum / max) of an f32 across the active lanes. NOT
+        // pure-virtual: the default is a width-agnostic XOR butterfly over
+        // waveShuffleDivergent with f32↔i32 punning. Backends override natively.
         enum class WaveReduceFOp { Sum, Max };
         virtual llvm::Value* waveReduceF32(llvm::IRBuilderBase& b,
                                            llvm::Module& m, WaveReduceFOp op,
                                            llvm::Value* value);
 
-        // SEGMENTED float reduce: the same XOR butterfly bounded at `seg`
-        // lanes instead of the full wave. Each aligned group of `seg`
-        // consecutive lanes reduces independently and every lane in a group
-        // receives that group's result. `seg` must divide the wave width and
-        // be a power of two; seg == width degenerates to waveReduceF32.
-        //
-        // This is what makes a block-scoped reduction (an amax over a 32-lane
-        // quant block) CORRECT when the hardware wave is wider than the block
-        // (wave64 over a 32-block): a plain whole-wave reduce would merge two
-        // blocks and hand both the same wrong result. Built on
-        // waveShuffleDivergent, so every backend gets it with no native op;
-        // Vulkan MAY override to OpGroupNonUniform*ClusteredReduce for speed
-        // without changing the result. Works identically under JIT and AOT.
+        // SEGMENTED float reduce: the same butterfly bounded at `seg` lanes, each
+        // aligned group reducing independently. `seg` must divide the width and be a
+        // power of two. This is what keeps a 32-lane block reduce right on wave64.
         virtual llvm::Value* waveReduceF32Segmented(llvm::IRBuilderBase& b,
                                                     llvm::Module& m,
                                                     WaveReduceFOp op,
                                                     llvm::Value* value,
                                                     llvm::Value* seg);
 
-        // Cooperative-group float reduce (Group.reduce): sum / max of an f32
-        // across the group's lanes (xpu-cooperative-tile §3.3). On a GPU the
-        // group IS the wave, so the default delegates to waveReduceF32. The CPU
-        // backend OVERRIDES it to IDENTITY (returns `value`): the group is one
-        // lane, and — decisively — the CPU wave is realised as SIMD lanes that
-        // each carry a DIFFERENT group/row, so summing them would merge rows
-        // that must stay independent. A width-1 group reduce is the input.
+        // Cooperative-group float reduce: on a GPU the group IS the wave, so the
+        // default delegates. CPU OVERRIDES to IDENTITY — its SIMD lanes each carry a
+        // DIFFERENT row, so summing them would merge rows that must stay apart.
         virtual llvm::Value* groupReduceF32(llvm::IRBuilderBase& b,
                                             llvm::Module& m, WaveReduceFOp op,
                                             llvm::Value* value) {
             return waveReduceF32(b, m, op, value);
         }
 
-        // Segmented cooperative-group float reduce (Group.reduceSegmented): each
-        // aligned span of `seg` lanes reduces independently (§3.4) — the
-        // block-scoped reduce that stays correct when the group is wider than
-        // the logical block. GPU default delegates to waveReduceF32Segmented;
-        // CPU OVERRIDES to identity for the same reason as groupReduceF32 (a
-        // width-1 group, one lane per row).
+        // Segmented cooperative-group float reduce: the GPU default delegates to
+        // waveReduceF32Segmented; CPU overrides to identity, as above.
         virtual llvm::Value* groupReduceF32Segmented(llvm::IRBuilderBase& b,
                                                      llvm::Module& m,
                                                      WaveReduceFOp op,
@@ -1083,53 +631,27 @@ namespace xpu {
             return waveReduceF32Segmented(b, m, op, value, seg);
         }
 
-        // EXCLUSIVE prefix scan across the lanes: lane i receives the sum (or
-        // product) of lanes 0..i-1; lane 0 gets the identity (0 / 1). uint32.
-        // NOT pure-virtual: the default (out-of-line in KernelLowering.cpp) is a
-        // width-agnostic Hillis-Steele scan built on waveShuffleDivergent /
-        // waveLaneId / waveWidth — correct on any backend whose shuffle takes a
-        // divergent index (NVPTX shfl; AMDGPU once it overrides
-        // waveShuffleDivergent → ds_bpermute). Vulkan OVERRIDES to the single
-        // native OpGroupNonUniform{IAdd,IMul} with the ExclusiveScan group op
-        // (the fork spv_wave_prefix_{sum,product} intrinsics); CPU overrides to a
-        // VFABI scan variant.
+        // EXCLUSIVE prefix scan across the lanes (uint32): lane i receives the sum or
+        // product of lanes 0..i-1, lane 0 the identity. Default: a width-agnostic
+        // Hillis-Steele scan over waveShuffleDivergent.
         enum class WaveScanOp { Sum, Product };
         virtual llvm::Value* waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
                                       WaveScanOp op, llvm::Value* value);
 
-        // The calling work-item's lane index within its wave: i32 in
-        // [0, waveWidth). The other half of "interrogate your environment"
-        // (with waveWidth) for width-agnostic kernels. NVPTX laneid sreg; AMDGPU
-        // mbcnt; Vulkan SubgroupLocalInvocationId; CPU tid.x % width.
+        // The calling work-item's lane index within its wave: i32 in [0, waveWidth).
+        // NVPTX laneid; AMDGPU mbcnt; Vulkan SubgroupLocalInvocationId; CPU tid%w.
         virtual llvm::Value* waveLaneId(llvm::IRBuilderBase& b,
                                         llvm::Module& m) = 0;
 
-        // Wave rotate: read i32 `value` from the lane `delta` positions ahead,
-        // modulo the wave width — i.e. from lane `(laneId + delta) mod width`.
-        // NOT pure-virtual: the default (defined out-of-line in KernelLowering.cpp
-        // — the header only forward-declares IRBuilderBase) is a width-agnostic
-        // shuffle built on the existing waveShuffle/waveLaneId/waveWidth seams,
-        // so every backend gets it for free (the isFirstLane pattern). Vulkan
-        // OVERRIDES to the single native OpGroupNonUniformRotateKHR
-        // (SPV_KHR_subgroup_rotate), reached from the Shader flavor via the
-        // fork's llvm.spv.subgroup.rotate intrinsic. Cross-lane, so callers flag
-        // the kernel for maximal reconvergence (like shuffle/ballot/reduce).
+        // Wave rotate: read i32 `value` from lane `(laneId + delta) mod width`. NOT
+        // pure-virtual — the default is a width-agnostic shuffle over the existing
+        // seams; Vulkan overrides to OpGroupNonUniformRotateKHR.
         virtual llvm::Value* waveRotate(llvm::IRBuilderBase& b, llvm::Module& m,
                                         llvm::Value* value, llvm::Value* delta);
 
-        // --- quad (2x2) ops (SPV_KHR_quad_control + core GroupNonUniformQuad) --
-        //
-        // A quad is four invocations with consecutive lane ids (laneId & ~3 ..
-        // +3) — the 2x2 derivative/tile group. Like the wave seams these are
-        // cross-lane and flag the kernel for maximal reconvergence; UNLIKE them
-        // they are NOT pure-virtual. The defaults (out-of-line in
-        // KernelLowering.cpp) are width-agnostic forms built on the existing
-        // waveShuffleDivergent / waveBallot / waveLaneId seams — so NVPTX, AMDGPU
-        // and CPU get quad ops for FREE, validating the same lane layout the
-        // Vulkan native ops use. Vulkan OVERRIDES each to the single native op
-        // (OpGroupNonUniformQuad{Broadcast,Swap} core; OpGroupNonUniformQuad
-        // {All,Any}KHR from SPV_KHR_quad_control) via the fork llvm.spv.quad.*
-        // intrinsics.
+        // --- quad (2x2) ops ----------------------------------------------------
+        // A quad is four invocations with consecutive lane ids (laneId & ~3 .. +3).
+        // NOT pure-virtual: the defaults are width-agnostic wave-seam forms.
 
         // Read i32 `value` from quad lane `index` (0-3); every lane in the quad
         // receives that lane's value. Vulkan: OpGroupNonUniformQuadBroadcast.
@@ -1137,42 +659,28 @@ namespace xpu {
                                            llvm::Module& m, llvm::Value* value,
                                            llvm::Value* index);
 
-        // Exchange i32 `value` across the 2x2 quad: direction 0 = horizontal
-        // (lanes 0<->1, 2<->3), 1 = vertical (0<->2, 1<->3), 2 = diagonal
-        // (0<->3, 1<->2). The partner lane is laneId ^ (direction+1). Vulkan:
-        // OpGroupNonUniformQuadSwap.
+        // Exchange i32 `value` across the 2x2 quad: direction 0 = horizontal, 1 =
+        // vertical, 2 = diagonal. The partner lane is laneId ^ (direction+1).
         virtual llvm::Value* quadSwap(llvm::IRBuilderBase& b, llvm::Module& m,
                                       llvm::Value* value, unsigned direction);
 
-        // Quad-wide vote of a per-lane predicate (i1 -> i1): all = true iff
-        // `pred` holds for every lane of the quad; any = true iff it holds for
-        // some lane. Vulkan: OpGroupNonUniformQuad{All,Any}KHR (no Scope operand
-        // — implicitly quad-scoped). The portable default reads a wave ballot and
-        // tests this lane's quad nibble (assumes full quads).
+        // Quad-wide vote of a per-lane predicate (i1 -> i1): all = true iff `pred`
+        // holds for every lane of the quad, any = iff it holds for some. The
+        // portable default reads a wave ballot and tests this lane's quad nibble.
         virtual llvm::Value* quadAll(llvm::IRBuilderBase& b, llvm::Module& m,
                                      llvm::Value* pred);
         virtual llvm::Value* quadAny(llvm::IRBuilderBase& b, llvm::Module& m,
                                      llvm::Value* pred);
 
-        // A dynamic (runtime-sized) `shared T[n]` lowers to an external unsized
-        // [0 x T] addrspace(3) global — the native extern-shared model on NVPTX
-        // and AMDGPU, where the launch sizes it. Vulkan can't: an external
-        // workgroup variable needs the Vulkan-forbidden Linkage capability, and a
-        // workgroup array needs a concrete length. Backends that return true get a
-        // concrete INTERNAL [1 x T] array instead (a post-emit pass turns the
-        // length into a spec constant the launch's sharedBytes sets).
+        // A dynamic `shared T[n]` lowers to an external unsized [0 x T]
+        // addrspace(3) global, the native model on NVPTX/AMDGPU. Vulkan cannot, so
+        // a backend returning true gets a concrete internal [1 x T] instead.
         virtual bool dynamicSharedNeedsConcreteSize() const { return false; }
     };
 
-    // The explicit-override layer of the degrade seam (CajetaGPU.md §1.5): apply
-    // the CAJETA_GPU_<FEATURE>_IMPL env override to a per-backend BASE tier.
-    // `feature` is the uppercase feature tag (e.g. "COOPMATRIX"), spliced into
-    // the env name. The override wins when set: "software" → Portable, "native" →
-    // Native; unset or any other value keeps `base`. The env is read here and
-    // ONLY here (the compile-time-feature instance of the convention; the
-    // runtime-noun instance is caj_resolve_as_impl / CAJETA_GPU_AS_IMPL in
-    // cajeta_runtime.c). Defined out-of-line in KernelLowering.cpp beside the
-    // other LoweringTarget defaults.
+    // The explicit-override layer of the degrade seam: apply the
+    // CAJETA_GPU_<FEATURE>_IMPL env override to a per-backend BASE tier —
+    // "software" → Portable, "native" → Native. The env is read here and ONLY here.
     LoweringTarget::ImplTier resolveImplTier(const char* feature,
                                              LoweringTarget::ImplTier base);
 

@@ -1,32 +1,6 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c ===
-//
-// cajeta-profiler Unit 13 — the Vulkan backend's PURE half (spec §5.5, §6.5).
-//
-// Everything here is arithmetic and policy, deliberately free of Vulkan types:
-// this file compiles on machines with no Vulkan SDK header, which is where the
-// refusal paths matter most (the same reason cajeta_rt_prof_rocm.c declares
-// its own slice of the rocprofiler ABI). The Vulkan API mechanics — query
-// pools, availability reads, host reset, calibrated timestamps — live in
-// cajeta_xpu_vulkan.c, which is included AFTER this file and calls down into
-// it; nothing here calls up.
-//
-// The three behaviours factored out here are exactly the ones a device cannot
-// be made to demonstrate on demand:
-//
-//   §5.5.2 — a queue family with timestampValidBits == 0 accepts timestamp
-//   writes and returns values that mean NOTHING. Three of five families on the
-//   reference device (RADV STRIX_HALO, measured 2026-08-24) are like this, and
-//   the old first-compute-hit selection would time on one wherever a zero-bit
-//   family enumerates first.
-//
-//   §5.5.6 — timestamps wrap at the device's valid-bit width, which is 36 on
-//   real hardware and 64 on the reference device and lavapipe; the 64-bit case
-//   must not compute `1 << 64`, which is undefined behavior that usually
-//   "works".
-//
-//   §5.5.7 — AMD APUs reset the timestamp register on low-power entry. The
-//   span after a reset is internally flawless; only history — a start before
-//   the previous end — reveals it.
+// The Vulkan profiler backend's PURE half: arithmetic and policy with no Vulkan
+// types, so it builds with no SDK header. The API half is cajeta_xpu_vulkan.c.
 
 #ifndef CAJETA_PROF_TRACE_STANDALONE
 
@@ -38,26 +12,21 @@ typedef struct {
     int32_t  timing_ok;       // != 0: brackets may claim device ticks
     uint32_t valid_bits;
     double   period_ns;       // advertised; the clock engine's fit refines it
-    // §5.5.7 tracking. One stream of spans: the Vulkan dispatch path is
-    // serialized by its submit mutex, so device brackets complete in order.
+    // Reset tracking over ONE ordered stream: the submit mutex serializes the
+    // dispatch path, so device brackets complete in order.
     uint64_t last_end_ticks;
     int32_t  have_last;
     int64_t  resets_detected;
-    // Counters for the run record (§7.8): how many brackets resolved, and how
-    // many query pairs came back unavailable (each of those spans degraded to
-    // its host window rather than being dropped).
+    // An unavailable query pair degrades its span to the host window, not a drop.
     int64_t  spans;
     int64_t  unavailable;
 } CajProfVkState;
 
 static CajProfVkState caj_pvk;
 
-// Pick the queue family whose timestamps mean something (plan 13.2.b).
-// Returns the family index to dispatch on, or -1 when no compute family
-// exists. `*timingOk` says whether that family can TIME: a compute family
-// with zero valid bits still dispatches correctly — refusing the device over
-// a timing gap would fail runs §10.4 says must degrade — but timing is
-// refused, so the spans that reach the trace stay honest host windows.
+// The queue family to dispatch on, or -1 when there is no compute family. A
+// family with timestampValidBits == 0 returns values that mean NOTHING, so
+// `*timingOk` clears and the run degrades to host windows instead of refusing.
 int32_t __cajeta_xpu_vk_pick_queue_family(const uint32_t* queueFlags,
                                           const uint32_t* timestampValidBits,
                                           int32_t n, int32_t* timingOk) {
@@ -75,9 +44,8 @@ int32_t __cajeta_xpu_vk_pick_queue_family(const uint32_t* queueFlags,
     return firstCompute;
 }
 
-// ── apple-vulkan Unit 2 — which Vulkan-on-Metal ICD (spec §3.2–§3.6) ───────
-// VkDriverId values, spelled raw for the same no-SDK reason as the queue bits:
-// VK_DRIVER_ID_MESA_KOSMICKRISP only exists in recent headers.
+// ── Which Vulkan-on-Metal ICD to run on ────────────────────────────────────
+// VkDriverId values, raw: VK_DRIVER_ID_MESA_KOSMICKRISP is new in the headers.
 #define CAJ_VK_DRIVER_MOLTENVK    14u
 #define CAJ_VK_DRIVER_KOSMICKRISP 28u
 
@@ -86,12 +54,9 @@ static int32_t caj_vk_driver_rank(uint32_t id) {
          : id == CAJ_VK_DRIVER_MOLTENVK    ? 1 : 0;
 }
 
-// Return the index of the device to run on, or -1 when there is none. On a Mac
-// carrying both ICDs the loader hands them back in unspecified order, so order
-// must not decide: KosmicKrisp is Vulkan-1.3 conformant, MoltenVK is not.
-// Everywhere else no ID outranks another and index 0 still wins, as before.
-// `force` ("kosmickrisp" | "moltenvk") beats the policy and REFUSES when that
-// driver is absent, rather than quietly running on the other one.
+// The device index to run on, or -1 when there is none. The loader's order must
+// not decide on a Mac carrying both ICDs, so rank picks; elsewhere index 0 wins.
+// `force` beats the rank and refuses rather than falling back to the other ICD.
 int32_t __cajeta_xpu_vk_pick_device(const uint32_t* driverIds, int32_t n,
                                     const char* force) {
     if (!driverIds || n <= 0) return -1;
@@ -112,19 +77,16 @@ int32_t __cajeta_xpu_vk_pick_device(const uint32_t* driverIds, int32_t n,
     return best;
 }
 
-// §3.5 — "no Vulkan" has two causes wanting different fixes: no ICD installed
-// at all, versus an ICD that loaded and enumerated nothing (a KosmicKrisp on a
-// pre-macOS-26 host). Returns the VkResult, spelled raw for the same reason.
+// Separates "no ICD at all" from "an ICD that enumerated nothing", as the two
+// want different fixes. Returns the VkResult, spelled raw.
 int32_t __cajeta_xpu_vk_classify_init(int32_t loaderFound, int32_t deviceCount) {
     if (!loaderFound) return -9;        // VK_ERROR_INCOMPATIBLE_DRIVER
     if (deviceCount <= 0) return -3;    // VK_ERROR_INITIALIZATION_FAILED
     return 0;                           // VK_SUCCESS
 }
 
-// Wrap-correct tick delta at the family's valid-bit width (§5.5.6). Bits
-// above the valid width are masked rather than trusted — drivers may leave
-// stale garbage there. At 64 bits the mask is all-ones WITHOUT computing
-// `1ULL << 64`, which is undefined behavior.
+// Wrap-correct tick delta at the family's valid-bit width; bits above it may be
+// driver garbage. At 64 the mask is all-ones, never the UB of `1ULL << 64`.
 uint64_t __cajeta_prof_vk_delta_ticks(uint64_t startTicks, uint64_t endTicks,
                                       uint32_t validBits) {
     if (validBits == 0) return 0;   // meaningless ticks make no duration
@@ -134,11 +96,8 @@ uint64_t __cajeta_prof_vk_delta_ticks(uint64_t startTicks, uint64_t endTicks,
     return (endTicks - startTicks) & mask;
 }
 
-// §5.5.7 — flag a span that starts before the previous one ended: on this
-// serialized dispatch path that is a timestamp register reset (low-power
-// entry), not concurrency. After flagging, tracking re-bases — the counter
-// genuinely restarted, and flagging everything after the event forever would
-// bury it in noise.
+// Flags a span starting before the previous one ended: on this serialized path
+// that is a timestamp-register reset, not concurrency, so tracking then re-bases.
 int32_t __cajeta_prof_vk_note_span_ticks(uint64_t startTicks,
                                          uint64_t endTicks) {
     int32_t flags = CAJETA_SPAN_OK;
@@ -156,11 +115,8 @@ void __cajeta_prof_vk_span_tracking_reset(void) {
     caj_pvk.have_last = 0;
 }
 
-// Accept the selected family's timing parameters, or refuse timing (§11.4).
-// The advertised period seeds the clock engine's domain — the rolling rate
-// fit refines it (§6.6), but conversions before the first calibration have to
-// start from something, and zero/negative is what a driver reports when it
-// does not know.
+// Accepts the selected family's timing parameters, or refuses timing. The
+// advertised period only seeds the clock domain; the rolling fit refines it.
 int32_t __cajeta_prof_vk_configure(uint32_t validBits, double periodNs,
                                    int32_t hasCalibration) {
     (void) hasCalibration;

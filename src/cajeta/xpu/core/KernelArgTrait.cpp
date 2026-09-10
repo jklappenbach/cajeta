@@ -1,6 +1,4 @@
-//
-// KernelArg admissibility — see header for rationale.
-//
+// KernelArg admissibility — see header for the trait.
 
 #include "KernelArgTrait.h"
 #include "XpuAttributes.h"
@@ -18,22 +16,17 @@ namespace xpu {
 
 namespace {
 
-// Buffer<T> instantiations have canonical names of the form
-// "cajeta.xpu.KernelBuffer<...>". The plain template (uninstantiated)
-// is just "cajeta.xpu.KernelBuffer". Match the prefix to admit both.
+/// Prefix match, so both the plain template and its instantiations admit.
 bool isBufferInstantiation(const std::string& canonical) {
     static const std::string kPrefix = "cajeta.xpu.KernelBuffer";
     if (canonical.size() < kPrefix.size()) return false;
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
-    // Exact match or `Buffer<...>` follow-on
     if (canonical.size() == kPrefix.size()) return true;
     return canonical[kPrefix.size()] == '<';
 }
 
-// Texture2D is now templated on its texel scalar — `Texture2D<T = float32>` —
-// so an instance's canonical is either the bare `cajeta.gfx.Texture2D`
-// (default-filled to `<float32>`) or `cajeta.gfx.Texture2D<...>`. Match the
-// prefix like Buffer. Sampler is NOT a template (exact match).
+/// The texture types are templated on their texel scalar, so a canonical is
+/// either bare (default-filled) or `<...>`; Sampler and Image2D are not.
 bool isTextureCanonical(const std::string& canonical) {
     static const std::string kPrefix = "cajeta.gfx.Texture2D";
     if (canonical.size() < kPrefix.size()) return false;
@@ -41,7 +34,6 @@ bool isTextureCanonical(const std::string& canonical) {
     if (canonical.size() == kPrefix.size()) return true;
     return canonical[kPrefix.size()] == '<';
 }
-// Texture3D<T = float32> — the volumetric sibling; same prefix-match shape.
 bool isTexture3DCanonical(const std::string& canonical) {
     static const std::string kPrefix = "cajeta.gfx.Texture3D";
     if (canonical.size() < kPrefix.size()) return false;
@@ -49,7 +41,6 @@ bool isTexture3DCanonical(const std::string& canonical) {
     if (canonical.size() == kPrefix.size()) return true;
     return canonical[kPrefix.size()] == '<';
 }
-// Texture1D<T = float32> — the linear sibling; same prefix-match shape.
 bool isTexture1DCanonical(const std::string& canonical) {
     static const std::string kPrefix = "cajeta.gfx.Texture1D";
     if (canonical.size() < kPrefix.size()) return false;
@@ -57,7 +48,6 @@ bool isTexture1DCanonical(const std::string& canonical) {
     if (canonical.size() == kPrefix.size()) return true;
     return canonical[kPrefix.size()] == '<';
 }
-// Texture2DArray<T = float32> — the layered sibling (N 2-D planes); same shape.
 bool isTexture2DArrayCanonical(const std::string& canonical) {
     static const std::string kPrefix = "cajeta.gfx.Texture2DArray";
     if (canonical.size() < kPrefix.size()) return false;
@@ -65,7 +55,6 @@ bool isTexture2DArrayCanonical(const std::string& canonical) {
     if (canonical.size() == kPrefix.size()) return true;
     return canonical[kPrefix.size()] == '<';
 }
-// TextureCube<T = float32> — the cube-map sibling (6 faces, direction-sampled).
 bool isTextureCubeCanonical(const std::string& canonical) {
     static const std::string kPrefix = "cajeta.gfx.TextureCube";
     if (canonical.size() < kPrefix.size()) return false;
@@ -76,49 +65,31 @@ bool isTextureCubeCanonical(const std::string& canonical) {
 bool isSamplerCanonical(const std::string& canonical) {
     return canonical == "cajeta.gfx.Sampler";
 }
-// Image2D (writable images) — the writable twin of Texture2D, matched by exact
-// canonical name (not a template). A 2-D float storage image, bound as a
-// STORAGE_IMAGE descriptor and written via `img.store(x, y, value)`.
 bool isImageCanonical(const std::string& canonical) {
     return canonical == "cajeta.xpu.Image2D";
 }
-// AccelerationStructure (cajeta-gpu Part C) — a descriptor-bound BVH handle,
-// admissible as a kernel argument (it lowers to an OpTypeAccelerationStructureKHR
-// descriptor on Vulkan). RayQuery is NOT a kernel arg — it is a device-only
-// function-local — so it has no admissibility entry; it is recognized only by
-// the device lowerer (isRayQueryType) when it appears as a kernel-body local.
+/// A descriptor-bound BVH handle, and an admissible kernel argument.
 bool isAccelStructCanonical(const std::string& canonical) {
     return canonical == "cajeta.xpu.AccelerationStructure";
 }
 bool isRayQueryCanonical(const std::string& canonical) {
     return canonical == "cajeta.xpu.RayQuery";
 }
-// CooperativeMatrix (cajeta-gpu Part C) — like RayQuery, a device-only
-// kernel-local (a subgroup-cooperative matrix-core tile), NOT a kernel arg. It
-// is parameterized (`CooperativeMatrix<T, Rows, Cols, Use>`), so an instance's
-// canonical carries a `<...>` suffix; match the prefix. Recognized only by the
-// device lowerer when it appears as a kernel-body local.
+/// A device-only kernel-local, never an argument; parameterized, so prefix-matched.
 bool isCooperativeMatrixCanonical(const std::string& canonical) {
     static const std::string kPrefix = "cajeta.xpu.CooperativeMatrix";
     return canonical.compare(0, kPrefix.size(), kPrefix) == 0;
 }
-// Tile<T, Rows, Cols> — the author-facing cooperative fragment (§4). Same
-// device-only kernel-local as CooperativeMatrix, but three type params: the
-// SPIR-V "Use" is inferred from the tile's role in Group.mac, never spelled.
+/// The author-facing cooperative fragment; also a device-only kernel-local.
 bool isTileCanonical(const std::string& canonical) {
     static const std::string kPrefix = "cajeta.xpu.Tile";
     if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
-    // Match the class exactly (or its <...> instantiation), not a longer name
-    // that merely starts with "Tile" (e.g. a hypothetical cajeta.xpu.TileStage).
+    // Exactly the class or its `<...>`, never a longer name starting "Tile".
     return canonical.size() == kPrefix.size()
         || canonical[kPrefix.size()] == '<';
 }
 
-// A class implements the KernelArg marker interface if its
-// implemented-interfaces list contains cajeta.xpu.KernelArg.
-// `getImplementedInterfaces()` returns the concrete CajetaClass
-// pointers for interfaces (CajetaInterface is just a CajetaClass with
-// isInterface()=true, so we walk those).
+/// Does `klass`'s implemented-interfaces list contain cajeta.xpu.KernelArg?
 bool implementsKernelArg(const std::shared_ptr<CajetaClass>& klass) {
     if (!klass) return false;
     for (auto& iface : klass->getImplementedInterfaces()) {
@@ -130,17 +101,9 @@ bool implementsKernelArg(const std::shared_ptr<CajetaClass>& klass) {
     return false;
 }
 
-// A plain POD struct admissible by value (Item 7): a non-interface,
-// non-Buffer class with no inherited fields (so every instance field is
-// in its own propertyList) and at least one field, all of whose
-// non-static instance fields are primitives (scalars / Vector — both carry
-// PRIMITIVE_FLAG) OR nested @ValueType PODs (S5, recursive). A @ValueType
-// class is itself such a struct: vtable-free, by-value, all-POD fields — so
-// it AND a struct that contains a value-type field marshal by value to a
-// field-reading kernel. Inheritance stays out of scope for v1. The vtable
-// word ordinary classes carry is stripped during marshalling, so it does
-// not affect admissibility (value types carry none — see CajetaClass
-// hasVtablePointerAtSlotZero).
+/// A non-interface, non-Buffer class with no inherited fields and at least one,
+/// every instance field a primitive or a nested @ValueType POD. Marshalling
+/// strips an ordinary class's vtable word, so it does not affect admissibility.
 bool isPodStruct(const std::shared_ptr<CajetaClass>& klass) {
     if (!klass) return false;
     if (klass->isInterface()) return false;
@@ -152,10 +115,8 @@ bool isPodStruct(const std::shared_ptr<CajetaClass>& klass) {
         sawField = true;
         auto ft = prop->getType();
         if (!ft) return false;
-        // Scalar primitive or Vector (both PRIMITIVE_FLAG): admissible directly.
         if (ft->getTypeFlags() & PRIMITIVE_FLAG) continue;
-        // Nested @ValueType field: recurse — a value-type-containing POD is
-        // still flat by-value POD all the way down.
+        // A value-type field is still flat by-value POD all the way down.
         if (ft->getTypeFlags() & VALUE_TYPE_FLAG) {
             if (isPodStruct(std::dynamic_pointer_cast<CajetaClass>(ft))) continue;
         }
@@ -169,31 +130,20 @@ bool isPodStruct(const std::shared_ptr<CajetaClass>& klass) {
 bool isKernelArgAdmissible(const CajetaTypePtr& type) {
     if (!type) return false;
 
-    // Primitives — int*, uint*, float*, bool, etc. Identified by the
-    // PRIMITIVE_FLAG bit on the type's flag word.
     if (type->getTypeFlags() & PRIMITIVE_FLAG) return true;
 
-    // Primitive arrays — `float32[]`, `int32[]`, etc. Used by the
-    // CPU-emulation kernels in step 7 (and by users who write
-    // device code against raw host-shaped arrays). Admissibility is
-    // recursive on the element type: `Buffer<float32>[]` is fine,
-    // `SomeRandomClass[]` isn't.
+    // An array is admissible exactly when its element type is.
     auto array = std::dynamic_pointer_cast<CajetaArray>(type);
     if (array) {
         return isKernelArgAdmissible(array->getElementType());
     }
 
-    // Class/interface references — admit Buffer<T> by name prefix,
-    // plain POD structs by value (Item 7), and user-defined
-    // classes/interfaces that implement the KernelArg marker interface.
     auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
     if (klass) {
         const std::string canonical = type->toCanonical();
         if (isBufferInstantiation(canonical)) return true;
-        // Texture2D / Sampler matched by name BEFORE the POD-struct check —
-        // Sampler is a plain primitive-field class (so isPodStruct would also
-        // admit it), but it must take the sampler-descriptor path, not the
-        // by-value POD path.
+        // Matched by name BEFORE the POD-struct check: Sampler is structurally
+        // a POD, but must take the sampler-descriptor path instead.
         if (isTextureCanonical(canonical)) return true;
         if (isTexture3DCanonical(canonical)) return true;
         if (isTexture1DCanonical(canonical)) return true;
@@ -203,12 +153,8 @@ bool isKernelArgAdmissible(const CajetaTypePtr& type) {
         if (isSamplerCanonical(canonical)) return true;
         if (isAccelStructCanonical(canonical)) return true;
         if (isPodStruct(klass)) return true;
-        // A user type marked `implements KernelArg` is admissible only if it is
-        // ALSO a by-value POD (all-primitive fields) — that is the only shape the
-        // launch-site marshaller and the device deviceStructInfo can lower. A
-        // non-POD KernelArg would be admitted here but then silently dropped
-        // (the device lowerer throws XPU-N01, which the registration swallows).
-        // Rejecting it surfaces a clean diagnostic instead. (M11)
+        // `implements KernelArg` still requires a by-value POD: it is the only
+        // shape the marshaller lowers, and a non-POD would be silently dropped.
         if (implementsKernelArg(klass) && isPodStruct(klass)) return true;
     }
 
@@ -273,11 +219,8 @@ void validateKernelParams(const MethodPtr& method) {
 
     for (auto& param : method->getParameterList()) {
         if (!param) continue;
-        // Skip the implicit `this` parameter on instance methods —
-        // @Kernel methods are required to be static, but the check
-        // for that is independent of arg admissibility, and the
-        // parameter list may already carry `this` from method-shape
-        // post-processing.
+        // @Kernel methods must be static, but that check is separate and the
+        // list may already carry `this` from method-shape post-processing.
         if (param->getName() == "this") continue;
 
         auto t = param->getType();

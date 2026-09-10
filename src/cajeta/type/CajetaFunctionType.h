@@ -1,14 +1,5 @@
-//
-// First-class function type — value-type representation of a callable
-// `(T1, T2, ..., Tn) -> R`. See docs/specification/lang/Lambdas.md for the full design.
-//
-// v1 (L1): non-capturing lambdas only. The LLVM-level value of a function-
-// typed expression is a bare function pointer (`ptr`). Captures (L2) will
-// extend this to a fat pointer `{ fn_ptr, captures_ptr }`, at which point
-// the LLVM representation changes — call sites and variable slots will
-// migrate together.
-//
-
+// First-class function type - the value-type representation of a callable
+// `(T1, ..., Tn) -> R`. v1 is non-capturing only: the LLVM value is a bare `ptr`.
 #pragma once
 
 #include "CajetaType.h"
@@ -24,17 +15,10 @@ namespace cajeta {
     private:
         std::vector<CajetaTypePtr> parameterTypes;
         CajetaTypePtr returnType;
-        // Function-type return ABI discriminator (M5(b) — see
-        // docs/specification/lang/ValueReturns.md). `true` (default) = the
-        // pre-existing pointer-return / heap-ownership form `(P) -> #R`;
-        // `false` reserves the sret value-return form `(P) -> R` that N3
-        // will wire up. N1+N2 plumb the field so the canonical
-        // discriminates the two forms; the LLVM signature production
-        // currently still emits the ptr-return shape regardless.
+        // Return-ABI discriminator: true (default) = the pointer-return / heap-ownership
+        // form `(P) -> #R`; false reserves the sret value-return form `(P) -> R`.
         bool returnsOwnership = true;
-        // Cached LLVM FunctionType — the signature `fn(params...) -> return`
-        // that any function value of this Cajeta type conforms to. Stored
-        // separately from `llvmType` (which is the value-side `ptr`).
+        // Cached LLVM signature, kept apart from `llvmType` (the value-side `ptr`).
         llvm::FunctionType* llvmFunctionType = nullptr;
     public:
         CajetaFunctionType(CajetaModulePtr module,
@@ -45,39 +29,26 @@ namespace cajeta {
         const std::vector<CajetaTypePtr>& getParameterTypes() const { return parameterTypes; }
         CajetaTypePtr getReturnType() const { return returnType; }
         bool isReturnsOwnership() const { return returnsOwnership; }
-        // U6.3b — frozen-aware. The cached LLVM FunctionType is LLVMContext-bound,
-        // so a frozen (shared) function type routes it through a per-thread
-        // side-table. Behaviour-identical while not frozen. Defined in the .cpp.
+        // Frozen-aware: the cached FunctionType is LLVMContext-bound, so a frozen (shared)
+        // function type routes through a per-thread side table. Identical while not frozen.
         llvm::FunctionType* getLlvmFunctionType() const;
         void setLlvmFunctionType(llvm::FunctionType* t);
-        // U6.4.1 — build the signature FunctionType in `ctx` from the param/return
-        // types. Context-parameterized for frozen-stdlib per-thread rebuild (U6.4.2).
+        // Build the signature FunctionType in `ctx`, for the frozen-stdlib rebuild.
         llvm::FunctionType* buildLlvmFunctionType(llvm::LLVMContext* ctx) const;
 
-        // True iff the LLVM signature uses the sret ABI: `void (ptr sret(R),
-        // ptr captures, params...)`. Call sites consult this to allocate the
-        // result slot, prepend it, set the sret attribute on the call, and
-        // recover the slot pointer as the call's value. Mirrors the
-        // `useSret` decision made when building the cached llvmFunctionType
-        // — kept consistent here so call-site logic doesn't drift.
+        // True iff the LLVM signature uses the sret ABI `void (ptr sret(R), ptr captures,
+        // params...)`. Call sites allocate and prepend the result slot when it is true.
         bool usesSret() const;
 
-        // Canonical name follows the source form: `(T1,T2) -> R` for the
-        // sret value-return form, `(T1,T2) -> #R` for the heap-ownership
-        // form. The `#` mirrors the source-level annotation on method
-        // returns and keeps the two ABIs as distinct canonical-map
-        // entries. Two function types are equal iff their canonicals
-        // match.
+        // Canonical follows the source form: `(T1,T2) -> R` for sret, `(T1,T2) -> #R` for
+        // the heap-ownership form. Two function types are equal iff their canonicals match.
         static std::string buildCanonical(
             const std::vector<CajetaTypePtr>& parameterTypes,
             CajetaTypePtr returnType,
             bool returnsOwnership = true);
 
-        // Mirror of Method::generatePrototype's pass-by-pointer choice
-        // for params and returns at the call boundary. Exposed because
-        // the matching call site in MethodReferenceExpression needs to
-        // type the indirect call the same way the function-typed
-        // signature does.
+        // Mirror of Method::generatePrototype's pass-by-pointer choice at the call
+        // boundary; exposed so an indirect call site types itself the same way.
         static llvm::Type* toCallingConvType(CajetaTypePtr p, llvm::Type* ptrTy);
     };
 

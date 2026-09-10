@@ -1,37 +1,6 @@
-// cajeta.io.net — NET-1.1 native socket intrinsics (BSD sockets / Winsock).
-//
-// This translation unit is **#included once** at the bottom of
-// `cajeta_runtime.c` (the runtime is built as a single TU → LLVM bitcode →
-// embedded into the compiler, then linker-merged into every user module).
-// Keeping the net intrinsics in their own file makes them reviewable and
-// editable independently while still riding the existing single-TU build —
-// no CMake change to the bitcode-embed path is required. The functions are
-// plain `extern "C"`-ABI symbols (`__cajeta_net_*`) that the `cajeta.io.net`
-// stdlib wrappers (NET-1.2 onward) lower their method bodies to, exactly the
-// way `File` lowers to `__cajeta_file_*` and `Channel` to `Cajeta.lockNew`.
-//
-// Scope of NET-1.1 (per plan/cajeta-net-plan.md):
-//   socket / bind / listen / accept / connect / send / recv / sendto /
-//   recvfrom / close / shutdown / setsockopt / getsockopt / set_nonblocking,
-//   plus the `cajeta_net_errno` shim that maps the platform error code
-//   (POSIX `errno` / `WSAGetLastError`) to a stable cross-platform enum the
-//   cajeta layer turns into a `NetException` subtype (NET-1.8). Address
-//   marshalling (`__cajeta_net_sockaddr_pack/_unpack`) is NET-1.2 and is
-//   intentionally NOT here.
-//
-// No async here — these are the blocking-mode primitives (Phase 1). The
-// reactor (Phase 3) drives them in non-blocking mode via the same symbols
-// plus `__cajeta_net_set_nonblocking`.
-//
-// **fd ABI.** The descriptor crosses the cajeta boundary as `int32`, the
-// same width `File.fd` uses, so the intrinsic codegen addresses it
-// identically across file + socket types. On POSIX a socket fd is already a
-// small `int`. On Windows a `SOCKET` is an opaque unsigned handle that is, in
-// practice, a small kernel-handle value that fits in 32 bits for every socket
-// a process actually opens; we round-trip it through `int32` and re-widen on
-// the way back into Winsock calls. `-1` is the universal "no socket"
-// sentinel on both platforms (POSIX error return and the value
-// `INVALID_SOCKET` narrows to under `int32`).
+// cajeta.io.net — native socket intrinsics (BSD sockets / Winsock), #included once at
+// the bottom of cajeta_runtime.c. Blocking-mode primitives; a descriptor crosses the
+// cajeta boundary as int32 (a Windows SOCKET narrows), with -1 as the "no socket" value.
 
 #if defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -39,11 +8,8 @@
 #  endif
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
-// MinGW links ws2_32 for the test/native object build; the JIT-embedded
-// bitcode resolves these via the process symbol generator against the host's
-// already-loaded ws2_32 (the build tool's Subprocess port + TestHttpServer
-// already pull it in). The `#pragma comment` is MSVC-only and harmless to
-// omit under MinGW where the linker flag is supplied by CMake.
+// No `#pragma comment` here: it is MSVC-only, and under MinGW the ws2_32 link comes
+// from CMake, while the JIT-embedded bitcode resolves against the already-loaded copy.
 #else
 #  include <arpa/inet.h>
 #  include <netinet/in.h>
@@ -56,12 +22,7 @@
 #  include <signal.h>        // signal / SIG_IGN (SIGPIPE suppression)
 #endif
 
-// ---------------------------------------------------------------------------
-// Platform abstraction shims. POSIX and Winsock are ~95% API-compatible; the
-// real differences are the handle type, the close/shutdown spellings, the
-// invalid-handle sentinel, the non-blocking toggle, and how the last error is
-// read (thread-local `errno` vs `WSAGetLastError`).
-// ---------------------------------------------------------------------------
+// ---- Platform shims: handle type, close spelling, invalid sentinel, last error ----
 #if defined(_WIN32)
 typedef SOCKET cajeta_native_socket_t;
 typedef int    cajeta_socklen_t;
@@ -76,15 +37,9 @@ typedef socklen_t cajeta_socklen_t;
 #  define cajeta_closesocket(s)   close(s)
 #endif
 
-// ---------------------------------------------------------------------------
-// Cross-platform error enum (the `cajeta_net_errno` shim).
-//
-// These ordinals are the stable contract between the native layer and the
-// `cajeta.io.net` exception mapping (NET-1.8): the cajeta side switches on this
-// value to pick the `NetException` subtype. Keep the ordinals append-only;
-// never renumber. The mapping table lives in `docs/specification/io/net/Errors.md`
-// (authored by NET-1.8 / NET-11.6).
-// ---------------------------------------------------------------------------
+// ---- Cross-platform error enum ----
+// The stable contract with the cajeta exception mapping, which switches on this value
+// to pick a NetException subtype: the ordinals are append-only and never renumbered.
 enum cajeta_net_err {
     CAJETA_NET_OK                  = 0,   // no error
     CAJETA_NET_WOULDBLOCK          = 1,   // EAGAIN/EWOULDBLOCK/WSAEWOULDBLOCK
@@ -113,11 +68,8 @@ static int cajeta_net_raw_errno(void) {
 #endif
 }
 
-// Map a raw platform error code → the stable `cajeta_net_err` ordinal.
-// Pass the value from `cajeta_net_raw_errno()`. Centralizing the mapping
-// here is the entire point of the shim: every intrinsic reports failures
-// through this single funnel so the cajeta exception layer sees one enum on
-// all three OSes.
+// Maps a raw platform code, as returned by cajeta_net_raw_errno(), to the stable
+// ordinal: the single funnel every intrinsic's failures are reported through.
 static int32_t cajeta_net_map_errno(int e) {
 #if defined(_WIN32)
     switch (e) {
@@ -169,23 +121,13 @@ static int32_t cajeta_net_map_errno(int e) {
 #endif
 }
 
-// Public intrinsic: the cajeta layer reads the normalized error after any
-// intrinsic that returned a failure sentinel, then maps it to a `NetException`
-// subtype. Must be called immediately after the failing syscall on the same
-// thread (errno / WSAGetLastError are thread-local and clobbered by the next
-// syscall). Returns a `cajeta_net_err` ordinal.
+// The `cajeta_net_err` ordinal for the last failure. Must be called on the same thread
+// immediately after it: errno and WSAGetLastError are thread-local and soon clobbered.
 int32_t __cajeta_net_last_error(void) {
     return cajeta_net_map_errno(cajeta_net_raw_errno());
 }
 
-// ---------------------------------------------------------------------------
-// One-time Winsock init. On POSIX this is a no-op. On Windows every process
-// using sockets must call WSAStartup once before any socket call and
-// WSACleanup at teardown. We init lazily + idempotently on the first socket
-// op via a pthreads once-guard (pthread is already a hard runtime dependency —
-// the fiber scheduler uses it, and MinGW's winpthreads provides it on
-// Windows). This mirrors the spec's "WSAStartup once at runtime init".
-// ---------------------------------------------------------------------------
+// ---- One-time Winsock init: WSAStartup on the first socket op, under a once-guard ----
 #if defined(_WIN32)
 static pthread_once_t g_cajeta_wsa_once = PTHREAD_ONCE_INIT;
 static int g_cajeta_wsa_ok = 0;
@@ -196,16 +138,9 @@ static void cajeta_net_wsa_startup_once(void) {
 }
 #endif
 
-// One-time SIGPIPE suppression (POSIX only). Writing to a socket whose peer
-// has closed its read half raises SIGPIPE, whose default disposition is to
-// kill the process — invisible on Windows (no SIGPIPE) but a real Linux/POSIX
-// crash on any write to a closed peer. We ignore it process-wide once, at the
-// first socket-creating op (which always precedes any send), so a broken-pipe
-// write instead returns the EPIPE failure sentinel the cajeta layer already
-// maps to BrokenPipeException via __cajeta_net_last_error(). Idempotent via a
-// pthread_once guard. (Linux sends with MSG_NOSIGNAL too — see __cajeta_net_send
-// — but ignoring SIGPIPE is the portable belt-and-suspenders for platforms /
-// paths without MSG_NOSIGNAL, e.g. macOS sendto without SO_NOSIGPIPE.)
+// One-time SIGPIPE suppression (POSIX). Writing to a peer that closed its read half
+// would otherwise kill the process, where the cajeta layer wants the EPIPE sentinel it
+// maps to BrokenPipeException. Belt and braces with MSG_NOSIGNAL, which is not portable.
 #if !defined(_WIN32)
 static pthread_once_t g_cajeta_sigpipe_once = PTHREAD_ONCE_INIT;
 static void cajeta_net_ignore_sigpipe_once(void) {
@@ -213,9 +148,8 @@ static void cajeta_net_ignore_sigpipe_once(void) {
 }
 #endif
 
-// Idempotent, thread-safe Winsock init. Returns 1 on success / already-up,
-// 0 if startup failed. POSIX always returns 1 (after ignoring SIGPIPE once).
-// Called at the top of every socket-creating entry point.
+// Called at the top of every socket-creating entry point: 1 when sockets are usable,
+// which POSIX always is, once it has ignored SIGPIPE.
 static int cajeta_net_ensure_init(void) {
 #if defined(_WIN32)
     pthread_once(&g_cajeta_wsa_once, cajeta_net_wsa_startup_once);
@@ -226,37 +160,23 @@ static int cajeta_net_ensure_init(void) {
 #endif
 }
 
-// Narrow a native socket handle to the int32 ABI the cajeta layer expects.
-// On POSIX this is identity; on Windows it truncates a SOCKET (always a small
-// handle in practice) to int32. `CAJETA_INVALID_SOCKET` maps to -1.
+// Narrows a native handle to the int32 ABI: identity on POSIX, a truncation of a
+// (always small in practice) SOCKET on Windows. CAJETA_INVALID_SOCKET becomes -1.
 static int32_t cajeta_net_to_fd(cajeta_native_socket_t s) {
     if (s == CAJETA_INVALID_SOCKET) return -1;
     return (int32_t) s;
 }
 
-// Re-widen an int32 fd back to the native socket handle for a Winsock/POSIX
-// call. -1 → CAJETA_INVALID_SOCKET.
+// The inverse, for handing an fd back to a Winsock or POSIX call.
 static cajeta_native_socket_t cajeta_net_from_fd(int32_t fd) {
     if (fd < 0) return CAJETA_INVALID_SOCKET;
     return (cajeta_native_socket_t) fd;
 }
 
-// ---------------------------------------------------------------------------
-// Socket lifecycle + transfer intrinsics.
-//
-// `family`/`type`/`protocol` are passed as the **native** integer constants
-// by the cajeta layer (it owns the enum→constant table, since AF_INET etc.
-// are platform values). The address arguments are raw `sockaddr` byte
-// buffers the cajeta layer packs/unpacks via NET-1.2's
-// `__cajeta_net_sockaddr_pack/_unpack`; here they are opaque `(ptr, len)`.
-//
-// Convention: every fd-returning intrinsic returns the int32 fd or -1 on
-// failure; every status intrinsic returns 0 on success or -1 on failure;
-// every byte-count intrinsic returns the count (>= 0) or a NEGATIVE
-// `cajeta_net_err` ordinal so the caller distinguishes WouldBlock (-1 *
-// WOULDBLOCK) from a real error without a second errno read. After any
-// failure the cajeta layer may also call `__cajeta_net_last_error()`.
-// ---------------------------------------------------------------------------
+// ---- Socket lifecycle + transfer intrinsics ----
+// family/type/protocol are native constants and the addresses opaque (ptr, len) sockaddr
+// buffers; the cajeta layer owns both tables. An fd-returning intrinsic answers the fd
+// or -1, a status one 0 or -1, a byte-count one the count or -1.
 
 // Create a socket. Returns the int32 fd, or -1 on failure.
 int32_t __cajeta_net_socket(int32_t family, int32_t type, int32_t protocol) {
@@ -274,31 +194,18 @@ int32_t __cajeta_net_bind(int32_t fd, const void* addr, int32_t addrlen) {
     return r == CAJETA_SOCKET_ERROR ? -1 : 0;
 }
 
-// Mark `fd` as a passive listening socket with the given accept backlog.
-// Returns 0 / -1.
+// Marks `fd` passive with the given accept backlog. Returns 0 / -1.
 int32_t __cajeta_net_listen(int32_t fd, int32_t backlog) {
     if (fd < 0) return -1;
     int r = listen(cajeta_net_from_fd(fd), (int) backlog);
     return r == CAJETA_SOCKET_ERROR ? -1 : 0;
 }
 
-// Accept one pending connection on listening socket `fd`. The peer's address
-// is written into `addr_out[0..*addrlen_inout)` (caller-sized sockaddr
-// buffer); `*addrlen_inout` is updated to the actual written length. Either
-// out pointer may be NULL to discard the peer address. Returns the new
-// connection's int32 fd, or -1 on failure (incl. WouldBlock — the caller
-// checks `__cajeta_net_last_error()`).
-// Which intrinsic last produced a socket error, per thread — Windows only.
-// Winsock reuses WSAEWOULDBLOCK for two different things: "would block" from
-// recv/send/accept AND "connect in flight" from a non-blocking connect. errno
-// alone cannot tell them apart, so the non-throwing classifiers in
-// cajeta_net_nonblocking.c (is_wouldblock / is_in_progress) consult this note:
-// set by __cajeta_net_connect when its connect() fails, cleared by every other
-// error-producing intrinsic on entry. Before this, a would-block recv was ALSO
-// reported as an in-progress connect on Windows
-// (NetNonBlockingTests.wouldBlockClassifiedNotAsHardError, release full
-// sweep 2026-09-06). Thread-local because WSAGetLastError is. POSIX keeps its
-// distinct EAGAIN/EWOULDBLOCK vs EINPROGRESS codes and never reads it.
+// Accepts one pending connection, writing the peer into the caller-sized `addr_out` and
+// updating `*addrlen_inout`; either out pointer may be NULL to discard it.
+// Which intrinsic last produced an error, per thread — Windows only. Winsock reuses
+// WSAEWOULDBLOCK for both "would block" and "connect in flight", so the non-throwing
+// classifiers consult this: connect sets it, every other error path clears it.
 #if defined(_WIN32)
 static _Thread_local int g_cajeta_net_last_op_connect = 0;
 static inline void cajeta_net_note_op(int is_connect) {
@@ -328,10 +235,8 @@ int32_t __cajeta_net_accept(int32_t fd, void* addr_out, int32_t* addrlen_inout) 
     return cajeta_net_to_fd(c);
 }
 
-// Connect `fd` to the address in `addr[0..addrlen)`. Returns 0 on success,
-// -1 on failure. For a non-blocking socket an in-progress connect returns -1
-// with last-error == IN_PROGRESS/WOULDBLOCK; the reactor (Phase 3) then waits
-// for writability and checks SO_ERROR.
+// Connects `fd` to `addr[0..addrlen)`. Returns 0 / -1; on a non-blocking socket an
+// in-progress connect is -1 with a last-error of IN_PROGRESS or WOULDBLOCK.
 int32_t __cajeta_net_connect(int32_t fd, const void* addr, int32_t addrlen) {
     if (fd < 0 || !addr || addrlen <= 0) return -1;
     cajeta_net_note_op(1);
@@ -341,16 +246,8 @@ int32_t __cajeta_net_connect(int32_t fd, const void* addr, int32_t addrlen) {
     return r == CAJETA_SOCKET_ERROR ? -1 : 0;
 }
 
-// Read the pending socket error on `fd` after a non-blocking connect has
-// signalled completion (the reactor saw the socket become writable). Returns
-// CAJETA_NET_OK (0) when the connect succeeded, otherwise the normalized
-// `cajeta_net_err` ordinal for the failure (ECONNREFUSED → CONNECTION_REFUSED,
-// ETIMEDOUT → TIMED_OUT, …). This is the post-readiness half of the
-// non-blocking connect dance described above __cajeta_net_connect: the caller
-// issues the connect, gets IN_PROGRESS, parks on `await_writable`, then calls
-// this to learn the outcome. Keeping the SO_ERROR / SOL_SOCKET platform
-// constants in the C layer matches the POSIX-native / Windows-shim convention
-// (the cajeta surface only ever sees the stable ordinal).
+// The outcome of a non-blocking connect, read once the socket is writable: OK when it
+// succeeded, else the normalized ordinal. The other half of the IN_PROGRESS dance.
 int32_t __cajeta_net_connect_result(int32_t fd) {
     if (fd < 0) return CAJETA_NET_INVALID;
     int soerr = 0;
@@ -365,15 +262,11 @@ int32_t __cajeta_net_connect_result(int32_t fd) {
     if (r == CAJETA_SOCKET_ERROR) {
         return cajeta_net_map_errno(cajeta_net_raw_errno());
     }
-    // soerr == 0 → connect succeeded (map_errno's case 0 → CAJETA_NET_OK).
     return cajeta_net_map_errno(soerr);
 }
 
-// Send `len` bytes from `buf`. Returns the count sent (>= 0), or -1 on error
-// (caller reads `__cajeta_net_last_error()` — WouldBlock is a normal
-// non-blocking outcome). `flags` is the native send() flags value (0 in the
-// common case; MSG_NOSIGNAL on Linux to suppress SIGPIPE — the cajeta layer
-// supplies it).
+// Sends `len` bytes from `buf`, returning the count sent or -1. `flags` is the native
+// send() value the cajeta layer supplies, MSG_NOSIGNAL included on Linux.
 int64_t __cajeta_net_send(int32_t fd, const void* buf, int64_t len, int32_t flags) {
     if (fd < 0 || (!buf && len > 0) || len < 0) return -1;
     cajeta_net_note_op(0);
@@ -388,9 +281,8 @@ int64_t __cajeta_net_send(int32_t fd, const void* buf, int64_t len, int32_t flag
 #endif
 }
 
-// Receive up to `len` bytes into `buf`. Returns the count read (>= 0; 0 ==
-// orderly peer shutdown / EOF), or -1 on error (caller reads last-error;
-// WouldBlock is the normal empty-non-blocking outcome).
+// Receives up to `len` bytes into `buf`: the count read, 0 for an orderly peer shutdown,
+// or -1 on error, where WouldBlock is the normal empty non-blocking outcome.
 int64_t __cajeta_net_recv(int32_t fd, void* buf, int64_t len, int32_t flags) {
     if (fd < 0 || (!buf && len > 0) || len < 0) return -1;
     cajeta_net_note_op(0);
@@ -404,8 +296,7 @@ int64_t __cajeta_net_recv(int32_t fd, void* buf, int64_t len, int32_t flags) {
 #endif
 }
 
-// UDP: send `len` bytes to the explicit destination `addr[0..addrlen)`.
-// Returns count sent or -1.
+// UDP: sends to the explicit destination `addr[0..addrlen)`. Count sent, or -1.
 int64_t __cajeta_net_sendto(int32_t fd, const void* buf, int64_t len,
                             int32_t flags, const void* addr, int32_t addrlen) {
     if (fd < 0 || (!buf && len > 0) || len < 0) return -1;
@@ -423,10 +314,8 @@ int64_t __cajeta_net_sendto(int32_t fd, const void* buf, int64_t len,
 #endif
 }
 
-// UDP: receive up to `len` bytes; write the sender's address into
-// `addr_out[0..*addrlen_inout)` and update `*addrlen_inout` to the actual
-// length. Either out pointer may be NULL to discard the sender. Returns count
-// read or -1.
+// UDP: receives into `buf` and the sender into `addr_out`, updating `*addrlen_inout`;
+// either out pointer may be NULL to discard the sender. Count read, or -1.
 int64_t __cajeta_net_recvfrom(int32_t fd, void* buf, int64_t len, int32_t flags,
                               void* addr_out, int32_t* addrlen_inout) {
     if (fd < 0 || (!buf && len > 0) || len < 0) return -1;
@@ -451,24 +340,17 @@ int64_t __cajeta_net_recvfrom(int32_t fd, void* buf, int64_t len, int32_t flags,
     return (int64_t) n;
 }
 
-// Wake any fiber parked on this descriptor in the I/O reactor before the
-// descriptor goes away (defined in cajeta_rt_concurrent_exec.c; a no-op off
-// Linux). Closing an fd removes it from the epoll interest list without
-// delivering an event, so without this a parked fiber is never resumed —
-// the shutdown-and-await hang. See the comment on the definition.
+// Wakes any fiber parked on this descriptor before it goes away: closing an fd drops it
+// from the epoll interest list with no event, so a parked fiber would never resume.
 extern int32_t __cajeta_io_close_fd(int32_t fd);
 
-// Close the socket. Idempotent at the cajeta layer (it nulls its fd field).
-// Returns 0 / -1.
+// Closes the socket; idempotent, as the cajeta layer nulls its fd field. Returns 0 / -1.
 int32_t __cajeta_net_close(int32_t fd) {
     if (fd < 0) return 0;   // already closed — no-op success
-    // Order matters: publish the waiters while `fd` is still valid, then
-    // close. A fiber woken this way retries its I/O, gets EBADF, and the
-    // library maps that to the NetException its accept loop expects.
+    // Order matters: wake the waiters while `fd` is still valid, then close. A fiber
+    // woken this way retries, gets EBADF, and the library maps it to a NetException.
 #if defined(__linux__)
-    // Wake the fd's reactor waiters AND close it under one lock — see the
-    // definition. A socket fd is an ordinary descriptor here, so close(2) is
-    // the right closer; the atomicity is what matters.
+    // Wake and close under one lock; a socket fd is an ordinary descriptor here.
     return __cajeta_io_close_fd(fd);
 #else
     int r = cajeta_closesocket(cajeta_net_from_fd(fd));
@@ -489,10 +371,8 @@ int32_t __cajeta_net_shutdown(int32_t fd, int32_t how) {
     return r == CAJETA_SOCKET_ERROR ? -1 : 0;
 }
 
-// setsockopt passthrough. `level`/`optname` are the native constants supplied
-// by the cajeta option surface (NET-1.6). `optval[0..optlen)` is the raw
-// option payload (an int32 for the boolean/int options, a `struct linger`
-// for SO_LINGER, etc.). Returns 0 / -1.
+// setsockopt passthrough: `level` and `optname` are native constants and `optval` the
+// raw payload, an int32 for the boolean options or a `struct linger` for SO_LINGER.
 int32_t __cajeta_net_setsockopt(int32_t fd, int32_t level, int32_t optname,
                                 const void* optval, int32_t optlen) {
     if (fd < 0 || !optval || optlen <= 0) return -1;
@@ -506,8 +386,7 @@ int32_t __cajeta_net_setsockopt(int32_t fd, int32_t level, int32_t optname,
     return r == CAJETA_SOCKET_ERROR ? -1 : 0;
 }
 
-// getsockopt passthrough. Reads the option into `optval[0..*optlen_inout)`
-// and updates `*optlen_inout` to the actual length. Returns 0 / -1.
+// getsockopt passthrough: reads into `optval` and updates `*optlen_inout`. 0 / -1.
 int32_t __cajeta_net_getsockopt(int32_t fd, int32_t level, int32_t optname,
                                 void* optval, int32_t* optlen_inout) {
     if (fd < 0 || !optval || !optlen_inout || *optlen_inout <= 0) return -1;
@@ -524,9 +403,8 @@ int32_t __cajeta_net_getsockopt(int32_t fd, int32_t level, int32_t optname,
     return 0;
 }
 
-// Toggle non-blocking mode. `nonblocking` != 0 enables O_NONBLOCK
-// (POSIX) / FIONBIO (Winsock); 0 restores blocking. Returns 0 / -1. The
-// reactor (Phase 3) and `WouldBlock` surfacing (NET-1.7) depend on this.
+// Toggles non-blocking mode: a non-zero `nonblocking` sets O_NONBLOCK or FIONBIO, 0
+// restores blocking. Returns 0 / -1.
 int32_t __cajeta_net_set_nonblocking(int32_t fd, int32_t nonblocking) {
     if (fd < 0) return -1;
 #if defined(_WIN32)

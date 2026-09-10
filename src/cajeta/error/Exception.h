@@ -1,6 +1,4 @@
-//
 // Created by James Klappenbach on 11/6/22.
-//
 
 #pragma once
 
@@ -47,11 +45,7 @@ namespace cajeta {
 
         bool hasLocation() const { return line > 0; }
 
-        // script-units U5 — the script-diagnostic remap rewrites a caught
-        // exception into host coordinates before rethrowing. The remap flag
-        // makes the rewrite once-only: nested method codegen rethrows
-        // through several remap boundaries, and a second translation would
-        // treat an already-host line as a wrapper line.
+        // The remap flag makes the rewrite once-only: nested codegen rethrows through several remap boundaries.
         void setLocation(const string& f, int l, int c) {
             file = f;
             line = l;
@@ -61,11 +55,8 @@ namespace cajeta {
         void markScriptRemapped() { scriptRemapped = true; }
     };
 
-    // Thrown after parsing when the user source has syntax errors. The per-error
-    // diagnostics were already reported during the parse (NDJSON in json mode,
-    // ANTLR console text otherwise), so the top-level handler fails the compile
-    // without re-emitting. Aborts before the semantic visitor walks ANTLR's
-    // malformed error-recovery tree, which segfaulted on some inputs.
+    // Thrown after parsing when the source has syntax errors the parse already reported.
+    // Aborts before the semantic visitor walks ANTLR's malformed error-recovery tree.
     class SyntaxErrorException : public Exception {
     public:
         explicit SyntaxErrorException(int count)

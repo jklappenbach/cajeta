@@ -1,34 +1,6 @@
-// Phase 7 — Coverage map parsing, threshold enforcement, and
-// multi-format report emission.
-//
-// The `test` action invokes the cajeta.coverage plugin when the
-// task is configured with a coverage block. The plugin writes a
-// coverage map file (simple text format: one line per source file)
-// and the test action consumes it here:
-//   - parses + validates the map
-//   - applies `exclude` glob patterns to drop fixtures / generated
-//     sources / opt-out files from the denominator
-//   - computes overall + per-file coverage percentage
-//   - checks `min` (overall floor) + `min-per-file` (worst-file floor)
-//   - on violation, emits a bottom-N citation (worst N files)
-//   - writes report files in the requested formats (HTML, console,
-//     SARIF, lcov)
-//
-// Coverage map wire format (one line per source file, ASCII):
-//
-//     <relpath> <covered-counters> <total-counters>
-//
-// Example:
-//     src/cajeta/buildtool/Resolver.cajeta 412 487
-//     src/cajeta/buildtool/Manifest.cajeta 199 199
-//
-// Blank lines + `#`-prefixed comments are ignored. The map's grain
-// (line / branch / region) lives in a single header comment so
-// reports can label themselves correctly:
-//
-//     # cajeta-coverage-map v1 grain=line
-//
-// Any other shape errors out with the offending line cited.
+// Coverage map parsing, threshold enforcement, and multi-format report emission.
+// Map wire format, ASCII, one line per source file: `<relpath> <covered> <total>`;
+// blank and `#` lines are ignored, and `# cajeta-coverage-map v1 grain=line` leads.
 
 #pragma once
 
@@ -56,17 +28,12 @@ namespace cajeta::buildtool {
         std::vector<CoverageFile> files;
     };
 
-    // Parse a coverage-map file's text contents into a typed map.
-    // Errors cite the line number for diagnosability.
+    // Parse a coverage-map file's text into a typed map; errors cite the line number.
     llvm::Expected<CoverageMap> parseCoverageMap(const std::string& text);
 
-    // Apply glob-style exclude patterns to the map. A file matches
-    // when its path matches ANY pattern. The original map is
-    // returned unmodified; the result holds only the kept entries.
-    // Patterns:
-    //   "*"   — any chars except '/'
-    //   "**"  — any chars including '/'
-    //   exact substrings — literal match
+    // Keep only the entries matching NO pattern; the input map is unchanged. `*`
+    // matches any chars except '/', `**` any chars including '/', and anything else
+    // is a literal substring.
     CoverageMap applyExcludes(const CoverageMap& m,
                               const std::vector<std::string>& patterns);
 
@@ -76,30 +43,25 @@ namespace cajeta::buildtool {
     // Sort + return the bottom-N files by percentage (lowest first).
     std::vector<CoverageFile> bottomN(const CoverageMap& m, size_t n);
 
-    // Render reports to disk. Each entry in `reports` is a
-    // (format, path) pair; supported formats: "html", "sarif",
-    // "lcov", "console" (writes to path as plain text).
+    // Render reports to disk, `reports` being (format, path) pairs; the formats are
+    // "html", "sarif", "lcov" and "console", which writes plain text to its path.
     llvm::Error renderCoverageReports(
         const CoverageMap& m,
         const std::map<std::string, std::string>& reports);
 
-    // Render the console-summary string (used by the test action
-    // for stderr surfacing when format == "console" *and* no path
-    // is configured). Format:
-    //   coverage: 86.42% (412/487 over N files, grain=line)
+    // The console-summary string, which the test action surfaces on stderr when the
+    // format is "console" with no path: `coverage: 86.42% (412/487 over N files, ...)`.
     std::string consoleSummary(const CoverageMap& m);
 
-    // Threshold gate result. When `violated` is true, `detail`
-    // contains a bottom-N citation suitable for surfacing as the
-    // test action's error message.
+    // Threshold gate result; when `violated`, `detail` is a bottom-N citation ready
+    // to surface as the test action's error message.
     struct ThresholdResult {
         bool violated = false;
         std::string detail;
     };
 
-    // Check thresholds. `minOverall < 0` skips the overall check;
-    // `minPerFile < 0` skips the per-file check. Both negative is
-    // a no-op (returns {violated=false}).
+    // Check thresholds. A negative `minOverall` or `minPerFile` skips that check, so
+    // both negative is a no-op returning {violated=false}.
     ThresholdResult checkThresholds(const CoverageMap& m,
                                     double minOverall,
                                     double minPerFile,

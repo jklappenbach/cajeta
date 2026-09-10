@@ -1,29 +1,6 @@
-//
-// CajetaMatrix — a fixed-shape numeric matrix, `Matrix<T, R, C>`, lowering to a
-// flat row-major LLVM `<R*C x T>` (element (r,c) lives at lane r*C+c).
-//
-// A VALUE type (like a primitive / Vector): passed by value, no heap, no vtable,
-// no drop chain. The element type T is a non-bool numeric primitive; R and C are
-// positive compile-time integer constants. Synthesized on demand and cached in
-// CajetaType::canonicalMap under the key "Matrix<T,R,C>" so every reference to
-// the same shape resolves to one CajetaType (and so it participates in the
-// resetGlobals lifecycle).
-//
-// Modeled directly on CajetaVector: it derives from CajetaType (not CajetaClass)
-// — the matrix has no struct body, fields, or methods of its own. Construction,
-// 2D element access (m[r][c]), element-wise arithmetic, scalar scale, `*` =
-// matrix multiply, and the transpose/identity/row/col/hadamard methods are all
-// lowered as compiler intrinsics (see the host expression codegen and the device
-// KernelLowering walker), delegating to the shared `matops` helper.
-//
-// The HYBRID model (plans/fluttering-sparking-lantern.md): the user-facing
-// surface is the declared `Matrix<T, uint32 R, uint32 C>` class in
-// runtime/src/cajeta/math/Matrix.cajeta (so the operator/method DECLARATIONS are
-// library-owned and exercise the operator-declaration + type-resolution path),
-// while a `Matrix<...>` type REFERENCE resolves to this flat CajetaMatrix
-// representation and codegen intercepts the operators — identical generated code
-// to a pure-intrinsic vector.
-//
+// `Matrix<T, R, C>`: a fixed-shape numeric VALUE type lowering to a flat
+// row-major `<R*C x T>`, element (r,c) at lane r*C+c. Its operators are declared
+// in Matrix.cajeta but intercepted by codegen as intrinsics, never called.
 
 #pragma once
 
@@ -47,8 +24,8 @@ namespace cajeta {
         // Flat lane count R*C — the width of the underlying `<R*C x T>`.
         uint32_t getLanes() const { return rows * cols; }
 
-        // `<R*C x T>`. T's llvm scalar type must already exist (primitives are
-        // registered in CajetaType::init before any matrix is resolved).
+        // `<R*C x T>`. T's llvm scalar type must already be registered, which
+        // CajetaType::init guarantees before any matrix can be resolved.
         llvm::Type* getLlvmType() override;
 
         // Canonical name, e.g. "Matrix<float32,2,3>".
@@ -60,12 +37,9 @@ namespace cajeta {
                                                     CajetaTypePtr elementType,
                                                     uint32_t rows, uint32_t cols);
 
-        // Validate the semantic constraints (element is a non-bool numeric
-        // primitive; R and C are positive constants) then getOrCreate. Shared by
-        // every site that materializes a Matrix type (CajetaType::fromContext
-        // type positions and NewExpression construction), so the diagnostics are
-        // identical. Throws CAJETA_ERROR_MATRIX_ELEMENT_TYPE /
-        // CAJETA_ERROR_MATRIX_DIMENSIONS.
+        // Check that the element is a non-bool numeric primitive and R, C are
+        // positive, then getOrCreate. Every site that materializes a Matrix goes
+        // through here. Throws MATRIX_ELEMENT_TYPE / MATRIX_DIMENSIONS.
         static shared_ptr<CajetaMatrix> validateAndCreate(
             CajetaModulePtr module, CajetaTypePtr elementType,
             int64_t rows, int64_t cols);

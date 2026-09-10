@@ -1,4 +1,4 @@
-// Codec Phase 1.2b — Tier-1 CSV typed-bind synthesizer (see header).
+// Tier-1 CSV typed-bind synthesizer (see header).
 
 #include "CsvSynthesizer.h"
 #include "../type/CajetaClass.h"
@@ -14,7 +14,6 @@ namespace cajeta {
 
     namespace {
 
-    // Canonical of param `i`, or empty if out of range.
     std::string paramCanonAt(
             const std::vector<CajetaTypePtr>& paramTypes, size_t i) {
         if (i >= paramTypes.size()) return std::string();
@@ -33,9 +32,8 @@ namespace cajeta {
         return out;
     }
 
-    // camelCase → snake_case / kebab-case (mirror of JSON's applyNamingStrategy).
-    // Empty / IDENTITY / CAMEL_CASE are no-ops; unrecognized strategies pass
-    // through unchanged.
+    // Rewrite a declared field name under `strategy`. Empty, IDENTITY,
+    // CAMEL_CASE and unrecognized strategies pass the name through unchanged.
     std::string applyNamingStrategy(const std::string& strategy,
                                      const std::string& declaredName) {
         if (strategy.empty() || strategy == "IDENTITY" || strategy == "CAMEL_CASE") {
@@ -67,7 +65,6 @@ namespace cajeta {
         return declaredName;
     }
 
-    // Class-level @CsvNamingStrategy("...") value, or empty when absent.
     std::string classNamingStrategy(const CajetaClassPtr& T) {
         if (!T) return std::string();
         if (auto ann = T->findAnnotation("CsvNamingStrategy")) {
@@ -76,15 +73,11 @@ namespace cajeta {
         return std::string();
     }
 
-    // True if the field carries @CsvIgnore — dropped from the bind entirely.
     bool isCsvIgnored(const StructurePropertyPtr& prop) {
         return prop && prop->findAnnotation("CsvIgnore") != nullptr;
     }
 
-    // Primary header key for a field. Precedence (mirror effectiveJsonKey):
-    //   1. @CsvColumn("name") on the field — wins.
-    //   2. class @CsvNamingStrategy transform of the declared name.
-    //   3. the declared name verbatim.
+    // Header key for a field: @CsvColumn wins, else the strategy transform.
     std::string effectiveCsvKey(const StructurePropertyPtr& prop,
                                  const std::string& classStrategy) {
         if (!prop) return std::string();
@@ -95,8 +88,7 @@ namespace cajeta {
         return applyNamingStrategy(classStrategy, prop->getName());
     }
 
-    // Extra header keys accepted on read via @CsvAlias({"a","b"}) (or the
-    // single-value form). Order preserved; empty if absent.
+    // Extra header keys accepted on read via @CsvAlias, in declared order.
     std::vector<std::string> csvAliases(const StructurePropertyPtr& prop) {
         std::vector<std::string> out;
         if (!prop) return out;
@@ -111,12 +103,9 @@ namespace cajeta {
         return out;
     }
 
-    // The reader-driven value decode for a supported primitive field type, or
-    // empty if the type isn't bound in b2. `fv` names the field's value bytes.
+    // Decode expression for a supported primitive type, empty when unbound;
+    // `CsvReader` is short because the body is reparented into Csv's package.
     std::string decodeExpr(const std::string& canon, const std::string& fv) {
-        // Short class name — the body is reparented into Csv's package
-        // (cajeta.codec.csv), so CsvReader resolves same-package (mirrors the
-        // JSON synthesizer's short `JsonIndex.decode*` calls).
         if (canon == "int32") {
             return "(int32) CsvReader.parseI64(" + fv + ")";
         }
@@ -129,16 +118,13 @@ namespace cajeta {
         if (canon == "boolean") {
             return "CsvReader.parseBool(" + fv + ")";
         }
-        return "";   // String handled inline (ownership transfer); else skip.
+        return "";
     }
 
     // Synthesize `parse(int8[] bytes, int64 length) -> #E[]` for element E.
     std::string synthesizeArrayParseBody(const CajetaClassPtr& E) {
         const std::string Ec = E->getQName()->toCanonical();
 
-        // Bindable fields: those whose type is a supported primitive or String,
-        // and not @CsvIgnore'd. `keys` holds the header strings that map to the
-        // field (primary key first, then aliases).
         struct Bind {
             std::string name; std::string canon; bool isString; bool required;
             std::vector<std::string> keys;
@@ -166,7 +152,6 @@ namespace cajeta {
         std::ostringstream os;
         os << "public static #" << Ec << "[] parse(int8[] bytes, int64 length) {\n";
 
-        // Pass 1: header → column index map + data-row count.
         os << "    cajeta.codec.csv.CsvReader rh = "
               "heap cajeta.codec.csv.CsvReader(bytes, length);\n";
         for (auto& b : binds) {
@@ -197,10 +182,6 @@ namespace cajeta {
         os << "            hi = hi + 1;\n";
         os << "        }\n";
         os << "    }\n";
-        // Fail-loud: a @CsvRequired field whose column never appeared in the
-        // header is a hard error (mirrors JSON's @JsonRequired). Checked once
-        // against the shared header — not per-row — since CSV columns are
-        // positional and the header binds them for the whole file.
         for (auto& b : binds) {
             if (!b.required) continue;
             os << "    if (col_" << b.name << " < (int32) 0) {\n";
@@ -213,7 +194,6 @@ namespace cajeta {
         os << "    boolean cn = rh.nextRow();\n";
         os << "    while (cn) { rowCount = rowCount + 1; cn = rh.nextRow(); }\n";
 
-        // Pass 2: a fresh reader, skip the header, bind each row.
         os << "    " << Ec << "[] outv = heap " << Ec << "[rowCount];\n";
         os << "    cajeta.codec.csv.CsvReader rd = "
               "heap cajeta.codec.csv.CsvReader(bytes, length);\n";
@@ -266,8 +246,7 @@ namespace cajeta {
                 || paramCanonAt(paramTypes, 1) != "int64") {
             return false;
         }
-        // b2 primary form: T[] — bind every data row to element T.
-        // CajetaArray inherits CajetaClass, so check the array form first.
+        // CajetaArray inherits CajetaClass, so the array form must be tried first.
         auto arr = std::dynamic_pointer_cast<CajetaArray>(args[0]);
         if (!arr) return false;
         auto E = std::dynamic_pointer_cast<CajetaClass>(arr->getElementType());

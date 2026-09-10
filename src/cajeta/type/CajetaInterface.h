@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 10/2/22.
-//
+// CajetaInterface - the CajetaClass specialization for interface declarations.
 
 #pragma once
 

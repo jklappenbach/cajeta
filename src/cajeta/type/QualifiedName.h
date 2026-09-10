@@ -1,7 +1,4 @@
-//
-// Created by James Klappenbach on 10/1/22.
-//
-
+// QualifiedName - an interned package + type name and its canonical string form.
 #pragma once
 
 #include <string>
@@ -66,9 +63,7 @@ namespace cajeta {
         const string& toCanonical() { return canonical; }
 
         bool operator<(const QualifiedNamePtr& rhs) const {
-            // Lexicographic — the old AND-of-two-less-thans was not a strict
-            // weak ordering (both a<b and b<a false for unequal names),
-            // breaking std::set/std::sort over QualifiedName.
+            // Must stay a strict weak ordering: std::set/std::sort depend on it.
             if (typeName != rhs->typeName) return typeName < rhs->typeName;
             return packageName < rhs->packageName;
         }

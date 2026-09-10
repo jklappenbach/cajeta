@@ -1,6 +1,4 @@
-// `cajeta fetch` / `cajeta vendor` — native-dependency provisioning CLI
-// (native-deps unit 14). Thin driver surface over the unit-9 provisioning
-// functions (fetchNativeToCache / vendorNativeArtifact).
+// `cajeta fetch` / `cajeta vendor` — the native-dependency provisioning CLI.
 
 #pragma once
 

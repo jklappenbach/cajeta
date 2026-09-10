@@ -39,10 +39,6 @@ namespace cajeta::buildtool {
             }
             r.name = name->str();
 
-            // Type: default "filesystem" when `path` is present,
-            // "http" when `url` is present. Explicit `type` field
-            // wins. Spec says explicit type is required for
-            // maven-compat; we don't infer that one.
             if (auto t = obj->getString("type")) {
                 r.type = t->str();
             } else if (obj->getString("path")) {
@@ -60,17 +56,13 @@ namespace cajeta::buildtool {
             if (auto v = obj->getInteger("priority")) {
                 r.priority = static_cast<int>(*v);
             }
-            // Git-specific fields. We accept `tag`, `branch`, and
-            // `rev` as ref shapes (spec form) — internally they all
-            // collapse to a single literal `gitRef` since `git
-            // checkout` doesn't distinguish at the call site.
+            // `ref`, `tag`, `branch` and `rev` all collapse to one literal gitRef.
             if (auto v = obj->getString("ref"))    r.gitRef = v->str();
             if (auto v = obj->getString("tag"))    r.gitRef = v->str();
             if (auto v = obj->getString("branch")) r.gitRef = v->str();
             if (auto v = obj->getString("rev"))    r.gitRef = v->str();
             if (auto v = obj->getString("subdir")) r.gitSubdir = v->str();
 
-            // Validate the type / fields combination.
             if (r.type == "filesystem" && r.path.empty()) {
                 return err("settings.repositories." + r.name +
                            ": type='filesystem' requires 'path'");
@@ -92,9 +84,7 @@ namespace cajeta::buildtool {
                 }
             }
 
-            // Optional auth block — only meaningful for http /
-            // maven-compat. Parse for any repo type; the driver
-            // ignores it where it doesn't apply.
+            // Parsed for any repo type; drivers that cannot use it ignore it.
             if (const auto* a = obj->getObject("auth")) {
                 if (auto t = a->getString("type")) {
                     r.auth.type = t->str();
@@ -114,8 +104,6 @@ namespace cajeta::buildtool {
                 if (auto v = a->getString("ca-cert")) {
                     r.auth.caCertPath = v->str();
                 }
-                // Cross-field validation: 'mtls' needs cert+key;
-                // 'bearer' needs a token source.
                 if (r.auth.type == "bearer" &&
                     r.auth.tokenEnv.empty() &&
                     r.auth.tokenLiteral.empty()) {
@@ -142,14 +130,9 @@ namespace cajeta::buildtool {
             out.push_back(std::move(r));
         }
 
-        // A filesystem repository's `path` is relative to the MANIFEST
-        // that declares it, never to whatever directory the process
-        // happens to be in. Anchoring here fixes every consumer at once —
-        // `cajeta build` usually runs at the project root and got away
-        // with it, but the Jupyter kernel is launched in the NOTEBOOK's
-        // directory, so `"path": "./repo"` beside cajeta.json resolved to
-        // `notebooks/repo` and the repository looked empty. Measured
-        // twice: once on the install path, once at session start.
+        // A filesystem repository's `path` is relative to the MANIFEST that
+        // declares it, never to the process's working directory. Anchoring it here
+        // fixes every consumer at once.
         if (!m.sourcePath.empty()) {
             auto base = std::filesystem::path(m.sourcePath).parent_path();
             for (auto& r : out) {
@@ -160,8 +143,7 @@ namespace cajeta::buildtool {
             }
         }
 
-        // Sort by priority descending; preserve declaration order
-        // among ties (stable_sort).
+        // Priority descending, declaration order among ties.
         std::stable_sort(out.begin(), out.end(),
             [](const RepositorySpec& a, const RepositorySpec& b) {
                 return a.priority > b.priority;
@@ -179,22 +161,16 @@ namespace cajeta::buildtool {
         for (const auto& kv : *deps) {
             DependencySpec d;
             d.name = kv.first.str();
-            // Two recognized forms:
-            //   1) string constraint: "1.2.*"
-            //   2) object: { version: "1.2.*", from: "repo" }
-            //              or { path: "..." } / { git: "..." }
+            // Either a bare constraint string, or an object carrying `version`
+            // plus `from`, or a `path` / `git` source.
             if (auto s = kv.second.getAsString()) {
                 d.versionConstraint = s->str();
             } else if (const auto* obj = kv.second.getAsObject()) {
                 if (auto v = obj->getString("version")) {
                     d.versionConstraint = v->str();
                 } else if (obj->get("path") || obj->get("git")) {
-                    // 6c parses these into a richer DependencySpec
-                    // (with source kind). For 6a we leave the
-                    // version constraint empty and continue —
-                    // downstream resolution skips entries with no
-                    // constraint (path/git sources don't need
-                    // version negotiation against a repo).
+                    // A path/git source negotiates no version, so the empty
+                    // constraint left here makes resolution skip the entry.
                 } else {
                     return err("settings.dependencies." + d.name +
                                ": object form requires 'version', "

@@ -1,38 +1,14 @@
-// === cajeta-profiler Unit 7 — the GPU dispatch record seam (spec §5.1, §5.3,
-// === §5.6). #included into cajeta_runtime.c AFTER cajeta_rt_prof_trace.c (it
-// === uses the writer) and BEFORE cajeta_xpu.c (the launch path calls in here).
-//
-// The seam is DUAL-CONSUMER by construction (spec §14.9). Records are published
-// to registered sinks; the Perfetto writer is one of them, and the XPU
-// scheduler's feedback loop (xpu-kernel-scheduling §3, §8) will be another,
-// consuming the same records live. Wiring the writer in as the collector's
-// callee would have been less code today and a rewrite of every backend's
-// collection path later.
-//
-// Three properties this file exists to keep, in the order they are easy to lose:
-//
-//   1. A slow or broken consumer must not become backpressure on the program
-//      under test (§5.6.4). Publication is bounded and drops; it never waits.
-//   2. Sinks must not be able to reach each other (§5.6.2). Each gets its own
-//      copy in its own queue — not a shared buffer with a shared cursor.
-//   3. With nothing registered, the dispatch path must be what it was (7.1.e).
-//      That is one relaxed load of `g_gpu_sinks_live` and a branch.
+// === The GPU dispatch record seam. #included into cajeta_runtime.c AFTER
+// === cajeta_rt_prof_trace.c and BEFORE cajeta_xpu.c. Publication to sinks is
+// === bounded and never waits; each sink gets its own copy in its own queue.
 
 #include <pthread.h>
 
-int64_t __cajeta_currentTimeNanos(void);   // cajeta_rt_concurrent_exec.c, later in this TU
+int64_t __cajeta_currentTimeNanos(void);
 
 // ── per-sink queue ────────────────────────────────────────────────────────
-//
-// Vyukov-style bounded MPMC ring, used multi-producer / single-consumer: many
-// threads dispatch concurrently (7.1.d), one delivery thread drains. The
-// per-slot sequence number is what makes a producer's claim and its write
-// separable, so a claim that is still in flight is invisible to the consumer
-// rather than delivering a half-written record.
-//
-// A mutex would have been shorter. It would also have made a slow consumer able
-// to stall a dispatching thread, which is exactly the property §5.6.4 forbids —
-// and it would have failed only under load, i.e. never in a test.
+// Vyukov-style bounded MPMC ring: the per-slot sequence separates a producer's
+// claim from its write, so a claim in flight is invisible to the consumer.
 typedef struct {
     volatile int64_t seq;
     CajetaGpuEvent   ev;
@@ -54,9 +30,8 @@ typedef struct {
 
 static CajGpuSink       g_gpu_sink[CAJETA_GPU_MAX_SINKS];
 static pthread_mutex_t  g_gpu_reg_lock = PTHREAD_MUTEX_INITIALIZER;
-// Held while a sink is being CALLED, so a synchronous flush and the delivery
-// thread cannot enter the same sink at once. Producers never take it — that is
-// the whole point.
+// Held while a sink is CALLED: a flush and the delivery thread must not enter
+// the same sink at once. Producers never take it.
 static pthread_mutex_t  g_gpu_deliver_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile int32_t g_gpu_sinks_live = 0;   // the dispatch-path fast path
 static volatile int64_t g_gpu_launch_id  = 0;
@@ -69,6 +44,7 @@ static int64_t caj_gpu_pow2(int64_t v) {
     return p;
 }
 
+// Allocate one sink's ring, rounded up to a power of two. 0 if calloc failed.
 static int32_t caj_gpu_queue_init(CajGpuSink* s, int32_t cap) {
     int64_t n = caj_gpu_pow2(cap > 0 ? cap : CAJETA_GPU_SINK_QUEUE);
     s->ring = (CajGpuSlot*) calloc((size_t) n, sizeof(CajGpuSlot));
@@ -80,8 +56,7 @@ static int32_t caj_gpu_queue_init(CajGpuSink* s, int32_t cap) {
     return 1;
 }
 
-// Never blocks. Returns 1 if the record was queued, 0 if the queue was full —
-// in which case the caller counts a drop rather than waiting (§5.6.4).
+// Never blocks: 1 if the record was queued, 0 if the queue was full (a drop).
 static int32_t caj_gpu_enqueue(CajGpuSink* s, const CajetaGpuEvent* ev) {
     int64_t pos = __atomic_load_n(&s->head, __ATOMIC_RELAXED);
     for (;;) {
@@ -91,7 +66,7 @@ static int32_t caj_gpu_enqueue(CajGpuSink* s, const CajetaGpuEvent* ev) {
         if (d == 0) {
             if (__atomic_compare_exchange_n(&s->head, &pos, pos + 1, 1,
                                             __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
-                slot->ev = *ev;      // each sink's OWN copy: §5.6.2 by construction
+                slot->ev = *ev;      // each sink's OWN copy
                 __atomic_store_n(&slot->seq, pos + 1, __ATOMIC_RELEASE);
                 return 1;
             }
@@ -103,6 +78,7 @@ static int32_t caj_gpu_enqueue(CajGpuSink* s, const CajetaGpuEvent* ev) {
     }
 }
 
+// Take one record for the single consumer; 0 when empty or still being written.
 static int32_t caj_gpu_dequeue(CajGpuSink* s, CajetaGpuEvent* out) {
     int64_t pos = s->tail;           // single consumer, under g_gpu_deliver_lock
     CajGpuSlot* slot = &s->ring[pos & s->mask];
@@ -118,8 +94,7 @@ static int32_t caj_gpu_dequeue(CajGpuSink* s, CajetaGpuEvent* out) {
 
 #define CAJ_GPU_BATCH_MAX 64
 
-// Drain one sink and hand what came out to it. Returns the number of records
-// delivered. Called with g_gpu_deliver_lock held.
+// Drain one sink into its callback under the delivery lock; returns the count.
 static int32_t caj_gpu_drain_one(CajGpuSink* s) {
     if (!s->in_use || !s->enabled || !s->fn) return 0;
     CajetaGpuEvent batch[CAJ_GPU_BATCH_MAX];
@@ -128,16 +103,11 @@ static int32_t caj_gpu_drain_one(CajGpuSink* s) {
         int32_t n = 0;
         while (n < CAJ_GPU_BATCH_MAX && caj_gpu_dequeue(s, &batch[n])) {
             n++;
-            // A per-record sink asked to see them one at a time (§5.6.8): hand
-            // over immediately rather than accumulating and calling it N times
-            // with a stale batch, which would honor the LETTER of the
-            // granularity and none of the latency it was asked for.
             if (s->granularity == CAJETA_GPU_SINK_PER_RECORD) break;
         }
         if (n == 0) return total;
         int32_t rc = s->fn(batch, n, s->user);
         if (rc != 0) {
-            // §5.6.5: isolate, disable, report. The run continues.
             s->enabled = 0;
             fprintf(stderr,
                     "cajeta.profiler: record sink faulted (rc=%d) after %lld "
@@ -151,8 +121,7 @@ static int32_t caj_gpu_drain_one(CajGpuSink* s) {
     }
 }
 
-// Deliver everything queued, on the caller's thread. Returns the number of
-// sinks that received at least one record.
+// Deliver everything queued, on the caller's thread. Returns the sinks touched.
 int32_t __cajeta_prof_gpu_flush(void) {
     int32_t touched = 0;
     pthread_mutex_lock(&g_gpu_deliver_lock);
@@ -166,11 +135,7 @@ static pthread_t        g_gpu_deliver_thread;
 static volatile int32_t g_gpu_deliver_running = 0;
 static volatile int32_t g_gpu_deliver_stop = 0;
 
-// Per-record sinks want promptness; batched sinks explicitly do not (§14.12 —
-// the writer is filling a file). So the thread polls at a per-record cadence and
-// leaves batched queues to accumulate until they are half full or somebody
-// flushes. That is also what makes the granularity test deterministic instead of
-// a race against a timer.
+// The delivery thread: per-record sinks drain promptly, batched ones half full.
 static void* caj_gpu_deliver_loop(void* arg) {
     (void) arg;
     while (!g_gpu_deliver_stop) {
@@ -194,11 +159,11 @@ static void* caj_gpu_deliver_loop(void* arg) {
 
 // ── sink registry ─────────────────────────────────────────────────────────
 
+// Register a record consumer and ARM the seam, starting the delivery thread on
+// the first sink. Anything not PER_RECORD is batched. Returns the id, or -1.
 int32_t __cajeta_prof_gpu_sink_register(CajetaGpuSinkFn fn, void* user,
                                         int32_t granularity) {
     if (!fn) return -1;
-    // Anything that is not an explicit per-record request is "undeclared", and
-    // an undeclared sink gets batched — the cheaper default (§5.6.8).
     if (granularity != CAJETA_GPU_SINK_PER_RECORD)
         granularity = CAJETA_GPU_SINK_BATCHED;
     pthread_mutex_lock(&g_gpu_reg_lock);
@@ -219,9 +184,6 @@ int32_t __cajeta_prof_gpu_sink_register(CajetaGpuSinkFn fn, void* user,
     s->delivered = 0;
     s->enabled = 1;
     __atomic_store_n(&s->in_use, 1, __ATOMIC_RELEASE);
-    // Registering ARMS the seam. That is §5.6.3 in one rule: a live consumer
-    // does not imply a trace file, and (below) a trace file registers a sink of
-    // its own, so neither direction implies the other.
     __atomic_add_fetch(&g_gpu_sinks_live, 1, __ATOMIC_RELEASE);
     if (!g_gpu_deliver_running) {
         g_gpu_deliver_stop = 0;
@@ -232,13 +194,13 @@ int32_t __cajeta_prof_gpu_sink_register(CajetaGpuSinkFn fn, void* user,
     return id;
 }
 
+// Disarm and free one sink, joining the delivery thread with the last of them.
 int32_t __cajeta_prof_gpu_sink_unregister(int32_t id) {
     if (id < 0 || id >= CAJETA_GPU_MAX_SINKS) return 0;
     pthread_mutex_lock(&g_gpu_reg_lock);
     CajGpuSink* s = &g_gpu_sink[id];
     if (!s->in_use) { pthread_mutex_unlock(&g_gpu_reg_lock); return 0; }
-    // Stop publication first, then take the delivery lock: a sink must not be
-    // freed while the delivery thread is inside it.
+// Stop publication first: a sink must not be freed while delivery is inside it.
     __atomic_store_n(&s->in_use, 0, __ATOMIC_RELEASE);
     __atomic_sub_fetch(&g_gpu_sinks_live, 1, __ATOMIC_RELEASE);
     int32_t last = (__atomic_load_n(&g_gpu_sinks_live, __ATOMIC_ACQUIRE) == 0);
@@ -277,10 +239,7 @@ int32_t __cajeta_prof_gpu_sink_granularity(int32_t id) {
     if (id < 0 || id >= CAJETA_GPU_MAX_SINKS) return -1;
     return g_gpu_sink[id].granularity;
 }
-// Queue capacity for sinks registered AFTER this call. Exists so a test can
-// force the full-queue path with eight slots instead of by generating a
-// thousand launches — a drop that only happens under production load is a drop
-// nobody ever asserts.
+// Queue capacity for sinks registered AFTER this call. Returns what is in force.
 int32_t __cajeta_prof_gpu_set_queue_cap(int32_t cap) {
     if (cap <= 0) return g_gpu_queue_cap;
     g_gpu_queue_cap = cap;
@@ -304,10 +263,7 @@ void __cajeta_prof_gpu_publish(const CajetaGpuEvent* ev) {
 
 // ── backends ──────────────────────────────────────────────────────────────
 
-// CPU emulation (spec §5.3): device times come from host wall time, which for a
-// synchronous dispatch IS the kernel's span. It reports TIER_HOST anyway — see
-// the tier note in cajeta_prof_abi.h. Its value is that the whole pipeline,
-// seam to trace, is exercisable with no GPU and no vendor library (§5.3.2).
+// CPU emulation: host wall time IS a synchronous dispatch's span, at TIER_HOST.
 static int32_t caj_gpu_cpu_init(void) { return 1; }
 static int32_t caj_gpu_cpu_begin(CajetaGpuEvent* ev) {
     ev->dev_start_ns = __cajeta_currentTimeNanos();
@@ -318,9 +274,7 @@ static int32_t caj_gpu_cpu_end(CajetaGpuEvent* ev) {
     ev->dev_end_ns = __cajeta_currentTimeNanos();
     return 1;
 }
-// Nothing is buffered and there is no device clock, so there is nothing to
-// drain and nothing to correlate. Present rather than absent so the vtable is
-// the same shape every backend fills (plan 7.3.a).
+// Nothing is buffered and no device clock: present to keep the vtable uniform.
 static int32_t caj_gpu_cpu_collect(void)   { return 0; }
 static int32_t caj_gpu_cpu_calibrate(void) { return 1; }
 
@@ -329,29 +283,13 @@ static const CajetaGpuBackendVtbl caj_gpu_cpu_vtbl = {
     caj_gpu_cpu_collect, caj_gpu_cpu_calibrate
 };
 
-// ROCm (Unit 8, spec §5.2). Selected only once rocprofiler-sdk is actually
-// bound; until then backend 1 takes the host lane below, which is what makes
-// §5.2.2's "degraded and reported" true rather than aspirational. The vtable
-// deliberately does not exist in a half-bound form — a rocm backend answering
-// with zeros would be worse than the host window, because a zero device span
-// is indistinguishable downstream from a measured one.
+// ROCm. Selected only once rocprofiler-sdk is bound; until then the backend
+// takes the host lane, since a zero device span would look like a measured one.
 static int32_t caj_gpu_rocm_init(void) { return __cajeta_prof_rocm_init(); }
 
-// ── the pending table (8.2.c) ─────────────────────────────────────────────
-//
-// A dispatch record arrives after the launch that caused it has already
-// returned — often several launches later, in a batch. So a launch that is
-// waiting for its device span is PARKED here instead of being published at the
-// seam, and the record claims it by launch id when it turns up.
-//
-// The alternative — flushing and waiting inside end_launch — would make every
-// launch synchronous with its own completion. Two streams that genuinely
-// overlapped would be recorded back to back, and §5.1.3 asks for exactly the
-// opposite. Waiting is the one thing a profiler of concurrency must not do.
-//
-// Bounded, and full is not fatal: an unparkable launch publishes immediately at
-// host tier, which is a true measurement of a narrower thing. Nothing is
-// dropped for want of a slot.
+// ── the pending table ─────────────────────────────────────────────────────
+// A dispatch record arrives after the launch that caused it returned, so a
+// launch awaiting its span PARKS here; full publishes at host tier instead.
 #define CAJ_GPU_PENDING_MAX 256
 
 typedef struct {
@@ -365,8 +303,7 @@ static pthread_mutex_t g_gpu_pending_lock = PTHREAD_MUTEX_INITIALIZER;
 static int64_t         g_gpu_pending_overflow = 0;   // published at host tier instead
 static int64_t         g_gpu_pending_unclaimed = 0;  // parked, never matched, flushed out
 
-// Park a launch awaiting its device record. Returns 1 when parked (the caller
-// must NOT publish), 0 when the table is full (the caller publishes as-is).
+// Park a launch awaiting its record. 1 = parked (do NOT publish), 0 = full.
 static int32_t caj_gpu_park(const CajetaGpuEvent* ev) {
     int i;
     pthread_mutex_lock(&g_gpu_pending_lock);
@@ -383,11 +320,8 @@ static int32_t caj_gpu_park(const CajetaGpuEvent* ev) {
     return 0;
 }
 
-// Resolve a parked launch with the span its backend's mechanism supplied,
-// claiming `tier` for it. The tier is the CALLER's claim about the mechanism
-// (§5.1.4): the ROCm backend resolves vendor dispatch records at TIER_DEVICE;
-// the Vulkan backend resolves query-pool brackets at TIER_EVENT — device
-// event bracketing, which is what a timestamp pair around a dispatch is.
+// Resolve a parked launch with the span its backend supplied. `tier` is the
+// CALLER's claim: vendor records are TIER_DEVICE, query brackets TIER_EVENT.
 int32_t __cajeta_prof_gpu_resolve_dispatch_flags(int64_t launchId,
                                                  int64_t devStartNs,
                                                  int64_t devEndNs,
@@ -412,18 +346,13 @@ int32_t __cajeta_prof_gpu_resolve_dispatch_flags(int64_t launchId,
     ev.dev_end_ns   = devEndNs;
     ev.tier = tier;
     ev.integrity_flags |= integrityFlags;
-    // The mechanism's answer closes the span's causal bracket: a real
-    // execution ended before the record (or query result) describing it was
-    // read. The integrity check bounds dev_end by this rather than by
-    // host_return_ns, which an asynchronous dispatch overruns by construction
-    // (plan 6.7.2.c).
+// dev_end is bounded by resolved_ns, not host_return_ns, which async overruns.
     ev.resolved_ns = __cajeta_currentTimeNanos();
-    __cajeta_prof_gpu_publish(&ev);   // published OUTSIDE the lock: a sink runs
-                                      // user code, and holding a lock across it
-                                      // would let a slow sink stall every launch
+    __cajeta_prof_gpu_publish(&ev);   // outside the lock: a sink runs user code
     return 1;
 }
 
+// resolve_dispatch_flags with no additional integrity flags.
 int32_t __cajeta_prof_gpu_resolve_dispatch_tier(int64_t launchId,
                                                 int64_t devStartNs,
                                                 int64_t devEndNs,
@@ -433,19 +362,15 @@ int32_t __cajeta_prof_gpu_resolve_dispatch_tier(int64_t launchId,
                                                     CAJETA_SPAN_OK);
 }
 
+// Resolve at TIER_DEVICE: a vendor dispatch record supplied the span.
 int32_t __cajeta_prof_gpu_resolve_dispatch(int64_t launchId,
                                            int64_t devStartNs, int64_t devEndNs) {
-    // TIER_DEVICE: a vendor dispatch record supplied the span — the ROCm
-    // buffer callback is this entry point's only production caller.
     return __cajeta_prof_gpu_resolve_dispatch_tier(launchId, devStartNs,
                                                    devEndNs,
                                                    CAJETA_PROF_TIER_DEVICE);
 }
 
-// Publish everything still parked, at host tier. Called when the trace ends and
-// after a flush that did not claim everything: a launch whose record never came
-// back still has an honest host submit-to-complete window, and losing it
-// entirely would be worse than reporting it for what it is.
+// Publish everything still parked, at host tier; returns how many went out.
 static int32_t caj_gpu_drain_pending(void) {
     CajetaGpuEvent batch[CAJ_GPU_PENDING_MAX];
     int32_t n = 0;
@@ -484,18 +409,16 @@ void __cajeta_prof_gpu_pending_reset(void) {
     pthread_mutex_unlock(&g_gpu_pending_lock);
 }
 
+// Stamp the host window and push the launch id. The window is what gets
+// reported if the record never comes; TIER_DEVICE is claimed only on resolve.
 static int32_t caj_gpu_rocm_begin(CajetaGpuEvent* ev) {
-    // The host window is filled in either way: it is what gets reported if the
-    // device record never comes back, and §10.4 says a degraded measurement
-    // beats none. TIER_DEVICE is claimed only in resolve_dispatch.
     ev->dev_start_ns = __cajeta_currentTimeNanos();
     ev->tier = CAJETA_PROF_TIER_HOST;
     __cajeta_prof_rocm_push(ev->launch_id);
     return 1;
 }
 
-// Returns 0 to tell the seam "I have taken this one" — see the publish contract
-// on __cajeta_prof_gpu_launch.
+// Returns 0 to tell the seam it has taken this one; see __cajeta_prof_gpu_launch.
 static int32_t caj_gpu_rocm_end(CajetaGpuEvent* ev) {
     ev->dev_end_ns = __cajeta_currentTimeNanos();
     __cajeta_prof_rocm_pop();
@@ -503,11 +426,9 @@ static int32_t caj_gpu_rocm_end(CajetaGpuEvent* ev) {
     return caj_gpu_park(ev) ? 0 : 1;
 }
 
+// Flush the vendor's records; whatever it did not claim goes out at host tier.
 static int32_t caj_gpu_rocm_collect(void) {
     __cajeta_prof_rocm_flush();
-    // Whatever the flush did not claim has waited long enough. Its host window
-    // is still true, so it goes out at host tier rather than being held for a
-    // record that may never arrive.
     return caj_gpu_drain_pending();
 }
 static int32_t caj_gpu_rocm_calibrate(void) { return 1; }
@@ -517,29 +438,17 @@ static const CajetaGpuBackendVtbl caj_gpu_rocm_vtbl = {
     caj_gpu_rocm_collect, caj_gpu_rocm_calibrate
 };
 
-// ── NVIDIA / CUPTI (Unit 12, spec §5.4, §6.2) ─────────────────────────────
-//
-// Structurally the ROCm backend: the host window is filled either way, the
-// launch id is pushed as CUPTI's external correlation id so the kernel records
-// that arrive later can be tied back to it, and the launch parks rather than
-// publishing — `caj_cupti_consume_buffer` resolves it through
-// __cajeta_prof_gpu_resolve_dispatch when the records come in.
-//
-// This vtbl is what 12.2.d was missing. The push/pop pair existed and was
-// tested by calling it directly; `caj_gpu_vtbl_for` had no CUDA arm, so every
-// CAJ_GPU_BACKEND_CUDA launch went to the CPU lane and nothing ever pushed.
+// ── NVIDIA / CUPTI ────────────────────────────────────────────────────────
+// Structurally the ROCm backend: the launch id is pushed as CUPTI's external
+// correlation id, and the launch parks until the activity records arrive.
 // ── the event-tier fallback's state (see cajeta_prof_abi.h) ──────────────
-//
-// A machine with a driver and no CUDA Toolkit has no CUPTI and therefore no
-// activity records, but it does have cuEventRecord and cuEventElapsedTime. The
-// dispatcher brackets each launch with a pair of those and hands the finished
-// span back here; this half owns the launch id it is keyed by and the arming
-// state, because the dispatcher's translation unit is compiled after this one
-// and nothing here may call into it.
+// A driver with no CUDA Toolkit has no CUPTI but does have cuEventRecord. This
+// half owns the arming state; the dispatcher's TU is compiled after this one.
 static int32_t caj_gpu_cuda_events_armed;
 static char    caj_gpu_cuda_events_why[256];
 static int64_t caj_gpu_cuda_event_spans;
 
+// Record whether the driver's event lane armed, and the reason when it did not.
 void __cajeta_prof_cuda_events_note(int32_t ok, const char* why) {
     caj_gpu_cuda_events_armed = ok ? 1 : 0;
     if (why) snprintf(caj_gpu_cuda_events_why, sizeof(caj_gpu_cuda_events_why),
@@ -549,9 +458,7 @@ int32_t     __cajeta_prof_cuda_events_ok(void)     { return caj_gpu_cuda_events_
 const char* __cajeta_prof_cuda_events_reason(void) { return caj_gpu_cuda_events_why; }
 int64_t     __cajeta_prof_cuda_event_spans(void)   { return caj_gpu_cuda_event_spans; }
 
-// The host instant a still-parked launch was issued at, or 0 if it is not
-// parked. Read-only peek: resolution itself still goes through
-// resolve_dispatch_flags, which removes the entry under the same lock.
+// The host instant a still-parked launch was issued at, or 0 if not parked.
 static int64_t caj_gpu_pending_host_launch(int64_t launchId) {
     int64_t v = 0;
     int i;
@@ -566,29 +473,16 @@ static int64_t caj_gpu_pending_host_launch(int64_t launchId) {
     return v;
 }
 
-// The launch the dispatcher should bracket, published for the duration of the
-// launch only. Thread-local for the same reason Vulkan's is: two threads may
-// be launching at once and a bracket belongs to exactly one of them.
+// The launch the dispatcher should bracket. Thread-local: two threads may be
+// launching at once, and a bracket belongs to exactly one of them.
 static __thread int64_t caj_gpu_cuda_current_launch;
 int64_t __cajeta_prof_cuda_current_launch(void) { return caj_gpu_cuda_current_launch; }
 
-// A finished bracket, claimed at EVENT tier — device event bracketing, which
-// is what a timestamp pair around a dispatch is, and one rung below the
-// DEVICE tier a vendor dispatch record earns.
+// A finished event bracket, at EVENT tier. Its duration is device-measured but
+// its placement is not, so the span is translated to sit inside [launch, now].
 void __cajeta_prof_cuda_bracket_resolved(int64_t launchId, int64_t devStartNs,
                                          int64_t devEndNs) {
-    // An event bracket measures a DURATION on the device and places it using a
-    // reference event whose completion was observed on the host — so unlike
-    // the duration, the placement carries the anchor's uncertainty. A kernel
-    // provably cannot begin before the launch that issued it, nor still be
-    // running after the query that reported it complete; when the placement
-    // says otherwise by less than the clock dispersion cap, the span is
-    // TRANSLATED — duration untouched — just far enough to sit inside that
-    // causal bracket. This is the same treatment the Vulkan bracket gets, and
-    // for the same reason: without it every span of a healthy run wears
-    // OUTSIDE_HOST, which teaches readers to ignore the one flag that exists
-    // to catch a genuinely sheared clock domain. An excursion the cap cannot
-    // explain IS such a shear, and stays where it is to be flagged.
+// Bounded by the dispersion cap: an excursion it cannot explain is a real shear.
     const int64_t lo    = caj_gpu_pending_host_launch(launchId);
     const int64_t hi    = __cajeta_currentTimeNanos();
     const int64_t slack = __cajeta_prof_clock_dispersion_cap();
@@ -607,63 +501,42 @@ void __cajeta_prof_cuda_bracket_resolved(int64_t launchId, int64_t devStartNs,
         caj_gpu_cuda_event_spans++;
 }
 
-// Either mechanism is a reason to take this backend: CUPTI when it is tracing,
-// the driver's own events otherwise. Neither is a reason to take it when the
-// profiler is not armed at all — the launch path checks that first.
+// CUPTI when it is tracing, the driver's own events otherwise.
 static int32_t caj_gpu_cuda_init(void) {
     return __cajeta_prof_cupti_tracing() || caj_gpu_cuda_events_armed;
 }
 
+// Stamp the host window and push the launch id as CUPTI's correlation id.
 static int32_t caj_gpu_cuda_begin(CajetaGpuEvent* ev) {
     ev->dev_start_ns = __cajeta_currentTimeNanos();
     ev->tier = CAJETA_PROF_TIER_HOST;
     __cajeta_prof_cupti_push(ev->launch_id);
-    // Published before the dispatch runs, so the bracket the dispatcher lays
-    // down carries the id this record will be resolved by — but ONLY when no
-    // vendor record is coming.
-    //
-    // The tier ladder is a precedence order, not a menu. When CUPTI is tracing,
-    // a DEVICE-tier dispatch record is on its way and is strictly better than
-    // an event bracket; letting both run means they RACE for the same parked
-    // launch, and the bracket wins, because it resolves at stream-sync time
-    // while the vendor record waits for a buffer flush. The launch then
-    // publishes at EVENT tier and the CUPTI record arrives to find nothing
-    // left to resolve — a silent downgrade that looks exactly like a
-    // correlation failure. Measured 2026-09-04, the first run in which both
-    // mechanisms worked at once: ext_correlation=9, unmapped=0, and still no
-    // device span.
+    // The tier ladder is a precedence order: while CUPTI is tracing, a better
+    // DEVICE-tier record is coming, and publishing the launch id too would let
+    // the event bracket race it for the same parked launch and downgrade it.
     caj_gpu_cuda_current_launch =
         (caj_gpu_cuda_events_armed && !__cajeta_prof_cupti_tracing())
             ? ev->launch_id : 0;
     return 1;
 }
 
-// Returns 0 for "I have taken this one" — the publish contract on
-// __cajeta_prof_gpu_launch, same as ROCm's.
+// Returns 0 for "I have taken this one" — __cajeta_prof_gpu_launch's contract.
 static int32_t caj_gpu_cuda_end(CajetaGpuEvent* ev) {
     ev->dev_end_ns = __cajeta_currentTimeNanos();
     __cajeta_prof_cupti_pop();
     caj_gpu_cuda_current_launch = 0;
-    // Park whenever SOMETHING will come back for it: a CUPTI activity record,
-    // or the event bracket the dispatcher just laid down. Parking for neither
-    // would hold a launch for a resolution that cannot arrive, and the drain
-    // would eventually publish it at host tier anyway — later and for nothing.
     if (!__cajeta_prof_cupti_tracing() && !caj_gpu_cuda_events_armed)
         return 1;   // no record and no bracket will come
     return caj_gpu_park(ev) ? 0 : 1;
 }
 
+// Flush CUPTI's records; whatever it did not claim goes out at host tier.
 static int32_t caj_gpu_cuda_collect(void) {
     __cajeta_prof_cupti_flush();
-    // Whatever the flush did not claim has waited long enough; its host window
-    // is still true, so it goes out at host tier rather than being held for a
-    // record that may never arrive.
     return caj_gpu_drain_pending();
 }
 
-// Records arrive already in the host domain, stamped by the timestamp callback
-// this backend registers before enabling any kind (§6.2, 12.2.b) — so there is
-// no after-the-fact fit to run here, exactly as for ROCm.
+// Records arrive in the host domain already, stamped by the timestamp callback.
 static int32_t caj_gpu_cuda_calibrate(void) { return 1; }
 
 static const CajetaGpuBackendVtbl caj_gpu_cuda_vtbl = {
@@ -671,44 +544,34 @@ static const CajetaGpuBackendVtbl caj_gpu_cuda_vtbl = {
     caj_gpu_cuda_collect, caj_gpu_cuda_calibrate
 };
 
-// ── Vulkan (Unit 13, spec §5.5) ───────────────────────────────────────────
-//
-// The mechanics live in cajeta_xpu_vulkan.c — the query pool is device state
-// and the dispatch path already owns the command buffer the bracket has to be
-// recorded into. What lives HERE is the seam contract: the launch parks like
-// a ROCm launch, and the dispatcher — which runs INSIDE the launch, on the
-// same thread — reads the launch id from TLS, brackets the dispatch, and
-// resolves the parked event at EVENT tier once the query pair reads back
-// available. A pair that never becomes available leaves the parked event to
-// drain at host tier, which is the §10.4 degradation, not a loss.
+// ── Vulkan ────────────────────────────────────────────────────────────────
+// The mechanics live in cajeta_xpu_vulkan.c; the seam contract lives here: the
+// launch parks, and the dispatcher resolves it at EVENT tier from the same thread.
 static __thread int64_t caj_gpu_vk_current_launch;
 
 int64_t __cajeta_prof_vk_current_launch(void) { return caj_gpu_vk_current_launch; }
 
 static int32_t caj_gpu_vk_init(void) { return __cajeta_prof_vk_timing_ok(); }
 
+// Stamp the host window; it is what is reported if the bracket never resolves.
 static int32_t caj_gpu_vk_begin(CajetaGpuEvent* ev) {
-    // The host window is filled either way, exactly as the ROCm backend does:
-    // it is what gets reported if the bracket never resolves.
     ev->dev_start_ns = __cajeta_currentTimeNanos();
     ev->tier = CAJETA_PROF_TIER_HOST;
     caj_gpu_vk_current_launch = ev->launch_id;
     return 1;
 }
 
-// The dispatcher's bracket result arrives while the launch is still INSIDE
-// __cajeta_prof_gpu_launch — before end_launch has parked the event — so it
-// cannot resolve through the pending table directly. It is held here (one
-// slot: the dispatch path is serialized by the submit mutex, and TLS makes
-// the slot this thread's own) and applied by end_launch right after the park.
+// The bracket lands while the launch is still inside __cajeta_prof_gpu_launch,
+// before the park, so it waits here — one slot, TLS — until end_launch applies it.
 static __thread struct {
     int64_t launch_id;
     int64_t start_ns;
     int64_t end_ns;
-    int32_t flags;      // §5.5.7's producer-only integrity flags
+    int32_t flags;      // producer-only integrity flags
     int32_t valid;
 } caj_gpu_vk_bracket;
 
+// Hand a finished query-pool bracket to the launch running on this thread.
 void __cajeta_prof_vk_bracket_resolved(int64_t launchId, int64_t devStartNs,
                                        int64_t devEndNs, int32_t flags) {
     caj_gpu_vk_bracket.launch_id = launchId;
@@ -718,6 +581,7 @@ void __cajeta_prof_vk_bracket_resolved(int64_t launchId, int64_t devStartNs,
     caj_gpu_vk_bracket.valid = 1;
 }
 
+// Returns 0 for "I have taken this one" — __cajeta_prof_gpu_launch's contract.
 static int32_t caj_gpu_vk_end(CajetaGpuEvent* ev) {
     ev->dev_end_ns = __cajeta_currentTimeNanos();
     caj_gpu_vk_current_launch = 0;
@@ -729,26 +593,13 @@ static int32_t caj_gpu_vk_end(CajetaGpuEvent* ev) {
         caj_gpu_vk_bracket.valid = 0;   // table full: host window goes out as-is
         return 1;
     }
-    // Park FIRST, then apply the bracket the dispatcher left: resolution goes
-    // through the pending table, so the event must be in it. The dispatch is
-    // synchronous, so on the happy path the bracket is already waiting here
-    // and the span resolves at EVENT tier before this function returns.
+// Park FIRST: resolution goes through the pending table, so it must be in it.
     if (caj_gpu_vk_bracket.valid) {
         caj_gpu_vk_bracket.valid = 0;
         int64_t s = caj_gpu_vk_bracket.start_ns;
         int64_t e = caj_gpu_vk_bracket.end_ns;
-        // Placement through the fitted clock mapping carries the fit's
-        // uncertainty. On a paired-calibration lane that is nanoseconds and
-        // this block never moves anything; on the bracket-calibrated lane
-        // (§6.8: no CLOCK_MONOTONIC domain) it is microseconds — wide enough
-        // to push a converted span a hair outside its causal bracket, which
-        // the first Windows run showed as OUTSIDE_HOST on every span. The
-        // dispatch is SYNCHRONOUS: the true execution provably lies inside
-        // [submit, now]. So the span is translated — duration untouched —
-        // just far enough to fit, bounded by the same dispersion cap the
-        // calibration samples were accepted under. An excursion the cap
-        // cannot explain is a real shear and stays where it was, to be
-        // flagged (§11.3).
+// Placement through the fitted clock mapping carries the fit's uncertainty; the
+// dispatch is synchronous, so translate into [submit, now], bounded by the cap.
         {
             const int64_t lo = ev->host_launch_ns;
             const int64_t hi = __cajeta_currentTimeNanos();
@@ -773,9 +624,8 @@ static int32_t caj_gpu_vk_end(CajetaGpuEvent* ev) {
     return 0;
 }
 
+// Nothing buffers: anything still parked has no bracket coming and goes out host.
 static int32_t caj_gpu_vk_collect(void) {
-    // Nothing buffers: the synchronous dispatch resolves in the launch
-    // epilogue. Anything still parked has no bracket coming.
     return caj_gpu_drain_pending();
 }
 static int32_t caj_gpu_vk_calibrate(void) { return 1; }
@@ -785,11 +635,8 @@ static const CajetaGpuBackendVtbl caj_gpu_vk_vtbl = {
     caj_gpu_vk_collect, caj_gpu_vk_calibrate
 };
 
-// §5.5.8 / §14.13 — the host blocked on vkQueueWaitIdle. An explicit span,
-// not a gap: the dispatcher hands over the wall interval it spent blocked,
-// and it is published as its own host-tier record so the reader sees "host
-// blocked on GPU" instead of having to notice an absence and rule out its
-// other causes. Returns 1 when published, 0 when profiling is unarmed.
+// The host blocked on vkQueueWaitIdle, published as its own host-tier span so a
+// reader sees it rather than an absence. 1 when published, 0 when unarmed.
 int32_t __cajeta_prof_vk_note_wait(int64_t queue, int64_t startNs,
                                    int64_t endNs) {
     if (__atomic_load_n(&g_gpu_sinks_live, __ATOMIC_ACQUIRE) == 0) return 0;
@@ -809,20 +656,13 @@ int32_t __cajeta_prof_vk_note_wait(int64_t queue, int64_t startNs,
     return 1;
 }
 
-// A backend whose SDK is not usable here degrades to host submit-to-complete
-// rather than to nothing (§5.1.4). The tier says so, so a consumer can weight
-// it (§5.6.6).
+// The vtable a backend id resolves to; an unusable SDK degrades to the host lane.
 static const CajetaGpuBackendVtbl* caj_gpu_vtbl_for(int32_t backend) {
     if (backend == CAJ_GPU_BACKEND_HIP
             && __cajeta_prof_rocm_state() == CAJETA_ROCM_READY)
         return &caj_gpu_rocm_vtbl;
-    // tracing(), not state(): a CUPTI that bound but has no activity kind
-    // enabled — or that degraded because something else subscribed first
-    // (§5.4.3) — will produce no records, so parking a launch for one would
-    // hold it for a record that cannot come.
-    // ... or when only the driver's events are available: that is the EVENT-tier
-    // fallback, and it is the common case, since CUPTI ships with the CUDA
-    // Toolkit while cuEventRecord ships with the driver.
+// tracing(), not state(): a CUPTI with no activity kind enabled produces no
+// records, so parking would hold a launch forever. Events are the fallback.
     if (backend == CAJ_GPU_BACKEND_CUDA
             && (__cajeta_prof_cupti_tracing() || caj_gpu_cuda_events_armed))
         return &caj_gpu_cuda_vtbl;
@@ -831,23 +671,19 @@ static const CajetaGpuBackendVtbl* caj_gpu_vtbl_for(int32_t backend) {
     return &caj_gpu_cpu_vtbl;
 }
 
-// What a given backend id actually resolved to, and at which tier. Both read
-// the SAME selector the launch path uses, rather than re-deriving it — a test
-// that asked a second implementation of the rule would pass while the launch
-// path did something else.
+// The name a backend id resolves to, through the SAME selector the launch uses.
 const char* __cajeta_prof_gpu_backend_name(int32_t backend) {
     const CajetaGpuBackendVtbl* v = caj_gpu_vtbl_for(backend);
     return v && v->name ? v->name : "";
 }
 
-// Drain a backend's buffered device records and publish what they claim. The
-// trace-end path calls it; so does anything that wants the device's answer
-// before the run is over. Backends with nothing buffered answer 0.
+// Drain a backend's buffered device records; backends with none answer 0.
 int32_t __cajeta_prof_gpu_collect(int32_t backend) {
     const CajetaGpuBackendVtbl* v = caj_gpu_vtbl_for(backend);
     return (v && v->collect) ? v->collect() : 0;
 }
 
+// The tier a backend id would claim, probed through its own begin_launch.
 int32_t __cajeta_prof_gpu_backend_tier(int32_t backend) {
     CajetaGpuEvent probe;
     const CajetaGpuBackendVtbl* v = caj_gpu_vtbl_for(backend);
@@ -859,10 +695,7 @@ int32_t __cajeta_prof_gpu_backend_tier(int32_t backend) {
 
 // ── the seam ──────────────────────────────────────────────────────────────
 
-// The innermost shadow frame — where the program was when it launched (§5.1.2).
-// Reads the same per-fiber shadow stack the sampler reads, so a launch and a
-// sample never disagree about the call site, and a fiber-launched kernel is
-// attributed to the fiber rather than to its carrier.
+// The innermost shadow frame: the same per-fiber stack the sampler reads.
 static void caj_gpu_call_site(CajetaGpuEvent* ev) {
     CajetaShadowFrame f;
     if (__cajeta_shadow_snapshot(&f, 1) == 1) {
@@ -872,17 +705,14 @@ static void caj_gpu_call_site(CajetaGpuEvent* ev) {
 }
 
 // The one place a dispatch becomes a record. `run` is the actual backend
-// dispatch; taking it as a thunk is what lets the launch chokepoint and the
-// tests drive IDENTICAL code, rather than the tests re-deriving the bookkeeping
-// against a seam that might never have been wired in.
+// dispatch, taken as a thunk so the launch chokepoint and the tests drive
+// identical code. Unarmed, this is one acquire load, a branch, and run().
 void __cajeta_prof_gpu_launch(const char* kernelName,
                               int32_t gridX, int32_t gridY, int32_t gridZ,
                               int32_t blockX, int32_t blockY, int32_t blockZ,
                               uint32_t sharedBytes, int64_t streamHandle,
                               int32_t deviceId, int32_t backend,
                               void (*run)(void*), void* runArg) {
-    // 7.1.e: unarmed is one acquire load and a branch, and the kernel still
-    // runs. Nothing is minted, nothing is stamped, nothing is stacked.
     if (__atomic_load_n(&g_gpu_sinks_live, __ATOMIC_ACQUIRE) == 0) {
         if (run) run(runArg);
         return;
@@ -904,24 +734,15 @@ void __cajeta_prof_gpu_launch(const char* kernelName,
     ev.host_launch_ns = __cajeta_currentTimeNanos();
     if (vt->begin_launch) vt->begin_launch(&ev);
     if (run) run(runArg);
-    // Stamped BEFORE end_launch so a backend that parks the event parks a
-    // complete one. It also keeps end_launch's own cost out of the window,
-    // which is the profiler's time and not the program's.
+// Stamped BEFORE end_launch, so a backend that parks the event parks a whole one.
     ev.host_return_ns = __cajeta_currentTimeNanos();
-    // end_launch returns 0 to say "I have taken this record and will publish it
-    // myself, later" — the ROCm backend does that while it waits for the device
-    // dispatch record that turns a host window into a device span. Any other
-    // answer, including no end_launch at all, publishes here.
+// end_launch returns 0 for "I have taken this record"; anything else publishes.
     if (vt->end_launch && vt->end_launch(&ev) == 0) return;
     __cajeta_prof_gpu_publish(&ev);
 }
 
 // ── the writer, as a sink ─────────────────────────────────────────────────
-//
-// The Perfetto writer registers like any other consumer. That is plan 7.3.b in
-// executable form: if the writer needed a privileged path, "adding a consumer
-// requires no change to any backend" would be a claim with one worked example
-// and no second.
+// The Perfetto writer registers like any other consumer, with no special path.
 static CajProfWriter g_gpu_writer;
 static CajGpuTracks  g_gpu_writer_tracks;
 static int32_t       g_gpu_writer_sink = -1;
@@ -934,25 +755,9 @@ static int32_t caj_gpu_writer_sink(const CajetaGpuEvent* recs, int32_t n, void* 
     return 0;
 }
 
-// ── 6.6 — capture, so a profiled run actually records GPU work ───────────
-//
-// Until this existed, CAJETA_PROFILER=1 armed the SAMPLER only. Nothing
-// registered a GPU sink, so a profiled run of a GPU program produced a
-// CPU-sampled trace with no device track, and Units 7 and 8 were reachable only
-// from tests that attached a writer by hand. `__cajeta_prof_shutdown` already
-// detached an attached GPU trace, which is how thoroughly the plumbing assumed
-// something on the other end.
-//
-// The events go into the SAME file as the samples, not a second one. §8.3 wants
-// host, fiber and device on one time axis and §8.8 wants that to be one file in
-// Perfetto with no export step — and §3.4 already settled the identical
-// question for instrumentation: "two files would make 'which tier produced this
-// number' a question about provenance the reader has to keep track of by hand."
-//
-// Which means buffering until drain. The ring is bounded and drops the OLDEST
-// on overflow, counting what it dropped — the same bargain the sampler's ring
-// makes, for the same reason: a profiler that grows without limit changes the
-// program it is measuring, and one that blocks changes it more.
+// ── capture ───────────────────────────────────────────────────────────────
+// GPU events go into the SAME file as the samples, so they buffer here until
+// the drain. Bounded, dropping the OLDEST and counting what it dropped.
 #define CAJ_GPU_CAPTURE_DEFAULT 8192
 
 static CajetaGpuEvent*  g_gpu_cap_ring = NULL;
@@ -962,6 +767,7 @@ static int64_t          g_gpu_cap_dropped = 0;
 static int32_t          g_gpu_cap_sink = -1;
 static pthread_mutex_t  g_gpu_cap_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// The capture sink: copy a delivered batch into the ring, oldest dropped first.
 static int32_t caj_gpu_capture_sink(const CajetaGpuEvent* recs, int32_t n, void* user) {
     (void) user;
     pthread_mutex_lock(&g_gpu_cap_lock);
@@ -976,11 +782,8 @@ static int32_t caj_gpu_capture_sink(const CajetaGpuEvent* recs, int32_t n, void*
     return 0;
 }
 
-// Armed from the same environment that arms the sampler, and early — §9.6 wants
-// arming before any backend initializes, which is what lets Unit 8's
-// rocprofiler configure hook find its window (it gates on
-// __cajeta_prof_gpu_is_armed(), so before this the hook never fired outside
-// tests).
+// Arm capture with a `cap`-record ring (0 = default). 0, -1 already armed, -3/-4
+// ring or sink failed. Runs before any backend init, which gates on is_armed().
 int32_t __cajeta_prof_gpu_capture_arm(int32_t cap) {
     if (g_gpu_cap_sink >= 0) return -1;
     if (cap <= 0) cap = CAJ_GPU_CAPTURE_DEFAULT;
@@ -991,14 +794,13 @@ int32_t __cajeta_prof_gpu_capture_arm(int32_t cap) {
     g_gpu_cap_dropped = 0;
     pthread_mutex_unlock(&g_gpu_cap_lock);
     if (!g_gpu_cap_ring) return -3;
-    // BATCHED: nothing is waiting on promptness, and per-record delivery would
-    // wake the delivery thread for every launch.
     g_gpu_cap_sink = __cajeta_prof_gpu_sink_register(caj_gpu_capture_sink, NULL,
                                                      CAJETA_GPU_SINK_BATCHED);
     if (g_gpu_cap_sink < 0) { free(g_gpu_cap_ring); g_gpu_cap_ring = NULL; g_gpu_cap_size = 0; return -4; }
     return 0;
 }
 
+// Unregister the capture sink and free the ring. Idempotent.
 void __cajeta_prof_gpu_capture_disarm(void) {
     if (g_gpu_cap_sink >= 0) {
         __cajeta_prof_gpu_sink_unregister(g_gpu_cap_sink);
@@ -1022,24 +824,14 @@ int64_t __cajeta_prof_gpu_capture_dropped(void) {
     return __atomic_load_n(&g_gpu_cap_dropped, __ATOMIC_ACQUIRE);
 }
 
-/**
- * Emit what was captured into an already-open writer, in launch order.
- *
- * Called from the sampler's drain so both halves land in one file. Collects the
- * device's outstanding records first: a launch parked waiting for its dispatch
- * record is still parked at exit, and without this its device span would be
- * dropped in favour of the host window it already had.
- */
+// Claim the device's outstanding records and deliver everything queued. Runs
+// BEFORE the metadata packet, which carries the backend's account of itself.
 void __cajeta_prof_gpu_capture_settle(void) {
-    // Claim the device's outstanding records and deliver everything queued.
-    // Separate from the emit, and called BEFORE the trace's metadata packet is
-    // written, because that packet carries the backend's account of itself
-    // (§5.2.2) — settling afterwards produced traces annotated rocm_records=0
-    // while 144 device spans sat in the same file.
     __cajeta_prof_gpu_collect(CAJ_GPU_BACKEND_HIP);
     __cajeta_prof_gpu_flush();
 }
 
+// Emit everything captured into an open writer, in launch order; settles first.
 int64_t __cajeta_prof_gpu_captured_to_trace(CajProfWriter* w, uint64_t ts) {
     (void) ts;
     __cajeta_prof_gpu_capture_settle();
@@ -1065,10 +857,7 @@ int64_t __cajeta_prof_gpu_captured_to_trace(CajProfWriter* w, uint64_t ts) {
     return packets;
 }
 
-// A run that dispatched to the GPU but collected no samples still measured
-// something. Mirrors __cajeta_prof_instr_only_to_trace, and exists for the same
-// reason: the sampler's drain returns early on an empty ring, so without this a
-// short GPU program profiles to an empty file.
+// Write a GPU-only trace to `path`; the sampler's drain skips an empty ring.
 int64_t __cajeta_prof_gpu_only_to_trace(const char* path) {
     if (__cajeta_prof_gpu_captured() <= 0 && __cajeta_prof_gpu_pending_count() <= 0) return 0;
     static CajProfWriter w;
@@ -1080,6 +869,7 @@ int64_t __cajeta_prof_gpu_only_to_trace(const char* path) {
     return packets;
 }
 
+// Open `path` and register the writer as a batched sink. 0, or a negative code.
 int32_t __cajeta_prof_gpu_trace_attach(const char* path) {
     if (g_gpu_writer_open) return -1;
     if (!__cajeta_prof_trace_open(&g_gpu_writer, path)) return -2;
@@ -1095,19 +885,14 @@ int32_t __cajeta_prof_gpu_trace_attach(const char* path) {
     return 0;
 }
 
+// Settle, write the run metadata, close the trace. Returns 1 if one was open.
 int32_t __cajeta_prof_gpu_trace_detach(void) {
     if (!g_gpu_writer_open) return 0;
-    // Claim what the device has finished, THEN publish whatever is still
-    // parked at host tier, THEN deliver. A launch waiting on a record that
-    // never came back is still a measurement, and dropping it at trace end
-    // would leave a hole where a kernel plainly ran.
+// Collect, THEN publish what is still parked at host tier, THEN deliver: a
+// launch whose record never came back is still a measurement.
     __cajeta_prof_gpu_collect(CAJ_GPU_BACKEND_HIP);
-    __cajeta_prof_gpu_flush();     // whatever is queued belongs in the file
-    // §7.8's run metadata, and with it the backend's own account of itself
-    // (§5.2.2). A GPU-only trace was previously written with no metadata packet
-    // at all, so a reader opening one had no way to tell a device-timed run
-    // from a degraded one — the two render identically. Written at detach
-    // rather than attach because the counters it carries are only final here.
+    __cajeta_prof_gpu_flush();
+// Written at detach, not attach: the counters it carries are final only here.
     __cajeta_prof_trace_metadata(&g_gpu_writer, 0, "gpu", 0, 0, 0, 0, 0);
     if (g_gpu_writer_sink >= 0) __cajeta_prof_gpu_sink_unregister(g_gpu_writer_sink);
     g_gpu_writer_sink = -1;

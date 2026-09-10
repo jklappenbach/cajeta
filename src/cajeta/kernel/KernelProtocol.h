@@ -1,25 +1,9 @@
-//
-// jupyter-kernel U5 (spec 3.1-3.4, 4.1-4.4) — the protocol verbs.
-//
-// This layer knows Jupyter and knows KernelSession. It does NOT know ZeroMQ:
-// every outbound message goes to a `Sink` tagged with its channel, so the
-// whole verb surface is exercisable in a test with a vector for a sink, and
-// the transport underneath it stays a thing that moves bytes.
-//
-// The ordering of what a request emits is protocol, not taste. An
-// `execute_request` publishes, in this order:
-//
-//   IOPub  status(busy)          — the frontend's spinner starts here
-//   IOPub  execute_input         — echo, so every frontend agrees on In[N]
-//   IOPub  stream*               — live, while the cell is still running
-//   IOPub  execute_result        — only when the cell HAS a unit result
-//   IOPub  error                 — only when it failed
-//   Shell  execute_reply         — ok/error, with the same execution_count
-//   IOPub  status(idle)          — spinner stops; the frontend may send more
-//
-// `status(idle)` last is what tells a frontend the kernel is free. Emitting
-// the reply after it makes cells appear to finish out of order.
-//
+// The Jupyter protocol verbs. Knows KernelSession, not ZeroMQ: every outbound message
+// goes to a channel-tagged `Sink`. The order an `execute_request` emits is protocol:
+//   IOPub status(busy), IOPub execute_input, IOPub stream*, IOPub execute_result
+//   (only with a unit result), IOPub error (only on failure), Shell execute_reply
+//   (same execution_count), then IOPub status(idle) LAST — that is what tells a
+//   frontend the kernel is free; replying after it makes cells finish out of order.
 #pragma once
 
 #include <functional>
@@ -35,9 +19,7 @@ namespace cajeta::kernel {
     class KernelProtocol {
     public:
         using Sink = std::function<void(Channel, const JupyterMessage&)>;
-        // Builds the JIT session. Injectable so a test can supply a stub, and
-        // so restart is "throw the old one away and call this again" rather
-        // than a second construction path.
+        // Builds the JIT session; injectable, so restart is just calling it again.
         using SessionFactory =
             std::function<std::unique_ptr<KernelSession>(std::string* error)>;
 
@@ -48,47 +30,31 @@ namespace cajeta::kernel {
 
         void setSessionFactory(SessionFactory factory);
 
-        // The project whose `cajeta.json` classpath cells compile against
-        // (spec 6). `cajeta kernel` sets this to its working directory —
-        // Jupyter launches a kernel in the notebook's own directory, so that
-        // is the project the user means. Applies to the next session built,
-        // so a restart picks up a manifest edited in the meantime.
+        // The project whose `cajeta.json` classpath cells compile against; `cajeta kernel`
+        // uses its cwd. Applies to the NEXT session, so a restart picks up manifest edits.
         void setProjectDir(std::string dir);
-        // The kernel's own session id, stamped into every header we
-        // originate. Distinct from the CLIENT's session, which rides in the
-        // parent header.
+        // The kernel's own session id, distinct from the CLIENT's in the parent header.
         void setSessionId(std::string id);
 
-        // Dispatch one verified inbound request. Unknown message types are
-        // ignored (the protocol's own rule): a kernel that faults on a verb
-        // it has not implemented cannot be extended by its frontend.
+        // Dispatch one verified inbound request; an unknown message type is ignored.
         void handle(Channel channel, const JupyterMessage& request);
 
-        // Set by `shutdown_request`. The transport polls this to leave its
-        // loop; `restartRequested` distinguishes a restart (fresh session,
-        // same process) from a stop.
+        // Polled by the transport to leave its loop; restart keeps the process alive.
         bool shutdownRequested() const;
         bool restartRequested() const;
 
-        // 1-based count of executes SEEN, failures included (spec 2.2).
+        // 1-based count of executes SEEN, failures included.
         int executionCount() const;
 
-        // Stop the running cell at its next safepoint (spec 5.1), if one is
-        // running. SAFE FROM ANOTHER THREAD, and it has to be: the transport
-        // answers `interrupt_request` on its IO thread precisely because the
-        // execution thread is busy inside the cell being interrupted. Only
-        // touches the session through KernelSession::requestInterrupt, which
-        // is itself documented as cross-thread safe.
+        // Stop the running cell at its next safepoint. SAFE FROM ANOTHER THREAD, and it
+        // has to be: the transport answers `interrupt_request` on its IO thread precisely
+        // because the execution thread is inside the cell being interrupted.
         void interrupt();
 
-        // Tear the session down and build a new one. `shutdown_request` with
-        // restart=true does this itself; the transport calls it when the
-        // frontend restarts out-of-band.
+        // Tear the session down and build a new one, for an out-of-band frontend restart.
         void restartSession();
 
-        // spec 3.1 — the `kernel_info_reply` content. Static because a
-        // frontend gets an answer before any session exists: kernel_info must
-        // not pay for a JIT.
+        // The `kernel_info_reply` content. Static, so it never pays for a JIT session.
         static dap::Json kernelInfo();
 
     private:

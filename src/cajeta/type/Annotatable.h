@@ -15,24 +15,9 @@ using namespace std;
 
 namespace cajeta {
 
-    // Captured value of a single annotation argument.
-    //
-    // Cajeta annotations carry typed literal arguments (`@Order(2)`,
-    // `@Component(name = "disk")`, `@Profile("prod")`,
-    // `@SuppressLint({"a", "b"})`). This struct holds one such value;
-    // an annotation with multiple arguments has multiple entries on
-    // its AnnotationInstance.
-    //
-    // `name` is the user-written parameter name, or empty for the
-    // single-unnamed-arg form (`@Order(2)`). Consumers look up by
-    // the conventional implicit name "value" — findArg treats an
-    // empty-name arg as matching the key "value" so call sites stay
-    // uniform regardless of which form the user wrote.
-    //
-    // The variant is open-coded (kind tag + per-shape storage) rather
-    // than std::variant to keep header-only inclusion simple and the
-    // accessors trivially inlinable. New kinds (nested annotation,
-    // class literal, enum constant) can be added when A2+ needs them.
+    // One captured annotation-argument value; an annotation with several arguments
+    // holds several. The variant is open-coded rather than std::variant to keep this
+    // header-only and the accessors inlinable.
     enum class AnnotationArgKind {
         Int64,
         String,
@@ -66,9 +51,8 @@ namespace cajeta {
 
         void addArg(AnnotationArg arg) { args.push_back(std::move(arg)); }
 
-        // Find an argument by name. `key == "value"` also matches an
-        // unnamed single-arg (the spec-side "no name" form) — call
-        // sites can read `findArg("value")` uniformly.
+        // `key == "value"` also matches the unnamed single-arg form, so call sites
+        // can read `findArg("value")` whichever way the user wrote it.
         const AnnotationArg* findArg(const string& key) const {
             for (auto& a : args) {
                 if (a.name == key) return &a;
@@ -77,11 +61,7 @@ namespace cajeta {
             return nullptr;
         }
 
-        // Typed accessors. Each returns a sentinel default when the
-        // requested arg is missing OR has the wrong kind, so consumers
-        // can call `getString("name")` without first checking findArg.
-        // Tests / call sites that need the absence-vs-wrong-type
-        // distinction should use findArg directly.
+        // Each falls back when the argument is missing OR of the wrong kind.
         string getString(const string& key = "value", const string& fallback = "") const {
             auto* a = findArg(key);
             return (a && a->kind == AnnotationArgKind::String) ? a->strVal : fallback;
@@ -94,10 +74,7 @@ namespace cajeta {
             auto* a = findArg(key);
             return (a && a->kind == AnnotationArgKind::Bool) ? a->boolVal : fallback;
         }
-        // Returns the captured type name (no `.class` suffix), or
-        // empty string if the arg is missing or not a class literal.
-        // Pointcut arguments — `@Before(Audited.class)` — capture as
-        // ClassRef with strVal = "Audited".
+        // The captured type name without the `.class` suffix, or empty.
         string getClassRef(const string& key = "value") const {
             auto* a = findArg(key);
             return (a && a->kind == AnnotationArgKind::ClassRef) ? a->strVal : string();
@@ -117,35 +94,22 @@ namespace cajeta {
 
     class Annotatable {
     protected:
-        // By-name set + ordered-name list. Preserved for the call
-        // sites (and tests) that only care whether an annotation is
-        // present, not its argument values.
+        // By-name set and ordered list, for call sites that only ask presence.
         set<QualifiedNamePtr> annotations;
         list<QualifiedNamePtr> annotationList;
-        // Captured instances with their argument values. Populated by
-        // the visitor in lockstep with addAnnotation when an
-        // annotation has arguments worth keeping. An annotation
-        // without arguments still appears here as an instance with an
-        // empty args vector, so findAnnotation works uniformly.
+        // Instances with their argument values, in lockstep with addAnnotation. An
+        // argument-less annotation still appears, so findAnnotation works uniformly.
         vector<AnnotationInstancePtr> annotationInstances;
-        // Lint rule IDs suppressed at this declaration via
-        // @SuppressLint(...). See docs/LintRules.md. Now
-        // derived from the captured AnnotationInstance for
-        // @SuppressLint, kept as a denormalized vector so the
-        // hot-path lint check (isLintSuppressed) is an O(N) scan
-        // over a tiny list, not a per-rule annotation-arg dispatch.
+        // Rule ids from @SuppressLint, denormalized out of the instance so the
+        // hot-path check is a scan of a tiny list, not an argument dispatch.
         vector<string> suppressedLints;
     public:
         Annotatable() { }
 
         Annotatable(set<QualifiedNamePtr>& src) {
-            // Mirror both containers: callers expect annotations and
-            // annotationList to be aligned (RTTI's
-            // createParameterType walks the list to build the LLVM
-            // type while createParameterConstant walks the set to
-            // build the initializer — a size mismatch trips the LLVM
-            // verifier with "Invalid size request on a scalable
-            // vector"). FormalParameter::fromContext takes this path.
+            // Both containers must stay aligned: RTTI builds the LLVM type from the
+            // list and its initializer from the set, and a size mismatch trips the
+            // verifier with "Invalid size request on a scalable vector".
             annotations.insert(src.begin(), src.end());
             for (auto& q : src) annotationList.push_back(q);
         }
@@ -161,9 +125,7 @@ namespace cajeta {
 
         list<QualifiedNamePtr>& getAnnotationList() { return annotationList; }
 
-        // Per-instance accessors. addAnnotationInstance ALSO calls
-        // addAnnotation so the by-name lookups stay consistent — call
-        // sites pick whichever shape they need.
+        // Also calls addAnnotation, so the by-name lookups stay consistent.
         void addAnnotationInstance(AnnotationInstancePtr inst) {
             if (inst && inst->getName()) {
                 addAnnotation(inst->getName());
@@ -175,11 +137,8 @@ namespace cajeta {
             return annotationInstances;
         }
 
-        // Look up an instance by short type name (e.g. "Component").
-        // Returns the first match — annotations are not repeatable
-        // in v1, so first-match equals only-match in practice.
-        // Matches on the short typeName so callers don't need to
-        // know what package a user-defined annotation lives in.
+        // By SHORT type name, so callers need not know the annotation's package;
+        // the first match, which is the only match while none are repeatable.
         AnnotationInstancePtr findAnnotation(const string& shortName) const {
             for (auto& a : annotationInstances) {
                 if (a && a->getName() && a->getName()->getTypeName() == shortName) {

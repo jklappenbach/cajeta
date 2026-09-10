@@ -1,24 +1,5 @@
-// Flavor model + composition.
-//
-// A `flavor:` entry on a build action is either:
-//
-//   1. A string — names a built-in (`release`, `debug`) OR a
-//      project-defined custom flavor declared in
-//      `settings.build.custom-flavors.<name>`.
-//   2. A map  — inline composition: `{ "base": "release",
-//      "debug-info": "full", "lto": true }`.
-//
-// Phase 5b shipped the resolver shape; Phase 8 adds:
-//   - Property vocabulary (typed key/value table from BuildTool.md
-//     "Property vocabulary").
-//   - Load-time validation: unknown property keys, custom-flavor
-//     cycles, and bad base references are hard errors at
-//     manifest-load (loadManifestString hooks this in).
-//   - Built-in property bundles for `release` + `debug`.
-//   - Effective-property materialisation: built-in defaults +
-//     chain overrides + inline overrides, in resolution order.
-//   - Compiler-flag emission so BuildAction can pass the resolved
-//     map through to the compiler.
+// Flavor model: a build action's `flavor:` is a built-in name, a custom-flavor
+// name, or an inline `{base, ...properties}` map. Vocabulary + resolver.
 
 #pragma once
 
@@ -33,97 +14,68 @@
 
 namespace cajeta::buildtool {
 
-    // The two built-in flavor names. Custom flavors must derive from
-    // a built-in (their `base` field must transitively resolve to one).
+    // The built-in flavors; every custom flavor's `base` chain must end in one.
     inline const std::set<std::string>& builtinFlavors() {
         static const std::set<std::string> s = {"release", "debug"};
         return s;
     }
 
-    // Property vocabulary entry — see BuildTool.md "Property
-    // vocabulary" for the source-of-truth table.
+    // One entry of the property vocabulary (BuildTool.md "Property vocabulary").
     struct FlavorPropertySpec {
         std::string key;
-        // EnumStringCsv: a comma-separated list whose every token must be in
-        // `allowed` (e.g. xpu-backend="amdgpu,vulkan,cpu" bundles several device
-        // targets in one build); lowers to the raw string, which the frontend
-        // CLI splits on commas.
-        // FreeString: any non-empty string, lowered verbatim (e.g. xpu-arch=
-        // gfx1151 / sm_89 / vulkan1.3 — an open device-arch set the build tool
-        // does not enumerate).
+        // EnumStringCsv: comma-separated, every token in `allowed`, lowered as
+        // the raw string. FreeString: any non-empty string, lowered verbatim.
         enum class Kind { Boolean, EnumString, EnumStringCsv, FreeString };
         Kind kind;
-        // Populated when kind == EnumString / EnumStringCsv; the closed set of
-        // accepted strings (per token for EnumStringCsv).
+        // The closed set of accepted strings; empty unless kind is an enum.
         std::vector<std::string> allowed;
-        // The compiler CLI flag this property lowers to (without the
-        // leading `--`), e.g. "bounds" for the "bounds-check" property.
-        // Empty when the property is build-flavor intent with no compiler
-        // frontend flag — sanitizers, strip-symbols — which are honored (or
-        // reserved) at the emit/link stage, not passed to the frontend.
-        // `toCompilerFlags` emits only the mapped ones.
+        // Compiler CLI flag without the leading `--`, empty when the property
+        // is honored at the emit/link stage instead; only mapped keys lower.
         std::string compilerFlag;
     };
 
-    // The full vocabulary. Indexed lookup goes through
-    // findFlavorPropertySpec; this is the canonical listing the
-    // error-citation builder consults.
+    // The canonical listing, in lowering order; lookup by key goes through
+    // findFlavorPropertySpec.
     const std::vector<FlavorPropertySpec>& flavorPropertyVocab();
 
     // Returns nullptr when the key isn't in the vocabulary.
     const FlavorPropertySpec* findFlavorPropertySpec(llvm::StringRef key);
 
-    // Property bundle for one of the two built-ins. Errors when
-    // `name` isn't a built-in.
+    // The default property bundle of a built-in; errors on any other name.
     llvm::Expected<llvm::json::Object> builtinFlavorProperties(
         llvm::StringRef name);
 
-    // Validate a (key, value) pair against the vocabulary. The error
-    // message carries `where` (e.g. "custom-flavors.integration" or
-    // "inline flavor") so the user can find the offending entry.
+    // Checks one (key, value) against the vocabulary. `where` is the site
+    // quoted back to the user, e.g. "custom-flavors.integration".
     llvm::Error validateFlavorProperty(
         llvm::StringRef key,
         const llvm::json::Value& value,
         llvm::StringRef where);
 
-    // Walk `settings.build.custom-flavors` at manifest-load time:
-    //   - every override key must be in the vocabulary (typos error)
-    //   - every value must match the property's type/enum
-    //   - every `base` chain must terminate in a built-in
-    //   - cycles in the chain are rejected
-    // Wired into loadManifestString.
+    // Rejects unknown keys, mistyped values, non-built-in base chains and cycles
+    // across `settings.build.custom-flavors`; called from loadManifestString.
     llvm::Error validateCustomFlavors(
         const llvm::json::Object& customFlavors);
 
+    // `base` is the built-in the compiler's `--mode` gets; `overrides` is the
+    // flat property map, custom-flavor chain first and the inline map last.
     struct ResolvedFlavor {
-        // The effective built-in flavor — what the compiler's
-        // `--mode` flag gets.
         std::string base;
-        // Property overrides composed in resolution order: custom-
-        // flavor chain (deepest first) → inline map (last, wins).
         llvm::json::Object overrides;
     };
 
-    // Resolve a `flavor:` JSON value against the project's
-    // `settings.build.custom-flavors` registry. Returns the effective
-    // base + flat override map. Also re-validates every override key
-    // and value (so inline-form callers get the same key-vocab
-    // enforcement as the load-time walk).
+    // Resolves a `flavor:` value against the custom-flavor registry, re-validating
+    // every override so inline callers meet the load-time walk's enforcement.
     llvm::Expected<ResolvedFlavor> resolveFlavor(
         const llvm::json::Value& flavorRef,
         const llvm::json::Object& customFlavors);
 
-    // Materialise the full property map for a resolved flavor:
-    // built-in defaults overlaid with `r.overrides`. This is what
-    // the compiler sees.
+    // The full map the compiler sees: built-in defaults under `r.overrides`.
     llvm::Expected<llvm::json::Object> effectiveProperties(
         const ResolvedFlavor& r);
 
-    // Emit `--<key>=<value>` flags from a property map. Booleans
-    // render as "true"/"false"; strings render as their raw value.
-    // Keys are emitted in vocabulary order so the argv string is
-    // deterministic (so the build-cache discriminator is stable
-    // across runs).
+    // Emits `--<key>=<value>` for each mapped property, in vocabulary order so
+    // the argv (and the build-cache discriminator it feeds) is deterministic.
     std::vector<std::string> toCompilerFlags(
         const llvm::json::Object& props);
 

@@ -1,30 +1,6 @@
-//
-// XPU MIR ops.
-//
-// The op set is intentionally small — MIR's job is to carry
-// structural metadata around kernel bodies (calling conv hints,
-// address-space-qualified types, launch-site records), not to be
-// a replacement for LLVM IR for general computation. Per-function
-// bodies still lower through the existing AST→LLVM visitor; MIR
-// ops appear only where the lowering needs an explicit decision
-// point that's different per backend.
-//
-// v1 op list (CajetaXPU.md §2 architecture diagram):
-//
-//   Op_Kernel             function entry; carries calling-conv hint
-//   Op_AddrSpaceCast      explicit cast between qualified types
-//   Op_ThreadId           leaf builtin for xpu.thread.{x,y,z}()
-//   Op_WorkgroupId        leaf builtin for xpu.workgroup.{x,y,z}()
-//   Op_WorkgroupDim       leaf builtin for xpu.workgroup.dim_{x,y,z}()
-//   Op_BarrierWorkgroup   portable workgroup barrier
-//   Op_BarrierWave        portable wave-level barrier
-//   Op_LaunchKernel       host-side launch site
-//   Op_StatusBufWrite     placeholder for xpu.kernel.fail(code)
-//
-// In step 4 these are bare data; steps 5-7 wire them into the
-// lowering visitors. Each op carries enough state for the printer
-// (step 4) to round-trip its kind + payload.
-//
+// XPU MIR ops. The set stays small on purpose: MIR carries structural metadata
+// around kernel bodies, not general computation — bodies still lower through the
+// AST visitor, and an op appears only where a backend needs its own decision.
 
 #pragma once
 
@@ -64,8 +40,7 @@ namespace mir {
         return "?";
     }
 
-    // Axis tag for ops that pick one of x/y/z (ThreadId,
-    // WorkgroupId, WorkgroupDim).
+    // Axis tag for the ops that pick one of x/y/z.
     enum class Axis : uint8_t { X = 0, Y = 1, Z = 2 };
 
     inline char axisLetter(Axis a) {
@@ -77,10 +52,8 @@ namespace mir {
         return '?';
     }
 
-    // Base op. Concrete ops derive from this and carry their per-
-    // kind payload. v1 keeps everything in one struct rather than
-    // a class hierarchy to make the printer trivial — the discriminant
-    // (kind) tells the consumer which payload fields are meaningful.
+    // One struct for every op rather than a hierarchy, to keep the printer
+    // trivial: `kind` tells a consumer which payload fields are meaningful.
     struct XpuMirOp {
         OpKind kind;
         Axis axis = Axis::X;                  // ThreadId/WorkgroupId/WorkgroupDim

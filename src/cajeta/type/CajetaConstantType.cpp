@@ -1,7 +1,3 @@
-//
-// CajetaConstantType — see header.
-//
-
 #include "CajetaConstantType.h"
 
 #include <algorithm>
@@ -18,13 +14,12 @@ namespace cajeta {
 
     int64_t CajetaConstantType::parseLiteral(
             CajetaParser::IntegerLiteralContext* ctx) {
-        // Mirror IntegerLiteralExpression::generateCode's radix handling.
+        // Radix handling mirrors IntegerLiteralExpression::generateCode.
         uint8_t radix = 10;
         size_t prefixLen = 0;
         if (ctx->BINARY_LITERAL()) { radix = 2;  prefixLen = 2; }   // "0b"/"0B"
         else if (ctx->HEX_LITERAL()) { radix = 16; prefixLen = 2; } // "0x"/"0X"
         else if (ctx->OCT_LITERAL()) { radix = 8;  prefixLen = 0; } // leading 0 ok for base-8
-        // else decimal
 
         std::string text = ctx->getText();
         if (prefixLen && text.size() >= prefixLen) {

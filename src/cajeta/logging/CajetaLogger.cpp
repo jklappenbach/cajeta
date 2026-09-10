@@ -1,7 +1,3 @@
-//
-// Created by James Klappenbach on 11/6/22.
-//
-
 #include "CajetaLogger.h"
 #include <glog/logging.h>
 #include <glog/log_severity.h>
@@ -9,6 +5,7 @@
 
 namespace cajeta {
     namespace {
+    // Emits one glog record at `severity`: source position, error id, message, token text.
     void logAt(google::LogSeverity severity, antlr4::ParserRuleContext* ctx,
         const string& sourcePath, const string& errorId, const string& message) {
         antlr4::Token* token = ctx->getStart();

@@ -19,7 +19,6 @@ namespace cajeta::buildtool {
                                           const std::string& organization) const {
         for (const auto& r : revoked) {
             if (r.id != keyId) continue;
-            // An entry with no organization applies to every document.
             if (r.organization.empty() || r.organization == organization) {
                 return &r;
             }
@@ -33,9 +32,7 @@ namespace cajeta::buildtool {
             const std::string& origin,
             std::time_t now,
             std::time_t seenIssuedAt) {
-        // Only the delegated keys verify. Building the verifier set from the
-        // delegation rather than taking one as a parameter is what makes a
-        // root signature unrepresentable here rather than merely discouraged.
+        // Only the delegated keys verify, which makes a root signature unrepresentable here.
         std::vector<RootKey> verifiers;
         for (const auto* k : delegation.usableKeys(now)) {
             verifiers.push_back(RootKey{k->id, k->publicKeyPem, false});
@@ -58,9 +55,7 @@ namespace cajeta::buildtool {
         auto* obj = body->getAsObject();
         if (!obj) return err("revocation statement: payload is not an object");
 
-        // Before any field is read, as with the delegation: a document of
-        // the wrong kind is refused as the wrong kind, not reported as a
-        // malformed one.
+        // Checked before any field is read: a wrong-kind document is refused as the wrong kind.
         auto type = obj->getString("type");
         if (!type || *type != kRevocationType) {
             return err("revocation statement: payload is not of type '"
@@ -94,9 +89,7 @@ namespace cajeta::buildtool {
         if (!expiry) return expiry.takeError();
         rev.notAfter = *expiry;
 
-        // An EMPTY array is a valid statement — "nothing is revoked as of
-        // issued-at" — and a different assertion from serving nothing. A
-        // missing array is not the same thing and is malformed.
+        // An EMPTY array is a valid statement — nothing revoked; a MISSING one is malformed.
         const auto* revoked = obj->getArray("revoked");
         if (!revoked) return err("revocation statement: no revoked list");
         for (const auto& v : *revoked) {
@@ -141,8 +134,7 @@ namespace cajeta::buildtool {
         auto caps = repo.capabilities();
         if (!caps) return caps.takeError();
         if (!caps->revocation) {
-            // Never advertised, so nothing is promised. Every other
-            // document degrades this way; this one degrades ONLY here.
+        // Never advertised, so nothing is promised: this document degrades only here.
             return std::optional<KeyRevocation>{};
         }
 
@@ -168,10 +160,8 @@ namespace cajeta::buildtool {
                        "has ever revoked.");
         }
 
-        // origin(), never name(). A manifest label differs per machine, so
-        // checking against it refuses every client that spells the
-        // repository differently — and revocation fails CLOSED, which makes
-        // that installs stopping rather than a warning.
+        // origin(), never name(): a manifest label differs per machine, and revocation
+        // fails CLOSED, so checking against it would stop every client that renames it.
         auto rev = loadKeyRevocation(**raw, *delegation, repo.origin(), now,
                                      seenIssuedAt);
         if (!rev) return rev.takeError();

@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 11/6/22.
-//
+// Exception for a variable that could not be created, carrying the name and cause.
 
 #pragma once
 

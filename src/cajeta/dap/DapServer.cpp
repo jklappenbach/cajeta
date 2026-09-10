@@ -34,11 +34,7 @@ Json makeResponse(int seq, int requestSeq, const std::string& command,
     r["request_seq"] = requestSeq;
     r["command"] = command;
     r["success"] = success;
-    // DAP's ErrorResponse puts the human-readable reason in a TOP-LEVEL
-    // `message`, and that is where clients look. We only ever set `body`, so a
-    // failed launch reached the IDE as the generic "request failed" while the
-    // real cause — "compile/JIT failed", a syntax error — sat in a body field
-    // nobody reads (Julian, 2026-07-31). Lift a plain-string body up.
+    // Clients read the reason from DAP's TOP-LEVEL `message`, not from `body`.
     if (!success && body.isString() && !body.asString().empty())
         r["message"] = body.asString();
     r["body"] = std::move(body);
@@ -85,16 +81,13 @@ Json variableJson(const cajeta::dbg::DbgVar& v, const std::string& renderedValue
     var["type"] = v.type;
     var["variablesReference"] = 0;
 
-    // Namespaced facet tags — the plugin's source of truth for the
-    // icon/color/strike rendering, and a textual affordance on their own.
     Json meta = Json::object();
     meta["alloc"] = cajeta::dbg::allocClassName(v.alloc);
     meta["ownership"] = cajeta::dbg::ownershipRoleName(v.ownership);
     meta["lifetime"] = cajeta::dbg::lifetimeStateName(v.lifetime);
     var["cajeta"] = std::move(meta);
 
-    // A moved-out binding is consumed: reading it is a language error, so it
-    // must not look editable. Map to the standard read-only attribute.
+    // A moved-out binding is consumed, so it must not look editable.
     if (v.lifetime == LifetimeState::MovedOut) {
         Json attrs = Json::array();
         attrs.push_back(std::string("readOnly"));
@@ -105,10 +98,8 @@ Json variableJson(const cajeta::dbg::DbgVar& v, const std::string& renderedValue
     return var;
 }
 
-// variable-inspection Unit 4: a child row (array element / object field). Unlike
-// a frame local it carries no facets — those are a property of a declared
-// binding, not of a slot reached by drilling. `ref` is 0 for a leaf, or a minted
-// aggregate handle for an expandable child.
+// One child row (element or field): no facets, since those belong to a declared
+// binding rather than a drilled slot. `ref` is 0 for a leaf, else an expansion handle.
 static Json childVariableJson(const std::string& name, const std::string& type,
                               const std::string& value, int ref,
                               bool isStatic = false) {
@@ -118,9 +109,6 @@ static Json childVariableJson(const std::string& name, const std::string& type,
     var["type"] = type;
     var["variablesReference"] = ref;
     if (isStatic) {
-        // runtime-type-inspection 4.1.2: the DAP presentation hint the plugin
-        // styles static rows by (italics etc.). Additive — a client that
-        // ignores presentationHint renders the row like any other.
         Json hint = Json::object();
         Json attrs = Json::array();
         attrs.push_back(Json("static"));
@@ -130,8 +118,7 @@ static Json childVariableJson(const std::string& name, const std::string& type,
     return var;
 }
 
-// variable-inspection Unit 6: one step of a simple evaluate path — a `.field`
-// or a `[index]`.
+// One step of a simple evaluate path — a `.field` or a `[index]`.
 namespace {
     struct PathStep {
         bool isField;
@@ -146,10 +133,9 @@ namespace {
         return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
     }
 
-    // Parse a bare identifier followed only by `.field` / `[digits]` segments
-    // (spec §7.2). Anything else — an operator, a call, whitespace inside, an
-    // assignment — returns false so the caller reports "unsupported" rather than
-    // guessing. Read-only by construction: it never evaluates, only navigates.
+    // Parse a bare identifier followed only by `.field` / `[digits]` segments into
+    // `root` + `steps`. Anything else returns false, so the caller says
+    // "unsupported" rather than guessing; this navigates, it never evaluates.
     bool parseSimplePath(const std::string& in, std::string& root,
                          std::vector<PathStep>& steps) {
         size_t a = 0, b = in.size();
@@ -173,28 +159,24 @@ namespace {
                 while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) i++;
                 if (i == ds || i >= s.size() || s[i] != ']') return false;
                 PathStep step{false, "", static_cast<size_t>(std::stoull(s.substr(ds, i - ds)))};
-                i++;   // consume ']'
+                i++;
                 steps.push_back(step);
             } else {
-                return false;   // operator / call / stray char → unsupported
+                return false;
             }
         }
         return true;
     }
 } // namespace
 
-// dap-stepping: chain-length accessor from the C runtime — a pure pointer
-// chase, cheap enough to run per candidate safepoint while a step is pending
-// (walkFrames would decode every local of every frame).
+// Chain length from the C runtime — a pointer chase cheap enough to run per safepoint.
 extern "C" int __cajeta_dbg_frame_depth(void* top);
-// 9.1: chain-containment probe (same pure pointer chase family).
+// Chain-containment probe, of the same pure pointer-chase family.
 extern "C" int __cajeta_dbg_frame_contains(void* top, void* node);
 
 namespace {
-// dap-stepping: the controller compares the step origin's "line" as an opaque
-// key. Fold the file into it so a coincidental line-number match in another
-// source file doesn't read as "same line" (the same-line skip is per
-// (file, line)). -1 = unknown loc; the masked hash can never produce it.
+// The step origin's "line" as an opaque key, with the file folded in so a line-number
+// match in another source cannot read as "same line". -1 = unknown loc.
 int lineKeyForLoc(int32_t locId) {
     const auto& table = globalDbgLocTable();
     if (locId < 0 || static_cast<size_t>(locId) >= table.size()) return -1;
@@ -206,9 +188,7 @@ int lineKeyForLoc(int32_t locId) {
 } // namespace
 
 namespace {
-// The running server's own executable path (Linux: /proc/self/exe). Empty
-// when unresolvable — identity checks then never refuse (fail-open: a
-// missing /proc must not brick debugging on exotic hosts).
+// The server's own executable path. Empty when unresolvable, so checks fail OPEN.
 std::string selfExePath() {
     std::error_code ec;
     auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
@@ -228,17 +208,8 @@ std::string diskIdentity(const std::string& path) {
                (long long) mtime.time_since_epoch().count());
 }
 
-// Step-decision trace: for each safepoint reached while a step was pending,
-// why it was accepted or rejected. Invaluable when stepping lands somewhere
-// unexpected — it is what settled the four-bug parallel step-over stack and
-// the template line attribution.
-//
-// OFF unless CAJETA_STEP_TRACE is set to something other than 0/empty. It
-// writes to stderr, which the IDE console paints red, so leaving it on buries
-// the user's own output under a flood of red diagnostics (reported live
-// 2026-07-22). The recording ring in DebugController is always armed — it is
-// bounded at 64 entries and drained here — so enabling the variable is enough
-// to get a trace, with no rebuild.
+// Is the step-decision trace on? OFF unless CAJETA_STEP_TRACE is set to something
+// other than 0/empty: it writes to stderr, which the IDE console paints red.
 bool stepTraceEnabled() {
     static const bool on = [] {
         const char* v = ::getenv("CAJETA_STEP_TRACE");
@@ -247,6 +218,7 @@ bool stepTraceEnabled() {
     return on;
 }
 
+// Print one stderr line per recorded step decision: loc, fiber, depth and verdict.
 void dumpStepTrace(
     const std::vector<cajeta::dbg::DebugController::StepDecision>& trace) {
     const auto& table = globalDbgLocTable();
@@ -281,16 +253,11 @@ bool DapServer::verifyCompilerIdentity(const Json& args, const Emit& emit,
         emit(makeResponse(seq_++, requestSeq, "initialize", false, Json(why)));
         return false;
     };
-    // Self-check: the on-disk binary changed under this running image
-    // (a compiler rebuild). First initialize snapshots; later ones compare.
     if (!now.empty()) {
         if (selfIdentityAtStart_.empty()) selfIdentityAtStart_ = now;
         else if (selfIdentityAtStart_ != now)
             return refuse("compiler binary changed on disk");
     }
-    // Client expectation: the binary the plugin LAUNCHED (or now intends).
-    // A different path means the compilerPath setting moved — this server
-    // is the wrong compiler entirely.
     const std::string expected = args.at("compilerPath").asString();
     if (!expected.empty() && !exe.empty()) {
         std::error_code ec;
@@ -306,14 +273,8 @@ DapServer::~DapServer() {
     drainToExit();
 }
 
-// End the debuggee cleanly from either exit — an explicit `disconnect`, or
-// destruction because the client vanished.
-//
-// Joining outright is wrong whenever the program is PARKED: nothing is left
-// to service its stop, so it waits for a resume that will never come and the
-// join never returns (the process hangs holding the terminal). Disarm every
-// stop source FIRST — a bare resume would only park again at the next armed
-// safepoint — then release the program and let it run to its own end.
+// End the debuggee cleanly from either exit — `disconnect`, or destruction when the
+// client vanished. Joining a PARKED program hangs, so disarm every stop source first.
 void DapServer::drainToExit() {
     if (!session_) return;
     auto& controller = session_->controller();
@@ -322,8 +283,6 @@ void DapServer::drainToExit() {
     controller.disarmEntry();
     controller.resume();
     // A stop already in flight when the arms were cleared can still park once.
-    // Nudge it, briefly, rather than assuming: the cost of being wrong here is
-    // a hang, and the cost of the extra resumes is nothing.
     const auto deadline = std::chrono::steady_clock::now()
                         + std::chrono::seconds(2);
     while (!session_->isFinished()
@@ -337,31 +296,21 @@ void DapServer::drainToExit() {
 void DapServer::runToStopOrExit(const Emit& emit) {
     if (!session_) return;
     using namespace std::chrono;
-    // Poll: the program either hits an armed safepoint (controller parks ->
-    // waitForStop returns) or runs to completion (isFinished). Short timeout
-    // so we notice termination promptly.
     while (true) {
         StopEvent ev;
         if (session_->controller().waitForStop(ev, milliseconds(50))) {
-            // CP5: snapshot the frame chain + locals while the carrier is
-            // parked (the chain is stable until we resume).
             auto frames = cajeta::dbg::walkFrames(ev.frameTop);
-            // CP6f: a conditional breakpoint whose condition is false does not
-            // stop — resume the carrier and keep running. The snapshot above is
-            // exactly what the condition needs (this frame's locals).
+            // A breakpoint whose condition is false does not stop: keep running.
             if (!shouldStopAt(ev, frames)) {
                 session_->controller().resume();
                 continue;
             }
             currentStop_ = ev;
             haveStop_ = true;
-            // CP6f-2b-ii: build the cross-thread frame table for this stop.
             rebuildFrameTable(std::move(frames));
             Json body = Json::object();
             if (stepTraceEnabled()
                 && ev.reason == cajeta::dbg::StopEvent::StopReason::Step) {
-                // The stopped chain itself: length + innermost functions. A
-                // depth=1 verdict beside a deep walk = detached chain.
                 auto walked = cajeta::dbg::walkFrames(ev.frameTop);
                 std::cerr << "[step-trace] STOP chain len=" << walked.size();
                 for (size_t i = 0; i < walked.size() && i < 3; ++i)
@@ -369,7 +318,6 @@ void DapServer::runToStopOrExit(const Emit& emit) {
                 std::cerr << "\n";
                 dumpStepTrace(session_->controller().drainStepTrace());
             }
-            // CP6f-3: reason reflects breakpoint vs exception vs step stop.
             switch (ev.reason) {
                 case cajeta::dbg::StopEvent::StopReason::Exception:
                     body["reason"] = "exception"; break;
@@ -380,20 +328,13 @@ void DapServer::runToStopOrExit(const Emit& emit) {
                 default:
                     body["reason"] = "breakpoint"; break;
             }
-            // CP6f-2b: the real stopped fiber id (0 = entry/main thread, >=1 a
-            // spawned fiber) instead of a hard-coded 1.
             body["threadId"] = static_cast<int>(ev.fiberId);
-            // CP6f-2d: only claim a full stop-the-world when the quiesce barrier
-            // confirmed every carrier parked. If some carrier was stuck (e.g. in
-            // a native call) it stays running, so allThreadsStopped is false and
-            // the client knows not every fiber's state is settled.
+            // Claim stop-the-world only if the barrier saw every carrier park.
             body["allThreadsStopped"] = (ev.unquiescedCarriers == 0);
             emit(makeEvent(seq_++, "stopped", std::move(body)));
             return;
         }
         if (session_->isFinished()) {
-            // A step that never landed leaves its evidence here — the step-stop
-            // dump above never runs when the program runs away instead.
             if (stepTraceEnabled()) {
                 auto trace = session_->controller().drainStepTrace();
                 if (!trace.empty()) {
@@ -422,7 +363,6 @@ bool DapServer::shouldStopAt(const StopEvent& stop,
                              const std::vector<cajeta::dbg::DbgFrameInfo>& frames)
                              const {
     if (conditions_.empty()) return true;
-    // Resolve the stopped loc to (file basename, line) and look up a condition.
     const auto& table = globalDbgLocTable();
     if (stop.locId < 0 || static_cast<size_t>(stop.locId) >= table.size())
         return true;
@@ -430,7 +370,6 @@ bool DapServer::shouldStopAt(const StopEvent& stop,
     std::string base = std::filesystem::path(loc.file).filename().string();
     auto it = conditions_.find({base, loc.line});
     if (it == conditions_.end() || it->second.empty()) return true;
-    // Evaluate against the innermost frame's locals (where the bp sits).
     if (frames.empty()) return true;
     std::string err;
     return cajeta::dbg::evaluateCondition(it->second, frames.front().locals,
@@ -456,9 +395,7 @@ void DapServer::rebuildFrameTable(
         for (auto& fr : stoppedFrames)
             frameTable_.push_back(FrameEntry{stoppedTid, std::move(fr)});
     } else if (currentStop_.locId >= 0) {
-        // CP4 fallback: no frame chain (a debug build without the CP5 frame
-        // codegen). Synthesize a single frame for the stopped thread from the
-        // loc table so stackTrace still shows where we are.
+        // No frame chain: synthesize one from the loc table so stackTrace still works.
         const auto& table = globalDbgLocTable();
         cajeta::dbg::DbgFrameInfo fr;
         if (static_cast<size_t>(currentStop_.locId) < table.size())
@@ -467,9 +404,7 @@ void DapServer::rebuildFrameTable(
         frameTable_.push_back(FrameEntry{stoppedTid, std::move(fr)});
     }
 
-    // Every other live fiber's chain. The carrier is parked at the stopped
-    // safepoint, so these chains are stable to walk (CP6f-2b). The stopped
-    // fiber is already in the registry; skip it to avoid a duplicate.
+    // Other fibers' chains are stable while the carrier is parked; skip the stopped one.
     if (session_) {
         for (const auto& f : session_->liveFibers()) {
             if (f.id == stoppedTid) continue;
@@ -491,10 +426,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         Json caps = Json::object();
         caps["supportsConfigurationDoneRequest"] = true;
         caps["supportsSetVariable"] = true;
-        // variable-inspection Unit 6: identifier/path evaluation, incl. hover.
         caps["supportsEvaluateForHovers"] = true;
-        // CP6f-3: advertise an "all throws" exception filter so the client can
-        // offer break-on-throw. Single filter for now (no type filtering yet).
         Json filter = Json::object();
         filter["filter"] = "all";
         filter["label"] = "All thrown exceptions";
@@ -503,17 +435,14 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         filters.push_back(std::move(filter));
         caps["exceptionBreakpointFilters"] = std::move(filters);
         emit(makeResponse(seq_++, requestSeq, command, true, caps));
-        // Tell the client we're ready for breakpoint configuration.
         emit(makeEvent(seq_++, "initialized", Json::object()));
         return true;
     }
 
     if (command == "launch") {
-        // Accept either the documented "entry-method" or "entryMethod".
         std::string entry = args.at("entry-method").asString();
         if (entry.empty()) entry = args.at("entryMethod").asString();
-        // Dotted form is what runJit wants; the doc uses "Class::method" too —
-        // normalize a single "::" to ".".
+        // runJit wants the dotted form; the docs also spell it "Class::method".
         auto pos = entry.find("::");
         if (pos != std::string::npos) entry = entry.substr(0, pos) + "."
                                             + entry.substr(pos + 2);
@@ -521,24 +450,16 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         launchOpts_.sourceRoot = args.at("sourceRoot").asString();
         if (launchOpts_.sourceRoot.empty())
             launchOpts_.sourceRoot = args.at("source-root").asString();
-        // fast-debug-launch 5.2.1: whole-program cache root. Absence (or
-        // empty) = unspecified = full compile — the same convention as `env`,
-        // so every pre-cache client keeps today's behavior.
         launchOpts_.cacheDir = args.at("cacheDir").asString();
         if (launchOpts_.cacheDir.empty())
             launchOpts_.cacheDir = args.at("cache-dir").asString();
-        // resident-debug-server 4.2.1: reuse the primed stdlib world across
-        // this server's sessions. Absence = off (one-shot behavior).
         launchOpts_.resident = args.at("resident").isBool()
                                    ? args.at("resident").asBool()
                                    : false;
         // DI profile for @Profile providers (absence = the compiler default).
         launchOpts_.profile = args.at("profile").asString();
-        // DI profile for @Profile providers (absence = the compiler default).
         launchOpts_.profile = args.at("profile").asString();
-        // Dependency archives for the launch (the JIT's --classpath). Absence
-        // = no dependencies, as every pre-feature client sends. Accepts an
-        // array of paths, or one comma-separated string like the CLI flag.
+        // The JIT's --classpath: an array of paths, or one comma-separated string.
         launchOpts_.classpath.clear();
         const Json& cp = args.at("classpath");
         if (cp.isArray()) {
@@ -558,10 +479,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             }
         }
         stopOnEntry_ = args.at("stopOnEntry").asBool();
-        // Environment (spec §4). Absence of "env" means UNSPECIFIED, not
-        // "empty environment" — every launch sent before this feature existed
-        // omits it, and reading that as an empty environment would blank the
-        // debuggee's. Same for the inherit flag, which defaults to on.
+        // Absence of "env" means UNSPECIFIED, not "empty": reading it as empty would
+        // blank the debuggee's. The inherit flag likewise defaults on.
         launchEnv_.clear();
         const Json& env = args.at("env");
         if (env.isObject())
@@ -570,9 +489,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         inheritSystemEnv_ = args.at("inheritSystemEnv").isBool()
                                 ? args.at("inheritSystemEnv").asBool()
                                 : true;
-        // variable-inspection §3.1.4: elements per page when expanding an array.
-        // A missing or non-positive value keeps the built-in default, so every
-        // pre-feature launch behaves unchanged.
+        // Elements per page when expanding an array; missing or <= 0 keeps the default.
         int reqPage = args.at("pageSize").asInt();
         if (reqPage <= 0) reqPage = args.at("page-size").asInt();
         if (reqPage > 0) pageSize_ = static_cast<size_t>(reqPage);
@@ -581,14 +498,10 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "setBreakpoints") {
-        // args.source.path + args.breakpoints[].line
         std::string path = args.at("source").at("path").asString();
         if (path.empty()) path = args.at("source").at("name").asString();
         std::string base = std::filesystem::path(path).filename().string();
-        // Whole-file REPLACE, per the DAP spec: drop this source's previous
-        // breakpoints (and their ids) before recording the new set. Appending
-        // left stale copies behind on every re-send — which the plugin does
-        // each time a breakpoint is added or removed mid-session.
+        // Whole-file REPLACE per the DAP spec, or a re-send leaves stale copies.
         std::vector<cajeta::jit::Breakpoint> dropped;
         for (size_t i = breakpoints_.size(); i-- > 0; ) {
             if (breakpoints_[i].file != base) continue;
@@ -602,14 +515,10 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         for (size_t i = 0; i < bps.size(); ++i) {
             int line = bps[i].at("line").asInt();
             breakpoints_.push_back(cajeta::jit::Breakpoint{base, line});
-            // CP6f: an optional condition (whole-file replace semantics — a
-            // bp without a condition clears any prior one for that loc).
             std::string cond = bps[i].at("condition").asString();
             if (!cond.empty()) conditions_[{base, line}] = cond;
             else conditions_.erase({base, line});
-            // Optimistic: nothing is compiled yet, so whether this location
-            // carries a safepoint is unknowable here. The id is what lets
-            // configurationDone come back and say otherwise.
+            // Optimistic: nothing is compiled, so configurationDone corrects this.
             const int id = nextBreakpointId_++;
             breakpointIds_.push_back(id);
             Json b = Json::object();
@@ -618,18 +527,9 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             b["line"] = line;
             verified.push_back(std::move(b));
         }
-        // Tell a LIVE session. `breakpoints_` is consumed exactly once — at
-        // configurationDone, by startDebugSession — so without this the edit
-        // above is bookkeeping the running program never hears about: a
-        // removed breakpoint keeps stopping and an added one never binds
-        // (Julian, 2026-08-31, on ArrayList.add). setExceptionBreakpoints
-        // below has always done this; line breakpoints got the registration
-        // half and not the live half.
-        //
-        // Disarm what this source dropped, then re-arm the CURRENT WHOLE set
-        // rather than just the new lines: locations match by file BASENAME +
-        // line, so two sources can share a locId, and disarming one file's
-        // breakpoint must not silently disarm another's.
+        // Tell a LIVE session: `breakpoints_` is consumed exactly once, at
+        // configurationDone, so the edit above would otherwise never reach it.
+        // Re-arm the CURRENT WHOLE set — two sources can share a locId by basename.
         if (session_) {
             auto& controller = session_->controller();
             for (const auto& bp : dropped)
@@ -647,11 +547,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "setExceptionBreakpoints") {
-        // CP6f-3: a non-empty `filters` array arms break-on-throw (single
-        // all-throws toggle for now — type filtering is a later cut). Whole-
-        // replace semantics: an empty array disarms. The desired state is
-        // recorded and applied to the controller once the session exists
-        // (configurationDone); if a session is already running, apply live.
+        // Non-empty arms break-on-throw, empty disarms; applied at configurationDone.
         const Json& filters = args.at("filters");
         exceptionsArmed_ = filters.size() > 0;
         if (session_) {
@@ -664,23 +560,13 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
 
     if (command == "configurationDone") {
         std::string err;
-        // The launch environment is applied through startDebugSession's
-        // beforeRun hook: after the build, before the program thread starts.
-        // The debuggee's first System.env.get therefore sees it (spec 4.1.3)
-        // while the in-process compile still runs under the real environment —
-        // which matters because an inheritSystemEnv=false configuration
-        // suppresses every undeclared variable, and the build needs PATH and
-        // friends. envScope_ remembers what it displaced and restores from its
-        // destructor (4.1.4).
+        // Applied in startDebugSession's beforeRun hook — after the build, before the
+        // program thread — so the compile still runs under the real environment.
         auto applyEnv = [this]() {
             if (!launchEnv_.empty() || !inheritSystemEnv_)
                 envScope_.apply(launchEnv_, inheritSystemEnv_);
         };
-        // fast-debug-launch 2.2.1: narrate the in-process compile as `output`
-        // events so a working launch never reads as a hang. buildJit runs on
-        // THIS thread inside startDebugSession, so emitting through `emit` is
-        // safe and ordered; the callback is cleared right after because it
-        // captures the stack-scoped `emit`.
+        // Narrated as `output` events so a working launch never reads as a hang.
         launchOpts_.onProgress = [this, &emit](const std::string& phase,
                                                const std::string& detail,
                                                int current, int total) {
@@ -697,13 +583,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                 line = detail == "cached" ? "cajeta: using cached build\n"
                                           : "cajeta: preparing JIT\n";
             if (line.empty()) return;
-            // This narration reaches the console over the DAP `output` channel,
-            // not over stderr — which is why it stayed prose while everything
-            // on the stream became records (Julian, 2026-07-31: "some output is
-            // in json, not all is"). Keep the DAP event (that is how a client
-            // is meant to receive progress) but carry a RECORD as its text when
-            // the flag is on, so the one console rendering both channels sees
-            // one format. Text mode is untouched.
+            // Keep the DAP `output` event, but carry a RECORD as its text under the
+            // json-progress flag, so one console renders both channels alike.
             if (cajeta::jsonProgressEnabled()) {
                 while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
                     line.pop_back();
@@ -723,8 +604,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             body["output"] = std::move(line);
             emit(makeEvent(seq_++, "output", std::move(body)));
         };
-        // CP6f-3: arm break-on-throw inside startDebugSession (before the
-        // program thread starts) so an immediate throw can't race past it.
+        // Armed before the program thread starts, so an immediate throw can't race it.
         session_ = cajeta::jit::startDebugSession(launchOpts_, breakpoints_,
                                                   &err, exceptionsArmed_,
                                                   stopOnEntry_, applyEnv);
@@ -733,8 +613,6 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         if (ok) {
             Json body = Json::object();
             body["category"] = "console";
-            // Same channel, same rule as the phase narration above: a record
-            // under the flag, the identical line without it.
             if (cajeta::jsonProgressEnabled()) {
                 Json rec = Json::object();
                 rec["kind"] = std::string("progress");
@@ -746,10 +624,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                 body["output"] = "cajeta: compile finished\n";
             }
             emit(makeEvent(seq_++, "output", std::move(body)));
-            // The program is compiled, so the loc table now says which
-            // breakpoints can actually bind. Downgrade the ones that matched
-            // no safepoint: without this the IDE shows them as armed and the
-            // run just ends with no explanation (Julian, 2026-07-31).
+            // Downgrade breakpoints the loc table matched to no safepoint, or the IDE
+            // shows them armed and the run just ends with no explanation.
             for (size_t i = 0; i < breakpoints_.size(); ++i) {
                 if (!cajeta::jit::matchingLocIds(breakpoints_[i]).empty())
                     continue;
@@ -757,8 +633,6 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                 if (i < breakpointIds_.size()) bp["id"] = breakpointIds_[i];
                 bp["verified"] = false;
                 bp["line"] = breakpoints_[i].line;
-                // Carry the source too: the client correlates by (file, line)
-                // without having to remember the ids it was handed.
                 Json bpSrc = Json::object();
                 bpSrc["name"] = breakpoints_[i].file;
                 bpSrc["path"] = breakpoints_[i].file;
@@ -772,11 +646,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                 ev["breakpoint"] = std::move(bp);
                 emit(makeEvent(seq_++, "breakpoint", std::move(ev)));
             }
-            // dap-stepping: give the controller its depth/line seams. Depth is
-            // the carrier's own frame-chain length at the safepoint (the
-            // carrier is executing the chase, so the chain is stable); line is
-            // the (file, line) key. Only consulted while a step is pending,
-            // and depth only once the line already differs.
+            // The controller's depth/line seams, read only while a step is pending.
             session_->controller().setStepProviders(
                 [](void* frameTop) { return __cajeta_dbg_frame_depth(frameTop); },
                 [](int32_t locId) { return lineKeyForLoc(locId); },
@@ -791,18 +661,11 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "threads") {
-        // CP6f-2b: the program/entry thread is always id 0 ("main"); each live
-        // fiber from the JIT registry is an additional thread keyed by its
+        // The entry thread is always id 0 ("main"); every live fiber is keyed by its
         // stable dbg id.
-        //
-        // FIXME(CP6f-2d, specs/archive/carrier-quiesce-spec.md): this enumeration
-        // is NOT yet safe under the multi-carrier scheduler. Only the carrier
-        // that hit the breakpoint is parked (DebugController::onSafepoint blocks
-        // one thread); the other __cajeta_carriers[] keep running fibers, so the
-        // registry can be mutated (register/unregister) concurrently while we
-        // walk it, and liveFibers() reads count() then at(i) with the registry
-        // lock released between calls (a TOCTOU). Correct behavior needs
-        // cross-carrier stop-the-world quiesce before inspection.
+        // FIXME(CP6f-2d, specs/archive/carrier-quiesce-spec.md): NOT safe under the
+        // multi-carrier scheduler — only the stopping carrier parks, so the fiber
+        // registry can mutate while this walks it (liveFibers() is a TOCTOU).
         Json threads = Json::array();
         Json main = Json::object();
         main["id"] = 0;
@@ -823,11 +686,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "stackTrace") {
-        // CP6f-2b-ii: return the slice of the per-stop frame table belonging to
-        // the requested thread. frameId is the GLOBAL monotonic index into the
-        // table (stable for this stop, spanning all threads). A missing threadId
-        // defaults to the stopped thread (the existing single-thread tests pass
-        // none; the stopped thread there is id 0).
+        // The slice of the per-stop frame table for the requested thread. frameId is a
+        // GLOBAL index into that table, and a missing threadId means the stopped one.
         const int stoppedTid = static_cast<int>(currentStop_.fiberId);
         const int threadId =
             args.has("threadId") ? args.at("threadId").asInt() : stoppedTid;
@@ -871,10 +731,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "scopes") {
-        // One "Locals" scope per frame. frameId is a global frameTable_ index;
-        // we mint an opaque variablesReference handle (>=1) for it. The client
-        // round-trips that handle to `variables`/`setVariable` — no arithmetic
-        // relationship to frameId.
+        // One "Locals" scope per frame; the minted reference is opaque, not a frameId.
         int frameId = args.at("frameId").asInt();
         Json scopes = Json::array();
         if (frameId >= 0 && static_cast<size_t>(frameId) < frameTable_.size()) {
@@ -898,17 +755,14 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         // The bridge needs the live DataLayout; it only exists while stopped.
         const bool haveDl = session_ != nullptr;
 
-        // Case A: a frame's Locals scope. Each local is rendered through the
-        // bridge (String text, array/object summaries — replacing the old
-        // <type@ptr>), and an aggregate local carries a fresh expansion handle.
+        // Case A: a frame's Locals scope; an aggregate local gets an expansion handle.
         auto it = varRefToFrame_.find(ref);
         if (it != varRefToFrame_.end() &&
                 static_cast<size_t>(it->second) < frameTable_.size()) {
             for (const auto& v : frameTable_[it->second].info.locals) {
                 std::string rendered = cajeta::dbg::formatValue(v.type, v.addr);
                 int childRef = 0;
-                // A moved-out binding is consumed: never deep-decode it (the
-                // instance may be gone). Keep the shallow render and no children.
+                // A moved-out binding is consumed: never deep-decode it.
                 const bool consumed =
                     v.lifetime == cajeta::dbg::LifetimeState::MovedOut;
                 std::string shownType = v.type;
@@ -917,10 +771,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                                             &session_->resolvedTypeSymbols());
                     auto dec = insp.inspect(v.type, v.addr);
                     rendered = dec.summary;
-                    // The type COLUMN shows the runtime type (runtime-type-
-                    // inspection §2.1.5); expansion handles keep the declared
-                    // name — the bridge re-narrows on every decode, so a
-                    // mutated slot never serves a stale narrowing.
+                    // The COLUMN shows the runtime type; handles keep the declared one.
                     shownType = insp.runtimeType(v.type, v.addr);
                     if (dec.kind == cajeta::dbg::ValueKind::Aggregate)
                         childRef = mintAggregateRef(v.type, v.addr);
@@ -932,9 +783,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             }
         }
 
-        // Case B: an aggregate-expansion handle — array elements or object
-        // fields, one page at a time. A remaining count becomes a "more" node
-        // that carries a handle resuming at the next offset.
+        // Case B: an expansion handle, one page at a time; a remainder is a "more" node.
         auto ait = varRefToAggregate_.find(ref);
         if (haveDl && ait != varRefToAggregate_.end()) {
             const AggregateRef ag = ait->second;  // copy: the map may re-hash.
@@ -988,10 +837,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             }
         }
 
-        // variable-inspection Unit 5: a child reached by expansion — an array
-        // element ("[i]") or object field — resolved through the aggregate
-        // handle. Only a primitive leaf is writable; writeValue itself refuses a
-        // non-primitive target, so a String/object/array child is read-only.
+        // A child reached by expansion; writeValue refuses any non-primitive target.
         auto ait = varRefToAggregate_.find(ref);
         if (!ok && session_ && ait != varRefToAggregate_.end()) {
             const AggregateRef ag = ait->second;
@@ -1018,12 +864,9 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "evaluate") {
-        // variable-inspection Unit 6 (spec §7): resolve a bare identifier or a
-        // simple `.field`/`[i]` path against the frame's locals, decode it
-        // through the bridge, and return its value plus an expansion reference
-        // when it is an aggregate. Read-only — it navigates, never evaluates a
-        // call or operator. An unparsable expression is "unsupported"; a name
-        // that doesn't resolve is "not available" — both handled, never a crash.
+        // Resolve a bare identifier or a simple `.field`/`[i]` path against the
+        // frame's locals and decode it. Read-only: it navigates, never evaluates.
+        // Unparsable is "unsupported"; unresolved is "not available".
         const std::string expr = args.at("expression").asString();
         const int fid = args.has("frameId") ? args.at("frameId").asInt() : 0;
 
@@ -1070,7 +913,6 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                     }
                 }
             } else {
-                // One element window at the requested index.
                 auto page = insp.children(curType, curAddr, step.index, 1);
                 const std::string want = "[" + std::to_string(step.index) + "]";
                 for (const auto& c : page.children) {
@@ -1112,9 +954,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "next" || command == "stepIn" || command == "stepOut") {
-        // dap-stepping spec §3: only valid against the currently stopped
-        // fiber. While running (or after termination) fail with a message —
-        // never crash, never disturb the session.
+        // Only valid against the stopped fiber: otherwise fail with a message.
         if (!session_ || terminated_ || !haveStop_) {
             emit(makeResponse(seq_++, requestSeq, command, false,
                               Json(std::string("cannot step: no stopped "
@@ -1132,9 +972,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                      ": the stopped thread is " + std::to_string(stoppedTid))));
             return true;
         }
-        // Origin: the stopped fiber's frame count and (file, line) key. An
-        // exception stop has locId -1 — its line comes from the innermost
-        // frame's recorded current loc.
+        // Origin: frame count + (file, line). An exception stop has locId -1, so its
+        // line comes from the innermost frame's recorded loc.
         int originDepth = 0;
         int32_t originLoc = currentStop_.locId;
         for (const auto& fe : frameTable_) {
@@ -1157,20 +996,10 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "disconnect" || command == "terminate") {
-        // Let the program finish if it's parked, and disarm first so it
-        // cannot park again on the way out (join also detaches handlers +
-        // the active controller).
         drainToExit();
-        // The program thread has joined, so nothing can read the environment
-        // any more: put back what the launch displaced (spec 4.1.4). The scope
-        // also restores from its destructor, which covers the abnormal exits
-        // that never reach this line.
+        // The program thread has joined, so put back what the launch displaced.
         envScope_.restore();
-        // Resident lifecycle (resident-debug-server 1.2.1): this ends the
-        // SESSION, not the process — reset every per-session member so the
-        // next initialize/launch starts exactly like a fresh process would.
-        // The PROCESS ends at stdin EOF (run()'s read loop) or on the
-        // launcher killing it; a lingering idle server costs only memory.
+        // Ends the SESSION, not the process: reset every per-session member. EOF ends run().
         session_.reset();
         launchOpts_ = cajeta::jit::JitRunOptions{};
         stopOnEntry_ = false;
@@ -1210,11 +1039,8 @@ int DapServer::run(std::istream& in, std::ostream& out) {
 }
 
 namespace {
-// Raw fd primitives, spelled per platform. The stdout-pump below owns the
-// debuggee's stdout on a pipe and re-frames it as DAP `output` events so the
-// program's prints never corrupt the protocol channel — and it must run on
-// Windows too (without it, the debuggee's bytes land inline in the protocol
-// stream). MinGW exposes the same calls under `_`-prefixed names in <io.h>.
+// Raw fd primitives, per platform (MinGW spells them `_`-prefixed in <io.h>). The pump
+// below owns the debuggee's stdout so its prints never corrupt the protocol channel.
 #ifdef _WIN32
 inline int rawDup(int fd)                       { return ::_dup(fd); }
 inline int rawDup2(int from, int to)            { return ::_dup2(from, to); }
@@ -1233,11 +1059,9 @@ inline long rawRead(int fd, void* p, size_t n)  { return ::read(fd, p, n); }
 constexpr int kStdoutFd = STDOUT_FILENO;
 #endif
 
-// Write-only streambuf over a raw fd. Replaces __gnu_cxx::stdio_filebuf, which
-// is a libstdc++ extension: libc++ (macOS) has no <ext/stdio_filebuf.h>, so the
-// old include broke the aarch64-apple-darwin build outright. Writing the
-// protocol through a raw fd also keeps DAP's `\r\n` framing exact on Windows,
-// where a text-mode FILE* would rewrite `\n` to `\r\n`.
+// Write-only streambuf over a raw fd, replacing __gnu_cxx::stdio_filebuf — a libstdc++
+// extension libc++ (macOS) does not have. A raw fd also keeps DAP's `\r\n` framing
+// exact on Windows, where a text-mode FILE* would rewrite `\n`.
 class FdOutBuf : public std::streambuf {
 public:
     explicit FdOutBuf(int fd) : fd_(fd) {}
@@ -1274,18 +1098,9 @@ int DapServer::runOverStdio() {
         // fd 1 now feeds the pump; the protocol owns a private descriptor.
         rawDup2(pfd[1], kStdoutFd);
         rawClose(pfd[1]);
-        // The debuggee prints through FILE* stdout, and libc picks its
-        // buffering from what fd 1 IS at first use: a TTY gets line
-        // buffering, a PIPE gets 4KB block buffering. Redirecting to the
-        // pump turned it into a pipe, so output sat in the buffer instead of
-        // reaching the console until the buffer filled or the process ended
-        // (live 2026-07-22: tour printed nothing to the Console). Force line
-        // buffering before any I/O touches the stream — the JIT runs
-        // in-process, so this is the same stdout the debuggee uses.
-        // Windows has no true line buffering (_IOLBF is treated as full
-        // buffering), which would strand the debuggee's prints in the FILE*
-        // buffer until process exit and race the detached pump; go unbuffered
-        // there so each write reaches the pipe while the pump is still reading.
+        // libc picks stdout's buffering from what fd 1 IS at first use, and it is now
+        // a pipe (4KB block), which would strand the debuggee's prints. Force line
+        // buffering — unbuffered on Windows, where _IOLBF means full buffering.
 #ifdef _WIN32
         ::setvbuf(stdout, nullptr, _IONBF, 0);
 #else
@@ -1294,10 +1109,7 @@ int DapServer::runOverStdio() {
         static FdOutBuf protoBuf(protoFd);
         static std::ostream protoStream(&protoBuf);
 
-        // Pump: everything the debuggee (or stray host code) prints becomes
-        // a DAP output event, category "stdout" — frame-atomic under the
-        // emit lock. Detached: it blocks in read() for the process lifetime
-        // (our own fd 1 keeps the pipe writable, so no EOF before exit).
+        // Everything printed becomes a DAP output event, frame-atomic under the lock.
         int rd = pfd[0];
         std::thread([this, rd]() {
             char buf[4096];

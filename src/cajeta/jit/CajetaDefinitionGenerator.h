@@ -1,16 +1,8 @@
 #pragma once
 
-// lazy-codegen 2.2.1 (spec 3.1, 3.2) — resolve a missing symbol by generating
-// the body the eager loop would have emitted.
-//
-// Split deliberately in two: `resolve()` is the decision (which of these
-// symbols are ours?) and is plain, testable code; `tryToGenerate` is a thin ORC
-// adapter over it. The decision is where the bugs live — claiming a symbol we
-// cannot emit turns a clean fall-through into a failed materialization.
-//
-// ORC serializes entry per generator object only (Core.h: a mutex, an InUse
-// flag, a PendingLookups deque). Cross-generator serialization — several
-// generators, one compiler world — is the CompilerGate below.
+// Resolve a missing symbol by generating the body the eager loop would have
+// emitted. `resolve()` holds the decision and is plain testable code, with
+// `tryToGenerate` a thin ORC adapter; cross-generator entry is CompilerGate's job.
 
 #include "cajeta/jit/CajetaSymbolIndex.h"
 #include "cajeta/method/Method.h"
@@ -27,28 +19,19 @@
 
 namespace cajeta {
 
-    // 2.2.2 — one thread inside the compiler at a time, PROCESS-WIDE. ORC
-    // serializes tryToGenerate per generator object; a process holds several
-    // generators but one compiler world (canonicalMap, active module,
-    // substitution stack). Recursive, because emitting a body can re-enter a
-    // lookup on the same thread — still single-threaded, and a plain mutex
-    // would deadlock the session at the first cascade (spec 3.4).
+    // One thread inside the compiler at a time, PROCESS-WIDE (ORC serializes only
+    // per generator). Recursive, since emitting a body can re-enter a lookup.
     class CompilerGate {
     public:
         static CompilerGate& instance();
 
         void run(const std::function<void()>& fn);
 
-        // True while the calling thread is inside run().
         static bool heldByThisThread();
 
-        // Observation, so tests ASSERT the discipline instead of trusting the
-        // mutex: the most threads ever seen inside at once.
         size_t maxThreadsObserved() const { return maxInside.load(); }
         void resetObservation() { maxInside.store(0); }
 
-        // Counts without locking — the control that proves the observation can
-        // see concurrency, so maxThreadsObserved()==1 is never vacuous.
         void runUngatedForTest(const std::function<void()>& fn);
 
     private:
@@ -61,9 +44,8 @@ namespace cajeta {
 
     class CajetaDefinitionGenerator : public llvm::orc::DefinitionGenerator {
     public:
-        // Add a finished snapshot to the JIT. Host-supplied — the kernel and
-        // the JIT host add modules differently; emission itself (which body,
-        // how it is packaged) is the generator's job, not the host's.
+        // Host-supplied: how a finished snapshot reaches the JIT. What to emit stays
+        // the generator's job.
         using DeliverFn = std::function<llvm::Error(llvm::orc::ThreadSafeModule,
                                                     llvm::orc::JITDylib&)>;
 
@@ -71,10 +53,8 @@ namespace cajeta {
                                            DeliverFn deliver = nullptr)
             : index(index), deliver(std::move(deliver)) {}
 
-        // The methods this generator will emit for `symbols`. Empty when lazy
-        // emission is off, so Unit 2 is inert until Unit 4 flips the default.
-        // A symbol we do not know is silently not ours — that is an ordinary
-        // fall-through, not an error.
+        // The methods this generator will emit for `symbols`; empty when lazy emission
+        // is off. An unknown symbol is not ours: a fall-through, not an error.
         std::vector<MethodPtr> resolve(
             const std::vector<std::string>& symbols) const;
 
@@ -93,9 +73,7 @@ namespace cajeta {
         // All guarded by the CompilerGate — only one thread emits at a time.
         size_t generated = 0;
         long long emitNs = 0;
-        // Thread_local IR variables already served for an __emutls_v./_t.
-        // lookup: one delivery defines both object symbols, so the sibling
-        // must not deliver a second copy.
+        // One delivery defines both __emutls_v./_t.; the sibling must not repeat it.
         std::set<std::string> servedEmutls;
     };
 

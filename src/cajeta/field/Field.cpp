@@ -1,7 +1,3 @@
-//
-// Created by James Klappenbach on 2/20/22.
-//
-
 #include "Field.h"
 #include "StackField.h"
 #include "../type/CajetaType.h"
@@ -16,6 +12,7 @@ namespace cajeta {
         this->type = CajetaType::of(alloc);
     }
 
+    // Builds one Field per declarator in a field-declaration context.
     list<FieldPtr> Field::fromContext(CajetaParser::FieldDeclarationContext* ctx, CajetaModulePtr module) {
         list<FieldPtr> fields;
         CajetaTypePtr type = CajetaType::fromContext(ctx->typeType(), module);

@@ -9,8 +9,7 @@
 #include <iostream>
 #include <string>
 
-// Stamped globally at configure time (top-level CMakeLists.txt); the
-// fallbacks mirror main.cpp so a bare build still produces a marker.
+// Stamped at configure time; the fallbacks mirror main.cpp so a bare build still produces a marker.
 #ifndef CAJETA_VERSION
 #define CAJETA_VERSION "0.0.0-unknown"
 #endif
@@ -45,9 +44,6 @@ namespace cajeta {
             return 0;
         }
 
-        // JSON string escaping for the marker. Version/hash strings are
-        // configure-time constants, but a fork's VERSION file could hold
-        // anything printable.
         std::string jsonEscape(const std::string& s) {
             std::string out;
             out.reserve(s.size());
@@ -72,9 +68,7 @@ namespace cajeta {
                 return 1;
             }
 
-            // Write each embedded source to <dir>/<relativePath>. Existing
-            // extracted files are overwritten (re-extraction refreshes them);
-            // nothing else in the target directory is touched.
+            // Existing extracted files are overwritten; nothing else in the target directory is touched.
             for (size_t i = 0; i < stdlib::g_fileCount; ++i) {
                 const auto& f = stdlib::g_files[i];
                 fs::path dest = fs::path(targetDir) / f.relativePath;
@@ -99,9 +93,7 @@ namespace cajeta {
                 }
             }
 
-            // Identity marker LAST — its presence with a matching fileCount
-            // vouches for a complete extraction, so the plugin can both key
-            // its cache on the producing compiler and detect a torn tree.
+            // The identity marker is written LAST, so its presence with a matching fileCount vouches for a complete extraction.
             fs::path marker = fs::path(targetDir) / ".cajeta-stdlib.json";
             std::ofstream m(marker, std::ios::binary | std::ios::trunc);
             m << "{\n"

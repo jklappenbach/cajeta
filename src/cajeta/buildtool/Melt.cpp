@@ -13,9 +13,7 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Fields the spec marks as exportable inside the `melt` block.
-        // Anything else is rejected — matches the "inert inherits,
-        // active doesn't" rule from BuildTool.md "What a melt exports".
+        // The only fields a `melt` block may export; anything else is rejected.
         const std::set<std::string>& allowedMeltFields() {
             static const std::set<std::string> kFields = {
                 "dependencies", "properties", "actions",
@@ -35,7 +33,6 @@ namespace cajeta::buildtool {
         MeltImport out;
         out.name    = s.substr(0, at);
         out.version = s.substr(at + 1);
-        // Both halves non-empty — sanity check.
         if (out.name.empty() || out.version.empty()) {
             return err("melt import '" + s +
                        "': name and version must both be non-empty");
@@ -67,11 +64,8 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Parse `melt.repositories` array. Mirrors the
-        // `parseRepositories` logic from Dependency.cpp but operates
-        // on a sub-object rather than `settings.repositories`.
-        // Reused with the cross-checking validation that the public
-        // parseRepositories already does.
+        // Parse a `melt.repositories` array into specs, inferring `type` from
+        // whichever of `path` / `url` is present when it is not stated.
         llvm::Expected<std::vector<RepositorySpec>> parseMeltRepos(
             const llvm::json::Array& arr) {
             std::vector<RepositorySpec> out;
@@ -115,18 +109,9 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Expand one melt import: fetch its artifact through the
-        // priority-ordered repos, read its manifest sidecar, verify
-        // it really is a melt-shaped manifest, parse its typed
-        // `melt` block, then recurse post-order into its
-        // `melt.melts`. The `visiting` set is the stack of melts
-        // currently being expanded — used for cycle detection.
-        //
-        // Aggregates contributions in declaration order into `out`.
-        // Post-order means a melt that imports B sees B's
-        // contributions FIRST, then layers its own on top — so the
-        // outer melt's constraints win on conflict (matching the
-        // spec's "later overrides earlier" semantics).
+        // Fetch one melt through `repos`, parse its `melt` block and merge its
+        // contributions into `out`. `visiting` is the expansion stack, for cycle
+        // detection; recursion is post-order, so an importer's writes win.
         llvm::Error expandMelt(
             const MeltImport& imp,
             const std::vector<RepositoryPtr>& repos,
@@ -146,14 +131,10 @@ namespace cajeta::buildtool {
                 }
                 return err("melt cycle detected: " + chain);
             }
-            // Same exact pin already resolved → no-op (a melt that
-            // appears twice in the resolved graph just shares its
-            // contributions; the constraint-table merge is idempotent).
             if (alreadyResolved.count(key)) {
                 return llvm::Error::success();
             }
 
-            // Walk the repository list to find the pinned version.
             MeltResolution::Resolved resolved;
             resolved.name = imp.name;
             resolved.version = imp.version;
@@ -209,12 +190,8 @@ namespace cajeta::buildtool {
             auto typed = parseMelt(*meltManifest);
             if (!typed) return typed.takeError();
 
-            // Stash transitive list before recursing — needed for the
-            // lockfile entry whether or not recursion succeeds.
             resolved.transitiveMelts = typed->melts;
 
-            // Recurse post-order: process this melt's `melts` first,
-            // then apply this melt's own contributions.
             visiting.insert(imp.name);
             cyclePath.push_back(imp.name);
             for (const auto& child : typed->melts) {
@@ -227,7 +204,6 @@ namespace cajeta::buildtool {
             visiting.erase(imp.name);
             cyclePath.pop_back();
 
-            // Apply this melt's contributions (later writes win).
             for (const auto& [name, constraint] : typed->dependencies) {
                 out.depConstraints[name] = constraint;
                 out.depProvidedBy[name] = key;
@@ -293,10 +269,6 @@ namespace cajeta::buildtool {
                 }
                 continue;
             }
-            // Explicit version: keep the consumer's pin, but surface
-            // a divergence warning when a melt would have curated a
-            // different version. The operator sees in their build
-            // output exactly which curated guidance they overrode.
             if (it != melts.depConstraints.end() &&
                 it->second != dep.versionConstraint) {
                 auto byIt = melts.depProvidedBy.find(dep.name);
@@ -317,9 +289,6 @@ namespace cajeta::buildtool {
         Melt out;
         if (!m.hasMelt) return out;
 
-        // Unknown fields are rejected so consumers get a clear error
-        // if they (e.g.) tried to slip `plugins` or `capabilities`
-        // into a melt.
         for (const auto& kv : m.meltRaw) {
             if (!allowedMeltFields().count(kv.first.str())) {
                 return err("'melt." + kv.first.str() +

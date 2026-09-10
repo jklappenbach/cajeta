@@ -43,42 +43,24 @@ namespace cajeta {
     #define BIT_64_FLAG             0b00000100000000000000
     #define BIT_128_FLAG            0b00001000000000000000
     #define ENUM_FLAG               0b00010000000000000000
-    // A compile-time integer constant carried as a non-type template argument
-    // (the N in Vector<T, N>) — never lowered to an llvm type. See CajetaConstantType.
+    // A non-type template argument (the N in Vector<T, N>); never lowered to an llvm type.
     #define CONSTANT_FLAG           0b00100000000000000000
     // A fixed-width numeric vector lowering to llvm `<N x T>`. See CajetaVector.
     #define VECTOR_FLAG             0b01000000000000000000
-    // A by-value POD CajetaClass declared @ValueType: eligible for operator-overload
-    // dispatch (the !PRIMITIVE_FLAG gate is relaxed for it) while still marshalling by
-    // value. Additive — NOT PRIMITIVE_FLAG (which is exclusive to scalar/vector/array/
-    // pointer and is wired into width/marshalling math). See plans/value-type-overloading-plan.md.
+    // A by-value POD CajetaClass declared @ValueType. Additive, and never PRIMITIVE_FLAG,
+    // which is exclusive to scalar/vector/array/pointer and wired into marshalling math.
     #define VALUE_TYPE_FLAG         0b10000000000000000000
-    // The STORAGE AXIS, orthogonal to the scalar/kind axes above. Set on every
-    // type that lives INLINE in its slot and is copied whole (load/store the
-    // aggregate, no heap body, no drop/borrow): @ValueType PODs carry it
-    // EXPLICITLY (they are not PRIMITIVE_FLAG). Scalar primitives and Vector are
-    // by-value too, but already reliably marked PRIMITIVE_FLAG, so hasValueSemantics()
-    // tests both bits rather than retro-tagging every numeric. A future builtin
-    // by-value type (Matrix/Tensor) that does NOT borrow PRIMITIVE_FLAG sets this
-    // bit alone. Born-correct on cross-file placeholders via markArchiveValueType.
+    // The STORAGE AXIS: set on a type that lives INLINE in its slot and is copied whole.
+    // @ValueType PODs carry it explicitly; scalars and Vector rely on PRIMITIVE_FLAG.
     #define BY_VALUE_FLAG           0b100000000000000000000
-    // A fixed-shape numeric matrix `Matrix<T, R, C>` lowering to a flat
-    // row-major llvm `<R*C x T>` (element (r,c) = lane r*C+c). Like VECTOR_FLAG
-    // it rides PRIMITIVE_FLAG for by-value marshalling; the dedicated matrix
-    // codegen path (construction, m[r][c], element-wise, * = matmul) recognizes
-    // it. See CajetaMatrix and plans/fluttering-sparking-lantern.md (B1).
+    // `Matrix<T, R, C>` as a flat row-major llvm `<R*C x T>`, element (r,c) at lane r*C+c.
     #define MATRIX_FLAG             0b1000000000000000000000
-    // Unit quaternion `Quaternion<T>` -> llvm `<4 x T>` = (w, x, y, z), w the
-    // scalar part. Like VECTOR_FLAG it rides PRIMITIVE_FLAG for by-value
-    // marshalling; the dedicated quaternion codegen path (construction, `*` =
-    // Hamilton product / vector rotation, normalize/conjugate/slerp) recognizes
-    // it. See CajetaQuaternion.
+    // Unit quaternion `Quaternion<T>` -> llvm `<4 x T>` = (w, x, y, z), w the scalar part.
     #define QUATERNION_FLAG         0b10000000000000000000000
     #define BIT_SIZE_MASK           0b00001111111000000000
 
 
-    // Numeric IDs are ordered so sub-byte floats sort below fp16; CajetaType::normalize()
-    // compares the full flag word, so an fp4/fp6/fp8 operand normalizes up to fp16/fp32/etc.
+    // Ordered so sub-byte floats sort below fp16: normalize() compares the full flag word.
     #define VOID_ID                 0x0000000100000000
     #define BOOLEAN_ID              0x0000000200000000
     #define UINT8_ID                0x0000000300000000
@@ -126,8 +108,7 @@ namespace cajeta {
     #define FLOAT8E4M3FNUZ_TYPE_ID  (FLOAT8E4M3FNUZ_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_8_FLAG)
     #define FLOAT8E5M2FNUZ_TYPE_ID  (FLOAT8E5M2FNUZ_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_8_FLAG)
     #define FLOAT16_TYPE_ID         (FLOAT16_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_16_FLAG)
-    // bfloat16 (brain float): same 16-bit width as float16 but a wider exponent
-    // (8-bit, like float32) — distinct LLVM `bfloat`. The ML training dtype.
+    // bfloat16: float16's width with float32's 8-bit exponent — a distinct LLVM `bfloat`.
     #define BFLOAT16_TYPE_ID        (BFLOAT16_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_16_FLAG)
     #define FLOAT32_TYPE_ID         (FLOAT32_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_32_FLAG)
     #define FLOAT64_TYPE_ID         (FLOAT64_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_64_FLAG)
@@ -138,9 +119,8 @@ namespace cajeta {
     #define TYPE_ID_MASK            0xFFFFFFFF00000000
     #define TYPE_ID(flags)          ((flags & TYPE_ID_MASK) >> 16)
 
-    // 64-bit on every supported target. `unsigned long` is 32-bit on Windows
-    // (LLP64), which silently truncates the upper-32 _ID component of every
-    // TYPE_ID and collapses distinct types onto the same numeric value.
+    // 64-bit on every target: `unsigned long` is 32-bit on Windows (LLP64), which would
+    // truncate the upper-32 _ID of every TYPE_ID and collapse distinct types together.
     typedef uint64_t CajetaTypeFlags;
 
     class Method;
@@ -164,10 +144,7 @@ namespace cajeta {
 
     bool operator<(const TypeKey& a, const TypeKey& b);
 
-    // Source position of an enum CONSTANT. The enum-constant registry stores only
-    // the ordinal, so without this an IDE could find `Color` but not `Color.GREEN`
-    // — Ctrl-click on a constant would land on the enum, or on nothing.
-    // See specs/ide-symbol-index-spec.md §2.
+    // Source position of an enum CONSTANT — the constant registry stores only ordinals.
     struct EnumConstantPos {
         string file;
         int line = 0;
@@ -177,47 +154,30 @@ namespace cajeta {
 class CajetaType : public Modifiable, public Annotatable,
         public std::enable_shared_from_this<CajetaType> {
     protected:
-        // thread-safe-compiler Unit 2: the per-compile type registries are
-        // thread_local so concurrent compiles on different threads never share
-        // them. Single-threaded behavior is unchanged (resetGlobals clears the
-        // calling thread's copy each compile). Units 5-6 split these into a
-        // shared frozen-stdlib tier + a per-thread user tier.
+        // The per-compile type registries are thread_local, so concurrent compiles never
+        // share them; resetGlobals clears the calling thread's copy each compile.
         static thread_local map<string, CajetaTypePtr> canonicalMap;
         static thread_local map<TypeKey, CajetaTypePtr> typeMap;
         static thread_local map<llvm::Type::TypeID, CajetaTypePtr> llvmTypeIdMap;
 
-        // Where this type is DECLARED (remapped path; 1-based line, 0-based col —
-        // the ANTLR convention). Lives on CajetaType rather than CajetaClass because
-        // an ENUM is a CajetaType (i32-backed, ENUM_FLAG) and not a CajetaClass, so
-        // a class-only field left every enum unlocatable. 0/"" = synthesized (mock,
-        // template placeholder, primitive) — such a type has no source an IDE could
-        // open, and the xref export skips it rather than emit a record pointing
-        // nowhere. See specs/ide-symbol-index-spec.md §2.
+        // Where this type is DECLARED (remapped path; 1-based line, 0-based col). Here and
+        // not on CajetaClass because an enum is a CajetaType; 0/"" means synthesized.
         string declaringFile;
         int declLine = 0;
         int declColumn = 0;
-        // Enum-constant positions, parallel to `enumConstants`. See
-        // registerEnumConstantPosition().
+        // Enum-constant positions, parallel to `enumConstants`.
         static thread_local map<string, map<string, EnumConstantPos>>
             enumConstantPositions;
-        // Enum constant registry. Keyed by the enum's short typeName
-        // ("Direction") and then by constant name ("NORTH" / "SOUTH" / ...).
-        // The value is the constant's int32 ordinal. DotExpression consults
-        // this for `MyEnum.CONST` references; the enum CajetaType itself
-        // is registered in canonicalMap as an i32-backed type.
+        // Enum constants: short type name, then constant name, to the int32 ordinal.
+        // The enum's own CajetaType is registered in canonicalMap as an i32-backed type.
         static thread_local map<string, map<string, int32_t>> enumConstants;
         QualifiedNamePtr qName;
         llvm::Type* llvmType;
-        // threadsafe U6: when frozen (a shared stdlib instance), the LLVM binding
-        // is NOT the inline `llvmType` (one context) but a per-thread side-table
-        // entry keyed by `this`, so threads with different LLVMContexts each get
-        // their own binding for the one shared object. Default false → inline
-        // (unchanged behavior) until the stdlib is frozen in 6.4.
+        // When frozen (a shared stdlib instance) the LLVM binding is a per-thread
+        // side-table entry keyed by `this`, not the inline `llvmType`.
         bool frozen = false;
-        // Script units (script-units spec §3.4): true only on the implicit
-        // class a script-shaped compilation unit synthesizes — tooling and
-        // reflection filter on it. User-declared types, including types
-        // declared INSIDE a script unit, stay false.
+        // True only on the implicit class a script-shaped compilation unit synthesizes;
+        // types declared INSIDE a script unit stay false. Tooling filters on it.
         bool scriptSynthesized = false;
         string canonical;
         string generic;
@@ -268,38 +228,19 @@ class CajetaType : public Modifiable, public Annotatable,
             return typeFlags;
         }
 
-        // OR additional bits into the flag word. Used to retro-tag an already
-        // built type — e.g. a class declared `@ValueType` gains VALUE_TYPE_FLAG
-        // after its structure is known. See plans/value-type-overloading-plan.md.
+        // OR bits into the flag word, to retro-tag a type once its structure is known.
         void addTypeFlags(CajetaTypeFlags bits) {
             typeFlags |= bits;
         }
 
-        // Robust @ValueType test (plans/value-type-overloading-plan.md S2).
-        // VALUE_TYPE_FLAG is applied to the CANONICAL CajetaClass inside
-        // generatePrototype, but consumer sites (parse-time placeholders,
-        // un-refreshed local-variable type instances) may hold a DIFFERENT
-        // CajetaType object for the same class that never received the bit.
-        // Resolving through canonicalMap by canonical name makes every
-        // instance of a value-type class answer true once the class is
-        // prototyped. Prefer this over a raw `getTypeFlags() & VALUE_TYPE_FLAG`
-        // at any value-type ABI decision point.
+        // The robust @ValueType test: generatePrototype sets VALUE_TYPE_FLAG on the
+        // CANONICAL class only, so this resolves through canonicalMap. Prefer it to a raw
+        // flag test at any value-type ABI decision point.
         bool isValueType() const;
 
-        // Storage axis (NOT the scalar axis). True for types with value /
-        // Copy semantics that live INLINE in an alloca and are loaded/stored
-        // whole: scalar primitives (ints/floats — PRIMITIVE_FLAG), the
-        // by-value device types (Vector/CooperativeMatrix, which borrow
-        // PRIMITIVE_FLAG for kernel-arg marshalling), and @ValueType PODs
-        // (BY_VALUE_FLAG — they are NOT primitives, and must not be, or they'd
-        // fail the `!(PRIMITIVE_FLAG)` operator-dispatch gate). The two bits
-        // together span the storage axis: PRIMITIVE_FLAG already marks every
-        // scalar/vector by-value type uniformly, BY_VALUE_FLAG marks the
-        // non-primitive ones. Both are born-correct on cross-file placeholders
-        // (PRIMITIVE_FLAG always, BY_VALUE_FLAG via markArchiveValueType), so
-        // this is a reliable direct flag test with no canonical-map backstop.
-        // Slot allocation, by-value load/store, and POD kernel marshalling key
-        // off THIS, not the scalar bit. See plans/value-type-overloading-plan.md.
+        // Storage axis, NOT the scalar axis: true for types that live INLINE in an alloca
+        // and load/store whole. Both bits are born-correct on placeholders, so slot
+        // allocation and POD marshalling key off THIS rather than PRIMITIVE_FLAG.
         bool hasValueSemantics() {
             return (typeFlags & PRIMITIVE_FLAG) || (typeFlags & BY_VALUE_FLAG);
         }
@@ -308,21 +249,14 @@ class CajetaType : public Modifiable, public Annotatable,
             return qName;
         }
 
-        // Frozen-aware: returns the per-thread binding for a frozen (shared
-        // stdlib) object, else the inline `llvmType`. Out-of-line so it can reach
-        // the thread_local binding table (CajetaType.cpp). (threadsafe U6.1)
+        // Frozen-aware: the per-thread binding for a frozen object, else inline `llvmType`.
         virtual llvm::Type* getLlvmType();
-        // Raw frozen-aware read of the cached binding: const, NO virtual dispatch
-        // and NO lazy-create. Subclasses + const methods use this for cache reads
-        // (the virtual getLlvmType has placeholder/wildcard branches). (U6.2)
+        // Raw frozen-aware read of the cached binding: const, no virtual dispatch and no
+        // lazy create, for the cache reads that must not take getLlvmType's branches.
         llvm::Type* rawLlvmType() const;
 
-        // Used by the placeholder-synthesis path so a forward-
-        // referenced class has a named (body-less) struct type
-        // before its real generatePrototype runs. The real pass
-        // calls setBody on the same struct (getOrCreateLlvmType
-        // is canonical-keyed) so existing references compose
-        // correctly.
+        // Gives a forward-referenced class a named, body-less struct type; the real
+        // prototype pass calls setBody on that same struct, so references compose.
         void setLlvmType(llvm::Type* t);
 
         CajetaTypePtr toPointerType();
@@ -335,25 +269,16 @@ class CajetaType : public Modifiable, public Annotatable,
 
         string toGeneric();
 
-        // Registry lookups NEVER insert on a miss. They once read canonicalMap
-        // with operator[], and a missed probe left a null entry behind — later
-        // "already registered?" checks saw a present-but-null type and the
-        // generic-instantiation machinery skipped generating it (the failure
-        // mode was `Symbols not found: Foo<Bar>#ClassObject` in a later
-        // session sharing the type world). A miss now returns null and leaves
-        // the registry untouched.
+        // Registry lookups NEVER insert on a miss: a present-but-null entry reads as
+        // "already registered" and silently skips generic instantiation.
         static CajetaTypePtr of(string typeName);
 
-        // Cheaper probe than of(): tries the raw string before canonicalizing,
-        // so a name that is already canonical costs one lookup and no
-        // QualifiedName interning. Same non-inserting contract.
+        // A cheaper probe than of(): tries the raw string first, so an already-canonical
+        // name costs one lookup and no interning. Same non-inserting contract.
         static CajetaTypePtr find(const string& typeName);
 
-        // The name-keyed core of declared-type resolution: substitution,
-        // scoped tiers (own package -> imports -> global), archive-vouched
-        // placeholder synthesis. For resolution sites that hold only a NAME
-        // (no parser context) — resolves identically to a declared type.
-        // Null when the name resolves nowhere; the caller owns the miss.
+        // The name-keyed core of declared-type resolution — substitution, the scoped tiers,
+        // archive-vouched placeholders — for sites that hold only a NAME. Null on a miss.
         static CajetaTypePtr resolveNamed(QualifiedNamePtr qName,
                                           CajetaModulePtr module);
 
@@ -361,41 +286,18 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static CajetaTypePtr of(QualifiedNamePtr qName);
 
-        // Scoped short-name lookup for a BARE class name written in source
-        // (class-name receivers of static calls, static-field LHS, bare
-        // allocations). Mirrors fromContext's bare-name tier order:
-        //   1. the module's own package,
-        //   2. the module's explicit imports — when the import names the
-        //      class but its canonical isn't materialized yet, returns
-        //      nullptr rather than letting the global key answer wrongly,
-        //   3. the global canonical/short-name key (legacy behavior).
-        // The global short key is last-writer-wins across packages, so a
-        // same-named class elsewhere (e.g. a user class shadowing a stdlib
-        // name) poisons any call site that consults it directly; resolve
-        // source-written bare names through here instead.
+        // Scoped lookup for a BARE class name written in source, in fromContext's tiers:
+        // own package, imports, then the last-writer-wins global short key.
         static CajetaTypePtr ofScoped(const string& shortName,
                                       CajetaModulePtr module);
 
-        // The canonical FQN a scoped bare name denotes, as a STRING — mirroring
-        // ofScoped's tiers (own package → imports → global) but tolerant of a
-        // FORWARD reference: a name that is only prescan-registered (in the
-        // archive) and not yet built into canonicalMap still resolves. Used by
-        // the xref reference capture for `heap Point(...)` created types, where
-        // the whole-root export's directory-order parse routinely reaches an
-        // allocation before its target's declaration is built. Returns "" when
-        // the name names nothing known. Position-free — the caller supplies it.
+        // The canonical FQN a scoped bare name denotes, in ofScoped's tiers but tolerant of
+        // a FORWARD reference: a name only prescan-registered resolves. "" for a miss.
         static std::string canonicalNameScoped(const string& shortName,
                                                CajetaModulePtr module);
 
-        // Find a generic (template) class registered under the bare short
-        // name `shortName`, scanning the process-global canonicalMap. Used to
-        // recover from same-short-name collisions: a parameterized reference
-        // `Foo<...>` can only denote a generic class, so when an ordinary
-        // name lookup lands a NON-template (e.g. `Stream` resolving to the
-        // final, non-generic cajeta.xpu.KernelStream instead of the generic
-        // cajeta.lang.stream.Stream because both register the bare key
-        // "Stream" with last-writer-wins), callers re-resolve through here.
-        // Returns nullptr when no same-short-name template exists.
+        // Find a TEMPLATE class under the bare `shortName`. A parameterized reference can
+        // only denote a generic, so a lookup that landed a non-template re-resolves here.
         static CajetaTypePtr findTemplateByShortName(const string& shortName);
 
         static CajetaTypePtr of(llvm::Type* type, CajetaTypePtr parent = nullptr);
@@ -408,110 +310,53 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static CajetaTypePtr fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module);
 
-        // The resolution itself. `fromContext` above is a thin wrapper that also
-        // records the resolved type as an xref reference edge (ide-symbol-index
-        // 2.1.5), so every type name in the language is indexed at one point rather
-        // than at each of its dozens of syntactic homes.
-        //
-        // The resolver's own recursive calls (a type argument, a function type's
-        // parameter and return slots) go back through the WRAPPER, which is what we
-        // want: in `ArrayList<Point>` both `ArrayList` and `Point` are names a
-        // developer Ctrl-clicks, and each records at its own token.
+        // The resolution itself; `fromContext` wraps it to record an xref edge. Recursive
+        // calls go back through the WRAPPER, so each nested name records its own token.
         static CajetaTypePtr fromContextImpl(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module);
 
         static map<string, CajetaTypePtr>& getCanonicalMap();
 
-        // Archive of class/interface/struct declarations available in
-        // the current compilation unit. Populated by a pre-scan over
-        // every .cajeta source under the source root (or, for the
-        // multi-source JIT helper, every source string the test
-        // provided) BEFORE any visitor walks begin. Keyed by both
-        // canonical name (`pkg.Class`) and short typeName (`Class`)
-        // so fromContext's miss path can vouch for a referenced name
-        // before deciding to create a placeholder vs throw.
-        //
-        // The mapped value is the resolved canonical the placeholder
-        // would be created under — short-name lookups carry the full
-        // qualified name from the archive so we don't pollute
-        // canonicalMap with bare-name entries that collide across
-        // packages.
+        // Every class/interface/struct the prescan saw, keyed by BOTH canonical and short
+        // name so a miss can be vouched for; the value is the placeholder's canonical.
         static map<string, string>& getArchive();
 
-        // Record one class/interface/struct declaration found by the
-        // pre-scan. Idempotent — repeated registration of the same
-        // canonical leaves the existing entry. Same canonical from a
-        // second source file is treated as a duplicate-declaration
-        // error at compile time (not here — the archive just notes
-        // first-sight).
+        // Record one declaration the prescan found. Idempotent: a repeat leaves the
+        // existing entry, and duplicate-declaration is diagnosed at compile time.
         static void registerArchive(const string& canonical,
                                     const string& shortName);
 
-        // Mark a previously-registered archive entry as an enum
-        // declaration (not a class / interface / struct / view).
-        // Read by fromContext's placeholder-synthesis path so cross-
-        // file enum-typed field declarations resolve to an i32-
-        // backed enum CajetaType rather than a class placeholder.
-        // Called by the prescan visitor's visitEnumDeclaration after
-        // registerArchive(canonical, shortName).
+        // Mark an archive entry as an ENUM, so placeholder synthesis gives a cross-file
+        // enum-typed declaration an i32-backed enum type rather than a class shell.
         static void markArchiveEnum(const string& canonical);
         static bool isArchiveEnum(const string& canonical);
 
-        // Mark / query a prescan-noted VIEW declaration. Read by
-        // fromContext's placeholder synthesis so a forward reference to a
-        // view gets a CajetaView placeholder (view classification and
-        // member lookup dynamic_cast the type), not a class shell.
+        // Mark an archive entry as a VIEW: a forward reference then gets a CajetaView
+        // placeholder, which view classification and member lookup dynamic_cast for.
         static void markArchiveView(const string& canonical);
         static bool isArchiveView(const string& canonical);
 
-        // Mark a previously-registered archive entry as an @ValueType
-        // class. Read by fromContext's placeholder-synthesis path so a
-        // cross-file value-type-typed declaration (`Vec2 a;`) is born
-        // carrying VALUE_TYPE_FLAG | BY_VALUE_FLAG — eliminating the
-        // stale-instance gap where the canonical CajetaClass gets the
-        // flag in generatePrototype but earlier placeholders do not.
-        // Mirrors markArchiveEnum; called by the prescan visitor's
-        // visitClassDeclaration when the class is annotated @ValueType.
+        // Mark an archive entry as an @ValueType class, so a cross-file declaration is
+        // BORN with VALUE_TYPE_FLAG | BY_VALUE_FLAG rather than gaining them later.
         static void markArchiveValueType(const string& canonical);
         static bool isArchiveValueType(const string& canonical);
 
-        // canonical → declaring source file for on-disk user sources, recorded
-        // by the whole-root prescan. Lets Compiler::materializeUserClass (the
-        // user-source analog of the lazy stdlib drain) compile a cross-file
-        // class's declaring module on demand when a synthesizer needs its REAL
-        // declaration — record flags and fields, not a placeholder. Empty
-        // string when the canonical has no recorded source (stdlib, synthetic).
+        // canonical → declaring source file, so materializeUserClass can compile that
+        // module on demand. Empty when the canonical has no recorded source.
         static void registerArchiveSourcePath(const string& canonical,
                                               const string& sourcePath);
         static string lookupArchiveSourcePath(const string& canonical);
 
-        // Mark a previously-registered archive entry as an INTERFACE
-        // declaration. Read by fromContext's placeholder-synthesis path
-        // so a cross-file field/param/local declared at a forward-
-        // referenced interface type (e.g. `ByteChannel stream;` in
-        // AsyncReader before ByteChannel.cajeta is parsed) is born as a
-        // FAT 24-byte interface pointer `{ ptr data, ptr vtable, i64 kind }`
-        // — not a thin 8-byte class pointer that silently drops interface
-        // dispatch at codegen. Called by the prescan visitor's
-        // visitInterfaceDeclaration after registerArchive(canonical,
-        // shortName). See cajeta-interface-arg-field-offset-bug.
+        // Mark an archive entry as an INTERFACE, so a forward-referenced interface type is
+        // born a FAT `{ ptr data, ptr vtable, i64 kind }`, not a dispatch-losing thin one.
         static void markArchiveInterface(const string& canonical);
         static bool isArchiveInterface(const string& canonical);
 
-        // Record template metadata for an archived class. Called by
-        // the prescan visitor for any class/interface declaration
-        // that carries a `typeParameters` clause. The templateSource
-        // is the literal text of the enclosing typeDeclaration —
-        // mirroring what visitClassDeclaration captures at parse
-        // time. Lets fromContext's placeholder-synthesis path
-        // pre-set typeParameters + templateSource on a placeholder
-        // so an early `T<args>` use site can instantiate before
-        // the real visitClassDeclaration runs.
+        // Record an archived class's template metadata — `templateSource` is the literal
+        // declaration text — so an early `T<args>` site can instantiate a placeholder.
         static void registerArchiveTemplate(const string& canonical,
                                             const vector<TypeParameter>& typeParameters,
                                             const string& templateSource);
-        // Read accessors — return null if no template entry exists
-        // for `canonical`. Pointers stay valid for the lifetime of
-        // the static archive map.
+        // Null when no template entry exists; the pointers live as long as the archive.
         static const vector<TypeParameter>* lookupArchiveTemplateParameters(
             const string& canonical);
         static const string* lookupArchiveTemplateSource(
@@ -521,53 +366,34 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static void init(llvm::LLVMContext& ctxLlvm);
 
-        // Drop all cached llvm::Type* / CajetaTypePtr entries. Called from the Compiler
-        // constructor before init() so a fresh LLVMContext doesn't inherit dangling
-        // pointers from a previous Compiler's now-destroyed context.
+        // Drop every cached llvm::Type* / CajetaTypePtr, so a fresh LLVMContext cannot
+        // inherit dangling pointers from a previous Compiler's destroyed context.
         static void resetGlobals();
 
-        // Test stdlib-reuse support. captureBaseline() snapshots every global
-        // type container (canonicalMap, typeMap, archives, …) right after the
-        // pristine stdlib is built; restoreBaseline() assigns those snapshots
-        // back, wiping all user-added types AND any user-triggered stdlib
-        // template instantiations in one shot, so each test starts from the
-        // exact post-stdlib state without re-parsing. No-ops outside the
-        // reuse path (production never calls them).
+        // Test stdlib-reuse: capture snapshots every global type container just after the
+        // pristine stdlib is built, restore wipes back to it. No-ops in production.
         static void captureBaseline();
         static void restoreBaseline();
-        // lint-server sibling-context reuse (spec §4): a SECOND baseline slot
-        // holding "stdlib + the sibling sweep", captured after
-        // registerLintContext and restored (independently of the pristine
-        // stdlib baseline) on a warm request so it skips the sweep.
-        // invalidate clears it so the next request resweeps. No-ops until a
-        // context is captured (production one-shot never captures one).
+        // A SECOND baseline slot, "stdlib + the sibling sweep", restored independently on
+        // a warm lint request so it skips the sweep; invalidate forces the next resweep.
         static void captureContextBaseline();
         static void restoreContextBaseline();
         static void invalidateContextBaseline();
-        // Test stdlib-reuse support: free the shared-context LLVM struct NAMES of
-        // the transient user types a THROWING compile left behind (a test whose
-        // compile threw never reached its normal end-of-compile struct-name
-        // release), so a later same-named test can't pick up a stale layout via
-        // StructType::getTypeByName. Preserves stdlib-resident (reusable)
-        // instantiations. No-op outside the reuse path.
+        // Free the shared-context LLVM struct NAMES a THROWING compile left behind, so a
+        // later same-named test cannot pick up a stale layout through getTypeByName.
         static void releaseThrownTransientStructNames();
 
 
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name, vector<llvm::Type*> properties);
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name);
 
-        // U6.4.2 — like getOrCreateLlvmType(ctx, name) but WITHOUT the
-        // canonicalMap registration side-effect. The frozen-stdlib per-thread
-        // struct rebuild needs only the (opaque) named StructType in the thread's
-        // context; it must NOT re-register a plain CajetaType over the shared
-        // class/view entry in the thread's registry. Returns the existing struct
-        // by name in `ctx` if present, else creates a fresh opaque one.
+        // getOrCreateLlvmType without the canonicalMap registration: the per-thread rebuild
+        // must NOT re-register a plain CajetaType over the shared class/view entry.
         static llvm::StructType* getOrCreateLlvmStructNoRegister(llvm::LLVMContext* ctx, const string& name);
 
         static CajetaTypePtr create(QualifiedNamePtr qName) {
             CajetaTypePtr result = make_shared<CajetaType>(qName);
-            // Guard: a qName-only CajetaType has no llvmType yet, and
-            // TypeKey(nullptr) dereferences it — only index by type when present.
+            // TypeKey(nullptr) dereferences, and a qName-only type has no llvmType yet.
             if (result->llvmType) typeMap[TypeKey(result->llvmType)] = result;
             result->rank = canonicalMap.size();
             canonicalMap[result->canonical] = result;
@@ -580,9 +406,8 @@ class CajetaType : public Modifiable, public Annotatable,
             CajetaTypePtr result = make_shared<CajetaType>(qName, llvmType, typeFlags);
             result->rank = canonicalMap.size();
             canonicalMap[result->canonical] = result;
-            // Sub-byte/fp8 types alias an integer storage type (i4/i6/i8); registering them in
-            // typeMap or llvmTypeIdMap would clobber the canonical int registration. Pass
-            // shareLlvmType=false in that case.
+            // Sub-byte/fp8 types alias an integer storage type, so registering them here
+            // would clobber the canonical int; those pass shareLlvmType=false.
             if (shareLlvmType) {
                 typeMap[TypeKey(result->llvmType)] = result;
                 if (llvmType->getTypeID() != llvm::Type::StructTyID) {
@@ -594,44 +419,27 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static CajetaTypeFlags getTypeFlagsOf(llvm::Value* op);
 
-        // Template wildcards (`<?>`) — Step 1 foundation. Gated by the
-        // CAJETA_WILDCARDS env var (or a test override) so the existing
-        // throw at the wildcard-parse site stays the default while the
-        // foundation lands. Rationale, costs, and full staging plan
-        // live in docs/TemplateWildcard.md and todo.md.
+        // Template wildcards (`<?>`), gated by the CAJETA_WILDCARDS env var or a test
+        // override so the throw at the wildcard-parse site stays the default.
         static bool wildcardsEnabled();
 
-        // Forces the wildcard flag on/off regardless of the env var.
-        // Test-only entry point — production callers should use the
-        // env var. Persists until cleared.
+        // Forces the wildcard flag on/off regardless of the env var; test-only, persistent.
         static void setWildcardsEnabledForTest(bool enabled);
 
-        // Clears any test override. Subsequent calls to
-        // wildcardsEnabled() fall back to the env-var check.
+        // Clears any test override, so wildcardsEnabled() falls back to the env var.
         static void clearWildcardsTestOverride();
 
-        // Singleton type-identity stub for the unbounded wildcard `?`.
-        // Registered in canonicalMap under canonical "?" by init(ctx)
-        // so wildcardSentinel() is non-null in any Compiler-bootstrapped
-        // process. Carries an opaque-pointer llvmType purely for shape
-        // — codegen on a wildcard-typed value is NOT yet supported
-        // (Step 2 lands the drop-chain ABI). Step 1 wires the sentinel
-        // through parsing and the template-instantiation cache only.
+        // The singleton type-identity stub for `?`, registered by init(ctx) under canonical
+        // "?". Its opaque-pointer llvmType is shape only — a wildcard value is not lowered.
         static CajetaTypePtr wildcardSentinel();
 
-        // The error/poison type (diagnostic-engine-spec §3): a singleton returned
-        // when resolution fails, so semantic analysis continues instead of
-        // throwing. Not registered in the type map (unfindable by name). Codegen
-        // is gated on the diagnostic engine having no errors, so it is never
-        // lowered. `isError()` is true only for this sentinel.
+        // The error/poison type: a singleton returned when resolution fails, so analysis
+        // continues instead of throwing. Unregistered by name, and never lowered.
         static CajetaTypePtr error();
         bool isError() const;
 
-        // Step 6 — bounded wildcards. Lazy per-(kind, bound) sentinels
-        // cached in canonicalMap under canonicals "? extends <bound>"
-        // and "? super <bound>". All wildcard sentinels share the
-        // unbounded form's llvm type (opaque pointer). The bound is
-        // recorded in a side table queried via wildcardBound().
+        // Bounded wildcards: lazy per-(kind, bound) sentinels sharing the unbounded form's
+        // opaque llvm type, with the bound itself in the wildcardBound() side table.
         static CajetaTypePtr wildcardSentinelExtends(CajetaTypePtr bound);
         static CajetaTypePtr wildcardSentinelSuper(CajetaTypePtr bound);
 
@@ -649,48 +457,28 @@ class CajetaType : public Modifiable, public Annotatable,
         // Wildcard kind classifier. Returns None for non-wildcards.
         WildcardKind wildcardKind() const;
 
-        // Bound type for `? extends Bound` / `? super Bound`. Returns
-        // null for unbounded wildcards and non-wildcards.
+        // The bound of `? extends B` / `? super B`; null for unbounded and non-wildcards.
         CajetaTypePtr wildcardBound() const;
 
-        // Register a per-canonical wildcard-info entry. Used by
-        // CajetaCapture's factories — captures need to appear as
-        // wildcards to existing wildcard-aware code paths (isWildcard,
-        // wildcardKind, wildcardBound, isWildcardInstantiation,
-        // substitution-stable hash machinery) while retaining their
-        // own per-binding identity via the capture's unique qName.
+        // Register a per-canonical wildcard-info entry, so a capture answers the
+        // wildcard-aware predicates while keeping its own identity through its qName.
         static void registerWildcardInfo(const string& canonical,
                                           WildcardKind kind,
                                           CajetaTypePtr bound);
 
-        // Capture conversion projection at read positions
-        // (docs/TemplateWildcard.md § 3 Capture identity). When
-        // an expression's static type comes back from method
-        // resolution as a bounded-extends wildcard — typically the
-        // return type of a method on a `Foo<? extends B>` receiver —
-        // the caller should see the bound `B`, not the raw sentinel,
-        // so member-resolution on the result works.
-        //
-        // Scope (v1):
-        //   - `? extends B` → B
-        //   - other wildcard kinds + non-wildcards → unchanged
-        //   - nested wildcards inside generic args (`Foo<? extends B>`)
-        //     left alone; variance through type constructors needs
-        //     proper capture-identity tracking.
+        // Capture conversion at read positions: a static type that comes back as
+        // `? extends B` projects to B, so member resolution on the result works. Other
+        // kinds and wildcards nested inside generic arguments are left unchanged.
         static CajetaTypePtr captureProject(CajetaTypePtr t);
 
-        // Enum support. `registerEnumConstant` is called per constant when
-        // the visitor sees `enum X { A, B, C }`. `lookupEnumConstant` returns
-        // the int32 ordinal if `enumName.constName` is a registered enum
-        // constant; `nullopt` otherwise. The enum's CajetaType itself is
-        // a normal i32-backed primitive registered in canonicalMap.
+        // Called per constant when the visitor sees `enum X { A, B, C }`; the enum's own
+        // CajetaType is a normal i32-backed primitive in canonicalMap.
         static void registerEnumConstant(const string& enumName,
             const string& constName, int32_t ordinal) {
             enumConstants[enumName][constName] = ordinal;
         }
 
-        // Where this type is declared. Only meaningful for types that came from a
-        // parsed declaration; see the field comments.
+        // Where this type is declared; meaningful only for a parsed declaration.
         const string& getDeclaringFile() const { return declaringFile; }
         void setDeclaringFile(const string& file) { declaringFile = file; }
         int getDeclLine() const { return declLine; }
@@ -722,25 +510,9 @@ class CajetaType : public Modifiable, public Annotatable,
             return cit->second;
         }
 
-        /**
-         *  Sources for both LHS and RHS:
-         *  - Field (Value*)
-         *  - Literal (Constant*)
-         *  - Return value
-         *
-         *  Use cases:
-         *
-         *  - If values are numeric:
-         *      - If equal types, return the original value
-         *      - If ap is a higher rank, throw an exception requiring manual cast
-         *      - If op is equal lesser rank:
-         *          - If op is signed and src is unsigned, throw an exception requiring manual cast (potential loss of data)
-         *          - If op is unsigned and src is signed, throw a warning (integer overflow), but allow if rank delta is 1.  Otherwise,
-         *
-         * @param op The Value* to be compared against this value
-         * @param module The pModule to use for creating builder statement to cast the argument to a new value with rank parity
-         * @return A normalize result with any warnings to promote
-         */
+        /** Promote `op` to this type's rank, returning the value to use. A higher-rank
+         *  operand, or a sign change that could lose data, throws instead: those need a
+         *  manual cast. `module` supplies the builder for any cast emitted. */
         llvm::Value* normalize(llvm::Value* op, CajetaModulePtr module);
     };
 

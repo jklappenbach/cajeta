@@ -1,7 +1,4 @@
-//
-// Skill document parsing + validation. See SkillDocument.h and
-// specs/archive/skill-discovery-spec.md §4.
-//
+// Skill document parsing + validation. See SkillDocument.h and the skill-discovery spec §4.
 #include "cajeta/buildtool/skill/SkillDocument.h"
 
 #include "cajeta/buildtool/FrontMatter.h"
@@ -20,9 +17,7 @@ namespace cajeta::buildtool::skill {
                 (sourceName + ": " + msg).str());
         }
 
-        // Map a parsed frontmatter object onto a SkillDocument's fields. Optional
-        // fields default to empty; unknown fields (e.g. a stray version) are
-        // ignored. Validation happens separately.
+        // Maps a parsed frontmatter object onto the fields: optional ones default to empty, unknown ones are ignored, and validation is separate.
         void mapFields(const llvm::json::Object& obj, SkillDocument& out) {
             if (auto id = obj.getString("id")) {
                 out.id = id->str();
@@ -38,8 +33,7 @@ namespace cajeta::buildtool::skill {
                     if (auto s = entry.getAsString()) {
                         out.appliesTo.push_back(s->str());
                     } else {
-                        // Non-string entry → record an empty marker so validate()
-                        // rejects it with a clear message.
+                        // A non-string entry records an empty marker, so validate() rejects it with a clear message.
                         out.appliesTo.emplace_back();
                     }
                 }

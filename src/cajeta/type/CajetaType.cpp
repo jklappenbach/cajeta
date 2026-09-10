@@ -26,10 +26,9 @@
 
 namespace cajeta {
 
-    // U6.4.2 — rebuild a scalar (primitive) LLVM type in `ctx` from a prototype
-    // built in another context. TypeID + integer bit-width are context-independent
-    // metadata, so a frozen primitive (whose inline llvmType belongs to the prime
-    // context) can clone its shape into a compile thread's own context.
+    // Rebuild a scalar (primitive) LLVM type in `ctx` from a prototype built in
+    // another context: TypeID and integer bit-width are context-independent, so a
+    // frozen primitive can clone its shape per thread. Null if `proto` is not scalar.
     static llvm::Type* cloneScalarLlvmType(llvm::Type* proto, llvm::LLVMContext& ctx) {
         if (!proto) return nullptr;
         switch (proto->getTypeID()) {
@@ -48,12 +47,9 @@ namespace cajeta {
     #define CAJETA_NATIVE_PACKAGE ""
     #define NATIVE_TYPE_ENTRY(typeName, llvmType, typeFlags) CajetaType::create(QualifiedName::getOrInsert(typeName, CAJETA_NATIVE_PACKAGE), llvmType, typeFlags);
 
-    // A built-in Vector/Matrix non-type dimension argument: either a syntactic
-    // integer literal (`Vector<float32,4>`) or a bound const generic parameter
-    // (`Vector<float32,N>` inside a `<uint32 N>` method/class), the latter resolved
-    // through the active substitution map to a CajetaConstantType — the same path
-    // user templates already use for `Box<N>`. Lets one generic source monomorphize
-    // per width (cajeta-accel §4.5). Throws `errId` if it is neither.
+    // Resolve a built-in Vector/Matrix dimension argument to its constant value:
+    // an integer literal, or a bound const generic parameter resolved through the
+    // active substitution map. Throws `errId` (naming `what`) if it is neither.
     static int64_t vectorLengthArg(CajetaParser::TypeArgumentContext* arg,
                                    CajetaModulePtr module,
                                    const char* errId, const char* what) {
@@ -73,7 +69,7 @@ namespace cajeta {
             errId);
     }
 
-    // thread-safe-compiler Unit 2: per-thread so concurrent compiles don't share.
+    // Per-thread: concurrent compiles must not share type state.
     thread_local map<string, CajetaTypePtr> CajetaType::canonicalMap;
     thread_local map<string, map<string, int32_t>> CajetaType::enumConstants;
     thread_local map<string, map<string, EnumConstantPos>>
@@ -81,11 +77,9 @@ namespace cajeta {
     thread_local map<TypeKey, CajetaTypePtr> CajetaType::typeMap;
     thread_local map<llvm::Type::TypeID, CajetaTypePtr> CajetaType::llvmTypeIdMap;
 
-    // threadsafe U6.1: per-thread LLVM-type binding for FROZEN (shared stdlib)
-    // CajetaType objects, keyed by the shared object. A frozen object has no valid
-    // inline `llvmType` (it would be one context's); each thread resolves/creates
-    // its own binding here in its own LLVMContext. Non-frozen objects keep using
-    // the inline member, so behavior is unchanged until the stdlib is frozen (6.4).
+    // Per-thread LLVM-type bindings for FROZEN (shared stdlib) CajetaType objects,
+    // keyed by the shared object: a frozen object's inline `llvmType` belongs to the
+    // prime context, so each thread resolves its own binding here.
     static std::unordered_map<const CajetaType*, llvm::Type*>& frozenTypeBindings() {
         static thread_local std::unordered_map<const CajetaType*, llvm::Type*> tbl;
         return tbl;
@@ -101,9 +95,6 @@ namespace cajeta {
     }
 
     llvm::Type* CajetaType::getLlvmType() {
-        // U6.4.2 — frozen primitive with an empty per-thread binding: clone its
-        // scalar shape (from the prime-context inline prototype) into this thread's
-        // context. Inert while not frozen. Composite/class types override this.
         if (frozen && (typeFlags & PRIMITIVE_FLAG) && rawLlvmType() == nullptr && llvmType) {
             if (llvm::LLVMContext* ctx = currentLlvmContext()) {
                 if (llvm::Type* t = cloneScalarLlvmType(llvmType, *ctx)) setLlvmType(t);
@@ -116,65 +107,26 @@ namespace cajeta {
         if (frozen) { frozenTypeBindings()[this] = t; return; }
         llvmType = t;
     }
-    // Archive — see CajetaType.h. Cleared by resetGlobals so each
-    // fresh Compiler starts with an empty set.
+    // Prescan archives (see CajetaType.h), cleared by resetGlobals: canonical and
+    // short name -> canonical, plus side sets recording which archived names are
+    // enums, views, @ValueType classes or interfaces. Read by placeholder synthesis.
     static thread_local map<string, string> g_archive;
-    // Side set marking which archived canonical names are enum
-    // declarations (rather than classes / interfaces / structs /
-    // views). Read by fromContext's placeholder-synthesis path so
-    // a cross-file `JsonToken current;` field declaration resolves
-    // to the proper i32-backed enum CajetaType instead of a
-    // class-shaped placeholder. Populated by the prescan visitor's
-    // visitEnumDeclaration override.
     static thread_local set<string> g_enumArchive;
     static thread_local set<string> g_viewArchive;
-    // Archive entries known to be @ValueType classes. Read by
-    // fromContext's placeholder-synthesis path so a cross-file
-    // value-type-typed declaration gets a placeholder born with
-    // VALUE_TYPE_FLAG | BY_VALUE_FLAG. Populated by the prescan
-    // visitor's visitClassDeclaration when it sees the annotation.
     static thread_local set<string> g_valueTypeArchive;
-    // Side set marking which archived canonical names are INTERFACE
-    // declarations. Read by fromContext's placeholder-synthesis path so
-    // a forward-referenced interface type (referenced by a field/param/
-    // local before its own declaration is visited) is born as a fat
-    // 24-byte interface pointer instead of a thin class pointer.
-    // Populated by the prescan visitor's visitInterfaceDeclaration.
     static thread_local set<string> g_interfaceArchive;
-    // Per-class template metadata captured by the prescan when the
-    // class declaration carries `typeParameters`. Lets the placeholder-
-    // synthesis path in fromContext below pre-populate enough state on
-    // the placeholder that `isTemplate()` returns true AND a use-site
-    // `T<args>` reference can immediately call `placeholder->instantiate(args)`
-    // — even though the placeholder's REAL visitClassDeclaration hasn't
-    // fired yet. The instantiation re-parses templateSource with the
-    // pinned typeParameter names substituted, producing a fully-built
-    // `T<args>` class up-front. Without this, the typeArguments at the
-    // use site are silently dropped (Box<int32>::get() multi-module bug)
-    // because the placeholder's `isTemplate()` returns false.
-    //
-    // Keyed by canonical name; entries set only for templated classes.
+    // Per-class template metadata from the prescan: lets a placeholder answer
+    // isTemplate() and instantiate `T<args>` before its real declaration is visited.
     struct ArchiveTemplateMeta {
         vector<TypeParameter> typeParameters;
         string templateSource;
     };
     static thread_local map<string, ArchiveTemplateMeta> g_archiveTemplateMeta;
-    // canonical → declaring source file, recorded by the whole-root prescan
-    // (only for on-disk user sources; stdlib content units register nothing).
-    // Read by the user-class materialization hook (Compiler::
-    // materializeUserClass) so a synthesizer that needs a cross-file class's
-    // REAL declaration (record flags + fields, not a placeholder) can compile
-    // the declaring module on demand — the user-source analog of the lazy
-    // stdlib drain. Lifecycle mirrors g_archive exactly.
+    // canonical -> declaring source file, recorded for on-disk user sources only.
     static thread_local map<string, string> g_archiveSourcePaths;
-    // Wildcard feature-flag override (Step 1). Set by tests via
-    // CajetaType::setWildcardsEnabledForTest. Null means "fall back
-    // to the CAJETA_WILDCARDS env var" (the production path).
+    // Null means "fall back to the CAJETA_WILDCARDS env var" (the production path).
     static std::optional<bool> g_wildcardsTestOverride;
-    // Step 6 — bounded wildcards. Side table keyed by wildcard
-    // canonical name (`?`, `? extends X`, `? super X`). The unbounded
-    // entry is registered by init(ctx); bounded entries are created
-    // lazily on first parse-site hit. Cleared by resetGlobals.
+    // Wildcard info keyed by sentinel canonical (`?`, `? extends X`, `? super X`).
     struct WildcardInfoEntry {
         CajetaType::WildcardKind kind;
         CajetaTypePtr bound;
@@ -194,31 +146,21 @@ namespace cajeta {
         }
     }
 
+    // Lexicographic (typeId, then typeCode). Must be a strict weak ordering: less
+    // than that corrupts the std::map<TypeKey, ...> registries that of() reads.
     bool operator<(const TypeKey& a, const TypeKey& b) {
-        // Lexicographic (typeId, then typeCode). The old OR-of-two-less-thans
-        // was not a strict weak ordering — it made comp(a,b) && comp(b,a) both
-        // true for e.g. {IntegerTyID,32} vs {PointerTyID,0}, corrupting the
-        // std::map<TypeKey,...> that of() looks up.
         if (a.typeId != b.typeId) return a.typeId < b.typeId;
         return a.typeCode < b.typeCode;
     }
 
     void CajetaType::resetGlobals() {
-        // First: drop any deferred class-template instantiations abandoned by
-        // a PREVIOUS compile that failed mid-instantiation (synthesizer
-        // diagnostics like FRAME_SCHEMA). The queue is thread_local on
-        // CajetaClass and holds pointers into the dead compile's object
-        // graph; draining it in this compile resolves stdlib names against
-        // half-populated registries (UNKNOWN_TYPE 'Plan' — the TableCore
-        // frameSchemaErrorDoesNotPoisonNextCompile pin).
+        // Drop first: a previous compile's abandoned deferred instantiations point
+        // into a dead object graph and would drain against half-built registries.
         CajetaClass::resetDeferredInstantiationState();
         canonicalMap.clear();
         typeMap.clear();
         llvmTypeIdMap.clear();
         enumConstants.clear();
-        // Cleared with enumConstants, never apart from it: a stale position that
-        // outlived its enum would point Ctrl-click at whatever now occupies that
-        // offset — a wrong answer, which is worse than none.
         enumConstantPositions.clear();
         g_archive.clear();
         g_enumArchive.clear();
@@ -228,18 +170,13 @@ namespace cajeta {
         g_archiveTemplateMeta.clear();
         g_archiveSourcePaths.clear();
         g_wildcardInfo.clear();
-        // Test override survives resetGlobals on purpose — a test
-        // turning the feature on expects the next Compiler instance
-        // to honor that.
+        // The test override survives resetGlobals on purpose.
     }
 
     namespace {
-        // Snapshot of every global type container, taken once after the
-        // pristine stdlib is built (StdlibCache::prime) and reassigned before
-        // each reusing test (StdlibCache::restoreBaseline). Holds copies of
-        // both the CajetaType member-statics and the file-statics above, so a
-        // single restore reverts every user-visible mutation. `valid` guards
-        // the production case where a baseline was never captured.
+        // Snapshot of every global type container, taken once after the pristine
+        // stdlib is built (StdlibCache::prime) and reassigned before each reusing
+        // test. `valid` guards the production case where none was ever captured.
         struct TypeGlobalsBaseline {
             bool valid = false;
             map<string, CajetaTypePtr> canonicalMap;
@@ -256,13 +193,11 @@ namespace cajeta {
             map<string, WildcardInfoEntry> g_wildcardInfo;
         };
         TypeGlobalsBaseline g_typeBaseline;
-        // A SECOND, independent slot for the lint-server sibling context
-        // (lint-server-spec §4): "stdlib + the sibling sweep", captured after
-        // registerLintContext so a warm request restores it instead of paying
-        // the sweep. Independent of g_typeBaseline (pristine stdlib), which the
-        // resweep path still needs. valid guards the never-captured case.
+        // A second, independent slot for the lint-server sibling context ("stdlib +
+        // the sibling sweep"), so a warm request restores it instead of resweeping.
         TypeGlobalsBaseline g_typeContextBaseline;
 
+        // Copy every global type container into `b` and mark it valid.
         void captureTypeBaselineInto(TypeGlobalsBaseline& b,
                                      const map<string, CajetaTypePtr>& canonicalMap,
                                      const map<string, map<string, int32_t>>& enumConstants,
@@ -316,24 +251,9 @@ namespace cajeta {
 
     void CajetaType::releaseThrownTransientStructNames() {
         if (!g_typeBaseline.valid) return;
-        // A reusing test whose compile THREW (typically an expected-error test)
-        // never ran its normal end-of-compile struct-name release, so any USER
-        // struct it created keeps its name in the shared LLVMContext — and LLVM
-        // struct types are context-owned, outliving the per-test module teardown.
-        // Even a fully BODIED user struct is a hazard: TemplateBasicTests
-        // .diamondWithoutInferableConstructorThrows builds `test.Holder<int32>`
-        // as a 1-field `class Holder<T>` then throws on an un-inferable ctor; a
-        // later test re-declaring `interface Holder<T>` (TemplatedInterfaceV2Tests)
-        // gets that stale 1-field struct from getOrCreateLlvmType and GEPs into
-        // the absent interface vtable/kind slots → "Invalid indices for GEP
-        // pointer type". So we release by NAME (not by opaque-ness), walking
-        // canonicalMap — the authoritative creation record that also catches
-        // structs floating free of any module. We PRESERVE stdlib-resident
-        // structs: a stdlib template instantiation accumulated for cross-test
-        // reuse lives in the persistent stdlib module and is reused by name, so
-        // freeing it would diverge from its accumulated bodies. (The success path
-        // keeps its own clearTransientStructNames; this is the throw counterpart.)
-        // Production-inert: only the test harness ever captures a baseline.
+        // Release by NAME, walking canonicalMap (the authoritative creation record,
+        // which also catches structs floating free of any module), but PRESERVE
+        // stdlib-resident ones: the stdlib module reuses them by name across tests.
         std::set<std::string> stdlibResident;
         if (auto stdlib = CajetaModule::getStdlibModule()) {
             if (auto* lm = stdlib->getLlvmModule()) {
@@ -354,10 +274,6 @@ namespace cajeta {
 
     void CajetaType::restoreBaseline() {
         if (!g_typeBaseline.valid) return;
-        // Same hygiene as resetGlobals: a prior reusing test that failed
-        // mid-instantiation must not leave its deferred-instantiation queue
-        // for this test to drain (the baseline predates every user type the
-        // stale entries reference).
         CajetaClass::resetDeferredInstantiationState();
         canonicalMap = g_typeBaseline.canonicalMap;
         enumConstants = g_typeBaseline.enumConstants;
@@ -401,7 +317,6 @@ namespace cajeta {
 
     void CajetaType::registerArchiveSourcePath(const string& canonical,
                                                const string& sourcePath) {
-        // First-write-wins, like registerArchive — re-prescans are idempotent.
         g_archiveSourcePaths.emplace(canonical, sourcePath);
     }
 
@@ -445,11 +360,6 @@ namespace cajeta {
         if (g_wildcardsTestOverride.has_value()) {
             return *g_wildcardsTestOverride;
         }
-        // Default ON as of Step 5b — stdlib stream wrappers use
-        // `Stream<?>` overrides for chain-walking and the stdlib parses
-        // on every compile, so wildcards must be accepted by default
-        // for the runtime to load. CAJETA_WILDCARDS=0 is the backout
-        // opt-out for emergencies.
         const char* v = std::getenv("CAJETA_WILDCARDS");
         if (v == nullptr) return true;
         return v[0] != '\0' && v[0] != '0';
@@ -469,10 +379,9 @@ namespace cajeta {
         return it->second;
     }
 
-    // Bounded-wildcard sentinel factory. Lazily creates a per-(kind, bound)
-    // CajetaType keyed by canonical "? <kind-word> <bound-canonical>".
-    // Shares the unbounded sentinel's llvm type (opaque pointer); bound
-    // info goes into g_wildcardInfo for query by wildcardBound().
+    // Lazily create (or reuse) the sentinel for a bounded wildcard, keyed by the
+    // canonical "? <kindWord> <bound>". Shares the unbounded sentinel's opaque
+    // pointer type; the bound is recorded in g_wildcardInfo for wildcardBound().
     static CajetaTypePtr makeBoundedWildcardSentinel(
             CajetaType::WildcardKind kind,
             CajetaTypePtr bound,
@@ -512,8 +421,7 @@ namespace cajeta {
     }
 
     CajetaTypePtr CajetaType::error() {
-        // Singleton, built directly (not via create()) so it never lands in the
-        // type registry / canonicalMap and can't be found by name.
+        // Built directly, not via create(), so it never lands in canonicalMap.
         static CajetaTypePtr sentinel =
             std::make_shared<CajetaType>(QualifiedName::getOrCreate("<error>"));
         return sentinel;
@@ -544,11 +452,6 @@ namespace cajeta {
 
     CajetaTypePtr CajetaType::captureProject(CajetaTypePtr t) {
         if (!t) return t;
-        // Phase 1.2 — extends-bounded capture projects to its upper
-        // bound at read positions. Mirrors the bounded-wildcard case
-        // below; future code paths that build captures at binding
-        // sites (Phase 2+) feed this same projection to chained
-        // member access.
         if (auto cap = dynamic_pointer_cast<CajetaCapture>(t)) {
             auto upper = cap->getUpperBound();
             return upper ? upper : t;
@@ -560,15 +463,8 @@ namespace cajeta {
 
     void CajetaType::registerArchive(const string& canonical,
                                       const string& shortName) {
-        // Both keys point at the canonical so the miss-path in
-        // fromContext can promote a bare short name into the right
-        // qualified placeholder. First write wins; a second
-        // registration of the same canonical is fine (idempotent
-        // from re-running the pre-scan), and a second registration
-        // of the same SHORT name with a different canonical means
-        // two classes share the short name across packages — keep
-        // the first to remain deterministic, and let the visitor
-        // catch the duplicate-canonical case at parse time if any.
+        // Both keys point at the canonical so a bare short name can be promoted to
+        // the right qualified placeholder. First write wins for either key.
         if (!canonical.empty() && g_archive.count(canonical) == 0) {
             g_archive[canonical] = canonical;
         }
@@ -577,22 +473,14 @@ namespace cajeta {
         }
     }
 
+    // Register every built-in primitive (and the wildcard sentinel) in `ctx`.
+    // Called once per Compiler, after resetGlobals.
     void CajetaType::init(llvm::LLVMContext& ctx) {
         NATIVE_TYPE_ENTRY("void", llvm::Type::getVoidTy(ctx), VOID_TYPE_ID);
         NATIVE_TYPE_ENTRY("boolean", llvm::Type::getInt1Ty(ctx), BOOLEAN_TYPE_ID);
-        // `char` is the **Unicode codepoint** type (32-bit signed),
-        // not the C-style 8-bit byte. Cajeta's `char` matches Go's
-        // `rune` semantically — a single Unicode code point — and the
-        // character literal `'c'` evaluates to int32 99, `'é'` to 233,
-        // `'😀'` to 0x1F600. The 8-bit byte type has perfectly good
-        // names (`int8` / `uint8`); `char` doesn't need to alias them.
-        // See docs/specification/lang/String.md § `char` is a 32-bit
-        // Unicode codepoint. Redefined 2026-05-18 (was i8).
-        //
-        // `uchar` is kept as a deprecated alias for `uint8` so legacy
-        // code referencing the 8-bit name keeps compiling; new code
-        // should use `uint8` directly. shareLlvmType=false keeps the
-        // reverse i8 -> name lookup landing on `uint8`.
+        // `char` is the 32-bit Unicode codepoint type (Go's `rune`), NOT the 8-bit
+        // byte -- that is `int8`/`uint8`. `uchar` stays as a deprecated alias for
+        // uint8, with shareLlvmType=false so the reverse i8 lookup lands on uint8.
         NATIVE_TYPE_ENTRY("uchar", llvm::Type::getInt8Ty(ctx), UINT8_TYPE_ID);
         NATIVE_TYPE_ENTRY("char", llvm::Type::getInt32Ty(ctx), INT32_TYPE_ID);
         CajetaType::create(QualifiedName::getOrInsert("uint8", CAJETA_NATIVE_PACKAGE),
@@ -607,10 +495,9 @@ namespace cajeta {
         NATIVE_TYPE_ENTRY("int64", llvm::Type::getInt64Ty(ctx), INT64_TYPE_ID);
         NATIVE_TYPE_ENTRY("uint128", llvm::Type::getInt128Ty(ctx), UINT128_TYPE_ID);
         NATIVE_TYPE_ENTRY("int128", llvm::Type::getInt128Ty(ctx), INT128_TYPE_ID);
-        // Sub-byte and 8-bit floats from the OCP Microscaling spec. LLVM has no IR-level
-        // Type* for these formats (only APFloat semantics), so we represent them as iN
-        // storage and rely on runtime helpers for conversions/arithmetic (future work).
-        // shareLlvmType=false so the iN registration doesn't overwrite the int{4,6,8} entries.
+        // Sub-byte and 8-bit floats from the OCP Microscaling spec: LLVM has no
+        // IR-level Type* for them, so they are stored as iN. shareLlvmType=false
+        // keeps the iN registration from overwriting the int{4,6,8} entries.
         #define FP_OPAQUE_ENTRY(typeName, bits, typeFlags) \
             CajetaType::create(QualifiedName::getOrInsert(typeName, CAJETA_NATIVE_PACKAGE), \
                 llvm::IntegerType::get(ctx, bits), typeFlags, /*shareLlvmType=*/false);
@@ -622,44 +509,23 @@ namespace cajeta {
         FP_OPAQUE_ENTRY("float8e4m3fnuz", 8, FLOAT8E4M3FNUZ_TYPE_ID);
         FP_OPAQUE_ENTRY("float8e5m2fnuz", 8, FLOAT8E5M2FNUZ_TYPE_ID);
         #undef FP_OPAQUE_ENTRY
-        // `float16` is IEEE-754 binary16 (LLVM `half`) — the standard meaning of
-        // "float16", and the element format the hardware cooperative-matrix path
-        // (SPV_KHR_cooperative_matrix → OpTypeFloat 16) and the RADV WMMA f16→f32
-        // device config require. (bfloat16 is a *distinct* format with the same
-        // bit-width but a wider exponent; it gets its own future `bfloat16` keyword
-        // and maps to LLVM `bfloat`. Don't conflate the two.)
+        // float16 is IEEE-754 binary16 (LLVM `half`); bfloat16 is a distinct format
+        // -- same width, float32's exponent. Don't conflate the two.
         NATIVE_TYPE_ENTRY("float16", llvm::Type::getHalfTy(ctx), FLOAT16_TYPE_ID);
-        // bfloat16 — the brain-float ML dtype (LLVM `bfloat`): 16-bit, float32's
-        // 8-bit exponent, fewer mantissa bits. Distinct from float16 (binary16).
         NATIVE_TYPE_ENTRY("bfloat16", llvm::Type::getBFloatTy(ctx), BFLOAT16_TYPE_ID);
         NATIVE_TYPE_ENTRY("float32", llvm::Type::getFloatTy(ctx), FLOAT32_TYPE_ID);
         NATIVE_TYPE_ENTRY("float64", llvm::Type::getDoubleTy(ctx), FLOAT64_TYPE_ID);
         NATIVE_TYPE_ENTRY("float128", llvm::Type::getFP128Ty(ctx), FLOAT128_TYPE_ID);
         NATIVE_TYPE_ENTRY("pointer", llvm::PointerType::get(ctx, 0), POINTER_TYPE_ID);
-        // Wildcard sentinel (`?`) — Step 1 of template wildcards. Always
-        // registered regardless of feature-flag state so other passes
-        // can rely on `wildcardSentinel()` being non-null; the flag
-        // gates only the parser path that *produces* it as an arg.
-        // STRUCT_FLAG (no PRIMITIVE_FLAG) so toGeneric() returns the
-        // canonical "?" rather than misclassifying it as a pointer
-        // primitive. shareLlvmType=false so its opaque-pointer backing
-        // doesn't overwrite the canonical `pointer` entry in typeMap /
-        // llvmTypeIdMap.
+        // The `?` sentinel is registered regardless of the feature flag so
+        // wildcardSentinel() is never null; shareLlvmType=false keeps its opaque
+        // pointer out of the canonical `pointer` entries in typeMap/llvmTypeIdMap.
         CajetaType::create(
             QualifiedName::getOrInsert("?", CAJETA_NATIVE_PACKAGE),
             llvm::PointerType::get(ctx, 0),
             STRUCT_FLAG,
             /*shareLlvmType=*/false);
         g_wildcardInfo["?"] = {CajetaType::WildcardKind::Unbounded, nullptr};
-        // Phase 2b-β: the legacy primitive-alias `String` (an i8*
-        // C-string) is RETIRED. The `cajeta.lang.String` class registers
-        // itself in canonicalMap under both the canonical and short name
-        // when the runtime parses — every reference to `String` now
-        // resolves to the class. Any compiler code that needs a raw
-        // C-string spell `pointer` (or, more rigorously, the new
-        // encoding-prefixed byte-array literal — task #164, L-29 in
-        // Features.md — once shipped). See
-        // docs/specification/lang/String.md § Memory model.
     }
 
     llvm::ConstantInt* CajetaType::getTypeAllocSize(CajetaModulePtr module) {
@@ -668,12 +534,12 @@ namespace cajeta {
             dataLayout.getTypeAllocSize(rawLlvmType()));
     }
 
+    // The generic token this type keys on for dispatch: "number", "void",
+    // "function" or "pointer" for primitives, the canonical name otherwise.
     string CajetaType::toGeneric() {
         if (typeFlags & PRIMITIVE_FLAG) {
-            // getLlvmType() (not the raw llvmType field) so a lazily-built type
-            // is resolved rather than dereferenced null — the intrinsic
-            // aggregate value types CajetaVector / CajetaMatrix start with a
-            // null llvmType and only build it on demand.
+            // getLlvmType(), not the llvmType field: CajetaVector / CajetaMatrix
+            // build theirs lazily and start null.
             switch (getLlvmType()->getTypeID()) {
                 case llvm::Type::HalfTyID:
                 case llvm::Type::BFloatTyID:
@@ -692,8 +558,6 @@ namespace cajeta {
                     return "pointer";
                 case llvm::Type::FixedVectorTyID:
                 case llvm::Type::ScalableVectorTyID:
-                    // Vector<T,N> / Matrix<T,R,C>: distinct shapes are distinct
-                    // generic tokens (their canonical name), not all "number".
                     return toCanonical();
                 default:
                     return "unknown";
@@ -709,8 +573,6 @@ namespace cajeta {
         if (typeFlags & VALUE_TYPE_FLAG) {
             return true;
         }
-        // Stale instance: resolve to the canonical class object, which carries
-        // the bit once generatePrototype has run. See the header doc-comment.
         if (!qName) {
             return false;
         }
@@ -721,20 +583,12 @@ namespace cajeta {
         return false;
     }
 
-    // Every of() overload reads the registry with map::find, NEVER operator[]:
-    // an operator[] miss INSERTS a null entry under the probed name, which
-    // "already registered?" checks then read as present — and the generic-
-    // instantiation machinery skips generating a type it believes exists
-    // (`Symbols not found: Foo<Bar>#ClassObject` in a sharing session). A
-    // resolution miss must leave the registry untouched.
     CajetaTypePtr CajetaType::of(string typeName) {
         QualifiedNamePtr qName = QualifiedName::getOrCreate(typeName);
         auto it = canonicalMap.find(qName->toCanonical());
         return it == canonicalMap.end() ? nullptr : it->second;
     }
 
-    // Cheaper probe than of(): tries the raw string first, so a name that is
-    // already canonical costs one lookup and no QualifiedName interning.
     CajetaTypePtr CajetaType::find(const string& typeName) {
         auto it = canonicalMap.find(typeName);
         if (it != canonicalMap.end()) return it->second;
@@ -743,13 +597,9 @@ namespace cajeta {
         return it == canonicalMap.end() ? nullptr : it->second;
     }
 
-    // The package that scopes a bare name written in the code currently
-    // being processed. During codegen the declaring class of the current
-    // method is authoritative — the stdlib parses many packages into ONE
-    // module whose qName is per-file only while parsing (restored to
-    // cajeta.runtime.__stdlib__ afterwards), so the module qName is stale
-    // by codegen time. Fall back to the module's qName package (correct
-    // during the parse walk, and for single-package user modules always).
+    // The package that scopes a bare name in the code being processed: the current
+    // method's declaring class, else the top of the structure stack, else the
+    // module's own package (the module qName is stale by codegen time).
     static string scopePackageOf(CajetaModulePtr module) {
         if (!module) return {};
         if (auto m = module->getCurrentMethod()) {
@@ -759,16 +609,6 @@ namespace cajeta {
                 if (!p.empty()) return p;
             }
         }
-        // No current method (a resolve pre-pass, or class-level codegen):
-        // the structure stack's top is the class lexically being visited —
-        // its package is the right scope. Without this tier, resolution on
-        // the merged stdlib module fell through to the module qName below,
-        // which post-parse is the meaningless `cajeta.runtime` — tier 1 then
-        // missed and the GLOBAL short-name key answered, binding a stdlib
-        // class's bare self-reference (`HttpServer.serveConnectionWithLimits`
-        // inside cajeta.io.net.http.HttpServer) to a same-named USER class.
-        // That was cajeta-http's NO_MATCHING_OVERLOAD build break: stdlib-
-        // typed args matched against the user class's formals.
         if (!module->getStructureStack().empty()) {
             auto& top = module->getStructureStack().back();
             if (top && top->getQName()) {
@@ -782,7 +622,6 @@ namespace cajeta {
 
     CajetaTypePtr CajetaType::ofScoped(const string& shortName,
                                        CajetaModulePtr module) {
-        // Tier 1: the surrounding code's own package.
         {
             string ownPkg = scopePackageOf(module);
             if (!ownPkg.empty()) {
@@ -792,10 +631,6 @@ namespace cajeta {
                 }
             }
         }
-        // Tier 2: explicit imports. An import that names the class binds
-        // it even when the canonical isn't materialized yet — in that
-        // case answer nullptr so the caller's miss-path runs instead of
-        // the global key landing a same-named class from elsewhere.
         if (module) {
             auto& imports = module->getImports();
             auto importIt = imports.find(shortName);
@@ -808,22 +643,17 @@ namespace cajeta {
                 return nullptr;
             }
         }
-        // Tier 3: the global canonical/short-name key.
         auto it = canonicalMap.find(shortName);
         return it != canonicalMap.end() ? it->second : nullptr;
     }
 
     std::string CajetaType::canonicalNameScoped(const string& shortName,
                                                 CajetaModulePtr module) {
-        // Tier 1: own package — accept a name that is built (canonicalMap) OR
-        // merely prescan-registered (g_archive), so a forward reference still
-        // resolves to its declaration's canonical FQN.
         string ownPkg = scopePackageOf(module);
         if (!ownPkg.empty()) {
             string canon = ownPkg + "." + shortName;
             if (canonicalMap.count(canon) || g_archive.count(canon)) return canon;
         }
-        // Tier 2: explicit imports.
         if (module) {
             auto& imports = module->getImports();
             auto it = imports.find(shortName);
@@ -831,8 +661,6 @@ namespace cajeta {
                 return it->second.begin()->second->toCanonical();
             }
         }
-        // Tier 3: the global short-name key (last-writer-wins across packages),
-        // via the archive so a not-yet-built forward reference is covered.
         auto a = g_archive.find(shortName);
         if (a != g_archive.end()) return a->second;
         return {};
@@ -880,10 +708,9 @@ namespace cajeta {
         return type;
     }
 
-    // Parse a `T[N]` bracket size literal into a fixed inline length. Returns
-    // the value for a plain non-negative integer literal (decimal or `0x` hex,
-    // underscores allowed); -1 for anything non-constant (a named const, an
-    // arithmetic expression, a `new`-time size) — those stay heap references.
+    // Parse a `T[N]` bracket size literal into a fixed inline length: the value of a
+    // plain non-negative decimal or `0x` literal (underscores allowed), -1 for
+    // anything non-constant -- those stay heap references.
     static int32_t parseConstantArrayLength(const std::string& text) {
         std::string s;
         for (char c : text) {
@@ -894,7 +721,7 @@ namespace cajeta {
             size_t pos = 0;
             int base = (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? 16 : 10;
             long v = std::stol(s, &pos, base);
-            if (pos != s.size()) return -1;       // trailing junk => not a plain literal
+            if (pos != s.size()) return -1;
             if (v < 0 || v > 0x7fffffff) return -1;
             return static_cast<int32_t>(v);
         } catch (...) {
@@ -902,28 +729,12 @@ namespace cajeta {
         }
     }
 
-    // The name-keyed core of declared-type resolution -- the tier discipline
-    // every type WRITTEN in source goes through: template-parameter
-    // substitution, the surrounding package, explicit imports, the global
-    // canonical/short-name keys (annotation hits deferred so @Foo never
-    // shadows a class Foo), then archive-vouched placeholder synthesis for
-    // forward references. Extracted from fromContext so NAME-ONLY resolution
-    // sites resolve identically to a declared type instead of reimplementing
-    // a subset -- the catch tier was the bug class: a bare CajetaType::of at
-    // parse time missed sibling-file/archive classes and silently degraded
-    // the clause to an int64-bound catch-all. Returns null when the name
-    // resolves nowhere; the CALLER decides whether that is an error.
     CajetaTypePtr CajetaType::resolveNamed(QualifiedNamePtr qName,
                                            CajetaModulePtr module) {
         if (!module) {
             module = CajetaModule::getActiveModule();
         }
         CajetaTypePtr type;
-        // Template type-parameter substitution: when we're inside a template
-        // instantiation walk, `T` should resolve to whatever concrete type
-        // was bound for this instantiation (consulted via the module's
-        // substitution stack). Only matched on the simple type name —
-        // template parameters are unqualified by definition.
         if (module) {
             CajetaTypePtr substituted = module->lookupTypeParameter(qName->getTypeName());
             if (substituted) {
@@ -932,38 +743,13 @@ namespace cajeta {
         }
         if (!type) {
             auto it = canonicalMap.find(qName->toCanonical());
-            // An annotation type (canonicalized under package "code") must
-            // NOT satisfy a plain type reference. A bare `Foo var` resolves
-            // its qName to "code.Foo" here; once @Foo exists that lookup
-            // hits the layout-less annotation and shadows a real class Foo
-            // (→ null-llvmType SIGSEGV at allocation). Treat an annotation
-            // hit as a miss so the import-aware / short-name resolution
-            // below binds the class. Annotation APPLICATIONS (`@Foo`)
-            // resolve through AnnotationParser, and classesAnnotated<@Foo>()
-            // passes the "code.Foo" canonical as a string — neither needs an
-            // annotation returned from here. (task #65)
+            // An annotation type must NOT satisfy a plain type reference: a bare
+            // `Foo` canonicalizes to "code.Foo", which an @Foo annotation owns too.
             bool annHit = false;
             if (it != canonicalMap.end()) {
                 auto kc = std::dynamic_pointer_cast<CajetaClass>(it->second);
                 annHit = kc && kc->isAnnotation();
             }
-            // Bare-name scoping. toCanonical() of a package-less name
-            // IS the short name, so the `it` lookup above consulted the
-            // GLOBAL short-name key — last-writer-wins across packages.
-            // When two classes share a short name (a user class
-            // shadowing an embedded-stdlib class is the canonical
-            // case), that key binds one package's references to the
-            // other package's class. Resolve bare names scoped-first:
-            //   1. the module's OWN package (self/sibling references),
-            //   2. the module's explicit imports — including forward
-            //      refs: an imported-but-not-yet-visited canonical is
-            //      remembered so placeholder synthesis below targets
-            //      the IMPORT, never the global short-name key,
-            //   3. only then the global canonical/short-name tiers.
-            // A bare identifier reaches here under the "code" pseudo-
-            // package (QualifiedName::fromContext defaults single
-            // identifiers to it), or occasionally with an empty package
-            // — both mean "unqualified in source".
             const bool bareName = qName->getPackageName().empty()
                                   || qName->getPackageName() == "code";
             std::string ownPkgCanonical;
@@ -982,12 +768,6 @@ namespace cajeta {
                 }
             }
             if (!type && bareName && module) {
-                // Import-aware short-name resolution. The map shape is
-                // imports[shortName][packageName] = qn, populated by
-                // onImportDeclaration. First entry wins — multiple
-                // imports of the same short name from different
-                // packages is a future ambiguity-error condition, not
-                // a quiet pick. v1 just takes one deterministically.
                 auto& imports = module->getImports();
                 auto importIt = imports.find(qName->getTypeName());
                 if (importIt != imports.end() && !importIt->second.empty()) {
@@ -999,14 +779,8 @@ namespace cajeta {
                     }
                 }
             }
-            // Global tiers — skipped when an explicit import names the
-            // class but it hasn't been visited yet: binding the global
-            // short-name key there would land the WRONG same-named
-            // class; the placeholder path below honors the import.
-            // Likewise skipped for a same-package forward reference the
-            // archive pre-scan can vouch for (a bare name declared in
-            // this module's own package but not yet visited) — the
-            // placeholder path below targets the own-package canonical.
+            // The global tiers are skipped when an import or the own-package archive
+            // vouches for the name: the placeholder path below honors that scope.
             bool ownPkgArchived = false;
             if (!type && importedCanonical.empty()
                 && !ownPkgCanonical.empty()) {
@@ -1017,44 +791,22 @@ namespace cajeta {
                 if (it != canonicalMap.end() && !annHit) {
                     type = it->second;
                 } else {
-                    // Fall back to the native ("") package — covers
-                    // built-in aliases like String/Exception that
-                    // fromContext defaults to package "code".
+                    // Fall back to the native ("") package: built-in aliases.
                     auto nativeIt = canonicalMap.find(qName->getTypeName());
                     if (nativeIt != canonicalMap.end()) {
                         type = nativeIt->second;
                     }
                 }
             }
-            // Annotation fallback. The branches above try a
-            // same-named real CLASS first (so @Foo never shadows a
-            // class Foo). If none resolved and the only hit was the
-            // annotation, the bare name refers to the annotation
-            // itself — e.g. classesAnnotated<Audited>() naming the
-            // annotation in type position with no `@`. (task #65)
             if (!type && annHit) {
                 type = it->second;
             }
-            // Placeholder synthesis. The four lookup tiers
-            // above couldn't find a defined type, but the
-            // archive pre-scan may have noted that the name
-            // IS declared somewhere in the compilation unit
-            // — just not yet visited by the body walk that
-            // would have populated canonicalMap. Create a
-            // forward-reference placeholder CajetaClass under
-            // the archive's canonical so the caller carries
-            // a real CajetaTypePtr forward. visitClassDeclaration
-            // later detects the existing placeholder and fills
-            // it in on the same shared_ptr.
+            // Placeholder synthesis: the archive says the name IS declared in this
+            // compilation unit, just not visited yet. The real visitClassDeclaration
+            // later fills in this same shared_ptr.
             if (!type) {
                 auto& archive = getArchive();
                 std::string lookup = qName->toCanonical();
-                // Scoped-first, mirroring the lookup tiers above: an
-                // explicitly imported canonical, then the module's own
-                // package, vouch before the global keys — the archive's
-                // short-name key is first-write-wins across packages,
-                // so a same-named class elsewhere must not supply the
-                // placeholder for a reference these scopes can resolve.
                 auto archIt = archive.end();
                 if (!importedCanonical.empty()) {
                     archIt = archive.find(importedCanonical);
@@ -1066,13 +818,10 @@ namespace cajeta {
                     archIt = archive.find(lookup);
                 }
                 if (archIt == archive.end()) {
-                    // Try short name — archive carries both keys
-                    // so bare-name references can still vouch.
                     archIt = archive.find(qName->getTypeName());
                 }
                 if (archIt != archive.end()) {
                     const std::string& canonical = archIt->second;
-                    // Parse canonical into package + short.
                     auto dot = canonical.find_last_of('.');
                     std::string pkg = (dot == std::string::npos)
                         ? std::string()
@@ -1083,17 +832,6 @@ namespace cajeta {
                     QualifiedNamePtr phName =
                         QualifiedName::getOrInsert(shortName, pkg);
                     if (isArchiveEnum(canonical)) {
-                        // Enum: synthesize the i32-backed
-                        // primitive type directly. Mirrors the
-                        // visitEnumDeclaration registration shape
-                        // so a cross-file `JsonToken current;`
-                        // field declaration gets the correct
-                        // layout (i32 slot) instead of a class-
-                        // shaped placeholder. Enum constants
-                        // (JsonToken.END, etc.) are populated
-                        // when the enum's own visitEnumDeclaration
-                        // body walk runs; this just makes the
-                        // TYPE available before that point.
                         llvm::LLVMContext* ctx2 = module
                             ? module->getLlvmContext()
                             : nullptr;
@@ -1110,27 +848,9 @@ namespace cajeta {
                                && lookupArchiveTemplateParameters(canonical)
                                       == nullptr
                                && module) {
-                        // Forward-referenced NON-generic interface: born
-                        // FAT. A field/param/local declared at this
-                        // interface type before the interface's own
-                        // declaration is visited must lay out as a 24-byte
-                        // fat pointer `{ ptr data, ptr vtable, i64 kind }`,
-                        // not a thin 8-byte class pointer — otherwise the
-                        // owning class's layout reserves the wrong width and
-                        // interface dispatch through the member is silently
-                        // dropped at codegen (no `call` emitted → garbage
-                        // result). Build the named struct body eagerly here
-                        // (keyed by canonical, so the interface's real
-                        // generatePrototype reuses the SAME StructType) and
-                        // tag the placeholder isInterface=true so
-                        // fieldLayoutType + the interface-dispatch path take
-                        // the fat branch. The real visitInterfaceDeclaration
-                        // later fills this SAME shared_ptr with the method
-                        // set (placeholder reuse), so every earlier
-                        // reference picks up the dispatch slots.
-                        // (Generic interfaces fall through to the class
-                        // placeholder path below, which handles
-                        // typeParameters / instantiation.)
+                        // A forward-referenced non-generic interface must be born
+                        // FAT -- `{ ptr data, ptr vtable, i64 kind }`, 24 bytes -- or
+                        // the owner reserves 8 and dispatch is dropped at codegen.
                         auto placeholder = std::make_shared<CajetaClass>(
                             module, phName,
                             std::list<QualifiedNamePtr>{},
@@ -1151,28 +871,14 @@ namespace cajeta {
                                 llvm::ArrayRef<llvm::Type*>(members), false);
                         }
                         placeholder->setLlvmType(body);
-                        // getOrCreateLlvmType inserted a plain CajetaType
-                        // for `canonical`; overwrite both keys so name
-                        // lookups land the interface CajetaClass (a
-                        // class→interface upcast at a call site needs the
-                        // formal's type to dynamic_cast to CajetaClass).
+                        // Overwrite the plain CajetaType getOrCreateLlvmType just
+                        // registered, so name lookups land the interface CajetaClass.
                         canonicalMap[canonical] = placeholder;
                         canonicalMap[shortName] = placeholder;
                         type = placeholder;
                     } else if (isArchiveView(canonical)) {
-                        // Forward-referenced VIEW: the placeholder must
-                        // BE a CajetaView, not a class shell — view
-                        // classification (CajetaView::isElementArray,
-                        // descriptor-view detection, member lookup via
-                        // captured type ptrs) dynamic_casts the element/
-                        // receiver type, and a class-shaped placeholder
-                        // silently declassifies it (the gossip
-                        // Delta[]-before-Delta bug: file visit order is
-                        // directory order, so GossipMessage.cajeta's
-                        // `Delta[] deltas` resolved before Delta.cajeta
-                        // was visited). visitViewDeclaration later
-                        // detects this placeholder and fills the SAME
-                        // shared_ptr (annotations, body, prototype).
+                        // The placeholder must BE a CajetaView: view classification
+                        // and member lookup dynamic_cast the type.
                         auto placeholder = std::make_shared<CajetaView>(
                             module, phName);
                         placeholder->setPlaceholder(true);
@@ -1185,43 +891,17 @@ namespace cajeta {
                             std::list<QualifiedNamePtr>{},
                             std::list<QualifiedNamePtr>{});
                         placeholder->setPlaceholder(true);
-                        // Born-correct @ValueType: if the prescan saw
-                        // this class annotated @ValueType, the placeholder
-                        // gets VALUE_TYPE_FLAG | BY_VALUE_FLAG NOW, before
-                        // generatePrototype runs on the canonical. This is
-                        // the stale-instance fix: any AST node that captures
-                        // this placeholder (a `Vec2 a;` local-var type) sees
-                        // the by-value storage axis directly, so StackField /
-                        // LocalVariableDeclaration allocate an inline slot
-                        // without a canonical-map backstop. Mirrors the
-                        // isArchiveEnum i32 path above.
+                        // Born-correct @ValueType, so any AST node that captures this
+                        // placeholder sees the by-value storage axis directly.
                         if (isArchiveValueType(canonical)) {
                             placeholder->addTypeFlags(
                                 VALUE_TYPE_FLAG | BY_VALUE_FLAG);
                         }
-                        // A forward-referenced GENERIC interface takes this
-                        // class-shaped placeholder path (the fat-interface
-                        // branch above is non-generic only), but its
-                        // instantiation must route through the templated-
-                        // INTERFACE re-parse — instantiateInternal keys on
-                        // isInterface, and without the tag it re-parses the
-                        // captured interface source expecting a
-                        // classDeclaration and aborts (first hit: the frame
-                        // package's `Rebinder<T>` referenced by Table.cajeta
-                        // before Rebinder.cajeta parses).
+                        // A forward-referenced GENERIC interface takes this path;
+                        // instantiateInternal keys on isInterface to re-parse it.
                         if (isArchiveInterface(canonical)) {
                             placeholder->setIsInterface(true);
                         }
-                        // Template-metadata seeding. If the prescan
-                        // captured typeParameters + source for this
-                        // class, install them on the placeholder now —
-                        // then `placeholder->isTemplate()` returns
-                        // true and a use-site `T<args>` reference can
-                        // immediately call instantiate(args), instead
-                        // of silently dropping the type-args. The
-                        // real visitClassDeclaration later overwrites
-                        // both fields with identical values from the
-                        // real parse (harmless).
                         if (const auto* archParams =
                                 lookupArchiveTemplateParameters(canonical)) {
                             placeholder->setTypeParameters(*archParams);
@@ -1230,16 +910,8 @@ namespace cajeta {
                                 placeholder->setTemplateSource(*archSrc);
                             }
                         }
-                        // Don't pre-set llvmType — leave it null so
-                        // the real generatePrototype's
-                        // getOrCreateLlvmType call creates a named
-                        // StructType under the canonical (rather
-                        // than seeing a pre-set non-struct type and
-                        // discarding the name). CajetaClass::getLlvmType
-                        // overrides to return `ptr` while the
-                        // placeholder is unfilled, so earlier-parsed
-                        // classes composing layouts against the
-                        // placeholder still get a sized type back.
+                        // Leave llvmType null: the real generatePrototype's
+                        // getOrCreateLlvmType must create the named StructType.
                         canonicalMap[canonical] = placeholder;
                         canonicalMap[shortName] = placeholder;
                         type = placeholder;
@@ -1250,52 +922,27 @@ namespace cajeta {
         return type;
     }
 
-    // ide-symbol-index: the resolution CORE. `fromContext` below is the
-    // thin wrapper that also records the xref reference — merged with
-    // upstream's resolveNamed refactor 2026-07-22 (both wanted: their
-    // name-tier fix, our capture hook).
     cajeta::CajetaTypePtr cajeta::CajetaType::fromContextImpl(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module) {
-        // Fall back to the active module set during the walk — many parse-time
-        // call sites don't have a `module` to pass. See CajetaModule::activeModule.
         if (!module) {
             module = CajetaModule::getActiveModule();
         }
-        // Function type: `(T1, T2) -> R`. Resolve each component and build
-        // (or look up by canonical) a CajetaFunctionType. See
-        // docs/specification/lang/Lambdas.md. The return slot is typeTypeOrVoid so
-        // `(T) -> void` is a legal function-type shape (P6.5).
         if (auto* fnt = ctx->functionType()) {
             std::vector<CajetaTypePtr> paramTypes;
             for (auto* p : fnt->typeType()) {
                 paramTypes.push_back(fromContext(p, module));
             }
             CajetaTypePtr ret;
-            // M5(b) — function-type return ABI discriminator. Source-level
-            // `(P) -> #R` (REFERENCE present) means the ownership/heap
-            // pointer-return form `R* (params)`; `(P) -> R` (no `#`) means
-            // the sret value-return form `void (ptr sret(R), params)`. The
-            // distinction is only meaningful when the return type can be
-            // sret-shaped (class, non-interface, non-array, non-view) —
-            // CajetaFunctionType's canonical-build normalizes non-eligible
-            // returns to ownership so primitive/void/interface fn-types
-            // don't get spurious canonical splits.
+            // Function-type return ABI: `-> #R` is the pointer-return form
+            // `R* (params)`; plain `-> R` is the sret form `void (ptr sret(R),
+            // params)`. buildCanonical normalizes non-sret-eligible returns.
             bool returnsOwn = true;
             if (auto* rt = fnt->typeTypeOrVoid()) {
                 if (rt->VOID()) {
-                    // Resolve void via canonicalMap (registered by the
-                    // primitive-bootstrap path).
                     QualifiedNamePtr voidQ = QualifiedName::getOrInsert(
                         "void", CAJETA_NATIVE_PACKAGE);
                     auto vIt = canonicalMap.find(voidQ->toCanonical());
                     if (vIt != canonicalMap.end()) ret = vIt->second;
                 } else if (rt->typeType()) {
-                    // 8.2.8 / spec §4.7 — the grammar lets `^R` parse here
-                    // (functionType routes through typeTypeOrVoid), but the
-                    // function-type ABI has only two return shapes (ownership
-                    // pointer-return vs sret value-return) and no view
-                    // stance: classifying a CARET silently as either one is
-                    // a wrong ABI with no diagnostic. Rejected until `^` has
-                    // a reference-stance story (the spec's open question).
                     if (rt->CARET() != nullptr) {
                         throw Exception(
                             "`^` (view) returns are not supported on function "
@@ -1310,13 +957,8 @@ namespace cajeta {
                     returnsOwn = (rt->REFERENCE() != nullptr);
                 }
             }
-            // ret may be null when the return slot names an unknown
-            // identifier — pre-P6.5 fromContext returned null for an
-            // unresolved name without throwing, and downstream codegen
-            // (e.g. method-reference NOT_IMPLEMENTED) surfaced the
-            // original problem. Preserve that shape: build the
-            // CajetaFunctionType with a null return; buildCanonical
-            // already handles it ("?" slot).
+            // A null return is legal here: an unresolved return-slot name stays null
+            // rather than throwing, and buildCanonical gives it a "?" slot.
             std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret, returnsOwn);
             CajetaTypePtr fnAsType;
             auto it = canonicalMap.find(canon);
@@ -1328,13 +970,8 @@ namespace cajeta {
                 canonicalMap[canon] = static_pointer_cast<CajetaType>(fnType);
                 fnAsType = static_pointer_cast<CajetaType>(fnType);
             }
-            // Array-of-function-type: the parenthesized-arrayed form `((T)->R)[]`
-            // (grammar alt `'(' functionType ')' ('[' ']')*`). The inner
-            // functionType is what `ctx->functionType()` matched above; any `[`
-            // `]` pairs here belong to the *outer* grouping, so wrap the function
-            // type in `CajetaArray` per pair — mirroring the class/primitive
-            // bracket loop below. Bare `(T)->R` has no brackets and falls through
-            // returning the function type itself.
+            // `((T)->R)[]`: brackets at this level belong to the OUTER grouping, so
+            // wrap the function type in a CajetaArray once per pair.
             CajetaTypePtr type = fnAsType;
             int bracketPairs = static_cast<int>(ctx->LBRACK().size());
             for (int i = 0; i < bracketPairs; i++) {
@@ -1358,38 +995,9 @@ namespace cajeta {
                 throw "What is this if not a class or interface?";
             }
             type = resolveNamed(qName, module);
-            // Template instantiation: if the type-use site carries
-            // typeArguments (e.g. `Box<int32>`), resolve them and route
-            // through the template's instantiate(...) cache. Each argument
-            // is itself a typeType and goes through fromContext recursively
-            // — substitutions cascade naturally, so `Pair<int32, T>` inside
-            // an outer template walk lands `T` to its current substitution
-            // before instantiating Pair.
-            //
-            // Diamond operator (`Box<>`) is parsed as typeArgumentsOrDiamond
-            // but doesn't appear in the typeType production — it only shows
-            // up under classCreatorRest's createdName. So here we only see
-            // explicit-args typeArguments; diamond inference is TPL-7's job
-            // and lives in NewExpression / ClassCreatorRest.
             if (auto* targs = ctxClassOrInterface->typeArguments(0)) {
-                // Built-in Task<T>: synthesized type, not a user template.
-                // CajetaTask::getOrCreate(module, T) materializes a fresh
-                // CajetaTask per (module, T) and caches it on the module
-                // structure map. Handled here — before the generic
-                // template path — so we don't need to register a fake
-                // "Task" template class just to satisfy the
-                // isTemplate() check. See docs/AsyncStatus.md §
-                // Plan: Task<T> as user-typeable template.
                 if (qName->getTypeName() == "Vector"
                         && targs->typeArgument().size() == 2) {
-                    // Built-in Vector<T, N> — a value vector lowering to
-                    // <N x T>. arg0: element type (a non-bool numeric
-                    // primitive). arg1: a positive integer-constant lane
-                    // count. Synthesized here (like Task) before the generic
-                    // template path; the element-numeric / N-positive
-                    // constraints are checked directly since Vector is not a
-                    // user template that would run TemplateInstantiator's bound
-                    // check. See CajetaVector.
                     auto* elemArg = targs->typeArgument()[0];
                     auto* lenArg = targs->typeArgument()[1];
                     if (!elemArg->typeType()) {
@@ -1399,40 +1007,20 @@ namespace cajeta {
                             "CAJETA_ERROR_VECTOR_ELEMENT_TYPE");
                     }
                     CajetaTypePtr elemT = fromContext(elemArg->typeType(), module);
-                    // N is either a syntactic integer literal (`Vector<float32,4>`)
-                    // or a bound const generic parameter (`Vector<float32,N>` inside
-                    // a `<uint32 N>` method/class) — the latter resolves through the
-                    // active substitution map to a CajetaConstantType, the same path
-                    // user templates use for `Box<N>`. This is what lets one generic
-                    // source monomorphize per width (cajeta-accel §4.5).
                     int64_t n = vectorLengthArg(lenArg, module,
                                                 "CAJETA_ERROR_VECTOR_LENGTH",
                                                 "Vector length N");
-                    // Semantic checks (numeric/non-bool element, positive N)
-                    // are shared with the construction path. See CajetaVector.
                     type = CajetaVector::validateAndCreate(module, elemT, n);
                 } else if (qName->getTypeName() == "Matrix"
                         && targs->typeArgument().size() == 3) {
-                    // Lazy stdlib: cajeta.math is parsed on demand. The flat
-                    // CajetaMatrix type resolves below without the parsed class,
-                    // but Matrix's operator/method surface (a+b, .transpose(),
-                    // .determinant(), ...) lives in cajeta.math.Matrix and is
-                    // resolved later at codegen — so a bare `Matrix<...>` (no
-                    // explicit import) must still pull cajeta.math in. Fire the
-                    // import hook here; the package is prescanned now and fully
-                    // parsed at the next drain, before operator codegen runs.
+                    // cajeta.math is parsed lazily: the flat CajetaMatrix resolves
+                    // without it, but Matrix's operator/method surface lives in
+                    // cajeta.math.Matrix, so a bare `Matrix<...>` must pull it in.
                     if (CajetaModule::stdlibImportHook) {
                         CajetaModule::stdlibImportHook("cajeta.math");
                     }
-                    // Built-in Matrix<T, R, C> (B1) — the HYBRID value type. The
-                    // declared cajeta.math.Matrix class supplies the operator/
-                    // method surface (and was already resolved into `type` by the
-                    // short-name fallback above), but a concrete `Matrix<...>`
-                    // REFERENCE resolves to the flat row-major CajetaMatrix
-                    // representation (`<R*C x T>`), which codegen intercepts —
-                    // identical generated code to a pure-intrinsic vector. arg0:
-                    // element type (a non-bool numeric primitive); arg1/arg2:
-                    // positive integer-constant row/col counts. See CajetaMatrix.
+                    // A concrete `Matrix<...>` reference resolves to the flat
+                    // row-major CajetaMatrix (`<R*C x T>`) that codegen intercepts.
                     auto* elemArg = targs->typeArgument()[0];
                     auto* rowArg = targs->typeArgument()[1];
                     auto* colArg = targs->typeArgument()[2];
@@ -1443,8 +1031,6 @@ namespace cajeta {
                             "CAJETA_ERROR_MATRIX_ELEMENT_TYPE");
                     }
                     CajetaTypePtr elemT = fromContext(elemArg->typeType(), module);
-                    // R and C accept a literal or a bound const generic parameter
-                    // (mirrors the Vector length path above).
                     int64_t r = vectorLengthArg(rowArg, module,
                                                 "CAJETA_ERROR_MATRIX_DIMENSIONS",
                                                 "Matrix dimension R");
@@ -1454,10 +1040,6 @@ namespace cajeta {
                     type = CajetaMatrix::validateAndCreate(module, elemT, r, c);
                 } else if (qName->getTypeName() == "Quaternion"
                         && targs->typeArgument().size() == 1) {
-                    // Built-in Quaternion<T> — a value quaternion lowering to
-                    // `<4 x T>` (w, x, y, z). arg0: a floating-point element
-                    // type. Synthesized here (like Vector/Matrix); the
-                    // float-element constraint is checked in validateAndCreate.
                     auto* elemArg = targs->typeArgument()[0];
                     if (!elemArg->typeType()) {
                         throw Exception(
@@ -1480,20 +1062,9 @@ namespace cajeta {
                     }
                 } else {
                     auto templateClass = dynamic_pointer_cast<CajetaClass>(type);
-                    // Same-short-name collision guard. A parameterized
-                    // reference `Foo<...>` can ONLY denote a generic class —
-                    // you cannot parameterize a non-generic one. If the bare
-                    // short-name fallback above landed a NON-template (e.g.
-                    // unqualified `Stream<T>` resolved to the final,
-                    // non-generic `cajeta.xpu.KernelStream` instead of the
-                    // generic `cajeta.lang.stream.Stream`, because both
-                    // register the bare key "Stream" in the process-global
-                    // canonicalMap and the last writer wins), re-resolve to a
-                    // same-short-name TEMPLATE. Without this the type
-                    // arguments are silently dropped and the intended generic
-                    // type/parent is lost — which broke every
-                    // `ArrayStream<T>`-derived stream (fold/map/reduce/…) once
-                    // `cajeta.xpu.KernelStream` was added to the build.
+                    // A parameterized `Foo<...>` can only denote a generic class, so
+                    // when the bare short-name key landed a NON-template (last writer
+                    // wins across packages), re-resolve to a same-named template.
                     if (!templateClass || !templateClass->isTemplate()) {
                         if (auto t = findTemplateByShortName(qName->getTypeName())) {
                             templateClass = dynamic_pointer_cast<CajetaClass>(t);
@@ -1502,17 +1073,9 @@ namespace cajeta {
                     }
                     if (templateClass && templateClass->isTemplate()) {
                         vector<CajetaTypePtr> args;
-                        // A `#`-prefixed class-typed argument carries no
-                        // meaning; the loop below rejects it with
-                        // TYPE_TRANSFER_RETIRED. Ownership is per-call, spelled
-                        // at the call/store site.
                         for (auto* targ : targs->typeArgument()) {
-                            // Wildcard branch — `?`, `? extends T`, or
-                            // `? super T`. Grammar
-                            // `'?' ((EXTENDS|SUPER) typeType)?` means
-                            // typeType() carries the BOUND for bounded
-                            // forms (not a regular type arg). Step 6
-                            // — see docs/TemplateWildcard.md.
+                            // Grammar `'?' ((EXTENDS|SUPER) typeType)?`: in a bounded
+                            // form typeType() is the BOUND, not a regular type arg.
                             if (targ->QUESTION() != nullptr) {
                                 if (!CajetaType::wildcardsEnabled()) {
                                     throw "wildcard type arguments not supported in v1";
@@ -1545,22 +1108,12 @@ namespace cajeta {
                                 continue;
                             }
                             if (targ->integerLiteral() != nullptr) {
-                                // Non-type (integer constant) template
-                                // argument — the `N` in `Vector<T, N>` and,
-                                // latently, any future user template that
-                                // takes a `uint32 N` parameter. Carried as a
-                                // CajetaConstantType so it flows through the
-                                // existing vector<CajetaTypePtr> + cache-key
-                                // machinery unchanged.
                                 args.push_back(CajetaConstantType::of(
                                     CajetaConstantType::parseLiteral(
                                         targ->integerLiteral())));
                                 continue;
                             }
                             if (!targ->typeType()) {
-                                // Bare `primitiveType` alternative.
-                                // typeType already subsumes primitives,
-                                // so this branch is effectively dead.
                                 throw "unresolved template argument";
                             }
                             CajetaTypePtr argType = fromContext(targ->typeType(), module);
@@ -1568,9 +1121,6 @@ namespace cajeta {
                                 throw "unresolved template argument";
                             }
                             args.push_back(argType);
-                            // title-tracking §8.1 (plan 7.1.1) — type-argument
-                            // `#` is retired: ownership is per-call, the store
-                            // site decides and the entry bit records.
                             if (targ->REFERENCE() != nullptr) {
                                 throw Exception(
                                     "`#` on a type argument is retired: "
@@ -1587,15 +1137,8 @@ namespace cajeta {
                     }
                 }
             } else {
-                // No explicit type arguments. If the name denotes a template
-                // whose parameters are ALL defaulted (`class Foo<T = float32>`),
-                // a bare `Foo` means `Foo<float32>` — resolve it to that
-                // instantiation, so default-bearing generics are usable without
-                // `<>` and a type that GAINS a defaulted parameter keeps its
-                // existing bare spellings working. A template with any
-                // non-defaulted parameter is left as the bare template
-                // (unchanged — its use errors elsewhere as today). Inert until a
-                // template actually declares defaults.
+                // No explicit arguments: a template whose parameters are ALL
+                // defaulted resolves bare `Foo` to `Foo<float32>`.
                 auto tmpl = dynamic_pointer_cast<CajetaClass>(type);
                 if (!tmpl || !tmpl->isTemplate()) {
                     if (auto t = findTemplateByShortName(qName->getTypeName())) {
@@ -1614,17 +1157,9 @@ namespace cajeta {
                 }
             }
         }
-        // Each `[]` pair wraps the type in another CajetaArray. `int[]` -> CajetaArray<int>;
-        // `int[][]` -> CajetaArray<CajetaArray<int>>. A bracket carrying a
-        // CONSTANT integer size (`int8[64]`) is a fixed-size INLINE array field
-        // (stored inline in the enclosing object, no heap); an empty `[]` or a
-        // non-constant size stays a heap reference (size is then an
-        // allocation-time concern that doesn't change the type).
-        //
-        // An unresolved ELEMENT type must exit here as null, same as the
-        // non-array miss path — wrapping null in CajetaArray dereferences it
-        // in the ctor (toCanonical), turning a reportable
-        // CAJETA_ERROR_UNRESOLVED_TYPE into a segfault.
+        // Each `[]` pair wraps the type in another CajetaArray; a bracket carrying a
+        // CONSTANT size is a fixed-size inline array. An unresolved element type must
+        // exit null here -- CajetaArray's ctor dereferences it (segfault, no report).
         if (!type) return nullptr;
         int bracketPairs = static_cast<int>(ctx->LBRACK().size());
         for (int i = 0; i < bracketPairs; i++) {
@@ -1641,15 +1176,9 @@ namespace cajeta {
         return type;
     }
 
-    // Recording wrapper (ide-symbol-index 2.1.5 / 2.2.2). fromContext is the one
-    // choke point every type name in the language passes through — field types,
-    // parameter and return types, type arguments, locals, extends/implements — so
-    // hooking it here gives the IDE every type reference with no per-site
-    // instrumentation, exactly as resolveMethod does for calls.
-    //
-    // The ctx knows its own file (Compiler::parseSource names each real-source
-    // stream), so a name in a SYNTHESIZED snippet resolves to no file and is
-    // skipped: its line numbers refer to the snippet, not to anywhere.
+    // Recording wrapper over fromContextImpl: the one choke point every type name in
+    // the language passes through, so the xref index captures every type reference
+    // here. A name in synthesized source resolves to no file and is skipped.
     cajeta::CajetaTypePtr cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module) {
         CajetaTypePtr resolved = fromContextImpl(ctx, module);
         if (!xref::captureEnabled() || !resolved || !ctx) return resolved;
@@ -1658,17 +1187,12 @@ namespace cajeta {
         if (!tok || !tok->getInputStream()) return resolved;
         const std::string* file =
             xref::internSourceFile(tok->getInputStream()->getSourceName());
-        if (!file) return resolved;                 // synthesized source: no position
+        if (!file) return resolved;
 
-        // Only NAMED types are navigable. A primitive (`int32`) declares nowhere,
-        // and an array/function type is structural — its ELEMENT type is what a
-        // developer Ctrl-clicks, and that resolved through its own fromContext call
-        // (this function recurses), so it is already recorded at its own position.
         auto klass = std::dynamic_pointer_cast<CajetaClass>(resolved);
         if (!klass) return resolved;
 
-        // An instantiation (`ArrayList<int32>`) has no source of its own — the
-        // declaration is the TEMPLATE's, which is what the index carries.
+        // An instantiation has no source of its own; the index carries the template.
         std::string target = klass->getQName()->toCanonical();
         auto lt = target.find('<');
         if (lt != std::string::npos) target = target.substr(0, lt);
@@ -1695,8 +1219,7 @@ namespace cajeta {
             if (type->isStructTy()) {
                 llvm::StringRef ref = type->getStructName();
                 if (!ref.empty()) {
-                    // find, not operator[]: a miss must not insert a null
-                    // entry (see the of() overloads above) — typeMap included.
+                    // find, not operator[]: a miss must not insert a null entry.
                     auto it = canonicalMap.find(ref.str());
                     if (it != canonicalMap.end()) result = it->second;
                 }
@@ -1714,6 +1237,8 @@ namespace cajeta {
         return of(value->getType(), parent);
     }
 
+    // The named struct type in `ctx`, created opaque -- and registered in
+    // canonicalMap under `name` -- when it does not exist yet.
     llvm::StructType* CajetaType::getOrCreateLlvmType(llvm::LLVMContext* ctx, string name) {
         llvm::StructType* result = llvm::StructType::getTypeByName(*ctx, name);
         if (result == nullptr) {
@@ -1728,11 +1253,12 @@ namespace cajeta {
     llvm::StructType* CajetaType::getOrCreateLlvmStructNoRegister(llvm::LLVMContext* ctx, const string& name) {
         llvm::StructType* result = llvm::StructType::getTypeByName(*ctx, name);
         if (result == nullptr) {
-            result = llvm::StructType::create(*ctx, name);  // opaque; caller sets body
+            result = llvm::StructType::create(*ctx, name);
         }
         return result;
     }
 
+    // As above, but creates the struct with `properties` as its body.
     llvm::StructType* CajetaType::getOrCreateLlvmType(llvm::LLVMContext* ctx, string name, vector<llvm::Type*> properties) {
         llvm::StructType* result = llvm::StructType::getTypeByName(*ctx, name);
         if (result == nullptr) {
@@ -1743,27 +1269,19 @@ namespace cajeta {
         return result;
     }
 
-    /**
-     *
-     * @param op
-     * @return
-     */
+    /** The CajetaTypeFlags describing `op`'s LLVM type. Vectors key on their
+     * ELEMENT type; any otherwise-unmapped type falls back to STRUCT_TYPE_ID. */
     CajetaTypeFlags CajetaType::getTypeFlagsOf(llvm::Value* op) {
         llvm::Type* opType = op->getType();
         if (opType->getTypeID() == llvm::Type::StructTyID) {
             return STRUCT_TYPE_ID;
         }
-        // Vector value types (Vector<T,N> -> <N x T>): key on the ELEMENT type —
-        // per-lane arithmetic follows the element's signedness/width. Without
-        // this, llvmTypeIdMap has no entry for the vector type id and operator[]
-        // default-inserts a null CajetaTypePtr, so `->typeFlags` null-derefs.
-        // That was the crash behind chained / reassigned Vector codegen
-        // (e.g. `v = v + v`, the xxhash3 accumulate). getScalarType() returns the
-        // element type for vectors and the type itself for scalars.
+        // Vectors key on the ELEMENT type -- per-lane arithmetic follows the
+        // element's signedness/width. getScalarType() is identity for scalars.
         opType = opType->getScalarType();
         auto it = llvmTypeIdMap.find(opType->getTypeID());
         if (it == llvmTypeIdMap.end() || !it->second) {
-            return STRUCT_TYPE_ID; // safe fallback for any otherwise-unmapped type
+            return STRUCT_TYPE_ID;
         }
         return it->second->typeFlags;
     }
@@ -1780,7 +1298,7 @@ namespace cajeta {
             if (typeFlags & SIGNED_FLAG) {
                 if (TYPE_ID(typeFlags) - TYPE_ID(opTypeFlags) == 1) {
                 }
-            } else { // if not signed
+            } else {
                 if (opTypeFlags & SIGNED_FLAG) {
                     // Throw explicit cast exception
                 }
@@ -1808,8 +1326,6 @@ namespace cajeta {
                 case FLOAT8E5M2_TYPE_ID:
                 case FLOAT8E4M3FNUZ_TYPE_ID:
                 case FLOAT8E5M2FNUZ_TYPE_ID:
-                    // LLVM has no IR-level Type* for these formats. Storage is iN; casts to/from
-                    // standard FP types need runtime conversion helpers (not yet implemented).
                     throw Exception(string("Casts to sub-fp16 float types require runtime conversion helpers (not yet implemented)."), string("101"));
                 case FLOAT16_TYPE_ID:
                 case BFLOAT16_TYPE_ID:

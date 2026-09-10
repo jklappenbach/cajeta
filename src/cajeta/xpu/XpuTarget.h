@@ -1,23 +1,6 @@
-//
-// XPU backend selection seam.
-//
-// The frontend, MIR, KernelArg validation, the `shared` keyword, launch
-// grammar and launch-borrow checking are all backend-agnostic — they run
-// identically for every device target. The fork happens only at codegen:
-// which device IR, which assembler, which loader. This header is the single
-// dispatch point that picks the concrete backend.
-//
-// `Backend` is deliberately defined here (in the xpu layer) and NOT reused
-// from Compiler.h's `XpuBackend`: the xpu/ code must not depend on the
-// compile/ layer. Compiler maps its own enum onto this one (see
-// Compiler::emitXpuKernels). The None case lives only in Compiler's enum —
-// by the time we reach this seam a concrete device backend has been chosen.
-//
-// History: this seam was extracted by threading a second backend (AMDGPU)
-// through the originally NVIDIA-only path — the first `switch (backend)`
-// below is exactly the seam coordinate cajeta-amd.md §0 describes.
-//
-
+// XPU backend selection seam: everything above codegen is backend-agnostic, and the fork
+// (which device IR, which assembler, which loader) happens here. `Backend` is defined in
+// the xpu layer rather than reused from Compiler.h, because xpu/ must not depend on compile/.
 #pragma once
 
 #include <memory>
@@ -37,9 +20,8 @@ namespace xpu {
 
     struct KernelManifest;
 
-    // The concrete device backends. These values are a runtime ABI — cast to
-    // ids in emitBackendManifest — so the explicit initializers are load-bearing:
-    // never renumber or reorder without updating every consumer of the manifest.
+    // The concrete device backends. These values are a runtime ABI - cast to ids in
+    // emitBackendManifest - so never renumber or reorder them.
     enum class Backend {
         Nvptx  = 0,  // NVIDIA: AST -> device IR -> PTX -> ptxas -> cubin.
         Amdgpu = 1,  // AMD:    AST -> device IR -> AMDGCN ISA -> lld -> hsaco.
@@ -58,14 +40,9 @@ namespace xpu {
         return "?";
     }
 
-    // Embed each @Kernel's device binary + a registration ctor into
-    // `hostModule`, dispatching to the chosen backend. Returns the number of
-    // kernels successfully embedded. Mirrors the per-backend
-    // emitKernelRegistration contract: unsupported kernels (XPU-N01) are
-    // skipped, not fatal. `arch` is the device arch string (e.g. "sm_89" or
-    // "gfx1151"). `manifests`, when given, receives one KernelManifest per
-    // (kernel, target) the backend embedded (xpu-tile-manifest §2) — the
-    // compiler writes the JSON copies from it; the JIT host passes nothing.
+    // Embed each @Kernel's device binary plus a registration ctor into `hostModule` for
+    // the chosen backend, returning how many were embedded; an unsupported kernel (XPU-N01)
+    // is skipped, not fatal. `manifests`, when given, takes one entry per embedded pair.
     int emitKernelRegistration(Backend backend,
                                const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
@@ -74,23 +51,17 @@ namespace xpu {
                                    kernelMaxThreads = {},
                                std::vector<KernelManifest>* manifests = nullptr);
 
-    // Embed each graphics-shader (@Vertex/@Fragment/…) method's SPIR-V + a
-    // registration ctor into `hostModule` — the rasterization parallel of
-    // emitKernelRegistration. Graphics is a SPIR-V/Vulkan-only capability: this
-    // dispatches to the Vulkan backend for Backend::Spirv and is a no-op
-    // (returns 0) for every other device target, which has no raster pipeline.
-    // Returns the number of shaders embedded. Same skip-don't-fail contract.
+    // The rasterization parallel of emitKernelRegistration for @Vertex/@Fragment methods.
+    // Graphics is SPIR-V/Vulkan-only, so this returns 0 on every other backend. Same
+    // skip-don't-fail contract, returning the number of shaders embedded.
     int emitGraphicsRegistration(Backend backend,
                                  const std::vector<MethodPtr>& shaders,
                                  llvm::Module& hostModule,
                                  const std::string& arch);
 
-    // Emit one global ctor per bundled backend calling the runtime hook
-    // __cajeta_xpu_register_backend((int) backend) — the compile-time manifest
-    // the runtime dispatcher (cajeta-cpu.md Increment 4) reads to know which
-    // backends a binary bundled. The Backend enum values (Nvptx=0, Amdgpu=1,
-    // Spirv=2, Cpu=3) deliberately match the runtime's priority-ordered ids
-    // (CUDA=0, HIP=1, VULKAN=2, CPU=3), so the id is just (int) backend.
+    // Emit one global ctor per bundled backend calling __cajeta_xpu_register_backend, the
+    // compile-time manifest the runtime dispatcher reads. The Backend values match the
+    // runtime's priority-ordered ids, so the id is just (int) backend.
     void emitBackendManifest(const std::vector<Backend>& backends,
                              llvm::Module& hostModule);
 

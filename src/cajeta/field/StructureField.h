@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 11/14/22.
-//
+// StructureField - a Field at a fixed index within an enclosing structure.
 
 #pragma once
 

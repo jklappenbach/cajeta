@@ -34,10 +34,7 @@ namespace cajeta::buildtool {
                                             : l.root / "obj";
         l.artifacts = cfg.artifacts ? fs::path(*cfg.artifacts)
                                     : l.root / "archive";
-        // <root>/exe, not §3.1's build/bin: unit 2 kept the executable where
-        // the toolchain skill and check-guide-part1.sh expect it. The KEY is
-        // `binaries`, so adopting bin later is a default change rather than a
-        // new setting.
+        // Defaults to <root>/exe, where the toolchain skill and guide checks look.
         l.binaries = cfg.binaries ? fs::path(*cfg.binaries) : l.root / "exe";
         return l;
     }

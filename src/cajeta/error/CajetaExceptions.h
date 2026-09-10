@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 11/6/22.
-//
+// Umbrella include for the compiler's exception types.
 
 #pragma once
 

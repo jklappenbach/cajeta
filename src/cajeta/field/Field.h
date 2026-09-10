@@ -32,20 +32,8 @@ namespace cajeta {
     class Scope;
     typedef shared_ptr<Scope> ScopePtr;
 
-    /**
-     * Types of fields:
-     * - Alloca variables, stack allocated.  This includes all native types and arrays.  Alloca variables are not assignable as a reference.
-     * - Heap variables, allocated with new.  This is all classes, and also includes arrays.
-     * - Arrays
-     *  - Two types of arrays:
-     *      - Alloca: int64[4] anArray; <-- This creates a type, int64[4]
-     *      - Heap: int64[] aReference; <-- This creates a reference
-     *
-     *      Can references point at stack based arrays?  I don't see why not.  However the following rules would need to be enforced:
-     *      - The dimension of the reference must match the stack alloca dimension
-     *      - Only non-ownership references
-     *
-     */
+    /** A named binding: an alloca for native types and fixed arrays, a heap
+     *  reference for classes. Subclasses supply the load, store and alloca. */
     class Field : public Modifiable, public Annotatable {
     protected:
         CajetaModulePtr module;
@@ -58,67 +46,37 @@ namespace cajeta {
         llvm::AllocaInst* alloca;
         llvm::Value* dropEntry = nullptr;
         bool runtimeConditionalOwner = false;
-        // Unit 9 (spec 5.14) — the drop entry may describe a DISPLACED value, so
-        // readers compare the entry's object with the local's before trusting it.
+        // The drop entry may describe a DISPLACED value: compare before trusting.
         bool entryMayBeStale = false;
         bool stackInstance = false;
-        // stdlib-ownership-convention U2 — when this local was initialised
-        // from a BORROW-returning call (a callee whose return type is not
-        // spelled `#`), the call that lent it. `#local` is then a lie: the
-        // owner is whatever object that call read the value out of, and it
-        // still frees it. Carried on the FIELD rather than the Scope because
-        // the recording site (declaration analysis) and the reading site
-        // (`#x` codegen) do not reliably share a Scope object; the field is
-        // the one identity both sides already resolve.
+        // The borrow-returning call this local came from, if any: `#local` is
+        // then a lie, since that call's source still owns and frees the value.
         string callBorrowOrigin;
-        // U3 — the plain parameter a local was initialised from (§7.2's
-        // straight-line capture). Same identity-not-name rationale.
+        // The plain parameter a local was initialised from (straight-line
+        // capture), for the same identity-not-name reason.
         string paramBorrowOrigin;
         std::vector<std::pair<int, string>> slotBorrowedLocals;
-        // script-units U4 — seeded into a script entry's root scope from the
-        // SessionState table (a binding created by an earlier unit of the
-        // same session). Carries a type but no alloca in this unit; moved
-        // bindings reject reads (spec §4.2), live cross-unit reads land with
-        // the kernel's read-through-session codegen.
+        // Seeded from an earlier unit of the same session: a type, but no alloca
+        // in this unit.
         bool sessionSeeded = false;
-        // script-units §4 — this declaration already registered the name in
-        // the runtime session registry. Not derivable from getDropEntry():
-        // the owner path registers INSTEAD of pushing a drop entry, so a
-        // bound owner and a never-bound borrow both have a null entry.
+        // Registered in the runtime session registry. Not derivable from the
+        // drop entry: the owner path registers INSTEAD of pushing one.
         bool sessionBound = false;
-        // jupyter-kernel 2.1.3a — a seeded binding whose class has since been
-        // REDEFINED (script-units 5.3). The value is an instance of the older
-        // generation; the name now resolves to the newer one. Both labels are
-        // kept so the diagnostic can name the two generations rather than
-        // saying only that they differ.
-        //
-        // The flag is separate from the labels ON PURPOSE: the FIRST
-        // generation's suffix is the empty string, so "has a stale suffix"
-        // would be false for the one case that matters most — a value made
-        // before any redefinition, which is every value in the common shape.
+        // A seeded binding whose class was REDEFINED. A flag of its own, since
+        // the first generation's suffix is itself the empty string.
         bool staleGenerationMark = false;
         string staleGeneration;
         string currentGeneration;
         bool ownershipAudited = false;
-        // slices 9.2.1 — for OWNING String-element array locals: the stack
-        // sidecar shared by the element-store helpers and the element-walk
-        // drop entry (LocalVariableDeclaration registers both). nullptr for
-        // every other field; element stores fall back to the raw store.
+        // For an owning String-element array local: the stack sidecar shared by
+        // its element stores and its element-walk drop entry. Else nullptr.
         llvm::Value* elemOwnSidecar = nullptr;
         bool _hasBorrowCaptures = false;
-        // For struct view-mode locals (`Header h = Header(bytes)`):
-        // the field this view aliases. Set at LocalVariableDeclaration
-        // time when the initializer is a struct-view-construction call;
-        // consulted at ReturnStatement to reject returning a view of
-        // a same-scope local buffer. nullptr for non-view structs and
-        // for views over caller-provided buffers (parameters, fields).
+        // For a struct view local, the same-scope field it aliases — null for a
+        // view over a caller's buffer, and so the ReturnStatement check.
         FieldPtr _viewSource;
-        // For view-mode locals: distinguishes the borrow form (`View(buf)`,
-        // false — default) from the owning form (`View(#buf)`, true). The
-        // owning form transfers buffer ownership to the view; scope-exit
-        // frees the underlying byte[] via __cajeta_view_drop_owned. The
-        // borrow form leaves ownership with the source field and only
-        // tracks the view-aliasing relationship via _viewSource above.
+        // `View(#buf)` rather than `View(buf)`: the view took the buffer over,
+        // and scope exit frees it instead of only dropping the alias.
         bool _isOwningView = false;
 
     public:
@@ -207,10 +165,6 @@ namespace cajeta {
             callBorrowOrigin = origin;
         }
 
-        // U3 — the plain PARAMETER this local was initialised from, or "".
-        // Lets the capture check follow spec §7.2's straight-line case
-        // (`T v = p; this.f = v;`). Carried on the field for the same
-        // reason as callBorrowOrigin above: identity, not name.
         const string& getParamBorrowOrigin() const {
             return paramBorrowOrigin;
         }
@@ -231,10 +185,6 @@ namespace cajeta {
         }
 
         const string& getHierarchicalName() {
-            // Memoize once. The old form recomputed on every call and, on the
-            // second call for a parented field, fell through to overwrite the
-            // cached `Parent.name` with the bare `name` — returning the wrong
-            // value on alternate reads.
             if (hierarchicalName.empty()) {
                 hierarchicalName = parent
                     ? parent->buildHierarchicalName() + "." + name
@@ -251,18 +201,12 @@ namespace cajeta {
             this->alloca = alloca;
         }
 
-        // Drop-chain entry alloca for this owner, or null if this field isn't an
-        // owner (e.g. primitive, borrow, parameter without `#`). Set by codegen
-        // when the owner pushes onto the chain.
+        // The drop-chain entry alloca, or null when this field owns nothing.
         llvm::Value* getDropEntry() const { return dropEntry; }
         void setDropEntry(llvm::Value* e) { dropEntry = e; }
 
-        // True when this local was initialized by a `stack` construction
-        // (`Cell c = stack Cell(...)`). Storage class lives on the
-        // construction, not the type, so the declaration site is the only
-        // place that knows — it records the fact here for later analyses.
-        // Consumed by the `#`-return escape check
-        // (stack-return-transfer-error-spec §2.1).
+        // Initialised by a `stack` construction. Storage class lives on the
+        // construction, so the declaration site is the only one that knows.
         bool isStackInstance() const { return stackInstance; }
         void setStackInstance(bool v) { stackInstance = v; }
 
@@ -270,9 +214,7 @@ namespace cajeta {
         void setSessionSeeded(bool v) { sessionSeeded = v; }
         bool isSessionBound() const { return sessionBound; }
         void setSessionBound(bool v) { sessionBound = v; }
-        // jupyter-kernel 2.1.3a. `stale` is the generation the VALUE belongs
-        // to, `current` the one the name now names; they always differ when
-        // set. See ScriptUnitSynthesis's seedSessionScope.
+        // `stale` is the VALUE's generation, `current` the name's; they differ.
         void setStaleGeneration(const string& stale, const string& current) {
             staleGenerationMark = true;
             staleGeneration = stale;
@@ -281,36 +223,25 @@ namespace cajeta {
         bool isStaleGeneration() const { return staleGenerationMark; }
         const string& getStaleGeneration() const { return staleGeneration; }
         const string& getCurrentGeneration() const { return currentGeneration; }
-        // title-stores 6.2.1 — this local/formal's drop entry is armed from a
-        // RUNTIME bit (transfer word, return flag, or forwarded slot bit), so
-        // a plain retaining store of it is the loud-plain-store hazard.
+        // This drop entry is armed from a RUNTIME bit (transfer word, return
+        // flag, forwarded slot bit), so a plain retaining store of it is loud.
         bool isRuntimeConditionalOwner() const { return runtimeConditionalOwner; }
         void setRuntimeConditionalOwner(bool v) { runtimeConditionalOwner = v; }
         bool isEntryMayBeStale() const { return entryMayBeStale; }
         void setEntryMayBeStale(bool v) { entryMayBeStale = v; }
-        // 6.2.1 exclusion — the body read `Cajeta.owned(<this formal>)`, so
-        // its plain stores are branch-guarded by the author (the container
-        // dual-store idiom, spec §3.3.1); the loud-plain-store stays quiet.
+        // The body read `Cajeta.owned(<this formal>)`, so its plain stores are
+        // the author's own branch-guarded dual-store and stay quiet.
         bool isOwnershipAudited() const { return ownershipAudited; }
         void setOwnershipAudited(bool v) { ownershipAudited = v; }
         llvm::Value* getElemOwnSidecar() const { return elemOwnSidecar; }
         void setElemOwnSidecar(llvm::Value* s) { elemOwnSidecar = s; }
 
-        // L3-2: set on function-typed fields that hold a closure with
-        // borrow captures. Such a closure is scope-bound — returning it
-        // or storing it past the declaring scope would leave the borrows
-        // dangling. ReturnStatement consults this to reject the return.
-        // Defaults false; LocalVariableDeclaration sets it after the
-        // initializer codegen finds the RHS lambda's borrow flag.
+        // Holds a closure with borrow captures: scope-bound, so it cannot return.
         bool hasBorrowCaptures() const { return _hasBorrowCaptures; }
         void setHasBorrowCaptures(bool v) { _hasBorrowCaptures = v; }
 
-        // Struct view-aliasing: the field whose backing buffer this
-        // struct view points into. Set when the local is constructed
-        // via `Header h = Header(bytes)`; ReturnStatement consults it
-        // to reject returns where the source is a function-scope
-        // local (the buffer would drop and leave the caller with a
-        // dangling view).
+        // The field whose buffer this struct view points into; returning a view
+        // of a function-scope local leaves the caller a dangling one.
         FieldPtr getViewSource() const { return _viewSource; }
         void setViewSource(FieldPtr s) { _viewSource = std::move(s); }
 

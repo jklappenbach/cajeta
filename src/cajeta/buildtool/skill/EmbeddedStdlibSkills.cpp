@@ -1,6 +1,4 @@
-// See EmbeddedStdlibSkills.h. Decompresses the embedded stdlib skill corpus
-// (tools/skillembed framing), groups by library, parses each member, and builds
-// one ResolvedSkillArchive per library. Built once and cached.
+// See EmbeddedStdlibSkills.h: one ResolvedSkillArchive per embedded stdlib library.
 
 #include "cajeta/buildtool/skill/EmbeddedStdlibSkills.h"
 

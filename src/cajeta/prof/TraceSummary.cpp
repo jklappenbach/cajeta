@@ -11,9 +11,8 @@
 #include <unordered_map>
 #include <vector>
 
-// The runtime's own varint decoder, linked into this binary. Reused rather than
-// reimplemented: a second decoder is a second chance to disagree with the
-// writer about the encoding, and the writer is the only authority on it.
+// The runtime's own varint decoder, linked into this binary: a second decoder is a
+// second chance to disagree with the writer, which is the only authority on it.
 extern "C" uint64_t __cajeta_pb_varint_read(const uint8_t* in, int32_t max,
                                             int32_t* consumed);
 
@@ -21,8 +20,7 @@ namespace cajeta::prof {
 
     namespace {
 
-        // Perfetto field numbers, as the writer emits them
-        // (runtime/native/cajeta_rt_prof_trace.c).
+        // Perfetto field numbers, as runtime/native/cajeta_rt_prof_trace.c emits them.
         constexpr uint32_t kTracePacket      = 1;
         constexpr uint32_t kPktTimestamp     = 8;
         constexpr uint32_t kPktTrackEvent    = 11;
@@ -42,9 +40,6 @@ namespace cajeta::prof {
         constexpr uint32_t kDaIntValue       = 4;
         constexpr int32_t  kSliceBegin       = 1;
         constexpr int32_t  kSliceEnd         = 2;
-        // The runtime's run-metadata instant (cajeta_rt_prof_trace.c,
-        // __cajeta_prof_trace_metadata): its debug annotations carry the
-        // device capture ring's kept / dropped counts.
         constexpr const char* kRunMetaEvent  = "cajeta.profiler.run";
 
         struct Field {
@@ -54,10 +49,8 @@ namespace cajeta::prof {
             uint64_t       len = 0;          // wire 2 length, or wire 0 value
         };
 
-        // One level of a length-delimited message. Returns false on a malformed
-        // buffer rather than throwing: a truncated trace is a normal thing to
-        // be handed (a killed run still leaves a readable prefix), and the
-        // caller reports what it managed to read.
+        // Read one level of a length-delimited message. False on a malformed buffer
+        // rather than a throw: a killed run leaves a readable prefix, which is normal.
         bool walk(const uint8_t* p, size_t len,
                   const std::function<void(const Field&)>& visit) {
             size_t i = 0;
@@ -97,8 +90,7 @@ namespace cajeta::prof {
             return true;
         }
 
-        // The same rule the IDE applies (ProfileViewModel.TrackKind.of), so the
-        // CLI and the tool window never disagree about what is device work.
+        // The same rule the IDE applies, so the CLI never disagrees with the tool window.
         bool isDeviceQueue(const std::string& name) {
             return name.rfind("queue ", 0) == 0;
         }
@@ -110,8 +102,7 @@ namespace cajeta::prof {
         struct Open {
             std::string name;
             int64_t     ts = 0;
-            /** Inclusive time held by this frame's direct children, so its own
-             *  exclusive time can be found when it closes. */
+            /** Inclusive child time, so this frame's exclusive time is known at close. */
             int64_t     childNs = 0;
         };
 
@@ -138,9 +129,8 @@ namespace cajeta::prof {
         std::unordered_map<uint64_t, std::string> trackName;
         std::unordered_map<uint64_t, std::string> internedName;
 
-        // Pass 1: descriptors and interned names. Two passes because a trace
-        // may name a track after the first event on it, and a one-pass reader
-        // would attribute those events to an unknown track.
+        // Two passes, because a trace may name a track after the first event on it and
+        // a one-pass reader would attribute those events to an unknown track.
         walk(buf.data(), buf.size(), [&](const Field& pkt) {
             if (pkt.number != kTracePacket || pkt.wire != 2) return;
             walk(pkt.data, (size_t) pkt.len, [&](const Field& g) {
@@ -166,10 +156,6 @@ namespace cajeta::prof {
                         if (iid) internedName[iid] = name;
                     });
                 } else if (g.number == kPktTrackEvent && g.wire == 2) {
-                    // The run-metadata instant carries the device capture
-                    // ring's accounting as debug annotations. Read here, in
-                    // the descriptor pass, so a trace with no device slice at
-                    // all still reports what its ring did.
                     std::string name;
                     std::vector<std::pair<std::string, int64_t>> annos;
                     walk(g.data, (size_t) g.len, [&](const Field& t) {
@@ -200,9 +186,7 @@ namespace cajeta::prof {
             });
         });
 
-        // Pass 2: pair BEGIN with END per track. The writer emits boundaries,
-        // not durations — the same reason trace_processor computes `dur` by
-        // nesting rather than reading it.
+        // Pair BEGIN with END per track: the writer emits boundaries, not durations.
         std::unordered_map<uint64_t, std::vector<Open>> stacks;
         struct Rec { std::string name; int64_t ts; int64_t dur; int64_t self; };
         std::vector<Rec> recs;
@@ -250,14 +234,11 @@ namespace cajeta::prof {
                 stacks[uuid].push_back(Open{name, ts});
             } else if (type == kSliceEnd) {
                 auto& st = stacks[uuid];
-                if (st.empty()) return;          // an END with nothing open —
-                                                 // a trace that began mid-slice
+                if (st.empty()) return;          // an END with nothing open
                 Open o = st.back();
                 st.pop_back();
                 const int64_t dur = ts - o.ts;
-                // Clamped: an unmatched child or a clock that stepped could
-                // otherwise make a frame's self time negative, which is not a
-                // duration and would corrupt the totals it feeds.
+                // Clamped: an unmatched child or stepped clock would make self time negative.
                 int64_t self = dur - o.childNs;
                 if (self < 0) self = 0;
                 recs.push_back(Rec{o.name, o.ts, dur, self});
@@ -269,9 +250,8 @@ namespace cajeta::prof {
         out->sawAnyTrack = sawTrack;
         if (recs.empty()) return true;
 
-        // The window anchors on the FIRST matching slice, not on absolute
-        // timestamps: those are host-clock nanoseconds and differ every run, so
-        // an absolute window cannot be reused across two runs of one program.
+        // The window anchors on the FIRST matching slice: absolute timestamps are
+        // host-clock nanoseconds and differ every run, so they cannot be reused.
         int64_t t0 = recs.front().ts;
         for (const auto& r : recs) t0 = std::min(t0, r.ts);
 
@@ -298,9 +278,7 @@ namespace cajeta::prof {
             out->totalSelfNs += kv.second.selfNs;
             out->rows.push_back(kv.second);
         }
-        // Ordered by SELF time: "where did the time go" is answered by the work
-        // a frame did itself, not by how much of the run it happened to span.
-        // On a device view self == total, so the device ordering is unchanged.
+        // Ordered by SELF time, the work a frame did itself; on a device view self == total.
         std::sort(out->rows.begin(), out->rows.end(),
                   [](const KernelStat& a, const KernelStat& b) {
                       if (a.selfNs != b.selfNs) return a.selfNs > b.selfNs;
@@ -316,9 +294,7 @@ namespace cajeta::prof {
 
     namespace {
 
-        // "20ms", "500us", "1s", or a bare nanosecond count. A bare number is
-        // ns because that is the trace's own unit; every suffix is spelled out
-        // so a reader never has to guess whether `20` meant ms.
+        // "20ms", "500us", "1s", or a bare nanosecond count, ns being the trace's unit.
         bool parseDuration(const std::string& s, int64_t* out) {
             if (s.empty()) return false;
             size_t i = 0;
@@ -413,9 +389,6 @@ namespace cajeta::prof {
 
         const char* what = opts.host ? "host frames" : "kernels";
         if (!sum.sawAnyTrack) {
-            // Distinct from "the window excluded everything": one is a profile
-            // of a run that never touched the device, the other is a bad
-            // window. Printing an empty table for both would conflate them.
             std::fprintf(stderr,
                 "cajeta profile: no %s in %s — this run has no %s track\n",
                 what, path.c_str(), opts.host ? "host" : "device queue");
@@ -429,8 +402,6 @@ namespace cajeta::prof {
         }
 
         if (csv) {
-            // The ring's accounting first, as a comment line, so a consumer
-            // can refuse totals from a lossy ring before it reads a number.
             if (sum.gpuRecordsKept >= 0) {
                 std::printf("# gpu_records_kept=%" PRId64 " gpu_records_dropped=%" PRId64 "\n",
                             sum.gpuRecordsKept, sum.gpuRecordsDropped);
@@ -449,9 +420,7 @@ namespace cajeta::prof {
         const char* head = opts.host ? "frame" : "kernel";
         std::printf("%-*s %8s %12s %12s %12s %12s %7s\n", (int) w, head,
                     "count", "self", "total", "avg", "max", "share");
-        // Share is of SELF time. Sharing out inclusive time would give a host
-        // table whose column sums to more than the run is long, and percentages
-        // of a number that does not exist.
+        // Share is of SELF time; inclusive time would total to more than the run is long.
         for (const auto& r : sum.rows) {
             std::printf("%-*s %8" PRId64 " %12s %12s %12s %12s %6.1f%%\n",
                         (int) w, r.name.c_str(), r.count,
@@ -461,10 +430,7 @@ namespace cajeta::prof {
                             ? (100.0 * (double) r.selfNs / (double) sum.totalSelfNs)
                             : 0.0);
         }
-        // `self` sums honestly; `total` does not, because host frames nest.
-        // Both are printed, and the footer totals the one that is a duration.
-        // It can still EXCEED the wall span when tracks run concurrently, which
-        // is why a single "utilisation" figure is not offered.
+        // `self` sums honestly, `total` does not, because host frames nest; the footer totals `self`.
         std::printf("\n%" PRId64 " slice(s) over %" PRId64 " track(s); "
                     "self %s, wall %s\n",
                     sum.sliceCount, sum.trackCount,

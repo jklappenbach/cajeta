@@ -1,22 +1,9 @@
 #ifndef CAJETA_XREF_INDEX_H
 #define CAJETA_XREF_INDEX_H
 
-// The compiler's resolved view of a source root, source-mapped, as a
-// machine-readable index for external tools (ide-symbol-index spec §2).
-//
-// Why this exists: the IntelliJ plugin parses Cajeta but does not understand it.
-// The alternative — reimplementing Cajeta's name resolution, overload selection
-// and override matching in Kotlin — has no oracle to be pinned against
-// (`cajeta doc --emit-model-json` PARSES but does not RESOLVE; its
-// extends/implements are raw declared names), and a resolver that silently
-// disagrees with the compiler is worse than none: it sends you to the wrong
-// declaration with total confidence, and renames the wrong thing. So the compiler
-// exports what it already computed, and the IDE presents it.
-//
-// Contract: specs/schemas/cajeta-xref-v1.schema.json.
-//
-// Determinism is required (spec §2.0.7): the writer sorts every relation, so the
-// same input yields byte-identical output.
+// The compiler's resolved view of a source root, source-mapped, as a machine-
+// readable index for external tools; the contract is
+// specs/schemas/cajeta-xref-v1.schema.json and the output must be deterministic.
 
 #include <cstdint>
 #include <string>
@@ -24,13 +11,11 @@
 
 namespace cajeta::xref {
 
-    // Schema version. Bump MAJOR on any breaking change — consumers are required
-    // to REFUSE an unknown major rather than guess at the contents.
+    // Bump MAJOR on a breaking change: consumers must REFUSE an unknown major.
     constexpr int kSchemaMajor = 1;
     constexpr int kSchemaMinor = 0;
 
-    // A source span. Line is 1-based, column 0-based — the ANTLR convention the
-    // compiler already carries on every AbstractSyntaxNode.
+    // A source position: line 1-based, column 0-based, the ANTLR convention.
     struct SourceRef {
         std::string file;   // relative to the source root
         int line = 0;
@@ -44,18 +29,11 @@ namespace cajeta::xref {
         std::string kind;         // class | interface | method | field | ...
         std::string owner;        // declaring type, for members
         std::string signature;    // methods/constructors
-        // Identifies ONE overload: the compiler's own canonical unlabeled
-        // signature. Two same-name, same-arity overloads MUST differ here — if
-        // they collide, "who calls f(int32)" returns f(String)'s callers, and
-        // renaming one overload rewrites the other's call sites.
+        // Identifies ONE overload. Two same-name, same-arity overloads MUST
+        // differ here, or a rename rewrites the other one's call sites.
         std::string overloadKey;
         std::vector<std::string> modifiers;
-        // Applied annotations, as CANONICAL FQNs where the annotation type
-        // resolves (`dev.cajeta.unit.Test`), and as written otherwise.
-        //
-        // Names only, deliberately: the consumers this exists for ask "is this
-        // method a test", "is it disabled" — presence questions. Argument values
-        // are a separate feature with separate consumers and are not recorded.
+        // Applied annotations by name only, canonical where the type resolves.
         std::vector<std::string> annotations;
         SourceRef at;
     };
@@ -97,30 +75,21 @@ namespace cajeta::xref {
         void addOverride(OverrideEdge o) { overrides_.push_back(std::move(o)); }
         void addCall(Call c) { calls_.push_back(std::move(c)); }
 
-        // Drop every edge whose endpoint names a declaration this index does not
-        // carry. Such an edge is a Ctrl-click into the void — the consumer resolves
-        // it to nothing, or worse, to whatever later occupies that key. A missing
-        // edge costs a navigation; a dangling one costs trust (spec §1.3).
-        //
-        // Call after every relation has been collected. Returns the number dropped.
+        // Drop every edge whose endpoint names a declaration this index lacks —
+        // a dangling edge resolves to whatever later takes that key. Call once
+        // every relation is collected; returns the number dropped.
         int pruneDanglingEdges();
 
-        // Sort + de-duplicate every relation, then render. Deterministic by
-        // construction: the same input yields byte-identical output.
+        // Sort, de-duplicate and render; byte-identical for identical input.
         std::string toJson() const;
 
-        // The lint-mode stream (spec §2.0.2): one NDJSON line per record, each
-        // wrapped as {"kind":"xref","rel":"<relation>","record":{...}} so it can
-        // ride the diagnostic channel and be demultiplexed by `kind`. Restricted
-        // to records positioned in `onlyFile` — the linted buffer; siblings and
-        // stdlib are the whole-root export's job — and reported against
-        // `reportAs`, the ORIGINAL path when the buffer was staged via --shadow.
-        // Opens with a version record; prune before calling.
+        // The lint-mode stream: one NDJSON line per record, wrapped by relation
+        // to ride the diagnostic channel. Only records in `onlyFile`, reported
+        // against `reportAs`. Opens with a version record; prune before calling.
         std::string toNdjson(const std::string& onlyFile,
                              const std::string& reportAs) const;
 
-        // Render and write to `path`. Returns false (and leaves no partial file)
-        // if the file cannot be opened.
+        // Render to `path`; false, and no partial file, if it cannot be opened.
         bool writeToFile(const std::string& path) const;
 
         bool empty() const {
@@ -138,45 +107,24 @@ namespace cajeta::xref {
     };
 
     // ---- template members (plan 1.5) ---------------------------------------
-    //
-    // A template's body walk is SKIPPED (CajetaLlvmVisitor.h:726 — it "keeps the
-    // template out of getAllMethods' codegen worklist by way of having no methods
-    // at all"), so a generic class holds no Method objects and its members are
-    // invisible to the declaration walk. Without this, `ArrayList.add` — the
-    // most-called method in the stdlib — is simply not in the index.
-    //
-    // So the visitor captures a template's members declaratively at parse time:
-    // name, position, and parameter types AS WRITTEN. No type resolution — that is
-    // precisely what the skipped body walk cannot do, and navigation does not need
-    // it. We record the TEMPLATE's member, never an instantiation's: an
-    // instantiation is monomorphized from the template and has no source of its
-    // own, so per-instantiation records would list one source method N times and
-    // fragment "who calls add" across instantiations.
+    // A template's body walk is skipped, so its members are captured at parse
+    // time with parameter types AS WRITTEN. Always the TEMPLATE's member: an
+    // instantiation has no source and would fragment "who calls add" N ways.
     struct TemplateMember {
         std::string ownerFqn;      // the template's canonical name, no type args
         std::string name;
         std::string kind;          // method | constructor | field
         std::string overloadKey;   // e.g. demo.Box::get(T) — params as written
         std::string signature;     // display label, e.g. `T get(int32 i)` (2.2.6)
-        // Needed to map a resolved method back to this template member. The
-        // DECLARED count, receiver excluded. The caller computes the same from
-        // the resolved method's parameter list (dropping a leading `this` when
-        // present) — never by adding a receiver back on, because whether a
-        // resolved method's list carries `this` depends on HOW it resolved: a
-        // build-path instantiation's does, a lint-resolved METHOD TEMPLATE's
-        // does not. Guessing with `declaredParams + (isStatic ? 0 : 1)` swapped
-        // the keys of overloads differing by one parameter — the 3-arg
-        // `fold<R>` recorded the 2-arg key (xref-lint-emission-gap 5.1.7).
+        // The DECLARED count, receiver excluded. Callers must DROP a leading
+        // `this`, never add one: carrying it depends on how the method resolved.
         int declaredParams = 0;
         bool isStatic = false;
         SourceRef at;
     };
 
-    // The template member key for a call resolved to an INSTANTIATION's method.
-    // `declaredParamCount` is the resolved callee's own parameter count with
-    // any leading `this` removed — an exact match against declaredParams, no
-    // receiver arithmetic. Returns "" when it cannot be determined
-    // unambiguously — omitting the edge, never guessing at one.
+    // The template member key for a call resolved to an INSTANTIATION's method;
+    // `declaredParamCount` matches declaredParams exactly. "" when ambiguous.
     std::string templateKeyFor(const std::string& templateFqn,
                                const std::string& methodName,
                                int declaredParamCount);
@@ -184,48 +132,22 @@ namespace cajeta::xref {
     // Off by default: a build that does not ask for xref captures nothing.
     void setCaptureEnabled(bool enabled);
     bool captureEnabled();
-    // Clear per-compile state. Call at the start of a compile. When a
-    // baseline was captured (stdlib-reuse prime), this RESTORES the baseline
-    // instead of clearing — a warm lint's logs then begin exactly where a
-    // fresh process's stdlib parse would leave them (template members
-    // especially; lint-server Unit 1). Production one-shot runs never
-    // capture a baseline, so they clear, as always.
+    // Clear per-compile state at the start of a compile — or RESTORE a captured
+    // baseline, so a warm lint starts where a fresh stdlib parse would.
     void resetCapture();
-    // Snapshot the capture logs (stdlib-reuse prime, after the stdlib
-    // parse). Same thread-affinity as the logs themselves.
+    // Snapshot the capture logs, with the logs' own thread affinity.
     void captureBaseline();
     void registerTemplateMember(TemplateMember member);
 
     // ---- source-file interning (2.2.8) -------------------------------------
-    //
-    // An AST node's position is meaningless without the file it is a position IN.
-    // The node used to take that file from the module being compiled at the moment
-    // codegen reached it, which is right only by coincidence: a stdlib method body
-    // is generated while a USER module is active, so `Optional.get`'s call sites
-    // landed inside whichever demo file triggered the instantiation. 426 of 2589
-    // call edges on samples/tour pointed at the wrong file, most at a line that
-    // exists — a confident wrong answer, the one thing this index must never give.
-    //
-    // The token knows. Compiler::parseSource names each real-source stream, so a
-    // node can record its origin at construction. A SYNTHETIC re-parse (template
-    // instantiation, mock synthesis) names no stream, so its nodes get nullptr and
-    // are excluded — correct, because a snippet's line numbers refer to the snippet.
-    //
-    // Returns a stable pointer (the pool is never cleared, so nodes may outlive any
-    // one compile), or nullptr when the name is unknown or capture is off.
+    // A node's origin file comes from its own token stream, not the module
+    // active during codegen; a synthetic re-parse names none and is excluded.
+    // The returned pointer is stable (the pool is never cleared).
     const std::string* internSourceFile(const std::string& name);
 
     // ---- call sites (Unit 2) -----------------------------------------------
-    //
-    // `CajetaClass::resolveMethod` is the one choke point every callee resolution
-    // passes through — but it knows the callee, not the CALL SITE. The AST node
-    // does. So a node with a source position pushes it for the duration of its own
-    // codegen, and resolveMethod attributes what it resolves to the innermost open
-    // site.
-    //
-    // If nothing is pushed, nothing is recorded. That is the safe direction: a
-    // missing call edge costs a navigation, a MISATTRIBUTED one sends "who calls
-    // this" to the wrong line and renames the wrong code.
+    // resolveMethod knows the callee, not the call site, so a node pushes its own
+    // position for its codegen and resolutions attribute to the innermost site.
     class CallSiteScope {
     public:
         CallSiteScope(const std::string& file, int line, int col);
@@ -236,17 +158,9 @@ namespace cajeta::xref {
         bool pushed_ = false;
     };
 
-    // Suppress all call recording for the duration — for a region that parses and
-    // walks SYNTHESIZED source (template instantiation, method-template
-    // instantiation, mock synthesis, the codec/@Logged body synthesizers).
-    //
-    // Necessary because such a region runs LAZILY, nested inside codegen of the
-    // user call that triggered it, and it resolves callees during the walk — before
-    // any node of its own opens a call site. Without a mask, `Stream<T>::fold`'s
-    // internal calls to `Optional.get` were attributed to the user's `.fold(...)`
-    // line, and `Csv.parse`'s 27 internal calls all to one line of CsvDemo. The
-    // positions in a synthesized snippet refer to the snippet; they are not
-    // anywhere, and "not anywhere" must not resolve to "wherever we happened to be".
+    // Suppress call recording while walking SYNTHESIZED source: such a region
+    // runs lazily inside the codegen of the call that triggered it, so without
+    // the mask its internal calls land on the user's line.
     class SyntheticSourceScope {
     public:
         SyntheticSourceScope();
@@ -257,29 +171,20 @@ namespace cajeta::xref {
         bool pushed_ = false;
     };
 
-    // Record a resolved call at the innermost open call site. No-op when capture is
-    // off, when no site is open, when the innermost site is masked, or when
-    // `calleeKey` is empty.
+    // Record a resolved call at the innermost open call site; a no-op when
+    // capture is off, no site is open, the site is masked, or the key is empty.
     void noteResolvedCall(const std::string& calleeKey,
                           const std::string& callerKey,
                           bool isVirtual);
 
     // ---- references (2.1.5 / 2.2.2) ----------------------------------------
-    //
-    // A type name at a source position, resolved to the declaration it names.
-    // Recorded from CajetaType::fromContext — the choke point every type name in
-    // the language passes through, whatever its syntactic home (field type,
-    // parameter, return, type argument, local, extends/implements).
+    // A type name at a position, resolved to what it names. Recorded from
+    // CajetaType::fromContext, which every type name passes through.
     void noteTypeReference(const std::string& targetFqn, const std::string& file,
                            int line, int col);
 
-    // A field/property access (`receiver.field`), resolved to the DECLARING class's
-    // field — recorded from DotExpression, at the identifier's own token so the
-    // reference sits under the caret the developer Ctrl-clicks.
-    //
-    // Deliberately not locals or parameters: those are the one thing the IDE
-    // resolves for itself (spec §4.3), because a local is visible in the buffer the
-    // developer is editing and needs no compiler round-trip to be correct.
+    // A `receiver.field` access, resolved to the DECLARING class's field, at the
+    // identifier's own token. Locals and parameters: the IDE resolves those.
     void noteFieldReference(const std::string& targetFqn, const std::string& file,
                             int line, int col);
 
@@ -287,10 +192,8 @@ namespace cajeta::xref {
     void drainCalls(XrefIndex& index, const std::string& sourceRoot);
     void drainReferences(XrefIndex& index, const std::string& sourceRoot);
 
-    // Build the index for everything the compiler currently holds resolved:
-    // walks the canonical type registry, emitting declarations and inheritance
-    // edges (Unit 1), enums (1.4), and captured template members (1.5).
-    // `sourceRoot` is stripped from recorded paths.
+    // Walk the type registry into declarations, inheritance edges, enums and
+    // captured template members, with `sourceRoot` stripped from paths.
     void collectDeclarationsAndInheritance(XrefIndex& index,
                                            const std::string& sourceRoot);
 

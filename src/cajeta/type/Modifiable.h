@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 2/19/22.
-//
+// Modifier - the declaration-modifier bit set carried by every declaration.
 
 #pragma once
 
@@ -19,31 +17,17 @@ namespace cajeta {
         STATIC = 0x10,
         FINAL = 0x20,
         SYNCHRONIZED = 0x40,
-        // docs/specification/concurrent/Concurrency.md — method whose body is a suspendable state machine.
-        // In the sync-lowering MVP, only the modifier bit is recorded; codegen
-        // ignores it. The real scheduler / state-machine lowering keys off this
-        // bit to pick the async ABI.
+        // A method whose body is a suspendable state machine; the sync-lowering
+        // MVP records the bit only.
         ASYNC = 0x80,
-        // REFL-3.3 — set on a class annotated `@Sealed` (decision D1). Bars
-        // reflective access to the class's PRIVATE members: the synthesized
-        // invoke/newInstance adapters omit private cases, and the reflect API
-        // throws IllegalAccessException. Recorded as a class modifier so it
-        // rides into the RTTI header's `modifiers` word for free. Not a source
-        // keyword — it is derived from the `@Sealed` annotation in
-        // visitClassDeclaration (distinct from Java's `sealed` subclassing).
-        // Named REFLECT_SEALED (not SEALED) to avoid colliding with the
-        // ReservedIdentifiers::SEALED enumerator (both unscoped, namespace cajeta).
+        // From `@Sealed`, not a keyword: bars reflective access to PRIVATE
+        // members. Named REFLECT_SEALED so it cannot collide with the
+        // ReservedIdentifiers::SEALED enumerator, which is also unscoped.
         REFLECT_SEALED = 0x100,
-        // REFL-8 — set on a class annotated `@Retained`. Marks a class that must
-        // stay in the Class.forName registry even when no static code path
-        // references it. Advisory today (the AOT linker does not strip unused
-        // classes yet, so every compiled class is already registered); the
-        // future stripping pass keys off this bit. Recorded as a class modifier
-        // so it rides into the RTTI header's `modifiers` word for free. Derived
-        // from the `@Retained` annotation in visitClassDeclaration (no keyword).
+        // From `@Retained`, not a keyword: the class must stay in the
+        // Class.forName registry even when nothing references it.
         REFLECT_RETAINED = 0x200,
-        // Record per-field mutation opt-in (records-spec §3.4): a `mut`
-        // field accepts in-place writes; the record default stays immutable.
+        // A `mut` field accepts in-place writes; a record is otherwise immutable.
         MUT = 0x400
     };
 

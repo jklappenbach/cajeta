@@ -1,10 +1,7 @@
 #include "cajeta/buildtool/repo/TarZstd.h"
 
-// ZSTD_getErrorCode is an "experimental" API gated behind
-// ZSTD_STATIC_LINKING_ONLY in newer zstd headers (older ones exposed it
-// from <zstd.h> directly). Define it before the include so the decl is
-// visible; the symbol itself is exported by the shared libzstd. The
-// ZSTD_error_* enum lives in <zstd_errors.h>.
+// ZSTD_getErrorCode sits behind ZSTD_STATIC_LINKING_ONLY in newer zstd headers, so
+// this define must precede the include; the symbol is exported by shared libzstd.
 #define ZSTD_STATIC_LINKING_ONLY
 #include <zstd.h>
 #include <zstd_errors.h>
@@ -27,7 +24,6 @@ namespace cajeta::buildtool {
         constexpr size_t kBlock = 512;
         constexpr size_t kMaxName = 100;
 
-        // Pad `out` with zeros up to the next 512-byte multiple.
         void padToBlock(std::string& out) {
             size_t rem = out.size() % kBlock;
             if (rem != 0) {
@@ -35,9 +31,8 @@ namespace cajeta::buildtool {
             }
         }
 
-        // Write octal-encoded size into a fixed-width field.
+        // Write `value` as octal into a fixed-width field; the last byte stays NUL.
         void writeOctal(char* dst, size_t width, uint64_t value) {
-            // Last byte stays NUL; preceding bytes hold octal digits.
             std::array<char, 32> buf{};
             std::snprintf(buf.data(), buf.size(), "%0*llo",
                           static_cast<int>(width - 1),
@@ -46,9 +41,7 @@ namespace cajeta::buildtool {
             dst[width - 1] = '\0';
         }
 
-        // Compute the ustar header checksum: sum of all bytes in
-        // the header, with the chksum field itself read as eight
-        // ASCII spaces.
+        // The ustar checksum: every header byte summed, chksum read as eight spaces.
         uint32_t headerChecksum(const std::array<char, kBlock>& hdr) {
             uint32_t sum = 0;
             for (size_t i = 0; i < kBlock; ++i) {
@@ -72,23 +65,18 @@ namespace cajeta::buildtool {
             }
             std::array<char, kBlock> hdr{};
             std::memcpy(hdr.data(), name.data(), name.size());
-            // mode: 0644 (file permissions)
+            // ustar offsets: mode 100, uid 108, gid 116, size 124, mtime 136, chksum
+            // 148, typeflag 156, magic 257. mtime 0 keeps a bundle byte-identical.
             writeOctal(hdr.data() + 100, 8, 0644);
-            // uid + gid: 0
             writeOctal(hdr.data() + 108, 8, 0);
             writeOctal(hdr.data() + 116, 8, 0);
-            // size: file length (octal, 12 chars w/ NUL)
             writeOctal(hdr.data() + 124, 12, size);
-            // mtime: 0 (deterministic — bundles are content-addressed)
             writeOctal(hdr.data() + 136, 12, 0);
-            // typeflag: regular file
             hdr[156] = '0';
-            // magic + version: "ustar\0" + "00"
             std::memcpy(hdr.data() + 257, "ustar", 5);
             hdr[262] = '\0';
             hdr[263] = '0';
             hdr[264] = '0';
-            // checksum field: spaces during computation
             std::memset(hdr.data() + 148, ' ', 8);
             uint32_t cksum = headerChecksum(hdr);
             writeOctal(hdr.data() + 148, 7, cksum);
@@ -97,8 +85,7 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
-        // Parse an octal field (NUL- or space-terminated). Returns
-        // the parsed value or 0 if empty.
+        // Parse a NUL- or space-terminated octal field; 0 when empty.
         uint64_t parseOctal(const char* p, size_t width) {
             uint64_t v = 0;
             for (size_t i = 0; i < width; ++i) {
@@ -124,7 +111,6 @@ namespace cajeta::buildtool {
             tar.append(e.data);
             padToBlock(tar);
         }
-        // Two empty blocks → end-of-archive.
         tar.append(2 * kBlock, '\0');
 
         size_t bound = ::ZSTD_compressBound(tar.size());
@@ -144,9 +130,6 @@ namespace cajeta::buildtool {
 
     llvm::Expected<std::vector<TarEntry>> readTarZstd(
         const std::string& zstdBytes) {
-        // Probe the original size — caller's input is small enough
-        // (a single bundle response) that a single-shot decompress
-        // is fine.
         unsigned long long origSize =
             ::ZSTD_getFrameContentSize(zstdBytes.data(),
                                        zstdBytes.size());
@@ -155,8 +138,7 @@ namespace cajeta::buildtool {
         }
         std::string tar;
         if (origSize == ZSTD_CONTENTSIZE_UNKNOWN) {
-            // Server didn't set the frame content size — decompress
-            // into a growing buffer until the call succeeds.
+            // No frame content size: grow the buffer until decompress succeeds.
             tar.resize(zstdBytes.size() * 4 + 4096);
             for (;;) {
                 size_t written = ::ZSTD_decompress(
@@ -189,10 +171,7 @@ namespace cajeta::buildtool {
         std::vector<TarEntry> entries;
         size_t pos = 0;
         while (pos + kBlock <= tar.size()) {
-            // End-of-archive: a zero block (the canonical end is
-            // *two* zero blocks but real tar archives often pad
-            // to disk-block boundaries with more — one is enough
-            // to stop).
+            // One zero block ends the read; real archives pad past the canonical two.
             bool allZero = true;
             for (size_t i = 0; i < kBlock; ++i) {
                 if (tar[pos + i] != '\0') { allZero = false; break; }
@@ -213,7 +192,6 @@ namespace cajeta::buildtool {
             e.data.assign(tar.data() + pos, sz);
             entries.push_back(std::move(e));
             pos += sz;
-            // Round up to block boundary.
             size_t rem = sz % kBlock;
             if (rem != 0) pos += kBlock - rem;
         }

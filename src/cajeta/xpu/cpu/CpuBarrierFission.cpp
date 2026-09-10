@@ -1,6 +1,4 @@
-//
 // CPU work-item loop fission for workgroup barriers — see header.
-//
 
 #include "CpuBarrierFission.h"
 
@@ -58,18 +56,9 @@ struct RegionJob {
     llvm::Value* linear = nullptr;              // tz*ntidY*ntidX + ty*ntidX + tx
 };
 
-// Per-work-item value set: the least fixpoint over SSA def-use AND memory
-// round-trips through per-work-item alloca slots. Used to tell per-work-item
-// locals (context arrays across a barrier) from block-uniform ones.
-//
-// Pre-mem2reg, a plain def-use walk is not enough: `uint32 t = Thread.x()`
-// stores the work-item index into `t`'s slot, and `int x = a[t] + …` reads it
-// back — the SSA chain is broken by that store/load, so the value derived from
-// `t` (and stored into `x`'s slot) would look block-uniform and `x` would not
-// get a context array. So we also taint every load from any slot that ever
-// receives a tainted value (a per-work-item slot), and re-propagate, to a
-// fixpoint. Over-approximation is safe: a wrongly-widened uniform slot still
-// computes the right value, just with redundant per-lane storage.
+// Least fixpoint of the per-work-item value set over SSA def-use AND memory
+// round-trips: pre-mem2reg a store/load through an alloca slot breaks the SSA
+// chain, so loads from any tainted slot are tainted too. Widening is safe.
 void computeTaint(llvm::ArrayRef<llvm::Value*> seeds,
                   llvm::ArrayRef<llvm::AllocaInst*> slots,
                   llvm::SmallPtrSetImpl<llvm::Value*>& tainted) {
@@ -118,9 +107,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     llvm::Value* ntidZ = ntid[2];
 
     // --- 1. True-entry + the work-item-index placeholders (tid.x/y/z) -------
-    // 3-D blocks: each region's work-item loop is a tid.z→tid.y→tid.x nest, so
-    // tid.x stays the contiguous inner IV (no `urem`, SIMD preserved). The three
-    // placeholders stand in for the tid coords until the per-region IVs exist.
+    // Placeholders for the tid coords until the per-region IVs exist; tid.x
+    // must stay the contiguous inner IV (no `urem`, so SIMD survives).
     auto* trueEntry = llvm::BasicBlock::Create(ctx, "entry", wrapper);
     llvm::IRBuilder<> eb(trueEntry);
     auto* phX = llvm::cast<llvm::Instruction>(
@@ -129,8 +117,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         eb.CreateFreeze(llvm::PoisonValue::get(i32), "wiid.y.ph"));
     auto* phZ = llvm::cast<llvm::Instruction>(
         eb.CreateFreeze(llvm::PoisonValue::get(i32), "wiid.z.ph"));
-    // y*x stride + total work-items per block, for context arrays sized by the
-    // whole 3-D block and indexed by a linearized work-item index.
+    // Stride and total work-items per block, for sizing context arrays.
     llvm::Value* ntidYX  = eb.CreateMul(ntidY, ntidX, "ntid.yx");
     llvm::Value* ntidAll = eb.CreateMul(ntidYX, ntidZ, "ntid.all");
 
@@ -154,9 +141,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     for (auto& bb : *wrapper)
         if (&bb != trueEntry) { bodyEntry = &bb; break; }
 
-    // Connect the entry to the body so the CFG is reachable for DominatorTree /
-    // LoopInfo (region wrapping later redirects this edge). Keep the entry
-    // builder inserting *before* this terminator for the alloca setup below.
+    // The entry builder must keep inserting *before* this terminator.
     auto* entryBr = eb.CreateBr(bodyEntry);
     eb.SetInsertPoint(entryBr);
 
@@ -172,9 +157,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // --- 4. Analyses + uniformity guardrails --------------------------------
     llvm::DominatorTree DT(*wrapper);
     llvm::LoopInfo LI(DT);
-    // The kernel's locals (entry-block allocas) — needed both to flow taint
-    // through per-work-item slots (below) and to widen barrier-crossing ones
-    // into context arrays (step 7).
+    // The kernel's locals: taint carriers here, context arrays in step 7.
     llvm::SmallVector<llvm::AllocaInst*, 8> allocas;
     for (auto& in : *bodyEntry)
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(&in)) allocas.push_back(a);
@@ -206,12 +189,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                                     "dependent trip count (must be uniform)");
         }
     }
-    // Every barrier must be block-uniform: reached by all work-items, not under
-    // work-item-divergent control flow. A barrier post-dominates its level's
-    // entry (the function body, or its loop's in-loop successor) iff every path
-    // through that level hits it — otherwise it sits in one arm of an `if` and
-    // only some work-items would reach it (GPU-undefined; reject, don't
-    // miscompile).
+    // Post-dominating the level entry IS the block-uniformity a barrier needs.
     llvm::PostDominatorTree PDT(*wrapper);
     for (llvm::BasicBlock* bar : boundarySet) {
         llvm::Loop* bl = LI.getLoopFor(bar);
@@ -220,19 +198,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             unsupported("a barrier under work-item-divergent control flow "
                         "(all work-items must reach every barrier)");
     }
-    // A loop that holds a barrier must itself be reached by every work-item:
-    // its header post-dominates the enclosing level's entry, exactly as a
-    // barrier does. The check above looks only INSIDE the loop (the barrier
-    // against the loop's own in-loop successor), so a barrier loop under an
-    // `if` passed it — the WMMA GEMM kernels' `if (t0 < rows && i0 < outDim)
-    // { while (b < blocksPerRow) { … barrier … } }`. Once the latch-scaffold
-    // rule (66041f35) stopped declining that shape by accident, the region
-    // walk collected the `if`'s join block twice — as the pre-loop region's
-    // exit and again as the post-loop region's — and step 9 rewired its `ret`
-    // into the first nest's latch: `%wi.tx` no longer dominated `%wi.next`,
-    // the post-loop nest's latch had no predecessors, and RAGreedy crashed on
-    // the inlined copy three passes later (cajeta-llm, 2026-09-06). Declined
-    // by name instead; the host-stub fallback is what ran before.
+    // The same rule one level out; the check above looks only INSIDE the loop.
     for (llvm::Loop* top : LI)
         for (llvm::Loop* L : llvm::depth_first(top)) {
             if (!loopHasBarrier(L)) continue;
@@ -243,21 +209,9 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                             "flow (every work-item must enter a loop that holds "
                             "a barrier)");
         }
-    // Wave ops compose with barriers: fission produces clean counted work-item
-    // loops, and the caller forces VF=W + attaches the wave SIMD variants on each
-    // (`workItemLatches`), so a wave op inside a region becomes W SIMD lanes while
-    // the barriers delimit regions (Inc 9). Nothing to reject here.
-
     // --- 5. Per-block shared memory -----------------------------------------
-    // A `Shared<T>` array lowers to one module-level addrspace(3) global — one
-    // instance, which would race across the blocks/threads that each call this
-    // wrapper. Replace it with a wrapper-local buffer (fresh per block call);
-    // the addrspacecast 0→3 is a no-op the CPU backend folds.
-    // Discovery must see THROUGH ConstantExprs: a slice base (`arr[k]` with a
-    // constant k, epilogue-verb SLICE args) folds to a ConstantExpr GEP over
-    // the global, so the instruction operand is the CE, not the global — a
-    // shared array referenced only that way would silently keep ONE module
-    // global across all blocks (a cross-block race).
+    // One module-level addrspace(3) global would race across blocks, so each
+    // becomes a wrapper-local buffer. Discovery must see through ConstantExprs.
     llvm::SmallPtrSet<llvm::GlobalVariable*, 4> sharedGlobals;
     llvm::SmallVector<llvm::Value*, 16> work;
     llvm::SmallPtrSet<llvm::Value*, 16> seen;
@@ -281,9 +235,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             buf = eb.CreateAlloca(gv->getValueType(), 0, nullptr,
                                   gv->getName() + ".blk");
         } else {
-            // Dynamic `shared T[runtimeN]` (an external unsized addrspace(3)
-            // global): alloca the launch's `sharedBytes:` count of bytes per
-            // block. The kernel's typed GEPs index this byte buffer unchanged.
+            // Dynamic `shared T[runtimeN]`: the launch's `sharedBytes:` count.
             if (!dynSharedBytes)
                 unsupported("dynamic-sized shared memory needs a runtime byte "
                             "count (the launch's sharedBytes:)");
@@ -293,14 +245,9 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                                   gv->getName() + ".dyn");
         }
         buf->setAlignment(llvm::Align(16));
-        // The replacement is an INSTRUCTION, and gv may be used inside
-        // ConstantExprs (the folded slice GEP above). RAUW through a constant
-        // user re-uniques the constant with `cast<Constant>(New)` — in a
-        // release build that blindly installs the Instruction pointer INSIDE
-        // the "constant", i.e. malformed IR that InstCombine later walks into
-        // a nondeterministic SIGSEGV (the XpuCoopEpilogue parallel-suite
-        // crash). Expand every constant user to instructions first; then all
-        // uses are instruction operands and the RAUW is well-defined.
+        // The replacement is an Instruction, so RAUW through a ConstantExpr
+        // user would install it inside a "constant" and produce malformed IR.
+        // Expand constant users first; then every use is an operand.
         llvm::convertUsersOfConstantsToInstructions({gv});
         gv->replaceAllUsesWith(
             eb.CreateAddrSpaceCast(buf, llvm::PointerType::get(ctx, 3)));
@@ -308,10 +255,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     }
 
     // --- 6. Identify regions (loop-aware structured walk) -------------------
-    // Top level is a sequence of regions and uniform loops; a uniform loop is
-    // kept as the outer scalar scaffold (its header/latch run once per
-    // iteration) and its body region is wrapped in a work-item loop nested
-    // inside. A `wrapEnd` block holds the function's single return.
+    // A uniform loop stays the scalar scaffold, its body region wrapped inside.
     auto* wrapEnd = llvm::BasicBlock::Create(ctx, "wrap.end", wrapper);
     llvm::ReturnInst::Create(ctx, wrapEnd);
 
@@ -343,11 +287,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             if (llvm::isa<llvm::ReturnInst>(term)) { R.reachedRet = true; continue; }
             for (llvm::BasicBlock* s : llvm::successors(bb)) {
                 if (boundarySet.count(s)) { R.barrier = s; continue; }
-                // The latch is scaffold, never part of a region: it runs
-                // once per iteration on the scalar side, and the region's
-                // exit edge is redirected to it (step 8). The walk applies
-                // the same rule when the block after the last barrier IS
-                // the latch, so a latch is never a region's start either.
+                // A latch is scaffold: never in a region, never a region start.
                 if (encLoop && s == encLoop->getLoopLatch()) {
                     R.reachedLatch = true; continue;
                 }
@@ -365,24 +305,9 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         return nullptr;
     };
 
-    // Every block starts at most ONE region. `collect` already guards its own
-    // BFS with a `seen` set; this walk had no equivalent, so a CFG that comes
-    // back around to a block already regioned kept going — appending a
-    // RegionJob per lap, forever. `samples/profile` built with
-    // `--xpu-backend=cpu` reached a 67,108,864-element `jobs` vector and 116 GB
-    // of RSS before the OOM killer took the compiler (kernel log:
-    // "Out of memory: Killed process (cajeta) total-vm:176864816kB").
-    //
-    // A revisit means the barrier control flow is not the structured sequence
-    // the region model assumes, which is precisely the case this pass is
-    // supposed to DECLINE: `emitKernelRegistration` already wraps the call in
-    // `try { fissionBarrierKernel(...) } catch (cajeta::Exception&)` and falls
-    // back to a host stub. That fallback was simply unreachable for this shape,
-    // because the walk never got around to throwing — it ran out of memory
-    // first. Raising `unsupported` here is what connects the two.
-    //
-    // Deliberately NOT a silent `return`: dropping the region would leave the
-    // kernel half-fissioned, and this pass's rule is never to miscompile.
+    // Every block starts at most ONE region: a CFG that comes back around to a
+    // regioned block is unstructured, and without this guard the walk appends a
+    // RegionJob per lap until it exhausts memory. Throw, never return silently.
     llvm::SmallPtrSet<llvm::BasicBlock*, 32> regioned;
     std::function<void(llvm::BasicBlock*, llvm::Loop*, llvm::BasicBlock*)> walk =
         [&](llvm::BasicBlock* start, llvm::Loop* encLoop,
@@ -390,20 +315,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         llvm::BasicBlock* cur = start;
         llvm::BasicBlock* pred = predBlock;
         while (cur) {
-            // The block after a loop's LAST barrier is often the loop's own
-            // latch — `stride = stride / 2` in an LDS tree reduce, `k0 = k0 +
-            // 16` in a tiled GEMM: block-uniform code that belongs to the
-            // scalar scaffold, which already runs the latch once per
-            // iteration. Starting a region here collected the latch, flowed
-            // through the header and around the loop until a block was
-            // reached twice, and declined three baseline kernels as
-            // "unstructured barrier control flow" (cpu-barrier-fission-loops
-            // spec §1). A uniform latch ends this level with no region job:
-            // the barrier's `br latch` edge is in place and nothing else
-            // needs redirecting. A latch that holds a per-work-item
-            // instruction is declined by name — the scaffold has no
-            // work-item context to run it in, and running it once per
-            // iteration would be wrong (spec 2.3).
+            // A uniform latch after the last barrier ends this level with no
+            // region job; a per-work-item one has no context, so decline it.
             if (encLoop && cur == encLoop->getLoopLatch()) {
                 for (llvm::Instruction& in : *cur)
                     if (!in.isTerminator() && tainted.count(&in)) {
@@ -417,11 +330,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             if (!regioned.insert(cur).second)
                 unsupported("unstructured barrier control flow (a block is "
                             "reached by more than one region path)");
-            // Sitting directly on a barrier-subloop header (a nested loop with no
-            // separating preheader region): enter it as a subloop rather than
-            // letting `collect` walk through and flatten it. Cajeta's structured
-            // loops have a preheader so this is defensive, but it keeps the walk
-            // from misregioning any nested shape (never miscompile).
+            // A barrier-subloop header with no separating preheader: enter it
+            // as a subloop rather than letting `collect` flatten it.
             if (llvm::Loop* cl = LI.getLoopFor(cur))
                 if (cl != encLoop && cl->getHeader() == cur && loopHasBarrier(cl)) {
                     walk(inLoopSucc(cl), cl, cur);
@@ -430,12 +340,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                     continue;
                 }
             Collected R = collect(cur, encLoop);
-            // Every block a region collects is claimed, not only its start:
-            // a block two regions both reach (the join of an `if` whose one
-            // arm holds a barrier loop) gets its exit edge rewired by the
-            // first nest and left dangling by the second, which is a
-            // miscompile, not a decline. The post-dominance checks in step 4
-            // name the known shapes first; this is the net under them.
+            // Claim every block a region collects, not only its start: a block
+            // two regions reach is left dangling by the second — a miscompile.
             for (llvm::BasicBlock* b : R.blocks)
                 if (b != cur && !regioned.insert(b).second)
                     unsupported("unstructured barrier control flow (a block is "
@@ -475,7 +381,6 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     };
 
     // --- 7. Context arrays for tid-tainted locals live across a barrier -----
-    // (`allocas` gathered in step 4, before the taint fixpoint.)
     llvm::DenseMap<llvm::AllocaInst*, llvm::AllocaInst*> ctxArray;
     for (llvm::AllocaInst* a : allocas) {
         bool perWorkItem = false;
@@ -507,10 +412,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     }
 
     // --- 9. Wrap each region in a 3-D work-item loop nest -------------------
-    // Per region: a tid.z → tid.y → tid.x nest. The inner tid.x loop is the
-    // contiguous, vectorizable one (its latch is forced to VF=W for waves), so a
-    // 1-D block (ntid.y/z == 1) is the same single SIMD loop as before; the z/y
-    // loops are single-trip. The region body sits inside the x loop.
+    // The inner tid.x loop is the vectorizable one; a 1-D block is one SIMD
+    // loop with two single-trip loops around it.
     llvm::Constant* z0 = llvm::ConstantInt::get(i32, 0);
     llvm::Constant* one = llvm::ConstantInt::get(i32, 1);
     for (RegionJob& J : jobs) {
@@ -522,7 +425,6 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         auto* yLat = llvm::BasicBlock::Create(ctx, "wi.y.latch", wrapper, J.entry);
         auto* zLat = llvm::BasicBlock::Create(ctx, "wi.z.latch", wrapper, J.entry);
 
-        // pred → preheader (redirect the specific edge pred → entry)
         auto* pterm = J.predBlock->getTerminator();
         bool redirected = false;
         for (unsigned s = 0; s < pterm->getNumSuccessors(); ++s)
@@ -562,7 +464,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         tz->addIncoming(zlb.CreateAdd(tz, one, "wi.z.next"), zLat);
         zlb.CreateBr(zHd);
 
-        // region exit edge(s) (to doneTarget, or a ret) → the inner (x) latch
+        // Region exit edges, a `ret` included, become the inner (x) latch.
         for (llvm::BasicBlock* bb : J.blocks) {
             auto* term = bb->getTerminator();
             if (llvm::isa<llvm::ReturnInst>(term)) {
@@ -575,10 +477,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             }
         }
 
-        // Linearized work-item index for context-array accesses:
-        // tz*ntidYX + ty*ntidX + tx. Built at the region entry (after its phis);
-        // the tz*ntidYX + ty*ntidX base is loop-invariant in the x loop and
-        // hoists out, leaving `base + tx` in the inner loop (SIMD-friendly).
+        // Linearized work-item index; its base hoists out of the x loop.
         llvm::IRBuilder<> rb(&*J.entry->getFirstInsertionPt());
         J.linear = rb.CreateAdd(
             rb.CreateAdd(rb.CreateMul(tz, ntidYX, "wi.zbase"),
@@ -609,7 +508,6 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 auto f = ctxArray.find(llvm::dyn_cast<llvm::AllocaInst>(ptr));
                 if (f == ctxArray.end()) continue;
                 llvm::IRBuilder<> b(&in);
-                // Index the per-work-item context array by the linearized index.
                 in.setOperand(ptrIdx,
                               b.CreateInBoundsGEP(f->second->getAllocatedType(),
                                                   f->second, J.linear, "ctx.p"));
@@ -618,11 +516,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     }
 
     for (auto& kv : ctxArray) {
-        // H17: the redirect above only rewrites direct Load/Store whose pointer is
-        // the alloca, and only inside J.blocks. A GEP/bitcast user, or a Load/Store
-        // in a non-job (loop-structural) block, is left pointing at the alloca —
-        // erasing it then leaves dangling IR (assert in debug, UAF/miscompile in
-        // release). Reject cleanly instead, mirroring the use_empty() guard above.
+        // The redirect above rewrites only direct Load/Store inside J.blocks, so
+        // erasing an alloca a GEP/bitcast user still names leaves dangling IR.
         if (!kv.first->use_empty())
             unsupported("a per-work-item local is accessed in a way barrier "
                         "fission can't redirect (a derived/GEP pointer, or a "

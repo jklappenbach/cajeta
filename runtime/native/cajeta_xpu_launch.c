@@ -1,9 +1,8 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
 // === (single-TU build; not a standalone compilation unit).
 // --- Texture3D CPU sample/fetch ---------------------------------------------
-// 3-D voxel read from the DECODED float volume, row-major (x fastest, then y,
-// then z): index = ((z*h + y)*w + x)*channels. The 3-D analogue of
-// cajeta_cpu_texel; missing channels default G/B = 0, A = 1.
+// One voxel of the DECODED float volume: index = ((z*h + y)*w + x)*channels, missing
+// channels defaulting G/B = 0, A = 1.
 static inline caj_v4f cajeta_cpu_texel3d(const struct cajeta_cpu_texobj* t,
                                          int x, int y, int z) {
     const float* p = t->data +
@@ -13,11 +12,8 @@ static inline caj_v4f cajeta_cpu_texel3d(const struct cajeta_cpu_texobj* t,
     return c;
 }
 
-// CPU 3-D texture sampler — the lowering of `tex.sample(sampler, u, v, w)`.
-// (u, v, w) normalized in [0, 1]; filterMode 0 = nearest / 1 = trilinear;
-// addressMode 0 = clamp / 1 = wrap. Trilinear uses the texel-center convention
-// (coord = u*N - 0.5) matching GPU texture units, blending the 8 surrounding
-// voxels. The 3-D twin of __cajeta_xpu_cpu_tex_sample_rgba.
+// CPU 3-D sampler — the lowering of `tex.sample(sampler, u, v, w)`, (u, v, w) in [0, 1].
+// filterMode 0 = nearest / 1 = trilinear (texel-center); addressMode 0 = clamp / 1 = wrap.
 caj_v4f __cajeta_xpu_cpu_tex3d_sample_rgba(void* texp, int32_t filterMode,
                                            int32_t addressMode, float u, float v,
                                            float w) {
@@ -25,13 +21,12 @@ caj_v4f __cajeta_xpu_cpu_tex3d_sample_rgba(void* texp, int32_t filterMode,
     caj_v4f zero = { 0.0f, 0.0f, 0.0f, 1.0f };
     if (!t || !t->data || t->w == 0 || t->h == 0 || t->d == 0) return zero;
     int W = (int) t->w, H = (int) t->h, D = (int) t->d;
-    if (filterMode == 0) {                   // nearest
+    if (filterMode == 0) {
         int x = cajeta_tex_addr((int) floorf(u * (float) W), W, addressMode);
         int y = cajeta_tex_addr((int) floorf(v * (float) H), H, addressMode);
         int z = cajeta_tex_addr((int) floorf(w * (float) D), D, addressMode);
         return cajeta_cpu_texel3d(t, x, y, z);
     }
-    // trilinear (texel-center) — blend eight RGBA voxels
     float fx = u * (float) W - 0.5f;
     float fy = v * (float) H - 0.5f;
     float fz = w * (float) D - 0.5f;
@@ -51,7 +46,6 @@ caj_v4f __cajeta_xpu_cpu_tex3d_sample_rgba(void* texp, int32_t filterMode,
     caj_v4f c101 = cajeta_cpu_texel3d(t, cx1, cy0, cz1);
     caj_v4f c011 = cajeta_cpu_texel3d(t, cx0, cy1, cz1);
     caj_v4f c111 = cajeta_cpu_texel3d(t, cx1, cy1, cz1);
-    // interpolate along x, then y, then z
     caj_v4f a0 = c000 + (c100 - c000) * dx;
     caj_v4f b0 = c010 + (c110 - c010) * dx;
     caj_v4f a1 = c001 + (c101 - c001) * dx;
@@ -92,12 +86,8 @@ caj_v4i __cajeta_xpu_cpu_tex3d_fetch_rgba_i32(void* texp, int32_t x, int32_t y,
 }
 
 // --- Texture2DArray CPU sample ----------------------------------------------
-// A 2-D array stores its `layers` planes exactly like a 3-D volume's z slices
-// (index = ((layer*h + y)*w + x)*channels), so `fetch` reuses the 3-D exact-voxel
-// read with z = layer. Only `sample` differs: it filters bilinearly WITHIN the
-// integer-selected layer (no cross-layer blend — unlike the 3-D trilinear). The
-// lowering of `arr.sample(sampler, u, v, layer)`; `layer` is the integer array
-// index (clamped), (u, v) normalized.
+// The lowering of `arr.sample(sampler, u, v, layer)`: `layer` is the clamped integer
+// index, (u, v) normalized. Filtering is bilinear WITHIN a layer, never across layers.
 caj_v4f __cajeta_xpu_cpu_tex2da_sample_rgba(void* texp, int32_t filterMode,
                                             int32_t addressMode, float u, float v,
                                             int32_t layer) {
@@ -105,13 +95,12 @@ caj_v4f __cajeta_xpu_cpu_tex2da_sample_rgba(void* texp, int32_t filterMode,
     caj_v4f zero = { 0.0f, 0.0f, 0.0f, 1.0f };
     if (!t || !t->data || t->w == 0 || t->h == 0 || t->d == 0) return zero;
     int W = (int) t->w, H = (int) t->h, D = (int) t->d;
-    int z = layer < 0 ? 0 : (layer >= D ? D - 1 : layer);   // clamp layer index
-    if (filterMode == 0) {                   // nearest
+    int z = layer < 0 ? 0 : (layer >= D ? D - 1 : layer);
+    if (filterMode == 0) {
         int x = cajeta_tex_addr((int) floorf(u * (float) W), W, addressMode);
         int y = cajeta_tex_addr((int) floorf(v * (float) H), H, addressMode);
         return cajeta_cpu_texel3d(t, x, y, z);
     }
-    // bilinear (texel-center) within layer z — blend four RGBA texels
     float fx = u * (float) W - 0.5f;
     float fy = v * (float) H - 0.5f;
     int x0 = (int) floorf(fx), y0 = (int) floorf(fy);
@@ -130,11 +119,8 @@ caj_v4f __cajeta_xpu_cpu_tex2da_sample_rgba(void* texp, int32_t filterMode,
 }
 
 // --- TextureCube CPU sample -------------------------------------------------
-// Sample a cube map by a DIRECTION vector. The 6 faces are stored like a 6-layer
-// volume (face = the z slice) in the canonical +X,-X,+Y,-Y,+Z,-Z order. This does
-// the standard major-axis face projection (matching the GPU cube convention),
-// then bilinear within the selected face. The lowering of
-// `cube.sample(sampler, x, y, z)`; the direction need not be normalized.
+// The lowering of `cube.sample(sampler, x, y, z)`: sample by DIRECTION (need not be
+// normalized). Faces are z slices in +X,-X,+Y,-Y,+Z,-Z order, picked by major axis.
 caj_v4f __cajeta_xpu_cpu_texcube_sample_rgba(void* texp, int32_t filterMode,
                                              int32_t addressMode, float x, float y,
                                              float z) {
@@ -143,29 +129,28 @@ caj_v4f __cajeta_xpu_cpu_texcube_sample_rgba(void* texp, int32_t filterMode,
     if (!t || !t->data || t->w == 0 || t->h == 0 || t->d < 6) return zero;
     float ax = fabsf(x), ay = fabsf(y), az = fabsf(z);
     int face; float sc, tc, ma;
-    if (ax >= ay && ax >= az) {            // major axis X
+    if (ax >= ay && ax >= az) {
         ma = ax;
-        if (x >= 0.0f) { face = 0; sc = -z; tc = -y; }   // +X
-        else           { face = 1; sc =  z; tc = -y; }   // -X
-    } else if (ay >= ax && ay >= az) {     // major axis Y
+        if (x >= 0.0f) { face = 0; sc = -z; tc = -y; }
+        else           { face = 1; sc =  z; tc = -y; }
+    } else if (ay >= ax && ay >= az) {
         ma = ay;
-        if (y >= 0.0f) { face = 2; sc =  x; tc =  z; }   // +Y
-        else           { face = 3; sc =  x; tc = -z; }   // -Y
-    } else {                               // major axis Z
+        if (y >= 0.0f) { face = 2; sc =  x; tc =  z; }
+        else           { face = 3; sc =  x; tc = -z; }
+    } else {
         ma = az;
-        if (z >= 0.0f) { face = 4; sc =  x; tc = -y; }   // +Z
-        else           { face = 5; sc = -x; tc = -y; }   // -Z
+        if (z >= 0.0f) { face = 4; sc =  x; tc = -y; }
+        else           { face = 5; sc = -x; tc = -y; }
     }
-    if (ma == 0.0f) ma = 1.0f;             // degenerate (0,0,0) → face 0 center
+    if (ma == 0.0f) ma = 1.0f;
     float u = 0.5f * (sc / ma + 1.0f);
     float v = 0.5f * (tc / ma + 1.0f);
     int W = (int) t->w, H = (int) t->h;
-    if (filterMode == 0) {                 // nearest
+    if (filterMode == 0) {
         int xi = cajeta_tex_addr((int) floorf(u * (float) W), W, addressMode);
         int yi = cajeta_tex_addr((int) floorf(v * (float) H), H, addressMode);
         return cajeta_cpu_texel3d(t, xi, yi, face);
     }
-    // bilinear (texel-center) within the selected face
     float fx = u * (float) W - 0.5f;
     float fy = v * (float) H - 0.5f;
     int x0 = (int) floorf(fx), y0 = (int) floorf(fy);
@@ -184,24 +169,8 @@ caj_v4f __cajeta_xpu_cpu_texcube_sample_rgba(void* texp, int32_t filterMode,
 }
 
 // --- Launch + module registration -------------------------------------------
-// The compiler lowers `kernel.launch(stream, grid:, block:)(args)` to a call
-// here, passing the kernel's PTX entry name, 1-D grid/block, and the CUDA
-// kernelParams argv (an array of pointers to each argument value). The real
-// NVPTX path (cuLaunchKernel via the dlopen'd driver) lands in the host-launch
-// runtime; this is the not-yet-wired no-op so the symbol resolves and host
-// codegen of a launch site links.
-// CUDA launch: lazily load the module + resolve the function, then 1-D launch.
-// Marshal the canonical count-shape argv into the OptiX launch params (the layout
-// contract in NvptxOptixRayQuery.h) and run the RT-core pipeline. argv slots, in
-// signature order: [0] &AS handle, [1..3] &originX/Y/Z device ptr, [4] &out device
-// ptr, [5] &n. The packed params struct mirrors LLVM {i64×5, i32, i64} exactly
-// (handle@0, origins@8/16/24, out@32, n@40, boxes@48; size 56) — the same struct
-// the 3-C-i device probe launched with. `boxes` is the AS's AABB data (NOT a kernel
-// arg); the glue retained it at build time (cajeta_xpu_optix_accel_boxes).
-// optixHandle is the OptiX AS rep resolved at launch (M3 Phase 2/3): the AS POD's
-// primary handle under eager =optix, or the lazily-built OptiX secondary under AUTO.
-// It keys the traversable/boxes lookups instead of av[0], so the AUTO path (whose POD
-// primary is the software floor) reaches the right OptiX rep.
+// Marshal argv into the OptiX launch params (layout contract in NvptxOptixRayQuery.h)
+// and run the RT-core pipeline. `optixHandle` keys the traversable/boxes lookups.
 static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv,
                                          int64_t optixHandle) {
     void** av = (void**) argv;
@@ -216,7 +185,7 @@ static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv,
     }
     int rc;
     if (rq->shape == 1) {
-        // Triangle nearest-hit: argv [AS, outT, outI] -> { handle, outT, outI }.
+        // Triangle nearest-hit: argv [AS, outT, outI].
         struct { uint64_t handle, outT, outI; } p;
         p.handle = trav;
         p.outT   = *(uint64_t*) av[1];
@@ -225,7 +194,7 @@ static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv,
                                          rq->prog1 /*closesthit*/, "" /*anyhit*/,
                                          rq->prog2 /*miss*/, &p, sizeof(p), 1);
     } else if (rq->shape == 2) {
-        // Triangle candidate getters: argv [AS, out] -> { handle, out }.
+        // Triangle candidate getters: argv [AS, out].
         struct { uint64_t handle, out; } p;
         p.handle = trav;
         p.out    = *(uint64_t*) av[1];
@@ -233,8 +202,7 @@ static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv,
                                          "" /*closesthit*/, rq->prog1 /*anyhit*/,
                                          rq->prog2 /*miss*/, &p, sizeof(p), 1);
     } else if (rq->shape == 3) {
-        // Committed-triangle per-launch: argv [AS, b0, b1, out, n] ->
-        // { handle, b0, b1, out, n }; one ray per launch index (width = n).
+        // Committed-triangle per-launch: argv [AS, b0, b1, out, n], one ray per index.
         struct { uint64_t handle, b0, b1, out; uint32_t n; } p;
         p.handle = trav;
         p.b0     = *(uint64_t*) av[1];
@@ -245,7 +213,7 @@ static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv,
                                          rq->prog1 /*closesthit*/, "" /*anyhit*/,
                                          rq->prog2 /*miss*/, &p, sizeof(p), p.n);
     } else {
-        // AABB candidate count: argv [AS, ox,oy,oz, out, n] -> the count params.
+        // AABB candidate count: argv [AS, ox, oy, oz, out, n]; `boxes` is retained AS data.
         struct {
             uint64_t handle, originX, originY, originZ, out;
             uint32_t n;
@@ -273,22 +241,15 @@ static void cajeta_xpu_launch_cuda_optix(struct cajeta_optix_rq* rq, void* argv,
                 rq->name, rc);
 }
 
+// CUDA launch: pick the OptiX or software path from the AS argument's impl, load the
+// module lazily, apply spec overrides, translate kernargs, launch, then free them.
 static void cajeta_xpu_launch_cuda(const char* kernelName,
                                    int32_t gridX, int32_t gridY, int32_t gridZ,
                                    int32_t blockX, int32_t blockY, int32_t blockZ,
                                    uint32_t sharedBytes, void* argv,
                                    int64_t streamHandle,
                                    int32_t specCount, const int32_t* specValues) {
-    // M3 Phase 2: launch-time impl selection (the verb picks). Read the ACTUAL
-    // AccelerationStructure argument's recorded impl (POD offset 12 = ((int32*)pod)[3])
-    // rather than a global resolve, so ONE AS can serve an OptiX-shape kernel (which
-    // emitted an OptiX program set → optixLaunch / RT cores) AND an Unsupported-shape
-    // kernel (no program set → the software cubin over the retained software floor) in
-    // the same program. The verb picks per launch; no kernel ever receives a rep it
-    // cannot traverse (R2). When the software path gets a non-software AS primary
-    // (OptiX) the marshalling pass below swaps in the registered software floor so the
-    // software cubin reads a real BVH blob, not the OptixAs* — eliminating the silent
-    // fault (R6). Supersedes the M2 global caj_cuda_resolve_as_impl(AUTO)==OPTIX gate.
+    // Read the ACTUAL AS argument's impl (POD offset 12), not a global resolve.
     {
         void** av0 = (void**) argv;
         struct cajeta_kparams* kpx = cajeta_xpu_find_kparams(kernelName);
@@ -304,10 +265,6 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
         }
         struct cajeta_optix_rq* rq = cajeta_xpu_find_optix_rq(kernelName);
         if (rq && cajeta_xpu_optix_available() && asPrimary) {
-            // Resolve the OptiX rep for this AS: under eager =optix the POD primary IS
-            // the OptiX AS; under AUTO the primary is the software floor and we build
-            // (or reuse) the OptiX rep lazily on this first supported-shape launch (R4).
-            // Forced =software retains no geometry → resolve returns 0 → software path.
             int64_t optixHandle = 0;
             if (asArgImpl == CAJ_AS_IMPL_OPTIX)
                 optixHandle = asPrimary;
@@ -340,12 +297,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                 kernelName);
         return;
     }
-    // Texture / Image2D guard: the CUDA texture+surface runtime (cuArrayCreate /
-    // cuTexObjectCreate / cuSurfObjectCreate) IS wired below; an unbacked (0)
-    // handle here means alloc failed or the driver lacks the entry points, in
-    // which case dispatching would feed tex/suld a null object and FAULT — skip
-    // the launch instead (mirrors the HIP launchOk=0 guard) so the caller degrades
-    // cleanly. A valid (nonzero) handle proceeds to per-launch object translation.
+    // An unbacked (0) texture/image handle would feed tex/suld a null object and FAULT.
     {
         void** av = (void**) argv;
         struct cajeta_kparams* kp = cajeta_xpu_find_kparams(kernelName);
@@ -361,20 +313,9 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                 }
         }
     }
-    // H9: the CUDA context is bound to the thread that created it (cuCtxCreate);
-    // a launch from a different thread (the carrier fiber vs the main thread) runs
-    // with no current context -> CUDA_ERROR_INVALID_CONTEXT and the launch is a
-    // silent no-op. Make the context current on this thread first, and surface a
-    // launch failure instead of discarding the return code.
+    // Bound to its creating thread: a launch elsewhere finds no context and no-ops.
     if (g_xpu_cuda.cuCtxSetCurrent) g_xpu_cuda.cuCtxSetCurrent(g_xpu_cuda.ctx);
-    // Host spec-constant override (stage12-spec-override Phase C): set the
-    // module's constant-memory spec globals before launch. The kernel reads
-    // `(slot < count) ? values[slot] : default`, so writing count (0 when no
-    // override, clearing any prior launch's values) suffices; the symbols are
-    // absent for kernels without spec constants → getGlobal fails → skip (the
-    // kernel then has no spec read anyway). Verified on-device (RTX 4090,
-    // XpuCudaDispatchDeviceTests.{specOverride,noOverride}*); safe-by-default —
-    // a failed/absent copy leaves the zero-init default.
+    // The kernel reads `(slot < count) ? values[slot] : default`, so count 0 clears.
     if (mod && g_xpu_cuda.cuModuleGetGlobal && g_xpu_cuda.cuMemcpyHtoD) {
         cajeta_cudeviceptr g; size_t gbytes;
         int32_t count = (specCount > 0 && specValues) ? specCount : 0;
@@ -390,13 +331,9 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
             }
         }
     }
-    // Per-launch kernarg translation (mirrors cajeta_xpu_launch_hip):
-    //   TEXTURE      → build a CUtexObject from the texture record + the bound
-    //                  Sampler's modes, pass the u64 handle by value.
-    //   IMAGE        → build a CUsurfObject (no sampler), pass the u64 by value.
-    //   BUFFER_ARRAY → copy the HOST [count, h…] handle array to device memory,
-    //                  pass &devPtr (the kernel flat-loads each device handle).
-    // Everything else passes through unchanged.
+    // Per-launch kernarg translation: TEXTURE → a CUtexObject built from the record
+    // + the bound Sampler's modes; IMAGE → a CUsurfObject; BUFFER_ARRAY → a device
+    // copy of the host [count, h…] array, passed as &devPtr. Others pass through.
     void** useArgv = (void**) argv;
     void* subArgv[64];
     void* bufArrVals[8];
@@ -404,9 +341,8 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
     int nbufarr = 0;
     unsigned long long texObjs[8]; void* texObjVals[8]; int ntex = 0;
     unsigned long long surfObjs[8]; void* surfObjVals[8]; int nsurf = 0;
-    // M3 Phase 2: substitute AccelerationStructure PODs (handle swapped to the software
-    // floor) for the software-path floor fallback. POD layout {i64 handle, u32 count,
-    // i32 impl} = 16 bytes, matching the cajeta AS struct the cubin reads by value.
+    // AS PODs substituted for the software-floor fallback. Layout {i64 handle, u32
+    // count, i32 impl} = 16 bytes, matching the struct the cubin reads by value.
     struct { int64_t handle; uint32_t count; int32_t impl; } asPods[8];
     int nas = 0;
     {
@@ -421,13 +357,10 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                 } else if (kpa->kind[i] == CAJETA_KP_ACCEL && ((void**) argv)[i] &&
                            ((const int32_t*) ((void**) argv)[i])[3]
                                != CAJ_AS_IMPL_SOFTWARE_BVH) {
-                    // A non-software AS primary reaching the software cubin — needs the
-                    // floor swap (R6). The optix path already returned above if taken.
                     hasXlat = 1;
                 }
             }
             if (hasXlat) {
-                // The (single, v1) Sampler param supplies the filter/address modes.
                 int32_t filterMode = CAJ_CU_TR_FILTER_MODE_LINEAR, addressMode = 0;
                 for (int i = 0; i < kpa->count; ++i)
                     if (kpa->kind[i] == CAJETA_KP_SAMPLER) {
@@ -500,10 +433,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                         subArgv[i] = &bufArrVals[nbufarr];
                         ++nbufarr;
                     } else if (kpa->kind[i] == CAJETA_KP_ACCEL) {
-                        // M3 Phase 2 floor swap. The software cubin reads field 0 (the
-                        // handle) as the BVH-blob device pointer; a non-software AS
-                        // primary (OptiX OptixAs*) would fault. Substitute a POD copy
-                        // pointing at the retained software-BVH floor (Phase 1 registry).
+                        // Field 0 is read as the BVH-blob pointer: point at the floor.
                         int32_t asImpl = ((const int32_t*) ((void**) argv)[i])[3];
                         if (asImpl != CAJ_AS_IMPL_SOFTWARE_BVH) {
                             if (nas >= 8) { ok = 0; break; }
@@ -538,19 +468,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
             }
         }
     }
-    // 3-D grid/block; default stream; kernelParams = the CUDA argv the launch
-    // site marshalled (pointers to each arg value). sharedBytes sizes the
-    // kernel's dynamic (extern) shared memory; 0 for static-only kernels.
-    // The profiler's EVENT-tier bracket. Drain first — resolving the launches
-    // that have since finished costs a cuEventQuery each and keeps the pool
-    // from filling — then open the bracket immediately before the launch and
-    // close it immediately after, both on the launch's OWN stream so the pair
-    // measures the kernel rather than the host's marshalling.
-    //
-    // Neither call waits (§5.1.3): a bracket that synchronized here would
-    // serialize every launch against its own kernel, and two genuinely
-    // concurrent streams would be recorded back to back with nothing in the
-    // trace to say the measurement is what separated them.
+    // The EVENT-tier bracket sits on the launch's OWN stream and never waits.
     caj_cuda_bracket_drain();
     const int profSlot = caj_cuda_bracket_begin(
         __cajeta_prof_cuda_current_launch(), (void*) (intptr_t) streamHandle);
@@ -560,9 +478,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
         (unsigned) sharedBytes, /*stream=*/(void*) (intptr_t) streamHandle,
         useArgv, /*extra=*/NULL);
     caj_cuda_bracket_end(profSlot, (void*) (intptr_t) streamHandle);
-    // Free per-launch resources. Sync first (the launch is async; texobj/surfobj
-    // and the bindless array are read during execution) — mirrors the HIP path's
-    // hipDeviceSynchronize-before-free.
+    // Sync before freeing: the launch is async and still reads these resources.
     if (nbufarr > 0 || ntex > 0 || nsurf > 0) {
         g_xpu_cuda.cuCtxSynchronize();
         for (int j = 0; j < nbufarr; ++j) g_xpu_cuda.cuMemFree(bufArrDev[j]);
@@ -574,13 +490,8 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                 kernelName, launchRc);
 }
 
-// HIP launch: lazily load the hsaco module + resolve the function (reusing the
-// shared module table — only one device backend is active per run), then 1-D
-// launch. Mirrors cajeta_xpu_launch_cuda with hip* entry points. Texture params
-// (Item 8 Stage C) are translated here: the argv slot holds a texture-record
-// handle, so a hipTextureObject is built from its hipArray + the paired Sampler's
-// modes and substituted into the kernelParams (the kernel reads the image+sampler
-// SRDs from that object via __ockl_image_sample_2D); destroyed after the launch.
+// HIP launch: mirrors cajeta_xpu_launch_cuda with hip* entry points, over the shared
+// module table. Texture/image objects are built here and destroyed after the launch.
 static void cajeta_xpu_launch_hip(const char* kernelName,
                                   int32_t gridX, int32_t gridY, int32_t gridZ,
                                   int32_t blockX, int32_t blockY, int32_t blockZ,
@@ -603,10 +514,7 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
     void* fn = e ? e->function : NULL;
     void* mod = e ? e->module : NULL;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
-    // Host spec-constant override (Phase C): set the module's constant-memory
-    // spec globals before launch (count 0 = no override, clears prior values;
-    // absent symbol → no spec constants → skip). UNVERIFIED on-device (AMD
-    // in-process JIT is comgr-blocked here); safe-by-default (zero-init = default).
+    // Spec override: count 0 clears a prior launch; an absent symbol means none.
     if (mod && g_xpu_hip.hipModuleGetGlobal && g_xpu_hip.hipMemcpyHtoD) {
         void* g; size_t gbytes;
         int32_t count = (specCount > 0 && specValues) ? specCount : 0;
@@ -629,10 +537,8 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
     }
     void** argv = (void**) argvv;
 
-    // Texture/surface-object translation (only if this kernel has a Texture2D or
-    // Image2D param). A Texture2D param is bound as a sampled texture object; an
-    // Image2D param as a writable surface object — both arrive at the kernel as a
-    // ptr-addrspace(4) kernarg, so we substitute &objVal into the argv slot.
+    // Texture2D binds as a sampled texture object, Image2D as a writable surface one;
+    // both reach the kernel as a ptr-addrspace(4) kernarg, so &objVal fills the slot.
     void** useArgv = argv;
     void* subArgv[64];
     void* texObjVals[8];
@@ -655,7 +561,6 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
             else if (kp->kind[i] == CAJETA_KP_BUFFER_ARRAY) hasBufArr = 1;
         }
         if (hasTex || hasImg || hasBufArr) {
-            // The (single, v1) Sampler param supplies the filter/address modes.
             int32_t filterMode = CAJ_HIP_FILTER_LINEAR, addressMode = 0;
             for (int i = 0; i < kp->count; ++i)
                 if (kp->kind[i] == CAJETA_KP_SAMPLER) {
@@ -666,7 +571,7 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
             for (int i = 0; i < kp->count; ++i) {
                 subArgv[i] = argv[i];
                 if (kp->kind[i] == CAJETA_KP_TEXTURE) {
-                    if (ntex >= 8) {   // M6: more textures than the texObj buffers
+                    if (ntex >= 8) {
                         fprintf(stderr, "cajeta.xpu: HIP kernel '%s' uses more than "
                                 "8 textures (unsupported); not launching\n", kernelName);
                         launchOk = 0; break;
@@ -674,7 +579,7 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                     int64_t rec = *(int64_t*) argv[i];   // texture-record handle
                     int64_t obj = cajeta_xpu_hip_make_texobj(rec, filterMode,
                                                              addressMode);
-                    if (!obj) {        // M5: texture-object creation failed
+                    if (!obj) {
                         fprintf(stderr, "cajeta.xpu: HIP texture-object creation "
                                 "failed for kernel '%s'; not launching\n", kernelName);
                         launchOk = 0; break;
@@ -686,7 +591,7 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                     subArgv[i] = &texObjVals[ntex];      // arg = the texObj ptr
                     ++ntex;
                 } else if (kp->kind[i] == CAJETA_KP_IMAGE) {
-                    if (nsurf >= 8) {  // more storage images than the surfObj buffers
+                    if (nsurf >= 8) {
                         fprintf(stderr, "cajeta.xpu: HIP kernel '%s' uses more than "
                                 "8 storage images (unsupported); not launching\n",
                                 kernelName);
@@ -694,7 +599,7 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                     }
                     int64_t rec = *(int64_t*) argv[i];   // image-record handle
                     int64_t obj = cajeta_xpu_hip_make_surfobj(rec);
-                    if (!obj) {        // surface-object creation failed/unsupported
+                    if (!obj) {
                         fprintf(stderr, "cajeta.xpu: HIP surface-object creation "
                                 "failed for kernel '%s'; not launching\n", kernelName);
                         launchOk = 0; break;
@@ -704,11 +609,8 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                     subArgv[i] = &surfObjVals[nsurf];    // arg = the surfObj ptr
                     ++nsurf;
                 } else if (kp->kind[i] == CAJETA_KP_BUFFER_ARRAY) {
-                    // Bindless Buffer<T>[]: argv[i] points at the HOST-marshalled
-                    // [i64 count, i64 h0 … ] handle array. The device kernel takes a
-                    // global pointer to it (the default bufferArrayElement flat-loads
-                    // each handle, which is itself a device address). Copy the array
-                    // into device memory and pass &devPtr as the kernarg.
+                    // argv[i] is the HOST [i64 count, i64 h0 …] array; the kernel
+                    // flat-loads device addresses out of a device copy of it.
                     if (nbufarr >= 8) {
                         fprintf(stderr, "cajeta.xpu: HIP kernel '%s' uses more than "
                                 "8 bindless buffer arrays (unsupported); not "
@@ -769,21 +671,15 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
     }
 }
 
-// Vulkan launch: translate the uniform kernelParams argv into descriptor
-// bindings using the per-kernel param metadata — buffer args map to their
-// existing storage buffers (argv slot holds the buffer-table handle), scalar
-// args are copied into transient single-element SSBOs (freed after) — then
-// dispatch gridX work-groups (the local size is baked into the SPIR-V). This is
-// the one backend whose launch ABI forks from the pointer-arg kernelParams
-// model: Vulkan's compute entry has no params, only descriptor bindings.
+// Vulkan launch: translate argv into descriptor bindings — buffers to their storage
+// buffers, scalars to transient SSBOs — then dispatch. Vulkan's entry takes no params.
 static void cajeta_xpu_launch_vulkan(const char* kernelName,
                                      int32_t gridX, int32_t gridY, int32_t gridZ,
                                      int32_t blockX, int32_t blockY, int32_t blockZ,
                                      int32_t sharedBytes, void* argvv,
                                      int32_t specCount, const int32_t* specValues) {
     void** argv = (void**) argvv;
-    // kparams are shared across variants (looked up by the base name); the launch
-    // resolves the AS bind kind from the recorded impl below.
+    // kparams are shared across variants, looked up by the base name.
     struct cajeta_kparams* kp = cajeta_xpu_find_kparams(kernelName);
     if (!kp || kp->count <= 0 || kp->count > 64) {
         fprintf(stderr,
@@ -793,11 +689,7 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
     }
     const int n = kp->count;
 
-    // Variant selection (inc-4 brick #3): if an AccelerationStructure argument was
-    // built as a software BVH, launch the "<name>$sw" variant — the SoftwareRayQuery
-    // walk in plain SPIR-V, AS bound as a storage buffer — instead of the native
-    // module. The impl is recorded at the AS POD's offset 12 ({i64 handle, u32
-    // count, i32 impl}). v1: AS args in one launch share one impl.
+    // A software-BVH AS launches the "<name>$sw" variant, AS bound as a storage buffer.
     int asSoftware = 0;
     for (int i = 0; i < n; ++i) {
         if (kp->kind[i] == CAJETA_KP_ACCEL &&
@@ -838,9 +730,7 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                 bkinds[i] = CAJ_VKB_BUFFER;
                 break;
             case CAJETA_KP_BUFFER_ARRAY:
-                // argv[i] points at the marshalled [int64 count, int64 h0 …]
-                // handle array; pass that pointer through to the descriptor-array
-                // write (which reads the count + handles).
+                // argv[i] is the marshalled [int64 count, int64 h0 …] array itself.
                 bindings[i] = (int64_t) (intptr_t) argv[i];
                 bkinds[i] = CAJ_VKB_BUFFER_ARRAY;
                 break;
@@ -850,18 +740,14 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                 bkinds[i] = CAJ_VKB_TEXTURE;
                 break;
             case CAJETA_KP_IMAGE:
-                // argv slot holds the Image2D deviceHandle = texture-table index
-                // (storage image). Bind it as a STORAGE_IMAGE (GENERAL layout).
+                // argv slot holds the Image2D deviceHandle = texture-table index.
                 bindings[i] = *(int64_t*) argv[i];
                 bkinds[i] = CAJ_VKB_STORAGE_IMAGE;
                 break;
             case CAJETA_KP_ACCEL: {
-                // argv slot points at the AccelerationStructure POD:
-                // { i64 deviceHandle, u32 primitiveCount, i32 impl }. The first
-                // field is the handle; the bind kind follows the noun's RECORDED
-                // impl (the matching verb variant was already selected above):
-                // native BLAS → an acceleration-structure descriptor; software
-                // BVH → the storage buffer the "$sw" variant reads as bvh[i].
+                // argv slot points at the AS POD { i64 deviceHandle, u32 primitiveCount,
+                // i32 impl }: native BLAS binds an acceleration-structure descriptor,
+                // software BVH the storage buffer "$sw" reads as bvh[i].
                 int32_t asImpl = ((const int32_t*) argv[i])[3];
                 bindings[i] = *(int64_t*) argv[i];
                 bkinds[i] = (asImpl == CAJ_AS_IMPL_SOFTWARE_BVH) ? CAJ_VKB_BUFFER
@@ -869,8 +755,7 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                 break;
             }
             case CAJETA_KP_SAMPLER: {
-                // argv slot points at the by-value Sampler POD: { i32 filterMode,
-                // i32 addressMode }. Build a transient VkSampler from it.
+                // argv slot points at the by-value Sampler POD { i32 filter, i32 address }.
                 const int32_t* modes = (const int32_t*) argv[i];
                 int64_t s = cajeta_xpu_vk_make_sampler(modes[0], modes[1]);
                 if (!s) { built = 0; break; }
@@ -892,8 +777,6 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
         if (!built) break;
     }
     if (!built)
-        // A binding that would not marshal skips the dispatch entirely —
-        // as much a failed launch as a refused one, and counted the same.
         cajeta_xpu_note_launch_failure();
     if (built)
         cajeta_xpu_vk_launch(spirv, len, launchName, bindings, bkinds, n,
@@ -908,8 +791,6 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
 }
 
 // Dispatch a launch to whatever backend is active, on its current device.
-// `specCount`/`specValues` are host overrides for the kernel's user spec
-// constants (NULL/0 = none); see __cajeta_xpu_launch_v3.
 static void caj_xpu_dispatch_raw(const char* kernelName,
                              int32_t gridX, int32_t gridY, int32_t gridZ,
                              int32_t blockX, int32_t blockY, int32_t blockZ,
@@ -919,9 +800,6 @@ static void caj_xpu_dispatch_raw(const char* kernelName,
     int backend = cajeta_xpu_active_backend();
     switch (backend) {
         case CAJ_XPU_CUDA:
-            // streamHandle (0 = default stream) orders this launch with the
-            // async copies queued on the same stream. Spec override → the
-            // module's constant-memory globals (Phase C).
             cajeta_xpu_launch_cuda(kernelName, gridX, gridY, gridZ,
                                    blockX, blockY, blockZ, sharedBytes, argv,
                                    streamHandle, specCount, specValues);
@@ -932,8 +810,7 @@ static void caj_xpu_dispatch_raw(const char* kernelName,
                                   streamHandle, specCount, specValues);
             return;
         case CAJ_XPU_VULKAN:
-            // Vulkan v1 submits on its own queue; per-stream ordering is a
-            // follow-on (cajeta-xpu). The stream handle is accepted, not used.
+            // Vulkan submits on its own queue: the stream handle is accepted, not used.
             (void) streamHandle;
             cajeta_xpu_launch_vulkan(kernelName, gridX, gridY, gridZ,
                                      blockX, blockY, blockZ,
@@ -942,7 +819,6 @@ static void caj_xpu_dispatch_raw(const char* kernelName,
             return;
         case CAJ_XPU_CPU:
             // CPU launches run synchronously; the stream is ordering-irrelevant.
-            // CPU honors a spec override by reading it at runtime (hybrid).
             (void) streamHandle;
             cajeta_xpu_launch_cpu(kernelName, gridX, gridY, gridZ,
                                   blockX, blockY, blockZ,
@@ -953,12 +829,8 @@ static void caj_xpu_dispatch_raw(const char* kernelName,
     }
 }
 
-// The profiler's dispatch-record seam (cajeta-profiler Unit 7, spec §5.1).
-//
-// Wrapped HERE rather than in __cajeta_xpu_launch_v3's body because this is the
-// single point every launch passes through: v3 dispatches from two places (the
-// HIP per-device branch and the fallthrough) and v2/v1 forward to v3, so a hook
-// written one level up would be two call sites, i.e. two chances to miss one.
+// The profiler's dispatch-record seam lives HERE, the single point every launch
+// passes through; a hook one level up would be two call sites, not one.
 typedef struct {
     const char* kernelName;
     int32_t gridX, gridY, gridZ, blockX, blockY, blockZ;
@@ -969,6 +841,7 @@ typedef struct {
     const int32_t* specValues;
 } CajXpuDispatchArgs;
 
+// Trampoline that replays a recorded dispatch from the profiler's launch hook.
 static void caj_xpu_dispatch_thunk(void* p) {
     CajXpuDispatchArgs* a = (CajXpuDispatchArgs*) p;
     caj_xpu_dispatch_raw(a->kernelName, a->gridX, a->gridY, a->gridZ,
@@ -976,6 +849,7 @@ static void caj_xpu_dispatch_thunk(void* p) {
                          a->argv, a->streamHandle, a->specCount, a->specValues);
 }
 
+// Dispatch through the profiler seam: unarmed, the raw dispatch; armed, the thunk.
 static void caj_xpu_dispatch(const char* kernelName,
                              int32_t gridX, int32_t gridY, int32_t gridZ,
                              int32_t blockX, int32_t blockY, int32_t blockZ,
@@ -983,8 +857,6 @@ static void caj_xpu_dispatch(const char* kernelName,
                              int64_t streamHandle,
                              int32_t specCount, const int32_t* specValues,
                              int32_t deviceId) {
-    // Unarmed: one acquire load inside the seam, then the same call the
-    // unprofiled build makes. No record, no id, no stack read (plan 7.1.e).
     if (__cajeta_prof_gpu_sink_count() == 0) {
         caj_xpu_dispatch_raw(kernelName, gridX, gridY, gridZ, blockX, blockY,
                              blockZ, sharedBytes, argv, streamHandle,
@@ -1000,9 +872,7 @@ static void caj_xpu_dispatch(const char* kernelName,
                              caj_xpu_dispatch_thunk, &a);
 }
 
-// How many devices the given backend exposes (>= 1). Best-effort; falls back to
-// 1 if the count can't be queried. The index space the launch `deviceId` selects
-// within (handles originate from cajeta-gpu enumeration; xpu consumes the index).
+// How many devices the backend exposes (>= 1) — the space `deviceId` indexes. Best-effort.
 static int caj_xpu_device_count(int backend) {
     switch (backend) {
         case CAJ_XPU_HIP: {
@@ -1032,20 +902,9 @@ static int caj_xpu_device_count(int backend) {
     }
 }
 
-// The versioned host-source launch entry point (ABI v1): dispatch to the active
-// backend (chosen + cached on first device touch). `deviceId` selects the target
-// device — -1 = the current active device (no targeting; the pre-Stage-12
-// behavior); >= 0 = an index into the active backend's enumerated devices. An
-// out-of-range index is a defined no-op (a diagnostic, never UB). v1 targets
-// "where it is cheap + correct": deviceId 0 is the default device on every
-// backend, and HIP genuinely selects deviceId>0 via hipSetDevice (the caller
-// owns buffer affinity — buffers must already live on the target device; no
-// migration here). Multi-device >0 on CUDA/Vulkan needs per-device contexts not
-// yet built and is a defined "unsupported", not a silent wrong-device launch.
-// A future field is added as __cajeta_xpu_launch_v4, never by repurposing an arg.
-// `specCount`/`specValues` are host overrides for the kernel's user
-// specialization constants (NULL/0 = none); see the header for the slot→SpecId
-// mapping and per-backend honoring.
+// The versioned host-source launch entry point (ABI v3). `deviceId`: -1 = the active
+// device, >= 0 = an index into the backend's devices, honored above 0 on HIP only;
+// out of range or unsupported is a diagnosed no-op. Frozen: add a v4, never a field.
 void __cajeta_xpu_launch_v3(const char* kernelName,
                             int32_t gridX, int32_t gridY, int32_t gridZ,
                             int32_t blockX, int32_t blockY, int32_t blockZ,
@@ -1068,9 +927,7 @@ void __cajeta_xpu_launch_v3(const char* kernelName,
         }
         if (deviceId > 0) {
             if (backend == CAJ_XPU_HIP && g_xpu_hip.hipSetDevice) {
-                // Bind the target device for this launch, then restore the
-                // runtime's default so subsequent (deviceId<=0) launches and
-                // buffer ops keep landing on the default device.
+                // Restored below so later launches and buffer ops keep the default.
                 int prev = g_xpu_hip.device;
                 g_xpu_hip.hipSetDevice(deviceId);
                 caj_xpu_dispatch(kernelName, gridX, gridY, gridZ,
@@ -1105,8 +962,7 @@ void __cajeta_xpu_launch_v2(const char* kernelName,
                            streamHandle, deviceId, /*specCount=*/0, /*specValues=*/NULL);
 }
 
-// Backward-compat shim — the original positional entry point. Forwards to v2
-// with deviceId = -1 (the active device). Frozen: keep this signature stable.
+// Backward-compat shim (the original entry point): v2 with deviceId = -1. Frozen.
 void __cajeta_xpu_launch(const char* kernelName,
                          int32_t gridX, int32_t gridY, int32_t gridZ,
                          int32_t blockX, int32_t blockY, int32_t blockZ,
@@ -1116,27 +972,14 @@ void __cajeta_xpu_launch(const char* kernelName,
                            streamHandle, /*deviceId=*/-1);
 }
 
-// Register a kernel's compiled device image under its entry name + backend id.
-// Each backend's registration ctor calls this; the launch path (above) resolves
-// by (name, active backend) and loads lazily on first use. The image pointer
-// lives in the host module's constant data and stays valid for the process
-// lifetime.
+// Register a kernel's compiled device image under its entry name + backend id; the
+// launch path resolves by (name, active backend) and loads lazily on first use.
 static void cajeta_xpu_register_module_impl(const char* kernelName,
                                             const void* image, uint64_t len,
                                             int backend) {
     if (!kernelName || !image) return;
     pthread_mutex_lock(&g_xpu_cuda_lock);
-    // Dedup by (name, backend), OVERWRITING on re-registration (mirrors the
-    // kparams registry). A second JIT'd program in the same process that reuses
-    // a kernel name (the test suite; any multi-program JIT host) MUST adopt the
-    // NEW image: the old one was embedded in the first program's module and is
-    // freed when that JIT is torn down, so keeping the stale pointer is a
-    // use-after-free at the next cuModuleLoadData (wrong kernel / crash).
-    // Resetting module+function forces a reload from the live image. (The old
-    // CUmodule/hipModule handle is leaked; re-registration is rare and the
-    // alternative — unloading without the owning backend context here — is
-    // unsafe.) Distinct backends deliberately do NOT collide: a multi-backend
-    // build stores one image per backend under the same name.
+    // Re-registration OVERWRITES: the old image died with the JIT that embedded it.
     int i;
     struct cajeta_xpu_module* e = NULL;
     for (i = 0; i < g_xpu_module_count; i++) {
@@ -1154,9 +997,6 @@ static void cajeta_xpu_register_module_impl(const char* kernelName,
         e->backend = backend;
     }
     if (!e) {
-        // A dropped registration MUST be loud: the failure otherwise
-        // surfaces only at launch time as "no registered kernel", in a
-        // different program run, with no pointer back to this cap.
         fprintf(stderr,
                 "cajeta.xpu: kernel registry FULL (%d) — dropping '%s'; "
                 "raise CAJETA_XPU_MAX_MODULES\n",
@@ -1177,18 +1017,14 @@ void __cajeta_xpu_register_module_be(const char* kernelName, const void* image,
     cajeta_xpu_register_module_impl(kernelName, image, len, (int) backend);
 }
 
-// Legacy 3-arg entry point (pre-backend-tag binaries): registers as backend -1,
-// which the lookup treats as serves-any. Frozen: keep this signature stable.
+// Legacy entry point: registers as backend -1, which lookup treats as serves-any. Frozen.
 void __cajeta_xpu_register_module(const char* kernelName, const void* image,
                                   uint64_t len) {
     cajeta_xpu_register_module_impl(kernelName, image, len, -1);
 }
 
 // --- kernel manifests (xpu-tile-manifest §12.1) ------------------------------
-// One entry per (name, backend, arch): the manifest JSON the compiler embedded
-// beside that backend's device code. The pointer is host-module constant data,
-// valid for the process lifetime; re-registration overwrites (the module
-// registry's rule — a second JIT'd program reusing a name must win).
+// One per (name, backend, arch): the manifest JSON embedded beside that device code.
 struct cajeta_xpu_manifest {
     char name[256];
     int backend;
@@ -1204,6 +1040,7 @@ static int g_xpu_manifest_count;
 void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size,
                                 uint64_t count);
 
+// Record one kernel's manifest JSON under (name, backend, arch), overwriting a repeat.
 void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
                                            int32_t backend, const char* arch,
                                            const void* json, uint64_t len) {
@@ -1241,7 +1078,8 @@ void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 }
 
-// STATIC native (no `this`): `nameArr` is a cajeta int8[] (payload at +8).
+// The active backend's manifest JSON as a fresh cajeta int8[] the caller owns, or NULL.
+// STATIC native (no `this`); `nameArr` is an int8[] whose payload starts at +8.
 void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len) {
     if (!nameArr || len <= 0 || len > 255) return NULL;
     char name[256];
@@ -1264,9 +1102,7 @@ void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len) {
     pthread_mutex_unlock(&g_xpu_cuda_lock);
     if (!pick) return NULL;
 
-    // Several arches under one name (a multi-arch bundle): serve the one the
-    // live device runs. The arch token the driver reports may carry a feature
-    // suffix ("gfx1151:sramecc-:xnack-"), so match on the registered prefix.
+    // The device's arch token may carry a suffix ("gfx1151:xnack-") — match a prefix.
     if (candidates > 1) {
         CajetaXpuRawDevice dev;
         if (cajeta_xpu_query_raw_device(&dev) && dev.archName[0]) {
@@ -1284,44 +1120,24 @@ void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len) {
         }
     }
 
-    // A fresh cajeta int8[] { i64 count, [count x i8] } the caller owns.
     void* hdr = __cajeta_new_array_header(8, 1, pick->len);
     if (!hdr) return NULL;
     if (pick->len) memcpy((char*) hdr + 8, pick->json, (size_t) pick->len);
     return hdr;
 }
 
-// Is `kernelName` actually LAUNCHABLE on the active backend — device code
-// registered, and (Vulkan) parameter metadata present? Type-level routing
-// (hasBatchKernel) cannot know a backend SKIPPED a kernel at build (the
-// NATIVE-only verb kernels on the shader tier); launching one is a loud
-// no-op the caller reads as success with garbage output (the vkwmma
-// measurement: 1,344 dropped launches, wrong logits at an impossibly fast
-// 130 ms prefill). This query lets a route degrade to kernels that exist.
-// `nameArr` is a cajeta int8[] (payload at +8), NOT NUL-terminated.
-// STATIC native: no leading `this` (the instance-native forwarder passes one,
-// static natives do not — the first cut declared `(void* self, ...)` and read
-// the ARRAY as self and the LENGTH as the array, returning all-false on every
-// backend; the Vulkan all-false was plausible enough to survive one gate).
+// Is `kernelName` LAUNCHABLE on the active backend (device code registered, and on
+// Vulkan its kparams too)? Lets a route degrade rather than issue a loud no-op.
+// STATIC native (no `this`); `nameArr` is an int8[] whose payload starts at +8.
 int32_t __cajeta_xpu_kernel_available(void* nameArr, int64_t len) {
     if (!nameArr || len <= 0 || len > 255) return 0;
     char name[256];
     memcpy(name, (const char*) nameArr + 8, (size_t) len);
     name[len] = 0;
     int backend = cajeta_xpu_active_backend();
-    // Per-backend registry SEMANTICS differ (measured, not assumed — the
-    // first cut used Vulkan's per-kernel-module lookup for every backend and
-    // read ALL-FALSE on HIP, demoting amdgpu off its Mw8 GEMMs, 594 -> 1538
-    // ms prefill):
-    //  - Vulkan registers one SPIR-V module PER KERNEL plus kparams; both
-    //    must exist or the launch is a loud no-op.
-    //  - HIP/CUDA register fatbin modules per unit and resolve kernels via
-    //    hipModuleGetFunction at launch; per-kernel find_module misses by
-    //    design. Their toolchains also compile EVERY kernel today (the
-    //    build-time skip mechanism is shader-tier-only), so availability is
-    //    unconditionally true. When a native backend gains skips, wire its
-    //    real resolution here.
-    //  - CPU registers thunks; everything lowerable is present.
+    // Registry semantics differ: Vulkan registers one SPIR-V module PER KERNEL, while
+    // HIP/CUDA register per-unit fatbins, resolve at launch, and compile every kernel
+    // — so availability on those backends is unconditional.
     if (backend != CAJ_XPU_VULKAN) return 1;
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(name, backend);

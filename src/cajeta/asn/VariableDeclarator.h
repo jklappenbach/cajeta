@@ -1,6 +1,4 @@
-//
 // Created by James Klappenbach on 11/4/22.
-//
 
 #pragma once
 
@@ -31,14 +29,9 @@ namespace cajeta {
 
     typedef shared_ptr<VariableInitializer> VariableInitializerPtr;
 
-    // title-stores §2.3 Phase 2 (plan 7.2.2) — flag a declaration initializer
-    // that was spelled the legacy way, `T x = #v`, so MoveExpression::generateCode
-    // can deprecate it. Shared by the two declaration builders (Statement.cpp's
-    // nested-decl path and the visitor's) — they must agree, or the same
-    // declaration would warn in one nesting context and stay silent in the other.
-    //
-    // A no-op unless the initializer is exactly `#v`: `T x = f(#v)` keeps the
-    // move nested inside the call, where it is an argument, not an assignment.
+    // Flags a declaration initializer spelled the legacy way, `T x = #v`, so
+    // MoveExpression::generateCode can deprecate it. Shared by both declaration
+    // builders, and a no-op unless the initializer is exactly `#v`.
     inline void markLegacyTransferAssign(const InitializerPtr& initializer) {
         auto vi = dynamic_pointer_cast<VariableInitializer>(initializer);
         if (!vi || vi->getChildren().empty()) {
@@ -52,12 +45,8 @@ namespace cajeta {
     class ArrayInitializer : public Initializer {
     private:
         list<VariableInitializerPtr> initializers;
-        // Element type for the literal. The literal `{1, 2, 3}` has no
-        // declared type of its own; the surrounding context (e.g. a
-        // `int32[] xs = {1, 2, 3}` local variable declaration) passes it
-        // down by calling setElementType before codegen. Without it the
-        // initializer can't choose an LLVM type for the heap allocation
-        // or coerce the element values.
+        // Element type for the literal: `{1, 2, 3}` has no declared type of its own,
+        // so the surrounding declaration passes it down before codegen.
         CajetaTypePtr elementType;
     public:
         virtual ~ArrayInitializer() {

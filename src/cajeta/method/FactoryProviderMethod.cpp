@@ -1,10 +1,5 @@
-//
-// AspectModel.md § @Factory (aot-di Unit 4a): synthesized provider
-// accessor for an all-injected @Factory provider. See the header for the
-// shape. Mirrors ComponentInjectMethod's lazy-singleton IR; the product
-// is built by invoking the factory's provider method (init beyond ctor,
-// R2 fresh-owned) rather than a plain constructor.
-//
+// Synthesized provider accessor for an all-injected @Factory provider: the
+// lazy-singleton IR of ComponentInjectMethod, built by the provider method.
 
 #include "FactoryProviderMethod.h"
 #include "../type/CajetaClass.h"
@@ -71,17 +66,15 @@ namespace cajeta {
                  factoryClass),
           descriptor(std::move(descriptor)),
           providerIdx(providerIdx) {
-        // Added after the factory class's generatePrototype already ran
-        // (during resolveDependencyGraph's tail), so clear the cached
-        // prototype pointers to take the lazy generatePrototype path —
-        // same dance as ComponentInjectMethod.
+        // Registered after the factory class's generatePrototype already ran, so
+        // clear the cached prototype pointers to take the lazy path.
         llvmFunctionType = nullptr;
         llvmFunction = nullptr;
         addModifier(STATIC);
     }
 
     void FactoryProviderMethod::generateCode() {
-        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
+        auto& llvmFunction = llvmFunctionRef();
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
@@ -99,8 +92,6 @@ namespace cajeta {
         module->setCurrentMethod(shared_from_this());
 
         if (isSingleton) {
-            // Lazy memo: load + null-check + branch (same shape as
-            // __cajeta_inject). The framework owns this singleton's drop.
             if (!singletonGlobal) {
                 std::string gname = "__cajeta_provided_"
                     + accessorName(parent, provider.providedType);
@@ -137,11 +128,8 @@ namespace cajeta {
                 inj->getLlvmFunctionType(), fn, {}, label);
         };
 
-        // 1. The factory singleton — the receiver of the provider method.
         llvm::Value* factoryInstance = callInject(parent, "factory");
 
-        // 2. Resolve each @Inject param (an all-injected provider has only
-        //    these; assisted providers get no accessor at all).
         std::vector<ParameterEntry> args;
         for (auto& fp : provider.params) {
             if (!fp.injected) continue;
@@ -149,13 +137,11 @@ namespace cajeta {
             args.emplace_back(fp.param->getType(), std::string(), dep);
         }
 
-        // 3. Invoke the provider method on the factory → fresh product (R2).
         std::string makeName = provider.method->getName();
         llvm::Value* product = parent->invokeMethod(
             makeName, args, /*isConstructor=*/false, factoryInstance,
             /*callerModule=*/module);
 
-        // 4. Cache (singleton) + return.
         if (isSingleton) {
             builder->CreateStore(product, singletonGlobal);
         }

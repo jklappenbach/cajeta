@@ -53,9 +53,7 @@ struct CommonFlags {
     bool quiet = false;
 };
 
-// Strip a `--json` / `--quiet` / `-q` flag out of `args` in-place,
-// updating `flags`. Run before subcommand-specific flag parsing so
-// each handler only sees what's left.
+// Strip `--json` / `--quiet` / `-q` before subcommand flag parsing sees them.
 void consumeCommonFlags(std::vector<std::string>& args, CommonFlags& flags) {
     auto it = args.begin();
     while (it != args.end()) {
@@ -103,7 +101,6 @@ void printArchiveUsage() {
 }
 
 // ---------------------------------------------------------------- stdin / stdout helpers
-// Read every byte from stdin until EOF. Used when an archive path is "-".
 std::vector<uint8_t> readStdinBytes() {
     std::vector<uint8_t> bytes;
     constexpr size_t CHUNK = 65536;
@@ -132,16 +129,12 @@ std::vector<uint8_t> readPathOrStdin(const std::string& path) {
 }
 
 // ---------------------------------------------------------------- glob matching
-// Recursive shell-style match supporting `*` (single segment), `**` (any
-// segments), `?` (one char). Anchored at both ends.
+// Shell-style match, anchored both ends: `*` a segment, `**` any, `?` a char.
 bool globMatch(const char* pat, const char* str) {
     while (*pat) {
         if (pat[0] == '*' && pat[1] == '*') {
-            // ** matches any number of chars including '/'. Try every
-            // suffix of `str` after consuming the `**`.
             const char* afterStars = pat + 2;
             if (*afterStars == '/') ++afterStars;
-            // Empty remainder matches everything left.
             if (*afterStars == 0) return true;
             for (const char* s = str; ; ++s) {
                 if (globMatch(afterStars, s)) return true;
@@ -149,7 +142,6 @@ bool globMatch(const char* pat, const char* str) {
             }
         }
         if (*pat == '*') {
-            // * matches any chars except '/'.
             const char* after = pat + 1;
             for (const char* s = str; ; ++s) {
                 if (globMatch(after, s)) return true;
@@ -170,14 +162,10 @@ bool entryMatchesAnyPath(const std::string& entryName,
                          const std::vector<std::string>& patterns) {
     if (patterns.empty()) return true;
     for (const auto& p : patterns) {
-        // Exact prefix match (foo/bar/ matches foo/bar/baz.bc) and
-        // glob match both supported. A naked path without * is treated
-        // as a prefix; a path with glob metachars goes through the
-        // glob matcher unchanged.
+        // A naked path is a prefix, so foo/bar/ matches foo/bar/baz.bc.
         if (p.find('*') != std::string::npos || p.find('?') != std::string::npos) {
             if (globMatch(p.c_str(), entryName.c_str())) return true;
         } else {
-            // Prefix or exact match.
             if (entryName == p) return true;
             if (entryName.size() > p.size()
                 && entryName.compare(0, p.size(), p) == 0
@@ -214,7 +202,6 @@ const char* archiveKindName(CajetaArchive::Kind k) {
     return k == CajetaArchive::Kind::Uber ? "uber" : "cja";
 }
 
-// xxh3-64 as a 16-hex-char string. Stable representation across diffs.
 std::string xxh3Hex(const std::vector<uint8_t>& bytes) {
     XXH64_hash_t h = XXH3_64bits(bytes.data(), bytes.size());
     char buf[17];
@@ -222,8 +209,7 @@ std::string xxh3Hex(const std::vector<uint8_t>& bytes) {
     return std::string(buf);
 }
 
-// Minimal JSON string escape — handles the subset cajeta entry names
-// and manifest values actually use ('"' and '\\' and control bytes).
+// Minimal JSON escape: the '"', '\\' and control bytes entry names can carry.
 std::string jsonEscape(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 4);
@@ -250,11 +236,7 @@ std::string jsonEscape(const std::string& s) {
 }
 
 // ---------------------------------------------------------------- archive load
-// Wraps CajetaArchive::readFrom and maps the underlying exception
-// text to a stable exit code. The CajetaArchive reader composes its
-// messages from a small vocabulary ("bad magic", "unsupported format
-// version", "truncated", ...), so a substring match here is robust
-// enough for the §4 exit-code mapping.
+// Read an archive, or stdin for "-", mapping reader errors to exit codes.
 struct LoadResult {
     bool ok = false;
     int exitCode = EXIT_OK;
@@ -279,10 +261,6 @@ LoadResult loadArchiveOrReport(const std::string& path) {
         else if (msg.find("truncated") != std::string::npos
               || msg.find("too short") != std::string::npos)         r.exitCode = EXIT_TRUNCATED;
         else if (msg.find("cannot open") != std::string::npos) {
-            // Distinguish missing file from permission/IO failure by
-            // probing the path. The archive reader's "cannot open"
-            // message covers both ENOENT and EACCES; the §4 exit
-            // codes split them.
             if (errno == ENOENT
                 || !std::filesystem::exists(path))                  r.exitCode = EXIT_NOT_FOUND;
             else                                                     r.exitCode = EXIT_IO;
@@ -294,10 +272,7 @@ LoadResult loadArchiveOrReport(const std::string& path) {
 }
 
 // ---------------------------------------------------------------- manifest field scan
-// Pull a top-level string field's value out of the raw manifest JSON.
-// The manifest writer produces compact JSON with no whitespace and no
-// escapes inside the values cajeta writes today, so a substring scan
-// is sufficient. Returns the empty string when the key is absent.
+// A top-level string field from the raw manifest JSON, "" when absent.
 std::string scanString(const std::string& json, const std::string& key) {
     std::string needle = "\"" + key + "\":\"";
     auto pos = json.find(needle);
@@ -308,14 +283,11 @@ std::string scanString(const std::string& json, const std::string& key) {
     return json.substr(pos, end - pos);
 }
 
-// Pull a top-level numeric field's value. Returns 0 when absent.
 uint64_t scanNumber(const std::string& json, const std::string& key) {
     std::string needle = "\"" + key + "\":";
     auto pos = json.find(needle);
     if (pos == std::string::npos) return 0;
     pos += needle.size();
-    // Skip optional whitespace (manifest writer doesn't emit any, but
-    // be defensive against future formatting).
     while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
     uint64_t v = 0;
     while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9') {
@@ -336,7 +308,6 @@ int cmdList(const std::vector<std::string>& args, const CommonFlags& f) {
 
     std::vector<std::string> pathFilters(args.begin() + 1, args.end());
 
-    // Snapshot + sort by name for stable output.
     std::vector<const CajetaArchiveEntry*> view;
     view.reserve(load.archive.getEntries().size());
     for (const auto& e : load.archive.getEntries()) {
@@ -394,9 +365,7 @@ int cmdCat(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
         return EXIT_NOT_FOUND;
     }
 
-    // Raw binary write to stdout. Bypass std::cout's formatting (some
-    // platforms munge \r\n on text-mode handles); write directly to
-    // the underlying file descriptor via fwrite on stdout.
+    // fwrite, not std::cout: some platforms munge \r\n on a text-mode handle.
     std::fwrite(e->data.data(), 1, e->data.size(), stdout);
     std::fflush(stdout);
     return EXIT_OK;
@@ -404,8 +373,6 @@ int cmdCat(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
 
 // ---------------------------------------------------------------- extract
 int cmdExtract(const std::vector<std::string>& args, const CommonFlags& f) {
-    // Parse flags + positional args in one pass: -C <dir>, --overwrite,
-    // --flatten, --strip=<n>, then positionals = <archive> [paths...].
     std::string destDir = ".";
     bool overwrite = false;
     bool flatten   = false;
@@ -460,7 +427,6 @@ int cmdExtract(const std::vector<std::string>& args, const CommonFlags& f) {
     for (const auto& e : load.archive.getEntries()) {
         if (!entryMatchesAnyPath(e.name, filters)) continue;
 
-        // Compute the on-disk relative path with flatten/strip applied.
         std::string outRel;
         if (flatten) {
             auto slash = e.name.find_last_of('/');
@@ -482,8 +448,7 @@ int cmdExtract(const std::vector<std::string>& args, const CommonFlags& f) {
         }
 
         std::filesystem::path outPath = base / outRel;
-        // Defense against archive entries with .. components — refuse
-        // to write outside the destination dir.
+        // An entry with `..` components must not escape the destination dir.
         auto canonicalBase = std::filesystem::weakly_canonical(base);
         auto canonicalOut  = std::filesystem::weakly_canonical(outPath);
         auto rel = std::filesystem::relative(canonicalOut, canonicalBase);
@@ -529,8 +494,6 @@ int cmdInfo(const std::vector<std::string>& args, const CommonFlags& f) {
     if (!load.ok) return load.exitCode;
 
     if (f.json) {
-        // Dump the raw manifest verbatim. Per §5, --json is the stable
-        // format; the manifest schema additions are backward-compatible.
         std::cout << load.archive.getRawManifest() << "\n";
         return EXIT_OK;
     }
@@ -606,12 +569,7 @@ int cmdVerify(const std::vector<std::string>& args, const CommonFlags& f) {
         std::cerr << "cajeta archive verify: missing <archive>\n";
         return EXIT_USAGE;
     }
-    // The readFrom path already does the heavy lifting: it validates
-    // the magic, format version, header bounds, decompresses the
-    // manifest, parses it, walks every entry, decompresses each
-    // entry's payload, and confirms no truncation. We re-run it here
-    // and add the duplicate-name + manifest-required-field checks
-    // that readFrom doesn't enforce.
+    // readFrom checks the container, but NOT duplicate names or manifest fields.
     auto load = loadArchiveOrReport(positional[0]);
     if (!load.ok) return load.exitCode;
 
@@ -632,10 +590,7 @@ int cmdVerify(const std::vector<std::string>& args, const CommonFlags& f) {
         return EXIT_CORRUPT;
     }
 
-    // --strict: enforce the "recommended-but-optional" manifest fields.
-    // build_timestamp + cajeta_lang_version are the two the spec calls
-    // out — both should be populated by every release-flavored build.
-    // Their absence in --strict mode signals a non-canonical archive.
+    // --strict also demands the recommended-but-optional manifest fields.
     if (strict) {
         const auto& m = load.archive.getRawManifest();
         if (scanString(m, "build_timestamp").empty()) {
@@ -682,7 +637,6 @@ int cmdDiff(const std::vector<std::string>& args, const CommonFlags& f) {
     auto lb = loadArchiveOrReport(positional[1]);
     if (!lb.ok) return lb.exitCode;
 
-    // Index each side by name, skipping stdlib entries by default.
     auto buildIndex = [&](const CajetaArchive& arc) {
         std::unordered_map<std::string, const CajetaArchiveEntry*> idx;
         for (const auto& e : arc.getEntries()) {
@@ -703,7 +657,6 @@ int cmdDiff(const std::vector<std::string>& args, const CommonFlags& f) {
     std::vector<Changed> changed;
     size_t identicalCount = 0;
 
-    // All names present in either side.
     std::set<std::string> allNames;
     for (const auto& kv : idxA) allNames.insert(kv.first);
     for (const auto& kv : idxB) allNames.insert(kv.first);
@@ -759,9 +712,7 @@ int cmdDiff(const std::vector<std::string>& args, const CommonFlags& f) {
 }
 
 // ---------------------------------------------------------------- archive write helper
-// Materialize an in-memory CajetaArchive to a path or to stdout when
-// `outPath == "-"`. Used uniformly by repack / strip / merge so the
-// `-` convention from ArchiveManagement.md §6 is honored everywhere.
+// Write an archive to `outPath`, or stdout for "-", for repack/strip/merge.
 int writeArchiveOrReport(CajetaArchive& arc, const std::string& outPath,
                           const char* subcommand) {
     try {
@@ -778,10 +729,6 @@ int writeArchiveOrReport(CajetaArchive& arc, const std::string& outPath,
     return EXIT_OK;
 }
 
-// Build a fresh CajetaArchiveEntry from an existing one's fields. The
-// writer-side `addEntry` takes by-move; this helper makes the "copy
-// one entry from a loaded archive into a new archive" pattern a
-// one-liner.
 CajetaArchiveEntry cloneEntry(const CajetaArchiveEntry& src) {
     CajetaArchiveEntry e;
     e.name      = src.name;
@@ -865,11 +812,6 @@ int cmdStrip(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
 
     CajetaArchive out(load.archive.getName(), load.archive.getVersion(),
                       load.archive.getKind());
-    // Compression settings track the input (zstd default; tests that
-    // need raw bytes can repack afterwards with --compression=none).
-
-    // Apply filters: kept iff (includes empty || matches an include)
-    //                       AND not matched by any exclude.
     for (const auto& e : load.archive.getEntries()) {
         bool keep = includes.empty() || entryMatchesAnyPath(e.name, includes);
         if (keep && !excludes.empty()
@@ -879,12 +821,7 @@ int cmdStrip(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
         if (keep) out.addEntry(cloneEntry(e));
     }
 
-    // Deps array fixup: walk the loaded deps; for each dep, count the
-    // remaining kept entries under deps/<name>-<version>/. Prune deps
-    // whose entry count drops to zero; update includedEntryCount for
-    // the rest. The spec's "error if --exclude would drop entries the
-    // manifest's metadata still references" clause is satisfied
-    // implicitly — we keep the deps array in sync.
+    // Keep the deps array in sync: re-count, then prune any dep that hits zero.
     if (load.archive.getKind() == CajetaArchive::Kind::Uber) {
         std::vector<CajetaArchive::DepSummary> newDeps;
         for (const auto& d : load.archive.getDeps()) {
@@ -947,8 +884,6 @@ int cmdMerge(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
         inputs.push_back(std::move(load.archive));
     }
 
-    // Resolve output name / version: explicit flag wins; else require
-    // every input to agree.
     if (outName.empty()) {
         outName = inputs[0].getName();
         for (size_t i = 1; i < inputs.size(); ++i) {
@@ -977,9 +912,7 @@ int cmdMerge(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
         : CajetaArchive::Kind::Uber;
     CajetaArchive out(outName, outVersion, kind);
 
-    // Collect entries left-to-right with collision handling. Map
-    // tracks position in out's pending-entries list so we can replace
-    // in place under --allow-collisions.
+    // Left-to-right; a name's staged position lets a collision replace in place.
     std::unordered_map<std::string, size_t> sourceFor;  // entry name → input index that produced it
     std::vector<CajetaArchiveEntry> staged;
     std::unordered_map<std::string, size_t> stagedAt;   // entry name → index in staged
@@ -1016,8 +949,6 @@ int cmdMerge(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
     }
     for (auto& e : staged) out.addEntry(std::move(e));
 
-    // Build the deps array when --prefix-deps is set: one summary per
-    // input archive describing what it contributed.
     if (prefixDeps && kind == CajetaArchive::Kind::Uber) {
         std::vector<CajetaArchive::DepSummary> deps;
         for (const auto& in : inputs) {
@@ -1034,8 +965,6 @@ int cmdMerge(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
 }
 
 // ---------------------------------------------------------------- sign / verify-sig
-// RAII wrappers around OpenSSL handles. ed25519 sign/verify needs
-// EVP_PKEY (parsed from PEM) and EVP_MD_CTX (the digest/sign context).
 struct EvpPkeyDeleter   { void operator()(EVP_PKEY* p)   const { if (p) EVP_PKEY_free(p); } };
 struct EvpMdCtxDeleter  { void operator()(EVP_MD_CTX* c) const { if (c) EVP_MD_CTX_free(c); } };
 struct BioDeleter       { void operator()(BIO* b)        const { if (b) BIO_free(b); } };
@@ -1043,10 +972,7 @@ using PkeyPtr  = std::unique_ptr<EVP_PKEY,   EvpPkeyDeleter>;
 using MdCtxPtr = std::unique_ptr<EVP_MD_CTX, EvpMdCtxDeleter>;
 using BioPtr   = std::unique_ptr<BIO,        BioDeleter>;
 
-// Surface the most recent OpenSSL error to stderr, then drain the
-// error queue. Called after every failing EVP/PEM call so the user
-// sees libcrypto's reason string ("bad signature", "no start line",
-// ...) instead of a generic message.
+// Print the most recent OpenSSL error and DRAIN the queue, after every failure.
 void emitOpenSSLError(const char* prefix) {
     unsigned long err = ERR_get_error();
     if (err == 0) {
@@ -1121,8 +1047,6 @@ int cmdSign(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
         return EXIT_NOT_FOUND;
     }
 
-    // Load the ed25519 private key from PEM. OpenSSL handles
-    // PKCS#8-wrapped ed25519 keys directly through EVP_PKEY.
     BioPtr keyBio(BIO_new_file(keyPath.c_str(), "r"));
     if (!keyBio) {
         std::cerr << "cajeta archive sign: cannot open key: " << keyPath << "\n";
@@ -1139,8 +1063,7 @@ int cmdSign(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
         return EXIT_USAGE;
     }
 
-    // Single-shot sign — ed25519's EVP path uses DigestSign without a
-    // separate digest stage (the curve incorporates hashing itself).
+    // Single-shot: ed25519 incorporates hashing, so there is no digest stage.
     MdCtxPtr ctx(EVP_MD_CTX_new());
     if (!ctx) { emitOpenSSLError("cajeta archive sign"); return EXIT_IO; }
     if (EVP_DigestSignInit(ctx.get(), nullptr, nullptr, nullptr, pkey.get()) != 1) {
@@ -1172,8 +1095,6 @@ int cmdSign(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
         return EXIT_IO;
     }
 
-    // Phase 10: write the key-id sidecar so the launcher's
-    // signature-verify path can resolve the matching public key.
     if (!keyId.empty()) {
         std::ofstream kidOut(outPath + ".keyid", std::ios::trunc);
         if (kidOut) kidOut << keyId << "\n";
@@ -1266,8 +1187,7 @@ int cmdVerifySig(const std::vector<std::string>& args, const CommonFlags& f) {
         }
         return EXIT_OK;
     }
-    // rv == 0 → signature didn't validate; rv < 0 → OpenSSL error.
-    // Both surface as EXIT_SIG_INVALID per the spec.
+    // rv == 0 is an invalid signature, rv < 0 an OpenSSL error; both exit alike.
     if (rv < 0) emitOpenSSLError("cajeta archive verify-sig");
     else        std::cerr << "cajeta archive verify-sig: signature invalid\n";
     return EXIT_SIG_INVALID;
@@ -1283,9 +1203,6 @@ int dispatchArchive(int argc, const char* argv[]) {
     }
     std::string sub = argv[2];
 
-    // Build the args vector that the per-subcommand handler sees.
-    // argv[0] = "cajeta", argv[1] = "archive", argv[2] = subcommand,
-    // argv[3..] = subcommand args.
     std::vector<std::string> args;
     args.reserve(argc - 3);
     for (int i = 3; i < argc; ++i) args.emplace_back(argv[i]);

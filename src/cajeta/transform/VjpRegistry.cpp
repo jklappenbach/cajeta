@@ -1,11 +1,4 @@
-//
-// transform-intrinsics Unit 2 — built-in VJP rules (spec §7).
-//
-// The minimal rule set that validates the mechanism: add / mul / sub / negate /
-// matmul / sum.
-// Every rule is expressed in built-in primitives, so each rule's own IR is
-// differentiable — second-order Grad (§5.1) composes for free on this set.
-//
+// transform-intrinsics Unit 2 - built-in VJP rules (spec §7), each in built-in primitives.
 #include "cajeta/transform/VjpRegistry.h"
 
 namespace cajeta {
@@ -16,12 +9,8 @@ namespace cajeta {
         }
 
         const VjpRule* VjpRegistry::lookup(const std::string& primitive) const {
-            // 3.1.5 probe hook — CAJETA_NUCLEO_FORCE_BAD_VJP=<primitive>
-            // substitutes a deliberately ill-typed rule (an undeclared function
-            // reference) so tests can prove the synthesized backward re-enters
-            // the CHECKED pipeline: the bad source must be rejected, never
-            // emitted. Read per lookup at this one site; the builtin table
-            // stays immutable, so no state can leak between compiles.
+            // Probe hook: CAJETA_NUCLEO_FORCE_BAD_VJP=<primitive> substitutes an ill-typed
+            // rule, proving a synthesized backward re-enters the CHECKED pipeline.
             if (const char* bad = std::getenv("CAJETA_NUCLEO_FORCE_BAD_VJP")) {
                 if (primitive == bad) {
                     static const VjpRule forcedBad{
@@ -45,12 +34,6 @@ namespace cajeta {
                 VjpRegistry r;
 
                 // c = a + b  ->  a_bar += sumTo(g, a), b_bar += sumTo(g, b).
-                // The forward BROADCASTS (numpy right-aligned), so each
-                // operand's cotangent reduces back to that operand's own
-                // shape — a [B,O]+[O] bias add hands the bias a batch-summed
-                // [O] grad, not a [B,O] one (nucleo-nn-optim U4). Same-shape
-                // operands pass through as a fresh copy inside sumTo. Scalars
-                // keep the pass-through.
                 r.add({"add", 2,
                     [](const std::string& g, const std::vector<std::string>& o,
                        const GradSurface& s) {
@@ -78,7 +61,6 @@ namespace cajeta {
                     }});
 
                 // c = a - b  ->  a_bar += sumTo(g, a), b_bar += sumTo(-g, b)
-                // (broadcast-aware like `add`; scalars keep the pass-through).
                 r.add({"sub", 2,
                     [](const std::string& g, const std::vector<std::string>& o,
                        const GradSurface& s) {
@@ -92,7 +74,6 @@ namespace cajeta {
                         return std::vector<std::string>{g, "-(" + g + ")"};
                     }});
 
-                // c = -a  ->  a_bar += -g.
                 r.add({"negate", 1,
                     [](const std::string& g, const std::vector<std::string>&,
                        const GradSurface& s) {
@@ -112,8 +93,7 @@ namespace cajeta {
                             "Tensor.matmul" + e + "(" + o[0] + ".transpose(), " + g + ")"};
                     }});
 
-                // s = sum(a)  ->  a_bar += broadcast(g) — the scalar cotangent
-                // spread back over a's shape (rank-restoring): ones_like(a) * g.
+                // s = sum(a)  ->  a_bar += broadcast(g), spread back over a's shape.
                 r.add({"sum", 1,
                     [](const std::string& g, const std::vector<std::string>& o,
                        const GradSurface& s) {
@@ -123,9 +103,6 @@ namespace cajeta {
                                 + "(" + o[0] + "), " + g + ")"};
                     }});
 
-                // nucleo-autograd U1 — the widened cut: div, exp, log, sqrt, mean.
-                // Forward subexpressions are re-inlined (pure), matching the
-                // existing rules' style. Tensor div spells the 3-type-arg form.
 
                 // c = a / b  ->  a_bar += g/b, b_bar += -(g*a)/(b*b).
                 r.add({"div", 2,
@@ -193,9 +170,7 @@ namespace cajeta {
                             "(" + g + ") / (2.0f * Math.sqrt(" + o[0] + "))"};
                     }});
 
-                // nucleo-nn-optim U1 (1.2.3) — c = relu(a) -> a_bar += g * (a > 0).
-                // The mask helper is NOT differentiable (a.e. constant), so
-                // second-order Grad through relu fails loud on it — recorded.
+                // c = relu(a)  ->  a_bar += g * (a > 0); the mask is not differentiable.
                 r.add({"relu", 1,
                     [](const std::string& g, const std::vector<std::string>& o,
                        const GradSurface& s) {
@@ -209,8 +184,7 @@ namespace cajeta {
                             "((" + o[0] + ") > 0.0f ? (" + g + ") : 0.0f)"};
                     }});
 
-                // s = mean(a)  ->  a_bar += broadcast(g / numel(a)) — sum's rule
-                // with the count divided out (tensor-only, like sum).
+                // s = mean(a)  ->  sum's rule with numel(a) divided out (tensor-only).
                 r.add({"mean", 1,
                     [](const std::string& g, const std::vector<std::string>& o,
                        const GradSurface& s) {

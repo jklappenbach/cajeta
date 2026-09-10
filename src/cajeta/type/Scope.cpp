@@ -28,9 +28,8 @@ namespace cajeta {
     void Scope::putField(FieldPtr field) {
         fields[field->getName()] = field;
         fieldList.push_back(field);
-        // A slotless field (a name-only session seed, whose recorded type did
-        // not resolve in this unit) has no alloca to reverse-map. Keying the
-        // map on null would also make every such field alias every other one.
+        // A slotless field has no alloca to reverse-map, and keying the map on
+        // null would make every such field alias every other one.
         if (llvm::AllocaInst* slot = field->getOrCreateAllocation()) {
             allocaToField[slot] = field;
         }
@@ -54,24 +53,19 @@ namespace cajeta {
     }
 
     void Scope::restoreBinding(const string& fieldName, FieldPtr prior) {
-        // Callers only track names that genuinely shadowed a prior binding, so
-        // prior is never null here; guard rather than erase, since unbinding a
-        // name is visible to analyses that run after the block (see Block.cpp).
+        // Guard rather than erase: unbinding a name is visible to analyses that
+        // run after the block, and the two alloca-keyed maps never collided.
         if (prior != nullptr) {
             fields[fieldName] = prior;
         }
-        // fieldList and allocaToField are intentionally left alone: each field
-        // owns a distinct alloca, so the shadowing entry never displaced
-        // anything there, and both are consulted by alloca (not by name).
     }
 
     void Scope::demoteToBorrow(const string& name) {
         demoteToBorrow(name, "");
     }
 
-    // 5.2.7 — lend edges live on the HOLDER's declaring scope (same placement
-    // rule demoteToBorrow uses), so a lend recorded inside a nested block is still
-    // visible at the outer return that escapes the holder.
+    // Lend edges live on the HOLDER's declaring scope, as demoteToBorrow and
+    // recordCallBorrow also do, so a nested record is visible outside.
     void Scope::recordLend(const string& holder, const string& src) {
         Scope* target = this;
         while (target) {
@@ -82,9 +76,6 @@ namespace cajeta {
         target->lendEdges[holder].insert(src);
     }
 
-    // U2 — same declaring-scope placement as recordLend/demoteToBorrow, so a
-    // `#local` inside a nested block still sees the provenance recorded at
-    // the declaration.
     void Scope::recordCallBorrow(const string& name, const string& origin) {
         Scope* target = this;
         while (target) {
@@ -110,18 +101,13 @@ namespace cajeta {
         if (!field) return;
         bool isFormal = (bool) dynamic_pointer_cast<ParameterField>(field);
         auto klass = dynamic_pointer_cast<CajetaClass>(field->getType());
-        // Value types copy, and shared-capable values (String/Slice) transfer
-        // by share-bump rather than title move (§5.1.6) — neither can
-        // double-free, so neither is this check's business.
+        // Value types copy and shared-capable values share-bump: no double-free.
         bool titleBearing = klass && !klass->isValueType()
                 && !klass->isSharedCapableValue();
         if (!titleBearing) return;
 
-        // (a) Demoted by an EARLIER transfer — a transfer demotes its source,
-        // so transferring twice IS transferring from a borrow. Applies to
-        // formals too: `isBorrow` only becomes true once something in THIS
-        // method actually transferred the name, so a plain formal that was
-        // merely lent stays untouched (§1.4).
+        // (a) Demoted by an EARLIER transfer. Formals included: `isBorrow` is
+        // true only once THIS method transferred the name, never from a lend.
         if (isBorrow(name)) {
             string note = transferSiteOf(name);
             throw Exception(
@@ -134,24 +120,15 @@ namespace cajeta {
                 "CAJETA_ERROR_MOVE_OF_BORROW");
         }
 
-        // A `#=` store claims no title — it forwards the source's mode — so
-        // the two PROVENANCE checks below do not apply to it: their sources
-        // may still hold a title at run time, and `#=` is U3's prescribed fix
-        // for a borrow-alias capture. Check (a) above still applies, because a
-        // source already transferred in this frame has no mode left to
-        // forward. Without this split the same `#=` was rejected when it
-        // declared a local and accepted when it stored to a field.
+        // A `#=` claims no title, it forwards the source's mode, so the two
+        // PROVENANCE checks below cannot apply to it. (a) above still does.
         if (modeCarrying) return;
 
-        // Formals are excluded from the two STATIC checks below, and must stay
-        // excluded: a formal's ownership is fixed at the call site and carried
-        // at run time by the transfer word, so `#p` forwards whichever mode
-        // arrived (conditional acquisition). Rejecting it statically would
-        // outlaw every mode-forwarding wrapper.
+        // A formal's ownership is decided at the call site and carried at run
+        // time, so rejecting `#p` statically would outlaw mode-forwarding.
         if (isFormal) return;
 
-        // (b) Never owned — an alias / field-read borrow with a recorded
-        // source.
+        // (b) Never owned: an alias or field-read borrow with a known source.
         if (!field->getDropEntry()) {
             string owner = borrowSourceOf(name);
             if (!owner.empty()) {
@@ -166,21 +143,8 @@ namespace cajeta {
             }
         }
 
-        // (c) A BORROW returned by a plain (non-`#`) call. Deliberately
-        // outside the drop-entry gate above: that gate admits only locals
-        // already classified as borrows, and the locals this check exists for
-        // are exactly the ones that were NOT so classified (they carry a drop
-        // entry). Recorded provenance is authoritative on its own.
-        // Provenance is read from the FIELD only, never from the by-name
-        // Scope map. That map was a fallback for the recording and reading
-        // sites not reliably sharing a Scope, but it keys on the local's NAME
-        // and walks ancestors — so a name declared in one method matched a
-        // same-named local in another. `Exec.cajeta` has `ColF64 r =
-        // s.exprOf();` in one method and `AggResult r = Exec.evalAgg(...)` in
-        // another; `#r` at the second site was rejected and blamed on
-        // `exprOf()`, a call it never made. Six Table/FilterSelect gate
-        // failures, all one bug. Field identity is per-declaration and cannot
-        // collide.
+        // (c) A borrow returned by a plain call; these locals DO carry a drop
+        // entry. Read off the FIELD: a by-name map collides across methods.
         string callOrigin = field->getCallBorrowOrigin();
         if (!callOrigin.empty()) {
             throw Exception(
@@ -230,16 +194,12 @@ namespace cajeta {
         FieldPtr field = getField(srcName);
         if (!field) return;
 
-        // The source must be a FORMAL. A local is the caller's own business
-        // and is already policed by DANGLING_LEND.
+        // Only a FORMAL: a local is already policed by DANGLING_LEND.
         auto pf = dynamic_pointer_cast<ParameterField>(field);
         string origin = srcName;
         if (!pf) {
-            // Straight-line case (spec §7.2): the parameter reached here
-            // through an intermediate local. Provenance is recorded on the
-            // FIELD at the declaration — by identity, never by name, since
-            // a by-name map matched same-named locals across methods and
-            // produced six false positives in U2.
+            // Reached through an intermediate local, whose provenance is on the
+            // FIELD by identity, never by name.
             const string& via = field->getParamBorrowOrigin();
             if (via.empty()) return;
             origin = via;
@@ -254,7 +214,6 @@ namespace cajeta {
         if (fp && fp->isTransferred()) return;
 
         auto klass = dynamic_pointer_cast<CajetaClass>(field->getType());
-        // Unit 9 (spec 5.13) — a function-typed parameter is title-bearing too.
         auto fnTy = dynamic_pointer_cast<CajetaFunctionType>(field->getType());
         bool titleBearing = (klass && !klass->isValueType()
                 && !klass->isSharedCapableValue()) || fnTy != nullptr;
@@ -285,7 +244,6 @@ namespace cajeta {
             throw Exception(message, "CAJETA_ERROR_CAPTURED_BORROW_PARAM");
         }
 
-        // Warn mode (3.3.3) — see MigrationSwitch for why two channels.
         string className;
         string methodName;
         if (module) {
@@ -318,8 +276,6 @@ namespace cajeta {
     }
 
     void Scope::demoteToBorrow(const string& name, const string& note) {
-        // Find the scope where the name was declared and record the move there;
-        // otherwise record it locally so later checks still see it.
         Scope* target = this;
         while (target) {
             if (target->fields.find(name) != target->fields.end()) break;
@@ -400,8 +356,8 @@ namespace cajeta {
     }
 
     void Scope::demotePathToBorrow(const string& path) {
-        // Record on the scope where the root variable lives, so a move inside
-        // a nested block still invalidates the outer binding's sub-paths.
+        // Recorded where the ROOT lives, so a move in a nested block still
+        // invalidates the outer binding's sub-paths.
         if (path.empty()) return;
         size_t dot = path.find('.');
         string root = (dot == string::npos) ? path : path.substr(0, dot);
@@ -413,20 +369,17 @@ namespace cajeta {
             }
             target = target->parent ? target->parent.get() : nullptr;
         }
-        // Fallback: record locally if the root isn't found in any ancestor.
         borrowedPaths.insert(path);
     }
 
     bool Scope::isPathBorrow(const string& path) {
-        // Check every prefix of `path` ("a", "a.b", "a.b.c") against the
-        // moved-path set — if any prefix was moved, the full path is invalid.
+        // Any moved PREFIX of `path` invalidates the whole path.
         size_t pos = 0;
         while (true) {
             size_t dot = path.find('.', pos);
             string prefix = (dot == string::npos) ? path : path.substr(0, dot);
             if (borrowedPaths.find(prefix) != borrowedPaths.end()) return true;
-            // The root identifier of the path may also be in the variable-level
-            // moved set (covers `#person` followed by a `person.name` read).
+            // The root may also sit in the variable-level moved set.
             if (pos == 0 && borrowedBindings.find(prefix) != borrowedBindings.end()) return true;
             if (dot == string::npos) break;
             pos = dot + 1;
@@ -440,9 +393,6 @@ namespace cajeta {
     }
 
     void Scope::markAssigned(const string& name) {
-        // Walk to the scope where the NYA mark lives and remove it. The mark
-        // could be in this scope (assignment in the same block as declaration)
-        // or an ancestor (assignment in a nested block).
         Scope* target = this;
         while (target) {
             auto it = target->notYetAssigned.find(name);
@@ -452,8 +402,6 @@ namespace cajeta {
             }
             target = target->parent ? target->parent.get() : nullptr;
         }
-        // No mark to remove — fine; the variable was either initialized at
-        // declaration or comes from an enclosing class scope.
     }
 
     bool Scope::isNotYetAssigned(const string& name) {
@@ -469,11 +417,9 @@ namespace cajeta {
 
     string Scope::findInvalidatingBorrow(const string& writePath) {
         if (writePath.empty()) return "";
-        // Check this scope's borrows: writing to W invalidates B if
-        // W == B, or W is a strict prefix of B (clobbering a parent
-        // path under which a sub-path is borrowed), or B is a strict
-        // prefix of W (writing through a sub-field of a borrowed
-        // structure mutates what the borrow points at).
+        // Writing W invalidates borrow B when W == B, when W is a strict
+        // prefix of B (clobbering the parent of a borrowed sub-path), or when B
+        // is a strict prefix of W (writing through what the borrow points at).
         for (auto& entry : liveBorrows) {
             const string& borrowed = entry.first;
             if (borrowed == writePath) return borrowed;

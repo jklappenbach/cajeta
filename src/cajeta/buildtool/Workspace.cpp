@@ -23,8 +23,7 @@ namespace cajeta::buildtool {
                 where + ": " + msg);
         }
 
-        // Allowed keys under `workspace`. Mirrors the strict
-        // unknown-block rejection the top-level Manifest loader uses.
+        // The only keys a `workspace` block may carry; anything else is rejected.
         const std::set<std::string>& workspaceAllowedKeys() {
             static const std::set<std::string> k = {
                 "members", "shared-dependencies",
@@ -47,10 +46,7 @@ namespace cajeta::buildtool {
             return std::filesystem::absolute(p).parent_path().string();
         }
 
-        // The library() rule for a member's name → member short name
-        // resolution. Mirrors ManifestDetails::library() but operates
-        // on a bare name string so we can re-use it for matching
-        // dependency declarations to members.
+        // The trailing segment of a dotted name, which is a member's short name.
         std::string lastSegment(const std::string& dotted) {
             auto pos = dotted.find_last_of('.');
             if (pos == std::string::npos) return dotted;
@@ -144,11 +140,9 @@ namespace cajeta::buildtool {
             return cite(rootManifestPath,
                 "this manifest does not declare a 'workspace' block");
         }
-        // parseWorkspace expects rootManifest.sourcePath populated.
         auto ws = parseWorkspace(*root);
         if (!ws) return ws.takeError();
 
-        // Load each member.
         for (const auto& pattern : ws->memberPatterns) {
             std::string memberAbs = absolutize(pattern, ws->rootPath);
             std::string memberManifestPath =
@@ -175,8 +169,7 @@ namespace cajeta::buildtool {
             ws->members.push_back(std::move(wm));
         }
 
-        // Reject duplicate member short names — they would collide
-        // on `-p <name>` and `<name>:<task>` dispatch.
+        // Duplicate short names would collide on `-p` and `<name>:<task>` dispatch.
         std::unordered_map<std::string, std::string> seen;
         for (const auto& m : ws->members) {
             std::string nm = memberShortName(m);
@@ -190,20 +183,11 @@ namespace cajeta::buildtool {
             seen[nm] = m.declaredPath;
         }
 
-        // Overlay shared-dependencies into each member's settingsRaw
-        // for names the member didn't already declare. Member-declared
-        // pins always win — the workspace curation is "inert inherits,
-        // active wins", same as the melt + property rule documented in
-        // BuildTool.md "Relationship to workspace.shared-dependencies".
-        //
-        // We mutate `member.manifest.settingsRaw.dependencies` rather
-        // than threading a separate view through the resolver so the
-        // existing parseDependencies + resolver paths see the composed
-        // map without further wiring.
+        // Shared dependencies are overlaid into each member's own settingsRaw, so
+        // the existing parse and resolve paths need no extra wiring; a name the
+        // member already declared always wins over the workspace's curation.
         for (auto& m : ws->members) {
             auto* settings = m.manifest.settingsRaw.getObject("settings");
-            // settingsRaw IS the settings object (the loader already
-            // pulled it from the top-level manifest), not a wrapper.
             (void)settings;
             llvm::json::Object* deps =
                 m.manifest.settingsRaw.getObject("dependencies");
@@ -269,8 +253,7 @@ namespace cajeta::buildtool {
         const Workspace& ws,
         const LockfileWorkspaceView* view) {
         std::set<std::string> dirty;
-        // Pass 1: per-member manifest-checksum drift OR no prior
-        // record → mark dirty directly.
+        // Pass 1: a member is dirty if its manifest checksum drifted or is new.
         std::unordered_map<std::string, std::string> currentChecksums;
         for (const auto& m : ws.members) {
             std::string name = memberShortName(m);
@@ -286,9 +269,7 @@ namespace cajeta::buildtool {
                 dirty.insert(name);
             }
         }
-        // Pass 2: propagate dirty downstream. Walk the dependency
-        // edges (member A depends on member B → if B dirty, A
-        // dirty). Iterate to fixpoint.
+        // Pass 2: propagate dirty along the dependency edges, to fixpoint.
         std::unordered_map<std::string, size_t> shortIdx;
         std::unordered_map<std::string, size_t> nameIdx;
         for (size_t i = 0; i < ws.members.size(); ++i) {
@@ -335,8 +316,6 @@ namespace cajeta::buildtool {
 
     llvm::Expected<std::vector<const WorkspaceMember*>>
     topologicallySortMembers(const Workspace& ws) {
-        // Build short-name → member index, plus details.name →
-        // member-index for matching `settings.dependencies` entries.
         std::unordered_map<std::string, size_t> shortIdx;
         std::unordered_map<std::string, size_t> nameIdx;
         for (size_t i = 0; i < ws.members.size(); ++i) {
@@ -355,9 +334,6 @@ namespace cajeta::buildtool {
             for (const auto& d : *parsed) {
                 auto it = nameIdx.find(d.name);
                 if (it == nameIdx.end()) {
-                    // Try short-name match (members often refer to
-                    // each other by short name when the workspace
-                    // doesn't use fully-qualified names).
                     it = shortIdx.find(lastSegment(d.name));
                 }
                 if (it == nameIdx.end()) continue;
@@ -365,9 +341,7 @@ namespace cajeta::buildtool {
                 deps[i].insert(it->second);
             }
         }
-        // Kahn's algorithm — emit members with no remaining
-        // dependencies; ties broken by declaration order so the
-        // output is deterministic.
+        // Kahn's algorithm, ties broken by declaration order so output is stable.
         std::vector<size_t> remaining(ws.members.size(), 0);
         std::vector<std::set<size_t>> reverse(ws.members.size());
         for (size_t i = 0; i < ws.members.size(); ++i) {

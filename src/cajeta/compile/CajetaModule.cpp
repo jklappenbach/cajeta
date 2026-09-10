@@ -31,13 +31,10 @@
 #include "llvm/Support/MemoryBuffer.h"
 
 namespace cajeta {
-    // thread-safe-compiler Unit 3: per-compile registries thread_local.
     thread_local map<string, MethodPtr> CajetaModule::methods;
     thread_local map<string, CajetaModulePtr> CajetaModule::strutureToModule;
     thread_local CajetaModulePtr CajetaModule::activeModule;
     thread_local CajetaModulePtr CajetaModule::currentCodegenModule;
-    // U5 concurrency-first: each thread primes its OWN stdlib (memory-heavy,
-    // temporary — the frozen-shared optimization replaces this).
     thread_local CajetaModulePtr CajetaModule::reuseEmitModule;
     thread_local CajetaModulePtr CajetaModule::activeUnitModule;
     thread_local llvm::Module* CajetaModule::currentEmitLlvmModule = nullptr;
@@ -51,6 +48,8 @@ namespace cajeta {
     thread_local vector<CajetaModule::FactoryDescriptorPtr> CajetaModule::factoryClasses;
     thread_local string CajetaModule::activeProfile = "prod";
 
+    // Builds a module for a synthetic unit named by qName: creates the
+    // llvm::Module and pins it to the target's data layout and triple.
     CajetaModule::CajetaModule(llvm::LLVMContext* llvmContext,
         QualifiedNamePtr qName,
         string targetTriple,
@@ -63,9 +62,8 @@ namespace cajeta {
         llvmModule = new llvm::Module(qName->toCanonical(), *llvmContext);
         llvmModule->setSourceFileName(qName->toCanonical());
         llvmModule->setDataLayout(targetMachine->createDataLayout());
-        // LLVM 21 narrowed Module::setTargetTriple to take llvm::Triple;
-        // 18 / 20 take a StringRef (string). The Triple ctor accepts the
-        // triple string in both, so we branch at preprocess time.
+        // LLVM 21 narrowed Module::setTargetTriple to llvm::Triple; 18 / 20
+        // take the triple string, which the Triple ctor accepts in both.
 #if LLVM_VERSION_MAJOR >= 21
         llvmModule->setTargetTriple(llvm::Triple(targetTriple));
 #else
@@ -73,6 +71,8 @@ namespace cajeta {
 #endif
     }
 
+    // Builds a module from a source file, deriving package and module name from
+    // sourcePath relative to sourceRoot; a path not ending in ".cajeta" errors.
     CajetaModule::CajetaModule(llvm::LLVMContext* llvmContext,
         string sourcePath,
         string sourceRoot,
@@ -86,11 +86,8 @@ namespace cajeta {
         this->targetTriple = targetTriple;
         this->targetMachine = targetMachine;
 
-        // The extension must match at the TAIL: find() takes the FIRST
-        // ".cajeta" in the path, so any directory containing that substring
-        // (a project under ~/.cajeta/versions/..., a scratch dir named
-        // *.cajeta-*) made the package math run off a mid-path index and
-        // ship the extension inside the canonical ("depx.Answer.cajeta").
+        // The extension must match at the TAIL: the FIRST ".cajeta" in the path
+        // may belong to a directory, which sends the package math off it.
         const std::string kExt = CAJETA_EXTENSION;
         int suffixIndex = -1;
         if (sourcePath.size() > kExt.size()
@@ -99,18 +96,12 @@ namespace cajeta {
             suffixIndex = (int) (sourcePath.size() - kExt.size());
         }
         if (suffixIndex >= 0) {
-            // `temp` is sourcePath stripped of sourceRoot prefix and ".cajeta"
-            // suffix. Whether it starts with PATH_SEPARATOR depends on whether
-            // the caller's sourceRoot ended with one. CLI driver (Compiler::compile
-            // with positional args) appends a trailing '/'; direct createModule
-            // callers (tests) typically don't. Normalize the leading separator
-            // out so the package-extraction math is independent of that detail.
+            // Whether `temp` opens with PATH_SEPARATOR depends on whether the
+            // caller's sourceRoot ended in one; normalize so the math does not.
             string temp = sourcePath.substr(sourceRoot.size(), suffixIndex - sourceRoot.size());
 #ifdef _WIN32
-            // The filesystem hands back Windows paths with '\' separators, but
-            // package derivation below keys off PATH_SEPARATOR ('/'). Normalize
-            // so `<root>\test\D.cajeta` yields package "test", not "". Backslash
-            // is never a valid filename char on Windows, so this is lossless.
+            // Package derivation keys off PATH_SEPARATOR, and backslash is never
+            // a valid Windows filename character, so this is lossless.
             std::replace(temp.begin(), temp.end(), '\\', '/');
 #endif
             if (!temp.empty() && temp[0] == PATH_SEPARATOR) {
@@ -130,9 +121,6 @@ namespace cajeta {
             llvmModule = new llvm::Module(qName->toCanonical(), *llvmContext);
             llvmModule->setSourceFileName(sourcePath);
             llvmModule->setDataLayout(targetMachine->createDataLayout());
-            // LLVM 21 narrowed Module::setTargetTriple to take llvm::Triple;
-        // 18 / 20 take a StringRef (string). The Triple ctor accepts the
-        // triple string in both, so we branch at preprocess time.
 #if LLVM_VERSION_MAJOR >= 21
         llvmModule->setTargetTriple(llvm::Triple(targetTriple));
 #else
@@ -143,6 +131,8 @@ namespace cajeta {
         }
     }
 
+    // Maps a source path to the machine-independent form embedded in IR:
+    // --debug-prefix-map=<from>=<to> when it matches, else sourceRoot-relative.
     std::string CajetaModule::remapSourcePath(const std::string& sourcePath,
                                               const std::string& sourceRoot,
                                               const std::string& debugPrefixMap) {
@@ -152,9 +142,6 @@ namespace cajeta {
         };
         std::string path = normalize(sourcePath);
 
-        // Honor an explicit --debug-prefix-map=<from>=<to>. Split on the
-        // first '=' (the GCC/Clang convention: <from> is everything before
-        // it). When the source path starts with <from>, swap that prefix.
         if (!debugPrefixMap.empty()) {
             auto eq = debugPrefixMap.find('=');
             if (eq != std::string::npos) {
@@ -166,10 +153,6 @@ namespace cajeta {
             }
         }
 
-        // No map (or no prefix match): fall back to a sourceRoot-relative
-        // path so the embedded name is still machine-independent when the
-        // compiler is driven directly (tests, manual invocation) without a
-        // map from the build tool.
         std::string root = normalize(sourceRoot);
         if (!root.empty() && path.compare(0, root.size(), root) == 0) {
             std::string rel = path.substr(root.size());
@@ -181,57 +164,50 @@ namespace cajeta {
         return path;
     }
 
+    // Rewrites the llvm module's source_filename through remapSourcePath so the
+    // emitted IR carries no machine-specific path.
     void CajetaModule::canonicalizeSourceFileName() {
         if (sourcePath.empty()) {
-            // Synthetic modules already embed the canonical name; nothing
-            // machine-specific to scrub.
             return;
         }
         llvmModule->setSourceFileName(
             remapSourcePath(sourcePath, sourceRoot, compilerFlags.debugPrefixMap));
     }
 
+    // Records that `triggering` demanded a template instantiation owned by
+    // another module - only those can vanish when its codegen is skipped.
     void CajetaModule::noteCrossModuleInstantiation(
         const CajetaModulePtr& triggering, const CajetaClassPtr& inst) {
         if (!triggering || !inst) {
             return;
         }
-        // Same-module instantiations travel with the module's own IR — only
-        // cross-module ones (the template is owned elsewhere, e.g. stdlib)
-        // can vanish when this module's codegen is skipped.
         if (inst->getModule() == triggering) {
             return;
         }
         triggering->instantiationObligations.insert(inst->toCanonical());
     }
 
+    // Records a cross-module method instantiation on `triggering`, keyed by
+    // getMapKey(false); the `::` in that key marks it as a method obligation.
     void CajetaModule::noteCrossModuleMethodInstantiation(
         const CajetaModulePtr& triggering, const MethodPtr& inst) {
         if (!triggering || !inst) {
             return;
         }
-        // The instantiated method's codegen lands in its own module (the host
-        // class's module — the template's declaring module, e.g. stdlib). Only
-        // a cross-module landing can vanish when `triggering`'s codegen is
-        // skipped; a same-module instantiation travels with this module's IR.
         if (inst->getModule() == triggering) {
             return;
         }
-        // getMapKey(false) embeds the host-class canonical, method name,
-        // value-param signature, and method-type-arg suffix — unique,
-        // deterministic, and reconcilable at replay. The `::` separator marks
-        // it as a method (vs. a `<…>`-only class) obligation.
         triggering->instantiationObligations.insert(inst->getMapKey(false));
     }
 
+    // Records that `triggering` read a static field owned by another module,
+    // as "<owner canonical>::<field>".
     void CajetaModule::noteCrossModuleStaticFieldRef(
         const CajetaModulePtr& triggering, const CajetaClassPtr& owner,
         const std::string& fieldName) {
         if (!triggering || !owner || fieldName.empty()) {
             return;
         }
-        // A same-module reference travels with the module's own IR; only a
-        // cross-module demand can vanish when `triggering` is skipped.
         if (owner->getModule() == triggering) {
             return;
         }
@@ -239,10 +215,11 @@ namespace cajeta {
             owner->toCanonical() + "::" + fieldName);
     }
 
+    // Writes the obligations beside the emitted IR at <archive>.obligations, one
+    // per line in sorted order; an empty set removes a stale sidecar instead.
     void CajetaModule::writeObligationsSidecar() const {
-        // Path mirrors the emitted IR: swap the .ll suffix for .obligations.
         std::string path = archiveRoot + archivePath;
-        const std::string irExt = CAJETA_IR_EXTENSION; // ".ll"
+        const std::string irExt = CAJETA_IR_EXTENSION;
         if (path.size() >= irExt.size() &&
             path.compare(path.size() - irExt.size(), irExt.size(), irExt) == 0) {
             path.replace(path.size() - irExt.size(), irExt.size(), ".obligations");
@@ -251,17 +228,19 @@ namespace cajeta {
         }
         std::error_code ec;
         if (instantiationObligations.empty()) {
-            std::filesystem::remove(path, ec); // drop any stale sidecar
+            std::filesystem::remove(path, ec);
             return;
         }
         std::filesystem::create_directories(
             std::filesystem::path(path).parent_path(), ec);
         std::ofstream out(path, std::ios::trunc);
-        for (const auto& name : instantiationObligations) { // std::set → sorted
+        for (const auto& name : instantiationObligations) {
             out << name << "\n";
         }
     }
 
+    // Writes the obligations to the incremental-cache slot. Unlike the sidecar an
+    // empty set still writes an empty file: an absent slot means "never built".
     bool CajetaModule::writeObligationsToSlot() const {
         if (cacheObligationsSlot.empty()) return true;
         std::error_code ec;
@@ -269,20 +248,19 @@ namespace cajeta {
             std::filesystem::path(cacheObligationsSlot).parent_path(), ec);
         std::ofstream out(cacheObligationsSlot, std::ios::trunc);
         if (!out) return false;
-        // Unlike the archive-root sidecar, an empty set still writes the
-        // (empty) file: slot absence must mean "never built".
         for (const auto& name : instantiationObligations) {
             out << name << "\n";
         }
         return static_cast<bool>(out);
     }
 
+    // Writes this module's bitcode to the cache slot through a same-directory
+    // temp file renamed over it, so a reader never sees a partial write.
     bool CajetaModule::writeBitcodeToSlot() const {
         if (cacheBcSlot.empty()) return true;
         std::error_code ec;
         std::filesystem::create_directories(
             std::filesystem::path(cacheBcSlot).parent_path(), ec);
-        // Atomic: temp in the same dir, then rename over the slot.
         std::string tmp = cacheBcSlot + ".tmp";
         {
             std::error_code fec;
@@ -296,6 +274,8 @@ namespace cajeta {
         return !ec;
     }
 
+    // Replaces this module's llvm::Module with the bitcode in the cache slot;
+    // false when the slot is missing or unparseable, module left untouched.
     bool CajetaModule::loadBitcodeFromSlot() {
         if (cacheBcSlot.empty()) return false;
         auto buf = llvm::MemoryBuffer::getFile(cacheBcSlot);
@@ -310,14 +290,9 @@ namespace cajeta {
         }
         delete llvmModule;
         llvmModule = parsed->release();
-        // Every cached llvm handle below pointed INTO the module just deleted.
-        // The swap runs POST-codegen (Compiler.cpp, "Dirty modules snapshot
-        // post-codegen"), so they are populated by now, and codegen does still
-        // reach a swapped module afterwards (a dirty module's replay/lowering
-        // can instantiate into it). Drop them so the next use rebuilds against
-        // the NEW module instead of handing out a freed pointer.
-        // NOT cleared: the tbaa MDNode* members — metadata is owned by the
-        // LLVMContext, which outlives the swap.
+        // Every cached llvm handle below points INTO the module just deleted, and
+        // codegen still reaches a swapped module, so drop them. The tbaa MDNode*
+        // members stay: metadata is owned by the LLVMContext, not the module.
         sourceFileConstants.clear();
         tbaaProvenance.clear();
         return true;
@@ -327,22 +302,14 @@ namespace cajeta {
         return builder;
     }
 
+    // Allocates `ty` in the enclosing function's entry block so it runs once on
+    // entry however deep the declaration sits. Returns null when there is no
+    // builder - a --lint resolve, whose caller wants a slotless field.
     llvm::AllocaInst* CajetaModule::createEntryAlloca(llvm::Type* ty, const std::string& name) {
-        // No builder at all: this module is being RESOLVED, not generated —
-        // `--lint` resolves method bodies to record xref edges and never
-        // enters codegen (xref-lint-emission-gap Unit 3). There is no function
-        // to hang an alloca off, and a caller in that state wants a slotless
-        // field, which Scope::putField already knows how to handle ("a
-        // slotless field has no alloca to reverse-map"). Dereferencing the
-        // null builder here is what it did before: a SIGSEGV inside lint.
         if (!builder) return nullptr;
         llvm::BasicBlock* insertBB = builder->GetInsertBlock();
         llvm::Function* fn = insertBB ? insertBB->getParent() : nullptr;
         if (fn) {
-            // Insert at the top of the entry block (before any terminator),
-            // so the alloca executes once on function entry regardless of how
-            // deep in a loop the declaration is. Other entry allocas already
-            // there are fine to precede — alloca order is immaterial.
             llvm::BasicBlock& entry = fn->getEntryBlock();
             llvm::IRBuilder<> eb(&entry, entry.begin());
             return eb.CreateAlloca(ty, nullptr, name);
@@ -350,12 +317,9 @@ namespace cajeta {
         return builder->CreateAlloca(ty, nullptr, name);
     }
 
+    // Records the unit's package and checks it against the path the module was
+    // built from. A script unit may omit the declaration, so a null ctx is legal.
     void CajetaModule::onPackageDeclaration(CajetaParser::PackageDeclarationContext* ctx) {
-        // A script unit may omit the package declaration entirely (script-units
-        // spec §2.5/§3.2 — the implicit class defaults to the reserved
-        // `cajeta.script` package, applied by the U2 synthesis pass). Nothing to
-        // record here; every source before script units carried a package line,
-        // which is why this null was never seen.
         if (ctx == nullptr) return;
         std::vector<CajetaParser::IdentifierContext*> identifiers = ctx->qualifiedName()->identifier();
         auto itr = identifiers.begin();
@@ -368,12 +332,8 @@ namespace cajeta {
         }
 
         if (qName->getPackageName() != packageName && !scriptUnit) {
-            // Under lint (an active DiagnosticEngine), the file's disk path is not
-            // authoritative — it may be a staged, unsaved buffer whose temp path
-            // can't match its declared package. Skip the check rather than leak a
-            // false-positive plain-text error into the NDJSON stream. (Full
-            // compile keeps validating; routing it through the engine is part of
-            // the full-compile collect-and-continue sub-phase.)
+            // Under lint the disk path is not authoritative - a staged buffer's
+            // temp path cannot match its declared package - so skip the check.
             if (DiagnosticEngine::active()) return;
             string message = "Declared package name " + packageName + " must match the compilation unit path of " +
                 qName->getPackageName();
@@ -389,16 +349,12 @@ namespace cajeta {
         structureMetadata->populate(structure);
     }
 
+    // Registers an import, records its xref edge and runs the lazy-stdlib hook;
+    // imports resolve here, not in CajetaType::fromContext, so nothing else does.
     void CajetaModule::onImportDeclaration(CajetaParser::ImportDeclarationContext* ctx) {
         auto qName = QualifiedName::fromContext(ctx->qualifiedName());
         imports[qName->getTypeName()][qName->getPackageName()] = qName;
-        // xref (ide-symbol-index): record the imported type as a reference at
-        // its name token, so Ctrl-click on `import a.b.Gzip;` navigates to the
-        // type. Imports resolve here, not through CajetaType::fromContext, so
-        // without this they carry no edge. Gated on --emit-xref; a wildcard
-        // (`a.b.*`) or an unresolved name records nothing (prune drops the
-        // rest). Positioned at the LEAF identifier — the type name a developer
-        // Ctrl-clicks.
+        // At the LEAF identifier, the name a developer Ctrl-clicks; --emit-xref only.
         if (xref::captureEnabled() && !qName->getTypeName().empty()
                 && qName->getTypeName() != "*" && ctx->qualifiedName()) {
             const auto& ids = ctx->qualifiedName()->identifier();
@@ -415,18 +371,15 @@ namespace cajeta {
                 }
             }
         }
-        // Lazy stdlib: an import of an on-demand package (e.g. cajeta.math)
-        // triggers that package's prescan + enqueue so its types resolve
-        // during this parse and are fully parsed at the next drain point.
+        // An import of an on-demand package (cajeta.math) triggers its prescan.
         if (stdlibImportHook) {
             stdlibImportHook(qName->getPackageName());
         }
     }
 
+    // Registers a declared type. A declaration that yields no CajetaClass (an
+    // enum registers its constants elsewhere) hands back an empty `any`.
     void CajetaModule::onStructureDeclaration(std::any any) {
-        // Type-declaration children that don't yield a CajetaClass (e.g. enums,
-        // which register their constants in a side-table instead) return a
-        // null `any`; skip those rather than throw bad_any_cast.
         if (!any.has_value()) return;
         try {
             CajetaClassPtr structure = std::any_cast<CajetaClassPtr>(any);
@@ -434,11 +387,11 @@ namespace cajeta {
                 structures[structure->toCanonical()] = structure;
             }
         } catch (const std::bad_any_cast&) {
-            // Not a CajetaClass — caller didn't return one (e.g. enum
-            // declaration). Nothing to register on the module here.
+            // Not a CajetaClass; nothing to register here.
         }
     }
 
+    // Synthesizes the interface vtables deferred while a class was a placeholder.
     void CajetaModule::completePendingInterfaceVTables() {
         for (auto& [canon, structure] : structures) {
             auto klass = std::dynamic_pointer_cast<CajetaClass>(structure);
@@ -458,6 +411,7 @@ namespace cajeta {
         this->initializerType = initializerType;
     }
 
+    // Creates a module for sourcePath and registers it by canonical name.
     CajetaModulePtr CajetaModule::create(
         llvm::LLVMContext* llvmContext,
         string sourcePath,
@@ -471,6 +425,7 @@ namespace cajeta {
         return result;
     }
 
+    // Clears every per-compile registry, the method archive and the module pins.
     void CajetaModule::resetGlobals() {
         strutureToModule.clear();
         moduleVariables.clear();
@@ -486,10 +441,8 @@ namespace cajeta {
     }
 
     namespace {
-        // Snapshot of the module-level global registries, taken once after the
-        // pristine stdlib build and reassigned before each reusing test. Holds
-        // the stdlib singleton so restore re-pins it (the persistent module),
-        // and the method archive so cross-file forward refs reset too.
+        // Snapshot of the module-level registries. Holds the stdlib singleton so a
+        // restore re-pins it, and the method archive so forward refs reset with it.
         struct ModuleGlobalsBaseline {
             bool valid = false;
             map<string, MethodPtr> methods;
@@ -503,12 +456,11 @@ namespace cajeta {
             CajetaModulePtr stdlibModule;
         };
         ModuleGlobalsBaseline g_moduleBaseline;
-        // lint-server sibling context (spec §4): a SECOND slot holding the
-        // module registries after the sibling sweep, restored independently of
-        // the pristine g_moduleBaseline on a warm request. See CajetaType's
-        // matching context baseline.
+        // A second slot, taken after the lint server's sibling sweep and restored
+        // independently of the pristine baseline on a warm request.
         ModuleGlobalsBaseline g_moduleContextBaseline;
 
+        // Fills `b` from the registries passed in plus the current method archive.
         void captureModuleBaselineInto(
                 ModuleGlobalsBaseline& b,
                 const map<string, MethodPtr>& methods,
@@ -532,6 +484,7 @@ namespace cajeta {
         }
     }
 
+    // ---- Registry baselines: pristine post-stdlib, and warm lint-server context.
     void CajetaModule::captureBaseline() {
         captureModuleBaselineInto(g_moduleBaseline, methods, strutureToModule,
             moduleVariables, aspectClasses, componentClasses, factoryClasses,
@@ -549,7 +502,6 @@ namespace cajeta {
         activeProfile = g_moduleBaseline.activeProfile;
         Method::getArchive() = g_moduleBaseline.methodArchive;
         stdlibModule = g_moduleBaseline.stdlibModule;
-        // Transient per-compile pointers must not leak across tests.
         activeModule.reset();
         currentCodegenModule.reset();
     }
@@ -579,19 +531,9 @@ namespace cajeta {
         g_moduleContextBaseline = ModuleGlobalsBaseline{};
     }
 
-    // Walks the registered aspects, identifies each advice method by
-    // its @Before/@After/@Around/@AfterReturning/@AfterThrowing
-    // annotation, resolves the pointcut's `.class` argument, and
-    // pushes an AdviceMatch onto every user method that satisfies the
-    // pointcut. See AspectModel.md § Implementation roadmap A3.
-    //
-    // Pointcut shape discriminator (v1): if the pointcut class name
-    // resolves to a registered class in the global structure map,
-    // it's type-based ("every method on this class"). Otherwise it's
-    // assumed to be marker-annotation mode ("every method annotated
-    // with this name"). `annotation` types register in canonicalMap (so
-    // they resolve as type tokens, e.g. classesAnnotated<@A>()) but NOT in
-    // the structure map, so absence-from-structures is still a reliable proxy.
+    // Pushes an AdviceMatch onto every method an aspect's pointcut selects, then
+    // orders them by @Order. A pointcut that names a registered class is
+    // type-based; any other name is a marker annotation.
     void CajetaModule::resolveAdviceMatches() {
         if (aspectClasses.empty()) return;
 
@@ -614,18 +556,8 @@ namespace cajeta {
                 return false;
             };
 
-        // Build a set of aspect classes for "is this method's owner
-        // an aspect?" checks during the user-method walk. Advice
-        // doesn't apply to other aspects' methods; users keep that
-        // separate (cross-aspect coordination is via DI, not AoP).
         set<CajetaClassPtr> aspectSet(aspectClasses.begin(), aspectClasses.end());
 
-        // Resolve a short pointcut name (e.g. "Audited") to a
-        // registered class, if one exists. Walks strutureToModule
-        // and matches on short typeName — pointcuts in v1 are
-        // written without package qualifiers (`@Before(Audited.class)`),
-        // and short-name lookup matches how the rest of the
-        // compiler resolves user-written type names.
         auto resolveClassByShortName =
             [](const string& shortName) -> CajetaClassPtr {
                 for (auto& [canonical, mod] : strutureToModule) {
@@ -633,7 +565,7 @@ namespace cajeta {
                     auto& structs = mod->getStructures();
                     auto it = structs.find(canonical);
                     if (it == structs.end() || !it->second) continue;
-                    if (it->second->isAnnotation()) continue;  // marker, not a type pointcut
+                    if (it->second->isAnnotation()) continue;
                     auto qn = it->second->getQName();
                     if (qn && qn->getTypeName() == shortName) {
                         return it->second;
@@ -652,14 +584,9 @@ namespace cajeta {
                     continue;
                 }
                 auto ann = adviceMethod->findAnnotation(adviceAnnotName);
-                if (!ann) continue;  // shouldn't happen — classifyAdvice just found it
+                if (!ann) continue;
                 string pointcutClassName = ann->getClassRef();
                 if (pointcutClassName.empty()) {
-                    // Pointcut argument wasn't a class literal — v1
-                    // doesn't recognize any other form, so this
-                    // advice silently doesn't match anything.
-                    // Higher-quality diagnostics ship in a later
-                    // pass (deferred to A12 composition tests).
                     continue;
                 }
 
@@ -668,11 +595,6 @@ namespace cajeta {
                     ? PointcutShape::Type
                     : PointcutShape::MarkerAnnotation;
 
-                // Walk every user class once via strutureToModule
-                // (the process-wide canonical->module map). For each
-                // class, walk its declared methods. Skip aspect-
-                // owned methods so advice doesn't fire on advice
-                // bodies.
                 for (auto& [canonical, mod] : strutureToModule) {
                     if (!mod) continue;
                     auto& structs = mod->getStructures();
@@ -689,24 +611,11 @@ namespace cajeta {
                                 matched = true;
                             }
                         } else {
-                            // Type-based pointcut (A12): the method
-                            // belongs to the pointcut class OR to a
-                            // descendant of it. The pointcut declares
-                            // "every method on T or T's subtypes" —
-                            // walking the superClasses + implemented
-                            // interfaces lists from the user's class
-                            // catches the inheritance / implementation
-                            // chain.
+                            // A type pointcut selects the class itself and every
+                            // descendant: walk supers plus implemented interfaces.
                             if (userClass == pointcutClass) {
                                 matched = true;
                             } else {
-                                // BFS over ancestors: superclass chain
-                                // plus implemented interfaces. The
-                                // implementedInterfaces list is
-                                // resolved at generatePrototype time
-                                // (CajetaClass::resolveImplementedInterfaces)
-                                // so by codegen-pointcut time the
-                                // pointers are stable.
                                 std::vector<CajetaClassPtr> queue;
                                 queue.push_back(userClass);
                                 std::set<CajetaClassPtr> seen;
@@ -740,23 +649,12 @@ namespace cajeta {
             }
         }
 
-        // A7: stable-sort each user method's matchingAdvice by the
-        // @Order(n) annotation on the advice method. Advice without
-        // @Order falls through with INT64_MAX (placed after
-        // explicitly-ordered advice; relative declaration order
-        // preserved among themselves thanks to stable_sort).
-        //
-        // This ordering propagates automatically through A4-A6: the
-        // emit helpers iterate matchingAdvice in vector order, so
-        // @Before/@After/@AfterReturning/@AfterThrowing all fire in
-        // the chosen sequence. emitAroundWrapper walks the same
-        // sorted list to build the @Around chain (A7's other half).
+        // Advice with no @Order sorts last, declaration order preserved by the
+        // stable_sort; the emit helpers walk this vector, so it fixes firing order.
         auto readOrder = [](const AdviceMatch& m) -> int64_t {
             if (!m.adviceMethod) return INT64_MAX;
             auto ann = m.adviceMethod->findAnnotation("Order");
             if (!ann) return INT64_MAX;
-            // @Order(n) — unnamed integer arg. getInt routes through
-            // findArg("value") which matches the unnamed-arg form.
             auto* arg = ann->findArg("value");
             if (!arg || arg->kind != AnnotationArgKind::Int64) {
                 return INT64_MAX;
@@ -780,25 +678,12 @@ namespace cajeta {
         }
     }
 
-    // Walks the registered components, filters by active profile,
-    // applies @TestComponent overrides, then validates the DI graph
-    // (missing implementation, circular dependency, ambiguous
-    // resolution). See AspectModel.md § A8.
-    //
-    // Field-level @Inject is the only injection shape inspected here;
-    // constructor-parameter @Inject lands alongside A9's codegen
-    // pass, which is where the new-call lowering needs the resolved
-    // dependency anyway.
-    //
-    // No codegen is emitted by this pass — A9 reads the validated
-    // graph state to synthesize get_X / make_X helpers.
+    // Filters components by active profile, applies @TestComponent overrides,
+    // resolves every @Inject site, rejects cycles, then attaches the synthesized
+    // __cajeta_inject and factory accessors. Emits no IR itself.
     void CajetaModule::resolveDependencyGraph() {
         if (componentClasses.empty()) return;
 
-        // Filter by profile. A component with no @Profile is
-        // profile-neutral (always included). A component with one or
-        // more @Profile annotations is included only if at least
-        // one matches the active profile.
         auto profileMatches = [](const ComponentDescriptorPtr& c) {
             if (c->profiles.empty()) return true;
             for (auto& p : c->profiles) {
@@ -807,22 +692,11 @@ namespace cajeta {
             return false;
         };
 
-        // Active set after profile filtering. Two passes follow:
-        // (1) collect @TestComponent overrides keyed by target type;
-        // (2) walk the registry, dropping @TestComponent entries
-        //     when not in test mode, dropping @Component entries
-        //     whose type is overridden in test mode.
         const bool testMode = (activeProfile == "test");
 
-        // Type → descriptor map built from the filtered + override-
-        // applied set. Used by the @Inject resolver below.
         vector<ComponentDescriptorPtr> active;
-        // Test-mode override: an active @TestComponent masks every
-        // non-test @Component that implements an interface the double
-        // also implements, so the double stands in at that interface's
-        // injection sites. Keyed on interface canonical names. A double
-        // with no interface masks nothing — it is injectable only by its
-        // own concrete type (preserves the own-type stub behavior).
+        // A @TestComponent masks every non-test @Component sharing one of its
+        // interfaces; with no interface it masks nothing (own concrete type only).
         set<string> testOverriddenInterfaces;
         if (testMode) {
             for (auto& c : componentClasses) {
@@ -840,8 +714,6 @@ namespace cajeta {
             if (!c || !c->klass) continue;
             if (!profileMatches(c)) continue;
             if (c->isTestComponent && !testMode) continue;
-            // In test mode, drop a non-test @Component that shares an
-            // interface with an active @TestComponent.
             if (testMode && !c->isTestComponent) {
                 bool masked = false;
                 for (auto& iface : c->klass->getImplementedInterfaces()) {
@@ -857,12 +729,8 @@ namespace cajeta {
             active.push_back(c);
         }
 
-        // Type-keyed lookup tables. v1 keys by both the canonical
-        // qualified name AND the short type name so consumers can
-        // write `@Inject Database db;` without writing the package.
-        // Inheritance / interface implementation walks (the doc's
-        // "implementer-of-Persister" case) ship with A12 once the
-        // ancestor-resolution path is stable.
+        // Keyed by canonical AND short name, so a consumer can write
+        // `@Inject Database db;` without the package.
         map<string, vector<ComponentDescriptorPtr>> byCanonical;
         map<string, vector<ComponentDescriptorPtr>> byShort;
         for (auto& c : active) {
@@ -872,17 +740,8 @@ namespace cajeta {
             byShort[qn->getTypeName()].push_back(c);
         }
 
-        // Resolve a dependency from a name-qualifier-aware lookup.
-        // Returns nullptr if no candidate matches; the caller turns
-        // that into a missing-impl / ambiguous error with context.
-        //
-        // Three lookup tiers (A10):
-        //   1. Direct match on the component's canonical name.
-        //   2. Direct match on the component's short typeName.
-        //   3. Implements-interface match — a component class whose
-        //      getImplementedInterfaces() list contains the requested
-        //      type. Lets `@Inject Persister p` resolve to a
-        //      `@Component class Disk implements Persister`.
+        // Resolves by canonical name, then short name, then by implemented
+        // interface. Null when nothing matches or the choice stays ambiguous.
         auto resolveDependency =
             [&](const string& typeName, const string& nameQualifier,
                 vector<ComponentDescriptorPtr>& outCandidates) -> ComponentDescriptorPtr {
@@ -900,12 +759,6 @@ namespace cajeta {
                     }
                 }
                 if (candidates.empty()) {
-                    // Interface walk. Linear over active components —
-                    // typical compiles have a handful, so the constant
-                    // factor is small. A short-circuit `break` after a
-                    // match avoids double-counting when a class lists
-                    // the same interface in its own implements clause
-                    // plus inherits it from a superclass.
                     for (auto& c : active) {
                         if (!c->klass) continue;
                         for (auto& iface : c->klass->getImplementedInterfaces()) {
@@ -924,16 +777,13 @@ namespace cajeta {
                     ComponentDescriptorPtr named;
                     for (auto& c : candidates) {
                         if (c->name == nameQualifier) {
-                            if (named) return nullptr;  // duplicate names — ambiguous
+                            if (named) return nullptr;
                             named = c;
                         }
                     }
                     return named;
                 }
                 if (candidates.size() == 1) return candidates.front();
-                // Multiple candidates, no name on the @Inject site.
-                // Prefer a single name-less candidate as the
-                // unqualified default; otherwise ambiguous.
                 ComponentDescriptorPtr unqualified;
                 for (auto& c : candidates) {
                     if (c->name.empty()) {
@@ -944,14 +794,9 @@ namespace cajeta {
                 return unqualified;
             };
 
-        // ---- @Factory provider lookup (Unit 3) ----
-        // An all-injected provider makes its product type injectable —
-        // consumers @Inject the *product* and codegen calls the provider
-        // (R3). An assisted provider does NOT: its product needs caller
-        // args, so consumers inject the *factory* type itself (an
-        // ordinary @Component, registered at discovery) and call it. A
-        // provider participates only if its factory's selfComponent
-        // survived profile / @TestComponent filtering.
+        // An all-injected provider makes its product type injectable; an assisted
+        // one does not - its product needs caller args, so consumers inject the
+        // factory itself, an ordinary @Component, and call it.
         set<ComponentDescriptorPtr> activeSet(active.begin(), active.end());
         struct ProviderRef { FactoryDescriptorPtr f; int idx; };
         map<string, vector<ProviderRef>> provByCanonical, provByShort;
@@ -969,12 +814,8 @@ namespace cajeta {
             }
         }
 
-        // Unified resolution: a type may be provided by a @Component
-        // ctor OR by an all-injected @Factory provider — never both
-        // (that overlap is the @Factory/@Component ambiguity). Returns
-        // exactly one of {component, factory-provider}, flags ambiguous,
-        // or leaves both null for missing. Used for both @Inject fields
-        // and all-injected providers' @Inject params.
+        // A type may come from a @Component ctor OR an all-injected @Factory
+        // provider, never both - that overlap is the ambiguity this flags.
         struct Resolution {
             ComponentDescriptorPtr component;
             FactoryDescriptorPtr factory;
@@ -999,7 +840,7 @@ namespace cajeta {
                     if (ps != provByShort.end()) provCands = ps->second;
                 }
                 if (!compCands.empty() && !provCands.empty()) {
-                    r.ambiguous = true;   // a @Component ctor AND a @Factory provide it
+                    r.ambiguous = true;
                     return r;
                 }
                 if (!provCands.empty()) {
@@ -1008,16 +849,13 @@ namespace cajeta {
                     r.providerIdx = provCands[0].idx;
                     return r;
                 }
-                r.component = comp;          // component-only (or nothing)
-                if (!comp && !compCands.empty()) r.ambiguous = true;  // name-mismatch / multi-unnamed
+                r.component = comp;
+                if (!comp && !compCands.empty()) r.ambiguous = true;
                 return r;
             };
 
-        // Build per-component dependency edges and detect missing /
-        // ambiguous resolution in one pass. The resolved (field →
-        // target) pairs are written back to the descriptor's
-        // resolvedFields list so A9 codegen has direct access to
-        // them without re-running lookup.
+        // Resolved (field -> target) pairs are written back to resolvedFields, so
+        // codegen needs no second lookup.
         map<ComponentDescriptorPtr, vector<ComponentDescriptorPtr>> edges;
         for (auto& c : active) {
             edges[c];   // ensure every node is in the graph
@@ -1040,14 +878,8 @@ namespace cajeta {
                 const string nameQualifier = injectAnn->getString("name");
                 bool isOptional = injectAnn->getBool("optional");
 
-                // `allocate = ALLOCATE_X` is a bare identifier in
-                // source. The visitor's classifyLiteral doesn't have
-                // a "bare identifier as enumerator" shape, so it
-                // falls through to String with the raw text (no
-                // surrounding quotes — the captured strVal is just
-                // the identifier). Read via getString first; for
-                // forward-compat, also accept the ClassRef form
-                // (`ALLOCATE_X.class`) if a user ever writes it.
+                // `allocate = ALLOCATE_X` is a bare identifier: the visitor has no
+                // enumerator shape, so it arrives as a String holding the raw text.
                 AllocateMode allocate = AllocateMode::Singleton;
                 string allocStr = injectAnn->getString("allocate");
                 if (allocStr.empty()) {
@@ -1062,9 +894,6 @@ namespace cajeta {
                 } else if (allocStr == "ALLOCATE_TRANSIENT") {
                     allocate = AllocateMode::Transient;
                 } else if (!allocStr.empty()) {
-                    // Recognized syntactic shape but not one of the
-                    // four spec modes — flag with a missing-component
-                    // -ish error so the user sees what's wrong.
                     throw Exception(
                         "@Inject on field '" + prop->getName()
                             + "' of " + c->klass->getQName()->toCanonical()
@@ -1072,10 +901,6 @@ namespace cajeta {
                         "CAJETA_ERROR_MISSING_COMPONENT");
                 }
                 if (allocate == AllocateMode::CallScope) {
-                    // R5-A' implicit-function-body-scope integration
-                    // hasn't reached the inject path yet. Reject with
-                    // a clear "not yet" rather than silently fall
-                    // through to Singleton.
                     throw Exception(
                         "@Inject on field '" + prop->getName()
                             + "' of " + c->klass->getQName()->toCanonical()
@@ -1097,9 +922,6 @@ namespace cajeta {
                             "CAJETA_ERROR_DI_AMBIGUOUS");
                     }
                     if (isOptional) {
-                        // No candidate; field stays null. The codegen
-                        // branch reads target==null and stores
-                        // ConstantPointerNull.
                         ResolvedDependency rd;
                         rd.field = prop;
                         rd.target = nullptr;
@@ -1120,8 +942,6 @@ namespace cajeta {
                 rd.allocate = allocate;
                 rd.optional = isOptional;
                 if (res.factory) {
-                    // Satisfied by an all-injected factory provider:
-                    // the consumer depends on the factory's node.
                     rd.factory = res.factory;
                     rd.providerIdx = res.providerIdx;
                     edges[c].push_back(res.factory->selfComponent);
@@ -1133,14 +953,8 @@ namespace cajeta {
             }
         }
 
-        // Resolve every provider's @Inject params (R1 edges) and
-        // attribute their dependencies to the factory's node, so cycles
-        // through factory params are caught by the DFS below. This runs
-        // for assisted providers too: their product isn't a graph node,
-        // but the @Inject params still need resolution for the
-        // assisted-injection call-site splice (Unit 4b). Assisted (un-
-        // marked) params are caller-supplied and skipped. A missing
-        // @Inject-param target is a hard error.
+        // Provider @Inject params are attributed to the factory's node, so cycles
+        // through them are caught below; assisted (unmarked) params are skipped.
         for (auto& f : factoryClasses) {
             if (!f || !f->klass || !f->selfComponent) continue;
             if (!activeSet.count(f->selfComponent)) continue;
@@ -1187,11 +1001,7 @@ namespace cajeta {
             }
         }
 
-        // Cycle detection via colored DFS. WHITE = unvisited,
-        // GRAY = on the current recursion path, BLACK = fully
-        // explored. A GRAY edge means we re-entered an ancestor —
-        // i.e., a cycle. Report the path from the cycle's entry to
-        // the offending edge so the error names every participant.
+        // Colored DFS: an edge to a GRAY node re-enters an ancestor, i.e. a cycle.
         enum Color { WHITE, GRAY, BLACK };
         map<ComponentDescriptorPtr, Color> color;
         vector<ComponentDescriptorPtr> path;
@@ -1203,9 +1013,6 @@ namespace cajeta {
                     auto it = color.find(dep);
                     Color cc = (it == color.end()) ? WHITE : it->second;
                     if (cc == GRAY) {
-                        // Cycle. Render from first occurrence of dep
-                        // on path through the current node back to
-                        // dep — that's the cycle proper.
                         string trace;
                         bool started = false;
                         for (auto& n : path) {
@@ -1229,22 +1036,12 @@ namespace cajeta {
             if (color.find(c) == color.end()) dfs(c);
         }
 
-        // A9 codegen prep: attach a synthesized __cajeta_inject()
-        // static method to every active component. The method's
-        // body emits the lazy-singleton pattern (alloc + ctor +
-        // field injection + cache) at Phase 2 codegen, reading
-        // resolvedFields populated above.
-        //
-        // The method registers on the class via addMethod, so
-        // Phase 1's getLlvmFunctionType walk and Phase 2's
-        // generateCode walk both pick it up without compiler
-        // changes. The method's owning module is the component's
-        // own module — multi-module DI graphs route each helper
-        // into the right IR module.
+        // __cajeta_inject() emits the lazy-singleton pattern at codegen from
+        // resolvedFields. It is added to the component's OWN module, so a
+        // multi-module graph routes each helper into the right IR module.
         for (auto& c : active) {
             if (!c->klass) continue;
-            // Skip if a manual __cajeta_inject already exists (idempotent
-            // across repeated Compiler-resets in the same process).
+            // Idempotent across repeated Compiler resets in one process.
             bool already = false;
             for (auto& [k, m] : c->klass->getMethods()) {
                 if (m && m->getName() == "__cajeta_inject") {
@@ -1258,18 +1055,15 @@ namespace cajeta {
             c->klass->addMethod(inject);
         }
 
-        // @Factory provider accessors (Unit 4a). One per all-injected
-        // provider whose factory survived filtering. Synthesized AFTER
-        // every component's __cajeta_inject exists (the accessor calls
-        // them for the factory singleton + the providers' @Inject params)
-        // and added to the factory class so the codegen worklist walks
-        // it. Idempotent: skip if the accessor is already set.
+        // One accessor per all-injected provider, synthesized after every
+        // __cajeta_inject exists: it calls them for the factory singleton and for
+        // the provider's own @Inject params.
         for (auto& f : factoryClasses) {
             if (!f || !f->klass || !f->selfComponent) continue;
             if (!activeSet.count(f->selfComponent)) continue;
             for (size_t i = 0; i < f->providers.size(); ++i) {
                 auto& p = f->providers[i];
-                if (p.hasAssisted) continue;            // assisted ⇒ no accessor (Unit 4b)
+                if (p.hasAssisted) continue;
                 if (p.accessor) continue;
                 if (!p.providedType) continue;
                 auto acc = std::make_shared<FactoryProviderMethod>(
@@ -1280,6 +1074,8 @@ namespace cajeta {
         }
     }
 
+    // Returns `original` made referenceable from the module the builder is
+    // writing into, declaring it there when the call crosses modules.
     llvm::Function* CajetaModule::ensureFunctionVisible(
             llvm::IRBuilder<>* builder,
             llvm::Function* original,
@@ -1291,25 +1087,15 @@ namespace cajeta {
         if (!enclosingFn) return original;
         llvm::Module* callerLm = enclosingFn->getParent();
         if (!callerLm || callerLm == original->getParent()) {
-            // Same module — no fixup needed.
             return original;
         }
-        // Cross-module reference. Insert a declaration in the
-        // caller's module; getOrInsertFunction returns either an
-        // existing decl/def or a newly-created declaration. Cast
-        // back to llvm::Function for use as a CallInst callee.
         llvm::FunctionCallee callee = callerLm->getOrInsertFunction(
             original->getName(), fnType);
         if (auto* fn = llvm::dyn_cast<llvm::Function>(callee.getCallee())) {
             return fn;
         }
-        // Bitcast-shaped callee (different type signature found
-        // under same name) — fall back to the original. The
-        // resulting CreateCall will still verify under the original
-        // function's module, just not the cross-module path. v1
-        // shouldn't hit this case (cajeta-mangled names include
-        // arg types in the canonical, so name + type are tightly
-        // coupled).
+        // A bitcast-shaped callee means the name resolved to another signature;
+        // mangled names embed arg types, so this should be unreachable.
         fprintf(stderr,
             "cajeta: ensureFunctionVisible CROSS-MODULE fallback: %s "
             "(caller module %s, original module %s)\n",
@@ -1319,14 +1105,13 @@ namespace cajeta {
         return original;
     }
 
+    // Returns `original` declared in targetModule, keyed by its own FunctionType
+    // (no builder here, so no caller-side signature to reconcile).
     llvm::Function* CajetaModule::ensureFunctionInModule(
             llvm::Module* targetModule,
             llvm::Function* original) {
         if (!original || !targetModule) return original;
         if (original->getParent() == targetModule) return original;
-        // Mirror ensureFunctionVisible's getOrInsertFunction call,
-        // but key by the original's own llvm::FunctionType (no
-        // IRBuilder, so no caller-side signature to reconcile).
         llvm::FunctionCallee callee = targetModule->getOrInsertFunction(
             original->getName(), original->getFunctionType());
         if (auto* fn = llvm::dyn_cast<llvm::Function>(callee.getCallee())) {
@@ -1335,50 +1120,35 @@ namespace cajeta {
         return original;
     }
 
+    // Returns `original` declared in targetModule; the declaration takes the
+    // donor's ValueType so the merge step matches it to the definition.
     llvm::Constant* CajetaModule::ensureGlobalInModule(
             llvm::Module* targetModule,
             llvm::GlobalVariable* original) {
         if (!original || !targetModule) return original;
         if (original->getParent() == targetModule) return original;
-        // getOrInsertGlobal returns the existing entry (decl or def)
-        // when one with the same name is already present, or creates
-        // a new declaration when absent. The declaration takes the
-        // same ValueType so the merge step matches it to the donor's
-        // definition.
         return llvm::cast<llvm::GlobalVariable>(targetModule->getOrInsertGlobal(
             original->getName(), original->getValueType()));
     }
 
+    // Builds class prototypes to a fixed point: a class becomes eligible once its
+    // parents fill in. Progress is read from isPrototypeBuilt before and after
+    // each call, not the return value, which is also true for built classes.
     void CajetaModule::buildPendingPrototypes() {
-        // Fixed-point loop: iterate canonicalMap, calling
-        // tryGeneratePrototype on each not-yet-built class. As parents
-        // fill in, dependent children become eligible on the next
-        // iteration. Stop when a full pass actually built no new
-        // prototypes.
-        //
-        // Progress is detected by checking isPrototypeBuilt before and
-        // after each tryGeneratePrototype call rather than the call's
-        // return value: tryGeneratePrototype returns true both when it
-        // built fresh AND when the class was already built. Using the
-        // before/after state instead avoids infinite-looping on
-        // already-built classes.
         bool changed = true;
         while (changed) {
             changed = false;
-            // Complete any instantiation that was deferred because its
-            // TEMPLATE had only been forward-referenced at the use site (see
-            // CajetaClass::DeferredInstantiation). This runs inside the
-            // fixpoint because completing one can both make new classes
-            // eligible and defer further instantiations of its own.
+            // Completing a deferred instantiation can both free new classes and
+            // defer more of its own, so it belongs inside the fixpoint.
             if (CajetaClass::drainDeferredInstantiations()) {
                 changed = true;
             }
             for (auto& [key, type] : CajetaType::getCanonicalMap()) {
                 auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
                 if (!klass) continue;
-                if (klass->isPlaceholder()) continue;       // wait for fill-in
+                if (klass->isPlaceholder()) continue;
                 if (klass->isDeclWalkInFlight()) continue;  // mid-declaration (nested materialize) — later sweep
-                if (klass->isAnnotation()) continue;        // type token only, no layout
+                if (klass->isAnnotation()) continue;
                 if (klass->isPrototypeBuilt()) continue;
                 if (klass->isTemplate()) continue;          // templates lay out only on instantiate
                 klass->tryGeneratePrototype();
@@ -1389,6 +1159,7 @@ namespace cajeta {
         }
     }
 
+    // Throws if any pre-scanned forward reference was never filled in.
     void CajetaModule::validatePlaceholders() {
         for (auto& [key, type] : CajetaType::getCanonicalMap()) {
             auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
@@ -1402,9 +1173,9 @@ namespace cajeta {
         }
     }
 
+    // Links the embedded runtime bitcode into this module. Idempotent: the
+    // presence of __cajeta_new_array means it is already linked.
     bool CajetaModule::linkRuntime() {
-        // Tracked via presence of a sentinel runtime function in the module — if it's
-        // already there, the runtime has been linked.
         if (llvmModule->getFunction("__cajeta_new_array") != nullptr) {
             return true;
         }
@@ -1417,8 +1188,7 @@ namespace cajeta {
             return false;
         }
         std::unique_ptr<llvm::Module> rtModule = std::move(*parsed);
-        // Align the runtime's target triple/datalayout with the user module's so the linker
-        // doesn't complain about a mismatch.
+        // Match the user module's triple/datalayout or the linker rejects the merge.
         rtModule->setTargetTriple(llvmModule->getTargetTriple());
         rtModule->setDataLayout(llvmModule->getDataLayout());
         if (llvm::Linker::linkModules(*llvmModule, std::move(rtModule))) {
@@ -1428,41 +1198,20 @@ namespace cajeta {
         return true;
     }
 
+    // Returns the llvm::Module codegen should emit into: this module's own, except
+    // on the shared-context reuse path, where a stdlib-template body and its
+    // runtime externs must land in the module being emitted.
     llvm::Module* CajetaModule::emitTargetLlvmModule() {
-        // Emit≠resolution is a TEST-REUSE-only concern. In production / non-reuse
-        // (no shared context) always return this module's own llvm::Module — the
-        // historical behavior — so normal compiles are bit-for-bit unchanged and
-        // never depend on currentEmitLlvmModule. In the reuse path, return the
-        // function currently being emitted (set RAII by Method::generateCode) so
-        // a stdlib-template instantiation's body IR + its runtime externs land in
-        // the user emit module, not the cached stdlib. Null (outside a body) →
-        // fall back to this module's own llvm::Module.
         if (Compiler::getSharedContext() && currentEmitLlvmModule)
             return currentEmitLlvmModule;
         return llvmModule;
     }
 
+    // Returns a decl of runtime function `name` in explicitTarget, or in the module
+    // codegen is emitting into. Definitions live only in the stdlib module; when
+    // this IS that module, or none exists yet, the runtime links in here instead.
     llvm::Function* CajetaModule::getRuntimeFunction(const std::string& name,
                                                      llvm::Module* explicitTarget) {
-        // Runtime definitions live exclusively in the compiler-owned
-        // stdlib module (Compiler::ensureStdlibModule runs linkRuntime
-        // once on it). User modules get module-local extern decls
-        // referencing those definitions; the merge step (JIT linker
-        // or AOT object link) resolves them.
-        //
-        // Bootstrap edge case: when this IS the stdlib module — or
-        // when there is no stdlib module yet (Compiler ctor before
-        // ensureStdlibModule runs) — fall back to linking the runtime
-        // straight into this module so the lookup returns a usable
-        // function on first call.
-        // Target the module the builder is currently emitting into (the emit
-        // module for a reuse-path instantiation), not necessarily this module —
-        // so the runtime extern decl is co-resident with the calling function.
-        // Guard against an out-of-codegen call (currentEmitLlvmModule null →
-        // emitTargetLlvmModule falls back to this module's llvm module).
-        // An explicit target overrides this: the caller knows the exact module its
-        // IRBuilder is writing into (see header — drop-wrapper bodies on persistent
-        // stdlib classes).
         llvm::Module* target = explicitTarget ? explicitTarget : emitTargetLlvmModule();
         auto stdlib = stdlibModule;
         if (!stdlib || stdlib.get() == this) {
@@ -1473,9 +1222,6 @@ namespace cajeta {
         }
         llvm::Function* defFn = stdlib->getLlvmModule()->getFunction(name);
         if (!defFn) {
-            // The named runtime helper isn't in the bitcode (or
-            // hasn't been linked yet). Force a link on the stdlib
-            // module's side and retry.
             stdlib->linkRuntime();
             defFn = stdlib->getLlvmModule()->getFunction(name);
             if (!defFn) return nullptr;
@@ -1483,23 +1229,17 @@ namespace cajeta {
         return ensureFunctionInModule(target, defFn);
     }
 
+    // Interns `rawPath` as a private constant string and returns a ptr to it. The
+    // path is remapped before the cache lookup, so the constant and its dedup key
+    // are both the machine-independent form.
     llvm::Constant* CajetaModule::getOrCreateSourceFileConstant(const std::string& rawPath) {
-        // Reproducible IR (docs-refactor 15.12.2): every IR-embedded source
-        // path routes through --debug-prefix-map / the sourceRoot-relative
-        // fallback, exactly like source_filename. Remap before the cache
-        // lookup so the constants (and their dedup keys) are the
-        // machine-independent form.
         const std::string path =
             remapSourcePath(rawPath, sourceRoot, compilerFlags.debugPrefixMap);
         auto it = sourceFileConstants.find(path);
         if (it != sourceFileConstants.end()) return it->second;
 
-        // Emit as a private constant char array; return a ptr-to-first-element.
-        // CreateGlobalStringPtr would also work, but it needs an active
-        // IRBuilder, and this helper is callable from any codegen context
-        // (including the function-entry-block builder that drop entries are
-        // allocated through). Doing it via plain LLVM C++ APIs keeps the
-        // call site free of builder-context concerns.
+        // Built through plain LLVM APIs, not CreateGlobalStringPtr: this is called
+        // from codegen contexts that have no active IRBuilder.
         auto& ctx = *llvmContext;
         llvm::Constant* strConst = llvm::ConstantDataArray::getString(ctx, path, /*AddNull=*/true);
         std::string globalName = ".cajeta.src." + std::to_string(sourceFileConstants.size());
@@ -1507,8 +1247,6 @@ namespace cajeta {
             *llvmModule, strConst->getType(), /*isConstant=*/true,
             llvm::GlobalValue::PrivateLinkage, strConst, globalName);
         gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-        // The runtime helpers take `const char*`, i.e. a pointer to i8. The
-        // global's type is an `[N x i8]` constant; bitcast to ptr.
         llvm::Constant* ptr = llvm::ConstantExpr::getBitCast(
             gv, llvm::PointerType::get(ctx, 0));
         sourceFileConstants[path] = ptr;
@@ -1516,14 +1254,15 @@ namespace cajeta {
     }
 
     // ── TBAA ───────────────────────────────────────────────────────────────
+    // Creates this module's TBAA type and tag nodes once.
     void CajetaModule::ensureTbaaNodes() {
         if (tbaaCharType) {
             return;
         }
         llvm::MDBuilder mdb(*llvmContext);
         llvm::MDNode* root = mdb.createTBAARoot("Cajeta TBAA");
-        // omnipotent char aliases everything; field + array-element descend from
-        // it and are SIBLINGS, so they do not alias each other.
+        // Field and array-element descend from omnipotent char as SIBLINGS, so a
+        // field access and an element access never alias each other.
         tbaaCharType = mdb.createTBAAScalarTypeNode("omnipotent char", root);
         tbaaFieldType = mdb.createTBAAScalarTypeNode("cajeta field", tbaaCharType);
         tbaaArrayElemType =
@@ -1540,9 +1279,9 @@ namespace cajeta {
         }
     }
 
+    // Tags every load/store whose pointer has recorded provenance and no tag yet.
     void CajetaModule::applyTbaaTags() {
-        // Kill switch (debug / A-B attribution): CAJETA_TBAA_DISABLE=1 emits no
-        // TBAA so the optimizer falls back to fully-conservative aliasing.
+        // Kill switch for A-B attribution: CAJETA_TBAA_DISABLE=1 emits no TBAA.
         if (tbaaProvenance.empty() || std::getenv("CAJETA_TBAA_DISABLE")) {
             return;
         }
@@ -1561,7 +1300,6 @@ namespace cajeta {
                     } else {
                         continue;
                     }
-                    // Don't clobber metadata another path already set.
                     if (inst.getMetadata(llvm::LLVMContext::MD_tbaa)) {
                         continue;
                     }

@@ -1,14 +1,6 @@
-// Cajeta build-tool dependency resolver.
-//
-// Phase 6a: direct-dep resolution (no transitive expansion, no
-// MVS conflict resolver yet). Each declared dependency is
-// matched against the priority-ordered repository list; the
-// first repo that has a satisfying version wins. The artifact
-// is fetched into the local cache and returned as a
-// ResolvedDependency.
-//
-// Phase 6b folds in transitive expansion + MVS (lowest version
-// satisfying all constraints). Phase 6c adds path/git overrides.
+// Cajeta build-tool dependency resolver: each declared dependency is matched
+// against the priority-ordered repositories, the first repo with a satisfying
+// version winning, then fetched into the local cache as a ResolvedDependency.
 
 #pragma once
 
@@ -25,14 +17,8 @@
 
 namespace cajeta::buildtool {
 
-    // Counters + accumulated wall-clock for one resolver run. When a
-    // pointer is passed to `resolveProjectDependencies` (and through
-    // to `resolveMvs`), each repository call records into here via
-    // the `TimingRepository` wrapper installed by the orchestrator.
-    //
-    // Used by `cajeta info --resolve-time` to surface pathological
-    // graphs (e.g. an MVS fixed-point that re-picks many times, or a
-    // repo whose `listVersions` is slow).
+    // Counters + wall-clock for one resolver run, recorded by the
+    // `TimingRepository` wrapper when the orchestrator is passed one of these.
     struct ResolverTimings {
         using Duration = std::chrono::microseconds;
         Duration total{0};
@@ -42,71 +28,22 @@ namespace cajeta::buildtool {
         int listVersionsCalls = 0;
         int fetchCalls = 0;
         int fetchManifestCalls = 0;
-        // Number of fixed-point iterations the MVS solver ran. Each
-        // iteration is one full pass over the package set picking
-        // dirty packages; bumping above ~deps_count signals
-        // re-pick churn.
+        // One pass over the dirty packages each; far above the dep count is churn.
         int mvsIterations = 0;
         int depsResolved = 0;
     };
 
-    // Resolve every declared dependency. Inputs are the
-    // priority-ordered repository drivers, the declared deps,
-    // and a cache instance. Returns one ResolvedDependency per
-    // dep in declaration order.
-    //
-    // Constraint matching (Phase 6a + 6b):
-    //   - Exact      "1.2.3"             release-only equality
-    //   - Wildcard   "1.2.*", "1.*", "*" prefix-of-segments match
-    //   - Range      ">=1.2.0", "<2.0.0", ">1.0", "<=3", "=1.2.3"
-    //   - AND-combo  ">=1.2.0,<2.0.0"     comma-separated, all must hold
-    //
-    // The MVS solver (also 6b) layers on top: gather constraints
-    // across the dependency graph, then pick the lowest version
-    // satisfying every gathered constraint.
+    // Resolves the declared deps directly, without transitive expansion: one
+    // ResolvedDependency per dep in declaration order. A constraint is exact
+    // ("1.2.3"), a wildcard ("1.2.*"), a range (">=1.2.0"), or a comma-AND.
     llvm::Expected<std::vector<ResolvedDependency>> resolveDirect(
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
         ArtifactCache& cache);
 
-    // Transitive resolution with Minimum-Version-Selection
-    // (Phase 6b). Gathers every constraint declared for each
-    // package across the dependency graph and picks the LOWEST
-    // version satisfying all of them. If a newly-discovered
-    // child constraint excludes a previously-picked version,
-    // the package is re-picked (still lowest-satisfying) and
-    // its children re-walked. Iterates to a fixed point.
-    //
-    // Properties:
-    //   - Deterministic: same inputs → same picks (constraint
-    //     gathering order is the BFS visitation order, but the
-    //     final pick depends only on the constraint set).
-    //   - Terminating: each re-pick can only raise a package's
-    //     selected version (constraints only ever get added /
-    //     tightened), and the version set is finite.
-    //   - Conflicts surface as a clear "no version of X satisfies
-    //     [<atom>, <atom>, ...]" error citing every contributing
-    //     constraint atom.
-    //
-    // Per-package version picker: lowest version that satisfies
-    // EVERY collected constraint, walked repo-priority-first
-    // (first repo with any satisfying version wins; within that
-    // repo the lowest satisfying version is picked). The `from`
-    // pin restricts to one repo; conflicting `from` pins for the
-    // same package error out.
-    //
-    // Output order is topological: root deps in declaration
-    // order first, then each dep's transitive children in
-    // declaration order.
-    //
-    // A dep whose repository can't produce a manifest sidecar
-    // (`fetchManifestJson` returns nullopt) is treated as a leaf —
-    // i.e. assumed to have no further dependencies. This is the
-    // backwards-compatible path for archives that pre-date the
-    // sidecar convention.
-    // Graph-returning form of resolveMvs: the same solve, returning the
-    // flat list together with the edges (see ResolvedGraph). resolveMvs
-    // is a wrapper over it that returns `.packages`.
+    // Transitive resolution by minimum-version selection, iterated to a fixed
+    // point; output order is topological. A dep whose repo yields no manifest
+    // sidecar is a leaf, which is how pre-sidecar archives still resolve.
     llvm::Expected<ResolvedGraph> resolveMvsGraph(
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
@@ -116,56 +53,32 @@ namespace cajeta::buildtool {
         const std::string& gitOverrideStageDir = "",
         const std::string& ollaWriteThroughRoot = "");
 
+    // The same solve returning only `.packages`. `gitOverrideStageDir` is where
+    // git overrides are cloned on demand (empty when none are declared) and
+    // `ollaWriteThroughRoot`, when set, mirrors remote fetches into ~/.olla.
     llvm::Expected<std::vector<ResolvedDependency>> resolveMvs(
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
         ArtifactCache& cache,
         const std::vector<OverrideSpec>& overrides = {},
         ResolverTimings* timings = nullptr,
-        // Stage directory for git-replacement overrides (Phase 6c).
-        // The resolver clones each git override into this directory
-        // on demand. Empty when no git overrides are declared (the
-        // pick step errors clearly if one is encountered with an
-        // empty stage dir).
         const std::string& gitOverrideStageDir = "",
-        // When non-empty, the ~/.olla local-repository root that
-        // artifacts fetched from a remote are written through into, so
-        // a later resolve is a local hit. Empty disables write-through
-        // (e.g. the resolveMvs unit tests that pass explicit repos).
         const std::string& ollaWriteThroughRoot = "");
 
-    // Compare just the major-version component of two semver
-    // strings. Returns <0 if a's major is lower, 0 if equal, >0
-    // if higher. Exposed for the override / major-downgrade
-    // guard tests; the resolver uses it to detect when applying
-    // an override drops a package below the major version a
-    // transitive needed.
+    // Orders two semver strings by major component alone, so the resolver can
+    // catch an override dropping a package below the major a transitive needs.
     int compareMajor(const std::string& a, const std::string& b);
 
-    // Test whether `version` satisfies `constraint`. Exposed for
-    // unit tests.
     bool versionSatisfies(const std::string& version,
                           const std::string& constraint);
 
-    // Compare two semver-shape strings: <0 if a<b, 0 if equal,
-    // >0 if a>b. Numeric components compared as integers;
-    // non-numeric prerelease tags compared lexicographically.
-    // Exposed for unit tests.
+    // Orders two semver-shape strings: numeric components as integers, other
+    // prerelease tags lexicographically.
     int compareVersions(const std::string& a, const std::string& b);
 
-    // Top-level orchestration helper: pulls `settings.repositories`,
-    // `settings.dependencies`, and `settings.overrides` from the
-    // manifest; builds the repository drivers; constructs an
-    // ArtifactCache rooted at `projectRoot`; runs `resolveMvs`.
-    //
-    // Returns an empty vector when no dependencies are declared
-    // (so BuildAction can skip the `--classpath` step entirely
-    // for projects without external deps).
-    //
-    // `projectRoot` is where the local artifact cache lives
-    // (`<projectRoot>/.cajeta/cache/artifacts/<sha256>.cja`).
-    // `homeOverride` lets tests pin the workstation cache root
-    // away from $HOME; production callers leave it unset.
+    // Runs the whole resolve off a manifest: repositories, dependencies and
+    // overrides from `settings`, an ArtifactCache under `projectRoot`, then
+    // resolveMvs. `homeOverride` pins the workstation cache root for tests.
     llvm::Expected<std::vector<ResolvedDependency>>
     resolveProjectDependencies(
         const Manifest& m,
@@ -173,10 +86,8 @@ namespace cajeta::buildtool {
         std::optional<std::string> homeOverride = std::nullopt,
         ResolverTimings* timings = nullptr);
 
-    // The same resolution, returning the graph (dependency-tree spec §2):
-    // `.packages` is byte-for-byte the resolveProjectDependencies result,
-    // which is now a wrapper over this. Empty graph when no dependencies
-    // are declared.
+    // The same resolution returning the graph; `.packages` is byte-for-byte the
+    // resolveProjectDependencies result, and an empty graph means no deps.
     llvm::Expected<ResolvedGraph>
     resolveProjectGraph(
         const Manifest& m,

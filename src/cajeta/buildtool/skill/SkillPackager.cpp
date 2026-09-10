@@ -1,7 +1,4 @@
-//
-// Build-time skill packaging. See SkillPackager.h and
-// specs/archive/skill-discovery-spec.md §4.2.
-//
+// Build-time skill packaging. See SkillPackager.h.
 #include "cajeta/buildtool/skill/SkillPackager.h"
 
 #include "cajeta/buildtool/skill/SkillDocument.h"
@@ -36,7 +33,7 @@ namespace cajeta::buildtool::skill {
             return std::vector<SkillMember>{}; // no skills — not an error
         }
 
-        // Collect *.md sources, sorted for deterministic processing.
+        // Sorted so packaging never depends on directory iteration order.
         std::vector<fs::path> sources;
         for (fs::directory_iterator it(skillsDir, ec), end; !ec && it != end;
              it.increment(ec)) {
@@ -80,7 +77,6 @@ namespace cajeta::buildtool::skill {
         }
         members.push_back({"skills/index.json", index->serialize()});
 
-        // Reproducible: stable order by in-archive path.
         std::sort(members.begin(), members.end(),
                   [](const SkillMember& a, const SkillMember& b) {
                       return a.path < b.path;

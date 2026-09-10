@@ -1,6 +1,4 @@
-//
 // Source-synthesis facility (núcleo Layer-1a). See SynthesizerRegistry.h.
-//
 #include "cajeta/synth/SynthesizerRegistry.h"
 
 #include <map>
@@ -23,13 +21,8 @@
 namespace cajeta::synth {
 
     namespace {
-        // table-fit spec §2: a synthesizer must never read schema facts
-        // (record flag, field list) off an unfilled cross-file placeholder —
-        // force the declaring module to compile first via the Compiler's
-        // materialization hook. The placeholder is the same shared_ptr the
-        // real declaration fills (visitClassDeclaration's placeholder reuse),
-        // so the caller's reference upgrades in place. A null hook (no
-        // Compiler installed) degrades to the prior placeholder behavior.
+        // Force the declaring module to compile before any synthesizer reads
+        // schema facts off a cross-file placeholder; the shared_ptr upgrades in place.
         void materializeIfPlaceholder(const CajetaClassPtr& cls) {
             if (cls && cls->isPlaceholder() && cls->getQName()
                     && CajetaModule::userMaterializeHook) {
@@ -76,8 +69,6 @@ namespace cajeta::synth {
     SynthesizerRegistry::collectMembers(const SynthesisContext& ctx) const {
         std::vector<std::pair<std::string, MemberSynthesisResult>> claimed;
         for (const auto& [label, fn] : memberSynths) {
-            // A synthesizer that validates-first and rejects throws here; the
-            // exception propagates to the caller as a user-attributed error.
             std::optional<MemberSynthesisResult> r = fn(ctx);
             if (r) claimed.emplace_back(label, std::move(*r));
         }
@@ -101,11 +92,8 @@ namespace cajeta::synth {
     }
 
     namespace {
-        // Wrap a `bool synthesize*MethodSource(parent, name, args, params, out&)`
-        // codec entry point as a BodySynthesizer. Codecs are method-template
-        // instantiation synthesizers returning FULL method source — they decline
-        // declaration-time contexts (ctx.method set), whose contract is a body
-        // block (see BodySynthesizer in the header).
+        // Wrap a codec's `synthesize*MethodSource` as a BodySynthesizer. Codecs
+        // return FULL source, so they decline declaration-time contexts (a body).
         template <typename Fn>
         BodySynthesizer wrapCodec(Fn fn) {
             return [fn](const SynthesisContext& c) -> std::optional<std::string> {
@@ -118,7 +106,7 @@ namespace cajeta::synth {
             };
         }
 
-        // --- @Einsum (Unit 6) -------------------------------------------------
+        // --- @Einsum ----------------------------------------------------------
 
         // If `t` is a concrete Tensor<E> instantiation, return E; else null.
         CajetaTypePtr tensorElementOf(const CajetaTypePtr& t) {
@@ -131,11 +119,7 @@ namespace cajeta::synth {
             if (name != "Tensor" && name.rfind("Tensor<", 0) != 0) return nullptr;
             const auto& args = cls->getTypeArguments();
             if (args.size() == 1) return args[0];
-            // Validate-first runs at DECLARATION time, where the signature's
-            // `Tensor<float32>` may still be the forward placeholder
-            // registered under the instantiation canonical — a CajetaClass
-            // with the right name but no typeArguments/templateOrigin yet.
-            // The canonical still names the element; recover it by name.
+            // A declaration-time placeholder has no typeArguments; its name does.
             if (args.empty() && name.rfind("Tensor<", 0) == 0
                     && name.back() == '>') {
                 std::string inner = name.substr(7, name.size() - 8);
@@ -146,9 +130,8 @@ namespace cajeta::synth {
             return nullptr;
         }
 
-        // Validate-first (spec §4.2, §6.1): check the contraction spec against
-        // the resolved signature and throw user-phrased diagnostics BEFORE any
-        // body text exists. Errors name the parameter and the declared spec.
+        // Check the spec against the resolved signature, throwing user-phrased
+        // diagnostics BEFORE any body text exists.
         struct EinsumPlan {
             std::vector<std::string> groups;   // one label group per parameter
             std::string outLabels;             // output label group
@@ -207,10 +190,7 @@ namespace cajeta::synth {
                     + " input group(s) but the method declares "
                     + std::to_string(formals.size()) + " parameter(s)");
             }
-            // Per-parameter rank + type checks. Tensor<E> rank is RUNTIME
-            // (tensor-spec.md — ndim/shape are fields), so it validates at the
-            // dynamic boundary; the STATIC rank check fires where the declared
-            // type carries one (Matrix<E,R,C> is const-generic rank-2).
+            // Tensor<E> rank is RUNTIME; the STATIC check fires only on ranked types.
             CajetaTypePtr elem;
             for (std::size_t g = 0; g < formals.size(); ++g) {
                 const std::string& pname = formals[g]->getName();
@@ -246,11 +226,7 @@ namespace cajeta::synth {
         }
 
         // Emit the contraction as a source loop nest over Tensor's checked
-        // accessors (Tier A — spec §7: source over primitives, never raw IR):
-        // outer loops over the output labels, an accumulator loop over the
-        // contracted labels, getAt/setAt element access, `return #out` transfer
-        // (the Tensor.matmul / LinAlg idiom). Synth locals carry a `__e_`
-        // prefix so they can't shadow user parameter names.
+        // accessors, output labels outside. Synth locals carry `__e_`.
         std::string emitEinsumBody(const SynthesisContext& c, const EinsumPlan& plan) {
             auto params = c.method->getParameterList();
             std::vector<std::string> names;
@@ -258,8 +234,7 @@ namespace cajeta::synth {
                 if (p && p->getName() != "this") names.push_back(p->getName());
             }
             const std::string& E = plan.elemName;
-            // First occurrence of each label -> (param, axis); order of first
-            // appearance drives the contracted-loop order (deterministic).
+            // First occurrence of each label drives the loop order: deterministic.
             std::vector<char> order;
             std::map<char, std::pair<std::size_t, std::size_t>> firstAt;
             for (std::size_t g = 0; g < plan.groups.size(); ++g) {
@@ -338,35 +313,21 @@ namespace cajeta::synth {
         }
     }
 
+    // Register every built-in synthesizer into the shared, mutex-less instance()
+    // vectors. call_once, not a `static bool`: two threads both emplacing duplicate.
     void registerBuiltinSynthesizers() {
-        // Registers into the shared, mutex-less instance() vectors and is
-        // called from per-compile dispatch sites. A plain `static bool done`
-        // let two threads (thread-safe compiler) both run the emplace_backs —
-        // a data race plus duplicate synthesizers (-> spurious
-        // CAJETA_ERROR_SYNTH_AMBIGUOUS). call_once runs the whole block exactly
-        // once across all threads.
         static std::once_flag builtinOnce;
         std::call_once(builtinOnce, [] {
         auto& reg = SynthesizerRegistry::instance();
-        // Order mirrors the former MethodTemplateInstantiator if-else chain. The
-        // codecs are mutually exclusive by declaring class, so at most one ever
-        // matches — the registry's at-most-one guarantee is a safety net, not a
-        // behaviour change.
+        // The codecs are mutually exclusive by declaring class; at most one matches.
         reg.registerBody("json",     wrapCodec(synthesizeJsonMethodSource));
         reg.registerBody("csv",      wrapCodec(synthesizeCsvMethodSource));
         reg.registerBody("protobuf", wrapCodec(synthesizeProtobufMethodSource));
         reg.registerBody("ion",      wrapCodec(synthesizeIonMethodSource));
         reg.registerBody("avro",     wrapCodec(synthesizeAvroMethodSource));
 
-        // Table.fromCsv<R> (nucleo-frame 16.1.1, resurrected by table-fit U2):
-        // replace the failsafe throw-body with a per-R schema-descriptor
-        // bridge — literal name/tag/nullability arrays in RECORD SCHEMA order
-        // (mirroring the "table" member synthesizer's field walk exactly,
-        // since __rebindOwned validates positionally) driving the concrete
-        // DynFrame.fromCsv parser, then the same probe + rebind airlock
-        // importArrow<R> uses. R stays symbolic in the emitted source — the
-        // method-template wrapper walk pins R -> the concrete record via
-        // pushTypeSubstitution.
+        // Table.fromCsv<R>: a per-R schema-descriptor bridge over the CSV parser.
+        // R stays symbolic here; the method-template wrapper walk pins it.
         reg.registerBody("frameCsv",
                 [](const SynthesisContext& c) -> std::optional<std::string> {
             if (c.method) return std::nullopt;   // instantiation path only
@@ -390,14 +351,12 @@ namespace cajeta::synth {
             if (!record || !record->getQName()
                     || record->getQName()->getPackageName().empty()  // T-var
                     || !record->isRecordType()) {
-                // Non-record R fails loudly at Table<R>'s own member
-                // synthesis; keep the failsafe here.
+                // Non-record R fails loudly at Table<R>'s own member synthesis.
                 return std::nullopt;
             }
 
-            // Schema fields in LAYOUT order: inherited (supers-first,
-            // recursively) then own — must mirror the "table" member
-            // synthesizer's walk.
+            // Schema fields in LAYOUT order: inherited (supers-first) then own —
+            // must mirror the "table" walk, since __rebindOwned is positional.
             std::vector<StructurePropertyPtr> fields;
             std::function<void(CajetaClassPtr)> collect =
                 [&](CajetaClassPtr k) {
@@ -441,17 +400,9 @@ namespace cajeta::synth {
                 }
                 cols.push_back({fieldName, tag});
             }
-            // Emit an INLINE typed parse (the CsvSynthesizer's model): header
-            // pass binds each schema field to a CSV column by name (loud when
-            // absent; extra CSV columns ignored), a counting pass arity-checks
-            // every data row, a fill pass parses per-field typed arrays, and
-            // the table is built through the synthesized `fromColumns` ctor
-            // from fresh `Column.of` / `StringColumn.of` builds — the same
-            // ownership shape as hand-written construction. (An earlier cut
-            // routed through an intermediate owned DynFrame + __rebindOwned;
-            // the rebind ALIASES the frame's storage and the frame then
-            // drops — safe for Arrow imports whose buffers are externally
-            // owned, a use-after-free for frame-owned columns.)
+            // Emit an INLINE typed parse: header bind by name, an arity-checking
+            // pass, typed fill, then the synthesized `fromColumns` ctor. NOT via an
+            // owned DynFrame + __rebindOwned, whose rebind aliases what then drops.
             std::string b;
             b += "public static final #Table<R> fromCsv(String text) {\n";
             b += "    int8[] __b #= text.toBytes();\n";
@@ -551,13 +502,8 @@ namespace cajeta::synth {
             return b;
         });
 
-        // @Einsum (Unit 6, spec §4.1-4.2): declaration-time body synthesis. A
-        // bodyless method annotated @Einsum("ij,jk->ik") gets a fused loop-nest
-        // body over Tensor's checked primitives. Claims only declaration-time
-        // contexts (ctx.method set); validates the spec against the resolved
-        // signature FIRST — every diagnostic is phrased in the user's terms
-        // (parameter name, declared spec) and raised before any body text
-        // exists (spec §6.1) — then emits the body block the caller splices.
+        // @Einsum: a bodyless method annotated @Einsum("ij,jk->ik") gets a fused
+        // loop-nest body over Tensor's primitives. Declaration-time only.
         reg.registerBody("einsum",
                 [](const SynthesisContext& c) -> std::optional<std::string> {
             if (!c.method) return std::nullopt;
@@ -575,9 +521,7 @@ namespace cajeta::synth {
             return emitEinsumBody(c, plan);
         });
 
-        // @Logged: inject a `static Logger log = Log.defaultFor("<canonical>")`
-        // member. Self-selects on the annotation; respects a user-declared `log`
-        // (spec §3.1-3.3). Was the hard-wired synthesizeLoggerField.
+        // @Logged: inject `static Logger log = ...`, respecting a declared `log`.
         reg.registerMember("logged",
                 [](const SynthesisContext& c) -> std::optional<MemberSynthesisResult> {
             auto structure = c.parent;
@@ -593,16 +537,8 @@ namespace cajeta::synth {
             return r;
         });
 
-        // Value-type clone (element-ownership plan 6.2.2, spec §6.1.3-5):
-        // synthesize a TYPED `clone()` on records / @ValueType classes so
-        // `Pt b = a.clone()` types as Pt (Object.clone returns Object — a
-        // record upcast slice) and copies BY VALUE through the normal
-        // aggregate-copy path, whose value-copy hook (emitValueSharedOp)
-        // retains shared-capable payload (Utf8/Slice) instead of byte-copying
-        // — COW by provenance. `return this;` lowers through the by-value
-        // aggregate return (sret/NRVO) coercion. Respect-user: a declared
-        // clone() wins. Fires at declaration for concrete value types and at
-        // instantiation for templated ones (the member seam runs both).
+        // A TYPED `clone()` on records / @ValueType classes, so `Pt b = a.clone()`
+        // types as Pt (Object.clone slices) and copies by value. A declared one wins.
         reg.registerMember("valueClone",
                 [](const SynthesisContext& c) -> std::optional<MemberSynthesisResult> {
             auto structure = c.parent;
@@ -622,29 +558,8 @@ namespace cajeta::synth {
             return r;
         });
 
-        // nucleo-frame U3 — the PRODUCTION Table<T> member synthesizer
-        // (frame spec §2, §3.1; plan 3.2.2 — the U5 test-shell retarget).
-        // Keyed on `cajeta.nucleo.frame.Table` instantiations only. Per
-        // schema-record field it injects, in layout order (inherited fields
-        // first — the prefix `Table<? extends T>` relies on):
-        //   - a public typed accessor FIELD with the mapped physical column
-        //     type (`ticks.price` — a typo fails the compile);
-        //   - a constructor taking the columns in schema order (`#` owned —
-        //     zero-copy adoption) with a loud row-length check;
-        //   - the introspection methods colCount/colNameAt/colTypeAt/
-        //     colNullableAt over compile-time schema facts.
-        // Physical mapping (plan 3.2.3): primitives -> Column<that>;
-        // Instant -> Column<int64> (epoch-nanos); Utf8 -> StringColumn
-        // (utf8); @Nullable on a mappable primitive -> NullableColumn.
-        // A non-record schema arg is CAJETA_ERROR_FRAME_SCHEMA; a field
-        // with no mapping is CAJETA_ERROR_FRAME_UNMAPPED_FIELD.
-        // `Table<? extends R>` handles synthesize the accessor surface FROM
-        // THE BOUND `R` (fields + introspection, no constructor): every
-        // `Table<R' extends R>` lays out `R`'s columns as its field prefix
-        // (inherited-first enumeration below), so the covariant reads are
-        // sound. Unbounded `Table<?>` declines — no schema, no accessors.
-        // Determinism/memoization rides the instantiation cache — this
-        // fires once per monomorphization.
+        // The Table<T> member synthesizer, on `cajeta.nucleo.frame.Table`
+        // instantiations: a typed accessor per schema field, ctor, introspection.
         reg.registerMember("table",
                 [](const SynthesisContext& c) -> std::optional<MemberSynthesisResult> {
             auto structure = c.parent;
@@ -679,9 +594,8 @@ namespace cajeta::synth {
             }
             if (!record) return std::nullopt;  // type variable / opaque handle
 
-            // Schema fields in LAYOUT order: inherited (supers-first,
-            // recursively) then own — `Table<? extends T>` reads the shared
-            // column-field prefix, so accessor order must mirror it.
+            // Schema fields in LAYOUT order: inherited (supers-first) then own —
+            // `Table<? extends T>` reads that prefix, so accessor order mirrors it.
             std::vector<StructurePropertyPtr> fields;
             std::function<void(CajetaClassPtr)> collect =
                 [&](CajetaClassPtr k) {
@@ -788,10 +702,7 @@ namespace cajeta::synth {
                 return std::string("as") + (col.nullable ? "N" : "")
                     + sfxOf(col.phys);
             };
-            // The shared constructor tail: fill the schema-agnostic dyn store
-            // (DynCol aliases of the same storage) and install the rebinder,
-            // over columns already assigned into `this`. `rowsVar` names the
-            // row count local. Extracted from the fromColumns ctor (U16).
+            // The constructor tail: fill the dyn store (aliases) and rebinder.
             auto emitDynTail = [&](const std::string& rowsVar) -> std::string {
                 std::string s;
                 const std::string w = std::to_string(cols.size());
@@ -819,14 +730,8 @@ namespace cajeta::synth {
             for (auto& col : cols) {
                 frag += "    public " + col.colType + " " + col.name + ";\n";
             }
-            // The synthesized constructor IS the fromColumns schema check:
-            // arity/type mismatches fail overload resolution at the call
-            // site; the row-length check fails loud; `#=` adopts zero-copy.
-            // It also fills the schema-agnostic dyn store (aliases of the
-            // same storage — the executor's world) and installs the typed
-            // rebinder closure. Bounded-wildcard handles get no constructor
-            // — a `? extends` handle is read-only over the bound's column
-            // prefix, never constructed directly.
+            // The synthesized constructor IS the fromColumns schema check, and `#=`
+            // adopts zero-copy. A read-only bounded handle gets no constructor.
             if (!boundedHandle) {
                 frag += "    public Table(";
                 for (std::size_t i = 0; i < cols.size(); ++i) {
@@ -871,12 +776,8 @@ namespace cajeta::synth {
                     return std::string(col.nullable ? "true" : "false");
                 });
 
-            // U4/U5 — the typed lazy surface. The lazy machinery itself
-            // (collect/lazy/head/filter(#Pred)/col/as<R>/describe) is
-            // TEMPLATE code over the dyn store; synthesized here are only
-            // the schema-typed seams: the zero-copy typed snapshot, the
-            // rebinder closure, the `.as<R>()` schema check, the typed row
-            // surface, and the lambda-builder relational ops.
+            // Only the schema-typed seams are synthesized; the lazy machinery is
+            // template code over the dyn store.
             const std::string recName = record->getQName()->getTypeName();
             const std::string tblType = "Table<" + recName + ">";
             auto joinCols = [&](const std::string& recv,
@@ -898,23 +799,14 @@ namespace cajeta::synth {
                 "        return heap " + tblType + "("
                     + joinCols("this", ".alias()") + ");\n"
                 "    }\n";
-            // __attachRebinder: install the display label and an OWNED
-            // `<Record>TableRebinder` companion instance — how TEMPLATE
-            // code (collect/head/as<R>) turns an executor frame back into
-            // a typed table without naming synthesized members (a
-            // `Table<?>` monomorph compiles those same template bodies).
-            // An object, not a closure: closures are frame-owned and
-            // cannot be stored past their creating frame; the companion is
-            // an ordinary owned instance.
+            // __attachRebinder: the label plus an OWNED companion, which is how
+            // template code rebuilds typed. An object: a closure dies with its frame.
             frag += "    public void __attachRebinder() {\n"
                 "        this.label = \"Table<" + schema + ">\";\n"
                 "        this.rebinder #= heap " + recName
                     + "TableRebinder();\n"
                 "    }\n";
-            // __rebindOwned: the OWNED typed rebuild — same unwrap as the
-            // rebinder companion but with a concrete return type, for call
-            // sites that know the schema statically (`as<R>`'s materialized
-            // branch calls it on the probe instance).
+            // __rebindOwned: the companion's unwrap with a concrete return type.
             {
                 std::string unwraps;
                 for (std::size_t i = 0; i < cols.size(); ++i) {
@@ -927,10 +819,7 @@ namespace cajeta::synth {
                     "        return heap " + tblType + "(" + unwraps + ");\n"
                     "    }\n";
             }
-            // head/fetch: bounded terminals — force, then a zero-copy row
-            // window (numeric column slices are views; utf8 copies —
-            // Column.slice docs). Synthesized (not template): the typed
-            // result must be allocated by schema-aware code.
+            // head/fetch: force, then a zero-copy row window, allocated schema-aware.
             frag += "    public #" + tblType + " head(int64 n) {\n"
                 "        " + tblType + " __f = this.collect();\n"
                 "        int64 __m = n;\n"
@@ -940,10 +829,8 @@ namespace cajeta::synth {
                 "    }\n";
             frag += "    public #" + tblType + " fetch(int64 n) { "
                 "return this.head(n); }\n";
-            // __narrowCheck: `.as<R>()`'s schema validation (spec §4.3.1)
-            // against this record — strict: same column count, every field
-            // present with its exact physical and nullability. Runs on a
-            // schema-only frame at plan build; never forces.
+            // __narrowCheck: `.as<R>()`'s strict validation against this record.
+            // Runs on a schema-only frame at plan build; never forces.
             {
                 frag += "    public void __narrowCheck() {\n"
                     "        DynFrame __d = this.__schemaOf();\n"
@@ -982,10 +869,8 @@ namespace cajeta::synth {
                 }
                 frag += "    }\n";
             }
-            // The typed relational ops — the U1-decided lambda-param DSL:
-            // the builder companion is the lambda's typed parameter, so a
-            // schema typo or type mismatch is a COMPILE error. All three
-            // are lazy (they build nodes via the template machinery).
+            // The typed relational ops: the builder companion is the lambda's
+            // typed parameter, so a schema typo is a COMPILE error. All are lazy.
             frag += "    public #" + tblType + " filter((" + recName
                     + "Cols) -> #Pred fn) {\n"
                 "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
@@ -1006,11 +891,8 @@ namespace cajeta::synth {
                 "        Sel __e = fn(__c);\n"
                 "        return this.__project(#__e, 1, true);\n"
                 "    }\n";
-            // groupBy/agg (U8): keys reuse the Sels collector — a key is a
-            // passthrough reference, which is exactly what Sels collects —
-            // so single and multi-column grouping share one signature. The
-            // handle stays typed between the two calls so `agg`'s builder
-            // resolves; the aggregated RESULT is erased.
+            // groupBy/agg: keys reuse the Sels collector, so single- and multi-column
+            // grouping share a signature. The handle stays typed; the RESULT erases.
             frag += "    public #" + tblType + " groupBy((" + recName
                     + "Cols, Sels) -> void fn) {\n"
                 "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
@@ -1027,9 +909,7 @@ namespace cajeta::synth {
                 "        int32 __n = __a.count();\n"
                 "        return this.__agg(__a.take(), __n);\n"
                 "    }\n";
-            // sort/join (U9): sort reuses the Sorts collector and stays
-            // typed (schema-preserving); join reuses Sels for its keys — a
-            // key is a passthrough reference — and erases (schema-changing).
+            // sort/join: sort stays typed (schema-preserving); join erases.
             frag += "    public #" + tblType + " sort((" + recName
                     + "Cols, Sorts) -> void fn) {\n"
                 "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
@@ -1046,11 +926,8 @@ namespace cajeta::synth {
                 "        int32 __n = __s.count();\n"
                 "        return this.__join(#other, __s.take(), __n, how);\n"
                 "    }\n";
-            // resample (U10): the typed lambda `(RecCols) -> #ColI64`
-            // selects the time column; the result is a resample handle
-            // (still the typed type so `.agg(...)` resolves) that erases
-            // once aggregated. A five-argument overload takes the
-            // origin/offset/closed grid overrides (Duration, no defaults).
+            // resample: the typed lambda selects the time column and the handle stays
+            // typed so `.agg(...)` resolves. The 5-arg form takes grid overrides.
             frag += "    public #" + tblType + " resample((" + recName
                     + "Cols) -> #ColI64 fn, Duration every) {\n"
                 "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
@@ -1066,9 +943,7 @@ namespace cajeta::synth {
                 "        return this.__resample(__t.name(), every.toNanos(),\n"
                 "            origin.toNanos(), offset.toNanos(), closedRight);\n"
                 "    }\n";
-            // rolling (U11): the typed lambda selects the time column for a
-            // time window; the count form `rolling(int64)` lives on Table
-            // directly (no companion needed).
+            // rolling: the typed lambda selects the time column; count form on Table.
             frag += "    public #" + tblType + " rolling((" + recName
                     + "Cols) -> #ColI64 fn, Duration window) {\n"
                 "        " + recName + "Cols __c = heap " + recName + "Cols();\n"
@@ -1076,10 +951,8 @@ namespace cajeta::synth {
                 "        return this.__rolling(__t.name(), window.toNanos(),\n"
                 "            true);\n"
                 "    }\n";
-            // rowAt: one TYPED row — the record — reconstructed from the
-            // physicals (Instant from epoch-nanos, Utf8 from utf8; a
-            // nullable field yields its physical value, validity stays a
-            // column-accessor fact).
+            // rowAt: one TYPED row rebuilt from the physicals; validity stays a
+            // column-accessor fact.
             frag += "    public " + recName + " rowAt(int64 i) {\n"
                 "        " + tblType + " __f = this.collect();\n"
                 "        if (__f.erased) {\n"
@@ -1116,9 +989,7 @@ namespace cajeta::synth {
             }
             frag += " };\n"
                 "    }\n";
-            // rows: the iteration terminal — a typed cursor over a forced
-            // snapshot (the for-each protocol covers arrays only today; the
-            // `for (row : table)` sugar is recorded for syntax-sugar).
+            // rows: the iteration terminal — a typed cursor over a forced snapshot.
             frag += "    public #" + recName + "Rows rows() {\n"
                 "        " + tblType + " __f = this.collect();\n"
                 "        return heap " + recName + "Rows(__f.aliasTable());\n"
@@ -1159,13 +1030,8 @@ namespace cajeta::synth {
             return r;
         });
 
-        // nucleo-frame U5 — the `<Record>TableRebinder` companion: the
-        // typed-rebuild seam behind the frame `Rebinder<T>` interface.
-        // Template code dispatches `rebinder.rebind(frame)` (it cannot name
-        // synthesized members — a `Table<?>` monomorph compiles the same
-        // bodies); this companion unwraps the frame's columns zero-copy in
-        // schema order and calls the synthesized column constructor.
-        // Concrete instantiations only.
+        // The `<Record>TableRebinder` companion: the typed-rebuild seam template
+        // code dispatches through, unwrapping the columns zero-copy in schema order.
         reg.registerCompanion("tableRebinder",
                 [](const SynthesisContext& c)
                     -> std::optional<SynthesizerRegistry::CompanionSynthesisResult> {
@@ -1220,8 +1086,7 @@ namespace cajeta::synth {
                         {"uint32", "U32"}, {"uint64", "U64"},
                         {"float32", "F32"}, {"float64", "F64"}};
                     auto it = sfx.find(tn);
-                    if (it == sfx.end()) return std::nullopt;  // unmapped: the
-                        // member synthesizer already threw the named error
+                    if (it == sfx.end()) return std::nullopt;  // already thrown
                     acc = std::string("as") + (nullable ? "N" : "")
                         + it->second;
                 }
@@ -1239,10 +1104,8 @@ namespace cajeta::synth {
             return r;
         });
 
-        // nucleo-frame U4 — the `<Record>Rows` companion: the typed row
-        // cursor `Table<Record>.rows()` returns. Holds an owned zero-copy
-        // snapshot; `next()` reconstructs typed rows via `rowAt`. Concrete
-        // instantiations only (the cursor names the concrete table type).
+        // The `<Record>Rows` companion: the typed row cursor `rows()` returns,
+        // over an owned zero-copy snapshot. Concrete instantiations only.
         reg.registerCompanion("tableRows",
                 [](const SynthesisContext& c)
                     -> std::optional<SynthesizerRegistry::CompanionSynthesisResult> {
@@ -1290,14 +1153,8 @@ namespace cajeta::synth {
             return r;
         });
 
-        // nucleo-frame U1 — the `<Record>Cols` companion: emitted per
-        // `Table<Record>` instantiation, it is the typed column-expression
-        // builder a relational op's lambda receives
-        // (`ticks.filter((TickCols c) -> c.price() > 0.0)`). SPIKE SHAPE:
-        // builder methods return per-field ordinals — the real expression
-        // node family replaces the bodies in U1's 1.2.2. Same gate as the
-        // `table` member synthesizer: an instantiation of a template named
-        // `Table` with one record argument.
+        // The `<Record>Cols` companion: the typed column-expression builder a
+        // relational op's lambda receives, one per `Table<Record>` instantiation.
         reg.registerCompanion("tableCols",
                 [](const SynthesisContext& c)
                     -> std::optional<SynthesizerRegistry::CompanionSynthesisResult> {
@@ -1316,16 +1173,8 @@ namespace cajeta::synth {
             SynthesizerRegistry::CompanionSynthesisResult r;
             r.className = record->getQName()->getTypeName() + "Cols";
             r.packageName = record->getQName()->getPackageName();
-            // Typed builders: each field becomes a method returning the
-            // field-typed column-reference NODE (the U1 1.2.2 node family).
-            // float64/float32 -> ColF64; integers + Instant (epoch-nanos)
-            // -> ColI64 (EXACT comparisons, no float64 round-trip); Utf8
-            // (the record-legal text field; `String` kept for the U1 test
-            // shells) -> ColStr; any other field type synthesizes NO
-            // builder (the member-accessor synthesizer still covers direct
-            // access). Fields enumerate supers-first recursively — the SAME
-            // layout order the table synthesizer derives columns in, so
-            // builder ordinals always match column ordinals.
+            // Typed builders: each field becomes a method returning its column
+            // NODE. Supers-first, the table synthesizer's order, so ordinals match.
             r.imports.emplace_back("ColF64", "cajeta.nucleo.frame");
             r.imports.emplace_back("ColI64", "cajeta.nucleo.frame");
             r.imports.emplace_back("ColStr", "cajeta.nucleo.frame");

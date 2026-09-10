@@ -1,27 +1,6 @@
-// SHA-1 (FIPS 180-4) — WebSocket handshake only.
-//
-// **Not for security use.** SHA-1's collision resistance is broken
-// (SHAttered, 2017) and chosen-prefix collisions are practical
-// (2020). The *only* sanctioned use in this tree is computing the
-// WebSocket `Sec-WebSocket-Accept` value — RFC 6455 §1.3 fixes the
-// algorithm as SHA-1(key + magic GUID), so the handshake's security
-// does not rest on SHA-1's collision resistance. Do not reach for
-// this for signatures, MACs, fingerprinting, or anything an attacker
-// can benefit from forging. Use `cajeta.hash.Sha256` instead.
-//
-// This file is a single translation unit `#include`d from
-// cajeta_runtime.c so it shares the runtime's headers (stdint.h,
-// string.h, malloc) and gets embedded in the runtime bitcode + the
-// native test object without a separate compile target. It defines
-// no symbols other than the `__cajeta_sha1_*` C ABI bridges and a
-// handful of file-static helpers.
-//
-// Streaming state, allocator, finalizer, and the width-named Hasher
-// primitive folders mirror the MD5 bridges in cajeta_runtime.c so the
-// cajeta-side `Sha1` class is shaped identically to `MD5`. The output
-// digest is 20 bytes (160 bits); the big-endian byte order is what
-// distinguishes the SHA family's serialization from MD5's
-// little-endian.
+// SHA-1 (FIPS 180-4) - WebSocket handshake only, NOT for security use: collision
+// resistance is broken; use `cajeta.hash.Sha256` instead. Textually #included from
+// cajeta_runtime.c; defines only the `__cajeta_sha1_*` bridges and static helpers.
 
 struct cajeta_sha1_state {
     uint32_t h[5];          // H0..H4
@@ -36,7 +15,6 @@ static inline uint32_t sha1_rotl(uint32_t x, uint32_t n) {
 
 static void sha1_transform(uint32_t state[5], const uint8_t block[64]) {
     uint32_t w[80];
-    // SHA-1 ingests each 512-bit block as 16 big-endian words.
     for (int i = 0; i < 16; i++) {
         w[i] = ((uint32_t) block[i*4 + 0] << 24)
              | ((uint32_t) block[i*4 + 1] << 16)
@@ -107,9 +85,9 @@ static void sha1_update(struct cajeta_sha1_state* s,
     }
 }
 
+// Pad per FIPS 180-4 (0x80, zeros to 56 mod 64, big-endian bit count) and emit the
+// 20-byte big-endian digest. Leaves `s` spent; callers must re-init to reuse it.
 static void sha1_finalize(struct cajeta_sha1_state* s, uint8_t out[20]) {
-    // Append 0x80, pad with zeros to 56 mod 64, append the 8-byte
-    // BIG-endian bit count, transform.
     s->buf[s->buf_len++] = 0x80;
     if (s->buf_len > 56) {
         memset(s->buf + s->buf_len, 0, (size_t)(64 - s->buf_len));
@@ -130,9 +108,6 @@ static void sha1_finalize(struct cajeta_sha1_state* s, uint8_t out[20]) {
 }
 
 // --- SHA-1 C ABI bridges ---------------------------------------------------
-// Streaming state — opaque to cajeta. Allocator + finalizer match the
-// ctor / destructor pattern the cajeta Sha1 class uses, mirroring the
-// MD5 bridges.
 
 void* __cajeta_sha1_alloc(void) {
     struct cajeta_sha1_state* s = (struct cajeta_sha1_state*) malloc(sizeof *s);
@@ -164,13 +139,8 @@ void __cajeta_sha1_finalize_into(void* state, void* out_hdr) {
     sha1_finalize((struct cajeta_sha1_state*) state, out);
 }
 
-// Width-named primitive folders — match MD5's behavior (little-endian
-// byte serialization of each scalar) so the Hasher contract is uniform
-// across algorithms. NB: SHA-1's *message* serialization is big-endian
-// internally, but the Hasher.write* contract pins the byte sequence the
-// algorithm ingests, and that contract is defined as the value's
-// little-endian bytes (identical to MD5/SipHash) so a caller swapping
-// algorithms sees the same input stream.
+// Width-named primitive folders. Each scalar is ingested as its LITTLE-endian
+// bytes, matching MD5/SipHash, so the Hasher contract is uniform across algorithms.
 void __cajeta_sha1_write_i8 (void* state, int8_t  v) {
     if (state) sha1_update((struct cajeta_sha1_state*) state, (const uint8_t*) &v, 1);
 }
@@ -207,9 +177,8 @@ void __cajeta_sha1_write_bool(void* state, int8_t v) {
     __cajeta_sha1_write_i8(state, v ? 1 : 0);
 }
 
-// finish() Hasher projection: return the first 8 digest bytes as a
-// little-endian int64. Mutates the state (calls sha1_finalize), so a
-// second finish() returns garbage — Hasher.finish() is terminal.
+// finish() Hasher projection: the first 8 digest bytes as a little-endian int64.
+// Terminal - it finalizes the state, so a second finish() returns garbage.
 int64_t __cajeta_sha1_finish_int64(void* state) {
     if (!state) return 0;
     uint8_t digest[20];
@@ -221,9 +190,8 @@ int64_t __cajeta_sha1_finish_int64(void* state) {
     return (int64_t) v;
 }
 
-// One-shot variants. Caller pre-allocates the output array on the
-// cajeta side (since @Native return of int8[] isn't ABI-bridged in
-// v1). These fill the caller's buffer at `out_hdr + 8`.
+// One-shot digest into a caller-allocated int8[20], written at `out_hdr + 8`
+// (@Native return of int8[] is not ABI-bridged, so the caller supplies the buffer).
 void __cajeta_sha1_oneshot_into(const void* data_hdr, int64_t len, void* out_hdr) {
     if (!out_hdr) return;
     struct cajeta_sha1_state s;

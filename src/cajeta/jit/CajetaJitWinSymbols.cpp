@@ -1,12 +1,6 @@
-//
-// Windows symbol bridge implementation. See header for the why. Port of
-// test/jit/JitWinSymbols.c into the src tree (C++ TU so it is picked up by the
-// src `*.cpp` glob; only addresses are taken, never calls, so C-vs-C++ makes
-// no ABI difference). MUST NOT define _FILE_OFFSET_BITS — the runtime bitcode
-// is built without it, so `stat` lowers to stat64i32 and lseek/ftruncate stay
-// 32-bit-offset; defining it here would remap &stat/&lseek to the 64-bit
-// variants (different symbol + struct layout) and corrupt every File/Path op.
-//
+// Windows symbol bridge implementation; see the header for the why. MUST NOT
+// define _FILE_OFFSET_BITS: the runtime bitcode is built without it, and
+// remapping &stat/&lseek to the 64-bit variants would corrupt every File op.
 #include "cajeta/jit/CajetaJitWinSymbols.h"
 
 #ifdef _WIN32
@@ -22,14 +16,10 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-// opendir/readdir/closedir for __cajeta_path_list — mingw-w64 ships them in
-// libmingwex (statically linked, absent from the PE export table), so they
-// need the same address-binding as the libm family below.
+// libmingwex is off the PE export table, so its dirent trio needs binding too.
 #include <dirent.h>
 
-// libmingwex printf-family / strtod: the runtime's fprintf/snprintf/strtod
-// calls lower to these under ANSI stdio. Bind them by their real names so we
-// don't depend on whether the header exposes fprintf as an inline wrapper.
+// fprintf/snprintf/strtod lower to these under ANSI stdio; bound by real name.
 extern "C" int __mingw_fprintf(FILE*, const char*, ...);
 extern "C" int __mingw_snprintf(char*, size_t, const char*, ...);
 extern "C" double __mingw_strtod(const char*, char**);
@@ -37,35 +27,13 @@ extern "C" double __mingw_strtod(const char*, char**);
 // libgcc stack-probe intrinsic clang emits for functions with large frames.
 extern "C" void ___chkstk_ms(void);
 
-// LLVM lowers tan (and sometimes sin/cos) to a combined sincos() libcall.
-// sincos is a GNU/libmingwex extension — UCRT/MSVCRT don't export it.
+// LLVM lowers tan to a sincos() libcall, which UCRT/MSVCRT do not export.
 extern "C" void sincos(double, double*, double*);
 extern "C" void sincosf(float, float*, float*);
 
-// compiler-rt/libgcc bfloat16 conversion builtins the CPU-kernel lowering emits
-// for bf16 arithmetic (float/double <-> bf16). libgcc provides them but, like
-// the libm family below, they're statically linked and absent from the host PE
-// export table, so the JIT's process generator can't see them — every bf16
-// kernel then fails to materialize ("Symbols not found: [ __truncsfbf2 ]").
-// The unsigned-short return here is NOT a placeholder: it is mingw's actual
-// ABI, and binding these directly was silently wrong.
-//
-// LLVM lowers `fptrunc float to bfloat` to `call __truncsfbf2` followed by
-// `pextrw $0, %xmm0` — it reads the bf16 back out of XMM0. mingw's libgcc
-// returns it in AX instead (every return path in truncsfbf2.o ends
-// `mov %edx,%eax; shl $0xf,%eax; ret`), and never touches XMM0. Linux libgcc
-// ends the same paths with `movd %ebx,%xmm0`, which is why this only bites on
-// Windows.
-//
-// The consequence is silent wrong data, not a crash: XMM0 still holds the
-// INPUT float, so pextrw takes that value's low 16 bits. Every float with a
-// zero low half — 1.0f, 2.0f, 10.0f, every constant in a typical kernel —
-// converts to bf16 0x0000, i.e. 0.0. XpuVectorDeviceTests.bfloat16RunsOnCpu
-// computes (1,2,3,4)+(10,20,30,40) and read back all zeroes.
-//
-// So bind wrappers that call libgcc for the arithmetic (its rounding is
-// correct) and move the result into XMM0 the way LLVM expects, by returning a
-// float whose low 16 bits carry the bf16 pattern.
+// The bf16 conversion builtins, statically linked like libm below. That
+// unsigned-short return is mingw's ACTUAL ABI — it hands the bf16 back in AX
+// while LLVM reads XMM0 — so the wrappers below must move the result across.
 extern "C" unsigned short __truncsfbf2(float);
 extern "C" unsigned short __truncdfbf2(double);
 extern "C" float          __extendbfsf2(unsigned short);
@@ -84,14 +52,8 @@ static float cajetaTruncDfBf2(double x) {
     return out;
 }
 
-// libm math functions the stdlib's Math intrinsics + float ops lower to. These
-// are statically linked from libm/libmingwex but absent from the host PE export
-// table, so the JIT's process-symbol generator can't see them — every
-// math-using JIT module then fails to materialize ("Symbols not found: [fabsf]"
-// was the first miss, which cascaded to a whole-module materialization failure
-// and failed every Windows release test). Declared extern "C" (not via <math.h>)
-// to dodge mingw header macro/inline expansion, same as sincos above. Bind by
-// address below. POSIX hosts export these from libm, so this is Windows-only.
+// The libm functions Math intrinsics lower to: statically linked and off the PE
+// export table, so unbound every math-using JIT module fails to materialize.
 extern "C" {
     float  fabsf(float);     double fabs(double);
     float  sqrtf(float);     double sqrt(double);
@@ -113,29 +75,17 @@ extern "C" {
 }
 
 
-// The Packages.install bridge, defined in KernelSession.cpp. These are DATA,
-// so unlike everything else in this file the real types matter: the JIT'd
-// runtime LOADS THROUGH them, and registering an address of the wrong width
-// or shape would corrupt rather than fail to resolve. Declared exactly as
-// defined there.
+// The Packages.install bridge. These are DATA, so the real types matter: the
+// runtime LOADS THROUGH them, and a wrong width corrupts rather than fails.
 extern "C" int32_t (*__cajeta_install_hook)(const char*, int32_t, const char*,
                                             int32_t, int32_t, char*, int32_t,
                                             void*);
 extern "C" void* __cajeta_install_ctx;
 extern "C" char  __cajeta_install_out[2048];
 
-// cajeta's OWN native families that live in libcajeta_lib but are absent from
-// the PE export table, so the process-symbol generator cannot see them — the
-// same class as the libm/dirent bindings above, rediscovered one family at a
-// time (v0.16.0 re-cut: dirent; v0.21.0 dry-run: every DAP/kernel test failed
-// materializing the runtime with "Symbols not found: [ __cajeta_tls_*,
-// cajeta_xpu_optix_* ]"). The TLS engine is a standalone native object (kept
-// out of the JIT bitcode so OpenSSL headers stay out of it — src/CMakeLists
-// ~623) and the OptiX entry points always exist (real or stub, OptixAccel.cpp)
-// — both comment "the JIT resolves them via its process-symbol generator",
-// which is true only on hosts that export them. Prototypes are deliberately
-// void(): only addresses are taken, never calls (same rationale as the file
-// header's C-vs-C++ note).
+// cajeta's OWN native families: in libcajeta_lib but off the PE export table
+// like libm, so the standalone TLS object and the OptiX entry points need
+// binding too. The void() prototypes are deliberate: only addresses are taken.
 extern "C" void __cajeta_tls_conn_new();
 extern "C" void __cajeta_tls_ctx_add_trust_pem();
 extern "C" void __cajeta_tls_ctx_free();
@@ -168,13 +118,8 @@ extern "C" void cajeta_xpu_optix_accel_free();
 extern "C" void cajeta_xpu_optix_launch();
 extern "C" void cajeta_xpu_optix_launch_tri();
 
-// sjlj exception machinery. Codegen's try/catch and the runtime bitcode's
-// session guard capture with `_setjmp(frame, NULL)` on COFF (non-unwinding —
-// ExcFrameSetjmp.h / cajeta_rt_session.c), and __cajeta_throw longjmps. Both
-// live in MSVCRT, whose PE exports the process generator cannot see, so bind
-// them by address like the libm family above. Declared by hand (not via
-// <setjmp.h>) to dodge the header's setjmp macro; addresses only, never
-// called from here.
+// The sjlj machinery try/catch captures with and __cajeta_throw longjmps to.
+// Both live in MSVCRT; declared by hand to dodge the <setjmp.h> macro.
 extern "C" int _setjmp(void*, void*);
 extern "C" void longjmp(void*, int);
 
@@ -200,11 +145,7 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("closedir",         &::closedir),
     CJ_SYM("stat64i32",        &::stat),
     CJ_SYM("fstat64i32",       &::fstat),
-    // 64-bit-offset CRT calls the runtime makes since 4d8f47a7 (_fstat64 /
-    // _lseeki64 / _chsize_s). Unbridged they resolve to a CRT DLL export —
-    // a different CRT than the bridged host open() that owns the fd — and
-    // fast-fail (0xC0000409) on that foreign fd. See test/jit/JitWinSymbols.c;
-    // keep the two tables in step.
+    // Unbridged these reach another CRT than the bridged open() owning the fd.
     CJ_SYM("_fstat64",         &::_fstat64),
     CJ_SYM("_lseeki64",        &::_lseeki64),
     CJ_SYM("_chsize_s",        &::_chsize_s),
@@ -217,11 +158,7 @@ static const JitWinSym kSymbols[] = {
     // sjlj exception machinery (MSVCRT) — see the extern "C" block above.
     CJ_SYM("_setjmp",          &::_setjmp),
     CJ_SYM("longjmp",          &::longjmp),
-    // bf16 conversion builtins — see the extern "C" block above.
-    // The two truncations go through the XMM0 wrappers, NOT libgcc directly.
-    // __extendbfsf2 is bound as-is: LLVM expands `fpext bfloat to float`
-    // inline as a 16-bit shift and never emits the call, so there is no
-    // observed ABI to correct here.
+    // The truncations go through the XMM0 wrappers, NOT libgcc directly.
     CJ_SYM("__truncsfbf2",     &cajetaTruncSfBf2),
     CJ_SYM("__truncdfbf2",     &cajetaTruncDfBf2),
     CJ_SYM("__extendbfsf2",    &__extendbfsf2),
@@ -275,20 +212,12 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("cajeta_xpu_optix_accel_free", &cajeta_xpu_optix_accel_free),
     CJ_SYM("cajeta_xpu_optix_launch", &cajeta_xpu_optix_launch),
     CJ_SYM("cajeta_xpu_optix_launch_tri", &cajeta_xpu_optix_launch_tri),
-    // Stateful CRT functions that maintain process-global tables — must resolve
-    // to the same CRT instance as the host binary (see JitWinSymbols.c).
+    // Process-global CRT state: must resolve to the host binary's CRT instance.
     CJ_SYM("_commit",          &::_commit),
     CJ_SYM("getenv",           &::getenv),
     CJ_SYM("_putenv_s",        &::_putenv_s),
-    // The Packages.install bridge — DATA symbols, not functions, and the only
-    // host-side state the embedded runtime reads directly. They are defined in
-    // KernelSession.cpp with visibility("default"), which is an ELF mechanism:
-    // on COFF a PE exports nothing regardless, so the process generator cannot
-    // see them and cajeta_rt_session.c's references go unresolved. Because that
-    // TU is part of the STANDARD embedded runtime, the failure is not confined
-    // to notebook tests — it poisons the runtime module for every JIT'd cell,
-    // which is how one missing bridge produced 82 failures across suites as
-    // unrelated as Protobuf, Avro, Vmap and Varargs.
+    // DATA symbols: their visibility("default") is an ELF mechanism, so on COFF
+    // they go unresolved and poison the runtime module for every JIT'd cell.
     CJ_SYM("__cajeta_install_hook", &__cajeta_install_hook),
     CJ_SYM("__cajeta_install_ctx",  &__cajeta_install_ctx),
     CJ_SYM("__cajeta_install_out",  &__cajeta_install_out),

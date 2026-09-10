@@ -1,8 +1,5 @@
-//
-// quatops — shared host/device quaternion intrinsics over the flat `<4 x T>`
-// representation (w, x, y, z), w the scalar part. All float. Geometry helpers
-// (dot/length/normalize) reuse vecops since a quaternion is a 4-vector for those.
-//
+// quatops - shared host/device quaternion intrinsics over the flat `<4 x T>` (w, x, y, z),
+// w the scalar part, all float. dot/length/normalize reuse vecops (a quaternion is a 4-vector).
 
 #pragma once
 
@@ -13,10 +10,7 @@
 namespace cajeta {
 namespace quatops {
 
-    // A per-backend transcendental emitter: (name, args) -> value. Host passes a
-    // lambda emitting `llvm.<name>` intrinsics; the device passes one routing
-    // through LoweringTarget::transcendental (so AMD uses ocml). Only "sin" and
-    // "acos" (scalar) are requested by slerp.
+    // Per-backend transcendental emitter: (name, args) -> value; slerp asks for sin/acos.
     using TrigEmitter =
         std::function<llvm::Value*(const std::string&, llvm::ArrayRef<llvm::Value*>)>;
 
@@ -24,28 +18,20 @@ namespace quatops {
         return vecops::extractLane(b, q, 0u);
     }
 
-    // The vector part (x, y, z) as a `<3 x T>`.
     inline llvm::Value* vec3(llvm::IRBuilderBase& b, llvm::Value* q) {
         return b.CreateShuffleVector(q, std::vector<int>{1, 2, 3}, "quat.xyz");
     }
 
-    // conjugate(q) = (w, -x, -y, -z) — the inverse of a unit quaternion.
     inline llvm::Value* conjugate(llvm::IRBuilderBase& b, llvm::Value* q) {
         llvm::Type* elemTy =
             llvm::cast<llvm::FixedVectorType>(q->getType())->getElementType();
-        // Multiply by (1, -1, -1, -1).
         llvm::Value* mask = llvm::ConstantVector::get({
             llvm::ConstantFP::get(elemTy, 1.0), llvm::ConstantFP::get(elemTy, -1.0),
             llvm::ConstantFP::get(elemTy, -1.0), llvm::ConstantFP::get(elemTy, -1.0)});
         return b.CreateFMul(q, mask, "quat.conj");
     }
 
-    // Hamilton product a*b (quaternion composition; non-commutative). Storage
-    // (w, x, y, z):
-    //   w = aw*bw - ax*bx - ay*by - az*bz
-    //   x = aw*bx + ax*bw + ay*bz - az*by
-    //   y = aw*by - ax*bz + ay*bw + az*bx
-    //   z = aw*bz + ax*by - ay*bx + az*bw
+    // Hamilton product a*b - quaternion composition, non-commutative, storage (w, x, y, z).
     inline llvm::Value* multiply(llvm::IRBuilderBase& b, llvm::Value* a,
                                  llvm::Value* c) {
         llvm::Value* aw = vecops::extractLane(b, a, 0u),
@@ -70,9 +56,7 @@ namespace quatops {
         return vecops::insertLane(b, acc, rz, 3u);
     }
 
-    // rotate(q, v) -> the Vector<T,3> v rotated by the unit quaternion q, via the
-    // branchless identity v' = v + 2*w*(qv × v) + 2*(qv × (qv × v)), written with
-    // t = 2*(qv × v): v' = v + w*t + qv × t. (qv = (x,y,z) vector part.)
+    // rotate(q, v): v rotated by unit q, as v' = v + w*t + qv x t with t = 2*(qv x v).
     inline llvm::Value* rotate(llvm::IRBuilderBase& b, llvm::Value* q,
                                llvm::Value* v) {
         llvm::Value* qv = vec3(b, q);
@@ -85,9 +69,7 @@ namespace quatops {
         return b.CreateFAdd(b.CreateFAdd(v, wt), ct, "quat.rot");
     }
 
-    // nlerp(a, b, t) -> normalize((1-t)*a' + t*b'), taking the shortest arc
-    // (b' = -b when dot(a,b) < 0). Branchless (a scalar select), device-capable —
-    // unlike slerp, which needs sin/acos (a transcendental device follow-on).
+    // nlerp(a, b, t) -> normalize(lerp) along the shortest arc; branchless, device-capable.
     inline llvm::Value* nlerp(llvm::IRBuilderBase& b, llvm::Value* a,
                               llvm::Value* c, llvm::Value* t) {
         llvm::Value* d = vecops::dot(b, a, c, /*isFloat=*/true);
@@ -99,12 +81,8 @@ namespace quatops {
         return vecops::normalize(b, b.CreateFAdd(a, scaled, "quat.nlerp"));
     }
 
-    // slerp(a, c, t) -> spherical linear interpolation (constant angular
-    // velocity) along the shortest arc, t in [0,1]. Branchless: the shortest-arc
-    // flip is a select, and near-parallel inputs (where the sin-divide blows up)
-    // fall back to nlerp via a select. `trig` supplies sin/acos per backend.
-    //   d = |dot(a,c')| ; θ = acos(d) ; result =
-    //     sin((1-t)θ)/sinθ · a  +  sin(tθ)/sinθ · c'   (c' = shortest-arc c)
+    // slerp(a, c, t) -> spherical linear interpolation (constant angular velocity) along
+    // the shortest arc. Branchless: near-parallel inputs select nlerp instead of dividing.
     inline llvm::Value* slerp(llvm::IRBuilderBase& b, llvm::Value* a,
                               llvm::Value* c, llvm::Value* t,
                               const TrigEmitter& trig) {
@@ -112,12 +90,10 @@ namespace quatops {
             llvm::cast<llvm::FixedVectorType>(a->getType())->getElementType();
         llvm::Value* one = llvm::ConstantFP::get(ft, 1.0);
         unsigned lanes = vecops::laneCount(a);
-        // Shortest arc: if dot < 0, negate c.
         llvm::Value* d = vecops::dot(b, a, c, /*isFloat=*/true);
         llvm::Value* cAdj = b.CreateSelect(
             b.CreateFCmpOLT(d, llvm::ConstantFP::get(ft, 0.0)),
             b.CreateFNeg(c), c, "quat.slerp.adj");
-        // |d|, clamped to <= 1 so acos stays in domain.
         llvm::Value* ad = b.CreateBinaryIntrinsic(
             llvm::Intrinsic::minnum,
             b.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, d), one);
@@ -132,8 +108,6 @@ namespace quatops {
         llvm::Value* slerpR = b.CreateFAdd(
             b.CreateFMul(vecops::splat(b, wa, lanes), a),
             b.CreateFMul(vecops::splat(b, wb, lanes), cAdj), "quat.slerp");
-        // Near-parallel (sinθ ~ 0): nlerp instead. The select discards the
-        // slerp lane's inf/nan.
         llvm::Value* nlerpR = vecops::normalize(b, b.CreateFAdd(
             a, b.CreateFMul(vecops::splat(b, t, lanes), b.CreateFSub(cAdj, a))));
         return b.CreateSelect(

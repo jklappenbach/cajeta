@@ -1,6 +1,4 @@
-// === cajeta_xpu.c — XPU/GPU module aggregator (one tightly-coupled module:
-// === driver, dispatch, textures, Vulkan, accel, launch share g_xpu_* state).
-// === #included into cajeta_runtime.c (single-TU build).
+// === cajeta_xpu.c — XPU/GPU aggregator; #included into cajeta_runtime.c (single TU).
 
 #include "cajeta_xpu_driver.c"
 #include "cajeta_xpu_vulkan.c"

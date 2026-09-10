@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 3/22/23.
-//
+// StackField - a Field whose value lives in a stack allocation.
 
 #include "StackField.h"
 #include "../type/CajetaType.h"
@@ -25,25 +23,14 @@ namespace cajeta {
     }
 
     /**
-     * I think this is how variable allocations should be handled, either way: the initializer will
-     * either create a stack origin, or one off the heap created by malloc
-     *
-     * @return
+     * Create the slot once — inline for value types, `ptr` otherwise — and initialize it.
      */
     llvm::AllocaInst* StackField::getOrCreateAllocation() {
-        // No type, no slot — see the note in HeapField::getOrCreateAllocation.
-        // Session seeding picks StackField for primitives, whose types always
-        // resolve, so this arm is not currently reachable; it is here so the
-        // two field kinds cannot disagree about what a typeless field means.
         if (!type) return nullptr;
         if (!alloca) {
-            // Storage axis (plans/value-type-overloading-plan.md): scalar
-            // primitives AND @ValueType PODs live INLINE in the slot (the
-            // value itself), loaded/stored whole. Reference types (classes,
-            // arrays) keep a `ptr` slot holding the heap body pointer.
-            // The slot alloca goes in the function ENTRY block (not the current
-            // point): a local declared inside a loop body would otherwise
-            // re-allocate native stack every iteration -> overflow at -O0.
+            // The slot alloca goes in the function ENTRY block, not at the
+            // current point: a local declared inside a loop body would
+            // otherwise re-allocate native stack every iteration.
             if (type->hasValueSemantics()) {
                 alloca = module->createEntryAlloca(type->getLlvmType());
             } else {
@@ -53,20 +40,13 @@ namespace cajeta {
             if (initializer != nullptr) {
                 llvm::Value* initVal = initializer->generateCode(module);
                 if (initVal) {
-                    // @ValueType construction (`stack Vec2(...)`) yields a
-                    // POINTER to a freshly-built aggregate, but a value-type
-                    // local's slot holds the aggregate BY VALUE — load the
-                    // value through the pointer before storing (a copy into
-                    // the inline slot). Value types are Copy. Primitives and
-                    // operator-result aggregates already arrive by value.
+                    // `stack Vec2(...)` yields a POINTER to a fresh aggregate but
+                    // a value-type slot holds it BY VALUE: load before storing.
                     llvm::Type* fieldTy = alloca->getAllocatedType();
                     if (type->isValueType() && initVal->getType()->isPointerTy()
                             && fieldTy->isAggregateType()) {
                         initVal = module->getBuilder()->CreateLoad(fieldTy, initVal);
                     }
-                    // Coerce when the initializer's natural LLVM type doesn't match the
-                    // declared field type — e.g. integer literals default to i64 but a
-                    // field declared int32 needs the value truncated.
                     if (initVal->getType() != fieldTy) {
                         auto* builder = module->getBuilder();
                         llvm::Type* srcTy = initVal->getType();
@@ -91,8 +71,6 @@ namespace cajeta {
         if (!alloca) {
             getOrCreateAllocation();
         }
-        // By-value types (primitives + @ValueType PODs) load the inline value;
-        // reference types load the heap pointer held in the slot.
         if (type->hasValueSemantics()) {
             return module->getBuilder()->CreateLoad(type->getLlvmType(), alloca);
         } else {

@@ -25,8 +25,7 @@ namespace cajeta::buildtool {
             return out;
         }
 
-        // Build the citation listing every known property key. Used
-        // in the unknown-key error so the user sees the full vocab.
+        // Citation listing every known property key, for the unknown-key error.
         std::string allowedPropertyKeyList() {
             std::string out;
             for (const auto& spec : flavorPropertyVocab()) {
@@ -36,9 +35,8 @@ namespace cajeta::buildtool {
             return out;
         }
 
-        // Inline a custom-flavor map's overrides into `out`, walking
-        // the `base` chain until a built-in is hit. `chain` is the
-        // visiting-set for cycle detection.
+        // Inline a custom flavor's overrides into `out`, walking `base` to a built-in;
+        // `chain` is the visiting set for cycle detection.
         llvm::Error inlineChain(
             const std::string& name,
             const llvm::json::Object& customFlavors,
@@ -69,9 +67,7 @@ namespace cajeta::buildtool {
             }
             std::string base = baseV->str();
 
-            // Recurse first so deeper overrides take precedence
-            // for keys NOT overridden by the current level. Then
-            // apply the current level's overrides on top.
+            // Recurse first, so the current level's overrides apply on top of deeper ones.
             if (builtinFlavors().count(base)) {
                 outBase = base;
             } else {
@@ -92,11 +88,9 @@ namespace cajeta::buildtool {
 
     const std::vector<FlavorPropertySpec>& flavorPropertyVocab() {
         using K = FlavorPropertySpec::Kind;
-        // 4th field = the compiler frontend flag this property lowers to
-        // (empty = build-flavor intent with no frontend flag; see
-        // FlavorPropertySpec::compilerFlag and BuildTool.md "Property
-        // vocabulary"). `opt`'s `Oz` is flavor-only — the frontend's --opt
-        // accepts O0..O3 — so a flavor using `Oz` is rejected at lowering.
+        // 4th field = the compiler frontend flag this property lowers to, empty for
+        // build-flavor intent with no flag. `opt`'s `Oz` is flavor-only, so a flavor
+        // using it is rejected at lowering.
         static const std::vector<FlavorPropertySpec> v = {
             {"opt",             K::EnumString, {"O0", "O1", "O2", "O3", "Oz"}, "opt"},
             {"cpu",             K::EnumString, {"native", "generic"},          "cpu"},
@@ -127,7 +121,6 @@ namespace cajeta::buildtool {
 
     llvm::Expected<llvm::json::Object> builtinFlavorProperties(
         llvm::StringRef name) {
-        // Source of truth: BuildTool.md "Built-in flavors" table.
         if (name == "release") {
             return llvm::json::Object{
                 {"opt",           "O2"},
@@ -191,9 +184,7 @@ namespace cajeta::buildtool {
                            "' must be a string (comma-separated, each one of " +
                            joinAllowed(spec->allowed) + ")");
             }
-            // Each comma token must be a known enum value; empty tokens (a
-            // stray/leading/trailing comma) are rejected so the lowered flag
-            // can't carry a blank backend.
+            // Empty tokens from a stray comma are rejected: no blank backend can be lowered.
             llvm::SmallVector<llvm::StringRef, 4> toks;
             s->split(toks, ',');
             if (toks.empty()) {
@@ -233,8 +224,6 @@ namespace cajeta::buildtool {
 
     llvm::Error validateCustomFlavors(
         const llvm::json::Object& customFlavors) {
-        // First pass: every override key/value validates against the
-        // vocabulary. The base chain check follows.
         for (const auto& kv : customFlavors) {
             std::string name = kv.first.str();
             const auto* spec = kv.second.getAsObject();
@@ -259,9 +248,6 @@ namespace cajeta::buildtool {
                 }
             }
         }
-        // Second pass: chain traversal for cycle + missing-base
-        // detection. We re-use inlineChain by feeding a dry-run
-        // base + overrides accumulator we discard.
         for (const auto& kv : customFlavors) {
             std::string name = kv.first.str();
             std::set<std::string> chain;
@@ -280,7 +266,6 @@ namespace cajeta::buildtool {
         const llvm::json::Object& customFlavors) {
         ResolvedFlavor out;
 
-        // String form.
         if (auto s = flavorRef.getAsString()) {
             std::string name = s->str();
             if (builtinFlavors().count(name)) {
@@ -295,7 +280,6 @@ namespace cajeta::buildtool {
             return out;
         }
 
-        // Object form: inline composition.
         if (const auto* obj = flavorRef.getAsObject()) {
             auto baseV = obj->getString("base");
             if (!baseV) {
@@ -314,11 +298,6 @@ namespace cajeta::buildtool {
             for (const auto& kv : *obj) {
                 std::string k = kv.first.str();
                 if (k == "base") continue;
-                // Inline overrides also go through the vocab check,
-                // so a typo in a one-shot composition surfaces at the
-                // build action's resolve step (it would have surfaced
-                // at load too if the same composition lived in
-                // custom-flavors).
                 if (auto e = validateFlavorProperty(
                         k, kv.second, "inline flavor")) {
                     return std::move(e);
@@ -345,14 +324,11 @@ namespace cajeta::buildtool {
 
     std::vector<std::string> toCompilerFlags(
         const llvm::json::Object& props) {
-        // Vocabulary order keeps argv deterministic regardless of
-        // how the JSON object stores keys.
+        // Vocabulary order keeps argv deterministic however the JSON stores keys.
         std::vector<std::string> out;
         for (const auto& spec : flavorPropertyVocab()) {
-            // Only properties that map to a compiler frontend flag are
-            // lowered to argv; the rest (strip-symbols, sanitizers,
-            // analytics) are build-flavor intent honored at the emit/link
-            // stage, not understood by the frontend.
+            // Only properties mapping to a frontend flag reach argv; the rest are honored
+            // at the emit/link stage.
             if (spec.compilerFlag.empty()) continue;
             const auto* v = props.get(spec.key);
             if (!v) continue;
@@ -367,9 +343,7 @@ namespace cajeta::buildtool {
             case FlavorPropertySpec::Kind::EnumString:
             case FlavorPropertySpec::Kind::EnumStringCsv:
             case FlavorPropertySpec::Kind::FreeString: {
-                // EnumStringCsv lowers to the raw comma list; the frontend CLI
-                // (--xpu-backend=a,b,c) splits it into individual targets.
-                // FreeString (xpu-arch) lowers verbatim.
+                // EnumStringCsv lowers to the raw comma list the frontend CLI splits.
                 auto s = v->getAsString();
                 if (!s) continue;
                 rendered = s->str();

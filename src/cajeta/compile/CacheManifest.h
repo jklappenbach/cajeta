@@ -1,16 +1,6 @@
-// cache-manifest-v1 — the build-tool ↔ compiler incremental-compilation
-// protocol (docs/specification/buildtool/IncrementalCompilation.md § protocol;
-// plan Phase 3/4). The build tool owns the dirty-set decision; the compiler
-// obeys it. Per source the manifest names the `.bc` + obligations slots to
-// load (clean) or write (dirty), plus the cache discriminator the slots were
-// keyed under.
-//
-// An EMPTY discriminator means populate mode: the manifest is write-only
-// (every entry dirty); the compiler adopts its own discriminator and prints
-// it so the caller can key subsequent manifests. A non-empty discriminator
-// that doesn't match the compiler's own computed one means the slots belong
-// to a different compiler/flag world: the manifest is ignored wholesale
-// (warn + full rebuild) — never half-honored.
+// cache-manifest-v1 — the incremental-compilation protocol. The build tool owns
+// the dirty-set decision and names the slots; a discriminator that does not match
+// the compiler's own means a different flag world and is ignored WHOLESALE.
 
 #pragma once
 
@@ -29,8 +19,7 @@ namespace cajeta {
         bool clean = false;
         std::string bcPath;           // absolute slot for the module's .bc
         std::string obligationsPath;  // absolute slot for the obligations sidecar
-        std::string objPath;          // OPTIONAL slot for the native object
-                                      // (Phase 6-alt; empty = no .o caching)
+        std::string objPath;          // optional; empty = no .o caching
     };
 
     struct CacheManifest {
@@ -45,18 +34,14 @@ namespace cajeta {
             return nullptr;
         }
 
-        // Strict parse + structural validation. Rejects: wrong/missing
-        // version, missing fields, and populate mode combined with a clean
-        // entry (a write-only manifest has nothing sound to read).
+        // Strict parse. Rejects a wrong version, a missing field, and populate
+        // mode carrying a clean entry, which has nothing sound to read.
         static llvm::Expected<CacheManifest> load(const std::string& path);
     };
 
-    // The canonical (name, value) flag pairs that key the IR cache — every
-    // flag that can change emitted module IR. Shared with the build tool so
-    // both sides compute the SAME discriminator via
-    // buildtool::computeCacheDiscriminator(CAJETA_VERSION, pairs).
-    // `emit` is the mode's flag spelling ("ir"/"obj"/"exe"/"cja"/"uber");
-    // `targetTriple` is the compiler's effective target.
+    // Every flag that can change emitted IR, as canonical (name, value) pairs.
+    // Shared with the build tool so both sides derive the SAME discriminator.
+    // `emit` is the mode's flag spelling; `targetTriple` the effective target.
     std::vector<std::pair<std::string, std::string>> cacheFlagPairs(
         const CompilerFlags& flags, const std::string& emit,
         const std::string& targetTriple);

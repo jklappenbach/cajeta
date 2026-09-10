@@ -9,8 +9,6 @@ namespace cajeta::dbg {
 
 namespace {
 
-    // Sidecar string escaping: the format is line- and tab-delimited, so the
-    // three structural characters are escaped; everything else is verbatim.
     std::string escape(const std::string& s) {
         std::string out;
         out.reserve(s.size());
@@ -113,10 +111,8 @@ namespace {
                 !std::getline(fields, lineStr, '\t') ||
                 !std::getline(fields, colStr, '\t') ||
                 !std::getline(fields, fileEsc, '\t')) return false;
-            // The function field is allowed to be EMPTY (DbgLoc.function may
-            // be empty — e.g. clinit statements), and getline on the
-            // exhausted tail then reports failure with nothing read. That is
-            // an empty field, not a malformed line.
+            // An EMPTY function field is legal, and getline on the exhausted tail
+            // then fails with nothing read: an empty field, not a malformed line.
             if (!std::getline(fields, fnEsc)) fnEsc.clear();
             DbgLoc loc;
             int32_t id;

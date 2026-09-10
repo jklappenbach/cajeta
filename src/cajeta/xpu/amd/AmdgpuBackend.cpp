@@ -1,6 +1,4 @@
-//
 // AMDGPU backend — see header.
-//
 
 #include "AmdgpuBackend.h"
 
@@ -42,8 +40,7 @@ namespace amd {
 
 namespace {
 
-// Process-global LLVM target registry init; same rationale as NvptxBackend
-// (this may run without a Compiler having initialized the registry).
+/// Target registry init; this may run before any Compiler has done it.
 void ensureTargetsInitialized() {
     static std::once_flag once;
     std::call_once(once, [] {
@@ -54,20 +51,12 @@ void ensureTargetsInitialized() {
     });
 }
 
-// Locate the ROCm device-bitcode directory (ockl/ocml). Honors ROCM_PATH, else
-// the canonical /opt/rocm install. Empty if neither has the bitcode.
-//
-// The bitcode's location within a ROCm root moved across releases: classic
-// installs put it at `<root>/amdgcn/bitcode`, while ROCm 7.x ships it under the
-// bundled LLVM at `<root>/lib/llvm/amdgcn/bitcode`. Probe every known layout per
-// root so a modern install (where only the lib/llvm path exists) isn't reported
-// as "bitcode not found" — the failure that made device math / texture sampling
-// silently unlinkable and the code object fail to load (hipError 209).
+/// The ROCm device-bitcode directory under ROCM_PATH or /opt/rocm; every known
+/// layout is probed, since its place moved across releases.
 std::string findRocmBitcodeDir() {
     auto has = [](const std::string& d) {
         return llvm::sys::fs::exists(d + "/ockl.bc");
     };
-    // Candidate subpaths within a ROCm root, in preference order.
     static const char* kSubdirs[] = {
         "/amdgcn/bitcode",           // classic layout
         "/lib/llvm/amdgcn/bitcode",  // ROCm 7.x (bundled LLVM)
@@ -87,10 +76,7 @@ std::string findRocmBitcodeDir() {
     return {};
 }
 
-// Link one ROCm bitcode file into `m` (same context), pulling ONLY the symbols
-// needed to resolve `m`'s outstanding references (LinkOnlyNeeded) — so a single
-// device-library function (and its transitive deps) is merged in, not the whole
-// library. Returns false (and logs) on parse/link failure.
+/// Links one ROCm bitcode file into `m`, pulling ONLY still-needed symbols.
 bool linkRocmBitcode(llvm::Module& m, const std::string& path) {
     llvm::SMDiagnostic err;
     std::unique_ptr<llvm::Module> lib =
@@ -100,8 +86,7 @@ bool linkRocmBitcode(llvm::Module& m, const std::string& path) {
                      << err.getMessage() << "\n";
         return false;
     }
-    // The device libs carry their own (amdgcn) datalayout/triple; align them to
-    // the destination's so the linker doesn't reject a benign mismatch.
+    // Aligning the libs' own datalayout and triple avoids a benign mismatch.
     lib->setDataLayout(m.getDataLayout());
     lib->setTargetTriple(m.getTargetTriple());
     if (llvm::Linker::linkModules(m, std::move(lib),
@@ -112,14 +97,7 @@ bool linkRocmBitcode(llvm::Module& m, const std::string& path) {
     return true;
 }
 
-// Item 8 Stage C (hybrid): a kernel that samples or fetches a Texture2D
-// references a ROCm device-library function __ockl_image_{sample,load}_2D
-// (emitted by AmdgpuTarget / the fetchTexture seam).
-// Link it — and the gfx ISA-version control global it reads — ONLY for such
-// kernels; every other AMD kernel is untouched (no device-lib dependency). If
-// the bitcode isn't installed, the declaration is left unresolved: codegen then
-// fails and the kernel falls back to the host stub, exactly like XPU-N01.
-// True if `m` references any declaration whose name starts with `prefix`.
+/// True if `m` references any declaration whose name starts with `prefix`.
 static bool referencesDeviceLib(llvm::Module& m, const char* prefix) {
     for (llvm::Function& fn : m)
         if (fn.isDeclaration() && fn.getName().starts_with(prefix))
@@ -127,8 +105,9 @@ static bool referencesDeviceLib(llvm::Module& m, const char* prefix) {
     return false;
 }
 
+/// Links only the ROCm device libraries this kernel needs; uninstalled bitcode
+/// leaves the declaration unresolved and the kernel falls back to the host stub.
 void linkAmdDeviceLibsIfNeeded(llvm::Module& m, llvm::TargetMachine& tm) {
-    // Any __ockl_image_* declaration (sample = tex.sample, load = tex.fetch).
     bool needsOckl = referencesDeviceLib(m, "__ockl_image_");
     bool needsOcml = referencesDeviceLib(m, "__ocml_");   // B2 transcendentals
     if (!needsOckl && !needsOcml) return;
@@ -143,9 +122,7 @@ void linkAmdDeviceLibsIfNeeded(llvm::Module& m, llvm::TargetMachine& tm) {
     if (needsOckl && !linkRocmBitcode(m, dir + "/ockl.bc")) return;
     if (needsOcml) linkRocmBitcode(m, dir + "/ocml.bc");   // __ocml_<fn>_f32 defs
 
-    // Both ockl (image sample) and ocml (transcendentals) read the oclc control
-    // globals: the ISA version plus the math-option flags. Link the standard set
-    // (each only if present) so no `__oclc_*` constant is left undefined.
+    // Both libraries read the oclc control globals; link the standard set.
     std::string gfx = tm.getTargetCPU().str();          // e.g. "gfx1151"
     std::string isa = gfx.rfind("gfx", 0) == 0 ? gfx.substr(3) : gfx;
     linkRocmBitcode(m, dir + "/oclc_isa_version_" + isa + ".bc");
@@ -161,14 +138,8 @@ void linkAmdDeviceLibsIfNeeded(llvm::Module& m, llvm::TargetMachine& tm) {
     }
 }
 
-// Promote entry-block allocas (loop counters, accumulators, reassigned
-// locals) to SSA registers before ISA emission. On AMDGPU these allocas live
-// in the private address space (5); mem2reg removes most of them, which both
-// improves codegen and sidesteps scratch traffic. addPassesToEmitFile runs
-// only the codegen pipeline (no IR optimization), so this must run first.
+/// Runs the IR pipeline before ISA emission, device libraries linked first.
 void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
-    // Pull in ROCm image-sample device code first (texture kernels only), so the
-    // merged functions go through mem2reg + codegen with the kernel.
     linkAmdDeviceLibsIfNeeded(m, tm);
     llvm::PassBuilder pb(&tm);
     llvm::LoopAnalysisManager lam;
@@ -181,9 +152,7 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     pb.registerLoopAnalyses(lam);
     pb.crossRegisterProxies(lam, fam, cgam, mam);
 
-    // Full IR pipeline before codegen (addPassesToEmitFile runs none, so without this every
-    // @Kernel ships unoptimized -> redundant address math spills regalloc); default O3,
-    // CAJETA_XPU_DEVICE_OPT=0|1|2|3 overrides (0 = mem2reg-only fallback).
+    // Default O3; CAJETA_XPU_DEVICE_OPT=0|1|2|3 overrides, 0 being mem2reg only.
     llvm::ModulePassManager mpm;
     int lvl = 3;
     if (const char* e = std::getenv("CAJETA_XPU_DEVICE_OPT")) lvl = std::atoi(e);
@@ -197,9 +166,6 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
                                               : llvm::OptimizationLevel::O3;
         mpm = pb.buildPerModuleDefaultPipeline(ol);
     }
-    // CAJETA_XPU_DUMP_BC=<dir>: the module's IR before and after this
-    // pipeline, as text — the instrument for "the CPU oracle passes and
-    // the device does not" (kernel-byte-vector-lowering 2026-09-02).
     if (const char* dumpDir = std::getenv("CAJETA_XPU_DUMP_BC")) {
         std::error_code ec;
         llvm::raw_fd_ostream pre(std::string(dumpDir) + "/" + m.getName().str() + ".pre.ll", ec);
@@ -212,9 +178,7 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     mpm.run(m, mam);
 }
 
-// Run the codegen pipeline to a chosen file type (Assembly or Object) into an
-// in-memory buffer. Returns false (and logs) if the TargetMachine can't emit
-// that file type.
+/// Runs codegen to Assembly or Object in memory; false if that type cannot be emitted.
 bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
                   llvm::CodeGenFileType type, llvm::SmallVectorImpl<char>& out) {
     optimizeDeviceModule(m, tm);
@@ -247,8 +211,7 @@ createAmdgpuTargetMachine(const std::string& arch) {
     }
 
     llvm::TargetOptions opt;
-    // AMDGPU code objects are position-independent; PIC is the supported reloc
-    // model (the default/static models are rejected by the AMDGPU backend).
+    // The AMDGPU backend rejects the default and static reloc models outright.
     llvm::TargetMachine* tm = target->createTargetMachine(
         triple, /*CPU=*/arch, /*Features=*/"", opt,
         /*RM=*/llvm::Reloc::PIC_);
@@ -258,9 +221,7 @@ createAmdgpuTargetMachine(const std::string& arch) {
 void configureDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     m.setTargetTriple(llvm::Triple(kAmdgpuTriple));
     m.setDataLayout(tm.createDataLayout());
-    // Record the gfx arch so the kernel lowerer can gate per-subtarget features
-    // it must decide BEFORE codegen (e.g. the direct global->LDS load, a CDNA/
-    // GFX9 + gfx1250 feature absent on RDNA1-3.5 where emitting it Cannot-selects).
+    // The kernel lowerer gates per-subtarget features BEFORE codegen on this.
     m.addModuleFlag(llvm::Module::Warning, "cajeta.amdgpu.arch",
                     llvm::MDString::get(m.getContext(), tm.getTargetCPU()));
 }
@@ -274,11 +235,8 @@ std::string emitIsa(llvm::Module& deviceModule, llvm::TargetMachine& tm) {
     return std::string(buf.begin(), buf.end());
 }
 
-// Parse per-kernel resource usage from the .amdgpu_metadata YAML in emitted
-// AMDGCN asm. Within a kernel record the (kernel) `.name:` is the nearest
-// `.name:` before its `.vgpr_count:` — arg names sit earlier under `.args:` —
-// and `.vgpr_spill_count:` immediately follows `.vgpr_count:`. Records keyed in
-// emission order; a missing spill line means none (0).
+/// Per-kernel resource usage from the emitted asm's .amdgpu_metadata YAML; a
+/// kernel's `.name:` is the nearest one BEFORE its `.vgpr_count:`.
 std::vector<KernelResourceInfo> parseKernelResourceUsage(
         const std::string& isa) {
     auto valAfter = [](const std::string& line, const char* key) -> std::string {
@@ -311,17 +269,16 @@ std::vector<KernelResourceInfo> parseKernelResourceUsage(
     return out;
 }
 
+/// Pins the flat work-group size to the real launch size, raising the VGPR budget.
 void setKernelWorkgroupSize(llvm::Function* fn, unsigned maxThreads) {
     if (!fn || maxThreads == 0) return;
-    if (fn->hasFnAttribute("amdgpu-flat-work-group-size")) return;  // override wins
-    // "min,max" flat work-group size. Pinning max to the real launch size lets
-    // the backend raise the per-thread VGPR budget (fewer co-resident waves).
+    if (fn->hasFnAttribute("amdgpu-flat-work-group-size")) return;
     std::string range = "1," + std::to_string(maxThreads);
     fn->addFnAttr("amdgpu-flat-work-group-size", range);
 }
 
+/// The ld.lld to invoke: $ROCM_PATH/llvm/bin, then /opt/rocm, then PATH.
 std::string findLld() {
-    // 1. $ROCM_PATH/llvm/bin, then the conventional /opt/rocm location.
     auto tryDir = [](const std::string& dir) -> std::string {
         for (const char* exe : {"/ld.lld", "/ld.lld.exe"}) {
             std::string p = dir + exe;
@@ -334,7 +291,6 @@ std::string findLld() {
             return p;
     }
     if (auto p = tryDir("/opt/rocm/llvm/bin"); !p.empty()) return p;
-    // 2. PATH.
     if (auto found = llvm::sys::findProgramByName("ld.lld")) return *found;
     return {};
 }
@@ -349,7 +305,6 @@ std::vector<uint8_t> assembleHsaco(llvm::Module& deviceModule,
         return {};
     }
 
-    // 1. Emit the relocatable AMDGCN ELF object to a temp file.
     llvm::SmallString<0> objBuf;
     if (!emitToBuffer(deviceModule, tm, llvm::CodeGenFileType::ObjectFile,
                       objBuf)) {
@@ -378,9 +333,7 @@ std::vector<uint8_t> assembleHsaco(llvm::Module& deviceModule,
         out.write(objBuf.data(), objBuf.size());
     }
 
-    // 2. ld.lld -shared <obj> -o <hsaco>. -shared makes the code object an
-    // ET_DYN ELF, which hipModuleLoad accepts. ExecuteAndWait passes argv
-    // directly (no shell), so spaces in paths are safe.
+    // -shared makes the code object the ET_DYN ELF hipModuleLoad accepts.
     std::string sharedFlag = "-shared";
     std::string oFlag = "-o";
     llvm::SmallVector<llvm::StringRef, 8> args = {
@@ -452,8 +405,6 @@ std::vector<uint8_t> bundleHsacos(const std::vector<ArchHsaco>& perArch) {
         return {};
     }
 
-    // Per-arch hsaco temp files + a 1-byte dummy host input (HIP fatbins lead
-    // with the host bundle). Clean them all up at return.
     std::vector<std::string> tmpFiles;
     auto cleanup = [&]() { for (auto& f : tmpFiles) llvm::sys::fs::remove(f); };
     auto writeTemp = [&](const char* ext, const uint8_t* data, size_t len,
@@ -518,10 +469,7 @@ std::vector<uint8_t> assembleHsacoBundle(
     return bundleHsacos(assembleHsacoPerArch(deviceModule, arches));
 }
 
-// The code object's AMDGPU metadata note is a msgpack document; its
-// `amdhsa.kernels` array holds one map per kernel with the resource fields the
-// assembler measured. This is the same note `llvm-readelf --notes` renders as
-// YAML, read in-process — no parsing of ISA text, no second codegen.
+/// Measured per-kernel resources, read from the code object's msgpack note.
 std::vector<AmdCodeObjectFootprint> readCodeObjectFootprint(
         const std::vector<uint8_t>& elfBytes) {
     std::vector<AmdCodeObjectFootprint> out;

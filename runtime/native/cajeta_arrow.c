@@ -1,27 +1,16 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
 // === (single-TU build; not a standalone compilation unit).
-// --- nucleo-column: Arrow C Data Interface shims (nucleo-column-spec §4) ----
-// Interop is by matching the frozen Arrow C ABI — no libarrow anywhere
-// (spec §1.3). Unit 1 ships the buffer-address primitive (64-byte alignment
-// computation + probes); the matched ArrowSchema/ArrowArray structs, export,
-// and import land in the plan's U3/U4.
+// Arrow C Data Interface shims: the frozen ABI is matched here, never linked.
 
-// Data address of a cajeta array's ELEMENT buffer. Instance @Native shim on
-// Storage<T>: `self` is the leading `this` the forwarder passes, ignored on
-// the C side. Arrays arrive as their HEADER pointer ({ i64 count, data... });
-// the element region starts at +8 — the same convention
-// __cajeta_xpu_buffer_upload applies. Returning the header address instead
-// was the U3 export bug: consumers read the count field as element 0.
+// Data address of an array's ELEMENT buffer: the { i64 count, data... } header
+// arrives at +0, so the elements start at +8.
 int64_t __cajeta_arrow_addr(void* self, void* array) {
     (void) self;
     if (!array) return 0;
     return (int64_t)(intptr_t) ((char*) array + 8);
 }
 
-// --- The frozen Arrow C Data Interface structs (matched, not linked) --------
-// Field order and widths are the ABI, stable since Arrow 1.0. Renamed with a
-// Caj prefix so a consumer embedding both this runtime and libarrow never
-// collides on the tag names; layout is byte-identical.
+// --- The frozen Arrow structs: field order and width are the ABI -----------
 typedef struct CajArrowSchema {
     const char* format;
     const char* name;
@@ -49,10 +38,7 @@ typedef struct CajArrowArray {
 
 #define CAJ_ARROW_FLAG_NULLABLE 2
 
-// EXPORT BUNDLE ABI: the export shim returns the address of one heap block
-// whose HEAD is { CajArrowSchema schema; CajArrowArray array; } — consumers
-// (and the tests, which are consumers) read the two structs at offsets 0 and
-// sizeof(CajArrowSchema). Tails after the head are private.
+// EXPORT BUNDLE ABI: head = { CajArrowSchema schema; CajArrowArray array; }.
 typedef struct CajArrowExportBundle {
     CajArrowSchema schema;
     CajArrowArray array;
@@ -60,26 +46,18 @@ typedef struct CajArrowExportBundle {
     int refs;                 // outstanding releases: schema + array
 } CajArrowExportBundle;
 
-// The bundle is raw malloc, DELIBERATELY outside the live set: it is a
-// foreign-facing shell whose lifetime the Arrow release contract governs —
-// each struct's release fires exactly once (the nulled callback is the
-// spec's released marker), and the block frees when both have. The column's
-// buffers are NEVER freed here: the export is a borrow (spec 4.4).
+// Drops one of the two release refs; the exported buffers are a borrow.
 static void caj_arrow_bundle_unref(CajArrowExportBundle* b) {
     if (--b->refs == 0) free(b);
 }
 
-// The ARRAY struct's address within an export bundle whose head address is
-// `bundleAddr` (the head { schema, array } is identical across all bundle
-// variants). The schema address is `bundleAddr` itself. Lets a consumer that
-// received a bundle address split it into the (schema, array) address pair the
-// import airlocks expect — used by the table round-trip (nucleo-frame U16).
+// The array struct's address in the bundle at `bundleAddr` (schema is at +0).
 int64_t __cajeta_arrow_bundle_array(void* self, int64_t bundleAddr) {
     (void) self;
     return bundleAddr + (int64_t) offsetof(CajArrowExportBundle, array);
 }
 static void caj_arrow_schema_release(CajArrowSchema* s) {
-    if (!s || !s->release) return;          // already-released: no-op
+    if (!s || !s->release) return;
     CajArrowExportBundle* b = (CajArrowExportBundle*) s->private_data;
     s->release = NULL;
     caj_arrow_bundle_unref(b);
@@ -91,9 +69,7 @@ static void caj_arrow_array_release(CajArrowArray* a) {
     caj_arrow_bundle_unref(b);
 }
 
-// (kind, bits) -> Arrow format string. DType kind codes (DType.cajeta):
-// 0 bool, 1 signed int, 2 unsigned int, 3 float. ONE table — the U4 import
-// shares it in reverse. Static strings, so schema.format needs no ownership.
+// (kind, bits) -> static format string; kind 0 bool, 1 int, 2 uint, 3 float.
 static const char* caj_arrow_format(int32_t kind, int32_t bits) {
     if (kind == 1) {
         switch (bits) { case 8: return "c"; case 16: return "s";
@@ -110,11 +86,7 @@ static const char* caj_arrow_format(int32_t kind, int32_t bits) {
     return NULL;
 }
 
-// --- IMPORT half (U4): read foreign structs, peek elements, honor release --
-
-// Reverse of caj_arrow_format: single-char format -> (kind<<8)|bits, -1 for
-// anything v1 fixed-width import doesn't model ("e"/f16 excluded — no
-// portable half-float peek; strings/nested are U5/deferred).
+// Reverse of caj_arrow_format: format char -> (kind<<8)|bits, -1 if unmodelled.
 int64_t __cajeta_arrow_read_dtype(void* self, int64_t schemaAddr) {
     (void) self;
     const CajArrowSchema* s = (const CajArrowSchema*) (intptr_t) schemaAddr;
@@ -159,10 +131,7 @@ int64_t __cajeta_arrow_read_buffer(void* self, int64_t arrayAddr, int64_t idx) {
     return (int64_t) (intptr_t) a->buffers[idx];
 }
 
-// The cross-ABI ownership contract (spec 4.3): invoke the PRODUCER's release
-// on both structs. The released-marker null checks make a second call a
-// no-op, and the importing column's destructor runs once (live-set claim),
-// so the producer sees exactly one release per struct.
+// Calls the producer's release on both structs; a nulled callback means released.
 void __cajeta_arrow_call_releases(void* self, int64_t schemaAddr,
                                   int64_t arrayAddr) {
     (void) self;
@@ -172,12 +141,8 @@ void __cajeta_arrow_call_releases(void* self, int64_t schemaAddr,
     if (s && s->release) s->release(s);
 }
 
-// Element peek for the foreign-backed column: a dtype-BLIND byte copy of
-// element `i` into the column's 1-element owned staging buffer, which the
-// cajeta side then reads back as a native `T` — no numeric conversion
-// anywhere, so the generic get() stays cast-free (a `(T)` conversion inside
-// an instance method miscompiles under the `Column<?>` wildcard
-// instantiation's pointer-shaped sentinel).
+// Dtype-BLIND copy of element `i` into the 1-element staging buffer: a `(T)`
+// conversion would miscompile under the `Column<?>` wildcard instantiation.
 void __cajeta_arrow_peek_into(void* self, int64_t src, int64_t i,
                               int32_t elemBytes, int64_t dst) {
     (void) self;
@@ -186,17 +151,13 @@ void __cajeta_arrow_peek_into(void* self, int64_t src, int64_t i,
            (size_t) elemBytes);
 }
 
-// --- Variable-length (utf8) support (U5) ------------------------------------
-
-// 1 iff the schema's format is utf8 ("u"). Large utf8 ("U") is v1-deferred.
+// 1 iff the schema's format is utf8 ("u"); large utf8 ("U") is not modelled.
 int64_t __cajeta_arrow_read_is_utf8(void* self, int64_t schemaAddr) {
     (void) self;
     const CajArrowSchema* s = (const CajArrowSchema*) (intptr_t) schemaAddr;
     return (s && s->format && s->format[0] == 'u' && !s->format[1]) ? 1 : 0;
 }
 
-// Typed peeks for the NON-generic StringColumn (no wildcard sentinel, so
-// direct returns are safe): int32 offsets and uint8 data bytes.
 int32_t __cajeta_arrow_peek_i32(void* self, int64_t addr, int64_t i) {
     (void) self;
     return ((const int32_t*) (intptr_t) addr)[i];
@@ -206,8 +167,7 @@ int32_t __cajeta_arrow_peek_u8(void* self, int64_t addr, int64_t i) {
     return (int32_t) ((const uint8_t*) (intptr_t) addr)[i];
 }
 
-// utf8 export: 3 buffers [validity|NULL, offsets(int32, len+1), data(bytes)],
-// same bundle head + release contract as the fixed-width export.
+// utf8 export: buffers are [validity|NULL, offsets(int32, len+1), data bytes].
 typedef struct CajArrowExportBundle3 {
     CajArrowSchema schema;
     CajArrowArray array;
@@ -251,11 +211,8 @@ int64_t __cajeta_arrow_export_varlen(void* self, int64_t offsetsAddr,
     return (int64_t)(intptr_t) b;
 }
 
-// --- MX extension types (U7, spec §5) ---------------------------------------
-// An extension type is a LOGICAL name + metadata riding the schema over a
-// physical storage type (here: packed uint8). The metadata field uses the C
-// Data Interface's binary key-value blob: int32 n_pairs, then per pair
-// int32 keyLen, key bytes, int32 valLen, value bytes (native endian).
+// --- MX extension types: a logical name + metadata over packed uint8 --------
+// Metadata blob: int32 n_pairs, then per pair int32 keyLen, key, int32 valLen, value.
 
 #define CAJ_MX_FP4_NAME "cajeta.mxfp4"
 
@@ -264,8 +221,8 @@ typedef struct CajArrowExtBundle {
     CajArrowArray array;
     const void* buffers[2];
     int refs;
-    char metadata[128];       // serialized kv blob (name + block size)
-    char extMeta[32];         // {"block":N}
+    char metadata[128];
+    char extMeta[32];
 } CajArrowExtBundle;
 
 static void caj_arrow_schema_release_ext(CajArrowSchema* s) {
@@ -292,9 +249,7 @@ static size_t caj_meta_put(char* p, const char* key, const char* val) {
     return n;
 }
 
-// Export packed MX bytes as physical uint8 ("C") tagged with the extension
-// name + block-size metadata: a consumer that knows the extension rebuilds
-// the logical type; one that doesn't still moves the bytes (spec 5.2).
+// Exports packed MX bytes as uint8 ("C") tagged with the name and block size.
 int64_t __cajeta_arrow_export_mx(void* self, int64_t dataAddr,
                                  int64_t byteLen, int32_t blockSize) {
     (void) self;
@@ -325,8 +280,7 @@ int64_t __cajeta_arrow_export_mx(void* self, int64_t dataAddr,
     return (int64_t)(intptr_t) b;
 }
 
-// Scan a schema's metadata blob for ARROW:extension:name. Returns:
-// 1 = cajeta.mxfp4, 0 = no extension entry, -1 = a different extension.
+// ARROW:extension:name: 1 = cajeta.mxfp4, 0 = none, -1 = another extension.
 int64_t __cajeta_arrow_read_ext_kind(void* self, int64_t schemaAddr) {
     (void) self;
     const CajArrowSchema* s = (const CajArrowSchema*) (intptr_t) schemaAddr;
@@ -378,9 +332,8 @@ int64_t __cajeta_arrow_read_ext_block(void* self, int64_t schemaAddr) {
     return 0;
 }
 
-// Export a fixed-width column over live buffers. validityAddr 0 = non-null
-// column (buffers[0] NULL, flags 0); nonzero = bitmap present + NULLABLE
-// flag. Returns the bundle address, 0 on an unsupported dtype.
+// Exports a fixed-width column over live buffers; validityAddr 0 means non-null,
+// nonzero adds the bitmap + NULLABLE flag. 0 = no Arrow format for that dtype.
 int64_t __cajeta_arrow_export_fixed(void* self, int64_t dataAddr,
                                     int64_t length, int64_t nullCount,
                                     int64_t validityAddr,

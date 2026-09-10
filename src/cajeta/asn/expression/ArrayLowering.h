@@ -1,14 +1,6 @@
-//
-// array-literals §7 — one store loop shared by the `[...]` literal expression
-// (ArrayLiteralExpression) and the `{...}` declarator initializer
-// (ArrayInitializer), so the two forms cannot drift.
-//
-// Given a resolved element type and the element nodes, allocate a
-// `{ i64 size, [0 x T] data }` header of length N (the droppable-bits variant
-// when the element type carries per-slot ownership), evaluate each element in
-// order, coerce it to the slot width, and store it. Returns the array header
-// pointer, or null if the runtime allocator can't be resolved.
-//
+// One store loop shared by the `[...]` literal and the `{...}` declarator
+// initializer so the two cannot drift: allocate a `{ i64 size, [0 x T] data }`
+// header of length N, then evaluate, coerce and store each element in order.
 
 #pragma once
 
@@ -25,13 +17,9 @@ namespace cajeta {
     typedef std::shared_ptr<CajetaType> CajetaTypePtr;
     typedef std::shared_ptr<AbstractSyntaxNode> AbstractSyntaxNodePtr;
 
-    // useArena routes the header through the frame arena
-    // (__cajeta_new_array_header_arena) instead of the heap allocator —
-    // array-literals §4, for a `stack [...]` literal proven non-escaping. The
-    // arena allocator takes the identical (headerBytes, elemBytes, count)
-    // signature; only the callee differs. Arena arrays are primitive-element
-    // only, so they never combine with the droppable-bits allocator.
-    // spec 5.10 — receives (slot, local) pairs for slots that lend a frame local.
+    // Returns the array header pointer, or null when the allocator cannot resolve.
+    // `useArena` routes the header through the frame arena instead of the heap for
+    // a `stack [...]` proven non-escaping; arena arrays are primitive-element only.
     llvm::Value* emitArrayFromElements(
         CajetaModulePtr module,
         CajetaTypePtr elementType,

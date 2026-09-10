@@ -1,7 +1,4 @@
-//
-// KernelAccess — pointer-provenance classification of a lowered kernel's
-// buffer accesses. See the header.
-//
+// KernelAccess - pointer-provenance classification of a lowered kernel's buffer accesses.
 
 #include "KernelAccess.h"
 #include "XpuAttributes.h"
@@ -34,10 +31,8 @@ namespace xpu {
 
 namespace {
 
-    // The buffer-like parameters of `method`, in declaration order, with their
-    // index among ALL declared parameters (the IR argument / descriptor binding
-    // index) and the manifest kind. Scalars, samplers, acceleration structures
-    // are not access entries.
+    // The buffer-like parameters of `method`, in declaration order, with their index among
+    // ALL declared parameters (the IR argument / descriptor binding index) and their kind.
     struct BufferParam {
         std::string name;
         unsigned declIndex = 0;   // position among declared params (no `this`)
@@ -76,8 +71,7 @@ namespace {
         return out;
     }
 
-    // Walk `v` back to its roots: kernel arguments and SPIR-V
-    // resource-handle calls. Bounded, cycle-safe.
+    // Walk `v` back to its roots: kernel arguments and SPIR-V resource handles. Cycle-safe.
     void collectRoots(const llvm::Value* v,
                       llvm::SmallPtrSetImpl<const llvm::Value*>& roots,
                       llvm::SmallPtrSetImpl<const llvm::Value*>& seen,
@@ -108,10 +102,8 @@ namespace {
             return;
         }
         if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(v)) {
-            // A pointer reloaded from a slot: the slot's stored values are the
-            // provenance (the lowering spills params to allocas). A pointer
-            // loaded THROUGH a parameter (a bindless handle array) is an access
-            // to that parameter too, so the pointer operand's roots count.
+            // The lowering spills params to allocas, so a slot's stored values are the
+            // provenance; a pointer loaded THROUGH a param is an access to that param too.
             const llvm::Value* slot = ld->getPointerOperand()->stripPointerCasts();
             if (auto* al = llvm::dyn_cast<llvm::AllocaInst>(slot)) {
                 for (const llvm::User* u : al->users())
@@ -140,8 +132,6 @@ namespace {
     }
 
     // Does the element address `ptr` name a compile-time-constant element?
-    // (A GEP with constant indices off the parameter, the parameter itself, or
-    // a SPIR-V getpointer with a constant index.)
     bool constantElement(const llvm::Value* ptr) {
         const llvm::Value* v = ptr;
         for (unsigned depth = 0; v && depth < 32; ++depth) {
@@ -163,8 +153,6 @@ namespace {
                 return false;
             }
             if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(v)) {
-                // A pointer reloaded from a slot names the same element the
-                // stored pointer did; take the single-store case.
                 const llvm::Value* slot = ld->getPointerOperand()->stripPointerCasts();
                 if (auto* al = llvm::dyn_cast<llvm::AllocaInst>(slot)) {
                     const llvm::Value* stored = nullptr;
@@ -195,13 +183,11 @@ namespace {
             return -1;
         }
         if (auto* call = llvm::dyn_cast<llvm::CallInst>(root)) {
-            // llvm.spv.resource.handlefrombinding(set, binding, ...): the lowering
-            // binds parameter i at binding i (SpirvKernelLowering::materializeParam).
+            // llvm.spv.resource.handlefrombinding binds parameter i at binding i.
             if (call->arg_size() > 1)
                 if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(1)))
                     for (size_t i = 0; i < params.size(); ++i)
                         if (params[i].declIndex == c->getZExtValue()) return (int) i;
-            // Or by the value's name, which the lowering sets to the parameter's.
             for (size_t i = 0; i < params.size(); ++i)
                 if (call->getName() == params[i].name) return (int) i;
         }
@@ -239,7 +225,6 @@ namespace {
                     const llvm::Function* f = call->getCalledFunction();
                     if (!f) continue;
                     llvm::StringRef n = f->getName();
-                    // Address computations are not accesses.
                     if (n.contains("spv.resource.getpointer")
                             || n.contains("spv.resource.handlefrombinding")) continue;
                     if (auto* mt = llvm::dyn_cast<llvm::MemTransferInst>(call)) {
@@ -256,8 +241,6 @@ namespace {
                         continue;
                     }
                     if (!f->isIntrinsic()) continue;
-                    // Image / masked / vector-predicated memory intrinsics: the
-                    // name says which way the data moves.
                     std::string lower = n.lower();
                     bool isStore = lower.find("store") != std::string::npos
                                 || lower.find("write") != std::string::npos;
@@ -317,7 +300,6 @@ namespace {
         auto ann = bp.field->findAnnotation(XpuAttr::Access);
         if (!ann) return {};
         std::string v = ann->getString();
-        // `@Access("write")` and `@Access(write)` both arrive as the text.
         while (!v.empty() && (v.front() == '"' || v.front() == ' ')) v.erase(v.begin());
         while (!v.empty() && (v.back() == '"' || v.back() == ' ')) v.pop_back();
         return v;
@@ -362,17 +344,8 @@ void applyAccessDeclarations(llvm::Function& kfn, const MethodPtr& method,
     std::vector<BufferParam> params = bufferParams(method);
     if (params.empty()) return;
 
-    // @Streaming: tag the parameter's loads and stores non-temporal where the
-    // backend lowers it AND the policy is on. The manifest reads the tag back
-    // off the IR, so it records what shipped, not what was asked.
-    //
-    // The policy is OFF by default (xpu-tile-manifest 3.3.2, trial T-M3,
-    // 2026-09-06, gfx1151): non-temporal saxpy left the protected frame's p99
-    // inside its noise band (4.84 -> 5.04 ms solo, 10.81 -> 10.68 ms beside
-    // the best-effort stream) and made the cache-resident 1M shape 3.2x
-    // slower pipelined (15.1 -> 47.8 us): the traffic bypassed the cache the
-    // 12 MiB working set fit in. The DRAM-bound 16M shape was unchanged
-    // (+2%). CAJETA_XPU_STREAMING_NONTEMPORAL=1 turns it on for a re-trial.
+    // @Streaming: tag the parameter's loads and stores non-temporal where the backend
+    // lowers it AND the policy is on - OFF by default, CAJETA_XPU_STREAMING_NONTEMPORAL=1.
     if (nontemporalSupported && streamingNontemporalEnabled()) {
         llvm::LLVMContext& ctx = kfn.getContext();
         llvm::MDNode* nt = llvm::MDNode::get(

@@ -1,11 +1,5 @@
-// The `exec` action — the build-tool's escape hatch. Spawns a
-// subprocess, waits for it to exit, captures stdout/stderr, and
-// publishes them as outputs alongside the exit code. See
-// BuildTool.md "Action catalog" `exec` row.
-//
-// Phase 3a implementation: fork + exec + waitpid on POSIX. Windows
-// support lands later. No sandboxing yet (Phase 11). No retry
-// (Phase 9).
+// The `exec` action — the build-tool's escape hatch. Spawns a subprocess, waits
+// for it, and publishes its stdout/stderr as outputs beside the exit code.
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/Sandbox.h"
@@ -37,8 +31,7 @@ namespace cajeta::buildtool {
             const llvm::json::Object& params,
             TaskContext& ctx) const override {
 
-            // Required: command. Optional: args (array), working-dir,
-            // env (object).
+            // Required: command. Optional: args, working-dir, env.
             auto cmdRaw = params.getString("command");
             if (!cmdRaw) {
                 return err("exec: missing required 'command' field");
@@ -85,13 +78,9 @@ namespace cajeta::buildtool {
                 }
             }
 
-            // Phase 11: sandbox wrap, opt-in via `sandbox: true`.
-            // The exec action is the user's escape hatch — auto-
-            // wrapping it would change long-standing behaviour for
-            // every shell-style invocation. Internal actions
-            // (build / package / upload / publish) consult the
-            // sandbox abstraction directly per their declared
-            // capability set.
+            // Sandboxing here is opt-in: auto-wrapping the user's escape hatch
+            // would change behaviour for every shell-style invocation. Internal
+            // actions consult the sandbox abstraction directly instead.
             bool wantSandbox = false;
             if (auto sb = params.getBoolean("sandbox"); sb && *sb) {
                 wantSandbox = true;
@@ -114,7 +103,6 @@ namespace cajeta::buildtool {
                 envEntries  = std::move(wrap->envEntries);
             }
 
-            // Spawn the command, capturing stdout/stderr. cwd + env apply.
             std::string stdoutBuf;
             std::string stderrBuf;
             SubprocessOptions so;
@@ -129,10 +117,8 @@ namespace cajeta::buildtool {
                            res.error);
             }
 
-            // Forward captured output to the parent's streams so the
-            // developer sees what the action did. We still keep the
-            // captures in the action's outputs for ${id.stdout} /
-            // ${id.stderr} threading.
+            // Forwarded to the parent's streams as well as kept as outputs, so
+            // the developer sees the run AND `${id.stdout}` still threads.
             if (!stdoutBuf.empty()) {
                 std::fwrite(stdoutBuf.data(), 1, stdoutBuf.size(), stdout);
             }

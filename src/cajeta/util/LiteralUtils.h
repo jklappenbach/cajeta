@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 11/6/22.
-//
+// LiteralUtils - integer literal text to 128-bit values and llvm::APInt.
 
 #pragma once
 

@@ -19,49 +19,8 @@ namespace llvm {
 
 using namespace std;
 
-/**
-expression
-    : primary
-    | REFERENCE primary
-    | expression bop='.'
-      (
-         identifier
-       | methodCall
-       | THIS
-       | NEW nonWildcardTypeArguments? innerCreator
-       | SUPER superSuffix
-      )
-    | expression '[' expression ']'
-    | methodCall
-    | NEW creator
-    | '(' annotation* typeType ('&' typeType)* ')' expression
-    | expression postfix=('++' | '--')
-    | prefix=('+'|'-'|'++'|'--') expression
-    | prefix=('~'|'!') expression
-    | expression bop=('*'|'/'|'%') expression
-    | expression bop=('+'|'-') expression
-    | expression ('<' '<' | '>' '>' '>' | '>' '>') expression
-    | expression bop=('<=' | '>=' | '>' | '<') expression
-    | expression bop=INSTANCEOF (typeType | pattern)
-    | expression bop=('==' | '!=') expression
-    | expression bop='&' expression
-    | expression bop='^' expression
-    | expression bop='|' expression
-    | expression bop='&&' expression
-    | expression bop='||' expression
-    | <assoc=right> expression bop='?' expression ':' expression
-    | <assoc=right> expression
-      bop=('=' | '+=' | '-=' | '*=' | '/=' | '&=' | '|=' | '^=' | '>>=' | '>>>=' | '<<=' | '%=')
-      expression
-    | lambdaExpression // Java8
-    | switchExpression // Java17
-
-    // Java 8 methodReference
-    | expression '::' typeArguments? identifier
-    | typeType '::' (typeArguments? identifier | NEW)
-    | classType '::' typeArguments? NEW
-    ;
-*/
+/** The `expression` grammar production these node types cover; the full rule,
+    with every alternative, lives in CajetaParser.g4. */
 
 namespace cajeta {
     class CajetaModule;
@@ -79,50 +38,24 @@ namespace cajeta {
     class Expression;
     typedef shared_ptr<Expression> ExpressionPtr;
 
-    // l-value → r-value coercion shared between expression-result consumers
-    // (BinaryOp's RHS/LHS load paths, ReturnStatement, LambdaExpression's
-    // body, VariableInitializer). Given a value `v` that may be a pointer
-    // to a slot (alloca for locals, GEP for array elements / struct
-    // fields), loads through to produce a value of the wrapped type.
-    // Scalars and intermediate r-values pass through unchanged. `ast` is
-    // optional; when provided it lets the helper distinguish ArrayIndex
-    // and DotExpression slot pointers (which need element/field-type-
-    // driven loads) from anonymous pointer values.
+    // l-value to r-value coercion, shared by every expression-result consumer: it
+    // loads through a slot pointer (an alloca, or a GEP for an element or field).
     llvm::Value* loadIfLValue(CajetaModulePtr module, llvm::Value* v,
                               ExpressionPtr ast = nullptr);
 
-    // Wrap a C-string `cstr` (an `i8*` pointing at malloc'd bytes that
-    // ARE null-terminated) into a heap-allocated class String instance.
-    // The String is mode-0 (owned) — its `bytes` field points at a
-    // fresh CajetaArray header that holds a copy of the bytes. When
-    // `freeAfterWrap` is true the intermediate cstr is freed at the
-    // call site (use false for static literals / .rodata pointers).
-    //
-    // Shared between MethodCallExpression (toString/valueOf intrinsics)
-    // and DotExpression (view-field String materialization).
+    // Wraps a null-terminated `i8*` into a heap class String, mode-0 (owned), whose
+    // `bytes` holds a COPY. `freeAfterWrap` frees the intermediate (not .rodata).
     llvm::Value* wrapCStringIntoClassString(CajetaModulePtr module,
         llvm::Value* cstr, const char* namePrefix,
         bool freeAfterWrap = true);
 
-    // collection-literals §2 (Unit 1) — target-typed collection literal.
-    // When a class target (e.g. `ArrayList<int32>`) is initialized/assigned/
-    // returned with a bare `[...]` literal, rewrite the literal as a from-array
-    // constructor call `heap Target([...])`: the literal's element type is set
-    // from the target's first type argument (so it builds the `T[]` the ctor
-    // expects), and any `stack`/`shared` prefix on the literal carries to the
-    // instance construction. Returns the synthesized creator, or nullptr when
-    // `target` is not a rewritable class target (an array/primitive/value type
-    // — the caller keeps the literal on its existing path). The three
-    // target-type push sites (LocalVariableDeclaration, ReturnStatement,
-    // BinaryOpExpression ASSIGN) share this one helper.
+    // Rewrites a bare `[...]` against a class target as `heap Target([...])`, with
+    // the element type from the target's first type argument. Null for a non-class.
     ExpressionPtr collectionLiteralFromArray(CajetaTypePtr target,
                                              const ExpressionPtr& literal);
 
-    // Expression is a sibling of Statement under AbstractSyntaxNode. When an expression
-    // appears in statement position (e.g. `foo();`), wrap it in ExpressionStatement
-    // rather than relying on inheritance — see Statement::fromContext.
-    // 1.2.1 — the node-kind tag, one byte per node, so a consumer switches once
-    // instead of chaining casts; the classifier's switch is -Werror=switch, so it stays total.
+    // The node-kind tag, one byte per node, so a consumer switches once instead of
+    // chaining casts; the classifier's switch is -Werror=switch, so it stays total.
     enum class ExprKind : uint8_t {
         Unsupported = 0,
         Primary, Literal, ClassLiteral, This, Super,
@@ -134,14 +67,14 @@ namespace cajeta {
         Count
     };
 
+    // An expression in statement position is wrapped in ExpressionStatement.
     class Expression : public AbstractSyntaxNode {
     protected:
         bool primary;
         ExprKind exprKind = ExprKind::Unsupported;
         llvm::Value* titleFlagCache = nullptr;
         llvm::Function* titleFlagCacheFn = nullptr;
-        // Set by the type-resolver pass; codegen consults this for situations where the
-        // LLVM type alone is insufficient (e.g. fp8 stored as i8). May be null pre-resolution.
+        // Set by the type-resolver, where the LLVM type alone is not enough.
         CajetaTypePtr resolvedType;
     public:
         Expression(antlr4::Token* token) : AbstractSyntaxNode(token) { }
@@ -171,15 +104,8 @@ namespace cajeta {
         static ExpressionPtr fromContext(CajetaParser::ExpressionContext* ctx);
     };
 
-    /**
-        : '(' expression ')'
-        | THIS
-        | SUPER
-        | literal
-        | identifier
-        | typeTypeOrVoid '.' CLASS
-        ;
-     */
+    /** primary: '(' expression ')' | THIS | SUPER | literal | identifier
+        | typeTypeOrVoid '.' CLASS */
     class PrimaryExpression : public Expression {
     public:
         PrimaryExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Primary; }
@@ -189,12 +115,8 @@ namespace cajeta {
         static ExpressionPtr fromContext(CajetaParser::PrimaryContext* ctx);
     };
 
-    // REFL-1.5: `T.class` literal. A primary expression
-    // (`typeTypeOrVoid '.' CLASS`) whose value is the address of T's cached
-    // `#ClassObject` and whose type is `Class<T>` (the statically-known type's
-    // reflective Class — the static counterpart to `obj.getClass()` /
-    // `Class.of(obj)`). v1 supports class types; a primitive `T.class` has no
-    // `#ClassObject` and is rejected.
+    // `T.class`: a primary whose value is the address of T's cached `#ClassObject`
+    // and whose type is `Class<T>`. A primitive `T.class` has none and is rejected.
     class ClassLiteralExpression : public PrimaryExpression {
     public:
         ClassLiteralExpression(std::string namedTypeName, antlr4::Token* token)
@@ -204,58 +126,32 @@ namespace cajeta {
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     private:
-        // The text of the type named before `.class` (e.g. `Foo`), captured at
-        // parse time — the ANTLR context is freed before codegen, so we cannot
-        // hold the TypeTypeOrVoidContext and call fromContext on it later.
+        // The type named before `.class`; the ANTLR context is freed by codegen.
         std::string namedTypeName;
-        // Resolved lazily in resolveTypes / generateCode: the named type's
-        // CajetaClass (looked up by name in canonicalMap), and the
-        // `Class<Foo>` instantiation.
+        // Resolved lazily: the named type and its `Class<Foo>` instantiation.
         CajetaTypePtr namedType;
     };
 
     class ThisExpression : public PrimaryExpression {
     public:
         ThisExpression(CajetaParser::ExpressionContext* ctx) : PrimaryExpression(ctx->getStart()) { exprKind = ExprKind::This; }
-        // Used by PrimaryExpression::fromContext, where `ctx` is a
-        // PrimaryContext (not an ExpressionContext). Previously the
-        // call site passed `ctx->expression()` which is null for the
-        // THIS form — the result was a null-deref the moment ThisExpression
-        // tried to read getStart(). Now we accept the Token directly.
+        // For PrimaryExpression::fromContext: the THIS form has no ExpressionContext.
         ThisExpression(antlr4::Token* token) : PrimaryExpression(token) { exprKind = ExprKind::This; }
 
         void resolveTypes(CajetaModulePtr module) override;
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
 
-        // MultiClassing Phase 2 (P-2): `this<Base>.field` — primary
-        // expression that resolves to a `this` pointer ADJUSTED to the
-        // selected ancestor's sub-object. resolvedType becomes the
-        // chosen ancestor (not the current class), so DotExpression's
-        // field lookup uses `Base`'s propertyList directly (skipping the
-        // sibling-collision walk that fires for unqualified `this.field`).
-        // Set via the visitor when `THIS '[' typeType ']'` parses; empty
-        // string means plain `this` (no adjustment).
+        // `this<Base>.field`: a `this` ADJUSTED to the named ancestor's sub-object,
+        // with resolvedType set to it. Empty means plain `this`.
         const std::string& getChosenAncestorName() const { return chosenAncestorName; }
         void setChosenAncestorName(std::string name) { chosenAncestorName = std::move(name); }
     private:
         std::string chosenAncestorName;
     };
 
-    // `super` as a primary expression. Value is the same pointer as
-    // `this` (a super-reference doesn't physically point to a different
-    // object); the distinction is in resolvedType — it's the current
-    // class's first declared parent — so a `super.foo()` call lands
-    // on the PARENT's method via direct dispatch (bypassing the
-    // instance's vtable, which would loop back to the override).
-    //
-    // MultiClassing Phase 2 adds the bracketed variant `super<Base>`
-    // which selects an explicit ancestor (any one — first parent,
-    // sibling parent, or further ancestor). Plain `super` resolves to
-    // the first declared parent for back-compat. The chosen-ancestor
-    // value flows through resolveTypes (set as resolvedType) and
-    // generateCode (`this` is adjusted to the ancestor sub-object via
-    // CajetaClass::adjustForUpcast before the call site reads it).
+    // `super`: the same pointer as `this`, distinguished by resolvedType (the first
+    // declared parent), so `super.foo()` skips the vtable. `super<Base>` picks one.
     class SuperExpression : public PrimaryExpression {
     public:
         SuperExpression(antlr4::Token* token) : PrimaryExpression(token) { exprKind = ExprKind::Super; }
@@ -286,10 +182,6 @@ namespace cajeta {
         VAR
     };
 
-    // Removed dead classes: ClassExpression, GenericsExpression, BopExpression and its 6
-    // subclasses, ParExpression. Their grammar productions are handled by DotExpression
-    // or are unreached. Member access lowers via DotExpression directly.
-
     class ArrayIndexExpression : public Expression {
     public:
         ArrayIndexExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token);
@@ -299,13 +191,8 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    // Array/slice window: `base[a:b]` (slice-spec §2/§7.2; slices plan Unit 7).
-    // children = [base, from, to]. Yields a `Slice<E>` VALUE (an alloca of the
-    // 3-word {store, off, len} body):
-    //   - array base:  {arr, a, b-a} windowing the root (from/to clamped to
-    //     [0, count] like String.substring);
-    //   - slice base:  {base.store, base.off + a, b-a} — O(1) composition
-    //     attributing to the ROOT.
+    // Array/slice window `base[a:b]`, children = [base, from, to], yielding a
+    // `Slice<E>` {store, off, len}; a slice base composes in O(1) against the ROOT.
     class ArraySliceExpression : public Expression {
     public:
         ArraySliceExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token);
@@ -315,43 +202,26 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    // List literal: `[e1, e2, ...]` (and the empty `[]`). Grammar:
-    // `arrayLiteral : '[' expressionList? ']'`, reachable from `primary`
-    // (CajetaParser.g4). Introduced for the XPU launch dimensions
-    // (`grid: [(n+255)/256]`, `block: [256]`) per CajetaXPU.md §3.1.3, but
-    // general-purpose. Each element expression is held in `children` in
-    // source order. Value codegen is deferred — the launch path reads the
-    // element expressions directly off the AST — so generateCode rejects
-    // standalone use for now.
+    // List literal `[e1, e2, ...]`, elements in `children` in source order. Value
+    // codegen is deferred - the launch path reads them off the AST.
     class ArrayLiteralExpression : public Expression {
     public:
-        // Sequence literal built from pre-parsed element expressions. The
-        // bracket-list parse (sequence-vs-map discrimination) lives in
-        // arrayOrMapLiteralFromContext; the map lowering also builds one of
-        // these to hold its `Pair<K,V>[]`.
+        // Built from pre-parsed elements; the parse lives in arrayOrMapLiteralFromContext.
         ArrayLiteralExpression(vector<ExpressionPtr> elems, antlr4::Token* token);
 
         // Element expressions in source order (also mirrored into children).
         const vector<ExpressionPtr>& getElements() const { return elements; }
 
-        // Push a target element type (array-literals §3.2). When set before
-        // resolveTypes, it overrides the unify fallback. Unused until Unit 2.
+        // Push a target element type; set before resolveTypes it overrides unify.
         void setElementType(CajetaTypePtr t) { elementType = t; }
 
-        // Placement (array-literals §4): heap (default), stack (frame arena),
-        // or shared (device workgroup memory). Set by Expression::fromContext
-        // from a `stack`/`shared` prefix; drives allocator selection in
-        // generateCode. At most one is true.
+        // Placement: heap (default), stack (frame arena) or shared; at most one.
         void setStackAlloc(bool v) { stackAlloc = v; }
         void setSharedAlloc(bool v) { sharedAlloc = v; }
         bool isStackAlloc() const { return stackAlloc; }
         bool isSharedAlloc() const { return sharedAlloc; }
 
-        // Set by Method::computeArenaEligibility when a `stack [...]` literal's
-        // bound local proves non-escaping and primitive-element (array-literals
-        // §4). Only then does generateCode route to the frame-arena allocator;
-        // an escaping or non-primitive `stack [...]` falls back to heap, exactly
-        // as the escape-driven arena path does for creators.
+        // Set by computeArenaEligibility when a `stack [...]` proves non-escaping.
         void setArenaEligible(bool v) { arenaEligible = v; }
         bool isArenaEligible() const { return arenaEligible; }
 
@@ -363,9 +233,7 @@ namespace cajeta {
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     private:
-        // Least-upper-bound of the element types (array-literals §3.3): numeric
-        // widest, reference nearest-common-superclass; throws on an empty
-        // literal or no common type when no target was pushed.
+        // Least-upper-bound of the element types; throws when there is none.
         CajetaTypePtr unifyElementType(CajetaModulePtr module);
 
         vector<ExpressionPtr> elements;
@@ -376,14 +244,8 @@ namespace cajeta {
         bool arenaEligible = false; // stack + proven non-escaping (§4)
     };
 
-    // Map literal: `[k1: v1, k2: v2]` (and the empty `[:]`) — collection-
-    // literals §3. Each entry is a (key, value) expression pair. Lowers, at
-    // generateCode, to a `Pair<K,V>[]` (one `heap Pair<K,V>(k, v)` per entry)
-    // passed to `HashMap<K,V>(Pair<K,V>[])`. K and V come from a pushed target
-    // map type (`HashMap<String,int32> m = [...]`) or, with no target, unify
-    // over the entries defaulting to `HashMap` (§3.4). The parser routes a
-    // bracket list here when any entry carries a `:` (else it's a sequence
-    // ArrayLiteralExpression).
+    // Map literal `[k1: v1, ...]` (and `[:]`), lowered to a `Pair<K,V>[]` passed to
+    // `HashMap<K,V>(Pair<K,V>[])`. The parser routes here on any entry's `:`.
     class MapLiteralExpression : public Expression {
     public:
         MapLiteralExpression(vector<pair<ExpressionPtr, ExpressionPtr>> entries,
@@ -403,17 +265,12 @@ namespace cajeta {
         bool sharedAlloc = false;
     };
 
-    // collection-literals §3 — parse an `arrayLiteral` bracket list into either
-    // a sequence (ArrayLiteralExpression) or a map (MapLiteralExpression) by the
-    // per-entry colon, applying any `stack`/`shared` placement prefix. Shared by
-    // the four bracket-literal construction sites (bare + heap/stack/shared).
+    // Parses an `arrayLiteral` bracket list into a sequence or a map by the colon.
     ExpressionPtr arrayOrMapLiteralFromContext(
         CajetaParser::ArrayLiteralContext* ctx, antlr4::Token* token,
         bool stackAlloc, bool sharedAlloc);
 
-    /**
-     * '(' annotation* typeType ('&' typeType)* ')' expression
-     */
+    /** '(' annotation* typeType ('&' typeType)* ')' expression */
     class CastExpression : public Expression {
     private:
         CajetaTypePtr destType;
@@ -421,9 +278,8 @@ namespace cajeta {
         CastExpression(CajetaTypePtr destType, antlr4::Token* token)
             : Expression(token), destType(destType) { exprKind = ExprKind::Cast; }
 
-        // The cast's declared target type. Available even before resolveTypes()
-        // runs (the XPU device lowerer walks the kernel AST directly and may
-        // not have populated resolvedType).
+        // The cast's declared target type, available before resolveTypes runs (the
+        // XPU device lowerer walks the kernel AST directly).
         CajetaTypePtr getDestType() const { return destType; }
 
         void resolveTypes(CajetaModulePtr module) override {
@@ -434,9 +290,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * expression postfix=('++' | '--')
-     */
+    /** expression postfix=('++' | '--') */
     enum PostfixOp {
         POSTFIX_OP_INC, POSTFIX_OP_DEC
     };
@@ -453,9 +307,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * prefix=('+'|'-'|'++'|'--'|'~'|'!') expression
-     */
+    /** prefix=('+'|'-'|'++'|'--'|'~'|'!') expression */
     enum PrefixOp {
         PREFIX_OP_POSITIVE,
         PREFIX_OP_NEGATIVE,
@@ -480,34 +332,12 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    // Removed dead classes: LogicalPrefixExpression, BitshiftExpression, ComparisonExpression,
-    // EquivalenceExpression, BitwiseAndExpression, BitwiseExOrExpression,
-    // BitwiseInclusiveOrExpression, LogicalAndExpression, LogicalOrExpression,
-    // ArithmeticAssignmentExpression. All of these are handled by BinaryOpExpression
-    // variants now (shift / comparison / equality / bitwise / logical / *_EQUALS).
-    // PrefixExpression handles ~ / ! / +/- / ++/--.
-
-    /**
-     * <assoc=right> expression bop='?' expression ':' expression
-     *
-     * Ternary. children = [cond, then, else] from fromContext's child-population loop.
-     * Emits a conditional branch + phi pattern, same shape as &&/||.
-     */
+    /** Ternary `c ? a : b`; children = [cond, then, else]. Emits a conditional
+     *  branch and a phi, the same shape as &&/||. */
     class BooleanSwitchExpression : public Expression {
     private:
-        // Ownership of the value a ternary yields (ternary-local-double-free,
-        // 2026-09-07). For a class-typed result this is the title flag of the
-        // arm actually TAKEN, as an i64 in the merge block: a constant 1 for
-        // an arm that materialises a fresh value (`heap`, a String concat, a
-        // `#x` move with a static owner), a constant 0 for an arm that only
-        // reads an existing one (literal, identifier, field, element, cast),
-        // the return-flag TLS read right after a call arm, a nested ternary's
-        // own flag — phi'd at the merge, or a constant when both arms decide
-        // the same way statically. LocalVariableDeclaration arms the receiving
-        // local's drop entry from it, so `T x = c ? this.f : "-"` never frees
-        // `this.f` (the shape that double-freed every Diag record under
-        // cajeta-llm's trace logging) and `T x = c ? heap T() : this.f` drops
-        // only what it owns. Null for non-class results. Reset per codegen.
+        // The title flag of the arm actually TAKEN, an i64 in the merge block: 1 for
+        // an arm that materialises a value, 0 for one that reads an existing one.
         llvm::Value* runtimeTitleFlag = nullptr;
     public:
         BooleanSwitchExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::BooleanSwitch; }
@@ -523,14 +353,9 @@ namespace cajeta {
         static void forEachLeafArm(const ExpressionPtr& e, F&& fn);
     };
 
-    /**
-     * expression bop=INSTANCEOF (typeType | pattern)
-     *
-     * Compile-time only for now: emits a constant i1 by comparing the lhs's
-     * resolvedType to the target type. A real runtime check needs class-hierarchy
-     * metadata emitted via StructureMetadata (so we can walk parents at runtime);
-     * that's tracked separately.
-     */
+    /** `expression instanceof (typeType | pattern)`. Compile-time only for now: a
+     *  constant i1 from the lhs's resolvedType. A runtime check needs the
+     *  class-hierarchy metadata StructureMetadata would emit. */
     class InstanceOfExpression : public Expression {
     private:
         CajetaTypePtr type;
@@ -547,15 +372,8 @@ namespace cajeta {
     };
 
 
-    // Method reference: `Type::method`, `obj::method`, or `Type::heap`.
-    // Compiles to a function-typed value (same value-level shape as a
-    // lambda) pointing at a synthesized thunk that adapts the underlying
-    // method to the closure ABI (`ptr captures` as the first arg).
-    // L4-1 implements only the static-method form
-    // (`Type::staticMethod`); bound instance refs, unbound instance
-    // refs, and constructor refs throw NOT_IMPLEMENTED until the
-    // matching sub-slices land. See docs/specification/lang/Lambdas.md § Method
-    // references.
+    // Method reference `Type::method`, `obj::method` or `Type::heap`: a function-typed
+    // value pointing at a thunk. Only the static form is implemented; the rest throw.
     class MethodReferenceExpression : public Expression {
     public:
         enum class Kind {
@@ -565,36 +383,22 @@ namespace cajeta {
             CONSTRUCTOR        // Type::heap
         };
     private:
-        // For `Type::id` / `Type::heap`: the type appears literally in
-        // the source as a typeType and we resolve it eagerly at AST
-        // build time (its name is in scope unconditionally).
+        // For `Type::id` / `Type::heap`: resolved eagerly at AST-build time.
         CajetaTypePtr receiverType;
-        // For `obj::id`: the receiver is a runtime expression evaluated
-        // at the reference site. nullptr for the type-receiver forms.
+        // For `obj::id`: the receiver expression; null for the type forms.
         ExpressionPtr receiverExpr;
         // Method name being referenced. Empty for CONSTRUCTOR.
         std::string methodName;
         bool isCtor;
-        // Set by resolveTypes once we know whether the named method is
-        // static or instance. STATIC for either form when the target
-        // method is static; BOUND_INSTANCE for obj::method on an
-        // instance method; UNBOUND_INSTANCE for Type::method on an
-        // instance method.
+        // Set by resolveTypes once the named method is known static or instance.
         Kind kind = Kind::STATIC;
-        // Name of the synthesized thunk function, generated lazily on
-        // first codegen.
+        // Name of the synthesized thunk, generated lazily on first codegen.
         std::string thunkName;
-        // Set when this method ref captures the receiver by borrow
-        // (kind == BOUND_INSTANCE) — analogous to LambdaExpression's
-        // hasBorrowCaptures flag, consumed by the L3-2 escape check at
-        // ReturnStatement and propagated to function-typed Fields.
+        // Set when the ref captures its receiver by borrow, like LambdaExpression's
+        // flag: the escape check at ReturnStatement consumes it.
         bool _hasBorrowCaptures = false;
-        // Target-type hint from the surrounding context, mirroring
-        // LambdaExpression. When the LHS is an sret-form function-type and
-        // the underlying method's natural ABI is borrow (non-sret, non-#),
-        // setting expectedType lets resolveTypes pick the sret-form fnType
-        // and generateCode synthesize the borrow→sret adapter thunk
-        // (docs/specification/lang/ValueReturns.md — M5(b) adapter).
+        // Target-type hint from context: when the LHS is an sret-form function type
+        // and the method's own ABI is borrow, this selects the sret adapter thunk.
         CajetaTypePtr expectedType;
     public:
         bool getHasBorrowCaptures() const { return _hasBorrowCaptures; }
@@ -612,9 +416,8 @@ namespace cajeta {
             if (this->isCtor) kind = Kind::CONSTRUCTOR;
         }
 
-        // Accessors used by the device kernel lowerer (Stage 11 bounded
-        // dispatch), which walks the AST directly and needs the eagerly-
-        // resolved receiver type + method name without running resolveTypes.
+        // For the device kernel lowerer, which walks the AST and needs the eagerly
+        // resolved receiver type and method name without running resolveTypes.
         CajetaTypePtr getReceiverType() const { return receiverType; }
         ExpressionPtr getReceiverExpr() const { return receiverExpr; }
         const std::string& getMethodName() const { return methodName; }
@@ -624,31 +427,13 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    // Placeholder for expression forms recognized by the grammar but not yet implemented
-    // (lambdas, switch expressions, super dispatch, inner-class new, method references).
-    // The parser produces one of these so the failure surfaces at codegen time as a clear
-    // cajeta::Exception with the construct name and source location, rather than a silent
-    /**
-     * `#expr` — the move/transfer operator. See `MemoryModel.md` for full
-     * semantics. At codegen time:
-     *   1. Delegates value-generation to its single child.
-     *   2. If that child is an `IdentifierExpression`, marks the identifier as
-     *      moved in the active scope so subsequent reads can be rejected.
-     *   3. Carries a static-checked invariant: nested `##expr` reports the
-     *      same use-after-move error pattern after the first wrap unwinds.
-     *
-     * The transfer-flow side (drop-elision on the source, ownership transfer
-     * to the destination) lives at the use site (`BinaryOpExpression` for
-     * assignment, `MethodCallExpression` for arguments, `ReturnStatement` for
-     * returns). They detect that their child is a `MoveExpression` via
-     * `dynamic_pointer_cast` and act accordingly.
-     */
+    /** `#expr`, the move/transfer operator (MemoryModel.md). Codegen delegates to
+     *  its child and marks an identifier child moved in the active scope; the
+     *  transfer flow itself lives at the use site (assign, argument, return). */
     class MoveExpression : public Expression {
     private:
-        // 5.2.2 — when the moved-out source is a runtime owner (a formal
-        // whose title is a transfer-word bit), its entry flag is captured
-        // here BEFORE deactivation; store/return sites seed their bit from
-        // it. Null for static owners (compile-time truth stands).
+        // When the moved-out source is a runtime owner, its entry flag is captured
+        // here BEFORE deactivation; store and return sites seed their bit from it.
         llvm::Value* runtimeTitleFlag = nullptr;
     public:
         MoveExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Move; }
@@ -656,48 +441,28 @@ namespace cajeta {
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
         llvm::Value* getRuntimeTitleFlag() const { return runtimeTitleFlag; }
-        // title-stores §2.1 (fused slot-to-slot forwarding) — set by the
-        // enclosing `dst[i] #= #src[j]` store BEFORE codegen: the slot
-        // extraction forwards the source bit verbatim (borrow stays
-        // borrow, NO panic) instead of claiming ownership.
-        // `#= #x` — the transfer spelled twice. Technically valid (it means
-        // exactly what `#= x` means), so it warns rather than rejects; the
-        // parse sites set this and MoveExpression::generateCode reports it.
+        // `#= #x`, the transfer spelled twice: it means what `#= x` means, so it
+        // warns rather than rejects, and generateCode reports it.
         void setRedundantSharp(bool v) { redundantSharp = v; }
         bool isRedundantSharp() const { return redundantSharp; }
 
+        // Fused slot-to-slot forwarding, set by the enclosing `dst[i] #= #src[j]`
+        // store: the extraction forwards the source bit instead of claiming title.
         void setForwardingSlotMove(bool v) { forwardingSlotMove = v; }
         bool isForwardingSlotMove() const { return forwardingSlotMove; }
-        // title-stores §2.3 Phase 2 (plan 7.2.2) — set by the enclosing site
-        // when this move was spelled the legacy way, `dst = #v`. It cannot be
-        // recovered later: `dst = #v` and `dst #= v` build the SAME node (the
-        // `#=` desugar wraps the RHS in a Move of its own), so the spelling is
-        // only visible while the parse context is in hand.
+        // Set when the move was spelled `dst = #v`. It cannot be recovered later:
+        // `dst = #v` and `dst #= v` build the SAME node.
         void setLegacyTransferAssign(bool v) { legacyTransferAssign = v; }
         bool isLegacyTransferAssign() const { return legacyTransferAssign; }
 
-        // U3 — set on the wrapper the `dst #= v` desugar synthesises. `#=` is
-        // MODE-CARRYING: it records whatever mode the source actually holds,
-        // so a lent source records a BORROW rather than claiming a title. It
-        // is therefore exempt from the U2 transfer-of-a-borrow rejection,
-        // which exists to catch a claim that is FALSE. Without the exemption
-        // the two checks collide: U3 prescribes `#=` as the fix for a
-        // borrow-alias capture and U2 rejects that very `#=`.
+        // Set on the wrapper the `dst #= v` desugar synthesises. `#=` is MODE-CARRYING,
+        // so it is exempt from the transfer-of-a-borrow rejection of a FALSE claim.
         void setModeCarrying(bool v) { modeCarrying = v; }
         bool isModeCarrying() const { return modeCarrying; }
 
-        // Set on the wrapper synthesised by EVERY `#=` spelling — the
-        // assignment `dst #= v` AND the declaration `T x #= v`. `modeCarrying`
-        // deliberately marks only the assignment, because the two spellings
-        // differ in what the U2 rejection should do (8.2.17); this marks what
-        // they SHARE, which is that the store records the source's mode rather
-        // than claiming a title.
-        //
-        // Keep them separate. Making the declaration `modeCarrying` too would
-        // also exempt it from the provenance rejections, which
-        // `TransferFromBorrowTests.transferFromAnAliasStillNamesTheOwner` pins
-        // as an error. This flag answers "what flag does the store record?",
-        // not "what does the checker reject?".
+        // Set by EVERY `#=` spelling, assignment and declaration alike: it marks
+        // that the store records the source's mode. Deliberately not `modeCarrying`,
+        // which would also exempt a declaration from the provenance rejections.
         void setSharpStore(bool v) { sharpStore = v; }
         bool isSharpStore() const { return sharpStore; }
     private:
@@ -708,15 +473,9 @@ namespace cajeta {
         bool sharpStore = false;
     };
 
-    // Structured-concurrency expressions (docs/specification/concurrent/Concurrency.md). All three wrap a
-    // single inner expression in children[0]. In the sync-lowering MVP:
-    //   - AwaitExpression: takes a Task<T> value, returns the inner T.
-    //   - SpawnExpression: takes a method-call invocation, runs it immediately,
-    //     packs the result in a fresh completed Task<T>.
-    //   - DetachExpression: same as spawn but discards the Task. The
-    //     "captures must be #-transferred" rule lands with the real scheduler.
-    // Real scheduling, suspension at await, and scope-bound child lifetimes
-    // come in later phases; today these are straight-line lowerings.
+    // Structured-concurrency expressions, each wrapping one inner expression in
+    // children[0]: await takes a Task<T> and yields T, spawn runs a call and packs
+    // a completed Task<T>, and detach is spawn with the Task discarded.
     class AwaitExpression : public Expression {
     public:
         AwaitExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Await; }
@@ -726,31 +485,15 @@ namespace cajeta {
 
     class SpawnExpression : public Expression {
     private:
-        // Drop-chain entry alloca for the malloced Task. Populated during
-        // generateCode after __cajeta_drop_push runs. Consumed by
-        // assignment sites (LocalVariableDeclaration's initializer path
-        // and BinaryOpExpression ASSIGN) to call __cajeta_drop_mark_inactive
-        // when the spawn result is bound to a named owner — ownership
-        // transfers to the local's own class-instance drop entry, so the
-        // spawn's transient entry shouldn't fire. See AsyncStatus.md §
-        // Plan: Task<T> as user-typeable template / Ownership-transfer.
+        // Drop-chain entry for the malloced Task, consumed by assignment sites to
+        // mark it inactive once ownership passes to the bound local's own entry.
         llvm::Value* dropEntry = nullptr;
-        // Detach mode skips scope_register (so scope_exit won't wait for
-        // this task) and skips drop_push (no scope owns the Task; its
-        // heap allocation leaks for the process lifetime per
-        // docs/specification/concurrent/Concurrency.md § detach semantics). Set by DetachExpression
-        // before calling generateCode through this same trampoline path
-        // — single source of truth for the spawn/detach lowering.
+        // Detach skips scope_register and drop_push: no scope owns the Task, and
+        // its heap allocation lives for the process.
         bool detachMode = false;
-        // Statement-position spawn whose Task is never bound to a local
-        // (`spawn f(x);` as a statement). Set by ExpressionStatement before
-        // generateCode. The lowering then registers the task with the scope
-        // frame as SCOPE-OWNED (__cajeta_scope_register_owned) instead of
-        // emitting a drop entry: a per-site drop-entry alloca cannot
-        // represent N live tasks from a loop, and its wait-on-drop joined at
-        // the innermost brace — serializing spec-legal spawn loops (the
-        // Concurrency.md `scope { for { spawn } }` example). The scope both
-        // joins (as before, via scope_register bookkeeping) and frees.
+        // Statement-position spawn whose Task is never bound. It registers with the
+        // scope frame as SCOPE-OWNED instead of taking a drop entry: one per-site
+        // entry cannot represent N live tasks from a loop.
         bool discardedMode = false;
     public:
         SpawnExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Spawn; }
@@ -770,20 +513,9 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * Java-17 switch expression. Today we only support the arrow form with single-
-     * expression case bodies — `case X -> expr;` and `default -> expr;` — which is
-     * the most common shape and avoids needing `yield`.
-     *
-     *   switch (x) {
-     *     case 1, 2 -> 10;
-     *     case 3    -> 20;
-     *     default   -> 99;
-     *   }
-     *
-     * Each case may match multiple constants via a comma-separated list. The cases
-     * lower to an `llvm::SwitchInst` and a phi node collects each arm's value.
-     */
+    /** Java-17 switch expression, arrow form with single-expression case bodies
+     *  only (`case 1, 2 -> 10;`), which avoids needing `yield`. The cases lower to
+     *  an llvm::SwitchInst, with a phi collecting each arm's value. */
     class SwitchExpression : public Expression {
     public:
         struct Case {
@@ -809,36 +541,20 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    // Non-capturing lambda: `(int32 a, int32 b) -> a + b`. Lowers at codegen
-    // to a synthesized static LLVM function whose body is the lambda's
-    // expression; the lambda expression itself evaluates to that function's
-    // address (a `ptr`), which a CajetaFunctionType-typed slot can hold.
-    //
-    // v1 (L1) limits:
-    //  - Explicit parameter types required. Elided forms (`(a, b) -> ...`)
-    //    that rely on target-type inference from the surrounding type
-    //    context are deferred to L1.5 or later.
-    //  - Expression body only — no block bodies yet.
-    //  - No captures. Bodies that reference outer-scope names produce a
-    //    codegen error; capture support arrives in L2.
+    // Non-capturing lambda `(int32 a, int32 b) -> a + b`, lowered to a synthesized
+    // static function whose address the expression evaluates to. v1 takes explicit
+    // parameter types and expression bodies only, with no captures.
     class LambdaExpression : public Expression {
     private:
         std::vector<std::string> paramNames;
         std::vector<CajetaTypePtr> paramTypes;
-        // L1/L1.5: an Expression (expression-body form, e.g. `x -> x + 1`).
-        // L2-4 onwards: may also be a Block (`{ stmt; return val; }`),
-        // hence the AbstractSyntaxNode-typed slot. Codegen dispatches
-        // based on the dynamic type.
+        // An Expression for the expression-body form, or a Block; codegen
+        // dispatches on the dynamic type.
         AbstractSyntaxNodePtr body;
-        // Name of the synthesized LLVM function. Unique per module via a
-        // monotonic counter; set lazily on first codegen.
+        // Name of the synthesized function, unique per module, set on first codegen.
         std::string synthesizedName;
-        // True once capture analysis has run AND found at least one
-        // borrow capture (heap reference, not primitive copy, not `#`
-        // transfer). Read after generateCode by the escape check that
-        // gates return-of-closure / store-to-non-local. Closures with
-        // only by-value or by-transfer captures are free to escape;
-        // borrow captures are bounded by the declaring scope.
+        // True once capture analysis found a borrow capture; the escape check gates
+        // return-of-closure and store-to-non-local on it.
         bool hasBorrowCaptures = false;
     public:
         bool getHasBorrowCaptures() const { return hasBorrowCaptures; }
@@ -862,12 +578,8 @@ namespace cajeta {
             AbstractSyntaxNode::forEachSubNode(fn);
         }
 
-        // Target-type hint from the surrounding context (e.g. a LHS
-        // function-typed declaration). When set, codegen uses this as the
-        // lambda's CajetaFunctionType — its return type is what the lambda's
-        // synthesized function returns. Without it, codegen would have to
-        // infer return type from the body, which requires every body-shape
-        // expression to populate its own resolvedType — not the case yet.
+        // Target-type hint from context; codegen uses it as the lambda's
+        // CajetaFunctionType, since a body's return type is not inferred yet.
         void setExpectedType(CajetaTypePtr t) { expectedType = std::move(t); }
 
         void resolveTypes(CajetaModulePtr module) override;
@@ -876,7 +588,8 @@ namespace cajeta {
         CajetaTypePtr expectedType;
     };
 
-    // nullptr returning invalid IR.
+    // Placeholder for grammar forms not yet implemented: generateCode throws a
+    // cajeta::Exception naming the construct and its source location.
     class UnsupportedExpression : public Expression {
     private:
         string constructName;
@@ -888,11 +601,8 @@ namespace cajeta {
     };
 
 
-    // `x #= #y` — true when the right-hand side of a `#=` carries its own `#`,
-    // whatever the source's shape (identifier, field, element, call result).
-    // The store already IS the transfer, so the second sharp is always
-    // redundant. Defined in Expression.cpp; shared with the two declaration
-    // paths (Statement.cpp, CajetaLlvmVisitor::visitVariableDeclarator).
+    // True when the right-hand side of a `#=` carries its own `#`. The store already
+    // IS the transfer, so the second sharp is redundant; defined in Expression.cpp.
     bool cajetaRhsCarriesRedundantSharp(
         CajetaParser::ExpressionContext* rhs);
 

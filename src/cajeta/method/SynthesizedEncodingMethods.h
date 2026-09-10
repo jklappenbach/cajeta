@@ -1,26 +1,6 @@
-// Synthesized methods for @Encoding(EncoderClass) — Phase B.
-//
-// Two methods are added to the @Encoding-annotated class T:
-//
-//   - SynthesizedEncodingCtor: `public T(byte[] bytes)`. Calls the
-//     encoder's static `decode(byte[])` to get a fresh T, then
-//     memcpys the decoded body into `this`. Memcpy preserves the
-//     vtable (slot 0) since both source and destination are T
-//     instances. The decoded temp's shell leaks in v1 (~24 B per
-//     decode — tracked for future fix); its owned fields are
-//     aliased into `this` and the auto-field-drop live-set
-//     discrimination keeps double-free safe.
-//
-//   - SynthesizedEncodingToBytes: `public #byte[] toBytes()`. Calls
-//     the encoder's static `encode(T)` and returns the result.
-//     The `#` on the return matches the new return-ownership rule
-//     (return heap X requires # — the encoder's encode returns a
-//     fresh byte[] which we pass straight through).
-//
-// Both methods reference the encoder class's static methods by
-// LLVM Function pointer. CajetaClass::synthesizeEncoding looks up
-// the encoder, verifies the required methods exist with the
-// correct signatures, and creates these synthesizers.
+// The two methods @Encoding(EncoderClass) adds to a class T, each calling the
+// encoder's statics by LLVM Function pointer. CajetaClass::synthesizeEncoding
+// verifies those statics exist with the right signatures and builds these.
 
 #pragma once
 
@@ -30,6 +10,8 @@ namespace cajeta {
     class CajetaModule;
     class CajetaClass;
 
+    // `public T(byte[] bytes)`: decode(byte[]) into a fresh T, then memcpy its
+    // body into `this` — which preserves the vtable, both being T instances.
     class SynthesizedEncodingCtor : public Method {
     public:
         SynthesizedEncodingCtor(CajetaModulePtr module,
@@ -43,6 +25,7 @@ namespace cajeta {
         CajetaClassPtr encoder;
     };
 
+    // `public #byte[] toBytes()`: the encoder's fresh byte[], passed straight through.
     class SynthesizedEncodingToBytes : public Method {
     public:
         SynthesizedEncodingToBytes(CajetaModulePtr module,

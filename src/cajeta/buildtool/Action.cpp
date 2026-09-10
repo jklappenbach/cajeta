@@ -16,10 +16,9 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Single-pass substitution over `s`. References are
-        // `${NAME}` or `${id.field}`. `$$` escapes a literal `$`.
-        // `lookup` returns nullopt for unknown names; on failure the
-        // caller produces a citation-style error.
+        // Single-pass substitution over `s`: `${NAME}` or `${id.field}` references,
+        // `$$` for a literal `$`. `lookup` returns nullopt for an unknown name, and
+        // the caller turns that into a citation-style error.
         bool substituteOnce(
             const std::string& s,
             const std::function<std::optional<std::string>(const std::string&)>& lookup,
@@ -94,14 +93,12 @@ namespace cajeta::buildtool {
 
     std::optional<std::string> TaskContext::lookup(
         const std::string& name) const {
-        // params.<name>
         if (name.size() > 7 && name.compare(0, 7, "params.") == 0) {
             std::string p = name.substr(7);
             auto it = params_.find(p);
             if (it == params_.end()) return std::nullopt;
             return it->second;
         }
-        // <id>.<field>  →  prior action's output
         auto dot = name.find('.');
         if (dot != std::string::npos) {
             std::string id = name.substr(0, dot);
@@ -110,12 +107,10 @@ namespace cajeta::buildtool {
             if (it != actionOutputs_.end()) {
                 auto f = it->second.find(field);
                 if (f != it->second.end()) return f->second;
-                // id matched but field didn't — fall through to props
-                // lookup; that lets `details.name` etc. work even if
-                // a task happens to have an id named "details".
+                // id matched but field didn't — fall through to the props lookup,
+                // so `details.name` still works when a task has an id "details".
             }
         }
-        // Fall back to manifest properties (built-ins + user).
         return props_.lookup(name);
     }
 
@@ -137,7 +132,6 @@ namespace cajeta::buildtool {
 
     // ──── Action registry ────────────────────────────────────────────
 
-    // Forward decls for action implementations registered below.
     std::unique_ptr<Action> makeExecAction();
     std::unique_ptr<Action> makeCopyAction();
     std::unique_ptr<Action> makeDeleteAction();
@@ -157,9 +151,7 @@ namespace cajeta::buildtool {
         auto reg = [&](std::unique_ptr<Action> a) {
             actions_[a->name()] = std::move(a);
         };
-        // Phase 3a: composition / control escape hatch.
         reg(makeExecAction());
-        // Phase 4: filesystem + crypto + version + download.
         reg(makeCopyAction());
         reg(makeDeleteAction());
         reg(makeMkdirAction());
@@ -167,13 +159,9 @@ namespace cajeta::buildtool {
         reg(makeVerifySigAction());
         reg(makeVersionAction());
         reg(makeDownloadAction());
-        // Phase 5a: build action.
         reg(makeBuildAction());
-        // Phase 5b: clean action (with --deep cache wipe).
         reg(makeCleanAction());
-        // Phase 7a: test action.
         reg(makeTestAction());
-        // Phase 9: distribution actions.
         reg(makePackageAction());
         reg(makeUploadAction());
         reg(makePublishAction());

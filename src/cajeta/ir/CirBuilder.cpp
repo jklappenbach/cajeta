@@ -1,6 +1,4 @@
-//
 // CirBuilder — AST -> CIR lowering for the closed slice. See CirBuilder.h.
-//
 
 #include "CirBuilder.h"
 
@@ -130,7 +128,6 @@ namespace {
                 for (auto& c : node->getChildren())
                     if (as<Expression>(c)) { last = lowerExpr(c); any = true; }
                 if (any) return last;
-                // a leaf literal — emit a constant placeholder (value not modeled in Phase A)
                 auto inst = cirInst(CirOp::ConstInt);
                 auto r = fresh(cirTypeOf(resolvedTypeOf(node)));
                 inst->result = r;
@@ -138,8 +135,6 @@ namespace {
                 return r;
             }
 
-            // generic fallback: recurse Expression children to discover nested
-            // closures/calls, then return an opaque value.
             CirValuePtr last;
             for (auto& c : node->getChildren())
                 if (as<Expression>(c)) last = lowerExpr(c);
@@ -152,11 +147,7 @@ namespace {
             // synthesizedName isn't set until codegen (after this pass), so name
             // the target deterministically from the enclosing function.
             inst->symbol = fn->name + "$lambda" + std::to_string(lambdaSeq++);
-            // §2.4.1: a non-capturing lambda has a statically-known unique target.
-            // Captures aren't enumerated in Phase A (only knownness matters).
             inst->targetKnown = !lam->getHasBorrowCaptures();
-            // Carry a function-typed spelling so the value reads as a closure even
-            // when an elided-param lambda leaves resolvedType unset.
             CirType ct = cirTypeOf(lam->getResolvedType());
             if (!ct.resolved) ct.spelling = "(closure)->?";
             auto r = fresh(ct, CirOwnership::Value);
@@ -168,8 +159,6 @@ namespace {
         CirValuePtr lowerCall(const std::shared_ptr<MethodCallExpression>& call) {
             const std::string& name = call->getMethodCallName();
 
-            // Closure call: the callee name resolves to a function-typed value in
-            // scope (a parameter or local) -> apply.closure (§2.3.5).
             auto it = scope.find(name);
             std::shared_ptr<CajetaFunctionType> fnTy;
             if (it != scope.end())
@@ -186,7 +175,6 @@ namespace {
                 return r;
             }
 
-            // Direct named call.
             auto inst = cirInst(CirOp::Call);
             inst->symbol = name;
             for (auto& p : call->getParameters())
@@ -207,7 +195,6 @@ namespace {
             BinaryOp op = bin->getBinaryOp();
 
             if (isAssignOp(op)) {
-                // model as a store into the lvalue; the expression value is the rhs
                 auto inst = cirInst(CirOp::Store);
                 if (lhs) inst->operands.push_back(lhs);
                 if (rhs) inst->operands.push_back(rhs);
@@ -282,9 +269,8 @@ namespace {
                 for (auto& c : b->getChildren()) lowerStmt(c);
                 return;
             }
-            // A braced `{ ... }` in statement position parses to a LabelStatement
-            // (and `scope { ... }` to a ScopeStatement); the Block is held outside
-            // `children`, so descend via getBlock().
+            // A braced block in statement position parses to a Label/ScopeStatement
+            // whose Block is held outside `children`: descend via getBlock().
             if (auto ls = as<LabelStatement>(node)) { lowerStmt(ls->getBlock()); return; }
             if (auto sc = as<ScopeStatement>(node)) { lowerStmt(sc->getBlock()); return; }
             if (auto lvd = as<LocalVariableDeclaration>(node)) { lowerLocalDecl(lvd); return; }
@@ -317,8 +303,6 @@ namespace {
                 return;
             }
 
-            // fallback: recurse children (covers nested blocks and statements
-            // whose sub-parts live in `children`).
             for (auto& c : node->getChildren()) {
                 if (as<Expression>(c)) lowerExpr(c);
                 else lowerStmt(c);
@@ -334,8 +318,6 @@ namespace {
                         initzr->getChildren().empty() ? nullptr : initzr->getChildren()[0];
                     val = lowerExpr(expr);
                 }
-                // bind a stable memory-cell value under the identifier (single
-                // definition via alloc.stack; reads return this value, writes store).
                 auto local = std::make_shared<CirValue>();
                 local->name = d->getIdentifier();
                 local->type = cirTypeOf(declTy);
@@ -384,8 +366,7 @@ CirFunctionPtr CirBuilder::buildFunction(const MethodPtr& method) {
 
     if (method->getBlock()) L.lowerStmt(method->getBlock());
 
-    // Phase A is a single block; a `return` terminator keeps the CFG well-formed
-    // (the lowering is structural for closure analysis, not a faithful CFG).
+    // The lowering is structural, not a faithful CFG: one block, one terminator.
     L.block->terminator = cirInst(CirOp::Return);
 
     return L.fn;

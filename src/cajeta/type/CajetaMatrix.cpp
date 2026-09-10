@@ -1,6 +1,4 @@
-//
 // CajetaMatrix — see header.
-//
 
 #include "CajetaMatrix.h"
 
@@ -48,11 +46,7 @@ namespace cajeta {
         : elementType(elementType), rows(rows), cols(cols) {
         qName = QualifiedName::getOrCreate(canonicalName(elementType, rows, cols));
         canonical = qName->toCanonical();
-        // By-value (PRIMITIVE_FLAG so the kernel-arg marshaller passes it like a
-        // scalar/vector) and tagged MATRIX_FLAG so codegen recognizes it. Not
-        // NUMBER_FLAG — a matrix is not a scalar number; arithmetic is handled by
-        // the dedicated matrix path. The element's SIGNED_FLAG is inherited so
-        // integer-matrix division picks SDiv/UDiv correctly.
+        // PRIMITIVE_FLAG so the marshaller passes it like a scalar, MATRIX_FLAG so codegen knows it, never NUMBER_FLAG; SIGNED_FLAG is inherited for SDiv/UDiv.
         typeFlags = MATRIX_FLAG | PRIMITIVE_FLAG
             | (elementType->getTypeFlags() & SIGNED_FLAG);
         llvmType = nullptr;

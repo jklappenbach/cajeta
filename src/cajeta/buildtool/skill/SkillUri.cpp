@@ -1,7 +1,4 @@
-//
-// cja-skill:// URI parse/format + lockfile resolver. See SkillUri.h and
-// specs/archive/skill-discovery-spec.md §2.2.
-//
+// cja-skill:// URI parse/format + lockfile resolver. See SkillUri.h.
 #include "cajeta/buildtool/skill/SkillUri.h"
 
 #include <llvm/ADT/Twine.h>
@@ -36,7 +33,7 @@ namespace cajeta::buildtool::skill {
         if (library.empty()) {
             return uriError("missing library in '" + text + "'");
         }
-        // split('@') with no '@' yields empty version.
+        // split('@') with no '@' yields an empty version, so test for the '@' too.
         if (!coord.contains('@') || version.empty()) {
             return uriError("missing version (expected '<library>@<version>') in '" +
                             text + "'");
@@ -60,7 +57,6 @@ namespace cajeta::buildtool::skill {
             lookupArtifact) {
         const ResolvedPackageEntry* match = nullptr;
         for (const auto& p : packages) {
-            // Exact name + version: the URI pins a resolved version, never a range.
             if (p.name == uri.library && p.version == uri.version) {
                 match = &p;
                 break;

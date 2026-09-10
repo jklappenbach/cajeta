@@ -1,6 +1,5 @@
 #pragma once
-// ownership-title-classifier — ONE answer to "what title does this value carry?"
-// for every consumer position (specs/ownership-title-classifier-spec.md).
+// ONE answer to "what title does this value carry?" for every consumer position.
 
 #include <cstdint>
 #include <string>
@@ -20,7 +19,6 @@ namespace cajeta {
 
 namespace cajeta::ownership {
 
-    /// The static answer (spec §2.1).
     enum class TitleAnswer : uint8_t {
         Borrow,      ///< a view of a value someone else owns and frees
         Owned,       ///< a fresh value, or a title moved out of its owner
@@ -29,7 +27,6 @@ namespace cajeta::ownership {
         Scalar,      ///< no title at all: primitives, comparisons, void
     };
 
-    /// Where a Runtime answer's flag comes from (spec §2.2).
     enum class TitleSource : uint8_t {
         None,
         DropEntry,     ///< the named local's drop-entry active byte
@@ -39,7 +36,6 @@ namespace cajeta::ownership {
         Slot,          ///< a field's own-bit or an element take's flag
     };
 
-    /// Provenance family — what the expression IS, before the answer.
     enum class TitleFamily : uint8_t {
         Literal, LocalRead, ThisRead, FieldRead, ElementRead,
         Fresh, Concat, Move, CallResult, ClosureCall, Conditional, Closure,
@@ -47,7 +43,6 @@ namespace cajeta::ownership {
         Count
     };
 
-    /// The consumer positions (spec §2.3).
     enum class ConsumerRole : uint8_t {
         Bind,         ///< `T x = e`
         StoreString,  ///< `#=` / `=` into a String field or slot
@@ -93,7 +88,6 @@ namespace cajeta::ownership {
         bool has(uint32_t f) const { return (flags & f) != 0; }
     };
 
-    /// What a role does with a shape: the answer, or the code that rejects it.
     struct TitleVerdict {
         TitleAnswer answer;
         TitleSource source;
@@ -104,45 +98,34 @@ namespace cajeta::ownership {
     /// The static shape of `e`; total over ExprKind, never throws.
     TitleShape classify(const ExpressionPtr& e, const CajetaModulePtr& module);
 
-    /// The shape of a `#` move / `#=` store over `inner`: the inner's provenance
-    /// decides the flag source, and its leaf/field/flags carry over (§2.1, Move).
     TitleShape moveFrom(const TitleShape& inner, bool sharpStore);
 
-    /// The policy table (spec §2.3), a pure function of (shape, role).
     TitleVerdict policy(const TitleShape& shape, ConsumerRole role);
 
-    /// Unit 9 (spec 5.14) — deactivate a local's drop entry after a move. A
-    /// runtime-conditional local deactivates only if the entry still describes
-    /// its current object, so a displaced value is not orphaned.
+    /// Deactivate a local's drop entry after a move — a runtime-conditional local
+    /// only if the entry still describes its object, so nothing is orphaned.
     void deactivateLocalEntry(const CajetaModulePtr& module, const FieldPtr& field);
     void deactivateLocalEntry(const CajetaModulePtr& module, Field* field);
 
-    /// The i64 title flag for `shape`: a constant for static answers, the named
-    /// runtime read for Runtime ones. Call it IMMEDIATELY after the value's
-    /// codegen for a ReturnFlag source — the next call clobbers the TLS.
+    /// The i64 title flag for `shape`. For a ReturnFlag source, call it
+    /// IMMEDIATELY after the value's codegen: the next call clobbers the TLS.
     llvm::Value* titleFlag(const TitleShape& shape, const CajetaModulePtr& module);
 
-    /// The title a STORE of `e` in `role` carries into its slot, or null for none
-    /// (a borrow, a scalar, a stack value). A policy error throws here (§2.3).
+    /// The title a STORE of `e` in `role` carries; null for none, and throws on a policy error.
     llvm::Value* storeTitleFlag(const ExpressionPtr& e, ConsumerRole role,
                                 const CajetaModulePtr& module, const char* where);
-    /// The same, from a shape the caller already computed (one classify).
     llvm::Value* storeTitleFlagOf(const TitleShape& shape, ConsumerRole role,
                                   const ExpressionPtr& e, const CajetaModulePtr& module,
                                   const char* where);
 
-    /// The flag a consumer stores for a policy VERDICT: 1 for Owned, the verdict's
-    /// runtime read for Runtime, 0 for Borrow/StackBound, null for Scalar or error.
     llvm::Value* verdictFlag(const TitleShape& shape, const TitleVerdict& v,
                              const CajetaModulePtr& module);
 
-    /// `verdictFlag` for a consumer that runs AFTER codegen: a call with no
-    /// resolution was lowered by an intrinsic and stored no flag (a stale TLS).
+    /// `verdictFlag` after codegen: an unresolved call was lowered by an intrinsic and stored no flag.
     llvm::Value* verdictFlagAfterCodegen(const TitleShape& shape, const TitleVerdict& v,
                                          const CajetaModulePtr& module);
 
-    /// Unit 7 — one call or constructor argument, classified AFTER its codegen;
-    /// `flag` is its title bit, read before anything deactivates the source.
+    /// One argument classified AFTER its codegen; `flag` is read before anything deactivates the source.
     struct ArgTitle {
         TitleShape shape;
         llvm::Value* flag = nullptr;
@@ -150,7 +133,7 @@ namespace cajeta::ownership {
     ArgTitle classifyArgument(const ExpressionPtr& e, bool callerTransferred,
                               const CajetaModulePtr& module, const char* where);
 
-    /// Unit 7 — the `#T`-formal contract (5.8, 5.11): every leaf arm must tender a title.
+    /// The `#T`-formal contract: every leaf arm must tender a title.
     void rejectOwnedFormalArgument(const ExpressionPtr& e, bool callerTransferred,
                                    const CajetaModulePtr& module,
                                    const std::string& callee, const std::string& formal,
@@ -159,7 +142,6 @@ namespace cajeta::ownership {
     void rejectEscape(const ExpressionPtr& e, ConsumerRole role,
                       const CajetaModulePtr& module, const char* where);
 
-    /// Constexpr label per family — one table, every diagnostic reads it.
     constexpr const char* labelOfFamily(TitleFamily f) noexcept {
         switch (f) {
             case TitleFamily::Literal:     return "a literal";
@@ -187,7 +169,6 @@ namespace cajeta::ownership {
     const char* toString(ConsumerRole r) noexcept;
     const char* toString(ExprKind k) noexcept;
 
-    /// One classification, as the audit records it (tests read these).
     struct TitleShapeRecord {
         std::string file;
         std::string holder;   ///< `pkg.Class.method` the site is in
@@ -209,7 +190,6 @@ namespace cajeta::ownership {
         static void clear();
     };
 
-    /// Audit-only observation at a consumer site: no behaviour, one branch.
     void observeTitle(const ExpressionPtr& e, const CajetaModulePtr& module,
                       ConsumerRole role);
 

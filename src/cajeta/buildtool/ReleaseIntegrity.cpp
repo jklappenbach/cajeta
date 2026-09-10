@@ -22,9 +22,7 @@ namespace cajeta::buildtool {
             std::time_t now) {
         ReleaseIntegrity out;
 
-        // Who is allowed to have signed the release metadata. A delegation
-        // narrows it to the online release keys; without one the roots verify
-        // directly.
+        // Who may have signed the release metadata; a delegation narrows it to the online release keys.
         std::vector<RootKey> verifiers;
         if (delegation) {
             for (const auto* k : delegation->usableKeys(now)) {
@@ -43,10 +41,7 @@ namespace cajeta::buildtool {
 
         auto raw = repo.releaseMetadataJson(name, version);
         if (!raw) {
-            // A failure to ASK is not an answer. Fall through to the
-            // sidecar rather than reporting a hash we did not get, and
-            // let the fetch produce the real diagnostic if the repository
-            // is genuinely broken.
+            // A failure to ASK is not an answer — fall through to the sidecar rather than report a hash we never got.
             llvm::consumeError(raw.takeError());
         } else if (raw->has_value()) {
             auto md = loadReleaseMetadata(**raw, verifiers);
@@ -61,21 +56,14 @@ namespace cajeta::buildtool {
                 out.fromSignedMetadata = true;
                 out.organization = md->organization;
                 out.rootKeyId = md->rootKeyId;
-                // From the signed payload, so the plain `retracted` beside
-                // it never reaches here — loadReleaseMetadata ignores the
-                // plain half whenever an envelope is present (spec 7.6.2).
+                // From the signed payload; the plain `retracted` beside it is ignored whenever an envelope is present (spec 7.6.2).
                 out.retracted = md->retracted;
                 out.retractedReason = md->retractedReason;
                 return out;
             }
-            // Present but unsigned. It carries no more authority than the
-            // sidecar, so it gets no more weight: fall through rather
-            // than treating a parsed hash as a verified one.
-            //
-            // The retraction still travels, with `fromSignedMetadata` false
-            // to say what it is worth. Whoever can write this flag can clear
-            // it, so it warns rather than binds — and a warning that might
-            // be spurious beats staying silent about a withdrawn release.
+            // Present but unsigned: no more authority than the sidecar, so it does
+            // not count as verified. The retraction still travels, with
+            // `fromSignedMetadata` false, so it warns rather than binds.
             out.retracted = md->retracted;
             out.retractedReason = md->retractedReason;
         }

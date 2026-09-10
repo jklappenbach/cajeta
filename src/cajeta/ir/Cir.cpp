@@ -1,7 +1,4 @@
-//
 // CIR core — enum<->text helpers and node factories. See Cir.h.
-//
-
 #include "Cir.h"
 
 namespace cajeta {

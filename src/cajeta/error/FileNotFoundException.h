@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 11/18/23.
-//
+// Exception naming the missing path and the working directory it was resolved against.
 
 #pragma once
 

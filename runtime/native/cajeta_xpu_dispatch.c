@@ -1,14 +1,8 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
 // === (single-TU build; not a standalone compilation unit).
 // --- registered kernel modules (device images keyed by entry name + backend) -
-// Each backend's registration ctor calls __cajeta_xpu_register_module_be once
-// per @Kernel with ITS image and backend id; the launch path resolves by
-// (name, active backend) and loads lazily on first use. A multi-backend build
-// registers one image per backend under the same name — keying by name alone
-// made the last ctor win, so on a nvptx,amdgpu,vulkan,cpu build the CUDA and
-// HIP paths saw the SPIR-V image ("no registered kernel" via the magic check,
-// or a RADV crash in the reverse order). backend == -1 marks a legacy 3-arg
-// registration and matches any requested backend.
+// Each backend's ctor registers ITS image per @Kernel; the launch path resolves
+// by (name, active backend). backend == -1 is legacy and matches any requester.
 struct cajeta_xpu_module {
     char name[256];
     int backend;      // CAJ_XPU_* id of the image's consumer, or -1 (legacy/any)
@@ -17,19 +11,13 @@ struct cajeta_xpu_module {
     void* module;     // CUmodule/hipModule, lazily loaded
     void* function;   // CUfunction/hipFunction, lazily resolved
 };
-// 1024, up from 128 (2026-08-25): cajeta-llama's engine + test suite crossed
-// 128 registered kernels and the overflow was SILENT — registration returned
-// without storing, and the dropped kernel surfaced only at launch as "no
-// registered kernel", two programs and one linker away from the cause. The
-// register path now also says so at the moment of the drop (see
-// cajeta_xpu_register_module_impl); this headroom is cheap (~300 KB static).
+// An overflow is reported at registration (cajeta_xpu_register_module_impl).
 #define CAJETA_XPU_MAX_MODULES 1024
 static struct cajeta_xpu_module g_xpu_modules[CAJETA_XPU_MAX_MODULES];
 static int g_xpu_module_count;
 
-// Caller holds g_xpu_cuda_lock. `backend` is the requesting consumer's
-// CAJ_XPU_* id, or -1 for the legacy don't-care lookup. Exact backend match
-// wins; a legacy (-1) entry serves any requester.
+// Find a registered image for `name` under `backend` (-1 = any): an exact
+// backend match wins, a legacy (-1) entry serves anyone. Caller holds the lock.
 static struct cajeta_xpu_module* cajeta_xpu_find_module(const char* name,
                                                         int backend) {
     int i;
@@ -50,22 +38,14 @@ static struct cajeta_xpu_module* cajeta_xpu_find_module(const char* name,
 }
 
 // --- Stream -----------------------------------------------------------------
-// Streams. The Stream handle (int64) is the per-backend stream object: 0 = the
-// default stream (the original v1 behaviour; current() returns it and the launch
-// path passes NULL for it). create() makes a REAL stream (hipStreamCreate /
-// cuStreamCreate) so async copies + stream-ordered launches queue independently;
-// sync() drains either the named stream (real handle) or the whole context (0).
-// Defined with the backend dispatcher below (after the kernel registries).
+// The Stream handle (int64) is the backend stream object: 0 = the default
+// stream; create() makes a real one so copies and launches queue independently.
 static void cajeta_xpu_sync_active(void);
 
 int64_t __cajeta_xpu_stream_current(void) { return 0; }   // the default stream
-// __cajeta_xpu_stream_{create,sync,destroy,wait_for} and the Event/Fence natives
-// are defined further below, after the backend enum + cajeta_xpu_active_backend()
-// they switch on (alongside the buffer async-copy functions).
 
 // --- Thread / Workgroup coordinate readers ---------------------------------
-// Returns zero in v1; step 7 plumbs these into TLS set by the emulation
-// dispatch loop so kernel bodies see real thread indices.
+// Zero on the host emulation; device lowerings never call these.
 uint32_t __cajeta_xpu_thread_x(void) { return 0; }
 uint32_t __cajeta_xpu_thread_y(void) { return 0; }
 uint32_t __cajeta_xpu_thread_z(void) { return 0; }
@@ -88,53 +68,30 @@ void __cajeta_xpu_barrier_workgroup_memory_ord(int32_t order) { (void) order; /*
 void __cajeta_xpu_barrier_device_memory_ord(int32_t order) { (void) order; /* host no-op; kernel path lowers with the order */ }
 
 // --- Wave ------------------------------------------------------------------
-// width=1 on CPU emulation (single-threaded) is the variance-correct
-// default that doesn't make any kernel's wave-uniformity assumption
-// false on this backend.
+// Wave / Group / Quad host stubs: the CPU emulation is a width-1 wave, so every
+// cross-lane op is the identity and the device lowerings fold them instead.
 uint32_t __cajeta_xpu_wave_width(void) { return 1; }
-// TargetDescriptor.waveWidth() — the COOPERATIVE-GROUP width (xpu-cooperative-
-// tile §3, §5). 1 on CPU: the cooperative unit is one work-item, SIMD lives
-// below the abstraction (§3.5). On a GPU the kernel lowering folds it to the
-// wave/subgroup size and never calls this; this is the host @Native / CPU
-// scalar-fallback value, and the CPU kernel path emits the constant 1 directly.
 uint32_t __cajeta_xpu_group_width(void) { return 1; }
-// Group.laneId() — the single lane of a width-1 CPU group is lane 0. GPU folds
-// to waveLaneId and never calls this.
 uint32_t __cajeta_xpu_group_lane_id(void) { return 0; }
-// Group.rowId() — the group's block index (workgroup id x). GPU/CPU kernels
-// fold to workgroupId and never call this; host stub for JIT materialization.
 uint32_t __cajeta_xpu_group_row_id(void) { return 0; }
-// Group.mac(acc, a, b) int8 tier — the kernel lowerer intercepts it to the
-// dp4a chunk loop and never calls this; the symbol exists only so the stdlib
-// JIT-materializes. The signature MUST match the @Native declaration's arity
-// and LLVM types (i32, <16 x i8>, <16 x i8>) — a 0-arg stub trips the JIT
-// verifier ("incorrect number of arguments"). Never invoked.
+// Group.mac int8 tier: the lowerer intercepts this, but the symbol must exist
+// for JIT materialization with the @Native arity/types (i32, v16i8, v16i8).
 typedef int8_t cajeta_v16i8 __attribute__((vector_size(16)));
 int32_t __cajeta_xpu_group_mac_i8(int32_t acc, cajeta_v16i8 a, cajeta_v16i8 b) {
     (void) a; (void) b;
     return acc;
 }
-// Group.reduce(op, value) — a width-1 group reduce is the identity. NOT the
-// wave reduce: on the CPU backend the SIMD lanes carry independent rows, so
-// summing them would merge rows. (op ignored; the identity is op-independent.)
+// NOT the wave reduce: on CPU the SIMD lanes carry independent rows.
 float __cajeta_xpu_group_reduce_f32(int32_t op, float value) {
     (void) op;
     return value;
 }
-// Group.reduceSegmented(segment, op, value) — identity on a width-1 group.
 float __cajeta_xpu_group_reduce_f32_seg(int32_t segment, int32_t op, float value) {
     (void) segment; (void) op;
     return value;
 }
-// Group.stripe(n) — only ever a for-each iterable, lowered directly by the
-// kernel lowerer; this host symbol exists solely for stdlib JIT materialization
-// and is never called.
 int32_t __cajeta_xpu_group_stripe(int32_t n) { return n; }
-// Lane within the wave: 0 on the width-1 emulation (only lane 0 exists). In a
-// vectorized CPU kernel the lowering computes `tid.x % width` inline instead of
-// calling this stub; this is the host @Native / scalar-fallback value.
 uint32_t __cajeta_xpu_wave_lane_id(void) { return 0; }
-// Width-1 emulation: the single lane is always the first.
 bool __cajeta_xpu_wave_is_first_lane(void) { return true; }
 uint32_t __cajeta_xpu_wave_shuffle_sync_u32(uint32_t value, uint32_t srcLane) {
     (void)srcLane; return value;
@@ -142,29 +99,16 @@ uint32_t __cajeta_xpu_wave_shuffle_sync_u32(uint32_t value, uint32_t srcLane) {
 uint64_t __cajeta_xpu_wave_ballot_sync(bool predicate) {
     return predicate ? 1ULL : 0ULL;
 }
-// Single-lane wave (width=1) on CPU emulation: the wave-wide reduction of one
-// lane's value is just that value. The real cross-lane reduction happens in the
-// vectorized VFABI variant (CpuRegistration) when a wave kernel is widened;
-// these scalars are the width-1 fallback.
 uint32_t __cajeta_xpu_wave_reduce_sum_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_max_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_min_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_and_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_or_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_xor_u32(uint32_t value) { return value; }
-// Mask-as-data spellings (compiler-generated; CpuRegistration's mask-as-data
-// rewrite hoists a guarded wave reduce out of divergent control flow and
-// passes the guard as an explicit lane-active argument, so LoopVectorize can
-// never scalarize the cross-lane op per lane — the arm64-darwin/NEON class
-// of silent wrong sums). Width-1 fallback: an active lane reduces to its own
-// value, an inactive lane contributes the op's identity (result unused —
-// every consumer of the result is still under the original guard).
+// Mask-as-data spellings (compiler-generated): the guard travels as an explicit
+// lane-active argument so LoopVectorize cannot scalarize the cross-lane op.
 float __cajeta_xpu_wave_reduce_sum_f32(float value) { return value; }
 float __cajeta_xpu_wave_reduce_max_f32(float value) { return value; }
-// Segmented reduce host fallback: a width-1 host lane is its own whole
-// segment, so the reduction is the identity. The real cross-lane work happens
-// in the device lowering (a bounded shuffle butterfly) or, on the CPU wave
-// model, the whole-wave VFABI variant of the plain reduce.
 float __cajeta_xpu_wave_reduce_sum_f32_seg(float value, uint32_t segment) { (void) segment; return value; }
 float __cajeta_xpu_wave_reduce_max_f32_seg(float value, uint32_t segment) { (void) segment; return value; }
 uint32_t __cajeta_xpu_wave_reduce_sum_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
@@ -175,23 +119,13 @@ uint32_t __cajeta_xpu_wave_reduce_or_u32_m(uint32_t value, _Bool active) { retur
 uint32_t __cajeta_xpu_wave_reduce_xor_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
 float __cajeta_xpu_wave_reduce_sum_f32_m(float value, _Bool active) { return active ? value : 0.0f; }
 float __cajeta_xpu_wave_reduce_max_f32_m(float value, _Bool active) { return active ? value : -3.402823466e38f; }
-// Exclusive prefix scan: width-1 fallback — lane 0's exclusive prefix is the
-// identity (0 for sum, 1 for product). The real scan runs in the VFABI variant.
+// Width-1 fallback: lane 0's exclusive prefix is the identity (0 sum, 1 product).
 uint32_t __cajeta_xpu_wave_prefix_sum_u32(uint32_t value) { (void)value; return 0; }
 uint32_t __cajeta_xpu_wave_prefix_product_u32(uint32_t value) { (void)value; return 1; }
-// Width-1 wave rotate: a single-lane wave rotated by any delta is the lane
-// itself (the host @Native / scalar fallback; the device path is ds_bpermute /
-// OpGroupNonUniformRotateKHR). Matches the shuffle/reduce width-1 convention.
 uint32_t __cajeta_xpu_wave_rotate_u32(uint32_t value, uint32_t delta) {
     (void)delta; return value;
 }
 
-// Quad (2x2) ops (Quad.*). Like the wave ops these are cross-lane on device; the
-// host @Native definition is the width-1 (single-lane quad) fallback so the host
-// JIT / any CPU @Device call resolves the Quad.cajeta forwarders. The device
-// backends lower them inline (OpGroupNonUniformQuad* on Vulkan, ds_bpermute /
-// shuffle elsewhere). A lone quad lane: broadcast/swap yield the lane's own
-// value; the vote is just this lane's predicate.
 uint32_t __cajeta_xpu_quad_broadcast(uint32_t value, uint32_t index) {
     (void)index; return value;
 }
@@ -201,11 +135,8 @@ uint32_t __cajeta_xpu_quad_swap_diagonal(uint32_t value) { return value; }
 bool __cajeta_xpu_quad_all(bool predicate) { return predicate; }
 bool __cajeta_xpu_quad_any(bool predicate) { return predicate; }
 
-// Per-invocation bit ops (Bits.*). Unlike the wave ops these are NOT cross-lane —
-// they are pure scalar functions of one u32, so the host @Native definition is
-// the exact same computation the device emits (OpBitReverse / OpBitCount / a
-// masked rotate). Provided so the host JIT (and any CPU @Device call) resolves
-// the Bits.cajeta forwarders; the device backends lower them inline.
+// Per-invocation bit ops: NOT cross-lane — pure scalar functions of one u32, so
+// this host code is exactly what the device emits inline.
 uint32_t __cajeta_xpu_bits_reverse_u32(uint32_t value) {
     value = ((value & 0x55555555u) << 1)  | ((value >> 1)  & 0x55555555u);
     value = ((value & 0x33333333u) << 2)  | ((value >> 2)  & 0x33333333u);
@@ -229,41 +160,32 @@ uint32_t __cajeta_xpu_bits_rotate_right_u32(uint32_t value, uint32_t amount) {
 }
 
 // --- CPU backend kernel registry -------------------------------------------
-// The CPU backend (cajeta-cpu.md) lowers each @Kernel to a host function linked
-// into the program. Its registration ctor calls register_cpu_kernel(name, fn)
-// at startup; the runtime dispatcher (Increment 4) resolves a launch to the
-// stored pointer. Keyed by simple kernel name, matching the device backends'
-// name-keyed __cajeta_xpu_register_module. A small fixed table — kernel counts
-// are tiny — with last-writer-wins on a duplicate name.
+// The CPU backend lowers each @Kernel to a host function; its registration ctor
+// calls register_cpu_kernel(name, fn) and the launch path resolves by name.
 #ifndef CAJETA_XPU_CPU_KERNEL_MAX
 #define CAJETA_XPU_CPU_KERNEL_MAX 256
 #endif
 static struct { const char* name; void* fn; } g_cpu_kernels[CAJETA_XPU_CPU_KERNEL_MAX];
 static int g_cpu_kernel_count = 0;
 
+// Register a CPU-backend kernel under `name`; last writer wins. The name is
+// strdup'd, since a JIT'd ctor's string dies with its module.
 void __cajeta_xpu_register_cpu_kernel(const char* name, void* fn) {
     if (!name || !fn) return;
     for (int i = 0; i < g_cpu_kernel_count; ++i) {
         if (g_cpu_kernels[i].name && strcmp(g_cpu_kernels[i].name, name) == 0) {
-            g_cpu_kernels[i].fn = fn;  // last writer wins
+            g_cpu_kernels[i].fn = fn;
             return;
         }
     }
     if (g_cpu_kernel_count < CAJETA_XPU_CPU_KERNEL_MAX) {
-        // Own the name: a caller may free the string after registering (notably
-        // a JIT'd registration ctor whose module/engine is later torn down — the
-        // kname global lives in JIT memory). Keeping the raw pointer leaves a
-        // dangling key that the next strcmp() here or in lookup dereferences →
-        // crash. strdup so the registry's keys outlive any caller (matching the
-        // env-registry above). Process-lifetime table, never freed.
         g_cpu_kernels[g_cpu_kernel_count].name = strdup(name);
         g_cpu_kernels[g_cpu_kernel_count].fn = fn;
         ++g_cpu_kernel_count;
     }
 }
 
-// Resolve a registered CPU kernel by name (NULL if absent). Used by the
-// dispatcher; exposed now so registration is testable end-to-end.
+// Resolve a registered CPU kernel by name; NULL when absent.
 void* __cajeta_xpu_lookup_cpu_kernel(const char* name) {
     if (!name) return 0;
     for (int i = 0; i < g_cpu_kernel_count; ++i) {
@@ -275,19 +197,8 @@ void* __cajeta_xpu_lookup_cpu_kernel(const char* name) {
 }
 
 // --- Backend dispatcher (cajeta-cpu.md Increment 4) -------------------------
-// Compiled Cajeta programs launch through THIS C runtime only (the C++
-// CudaDriver/HipDriver/VulkanDriver/CpuDriver are compiler/test-only and never
-// linked into a user program). A binary can bundle several backends
-// (--xpu-backend=vulkan,cpu); at the first device touch we pick the
-// highest-priority one that is both BUNDLED (a compile-time manifest of ctors
-// calling __cajeta_xpu_register_backend) and AVAILABLE (a runtime probe),
-// honoring a CAJETA_XPU_BACKEND force-override, then cache it. Every device
-// entry point (buffer_*, launch) routes to that backend. The choice is made
-// ONCE — a GPU present at startup but lost mid-run is a hard error, not a silent
-// CPU re-run (locked decision #2).
-//
-// Priority order: CUDA -> HIP -> Vulkan -> CPU. CPU is always available, the
-// guaranteed terminal of the chain. Backend ids are the priority order.
+// A binary can bundle several backends; the first device touch selects and
+// caches the highest-priority BUNDLED and AVAILABLE one (the ids are that order).
 enum {
     CAJ_XPU_CUDA   = 0,
     CAJ_XPU_HIP    = 1,
@@ -325,11 +236,8 @@ void __cajeta_xpu_register_backend(int32_t id) {
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 }
 
-// Probe a backend's availability. Caller holds g_xpu_cuda_lock — so this calls
-// the *_init_locked variants directly (NOT the locking *_ready wrappers, which
-// would deadlock under the held lock). Vulkan lands in Increment 4.3; until then
-// it probes unavailable, so a vulkan-only bundle falls through to the precise
-// diagnostic (or to CPU if bundled).
+// Probe a backend's availability. Caller holds g_xpu_cuda_lock, so this calls
+// the *_init_locked variants — the locking *_ready wrappers would deadlock.
 static int cajeta_xpu_backend_available_locked(int id) {
     switch (id) {
         case CAJ_XPU_CUDA:   return cajeta_xpu_cuda_init_locked();
@@ -340,12 +248,10 @@ static int cajeta_xpu_backend_available_locked(int id) {
     }
 }
 
-// In-process backend force (Device.force — cajeta-llama 11.2): observed by
-// select_locked ahead of the env var. -1 = not forced.
+// In-process backend force (Device.force), read ahead of the env var. -1 = none.
 static int g_xpu_forced_api = -1;
 
-// Returns 1 when the force landed before selection, 0 when selection has
-// already cached a backend (too late — the caller reports it).
+// Returns 1 when the force landed before selection, 0 when it is already too late.
 int32_t __cajeta_xpu_force_backend(int32_t id) {
     int ok;
     pthread_mutex_lock(&g_xpu_cuda_lock);
@@ -371,7 +277,6 @@ static int cajeta_xpu_select_locked(void) {
         if (cajeta_xpu_backend_available_locked(id)) { g_xpu_active = id; return id; }
     }
     g_xpu_active = CAJ_XPU_NONE;
-    // Precise, once: degradation is a build-time contract (locked decision #3).
     char set[128]; size_t n = 0; set[0] = '\0';
     for (int id = 0; id < CAJ_XPU_COUNT; ++id) {
         if (!(g_xpu_bundled & (1u << id))) continue;
@@ -394,39 +299,14 @@ static int cajeta_xpu_active_backend(void) {
     return r;
 }
 
-// cajeta.xpu.Device.activeBackend() — which backend the runtime selected.
-// Returns the CAJ_XPU_* id, or -1 when none is available. NOTE this SELECTS
-// the backend if the selection has not happened yet (it is a device touch),
-// which is the same contract Device.supports() already has.
+// Device.activeBackend() — the selected backend id, or -1 when none is
+// available. NOTE this SELECTS if selection has not happened (a device touch).
 int32_t __cajeta_xpu_active_backend_id(void) {
     return (int32_t) cajeta_xpu_active_backend();
 }
 
-// cajeta.xpu.Device.memoryBytes() — the active device's total visible
-// memory in bytes, 0 when the backend cannot answer (an absent optional
-// symbol, a query failure, or no backend). 0 is "unknown", never a
-// budget: callers must treat it as no answer. Like activeBackend, this
-// is a device touch.
-//   cuda   — cuDeviceTotalMem on the selected device.
-//   hip    — hipMemGetInfo's `total`; on a UMA part this is the
-//            GTT-visible pool, which is the honest device-visible
-//            number (Strix Halo reports ~96 GiB of the 122 GiB RAM).
-//   vulkan — the sum of DEVICE_LOCAL heaps from the memory properties
-//            cached at init (heap sizes, not budgets: allocation can
-//            still fail earlier under pressure).
-//   cpu    — total physical RAM (the device IS the host).
-// cajeta.xpu.Device's geometry surface — the queried machine shape a kernel
-// needs in order to size itself instead of carrying a constant measured on
-// somebody else's part (specs/device-geometry-parameterization-spec.md).
-//
-// Backed by the SAME query the host-side DeviceProfile uses, so a number a
-// cajeta program reads and a number `cajeta gpu-profile` prints cannot
-// disagree. Cached once: the query dlopens a driver and reads a dozen
-// attributes, and a kernel-sizing call site may run per launch.
-//
-// 0 means UNKNOWN for every key — no device, profiling disabled, or a runtime
-// that did not report that fact. A caller must branch on 0 rather than treat
-// it as a budget; that substitution is the exact defect this work undoes.
+// Device geometry: the machine shape a kernel needs to size itself, from the
+// same query DeviceProfile uses, cached once. 0 = UNKNOWN, never a budget.
 static CajetaXpuRawDevice g_xpu_geo;
 static int g_xpu_geo_state = 0;   /* 0 untried, 1 valid, -1 unavailable */
 
@@ -462,6 +342,8 @@ int64_t __cajeta_xpu_device_geometry(int32_t key) {
     return 0;
 }
 
+// Device.memoryBytes() — the active device's total visible memory, 0 when the
+// backend cannot answer. A device touch; on a UMA part HIP reports the GTT pool.
 int64_t __cajeta_xpu_device_memory_bytes(void) {
     int be = cajeta_xpu_active_backend();
     switch (be) {
@@ -509,48 +391,27 @@ int64_t __cajeta_xpu_device_memory_bytes(void) {
     }
 }
 
-// Forward decl (the OptiX glue's full extern block is below, near the launch path).
 extern int cajeta_xpu_optix_available(void);
 
-// Device.supports(Capability) — does the active device advertise the capability
-// natively? The capability heuristic's runtime input (cajeta.xpu.Device).
-// `cap` is the Capability ordinal (the stable contract in Capability.cajeta).
-// Returns 0/1. Append new capabilities as new cases; never renumber.
+// Device.supports(Capability) — does the active device advertise `cap` natively?
+// `cap` is the Capability.cajeta ordinal; append cases, never renumber.
 int32_t __cajeta_xpu_device_supports(int32_t cap) {
     int be = cajeta_xpu_active_backend();
     switch (cap) {
         case 0:  // RayQueryNative — hardware INLINE ray query
-            // g_xpu_vk.rayQuery is detected in the main (Windows-included) Vulkan
-            // device init, so this reports the real device capability on Windows
-            // too (the RTX 4090's Vulkan driver advertises VK_KHR_ray_query). The
-            // old `&& !defined(_WIN32)` hard-zeroed it on Windows — wrong now that
-            // the Vulkan ray-query path is exercised there.
-            // NOTE: CUDA is intentionally false here — OptiX has NO inline ray
-            // query (RT cores are reached only through a pipeline), so the CUDA RT
-            // core path is the SEPARATE RayQueryRtCore capability below, not this.
+            // CUDA is intentionally false: OptiX has no inline ray query (RT
+            // cores are reached only through a pipeline) — that is case 1.
 #if defined(CAJETA_RT_HAS_VULKAN)
             return (be == CAJ_XPU_VULKAN && g_xpu_vk.rayQuery) ? 1 : 0;
 #else
             (void) be; return 0;
 #endif
         case 1:  // RayQueryRtCore — pipeline-based RT-core ray query (NVIDIA OptiX)
-            // Distinct from RayQueryNative: this is the CUDA RT-core path reached via
-            // the OptiX pipeline (raygen/anyhit/closesthit/intersection/miss + SBT),
-            // opt-in at AS-build time with CAJETA_GPU_AS_IMPL=optix. True iff the
-            // active device is CUDA and the OptiX engine (nvoptix.dll) loaded.
+            // The CUDA RT-core path, opt-in with CAJETA_GPU_AS_IMPL=optix.
             return (be == CAJ_XPU_CUDA && cajeta_xpu_optix_available()) ? 1 : 0;
         case 2:  // CoopMatrixBf16F32Acc — a LAUNCHABLE bf16(A/B)+f32(acc)
-            // cooperative-matrix GEMM path on the active backend (cajeta-llama
-            // 2.2.6). "Launchable" is the contract, not "native silicon": the
-            // op layer uses this to decide whether Ewise.matmulBf16Wide can be
-            // dispatched at all, so the CPU backend answers 1 (its software
-            // tier runs any tile-dtype mix) even though nothing about it is
-            // native. Vulkan answers 0 — no driver exposes a bf16 coop-matrix
-            // config, the SPIR-V lowering skips the kernel (mixed-tier), and a
-            // launch would fail on the missing registration. CUDA needs the
-            // bf16 tensor cores (sm_80+); HIP needs RDNA3+ (gfx11xx/gfx12xx —
-            // wmma.f32.16x16x16.bf16; CDNA's MFMA path is not wired in the
-            // AMDGPU lowering, so it stays conservative-false there).
+            // "Launchable", not "native silicon": CPU answers 1, Vulkan 0 (no
+            // driver config), CUDA needs sm_80+, HIP gfx11xx/gfx12xx wmma.
             switch (be) {
                 case CAJ_XPU_CPU:
                     return 1;
@@ -572,12 +433,7 @@ int32_t __cajeta_xpu_device_supports(int32_t cap) {
                     return 0;
             }
         case 3:  // AtomicInt64 — Buffer<int64|uint64>.atomic* runs natively.
-            // The Vulkan init already probes VK_KHR_shader_atomic_int64 and
-            // enables shaderBufferInt64Atomics when the device has it; this
-            // just surfaces that verdict. Neither Apple driver advertises the
-            // extension, so both answer 0 and callers take the degrade path
-            // (apple-vulkan spec 4.6). CUDA and HIP have had 64-bit global
-            // atomics since forever; CPU serializes and always can.
+            // Vulkan's init probes the extension; CUDA/HIP always have it.
             switch (be) {
                 case CAJ_XPU_CPU:
                 case CAJ_XPU_CUDA:
@@ -596,14 +452,9 @@ int32_t __cajeta_xpu_device_supports(int32_t cap) {
     }
 }
 
-// Synchronize the active backend (called by stream.sync). active_backend() has
-// already initialized the chosen backend, so its fn pointers are valid. CPU is
-// synchronous (nothing to drain); none is a no-op.
+// Synchronize the active backend (stream.sync); CPU is already synchronous.
 static void cajeta_xpu_sync_active(void) {
     switch (cajeta_xpu_active_backend()) {
-        // After a synchronize every event on the device has completed, so this
-        // is where the profiler's brackets resolve promptly instead of waiting
-        // for the next launch to poll them.
         case CAJ_XPU_CUDA: g_xpu_cuda.cuCtxSynchronize();
                            caj_cuda_bracket_drain();        break;
         case CAJ_XPU_HIP:  g_xpu_hip.hipDeviceSynchronize(); break;
@@ -612,14 +463,10 @@ static void cajeta_xpu_sync_active(void) {
     }
 }
 
-// CPU launch: resolve the kernel's registered launcher thunk and run the
-// grid->threads loop (the in-C twin of CpuDriver::launch; cajeta-cpu.md Inc 3),
-// 1-D to match the host-source launch boundary. coord = [tid.xyz, ctaid.xyz,
-// ntid.xyz]; argv is the kernelParams array shared across work-items.
+// CPU launch thunk: coord = [tid.xyz, ctaid.xyz, ntid.xyz, ...]; argv is shared.
 typedef void (*cajeta_cpu_launch_fn)(void** argv, const int32_t* coord);
 
-// One worker's slice of the grid: linear block indices [bStart, bEnd) of a
-// gx*gy*gz block grid, each block sized (bx,by,bz) work-items.
+// One worker's slice: linear block indices [bStart, bEnd) of the block grid.
 struct cajeta_cpu_grid_slice {
     cajeta_cpu_launch_fn fn;
     void** argv;
@@ -632,21 +479,13 @@ struct cajeta_cpu_grid_slice {
     const int32_t* specValues;  // slot-indexed raw words; lives for the launch
 };
 
-// Host spec-constant override state for the CPU backend (Stage 11/12, hybrid
-// decision: CPU honors an override by READING the supplied value at runtime —
-// no per-value recompile; folding is a perf detail irrelevant on the oracle
-// path). Thread-local because the grid fans out across worker threads: each
-// worker's run_slice sets its OWN copy from its slice before invoking the
-// per-block wrapper, so the spec helpers (called from the inlined kernel on that
-// same thread) read the right values race-free. Set fresh per run_slice, so no
-// stale reads across launches.
+// Host spec-constant overrides are READ at runtime, never recompiled. Thread-
+// local: each worker publishes its own copy before the per-block wrapper runs.
 static __thread int32_t g_cpu_spec_count = 0;
 static __thread const int32_t* g_cpu_spec_values = NULL;
 
-// Read user spec slot `slot` (CPU): the host override if supplied, else the
-// kernel's compile-time `def`. The CPU kernel lowering emits calls to these
-// (CpuKernelLowering::specConstant{I32,F32}) instead of baking the default. The
-// f32 form reinterprets the raw override word (the transport is type-agnostic).
+// Read user spec slot `slot`: the host override when supplied, else the
+// kernel's compile-time `def`. The f32 form reinterprets the raw word.
 int32_t __cajeta_xpu_cpu_spec_i32(int32_t slot, int32_t def) {
     if (g_cpu_spec_values && slot >= 0 && slot < g_cpu_spec_count)
         return g_cpu_spec_values[slot];
@@ -661,19 +500,10 @@ float __cajeta_xpu_cpu_spec_f32(int32_t slot, float def) {
     return def;
 }
 
-// Run a contiguous slice of blocks. The launcher thunk is the per-BLOCK wrapper
-// (Inc 5B): it loops the block's work-items internally (vectorized), so we call
-// it ONCE PER BLOCK, setting ctaid.xyz + ntid.xyz + nctaid.xyz. coord =
-// [tid.xyz (the wrapper's loop var), ctaid.xyz, ntid.xyz, nctaid.xyz, dynShared].
-// nctaid (grid block-count = gx,gy,gz) lets the kernel compute the grid-stride
-// for-each stride gridSize = nctaid·ntid (Item 6 Stage 2). Each worker owns its
-// coord (no sharing); a data-parallel CPU kernel writes disjoint elements, so
-// the fan-out is race-free for any kernel correct on a GPU. The 3-D grid is
-// linearized (x fastest) and decoded back to ctaid.xyz per block.
+// Run a contiguous slice of blocks. The thunk is the per-BLOCK wrapper (it loops
+// the work-items), so it runs once per block; the grid is linearized x-fastest.
 static void cajeta_xpu_cpu_run_slice(const struct cajeta_cpu_grid_slice* s) {
-    // Publish this worker's spec overrides for the kernel's spec helpers (TLS;
-    // see g_cpu_spec_*). Set every call, so a launch with no override (count 0)
-    // correctly reads defaults even after a prior overridden launch on this thread.
+    // Set every call, so a launch with no override still reads defaults.
     g_cpu_spec_count = s->specCount;
     g_cpu_spec_values = s->specValues;
     int32_t coord[13] = {0, 0, 0, 0, 0, 0, s->bx, s->by, s->bz,
@@ -693,46 +523,15 @@ static void* cajeta_xpu_cpu_worker(void* arg) {
     return NULL;
 }
 
-// CPU launch (cajeta-cpu.md Inc 3 + Inc 5A). Resolve the kernel's launcher thunk
-// and run the grid->threads loop, parallelized across cores: the gridX blocks
-// are chunked across min(gridX, cores) worker threads (the calling thread runs
-// the last slice while the others fan out). Below a work-item threshold — or
-// with one core / one block — it runs serially, since thread fan-out costs more
-// than a small launch saves. Workgroup barriers are safe here even though they
-// make work-items rendezvous: fission (Inc 6) realizes a barrier *within* a
-// single per-block wrapper call, and each wrapper call runs on one worker — so
-// the grid of blocks stays embarrassingly parallel (work-items of a block never
-// split across threads). True wave=SIMD-lane vectorization (Inc 5B) layers on
-// top of each work-item call.
-// The parallel cutover. With the persistent pool (below) a dispatch is a
-// broadcast + barrier — no per-launch thread spawn — so the old 4096 figure
-// (chosen when each launch paid pthread_create/join) is far too conservative:
-// a kernel doing real per-item work parallelizes profitably well below it.
-// Overridable at runtime via CAJETA_XPU_CPU_PARALLEL_THRESHOLD for tuning.
+// The parallel cutover. A pooled dispatch is a broadcast + barrier, not a thread
+// spawn, so it pays off well below the old figure. Overridable in the env.
 #ifndef CAJETA_XPU_CPU_PARALLEL_THRESHOLD
 #define CAJETA_XPU_CPU_PARALLEL_THRESHOLD 256   /* work-items */
 #endif
 #define CAJETA_XPU_CPU_MAX_WORKERS 256
 
-// Spin budgets before falling back to a futex sleep. Split deliberately into a
-// WORKER (wakeup) budget and a JOIN (completion) budget because they have
-// opposite safety profiles:
-//
-//   * JOIN spin is caller-side: the launching thread busy-waits for the workers'
-//     done-counter to hit zero instead of sleeping on a condvar. Pure latency
-//     win, no effect on how the workers run. Safe to spin hard.
-//
-//   * WORKER spin would have every pool worker busy-wait on the generation
-//     counter, so a dispatch broadcast releases them all within nanoseconds —
-//     TRULY simultaneous entry into the kernel. That tripped a latent
-//     high-concurrency race in barrier-fission kernels (>8 work-items entering
-//     the freshly-emitted wrapper at the exact same instant corrupts the stack
-//     -> SIGSEGV). Staggered condvar wakeup (the legacy per-launch behavior)
-//     never hit it. So WORKER spin defaults to 0 (condvar wakeup, naturally
-//     staggered) until that fission race is fixed; JOIN spin carries the perf.
-//
-// ~2^18 pauses ~= a couple ms ceiling: kernels shorter than that never pay the
-// join's futex round-trip.
+// Spin budgets before a futex sleep. JOIN spin is caller-side and safe; WORKER
+// spin trips a latent barrier-fission race, so it defaults to 0 (condvar).
 #ifndef CAJETA_XPU_CPU_JOIN_SPIN
 #define CAJETA_XPU_CPU_JOIN_SPIN 262144
 #endif
@@ -748,14 +547,8 @@ static void* cajeta_xpu_cpu_worker(void* arg) {
 #endif
 
 // --- Persistent CPU-kernel worker pool --------------------------------------
-// A data-parallel @Kernel launch fans its blocks across cores. Spawning fresh
-// pthreads per launch (the original path) costs ~5-15us/thread in create+join
-// — ruinous for small, frequently-launched kernels (an iterative solver, a
-// per-frame image pass, matmul timed best-of-N). This pool creates the worker
-// threads ONCE; each subsequent launch is a generation bump + condvar
-// broadcast (fork) and a done-counter wait (join). Workers sleep between
-// launches, so idle cost is zero. The calling thread always runs the last
-// slice itself, so a P-way launch uses P-1 pool workers + the caller.
+// Spawning pthreads per launch costs ~5-15us/thread, which dominates small,
+// frequent kernels. This pool creates its workers ONCE and reuses them.
 struct caj_kpool_slice_ref { const struct cajeta_cpu_grid_slice* s; };
 static struct {
     int            started;
@@ -770,30 +563,15 @@ static struct {
     int             shutdown;
     const struct cajeta_cpu_grid_slice* slices;  // slices[0..njobs-1] for workers
 } g_caj_kpool = {
-    // The pthread primitives MUST carry their static initializers explicitly.
-    // On glibc PTHREAD_*_INITIALIZER is all-zero, so plain static zero-init
-    // happened to work there — but on winpthreads (MSYS2/MinGW) the
-    // initializers are -1 sentinels that trigger lazy self-init, and a ZEROED
-    // mutex/condvar is an invalid object: pthread_cond_wait on it never
-    // returns (return codes here are unchecked), so the FIRST CPU-rung kernel
-    // launch on Windows hung forever in caj_kpool_wait_gen/caj_kpool_join
-    // (specs/windows-vulkan-cpu-forced-hang-spec.md). Bit-identical to the
-    // old zero-init on glibc; correct everywhere.
+    // These pthread primitives MUST carry their static initializers explicitly:
+    // on winpthreads the initializers are -1 sentinels, and a ZEROED mutex or
+    // condvar is invalid — the first CPU launch on Windows hung forever.
     .mu   = PTHREAD_MUTEX_INITIALIZER,
     .go   = PTHREAD_COND_INITIALIZER,
     .done = PTHREAD_COND_INITIALIZER,
 };
 
-// Wait for generation to advance past `seen`. Spin on the atomic generation
-// first (ACQUIRE pairs with dispatch's RELEASE store, so slices/njobs/active are
-// visible once we see the new value); fall back to a cond_wait under mu after the
-// spin budget. Returns the new generation, or 0 on shutdown.
-// Effective spin budgets, resolved once from the environment (overriding the
-// compile-time defaults) by caj_kpool_ensure before any worker spins.
-//   CAJETA_XPU_CPU_WORKER_SPIN  — workers busy-wait for dispatch (default 0:
-//       condvar wakeup, staggered, safe for barrier-fission kernels). Set >0 to
-//       beat BLAS on barrier-free kernels (matmul) via hot, simultaneous start.
-//   CAJETA_XPU_CPU_JOIN_SPIN    — caller busy-waits for completion (default on).
+// Effective spin budgets, resolved once from the environment before any spin.
 static int caj_worker_spin = -1;
 static int caj_join_spin = -1;
 static void caj_kpool_resolve_spin(void) {
@@ -810,18 +588,7 @@ static void caj_kpool_resolve_spin(void) {
 }
 
 // --- Worker cap + last-launch observability ---------------------------------
-//
-// `nworkers` was min(nblocks, cores) with no way to ask for fewer and no way
-// to find out what was chosen. A scaling curve needs both: a timing whose
-// worker count is unknown is not a data point, and a 1/2/4/8/16 sweep cannot
-// be run without a bound.
-//
-// The cap is settable in-process as well as from the environment, because the
-// measurement discipline here requires ALTERNATING arm order inside one run —
-// a fixed order let a decaying background load read as a speedup once
-// already. A process-lifetime environment variable cannot alternate. 0 means
-// unlimited, and setting it back to 0 must restore that: a one-way cap would
-// silently pin every later launch in the process.
+// Settable in-process as well as from the env: a measurement must alternate.
 static int caj_worker_cap = -1;                 /* -1 = not yet resolved */
 static int32_t caj_last_workers = 0;            /* what the last launch used */
 
@@ -847,6 +614,8 @@ int32_t __cajeta_xpu_cpu_last_workers(void) {
     return __atomic_load_n(&caj_last_workers, __ATOMIC_ACQUIRE);
 }
 
+// Wait for the generation to advance past `seen`: spin (ACQUIRE pairs with
+// dispatch's RELEASE store), then cond_wait under mu. 0 means shutdown.
 static uint64_t caj_kpool_wait_gen(uint64_t seen) {
     for (int spins = 0; spins < caj_worker_spin; ++spins) {
         uint64_t g = __atomic_load_n(&g_caj_kpool.generation, __ATOMIC_ACQUIRE);
@@ -865,16 +634,7 @@ static uint64_t caj_kpool_wait_gen(uint64_t seen) {
     return __atomic_load_n(&g_caj_kpool.shutdown, __ATOMIC_ACQUIRE) ? 0 : g;
 }
 
-// cajeta-profiler 3.2.d — a pool worker is a host thread running program work
-// (the kernel body), so §2.1 requires the sampler to see it. Registered around
-// the loop rather than inside it, matching the carrier/timer/reactor wrappers:
-// every return path unregisters, including the shutdown break below, so a
-// module teardown cannot leave a dead handle in the registry for the sampler to
-// dereference.
-//
-// This file is textually part of the runtime TU (cajeta_xpu.c is #included
-// after cajeta_rt_core.c), so the registry is a direct call — the plan's note
-// about needing an extern declaration was wrong.
+// A pool worker runs program work: every return path unregisters it.
 static void* caj_kpool_worker_body(void* arg);
 
 static void* caj_kpool_worker_main(void* arg) {
@@ -886,10 +646,8 @@ static void* caj_kpool_worker_main(void* arg) {
 
 static void* caj_kpool_worker_body(void* arg) {
     long myid = (long) (intptr_t) arg;
-    // Baseline below the first dispatchable generation (see caj_kpool_dispatch):
-    // generation starts at 0, first dispatch bumps it to 1. Starting at 0 makes a
-    // dispatch that races ahead of our first wait still register (g != seen),
-    // where capturing the live value could lose it -> active stuck -> join hangs.
+    // Baseline below the first dispatchable generation: a dispatch that races
+    // ahead of the first wait must still register (g != seen), or join hangs.
     uint64_t seen = 0;
     for (;;) {
         uint64_t g = caj_kpool_wait_gen(seen);
@@ -899,8 +657,7 @@ static void* caj_kpool_worker_body(void* arg) {
             cajeta_xpu_cpu_run_slice(&g_caj_kpool.slices[myid]);
             // ACQ_REL so the joiner that reads active==0 sees our slice's stores.
             if (__atomic_sub_fetch(&g_caj_kpool.active, 1, __ATOMIC_ACQ_REL) == 0) {
-                // Wake a possibly-sleeping joiner. Take mu so the signal can't
-                // slip between the joiner's under-lock active check and its wait.
+                // Take mu so the signal cannot slip past the joiner's check.
                 pthread_mutex_lock(&g_caj_kpool.mu);
                 pthread_cond_signal(&g_caj_kpool.done);
                 pthread_mutex_unlock(&g_caj_kpool.mu);
@@ -910,25 +667,21 @@ static void* caj_kpool_worker_body(void* arg) {
     return NULL;
 }
 
-// How many pool workers exist right now. A diagnostic, and the only way a test
-// can tell "the registry did not grow" from "the launch never forked anything"
-// — the second reads as a pass on every assertion that matters.
+// How many pool workers exist right now — a diagnostic for tests.
 int32_t __cajeta_xpu_cpu_pool_threads(void) {
     return (int32_t) g_caj_kpool.nthreads;
 }
 
-// Lazily create `cap-1` persistent workers (cap = chosen worker count). Grows
-// the pool if a later launch wants more workers than exist; never shrinks.
-// Caller must NOT hold g_caj_kpool.mu.
+// Lazily create `cap-1` persistent workers (the caller runs one slice itself);
+// grows when a later launch wants more, never shrinks. Must NOT hold mu.
 static void caj_kpool_ensure(int cap) {
     int want = cap - 1;                       // caller runs one slice itself
     if (want < 0) want = 0;
     if (want > CAJETA_XPU_CPU_MAX_WORKERS) want = CAJETA_XPU_CPU_MAX_WORKERS;
     caj_kpool_resolve_spin();
     pthread_mutex_lock(&g_caj_kpool.mu);
-    // mu/go/done carry PTHREAD_*_INITIALIZER via g_caj_kpool's designated
-    // initializer (NOT plain zero-init — that is glibc-only and hung Windows);
-    // do NOT pthread_mutex_init(&mu) here -- we hold it.
+    // mu/go/done carry PTHREAD_*_INITIALIZER from the designated initializer
+    // above; do NOT pthread_mutex_init(&mu) here — we hold it.
     g_caj_kpool.started = 1;
     __cajeta_live_set_go_multithreaded();     // second-thread barrier (see live-set)
     while (g_caj_kpool.nthreads < want) {
@@ -941,9 +694,7 @@ static void caj_kpool_ensure(int cap) {
     pthread_mutex_unlock(&g_caj_kpool.mu);
 }
 
-// Fork-join dispatch: hand slices[0..njobs-1] to pool workers, return after
-// they finish. The caller separately runs its own (last) slice between fork
-// and join to overlap. njobs must be <= g_caj_kpool.nthreads.
+// Fork-join dispatch: hand slices[0..njobs-1] to pool workers, then return.
 static void caj_kpool_dispatch(const struct cajeta_cpu_grid_slice* slices,
                                int njobs) {
     // Publish the job payload, then RELEASE-store generation: a worker that
@@ -951,9 +702,7 @@ static void caj_kpool_dispatch(const struct cajeta_cpu_grid_slice* slices,
     g_caj_kpool.slices = slices;
     g_caj_kpool.njobs  = njobs;
     __atomic_store_n(&g_caj_kpool.active, njobs, __ATOMIC_RELAXED);
-    // Hold mu across the generation bump + broadcast so a worker on the slow
-    // (cond_wait) path can't miss the wake. Only this (single) thread writes
-    // generation, so a plain read of the current value is fine.
+    // Hold mu across the bump + broadcast so a sleeping worker cannot miss it.
     pthread_mutex_lock(&g_caj_kpool.mu);
     __atomic_store_n(&g_caj_kpool.generation, g_caj_kpool.generation + 1,
                      __ATOMIC_RELEASE);
@@ -972,16 +721,8 @@ static void caj_kpool_join(void) {
     pthread_mutex_unlock(&g_caj_kpool.mu);
 }
 
-// Join and dismantle the persistent pool — the runtime-teardown hook, called
-// from __cajeta_task_shutdown. A JIT'd module's pool workers park between
-// launches on g_caj_kpool.go, a condvar in MODULE memory; leaving them parked
-// past module unload lets a later allocation recycle that address and corrupt
-// the futex (glibc's "The futex facility returned an unexpected error code"
-// abort mid-suite). Same hazard class as the carrier/timer/reactor joins
-// (R9.1/R9.4); the pool was the one thread family without a teardown. No-op
-// when the pool never started; the state reset lets a subsequent launch in
-// the SAME module (shutdown is also safe to call more than once) lazily
-// rebuild a fresh pool via caj_kpool_ensure.
+// Join and dismantle the pool (the teardown hook). Workers park on a condvar in
+// MODULE memory; parked past unload, it corrupts the futex. Rebuilds lazily.
 void __cajeta_xpu_kpool_shutdown(void) {
     pthread_mutex_lock(&g_caj_kpool.mu);
     if (!g_caj_kpool.started) {
@@ -995,9 +736,7 @@ void __cajeta_xpu_kpool_shutdown(void) {
     for (int i = 0; i < n; ++i)
         pthread_join(g_caj_kpool.threads[i], NULL);
     // Reset for a clean lazy restart: no workers exist now, so clearing the
-    // dispatch bookkeeping (generation included — a fresh worker's seen=0
-    // baseline must not "see" a stale generation and re-run stale slices)
-    // races nothing.
+    // dispatch bookkeeping (generation included) races nothing.
     pthread_mutex_lock(&g_caj_kpool.mu);
     g_caj_kpool.nthreads = 0;
     g_caj_kpool.started = 0;
@@ -1009,6 +748,8 @@ void __cajeta_xpu_kpool_shutdown(void) {
     pthread_mutex_unlock(&g_caj_kpool.mu);
 }
 
+// CPU launch: resolve the registered thunk and run the grid, chunked across
+// min(blocks, cores) workers — blocks fan out, never one block's work-items.
 static void cajeta_xpu_launch_cpu(const char* name,
                                   int32_t gridX, int32_t gridY, int32_t gridZ,
                                   int32_t blockX, int32_t blockY, int32_t blockZ,
@@ -1016,10 +757,7 @@ static void cajeta_xpu_launch_cpu(const char* name,
                                   int32_t specCount, const int32_t* specValues) {
     void* p = __cajeta_xpu_lookup_cpu_kernel(name);
     if (!p) {
-        // Counted like every other dispatch that did not run: this is the
-        // path a kernel the CPU fission declined lands on, and a harness
-        // that checks Device.launchFailures() must see it move (it did not,
-        // and three skipped kernels read as sub-microsecond ones).
+        // Counted like every dispatch that did not run (Device.launchFailures()).
         cajeta_xpu_note_launch_failure();
         fprintf(stderr, "cajeta.xpu: no registered CPU kernel '%s' to launch\n",
                 name);
@@ -1027,9 +765,8 @@ static void cajeta_xpu_launch_cpu(const char* name,
     }
     cajeta_cpu_launch_fn fn = (cajeta_cpu_launch_fn) p;
     if (gridX < 1) gridX = 1; if (gridY < 1) gridY = 1; if (gridZ < 1) gridZ = 1;
-    // L6: sharedBytes becomes a per-block alloca on the worker's stack; an absurd
-    // value (the launch's sharedBytes round-tripped through the spec constant)
-    // would blow the stack. Bound it — real GPU shared memory is well under this.
+    // sharedBytes becomes a per-block alloca on the worker's stack; bound it so
+    // an absurd value cannot blow the stack.
     if (sharedBytes < 0 || (uint32_t) sharedBytes > (16u << 20)) {
         fprintf(stderr, "cajeta.xpu: CPU launch sharedBytes %d out of range "
                 "(max 16 MiB); not launching '%s'\n", sharedBytes, name);
@@ -1037,18 +774,12 @@ static void cajeta_xpu_launch_cpu(const char* name,
     }
 
 
-    // CAJETA_XPU_CPU_SERIAL forces single-threaded execution — a deterministic
-    // debug/oracle mode and the serial baseline for benchmarking. Read once.
+    // CAJETA_XPU_CPU_SERIAL forces single-threaded execution. Read once.
     static int force_serial = -1;
     if (force_serial < 0) force_serial = getenv("CAJETA_XPU_CPU_SERIAL") ? 1 : 0;
 
-    // Blocks fan out across threads (never the work-items of one block); the
-    // 3-D grid is flattened to nblocks linear indices, decoded to ctaid.xyz in
-    // run_slice.
-    // M9: compute in 64-bit — gridX*gridY*gridZ in int32 wraps (negative ->
-    // serial loop never runs, a silent no-op; or to 0 -> divide-by-zero in
-    // run_slice). The CPU path indexes blocks with int32, so clamp an absurd grid
-    // (>2^31 blocks runs serially anyway) with a diagnostic rather than wrap.
+    // 64-bit: gridX*gridY*gridZ wraps in int32 (a silent no-op, or 0 ->
+    // divide-by-zero in run_slice), so clamp an absurd grid with a diagnostic.
     int64_t nblocks64 = (int64_t) gridX * (int64_t) gridY * (int64_t) gridZ;
     if (nblocks64 > INT32_MAX) {
         fprintf(stderr, "cajeta.xpu: CPU grid block count %lld exceeds INT32_MAX; "
@@ -1061,8 +792,7 @@ static void cajeta_xpu_launch_cpu(const char* name,
                         (int64_t) (blockZ > 0 ? blockZ : 1);
     int64_t total = (int64_t) nblocks * blockSize;
 #if defined(_WIN32)
-    // sysconf/_SC_NPROCESSORS_ONLN is POSIX; on Windows ask the Win32 API
-    // (windows.h is included at file scope above for the fiber/file-lock paths).
+    // sysconf(_SC_NPROCESSORS_ONLN) is POSIX; ask the Win32 API here.
     SYSTEM_INFO cpu_si;
     GetSystemInfo(&cpu_si);
     long cores = (long) cpu_si.dwNumberOfProcessors;
@@ -1072,15 +802,12 @@ static void cajeta_xpu_launch_cpu(const char* name,
     if (cores < 1) cores = 1;
     int32_t nworkers = (int32_t) ((long) nblocks < cores ? (long) nblocks : cores);
     if (nworkers > CAJETA_XPU_CPU_MAX_WORKERS) nworkers = CAJETA_XPU_CPU_MAX_WORKERS;
-    // The cap bounds it; 0 leaves it alone.
     int wcap = caj_resolve_worker_cap();
     if (wcap > 0 && nworkers > (int32_t) wcap) nworkers = (int32_t) wcap;
 
-    // Serial path: forced, tiny launch, single core, or a single block.
     if (force_serial || nblocks <= 1 || nworkers <= 1 ||
         total < CAJETA_XPU_CPU_PARALLEL_THRESHOLD) {
-        // Record 1, not `nworkers`: the caller wants what RAN, and every one
-        // of these conditions means one thread ran the whole grid.
+        // Record 1, not nworkers: one thread ran the whole grid.
         __atomic_store_n(&caj_last_workers, 1, __ATOMIC_RELEASE);
         struct cajeta_cpu_grid_slice all = {fn, (void**) argv,
                                             blockX, blockY, blockZ,
@@ -1091,9 +818,7 @@ static void cajeta_xpu_launch_cpu(const char* name,
         return;
     }
 
-    // Parallel fan-out: chunk the nblocks linear block indices across `nworkers`.
-    // Dispatch slices[0..nworkers-2] to the persistent pool; the calling thread
-    // runs slices[nworkers-1] itself (overlapping the workers), then joins.
+    // Chunk the blocks across nworkers; the caller runs the last slice itself.
     __atomic_store_n(&caj_last_workers, nworkers, __ATOMIC_RELEASE);
     struct cajeta_cpu_grid_slice slices[CAJETA_XPU_CPU_MAX_WORKERS];
     int32_t base = nblocks / nworkers, rem = nblocks % nworkers, cx = 0;
@@ -1111,10 +836,8 @@ static void cajeta_xpu_launch_cpu(const char* name,
         cx += count;
     }
     caj_kpool_ensure(nworkers);
-    // If the pool couldn't spawn enough workers, run the surplus slices inline
-    // after the caller's slice (correctness over parallelism). njobs is capped
-    // to the live pool size; slices [njobs .. nworkers-2] (if any) plus the last
-    // are run by the calling thread.
+    // If the pool could not spawn enough workers, the surplus slices run inline
+    // after the caller's own — correctness over parallelism.
     int njobs = nworkers - 1;
     if (njobs > g_caj_kpool.nthreads) njobs = g_caj_kpool.nthreads;
     caj_kpool_dispatch(slices, njobs);
@@ -1125,26 +848,10 @@ static void cajeta_xpu_launch_cpu(const char* name,
 }
 
 // --- Buffer<T> device memory (backend-dispatched) ---------------------------
-// The Buffer<T> stdlib methods (alloc/upload/download/free) are ordinary
-// Cajeta now; they construct the handle via `heap`/`stack` + the generated
-// constructor and forward byte-sized primitives here. The element byte size
-// is supplied by the compiler (Buffer<T>.elementBytes() intrinsic), so these
-// symbols are monomorphism-independent: they speak only int64 handles and
-// byte counts. The int64 handle is the active backend's device pointer (CUDA/
-// HIP), buffer-table index (Vulkan), or host block (CPU) — consistent within a
-// run because the backend is fixed at first device touch.
-//
-// `host` is a Cajeta T[] header — { i64 count, [count x T] data } laid out
-// contiguously — so the element bytes begin at offset 8 (matches
-// __cajeta_new_array_header). byteCount is count * sizeof(T), already
-// computed caller-side.
-// `self` is the Buffer instance pointer the instance-method forwarder passes;
-// the device side is keyed on the int64 handle, so self is ignored.
+// Buffer<T>'s stdlib methods forward byte-sized primitives here: the int64
+// handle is the backend's device pointer, buffer-table index, or host block.
 // Buffer MemoryKind ordinals — the stable native contract; MUST match
-// runtime/src/cajeta/xpu/core/MemoryKind.cajeta. Device = device-local memory
-// with explicit upload/download (the default, original behaviour); Pinned =
-// page-locked, device-accessible host memory; Unified = managed memory one
-// pointer host AND device see (zero-copy on an integrated GPU).
+// runtime/src/cajeta/xpu/core/MemoryKind.cajeta.
 enum {
     CAJ_MEMKIND_DEVICE  = 0,
     CAJ_MEMKIND_PINNED  = 1,
@@ -1186,9 +893,7 @@ int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind) 
             return (int64_t) (intptr_t) p;
         }
         case CAJ_XPU_VULKAN:
-            // Vulkan buffers are already host-visible + coherent on this device
-            // (effectively unified); kind needs no distinct path. handle =
-            // buffer-table index.
+            // Host-visible + coherent already; handle = buffer-table index.
             (void) kind;
             return cajeta_xpu_vk_alloc(byteCount);
         case CAJ_XPU_CPU: {
@@ -1199,13 +904,8 @@ int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind) 
         default: return 0;   // none: diagnostic emitted
     }
 }
-// Direct host access to a host-accessible buffer (Pinned/Unified, or CPU/Vulkan
-// mapped) with NO device-transfer API — a plain memcpy in the shared address
-// space (zero-copy: no PCIe copy / no managed migration on a discrete GPU, a
-// host memcpy on an APU). dir != 0 stores host[]→buffer; dir == 0 loads
-// buffer→host[]. A plain Device buffer on a discrete GPU has no host mapping, so
-// this no-ops (use upload/download there). `host` is a cajeta array (8-byte
-// header skipped); kind selects whether the HIP/CUDA handle is host-accessible.
+// Direct host access to a host-accessible buffer (Pinned/Unified, CPU, Vulkan
+// map): a plain memcpy. dir != 0 stores host[]->buffer, 0 loads back.
 void __cajeta_xpu_buffer_host_copy(void* self, int64_t handle, void* host,
                                    uint64_t byteCount, int32_t dir, int32_t kind) {
     (void) self;
@@ -1218,8 +918,7 @@ void __cajeta_xpu_buffer_host_copy(void* self, int64_t handle, void* host,
             break;
         case CAJ_XPU_HIP:
         case CAJ_XPU_CUDA:
-            // managed (Unified) and pinned host handles are host-accessible
-            // pointers; plain Device memory is not.
+            // Unified/pinned handles are host-accessible; Device memory is not.
             if (kind == CAJ_MEMKIND_UNIFIED || kind == CAJ_MEMKIND_PINNED)
                 hp = (void*) (intptr_t) handle;
             break;
@@ -1228,8 +927,7 @@ void __cajeta_xpu_buffer_host_copy(void* self, int64_t handle, void* host,
             if (dir) {
                 hp = cajeta_xpu_vk_mapped(handle);   // WC writes stream fine
             } else {
-                // Reads through a write-combined mapping crawl; the read
-                // helper routes non-cached sources via cached staging.
+                // Reads through a write-combined mapping crawl: use staging.
                 cajeta_xpu_vk_read(handle, hostArr, byteCount);
                 return;
             }
@@ -1241,12 +939,8 @@ void __cajeta_xpu_buffer_host_copy(void* self, int64_t handle, void* host,
     if (dir) memcpy(hp, hostArr, (size_t) byteCount);
     else     memcpy(hostArr, hp, (size_t) byteCount);
 }
-// Async host↔device copies on a stream (Buffer.uploadAsync/downloadAsync). The
-// copy is enqueued on `stream` (a Stream handle; 0 = the default stream) and
-// completes by the next sync of that stream — so it overlaps other work queued
-// elsewhere. CUDA/HIP issue the real async memcpy (best paired with pinned/
-// unified host memory); CPU and the Vulkan host-coherent map copy synchronously
-// (no async path, but semantically correct — done by the time sync returns).
+// Async host<->device copies on a stream (0 = default), complete by that
+// stream's next sync. CPU and the Vulkan coherent map copy synchronously.
 void __cajeta_xpu_buffer_upload_async(void* self, int64_t handle, void* host,
                                       uint64_t byteCount, int64_t stream) {
     (void) self;
@@ -1316,9 +1010,8 @@ void __cajeta_xpu_buffer_download_async(void* self, int64_t handle, void* host,
         default: return;
     }
 }
-// Stream create/sync/destroy — defined here (not with stream_current above)
-// because they switch on the backend enum + cajeta_xpu_active_backend(), which
-// are declared further down. Handle 0 = the default stream (the v1 behaviour).
+// Stream create/sync/destroy, here rather than above because they switch on the
+// backend enum. Handle 0 = the default stream.
 int64_t __cajeta_xpu_stream_create(void) {
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA: {
@@ -1342,7 +1035,6 @@ void __cajeta_xpu_stream_sync(void* self, int64_t handle) {
     (void) self;
     void* st = (void*) (intptr_t) handle;
     if (st) {
-        // Drain just this stream (its async copies + launches).
         switch (cajeta_xpu_active_backend()) {
             case CAJ_XPU_CUDA:
                 if (g_xpu_cuda.cuStreamSynchronize) {
@@ -1377,13 +1069,8 @@ void __cajeta_xpu_stream_destroy(void* self, int64_t handle) {
 }
 
 // --- Event -----------------------------------------------------------------
-// Cross-stream + host synchronisation. The handle (int64) IS the backend event
-// object; create() returns it (0 = unavailable). On CUDA/HIP these wrap a real
-// cuEvent/hipEvent so a second stream can wait on a first stream's recorded
-// point device-side; on CPU/Vulkan work is synchronous, so an event is a
-// sentinel (handle 1) that is always already-signaled (record/wait no-op, query
-// true). Event and Fence share the backend mechanism — Event is the device-
-// facing surface (Stream.waitFor), Fence the host-facing one.
+// Cross-stream + host synchronisation: the handle IS the backend event object
+// (0 = unavailable); CPU/Vulkan use the always-signaled sentinel 1.
 int64_t __cajeta_xpu_event_create(void) {
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA: {
@@ -1415,9 +1102,7 @@ void __cajeta_xpu_event_record(void* self, int64_t handle, int64_t streamHandle)
             if (e && g_xpu_hip.hipEventRecord) g_xpu_hip.hipEventRecord(e, st);
             return;
         case CAJ_XPU_VULKAN:
-            // The sentinel event's contract is "already signaled": everything
-            // before the record is complete. Batched submission makes that a
-            // promise the record must KEEP — land the open batch here.
+            // The sentinel promises "already signaled": land the open batch.
             cajeta_xpu_vk_flush();
             return;
         default: return;   // CPU: nothing to record (synchronous)
@@ -1468,9 +1153,8 @@ void __cajeta_xpu_event_destroy(void* self, int64_t handle) {
     }
 }
 
-// Stream.waitFor(event): insert a device-side wait on `event` into `stream`, so
-// future launches on `stream` start only after `event` is signaled on its source
-// stream. Synchronous backends (CPU/Vulkan) need no wait — ordering already holds.
+// Stream.waitFor(event): a device-side wait so later launches on `stream` start
+// only after `event` signals. Synchronous backends need none.
 void __cajeta_xpu_stream_wait_for(void* self, int64_t streamHandle,
                                   int64_t eventHandle) {
     (void) self;
@@ -1491,10 +1175,8 @@ void __cajeta_xpu_stream_wait_for(void* self, int64_t streamHandle,
 }
 
 // --- Fence -----------------------------------------------------------------
-// Host-observable signal. v1 backs Fence with the same backend event object as
-// Event (an event IS host-waitable via cuEvent/hipEventSynchronize/Query):
-// signal(stream) records the event at the stream's tail; waitHost()/query()
-// block/poll the host on it. On CPU/Vulkan the synchronous sentinel applies.
+// Host-observable signal, backed by the same backend event object as Event:
+// signal() records at the stream's tail; waitHost()/query() block/poll it.
 int64_t __cajeta_xpu_fence_create(void) { return __cajeta_xpu_event_create(); }
 void __cajeta_xpu_fence_signal(void* self, int64_t handle, int64_t streamHandle) {
     __cajeta_xpu_event_record(self, handle, streamHandle);
@@ -1508,6 +1190,7 @@ bool __cajeta_xpu_fence_query(void* self, int64_t handle) {
 void __cajeta_xpu_fence_destroy(void* self, int64_t handle) {
     __cajeta_xpu_event_destroy(self, handle);
 }
+// Synchronous host->device copy of a cajeta array's bytes (header skipped).
 void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
                                 uint64_t byteCount) {
     (void) self;
@@ -1534,6 +1217,7 @@ void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
         default: return;
     }
 }
+// Synchronous device->host copy into a cajeta array's bytes.
 void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
                                   uint64_t byteCount) {
     (void) self;
@@ -1559,21 +1243,20 @@ void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
         default: return;
     }
 }
+// Free a buffer handle that was allocated with MemoryKind `kind`.
 void __cajeta_xpu_buffer_free(void* self, int64_t handle, int32_t kind) {
     (void) self;
     if (!handle) return;
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA:
-            // Pinned host memory frees with cuMemFreeHost; device + managed
-            // (Unified) free with cuMemFree.
+            // Pinned frees with cuMemFreeHost; device + managed with cuMemFree.
             if (kind == CAJ_MEMKIND_PINNED && g_xpu_cuda.cuMemFreeHost)
                 g_xpu_cuda.cuMemFreeHost((void*) (intptr_t) handle);
             else
                 g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) handle);
             return;
         case CAJ_XPU_HIP:
-            // Pinned host memory frees with hipHostFree; device + managed
-            // (Unified) free with hipFree.
+            // Pinned frees with hipHostFree; device + managed with hipFree.
             if (kind == CAJ_MEMKIND_PINNED && g_xpu_hip.hipHostFree)
                 g_xpu_hip.hipHostFree((void*) (intptr_t) handle);
             else
@@ -1584,13 +1267,8 @@ void __cajeta_xpu_buffer_free(void* self, int64_t handle, int32_t kind) {
         default: return;
     }
 }
-// Buffer.slice: resolve a sub-range base from a parent handle + byte offset.
-// Pointer backends (CUDA/HIP/CPU) fold the offset into the device pointer; the
-// returned handle indexes the slice's first element exactly like a base buffer,
-// so the launch-arg and upload/download paths need no offset-awareness. Vulkan
-// (handle = buffer-table index) allocates a borrowing view slot that carries
-// the descriptor offset. The returned handle is non-owning on every backend —
-// Buffer.owned is false for a view, so its drop never frees this.
+// Buffer.slice: a sub-range base from a parent handle + byte offset. Pointer
+// backends fold it in, Vulkan takes a view slot; the handle is non-owning.
 int64_t __cajeta_xpu_buffer_slice(void* self, int64_t handle, uint64_t byteOffset) {
     (void) self;
     if (!handle) return 0;
@@ -1605,10 +1283,8 @@ int64_t __cajeta_xpu_buffer_slice(void* self, int64_t handle, uint64_t byteOffse
     }
 }
 
-// Buffer.slice release: drop a view's backend record. Pointer backends fold
-// the offset into the handle (nothing was allocated — no-op); Vulkan allocated
-// a borrowing view slot in its buffer table, which is cleared here. Called by
-// the view KernelBuffer's drop/free, never for owning handles.
+// Release a slice view's backend record: a no-op on pointer backends, clears
+// the borrowing view slot on Vulkan. Never called for an owning handle.
 void __cajeta_xpu_buffer_slice_release(void* self, int64_t handle) {
     (void) self;
     if (!handle) return;

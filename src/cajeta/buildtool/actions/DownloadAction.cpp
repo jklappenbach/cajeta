@@ -1,24 +1,6 @@
-// `download` — HTTP fetch with optional SHA-256 verify.
-//
-// v1 implementation shells out to `curl`. Phase 6 (repositories +
-// dependency resolution) introduces a real HTTP client with auth /
-// retry / caching; this action gains a switch to use it as the
-// transport at that point. For Phase 4, curl-shell is sufficient
-// for the use cases that aren't latency-sensitive.
-//
-// Params:
-//   url         (required) source URL
-//   to          (required) destination path
-//   sha256      (optional) "sha256:<hex>" — when present, the
-//               downloaded bytes are checksummed and the action
-//               fails on mismatch
-//   auth        (optional, future) bearer-token / basic-auth
-//               support; today the action passes -L (follow) but
-//               doesn't add auth headers
-//
-// Outputs:
-//   path        the destination path
-//   sha256      "sha256:<hex>" of the downloaded bytes
+// `download` — HTTP fetch of `url` to `to`, verifying the optional
+// `sha256:<hex>` param; outputs `path` and `sha256` of the fetched bytes.
+// Shells out to `curl -L`, and adds no auth headers.
 
 #include "cajeta/buildtool/Action.h"
 
@@ -43,6 +25,7 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
+        // Lowercase hex SHA-256 of the file's bytes; empty string if it will not open.
         std::string sha256HexOfFile(const std::string& path) {
             std::ifstream in(path, std::ios::binary);
             if (!in) return "";

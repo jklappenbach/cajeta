@@ -11,9 +11,7 @@ namespace cajeta::buildtool {
                                            "%s", msg.c_str());
         }
 
-        // The comparison side (ArtifactCache::sha256OfFile) always produces
-        // the prefixed form, so an un-normalised value here would fail every
-        // verification it touched.
+        // The comparison side always produces the prefixed form, so an un-normalised value would fail every verification.
         std::string normaliseDigest(std::string sha) {
             if (!sha.empty() && sha.rfind("sha256:", 0) != 0) {
                 sha = "sha256:" + sha;
@@ -30,8 +28,7 @@ namespace cajeta::buildtool {
             if (auto s = obj.getString("organization")) {
                 md.organization = s->str();
             }
-            // Absent means false. Every release published before spec 7.6.2
-            // omits it, and refusing those would be a flag day.
+            // Absent means false: every release published before spec 7.6.2 omits it.
             if (auto b = obj.getBoolean("retracted")) md.retracted = *b;
             if (auto s = obj.getString("retracted-reason")) {
                 md.retractedReason = s->str();
@@ -51,9 +48,7 @@ namespace cajeta::buildtool {
         auto* obj = parsed->getAsObject();
         if (!obj) return err("release metadata: not a JSON object");
 
-        // A bare envelope, or one carried beside the plain body. Either way
-        // the envelope is authoritative and the plain fields are ignored —
-        // merging them is how an unsigned value ends up trusted.
+        // The envelope is authoritative and the plain fields are ignored; merging them is how an unsigned value ends up trusted.
         const llvm::json::Object* envelopeObj = nullptr;
         if (obj->get("payload") && obj->get("signature")) {
             envelopeObj = obj;
@@ -63,9 +58,7 @@ namespace cajeta::buildtool {
 
         ReleaseMetadata md;
         if (envelopeObj) {
-            // Re-serialising the envelope is safe precisely because the
-            // payload is opaque base64: round-tripping the wrapper cannot
-            // disturb the bytes the signature covers.
+            // Re-serialising is safe because the payload is opaque base64: the bytes the signature covers cannot move.
             llvm::json::Object copy = *envelopeObj;
             llvm::json::Value value(std::move(copy));
             std::string envelopeJson;

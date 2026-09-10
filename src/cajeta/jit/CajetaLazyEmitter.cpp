@@ -26,17 +26,9 @@ namespace cajeta {
 
     namespace {
 
-        // The shared snapshot tail: one definition cloned out of the live
-        // module, prepared exactly as the eager delivery path prepares whole
-        // modules (spec 4.4 — the passes hold over the lazy set because they
-        // run on every snapshot), then bitcode-round-tripped into a context
-        // ORC owns so the live module stays the front-end's to mutate.
-        // 3.2.3 — the set of definitions a snapshot must carry: the kept
-        // value plus every local-linkage global its body (transitively)
-        // references. Local linkage cannot be declared across modules, so
-        // those come along whole; everything else stays a declaration and
-        // resolves through the generator. Foreign-module operands are left
-        // to legalizeCrossModuleRefs, which runs on the clone.
+        /// The definitions a snapshot must carry: the seeds plus every
+        /// local-linkage global they transitively reference, since local
+        /// linkage cannot be declared across modules.
         llvm::SmallPtrSet<const llvm::GlobalValue*, 32>
         reachableClosure(llvm::Module* live,
                          llvm::ArrayRef<const llvm::GlobalValue*> seeds) {
@@ -62,8 +54,6 @@ namespace cajeta {
                 };
             while (!work.empty()) {
                 const llvm::GlobalValue* gv = work.pop_back_val();
-                // Covers initializers, aliasees, and a function's
-                // personality/prefix/prologue operands.
                 for (const llvm::Use& u : gv->operands())
                     if (auto* op = llvm::dyn_cast<llvm::Constant>(u.get()))
                         scan(op);
@@ -78,12 +68,9 @@ namespace cajeta {
             return reached;
         }
 
-        // The closure extractor shared by per-symbol snapshots and the init
-        // delta (4.2.4). `ctorsToRebuild`, when non-null, names the ctor
-        // functions (with priorities) the clone's llvm.global_ctors must
-        // carry — the ONLY case a snapshot may carry ctors, since a
-        // per-body snapshot re-running registration would be wrong
-        // (spec 2.2).
+        /// Clones the seeds' closure into a fresh module and round-trips it
+        /// through bitcode into a context ORC owns. `ctorsToRebuild`, when
+        /// non-null, is the ONLY case in which a snapshot may carry ctors.
         llvm::Expected<llvm::orc::ThreadSafeModule>
         extractClosure(llvm::Module* live,
                        llvm::ArrayRef<const llvm::GlobalValue*> seeds,
@@ -99,15 +86,9 @@ namespace cajeta {
             auto t0 = now();
             auto reached = reachableClosure(live, seeds);
 
-            // Local-linkage CONSTANTS may be duplicated per snapshot;
-            // MUTABLE internal globals may not — a runtime static (the
-            // script-result buffer, the exception TLS head) cloned into two
-            // snapshots splits its state: set() writes one copy, get() reads
-            // the other, and a throw pushes a frame the catch never walks.
-            // Promote such variables in the LIVE module to external linkage
-            // under a module-qualified name and drop them from the clone
-            // set: every snapshot then declares them, and the generator
-            // serves the single definition like any other live global.
+            // Local-linkage CONSTANTS may be duplicated per snapshot, but a
+            // MUTABLE internal global cloned twice splits its state. Promote
+            // those in the LIVE module so every snapshot declares the one.
             {
                 llvm::SmallVector<llvm::GlobalVariable*, 8> promote;
                 for (const llvm::GlobalValue* gv : reached) {
@@ -129,22 +110,14 @@ namespace cajeta {
             }
             auto t1 = now();
 
-            // A fresh module, NOT CloneModule: CloneModule walks the whole
-            // live module creating a declaration for every one of its ~11k
-            // globals — 26 of the 34 ms a snapshot used to cost, all of it
-            // deleted again by the strip below. Build shells for the reached
-            // set only and clone just those bodies. References to anything
-            // else self-map into the live module and are rewritten to local
-            // declarations by legalizeCrossModuleRefs — the same net that
-            // already catches cross-module operands.
+            // A fresh module, NOT CloneModule, which would declare every
+            // global of the live module only for the strip below to delete it.
             auto clone = std::make_unique<llvm::Module>(
                 ident, live->getContext());
             clone->setTargetTriple(live->getTargetTriple());
             clone->setDataLayout(live->getDataLayout());
-            // Module flags must come along ("Debug Info Version" above all):
-            // cloned bodies carry attached debug metadata, and the bitcode
-            // reader strips DI from a module whose version flag is absent
-            // ("ignoring debug info with an invalid version (0)").
+            // Module flags must come along: the bitcode reader strips debug
+            // info from a module whose "Debug Info Version" flag is absent.
             {
                 llvm::SmallVector<llvm::Module::ModuleFlagEntry, 8> flags;
                 live->getModuleFlagsMetadata(flags);
@@ -160,9 +133,7 @@ namespace cajeta {
                         f->getFunctionType(), f->getLinkage(),
                         f->getAddressSpace(), f->getName(), clone.get());
                     nf->copyAttributesFrom(f);
-                    // Comdats are section-linker semantics; ORC dedups weak
-                    // symbols by linkage alone, and a comdat would need its
-                    // own fresh-module recreation. Shed them.
+                    // ORC dedups weak symbols by linkage alone.
                     nf->setComdat(nullptr);
                     vmap[f] = nf;
                 } else if (auto* g =
@@ -176,8 +147,6 @@ namespace cajeta {
                     ng->setComdat(nullptr);
                     vmap[g] = ng;
                 } else {
-                    // No alias/ifunc has ever appeared in a closure; fail
-                    // loudly rather than half-copy one.
                     return llvm::createStringError(
                         llvm::inconvertibleErrorCode(),
                         "lazy emit: unsupported global kind '%s' in the "
@@ -207,8 +176,6 @@ namespace cajeta {
                     }
                 }
             }
-            // The init delta's reason to exist: a global_ctors array naming
-            // exactly the not-yet-delivered ctors, cloned above as seeds.
             if (ctorsToRebuild) {
                 for (auto& [prio, fn] : *ctorsToRebuild) {
                     llvm::appendToGlobalCtors(
@@ -217,17 +184,10 @@ namespace cajeta {
             }
             auto t2 = now();
 
-            // Instantiation emission can leave operands pointing at globals
-            // homed in ANOTHER live module; the bitcode writer cannot express
-            // that, so rewrite them to local declarations first (3.2.2).
+            // The bitcode writer cannot express an operand homed elsewhere.
             cajeta::jit::legalizeCrossModuleRefs(clone.get());
-            // ODR: an eagerly delivered module or another snapshot may carry
-            // the same instantiation symbol; weak_odr lets ORC pick one.
             cajeta::jit::demoteInstantiationsToWeakODR(clone.get());
 
-            // Safety net: only declarations the kept closure actually uses
-            // may reach bitcode (3.2.3). The fresh-module build creates none
-            // unused; this keeps the property if a later pass grows one.
             for (auto it = clone->begin(); it != clone->end();) {
                 llvm::Function& f = *it++;
                 if (f.isDeclaration() && f.use_empty()) f.eraseFromParent();
@@ -238,22 +198,14 @@ namespace cajeta {
                 if (g.isDeclaration() && g.use_empty()) g.eraseFromParent();
             }
 
-            // Every declaration must lose dso_local: a dso_local external is
-            // addressed with a direct 32-bit
-            // PC-relative fixup — valid inside the eager world's single large
-            // module, but a snapshot's externals live in OTHER snapshots that
-            // JITLink may place >2 GB away ("out of range of Delta32 fixup",
-            // seen on __cajeta_session_guard_frame at delivery #558).
-            // Clearing it routes external addressing through the GOT, which
-            // JITLink synthesizes with no range limit.
+            // A dso_local external is addressed by a direct 32-bit PC-relative
+            // fixup, but a snapshot's externals live in other snapshots JITLink
+            // may place >2 GB away. Clearing it routes them through the GOT.
             for (llvm::GlobalValue& gv : clone->global_values()) {
                 if (gv.isDeclaration()) gv.setDSOLocal(false);
             }
 
-            // Dylib-init work is the EAGER remainder (spec 2.2): a per-body
-            // snapshot that carried llvm.global_ctors would re-run class
-            // registration on every delivered body. Only the init delta may
-            // carry them — and then only the ones it just rebuilt.
+            // Carrying ctors here would re-run registration per delivered body.
             if (!ctorsToRebuild) {
                 if (auto* ctors = clone->getNamedGlobal("llvm.global_ctors"))
                     ctors->eraseFromParent();
@@ -262,9 +214,7 @@ namespace cajeta {
             }
             auto t3 = now();
 
-            // CAJETA_SNAPSHOT_VALIDATE=1: walk the clone the way the bitcode
-            // writer will, printing each holder BEFORE touching its operands —
-            // a crash mid-walk names the value the writer would have died on.
+            // Walks the clone as the bitcode writer will, holder before operands.
             if (std::getenv("CAJETA_SNAPSHOT_VALIDATE")) {
                 llvm::SmallPtrSet<const llvm::Constant*, 32> seenv;
                 std::function<void(const llvm::Constant*)> scanv =
@@ -376,6 +326,7 @@ namespace cajeta {
                                                std::move(tsContext));
         }
 
+        /// One-seed snapshot, named `lazy:<sym>` and carrying no ctors.
         llvm::Expected<llvm::orc::ThreadSafeModule>
         snapshotOne(llvm::Module* live, const llvm::GlobalValue* keep,
                     const std::string& sym) {
@@ -393,15 +344,11 @@ namespace cajeta {
         }
         const std::string sym = method->getLlvmSymbolName();
 
-        // The same two calls the eager fixpoint makes, for one method.
         method->getLlvmFunctionType();
         method->generateCode();
 
         // The EMIT module, not the home module: a user-typed specialization
-        // redirects its emission to the unit being compiled
-        // (stdlib-reuse policy), so ArrayList<cell.Foo>::count's body lands
-        // in the CELL's module while getModule() still names the stdlib —
-        // and the snapshot must be cut where the body actually is.
+        // emits into the unit being compiled, so cut the snapshot there.
         CajetaModulePtr parent = method->getEmitModule();
         llvm::Module* live = parent ? parent->getLlvmModule() : nullptr;
         if (!live) {
@@ -411,8 +358,6 @@ namespace cajeta {
         }
         llvm::Function* fn = live->getFunction(sym);
         if (!fn || fn->isDeclaration()) {
-            // spec 5.3 — distinguishable from an ordinary missing symbol: the
-            // method was indexed but generateCode() left no definition.
             return llvm::createStringError(
                 llvm::inconvertibleErrorCode(),
                 "lazy emit: generateCode() left no body for '%s'", sym.c_str());
@@ -430,7 +375,7 @@ namespace cajeta {
     }
 
     namespace {
-        // Every defined llvm.global_ctors entry of `live`, in array order.
+        /// Every defined llvm.global_ctors entry of `live`, in array order.
         std::vector<std::pair<uint32_t, const llvm::Function*>>
         definedCtors(llvm::Module* live) {
             std::vector<std::pair<uint32_t, const llvm::Function*>> out;
@@ -467,8 +412,7 @@ namespace cajeta {
             if (deliveredCtors.count(fn->getName().str())) continue;
             newCtors.emplace_back(prio, fn);
         }
-        // Nothing new since the last delivery: an empty (false) TSM, which
-        // callers must treat as "deliver nothing", not as an error.
+        // An empty (false) TSM means "deliver nothing", not an error.
         if (newCtors.empty()) return llvm::orc::ThreadSafeModule();
 
         std::vector<const llvm::GlobalValue*> seeds;

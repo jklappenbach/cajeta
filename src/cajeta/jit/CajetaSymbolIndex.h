@@ -1,16 +1,8 @@
 #pragma once
 
-// lazy-codegen Unit 1 (spec 3.3) — mangled symbol name -> the method that would
-// be emitted under it.
-//
-// This is the substitution at the heart of the capability: JIT hosts currently
-// call generateCode() on every method they know before running any user code
-// (12,379 bodies for a cell computing `20 + 42`, 89% of them stdlib). Indexing
-// replaces emitting as the startup cost; Unit 2's DefinitionGenerator consults
-// this to emit a body when the JIT asks for its symbol.
-//
-// The key is Method::getLlvmSymbolName() — the same name generateCode() emits
-// under, so a lookup that misses here would miss in the JIT too.
+// lazy-codegen Unit 1 (spec 3.3): mangled symbol name -> the method that would be emitted
+// under it, so indexing replaces emitting as the JIT's startup cost. The key is
+// Method::getLlvmSymbolName(), the same name generateCode() emits under.
 
 #include "cajeta/method/Method.h"
 
@@ -31,48 +23,30 @@ namespace cajeta {
 
     class CajetaSymbolIndex {
     public:
-        // Index every method of every module. Idempotent and ADDITIVE:
-        // re-building over a grown module set keeps existing entries and adds
-        // the new ones. Rebuilds are routine — codegen instantiates templates
-        // and so defines methods that did not exist at the first build
-        // (spec 3.5), and the JIT may already have resolved through entries a
-        // destructive rebuild would drop.
-        //
-        // Templated because the hosts hand over a vector (`codegenMods()`) and
-        // the compiler a list (`getModules()`).
+        // Index every method of every module. Idempotent and ADDITIVE: codegen defines new
+        // methods mid-run, and a destructive rebuild would drop entries the JIT resolved.
         template <typename Range>
         void build(const Range& modules) {
             for (auto& m : modules) addModule(m);
         }
 
-        // Additive re-scan of the modules already handed to build(). Codegen
-        // run from the generator instantiates templates mid-cascade, defining
-        // methods (and reflect thunks) that did not exist when the host built
-        // the index (spec 3.5); the generator calls this before conceding a
-        // miss. Cheap when nothing changed: instantiation registers a new
-        // structure, so a stable structure count means there is nothing new
-        // to find.
+        // Additive re-scan of the modules already handed to build(), called before the
+        // generator concedes a miss. Cheap: a stable structure count means nothing is new.
         void refresh();
 
-        // Definitions codegen synthesizes OUTSIDE getAllMethods — drop thunks,
-        // vtable/#ClassObject globals — searched live so entries created after
-        // build() (a thunk born during a lazy generateCode) are still found.
-        // Returns a definition or nullptr; declarations never match.
+        // Definitions codegen synthesizes OUTSIDE getAllMethods - drop thunks, vtable and
+        // #ClassObject globals - searched live. Returns a definition, never a declaration.
         llvm::GlobalValue* findLiveDefinition(const std::string& symbol) const;
 
-        // Reflective thunks (spec 2.4). Emitted by the REFL-2 loop in an eager
-        // session — which a lazy session never runs — and referenced from the
-        // RTTI/#ClassObject wiring of EVERY heap class, reflective or not. The
-        // generator emits them on demand through the class that owns them.
+        // Reflective thunks (spec 2.4), emitted by a loop only an eager session runs yet
+        // referenced from every heap class's RTTI wiring, so the generator emits on demand.
         struct ReflectThunk {
             std::shared_ptr<CajetaClass> klass;
             bool isInvoke = false;   // else reflect_new
         };
         const ReflectThunk* findReflectThunk(const std::string& symbol) const;
 
-        // The method emitted under `symbol`, or nullptr. Never throws — an
-        // unknown symbol is an ordinary miss that falls through to the JIT's
-        // other generators.
+        // The method emitted under `symbol`, or nullptr; an unknown symbol is a plain miss.
         MethodPtr find(const std::string& symbol) const;
 
         size_t size() const { return bySymbol.size(); }

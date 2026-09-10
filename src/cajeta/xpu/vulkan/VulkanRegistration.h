@@ -1,18 +1,6 @@
-//
 // Vulkan/SPIR-V kernel registration — embed each @Kernel's SPIR-V binary into
-// the host module and emit a global constructor that registers it with the
-// runtime.
-//
-// Structurally identical to Nvptx/AmdgpuRegistration: the runtime symbol
-// __cajeta_xpu_register_module is backend-neutral, keyed by entry name. The
-// only difference behind this header is the device binary format — SPIR-V
-// bytes instead of cubin/hsaco — and the lowering/emit pipeline producing them
-// (descriptor-set SPIR-V; no external assembler).
-//
-// Self-contained and GPU-free to emit: needs only the SPIR-V target in this
-// LLVM build. Kernels whose body uses an unsupported construct (XPU-N01) are
-// skipped — never throws on a per-kernel basis.
-//
+// the host module and emit a global ctor registering it with the runtime. Needs
+// no GPU, only the SPIR-V target; an unsupported kernel is skipped, never fatal.
 
 #pragma once
 
@@ -34,25 +22,17 @@ namespace xpu {
 
 namespace vulkan {
 
-    // Emit SPIR-V constants + registration ctors into `hostModule` for each
-    // @Kernel in `kernels`. Returns the number embedded (0 if none / the spirv
-    // target is unavailable). `arch` is the SPIR-V target env (e.g. "vulkan1.3").
-    // `manifests`, when given, receives one KernelManifest per kernel (the
-    // primary variant): identity + the SPIR-V hash. Pipeline statistics are a
-    // driver fact at pipeline creation, so the footprint stays absent here
-    // (xpu-tile-manifest §3.1 "where the driver exposes them").
+    // Emit SPIR-V constants + registration ctors for each @Kernel in `kernels`,
+    // returning how many were embedded. `arch` is the SPIR-V target env;
+    // `manifests`, when given, receives identity + SPIR-V hash per kernel.
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
                                const std::string& arch = "vulkan1.3",
                                std::vector<KernelManifest>* manifests = nullptr);
 
-    // Emit SPIR-V constants + registration ctors into `hostModule` for each
-    // graphics-shader method (@Vertex/@Fragment/…) in `shaders` — the
-    // rasterization parallel of emitKernelRegistration. Each is lowered on its
-    // own per-stage SPIR-V TargetMachine and registered under its entry name, so
-    // graphics shaders ride the normal build exactly like @Kernels. Returns the
-    // number embedded (0 if none / a stage's target env is unavailable). Stages
-    // using an unsupported construct (XPU-N01) are skipped, never fatal.
+    // The rasterization parallel for @Vertex/@Fragment/… methods: each is
+    // lowered on its own per-stage SPIR-V TargetMachine and registered under its
+    // entry name, so graphics shaders ride the normal build like @Kernels.
     int emitGraphicsRegistration(const std::vector<MethodPtr>& shaders,
                                  llvm::Module& hostModule,
                                  const std::string& arch = "vulkan1.3");

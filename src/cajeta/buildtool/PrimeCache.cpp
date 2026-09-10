@@ -21,8 +21,7 @@ namespace cajeta::buildtool {
             const std::string& preludeTag) {
         std::sort(files.begin(), files.end(),
             [](const auto& a, const auto& b) { return a.first < b.first; });
-        // Length-prefix every field so no (path, bytes, tag) concatenation
-        // can collide with another split of the same byte stream.
+        // Length-prefix every field so no other split of the same bytes hashes alike.
         std::string canonical;
         auto append = [&canonical](const std::string& s) {
             canonical += std::to_string(s.size());
@@ -48,8 +47,7 @@ namespace cajeta::buildtool {
         char magic[4] = {0, 0, 0, 0};
         in.read(magic, 4);
         if (in.gcount() != 4) return std::nullopt;   // truncated → miss
-        // LLVM bitcode magic: 'B' 'C' 0xC0 0xDE (a raw-bitcode header; the
-        // wrapper format is not produced by our writer, so reject it too).
+        // LLVM raw-bitcode magic 'B' 'C' 0xC0 0xDE; our writer never emits the wrapper.
         if (magic[0] != 'B' || magic[1] != 'C'
                 || (unsigned char) magic[2] != 0xC0
                 || (unsigned char) magic[3] != 0xDE) {

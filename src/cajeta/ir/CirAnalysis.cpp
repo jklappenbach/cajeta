@@ -1,6 +1,4 @@
-//
-// CirSpecializationAnalysis — see CirAnalysis.h and spec §3.5, §3.6.
-//
+// CirSpecializationAnalysis — see CirAnalysis.h.
 
 #include "CirAnalysis.h"
 
@@ -15,16 +13,14 @@ namespace ir {
 
 namespace {
 
-    // A first-class function type `(T…)->R`. Detected via the resolved CajetaType
-    // when present (lowered IR) or the textual spelling (hand-built IR).
+    // A first-class function type, by resolved CajetaType or textual spelling.
     bool isClosureType(const CirType& t) {
         if (t.resolved && std::dynamic_pointer_cast<CajetaFunctionType>(t.resolved))
             return true;
         return t.spelling.find("->") != std::string::npos;
     }
 
-    // Per-function index: value -> defining instruction, and memory-cell ->
-    // values stored into it (for tracing closures through a local slot).
+    // Per-function: value -> defining inst, and memory-cell -> values stored in.
     struct FnIndex {
         std::unordered_map<CirValue*, CirInstPtr> defOf;
         std::unordered_map<CirValue*, std::vector<CirValuePtr>> cellStores;
@@ -43,9 +39,8 @@ namespace {
         }
     };
 
-    // §3.5.1/§3.5.3 — trace a value back to the unique make.closure it resolves
-    // to, through the defining inst and (one level) a single-store memory cell.
-    // Returns the make.closure inst, or null for "unknown / not direct".
+    // Trace a value back to its unique make.closure, through the defining inst
+    // and one level of single-store memory cell; null when not direct.
     CirInstPtr traceClosureTarget(const CirValuePtr& v, const FnIndex& idx, int depth = 0) {
         if (!v || depth > 8) return nullptr;
         auto it = idx.defOf.find(v.get());
@@ -60,10 +55,8 @@ namespace {
         return nullptr;
     }
 
-    // §3.5.4/§3.5.5 — inside callee F, collect the apply.closure sites that invoke
-    // parameter P (operand[0] == P), and detect whether P escapes (appears as any
-    // other operand: stored, returned, passed on). Returns invocation-site count;
-    // sets `escapes` if P is used anywhere but as an apply.closure target.
+    // Count the apply.closure sites in F that invoke parameter P, and set
+    // `escapes` when P is used as any other operand: stored, returned, passed on.
     int invocationMap(const CirFunctionPtr& F, const CirValuePtr& P, bool& escapes) {
         escapes = false;
         int sites = 0;
@@ -108,17 +101,13 @@ CirAnalysisResult CirSpecializationAnalysis::analyze(
                 const CirValuePtr& arg = inst->operands[j];
                 if (!arg) continue;
 
-                // The authoritative "this is a closure argument" signal is the
-                // callee's parameter type at this position; for an unknown callee
-                // fall back to the arg's own type / a make.closure definition.
+                // The authoritative signal is the callee's parameter type here.
                 const bool paramIsClosure =
                     calleeKnown && j < F->params.size() && isClosureType(F->params[j]->type);
                 CirInstPtr mk = traceClosureTarget(arg, idx);
                 const bool argLooksClosure = isClosureType(arg->type) || mk != nullptr;
                 if (!paramIsClosure && !argLooksClosure) continue;
 
-                // Callee body must be visible to guarantee a *complete* invocation
-                // set (§3.5.4); otherwise we cannot specialize safely.
                 if (!calleeKnown) {
                     result.leaveIndirect.push_back(
                         {caller->name, calleeName,
@@ -128,20 +117,17 @@ CirAnalysisResult CirSpecializationAnalysis::analyze(
                 if (!paramIsClosure) continue;   // arg at a non-closure parameter position
                 CirValuePtr P = F->params[j];
 
-                // §3.5.1/§3.5.3 — known, directly-supplied target?
                 if (!mk) {
                     result.leaveIndirect.push_back(
                         {caller->name, calleeName,
                          "closure argument not a directly-supplied known closure"});
                     continue;
                 }
-                // §3.5.2 — capture-free?
                 if (!mk->targetKnown || !mk->operands.empty()) {
                     result.leaveIndirect.push_back(
                         {caller->name, calleeName, "closure target is capturing (not capture-free)"});
                     continue;
                 }
-                // §3.5.5 — escape/ownership safety on the parameter.
                 if (P->ownership == CirOwnership::Owned) {
                     result.leaveIndirect.push_back(
                         {caller->name, calleeName, "closure parameter is owned (drop semantics)"});
@@ -161,7 +147,6 @@ CirAnalysisResult CirSpecializationAnalysis::analyze(
                     continue;
                 }
 
-                // All probes hold -> SPECIALIZE (§3.6.1/§3.6.2).
                 CirSpecRequest req;
                 req.callerFn = caller->name;
                 req.callee = F->name;

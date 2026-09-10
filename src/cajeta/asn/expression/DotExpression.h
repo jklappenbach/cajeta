@@ -18,29 +18,16 @@ namespace cajeta {
 
     class DotExpression : public Expression {
         string identifier;
-        // Position of the IDENTIFIER token, not of the expression. The node's own
-        // sourceLine/Column point at the lhs (`person` in `person.address`), but a
-        // field reference must anchor on the name the developer Ctrl-clicks — the
-        // IDE resolves a reference by the offset under the caret. 0 when the rhs is
-        // not an identifier form. (ide-symbol-index 2.1.6)
+        // Position of the IDENTIFIER token, not of the node, which is at the lhs.
         int idLine = 0;
         int idColumn = 0;
-        // view v1.1 element arrays (specs/view-element-arrays-spec.md):
-        // when set, generateCode on an element-array view field returns the
-        // raw i8* to the field's u32 count prefix instead of throwing the
-        // bare-read error. One-shot — cleared on use. Set only by the
-        // callers that consume the prefix directly: ArrayIndexExpression
-        // (f[i]) and MethodCallExpression (f.count()).
+        // When set, generateCode on an element-array view field returns the raw i8*
+        // to its u32 count prefix. One-shot: cleared on use, set only by f[i]/count().
         bool elementArrayPrefixMode = false;
-        // Stashed by a prefix-mode generateCode for the caller
-        // (ArrayIndexExpression) — the descriptor view's unwrapped data
-        // base, offset table, and the field's fixed slot index. Null/-1
-        // when the receiver is not a descriptor view.
+        // Stashed by a prefix-mode generateCode; null/-1 unless a descriptor view.
         llvm::Value* earrDataBase = nullptr;
         llvm::Value* earrTable = nullptr;
         int earrSlot = -1;
-        // Receiver view type, stashed by resolveViewElementArrayProperty —
-        // callers need its effective endianness for count/len prefix reads.
         shared_ptr<class CajetaView> earrViewType;
     public:
         llvm::Value* getEarrDataBase() const { return earrDataBase; }
@@ -55,33 +42,22 @@ namespace cajeta {
 
         void setElementArrayPrefixMode(bool m) { elementArrayPrefixMode = m; }
 
-        // Non-null iff this dot names a view element-array field (`V[]` /
-        // `String[]`) on a view-typed receiver — the gate the f[i] and
-        // f.count() special paths key on. Resolves the receiver's type if
-        // needed.
+        // Non-null iff this dot names an element-array field on a view receiver.
         StructurePropertyPtr resolveViewElementArrayProperty(
             CajetaModulePtr module);
 
         void resolveTypes(CajetaModulePtr module) override;
 
-        // Emit an xref reference edge for this field access, targeting the class
-        // that DECLARES the field (which for an inherited field is not the
-        // receiver's class). See DotExpression.cpp.
+        // Emit an xref edge targeting the DECLARING class, not the receiver's.
         void recordFieldXref(const CajetaClassPtr& owner);
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
 
-        // Build the dotted-path string for a chain like `person.address.city`.
-        // Returns "" if the chain bottoms out at something that isn't a named
-        // identifier (e.g. a method call result). Used by the borrow checker
-        // to track moved paths and reject reads through them.
+        // The dotted path for `person.address.city`, "" if it is not all identifiers.
         static string buildPath(const ExpressionPtr& expr);
 
-        // Apply an `llvm.bswap.iN` intrinsic to `v` if the receiver's struct
-        // type carries a non-host endianness annotation. Used by both field
-        // load (after read) and field store (before write) so the value seen
-        // by the host is in host order while the in-buffer bytes match the
-        // declared wire order. Floats and i8 pass through unchanged today.
+        // Apply `llvm.bswap.iN` to `v` when the receiver's struct declares a non-host
+        // endianness: after a field load, before a field store, so wire order stays.
         static llvm::Value* maybeBswap(CajetaModulePtr module, llvm::Value* v,
                                         const ExpressionPtr& receiver);
     };

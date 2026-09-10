@@ -1,10 +1,5 @@
-//
-// Java-style nested array. A `T[]` value is a `ptr` to a header struct laid out as
-// `{ i64 size, [0 x T] data }` — one heap allocation per array. `T[][]` wraps another
-// CajetaArray whose element type is itself a CajetaArray; multi-dim arrays are nested
-// rather than flattened, matching Java semantics.
-//
-
+// Java-style nested array: a `T[]` value is a `ptr` to `{ i64 size, [0 x T] data }`, one
+// heap allocation per array. `T[][]` nests a CajetaArray of CajetaArray, not a flat block.
 #pragma once
 
 #include "CajetaClass.h"
@@ -18,16 +13,11 @@ namespace cajeta {
     class CajetaArray : public CajetaClass {
     private:
         CajetaTypePtr elementType;
-        // -1 => heap reference `T[]` (a pointer to a `{i64 size, [0 x T]}`
-        // header). >= 0 => fixed-size inline array `T[N]`: N contiguous
-        // elements stored INLINE in the enclosing object (no pointer, no
-        // heap), used for SSO-style inline buffers. The canonical name
-        // encodes N (`int8[64]` vs `int8[]`) so the two are distinct types.
+        // -1 => heap reference `T[]`. >= 0 => fixed-size inline array `T[N]`, N elements
+        // stored INLINE in the enclosing object; the canonical encodes N, so they differ.
         int32_t fixedLength = -1;
     public:
-        // Index of the size field in the header struct's GEP layout.
         static constexpr unsigned SIZE_FIELD_INDEX = 0;
-        // Index of the inline data array `[0 x T]` in the header struct.
         static constexpr unsigned DATA_FIELD_INDEX = 1;
 
         CajetaArray(CajetaModulePtr module, CajetaTypePtr elementType,
@@ -35,50 +25,32 @@ namespace cajeta {
 
         CajetaTypeFlags getTypeFlags() override { return ARRAY_TYPE_ID; }
 
-        // Fixed inline length (>= 0) or -1 for a heap reference. See the field
-        // comment above.
         int32_t getFixedLength() const { return fixedLength; }
         bool isInlineArray() const { return fixedLength >= 0; }
 
-        // The LLVM type of the inline storage for a `T[N]` field: `[N x T]`.
-        // Only valid when isInlineArray(); used by the class field-layout and
-        // the inline element-access GEP.
+        // LLVM type of a `T[N]` field's inline storage, `[N x T]`; only when isInlineArray().
         llvm::Type* getInlineLlvmType(llvm::LLVMContext* ctx) const;
 
-        // The element type for one level of indexing. For `T[][]` this returns the
-        // CajetaArray for `T[]`; the next level of unwrapping happens via that.
+        // The element type for one level of indexing; `T[][]` returns the CajetaArray `T[]`.
         CajetaTypePtr getElementType() { return elementType; }
-        // title-stores §3.1 (plan 2.2.2) — address of the element-ownership
-        // tail bitmap: hdr + headerBytes + count*elemBytes, with count loaded
-        // from the header word at runtime. Single shared emitter for the
-        // Unit-3/4 slot-store, move-out, and teardown codegen.
+        // Address of the element-ownership tail bitmap: hdr + headerBytes + count*elemBytes,
+        // count loaded from the header at runtime. Shared by slot-store, move-out, teardown.
         static llvm::Value* emitElementBitsBase(llvm::IRBuilder<>& builder,
             llvm::Value* hdrPtr, uint64_t headerBytes, uint64_t elemBytes);
 
-        // The LLVM type used inside the header's `[0 x T]`. Equal to elementType's
-        // llvm type for value-type elements, or `ptr` when elementType is itself an
-        // array or other reference type.
+        // The LLVM type inside the header's `[0 x T]`; `ptr` when the element is a reference.
         llvm::Type* getElementLlvmType(llvm::LLVMContext* ctx) const;
 
-        // title-stores §3.2 — the SLOT STRIDE in bytes, read from the BUILT
-        // `{ i64, [0 x T] }` type (the layout every element GEP follows).
-        // getElementLlvmType() re-answers with the element's now-complete
-        // struct, but a self-referential element (BPlusTreeNode.children)
-        // was opaque when the array type was built and its data degraded to
-        // `ptr` — stride 8, not the struct size. Every tail-bitmap es (alloc,
-        // store, take, drop walks) must use THIS, or indexes collapse.
+        // The SLOT STRIDE in bytes, read from the BUILT `{ i64, [0 x T] }` type that every
+        // element GEP follows: a self-referential element degraded to `ptr` when the array
+        // type was built, so every tail-bitmap walk must use THIS or indexes collapse.
         uint64_t elementStrideBytes(const llvm::DataLayout& dl,
                                     llvm::LLVMContext* ctx);
 
-        // U6.4.1 — build (intern) the array's `{ i64 size, [0 x T] data }` struct
-        // in `ctx` from the (immutable) element type + fixed length. Context-
-        // parameterized so the frozen-stdlib path can rebuild it in a thread's own
-        // context (U6.4.2); the ctor calls it with the home module's context.
+        // Build (intern) the `{ i64 size, [0 x T] data }` struct in `ctx` (per-thread rebuild).
         llvm::Type* buildLlvmType(llvm::LLVMContext* ctx) const;
 
-        // U6.4.2 — when frozen and this thread's binding table is empty, rebuild
-        // the struct in the thread's current LLVM context. Inert while not frozen
-        // (delegates to the base, which returns the inline-bound type).
+        // When frozen with an empty per-thread table, rebuild in this thread's context.
         llvm::Type* getLlvmType() override;
     };
     typedef shared_ptr<CajetaArray> CajetaArrayPtr;

@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 3/22/23.
-//
+// StackField - a Field whose value lives in a stack allocation.
 
 #pragma once
 #include "Field.h"

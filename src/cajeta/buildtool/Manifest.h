@@ -1,12 +1,6 @@
-// Cajeta build-tool manifest (`cajeta.json`) data model and loader.
-//
-// The manifest has six top-level blocks: details, properties, settings,
-// actions (presets), plugins, tasks. See BuildTool.md "Manifest —
-// cajeta.json" for the spec. Phase 0 scope (plans/buildtool/build-tool-plan.md):
-// load the document, validate top-level structure + the details block,
-// preserve unknown fields in other blocks for forward compatibility.
-// Subsequent phases extend Settings/Tasks/Actions/Plugins/Properties
-// modeling.
+// Cajeta build-tool manifest (`cajeta.json`) data model and loader. The
+// document has six top-level blocks: details, properties, settings, actions
+// (presets), plugins, tasks; see BuildTool.md for the schema.
 
 #pragma once
 
@@ -20,10 +14,7 @@
 
 namespace cajeta::buildtool {
 
-    // `details` block — package identity. Phase 0 models the required
-    // fields plus the commonly-set optional ones. Unknown fields are
-    // currently rejected (strict schema for `details`); extending the
-    // schema requires a doc + schema-version bump.
+    /// `details` block: package identity, on a strict schema.
     struct ManifestDetails {
         std::string name;                            // required
         std::string version;                         // required
@@ -32,51 +23,35 @@ namespace cajeta::buildtool {
         std::vector<std::string> authors;            // empty == not set
         std::optional<std::string> repositoryUrl;
         std::optional<std::string> cajetaLangVersion;
-        // `details.plugin` sub-block — present only on plugin
-        // sidecars. Raw because the shape is owned by the plugin
-        // protocol version, not the manifest schema; Plugin.cpp
-        // reads `id`, `binary`, `actions`, and `entries` out of it.
+        // Plugin sidecars only; raw because the plugin protocol owns its shape.
         llvm::json::Object pluginRaw;
 
-        // Derived from `name` by splitting on the last `.`. Cached at
-        // load time so consumers don't recompute on every reference.
         std::string group() const;     // everything before last '.'
         std::string library() const;   // last segment
     };
 
-    // settings.build.binaries entry — names a buildable executable
-    // with its entry method. Multi-binary projects declare several
-    // here; build tasks reference them via `binary: "<name>"`.
+    /// One settings.build.binaries entry: an executable and its entry method.
     struct BinarySpec {
         std::string name;
         std::string entryMethod;
         std::optional<std::string> description;
     };
 
-    // settings.build block. Carries cross-cutting build defaults the
-    // build action reads when invoked.
+    /// settings.build: the cross-cutting defaults the build action reads.
     struct SettingsBuild {
         std::optional<std::string> entryMethod;         // single-binary default
         std::optional<std::string> target;              // "host" / target triple
         std::optional<std::string> sourceRoot;          // default: src/main/cajeta
         std::optional<std::string> outputDir;           // default: build/
         std::map<std::string, BinarySpec> binaries;     // named-binary registry
-        // Phase 5b: custom-flavors map; left raw for now.
         llvm::json::Object customFlavorsRaw;
-        // settings.build.cache — IR-cache eviction policy applied after a
-        // successful incremental build. Zero = that pass is skipped.
-        //   { "max-bytes": <int>, "max-age-seconds": <int> }
+        // settings.build.cache `max-bytes` / `max-age-seconds`; 0 skips the pass.
         uint64_t cacheMaxBytes = 0;
         uint64_t cacheMaxAgeSeconds = 0;
     };
 
-    // settings.output block — where generated files go
-    // (build-output-layout-spec §3.3). All optional, all relative to the
-    // project root unless absolute. `root` is the one knob most projects
-    // touch; the other three override it individually.
-    //
-    // Defaults live in the build action, not here, so an absent key stays
-    // distinguishable from one set to its default value.
+    /// settings.output: where generated files go. Defaults live in the build
+    /// action, so an absent key stays distinguishable from a defaulted one.
     struct SettingsOutput {
         std::optional<std::string> root;           // default: build
         std::optional<std::string> intermediates;  // default: <root>/obj
@@ -84,9 +59,7 @@ namespace cajeta::buildtool {
         std::optional<std::string> binaries;       // default: <root>/exe
     };
 
-    // settings.native-libraries entry — a native C/C++ library a Cajeta
-    // library binds via @Native. Keyed by lib-id. See
-    // docs/specification/buildtool/native-deps-spec.md §2.
+    /// One per-platform artifact of a settings.native-libraries entry.
     struct NativeArtifact {
         std::string platform;                 // "linux-x64", ...
         std::optional<std::string> url;       // download coordinate
@@ -104,17 +77,13 @@ namespace cajeta::buildtool {
         std::optional<std::string> acquire;   // embargoed acquisition instructions
     };
 
-    // settings.native-overrides entry — the ONE developer-facing native knob:
-    // force a non-default version or a local path. Keyed by lib-id.
+    /// The one developer-facing native knob: force a version or a local path.
     struct NativeOverride {
         std::optional<std::string> version;
         std::optional<std::string> path;
     };
 
-    // Top-level manifest. Phase 0 keeps the non-details blocks as raw
-    // JSON values so we can validate they exist and have the right
-    // top-level type without yet modeling their contents. Later phases
-    // replace each `*Raw` with a typed model.
+    /// The whole document; a `*Raw` block's contents are not modeled yet.
     struct Manifest {
         ManifestDetails details;
         llvm::json::Object propertiesRaw;
@@ -122,75 +91,49 @@ namespace cajeta::buildtool {
         llvm::json::Object actionsRaw;
         llvm::json::Object pluginsRaw;
         llvm::json::Object tasksRaw;
-        // `melt` block — present only in melt packages (manifests
-        // whose purpose is to export curated configuration). Mutually
-        // exclusive with `tasks` and `workspace`. See cajeta/buildtool/
-        // Melt.h for the typed model.
+        // Melt packages only; mutually exclusive with `tasks` and `workspace`.
         llvm::json::Object meltRaw;
-        // `workspace` block — present only in workspace-root manifests
-        // (the monorepo coordination layer, Phase 12). Parses through
-        // raw today; typed model lands when Phase 12 ships.
+        // Workspace-root manifests only.
         llvm::json::Object workspaceRaw;
 
-        // True iff the `melt` block was present at load time. Used to
-        // distinguish "no melt declared" from "declared but empty".
+        // Presence flags: they separate "not declared" from "declared empty".
         bool hasMelt = false;
-        // True iff the `workspace` block was present at load time.
         bool hasWorkspace = false;
 
-        // Absolute path the manifest was loaded from. Empty when the
-        // manifest was loaded from an in-memory string.
+        // Empty when the manifest was loaded from an in-memory string.
         std::string sourcePath;
     };
 
-    // Parse the `settings.build` block from a manifest. Returns a
-    // typed SettingsBuild; missing block → defaults. Errors on
-    // structurally invalid shapes (e.g. binaries entry without
-    // `entry-method`).
+    /// Parses `settings.build`; a missing block yields defaults.
     llvm::Expected<SettingsBuild> parseSettingsBuild(const Manifest& m);
 
-    // Parse + VALIDATE settings.output. Validation happens here, on load,
-    // rather than at first write (spec §4.5): a bad value should stop the
-    // build before anything is generated, and the diagnostic names the
-    // offending value so it can be found in the manifest.
+    /// Parses and VALIDATES settings.output. Validating on load rather than
+    /// at first write stops a bad value before anything is generated.
     llvm::Expected<SettingsOutput> parseSettingsOutput(const Manifest& m);
 
-    // Parse one native-library entry object (the value under a lib-id key).
-    // `where` is the diagnostic prefix. Shared by the manifest parser and the
-    // .cja embedded-metadata parser (native-deps unit 4).
+    /// Parses the entry object under one lib-id key; `where` prefixes errors.
     llvm::Expected<NativeLibrary> parseNativeLibraryEntry(
         const std::string& id, const llvm::json::Object& entry,
         const std::string& where);
 
-    // Parse settings.native-libraries (keyed by lib-id). Missing block →
-    // empty map. Errors on a malformed entry (missing version/license,
-    // unknown link mode, non-object entry). See native-deps-spec §2.1.
+    /// Parses settings.native-libraries; a missing block yields an empty map.
     llvm::Expected<std::map<std::string, NativeLibrary>>
     parseNativeLibraries(const Manifest& m);
 
-    // Parse settings.native-overrides (keyed by lib-id) — the developer's
-    // version/path override. Missing block → empty map. Each entry must set
-    // 'version' or 'path'.
+    /// Parses settings.native-overrides; each entry must set version or path.
     llvm::Expected<std::map<std::string, NativeOverride>>
     parseNativeOverrides(const Manifest& m);
 
-    // Load + validate a manifest from disk. Errors are
-    // `cajeta::buildtool::ManifestError` with citation-style messages.
+    /// Loads and validates a manifest from disk; errors are ManifestError.
     llvm::Expected<Manifest> loadManifestFile(const std::string& path);
 
-    // Load + validate a manifest from an in-memory JSONC string.
-    // `sourceLabel` is used in error messages (a filename or
-    // "<inline>" or similar).
+    /// Loads a manifest from a JSONC string; `sourceLabel` names it in errors.
     llvm::Expected<Manifest> loadManifestString(
         const std::string& source,
         const std::string& sourceLabel = "<inline>");
 
-    // The package's project root: the directory holding `cajeta.json` (the
-    // parent of `manifest.sourcePath`), or "." when the source path is unset.
-    // This is the root that carries `skills/` (skill-discovery D.3) and the
-    // local artifact cache — NOT the deeper compile source root
-    // (`src/main/cajeta`). Returns "." rather than "" so it is always a usable
-    // path argument.
+    /// The directory holding `cajeta.json` — NOT the compile source root.
+    /// Returns "." rather than "" so it is always a usable path argument.
     std::string projectRootFromManifest(const Manifest& m);
 
 } // namespace cajeta::buildtool

@@ -1,22 +1,10 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
 // === (single-TU build; not a standalone compilation unit).
-// --- Noun seam: the resource-provider SPI (cajeta-gpu inc-4 brick #2) --------
-//
-// The first-class mirror of the verb seam (LoweringTarget): a struct of build/
-// free hooks, one instance per backend, through which a core noun is built from
-// its description. This is the machinery a vendor extension implements for a
-// noun (VendorExtensionSDK.md §2) — build-from-description, not convert-between-
-// builts. Dogfooded on AccelerationStructure: the seam-defining noun
-// (CajetaGPU.md §4) and the only noun with impl divergence (software BVH vs
-// native BLAS). Buffer/Texture/Image have one impl per backend, so their slots
-// are reserved here but stay on their existing switch dispatch (no tag would be
-// meaningful). Each build reports the CajetaAsImpl it used; the noun records it;
-// free follows the RECORDED impl, not the active backend.
+// --- Noun seam: one struct of build/free hooks per backend. Each build reports
+// --- the CajetaAsImpl used; free follows THAT, not the active backend.
 #include "cajeta_noun_impl.h"
 
-// OptiX AS runtime glue (src/cajeta/xpu/nvidia/OptixAccel.cpp). Resolved at JIT
-// link time via the process-symbol generator (the TLS-engine pattern); stubs
-// returning 0 when cajeta was built without the OptiX SDK, so this always links.
+// OptiX AS glue (xpu/nvidia/OptixAccel.cpp), JIT-linked; stubbed without the SDK.
 extern int     cajeta_xpu_optix_available(void);
 extern int64_t cajeta_xpu_optix_accel_build_aabbs(const float* boxes, uint32_t count);
 extern int64_t cajeta_xpu_optix_accel_build_triangles(const float* verts,
@@ -37,20 +25,11 @@ extern int      cajeta_xpu_optix_launch_tri(const char* ptx, uint64_t ptxLen,
                                             const void* paramsHost, uint64_t paramsLen,
                                             uint32_t width);
 
-// --- OptiX ray-query program registry (M2 Phase 3-C-ii) ---------------------
-// A ray-query @Kernel whose AccelerationStructure resolves to the OptiX impl can
-// NOT run as a single cuLaunchKernel kernel — OptiX has no inline ray query; the
-// RT cores are reached only through a program PIPELINE (raygen / intersection /
-// anyhit / miss) launched via optixLaunch. NvptxRegistration emits that program
-// set as a SEPARATE PTX module (the `_optix_*` asm ptxas rejects) and registers it
-// here via __cajeta_xpu_register_optix_rayquery, keyed by the same name as the
-// kernel's ordinary software-BVH cubin. The CUDA launch path (cajeta_xpu_launch_cuda)
-// dispatches here when the active AS impl is OptiX; otherwise the software cubin runs.
-// shape: 0 = AABB candidate count       (prog1=intersection, prog2=anyhit, prog3=miss);
-//        1 = triangle nearest-hit        (prog1=closesthit, prog2=miss, prog3 unused);
-//        2 = triangle candidate bary     (prog1=anyhit, prog2=miss, prog3 unused);
-//        3 = committed-triangle per-launch (prog1=closesthit, prog2=miss, prog3 unused).
-// Keep in sync with cajeta::xpu::nvidia::OptixRqShape.
+// --- OptiX ray-query program registry ---------------------------------------
+// An OptiX-impl ray query is a program PIPELINE, not one cuLaunchKernel: a separate
+// PTX module, registered here under the software-BVH cubin's name. `shape`, in sync
+// with OptixRqShape: 0 = AABB candidate (prog1 intersection, prog2 anyhit, prog3
+// miss); 1 = tri nearest-hit, 2 = tri bary, 3 = committed tri (prog1, prog2 miss).
 struct cajeta_optix_rq {
     char name[256];
     const void* ptx;     // OptiX program PTX text (an embedded host constant)
@@ -93,37 +72,18 @@ static struct cajeta_optix_rq* cajeta_xpu_find_optix_rq(const char* name) {
     return NULL;
 }
 
-// Native inline ray query available on the active device? (Same condition as
-// __cajeta_xpu_device_supports(RayQueryNative).) The native-vs-software input.
+// Native inline ray query on the active device? MUST stay the same condition as
+// __cajeta_xpu_device_supports(RayQueryNative), or query and resolver disagree.
 static int caj_native_rayquery_available(void) {
 #if defined(CAJETA_RT_HAS_VULKAN)
-    // No Win32 gate: native ray query is available wherever the Vulkan device
-    // advertises it (the RTX 4090's Windows Vulkan driver does). This MUST agree
-    // with __cajeta_xpu_device_supports(RayQueryNative) — same condition — so the
-    // capability query and the AS-impl resolver never disagree on one device.
     return (cajeta_xpu_active_backend() == CAJ_XPU_VULKAN && g_xpu_vk.rayQuery) ? 1 : 0;
 #else
     return 0;
 #endif
 }
 
-// Resolve an AS impl preference (CajetaAsPref) to a concrete impl (inc-4 brick #3).
-// Precedence: the CAJETA_GPU_AS_IMPL env override wins, then the explicit
-// preference, then the AUTO default policy. Read once per call (constant within a
-// run), so the build's choice and the recorded impl always agree. A NATIVE request
-// with no native support falls back to the software floor (core always runs).
-// This is the RUNTIME-NOUN instance of the CAJETA_GPU_<FEATURE>_IMPL degrade-
-// override convention (inc-4 brick #4); the compile-time-feature instance is
-// resolveImplTier() in src/cajeta/xpu/lowering/KernelLowering.cpp (e.g.
-// CAJETA_GPU_COOPMATRIX_IMPL). Same precedence + case-sensitive string match.
-// CUDA's native AS tier is OptiX (RT cores), resolved separately from Vulkan's
-// because the "native impl" ordinal differs (CAJ_AS_IMPL_OPTIX vs _VULKAN_NATIVE)
-// and the availability probe is different (cajeta_xpu_optix_available, not the
-// Vulkan ray-query flag). M1 NOTE: AUTO on CUDA stays SOFTWARE — the OptiX *verb*
-// (a kernel traversing the AS via optixTrace) lands in M2; until then an OptiX AS
-// is opt-in (AsImpl.Native / CAJETA_GPU_AS_IMPL=optix|native) and not yet consumed
-// by a lowered kernel. Flipping AUTO to OPTIX before M2 would hand the software
-// walk an OptiX handle it would misread as a buffer.
+// Resolve a CajetaAsPref on CUDA, whose native tier is OptiX: the CAJETA_GPU_AS_IMPL
+// env override wins, then the preference, then AUTO — which stays SOFTWARE.
 static CajetaAsImpl caj_cuda_resolve_as_impl(int pref) {
     int optix = cajeta_xpu_optix_available();
     const char* env = getenv("CAJETA_GPU_AS_IMPL");
@@ -131,20 +91,17 @@ static CajetaAsImpl caj_cuda_resolve_as_impl(int pref) {
         if (strcmp(env, "software") == 0) return CAJ_AS_IMPL_SOFTWARE_BVH;
         if (strcmp(env, "optix") == 0 || strcmp(env, "native") == 0)
             return optix ? CAJ_AS_IMPL_OPTIX : CAJ_AS_IMPL_SOFTWARE_BVH;
-        // unknown value: ignore; fall through to the explicit preference.
     }
     if (pref == CAJ_AS_PREF_SOFTWARE) return CAJ_AS_IMPL_SOFTWARE_BVH;
-    // NATIVE and NATIVE_NO_FLOOR both prefer OptiX; they differ only in whether the
-    // build keeps the software FLOOR (see caj_cuda_accel_build_aabbs), not the impl tag.
+    // NATIVE and NATIVE_NO_FLOOR differ only in keeping the software FLOOR.
     if (pref == CAJ_AS_PREF_NATIVE || pref == CAJ_AS_PREF_NATIVE_NO_FLOOR)
         return optix ? CAJ_AS_IMPL_OPTIX : CAJ_AS_IMPL_SOFTWARE_BVH;
     return CAJ_AS_IMPL_SOFTWARE_BVH;   // AUTO — software floor is the build-time primary
 }
 
+// Resolve a preference on the ACTIVE backend: CUDA to the OptiX tier, Vulkan to its
+// native BLAS, everything else to the portable floor. The build uses this too.
 static CajetaAsImpl caj_resolve_as_impl(int pref) {
-    // Backend-aware: CUDA resolves to the OptiX tier, Vulkan to its native BLAS,
-    // everything else to the portable floor. Keyed on the active backend so the
-    // recorded impl (implTag) and the build path always agree on one device.
     if (cajeta_xpu_active_backend() == CAJ_XPU_CUDA)
         return caj_cuda_resolve_as_impl(pref);
     int native = caj_native_rayquery_available();
@@ -153,11 +110,9 @@ static CajetaAsImpl caj_resolve_as_impl(int pref) {
         if (strcmp(env, "software") == 0) return CAJ_AS_IMPL_SOFTWARE_BVH;
         if (strcmp(env, "native") == 0)
             return native ? CAJ_AS_IMPL_VULKAN_NATIVE : CAJ_AS_IMPL_SOFTWARE_BVH;
-        // unknown value: ignore; fall through to the explicit preference.
     }
     if (pref == CAJ_AS_PREF_SOFTWARE) return CAJ_AS_IMPL_SOFTWARE_BVH;
-    // Vulkan native is a single rep (no separate software floor to drop), so
-    // NATIVE_NO_FLOOR behaves exactly like NATIVE here — the floor-drop is CUDA-only.
+    // Vulkan native is a single rep, so NATIVE_NO_FLOOR behaves like NATIVE.
     if (pref == CAJ_AS_PREF_NATIVE || pref == CAJ_AS_PREF_NATIVE_NO_FLOOR)
         return native ? CAJ_AS_IMPL_VULKAN_NATIVE : CAJ_AS_IMPL_SOFTWARE_BVH;
     return caj_default_as_impl(native);   // AUTO
@@ -166,19 +121,16 @@ static CajetaAsImpl caj_resolve_as_impl(int pref) {
 typedef struct CajetaNounProvider {
     const char*  name;
     int          backend_id;
-    // AccelerationStructure noun (wired). `pref` is the CajetaAsPref override;
-    // out_impl reports the impl the build actually chose (after resolution).
+    // `pref` is the CajetaAsPref override; out_impl reports the impl chosen.
     int64_t      (*accel_build_aabbs)(const float* boxes, uint32_t count,
                                       int32_t pref, CajetaAsImpl* out_impl);
     int64_t      (*accel_build_triangles)(const float* verts, uint32_t triCount,
                                           uint32_t stride, CajetaAsImpl* out_impl);
     void         (*accel_free)(int64_t handle, CajetaAsImpl impl);
-    // Buffer / Texture / Image noun slots: reserved (the unified contract);
-    // routed by their existing dispatchers until they gain impl divergence.
+    // Buffer / Texture / Image slots: reserved; still on their own dispatchers.
 } CajetaNounProvider;
 
-// CPU provider — the portable software BVH (the floor; handle == host blob ptr).
-// The CPU backend has only the software impl, so `pref` is moot here.
+// CPU provider — the portable software BVH floor; handle == host blob pointer.
 static int64_t caj_cpu_accel_build_aabbs(const float* boxes, uint32_t count,
                                          int32_t pref, CajetaAsImpl* out_impl) {
     (void) pref;
@@ -201,9 +153,7 @@ static const CajetaNounProvider caj_cpu_noun_provider = {
     caj_cpu_accel_free,
 };
 
-// Vulkan provider — native VK_KHR_acceleration_structure BLAS, or (forced/auto-
-// software) the portable software BVH uploaded into a storage buffer the "<name>$sw"
-// kernel variant reads as bvh[i]. The resolved impl drives both.
+// Vulkan provider — native BLAS, or a software BVH in a storage buffer the "$sw" twin reads.
 static int64_t caj_vk_accel_build_aabbs(const float* boxes, uint32_t count,
                                         int32_t pref, CajetaAsImpl* out_impl) {
     CajetaAsImpl impl = caj_resolve_as_impl(pref);
@@ -226,13 +176,7 @@ static int64_t caj_vk_accel_build_aabbs(const float* boxes, uint32_t count,
 }
 static int64_t caj_vk_accel_build_triangles(const float* verts, uint32_t triCount,
                                             uint32_t stride, CajetaAsImpl* out_impl) {
-    // Follow the resolved impl, exactly like the AABB path: software → build the
-    // portable host BVH and upload it to a storage buffer the "$sw" kernel reads;
-    // native → the VK_GEOMETRY_TYPE_TRIANGLES_KHR BLAS+TLAS traced via OpRayQuery.
-    // AUTO resolves to native on any ray-query-capable Vulkan device (Windows
-    // included — caj_native_rayquery_available is no longer Win32-gated), and to
-    // software on a non-RT device. (The triangle ctor carries no pref override, so
-    // AUTO — same default the noun records.)
+    // The triangle ctor carries no pref override, so AUTO — the noun's own default.
     CajetaAsImpl impl = caj_resolve_as_impl(CAJ_AS_PREF_AUTO);
     if (out_impl) *out_impl = impl;
     if (impl == CAJ_AS_IMPL_SOFTWARE_BVH) {
@@ -251,9 +195,8 @@ static int64_t caj_vk_accel_build_triangles(const float* verts, uint32_t triCoun
     }
     return cajeta_xpu_vk_accel_build_triangles(verts, triCount, stride);  // native
 }
+// Free follows the RECORDED impl: software is a storage buffer, native an entry.
 static void caj_vk_accel_free(int64_t handle, CajetaAsImpl impl) {
-    // Free follows the recorded impl: a software BVH is a storage buffer; a native
-    // BLAS is an accel-table entry.
     if (impl == CAJ_AS_IMPL_SOFTWARE_BVH) cajeta_xpu_vk_free(handle);
     else cajeta_xpu_vk_accel_free(handle);
 }
@@ -264,15 +207,8 @@ static const CajetaNounProvider caj_vk_noun_provider = {
     caj_vk_accel_free,
 };
 
-// CUDA provider — NVIDIA has no cajeta native inline ray-query seam (RT cores are
-// reached via OptiX, not the NVPTX device path), so the AS is ALWAYS the portable
-// software BVH: build the host blob (the shared CPU builder) and upload it into a
-// CUDA device buffer the kernel reads as bvh[i]. The NVPTX kernel is lowered with
-// the SoftwareRayQuery walk under its base name (NvptxTarget.accelImpl() ==
-// SoftwareBvh), so — unlike Vulkan's $sw twin — there is no separate variant to
-// select; the AS POD's deviceHandle (offset 0) is the device pointer the launch
-// passes through as the buffer arg. Mirrors caj_vk_accel_build_aabbs' software arm
-// with cuMemAlloc/cuMemcpyHtoD. (HIP is the symmetric follow-up.)
+// CUDA provider — no native inline ray-query seam (RT cores are OptiX-only), so the
+// AS is the software BVH in a device buffer, read under the kernel's base name.
 static int64_t caj_cuda_accel_upload_blob(int64_t blob) {
     if (!blob) return 0;
     if (!g_xpu_cuda.cuMemAlloc || !g_xpu_cuda.cuMemcpyHtoD) {
@@ -294,15 +230,9 @@ static int64_t caj_cuda_accel_upload_blob(int64_t blob) {
     free((void*) (intptr_t) blob);
     return (int64_t) dev;
 }
-// --- M3 Phase 1: multi-impl AS secondary-representation registry ------------
-// An AccelerationStructure may carry a SECONDARY representation alongside its
-// primary (the POD's deviceHandle). Under CAJETA_GPU_AS_IMPL=optix the primary is
-// the OptiX AS and the secondary is the portable software-BVH FLOOR (uploaded to a
-// device buffer), so M3's launch-time selection can fall back to software for an
-// Unsupported-shape kernel instead of faulting on the OptiX handle. Keyed by the
-// primary handle; entries are removed on free. (CUDA-only for now; the model
-// generalizes in M3 Phase 5.) Guarded by a dedicated lock — registration runs on
-// the build thread, lookup on launch/free.
+// --- Multi-impl AS secondary-representation registry ------------------------
+// An AS may carry a SECONDARY rep beside its primary (the software floor under an
+// OptiX one), so a launch can fall back. Its own lock: builds register, launches read.
 struct caj_as_secondary { int64_t primary; int32_t secImpl; int64_t secHandle; };
 #define CAJ_AS_SEC_MAX 256
 static struct caj_as_secondary g_as_sec[CAJ_AS_SEC_MAX];
@@ -346,15 +276,9 @@ static int caj_as_sec_remove(int64_t primary, int32_t* secImpl, int64_t* secHand
     return found;
 }
 
-// --- M3 Phase 3: lazy native build — retained geometry + lazy OptiX resolver ----
-// Under AUTO the build records the portable software BVH as the PRIMARY and does NOT
-// build the (expensive) OptiX rep — that is deferred to the first supported-shape
-// launch against this AS (R4: only pay for OptiX if a native consumer actually runs).
-// To rebuild OptiX on demand we must retain the source geometry; this registry holds a
-// host COPY keyed by the primary (software) handle. kind 0 = AABBs (count*6 floats),
-// 1 = triangle soup (triCount*3*stride floats). Freed when the OptiX rep is built (no
-// longer needed) or at AS free. Forced =optix builds OptiX eagerly and never retains
-// here; forced =software is ineligible and never retains (no lazy OptiX).
+// --- Lazy native build: retained geometry + lazy OptiX resolver --------------
+// Under AUTO the primary stays the software BVH and OptiX is deferred to the first
+// supported-shape launch, so keep a host COPY: kind 0 = AABBs, 1 = triangle soup.
 struct caj_as_geom { int64_t primary; int32_t kind; uint32_t count; uint32_t stride;
                      float* data; uint64_t nfloats; };
 #define CAJ_AS_GEOM_MAX 256
@@ -384,7 +308,7 @@ static void caj_as_geom_register(int64_t primary, int32_t kind, const float* dat
     pthread_mutex_unlock(&g_as_geom_lock);
     free(copy);   // registry full: drop the copy (lazy build just won't fire)
 }
-// Copy out the metadata + data pointer for `primary` (data still owned by the registry).
+// Metadata + data pointer for `primary`; the data stays owned by the registry.
 static int caj_as_geom_get(int64_t primary, struct caj_as_geom* out) {
     int found = 0;
     pthread_mutex_lock(&g_as_geom_lock);
@@ -406,9 +330,7 @@ static void caj_as_geom_remove(int64_t primary) {
     free(data);
 }
 
-// Lazy OptiX is eligible when the runtime has OptiX AND the policy is not forced
-// software (AUTO, or anything other than =software). Forced =optix takes the eager
-// build branch and never reaches the retention path; forced =software returns 0 here.
+// Lazy OptiX is eligible with OptiX present and the policy not forced software.
 static int caj_cuda_lazy_optix_eligible(void) {
     if (!cajeta_xpu_optix_available()) return 0;
     const char* env = getenv("CAJETA_GPU_AS_IMPL");
@@ -416,10 +338,8 @@ static int caj_cuda_lazy_optix_eligible(void) {
     return 1;
 }
 
-// Resolve (build-once) the OptiX representation for an AUTO AS whose primary is the
-// software BVH `primary`. Returns the OptiX handle, or 0 if none can be built (no
-// retained geometry → forced software, or the OptiX build failed). Registers the built
-// rep as the secondary so implSet() reports it and free releases it. Thread-safe.
+// Build-once the OptiX rep for an AUTO AS, registering it as the secondary so
+// implSet() reports it and free releases it. 0 when none can be built. Thread-safe.
 static int64_t caj_cuda_as_resolve_optix(int64_t primary) {
     int32_t sImpl = 0; int64_t sH = 0;
     if (caj_as_sec_lookup(primary, &sImpl, &sH) && sImpl == CAJ_AS_IMPL_OPTIX && sH)
@@ -451,12 +371,7 @@ static int64_t caj_cuda_accel_build_aabbs(const float* boxes, uint32_t count,
         int64_t h = cajeta_xpu_optix_accel_build_aabbs(boxes, count);
         if (h) {
             if (out_impl) *out_impl = CAJ_AS_IMPL_OPTIX;
-            // M3: build the portable software FLOOR as a secondary rep (uploaded to
-            // device) so the verb can fall back for an Unsupported-shape kernel — UNLESS
-            // the caller dropped it via AsImpl.NativeNoFloor (Phase 3c: asserts all
-            // consumers are supported native shapes, trading the safety net for memory;
-            // implSet() then reports OptiX-only = 4, and an Unsupported-shape launch is
-            // diagnosed + skipped rather than handed the OptixAs* handle).
+            // The software FLOOR as a secondary, unless dropped by NativeNoFloor.
             if (pref != CAJ_AS_PREF_NATIVE_NO_FLOOR) {
                 int64_t floor = caj_cuda_accel_upload_blob(
                     cajeta_xpu_cpu_accel_build_aabbs(boxes, count));
@@ -464,12 +379,10 @@ static int64_t caj_cuda_accel_build_aabbs(const float* boxes, uint32_t count,
             }
             return h;
         }
-        // OptiX build failed (or SDK absent at runtime) -> the software floor.
     }
     if (out_impl) *out_impl = CAJ_AS_IMPL_SOFTWARE_BVH;
     int64_t h = caj_cuda_accel_upload_blob(cajeta_xpu_cpu_accel_build_aabbs(boxes, count));
-    // M3 Phase 3: AUTO lazy path — retain geometry so a supported-shape launch can build
-    // the OptiX rep on demand (the primary stays the software floor until then).
+    // AUTO lazy path: retain the geometry so a later launch can build the OptiX rep.
     if (h && caj_cuda_lazy_optix_eligible())
         caj_as_geom_register(h, /*kind=aabbs*/0, boxes, (uint64_t) count * 6u, count, 0);
     return h;
@@ -490,8 +403,7 @@ static int64_t caj_cuda_accel_build_triangles(const float* verts, uint32_t triCo
     if (out_impl) *out_impl = CAJ_AS_IMPL_SOFTWARE_BVH;
     int64_t h = caj_cuda_accel_upload_blob(
         cajeta_xpu_cpu_accel_build_triangles(verts, triCount, stride));
-    // M3 Phase 3: AUTO lazy path — retain the vertex soup (triCount*3 verts, `stride`
-    // floats each) so a supported-shape launch can build the OptiX rep on demand.
+    // AUTO lazy path: retain the vertex soup for an on-demand OptiX build.
     if (h && caj_cuda_lazy_optix_eligible())
         caj_as_geom_register(h, /*kind=triangles*/1, verts,
                              (uint64_t) triCount * 3u * stride, triCount, stride);
@@ -499,8 +411,7 @@ static int64_t caj_cuda_accel_build_triangles(const float* verts, uint32_t triCo
 }
 static void caj_cuda_accel_free(int64_t handle, CajetaAsImpl impl) {
     if (!handle) return;
-    // M3: release any registered secondary (the software floor under =optix, or the
-    // lazily-built OptiX rep under AUTO) first, then any retained lazy geometry.
+    // Release any registered secondary first, then any retained lazy geometry.
     int32_t secImpl; int64_t secHandle;
     if (caj_as_sec_remove(handle, &secImpl, &secHandle) && secHandle) {
         if (secImpl == CAJ_AS_IMPL_OPTIX) cajeta_xpu_optix_accel_free(secHandle);
@@ -519,11 +430,7 @@ static const CajetaNounProvider caj_cuda_noun_provider = {
     caj_cuda_accel_free,
 };
 
-// HIP/AMD provider — the symmetric twin of the CUDA arm. AMD likewise has no
-// cajeta native inline ray-query seam, so AmdgpuTarget.accelImpl() == SoftwareBvh:
-// build the host software BVH and upload it into a HIP device buffer the kernel
-// reads as bvh[i] under its base name (no $sw twin). Mirrors caj_cuda_* with
-// hipMalloc/hipMemcpyHtoD/hipFree (HIP handles are void*, cast to the int64 handle).
+// HIP/AMD provider — the CUDA arm's twin; HIP's void* handles cast to int64.
 static int64_t caj_hip_accel_upload_blob(int64_t blob) {
     if (!blob) return 0;
     if (!g_xpu_hip.hipMalloc || !g_xpu_hip.hipMemcpyHtoD) {
@@ -569,9 +476,7 @@ static const CajetaNounProvider caj_hip_noun_provider = {
     caj_hip_accel_free,
 };
 
-// Registry indexed by backend id. CUDA + HIP now wire the software-BVH-on-device
-// provider (the AccelerationStructure noun built as a portable BVH uploaded to a
-// device buffer); Vulkan picks native BLAS or forced-software; CPU is the floor.
+// Registry indexed by backend id.
 static const CajetaNounProvider* const g_xpu_noun_providers[CAJ_XPU_COUNT] = {
     [CAJ_XPU_CUDA]   = &caj_cuda_noun_provider,
     [CAJ_XPU_HIP]    = &caj_hip_noun_provider,
@@ -579,25 +484,17 @@ static const CajetaNounProvider* const g_xpu_noun_providers[CAJ_XPU_COUNT] = {
     [CAJ_XPU_CPU]    = &caj_cpu_noun_provider,
 };
 
-// The provider for the active backend (the build site).
 static const CajetaNounProvider* cajeta_xpu_noun_provider(void) {
     int be = cajeta_xpu_active_backend();
     if (be < 0 || be >= CAJ_XPU_COUNT) return NULL;
     return g_xpu_noun_providers[be];
 }
 
-// --- AccelerationStructure device-BVH primitives (Part C inc 3b) -------------
-// Instance @Native methods on AccelerationStructure.cajeta. The leading `self`
-// is the cajeta `this`, ignored — the device side is keyed on the returned
-// handle. Ray query / BVH build is a Vulkan-only capability for now; other
-// backends return 0 (build) / no-op (free), which the cajeta drop chain handles.
+// --- AccelerationStructure device-BVH primitives -----------------------------
+// @Native methods on AccelerationStructure.cajeta; a leading `self` is ignored.
 
-// __cajeta_xpu_accel_build_aabbs(this, aabbs, count) -> int64 handle.
-// `aabbs` is a Cajeta float32[] header — { i64 count, [count x f32] data } — so
-// the box floats start at offset 8 (matches __cajeta_xpu_texture_upload). Each
-// box is 6 floats (minX,minY,minZ,maxX,maxY,maxZ); `count` is the box count.
-// STATIC @Native (no `self`): build with an explicit CajetaAsPref override (the
-// AccelerationStructure.of factory). `pref` is a CajetaAsPref ordinal.
+// `aabbs` is a Cajeta float32[] header, so the box floats start at offset 8, six
+// per box (min/max xyz). STATIC @Native: `pref` is a CajetaAsPref ordinal.
 int64_t __cajeta_xpu_accel_build_aabbs_pref(void* aabbs, uint32_t count,
                                             int32_t pref) {
     if (!aabbs || count == 0) return 0;
@@ -610,17 +507,12 @@ int64_t __cajeta_xpu_accel_build_aabbs_pref(void* aabbs, uint32_t count,
     return h;
 }
 
-// INSTANCE @Native (the default ctor): the AUTO preference.
 int64_t __cajeta_xpu_accel_build_aabbs(void* self, void* aabbs, uint32_t count) {
     (void) self;
     return __cajeta_xpu_accel_build_aabbs_pref(aabbs, count, CAJ_AS_PREF_AUTO);
 }
 
-// __cajeta_xpu_accel_build_triangles(this, vertices, triCount, stride) -> handle.
-// `vertices` is a Cajeta float32[] (8-byte count prefix); a triangle soup with
-// `stride` floats per vertex (3 = tight). 9 floats define triangle t at vertex
-// offset (t*3+v)*stride. v1: software (CPU) path only — Vulkan triangle geometry
-// is a follow-up (the Vulkan path still builds AABBs).
+// `vertices` is a float32[] triangle soup, `stride` floats per vertex (3 = tight).
 int64_t __cajeta_xpu_accel_build_triangles(void* self, void* vertices,
                                            uint32_t triCount, uint32_t stride) {
     (void) self;
@@ -634,24 +526,17 @@ int64_t __cajeta_xpu_accel_build_triangles(void* self, void* vertices,
     return h;
 }
 
-// STATIC @Native (no `self`): the impl a build with `pref` resolves to on the
-// active backend (env > pref > default). The AccelerationStructure.of factory
-// records this on the noun; the build uses the same resolver, so the recorded
-// impl and the built representation always agree.
+// The impl a build with `pref` resolves to; the build shares this resolver.
 int32_t __cajeta_xpu_accel_resolve_impl(int32_t pref) {
     return (int32_t) caj_resolve_as_impl(pref);
 }
 
-// INSTANCE @Native (the default ctor records this): the AUTO resolution.
 int32_t __cajeta_xpu_accel_impl(void* self) {
     (void) self;
     return (int32_t) caj_resolve_as_impl(CAJ_AS_PREF_AUTO);
 }
 
-// Free dispatches on the ACTIVE backend's provider, which branches on the RECORDED
-// impl (a forced-software-on-Vulkan AS is a storage buffer, not a host pointer or
-// an accel-table entry). v1: an AS is freed while the backend that built it is
-// still active (no cross-backend-after-switch free).
+// Free dispatches on the ACTIVE backend's provider, which branches on `impl`.
 void __cajeta_xpu_accel_free(void* self, int64_t handle, int32_t impl) {
     (void) self;
     if (!handle) return;
@@ -659,11 +544,8 @@ void __cajeta_xpu_accel_free(void* self, int64_t handle, int32_t impl) {
     if (p && p->accel_free) p->accel_free(handle, (CajetaAsImpl) impl);
 }
 
-// __cajeta_xpu_accel_impl_set(this, handle, primaryImpl) -> a bitmask of the
-// representations this AS carries, one bit per CajetaAsImpl ordinal (1u<<impl).
-// M3 Phase 1: the primary impl bit, OR'd with any registered SECONDARY rep (the
-// software floor built alongside an OptiX primary). `implTag()` still reports the
-// single primary; this exposes the full set the launch-time selector may choose.
+// A bitmask of the reps this AS carries, one bit per CajetaAsImpl ordinal
+// (1u<<impl): the primary OR'd with its secondary. implTag() reports the primary.
 int32_t __cajeta_xpu_accel_impl_set(void* self, int64_t handle, int32_t primaryImpl) {
     (void) self;
     int32_t set = (int32_t) (1u << (unsigned) primaryImpl);
@@ -673,28 +555,15 @@ int32_t __cajeta_xpu_accel_impl_set(void* self, int64_t handle, int32_t primaryI
     return set;
 }
 
-// --- gfx swapchain (cajeta.gfx.Swapchain, cajeta-gfx §4.c) --------------
-//
-// The presentable-image-chain noun. The instance @Native convention (leading
-// `self`, ignored): create is handed the opaque cajeta.ifx.Surface object (as a
-// void*) plus the resolved description and returns a swapchain handle; acquire/
-// present/free operate on it.
-//
-// HOST FLOOR ONLY (this build). The live VK_KHR_swapchain create / acquire /
-// queue-present (and the headless offscreen image ring) are device-machine work
-// over a real Vulkan WSI surface + a window backend (the separate cajeta-ifx-*
-// repos) — none of that exists here. These stubs let the noun construct and its
-// acquire/present plumb on the host so the API + frames-in-flight pacing
-// (cajeta.gfx.FrameSync) are exercisable; they hold no pixels and present
-// nothing. The real WSI backend replaces them on the device machine.
+// --- gfx swapchain (cajeta.gfx.Swapchain) ------------------------------------
+// HOST FLOOR ONLY in this build: these stubs let the noun construct and its
+// acquire/present plumb, but hold no pixels and present nothing.
 int64_t __cajeta_gfx_swapchain_create(void* self, void* surface, int32_t format,
                                       int32_t colorSpace, int32_t presentMode,
                                       uint32_t imageCount) {
     (void) self; (void) surface; (void) format; (void) colorSpace;
     (void) presentMode; (void) imageCount;
-    // A non-null opaque token so the noun reads as constructed; the real backend
-    // returns the VkSwapchainKHR / offscreen-ring pointer here.
-    return (int64_t) 1;
+    return (int64_t) 1;   // a non-null token, so the noun reads as constructed
 }
 
 uint32_t __cajeta_gfx_swapchain_acquire(void* self, int64_t handle) {
@@ -723,21 +592,16 @@ static inline int cajeta_tex_addr(int c, int n, int32_t addressMode) {
 }
 
 // A 4-lane float vector matching LLVM `<4 x float>` in the x86-64 SysV ABI
-// (returned in xmm0), so the CPU sampleTexture seam can declare this symbol as
-// returning `<4 x float>` and use the result as a Vector<float32,4> directly.
+// (returned in xmm0), so the CPU sampleTexture seam can use it as Vector<f32,4>.
 typedef float caj_v4f __attribute__((vector_size(16)));
 
-// Clamp a requested mip level into [0, levels-1].
 static inline int cajeta_cpu_lod(const struct cajeta_cpu_texobj* t, int lod) {
     if (lod < 0) return 0;
     if (lod >= t->levels) return t->levels - 1;
     return lod;
 }
 
-// Fetch texel (x,y) of mip level `lod` as RGBA from the DECODED float store: read
-// `channels` floats from that level's sub-buffer (offset mipoff[lod], width
-// mipw[lod]); missing channels default G/B = 0, A = 1. (x,y) are already addressed
-// (in-bounds). Level 0 has mipoff 0, so non-mip reads are unchanged.
+// Texel (x,y) of mip `lod` from the DECODED float store, already addressed in-bounds.
 static inline caj_v4f cajeta_cpu_texel_lod(const struct cajeta_cpu_texobj* t,
                                            int x, int y, int lod) {
     size_t lw = t->mipw[lod];
@@ -748,11 +612,8 @@ static inline caj_v4f cajeta_cpu_texel_lod(const struct cajeta_cpu_texobj* t,
     return c;
 }
 
-// CPU texture sampler — the lowering of `tex.sample(sampler, u, v)` (lod 0) and
-// `tex.sampleLod(sampler, u, v, lod)`. (u, v) normalized in [0, 1]; filterMode
-// 0 = nearest / 1 = bilinear; addressMode 0 = clamp / 1 = wrap. `lod` selects the
-// mip level (CPU v1: nearest mip = floor(lod), clamped; fractional cross-level
-// blend is a refinement). The bilinear gather uses the chosen level's dims.
+// CPU texture sampler — the lowering of `tex.sample` / `tex.sampleLod`. (u, v) are
+// normalized; filterMode 0 = nearest, 1 = bilinear; `lod` picks the nearest mip.
 caj_v4f __cajeta_xpu_cpu_tex_sample_rgba(void* texp, int32_t filterMode,
                                          int32_t addressMode, float u, float v,
                                          float lod) {
@@ -766,7 +627,6 @@ caj_v4f __cajeta_xpu_cpu_tex_sample_rgba(void* texp, int32_t filterMode,
         int y = cajeta_tex_addr((int) floorf(v * (float) H), H, addressMode);
         return cajeta_cpu_texel_lod(t, x, y, L);
     }
-    // bilinear (texel-center) — blend four RGBA texels of level L
     float fx = u * (float) W - 0.5f;
     float fy = v * (float) H - 0.5f;
     int x0 = (int) floorf(fx), y0 = (int) floorf(fy);
@@ -784,9 +644,7 @@ caj_v4f __cajeta_xpu_cpu_tex_sample_rgba(void* texp, int32_t filterMode,
     return a + (b - a) * dy;
 }
 
-// CPU texelFetch — `tex.fetch(x, y)` (lod 0) / `tex.fetchLod(x, y, lod)`: the
-// unfiltered, sampler-free read of the exact texel at integer (x, y) in mip level
-// `lod`. Coords clamped to the level's dims defensively. G/B = 0, A = 1 for <4 ch.
+// CPU texelFetch — the unfiltered texel at (x, y) in mip `lod`, coords clamped.
 caj_v4f __cajeta_xpu_cpu_tex_fetch_rgba(void* texp, int32_t x, int32_t y,
                                         int32_t lod) {
     struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
@@ -817,12 +675,8 @@ caj_v4i __cajeta_xpu_cpu_tex_fetch_rgba_i32(void* texp, int32_t x, int32_t y,
     return c;
 }
 
-// CPU Image2D store/load — the in-process lowering of `img.store(x, y, v)` /
-// `img.load(x, y)` (the writable twin of tex.fetch). `imgp` is the host image
-// record (a single-channel R32f cajeta_cpu_texobj). Bounds-guarded: an in-range
-// store writes data[y*w + x], an out-of-range store is dropped and an OOB load
-// returns 0 — so a stray kernel index can't corrupt host memory (the reference
-// path is the safe one). LLJIT resolves these like the tex-fetch symbols.
+// CPU Image2D store/load — the writable twin of tex.fetch over a single-channel
+// R32f record. Bounds-guarded, so a stray kernel index cannot corrupt host memory.
 void __cajeta_xpu_cpu_image_store(void* imgp, int32_t x, int32_t y, float v) {
     struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) imgp;
     if (!t || !t->data) return;

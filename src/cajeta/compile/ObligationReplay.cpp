@@ -21,8 +21,7 @@ namespace cajeta {
             return s.substr(b, e - b + 1);
         }
 
-        // Split at top-level commas — angle/paren depth aware, so
-        // `int32,HashMap<K,V>,(int32) -> #int32` yields three pieces.
+        // Split at top-level commas, angle/paren depth aware.
         std::vector<std::string> splitTopLevel(const std::string& s) {
             std::vector<std::string> out;
             int depth = 0;
@@ -40,9 +39,8 @@ namespace cajeta {
             return out;
         }
 
-        // Parse a `<...>` argument list into types. A leading `#` (stale
-        // element-ownership mangles in old obligation files) is stripped
-        // and ignored. False + err on any unresolvable argument.
+        // Parse a `<...>` argument list into types, stripping any stale leading
+        // `#`. False + err on an unresolvable argument.
         bool resolveArgList(const std::string& inner,
                             std::vector<CajetaTypePtr>& args,
                             std::string& err) {
@@ -69,10 +67,7 @@ namespace cajeta {
         auto hit = canon.find(s);
         if (hit != canon.end()) return hit->second;
 
-        // Array canonical `T[]` (heap reference form): resolve the element
-        // and wrap, mirroring the parse-path bracket loop. Fixed-size `T[N]`
-        // stays unsupported (never a template argument in practice) — falls
-        // through to the unresolvable error below.
+        // Heap-reference form only; fixed-size `T[N]` falls through as unresolvable.
         if (s.size() > 2 && s.compare(s.size() - 2, 2, "[]") == 0) {
             CajetaTypePtr elem = resolveCanonicalType(
                 s.substr(0, s.size() - 2), err);
@@ -124,27 +119,17 @@ namespace cajeta {
         if (sep == std::string::npos)
             return resolveCanonicalType(key, err) != nullptr;
 
-        // Lambda-specialization clones (`…$spec$__cajeta_lambda_N`) are
-        // codegen artifacts, not instantiations replay can (or need to)
-        // recreate: the clone's body lands in the module whose codegen drove
-        // it, so a clean module's cached .bc already carries its own clones
-        // byte-frozen. (A clone a skipped module drove INTO stdlib would be
-        // missing — that fails loud at link, never silently; v1 accepts it.)
+        // Lambda-specialization clones are codegen artifacts, already frozen into
+        // the cached .bc of whichever module's codegen drove them.
         if (key.find("$spec$") != std::string::npos) return true;
 
-        // Method form: host::name(params)<targs>. Resolving the host
-        // instantiates it if missing, so a host-class obligation need not
-        // precede its method obligations in the sidecar.
+        // Resolving the host instantiates it, so obligation order does not matter.
         std::string host = key.substr(0, sep);
         std::string rest = key.substr(sep + 2);
         auto paren = rest.find('(');
         if (paren == std::string::npos) {
-            // Static-field form: `Owner::field`, no param list (compile-cache
-            // D1). A foldable static's global is defined in the declaring
-            // class's module only when a referencing module's codegen demands
-            // it; the skipped module's demand is re-asserted here by forcing
-            // the definition the same way a live reference would — a null
-            // caller module targets the declaring module and records nothing.
+            // Static-field form `Owner::field`: force the declaring module to define
+            // the global, as a live reference from the skipped module would have.
             CajetaTypePtr hostType = resolveCanonicalType(host, err);
             if (!hostType) return false;
             auto hostClass = std::dynamic_pointer_cast<CajetaClass>(hostType);
@@ -169,11 +154,7 @@ namespace cajeta {
         }
         std::string methodName = trim(rest.substr(0, paren));
 
-        // Step past the (nesting-aware) value-param list. The param COUNT
-        // disambiguates same-name overloaded method templates below, and when
-        // two overloads share a count the TYPES break the tie (compile-cache
-        // D1 — v1 gave up here and failed the replay, which dropped a
-        // newly-required instantiation and broke the link).
+        // The param count, and on a tie the param types, pick between overloads.
         int depth = 0;
         size_t i = paren;
         for (; i < rest.size(); ++i) {
@@ -210,12 +191,8 @@ namespace cajeta {
             return false;
         }
 
-        // The methods map can reach the same template under several keys;
-        // dedupe by identity. Same-name overloads (Json.parse, Tensor.add)
-        // disambiguate by declared value-param count against the key's —
-        // exact first, then key-count-1 (keys captured after `this`
-        // insertion carry one extra leading param). Only a tie WITHIN a
-        // count remains the D2 ambiguity — fail loud.
+        // One template is reachable under several map keys, so dedupe by identity;
+        // same-name overloads then disambiguate by declared value-param count.
         std::set<Method*> seen;
         std::vector<MethodPtr> named;
         for (auto& [mapKey, m] : hostClass->getMethods()) {
@@ -228,22 +205,9 @@ namespace cajeta {
             err = "no method template `" + methodName + "` on `" + host + "`";
             return false;
         }
-        // compile-cache D1 — break a same-count tie on the value-param TYPES,
-        // which the key has been carrying all along. Instantiate each tied
-        // candidate with the requested type arguments and compare its concrete
-        // parameter types against the key's; the one that matches is the one
-        // the original call site resolved to.
-        //
-        // Instantiating a loser is cheap and inert: it builds the specialized
-        // Method but does NOT bring it alive (no register / prototype / body),
-        // so nothing is emitted for it. `noteCrossModuleMethodInstantiation`
-        // no-ops here too — replay runs outside codegen, so there is no current
-        // codegen module to charge the obligation to.
-        // `keySkip` is how many leading key params are NOT declared params —
-        // 1 when the key was captured after `this` insertion, 0 otherwise.
-        // `getParameterList()` may itself carry a leading `this` (the count
-        // above uses `getParameters()`, the map, which does not), so both
-        // sides are re-aligned here rather than assumed.
+        // Break a same-count tie on the value-param types. Instantiating a losing
+        // candidate is inert: no register/prototype/body, nothing emitted. `keySkip`
+        // and `declSkip` re-align the two lists, either of which may lead with `this`.
         auto signatureMatches = [&](const MethodPtr& cand,
                                     size_t keySkip) -> bool {
             MethodPtr probe = cand->instantiateMethodTemplate(targs);
@@ -261,8 +225,7 @@ namespace cajeta {
                 const std::string& keyParam = keyParams[keySkip + p];
                 std::string ignored;
                 CajetaTypePtr want = resolveCanonicalType(keyParam, ignored);
-                // An unresolvable key param must not silently disqualify a
-                // candidate — fall back to comparing the spelling.
+                // An unresolvable key param falls back to comparing the spelling.
                 if (want) {
                     if (want->toCanonical() != fp->getType()->toCanonical())
                         return false;
@@ -317,10 +280,8 @@ namespace cajeta {
             err = "method-template instantiation failed for `" + key + "`";
             return false;
         }
-        // A call site would bring the instantiation to life (register +
-        // prototype + body); replay has no call site, so do it explicitly —
-        // otherwise the body never emits and the skipped module's reference
-        // is undefined at link.
+        // Replay has no call site, so the instantiation is brought to life here;
+        // otherwise its body never emits and the skipped module's reference dangles.
         hostClass->ensureMethodInstantiationAlive(std::move(inst));
         return true;
     }

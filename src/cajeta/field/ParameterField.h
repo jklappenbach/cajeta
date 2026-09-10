@@ -1,6 +1,4 @@
-//
 // Created by James Klappenbach on 2/20/22.
-//
 
 #pragma once
 
@@ -23,15 +21,11 @@ namespace cajeta {
 
     class ParameterField : public Field, public enable_shared_from_this<Field> {
     protected:
-        // `reference` is inherited from Field — do NOT redeclare it here, or the
-        // shadow hides Field::reference and isReference() never sees writes made
-        // through ParameterField.
+        // `reference` is inherited from Field — do NOT redeclare it here, or the shadow
+        // hides Field::reference and isReference() never sees writes made through this.
         llvm::Function* llvmFunction;
         int paramIndex;
-        // Retained reference to the declaring formal so downstream
-        // borrow-escape checks (Phase 3 of #68, body-side `#T` contract
-        // enforcement) can consult the formal's `transferred` bit
-        // without re-walking the method's parameter list.
+        // The declaring formal is retained so borrow-escape checks can read its `transferred` bit without re-walking the parameter list.
         FormalParameterPtr formalParameter;
 
     public:

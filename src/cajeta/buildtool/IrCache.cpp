@@ -37,21 +37,15 @@ namespace cajeta::buildtool {
     std::string computeCacheDiscriminator(
         const std::string& compilerVersion,
         std::vector<std::pair<std::string, std::string>> flags) {
-        // Sort flags so the discriminator doesn't depend on the
-        // order the caller assembled them. Duplicates (same key
-        // twice) intentionally fold to the last value here — the
-        // build action de-dups before calling us; a sloppy caller
-        // shouldn't break cache stability.
+        // Sorted, so the discriminator does not depend on caller order.
         std::sort(flags.begin(), flags.end(),
                   [](const auto& a, const auto& b) {
                       if (a.first != b.first) return a.first < b.first;
                       return a.second < b.second;
                   });
 
-        // Canonical encoding: compiler version, then NUL-separated
-        // `k=v` pairs. NUL avoids any ambiguity between a flag value
-        // containing `=` (legal — paths with equals signs exist) and
-        // the encoding's own separator.
+        // Compiler version, then NUL-separated `k=v` pairs: NUL, unlike `=`,
+        // cannot appear in a flag value and be mistaken for the separator.
         std::string canonical = compilerVersion;
         canonical.push_back('\0');
         for (const auto& [k, v] : flags) {
@@ -61,10 +55,7 @@ namespace cajeta::buildtool {
             canonical.push_back('\0');
         }
         std::string hex = sha256Hex(canonical);
-        // sha256Hex returns "sha256:<hex>" — strip the prefix; the
-        // discriminator is a directory name and the colon is fine
-        // on POSIX but awkward on edge case stores (S3 prefixes,
-        // some CI dashboards) so we keep it bare hex.
+        // Bare hex: the discriminator is a directory name, and a colon travels badly.
         const std::string prefix = "sha256:";
         if (hex.compare(0, prefix.size(), prefix) == 0) {
             hex.erase(0, prefix.size());
@@ -106,8 +97,7 @@ namespace cajeta::buildtool {
                          fs::path(target).parent_path().string() + "'",
                          ec);
         }
-        // Atomic write: same-directory tempfile + rename. Same dir
-        // so the rename is guaranteed atomic on a single filesystem.
+        // Tempfile + rename in the SAME directory, so the rename is atomic.
         std::string tmp = target + ".tmp-" +
                           std::to_string(::getpid()) + "-" +
                           std::to_string(::rand());
@@ -137,8 +127,7 @@ namespace cajeta::buildtool {
         if (!fs::exists(rootDir_, ec)) {
             return 0;
         }
-        // Count first so the caller can report progress; fs::remove_all
-        // would lose the count.
+        // Counted first: fs::remove_all would lose the count.
         int removed = 0;
         for (auto it = fs::recursive_directory_iterator(rootDir_, ec);
              !ec && it != fs::recursive_directory_iterator(); ++it) {
@@ -161,7 +150,6 @@ namespace cajeta::buildtool {
         if (!fs::exists(rootDir_, ec)) {
             return 0;
         }
-        // Enumerate every regular file with (atime, size, path).
         struct Entry {
             std::string path;
             uint64_t size;
@@ -171,8 +159,7 @@ namespace cajeta::buildtool {
         for (auto it = fs::recursive_directory_iterator(rootDir_, ec);
              !ec && it != fs::recursive_directory_iterator(); ++it) {
             if (!it->is_regular_file()) continue;
-            // path().c_str() is wchar_t* on Windows; ::stat takes const char*.
-            // Use the narrow form (also reused for Entry::path below).
+            // path().c_str() is wchar_t* on Windows, but ::stat takes char*.
             std::string p = it->path().string();
             struct stat st;
             if (::stat(p.c_str(), &st) != 0) continue;
@@ -182,8 +169,7 @@ namespace cajeta::buildtool {
             e.atime = std::chrono::system_clock::from_time_t(st.st_atime);
             entries.push_back(std::move(e));
         }
-        // Sort by atime ascending — oldest first. Eviction walks
-        // this order and drops until the cap is met.
+        // Oldest first: eviction walks this order until the cap is met.
         std::sort(entries.begin(), entries.end(),
                   [](const Entry& a, const Entry& b) {
                       return a.atime < b.atime;
@@ -192,7 +178,6 @@ namespace cajeta::buildtool {
         int removed = 0;
         auto now = std::chrono::system_clock::now();
 
-        // TTL pass: drop anything older than maxAge.
         std::vector<Entry> survivors;
         survivors.reserve(entries.size());
         for (auto& e : entries) {
@@ -206,7 +191,6 @@ namespace cajeta::buildtool {
             }
         }
 
-        // Size cap pass: drop oldest until under cap.
         if (policy.maxBytes > 0) {
             uint64_t total = 0;
             for (const auto& e : survivors) total += e.size;

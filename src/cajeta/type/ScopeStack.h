@@ -1,6 +1,4 @@
-//
 // Created by James Klappenbach on 3/15/23.
-//
 
 #pragma once
 
@@ -32,13 +30,9 @@ namespace cajeta {
             return scope;
         }
 
-        // Save & clear — for cross-method codegen barriers (recursive
-        // method-template instantiation mid-codegen of a caller, where
-        // the inner method's resolve-types must NOT fall through the
-        // parent chain to the caller's locals). Returns the entire
-        // stack contents; restore() puts them back. Between save and
-        // restore the stack is empty, so subsequent `add()` calls
-        // create root-scoped frames with no parent.
+        // Save & clear, for cross-method codegen barriers: an inner method's resolve-types
+        // must not fall through the parent chain to the caller's locals. Returns the whole
+        // stack for restore(); in between, `add()` creates root-scoped frames.
         list<ScopePtr> save() {
             list<ScopePtr> out;
             out.swap(stack);

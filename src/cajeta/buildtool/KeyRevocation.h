@@ -1,16 +1,6 @@
-// The revocation statement — publisher-trust spec §2.8.
-//
-// The root is offline (§2.7), so a re-signed key document omitting a
-// compromised key waits on the offline ceremony. This is signed by the
-// DELEGATED key and applies in seconds: the brake, with the re-signed
-// document as the repair.
-//
-// An online key may sign it because it can only SUBTRACT trust — it names
-// key ids and makes them unusable, and can add no key, widen no namespace,
-// and issue no document. A compromised delegated key causes a loud,
-// recoverable outage and forges nothing.
-//
-// Wire format: specs/schemas/key-revocation.json
+// The revocation statement - publisher-trust spec §2.8. Signed by the DELEGATED
+// (online) key and applied in seconds, it is the brake while the offline ceremony
+// re-signs the key document; it can only SUBTRACT trust, never add any.
 
 #pragma once
 
@@ -28,9 +18,8 @@ namespace cajeta::buildtool {
 
     struct RevokedKey {
         std::string id;
-        // Empty means EVERY document. Key ids are only required to be
-        // unique within a document, so an unscoped id is ambiguous and the
-        // broad reading is the safe direction to be wrong in.
+        // Empty means EVERY document: key ids are only unique within a document, so
+        // an unscoped id is ambiguous and the broad reading is the safe direction.
         std::string organization;
         std::time_t revokedAt = 0;
         std::string reason;
@@ -49,21 +38,9 @@ namespace cajeta::buildtool {
                                const std::string& organization) const;
     };
 
-    // Parse and verify a revocation statement.
-    //
-    // Verified against the DELEGATION's keys, never against a root: this
-    // document's short lifetime is only sustainable because an online key
-    // produces it, and accepting a root signature would invite exactly the
-    // long-lived statement §2.8.3 forbids.
-    //
-    // `origin` is the repository it was fetched from (Repository::origin()),
-    // checked against the one it claims so a statement cannot be replayed
-    // elsewhere. An ORIGIN, never the manifest's `name`, which the user
-    // chooses and which therefore differs between machines talking to the
-    // same server. `seenIssuedAt` is the newest `issued-at` this client has
-    // already accepted, or 0 — an older statement is refused, which stops a
-    // rollback inside the validity window. Where that value is kept is the
-    // caller's problem; expiry already bounds the exposure to one window.
+    // Parse and verify a revocation statement against the DELEGATION's keys, never a
+    // root. `origin` is the repository it was fetched from, checked against the one it
+    // claims; a statement older than `seenIssuedAt` (0 = none) is refused as a rollback.
     llvm::Expected<KeyRevocation> loadKeyRevocation(
         const std::string& envelopeJson,
         const RepositoryDelegation& delegation,
@@ -71,17 +48,9 @@ namespace cajeta::buildtool {
         std::time_t now,
         std::time_t seenIssuedAt);
 
-    // The repository's current revocation statement.
-    //
-    // Returns nullopt when the repository does not advertise revocation
-    // (protocol §3.1) — it does not do fast revocation, and that is a
-    // supported choice, not a fault.
-    //
-    // ERRORS once it DOES advertise and the statement is missing, expired,
-    // unverifiable, or rolled back. This is the only document here whose
-    // absence is a failure, and the asymmetry is deliberate: failing open
-    // would make blocking one fetch equivalent to un-revoking every key in
-    // the repository (spec 2.8.4).
+    // The repository's current revocation statement. nullopt when the repository does
+    // not advertise revocation at all; an ERROR once it does and the statement is
+    // missing, expired, unverifiable, or rolled back - failing open would un-revoke.
     llvm::Expected<std::optional<KeyRevocation>> revocationFor(
         const Repository& repo,
         const RepositoryDelegation* delegation,

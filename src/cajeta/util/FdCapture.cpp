@@ -23,10 +23,7 @@ namespace cajeta::util {
         : fd_(fd), sink_(std::move(sink)), pollMs_(pollMs > 0 ? pollMs : 1) {
         file_ = std::tmpfile();
         if (!file_) return;
-        // Flush whatever the stream already holds, so bytes written BEFORE
-        // the capture began land on the real descriptor rather than in our
-        // file. Without this a buffered partial line from earlier work would
-        // be attributed to this cell.
+        // Flush first: bytes written before the capture must land on the real fd.
         std::FILE* stream = (fd_ == 2) ? stderr : stdout;
         std::fflush(stream);
         savedFd_ = CAJETA_DUP(fd_);
@@ -54,8 +51,8 @@ namespace cajeta::util {
         if (running_.exchange(false, std::memory_order_acq_rel)) {
             if (pump_.joinable()) pump_.join();
         }
-        // Restore FIRST, then take the tail: anything the sink itself prints
-        // must go to the real descriptor, not back into the capture.
+        // Restore the descriptor BEFORE the final drain, so whatever the sink
+        // itself prints cannot re-enter the capture.
         std::FILE* stream = (fd_ == 2) ? stderr : stdout;
         std::fflush(stream);
         if (savedFd_ != -1) {
@@ -70,8 +67,6 @@ namespace cajeta::util {
 
     void FdCapture::drain() {
         if (!file_) return;
-        // The writer is the C runtime writing through `fd_`; flushing the
-        // stream makes its buffered bytes visible to our reads.
         std::FILE* stream = (fd_ == 2) ? stderr : stdout;
         std::fflush(stream);
         std::fflush(file_);

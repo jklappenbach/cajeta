@@ -1,20 +1,6 @@
-// Codec Phase 2.3 — Tier-1 protobuf typed-bind synthesizer.
-//
-// `Protobuf.parse<T>(int8[], int64)` is a method-level template whose body is
-// synthesized PER T at instantiation time — the compiler walks T's `@ProtoField`
-// fields, infers each field's wire type from its Cajeta type, and emits a
-// `ProtobufCursor`-driven bind (look each field up by its explicit protobuf
-// number, decode by wire type, set it on a freshly-allocated `T`).
-//
-// `MethodTemplateInstantiator` calls `synthesizeProtobufMethodSource` alongside
-// the JSON/CSV hooks; on a recognized entry point the returned string replaces
-// the captured (failsafe-throw) method source and the normal re-parse path takes
-// it from there. Unlike CSV/JSON, the `Protobuf` facade lives in the standalone
-// `dev.cajeta.codec.protobuf` library (not core stdlib), so the emitted body uses
-// fully-qualified `dev.cajeta.codec.protobuf.ProtobufCursor` references.
-//
-// See docs/specification/codec/Codecs.md § Protobuf and
-// agents/cajeta/codecs/codecs-plan.md § 2.3.
+// Tier-1 protobuf typed-bind synthesizer: `Protobuf.parse<T>` is a template whose
+// body is synthesized PER T, binding each `@ProtoField` by its explicit number.
+// The facade is a standalone library, so ProtobufCursor is spelled fully-qualified.
 
 #pragma once
 
@@ -29,13 +15,9 @@ namespace cajeta {
     using CajetaClassPtr = std::shared_ptr<CajetaClass>;
     using CajetaTypePtr  = std::shared_ptr<CajetaType>;
 
-    // Returns true and writes the synthesized body into `out` if
-    // (parent, methodName, paramTypes) names the protobuf typed-bind entry point
-    // AND `args[0]` is a class (single message → T). Otherwise returns false and
-    // leaves `out` untouched (caller keeps the captured failsafe body).
-    //
-    // Recognized entry point (parent must be dev.cajeta.codec.protobuf.Protobuf):
-    //   - parse(int8[], int64) with args[0] == T (class) : one message → T
+    // Writes the synthesized body into `out` and returns true when the call names
+    // the protobuf typed-bind entry point, `parse(int8[], int64)` over a class T;
+    // otherwise returns false and leaves `out` untouched.
     bool synthesizeProtobufMethodSource(
         const CajetaClassPtr& parent,
         const std::string& methodName,

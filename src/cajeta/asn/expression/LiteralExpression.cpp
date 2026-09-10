@@ -1,6 +1,5 @@
-//
-// Created by James Klappenbach on 4/14/23.
-//
+// Literal expressions: bool / null / char / string text literals, and the
+// integer and float literal forms, from lexeme text to LLVM constants.
 
 #include "LiteralExpression.h"
 #include "../../compile/CajetaModule.h"
@@ -31,26 +30,17 @@ namespace cajeta {
         }
     }
 
-    // Decode the inner content of a CHAR_LITERAL lexeme (the bit between the single
-    // quotes, with escapes still raw). Returns the **Unicode codepoint** as an int —
-    // up to 0x10FFFF. Source bytes are UTF-8; multibyte sequences decode to their
-    // codepoint. The compiler emits the result as an i32 constant (char = i32 since
-    // the 2026-05-18 redefinition); see CajetaType.cpp.
+    // Decodes a CHAR_LITERAL's inner content (escapes still raw) to a Unicode
+    // codepoint, emitted as i32 because cajeta's `char` IS the codepoint type.
     static int decodeCharLiteral(const string& inner) {
         if (inner.empty()) return 0;
         if (inner[0] != '\\') {
-            // Plain character. Single ASCII byte is the common case;
-            // multibyte UTF-8 sequences (`'é'` = 0xC3 0xA9, `'😀'` =
-            // 0xF0 0x9F 0x98 0x80) decode to the Unicode codepoint.
             unsigned char b0 = (unsigned char) inner[0];
             if (b0 < 0x80) {
                 return b0;                       // ASCII fast path
             }
-            // UTF-8 decode. Determine sequence length from the leading
-            // byte. Malformed sequences fall back to returning the
-            // first byte (caller sees a low-value codepoint rather
-            // than a parse error — char-literal parse errors are out
-            // of scope for v1).
+            // A malformed sequence yields its first byte: char-literal parse
+            // errors are out of scope, so the caller sees a low codepoint.
             int seqLen = 0;
             int cp = 0;
             if ((b0 & 0xE0) == 0xC0) { seqLen = 2; cp = b0 & 0x1F; }
@@ -77,7 +67,6 @@ namespace cajeta {
             case '\'': return 0x27;
             case '\\': return 0x5C;
             case 'u': {
-                // Skip extra 'u's per Java spec, then read 4 hex digits.
                 size_t i = 1;
                 while (i < inner.size() && inner[i] == 'u') i++;
                 int v = 0;
@@ -95,7 +84,6 @@ namespace cajeta {
                 return v;
             }
             default: {
-                // Octal: up to 3 digits.
                 if (c >= '0' && c <= '7') {
                     int v = 0;
                     size_t i = 1;
@@ -113,8 +101,7 @@ namespace cajeta {
         }
     }
 
-    // Strip the surrounding quote pair on a string literal so the bytes emitted into the
-    // global include only the content. ANTLR's getText() returns the raw lexeme.
+    // Strips the surrounding quote pair; ANTLR's getText() returns the raw lexeme.
     static string stripQuotes(const string& raw) {
         if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"') {
             return raw.substr(1, raw.size() - 2);
@@ -122,9 +109,9 @@ namespace cajeta {
         return raw;
     }
 
-    // Decode backslash-escapes in a string-literal body (already stripped of its
-    // surrounding quotes). Mirrors the lexer's EscapeSequence rule: \b \t \n \f \r
-    // \" \' \\, octal \NNN (1–3 digits), and \uXXXX (one or more u's allowed).
+    // Decodes backslash-escapes in an already-unquoted string-literal body,
+    // mirroring the lexer's EscapeSequence rule: \b \t \n \f \r \" \' \\,
+    // octal \NNN (1-3 digits) and \uXXXX (one or more u's allowed).
     static string decodeStringLiteral(const string& src) {
         string out;
         out.reserve(src.size());
@@ -157,9 +144,8 @@ namespace cajeta {
                         i++;
                         read++;
                     }
-                    // For now we encode the code-point as a single byte if it fits;
-                    // larger code points are dropped on the floor. Proper UTF-8
-                    // encoding lands when String becomes UTF-8 end-to-end.
+                    // Encoded as one byte when it fits; larger codepoints are
+                    // dropped until String is UTF-8 end to end.
                     if (v <= 0xFF) out.push_back((char) v);
                     break;
                 }
@@ -193,23 +179,9 @@ namespace cajeta {
                 return llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx, 0));
             case LITERAL_TYPE_STRING:
             case LITERAL_TYPE_TEXT_BLOCK: {
-                // Phase 2b-β: a string literal materializes as a static
-                // view-mode `cajeta.lang.String` instance, not a bare i8*
-                // C-string. The byte payload is a private constant
-                // `{ i64 count, [N+1 x i8] data }` (CajetaArray-shaped,
-                // null-terminated for any legacy strlen reader); the
-                // instance is a private mutable global whose layout
-                // matches the class's struct (vtable, bytes, byteLength,
-                // mode=1 view, cachedCpLength=-1 uncomputed). Mutable
-                // because `count()` writes back its cached codepoint
-                // count on first call. Each literal has its own static
-                // pair; identical literals don't dedupe in v1 (LLVM may
-                // still merge them via mergefunc/constmerge passes).
-                //
-                // Bootstrap fallback: until class String is registered,
-                // emit the legacy i8* form. This lets the runtime
-                // (including String.cajeta itself) compile cleanly; user
-                // code always sees the class String materialization.
+                // A literal materializes as a static view-mode
+                // `cajeta.lang.String` instance; until class String is registered
+                // (bootstrap, String.cajeta itself) the legacy i8* form is emitted.
                 std::string decoded = decodeStringLiteral(stripQuotes(value));
                 CajetaTypePtr stringTy = CajetaType::of("String");
                 auto klass = std::dynamic_pointer_cast<CajetaClass>(stringTy);
@@ -218,11 +190,8 @@ namespace cajeta {
                     return module->getBuilder()->CreateGlobalString(decoded, "str");
                 }
                 auto* structTy = llvm::cast<llvm::StructType>(klass->getLlvmType());
-                // Emit the string-literal globals into the module the builder is
-                // currently emitting into (the emit/user module for a reuse-path
-                // instantiation), not the resolution module. == getLlvmModule()
-                // in production. The vtable cross-module fixup below is keyed off
-                // the same `mod`.
+                // Globals go into the module the builder is emitting into, not the
+                // resolution module; the vtable fixup below keys off the same one.
                 auto* mod = module->emitTargetLlvmModule();
                 auto* i8Ty = llvm::Type::getInt8Ty(ctx);
                 auto* i32Ty = llvm::Type::getInt32Ty(ctx);
@@ -230,17 +199,9 @@ namespace cajeta {
                 auto* ptrTy = llvm::PointerType::get(ctx, 0);
                 int64_t len = (int64_t) decoded.size();
 
-                // 6.2.2 tagged core: {vtable, lenTag, aux, base, ccp}.
-                //   len <= 12  Inline — the text bytes pack into the aux
-                //              i32 (bytes 0..3, little-endian) and the
-                //              base ptr slot (bytes 4..11 as an inttoptr
-                //              i64 constant); no byte global at all.
-                //   len >  12  Static pointer form — lenTag carries the
-                //              STATIC bit (1<<29), aux = 0 (window
-                //              offset), base = the CajetaArray-shaped
-                //              byte global (count word + text + NUL).
-                // The instance global stays mutable because count()
-                // writes back its cached codepoint count on first call.
+                // Tagged core {vtable, lenTag, aux, base, ccp}: len <= 12 packs the
+                // text into aux (bytes 0..3) and the base slot (bytes 4..11); longer
+                // sets lenTag's STATIC bit (1<<29) with base = the byte global.
                 llvm::Constant* vtableRef =
                     llvm::ConstantPointerNull::get(ptrTy);
                 if (auto* vt = klass->getVirtualTableGlobal()) {
@@ -307,12 +268,6 @@ namespace cajeta {
                 return instGv;
             }
             case LITERAL_TYPE_CHAR: {
-                // Strip the single-quote pair, then decode the literal
-                // into a Unicode codepoint (UTF-8 source bytes decoded
-                // to a codepoint; \uXXXX escapes decoded as written).
-                // Emitted as an i32 constant because Cajeta's `char`
-                // is the codepoint type (since the 2026-05-18
-                // redefinition). See CajetaType.cpp ~line 90.
                 string inner = value;
                 if (inner.size() >= 2 && inner.front() == '\'' && inner.back() == '\'') {
                     inner = inner.substr(1, inner.size() - 2);
@@ -325,24 +280,19 @@ namespace cajeta {
         }
     }
 
-    // True if the integer literal carries an `L` / `l` long-suffix.
-    // The lexer permits `[lL]?` on every integer-literal form (decimal,
-    // hex, oct, binary); presence of the suffix pins the value to int64.
+    // True if the literal carries the `L`/`l` suffix, which pins it to int64.
     static bool hasLongSuffix(const string& s) {
         if (s.empty()) return false;
         char last = s.back();
         return last == 'l' || last == 'L';
     }
 
+    // `L`-suffixed is int64; the rest default to int32 and widen at boundaries.
     void IntegerLiteralExpression::resolveTypes(CajetaModulePtr module) {
-        // Long-suffix (`8L`) → int64; otherwise default to int32 and let
-        // widening at boundaries (assignment, BinaryOpExpression, method-
-        // arg coercion) promote when the context demands a wider type.
         resolvedType = CajetaType::of(hasLongSuffix(value) ? "int64" : "int32");
     }
 
-    // Pick float32 if the literal carries an f/F suffix; float64 otherwise (matches the
-    // d/D suffix or unsuffixed default).
+    // True if the literal carries an f/F suffix; d/D and unsuffixed mean float64.
     static bool hasFloat32Suffix(const string& s) {
         if (s.empty()) return false;
         char last = s.back();
@@ -355,7 +305,6 @@ namespace cajeta {
 
     llvm::Value* FloatLiteralExpression::generateCode(CajetaModulePtr module) {
         bool isFloat32 = hasFloat32Suffix(value);
-        // Strip the trailing f/F/d/D suffix so APFloat doesn't choke on it.
         string numericText = value;
         if (!numericText.empty()) {
             char last = numericText.back();
@@ -366,10 +315,9 @@ namespace cajeta {
         const llvm::fltSemantics& sem = isFloat32 ? llvm::APFloat::IEEEsingle()
                                                   : llvm::APFloat::IEEEdouble();
         llvm::APFloat apf(sem);
-        // APFloat handles both decimal and hex-float syntax (0x1.0p3, etc.) via this overload.
         auto status = apf.convertFromString(numericText, llvm::APFloat::rmNearestTiesToEven);
         if (!status) {
-            // Parse failure; surface a zero constant rather than crashing.
+            // A parse failure surfaces as zero rather than crashing the compile.
             return llvm::ConstantFP::getZero(
                 isFloat32 ? llvm::Type::getFloatTy(*module->getLlvmContext())
                           : llvm::Type::getDoubleTy(*module->getLlvmContext()));
@@ -387,12 +335,8 @@ namespace cajeta {
             default:                          radix = 10; prefixLen = 0; break;
         }
 
-        // Strip the radix prefix (APInt expects pure digits in the given base),
-        // any digit-grouping underscores the lexer accepts (e.g. `1_000_000`),
-        // and the optional trailing `L`/`l` long-suffix. Without the strip,
-        // APInt(64, "8L", 10) misreads non-digit chars and `value` lands as
-        // garbage — surfaced by the int64-literal path during method-template
-        // testing.
+        // APInt wants pure digits in the given base: strip the radix prefix, the
+        // grouping underscores and the `L` suffix, or the value parses as garbage.
         string numericText = value;
         if (prefixLen && numericText.size() >= prefixLen) {
             numericText.erase(0, prefixLen);
@@ -401,16 +345,11 @@ namespace cajeta {
             char last = numericText.back();
             if (last == 'l' || last == 'L') numericText.pop_back();
         }
-        // Erase underscores in place.
         numericText.erase(
             std::remove(numericText.begin(), numericText.end(), '_'),
             numericText.end());
 
-        // Default storage is 64-bit so any value parses correctly; the
-        // ReturnStatement / BinaryOpExpression boundary code (and
-        // CajetaType::normalize when we get to it) coerces to the surrounding
-        // context's expected width. resolveTypes pins the Cajeta type to
-        // int32 (or int64 for L-suffixed literals) for type inference.
+        // Always parsed at 64 bits; the boundary code coerces to the real width.
         llvm::Type* valueType = llvm::IntegerType::getInt64Ty(*module->getLlvmContext());
         llvm::APInt apint(64, numericText, radix);
         return llvm::ConstantInt::get(valueType, apint);

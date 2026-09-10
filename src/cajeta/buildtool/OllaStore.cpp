@@ -24,9 +24,7 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Atomic copy: write a sibling temp file in the destination
-        // directory, then rename over the target (rename within one
-        // directory is atomic on POSIX).
+        // Atomic copy: write a sibling temp file in the destination directory, then rename over the target.
         llvm::Error atomicCopy(const fs::path& src, const fs::path& dst) {
             std::error_code ec;
             fs::create_directories(dst.parent_path(), ec);
@@ -51,7 +49,6 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
-        // Atomically write `text` to `dst`.
         llvm::Error atomicWriteText(const fs::path& dst,
                                     const std::string& text) {
             std::error_code ec;
@@ -75,8 +72,7 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
-        // Merge `version` into <pkgDir>/versions.json's "versions"
-        // array (idempotent, sorted).
+        // Merges `version` into <pkgDir>/versions.json's "versions" array, idempotently and sorted.
         llvm::Error upsertVersions(const fs::path& pkgDir,
                                    const std::string& version) {
             fs::path file = pkgDir / "versions.json";
@@ -99,8 +95,7 @@ namespace cajeta::buildtool {
                         }
                     }
                 }
-                // A malformed/unreadable versions.json is rebuilt from
-                // the single known version below rather than failing.
+                // A malformed or unreadable versions.json is rebuilt from the single known version below.
             }
 
             if (std::find(versions.begin(), versions.end(), version) ==

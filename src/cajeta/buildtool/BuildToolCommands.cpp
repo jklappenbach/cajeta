@@ -61,8 +61,7 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Strip the `--flag=` prefix if present and capture the value.
-        // Returns true when `arg` matched the flag form `--name=value`.
+        // Strip the `--flag=` prefix when present and capture the value.
         bool match(std::string_view arg,
                    std::string_view name,
                    std::string& value) {
@@ -75,18 +74,15 @@ namespace cajeta::buildtool {
             return true;
         }
 
-        // Apply a `--diag-format=text|json` value to the process-wide diagnostic
-        // format (json-diagnostics-spec §2). Returns false on an invalid value.
+        // Apply a `--diag-format=text|json` value to the process-wide diagnostic stream.
         bool applyDiagFormatArg(const std::string& value) {
             if (value == "json") { setDiagnosticFormat(DiagFormat::Json); return true; }
             if (value == "text") { setDiagnosticFormat(DiagFormat::Text); return true; }
             return false;
         }
 
-        // `cajeta info` — loads the manifest, optionally resolves
-        // properties, prints a structured summary. The summary is the
-        // load-bearing diagnostic for "did my manifest parse the way I
-        // think it did" — every block visible, every override applied.
+        // `cajeta info` — load the manifest, optionally resolve properties, and print a
+        // structured summary with every block visible and every override applied.
         int infoCommand(int argc, const char* argv[]) {
             std::string manifestPath = "./cajeta.json";
             std::string lockfilePath = "./cajeta.lock";
@@ -389,22 +385,16 @@ namespace cajeta::buildtool {
             return 0;
         }
 
-        // `cajeta init [<type>] [<dir>]` — write an archetype
-        // template to disk. The archetype source lives in
-        // samples/buildtool/<type>/; CMake embeds those bytes at
-        // build time so the binary is self-contained (no repo lookup
-        // at runtime). See docs/BuildTool.md "Project shapes".
+        // `cajeta init [<type>] [<dir>]` — write an archetype template to disk. CMake
+        // embeds samples/buildtool/<type> at build time, so nothing is read from a repo.
         int initCommand(int argc, const char* argv[]) {
             std::string templateName = "basic";
             std::string destDir = ".";
             bool force = false;
             bool listOnly = false;
 
-            // `cajeta init --kernel` installs the Jupyter kernelspec rather
-            // than scaffolding a project (jupyter-kernel spec §3). It shares
-            // the verb because it is the same act — putting something on disk
-            // so a tool can find it — and it is checked first because it
-            // takes no archetype and no destination.
+            // `cajeta init --kernel` installs the Jupyter kernelspec instead of scaffolding a
+            // project; checked first, since it takes no archetype and no destination.
             for (int i = 2; i < argc; ++i) {
                 if (std::string_view(argv[i]) != "--kernel") continue;
                 bool replace = false;
@@ -428,9 +418,6 @@ namespace cajeta::buildtool {
                 return 0;
             }
 
-            // Positional parsing: first non-flag is the template
-            // name, second is the destination directory. Both
-            // optional; defaults are `basic` + `.`.
             int positional = 0;
             for (int i = 2; i < argc; ++i) {
                 std::string_view arg = argv[i];
@@ -493,10 +480,8 @@ namespace cajeta::buildtool {
                 std::cout << "  " << p << "\n";
             }
 
-            // 7.2.11 — a notebook project is unusable until Jupyter can find
-            // the kernel, so init is where the kernelspec lands. An already-
-            // installed spec is success, not an error; `cajeta task
-            // kernelspec` force-refreshes after a toolchain upgrade.
+            // A notebook project is unusable until Jupyter can find the kernel, so init
+            // installs the kernelspec; an already-installed spec is success, not an error.
             if (templateName == "notebook") {
                 std::string exe = llvm::sys::fs::getMainExecutable(
                     argv[0], reinterpret_cast<void*>(&initCommand));
@@ -532,9 +517,7 @@ namespace cajeta::buildtool {
             return 0;
         }
 
-        // Common helpers for `cajeta add` / `cajeta remove`: read +
-        // write the manifest file as bytes, no JSONC normalization
-        // (those operations want comment + format preservation).
+        // Read/write the manifest as raw bytes, so JSONC comments and formatting survive.
         bool readFileBytes(const std::string& path, std::string& out) {
             std::ifstream in(path, std::ios::binary);
             if (!in) return false;
@@ -552,9 +535,8 @@ namespace cajeta::buildtool {
             return static_cast<bool>(out);
         }
 
-        // `cajeta add <name>[@<version>] [--manifest=<path>]`
-        // Inserts (or replaces) the entry in settings.dependencies.
-        // Default constraint when `@version` is omitted: "*".
+        // `cajeta add <name>[@<version>] [--manifest=<path>]` — insert or replace the
+        // entry in settings.dependencies; the default constraint is "*".
         int addCommand(int argc, const char* argv[]) {
             std::string manifestPath = "./cajeta.json";
             std::string spec;
@@ -589,8 +571,6 @@ namespace cajeta::buildtool {
                 return 1;
             }
 
-            // Split spec at the first '@'. Everything to the right
-            // is the constraint; default to '*' when absent.
             std::string name = spec;
             std::string constraint = "*";
             auto at = spec.find('@');
@@ -628,9 +608,8 @@ namespace cajeta::buildtool {
             return 0;
         }
 
-        // `cajeta remove <name> [--manifest=<path>]`
-        // Removes the entry from settings.dependencies. Errors when
-        // the dep isn't declared.
+        // `cajeta remove <name> [--manifest=<path>]` — drop the entry from
+        // settings.dependencies; errors when the dep isn't declared.
         int removeCommand(int argc, const char* argv[]) {
             std::string manifestPath = "./cajeta.json";
             std::string name;
@@ -688,17 +667,9 @@ namespace cajeta::buildtool {
             return 0;
         }
 
-        // `cajeta upgrade [<name>[@<version>]]... [options]`
-        //
-        // Re-resolves each named dep (or every dep when no names
-        // given) to the highest version in the configured repos and
-        // rewrites its constraint in the manifest to an exact pin.
-        // When the upgrade would add capabilities the consumer hasn't
-        // declared, prompts y/N before writing.
-        //
-        // --dry-run         Print the plan, don't write.
-        // --yes / -y        Skip the prompt (write even when caps grow).
-        // --manifest=<p>    Manifest file (default: ./cajeta.json).
+        // `cajeta upgrade [<name>[@<version>]]... [--dry-run] [--yes] [--manifest=<p>]` —
+        // re-resolve the named deps (or all of them) to the highest version in the
+        // configured repos and pin it, prompting first when capabilities would grow.
         int upgradeCommand(int argc, const char* argv[]) {
             std::string manifestPath = "./cajeta.json";
             bool dryRun = false;
@@ -745,7 +716,6 @@ namespace cajeta::buildtool {
                               << arg << "'\n";
                     return 1;
                 } else {
-                    // Positional: <name> or <name>@<version>
                     std::string spec(arg);
                     std::string n = spec;
                     auto at = spec.find('@');
@@ -764,8 +734,6 @@ namespace cajeta::buildtool {
                 }
             }
 
-            // Load + parse the manifest (also gives us the source
-            // bytes for the rewrite step).
             auto manifest = loadManifestFile(manifestPath);
             if (!manifest) {
                 std::string msg;
@@ -861,7 +829,6 @@ namespace cajeta::buildtool {
                 return 1;
             }
 
-            // Print the plan.
             int changedCount = 0;
             for (const auto& e : plan->entries) {
                 if (e.changed) {
@@ -906,9 +873,7 @@ namespace cajeta::buildtool {
                 return 0;
             }
 
-            // Capability-change prompt. Skip when --yes, or when
-            // stdin isn't a TTY (caller is a script — we error out
-            // with a hint instead of silently applying).
+            // Skip the capability prompt under --yes; with no TTY, error out with a hint.
             if (plan->anyCapabilityChange() && !assumeYes) {
                 bool isTty = isatty(STDIN_FILENO) != 0;
                 if (!isTty) {
@@ -952,8 +917,7 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Load manifest + resolve properties + parse tasks. Common
-        // prologue for the task-related subcommands.
+        // Manifest + resolved properties + parsed tasks: the common load for task verbs.
         struct LoadedProject {
             Manifest manifest;
             ResolvedProperties props;
@@ -967,18 +931,13 @@ namespace cajeta::buildtool {
             if (!manifest) return manifest.takeError();
             auto props = resolveProperties(*manifest, overrides);
             if (!props) return props.takeError();
-            // Rewrite ${...} in `settings` and `plugins` before anything
-            // reads them. parseDependencies / parseRepositories /
-            // parsePlugins all consume the raw JSON, so a placeholder that
-            // survives to here reaches the resolver as if it were a version
-            // constraint, or reaches a plugin as if it were a path.
+            // Rewrite ${...} in `settings` and `plugins` first: the dependency, repository
+            // and plugin parsers read raw JSON and would take a placeholder literally.
             if (auto e = substituteManifestProperties(*manifest, *props)) {
                 return std::move(e);
             }
             auto tasks = parseTasks(*manifest);
             if (!tasks) return tasks.takeError();
-            // Cycle / undefined-dep validation up front. Catches
-            // structural errors before any task starts running.
             if (auto e = validateTaskGraph(*tasks)) return std::move(e);
             LoadedProject p;
             p.manifest = std::move(*manifest);
@@ -987,8 +946,7 @@ namespace cajeta::buildtool {
             return p;
         }
 
-        // `cajeta task <name> --show` — print the resolved action
-        // sequence for a task without running it.
+        // `cajeta task <name> --show` — print the resolved action list without running it.
         int taskShowCommand(int argc, const char* argv[]) {
             if (argc < 3) {
                 std::cerr << "Usage: cajeta task <name> --show [--manifest=<path>]\n";
@@ -1058,9 +1016,7 @@ namespace cajeta::buildtool {
             return 0;
         }
 
-        // The tool's built-in subcommands, surfaced in `tasks --json` so the IDE
-        // can present them as runnable separately from manifest tasks (spec
-        // §3.1.2). Curated runnable set; not every internal subcommand.
+        // The tool's built-in subcommands, surfaced in `tasks --json` for the IDE.
         std::vector<BuiltinCommand> builtinCommands() {
             return {
                 {"init", "Scaffold a new project from an archetype"},
@@ -1115,17 +1071,13 @@ namespace cajeta::buildtool {
             }
 
             if (jsonOut) {
-                // Absolute manifest path so the IDE can key linked roots on it.
                 std::error_code ec;
                 std::filesystem::path abs =
                     std::filesystem::absolute(manifestPath, ec);
                 std::string absStr = ec ? manifestPath : abs.string();
 
-                // Debug-launch coordinates (widget §5.2.2, unit 7): `cajeta dap`
-                // JIT-runs an entry method from a source root, so surface those
-                // from settings.build for the IDE's Debug executor. A parse miss
-                // here just omits the coords (Debug disabled), never fails
-                // discovery.
+                // Debug-launch coordinates from settings.build, for the IDE's Debug executor. A
+                // parse miss omits them (Debug disabled) rather than failing discovery.
                 DebugLaunchCoords debugCoords;
                 if (auto sb = parseSettingsBuild(project->manifest)) {
                     debugCoords.sourceRoot = sb->sourceRoot;
@@ -1144,7 +1096,6 @@ namespace cajeta::buildtool {
                 std::cout << "(no tasks defined in " << manifestPath << ")\n";
                 return 0;
             }
-            // Compute column width for nice alignment.
             size_t nameWidth = 0;
             for (const auto& kv : project->tasks) {
                 if (kv.first.size() > nameWidth) nameWidth = kv.first.size();
@@ -1162,16 +1113,9 @@ namespace cajeta::buildtool {
             return 0;
         }
 
-        // Dispatch a named task. Parses CLI args into property /
-        // task-param overrides, then invokes the runner.
-        // Phase 12: resolve a possibly-`<member>:<task>` invocation
-        // to the manifest path the task lives in, plus the bare task
-        // name to look up. Returns std::nullopt for plain task names
-        // (the caller falls back to the local `./cajeta.json`).
-        //
-        // The colon form requires a workspace root on the ancestor
-        // chain. The member is looked up by short name; an unknown
-        // member produces a structured error.
+        // Resolve a possibly-`<member>:<task>` invocation to the manifest the task lives
+        // in plus the bare name; nullopt for a plain name. The colon form requires a
+        // workspace root on the ancestor chain.
         struct ResolvedTaskRef {
             std::string manifestPath;
             std::string taskName;
@@ -1180,9 +1124,6 @@ namespace cajeta::buildtool {
         resolveCrossMemberRef(std::string_view raw) {
             auto colon = raw.find(':');
             if (colon == std::string_view::npos) return std::optional<ResolvedTaskRef>{};
-            // Bare leading colon, trailing colon, or empty halves
-            // are user typos — surface them rather than silently
-            // treating as a single-segment name.
             std::string memberName{raw.substr(0, colon)};
             std::string taskName{raw.substr(colon + 1)};
             if (memberName.empty() || taskName.empty()) {
@@ -1217,13 +1158,8 @@ namespace cajeta::buildtool {
                 "no workspace member named '" + memberName +
                 "' (known: " + known + ")");
         }
-        // Join the plugin model to the task path: resolve the manifest's
-        // `plugins` block and register each plugin-provided action in the
-        // registry, so tasks can name them exactly like builtins. Every
-        // component here — parsePlugins, resolvePlugins, PluginRuntime,
-        // PluginAction — predates this function; the missing piece was
-        // only this wiring, which is why a task naming a plugin action
-        // has always failed with "unknown action".
+        // Resolve the manifest's `plugins` block and register each plugin-provided action
+        // in the registry, so a task can name one exactly like a builtin.
         llvm::Error wireManifestPlugins(const Manifest& m,
                                         const std::string& manifestPath,
                                         ActionRegistry& registry) {
@@ -1245,13 +1181,8 @@ namespace cajeta::buildtool {
             auto repos = buildRepositories(*repoSpecs, downloadStage);
             if (!repos) return repos.takeError();
 
-            // Local-first, exactly as dependency resolution does it
-            // (Resolver.cpp): prepend the implicit ~/.olla store as the
-            // highest-priority source. Without this, `cajeta install` of a
-            // plugin produced an artifact nothing could consume — the store
-            // held 0.4.0 and resolution still reported "no repository has a
-            // satisfying version (tried: central)", so the only way to test a
-            // plugin change was to publish it to a remote registry first.
+            // Local-first, as dependency resolution does it: prepend the implicit ~/.olla
+            // store, or a locally installed plugin resolves as "no satisfying version".
             repos->insert(repos->begin(),
                 std::make_shared<FilesystemRepository>(
                     "olla", OllaStore::resolveRoot()));
@@ -1263,8 +1194,6 @@ namespace cajeta::buildtool {
             if (!resolved) return resolved.takeError();
 
             for (const auto& rp : *resolved) {
-                // The spec's config block is each action's default param
-                // layer (the contract Plugin.h documents).
                 llvm::json::Object config;
                 for (const auto& sp : *specs) {
                     if (sp.name == rp.name) {
@@ -1284,11 +1213,8 @@ namespace cajeta::buildtool {
         int runTaskCommand(int argc, const char* argv[]) {
             std::string manifestPath = "./cajeta.json";
             std::string taskName = argv[1];
-            // Phase 12: `<member>:<task>` reroutes the task lookup
-            // to a sibling member's manifest before any property
-            // resolution runs. The bare task name is restored so
-            // the rest of the dispatch is identical to a normal
-            // run-task invocation.
+            // `<member>:<task>` reroutes the lookup to the sibling member's manifest before
+            // property resolution; the bare name is restored so the rest is unchanged.
             {
                 auto ref = resolveCrossMemberRef(taskName);
                 if (!ref) {
@@ -1399,9 +1325,6 @@ namespace cajeta::buildtool {
                 return 1;
             }
 
-            // Print the task's outputs (when non-empty). Useful for
-            // scripting; quiet by default for tasks that have no
-            // declared outputs.
             if (!outputs->empty()) {
                 std::cout << "\nTask '" << taskName << "' outputs:\n";
                 for (const auto& kv : *outputs) {
@@ -1411,24 +1334,12 @@ namespace cajeta::buildtool {
             return 0;
         }
 
-        // `cajeta coverage {ignore,list,remove}` — manipulate the
-        // cajeta.coverage plugin's exclude list in cajeta.json.
-        //
-        // The IDE plugin's "right-click → ignore in coverage" action
-        // shells out to `cajeta coverage ignore --kind <k> --pattern
-        // <p> --reason <r>`; CI scripts can call `cajeta coverage
-        // list` to enumerate the current exclusions before opening a
-        // PR; `cajeta coverage remove` deletes an entry by pattern.
-        //
-        // The JSONC-preserving rewrite lives in ManifestEditor —
-        // this layer is argv-parsing + a small generic-reason filter
-        // that catches obvious sloppy reasons before they hit disk.
+        // `cajeta coverage {ignore,list,remove}` — manipulate the coverage plugin's
+        // exclude list. The JSONC-preserving rewrite lives in ManifestEditor; this layer
+        // is argv parsing plus a generic-reason filter.
 
-        // Reasons we refuse to record. Lowercase, exact-match; the
-        // plugin author's own config parser may extend this list,
-        // but the CLI catches the most common drift before it hits
-        // disk. See plans/buildtool/coverage-exclude-and-cli.md "Generic-reason
-        // list" for the rationale.
+        // Reasons refused as too generic. Lowercase, exact-match; a plugin's own config
+        // parser may extend the list.
 
         bool isGenericCoverageReason(std::string_view reason) {
             std::string lower;
@@ -1437,7 +1348,6 @@ namespace cajeta::buildtool {
                 lower += static_cast<char>(
                     std::tolower(static_cast<unsigned char>(c)));
             }
-            // Trim surrounding whitespace.
             size_t b = 0, e = lower.size();
             while (b < e && std::isspace(
                        static_cast<unsigned char>(lower[b]))) ++b;
@@ -1450,18 +1360,9 @@ namespace cajeta::buildtool {
                    lower == "tbd";
         }
 
-        // Pull the exclude array out of the manifest. Returns an
-        // empty vector when the plugin isn't declared (callers print
-        // the "no entries" message). Each entry is the JSON value as
-        // parsed — typed objects or back-compat strings.
-        // Plugin ids that mean coverage, newest first.
-        //
-        // `dev.cajeta.coverage` is what the resolver publishes and what real
-        // manifests declare; `cajeta.coverage` is the first-party name
-        // BuildTool.md documented for a 1.0 that was never built. Matching only
-        // the latter made `cajeta coverage list` report "no exclude entries
-        // declared" for a project that had two — the same id mismatch that made
-        // the IDE read a configured project as not using coverage at all.
+        // Pull the exclude array out of the manifest, empty when the plugin isn't
+        // declared. Both ids are matched: `dev.cajeta.coverage` is what resolvers
+        // publish, `cajeta.coverage` the first-party name older manifests declare.
         const char* const kCoveragePluginIds[] = {
             "dev.cajeta.coverage", "cajeta.coverage"
         };
@@ -1690,10 +1591,6 @@ namespace cajeta::buildtool {
                           << "manifest '" << manifestPath << "'\n";
                 return 1;
             }
-            // Confirmation prompt when interactive. Removing an
-            // entry is irreversible (well, modulo re-running ignore
-            // with the same reason); skipping the prompt with --yes
-            // makes CI scripts straightforward.
             if (!assumeYes && isatty(STDIN_FILENO) != 0) {
                 std::cout << "Remove cajeta.coverage exclude "
                           << "matching '" << pattern << "' from "
@@ -1725,12 +1622,8 @@ namespace cajeta::buildtool {
             return 0;
         }
 
-        // `cajeta publish` — sugar over the publish action. Walks the
-        // manifest for name + version, picks the archived-ir output
-        // path from settings.build, accepts --url / --auth / --
-        // signature / --archive overrides, and invokes the publish
-        // action through the registry so the action's retry + transport
-        // logic stays single-source.
+        // `cajeta publish` — sugar over the publish action: take name + version and the
+        // archived-ir path from the manifest, apply overrides, invoke the action.
         int publishCommand(int argc, const char* argv[]) {
             std::string manifestPath = "./cajeta.json";
             std::string urlArg;
@@ -1774,8 +1667,6 @@ namespace cajeta::buildtool {
                 return 1;
             }
 
-            // Default archive path mirrors BuildAction's archived-ir
-            // emit shape: build/archive/<name>-<version>.cja.
             std::string archive = archiveArg;
             if (archive.empty()) {
                 auto sb = parseSettingsBuild(*m);
@@ -1824,18 +1715,10 @@ namespace cajeta::buildtool {
             return 0;
         }
 
-        // ─── Phase 10 — `cajeta trust` subcommands ──────────────
-        //
-        // The trust store is the launcher's allow-list of ed25519
-        // public keys. Subcommands live next to `cajeta publish` so
-        // operators can keep one mental model: project tools work
-        // on the manifest; trust tools work on `~/.cajeta/trust/`.
+        // ─── `cajeta trust` subcommands: the launcher's ed25519 allow-list ───────
 
-        // publisher-trust §3.3 — ROOT keys are a different thing from the
-        // signer keys above, and the subcommand names keep them apart. A
-        // root vouches for an organization's key document; a trusted key
-        // vouches for an artifact directly. Conflating them is how an
-        // operator accidentally grants far more than they meant to.
+        // ROOT keys are not the signer keys above: a root vouches for an organization's
+        // key document, a trusted key vouches for an artifact directly.
 
         cajeta::buildtool::RootTrustLayout rootLayoutFromTrustStore() {
             return cajeta::cli::rootTrustLayoutOf(
@@ -2007,14 +1890,9 @@ namespace cajeta::buildtool {
             return 0;
         }
 
-        // `cajeta trust verify-document` — answer "will a client accept
-        // this?" before it is served, using the client's own parsers.
-        //
-        // A signature check is not that question. These documents also carry
-        // a type discriminator, an origin they must match, expiry, and
-        // per-key validity windows, and any of them can reject a perfectly
-        // signed file. An operator who learns that from a user has already
-        // shipped it.
+        // `cajeta trust verify-document` — answer "will a client accept this?" through the
+        // client's own parsers. A signature check is not that question: the type
+        // discriminator, origin, expiry and per-key windows can each reject a signed file.
         int trustVerifyDocumentCommand(int argc, const char* argv[]) {
             namespace bt = cajeta::buildtool;
             if (argc < 3) {
@@ -2060,9 +1938,6 @@ namespace cajeta::buildtool {
                 return 1;
             }
 
-            // The roots a real install would use, shipped anchor included —
-            // verifying against anything else would answer a different
-            // question from the one asked.
             auto roots = bt::rootsFor(rootLayoutFromTrustStore(), "");
             if (!roots) {
                 std::cerr << "cajeta trust verify-document: "
@@ -2071,21 +1946,9 @@ namespace cajeta::buildtool {
             }
             const std::time_t now = std::time(nullptr);
 
-            // Read the KIND from the payload WITHOUT verifying first, and
-            // route on it. Two reasons it has to be this way round:
-            //
-            //   * a revocation is signed by a DELEGATED key, so opening it
-            //     against the roots always fails — verify-then-route would
-            //     misidentify every revocation as an org document;
-            //   * when a document does not verify, the kind is exactly what
-            //     the operator needs in the error, and that is the moment
-            //     verify-then-route has nothing to report.
-            //
-            // Routing on an unverified field is safe here: each parser
-            // independently verifies the signature and re-checks the
-            // discriminator INSIDE it, so a lie in this copy can only send
-            // the file to a parser that rejects it. It can cause a refusal,
-            // never an acceptance.
+            // Read the KIND from the payload WITHOUT verifying, and route on it: a revocation
+            // is signed by a DELEGATED key, so verify-then-route misidentifies every one. Safe
+            // because each parser re-verifies and re-checks the discriminator itself.
             std::string kind = "organization key document";
             {
                 auto outer = llvm::json::parse(envelope);
@@ -2183,8 +2046,7 @@ namespace cajeta::buildtool {
                 return 0;
             }
 
-            // A revocation verifies against the DELEGATION's keys, never a
-            // root — so it cannot be checked without one.
+            // A revocation verifies against the DELEGATION's keys, never a root's.
             if (delegationFile.empty()) {
                 std::cerr << "cajeta trust verify-document: a revocation "
                              "statement is signed by a DELEGATED key, so "
@@ -2261,12 +2123,8 @@ namespace cajeta::buildtool {
                 return argc < 3 ? 1 : 0;
             }
             std::string_view sub = argv[2];
-            // The handlers read their first argument at argv[2] — the
-            // convention where the subcommand word has been shifted out.
-            // Passing the unshifted vector made every arg-taking trust
-            // subcommand parse its own name as the argument ("trust add
-            // relkey k.pem" read key-id "add", pem "relkey"), so add/
-            // remove/show/verify could never have worked.
+            // The handlers read their first argument at argv[2], with the subcommand word
+            // shifted out; an unshifted vector makes each verb parse its own name as the arg.
             if (sub == "roots")       return trustListRootsCommand(argc - 1, argv + 1);
             if (sub == "add-root")    return trustAddRootCommand(argc - 1, argv + 1);
             if (sub == "remove-root") return trustRemoveRootCommand(argc - 1, argv + 1);
@@ -2284,16 +2142,9 @@ namespace cajeta::buildtool {
             return 2;
         }
 
-        // Resolve the effective signature-verification mode.
-        //
-        // Precedence (highest first):
-        //   1. CAJETA_REQUIRE_SIGNATURE env (always wins; safety
-        //      net — operators can pin strict regardless of CLI).
-        //   2. --verify-signature[=mode] CLI flag (parsed by the
-        //      dispatcher; "" means absent).
-        //   3. Default: "off" for local builds.
-        //
-        // Returns "off" / "warn" / "strict".
+        // Resolve the effective signature-verification mode, highest precedence first:
+        // CAJETA_REQUIRE_SIGNATURE, then --verify-signature[=mode] ("" when absent), then
+        // "off" for local builds. Returns "off", "warn" or "strict".
         std::string resolveVerifyMode(const std::string& cliMode) {
             const char* env = std::getenv("CAJETA_REQUIRE_SIGNATURE");
             if (env && *env) {
@@ -2309,22 +2160,13 @@ namespace cajeta::buildtool {
             return "off";
         }
 
-        // Phase 12: `cajeta workspace …` subcommand surface.
-        //
-        // The user can be standing anywhere inside a workspace; we
-        // walk up to find the workspace root, load the workspace,
-        // and iterate (or single-pick via `-p`) the members.
-        //
-        // Per the spec a member-task shadows the workspace-task of
-        // the same name: when a member's manifest declares its own
-        // task with the requested name, that wins; otherwise we
-        // dispatch to the workspace-root's task definition with the
-        // member's manifest as the context.
+        // `cajeta workspace …`: walk up to the workspace root from anywhere inside it and
+        // iterate (or `-p` single-pick) the members. A member's own task of the requested
+        // name shadows the workspace-root definition.
         int workspaceRunForMember(
             const Workspace& ws,
             const WorkspaceMember& m,
             const std::string& taskName) {
-            // Member-defined task wins.
             auto memberTasks = parseTasks(m.manifest);
             if (!memberTasks) {
                 std::string msg;
@@ -2337,10 +2179,6 @@ namespace cajeta::buildtool {
             std::string manifestForTask = m.manifestPath;
             bool memberWins = (memberTasks->count(taskName) > 0);
             if (!memberWins) {
-                // Fall back to the workspace-root's task definition
-                // by invoking against the workspace-root manifest
-                // — the member contributes its source tree via
-                // ${workspace.root}-relative paths in the action.
                 manifestForTask = ws.manifestPath;
             }
             PropertyOverrides overrides;
@@ -2457,14 +2295,8 @@ namespace cajeta::buildtool {
             return failed == 0 ? 0 : 1;
         }
 
-        // Phase 14: `cajeta toolchain …` subcommands.
-        //
-        // The dispatch flow surfaces here too: every top-of-main
-        // invocation runs `applyDispatchPolicy` before falling
-        // through to the regular subcommand routing. When the
-        // policy says ReExec, we execve the resolved binary; when
-        // it says NeedsInstall we surface the install hint; when
-        // it says Continue we just continue.
+        // `cajeta toolchain …`: every top-of-main invocation first runs
+        // applyDispatchPolicy — ReExec execve's the resolved binary, NeedsInstall hints.
         bool parseDistVersion(const std::string& s,
                               std::string& dist,
                               std::string& version) {
@@ -2508,11 +2340,7 @@ namespace cajeta::buildtool {
             auto layout = resolveToolchainStoreLayout();
             auto installRoot = layout.installRoot(dist, ver);
             namespace fs = std::filesystem;
-            // v1 install is "ensure the install directory exists +
-            // claim it"; the actual archive fetch + verify + extract
-            // step lives in the registry client (deferred slice).
-            // We do create the bin/lib/share skeleton so listing +
-            // dispatch wiring can be exercised end-to-end today.
+            // v1 install creates the install directory and its bin/lib/share skeleton only.
             std::error_code ec;
             fs::create_directories(fs::path(installRoot) / "bin", ec);
             fs::create_directories(fs::path(installRoot) / "lib", ec);
@@ -2589,17 +2417,14 @@ namespace cajeta::buildtool {
                 return 1;
             }
             auto symlink = layout.defaultSymlinkPath();
-            // Refresh the `current` pointer: remove + recreate.
             if (fs::is_symlink(symlink, ec) || fs::exists(symlink, ec)) {
                 fs::remove(symlink, ec);
             }
             ec.clear();
             fs::create_symlink(installRoot, symlink, ec);
             if (ec) {
-                // Windows (and any filesystem where the caller lacks the
-                // symlink privilege) fails here with ENOSYS / access-denied.
-                // Fall back to a plain marker file recording the target
-                // install root; listInstalledToolchains reads either form.
+                // Without symlink support (Windows, or no privilege) fall back to a marker file
+                // naming the install root; listInstalledToolchains reads either form.
                 ec.clear();
                 std::ofstream marker(symlink, std::ios::binary | std::ios::trunc);
                 marker << installRoot;
@@ -2629,11 +2454,7 @@ namespace cajeta::buildtool {
                     manifestPath = std::move(v);
                 }
             }
-            // Read the manifest as raw bytes + inject/overwrite the
-            // settings.toolchain.version field. We keep the rest of
-            // the manifest's JSONC verbatim — same approach as the
-            // existing `cajeta add` rewrite path uses for
-            // settings.dependencies.
+            // Inject settings.toolchain.version into the manifest bytes, JSONC intact.
             std::ifstream in(manifestPath);
             if (!in) {
                 std::cerr << "cajeta toolchain pin: cannot read '"
@@ -2643,22 +2464,12 @@ namespace cajeta::buildtool {
             std::ostringstream ss; ss << in.rdbuf();
             std::string body = ss.str();
             in.close();
-            // Surgical: write a minimal settings.toolchain stub
-            // adjacent to the existing settings block when present,
-            // or insert one alongside details. v1 uses a simple
-            // append-or-replace strategy that keeps formatting
-            // local to the toolchain block.
             std::string pinJson =
                 "    \"toolchain\": {\n"
                 "        \"version\": \"" + version + "\"\n"
                 "    }";
-            // If settings.toolchain already exists, this is a
-            // re-pin: replace via a substring rewrite.
             auto tcPos = body.find("\"toolchain\"");
             if (tcPos != std::string::npos) {
-                // Naive: walk to the closing brace of the toolchain
-                // object and replace from "toolchain" through that
-                // closing brace.
                 auto open = body.find('{', tcPos);
                 if (open == std::string::npos) {
                     std::cerr << "cajeta toolchain pin: existing "
@@ -2682,10 +2493,6 @@ namespace cajeta::buildtool {
                     "    }";
                 body.replace(tcPos, close - tcPos, repl);
             } else {
-                // No existing toolchain block. Find the closing brace
-                // of settings (or insert a settings block) — v1 keeps
-                // this minimal: insert a new `settings.toolchain`
-                // before the last top-level '}'.
                 auto lastClose = body.find_last_of('}');
                 if (lastClose == std::string::npos) {
                     std::cerr << "cajeta toolchain pin: manifest has "
@@ -2833,27 +2640,9 @@ namespace cajeta::buildtool {
             return 1;
         }
 
-        // Phase 13: `cajeta install <archive>` — consumer-side
-        // verification before extracting / installing a built
-        // archive. The flow:
-        //
-        //   1. Compute archive sha256.
-        //   2. If `<archive>.sig` exists (or `--require-signature`),
-        //      verify against the trust store (Phase 10).
-        //   3. If `<archive>.attestation` exists (or
-        //      `--require-attestation`), verify the provenance's
-        //      digest claim matches the computed sha256 + the
-        //      Statement / predicate type strings are spec-shaped.
-        //   4. Refuse to install when any verification step fails.
-        //
-        // v1 is verification-only — the install path that unpacks
-        // the archive into the user's local cache lives alongside
-        // the existing ArtifactCache and lands when first-party
-        // package consumption flows do.
-        // `cajeta install` (no archive arg): build the current project's
-        // library .cja and install it into the local ~/.olla repository
-        // (the Maven `mvn install` analog). Errors if the project builds an
-        // executable (declares an entry-method) rather than a library.
+        // `cajeta install` with no archive: build the current project's library .cja and
+        // install it into the local ~/.olla repository. Errors when the project declares
+        // an entry method and so builds an executable rather than a library.
         int installProjectMode(const std::string& ollaRoot) {
             namespace fs = std::filesystem;
             const std::string manifestPath = "./cajeta.json";
@@ -2881,7 +2670,6 @@ namespace cajeta::buildtool {
             const std::string name = m->details.name;
             const std::string version = m->details.version;
 
-            // Build the project (its `build` task), capturing the artifact path.
             PropertyOverrides overrides;
             loadEnvOverrides(overrides);
             auto project = loadProject(manifestPath, overrides);
@@ -2928,9 +2716,8 @@ namespace cajeta::buildtool {
             return 0;
         }
 
-        // Copy an already-verified archive into ~/.olla, deriving
-        // name/version from its `<name>-<version>.cja` filename (plus an
-        // optional sibling cajeta.json sidecar).
+        // Copy an already-verified archive into ~/.olla, deriving name and version from
+        // its `<name>-<version>.cja` filename plus an optional cajeta.json sidecar.
         int installArchiveIntoOlla(const std::string& ollaRoot,
                                    const std::string& archive) {
             namespace fs = std::filesystem;
@@ -2966,8 +2753,9 @@ namespace cajeta::buildtool {
 
         int installCommand(int argc, const char* argv[]) {
             namespace fs = std::filesystem;
-            // Modes: `cajeta install` (build cwd library → ~/.olla) and
-            // `cajeta install <archive.cja>` (verify the file, then → ~/.olla).
+            // `cajeta install` builds the cwd library into ~/.olla; `cajeta install <archive>`
+            // verifies its sha256, any `.sig` against the trust store and any `.attestation`
+            // provenance, and refuses to install when a verification step fails.
             std::string archive;
             bool requireSig = false;
             bool requireAtt = false;
@@ -3081,10 +2869,8 @@ namespace cajeta::buildtool {
             return installArchiveIntoOlla(ollaRoot, archive);
         }
 
-        // Phase 11: `cajeta verify-reproducible <archive-a>
-        // <archive-b>` — byte-compare two archives produced from
-        // the same source/lockfile. Exit 0 on identical, 1 on
-        // diff. Used by the CI rebuild-and-compare verifier.
+        // `cajeta verify-reproducible <a> <b>` — byte-compare two archives built from the
+        // same source and lockfile. Exit 0 identical, 1 differing.
         int verifyReproducibleCommand(int argc, const char* argv[]) {
             if (argc < 4) {
                 std::cerr << "Usage: cajeta verify-reproducible "
@@ -3103,10 +2889,7 @@ namespace cajeta::buildtool {
             return 1;
         }
 
-        // Phase 11: `cajeta sandbox-info` — diagnostic dump of the
-        // sandbox layer's current view of the host. Surfaces
-        // bwrap-availability + which actions get which capability
-        // sets so consumers can audit their build before shipping.
+        // `cajeta sandbox-info` — dump the sandbox layer's view of the host.
         int sandboxInfoCommand(int /*argc*/, const char* /*argv*/[]) {
             std::cout << "Sandbox primitive: "
                       << (hostSandboxAvailable() ? "available" : "missing")
@@ -3116,8 +2899,6 @@ namespace cajeta::buildtool {
                       << (dbg && *dbg ? "set (sandbox bypassed)" : "unset")
                       << "\n";
             std::cout << "\nNative action capabilities:\n";
-            // Hand-listed so the output's stable; pulled from
-            // nativeActionCapabilities() above.
             for (const char* name : {"exec", "copy", "delete", "mkdir",
                                       "sign", "verify-sig", "version",
                                       "download", "build", "clean", "test",
@@ -3167,8 +2948,6 @@ namespace cajeta::buildtool {
             std::string_view sub = argv[2];
             int subArgc = argc - 1;
             const char** subArgv = argv + 1;
-            // subArgv[0] is now the original argv[1] ("workspace")
-            // — the callee uses it for diagnostics, so let it stand.
             if (sub == "build")   return workspaceTaskCommand(subArgc, subArgv, "build");
             if (sub == "publish") return workspaceTaskCommand(subArgc, subArgv, "publish");
             if (sub == "test")    return workspaceTaskCommand(subArgc, subArgv, "test");
@@ -3209,8 +2988,7 @@ namespace cajeta::buildtool {
             return 1;
         }
 
-        // True for the global flags BuildTool.md says EVERY built-in accepts.
-        // `wantsValue` reports the separated forms that swallow the next token.
+        // True for the global flags every built-in subcommand accepts.
         bool isGlobalFlag(std::string_view arg, bool& wantsValue) {
             wantsValue = false;
             if (arg == "-P" || arg == "--property") { wantsValue = true; return true; }
@@ -3222,17 +3000,8 @@ namespace cajeta::buildtool {
         }
 
         int coverageCommand(int argc, const char* argv[]) {
-            // Locate the subcommand PAST any leading global flags.
-            //
-            // BuildTool.md: "Every built-in subcommand and every task accepts
-            // --manifest=<path>, -v/--verbose, --quiet, --profile=<name>,
-            // -P <prop>=<value>". This command took argv[2] as the subcommand
-            // verbatim, so the IDE's build-tool window — which passes
-            // --manifest per that contract — got
-            //
-            //   unknown subcommand '--manifest=/…/cajeta.json'
-            //
-            // naming a flag as if the user had typed it as a verb.
+            // Locate the subcommand PAST any leading global flags: every built-in accepts
+            // --manifest=<path>, -v/--verbose, --quiet, --profile=<name> and -P before the verb.
             std::vector<const char*> rest;   // globals + subcommand args
             std::string_view sub;
             int subIndex = -1;
@@ -3260,17 +3029,11 @@ namespace cajeta::buildtool {
                 return false;
             }();
 
-            // Only a --help with NO subcommand is answered here. A --help that
-            // follows one belongs to that subcommand and is forwarded below, so
-            // `coverage list --help` documents `list` instead of reprinting the
-            // list of verbs. Getting this wrong is how the whole family of
-            // subcommand helps became unreachable in 0.22.2 — the short-circuit
-            // fired on any --help anywhere in argv.
+            // Only a --help with NO subcommand is answered here; one that follows a verb is
+            // forwarded, so `coverage list --help` documents `list`.
             if (subIndex < 0) {
-                // An explicit --help is a REQUEST: stdout, exit 0. A bare
-                // `coverage` is a usage ERROR: stderr, exit 1. The two differ in
-                // both stream and status, and a caller that pipes stdout (the
-                // IDE does) sees nothing at all when help goes to stderr.
+                // An explicit --help is a REQUEST (stdout, exit 0); a bare verb is a usage ERROR
+                // (stderr, exit 1), and a caller piping stdout sees nothing if help goes to stderr.
                 std::ostream& os = wantsHelp ? std::cout : std::cerr;
                 os  << "Usage: cajeta coverage <subcommand> [options]\n"
                     << "\n"
@@ -3281,9 +3044,6 @@ namespace cajeta::buildtool {
                     << "\n"
                     << "Run `cajeta coverage <subcommand> --help` for "
                     << "subcommand-specific options.\n"
-                    // `coverage` manages the exclude CONFIG; it does not measure
-                    // anything. Say so, because "Coverage" in a menu reads like
-                    // it should run a coverage pass.
                     << "\n"
                     << "This subcommand edits the exclude list in cajeta.json. "
                        "To MEASURE coverage, bind the "
@@ -3292,8 +3052,6 @@ namespace cajeta::buildtool {
                 return wantsHelp ? 0 : 1;
             }
 
-            // Re-lay the argv so the subcommand sits at index 2, which is
-            // where each handler starts scanning its own options.
             std::vector<const char*> forwarded;
             forwarded.reserve(rest.size() + 3);
             forwarded.push_back(argv[0]);
@@ -3311,14 +3069,11 @@ namespace cajeta::buildtool {
             return 1;
         }
 
-        // Decide whether `argv[1]` is a task invocation. Returns
-        // false (so the compiler-side fallthrough runs) when there's
-        // no manifest or no matching task — that way `cajeta archive`
-        // etc. still work outside a project.
+        // Decide whether `argv[1]` is a task invocation. False — so the compiler
+        // fallthrough runs — when there is no manifest or no matching task.
         bool looksLikeTaskInvocation(int argc, const char* argv[]) {
             if (argc < 2) return false;
             std::string_view cmd = argv[1];
-            // Built-in subcommands handled elsewhere.
             if (cmd == "info" || cmd == "tasks" || cmd == "task" ||
                 cmd == "deps" ||
                 cmd == "init" || cmd == "archive" ||
@@ -3334,11 +3089,7 @@ namespace cajeta::buildtool {
                 cmd == "run") {   // script-units §7 — first-class verb
                 return false;
             }
-            // Anything starting with `-` is a flag for the existing
-            // compiler invocation, not a task name.
             if (!cmd.empty() && cmd[0] == '-') return false;
-            // Look for a manifest in the current directory; only
-            // claim to handle the task if we find one.
             llvm::Expected<llvm::json::Value> probe =
                 parseJsonCFile("./cajeta.json");
             if (!probe) {
@@ -3352,11 +3103,8 @@ namespace cajeta::buildtool {
             return tasksBlock->get(std::string(cmd)) != nullptr;
         }
 
-        // ─── skill discovery (skill-discovery spec §1.5.1) ───────────────
-        // Thin adapters over the transport-agnostic skill core
-        // (cajeta::buildtool::skill): parse args, load the lockfile + local
-        // artifact cache into a search context, call the core, print. No
-        // business logic here, so an MCP adapter (spec §6) reuses the same core.
+        // Thin adapters over the transport-agnostic skill core: parse args, build a
+        // search context from the lockfile + artifact cache, call the core, print.
 
         std::vector<std::string> skillArgvTail(int argc, const char* argv[]) {
             std::vector<std::string> out;
@@ -3364,9 +3112,7 @@ namespace cajeta::buildtool {
             return out; // out[0] is the subcommand name
         }
 
-        // --json structured output for the skill subcommands (consumed by the
-        // standalone tools/mcp wrapper). Removes "--json" from `tail`, returns
-        // whether it was present.
+        // Remove "--json" from `tail` and report whether it was present.
         bool takeJsonFlag(std::vector<std::string>& tail) {
             for (auto it = tail.begin(); it != tail.end(); ++it) {
                 if (*it == "--json") { tail.erase(it); return true; }
@@ -3374,7 +3120,6 @@ namespace cajeta::buildtool {
             return false;
         }
 
-        // JSON shapes live in SkillCli (shared with compiler-mcp for parity).
         std::string searchResultsJson(
                 llvm::ArrayRef<skill::SkillSearchResult> rs) {
             return skill::searchResultsJsonValue(rs).dump();
@@ -3393,8 +3138,7 @@ namespace cajeta::buildtool {
             bool json = takeJsonFlag(tail);
             auto a = skill::parseSearchSkillArgs(tail);
             if (!a.valid) { std::cerr << skill::searchSkillUsage(); return 2; }
-            // Lockfile is optional: with none, discovery still returns the
-            // always-available embedded stdlib skills (spec §2.5).
+            // The lockfile is optional: discovery still returns the embedded stdlib skills.
             std::vector<ResolvedPackageEntry> packages;
             if (std::filesystem::exists("./cajeta.lock")) {
                 auto lf = readLockfile("./cajeta.lock");
@@ -3427,7 +3171,6 @@ namespace cajeta::buildtool {
             bool json = takeJsonFlag(tail);
             auto a = skill::parseListSkillsArgs(tail);
             if (!a.valid) { std::cerr << skill::listSkillsUsage(); return 2; }
-            // Lockfile optional (spec §2.5): embedded stdlib skills always listed.
             std::vector<ResolvedPackageEntry> packages;
             if (std::filesystem::exists("./cajeta.lock")) {
                 auto lf = readLockfile("./cajeta.lock");
@@ -3459,7 +3202,6 @@ namespace cajeta::buildtool {
             if (tail.size() < 2) { std::cerr << skill::getSkillsUsage(); return 2; }
             auto uris = skill::splitCommaUris(tail[1]);
             if (uris.empty()) { std::cerr << skill::getSkillsUsage(); return 2; }
-            // Lockfile optional (spec §2.5): embedded stdlib URIs resolve with none.
             std::vector<ResolvedPackageEntry> packages;
             if (std::filesystem::exists("./cajeta.lock")) {
                 auto lf = readLockfile("./cajeta.lock");
@@ -3493,24 +3235,11 @@ namespace cajeta::buildtool {
         }
 
         // ─── `cajeta artifact-path` — build-output-layout §5.2 ──────────
-        //
-        // Consumers hard-code `ls -t build/archive/$name-*.cja | head -1`.
-        // That was already duplicated version-resolution logic across
-        // cajeta-llm, cajeta-cabra and others, and settings.output (unit 3)
-        // makes it outright wrong for any project that moves its artifacts.
-        // This verb answers the question instead, WITHOUT building.
-        //
-        // It shares every step of the resolution with the build action (see
-        // OutputLayout.h) so it cannot report somewhere the build does not
-        // write. What it does not share is the build itself: the path is
-        // where the artifact IS or WOULD BE, so a project that has never
-        // been built still gets an answer, and the caller decides whether a
-        // missing file matters.
+        // Answer where the artifact is (or would be) WITHOUT building, sharing every
+        // resolution step with the build action so it cannot name a path it won't write.
 
-        // Collect every `build` invocation reachable in a task's action list,
-        // descending into parallel groups. run-task entries are deliberately
-        // NOT followed: the artifact of a task that delegates is the callee's
-        // to report, and `--task <callee>` says so unambiguously.
+        // Every `build` invocation reachable in a task, descending into parallel groups
+        // but never into run-task: the callee reports its own artifact.
         void collectBuildInvocations(
             const std::vector<ActionEntry>& entries,
             std::vector<const ActionInvocation*>& out) {
@@ -3579,10 +3308,8 @@ namespace cajeta::buildtool {
                 return 1;
             }
 
-            // Pick the task. An explicit --task is taken as given; otherwise
-            // `build` by convention, and failing that the only task that
-            // builds anything. Several candidates is ambiguity, not a
-            // default — guessing here would hand a script the wrong binary.
+            // Pick the task: an explicit --task as given, else `build`, else the only task
+            // that builds anything. Several candidates is ambiguity, not a default.
             const Task* task = nullptr;
             if (!taskName.empty()) {
                 auto it = project->tasks.find(taskName);
@@ -3635,11 +3362,8 @@ namespace cajeta::buildtool {
             }
             const llvm::json::Object& params = builds.front()->params;
 
-            // Substitute ${...} in the params this command reads. The task
-            // runner does the same at invocation time (task params are
-            // deliberately left un-rewritten at load, since they can carry
-            // late-bound `${id.field}` action outputs) — so a `${flavor}` in
-            // an output-path resolves here exactly as it would there.
+            // Substitute ${...} in the params this command reads, as the task runner does at
+            // invocation time (task params are deliberately left un-rewritten at load).
             auto sub = [&](const char* key,
                            std::string& out) -> llvm::Error {
                 auto v = params.getString(key);
@@ -3700,21 +3424,17 @@ namespace cajeta::buildtool {
                 return 1;
             }
 
-            // Absolute, so the caller can use it from any directory. Resolved
-            // against the CURRENT directory rather than the manifest's, which
-            // is where the build action would have written it — matching the
-            // build matters more here than looking tidy under --manifest.
+            // Absolute, and resolved against the CURRENT directory rather than the manifest's
+            // — that is where the build action would have written it.
             std::cout << std::filesystem::weakly_canonical(
                              std::filesystem::absolute(result)).string()
                       << "\n";
             return 0;
         }
 
-        // `cajeta deps` — the dependency tree (dependency-tree spec §5, §6).
-        // Resolves with the same resolver `build` uses, walks the graph
-        // (DependencyTree.h), prints one format to stdout and reports
-        // cycles on stderr. Exit 0; 1 on a cycle or a resolution failure;
-        // 2 on a usage error.
+        // `cajeta deps` — resolve with the same resolver `build` uses, walk the graph and
+        // print one format to stdout, reporting cycles on stderr. Exit 0; 1 on a cycle or
+        // a resolution failure; 2 on a usage error.
         void depsUsage(std::ostream& os) {
             os << "Usage: cajeta deps [--format=text|json|csv] [--json] [--depth=N]\n"
                   "                   [--no-dedupe] [--ascii] [--manifest=<path>]\n"
@@ -3789,9 +3509,8 @@ namespace cajeta::buildtool {
                 std::filesystem::path(manifestPath).parent_path().string();
             if (projectRoot.empty()) projectRoot = ".";
 
-            // The same resolution `build` performs (overrides, melts, declared
-            // repositories, ~/.olla first), so the tree cannot disagree with
-            // the classpath. Nothing reaches stdout on failure (§5.4.2).
+            // The same resolution `build` performs, so the tree cannot disagree with the
+            // classpath. Nothing reaches stdout on failure.
             auto graph = resolveProjectGraph(m, projectRoot);
             if (!graph) {
                 std::string msg;
@@ -3817,8 +3536,6 @@ namespace cajeta::buildtool {
             }
             std::cout.flush();
 
-            // Reported after the tree so the tree that contains the cycle can
-            // be read (§4.5). One line per cycle, the melt detector's shape.
             for (const auto& cyc : tree.cycles) {
                 std::cerr << "dependency cycle detected: " << formatCycle(cyc) << "\n";
             }
@@ -3916,8 +3633,7 @@ namespace cajeta::buildtool {
             return true;
         }
 
-        // Other build-tool subcommands land in subsequent phases. For
-        // now anything not recognized falls through to the compiler.
+        // Other build-tool subcommands land in later phases.
         return false;
     }
 

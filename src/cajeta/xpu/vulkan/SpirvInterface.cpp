@@ -1,6 +1,4 @@
-//
 // SPIR-V shader interface variables — see header.
-//
 
 #include "SpirvInterface.h"
 
@@ -25,8 +23,6 @@ llvm::GlobalVariable* createInterfaceVar(llvm::Module& m, llvm::Type* ty,
     llvm::LLVMContext& ctx = m.getContext();
     const bool isInput = (sc == InterfaceStorage::Input);
 
-    // One !spirv.Decorations pair {i32 decoration, i32 operand}, wrapped in the
-    // outer node the backend reads off the global.
     llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
     llvm::Metadata* pair[2] = {
         llvm::ConstantAsMetadata::get(
@@ -35,9 +31,6 @@ llvm::GlobalVariable* createInterfaceVar(llvm::Module& m, llvm::Type* ty,
     };
     llvm::MDNode* decor = llvm::MDNode::get(ctx, pair);
 
-    // Input vars are read-only (`constant`), Output vars writable (`global`);
-    // both are external hidden thread_local externally-initialized, matching
-    // LLVM's position.{vs,ps}.ll interface-variable form.
     auto* gv = new llvm::GlobalVariable(
         m, ty, /*isConstant=*/isInput, llvm::GlobalValue::ExternalLinkage,
         /*Initializer=*/nullptr, name, /*InsertBefore=*/nullptr,
@@ -66,12 +59,8 @@ llvm::GlobalVariable* createBuiltInVar(llvm::Module& m, llvm::Type* ty,
 
 llvm::GlobalVariable* createPushConstantBlock(llvm::Module& m, llvm::Type* blockTy,
                                               const std::string& name) {
-    // The same external, externally-initialized, hidden, thread-local global shape
-    // the interface vars use (the position.{vs,ps}.ll form the backend recognizes)
-    // — but in the PushConstant address space and read-only, and WITHOUT a
-    // spirv.Decorations node: the SPIRVPushConstantAccess pass keys off the address
-    // space alone, then it + the backend lay the struct out as a Block (member
-    // Offsets) and rewrite member access into OpAccessChain.
+    // The same hidden, externally-initialized thread_local global the interface vars use,
+    // but in the PushConstant address space and undecorated: the pass keys off the AS alone.
     auto* gv = new llvm::GlobalVariable(
         m, blockTy, /*isConstant=*/true, llvm::GlobalValue::ExternalLinkage,
         /*Initializer=*/nullptr, name, /*InsertBefore=*/nullptr,

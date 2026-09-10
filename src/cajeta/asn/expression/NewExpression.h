@@ -1,6 +1,4 @@
-//
 // Created by James Klappenbach on 4/19/23.
-//
 
 #pragma once
 
@@ -15,38 +13,19 @@ namespace cajeta {
     class NewExpression : public Expression {
         string package;
         string typeName;
-        // Resolved template arguments for `new Box<int32>(...)`. Empty for
-        // non-templated `new Foo(...)` and for diamond-form `new Box<>(...)`
-        // (TPL-7 fills these in by inference at codegen time).
+        // Empty for non-templated and for diamond forms, which TPL-7 infers.
         vector<CajetaTypePtr> typeArguments;
         bool isDiamond = false;
         CreatorRestPtr creatorRest;
-        // Captured at construction-time (parse walk) when `typeName` matches
-        // a template parameter active on the module's substitution stack.
-        // Required because resolveTypes/generateCode run later (after the
-        // walk) when the stack is gone — without this we'd resolve `new T[N]`
-        // inside an instantiated template's body to null and segfault. See
-        // CajetaModule::pushTypeSubstitution / lookupTypeParameter.
+        // Bound in the parse walk; the substitution stack is gone by resolveTypes.
         CajetaTypePtr boundElementType;
-        // P2a: `stack ClassName(args)` routes through NewExpression with
-        // this flag set so ClassCreatorRest emits an entry-block alloca
-        // instead of a malloc. `heap ClassName(args)` and bare `new
-        // ClassName(args)` keep the default (heap).
+        // `stack X(args)`: an entry-block alloca instead of a malloc.
         bool stackAlloc = false;
-        // `shared ClassName(args)` / `shared T[N]` — GPU workgroup-shared
-        // placement (NV addrspace 3). Device-only: the NVPTX kernel lowerer
-        // recognizes this on a kernel-local's initializer and emits a per-block
-        // addrspace(3) global; the host generateCode path rejects it.
+        // `shared X(args)`: device-only workgroup-shared placement (addrspace 3).
         bool sharedAlloc = false;
-        // NRVO sret slot, set by ReturnStatement when this `stack X(...)` is
-        // the returned expression of a value-returning method. Forwarded to
-        // the CreatorRest at generateCode so the instance is built directly
-        // into the caller's return slot. See docs/specification/lang/ValueReturns.md.
+        // NRVO sret slot: the instance is built into the caller's return slot.
         llvm::Value* nrvoTarget = nullptr;
-        // Frame-arena (U3): set by Method::computeArenaEligibility when this
-        // `heap T[N]` initializes a non-escaping single-dimension primitive-element
-        // array local. Propagated to ArrayCreatorRest at generateCode so the header
-        // is bump-allocated from the frame arena (no malloc, no live-set, no drop).
+        // Set by Method::computeArenaEligibility: bump-allocate from the arena.
         bool arenaEligible = false;
     public:
         void setArenaEligible(bool v) { arenaEligible = v; }
@@ -58,14 +37,11 @@ namespace cajeta {
         void setNrvoTarget(llvm::Value* t) { nrvoTarget = t; }
         llvm::Value* getNrvoTarget() const { return nrvoTarget; }
 
-        // The creator-rest (ClassCreatorRest or ArrayCreatorRest), exposed so
-        // the device lowerer can read a `shared T[N]` array creation's size
-        // operand without going through host codegen.
+        /// The ClassCreatorRest or ArrayCreatorRest, exposed so the device
+        /// lowerer can read a `shared T[N]` size operand without host codegen.
         const CreatorRestPtr& getCreatorRest() const { return creatorRest; }
         const string& getTypeName() const { return typeName; }
 
-        // 7.2.4 — the creator-rest (and with it the ctor args / dims) is a
-        // private slot, not a child.
         void forEachSubNode(
                 const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
             if (creatorRest) fn(creatorRest);
@@ -74,12 +50,9 @@ namespace cajeta {
 
         NewExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::New; }
 
+        /// Builds the creator from its parse context: leaf type name, package,
+        /// template arguments (or diamond), creator-rest. Runs in the parse walk.
         NewExpression(CajetaParser::CreatorContext* creatorContext, antlr4::Token* token) : Expression(token) { exprKind = ExprKind::New;
-            // The leaf type-name token of `heap pkg.Point(...)` — the `Point`.
-            // Captured so the created type can be recorded as an xref reference
-            // at parse time (ide-symbol-index): lint stops before the codegen
-            // pass that otherwise resolves an allocation's type, so without this
-            // Ctrl-click on `heap Point(...)` would find no edge.
             antlr4::Token* createdTypeToken = nullptr;
             if (creatorContext->createdName() != nullptr) {
                 if (creatorContext->createdName()->primitiveType()) {
@@ -95,33 +68,19 @@ namespace cajeta {
                             package.append(identifierPart->getText());
                         }
                     }
-                    // Template arguments: createdName allows typeArgumentsOrDiamond
-                    // after each identifier. v1 looks at the LAST one (applying
-                    // to the leaf type); multiple levels of template args in a
-                    // qualified name (e.g. `Outer<A>.Inner<B>`) are deferred.
                     auto tads = creatorContext->createdName()->typeArgumentsOrDiamond();
                     if (!tads.empty()) {
                         auto* lastTad = tads.back();
                         if (auto* targs = lastTad->typeArguments()) {
                             for (auto* targ : targs->typeArgument()) {
-                                // A use-site `#` on a type argument carries no
-                                // meaning and is rejected below with
-                                // TYPE_TRANSFER_RETIRED. There is one monomorph
-                                // per type; ownership is decided per call.
                                 if (targ->integerLiteral() != nullptr) {
-                                    // Non-type (integer) template argument —
-                                    // the `N` in `new Vector<float32, 4>(...)`.
                                     typeArguments.push_back(CajetaConstantType::of(
                                         CajetaConstantType::parseLiteral(
                                             targ->integerLiteral())));
                                     continue;
                                 }
-                                // Wildcard arg — `?`, `? extends T`, `? super T`
-                                // — in a `heap T<?>(...)` / `heap T<?>[n]`
-                                // creator. Mirrors CajetaType::fromContext's
-                                // wildcard branch (REFL-1.7 needs `heap
-                                // Class<?>[n]` for the registry queries). The
-                                // grammar puts the BOUND, if any, in typeType().
+                                // The grammar puts a wildcard's BOUND, if it
+                                // has one, in typeType().
                                 if (targ->QUESTION() != nullptr) {
                                     if (!CajetaType::wildcardsEnabled()) {
                                         throw "wildcard type arguments not supported in v1";
@@ -150,19 +109,13 @@ namespace cajeta {
                                 if (!targ->typeType()) {
                                     throw "wildcard type arguments not supported in v1";
                                 }
-                                // module=nullptr; fromContext falls back to
-                                // CajetaModule::getActiveModule() so any
-                                // outer-template substitution stack is honored
-                                // (e.g. `new Box<T>()` inside a template body
-                                // where T was bound by the instantiation).
+                                // module=nullptr makes fromContext fall back to
+                                // getActiveModule(), honoring outer substitutions.
                                 CajetaTypePtr argType = CajetaType::fromContext(targ->typeType(), nullptr);
                                 if (!argType) {
                                     throw "unresolved template argument in `new`";
                                 }
                                 typeArguments.push_back(argType);
-                                // title-tracking §8.1 (plan 7.1.1) — creator
-                                // type-argument `#` is retired with the
-                                // declared-type form.
                                 if (targ->REFERENCE() != nullptr) {
                                     throw Exception(
                                         "`#` on a type argument is retired: "
@@ -175,56 +128,44 @@ namespace cajeta {
                                 }
                             }
                         } else {
-                            // Diamond form: typeArgumentsOrDiamond has '<' '>'
-                            // tokens but no inner typeArguments rule match.
-                            // TPL-7 handles inference from constructor args.
+                            // Diamond: '<' '>' with no inner typeArguments match.
                             isDiamond = true;
                         }
                     }
                 }
             }
             creatorRest = CreatorRest::fromContext(creatorContext, token);
-            // Capture template-parameter binding while the substitution
-            // stack is still live (we're in the parse walk now). See
-            // boundElementType comment above.
+            // The substitution stack is still live here, in the parse walk.
             if (!typeName.empty()) {
                 if (auto am = CajetaModule::getActiveModule()) {
                     boundElementType = am->lookupTypeParameter(typeName);
                 }
             }
-            // Record the created type as an xref reference at its token (parse
-            // time, so lint captures it). No-op unless --emit-xref is on.
             recordCreatedTypeXref(createdTypeToken);
         }
 
         const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }
         bool getIsDiamond() const { return isDiamond; }
 
-        // Synthetic construction (collection-literals §2): populate the fields a
-        // parsed `heap Name<args>(...)` would carry, so a target-typed
-        // collection literal can be rewritten into a real creator without a
-        // parse context. resolveTypes/generateCode then re-resolve `Name` and
-        // re-instantiate against `typeArguments` exactly as for the spelled form.
+        /// Synthetic construction: these populate what a parsed creator would
+        /// carry, so a collection literal becomes a creator with no parse context.
         void setTypeName(string name) { typeName = std::move(name); }
         void setPackage(string pkg) { package = std::move(pkg); }
         void setTypeArguments(vector<CajetaTypePtr> args) { typeArguments = std::move(args); }
         void setCreatorRest(CreatorRestPtr rest) { creatorRest = std::move(rest); }
 
+        /// Resolves the created type, its template arguments, and the rest.
         void resolveTypes(CajetaModulePtr module) override;
+        /// Emits the allocation and constructor call; returns the instance.
         llvm::Value* generateCode(CajetaModulePtr module) override;
 
     private:
-        // ide-symbol-index: record the created type (`heap Point(...)`) as a
-        // type-reference edge at `tok`, resolving the name scoped like
-        // resolveTypes. Best-effort and gated on xref::captureEnabled(), so a
-        // normal compile never runs it; a resolution miss or throw records no
-        // edge rather than affecting the compile.
+        /// Records the created type as a type-reference edge at `tok`. Gated on
+        /// xref::captureEnabled(); a miss or a throw records no edge and no error.
         void recordCreatedTypeXref(antlr4::Token* tok);
 
-        // ide-symbol-index / xref-lint-emission-gap 4.2.3: record the
-        // CONSTRUCTOR call edge for `heap Foo(args)` under lint, where the
-        // creator's own targetType is not yet set. Unique-arity match only;
-        // an ambiguous constructor set records nothing.
+        /// Records the constructor call edge under lint, where the creator's
+        /// own targetType is not yet set. Unique-arity match only.
         void recordConstructorCallXref(const CajetaTypePtr& type,
                                        CajetaModulePtr module);
     };

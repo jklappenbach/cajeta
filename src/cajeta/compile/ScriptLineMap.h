@@ -1,17 +1,6 @@
-//
-// script-units U5 (spec §6.1) — wrapper-line → host-line translation.
-//
-// The script synthesis splices original member text into the implicit-class
-// wrapper, shifting line numbers. Each spliced segment records where it
-// landed (wrapperStart) and where it came from (hostStart); internal
-// newlines are preserved verbatim, so a line inside a segment maps by
-// offset. Synthetic wrapper lines (package default, class shell, appended
-// `return 0;`) fall between segments and resolve to the nearest PRECEDING
-// host line — the closest thing the user wrote.
-//
-// This header is ANTLR-free on purpose: CajetaModule stores the map, and
-// CajetaModule.h must not pull in the parser headers.
-//
+// Wrapper-line → host-line translation for script units (spec §6.1): each spliced
+// segment records where it landed and where it came from. ANTLR-free on purpose,
+// since CajetaModule stores the map and must not pull in the parser headers.
 #pragma once
 
 #include <vector>
@@ -26,10 +15,9 @@ namespace cajeta {
 
     using ScriptLineMap = std::vector<ScriptLineSpan>;
 
-    // Translate a 1-based wrapper line to its host line. Lines inside a
-    // span map by offset; lines between spans resolve to the nearest
-    // preceding span's last host line; 0 when nothing precedes (an
-    // all-synthetic prefix) or the map is empty.
+    // Translates a 1-based wrapper line to its host line: inside a span by offset,
+    // between spans to the nearest preceding span's last host line, and 0 when
+    // nothing precedes or the map is empty.
     inline int mapScriptLine(const ScriptLineMap& map, int wrapperLine) {
         if (map.empty() || wrapperLine <= 0) return wrapperLine;
         int best = 0;

@@ -2,73 +2,38 @@
 //
 // ── Protocol spec (v1) ───────────────────────────────────────────
 //
-// Direction: parent (build tool) → child (plugin binary).
+// Parent → child, stdin, one JSON object:
+//   {"version": 1,
+//    "action":  "<namespaced action name>",
+//    "entry":   "<symbol path from the sidecar's entries map, or empty>",
+//    "params":  { ... substituted action params ... },
+//    "context": {"workdir":         "<abs path to project root>",
+//                "project-name":    "<consumer's details.name>",
+//                "project-version": "<consumer's details.version>",
+//                "capabilities":    [ ... allowlist intersection ... ],
+//                "classpath":       "<consumer's resolved dep .cja paths,
+//                                     comma-joined, the same string passed
+//                                     as --classpath; absent when there are
+//                                     none or resolution failed>",
+//                "toolchain":       {"cajeta":.., "llc":.., "llvm-dis":..,
+//                                    "cc":..},
+//                "plugin":          {"artifact": "<this plugin's .cja>",
+//                                    "deps": [ ... its own closure ... ]}}}
 //
-//   Stdin (single JSON object):
-//     {
-//       "version": 1,
-//       "action":  "<namespaced action name>",
-//       "entry":   "<symbol path from sidecar's entries map, or empty>",
-//       "params":  { ... substituted action params ... },
-//       "context": {
-//         "workdir":         "<abs path to project root>",
-//         "project-name":    "<consumer's details.name>",
-//         "project-version": "<consumer's details.version>",
-//         "capabilities":    [ ... allowlist intersection ... ],
-//         "classpath":       "<consumer's resolved dep .cja paths, comma-
-//                             joined; the same string BuildAction passes
-//                             as --classpath. Absent when the project has
-//                             no dependencies or resolution failed.>",
-//         "toolchain":       { "cajeta": ..., "llc": ..., "llvm-dis": ...,
-//                              "cc": ... },
-//         "plugin":          { "artifact": "<this plugin's .cja>",
-//                              "deps": [ ... its own closure ... ] }
-//       }
-//     }
+// Child → parent, stdout, one JSON object per line, trailing newline required:
+//   {"kind": "log",     "level": "info|warn|debug", "message": "..."}
+//   {"kind": "warn",    "message": "..."}
+//   {"kind": "write",   "text": "..."}
+//   {"kind": "output",  "key": "...", "value": "..."}
+//   {"kind": "finding", "rule": "...", "severity": "error|warning|info",
+//                       "file": "...", "line": <int>, "column": <int>,
+//                       "message": "..."}
+//   {"kind": "result",  "status": "ok"}
+//   {"kind": "result",  "status": "error", "message": "..."}
 //
-// Direction: child → parent.
-//
-//   Stdout (one JSON object per line; trailing newline required):
-//
-//     {"kind": "log",   "level": "info|warn|debug", "message": "..."}
-//        info/debug -> stdout (progress). warn -> stderr (a problem).
-//        Failure is reported by the `result` record, never by a log.
-//     {"kind": "warn",                              "message": "..."}
-//     {"kind": "write",                             "text":    "..."}
-//     {"kind": "output", "key": "...",              "value":   "..."}
-//     {"kind": "finding",
-//       "rule":     "...",
-//       "severity": "error|warning|info",
-//       "file":     "...",
-//       "line":     <int>,
-//       "column":   <int>,
-//       "message":  "..."}
-//
-//     {"kind": "result", "status": "ok"}                  // success
-//     {"kind": "result", "status": "error", "message": "..."}  // logical failure
-//
-//   Stderr: free-form text. Forwarded verbatim to the build tool's
-//   stderr so users see crash traces / "binary not found" / etc.
-//
-// Exit codes:
-//   0   — plugin completed cleanly. Result kind decides logical
-//         success/failure (a "result" record with status=error is
-//         a logical fail; the plugin still exits 0).
-//   non-zero — plugin crashed or refused to start. Surfaces to the
-//             build tool as a hard error from invokePluginAction.
-//
-// ── Why this shape ──
-//
-// - Single request JSON keeps the parent → child handshake atomic.
-//   No streaming of params; the plugin gets everything before doing
-//   work. Aligns with how plugins are written — synchronous
-//   functions in cajeta source, not coroutines.
-// - JSON-line response lets the plugin emit progress as it goes:
-//   coverage's per-file findings, lint's per-file warnings stream
-//   to the parent live without waiting for whole-action completion.
-// - `kind` discriminator makes parsing one-pass + extensible: future
-//   record kinds (progress percentage, sub-action invocation) don't
-//   break old parents.
+// Stderr is free-form and forwarded verbatim. Failure is reported by the
+// `result` record, never by a log; a non-zero exit means the plugin crashed
+// or refused to start, and surfaces as a hard error from invokePluginAction.
 
 #include "cajeta/buildtool/PluginRuntime.h"
 
@@ -110,21 +75,9 @@ namespace cajeta::buildtool {
         }
 
         // ── compile-from-cja: the default plugin distribution model ──
-        //
-        // A plugin ships as a .cja like any other package; a native binary
-        // is a DERIVED artifact. When the sidecar declares `main` (a static
-        // no-arg protocol entry) and no explicit `binary`, the runtime:
-        //
-        //   1. auto-homes the artifact + sidecar into the local olla store
-        //      (so the cache has a stable, name/version-addressed home),
-        //   2. AOT-compiles it once — a synthesized one-class source shim
-        //      calls `main`, because entry-point lookup reads user sources,
-        //      not classpath archives — into <store>/<name>/<version>/bin/,
-        //   3. stamps the binary with the artifact's sha and reuses it until
-        //      the artifact changes.
-        //
-        // An explicit sidecar `binary` skips all of this (the escape hatch
-        // for plugins that ship prebuilt executables).
+        // A plugin ships as a .cja and the binary is DERIVED: the artifact is
+        // auto-homed into the olla store, AOT-compiled once through a
+        // synthesized shim, and reused until its sha changes. `binary` opts out.
 
         std::string runningExecutable() {
 #if !defined(_WIN32)
@@ -138,24 +91,14 @@ namespace cajeta::buildtool {
             return "cajeta";
         }
 
-        // Resolve an LLVM tool (`llc`, `llvm-dis`) to a path that exists
-        // on THIS machine. The build-time LLVM dir is baked into the
-        // binary, but it only exists where the binary was built — for a
-        // released toolchain that is the CI runner. Order:
-        //
-        //   1. $CAJETA_LLVM_BIN/<tool>       (explicit user override)
-        //   2. <baked LLVM tools dir>/<tool> (from-source builds)
-        //   3. <dir of this binary>/<tool>   (bundled distributions)
-        //   4. PATH
-        //
-        // Falls back to the bare name so the eventual spawn failure names
-        // the missing tool instead of a phantom absolute path.
+        // Resolve an LLVM tool (`llc`, `llvm-dis`) to a path that exists on THIS
+        // machine: $CAJETA_LLVM_BIN, the baked LLVM tools dir, this binary's own
+        // dir, then PATH. Falls back to the bare name so a spawn names the tool.
         std::string resolveLlvmTool(const char* tool) {
             namespace fs = std::filesystem;
             std::error_code ec;
-            // generic_string() throughout: these paths are advertised to
-            // plugins in JSON, where a native '\\' both needs escaping and
-            // defeats substring checks; Windows spawns accept '/' fine.
+            // generic_string() throughout: these paths are advertised to plugins
+            // in JSON, where a native '\\' needs escaping; spawns accept '/'.
             if (const char* env = ::getenv("CAJETA_LLVM_BIN")) {
                 fs::path p = fs::path(env) / tool;
                 if (fs::is_regular_file(p, ec)) return p.generic_string();
@@ -179,6 +122,9 @@ namespace cajeta::buildtool {
             return tool;
         }
 
+        // The plugin's executable. Auto-homes the artifact, reuses the cached
+        // binary while its stamp matches the artifact AND its dependency
+        // closure, and otherwise compiles a shim that calls the `main` entry.
         llvm::Expected<std::string> ensurePluginBinary(
             const ResolvedPlugin& plugin) {
             namespace fs = std::filesystem;
@@ -212,10 +158,8 @@ namespace cajeta::buildtool {
             fs::path bin = binDir / plugin.name;
             fs::path stamp = binDir / (plugin.name + ".sha256");
 
-            // 2. Reuse when the cached binary matches this artifact AND its
-            // dependency closure — a dep-only update (same plugin version,
-            // new library build) must invalidate the cache too, or stale
-            // library code keeps running silently.
+            // 2. Reuse only when the stamp covers the artifact AND its closure:
+            // a dep-only update must invalidate the cache too.
             std::string stampPayload = plugin.sha256;
             for (const auto& d : plugin.depArtifacts) {
                 stampPayload += "+" + ArtifactCache::sha256OfFile(d);
@@ -308,7 +252,8 @@ namespace cajeta::buildtool {
             return bin.string();
         }
 
-        // Build the request JSON the plugin reads from stdin.
+        // Build the request JSON the plugin reads from stdin: version, action,
+        // entry, params, and the context block spelled out at the top of file.
         std::string serializeRequest(
             const ResolvedPlugin& plugin,
             const std::string& actionName,
@@ -321,8 +266,6 @@ namespace cajeta::buildtool {
             req["entry"] = (entryIt != plugin.entries.end())
                                ? entryIt->second
                                : std::string();
-            // Copy params verbatim — they're already substituted by
-            // the TaskRunner before we get here.
             req["params"] = llvm::json::Value(
                 llvm::json::Object(params));
 
@@ -330,11 +273,8 @@ namespace cajeta::buildtool {
             const Manifest* m = ctx.manifest();
             std::string workdir;
             if (m) {
-                // Best-effort: workdir is the consumer's manifest's
-                // parent dir. We don't carry that on TaskContext yet,
-                // so plugins requiring an absolute path fall back to
-                // `.` and resolve themselves. v1 acceptable; harder
-                // wiring once TaskRunner threads it through.
+                // Best-effort: TaskContext does not carry the manifest's parent
+                // dir yet, so a plugin gets `.` and resolves it itself.
                 workdir = ".";
                 context["project-name"]    = m->details.name;
                 context["project-version"] = m->details.version;
@@ -350,11 +290,8 @@ namespace cajeta::buildtool {
             }
             context["capabilities"] = std::move(caps);
 
-            // Toolchain paths, so a plugin can orchestrate compilation
-            // without machine-specific configuration: `cajeta` is this
-            // process; `llc`/`llvm-dis` are resolved against this machine
-            // (the baked build-time dir is a candidate, not the answer —
-            // see resolveLlvmTool); `cc` resolves from PATH.
+            // Toolchain paths, so a plugin can orchestrate compilation without
+            // machine-specific configuration; `cajeta` is this process.
             llvm::json::Object toolchain;
             toolchain["cajeta"] = runningExecutable();
             toolchain["llc"] = resolveLlvmTool("llc");
@@ -362,25 +299,9 @@ namespace cajeta::buildtool {
             toolchain["cc"] = std::string("cc");
             context["toolchain"] = std::move(toolchain);
 
-            // The CONSUMER's resolved dependency classpath.
-            //
-            // A plugin that compiles the consumer's sources — a coverage
-            // instrumenter, a doc generator, a linter with a type view —
-            // needs exactly what BuildAction passes as `--classpath`, and
-            // until this existed the context carried everything EXCEPT
-            // that: the toolchain paths, the plugin's own archive, its own
-            // dependency closure. So `cajeta.coverage.instrument` compiled
-            // a project that used a test framework and died on
-            // `unknown type 'Runner'`, and the only workaround was to
-            // hand-write `~/.olla/<name>/<version>/<name>-<version>.cja`
-            // into the task and keep it in step with the manifest by hand.
-            //
-            // Same source as BuildAction's `--classpath`, same comma-joined
-            // shape, so a plugin can forward it to the compiler verbatim.
-            // Resolution failure is NOT fatal here: a plugin that does not
-            // compile anything should not stop working because a dependency
-            // is unreachable, so the key is omitted and the plugin reports
-            // whatever it reports.
+            // The CONSUMER's resolved dependency classpath — the same
+            // comma-joined string BuildAction passes as `--classpath`. Omitted
+            // rather than fatal when resolution fails.
             if (m) {
                 std::string projectRoot = projectRootFromManifest(*m);
                 if (auto deps = resolveProjectDependencies(*m, projectRoot)) {
@@ -397,10 +318,8 @@ namespace cajeta::buildtool {
                 }
             }
 
-            // The plugin's own resolved artifacts — its archive and its
-            // dependency closure — so it can extract bundled bitcode
-            // (e.g. a probe runtime) from the packages it shipped in,
-            // instead of knowing an install location.
+            // The plugin's OWN archive and dependency closure, so it can extract
+            // bundled bitcode without knowing an install location.
             llvm::json::Object pluginObj;
             pluginObj["artifact"] = plugin.artifactPath;
             llvm::json::Array deps;
@@ -424,21 +343,14 @@ namespace cajeta::buildtool {
             std::string resultMessage;
             ActionResult result;
 
-            // §3 — a record this build cannot read is DROPPED, never fatal.
-            // Failing the action on one bad line would mean a plugin that
-            // emits a malformed record stops working the day the build tool
-            // learns to notice it, which is the opposite of what a protocol
-            // spec is for. `dev.cajeta.coverage` 0.5.2 is in the wild
-            // emitting exactly that.
+            // A record this build cannot read is DROPPED, never fatal.
             int dropped = 0;
             std::string firstDroppedReason;
             std::string firstDroppedLine;   // raw; quoted at report time
         };
 
-        // Record a dropped line. Only the FIRST is kept: the warning names
-        // one line and counts the rest, so a plugin emitting a thousand bad
-        // records costs one warning rather than a flood that buries the
-        // build's real output.
+        // Record a dropped line. Only the FIRST is kept: one warning names it
+        // and counts the rest, so a flood of bad records costs one warning.
         void dropRecord(ProtocolState& state,
                         const std::string& reason,
                         const std::string& line) {
@@ -449,12 +361,8 @@ namespace cajeta::buildtool {
             ++state.dropped;
         }
 
-        // One warning per plugin per invocation (spec §4 use case 5).
-        //
-        // The line is bytes the plugin controls and is malformed by
-        // definition, so it goes through `quoteUntrustedLine` rather than
-        // into the stream verbatim — a bad record must not be able to break
-        // the diagnostic reporting it (spec §4.1).
+        // One warning per plugin per invocation. The line is plugin-controlled
+        // and malformed by definition, so it goes through quoteUntrustedLine.
         void reportDropped(const ProtocolState& state,
                            const std::string& pluginName) {
             if (state.dropped == 0) return;
@@ -468,56 +376,15 @@ namespace cajeta::buildtool {
                       << "\"\n";
         }
 
-        // Parse one line of the plugin's stdout stream into the protocol
-        // state.
-        //
-        // NOTHING here fails the action (§3). A line either dispatches or is
-        // dropped and counted; the caller warns once at the end. Before this,
-        // a single unreadable line aborted the whole dispatch, which made the
-        // build tool a ceiling on every plugin that had ever shipped a typo.
-        // Findings carry error | warning | info; the diagnostic stream carries
-        // error | warning | note. INFO -> note is the mapping `Severity`'s own
-        // docstring already states for SARIF, not a new choice made here.
+        // Findings carry error | warning | info; the stream carries note for info.
         const char* diagnosticSeverity(const std::string& findingSeverity) {
             if (findingSeverity == "error")   return "error";
             if (findingSeverity == "warning") return "warning";
             return "note";
         }
 
-        // A finding, in the compiler's own text grammar (spec §6).
-        //
-        // The compiler writes
-        //     cajeta: src/A.cajeta:12:5: CAJETA_ERROR_X: message
-        //     cajeta: CAJETA_ERROR_X: message            (unlocated)
-        // so the slots are <producer>: <location>: <tag>: <message>. A finding
-        // fills the producer slot with the PLUGIN's name — which is its Olla
-        // key and its `plugins` entry, so a reader goes straight from the line
-        // to the manifest — and the tag slot with its severity, which is what
-        // §6 use case 1 asks for and what makes a finding legible as a
-        // problem rather than as narration.
-        //
-        // Naming the producer is what keeps a plugin finding from being read
-        // as compiler output, and what tells two plugins' findings apart in
-        // one task: every line says who said it.
-        //
-        // The rule goes in trailing brackets — the clang-tidy convention —
-        // because the tag slot is spoken for. Omitted when the finding has no
-        // rule, rather than printed as an empty pair.
-        //
-        // Location is emitted ONLY when there is one. A fabricated 0:0 would
-        // make the IDE's filter navigate somewhere, which is worse than not
-        // navigating at all.
-        // A finding's message is plugin-controlled text on ONE console line.
-        // A raw newline in it would split the rendering in two, leaving an
-        // unattributed second line that reads as its own diagnostic — the
-        // §4.1 problem one layer up, reached through a WELL-FORMED record
-        // rather than a malformed one, so validation never sees it.
-        //
-        // Control characters become spaces rather than escapes: this is text a
-        // person reads, and `caf\xc3\xa9` would be a worse rendering of a
-        // legitimate message than `café`. `quoteUntrustedLine` is the right
-        // tool for a line that is malformed by definition, not for a valid
-        // message that merely contains a newline.
+        // Flatten plugin-controlled text onto ONE console line: newlines and
+        // control characters become spaces, so a message cannot split a record.
         std::string oneLine(const std::string& text) {
             std::string out;
             out.reserve(text.size());
@@ -529,6 +396,9 @@ namespace cajeta::buildtool {
             return out;
         }
 
+        // A finding in the compiler's own <producer>: <location>: <tag>:
+        // <message> grammar, with the PLUGIN's name as producer and the rule in
+        // trailing brackets. A location is emitted only when there is one.
         std::string renderFinding(const ActionFinding& f,
                                   const std::string& pluginName) {
             std::string out = pluginName;
@@ -546,14 +416,15 @@ namespace cajeta::buildtool {
             return out;
         }
 
+        // Ingest one line of the plugin's stdout into `state`. NOTHING here
+        // fails the action: a line either dispatches or is dropped and counted,
+        // and the caller warns once at the end.
         void applyResponseLine(
             const std::string& line,
             ProtocolState& state,
             bool jsonMode,
             const std::string& pluginName,
             TaskContext& /*ctx*/) {
-            // Allow blank lines — plugin emitters might add them for
-            // readability when piping through a debugger.
             std::string trimmed = line;
             while (!trimmed.empty() &&
                    (trimmed.back() == '\r' || trimmed.back() == '\n' ||
@@ -562,18 +433,10 @@ namespace cajeta::buildtool {
             }
             if (trimmed.empty()) return;
 
-            // A line that never even attempted a record is `printf`
-            // debugging, not a protocol violation, and it keeps working
-            // (spec §4 use case 4). The discriminator is the leading brace:
-            // anything else was not trying to be JSON, so reporting it as
-            // malformed would warn about the one case that is deliberate.
-            // (It still fails CONFORMANCE — being lenient at runtime and
-            // strict there is what lets the protocol tighten without
-            // breaking anyone mid-build.)
+            // A line that never attempted a record is `printf` debugging, not a
+            // protocol violation; the discriminator is the leading brace.
             if (trimmed[0] != '{') {
                 if (jsonMode) {
-                    // Still narration, so still a note — but structured, and
-                    // attributed, so a consumer can filter it out.
                     cajeta::emitJsonDiagnostic("note", "", trimmed);
                 } else {
                     std::cout << "[plugin] " << trimmed << "\n";
@@ -593,53 +456,24 @@ namespace cajeta::buildtool {
                 return;
             }
 
-            // ONE definition of valid (plan §0.2.1). The runtime dispatches
-            // on exactly the rules the conformance suite asserts, so
-            // "conforms to spec" cannot mean two different things depending
-            // on who is asking — and the ad-hoc `getString` guards that used
-            // to live in each arm below are gone, because a record that
-            // reaches the dispatch has its required fields.
+            // ONE definition of valid: the same check the conformance suite
+            // asserts, so a record reaching dispatch has its required fields.
             const auto check = checkPluginRecord(*obj);
             if (check.verdict != RecordVerdict::Valid) {
-                // Malformed and unknown-kind are both dropped, but they are
-                // not the same thing: an unknown kind is a NEWER plugin
-                // talking to an older build tool, and refusing it would make
-                // every build tool a ceiling on every plugin.
+                // An unknown kind is a NEWER plugin, not a malformed record.
                 dropRecord(state, check.reason, trimmed);
                 return;
             }
 
             std::string k = obj->getString("kind")->str();
             if (k == "log") {
-                // Progress, not a problem — stdout unless the record says
-                // otherwise.
-                //
-                // These went to stderr on the reasoning that logs "pollute
-                // structured outputs". They do not: structured results travel
-                // as `output` and `result` records, and a plugin reports
-                // failure through `result`, never through a log. What the old
-                // routing actually produced was every line of an ordinary
-                // cajeta-coco run —
-                //
-                //   [plugin] coco: [1/6] reference pass
-                //   [plugin] coco: [3/6] instrumenting 6 of 10 modules
-                //
-                // — arriving on the error channel. IntelliJ's Build window
-                // colours by stream and has no third state, so a successful
-                // coverage run rendered as a wall of red and read as failure.
-                //
-                // `level` is honoured: an info/debug log is progress, a
-                // warn-level log is a problem and keeps the error channel.
+                // Progress, not a problem: info and debug go to stdout, and
+                // only a warn-level log keeps the error channel.
                 auto msg = obj->getString("message");
                 if (msg) {
                     auto level = obj->getString("level");
                     const bool isWarn = level && level->str() == "warn";
                     if (jsonMode) {
-                        // A log is a note (spec §5). Its `level` is honoured
-                        // rather than flattened: text mode already routes a
-                        // warn-level log to the error channel, and JSON mode
-                        // knowing less than text mode would make the
-                        // structured stream the worse of the two.
                         cajeta::emitJsonDiagnostic(isWarn ? "warning" : "note",
                                                    "", msg->str());
                     } else {
@@ -660,9 +494,6 @@ namespace cajeta::buildtool {
                 auto text = obj->getString("text");
                 if (text) {
                     if (jsonMode) {
-                        // Its own kind, never a message: the plugin composed
-                        // this for a human to read as-is, and wrapping it in a
-                        // diagnostic would add a prefix it did not ask for.
                         cajeta::emitJsonWrite(text->str());
                     } else {
                         std::cout << text->str();
@@ -673,16 +504,11 @@ namespace cajeta::buildtool {
                 const std::string value = obj->getString("value")->str();
                 state.result.outputs[key] = value;
                 if (jsonMode) {
-                    // Structural in both directions: the value still reaches
-                    // the invoking task through `${id.key}`, AND it reaches a
-                    // stream consumer as data rather than as prose.
+                    // Structural both ways: `${id.key}` and a stream consumer.
                     cajeta::emitJsonOutput(key, value);
                 }
             } else if (k == "finding") {
-                // Structured findings — parsed into the typed
-                // ActionResult.findings list. The lint task
-                // aggregates these across actions; the test task
-                // gates on coverage findings.
+                // Structured findings, typed into ActionResult.findings.
                 ActionFinding f;
                 if (auto s = obj->getString("rule")) f.rule = s->str();
                 if (auto s = obj->getString("severity")) {
@@ -700,20 +526,13 @@ namespace cajeta::buildtool {
                 }
                 if (f.severity.empty()) f.severity = "info";
                 if (!jsonMode) {
-                    // Text mode: a finding is a problem, so it goes to the
-                    // error channel like a compiler diagnostic — and it does
-                    // NOT carry the `[plugin] ` progress prefix, which is what
-                    // keeps the IDE's stream classifier from painting it as
-                    // narration.
+                    // A finding is a problem: the error channel, and NO
+                    // `[plugin] ` prefix, which would read as narration.
                     std::cerr << renderFinding(f, pluginName) << "\n";
                 }
                 if (jsonMode) {
-                    // A located finding becomes a NAVIGABLE diagnostic; an
-                    // unlocated one becomes a diagnostic with no location.
-                    // `emitJsonDiagnostic` writes null for an empty file and a
-                    // non-positive line/column, so absence stays absence
-                    // rather than becoming a position of 0:0 that navigates
-                    // somewhere wrong.
+                    // emitJsonDiagnostic writes null for an empty file and a
+                    // non-positive line/column, so absence stays absence.
                     cajeta::emitJsonDiagnostic(diagnosticSeverity(f.severity),
                                                f.rule, f.message, f.file,
                                                f.line, f.column);
@@ -723,10 +542,7 @@ namespace cajeta::buildtool {
                 const std::string status = obj->getString("status")->str();
                 if (status == "ok" || status == "error") {
                     if (jsonMode) {
-                        // Its own kind, attributed. The compiler's terminal
-                        // `result` says whether the BUILD succeeded; this one
-                        // says whether the plugin action did, and `source`
-                        // is what tells them apart.
+                        // The plugin action's verdict, not the build's.
                         auto m = obj->getString("message");
                         cajeta::emitJsonResult(status, m ? m->str() : "");
                     }
@@ -741,10 +557,8 @@ namespace cajeta::buildtool {
                     state.resultMessage = msg ? msg->str()
                                               : std::string("plugin reported error");
                 } else {
-                    // A status this build cannot interpret is not a report.
-                    // Dropped rather than fatal like everything else — and
-                    // `resultSeen` stays false, so the action still fails as
-                    // "produced no result", which is what actually happened.
+                    // Dropped like everything else — and `resultSeen` stays
+                    // false, so the action still fails as "produced no result".
                     dropRecord(state,
                                "'result' record has unknown status '" +
                                    status + "' (expected 'ok' or 'error')",
@@ -761,9 +575,7 @@ namespace cajeta::buildtool {
         const llvm::json::Object& params,
         TaskContext& ctx) {
 
-        // Explicit `binary` wins; otherwise `main` selects the default
-        // distribution model — compile the archive on first use and cache
-        // the binary in the local olla store.
+        // Explicit `binary` wins; otherwise `main` compiles and caches on first use.
         std::string binaryPath = plugin.binaryPath;
         if (binaryPath.empty() && !plugin.mainEntry.empty()) {
             auto built = ensurePluginBinary(plugin);
@@ -780,11 +592,8 @@ namespace cajeta::buildtool {
         std::string requestJson = serializeRequest(
             plugin, actionName, params, ctx);
 
-        // Single-arg spawn: the plugin binary takes no positional arguments —
-        // everything it needs is on stdin. Feed it the request, capture its
-        // stdout/stderr. Plugins that emit huge amounts on stdout before
-        // draining stdin could deadlock, but cajeta plugins' params are bounded
-        // by manifest size, so the simple serial pattern works for v1.
+        // The plugin takes no positional arguments: everything is on stdin.
+        // Serial feed-then-drain, which cajeta's bounded params make safe.
         std::string stdoutBuf;
         std::string stderrBuf;
         SubprocessOptions so;
@@ -798,8 +607,7 @@ namespace cajeta::buildtool {
                        "': " + procRes.error);
         }
 
-        // Forward the plugin's stderr verbatim — that's where its
-        // crash traces / "binary not found" land.
+        // Forward the plugin's stderr verbatim — crash traces land there.
         if (!stderrBuf.empty()) {
             std::fwrite(stderrBuf.data(), 1, stderrBuf.size(), stderr);
         }
@@ -820,14 +628,9 @@ namespace cajeta::buildtool {
         ProtocolState state;
         std::istringstream lines(stdoutBuf);
         std::string line;
-        // 4.2.3 — provenance is stamped HERE, from the plugin the build tool
-        // chose to invoke, and never read from the record. A plugin claiming
-        // to be the compiler, or to be another plugin, has the claim
-        // discarded: the field it emits is not a field this code reads.
-        //
-        // RAII because the ingest below has an early return on every dropped
-        // record; a missed reset would attribute the rest of the build to
-        // this plugin, which reads as a plugin emitting things it never did.
+        // Provenance is stamped HERE, from the plugin the build tool chose to
+        // invoke, and never read from the record. RAII, because the ingest
+        // returns early on dropped records and a missed reset mis-attributes.
         const bool jsonMode = diagnosticFormat() == DiagFormat::Json;
         {
             cajeta::JsonSourceScope provenance(plugin.name, plugin.version);
@@ -847,22 +650,9 @@ namespace cajeta::buildtool {
                        actionName + ": " + state.resultMessage);
         }
 
-        // §7a — an `error` finding fails the task that produced it.
-        //
-        // Severity stops being decorative here: a plugin that says `error`
-        // means the build is wrong, and coco's coverage floor becomes one
-        // instance of the general rule rather than its own mechanism.
-        //
-        // Checked AFTER the plugin's own result, which is its explicit verdict
-        // and the more specific statement. What this adds is the case the rule
-        // exists for: an action that finished cleanly — `result: ok` — and
-        // reported an error finding anyway. That is coco's migrated gate.
-        //
-        // Every finding has ALREADY been reported by the time this runs: the
-        // read loop rendered or emitted each one as it arrived. Failing here
-        // cannot truncate the report that explains the failure, which is the
-        // ordering §7a use case 3 requires — and it is ordering by
-        // construction, not by a rule someone has to remember.
+        // An `error` finding fails the task that produced it, checked AFTER the
+        // plugin's own result. Every finding has already been reported by the
+        // read loop, so failing here cannot truncate the report explaining it.
         int errorFindings = 0;
         const ActionFinding* firstError = nullptr;
         for (const auto& f : state.result.findings) {
@@ -871,8 +661,7 @@ namespace cajeta::buildtool {
             if (firstError == nullptr) firstError = &f;
         }
         if (errorFindings > 0) {
-            // Named by Olla key, so a failing build says WHICH plugin failed
-            // it — the same string as the `plugins` entry that declared it.
+            // Named by Olla key, so a failing build says WHICH plugin failed it.
             std::string why = "cajeta.plugin: " + plugin.name + "." +
                               actionName + ": " +
                               std::to_string(errorFindings) +

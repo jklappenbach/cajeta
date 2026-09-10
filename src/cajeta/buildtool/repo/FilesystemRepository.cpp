@@ -33,11 +33,8 @@ namespace cajeta::buildtool {
         fs::path pkgDir = fs::path(root_) / packageName;
         std::error_code ec;
         if (!fs::is_directory(pkgDir, ec)) {
-            // Empty list — caller handles "no such package here".
             return versions;
         }
-        // Each subdirectory is a version. Skip anything that isn't
-        // a directory.
         for (const auto& entry : fs::directory_iterator(pkgDir, ec)) {
             if (ec) {
                 return err("filesystem repository '" + name_ +
@@ -63,9 +60,7 @@ namespace cajeta::buildtool {
                        "': artifact not found at '" +
                        artifact.string() + "'");
         }
-        // Filesystem repo: return the path verbatim. Caller's
-        // ArtifactCache decides whether to copy it into the
-        // content-addressed cache for hash-keyed lookup.
+        // The path is returned verbatim; the caller's ArtifactCache decides whether to copy it.
         return artifact.string();
     }
 
@@ -111,9 +106,7 @@ namespace cajeta::buildtool {
         std::ostringstream buf;
         buf << in.rdbuf();
         std::string text = buf.str();
-        // Tolerate a trailing newline and the `<hex>  <file>` shape
-        // `sha256sum` writes, so a sidecar can be produced by the
-        // ordinary tool without post-processing.
+        // Tolerates a trailing newline and the `<hex>  <file>` shape `sha256sum` writes.
         auto cut = text.find_first_of(" \t\r\n");
         if (cut != std::string::npos) text.resize(cut);
         if (text.empty()) return std::optional<std::string>{};
@@ -140,16 +133,14 @@ namespace cajeta::buildtool {
         }
         std::ostringstream buf;
         buf << in.rdbuf();
-        // Raw signature bytes, NOT text: no trimming here, unlike the
-        // checksum sidecar. A stripped byte is a failed verification.
+        // Raw signature bytes, NOT text: no trimming, since a stripped byte fails verification.
         return std::optional<std::string>{buf.str()};
     }
 
     namespace {
 
-        // An organization name reaches the filesystem here, so it must not
-        // be able to leave the repository root. `../../etc/passwd` as an
-        // org would otherwise read anywhere the process can.
+        // An organization name reaches the filesystem here, so it must not be able to
+        // leave the repository root.
         bool isSafeOrgName(const std::string& org) {
             if (org.empty() || org == "." || org == "..") return false;
             for (char c : org) {

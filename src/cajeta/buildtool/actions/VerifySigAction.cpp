@@ -1,14 +1,6 @@
-// `verify-sig` — verify a detached ed25519 signature against an
-// input file and a public key. Mirrors `cajeta archive verify-sig`.
-//
-// Params:
-//   input         (required) the signed file
-//   pubkey-env    OR
-//   pubkey-path   (one required) PEM-encoded ed25519 public key
-//   sig           (optional) signature file; default <input>.sig
-//
-// Outputs:
-//   valid         "true" / "false"
+// `verify-sig` — verifies a detached ed25519 signature over `input` using
+// `pubkey-env` or `pubkey-path`, with `sig` defaulting to <input>.sig; outputs
+// `valid` as "true"/"false". Mirrors `cajeta archive verify-sig`.
 
 #include "cajeta/buildtool/Action.h"
 
@@ -138,10 +130,8 @@ namespace cajeta::buildtool {
             ActionResult r;
             r.outputs["valid"] = (rv == 1) ? "true" : "false";
             if (rv != 1) {
-                // Don't treat a bad signature as a hard error from
-                // the action — the consumer's task decides what to
-                // do (compare valid="false" against an expectation).
-                // OpenSSL clears its error queue on negative result.
+                // A bad signature is not a hard error from the action: the consumer's
+                // task compares valid="false" against its own expectation.
                 ERR_clear_error();
             }
             return r;

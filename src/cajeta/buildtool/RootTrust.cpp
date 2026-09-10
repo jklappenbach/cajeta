@@ -24,10 +24,7 @@ namespace cajeta::buildtool {
             return buf.str();
         }
 
-        // A repository name reaches the filesystem here, so it must not be
-        // able to escape the pins directory. `../../etc/something` as a
-        // repository name would otherwise read or write outside the trust
-        // store entirely.
+        // A repository name reaches the filesystem here, so it must not escape the pins directory.
         bool isSafeName(const std::string& name) {
             if (name.empty() || name == "." || name == "..") return false;
             for (char c : name) {
@@ -50,8 +47,7 @@ namespace cajeta::buildtool {
             std::error_code ec;
             if (!fs::is_regular_file(pin, ec)) continue;
             std::string id = readAll(pin);
-            // Tolerate a trailing newline: this file is one an operator may
-            // reasonably write with a text editor or `echo`.
+            // Tolerate a trailing newline: an operator may write this file by hand.
             while (!id.empty() && (id.back() == '\n' || id.back() == '\r'
                                    || id.back() == ' ')) {
                 id.pop_back();
@@ -71,10 +67,7 @@ namespace cajeta::buildtool {
                                : shippedRoot();
         if (!shipped.pem.empty()) found.push_back(shipped);
 
-        // Operator roots, highest-precedence directory first. A key id seen
-        // in an earlier tier wins, matching how the trust store already
-        // resolves: the tier that shadows must shadow completely, or an
-        // operator cannot override a system-installed root.
+        // Highest-precedence directory first; the first tier holding a key id wins.
         for (const auto& dir : layout.searchDirs) {
             if (dir.empty()) continue;
             fs::path roots = fs::path(dir) / "roots";
@@ -99,10 +92,8 @@ namespace cajeta::buildtool {
         auto pin = pinFor(layout, repositoryName);
         if (!pin) return found;
 
-        // A pin NARROWS. Falling back to the full set when the pinned root
-        // is absent would invert the operator's intent at exactly the moment
-        // it matters, so an unhonourable pin is an error rather than a
-        // silent widening.
+        // A pin NARROWS: falling back to the full set when the pinned root is absent
+        // would invert the operator's intent, so it is an error, not a widening.
         for (const auto& r : found) {
             if (r.id == *pin) return std::vector<RootKey>{r};
         }
@@ -126,9 +117,7 @@ namespace cajeta::buildtool {
         std::string pem = readAll(pemPath);
         if (pem.empty()) return err("cannot read '" + pemPath + "'");
 
-        // Reject anything that is not an ed25519 public key HERE, rather
-        // than storing it and failing at every later verification with a
-        // message about the artifact instead of the key.
+        // Reject a non-ed25519 key here, rather than at every later verification.
         auto probe = verifyDetachedEd25519PemBytes("probe", "", pem);
         if (!probe) {
             llvm::consumeError(probe.takeError());

@@ -1,16 +1,6 @@
-//
 // CirSpecializationAnalysis — Phase-A specialization analysis (spec §3.5, §3.6).
-//
-// Analysis-only: it does NOT transform CIR. It interrogates a slice of lowered
-// CirFunctions (a caller + the callees it invokes) and, for each call site that
-// passes a closure argument, decides SPECIALIZE vs LEAVE-INDIRECT by the binary,
-// structural conjunction of §3.6.1:
-//   (known target) ∧ (capture-free) ∧ (supplied directly) ∧
-//   (complete invocation set) ∧ (escape-safe).
-// A SPECIALIZE classification produces a request (§3.6.2) carrying exactly what
-// codegen (Unit 4) needs to materialize the fast instance. No cost model, no LTO
-// dependence — reproducible across builds.
-//
+// Analysis only, never a transform: for each call site passing a closure it decides
+// SPECIALIZE vs LEAVE-INDIRECT by the §3.6.1 conjunction, with no cost model.
 
 #pragma once
 
@@ -49,7 +39,6 @@ namespace ir {
         // Analyze a closed slice (functions referenced by name resolve within it).
         static CirAnalysisResult analyze(const std::vector<CirFunctionPtr>& slice);
 
-        // Deterministic, testable dump of the decisions.
         static std::string print(const CirAnalysisResult& result);
     };
 

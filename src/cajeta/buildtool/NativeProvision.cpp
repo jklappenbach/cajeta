@@ -29,8 +29,7 @@ namespace cajeta::buildtool {
             return sz * nm;
         }
 
-        // GET `url` → `dest` (no auth; the Olla native mirror is public for
-        // redistributable artifacts). Provision-time only.
+        // GET `url` into `dest`, unauthenticated (the Olla native mirror is public); provision-time only.
         llvm::Error httpGetToFile(const std::string& url,
                                   const std::string& dest) {
             CURL* curl = curl_easy_init();
@@ -149,7 +148,6 @@ namespace cajeta::buildtool {
             const NativeLibrary& lib, const std::string& version,
             const std::string& platform, const std::string& mirrorRoot,
             const std::string& cacheRoot) {
-        // Network seam: a mirror fetch is a network op — refused at run/JIT time.
         if (auto e = guardNativeNetwork("Olla mirror fetch of '" + lib.id + "'"))
             return std::move(e);
         if (!mayMirrorNativeBinary(lib)) {
@@ -159,7 +157,6 @@ namespace cajeta::buildtool {
                          "not the binary. Acquire it and provision locally" +
                          acq + ".");
         }
-        // Real HTTP mirror: GET the artifact, then verify + cache (unit 15).
         if (mirrorRoot.rfind("http://", 0) == 0
                 || mirrorRoot.rfind("https://", 0) == 0) {
             std::string fname = "lib" + lib.id + ".a";
@@ -170,9 +167,6 @@ namespace cajeta::buildtool {
                 url = *ait->second.url;
                 fname = std::filesystem::path(url).filename().string();
             }
-            // Download into a unique temp dir under the artifact's real
-            // filename so it caches as `lib<id>.a` (fetchNativeToCache keys the
-            // cached name off the source basename).
             std::error_code ec;
             std::string tmpdir = (std::filesystem::temp_directory_path() /
                 ("nd-olla-dl-" + lib.id + "-" + version + "-" + platform))
@@ -189,8 +183,6 @@ namespace cajeta::buildtool {
             return r;
         }
 
-        // Locate the artifact on the mirror (stub: a local
-        // <mirrorRoot>/<lib>/<version>/<platform>/ dir).
         std::string mdir =
             mirrorRoot + "/" + lib.id + "/" + version + "/" + platform;
         std::string srcFile;

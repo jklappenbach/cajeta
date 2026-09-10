@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 4/14/23.
-//
+// IdentifierExpression - a bare identifier in expression position.
 
 #pragma once
 

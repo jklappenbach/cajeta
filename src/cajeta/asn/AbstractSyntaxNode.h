@@ -49,14 +49,7 @@ namespace cajeta {
     protected:
         int sourceLine;
         int sourceColumn;
-        // The file these tokens were parsed FROM — interned, so this costs a
-        // pointer and only when --emit-xref is on. Null for a node built from a
-        // synthesized re-parse (template instantiation, mock synthesis), whose
-        // line numbers refer to a snippet rather than to any file. See
-        // xref::internSourceFile.
-        //
-        // Not the same thing as "the module being compiled": a stdlib body is
-        // generated while a user module is active.
+        // Interned parse file, only under --emit-xref; null for synthesized source.
         const string* sourceFile = nullptr;
         string sourceText;
         vector<AbstractSyntaxNodePtr> children;
@@ -66,9 +59,7 @@ namespace cajeta {
                 sourceLine = token->getLine();
                 sourceText = token->getText();
                 sourceColumn = token->getCharPositionInLine();
-                // Gated BEFORE getSourceName(), which returns a std::string by
-                // value: without this a normal build would pay a string allocation
-                // per AST node for an index it never asked for.
+                // Gated BEFORE getSourceName(), which returns a std::string by value.
                 if (xref::captureEnabled()) {
                     if (auto* stream = token->getInputStream()) {
                         sourceFile = xref::internSourceFile(stream->getSourceName());
@@ -80,9 +71,6 @@ namespace cajeta {
             }
         }
 
-        // transform-intrinsics U7 — synthetic (parser-less) nodes carry the
-        // span of the construct they desugar, so their diagnostics locate at
-        // the source the user actually wrote.
         void setSourceSpan(int line, int column) {
             sourceLine = line;
             sourceColumn = column;
@@ -100,10 +88,7 @@ namespace cajeta {
             return sourceColumn;
         }
 
-        // "" when this node came from synthesized source (or xref capture is off).
-        // An empty file is the signal to record NOTHING for this node: a position
-        // with no file behind it cannot be navigated to, and guessing at one sends
-        // the developer somewhere real and wrong.
+        // "" for synthesized source, which means record NOTHING for this node.
         const string& getSourceFile() const {
             static const string kNone;
             return sourceFile ? *sourceFile : kNone;
@@ -115,14 +100,9 @@ namespace cajeta {
 
         vector<AbstractSyntaxNodePtr>& getChildren() { return children; }
 
-        // Analysis-walk descent (title-tracking 7.2.4). `children` is the
-        // CODEGEN child list; statements and calls keep their payloads in
-        // private fields (if/loop/try bodies, return expressions, call and
-        // ctor arguments), so a getChildren() walk misses whole subtrees
-        // silently. Overrides visit those payloads AND the children — this
-        // is the single descent primitive for analysis passes (retainsFormal,
-        // computeLastUses, arenaWalk). Codegen must never use it: generating
-        // "every sub-node" would emit call arguments twice.
+        // The single descent primitive for analysis passes. `children` is only the
+        // CODEGEN list, so overrides visit their private payloads too. Codegen must
+        // never use it: emitting "every sub-node" would emit call arguments twice.
         virtual void forEachSubNode(
                 const std::function<void(const AbstractSyntaxNodePtr&)>& fn) {
             for (auto& child : children) {
@@ -133,10 +113,7 @@ namespace cajeta {
         // Pre-codegen pass: registers class/method signatures. See Compiler.cpp.
         virtual void generateSignature(CajetaModulePtr module) { }
 
-        // Pre-codegen pass: resolves CajetaType information that codegen will need but
-        // can't recover from LLVM types alone (fp8 vs i8, template instantiation,
-        // etc.). Default walks children. Concrete Expression subclasses override to set
-        // their own resolvedType once children have been resolved.
+        // Pre-codegen pass: resolves the CajetaType information LLVM types cannot carry.
         virtual void resolveTypes(CajetaModulePtr module) {
             for (auto& child : children) {
                 if (child) child->resolveTypes(module);

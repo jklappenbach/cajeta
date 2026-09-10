@@ -13,9 +13,7 @@
 namespace cajeta {
 
     namespace {
-        // Magic header — bytes 0..7. The "01" suffix is a human-readable
-        // hint that this is format generation 1; an incompatible
-        // generation-2 container would use "CAJETA02".
+        // Bytes 0..7; an incompatible generation-2 container would say CAJETA02.
         constexpr const char* MAGIC = "CAJETA01";
         constexpr uint32_t FORMAT_VERSION = 1;
 
@@ -52,11 +50,7 @@ namespace cajeta {
             return v;
         }
 
-        // Scan the manifest JSON for a string field. Pure substring
-        // search — the manifest writer keeps its output canonical
-        // (no whitespace, no escapes for the controlled set of keys)
-        // so we don't need a real JSON parser here. Returns empty
-        // string on miss.
+        // A manifest string field, or empty; the writer's output is canonical.
         std::string scanManifestString(const std::string& m, const std::string& key) {
             std::string needle = "\"" + key + "\":\"";
             auto pos = m.find(needle);
@@ -67,11 +61,7 @@ namespace cajeta {
             return m.substr(pos, end - pos);
         }
 
-        // Scan the manifest's `deps` array — uber-only. Each element is
-        // {"name":"...","version":"...","included_entry_count":N}.
-        // Compact JSON with no nesting, no whitespace, no escapes inside
-        // the controlled value set, so a simple linear scan suffices.
-        // Returns an empty vector when the field is absent.
+        // The uber-only `deps` array, empty when absent; unnested compact JSON.
         std::vector<CajetaArchive::DepSummary>
         scanManifestDeps(const std::string& m) {
             std::vector<CajetaArchive::DepSummary> out;
@@ -83,7 +73,6 @@ namespace cajeta {
             if (arrEnd == std::string::npos) return out;
             std::string body = m.substr(arrStart, arrEnd - arrStart);
 
-            // Each object is "{...},{...}" — split on `},{`.
             std::size_t cursor = 0;
             while (cursor < body.size()) {
                 auto objStart = body.find('{', cursor);
@@ -95,7 +84,6 @@ namespace cajeta {
                 CajetaArchive::DepSummary d;
                 d.name    = scanManifestString(obj, "name");
                 d.version = scanManifestString(obj, "version");
-                // included_entry_count is a numeric, not string-quoted.
                 const std::string cntKey = "\"included_entry_count\":";
                 auto cntPos = obj.find(cntKey);
                 if (cntPos != std::string::npos) {
@@ -114,25 +102,16 @@ namespace cajeta {
             return out;
         }
 
-        // Default zstd compression level. 3 is the .cja write-few-read-many
-        // sweet spot — fast encoder, very fast decoder, decent ratio.
-        // `cajeta archive repack --zstd=<n>` exposes 1..22.
+        // The write-few-read-many sweet spot; repack --zstd=<n> exposes 1..22.
         constexpr int ZSTD_DEFAULT_LEVEL = 3;
 
-        // Header flag bits — written into the 4-byte flags field at
-        // offset 12. Bit 0 marks the manifest section as zstd-
-        // compressed; bit 1 marks every entry's data block. Both
-        // sections, when compressed, are framed as:
-        //   uint64 uncompressed_length || zstd_compressed_bytes
-        // The on-disk length-prefix (manifest_len for the manifest,
-        // data_length per entry) describes the COMPRESSED on-disk size.
+        // The flags field at offset 12. A compressed section is framed as
+        // `uint64 uncompressed_length || zstd_bytes`, and its on-disk length
+        // prefix (manifest_len, or an entry's data_length) counts the frame.
         constexpr uint32_t FLAG_MANIFEST_COMPRESSED = 1u << 0;
         constexpr uint32_t FLAG_ENTRIES_COMPRESSED  = 1u << 1;
 
-        // Compress raw bytes with zstd at the given level. Returns the
-        // compressed buffer. Throws on zstd failure (malformed input
-        // is impossible since we pass valid bytes; out-of-memory is the
-        // realistic case).
+        // Compresses at `level`, throwing on zstd failure (realistically OOM).
         std::vector<uint8_t> zstdCompress(const uint8_t* src, size_t srcLen,
                                           int level) {
             size_t bound = ZSTD_compressBound(srcLen);
@@ -148,17 +127,12 @@ namespace cajeta {
             return out;
         }
 
-        // Decompress zstd bytes given the known uncompressed size (the
-        // .cja format stores it as a uint64 prefix in each compressed
-        // section).
+        // Decompresses, given the uint64 uncompressed size prefixing the frame.
         std::vector<uint8_t> zstdDecompress(const uint8_t* src, size_t srcLen,
                                              uint64_t uncompressedSize) {
-            // Security surface: uncompressedSize comes straight from the
-            // untrusted archive bytes, so a decompression bomb could claim a
-            // huge size with a tiny payload → bad_alloc/OOM before we even
-            // decompress. Cross-check it against the zstd frame's own declared
-            // content size, and cap at a sane absolute limit so a hostile frame
-            // that declares a matching-but-absurd size can't force a huge alloc.
+            // `uncompressedSize` is untrusted, so it is cross-checked against the
+            // frame's own declared size and capped: a decompression bomb would
+            // otherwise force the allocation below before anything is decoded.
             static const uint64_t kMaxDecompressed = 1ull << 30;  // 1 GiB
             unsigned long long frameSize =
                 ZSTD_getFrameContentSize(src, srcLen);
@@ -272,11 +246,8 @@ namespace cajeta {
     }
 
     std::string CajetaArchive::buildManifest() const {
-        // Minimal compact JSON — no library dependency, no escapes needed
-        // because name/version/kind are all controlled inputs and the
-        // entry_count is an integer. If user names ever carry a `"` we'd
-        // need a real escaper; for now the cajeta canonical-name format
-        // is restricted to ASCII identifier chars + dots.
+        // Compact JSON by hand: every value is a controlled input (canonical
+        // names are ASCII identifiers and dots), so nothing needs escaping.
         std::string kindStr = (kind == Kind::Uber) ? "uber" : "cja";
         std::string out;
         out += "{";
@@ -285,10 +256,7 @@ namespace cajeta {
         out += ",\"kind\":\"" + kindStr + "\"";
         out += ",\"format_version\":" + std::to_string(FORMAT_VERSION);
         out += ",\"entry_count\":" + std::to_string(entries.size());
-        // Uber-only: deps array describes the classpath archives whose
-        // entries were nested under deps/<name>-<version>/. Cja archives
-        // ship project-only (no stdlib, no deps), so this key is absent
-        // from the cja manifest entirely.
+        // Uber-only: the classpath archives nested under deps/<name>-<version>/.
         if (kind == Kind::Uber && !deps.empty()) {
             out += ",\"deps\":[";
             for (std::size_t i = 0; i < deps.size(); ++i) {
@@ -307,8 +275,7 @@ namespace cajeta {
 
     const CajetaArchiveEntry* CajetaArchive::findEntry(const std::string& name) const {
         if (nameIndex.empty() && !entries.empty()) {
-            // Build lazily on first call. First-wins for duplicates so the
-            // semantic matches what the writer's dedupe pass produced.
+            // First-wins on duplicates, matching the writer's dedupe pass.
             for (std::size_t i = 0; i < entries.size(); ++i) {
                 nameIndex.emplace(entries[i].name, i);
             }
@@ -334,12 +301,7 @@ namespace cajeta {
     }
 
     void CajetaArchive::writeToStream(std::ostream& sink) {
-        // Build the archive into a local string buffer first. The
-        // writer needs to seek back to patch header index_offset /
-        // index_length once the trailing index has been emitted, and
-        // not every `ostream` is seekable (stdout pipes aren't). The
-        // buffer is one extra in-memory copy of the archive bytes —
-        // acceptable for the MB-scale archives cajeta produces.
+        // Buffered because the header patch seeks back and a pipe cannot.
         std::ostringstream buf(std::ios::binary);
         std::ostream& out = buf;
 
@@ -350,9 +312,7 @@ namespace cajeta {
         }
 
         // ---- Header (32 bytes) ----
-        // index_offset / index_length are placeholders; we patch them
-        // post-write once the index has been appended and we know its
-        // actual offset + length.
+        // index_offset / index_length are patched once the index is appended.
         out.write(MAGIC, 8);
         writeU32LE(out, FORMAT_VERSION);
         writeU32LE(out, flags);
@@ -362,9 +322,7 @@ namespace cajeta {
         // ---- Manifest ----
         std::string manifest = buildManifest();
         if (compressed) {
-            // Frame: uint64 uncompressed_len || zstd_compressed_bytes.
-            // The manifest_len that follows in the format gives the
-            // on-disk size, which here is 8 + zstd_bytes.size().
+            // manifest_len counts the whole frame: 8 + zstd_bytes.size().
             auto comp = zstdCompress(
                 (const uint8_t*) manifest.data(), manifest.size(),
                 compressionLevel);
@@ -377,7 +335,6 @@ namespace cajeta {
         }
 
         // ---- Entries ----
-        // Track each entry's start offset for the trailing index.
         std::vector<uint64_t> entryOffsets;
         std::vector<uint64_t> entryOnDiskSizes;
         entryOffsets.reserve(entries.size());
@@ -412,18 +369,9 @@ namespace cajeta {
         }
 
         // ---- Trailing index ----
-        // Format:
-        //   uint32 entry_count
-        //   for each entry:
-        //     uint32 name_length
-        //     bytes  name
-        //     uint64 entry_offset    (start of name_length field)
-        //     uint64 entry_size      (total on-disk bytes including
-        //                             name+tags+data+framing)
-        // Always written; readers consult `index_offset != 0` in the
-        // header to decide whether to use it for random access. Cost is
-        // small (~24 bytes per entry + names); benefit is O(1) lookup
-        // by name across an arbitrarily large archive.
+        // uint32 entry_count, then per entry: uint32 name_length, the name,
+        // uint64 entry_offset (at its name_length field) and uint64 entry_size
+        // (its whole on-disk span). Always written; readers test index_offset.
         uint64_t indexOffset = (uint64_t) out.tellp();
         writeU32LE(out, (uint32_t) entries.size());
         for (std::size_t i = 0; i < entries.size(); ++i) {
@@ -435,8 +383,7 @@ namespace cajeta {
         }
         uint64_t indexLength = (uint64_t) out.tellp() - indexOffset;
 
-        // Patch header's index_offset (byte 16) and index_length (byte 24)
-        // on the in-memory buffer, then dump to the caller's sink.
+        // index_offset is at byte 16, index_length at byte 24.
         out.seekp(16);
         writeU64LE(out, indexOffset);
         writeU64LE(out, indexLength);
@@ -461,15 +408,10 @@ namespace cajeta {
 
     CajetaArchive CajetaArchive::readFromBytes(
             const std::vector<uint8_t>& bytes, const std::string& sourceName) {
-        // `sourceName` is what appears in the error diagnostics; callers
-        // pass the file path for file-loaded archives and "<stdin>" for
-        // stream-loaded ones. The body below treats it as opaque.
+        // `sourceName` is opaque here, and appears in the diagnostics below.
         const std::string& path = sourceName;
 
-        // Header is 32 bytes. Bail loudly on anything that doesn't look
-        // like a cajeta archive — the reader is a security surface
-        // (classpath-loaded archives come from outside the build),
-        // so the diagnostics need to be specific.
+        // A security surface: classpath archives come from outside the build.
         if (bytes.size() < 32) {
             throw std::runtime_error(
                 "CajetaArchive: " + path + " is too short to be a .cja file");
@@ -489,11 +431,7 @@ namespace cajeta {
                 "CajetaArchive: " + path + " unsupported format version "
                 + std::to_string(version));
         }
-        // Recognized flag bits: bit 0 (manifest_compressed) + bit 1
-        // (entries_compressed). Other bits would be a future format
-        // extension we don't yet understand — reject loudly so a
-        // future-shaped archive can't silently misparse through this
-        // reader.
+        // An unknown bit is a later format: reject rather than misparse it.
         constexpr uint32_t KNOWN_FLAGS =
             FLAG_MANIFEST_COMPRESSED | FLAG_ENTRIES_COMPRESSED;
         if ((flags & ~KNOWN_FLAGS) != 0) {
@@ -504,9 +442,7 @@ namespace cajeta {
         bool manifestCompressed = (flags & FLAG_MANIFEST_COMPRESSED) != 0;
         bool entriesCompressed  = (flags & FLAG_ENTRIES_COMPRESSED) != 0;
 
-        // Manifest: uint64 on-disk length-prefixed UTF-8 JSON. When
-        // compressed, the on-disk block is uint64 uncompressed_len ||
-        // zstd_bytes (total length = on-disk length).
+        // Manifest: uint64 on-disk length, then that many bytes of JSON frame.
         if (bytes.size() < 40) {
             throw std::runtime_error("CajetaArchive: " + path + " truncated at manifest");
         }
@@ -533,10 +469,7 @@ namespace cajeta {
                 (size_t) manifestOnDisk);
         }
         size_t cursor = 40 + (size_t) manifestOnDisk;
-        // Entries end at the trailing index (when present) or at EOF.
-        // Earlier writes (v1.0 before the trailing index landed) set
-        // both indexOff and indexLen to 0 — in that case fall through
-        // to EOF.
+        // Entries end at the trailing index, or at EOF for a pre-index archive.
         size_t entriesEnd = (indexOff != 0)
             ? (size_t) indexOff
             : bytes.size();
@@ -548,9 +481,7 @@ namespace cajeta {
         std::string archiveName = scanManifestString(manifest, "name");
         std::string archiveVer  = scanManifestString(manifest, "version");
         std::string kindStr     = scanManifestString(manifest, "kind");
-        // Accept both the current "cja" and the legacy "thin" tag —
-        // "thin" was emitted by pre-rename dev snapshots that may
-        // still sit in CI caches. New writes always emit "cja".
+        // Anything but "uber" reads as cja, including the legacy "thin" tag.
         Kind archKind = (kindStr == "uber") ? Kind::Uber : Kind::Cja;
 
         CajetaArchive arc(archiveName, archiveVer, archKind);
@@ -560,8 +491,6 @@ namespace cajeta {
             arc.setDeps(scanManifestDeps(manifest));
         }
 
-        // Entries — sequential read until the entries-section end
-        // (start of trailing index, or EOF for pre-index archives).
         while (cursor < entriesEnd) {
             if (bytes.size() - cursor < 4) {
                 throw std::runtime_error(

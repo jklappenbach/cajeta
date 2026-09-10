@@ -1,7 +1,4 @@
-//
-// Optimization pipeline helpers — see header.
-//
-
+// Optimization pipeline helpers - see header.
 #include "Optimizer.h"
 
 #include "llvm/IR/Function.h"
@@ -25,25 +22,9 @@ namespace cajeta {
 
 namespace {
 
-// PARKED EXPERIMENT (closure-devirt via LLVM function specialization). Forcing
-// IPSCCP function-specialization devirtualizes a generic callee's constant
-// non-capturing closure argument (the comparator) -> direct, inlinable call.
-// VALIDATED the ceiling in the NON-LTO pipeline: sort-int64 ascending
-// 0.78->0.21ms (beats std::sort), random 2.80->1.94ms. LIMITATIONS that drove
-// us to build Cajeta IR instead: (1) narrow — LLVM's cost model fired only for
-// `sort`, not binarySearch/streams; (2) version-fragile `force-specialization`
-// debug flag; (3) ThinLTO conflict — funcspec runs in the ld.lld backend
-// cross-module where it doesn't fire, and a pre-link IPSCCP breaks the link
-// (private-symbol/summary desync). Kept here as a reference probe; the real
-// solution is deterministic, total specialization in CIR. See
-// specs/archive/cajeta-ir-spec.md §1.2.
-//
-// TO RE-ENABLE (the validated non-LTO probe): call tuneFunctionSpecialization()
-// at the top of optimizeModule() (the O1/O2/O3 path). For ThinLTO the backend
-// runs in ld.lld, so the equivalent attempt was passing the same flags via
-// `-Wl,-mllvm,-force-specialization` (+ -funcspec-for-literal-constant=true,
-// -funcspec-min-function-size=1, -funcspec-max-clones=8) in Compiler.cpp's
-// ThinLTO link args — which did NOT devirtualize cross-module (limitation 3).
+// PARKED probe: forces LLVM's IPSCCP function specialization, which devirtualizes a constant
+// non-capturing closure argument. Unused - call it at the top of optimizeModule() (non-LTO
+// only) to re-enable; ThinLTO runs funcspec in the ld.lld backend, where it does not fire.
 [[maybe_unused]] void tuneFunctionSpecialization() {
     static bool done = false;
     if (done) return;
@@ -86,14 +67,8 @@ struct PassEnv {
 
 void optimizeModule(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level) {
     if (level == OptLevel::O0) {
-        // Unoptimized by default — but still honor `alwaysinline`. It is an
-        // attribute, not a transform: it only takes effect when an
-        // AlwaysInlinerPass actually runs, and the O0 pipeline runs nothing.
-        // @ValueType operators (and @Device helpers) are marked alwaysinline so a
-        // dispatched value-type operator folds to the same flat IR an intrinsic
-        // would; without this they stay real calls at O0/JIT, spilling aggregates
-        // through byval/sret and defeating register residency. See
-        // plans/value-type-overloading-plan.md (S1b / review fix #1).
+        // Still honor `alwaysinline` at O0: it is an attribute, not a transform, and takes
+        // effect only when an AlwaysInlinerPass runs, which the O0 pipeline otherwise skips.
         PassEnv env(tm);
         llvm::ModulePassManager mpm;
         mpm.addPass(llvm::AlwaysInlinerPass());
@@ -114,9 +89,7 @@ void optimizeModule(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level) {
 
 void optimizeModuleThinLTOPreLink(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level) {
     if (level == OptLevel::O0) {
-        // Same rationale as optimizeModule's O0 branch: honor `alwaysinline`
-        // (the AlwaysInlinerPass is the only transform), but here it also lets a
-        // ThinLTO build at O0 still fold @Inline hot paths once imported.
+        // Same as optimizeModule's O0 branch: run only the AlwaysInlinerPass.
         PassEnv env(tm);
         llvm::ModulePassManager mpm;
         mpm.addPass(llvm::AlwaysInlinerPass());
@@ -131,10 +104,8 @@ void optimizeModuleThinLTOPreLink(llvm::Module& m, llvm::TargetMachine* tm, OptL
         default:           return;
     }
     PassEnv env(tm);
-    // Pre-link half: optimize locally but leave cross-module work (import +
-    // inlining) for the linker's ThinLTO backend. This is what makes the module
-    // summary meaningful — full per-module optimization here would prematurely
-    // localize/strip symbols the importer still needs.
+    // Pre-link half: optimize locally but leave import and cross-module inlining to the
+    // linker's ThinLTO backend; optimizing fully here strips symbols the importer needs.
     llvm::ModulePassManager mpm = env.pb.buildThinLTOPreLinkDefaultPipeline(lv);
     mpm.run(m, env.mam);
 }

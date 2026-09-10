@@ -28,15 +28,12 @@ namespace cajeta::kernel {
 
     namespace {
 
-        // One inbound or outbound multipart message, already reduced to the
-        // only thing a socket cares about: an ordered list of byte frames.
         struct Envelope {
             Channel channel = Channel::Shell;
             std::vector<std::string> frames;
         };
 
-        // A queue with a shutdown state, so a waiting consumer wakes on
-        // teardown rather than blocking on a producer that is already gone.
+        // A queue with a shutdown state, so a consumer wakes on teardown.
         class EnvelopeQueue {
         public:
             void push(Envelope e) {
@@ -47,8 +44,7 @@ namespace cajeta::kernel {
                 cv_.notify_one();
             }
 
-            // Blocks until an item is available or the queue closes. False
-            // means closed and drained.
+            // Blocks for an item; false means the queue is closed and drained.
             bool pop(Envelope* out) {
                 std::unique_lock<std::mutex> lock(mutex_);
                 cv_.wait(lock, [this] { return !items_.empty() || closed_; });
@@ -58,7 +54,6 @@ namespace cajeta::kernel {
                 return true;
             }
 
-            // Non-blocking drain, for the IO thread's poll turn.
             std::vector<Envelope> drain() {
                 std::lock_guard<std::mutex> lock(mutex_);
                 std::vector<Envelope> out(std::make_move_iterator(items_.begin()),
@@ -112,8 +107,7 @@ namespace cajeta::kernel {
             return true;
         }
 
-        // The port a socket actually bound to, which is the only way to learn
-        // it when the endpoint asked for `:*`.
+        // The port actually bound — the only way to learn it after a `:*` endpoint.
         int boundPort(void* socket) {
             char endpoint[256];
             size_t len = sizeof(endpoint);
@@ -130,9 +124,7 @@ namespace cajeta::kernel {
 
 #endif  // CAJETA_HAVE_ZMQ
 
-    // The connection file itself needs no ZeroMQ: `cajeta init --kernel`
-    // writes kernel.json on a build with no transport, and a frontend can
-    // still be pointed at a kernel built elsewhere.
+    // The connection file needs no ZeroMQ, so it is built even without a transport.
 
     std::string ConnectionInfo::endpoint(int port) const {
         std::ostringstream out;
@@ -220,17 +212,12 @@ namespace cajeta::kernel {
         std::atomic<bool> running{true};
 
         std::thread hbThread;
-        // Published by the execution thread once its protocol exists, so the
-        // IO thread can answer an interrupt without going through the queue.
+        // Published by the execution thread so the IO thread can interrupt it.
         std::atomic<KernelProtocol*> protocol{nullptr};
 
-        // U6 / spec 5.1 + 6.3.1 — `interrupt_request` is answered HERE, on
-        // the IO thread, and never queued. Queueing it would put it behind
-        // the very cell it is meant to stop: the execution thread cannot
-        // drain its queue while it is inside a runaway loop, so the request
-        // would arrive only once the loop finished, which is exactly never.
-        // This is what "the kernel stays responsive during the stuck window"
-        // means in practice.
+        // `interrupt_request` is answered HERE and never queued: queueing puts it
+        // behind the very cell it must stop, and a runaway loop never drains its
+        // queue, so the request would arrive only once the loop finished.
         bool answerOnIoThread(const Envelope& in) {
             if (in.channel != Channel::Control) return false;
             JupyterMessage msg;
@@ -256,8 +243,7 @@ namespace cajeta::kernel {
                 if (error) *error = "zmq_socket failed";
                 return nullptr;
             }
-            // Drop queued messages on close rather than blocking the
-            // destructor on a frontend that has already gone away.
+            // LINGER 0: drop queued messages rather than block on a gone frontend.
             int linger = 0;
             zmq_setsockopt(sock, ZMQ_LINGER, &linger, sizeof(linger));
             std::string ep = info.endpoint(port);
@@ -280,8 +266,7 @@ namespace cajeta::kernel {
             return nullptr;
         }
 
-        // The heartbeat is a bare REP echo. ipykernel uses zmq_proxy for
-        // this; a poll loop costs the same and can actually be stopped.
+        // A bare REP echo; a poll loop costs what zmq_proxy does and can be stopped.
         void runHeartbeat() {
             while (running.load()) {
                 zmq_pollitem_t item{heartbeat, 0, ZMQ_POLLIN, 0};
@@ -302,25 +287,9 @@ namespace cajeta::kernel {
                 outbound.push(std::move(out));
             });
             protocol.setSessionId(sessionId);
-            // Spec 6 — the notebook's own directory IS the project. Jupyter
-            // launches a kernel there, nothing in the protocol carries a
-            // classpath, and the governing `cajeta.json` up from that
-            // directory is the one the user means. Without this line the
-            // whole classpath feature reaches nobody: a notebook sitting in a
-            // project full of dependencies silently gets a stdlib-only
-            // session, and the failure looks like a missing import rather
-            // than a kernel that never looked.
-            //
-            // Held back until 7.2.5 landed, because until then a session WITH
-            // a classpath failed outright and this line would have broken
-            // `cajeta kernel` for everyone who launched Jupyter inside a
-            // project. That is fixed; this is the consumer that ships it.
-            //
-            // Read HERE rather than captured at bind(): the execution thread
-            // owns session creation, and this is the value that reaches it.
-            // No manifest anywhere above the cwd is not an error — that is a
-            // notebook outside a project, which is an ordinary stdlib-only
-            // session.
+            // The notebook's own directory IS the project: nothing in the protocol
+            // carries a classpath. Read HERE, not at bind(), because the execution
+            // thread owns session creation; no manifest above cwd is not an error.
             {
                 std::error_code ec;
                 auto cwd = std::filesystem::current_path(ec);
@@ -335,16 +304,12 @@ namespace cajeta::kernel {
             while (inbound.pop(&envelope)) {
                 JupyterMessage msg;
                 std::string error;
-                // Spec 3.2: an unverifiable message is dropped where it is
-                // decoded. No reply, no log line the sender controls, and
-                // certainly no dispatch.
+                // An unverifiable message is dropped where it is decoded: no reply,
+                // no sender-controlled log line, no dispatch.
                 if (!decodeMessage(envelope.frames, signer, &msg, &error)) continue;
                 protocol.handle(envelope.channel, msg);
                 if (protocol.shutdownRequested()) {
                     if (protocol.restartRequested()) {
-                        // Restart in-process: a fresh session, an empty
-                        // binding table, and the counter back to 1 (spec
-                        // 3.3). The frontend keeps its connection.
                         protocol.restartSession();
                         continue;
                     }
@@ -418,10 +383,8 @@ namespace cajeta::kernel {
                 {impl.control, 0, ZMQ_POLLIN, 0},
                 {impl.stdinSock, 0, ZMQ_POLLIN, 0},
             };
-            // A short timeout rather than a blocking poll: the same turn has
-            // to flush whatever the execution and pump threads produced, and
-            // cell output must not wait on the next inbound message to be
-            // delivered.
+            // A short timeout, not a blocking poll: the same turn flushes what the
+            // execution and pump threads produced, which must not wait on inbound.
             int n = zmq_poll(items, 3, 20);
             if (n > 0) {
                 struct { void* sock; Channel channel; } sources[3] = {
@@ -434,8 +397,6 @@ namespace cajeta::kernel {
                     Envelope in;
                     in.channel = sources[i].channel;
                     if (recvMultipart(sources[i].sock, &in.frames)) {
-                        // An interrupt is answered here rather than queued —
-                        // see answerOnIoThread.
                         if (impl.answerOnIoThread(in)) continue;
                         impl.inbound.push(std::move(in));
                     }
@@ -449,8 +410,7 @@ namespace cajeta::kernel {
 
         impl.inbound.close();
         if (exec.joinable()) exec.join();
-        // Whatever the execution thread produced on its way out — the
-        // shutdown_reply above all — still has to reach the frontend.
+        // The shutdown_reply, and anything else produced on the way out, still ships.
         for (auto& out : impl.outbound.drain()) {
             void* sock = impl.socketFor(out.channel);
             if (sock) sendMultipart(sock, out.frames);
@@ -462,10 +422,8 @@ namespace cajeta::kernel {
 
 #else  // !CAJETA_HAVE_ZMQ
 
-    // No transport in this build. The verb refuses with a message naming the
-    // package to install rather than crashing on a null socket, and every
-    // other part of the kernel — session, protocol, connection file — is
-    // still built and still tested.
+    // No transport in this build: the verb refuses with a message naming the
+    // package to install, and the rest of the kernel is still built and tested.
     struct KernelTransport::Impl {};
 
     KernelTransport::KernelTransport() : impl_(std::make_unique<Impl>()) {}

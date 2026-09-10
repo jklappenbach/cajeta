@@ -20,8 +20,7 @@ namespace {
     const char* kArrayListFqn = "cajeta.collection.ArrayList";
     const char* kHashMapFqn = "cajeta.collection.HashMap";
 
-    // The base type name with any generic arguments stripped:
-    // "cajeta.collection.ArrayList<int32>" -> "cajeta.collection.ArrayList".
+    /// The base type name with any generic arguments stripped.
     std::string typeBase(const std::string& t) {
         auto lt = t.find('<');
         return lt == std::string::npos ? t : t.substr(0, lt);
@@ -34,20 +33,14 @@ namespace {
         return CollectionKind::None;
     }
 
-    // Inline-vs-pointer storage of a field by its declared type, mirroring how
-    // the layout stores it: a value type and a primitive are inline bytes; a
-    // String, reference class or array holds the instance/header pointer at the
-    // slot base.
+    /// A field's slot storage: value types and primitives inline, else pointer.
     Storage storageOfType(const cajeta::CajetaTypePtr& t) {
         if (auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(t))
             return klass->isValueType() ? Storage::Inline : Storage::Pointer;
         return Storage::Inline;  // primitive
     }
 
-    // A class's STATIC fields, inherited-then-own, deduped. The symbol is the
-    // declaring class's canonical + "." + name — the exact global
-    // getOrCreateStaticFieldGlobal emits — so the DECLARING class names the
-    // symbol even on a subclass's inherited view.
+    /// STATIC fields, inherited-then-own; the DECLARING class names the symbol.
     void collectStatics(cajeta::CajetaClass* cls,
                         std::vector<StaticFieldRecord>& out,
                         std::set<void*>& seen) {
@@ -66,8 +59,7 @@ namespace {
         }
     }
 
-    // A class's non-static fields in layout order — inherited (ancestors,
-    // recursively) before own — deduped so a shared vbase field appears once.
+    /// Non-static fields in layout order, ancestors first, vbase fields once.
     void collectFields(cajeta::CajetaClass* cls,
                        std::vector<cajeta::StructurePropertyPtr>& out,
                        std::set<void*>& seen) {
@@ -80,11 +72,8 @@ namespace {
         }
     }
 
-    // Geometry of one array element, mirroring CajetaArray::getElementLlvmType
-    // so the stride stored here is the stride the JIT'd code stores at. Array
-    // types are not interned in the name map, so the element name is stripped
-    // and resolved; no CajetaArray is constructed (that would mutate the live
-    // type registry).
+    /// One array element's geometry, mirroring CajetaArray so the stride here is
+    /// the one JIT'd code stores at. Constructs no CajetaArray, which would mutate.
     bool resolveElem(const std::string& arrayType, const llvm::DataLayout& dl,
                      ElemRecord& out) {
         if (arrayType.empty() || arrayType.back() != ']') return false;
@@ -93,8 +82,7 @@ namespace {
         std::string elemName = arrayType.substr(0, lb);
         if (elemName.empty()) return false;
 
-        // A nested array element (`int32[][]` -> `int32[]`) is itself a heap
-        // reference: a pointer slot.
+        // A nested array element is itself a heap reference: a pointer slot.
         if (elemName.back() == ']') {
             out.type = elemName;
             out.storage = Storage::Pointer;
@@ -104,8 +92,7 @@ namespace {
 
         auto elem = cajeta::CajetaType::find(elemName);
         if (!elem) {
-            // Unresolved user type: assume a pointer slot so a decoder only ever
-            // reads a pointer, never a fabricated inline width.
+            // A pointer slot, so a decoder never reads a fabricated inline width.
             out.type = elemName;
             out.storage = Storage::Pointer;
             out.stride = dl.getPointerSize();
@@ -123,9 +110,8 @@ namespace {
                 out.storage = Storage::Pointer;
                 out.stride = dl.getPointerSize();
             } else {
-                // STRUCT_FLAG classes keep their own struct slot. A value type
-                // is stored inline; String (a reference class with a struct
-                // slot) keeps the String* at the slot base — a pointer read.
+                // A STRUCT_FLAG class has a struct slot, but only a value type
+                // is inline; String keeps a String* at the slot base.
                 llvm::Type* elemLlvm = klass->getLlvmType();
                 if (!elemLlvm) return false;
                 out.storage = klass->isValueType() ? Storage::Inline
@@ -186,8 +172,7 @@ std::vector<std::string> DebugTypeTable::names() const {
 }
 
 namespace {
-    // The String decode ABI from the live layout, derived exactly as
-    // deriveEntryArgsABI derives it for makeEntryArgs — nothing hardcoded.
+    /// The String decode ABI read off the live layout, nothing hardcoded.
     StringAbi deriveStringAbi(const llvm::DataLayout& dl) {
         StringAbi abi;
         auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(
@@ -215,23 +200,15 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
     for (const auto& r : roots_) {
         if (queued.insert(r).second) work.push_back({r, 0});
     }
-    // Whole-world closure (runtime-type-inspection §3.1.1): a base- or
-    // Object-typed row can hold ANY subtype at runtime, so every compiled
-    // class is carried, not just the declared-local closure. Enqueued after
-    // the roots so root-reachable records keep discovery priority under the
-    // bound; the existing bound + logged-drop machinery still applies.
+    // A base- or Object-typed row can hold ANY subtype at run time, so every
+    // compiled class is carried; queued after the roots, which keep priority.
     for (const auto& [name, t] : cajeta::CajetaType::getCanonicalMap()) {
         if (!t) continue;
         if (!std::dynamic_pointer_cast<cajeta::CajetaClass>(t)) continue;
         if (queued.insert(name).second) work.push_back({name, 0});
     }
 
-    // A record is filed under the name it was ASKED for as well as its canonical
-    // name: a debug local's declared type string is the warm lookup key, and it
-    // need not already be canonical. A plain class is filed under its SHORT name
-    // too — `CajetaType::of` resolved short names, and the bridge must keep
-    // resolving everything it resolved before (§4.1.3). First writer wins, so a
-    // short name shared across packages never overwrites another's layout.
+    // Filed under the asked, canonical and short names; first writer wins.
     auto file = [&](const std::string& asked, TypeRecord rec) {
         const std::string canonical = rec.canonical;
         auto shortName = [&]() -> std::string {
@@ -260,14 +237,12 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
         const std::string& name = item.name;
         if (records_.count(name)) continue;   // already carried
 
-        // A bound never truncates silently (spec §5.1.3): the dropped type is
-        // recorded and reported, so a gap in inspection has an explanation.
+        // A bound never truncates silently: the dropped type is recorded.
         if (item.depth > opts.maxDepth || records_.size() >= opts.maxRecords) {
             bound(name);
             continue;
         }
 
-        // Primitives are leaves rendered by width.
         if (isPrimitiveTypeName(name)) {
             TypeRecord rec;
             rec.canonical = name;
@@ -277,8 +252,7 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
             continue;
         }
 
-        // The `[]` suffix is authoritative: an array is an array whether or not
-        // its name interns in the registry.
+        // The `[]` suffix is authoritative, registry or no registry.
         if (name.back() == ']') {
             ElemRecord elem;
             if (!resolveElem(name, dl, elem)) continue;
@@ -295,7 +269,6 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
         if (!ct) continue;   // unresolved: absent, never faked
         const std::string canonical = ct->toCanonical();
 
-        // String is a leaf decoded by its own ABI, not by field walking.
         if (canonical == kStringFqn) {
             TypeRecord rec;
             rec.canonical = canonical;
@@ -308,9 +281,7 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
 
         auto klass = std::dynamic_pointer_cast<cajeta::CajetaClass>(ct);
         if (!klass) {
-            // A non-class, non-primitive type has no walkable layout: an empty
-            // Object record, which renders as `{…}` — what the live decode
-            // already does for one.
+            // No walkable layout: an empty Object record, rendering as `{…}`.
             TypeRecord rec;
             rec.canonical = canonical;
             rec.kind = TypeKind::Object;
@@ -325,17 +296,13 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
         rec.kind = rec.collectionKind == CollectionKind::None
             ? TypeKind::Object : TypeKind::Collection;
 
-        // Static fields (runtime-type-inspection §4.1.1): inherited-then-own,
-        // symbol-addressed, resolved per session.
         {
             std::set<void*> seenStatics;
             collectStatics(klass.get(), rec.statics, seenStatics);
             for (const auto& sr : rec.statics) note(sr.type, item.depth + 1);
         }
 
-        // Vtable map (runtime-type-inspection §2.1.1): symbols from the REAL
-        // globals. Primary at offset 0; each secondary ($as$) vtable carries
-        // its sub-object offset so a base-view pointer can be rebased.
+        // A secondary ($as$) vtable carries its sub-object offset, for rebasing.
         if (auto* vg = klass->getVirtualTableGlobal()) {
             putVtable(vg->getName().str(), {canonical, 0});
         }
@@ -362,9 +329,8 @@ void DebugTypeTable::buildFromTypeWorld(const llvm::DataLayout& dl,
                 fr.name = f->getName();
                 fr.type = f->getType() ? f->getType()->toCanonical() : "";
                 fr.storage = storageOfType(f->getType());
-                // The offset comes from the DataLayout end to end — never
-                // index*8 — so a field after an interior secondary-vtable word
-                // lands on its own bytes.
+                // From the DataLayout end to end, never index*8, so a field
+                // past an interior secondary-vtable word lands on its own bytes.
                 fr.offset = sl->getElementOffset(slot);
                 note(fr.type, item.depth + 1);
                 rec.fields.push_back(std::move(fr));
@@ -388,25 +354,11 @@ DebugTypeTable& globalDebugTypeTable() {
 }
 
 // ---- sidecar (spec §3.1) ------------------------------------------------
-//
-// Line-oriented, versioned, tab-separated — the dbgloc sidecar's style:
-//
-//   cajeta-typeinfo-v1
-//   abi\t<valid>\t<size>\t<offLenTag>\t<offAux>\t<offBase>
-//   rec\t<key>\t<canonical>\t<kind>\t<isValueType>\t<isString>\t<collKind>
-//      \t<elemType>\t<elemStride>\t<elemStorage>\t<nFields>
-//      [\t<fName>\t<fType>\t<fOffset>\t<fStorage>]*
-//
-// One `rec` line per MAP ENTRY (alias keys included), so a load reproduces the
-// exact lookup surface the cold build had. Strings are escaped for tab/newline/
-// backslash. The major rides the header: a reader that does not know it
-// refuses the whole table rather than misreading (§3.1.2).
+// Line-oriented, versioned, tab-separated. One `rec` line per MAP ENTRY, alias
+// keys included, so a load reproduces the cold build's exact lookup surface.
+// The major rides the header: an unknown one refuses the whole table.
 
 namespace {
-    // v2 (runtime-type-inspection 1.2.3): rec lines gained a statics tail and
-    // the vtab line kind. The v1 reader refuses unknown line kinds by design,
-    // so the header major gates the whole format; a v1 slot misses under -g
-    // and heals by recompiling once.
     const char* kSidecarMagic = "cajeta-typeinfo-v2";
 
     std::string escapeField(const std::string& s) {
@@ -439,7 +391,7 @@ namespace {
         return true;
     }
 
-    // Parse a non-negative integer field strictly (whole field, no sign).
+    /// Parses a non-negative integer field strictly: whole field, no sign.
     bool parseU64(const std::string& s, uint64_t& out) {
         if (s.empty()) return false;
         out = 0;
@@ -484,7 +436,6 @@ bool writeTypeSidecar(const std::string& path, const DebugTypeTable& table) {
                 << '\t' << f.offset
                 << '\t' << static_cast<int>(f.storage);
         }
-        // v2: the statics tail — count + {name, type, symbol} triples.
         out << '\t' << rec->statics.size();
         for (const auto& sf : rec->statics) {
             out << '\t' << escapeField(sf.name)
@@ -493,7 +444,6 @@ bool writeTypeSidecar(const std::string& path, const DebugTypeTable& table) {
         }
         out << '\n';
     }
-    // v2: the vtable map — one line per vtable global.
     for (const auto& [sym, e] : table.vtables()) {
         out << "vtab\t" << escapeField(sym)
             << '\t' << escapeField(e.canonical)
@@ -503,8 +453,7 @@ bool writeTypeSidecar(const std::string& path, const DebugTypeTable& table) {
 }
 
 bool loadTypeSidecar(const std::string& path, DebugTypeTable& into) {
-    // All-or-nothing: parse into a scratch table and only then swap it in, so
-    // a failure at ANY line leaves `into` empty — never a partial misread.
+    // All-or-nothing: a failure at ANY line leaves `into` empty, never partial.
     into.clear();
 
     std::ifstream in(path, std::ios::binary);
@@ -577,7 +526,6 @@ bool loadTypeSidecar(const std::string& path, DebugTypeTable& into) {
                 rec.fields.push_back(std::move(fr));
             }
             base += nFields * 4;
-            // v2: the statics tail — count + {name, type, symbol} triples.
             uint64_t nStatics;
             if (!parseU64(f[base], nStatics)) return false;
             base += 1;

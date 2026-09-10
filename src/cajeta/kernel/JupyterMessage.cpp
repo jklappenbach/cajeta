@@ -26,9 +26,7 @@ namespace cajeta::kernel {
             return out;
         }
 
-        // One RNG for the process. Seeded from the system source; a kernel
-        // whose msg_ids collide would have a frontend correlating replies to
-        // the wrong request.
+        // One RNG for the process: colliding msg_ids would have a frontend correlating replies to the wrong request.
         std::mt19937_64& rng() {
             static std::mt19937_64 engine([] {
                 std::random_device rd;
@@ -61,9 +59,7 @@ namespace cajeta::kernel {
         unsigned int digestLen = 0;
         HMAC_CTX* ctx = HMAC_CTX_new();
         if (!ctx) return std::string();
-        // The scheme field is `hmac-sha256` in every connection file Jupyter
-        // writes; anything else is unsupported rather than silently treated
-        // as sha256, so a mismatch fails closed at verify time.
+        // Only `hmac-sha256` is supported; another scheme fails closed rather than being taken as sha256.
         if (HMAC_Init_ex(ctx, key_.data(), static_cast<int>(key_.size()),
                          EVP_sha256(), nullptr) == 1) {
             HMAC_Update(ctx, reinterpret_cast<const unsigned char*>(header.data()),
@@ -89,9 +85,7 @@ namespace cajeta::kernel {
         if (scheme_ != "hmac-sha256") return false;
         std::string expected = sign(header, parentHeader, metadata, content);
         if (expected.empty() || expected.size() != signature.size()) return false;
-        // Constant-time: a byte-at-a-time compare leaks the length of the
-        // matching prefix, which is enough to forge a signature one byte at a
-        // time against a kernel that will answer as fast as you can ask.
+        // Constant-time: a byte-at-a-time compare leaks the matching prefix length, enough to forge a signature.
         return CRYPTO_memcmp(expected.data(), signature.data(),
                              expected.size()) == 0;
     }
@@ -130,7 +124,6 @@ namespace cajeta::kernel {
             if (frames[i] == kDelimiter) { delim = i; break; }
         }
         if (delim == frames.size()) return fail("no <IDS|MSG> delimiter");
-        // signature + four JSON frames must follow.
         if (frames.size() < delim + 6) return fail("truncated message");
 
         const std::string& signature = frames[delim + 1];
@@ -139,8 +132,7 @@ namespace cajeta::kernel {
         const std::string& metadata = frames[delim + 4];
         const std::string& content = frames[delim + 5];
 
-        // Verify BEFORE parsing: an unverified message is not input we have
-        // any business interpreting, and the signature covers the raw bytes.
+        // Verify BEFORE parsing: the signature covers the raw bytes, and unverified input is not ours to interpret.
         if (!signer.verify(signature, header, parent, metadata, content)) {
             return fail("signature does not verify");
         }

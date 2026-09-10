@@ -1,13 +1,5 @@
-// TimingRepository — Repository decorator that records each
-// underlying call's wall-clock duration + a call count into a
-// `ResolverTimings` instance. Installed by
-// `resolveProjectDependencies` when timings are requested
-// (`cajeta info --resolve-time`).
-//
-// Wraps any existing RepositoryPtr; forwards every call to the
-// inner instance. The wrapper holds a non-owning pointer to the
-// caller's `ResolverTimings`, so the timing instance must outlive
-// the wrapper.
+// TimingRepository — a Repository decorator recording each underlying call's
+// duration and count into a caller-owned ResolverTimings, which must outlive it.
 
 #pragma once
 
@@ -24,8 +16,7 @@ namespace cajeta::buildtool {
             : inner_(std::move(inner)), timings_(timings) {}
 
         std::string name() const override { return inner_->name(); }
-        // A decorator borrows its subject's identity; inventing one here
-        // would make the same repository verify differently when timed.
+        // A decorator borrows its subject's identity; inventing one would make the same repository verify differently when timed.
         std::string origin() const override { return inner_->origin(); }
 
         llvm::Expected<std::vector<std::string>> listVersions(
@@ -44,9 +35,8 @@ namespace cajeta::buildtool {
         ResolverTimings* timings_;
     };
 
-    // Wrap each repo in a TimingRepository pinned to `timings`. The
-    // resulting vector mirrors the input one-to-one; pass through
-    // when `timings` is nullptr.
+    // Wraps each repo in a TimingRepository pinned to `timings`; the result mirrors
+    // the input one-to-one, and passes through unchanged when `timings` is null.
     std::vector<RepositoryPtr> wrapWithTimings(
         const std::vector<RepositoryPtr>& repos,
         ResolverTimings* timings);

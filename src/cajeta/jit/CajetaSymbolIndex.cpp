@@ -21,14 +21,12 @@ namespace cajeta {
         for (auto& method : module->getAllMethods()) {
             if (!method) continue;
             const std::string sym = method->getLlvmSymbolName();
-            // A method with no symbol name cannot be reached by a JIT lookup,
-            // so indexing it would only invite a collision on the empty key.
             if (sym.empty()) continue;
             bySymbol.emplace(sym, method);
         }
         for (auto& [name, klass] : module->getStructures()) {
             if (!klass || !klass->getQName()) continue;
-            // Same construction and sanitisation as reflectInvokeFnRef.
+            // Same construction and sanitisation as reflectInvokeFnRef; keep in step.
             std::string base = "__cajeta_" + klass->getQName()->toCanonical();
             for (char& c : base) {
                 if (c == ':' || c == '.' || c == '<' || c == '>' || c == ','
@@ -47,8 +45,7 @@ namespace cajeta {
             if (m) structures += m->getStructures().size();
         if (structures == lastStructureCount) return;
         lastStructureCount = structures;
-        // addModule mutates nothing but the maps for already-known modules;
-        // copy the vector so its dedup push_back cannot invalidate iteration.
+        // Copy: addModule's dedup push_back would otherwise invalidate this walk.
         std::vector<CajetaModulePtr> known = liveModules;
         for (auto& m : known) addModule(m);
     }

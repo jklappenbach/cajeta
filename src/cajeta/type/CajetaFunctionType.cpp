@@ -1,8 +1,5 @@
-//
-// See CajetaFunctionType.h. Builds the canonical name + the cached LLVM
-// FunctionType once at construction; both depend only on the immutable
-// parameter and return types.
-//
+// See CajetaFunctionType.h. Builds the canonical name and the cached LLVM
+// FunctionType at construction, from the immutable parameter/return types.
 
 #include "CajetaFunctionType.h"
 #include "../compile/CajetaModule.h"
@@ -14,8 +11,8 @@
 
 namespace cajeta {
 
-    // U6.3b — per-thread side-table for a frozen function type's cached LLVM
-    // FunctionType (LLVMContext-bound). See getLlvmFunctionType / the header.
+    // Per-thread side-table for a frozen function type's cached LLVM
+    // FunctionType, which is LLVMContext-bound and so cannot be shared.
     static std::unordered_map<const CajetaFunctionType*, llvm::FunctionType*>& frozenFnTypeBindings() {
         static thread_local std::unordered_map<const CajetaFunctionType*, llvm::FunctionType*> tbl;
         return tbl;
@@ -26,7 +23,6 @@ namespace cajeta {
             auto& tbl = frozenFnTypeBindings();
             auto it = tbl.find(this);
             if (it != tbl.end()) return it->second;
-            // U6.4.2 — rebuild the signature in this thread's context on empty.
             llvm::LLVMContext* ctx = currentLlvmContext();
             if (!ctx) return nullptr;
             llvm::FunctionType* t = buildLlvmFunctionType(ctx);
@@ -41,12 +37,9 @@ namespace cajeta {
         llvmFunctionType = t;
     }
 
-    // Non-sret-eligible returns (primitive, void, interface fat-ptr, array,
-    // view) have no semantic distinction between ownership and sret form —
-    // the LLVM signature is identical regardless. Normalizing them all to
-    // "embed #" in the canonical avoids spurious splits when source-level
-    // `(P) -> R` (no #, returnsOwn=false from the parser) meets a method-ref
-    // typed `(P) -> R` via returnsOwn=true: both ought to be the same type.
+    // Whether the `#` in the canonical name carries meaning for `returnType`.
+    // Non-sret-eligible returns share one LLVM signature either way, so they all
+    // normalize to "#" rather than splitting `(P) -> R` into two distinct types.
     static bool sretCanonicalDiscriminates(const CajetaTypePtr& returnType) {
         auto rtClass = std::dynamic_pointer_cast<CajetaClass>(returnType);
         if (!rtClass || rtClass->isInterface()) return false;
@@ -77,50 +70,22 @@ namespace cajeta {
         : parameterTypes(std::move(parameterTypes)),
           returnType(std::move(returnType)),
           returnsOwnership(returnsOwnership) {
-        // Function values are pointers at the value level — a lambda
-        // assignment stores the address of the synthesized function. The
-        // *signature* lives in llvmFunctionType (cached below) and gets
-        // used at call sites to type the indirect call instruction.
         std::string canon = buildCanonical(this->parameterTypes, this->returnType, returnsOwnership);
         this->qName = QualifiedName::getOrInsert(canon, "");
         this->canonical = canon;
         this->typeFlags = POINTER_FLAG;
-        // The value-side LLVM type is `ptr` — a function-typed local holds a
-        // pointer to a closure record `{ ptr fn, ptr captures }`. L2-1 keeps
-        // the slot type unchanged from L1 (still a single `ptr`); only the
-        // pointed-to layout grew. Call sites load the record and indirect-
-        // dispatch through fn_ptr, passing captures_ptr as the first arg.
         setLlvmType(llvm::PointerType::get(*module->getLlvmContext(), 0));  // U6.2
         setLlvmFunctionType(buildLlvmFunctionType(module->getLlvmContext()));  // U6.4.1
     }
 
-    // U6.4.1 — build the signature FunctionType in `ctx` from the (immutable)
-    // parameter/return types + returnsOwnership. Context-parameterized so the
-    // frozen-stdlib path can rebuild it in a thread's own context (U6.4.2); the
-    // ctor calls it with the home module's context.
     llvm::FunctionType* CajetaFunctionType::buildLlvmFunctionType(llvm::LLVMContext* ctx) const {
-        // The value-side LLVM type is `ptr` — a function-typed local holds a
-        // pointer to a closure record `{ ptr fn, ptr captures }`. L2-1 keeps
-        // the slot type unchanged from L1 (still a single `ptr`); only the
-        // pointed-to layout grew. Call sites load the record and indirect-
-        // dispatch through fn_ptr, passing captures_ptr as the first arg.
+        // A function value is a `ptr` to a closure record `{ ptr fn, ptr captures }`;
+        // call sites load it and indirect-dispatch through fn, passing captures first.
         llvm::Type* ptrTy = llvm::PointerType::get(*ctx, 0);
 
-        // L2 calling convention: every lambda function takes `ptr captures`
-        // as its first arg. Non-capturing lambdas pass null; capturing
-        // lambdas (L2-2+) pass the address of their captures struct. The
-        // synthesized function ignores the arg in L2-1 — it's about the
-        // ABI shape, not capture semantics.
-        //
-        // M5(b) — sret value-return form. When returnsOwnership is false
-        // and the return is a class (non-interface, non-array), the
-        // signature switches to the explicit sret ABI mirroring
-        // Method::generatePrototype: `void (ptr sret(R), ptr captures,
-        // params...)`. The sret attribute itself is set at the Function
-        // / CallInst level (FunctionType only knows the parameter is a
-        // `ptr`). Methods that returnsStackValue() and method-refs to
-        // them share this shape, so a direct binding flows the same
-        // ABI through. See docs/specification/lang/ValueReturns.md.
+        // Two shapes, both mirroring Method::generatePrototype: ownership form
+        // `R (ptr captures, params...)`, sret form `void (ptr sret(R), ptr captures,
+        // params...)`. The sret attribute itself is set on the Function/CallInst.
         bool useSret = false;
         if (!returnsOwnership) {
             auto rtClass = std::dynamic_pointer_cast<CajetaClass>(this->returnType);
@@ -137,11 +102,6 @@ namespace cajeta {
         for (auto& p : this->parameterTypes) {
             llvmParams.push_back(toCallingConvType(p, ptrTy));
         }
-        // Same pass-by-pointer rule for the return type: a class-or-array
-        // return is conventionally a `ptr` to the heap value, not the
-        // struct itself. Without this the indirect-call's return type
-        // mismatches the underlying method's signature, which goes
-        // through the same coercion in Method::generatePrototype.
         llvm::Type* llvmRet;
         if (useSret) {
             llvmRet = llvm::Type::getVoidTy(*ctx);
@@ -163,12 +123,6 @@ namespace cajeta {
         return true;
     }
 
-    // Mirror of Method::generatePrototype's pass-by-pointer choice for
-    // parameter and return types. Class instances and arrays cross the
-    // call boundary as `ptr` to the heap value; structs and primitives
-    // travel by value. Keeping the rule in lockstep means a method
-    // looked up via reference can be called through CajetaFunctionType's
-    // signature without per-arg coercion.
     llvm::Type* CajetaFunctionType::toCallingConvType(CajetaTypePtr p, llvm::Type* ptrTy) {
         if (!p) return nullptr;
         bool isStruct = std::dynamic_pointer_cast<CajetaView>(p) != nullptr;

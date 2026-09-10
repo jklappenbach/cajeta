@@ -17,22 +17,8 @@
 #include "cajeta/error/Exception.h"
 
 namespace cajeta {
-    // Set resolvedType to the target class so call-site overload
-    // resolution sees the right type when a `new T(...)` flows in as
-    // a method-call argument or constructor argument. Previously this
-    // wasn't set, so MethodCallExpression's fallback path (CajetaType::
-    // of(value)) inferred the generic `pointer` type — Method::resolveMethod
-    // then built the wrong signature ("consume(pointer)" instead of
-    // "consume(test.Payload)"), missed the lookup, and invokeMethod
-    // returned null. ReturnStatement::generateCode then null-deref'd
-    // val->getType() and segfaulted. See AsyncStatus.md § Known gaps
-    // before this commit. Diamond inference is deferred to codegen
-    // time (it needs each arg's resolvedType, which the surrounding
-    // method's resolve-pass populates first); for now, resolvedType
-    // stays null on diamond forms until generateCode fills it in.
-    // Built-in Vector<T,N>: resolve to the CajetaVector value type. Shared by
-    // resolveTypes and generateCode. typeArguments were captured at parse time
-    // (the element CajetaType + a CajetaConstantType lane count).
+    // Built-in Vector<T,N> -> the CajetaVector value type; construction yields an
+    // SSA `<N x T>`, so `new`/`stack` on one is purely syntactic.
     static CajetaVectorPtr resolveVectorNew(
             CajetaModulePtr module, const string& typeName,
             const vector<CajetaTypePtr>& typeArguments) {
@@ -47,9 +33,8 @@ namespace cajeta {
                                                cv->getValue());
     }
 
-    // Built-in Matrix<T,R,C>: resolve to the flat CajetaMatrix value type (B1).
-    // Mirrors resolveVectorNew; typeArguments were captured at parse time (the
-    // element CajetaType + two CajetaConstantType dimensions).
+    // Built-in Matrix<T,R,C> -> the flat CajetaMatrix value type; mirrors
+    // resolveVectorNew, and its R*C arguments fill the matrix row by row.
     static CajetaMatrixPtr resolveMatrixNew(
             CajetaModulePtr module, const string& typeName,
             const vector<CajetaTypePtr>& typeArguments) {
@@ -65,7 +50,8 @@ namespace cajeta {
                                                rv->getValue(), cv->getValue());
     }
 
-    // Built-in Quaternion<T>: resolve to the flat CajetaQuaternion value type.
+    // Built-in Quaternion<T> -> the flat CajetaQuaternion value type, built from
+    // four scalar arguments (w, x, y, z).
     static CajetaQuaternionPtr resolveQuaternionNew(
             CajetaModulePtr module, const string& typeName,
             const vector<CajetaTypePtr>& typeArguments) {
@@ -73,14 +59,8 @@ namespace cajeta {
         return CajetaQuaternion::validateAndCreate(module, typeArguments[0]);
     }
 
-    // Bare construction of a default-bearing template — `heap Box(args)` for
-    // `class Box<T = int32>` → Box<int32>. The construction-site twin of
-    // CajetaType::fromContext's default resolution (which handles type-use
-    // sites: field/param/local/return types), so `heap Texture2D(w, h)` keeps
-    // working once Texture2D gains a defaulted parameter. Returns `type`
-    // unchanged unless it names a template whose parameters are ALL defaulted.
-    // Only the no-type-arguments, non-diamond case calls this; explicit args
-    // and `<>` are handled by their own paths.
+    // Bare construction of an all-defaulted template — `heap Box(args)` for
+    // `class Box<T = int32>` -> Box<int32>. Any other `type` comes back unchanged.
     static CajetaTypePtr defaultedInstantiation(CajetaTypePtr type,
                                                 const string& typeName) {
         auto klass = dynamic_pointer_cast<CajetaClass>(type);
@@ -103,15 +83,10 @@ namespace cajeta {
         if (!tok->getInputStream()) return;
         const std::string* file =
             xref::internSourceFile(tok->getInputStream()->getSourceName());
-        if (!file) return;   // synthesized source (template/mock): no position
+        if (!file) return;
         try {
-            // Resolve the created type NAME to its declaration's canonical FQN,
-            // scoped like resolveTypes (own package → imports → global) and
-            // tolerant of a forward reference — the whole-root export parses in
-            // directory order and routinely reaches `heap Square(...)` before
-            // Square.cajeta is built. A qualified `heap pkg.Point()` carries a
-            // (dot-less-concatenated) package; try it first, else resolve the
-            // leaf name scoped. A miss records nothing.
+            // Scoped like resolveTypes and tolerant of a forward reference: the
+            // whole-root export reaches `heap Square(...)` before Square.cajeta.
             CajetaModulePtr module = CajetaModule::getActiveModule();
             std::string target;
             if (!package.empty()) {
@@ -121,19 +96,18 @@ namespace cajeta {
             if (target.empty())
                 target = CajetaType::canonicalNameScoped(typeName, module);
             if (target.empty()) return;
-            // An instantiation (`ArrayList<int32>`) navigates to the TEMPLATE's
-            // declaration — strip any argument list, mirroring fromContext.
+            // An instantiation navigates to the TEMPLATE's declaration.
             auto lt = target.find('<');
             if (lt != std::string::npos) target = target.substr(0, lt);
             xref::noteTypeReference(target, *file, (int) tok->getLine(),
                                     (int) tok->getCharPositionInLine());
         } catch (...) {
-            // Reference capture is best-effort: a resolution that throws here
-            // (it would throw again, reported, in the codegen pass) must never
-            // turn into a lint/compile failure.
+            // Best-effort: a throw here must never fail a lint or a build.
         }
     }
 
+    // Resolve the construction's static type: the built-in value types first,
+    // then the named class (scoped), its instantiation, and any `[]` wrapping.
     void NewExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         if (typeName.empty()) return;
@@ -149,22 +123,10 @@ namespace cajeta {
             resolvedType = qt;
             return;
         }
-        // boundElementType wins when set: it was captured at parse
-        // time when the template-substitution stack was live, so it
-        // already reflects T → concrete-arg even though the stack is
-        // long gone by the time resolveTypes runs.
+        // boundElementType wins when set: captured with the substitution stack live.
         CajetaTypePtr type = boundElementType;
-        // Bare names resolve SCOPED FIRST (own package → imports → global),
-        // mirroring generateCode below. The old ordering ran the raw
-        // `of(name, "")` global short-name key first — last-writer-wins
-        // across packages — and its non-null hit SHORT-CIRCUITED the scoped
-        // lookup entirely: resolvedType then carried the wrong same-named
-        // class into overload resolution even though generateCode would
-        // later re-resolve correctly. `heap HttpParserLimits()` inside the
-        // embedded stdlib stamped the USER'S HttpParserLimits (or vice
-        // versa), and the call's ParameterEntry mismatched every candidate —
-        // the cajeta-http NO_MATCHING_OVERLOAD regression, a silent miss
-        // until silent-resolution-diagnostics made it fatal.
+        // Bare names resolve SCOPED FIRST, as generateCode does: the raw global
+        // short-name key is last-writer-wins and shadows with the wrong class.
         if (!type && package.empty()) {
             type = CajetaType::ofScoped(typeName, module);
         }
@@ -173,52 +135,31 @@ namespace cajeta {
         if (!type) return;
         if (!typeArguments.empty()) {
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
-            // Same-short-name collision guard (see CajetaType::
-            // findTemplateByShortName): `heap Stream<int32>()` must build the
-            // generic cajeta.lang.stream.Stream, not the non-generic
-            // cajeta.xpu.KernelStream the bare-name lookup may have landed.
+            // Same-short-name collision guard: `heap Stream<int32>()` must build
+            // the generic Stream, not a non-generic class of the same short name.
             if (!klass || !klass->isTemplate()) {
                 if (auto t = CajetaType::findTemplateByShortName(typeName)) klass = dynamic_pointer_cast<CajetaClass>(t);
             }
             if (klass && klass->isTemplate()) {
                 type = klass->instantiate(typeArguments);
             } else {
-                // Type arguments given to a non-template type — reject instead
-                // of silently discarding them (compiling an ill-formed program).
                 throw Exception(
                     "type '" + typeName + "' is not a template but was given "
                     "type arguments", "CAJETA_ERROR_TYPE_ARGS_ON_NON_TEMPLATE");
             }
         } else if (!isDiamond) {
-            // Bare `heap Box(args)` of a default-bearing template → Box<defaults>.
             type = defaultedInstantiation(type, typeName);
         }
-        // For `new T[N]` / `new T[N][M]`, the value's static type is T[],
-        // not T. Wrap in CajetaArray for each `[]` pair so consumers
-        // (loadIfLValue's catch-all, assignment slot-type computation,
-        // overload resolution) see the array type instead of the element
-        // type. Without this, the heap pointer returned by the array
-        // creator gets treated as a pointer-to-element, and any catch-
-        // all "load from this pointer" code reads sizeof(T) bytes from
-        // the size prefix of the header.
+        // `new T[N]` has static type T[], not T: wrap once per `[]` pair, or a
+        // catch-all load reads sizeof(T) bytes out of the header's size prefix.
         if (auto arr = dynamic_pointer_cast<ArrayCreatorRest>(creatorRest)) {
             int depth = arr->getTotalBracketPairs();
             for (int i = 0; i < depth; i++) {
                 type = make_shared<CajetaArray>(module, type);
             }
         }
-        // Diamond form (`heap Box<>(7)`): infer the type arguments now so
-        // `resolvedType` is the concrete instantiation (`Box<int32>`), not the
-        // open template (`Box`). Earlier this was deferred to generateCode,
-        // which left resolvedType as the open template through the whole
-        // resolve pass — so member access off the result (`heap Box<>(7).id`)
-        // and the local-init assignability oracle saw an uninstantiated type
-        // and scored it unrelated to the declared `Box<int32>`. The inference
-        // reads each constructor-arg's resolved type (available now: the base
-        // resolveTypes above walked our children) and is pure inspection —
-        // inferDiamondArgs re-parses the template snippet without emitting IR.
-        // generateCode runs the same inference independently for codegen; both
-        // land on the same instantiation, so they stay in agreement.
+        // Diamond (`heap Box<>(7)`): infer now so resolvedType is the concrete
+        // instantiation — an open template scores as unrelated to `Box<int32>`.
         if (isDiamond) {
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
             if (klass && klass->isTemplate()) {
@@ -234,9 +175,6 @@ namespace cajeta {
                         if (!t) { allResolved = false; break; }
                         argTypes.push_back(t);
                     }
-                    // Only commit the instantiation when every arg type is
-                    // known; otherwise leave the open template and let
-                    // generateCode's (later, fuller) pass do the inference.
                     if (allResolved) {
                         type = klass->instantiate(klass->inferDiamondArgs(argTypes));
                     }
@@ -245,11 +183,8 @@ namespace cajeta {
         }
         resolvedType = type;
 
-        // xref-lint-emission-gap 4.2.3. `creatorRest` is not in `children`
-        // (only forEachSubNode reaches it), so without this the constructor
-        // arguments are never walked at all under lint. LINT ONLY: in a build
-        // this pass must not touch the creator, whose argument types are
-        // resolved later, under template substitution, by generateCode.
+        // LINT ONLY: `creatorRest` is not in `children`, so nothing else walks its
+        // arguments; a build resolves it later, under substitution, in generateCode.
         if (module && module->isResolutionOnly()) {
             if (creatorRest) {
                 try { creatorRest->resolveTypes(module); } catch (...) { }
@@ -258,12 +193,8 @@ namespace cajeta {
         }
     }
 
-    // The constructor call edge, recorded here rather than in ClassCreatorRest
-    // because this is where the created type is known — the creator's own
-    // `targetType` is set by generateCode and is still null on the lint path.
-    // The SITE is the creator's position, matching what
-    // ClassCreatorRest::generateCode opens, so a build and a lint name the
-    // same site and `drainCalls` merges them into one edge.
+    // Recorded here rather than in ClassCreatorRest because this is where the
+    // created type is known; the SITE is the creator's, so build and lint merge.
     void NewExpression::recordConstructorCallXref(const CajetaTypePtr& type,
                                                   CajetaModulePtr module) {
         if (!xref::captureEnabled() || !type || !creatorRest) return;
@@ -272,13 +203,9 @@ namespace cajeta {
         auto klass = dynamic_pointer_cast<CajetaClass>(type);
         if (!klass) return;
 
-        // Unique arity match only. An ambiguous constructor set gets no edge:
-        // a wrong one sends "who constructs this" to the wrong overload, which
-        // is worse than a missing edge (spec 2.1.2, plan 4.2.4).
-        // Scanned over getMethods(), NOT getMethodList(): CajetaClass::addMethod
-        // routes constructors to the constructor maps and `methods` and never
-        // pushes them onto `methodList`, so a methodList scan cannot find a
-        // constructor at all.
+        // A unique arity match only: a wrong edge sends "who constructs this" to
+        // the wrong overload. Scanned over getMethods(), NOT getMethodList() —
+        // addMethod never pushes a constructor onto methodList.
         const size_t argc = ccr->getParameters().size();
         MethodPtr match;
         for (auto& [_, mm] : klass->getMethods()) {
@@ -287,7 +214,7 @@ namespace cajeta {
             size_t formalCount = pl.size();
             if (!pl.empty() && pl.front()->getName() == "this") formalCount--;
             if (formalCount != argc) continue;
-            if (match) return;              // ambiguous — stay quiet
+            if (match) return;
             match = mm;
         }
         if (!match) return;
@@ -298,23 +225,19 @@ namespace cajeta {
         CajetaClass::noteResolvedCallXref(match, /*isConstructor=*/true, module);
     }
 
+    // Emit the construction: built-in value types build an SSA vector in place;
+    // everything else resolves the target type and hands CreatorRest the flags.
     llvm::Value* NewExpression::generateCode(CajetaModulePtr module) {
         if (!creatorRest) {
             return nullptr;
         }
-        // `shared` is GPU workgroup-shared placement (NV addrspace 3). It is
-        // device-only — the NVPTX kernel lowerer handles it by walking the AST
-        // directly (kernels get empty host stubs, so this normally never runs).
-        // If it surfaces on the host path, the user wrote `shared` outside a
-        // kernel: reject with a clear diagnostic rather than mis-lowering it.
+        // `shared` is device-only workgroup placement handled by the kernel
+        // lowerer, so reaching the host path means it was written outside a kernel.
         if (sharedAlloc) {
             throw cajeta::Exception(
                 "`shared` placement is only valid inside an @Kernel body "
                 "(GPU workgroup-shared memory)", "XPU-K03");
         }
-        // Built-in Vector<T,N> construction -> SSA `<N x T>`, no alloc/heap.
-        // The `new`/`stack` keyword is purely syntactic here; the result is a
-        // register value (a value type, like a primitive).
         if (auto vecTy = resolveVectorNew(module, typeName, typeArguments)) {
             auto ccr = dynamic_pointer_cast<ClassCreatorRest>(creatorRest);
             if (!ccr) {
@@ -342,9 +265,6 @@ namespace cajeta {
             }
             return vecops::buildVector(*b, elemTy, lanes, elems);
         }
-        // Built-in Matrix<T,R,C> construction -> SSA `<R*C x T>` (row-major), no
-        // alloc/heap. Like Vector, `new`/`stack` is purely syntactic; R*C scalar
-        // arguments fill the matrix row by row.
         if (auto matTy = resolveMatrixNew(module, typeName, typeArguments)) {
             auto ccr = dynamic_pointer_cast<ClassCreatorRest>(creatorRest);
             if (!ccr) {
@@ -374,8 +294,6 @@ namespace cajeta {
             return matops::buildMatrix(*b, elemTy, matTy->getRows(),
                                        matTy->getCols(), elems);
         }
-        // Built-in Quaternion<T> construction -> SSA `<4 x T>` (w, x, y, z). Four
-        // scalar arguments; `new`/`stack` is purely syntactic (a value type).
         if (auto qTy = resolveQuaternionNew(module, typeName, typeArguments)) {
             auto ccr = dynamic_pointer_cast<ClassCreatorRest>(creatorRest);
             if (!ccr || ccr->getParameters().size() != 4) {
@@ -394,32 +312,19 @@ namespace cajeta {
             }
             return vecops::buildVector(*b, elemTy, 4, elems);
         }
-        // Look up the target type by name. typeName names the class for `new Foo()`, or
-        // the element type for `new T[...]`. Package is "" for primitives (e.g. int32).
-        // boundElementType was captured at parse-walk time when the
-        // substitution stack was live; prefer it. See NewExpression.h.
+        // typeName is the class for `new Foo()`, the element type for `new T[...]`.
         CajetaTypePtr type = boundElementType;
-        // Bare names resolve SCOPED FIRST (own package → imports → global):
-        // `of(name, "")` hits the raw global short-name key, which is
-        // last-writer-wins across packages — a user class named `Event`
-        // would hijack `heap Event(...)` inside cajeta.xpu.Event.create()
-        // during lazy stdlib codegen. ofScoped's tier 3 is that same global
-        // key, so this is strictly more precise. Qualified names keep the
-        // direct canonical lookup. (Subsumes main f086c73e's scoped
-        // fallback — same shadowing fix, stronger ordering.)
+        // Bare names resolve SCOPED FIRST: the raw global short-name key is
+        // last-writer-wins, and would hijack `heap Event(...)` inside the stdlib.
         if (!type && package.empty()) {
             type = CajetaType::ofScoped(typeName, module);
         }
         if (!type) type = CajetaType::of(typeName, package);
-        // Qualified-miss rescue (pre-existing): the qualified-creator parse
-        // can mangle the package (`cajeta.lang.String` arrives as package
-        // "cajetalang"), which the legacy global short-name fallback silently
-        // absorbed. Keep that rescue as the last tier.
+        // Qualified-miss rescue: the qualified-creator parse can mangle a package
+        // (`cajeta.lang.String` arrives as "cajetalang"), so keep it as last tier.
         if (!type) type = CajetaType::ofScoped(typeName, module);
-        // Templated `new Box<int32>(...)`: typeArguments were resolved at
-        // parse time (in our constructor). Route through the template's
-        // instantiation cache so the concrete `Box<int32>` is what we
-        // allocate against.
+        // Templated `new Box<int32>(...)`: route through the template's
+        // instantiation cache so the concrete Box<int32> is what we allocate.
         if (!typeArguments.empty()) {
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
             // Same-short-name collision guard — see resolveTypes above.
@@ -429,19 +334,13 @@ namespace cajeta {
             if (klass && klass->isTemplate()) {
                 type = klass->instantiate(typeArguments);
             } else {
-                // Type arguments given to a non-template type — reject instead
-                // of silently discarding them (compiling an ill-formed program).
                 throw Exception(
                     "type '" + typeName + "' is not a template but was given "
                     "type arguments", "CAJETA_ERROR_TYPE_ARGS_ON_NON_TEMPLATE");
             }
         }
-        // Diamond form (`new Box<>(args)`): infer type arguments from the
-        // constructor-call argument types, then route through instantiate.
-        // Inference reads each arg expression's already-resolved type — by
-        // the time we're in NewExpression::generateCode, the surrounding
-        // method has run its resolveTypes pass so child expressions know
-        // their types.
+        // Diamond (`new Box<>(args)`): infer from the argument types, which the
+        // surrounding method's resolveTypes pass has already resolved.
         else if (isDiamond) {
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
             if (!klass || !klass->isTemplate()) {
@@ -472,34 +371,26 @@ namespace cajeta {
             }
             type = klass->instantiate(klass->inferDiamondArgs(argTypes));
         }
-        // Bare `heap Box(args)` of a default-bearing template → Box<defaults>
-        // (mirrors resolveTypes; keeps the codegen-time type identical to the
-        // resolve-time one so both agree on the instantiation).
+        // Bare `heap Box(args)` of a default-bearing template, as resolveTypes did.
         else {
             type = defaultedInstantiation(type, typeName);
         }
         creatorRest->setTargetType(type);
-        // P2a: propagate stack-alloc choice down to ClassCreatorRest so
-        // it picks alloca over malloc. Array creators ignore the flag —
-        // arrays are always heap-allocated in v1 regardless of allocation
-        // prefix (no `stack int32[10]` syntax has user-facing semantics
-        // yet; would land as a future feature if needed).
+        // Stack placement goes to ClassCreatorRest (alloca over malloc). Array
+        // creators ignore it: arrays are always heap-allocated in v1.
         if (stackAlloc) {
             if (auto ccr = dynamic_pointer_cast<ClassCreatorRest>(creatorRest)) {
                 ccr->setStackAlloc(true);
             }
         }
-        // U3: propagate arena-eligibility to the array creator so the header is
-        // bump-allocated from the frame arena. Only array creators are arena-routed
-        // in this unit (class instances stay heap — their drop reclaims owned
-        // fields / runs user destructors; see frame-arena-plan 3.2.3).
+        // Arena-eligibility goes to the array creator so the header is bump-
+        // allocated. Class instances stay heap: their drop reclaims owned fields.
         if (arenaEligible) {
             if (auto acr = dynamic_pointer_cast<ArrayCreatorRest>(creatorRest)) {
                 acr->setArenaEligible(true);
             }
         }
-        // NRVO: when this construction is the returned value of a value-
-        // returning method, build straight into the caller's sret slot.
+        // NRVO: build straight into the caller's sret slot.
         if (nrvoTarget) {
             creatorRest->setNrvoTarget(nrvoTarget);
         }

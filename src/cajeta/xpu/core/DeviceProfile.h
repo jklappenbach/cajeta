@@ -1,16 +1,6 @@
-//
-// DeviceProfile — interrogate the live GPU into an in-memory machine model
-// (xpu-device-profile U1). Replaces the deleted DeviceModel's hardcoded gfx1151
-// constants with a per-arch table populated PARTLY from a live device query
-// (RawDeviceProps: warpSize / maxThreadsPerBlock / sharedMemPerBlock /
-// multiProcessorCount) and PARTLY from arch-derived constants the driver does
-// not expose (VGPR file per SIMD, LDS bank geometry, max waves/SIMD). Adding a
-// GPU is one table row, not a code change. Nothing here is persisted; the
-// profile is built once per process, in memory (xpu-device-profile §7).
-//
-// GPU-free: buildDeviceModel takes the queried facts as plain data, so the
-// model + arch table are unit-tested without a device (inject RawDeviceProps).
-//
+// DeviceProfile — the live GPU as an in-memory machine model, built once per
+// process from a device query plus an arch table of constants the driver does
+// not expose. Nothing is persisted, and it is testable with no device present.
 
 #pragma once
 
@@ -22,26 +12,17 @@
 namespace cajeta {
 namespace xpu {
 
-    // Raw device facts a runtime query can read from hipDeviceProp /
-    // cudaDeviceProp. POD + a fixed arch buffer so the C runtime can fill it and
-    // a test can inject it. `valid` is false when the query failed or profiling
-    // is disabled — buildDeviceModel then yields conservative, flagged defaults.
+    // Raw device facts, POD so the runtime fills them and a test injects them.
     struct RawDeviceProps {
         char     archName[64]        = {0}; // gcnArchName / cuda name (e.g. "gfx1151")
         unsigned waveSize            = 0;   // warpSize
         unsigned maxThreadsPerBlock  = 0;   // maxThreadsPerBlock
         unsigned multiprocessorCount = 0;   // RDNA: WGPs (= physical CUs / 2)
-        // Occupancy inputs read LIVE (hipDeviceGetAttribute). These make an
-        // unknown-arch device modelable without an arch-table row — the driver
-        // reports the register file, wave cap, and LDS budget directly.
+        // Live occupancy inputs: they model an unknown arch with no table row.
         unsigned regsPerMP           = 0;   // MaxRegistersPerMultiprocessor
         unsigned threadsPerMP        = 0;   // MaxThreadsPerMultiProcessor
         unsigned ldsBytesPerMP       = 0;   // MaxSharedMemoryPerMultiprocessor
-        // Tier-B geometry (device-geometry-parameterization §2.2). Every one is
-        // a live driver attribute, validated ordinal-by-ordinal on an RTX 4090
-        // before being specified. 0 means "this runtime did not report it" —
-        // never a substituted default, because a wrong number here is worse
-        // than an absent one (that is the whole lesson of the gfx1151 defaults).
+        // Live attributes, where 0 means unreported — never a substituted default.
         unsigned ldsBytesPerBlock    = 0;   // per-BLOCK shared cap (CUDA attr 8)
         unsigned ldsBytesPerBlockOptin = 0; // raised cap, opt-in only (attr 97)
         unsigned maxBlocksPerMP      = 0;   // resident block cap  (attr 106)
@@ -56,10 +37,7 @@ namespace xpu {
         bool     valid               = false; // false -> query failed / disabled
     };
 
-    // The occupancy-relevant machine model, in per-multiprocessor (per-WGP on
-    // RDNA) terms — topology-free, so it is filled either from live device
-    // attributes (any queryable GPU) or from the arch table (fallback). Defaults
-    // are a conservative gfx1151-shaped baseline.
+    // The occupancy model per multiprocessor (per WGP on RDNA), live or tabled.
     struct DeviceModel {
         std::string archName = "unknown";
         unsigned waveSize           = 32;
@@ -72,15 +50,9 @@ namespace xpu {
         unsigned cuPerMultiprocessor = 2;     // RDNA WGP = 2 CUs; for CU reporting
         unsigned cuCount            = 0;      // PHYSICAL CUs = mpCount * cuPerMp
         unsigned mpCount            = 0;      // driver multiprocessors, UNSCALED
-        // Scheduler partitions per multiprocessor — an ARCH constant, not a
-        // driver attribute (spec §2.3 Q2: deriving it from threadsPerMP/waveSize
-        // would give 1.5 on Ada, which is a residency cap, not a count).
-        // RDNA WGP = 2 CUs x 4 SIMD32 = 8; an NVIDIA SM has 4 partitions.
+        // An ARCH constant: threadsPerMP/waveSize gives 1.5 on Ada, a cap not a count.
         unsigned simdsPerMP         = 8;
-        // Per-BLOCK shared ceiling. On AMD this equals the per-MP budget; on
-        // NVIDIA it is roughly half of it, and a static tile is checked against
-        // THIS, not against ldsBytesPerMP. 0 = not reported -> fall back to the
-        // per-MP figure, which is what AMD has always effectively used.
+        // The per-BLOCK ceiling a static tile is checked against; 0 = per-MP.
         unsigned ldsBytesPerBlock      = 0;
         unsigned ldsBytesPerBlockOptin = 0;
         unsigned maxBlocksPerMP     = 0;      // 0 = not reported (no clamp)
@@ -96,45 +68,29 @@ namespace xpu {
         bool     estimated          = true;   // true until modelable (live or known arch)
     };
 
-    // The per-block shared ceiling to size a tile against: the reported
-    // per-block cap when the runtime gave one, else the per-MP budget (spec Q1
-    // — HIP's per-block ordinal is unverified on the NVIDIA box, and AMD's two
-    // figures are equal in any case).
+    // The ceiling to size a tile against: the per-block cap, else the per-MP one.
     unsigned ldsCeilingPerBlock(const DeviceModel& m);
 
-    // L1, the dispatch law (spec §3). `wavesPerBlock` is the KERNEL half; the
-    // device half is every SIMD on the part. Reproduces gfx1151's frozen
-    // TARGET_BLOCKS = 80 at wavesPerBlock = 2, and gives 256 on sm_89.
-    // 0 when the model was never queried or wavesPerBlock is 0 — never a guess.
+    // Blocks filling every SIMD at `wavesPerBlock`; 0 — never a guess — if unknown.
     unsigned dispatchBlocks(const DeviceModel& m, unsigned wavesPerBlock);
 
-    // L4 (spec §3): the roofline ceiling the ATTRIBUTES imply, independent of
-    // the measured probe, so the two cross-check. Double-data-rate is folded in
-    // (the reported memory clock is the data rate's half). 0.0 on 0 inputs.
+    // The roofline the ATTRIBUTES imply (double-data-rate folded in), to
+    // cross-check the measured probe; 0.0 on 0 inputs.
     double theoreticalGBps(unsigned busWidthBits, unsigned memClockKHz);
 
-    // Fill `out`'s arch-derived constants for a known arch string; return true on
-    // a hit (out left at its defaults + false on a miss). Keyed on the leading
-    // "gfxNNNN" / arch token, so trailing feature suffixes do not defeat it.
+    // Fills `out` for a known arch, keyed on the leading token; false on a miss.
     bool lookupArch(const std::string& archName, DeviceModel& out);
 
     // Conservative default model (no device queried / profiling disabled).
     DeviceModel defaultDeviceModel();
 
-    // Build the model: arch table for the static constants, then overlay the
-    // live RawDeviceProps. `estimated` is false IFF the query is valid AND the
-    // arch is known.
+    // Table constants overlaid with live props; `estimated` false IFF both hold.
     DeviceModel buildDeviceModel(const RawDeviceProps& props);
 
-    // Query the live device through the runtime (hipDeviceGetAttribute + the
-    // gfx-arch scan) and build the model. Yields an estimated default when no
-    // GPU is reachable or profiling is disabled.
+    // Queries the live device and builds the model, or an estimated default.
     DeviceModel queryLiveDeviceModel();
 
-    // The full profile: the machine model plus the measured roofline. A peak
-    // FLOP ceiling is left 0 (unknown) until the optional FLOP probe ships;
-    // `bandwidthGBps` is the measured device-memory ceiling, the honest
-    // denominator for memory-bound throughput.
+    // The model plus the measured roofline, memory-bound throughput's denominator.
     struct DeviceProfile {
         DeviceModel model;
         double bandwidthGBps    = 0.0;    // measured; 0 = unmeasured
@@ -147,54 +103,34 @@ namespace xpu {
     struct BandwidthProbeParams { uint64_t bytes; unsigned passes; };
     BandwidthProbeParams bandwidthProbeParams();
 
-    // True when profiling is disabled (CAJETA_XPU_DEVICE_PROFILE_DISABLE) or the
-    // model is not a measured device — i.e. the roofline probe should be skipped.
+    // False when profiling is disabled or the model is not a measured device.
     bool shouldProbeRoofline(const DeviceModel& model);
 
-    // Roofline math (GPU-free). `bytesMoved`/`nanos` -> GB/s (bytes per ns ==
-    // GB/s). classifyBound compares the kernel's arithmetic intensity to the
-    // ridge point (peakGFLOPs / bwGBps); Unknown when a ceiling is missing.
+    // Bytes per ns IS GB/s; classifyBound answers Unknown without a ceiling.
     double achievedGBps(uint64_t bytesMoved, double nanos);
     enum class Bound { Memory, Compute, Unknown };
     Bound classifyBound(double flops, double bytes, double bwGBps, double peakGFLOPs);
 
-    // Build the full profile: the live model + (when warranted) the measured
-    // bandwidth roofline. Cached once per process; nothing persisted.
+    // The live model plus, when warranted, the measured roofline; cached once.
     DeviceProfile queryLiveDeviceProfile();
 
-    // Render the profile as a compact one-line JSON object (GPU-free) — the
-    // payload of `cajeta gpu-profile`, consumed by env-capture.sh.
+    // The profile as one line of JSON — the `cajeta gpu-profile` payload.
     std::string formatDeviceProfileJson(const DeviceProfile& profile);
 
-    // ---- Analytic launch-config picker (spec §4) -------------------------- //
-    // Resident waves per multiprocessor for `block` threads given the kernel's
-    // compiled per-thread VGPR demand and per-block LDS bytes — the closed form
-    // (min over the register, LDS, and wave-residency limiters, rounded to whole
-    // blocks). 0 means the config does not fit. Topology-free: uses only per-MP
-    // quantities the driver reports live (regsPerMP, maxWavesPerMP, ldsBytesPerMP).
+    // Resident waves/MP at this block, VGPR and LDS demand; 0 = does not fit.
     unsigned occupancy(const DeviceModel& m, unsigned block,
                        unsigned kernelVgpr, unsigned ldsBytes);
 
-    // Which budget binds `occupancy()` for this config: "registers", "lds",
-    // "waveSlots" (the wave-residency or resident-block cap), or "unknown"
-    // when the config does not fit / the model cannot say. The manifest's
-    // `occupancyLimiter` (xpu-tile-manifest §3.3); same arithmetic as
-    // occupancy(), kept beside it so the two cannot drift.
+    // Which budget binds occupancy(), by the same arithmetic, kept beside it.
     const char* occupancyLimiterName(const DeviceModel& m, unsigned block,
                                      unsigned kernelVgpr, unsigned ldsBytes);
 
-    // Feasible block sizes (wave multiples that fit the budgets), best-first by
-    // predicted occupancy (larger block breaks ties). `clamp` (0 = none) caps the
-    // block (an @Occupancy / §2 bound). Empty if nothing fits.
+    // The wave-multiple blocks that fit, best occupancy first; `clamp` 0 = none.
     std::vector<unsigned> candidateBlocks(const DeviceModel& m, unsigned kernelVgpr,
                                           unsigned ldsBytes, unsigned clamp = 0);
 
-    // The picker's verdict for a launch. `block` is the computed occupancy-optimal
-    // launch size (0 if nothing fits); `occupancyWaves` its resident waves/MP;
-    // `bound` the roofline classification; `geometryWontHelp` is true when the
-    // kernel is memory-bound (a geometry change cannot raise throughput — the
-    // honest negative). `advisoryOnly` flags that the caller's kernel has fixed,
-    // hand-tuned geometry so the pick is informational, not to be applied.
+    // The picker's verdict: the optimal `block` (0 = nothing fits) and its
+    // waves/MP, plus the honest negative that geometry cannot help at all.
     struct LaunchPick {
         unsigned block = 0;
         unsigned occupancyWaves = 0;
@@ -204,22 +140,14 @@ namespace xpu {
         bool     needsSweep = false;   // unmodelable device: verify `block` empirically
     };
 
-    // True when the device was queried but its arch is unknown — so the occupancy
-    // constants are guessed and the analytic ranking is unreliable. This is the
-    // ONLY case that warrants the bounded sweep (a known/modelable device stays
-    // analytic; a device that did not respond uses safe defaults, no sweep).
+    // Queried but of unknown arch: the ONLY case the bounded sweep is for.
     bool shouldSweep(const DeviceModel& m);
 
-    // Bounded empirical fallback: time each candidate block via the injected
-    // timer (lower is faster) and return the fastest (0 if none). The timer is
-    // injected so the decision is GPU-free testable; the real launcher supplies
-    // an on-device launch-and-time. Used only when shouldSweep is true.
+    // Times each candidate through the injected timer and returns the fastest.
     unsigned sweepBlocks(const std::vector<unsigned>& candidates,
                          const std::function<double(unsigned)>& timeBlock);
 
-    // Compute the launch pick from the profile + the kernel's resource demand +
-    // the launch's FLOP/byte work. Pure decision logic — no GPU calls. `clamp`
-    // caps the block; `fixedGeometry` marks a hand-tuned kernel (pick is advisory).
+    // The pick from the profile, demand and work; `fixedGeometry` = advisory.
     LaunchPick pickLaunch(const DeviceProfile& profile, unsigned kernelVgpr,
                           unsigned ldsBytes, double flops, double bytes,
                           unsigned clamp = 0, bool fixedGeometry = false);

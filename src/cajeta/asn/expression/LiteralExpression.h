@@ -1,7 +1,4 @@
-//
-// Created by James Klappenbach on 4/14/23.
-//
-
+// Literal expression AST nodes: text, integer and float literals.
 #pragma once
 
 #include "Expression.h"
@@ -48,9 +45,7 @@ namespace cajeta {
             }
         }
 
-        // Synthesized literal (no parse context) — e.g. the compiler injects a
-        // string arg for classesAnnotated<@A>(). `rawValue` must already carry
-        // the source form generateCode expects (quotes for STRING).
+        // Synthesized literal: `rawValue` must already be in the source form generateCode expects.
         TextLiteralExpression(string rawValue, LiteralType type)
             : LiteralExpression(nullptr) { exprKind = ExprKind::TextLiteral;
             value = std::move(rawValue);

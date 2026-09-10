@@ -1,16 +1,6 @@
-// Compiler-synthesized field setter for classes / fields annotated `@Setter`.
-//
-// Naming follows size()-style: the setter for field `name` is `name(T v)`,
-// NOT `setName(T v)`. Returns void. Visibility defaults to public.
-//
-// Skipped for `final` fields (Lombok parity) and for any field where the
-// user already declared a same-signature method (user wins).
-//
-// Class-ref fields: the synthesizer stores the incoming pointer into the
-// slot. v1 does NOT drop the previous holder — the auto-field-drop
-// machinery at scope exit + the live-set discrimination handles the
-// ownership story; if a user's setter assignment needs explicit drop of
-// the old value, they can declare `name(T v)` by hand.
+// Compiler-synthesized field setter for `@Setter`: the setter for field `name` is
+// `name(T v)`, not `setName(T v)`, returns void, and is public. Skipped for `final`
+// fields and for any field the user already gave a same-signature method.
 
 #pragma once
 
@@ -27,10 +17,8 @@ namespace cajeta {
                                  CajetaClassPtr parent,
                                  StructurePropertyPtr field);
 
-        // Called by the owner (CajetaClass::synthesizeSetters) AFTER the
-        // shared_ptr has been created. We can't take shared_from_this()
-        // in the ctor, but the FormalParameter needs us as its parent
-        // (StructureMetadata::createParameterType derefs parent->toCanonical()).
+        // Called by CajetaClass::synthesizeSetters AFTER the shared_ptr exists: the
+        // FormalParameter needs this method as its parent, which the ctor cannot give.
         void initParameter();
 
         void generateCode() override;

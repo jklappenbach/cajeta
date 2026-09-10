@@ -1,17 +1,5 @@
-//
-// XPU attribute name registry.
-//
-// Centralizes the short type names recognized by the XPU subsystem so
-// call sites don't sprinkle string literals. Recognition itself is
-// free — Annotatable already captures every @-annotation on a
-// declaration into an AnnotationInstance; these helpers just wrap
-// findAnnotation lookups by canonical XPU attribute name.
-//
-// PascalCase per the project's framework-annotation convention
-// (@Native, @Component, @Inject, @SuppressLint). The CajetaXPU.md spec
-// reads `@kernel` / `@device` lowercase; the implementation uses
-// PascalCase to match the surrounding codebase. Docs to be reconciled.
-//
+// XPU attribute name registry: the short type names the XPU subsystem recognizes,
+// so call sites key Annotatable::findAnnotation off a constant, not a string literal.
 
 #pragma once
 
@@ -20,12 +8,10 @@
 namespace cajeta {
 namespace xpu {
 
-    // Short type names for the XPU-recognized attribute set. Used as
-    // the key argument to Annotatable::findAnnotation. All recognition
-    // and validation lookups in src/cajeta/xpu/** should route through
-    // these constants instead of hard-coding the strings.
+    // Route every recognition and validation lookup in src/cajeta/xpu/** through
+    // these, rather than hard-coding the strings.
     struct XpuAttr {
-        // Function-attribute attributes per CajetaXPU.md §3.1.1.
+        // Function-attribute attributes.
         static constexpr const char* Kernel       = "Kernel";
         static constexpr const char* Device       = "Device";
         static constexpr const char* Host         = "Host";
@@ -34,30 +20,19 @@ namespace xpu {
         static constexpr const char* Wave         = "Wave";          // @Wave(width = 32)
         static constexpr const char* Backend      = "Backend";       // @Backend("nvidia"), or list
         static constexpr const char* PushConstant = "PushConstant";  // Vulkan-only
-        // @FastMath on a @Kernel: relax IEEE FP for the whole body — the backend
-        // may fuse (FMA), reassociate, use reciprocals, and pick approximate
-        // transcendentals (the LLVM fast-math flags). Opt-in (precision-trading).
+        // @FastMath relaxes IEEE FP over the whole body; opt-in, since it trades precision.
         static constexpr const char* FastMath     = "FastMath";
-        // @Occupancy(maxThreads=, minResident=, maxRegisters=) — the portable
-        // override for resource logistics (kernel-occupancy-autotune §3). All
-        // params optional + vendor-neutral; lowered per-backend, no-op where
-        // unsupported. Overrides the automatic workgroup-size budgeting (§2).
+        // @Occupancy overrides the automatic workgroup budgeting; no-op where unsupported.
         static constexpr const char* Occupancy    = "Occupancy";
-        // Parameter attributes (xpu-tile-manifest §6). @Access(read|write|
-        // readwrite|accumulate|indirect) narrows a buffer parameter's mode; the
-        // body may not contradict it. @Streaming lowers the parameter's loads
-        // and stores non-temporal where the backend supports it (§6.3).
+        // @Access narrows a buffer parameter's mode; @Streaming makes its access non-temporal.
         static constexpr const char* Access       = "Access";
         static constexpr const char* Streaming    = "Streaming";
 
-        // KernelArg trait marker (v1 simulates the trait via this
-        // annotation; full structural-trait check lands later).
+        // KernelArg trait marker; the structural trait check lands later.
         static constexpr const char* KernelArg    = "KernelArg";
 
-        // Graphics shader-stage attributes (cajeta-gfx §4.a) — the rasterization
-        // parallel to @Kernel. A graphics method is lowered to a standalone
-        // per-stage SPIR-V module (see SpirvBackend::ShaderStage). @TessControl /
-        // @TessEval are the cajeta spellings of the hull / domain stages.
+        // Graphics shader stages, the rasterization parallel to @Kernel; each lowers to
+        // a standalone per-stage SPIR-V module. TessControl/TessEval are hull/domain.
         static constexpr const char* Vertex       = "Vertex";
         static constexpr const char* Fragment     = "Fragment";
         static constexpr const char* Geometry     = "Geometry";
@@ -67,24 +42,18 @@ namespace xpu {
         static constexpr const char* Task         = "Task";
     };
 
-    // Predicate helpers. The Annotatable need not be a Method —
-    // class-level annotations work too (e.g. @Backend on a class
-    // gates every kernel in it).
+    // Predicate helpers; the Annotatable need not be a Method (class-level ones apply too).
     inline bool isKernel(const Annotatable& a) {
         return a.findAnnotation(XpuAttr::Kernel) != nullptr;
     }
     inline bool isDevice(const Annotatable& a) {
         return a.findAnnotation(XpuAttr::Device) != nullptr;
     }
-    // @FastMath kernel: relax FP (fast-math flags) for the whole body.
     inline bool isFastMath(const Annotatable& a) {
         return a.findAnnotation(XpuAttr::FastMath) != nullptr;
     }
     inline bool isHost(const Annotatable& a) {
-        // @Host is the default — present-or-absent is the same to the
-        // codegen routing. The explicit attribute is supported for
-        // @Host @Device dual-emit cases (a function callable from both
-        // host and device code, emitted twice).
+        // @Host is the default; it is explicit only for the @Host @Device dual-emit case.
         return a.findAnnotation(XpuAttr::Host) != nullptr;
     }
 
@@ -111,8 +80,7 @@ namespace xpu {
         return a.findAnnotation(XpuAttr::Task) != nullptr;
     }
 
-    // The number of graphics shader-stage annotations on a declaration. A
-    // well-formed graphics shader carries exactly one.
+    // The number of graphics stage annotations; a well-formed shader carries exactly one.
     inline int graphicsStageCount(const Annotatable& a) {
         return (isVertex(a) ? 1 : 0) + (isFragment(a) ? 1 : 0)
              + (isGeometry(a) ? 1 : 0) + (isTessControl(a) ? 1 : 0)
@@ -120,15 +88,12 @@ namespace xpu {
              + (isTask(a) ? 1 : 0);
     }
 
-    // True when the declaration carries any graphics shader-stage annotation —
-    // the routing parallel to isKernel (compute).
+    // True for any graphics stage annotation: the routing parallel to isKernel.
     inline bool isGraphicsShader(const Annotatable& a) {
         return graphicsStageCount(a) > 0;
     }
 
-    // Stage-shape validation: a declaration is ill-formed if it carries more
-    // than one graphics stage, or mixes a graphics stage with @Kernel (a method
-    // is either one compute kernel or one graphics stage, never both/several).
+    // Ill-formed if more than one graphics stage, or a graphics stage with @Kernel.
     inline bool hasShaderStageConflict(const Annotatable& a) {
         int g = graphicsStageCount(a);
         return g > 1 || (g > 0 && isKernel(a));

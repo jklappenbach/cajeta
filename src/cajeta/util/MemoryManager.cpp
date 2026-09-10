@@ -1,6 +1,4 @@
-//
 // Created by James Klappenbach on 11/9/22.
-//
 
 #include "MemoryManager.h"
 #include "../compile/CajetaModule.h"
@@ -42,20 +40,12 @@ namespace cajeta {
         return fnCallee;
     }
 
-    // After every malloc, register the result with the live-allocation set
-    // so the auto field-drop scheme (FieldOwnership.md § Solution B) can
-    // distinguish "this address is live, drop it" from "already freed by
-    // an aliasing owner, no-op." Without this, class instances allocated
-    // via libc malloc directly never appear in the set and auto-drop
-    // silently skips them.
+    // Registers a malloc result with the live-allocation set so the auto field-drop
+    // scheme can tell "live, drop it" from "already freed by an aliasing owner";
+    // instances allocated straight through libc malloc are otherwise skipped.
     static void emitLiveSetAdd(CajetaModulePtr module, llvm::CallInst* malloc, llvm::BasicBlock* basicBlock) {
-        // --live-set=off (release/minimal builds) skips registration
-        // entirely. Bounded and Strict both register; the runtime side
-        // distinguishes them (Strict asserts on duplicates, Bounded
-        // caps capacity). Off means class instances allocated via
-        // libc malloc never enter the live-set, so the auto field-
-        // drop pass becomes a no-op on them — caller code that owns
-        // those references is responsible for explicit cleanup.
+        // --live-set=off skips registration entirely, so auto field-drop no-ops on those
+        // instances; Bounded and Strict both register, and the runtime tells them apart.
         if (module->getFlags().liveSet == LiveSet::Off) return;
         llvm::Function* addFn = module->getRuntimeFunction("__cajeta_live_set_add");
         if (!addFn) return;

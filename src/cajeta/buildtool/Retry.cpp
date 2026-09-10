@@ -5,10 +5,6 @@
 namespace cajeta::buildtool {
 
     bool isTransientHttpStatus(long status) {
-        // 408 Request Timeout — load-balancer hand-off retries.
-        // 425 Too Early — caller may retry.
-        // 429 Too Many Requests — backoff exactly the right answer.
-        // 500-504 server-side hiccups.
         if (status == 408 || status == 425 || status == 429) return true;
         if (status >= 500 && status < 600) return true;
         return false;

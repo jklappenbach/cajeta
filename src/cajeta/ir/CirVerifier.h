@@ -1,13 +1,6 @@
-//
-// CirVerifier — well-formedness checks for a CirFunction (spec §2.1.4).
-//
-// Returns a list of human-readable error messages; an empty list means the
-// function is well-formed. Checks:
-//   - every block ends in exactly one terminator;
-//   - SSA single-definition (no value defined twice as a param/block-param/result);
-//   - branch targets pass the right block-parameter arity (and type spelling).
-// Analysis-only and codegen-independent (Unit 1).
-//
+// CirVerifier — well-formedness checks for a CirFunction (spec §2.1.4): exactly one
+// terminator per block, SSA single-definition, and branch targets matching their
+// block-parameter arity and type spelling. Analysis-only and codegen-independent.
 
 #pragma once
 

@@ -1,14 +1,5 @@
-//
-// Minimal JSON value model + parser/serializer for the DAP server (CP4).
-//
-// DAP message bodies are small and flat, so a tiny hand-rolled implementation
-// is the right call — no third-party dependency. The repo's only other JSON
-// (src/cajeta/codec/JsonSynthesizer) is a *compiler* feature emitting Cajeta
-// IR, not a host DOM, so it can't be reused here.
-//
-// Scope: objects, arrays, strings, numbers (stored as double + an integer
-// accessor), booleans, null. Enough for the DAP request/response/event shapes.
-//
+// Minimal JSON value model + parser/serializer for the DAP server: objects,
+// arrays, strings, numbers (a double plus an integer accessor), booleans, null.
 #pragma once
 
 #include <cstdint>
@@ -42,7 +33,7 @@ namespace cajeta::dap {
         bool isNumber() const { return type_ == Type::Number; }
         bool isBool() const { return type_ == Type::Bool; }
 
-        // Scalar accessors with defaults (no throw on type mismatch).
+        // Scalar accessors with defaults; a type mismatch yields the default, never a throw.
         bool asBool(bool dflt = false) const {
             return type_ == Type::Bool ? bool_ : dflt;
         }
@@ -59,13 +50,11 @@ namespace cajeta::dap {
             return type_ == Type::String ? str_ : dflt;
         }
 
-        // Object access. operator[] inserts a Null on miss (so you can build
-        // objects with j["a"] = 1); at()/has() are const lookups.
+        // operator[] inserts a Null on miss, so `j["a"] = 1` builds; at()/has() are const.
         Json& operator[](const std::string& key);
         bool has(const std::string& key) const;
         const Json& at(const std::string& key) const;  // returns Null sentinel on miss
 
-        // Array access / building.
         void push_back(Json value);
         size_t size() const;
         const Json& operator[](size_t i) const;  // Null sentinel on out-of-range
@@ -73,11 +62,10 @@ namespace cajeta::dap {
         const std::map<std::string, Json>& items() const { return obj_; }
         const std::vector<Json>& elements() const { return arr_; }
 
-        // Serialize to a compact JSON string.
+        // Serializes to a compact JSON string.
         std::string dump() const;
 
-        // Parse `text`. On success returns the value and sets *ok=true (if
-        // provided). On a parse error returns Null and sets *ok=false.
+        // Parses `text`; on a parse error returns Null and sets *ok (when given) false.
         static Json parse(const std::string& text, bool* ok = nullptr);
 
     private:

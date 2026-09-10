@@ -27,8 +27,7 @@ namespace cajeta {
         return prims.count(c) > 0;
     }
 
-    // The cajeta.lang box class for a scalar primitive, or "" if it has no box
-    // (int128/uint128). `<Box>.of(v)` boxes; `((<Box>) o).value()` unboxes.
+    // The cajeta.lang box class for a scalar primitive, "" when it has none.
     static string boxClassFor(const string& canon) {
         static const std::map<string, string> boxes = {
             {"int8", "Int8"}, {"int16", "Int16"}, {"int32", "Int32"}, {"int64", "Int64"},
@@ -45,11 +44,9 @@ namespace cajeta {
         return t->getQName()->toCanonical();
     }
 
-    // Build the mock body: a MockEngine field + ctor, then a forwarding override
-    // of every overridable reference-/void-signature method on the target. Each
-    // override boxes its (reference) args into an Object[], records+answers via
-    // engine.handle, and returns the answer INLINE (an owned local would free the
-    // stub's value — see docs/mockito-aot.md).
+    // The mock body: a MockEngine field + ctor, then a forwarding override per
+    // overridable method, each boxing its args into an Object[] for engine.handle
+    // and returning the answer INLINE (an owned local would free the stub's value).
     static string synthesizeMockBody(const CajetaClassPtr& mock,
                                      const CajetaClassPtr& target) {
         string mockName = mock->getQName()->getTypeName();
@@ -67,16 +64,12 @@ namespace cajeta {
             string retCanon = canonicalOf(rt);
             bool isVoid = (!rt || retCanon == "void" || retCanon.empty());
 
-            // Return: a primitive needs a box for the unbox path; bail if it has
-            // none (int128/uint128).
             string retBox;
             if (!isVoid && isPrimitiveCanonical(retCanon)) {
                 retBox = boxClassFor(retCanon);
                 if (retBox.empty()) continue;
             }
 
-            // Params: reference args pass through; primitive args box via
-            // `<Box>.of(name)`. Bail on an unboxable primitive or an unnamed type.
             bool skip = false;
             string paramDecl;
             string argList;
@@ -88,9 +81,8 @@ namespace cajeta {
                 if (isPrimitiveCanonical(ptCanon)) {
                     string box = boxClassFor(ptCanon);
                     if (box.empty()) { skip = true; break; }
-                    // Short name: qualified receivers don't resolve in
-                    // expression position; the box binds via the global
-                    // short-name key (CajetaType::ofScoped tier 3).
+                    // Short name: a qualified receiver does not resolve in
+                    // expression position; the box binds on the short-name key.
                     arg = box + ".of(" + p->getName() + ")";
                 } else {
                     arg = p->getName();
@@ -109,11 +101,9 @@ namespace cajeta {
             if (isVoid) {
                 body += "        " + handleCall + ";\n";
             } else if (!retBox.empty()) {
-                // Primitive return: unbox the answer inline.
                 body += "        return ((" + retBox + ") "
                       + handleCall + ").value();\n";
             } else {
-                // Reference return: downcast the answer inline.
                 body += "        return (" + retCanon + ") " + handleCall + ";\n";
             }
             body += "    }\n";
@@ -121,17 +111,12 @@ namespace cajeta {
         return body;
     }
 
-    // Parse `class <wrapper> { <body> }` and walk its class body with the
-    // structure stack rooted at `owner`, so the synthesized fields/methods/ctor
-    // land on `owner`. Returns the parsed ClassBodyDeclaration. Mirrors
-    // Method::instantiateMethodTemplateInternal's isolated re-parse.
+    // Parse and walk `class <wrapper> { <body> }` rooted at `owner`.
     static ClassBodyDeclarationPtr reparseBodyInto(const CajetaClassPtr& owner,
                                                    const string& wrapperName,
                                                    const string& body,
                                                    const CajetaModulePtr& module) {
-        // Nothing walked here has a source file — the snippet's line numbers refer
-        // to the snippet. Mask the region so no xref edge is attributed to whatever
-        // real call site this synthesis is nested inside (ide-symbol-index 2.2.8).
+        // Line numbers are the snippet's, so no xref edge may escape this region.
         xref::SyntheticSourceScope xrefMask;
 
         string src = "class " + wrapperName + " {\n" + body + "}\n";
@@ -190,13 +175,10 @@ namespace cajeta {
         string ownerName = owner->getQName()->getTypeName();
         string ctorBody;
         for (auto& fi : inits) {
-            // fi.second is the fully-qualified mock class canonical.
             ctorBody += "        this." + fi.first + " = heap " + fi.second + "();\n";
         }
         string body = "    public " + ownerName + "() {\n" + ctorBody + "    }\n";
-        // setClassBody's updateParent is what registers the parsed member on the
-        // class (the walk alone doesn't). The reparsed body holds only this ctor,
-        // so owner's existing methods are untouched.
+        // setClassBody's updateParent, not the walk, is what registers the member.
         auto classBody = reparseBodyInto(owner, ownerName, body, module);
         owner->setClassBody(classBody);
     }

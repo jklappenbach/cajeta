@@ -1,6 +1,4 @@
-//
 // Minimal Vulkan compute runtime wrapper — see header.
-//
 
 #include "VulkanDriver.h"
 
@@ -19,9 +17,7 @@
 #include <vector>
 #if defined(_WIN32)
 // POSIX dl* shim over the Win32 loader so the dlopen/dlsym/dlclose call sites
-// below stay identical across platforms. Mirrors the Cuda/Hip drivers' Win32
-// loadLib/loadSym split, but as drop-in dl* names because this driver also
-// dlclose's on its cleanup paths. RTLD_* have no Win32 analogue -> ignored.
+// below stay identical across platforms; RTLD_* have no Win32 analogue.
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
 #  ifndef RTLD_NOW
@@ -164,9 +160,8 @@ struct VulkanDriver::Impl {
         fp = reinterpret_cast<F>(getDeviceProcAddr(device, name));
     }
 
-    // Resolve libvulkan + instance/device, pick a compute queue, build the
-    // command pool. Static (takes the Impl) so it can name the private nested
-    // type; fills `d` on success.
+    // Resolve libvulkan + instance/device, pick a compute queue, build the command
+    // pool, filling `d`. Static so it can name the private nested Impl type.
     static bool bringUp(Impl& d);
 
     int findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags want) {
@@ -202,13 +197,10 @@ struct VulkanDriver::Impl {
 };
 
 bool VulkanDriver::Impl::bringUp(Impl& d) {
-    // MV1: macOS loads MoltenVK (Vulkan->Metal); no native Vulkan ICD there.
 #if defined(__APPLE__)
     for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
                              "libMoltenVK.dylib"}) {
 #elif defined(_WIN32)
-    // The Vulkan loader the GPU driver / runtime installs into System32;
-    // LoadLibraryA resolves it via the default DLL search path.
     for (const char* name : {"vulkan-1.dll"}) {
 #else
     for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
@@ -258,7 +250,6 @@ bool VulkanDriver::Impl::bringUp(Impl& d) {
     std::vector<VkPhysicalDevice> devs(count);
     d.enumeratePhysicalDevices(d.instance, &count, devs.data());
 
-    // Pick the first device exposing a compute-capable queue family.
     bool found = false;
     for (VkPhysicalDevice pd : devs) {
         uint32_t qcount = 0;
@@ -288,11 +279,9 @@ bool VulkanDriver::Impl::bringUp(Impl& d) {
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    // Enable shaderInt8 / shaderInt64 when present so SPIR-V that declares those
-    // capabilities (byte-addressed ops, 64-bit device handles) is valid on this
-    // launch device too — VUID-VkShaderModuleCreateInfo-pCode-08740. Mirrors the
-    // in-process runtime device (cajeta_runtime.c). int8 is an extension feature
-    // (pNext chain); int64 is core (pEnabledFeatures).
+    // shaderInt8 / shaderInt64 must be enabled for SPIR-V declaring those
+    // capabilities to be valid here (VUID-VkShaderModuleCreateInfo-pCode-08740).
+    // int8 is an extension feature (pNext chain); int64 is core.
     VkPhysicalDeviceShaderFloat16Int8Features int8f{};
     int8f.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
     VkPhysicalDeviceFeatures coreF{};
@@ -315,13 +304,9 @@ bool VulkanDriver::Impl::bringUp(Impl& d) {
             dci.pEnabledFeatures = &coreF;
         }
     }
-    // EXT_shader_atomic_float{,2}: Buffer<float32>.atomic{Add,Min,Max} lower to
-    // OpAtomicF{Add,Min,Max}EXT, which NVIDIA (unlike RADV) faults on —
-    // VK_ERROR_DEVICE_LOST — unless the extension+feature are enabled at device
-    // creation. Mirror the in-process runtime device (cajeta_runtime.c): probe
-    // support, enable only the advertised bits, gate on the extension being
-    // present (enabling an unsupported extension fails vkCreateDevice). The
-    // structs/list live in this function scope so they outlive createDevice.
+    // OpAtomicF{Add,Min,Max}EXT faults on NVIDIA with VK_ERROR_DEVICE_LOST unless
+    // EXT_shader_atomic_float{,2} is enabled here, and enabling an unadvertised
+    // extension fails vkCreateDevice, so both are probed first.
     std::vector<const char*> devExts;
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT afEn{};
     VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT af2En{};
@@ -350,10 +335,6 @@ bool VulkanDriver::Impl::bringUp(Impl& d) {
                 }
             }
         }
-        // KHR_shader_atomic_int64 (core in 1.2, still advertised as an extension):
-        // Buffer<int64|uint64>.atomic* lowers to 64-bit OpAtomicI*, which declares
-        // the Int64Atomics capability — VUID-VkShaderModuleCreateInfo-pCode-08740
-        // requires shaderBufferInt64Atomics enabled to back it.
         if (getF2 && hasAi64) {
             VkPhysicalDeviceShaderAtomicInt64Features qa64{};
             qa64.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES;
@@ -466,17 +447,11 @@ bool VulkanDriver::available() {
 bool VulkanDriver::builtWithVulkan() { return true; }
 
 bool VulkanDriver::rayQueryAvailable() {
-    // Self-contained probe: load libvulkan, create a throwaway 1.3 instance,
-    // and check the first compute-capable device for the ray-query extension +
-    // feature set. No logical device is created. Torn down before returning.
     void* lib = nullptr;
-    // MV1: macOS loads MoltenVK (Vulkan->Metal); no native Vulkan ICD there.
 #if defined(__APPLE__)
     for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
                              "libMoltenVK.dylib"}) {
 #elif defined(_WIN32)
-    // The Vulkan loader the GPU driver / runtime installs into System32;
-    // LoadLibraryA resolves it via the default DLL search path.
     for (const char* name : {"vulkan-1.dll"}) {
 #else
     for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
@@ -525,7 +500,6 @@ bool VulkanDriver::rayQueryAvailable() {
         std::vector<VkPhysicalDevice> devs(count);
         if (count) enumDevs(inst, &count, devs.data());
         for (VkPhysicalDevice pd : devs) {
-            // Require a compute queue (matches the device we'd actually pick).
             uint32_t qn = 0;
             getQueueProps(pd, &qn, nullptr);
             std::vector<VkQueueFamilyProperties> qp(qn);
@@ -572,17 +546,11 @@ bool VulkanDriver::rayQueryAvailable() {
 }
 
 bool VulkanDriver::coopMatrixAvailable() {
-    // Self-contained probe (mirrors rayQueryAvailable): load libvulkan, make a
-    // throwaway 1.3 instance, and check the first compute device's
-    // cooperative-matrix config list for the exact shape CM5 dispatches —
-    // 16x16x16, Subgroup scope, A=B=f16, C=Result=f32. No logical device.
     void* lib = nullptr;
 #if defined(__APPLE__)
     for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
                              "libMoltenVK.dylib"}) {
 #elif defined(_WIN32)
-    // The Vulkan loader the GPU driver / runtime installs into System32;
-    // LoadLibraryA resolves it via the default DLL search path.
     for (const char* name : {"vulkan-1.dll"}) {
 #else
     for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
@@ -663,11 +631,6 @@ bool VulkanDriver::coopMatrixAvailable() {
 }
 
 bool VulkanDriver::shaderAtomicFloatMinMaxAvailable() {
-    // Self-contained probe (mirrors coopMatrixAvailable): does the first compute
-    // device expose VK_EXT_shader_atomic_float2 with shaderBufferFloat32AtomicMinMax?
-    // Float atomic min/max (OpAtomicFMin/MaxEXT) needs it, and there is no portable
-    // SPIR-V fallback (an integer-bit-trick / CAS would need an int atomic on the
-    // float buffer, which logical addressing forbids). NVIDIA does NOT expose it.
     void* lib = nullptr;
 #if defined(__APPLE__)
     for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
@@ -745,11 +708,6 @@ bool VulkanDriver::shaderAtomicFloatMinMaxAvailable() {
 }
 
 bool VulkanDriver::shaderAtomicInt64Available() {
-    // Self-contained probe (mirrors shaderAtomicFloatMinMaxAvailable): does the
-    // first compute device expose VK_KHR_shader_atomic_int64 (core in 1.2) with
-    // shaderBufferInt64Atomics? 64-bit OpAtomicI* declares the Int64Atomics
-    // capability, which that feature must back. Broadly supported on desktop
-    // (RADV, NVIDIA, Intel); software rasterizers (llvmpipe) may lack it.
     void* lib = nullptr;
 #if defined(__APPLE__)
     for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
@@ -872,8 +830,8 @@ VulkanDriver::Buffer VulkanDriver::alloc(std::size_t bytes) {
         return 0;
     }
     rec.live = true;
-    // Reuse a reclaimed slot if one is free, else grow the table. Without this
-    // the handle table grew unbounded across alloc/free cycles.
+    // Reuse a reclaimed slot when one is free, else the table grows unbounded
+    // across alloc/free cycles.
     if (!d.freeSlots.empty()) {
         std::size_t idx = d.freeSlots.back();
         d.freeSlots.pop_back();
@@ -923,7 +881,6 @@ bool VulkanDriver::launch(const void* spirv, std::size_t len, const char* entry,
     const uint32_t n = (uint32_t) bindings.size();
     bool ok = false;
 
-    // Transient objects, torn down at the end regardless of outcome.
     VkShaderModule module = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipeLayout = VK_NULL_HANDLE;

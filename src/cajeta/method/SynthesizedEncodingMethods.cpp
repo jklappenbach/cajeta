@@ -13,11 +13,8 @@ using namespace std;
 
 namespace cajeta {
 
-    // Find a static method on `cls` with the given name that takes
-    // exactly one parameter, and whose param type's canonical name
-    // matches `wantCanon`. Static methods' parameterList has only
-    // user params (no implicit `this`). Returns nullptr if no
-    // matching method exists.
+    // The static one-parameter `name` on `cls` whose parameter type matches
+    // `wantCanon`, or nullptr. A static's parameterList carries no implicit `this`.
     static MethodPtr findStaticUnaryMethod(CajetaClassPtr cls,
                                             const std::string& name,
                                             const std::string& wantCanon) {
@@ -28,16 +25,12 @@ namespace cajeta {
             if (mods.find(STATIC) == mods.end()) continue;
             if (m->getName() != name) continue;
             auto params = m->getParameterList();
-            // Static methods don't have `this` injected — exactly one
-            // param means one user-visible param.
             if (params.size() != 1 || !params[0]) continue;
             auto pt = params[0]->getType();
             if (!pt) continue;
             std::string pCanon = pt->getQName()
                 ? pt->getQName()->toCanonical() : "";
-            // Match by canonical name; accept either bare typeName or
-            // fully-qualified form (encoder authors may import the
-            // type or refer by short name).
+            // Short or canonical: the encoder author may or may not have imported it.
             std::string pShort = pt->getQName()
                 ? pt->getQName()->getTypeName() : "";
             if (pCanon == wantCanon || pShort == wantCanon) return m;
@@ -58,20 +51,14 @@ namespace cajeta {
 
     void SynthesizedEncodingCtor::initParameter() {
         if (!parameterList.empty()) return;  // idempotent
-        // Parameter type is byte[] — CajetaType::of("byte") wrapped
-        // in a CajetaArray.
+        // The parameter is byte[]: reuse the canonical int8[] when one exists, so
+        // the synthesized signature matches every other byte[] in the program.
         auto byteType = CajetaType::of("int8");  // byte == int8 in Cajeta
-        // Use the canonical byte[] type via CajetaArray. We mirror the
-        // ArrayList / ArrayStream pattern of constructing array types
-        // through CajetaArray::getOrInsert (or similar).
-        // For simplicity, find an existing byte[] type if one is in
-        // the canonical map; otherwise construct one.
         auto& canonicalMap = CajetaType::getCanonicalMap();
         CajetaTypePtr arrayType;
         auto it = canonicalMap.find("int8[]");
         if (it != canonicalMap.end()) arrayType = it->second;
         if (!arrayType) {
-            // Fallback: search for any cached byte[] CajetaArray.
             for (auto& [name, t] : canonicalMap) {
                 if (auto arr = dynamic_pointer_cast<CajetaArray>(t)) {
                     auto et = arr->getElementType();
@@ -83,8 +70,6 @@ namespace cajeta {
                 }
             }
         }
-        // Last resort: build one. Most code paths should have a byte[]
-        // cached by this point (Optional / String etc.), but be defensive.
         if (!arrayType) {
             arrayType = make_shared<CajetaArray>(module, byteType);
         }
@@ -98,16 +83,10 @@ namespace cajeta {
 
     void SynthesizedEncodingCtor::generateCode() {
         auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
-        // Idempotent — Method-iteration paths can call generateCode
-        // multiple times; bail if we've already emitted the body.
+        // Idempotent: Method iteration can reach generateCode more than once.
         if (llvmBasicBlock != nullptr) return;
-        // Body:
-        //   tmp = MyEncoder.decode(bytes)
-        //   memcpy(this, tmp, sizeof(parent))
-        //   ret void
-        // The decode() function is a static method on the encoder class
-        // returning a fresh `parent`. memcpy copies vtable + fields
-        // verbatim; tmp's shell leaks (v1).
+        // Emits `memcpy(this, MyEncoder.decode(bytes), sizeof(parent))`: the static
+        // decode returns a fresh `parent`, whose vtable and fields copy verbatim.
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
@@ -117,7 +96,6 @@ namespace cajeta {
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
 
-        // Look up decode by canonical-name match — param must be int8[].
         MethodPtr decodeMethod = findStaticUnaryMethod(
             encoder, "decode", std::string("int8[]"));
         if (!decodeMethod) {
@@ -141,17 +119,14 @@ namespace cajeta {
         llvm::Value* thisPtr = llvmFunction->getArg(0);
         llvm::Value* bytes   = llvmFunction->getArg(1);
 
-        // Call decode(bytes) — returns ptr to fresh T. Title-tracking
-        // Unit 8: the target's ABI may carry the trailing transfer word
-        // (needsTransferWord) — pass 0 (borrowed arg) when it does, or the
-        // JIT verifier rejects the arg count.
+        // A trailing 0 transfer word when the target's ABI carries one, or the
+        // verifier rejects the argument count.
         std::vector<llvm::Value*> decodeArgs{bytes};
         if (decodeMethod->needsTransferWord()) {
             decodeArgs.push_back(llvm::ConstantInt::get(i64Ty, 0));
         }
         llvm::Value* tmp = b.CreateCall(decodeFn, decodeArgs, "enc.decoded");
 
-        // memcpy(this, tmp, sizeof(parent)).
         llvm::Type* parentTy = parent->getLlvmType();
         uint64_t parentSize = dl.getTypeAllocSize(parentTy);
         llvm::Function* memcpyFn = llvm::Intrinsic::getOrInsertDeclaration(
@@ -164,15 +139,9 @@ namespace cajeta {
             llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx), 0)
         });
 
-        // Free the decoded temp's shell — its field POINTERS were
-        // copied verbatim into `this`'s slots by the memcpy above, so
-        // ownership of the fields transferred to `this`. The shell
-        // itself (vtable slot + the inline portions of any value
-        // fields) is leaked memory if not freed. __cajeta_free claims
-        // tmp from the live-set + raw-frees the shell without
-        // walking fields, so the now-aliased field allocations stay
-        // alive under `this`'s ownership and get dropped exactly once
-        // when `this` does.
+        // The memcpy moved the temp's field pointers into `this`, so only the shell
+        // is left to reclaim. __cajeta_free raw-frees it WITHOUT walking fields, which
+        // is what leaves the now-aliased allocations alive under `this`.
         llvm::FunctionType* freeFnTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(ctx), {ptrTy}, false);
         llvm::FunctionCallee freeFn = lmod->getOrInsertFunction(
@@ -187,7 +156,6 @@ namespace cajeta {
     SynthesizedEncodingToBytes::SynthesizedEncodingToBytes(
             CajetaModulePtr module, CajetaClassPtr parent,
             CajetaClassPtr encoder)
-        // Return type is byte[]. Find/build the byte[] type.
         : Method(module, std::string("toBytes"),
                  [&]() -> CajetaTypePtr {
                      for (auto& [n, t] : CajetaType::getCanonicalMap()) {
@@ -199,35 +167,26 @@ namespace cajeta {
                              }
                          }
                      }
-                     // Build one if missing
                      return std::static_pointer_cast<CajetaType>(
                          make_shared<CajetaArray>(module, CajetaType::of("int8")));
                  }(),
                  parent),
           encoder(encoder) {
         this->parent = parent;
-        // The encoder's encode returns a fresh byte[] — we pass it
-        // through. Mark our return as ownership-transferring so the
-        // ReturnStatement check accepts it. Without this, the
-        // pass-through would still need # because encode itself
-        // returns #byte[].
+        // encode() returns an owned byte[] this passes straight through, so the
+        // return must transfer too or the ReturnStatement check rejects it.
         this->setReturnsOwnership(true);
     }
 
     void SynthesizedEncodingToBytes::generateCode() {
         auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         if (llvmBasicBlock != nullptr) return;
-        // Body: return MyEncoder.encode(this)
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
         llvm::Module* lmod = module->getLlvmModule();
 
-        // Look up encode by canonical-name match — param is the
-        // parent class (T in the @Encoding contract). Accept either
-        // short typeName or full canonical so an encoder author can
-        // write `encode(UserMessage)` whether or not they imported
-        // the type with its full package qualifier.
+        // encode's parameter is the parent class, matched short or canonical.
         std::string parentCanon = parent->getQName()
             ? parent->getQName()->toCanonical() : "";
         MethodPtr encodeMethod = findStaticUnaryMethod(
@@ -251,7 +210,7 @@ namespace cajeta {
         encodeFn = CajetaModule::ensureFunctionInModule(lmod, encodeFn);
 
         llvm::Value* thisPtr = llvmFunction->getArg(0);
-        // Title-tracking Unit 8: same trailing-word rule as decode above.
+        // The same trailing transfer word as the decode call above.
         std::vector<llvm::Value*> encodeArgs{thisPtr};
         if (encodeMethod->needsTransferWord()) {
             encodeArgs.push_back(llvm::ConstantInt::get(

@@ -1,10 +1,6 @@
-//
-// Source-synthesis facility (núcleo Layer-1a) — the trigger registry + handler
-// interface + synthesis context. One registry maps a trigger (an annotation on
-// a declaration, or a generic/method-template instantiation) to exactly one
-// synthesizer, replacing the scattered `findAnnotation` checks and the
-// if-else chain in MethodTemplateInstantiator. Spec §2 / §1.5; plan §2.
-//
+// Source-synthesis facility (nucleo Layer-1a): the trigger registry, the handler
+// interfaces, and the synthesis context. One registry maps a trigger (an annotation
+// or a generic/method-template instantiation) to exactly one synthesizer.
 #pragma once
 
 #include <functional>
@@ -23,43 +19,29 @@ namespace cajeta {
 
 namespace cajeta::synth {
 
-    // What a synthesizer sees: the resolved declaration plus its trigger
-    // arguments. (Unit 3+ adds a reflection view and a diagnostics sink.)
     struct SynthesisContext {
         CajetaClassPtr parent;                  // declaring / enclosing class
         std::string methodName;                 // body synthesis: the method
         std::vector<CajetaTypePtr> typeArgs;    // monomorphized type arguments
         std::vector<CajetaTypePtr> paramTypes;  // body synthesis: params (no `this`)
         CajetaModulePtr module;
-        // Declaration-time body dispatch only (Unit 6): the resolved bodyless
-        // Method — carries the annotations, named formals, and return type a
-        // signature-validating synthesizer (@Einsum) reads. Null on the
-        // method-template instantiation path.
+        // Declaration-time body dispatch only; null on the method-template path.
         MethodPtr method;
     };
 
-    // A body synthesizer provides the body of a declared-but-bodyless method,
-    // or declines (nullopt) so the caller keeps the captured/declared source.
-    // Contract by dispatch site: with ctx.method set (declaration-time, the
-    // caller splices into the original declaration) return a `{ ... }` BODY
-    // BLOCK; with ctx.method null (method-template instantiation) return FULL
-    // method source (the codec model). A synthesizer claims only its own site.
+    // Provides the body of a declared-but-bodyless method, or declines (nullopt).
+    // With ctx.method set (declaration-time) return a `{ ... }` BODY BLOCK; with it
+    // null (method-template instantiation) return FULL method source.
     using BodySynthesizer =
         std::function<std::optional<std::string>(const SynthesisContext&)>;
 
-    // What a member synthesizer returns: a `{ ... }` class-body fragment to
-    // inject into the target, plus any short-name imports the fragment needs
-    // (each injected only-when-unbound). A synthesizer that validates its
-    // trigger and finds it invalid throws a cajeta::Exception (validate-first,
-    // spec §6) — the caller surfaces it as a user-attributed compile error and
-    // injects nothing.
+    // A `{ ... }` class-body fragment to inject, plus short-name imports it needs
+    // (each injected only-when-unbound). An invalid trigger throws, injecting nothing.
     struct MemberSynthesisResult {
         std::string classBodyFragment;
         std::vector<std::pair<std::string, std::string>> imports;  // (short, package)
     };
 
-    // A member synthesizer inspects the target (via the context's `parent`) and
-    // either declines (nullopt) or returns a fragment to inject.
     using MemberSynthesizer =
         std::function<std::optional<MemberSynthesisResult>(const SynthesisContext&)>;
 
@@ -67,23 +49,14 @@ namespace cajeta::synth {
     public:
         SynthesizerRegistry() = default;
 
-        // The compiler-wide registry (the built-in synthesizers register here).
         static SynthesizerRegistry& instance();
 
-        // Register a body synthesizer under a stable label (used in diagnostics).
         void registerBody(std::string label, BodySynthesizer fn);
 
-        // Register a member synthesizer under a stable label.
         void registerMember(std::string label, MemberSynthesizer fn);
 
-        // nucleo-frame U1 — COMPANION-CLASS synthesis: a synthesizer that
-        // emits a whole sibling CLASS keyed on a trigger (the `<Record>Cols`
-        // builder emitted per `Table<Record>` instantiation). The class
-        // registers under `className` in the trigger's user-visible package
-        // so ordinary source can NAME it (a lambda param type). Distinct
-        // from member synthesis (fragments into the triggering class) and
-        // from the transform helpers (anonymous, name-mangled, never
-        // user-spelled).
+        // COMPANION-CLASS synthesis: emits a whole sibling class, registered under
+        // `className` in the trigger's user-visible package so source can name it.
         struct CompanionSynthesisResult {
             std::string className;    // short name, e.g. "TickCols"
             std::string packageName;  // registration package (the record's)
@@ -97,19 +70,15 @@ namespace cajeta::synth {
             collectCompanions(const SynthesisContext& ctx) const;
         std::size_t companionCount() const { return companionSynths.size(); }
 
-        // Collect the fragments of every member synthesizer that claims the
-        // target (composition — several may inject into one declaration). A
-        // synthesizer that throws (validate-first rejection) propagates. The
-        // caller injects the returned fragments and detects name collisions.
+        // Fragments of every member synthesizer that claims the target - several may
+        // compose into one declaration. A validate-first rejection propagates.
         std::vector<std::pair<std::string, MemberSynthesisResult>>
             collectMembers(const SynthesisContext& ctx) const;
 
         std::size_t memberCount() const { return memberSynths.size(); }
 
-        // Dispatch a body trigger: try every registered body synthesizer. AT
-        // MOST ONE may claim the declaration — two matches throw a loud
-        // cajeta::Exception naming both (no silent precedence; spec §2.3 /
-        // §1.5 [S2]). Zero matches returns nullopt (the failsafe; spec §2.4).
+        // Dispatch a body trigger. AT MOST ONE synthesizer may claim it; two matches
+        // throw naming both, zero matches returns nullopt (the failsafe).
         std::optional<std::string> dispatchBody(const SynthesisContext& ctx) const;
 
         std::size_t bodyCount() const { return bodySynths.size(); }
@@ -120,8 +89,7 @@ namespace cajeta::synth {
         std::vector<std::pair<std::string, CompanionSynthesizer>> companionSynths;
     };
 
-    // Register the compiler's built-in body synthesizers (the codecs) into the
-    // process-wide instance(). Idempotent — safe to call at every dispatch site.
+    // Register the compiler's built-in body synthesizers into instance(). Idempotent.
     void registerBuiltinSynthesizers();
 
 }

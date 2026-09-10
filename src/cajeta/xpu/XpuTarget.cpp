@@ -1,7 +1,4 @@
-//
 // XPU backend dispatch — see header.
-//
-
 #include "XpuTarget.h"
 
 #include "nvidia/NvptxRegistration.h"
@@ -35,8 +32,7 @@ namespace xpu {
                 return nvidia::emitKernelRegistration(kernels, hostModule, arch,
                                                       manifests);
             case Backend::Amdgpu:
-                // Only AMDGPU consumes the launch workgroup sizes today
-                // (amdgpu-flat-work-group-size); other backends ignore them.
+                // Only AMDGPU consumes the workgroup sizes (amdgpu-flat-work-group-size).
                 return amd::emitKernelRegistration(kernels, hostModule, arch,
                                                    kernelMaxThreads, manifests);
             case Backend::Spirv:
@@ -53,8 +49,6 @@ namespace xpu {
                                  const std::vector<MethodPtr>& shaders,
                                  llvm::Module& hostModule,
                                  const std::string& arch) {
-        // Rasterization is a SPIR-V/Vulkan-only capability; the other device
-        // backends have no graphics pipeline, so they simply embed nothing.
         if (backend == Backend::Spirv)
             return vulkan::emitGraphicsRegistration(shaders, hostModule, arch);
         return 0;
@@ -75,7 +69,7 @@ namespace xpu {
 
         llvm::IRBuilder<> b(ctx);
         for (Backend be : backends) {
-            const int id = (int) be;   // enum aligned with the runtime ids
+            const int id = (int) be;
             llvm::FunctionType* ctorTy = llvm::FunctionType::get(voidTy, false);
             llvm::Function* ctor = llvm::Function::Create(
                 ctorTy, llvm::GlobalValue::InternalLinkage,

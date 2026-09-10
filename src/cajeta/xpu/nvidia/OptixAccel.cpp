@@ -1,26 +1,6 @@
-//
-// OptixAccel.cpp — NVIDIA OptiX acceleration-structure runtime glue (cajeta-gpu,
-// NVIDIA-CUDA native RT-core ray query, Milestone 1).
-//
-// Owns the single OptiX function-table definition and a lazily-initialized
-// OptixDeviceContext over the CUDA primary context, and builds/frees OptiX
-// acceleration structures (optixAccelBuild) over AABB and triangle geometry. The
-// CUDA noun provider in the embedded runtime (cajeta_runtime.c) calls the
-// extern "C" entry points below; the JIT resolves them via its process-symbol
-// generator (the same path the TLS engine uses), so they live in cajeta_lib as a
-// standalone host object — NOT in the embedded bitcode (OptiX is C++ + needs the
-// driver loader, which can't live in JIT bitcode).
-//
-// DEPENDENCY MODEL: OptiX is a COMPILE-TIME-only dependency (header-only SDK; the
-// engine is the driver's nvoptix.dll, loaded lazily by optixInit). CMake defines
-// CAJETA_HAS_OPTIX + adds the include dirs only when the SDK is found; otherwise
-// every entry point below is a stub returning "unavailable" (0), so the runtime
-// always links and the software-BVH floor is unaffected.
-//
-// M1 SCOPE: build + free + the device context, validated in isolation. The VERB
-// (traversal via an OptiX pipeline / optixTrace) and AUTO-on-CUDA selection are
-// Milestone 2 — until then the OptiX AS is opt-in and not consumed by a kernel.
-//
+// NVIDIA OptiX acceleration-structure glue: the single function-table definition,
+// a lazy OptixDeviceContext over the CUDA primary context, and AS build/free/launch.
+// A host object, NOT embedded bitcode, and stubbed out when the SDK was absent.
 
 #include <cstdint>
 
@@ -40,9 +20,8 @@
 
 namespace {
 
-// --- minimal CUDA driver API, dynamically loaded from nvcuda.dll (the runtime
-// already dlopen's it for kernels; the glue loads its own pointers to stay a
-// self-contained TU). cuda.h (via optix) declares the bare names, so use p_-ptrs.
+// --- minimal CUDA driver API, loaded dynamically to keep this TU self-contained.
+// cuda.h (via optix) already declares the bare names, hence the p_ prefix.
 #define DRV(name, ret, ...) typedef ret (*name##_t)(__VA_ARGS__); name##_t p_##name = nullptr;
 DRV(cuInit, CUresult, unsigned)
 DRV(cuDeviceGet, CUresult, CUdevice*, int)
@@ -82,10 +61,7 @@ bool loadCudaDriver() {
     return true;
 }
 
-// Lazily-initialized OptiX state. The per-device PRIMARY CUDA context is retained;
-// post-M2-Phase-2 (R4) the cajeta runtime ALSO retains the primary (instead of its
-// own cuCtxCreate ctx), so the glue's AS build, the OptiX pipeline, and the runtime's
-// kernel launch all share this one context — the M1 split is resolved.
+// Lazy state over the retained PRIMARY CUDA context, shared with the runtime.
 struct OptixState {
     bool tried = false;
     bool ok = false;
@@ -104,11 +80,9 @@ OptixState& ensureInit() {
     CUdevice dev;
     if (p_cuDeviceGet(&dev, 0) != 0) return g_state;
     if (p_cuDevicePrimaryCtxRetain(&g_state.cuCtx, dev) != 0) return g_state;
-    // CRITICAL: do NOT leave a different CUDA context current. The cajeta runtime
-    // uses its OWN cuCtxCreate context (per-thread current), and the resolver
-    // probes cajeta_xpu_optix_available() even on the software path — so clobbering
-    // the current context here would send the runtime's cuMemAlloc/launch to the
-    // wrong context. Push the primary only for the OptiX init calls, then pop back.
+    // CRITICAL: never leave a different CUDA context current — the probe runs even
+    // on the software path, and clobbering it would send the runtime's
+    // cuMemAlloc/launch to the wrong context. Push, init, pop back.
     CUcontext prev = nullptr;
     p_cuCtxGetCurrent(&prev);
     if (p_cuCtxPushCurrent(g_state.cuCtx) != 0) return g_state;
@@ -122,9 +96,7 @@ OptixState& ensureInit() {
     return g_state;
 }
 
-// RAII: make the OptiX primary context current for the enclosed CUDA/OptiX calls
-// (AS build, free), restoring the caller's current context on scope exit — so the
-// runtime's per-thread context is never disturbed by an OptiX AS operation.
+// Makes the OptiX primary context current for the scope, restoring the caller's.
 struct ScopedPrimary {
     bool pushed = false;
     explicit ScopedPrimary(CUcontext primary) {
@@ -133,18 +105,14 @@ struct ScopedPrimary {
     ~ScopedPrimary() { if (pushed) { CUcontext p = nullptr; p_cuCtxPopCurrent(&p); } }
 };
 
-// The handle the CUDA noun provider records for an OptiX AS: the traversable plus
-// the device buffers to free. Returned as an int64 (pointer to this heap struct).
+// The AS handle the CUDA noun provider records, as an int64 to this heap struct.
 struct OptixAs {
     OptixTraversableHandle trav = 0;
     CUdeviceptr output = 0;   // the AS storage; freed on accel_free
-    CUdeviceptr boxes = 0;    // (AABB AS only) the count*6 raw box floats, kept on
-                              // device for the M2 count intersection program's
-                              // point-in-box test (params.boxes); 0 for triangle AS.
+    CUdeviceptr boxes = 0;    // AABB AS only: the raw box floats; 0 for triangles
 };
 
-// Shared accel-build core for one OptixBuildInput. Returns a heap OptixAs* (as
-// int64) or 0 on any failure (caller falls back to the software floor).
+// Builds one OptixBuildInput: a heap OptixAs* as int64, or 0 on any failure.
 int64_t buildAccel(OptixState& s, const OptixBuildInput& bi) {
     OptixAccelBuildOptions ao = {};
     ao.buildFlags = OPTIX_BUILD_FLAG_NONE;
@@ -169,42 +137,32 @@ int64_t buildAccel(OptixState& s, const OptixBuildInput& bi) {
 
 extern "C" {
 
-// 1 iff the OptiX runtime initialized (SDK built in AND nvoptix.dll loadable AND a
-// CUDA device present). The CUDA noun provider / capability gate on this.
+// 1 iff OptiX initialized: SDK built in, driver loadable, and a CUDA device.
 int cajeta_xpu_optix_available(void) {
     return ensureInit().ok ? 1 : 0;
 }
 
-// The OptixDeviceContext (as void*) for callers that build their own pipelines on
-// top of the shared context (the M0 probe reuses this instead of init'ing its own,
-// keeping a single function-table owner). NULL when unavailable.
+// The OptixDeviceContext for callers building their own pipelines on the shared
+// context; NULL when unavailable. Makes that context current on THIS thread.
 void* cajeta_xpu_optix_context(void) {
     OptixState& s = ensureInit();
     if (!s.ok) return nullptr;
-    // Make the OptiX primary context current on the CALLING thread: callers that
-    // build their own pipelines (the M0 probe) issue cuMemAlloc/optixLaunch against
-    // it. Safe because this is invoked from a host test thread, not the runtime's
-    // launch path (which re-asserts its own context per launch).
     p_cuCtxSetCurrent(s.cuCtx);
     return (void*) s.ctx;
 }
 
-// The underlying CUDA context (the per-device PRIMARY) the OptiX device context was
-// created over, as a void*. Post-R4 the cajeta runtime retains the SAME primary, so
-// this equals cajeta_xpu_cuda_context() — the M2 Phase-2 probe asserts that to prove
-// the AS build / pipeline / launch share ONE context. NULL when unavailable.
+// The PRIMARY CUDA context underneath; it equals cajeta_xpu_cuda_context().
 void* cajeta_xpu_optix_cuda_context(void) {
     OptixState& s = ensureInit();
     return s.ok ? (void*) s.cuCtx : nullptr;
 }
 
-// Build a custom-primitive (AABB) OptiX AS. `boxes` is count*6 floats
-// (minX,minY,minZ,maxX,maxY,maxZ). Returns an int64 handle (OptixAs*) or 0.
+// Builds a custom-primitive (AABB) AS from count*6 floats, ordered
+// minX,minY,minZ,maxX,maxY,maxZ. Returns an int64 OptixAs* handle, or 0.
 int64_t cajeta_xpu_optix_accel_build_aabbs(const float* boxes, uint32_t count) {
     OptixState& s = ensureInit();
     if (!s.ok || !boxes || count == 0) return 0;
     ScopedPrimary sp(s.cuCtx);   // ops on the OptiX context; caller's restored on exit
-    // Upload the AABBs as OptixAabb (same 6-float layout) for the build input.
     CUdeviceptr d_aabbs = 0;
     size_t bytes = (size_t) count * sizeof(OptixAabb);
     if (p_cuMemAlloc(&d_aabbs, bytes) != 0) return 0;
@@ -217,16 +175,14 @@ int64_t cajeta_xpu_optix_accel_build_aabbs(const float* boxes, uint32_t count) {
     bi.customPrimitiveArray.flags = flags;
     bi.customPrimitiveArray.numSbtRecords = 1;
     int64_t h = buildAccel(s, bi);
-    // OptixAabb IS the count*6-float box layout the M2 count intersection program
-    // reads (params.boxes), so KEEP d_aabbs as the AS's boxes buffer rather than
-    // freeing it; accel_free releases it. (Only on success — else it would leak.)
+    // OptixAabb IS the params.boxes layout, so the upload is kept, not freed.
     if (h) ((OptixAs*) (intptr_t) h)->boxes = d_aabbs;
     else   p_cuMemFree(d_aabbs);
     return h;
 }
 
-// Build a triangle OptiX AS. `verts` is a vertex soup; vertex v of triangle t is
-// at (t*3+v)*stride floats (3 = tight). Returns an int64 handle (OptixAs*) or 0.
+// Builds a triangle AS from a vertex soup: vertex v of triangle t sits at
+// (t*3+v)*stride floats, 3 being tight. Returns an int64 handle, or 0.
 int64_t cajeta_xpu_optix_accel_build_triangles(const float* verts, uint32_t triCount,
                                                uint32_t stride) {
     OptixState& s = ensureInit();
@@ -251,21 +207,19 @@ int64_t cajeta_xpu_optix_accel_build_triangles(const float* verts, uint32_t triC
     return h;
 }
 
-// The OptixTraversableHandle for an OptiX AS handle (M2's launch passes this to
-// optixTrace via the launch params). 0 if the handle is null/invalid.
+// The OptixTraversableHandle a launch passes in its params; 0 if handle is null.
 uint64_t cajeta_xpu_optix_traversable(int64_t handle) {
     if (!handle) return 0;
     return (uint64_t) ((OptixAs*) (intptr_t) handle)->trav;
 }
 
-// The AS's boxes buffer (count*6 floats) as a device pointer (u64), for the M2 count
-// intersection program's params.boxes. 0 for a triangle AS or a null handle.
+// The AS's boxes buffer as a device pointer; 0 for a triangle AS or null handle.
 uint64_t cajeta_xpu_optix_accel_boxes(int64_t handle) {
     if (!handle) return 0;
     return (uint64_t) ((OptixAs*) (intptr_t) handle)->boxes;
 }
 
-// Free an OptiX AS handle (its device storage + boxes + the bookkeeping struct).
+// Frees an AS handle: its device storage, its boxes, and the bookkeeping struct.
 void cajeta_xpu_optix_accel_free(int64_t handle) {
     if (!handle) return;
     OptixAs* as = (OptixAs*) (intptr_t) handle;
@@ -275,14 +229,9 @@ void cajeta_xpu_optix_accel_free(int64_t handle) {
     delete as;
 }
 
-// Build the OptiX count pipeline from emitted PTX and optixLaunch it. The PTX is the
-// cajeta NVPTX-emitted OptiX program module (NvptxOptixRayQuery::emitOptixCountModule);
-// `paramsHost`/`paramsLen` is the already-marshalled `params` launch block (the
-// {handle,originX,originY,originZ,out,n,boxes} contract). `width` is the launch grid
-// (one thread per query). Runs on the shared (primary) context. Returns 0 on success,
-// nonzero on any failure (caller may fall back to the software path). v1 builds the
-// module/pipeline/SBT per call (no caching yet — a noted follow-up) and is the COUNT
-// shape only (payload=1, attributes=2, custom-primitive AABB).
+// Builds the COUNT pipeline from emitted PTX and launches it: `paramsHost` is the
+// already-marshalled `params` block and `width` the grid, one thread per query.
+// Module, pipeline and SBT are rebuilt per call. 0 on success, nonzero on failure.
 int cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
                             const char* raygenName, const char* isName,
                             const char* anyhitName, const char* missName,
@@ -336,7 +285,6 @@ int cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
     if (optixPipelineCreate(s.ctx, &pco, &plo, groups, 3, log, &logSize, &pipeline)
             != OPTIX_SUCCESS) { cleanup(); return -4; }
 
-    // SBT: a header-only record per group (no per-record data).
     struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) Rec { char h[OPTIX_SBT_RECORD_HEADER_SIZE]; };
     Rec rgR, msR, hgR;
     optixSbtRecordPackHeader(rg, &rgR);
@@ -367,15 +315,9 @@ int cajeta_xpu_optix_launch(const char* ptx, uint64_t ptxLen,
     return rc;
 }
 
-// Triangle nearest-hit launch (M2 Phase 4). Built-in triangle traversal, so the
-// hitgroup has a CLOSESTHIT program (no intersection / anyhit) and no payload —
-// closesthit commits the nearest and writes T / type / prim to the params buffers.
-// Otherwise structurally identical to cajeta_xpu_optix_launch (the AABB-count path).
-// Triangle-traversal launch (built-in primitive). The hitgroup is shape-driven:
-// pass a non-empty `closesthitName` for the nearest-hit shape (commits the closest
-// hit) and/or a non-empty `anyhitName` for the candidate-enumeration shape (reads
-// per-candidate getters + optixIgnoreIntersection). An empty string ("") for either
-// omits that program slot. miss + raygen are always present.
+// The built-in-triangle counterpart of cajeta_xpu_optix_launch. The hitgroup is
+// shape-driven: `closesthitName` gives the nearest-hit shape, `anyhitName` the
+// candidate-enumeration shape, and "" omits that slot. raygen and miss are always.
 int cajeta_xpu_optix_launch_tri(const char* ptx, uint64_t ptxLen,
                                 const char* raygenName, const char* closesthitName,
                                 const char* anyhitName, const char* missName,

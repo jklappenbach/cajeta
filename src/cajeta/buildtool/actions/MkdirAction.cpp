@@ -1,8 +1,5 @@
-// `mkdir` — create a directory. Native filesystem action.
-//
-// Params:
-//   path        (required) directory path to create
-//   recursive   (optional, default true) create parents as needed
+// `mkdir` — native filesystem action. Params: `path` (required) and `recursive`
+// (optional, default true) to create missing parents.
 
 #include "cajeta/buildtool/Action.h"
 

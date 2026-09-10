@@ -20,15 +20,9 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Shell-escape a single argument for /bin/sh -c. Wraps the
-        // value in single quotes and escapes embedded single quotes.
-        // Used to assemble safe `git` invocations.
         // Quote one argument for the shell std::system() hands the command to.
-        // On Windows that is cmd.exe, where a single quote is a LITERAL
-        // character: 'C:\a\b' reached git with the quotes attached, so every
-        // clone/checkout failed on the v0.27.0 Windows release leg. cmd.exe
-        // honors double quotes. POSIX keeps the original sh single-quote form
-        // byte-for-byte.
+        // On cmd.exe a single quote is a LITERAL character, so Windows must use
+        // double quotes; POSIX keeps the sh single-quote form.
         std::string shEscape(const std::string& s) {
             std::string out;
             out.reserve(s.size() + 2);
@@ -50,10 +44,8 @@ namespace cajeta::buildtool {
             return out;
         }
 
-        // Discard a command's output portably. A literal ">/dev/null" under
-        // cmd.exe tries to open the file \dev\null and fails with "The system
-        // cannot find the path specified" — which made the clone itself return
-        // exit 1 regardless of what git did. The Windows null device is NUL.
+        // Discard output portably: cmd.exe has no /dev/null and fails the whole
+        // command trying to open it, so the Windows null device NUL is used.
         const char* nullRedirect() {
 #ifdef _WIN32
             return " >NUL 2>&1";
@@ -62,9 +54,7 @@ namespace cajeta::buildtool {
 #endif
         }
 
-        // Run a `git` command in the given working directory. stdout
-        // and stderr are silenced; non-zero exit is reported with the
-        // command line for diagnostics.
+        // Run `git` in `cwd`, silencing output and reporting a non-zero exit.
         llvm::Error runGit(const std::string& cwd,
                            const std::string& gitArgs,
                            const std::string& diagPrefix) {
@@ -140,10 +130,7 @@ namespace cajeta::buildtool {
         }
 
         if (!fs::exists(cloneDir_, ec)) {
-            // First clone. Shallow + single-branch when the ref is a
-            // branch/tag is a future enhancement; for now do a full
-            // clone so any literal ref (including commit hashes) is
-            // checkout-able.
+            // A full clone, so any literal ref (a commit hash too) is checkout-able.
             std::ostringstream cmd;
             cmd << "git clone " << shEscape(cloneUrl_) << " "
                 << shEscape(cloneDir_) << nullRedirect();
@@ -190,11 +177,8 @@ namespace cajeta::buildtool {
         buf << in.rdbuf();
         manifestJsonBytes_ = buf.str();
 
-        // Parse just enough to pull name + version. We use llvm::json
-        // directly here (rather than the full Manifest loader) so
-        // syntactically-invalid sidecars surface as parse errors
-        // attributed to the git repo rather than as generic manifest
-        // failures.
+        // llvm::json directly, not the Manifest loader, so an invalid sidecar
+        // surfaces as a parse error attributed to this git repo.
         auto parsed = llvm::json::parse(manifestJsonBytes_);
         if (!parsed) {
             llvm::consumeError(parsed.takeError());

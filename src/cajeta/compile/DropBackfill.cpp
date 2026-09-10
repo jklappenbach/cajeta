@@ -13,8 +13,8 @@
 namespace cajeta {
 
     namespace {
-        // symbol → owning class, both families, for every concrete class in
-        // the canonical map. Shared by the backfill scan and the merge pin.
+        // Maps both drop symbols of every concrete class back to that class.
+        // Shared by the backfill scan and the merge pin.
         std::map<std::string, CajetaClassPtr> buildDropSymbolMap() {
             std::map<std::string, CajetaClassPtr> classByDropSymbol;
             for (auto& [canon, type] : CajetaType::getCanonicalMap()) {
@@ -50,9 +50,7 @@ namespace cajeta {
                 if (!fn.isDeclaration()) continue;
                 auto hit = classByDropSymbol.find(fn.getName().str());
                 if (hit == classByDropSymbol.end()) continue;
-                // Stale-class guard (see header): only synthesize into a
-                // module of the compile in progress. Pointer membership only
-                // — a stale class's module pointer is never dereferenced.
+                // Pointer membership only; a stale class's module is never dereferenced.
                 auto emitModule = hit->second->getEmitModule();
                 if (!emitModule
                     || live.find(emitModule->getLlvmModule()) == live.end()) {
@@ -64,8 +62,6 @@ namespace cajeta {
                               << module->getLlvmModule()->getName().str()
                               << ")\n";
                 }
-                // Both families, whichever was declared — the historical AOT
-                // behavior; the sibling wrapper is cheap and often needed next.
                 hit->second->getOrCreateStackDropFunction();
                 hit->second->getOrCreateDropFunction();
             }

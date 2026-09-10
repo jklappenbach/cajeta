@@ -25,12 +25,8 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // curl_global_init / cleanup pair. libcurl docs say to call
-        // once per process before any handles are created. We
-        // serialize the first-call init via a once-flag; cleanup
-        // runs at static-destructor time. (HttpRepository instances
-        // are constructed lazily from the resolver, so we can't rely
-        // on a single fixed init site.)
+        // curl_global_init must run once per process before any handle exists,
+        // and repositories are constructed lazily, so it is once-flagged here.
         std::once_flag g_curlInitOnce;
         void initCurlOnce() {
             std::call_once(g_curlInitOnce, []() {
@@ -57,16 +53,12 @@ namespace cajeta::buildtool {
 
         std::string joinUrl(const std::string& base,
                             const std::string& rest) {
-            // base already has no trailing slash by construction;
-            // rest may or may not have a leading slash.
             if (rest.empty()) return base;
             if (rest.front() == '/') return base + rest;
             return base + "/" + rest;
         }
 
-        // Resolve the bearer token: literal wins over env var (caller
-        // has already verified at least one is set). Returns empty
-        // when no token is configured.
+        /// The bearer token, literal winning over env var; empty if neither.
         std::string resolveBearerToken(const RepositoryAuth& auth) {
             if (!auth.tokenLiteral.empty()) return auth.tokenLiteral;
             if (!auth.tokenEnv.empty()) {
@@ -81,11 +73,7 @@ namespace cajeta::buildtool {
 
     struct HttpRepository::State {
         CURL* curl = nullptr;
-        // Capability-probe cache (Phase 6d). Once probed we keep
-        // the result + the wall-clock expiry; subsequent calls
-        // return the cached value until expiry. A 404 from the
-        // well-known endpoint counts as "v1-only, never re-probe
-        // until TTL elapses".
+        // Probe cache: a 404 from the well-known endpoint caches as "v1-only".
         mutable std::mutex capMu;
         mutable std::optional<RepoCapabilities> cap;
         mutable std::chrono::steady_clock::time_point capExpiry{};
@@ -107,7 +95,6 @@ namespace cajeta::buildtool {
           cacheDir_(std::move(cacheDir)),
           state_(std::make_unique<State>()) {
         initCurlOnce();
-        // Strip trailing slashes so joinUrl produces a clean path.
         while (!baseUrl_.empty() && baseUrl_.back() == '/') {
             baseUrl_.pop_back();
         }
@@ -117,9 +104,7 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Configure auth headers / mTLS material on a curl handle.
-        // Caller owns the slist and must free it after curl_easy_perform
-        // returns.
+        /// Configures auth on a handle; the CALLER owns and frees the slist.
         curl_slist* applyAuth(CURL* curl, const RepositoryAuth& auth) {
             curl_slist* headers = nullptr;
             if (auth.type == "bearer") {
@@ -141,9 +126,7 @@ namespace cajeta::buildtool {
             return headers;
         }
 
-        // Run a GET that buffers the body into `bodyOut`. Returns the
-        // HTTP response code; on transport-level failure, returns an
-        // error citing the curl message.
+        /// GETs `url` into `bodyOut`, returning the HTTP response code.
         llvm::Expected<long> getToString(CURL* curl,
                                          const std::string& url,
                                          const RepositoryAuth& auth,
@@ -154,7 +137,6 @@ namespace cajeta::buildtool {
             ::curl_easy_setopt(curl, CURLOPT_WRITEDATA, &bodyOut);
             ::curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
             ::curl_easy_setopt(curl, CURLOPT_USERAGENT, "cajeta/0.5");
-            // 30s default — fast feedback when a registry is broken.
             ::curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
 
             curl_slist* headers = applyAuth(curl, auth);
@@ -172,8 +154,7 @@ namespace cajeta::buildtool {
             return code;
         }
 
-        // Run a POST whose body is `requestBody` (mime type
-        // `contentType`); buffer the response body into `bodyOut`.
+        /// POSTs `requestBody` as `contentType`, replying into `bodyOut`.
         llvm::Expected<long> postToString(CURL* curl,
                                           const std::string& url,
                                           const RepositoryAuth& auth,
@@ -208,8 +189,7 @@ namespace cajeta::buildtool {
             return code;
         }
 
-        // Run a GET that streams the body to a file. Path is created
-        // (parents made via the caller).
+        /// GETs `url` straight to a file; the caller creates the parents.
         llvm::Expected<long> getToFile(CURL* curl,
                                        const std::string& url,
                                        const RepositoryAuth& auth,
@@ -309,18 +289,13 @@ namespace cajeta::buildtool {
     HttpRepository::fetchManifestJson(
         const std::string& packageName,
         const std::string& version) const {
-        // Spec exposes the sidecar at /<name>/<version>/manifest.json
-        // (the filesystem repo uses /cajeta.json; on the wire the
-        // canonical endpoint name is manifest.json — content is the
-        // same JSON).
+        // On the wire the sidecar is manifest.json, not cajeta.json.
         std::string url = joinUrl(baseUrl_, packageName + "/" + version +
                                   "/manifest.json");
         std::string body;
         auto code = getToString(state_->curl, url, auth_, body);
         if (!code) return code.takeError();
         if (*code == 404) {
-            // Pre-sidecar artifact — let the walker treat this dep
-            // as a leaf, same as the filesystem-repo no-sidecar path.
             return std::optional<std::string>{};
         }
         if (*code < 200 || *code >= 300) {
@@ -397,8 +372,7 @@ namespace cajeta::buildtool {
         if (!code) return code.takeError();
         RepoCapabilities cap;
         if (*code == 404) {
-            // v1-only server — record + cache so we don't probe
-            // every call. probed=true signals "asked and answered".
+            // probed=true is "asked and answered": no re-probe every call.
             cap.probed = true;
         } else if (*code >= 200 && *code < 300) {
             auto parsed = parseCapabilitiesJson(body);
@@ -463,10 +437,7 @@ namespace cajeta::buildtool {
         if (auto s = obj->getString("published-at")) {
             md.publishedAt = s->str();
         }
-        // The UNSIGNED view of ownership. Useful for diagnostics; never
-        // sufficient to bind a publisher — a mirror writes this field as
-        // freely as any other. The binding reads `ReleaseMetadata`, which
-        // knows whether a root signed it (publisher-trust spec 4.4, 6.2).
+        // The UNSIGNED view of ownership: a mirror writes it as freely.
         if (auto s = obj->getString("organization")) {
             md.organization = s->str();
         }
@@ -485,10 +456,8 @@ namespace cajeta::buildtool {
         const std::string& sha256) const {
         namespace fs = std::filesystem;
         fs::create_directories(cacheDir_);
-        // Canonical sha256 format is "sha256:<hex>"; strip prefix
-        // for the URL form, keep the full string for the file name
-        // so the workstation cache sees the same key the resolver
-        // recorded.
+        // The URL drops the "sha256:" prefix; the FILE name keeps it, so the
+        // workstation cache sees the key the resolver recorded.
         std::string urlSha = sha256;
         const std::string prefix = "sha256:";
         if (urlSha.rfind(prefix, 0) == 0) {
@@ -513,7 +482,7 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Encode BundleRequest to JSON for the wire.
+        /// Encodes a BundleRequest to its JSON wire form.
         std::string encodeBundleRequest(const BundleRequest& req) {
             llvm::json::Array haveArr;
             for (const auto& h : req.have) {
@@ -537,10 +506,7 @@ namespace cajeta::buildtool {
             return out;
         }
 
-        // Walk an unpacked tar's TarEntry list and split into the
-        // bundle.json index entry + the per-artifact blob entries.
-        // Writes each blob to `destDir/<sha256>.cja` and returns
-        // the typed BundleResponse.
+        /// Splits an unpacked tar into its bundle.json index and its blobs.
         llvm::Expected<BundleResponse> consumeBundle(
             const std::vector<TarEntry>& entries,
             const std::string& destDir) {
@@ -659,8 +625,6 @@ namespace cajeta::buildtool {
                                  body);
         if (!code) return code.takeError();
         if (*code == 404) {
-            // Server hasn't snapshotted the old lockfile — surface
-            // so the caller can retry as /v2/bundle.
             return err("HTTP 404: server has no snapshot for old "
                        "lockfile sha256 — fall back to /v2/bundle");
         }
@@ -721,7 +685,6 @@ namespace cajeta::buildtool {
     llvm::Expected<std::optional<std::string>>
     HttpRepository::publishedChecksum(const std::string& packageName,
                                       const std::string& version) const {
-        // v1 servers have no resolve metadata to ask.
         auto caps = capabilities();
         if (!caps) {
             llvm::consumeError(caps.takeError());
@@ -736,9 +699,7 @@ namespace cajeta::buildtool {
         }
         std::string sha = md->sha256;
         if (sha.empty()) return std::optional<std::string>{};
-        // Servers may send the digest bare or already prefixed; the
-        // comparison side (ArtifactCache::sha256OfFile) always produces
-        // the prefixed form.
+        // The comparison side always produces the prefixed form.
         if (sha.rfind("sha256:", 0) != 0) sha = "sha256:" + sha;
         return std::optional<std::string>{sha};
     }
@@ -747,9 +708,7 @@ namespace cajeta::buildtool {
 
     llvm::Expected<std::optional<std::string>>
     HttpRepository::organizationKeys(const std::string& org) const {
-        // An org name goes into a URL path; keep it to the character set a
-        // dotted name actually uses rather than escaping it, so a name that
-        // could change the path shape is refused instead of encoded.
+        // An org name goes into a URL PATH: refused, never escaped.
         for (char c : org) {
             bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
                    || (c >= '0' && c <= '9')
@@ -764,8 +723,7 @@ namespace cajeta::buildtool {
 
         auto caps = capabilities();
         if (!caps) return caps.takeError();
-        // A v1-only server has no key-document surface at all. That is
-        // absence, not failure: spec 5.4's legacy path is exactly this.
+        // A v1-only server has no key-document surface: absence, not failure.
         if (!caps->supportsV2()) return std::optional<std::string>{};
 
         std::string url = joinUrl(baseUrl_, "v2/org-keys/" + org);
@@ -801,10 +759,7 @@ namespace cajeta::buildtool {
     }
 
     std::string HttpRepository::origin() const {
-        // scheme://host[:port]. Reducing to the origin is what makes the
-        // binding usable: two clients configured with
-        // "https://olla.cajeta.dev" and "https://olla.cajeta.dev/v2/" are
-        // talking to the same server and must accept the same documents.
+        // A bare host and a /v2/ path are one server: same documents.
         auto scheme = baseUrl_.find("://");
         if (scheme == std::string::npos) return baseUrl_;
         auto slash = baseUrl_.find('/', scheme + 3);
@@ -821,10 +776,7 @@ namespace cajeta::buildtool {
         std::string body;
         auto code = getToString(state_->curl, url, auth_, body);
         if (!code) return code.takeError();
-        // Absence reported faithfully. Whether it is fatal depends on the
-        // `revocation` capability, and that decision lives in
-        // revocationFor() rather than here — a driver that refused on its
-        // own would refuse for repositories that never claimed to serve it.
+        // Absence is reported faithfully; revocationFor() decides if it is fatal.
         if (*code == 404) return std::optional<std::string>{};
         if (*code < 200 || *code >= 300) {
             return err("HTTP " + std::to_string(*code) + " from " + url);

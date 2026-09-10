@@ -1,27 +1,5 @@
-// `publish` — speak the cajeta repository POST endpoint to upload
-// a built archive + its metadata. The wire shape is a multipart
-// form with the archive bytes + a JSON metadata blob describing
-// the package identity (name, version, sha256). Phase 9 v1 targets
-// the v2 protocol endpoint `/v2/publish`.
-//
-// Inputs:
-//   archive   (required) path to the .cja
-//   url       (required) registry URL (publish endpoint base; we
-//             append `/v2/publish` unless it already ends in
-//             `/publish`)
-//   name      (required) package name
-//   version   (required) package version
-//   auth      (optional) "Bearer <token>" header forwarded as-is
-//   signature (optional) path to the detached signature file —
-//             when present, also forwarded as the `signature` form
-//             field
-//   retries   (optional) maxAttempts (default 3)
-//
-// Outputs:
-//   url       the publish URL that was POSTed
-//   status    HTTP response status code
-//   key-id    forwarded from signature action if upstream
-//   sha256    sha256 of the archive bytes (re-confirmed)
+// The `publish` action: POST a built archive and its metadata to a cajeta
+// repository's `/v2/publish` endpoint as one multipart form.
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/Lockfile.h"
@@ -55,6 +33,7 @@ namespace cajeta::buildtool {
             return s * n;
         }
 
+        // Streaming SHA-256 of `path`, returned as "sha256:<hex>"; "" if unreadable.
         std::string sha256OfFile(const std::string& path) {
             std::ifstream in(path, std::ios::binary);
             if (!in) return "";
@@ -79,6 +58,7 @@ namespace cajeta::buildtool {
             return s;
         }
 
+        // Append `/v2/publish` to a registry base unless it already ends in `/publish`.
         std::string ensurePublishPath(const std::string& base) {
             if (base.size() >= 8 &&
                 base.compare(base.size() - 8, 8, "/publish") == 0) {
@@ -97,6 +77,9 @@ namespace cajeta::buildtool {
     public:
         std::string name() const override { return "publish"; }
 
+        // Requires `archive`, `url`, `name` and `version`; takes optional `auth`,
+        // `signature`, `attestation` and `retries`. Reports back the posted url,
+        // the HTTP status, the archive's sha256 and any upstream key-id.
         llvm::Expected<ActionResult> run(
             const llvm::json::Object& params,
             TaskContext& /*ctx*/) const override {
@@ -120,10 +103,8 @@ namespace cajeta::buildtool {
             std::string publishUrl = ensurePublishPath(urlV->str());
             std::string sha = sha256OfFile(archive);
 
-            // Metadata blob in the JSON-shaped `metadata` form field
-            // — the v2 endpoint also accepts top-level name/version/
-            // sha256 form fields directly, so we send both for
-            // backward compat.
+            // The endpoint accepts identity both nested in `metadata` and as flat
+            // form fields; both are sent, for compatibility with older servers.
             llvm::json::Object meta{
                 {"name",    nameV->str()},
                 {"version", versionV->str()},
@@ -148,12 +129,6 @@ namespace cajeta::buildtool {
                 authHeader = v->str();
             }
 
-            // Phase 13: SLSA v1 provenance attached to the archive
-            // when the caller asks for it (`attestation: true`).
-            // The composed JSON lives next to the archive as
-            // `<archive>.attestation` and is also uploaded as the
-            // `attestation` form field. `cajeta install` reads the
-            // sidecar back and verifies the digest + shape.
             std::string attestationPath;
             if (auto v = params.getBoolean("attestation"); v && *v) {
                 ProvenanceInputs prov;
@@ -201,13 +176,11 @@ namespace cajeta::buildtool {
                 if (!curl) return err("publish: curl_easy_init failed");
                 curl_mime* mime = ::curl_mime_init(curl);
 
-                // archive
                 {
                     auto* p = ::curl_mime_addpart(mime);
                     ::curl_mime_name(p, "archive");
                     ::curl_mime_filedata(p, archive.c_str());
                 }
-                // name / version / sha256 — both nested and flat.
                 {
                     auto* p = ::curl_mime_addpart(mime);
                     ::curl_mime_name(p, "metadata");

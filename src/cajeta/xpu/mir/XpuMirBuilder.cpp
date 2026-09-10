@@ -1,6 +1,4 @@
-//
 // XpuMirBuilder — see header for shape and rationale.
-//
 
 #include "XpuMirBuilder.h"
 
@@ -31,11 +29,8 @@ namespace mir {
 
 namespace {
 
-// Address-space qualifier for a parameter type. Recognized when the
-// type's canonical name maps to one of cajeta.xpu.{Global,
-// Shared, Constant, Private, Generic}. Anything else defaults to
-// Generic — including primitives and Buffer<T>, which carry their
-// own backend lowering at codegen time.
+// Address-space qualifier for a parameter type, from its canonical name; anything
+// unrecognized is Generic, including Buffer<T>, lowered per backend at codegen.
 AddressSpace addressSpaceForType(const CajetaTypePtr& type) {
     if (!type) return AddressSpace::Generic;
     AddressSpace as;
@@ -43,10 +38,8 @@ AddressSpace addressSpaceForType(const CajetaTypePtr& type) {
     return AddressSpace::Generic;
 }
 
-// Build the parameter list, skipping `this` for instance methods
-// (defensive — @Kernel methods are required to be static, but the
-// validator that enforces that lands later; v1 just drops `this`
-// if it slipped in).
+// Build the kernel parameter list. `this` is dropped defensively: @Kernel
+// methods must be static, but nothing enforces that before this runs.
 std::vector<XpuKernelParam>
 buildParams(const MethodPtr& method) {
     std::vector<XpuKernelParam> out;
@@ -62,10 +55,8 @@ buildParams(const MethodPtr& method) {
     return out;
 }
 
-// The receiver of `Recv.method(...)` is children[0] of the
-// MethodCallExpression (the DOT branch attaches the lhs there). When
-// it's a bare identifier we can match it syntactically — the same
-// shape the Math.* intrinsic block uses (MethodCallExpression.cpp).
+// The bare-identifier receiver of `Recv.method(...)`, which the DOT branch
+// attaches as children[0]; "" when the receiver is not an identifier.
 std::string receiverIdentifier(MethodCallExpression* mc) {
     const auto& kids = mc->getChildren();
     if (kids.empty()) return {};
@@ -75,10 +66,8 @@ std::string receiverIdentifier(MethodCallExpression* mc) {
     return {};
 }
 
-// Map a recognized leaf builtin call (`Thread.x()`, `Workgroup.dimY()`,
-// `Barrier.workgroup()`, …) to an XpuMirOp and append it. Unrecognized
-// receiver/name pairs are ignored. globalIdX/Y/Z record the LEAF
-// ThreadId axis only — the device pass composes ctaid*ntid+tid.
+// Append the XpuMirOp for a recognized leaf builtin call, ignoring any other pair.
+// globalIdX/Y/Z record the LEAF ThreadId axis; the device pass composes the rest.
 void emitBuiltinOp(const std::string& recv, const std::string& name,
                    std::vector<XpuMirOpPtr>& out) {
     auto axisOf = [](char c) {
@@ -124,15 +113,8 @@ void forEachNode(const AbstractSyntaxNodePtr& node,
     if (!node) return;
     fn(node);
 
-    // `forEachSubNode` is the canonical analysis-descent primitive: it visits
-    // the payloads statements/calls hide in private fields (if/loop/try/switch
-    // bodies, return/throw expressions, ctor and method-call arguments) AND the
-    // codegen children. A plain getChildren() walk stops dead at any loop/try/
-    // switch body, so the launch-site and builtin scans must use this.
-    // Two forms hold a sub-node in a private field with no forEachSubNode
-    // override, so the primitive can't reach them: a CallExpression's args, and
-    // a VariableDeclarator's initializer (`uint32 i = KernelThread.x()` — the
-    // builtin read lives here). Visit those explicitly.
+    // Descent uses forEachSubNode, since getChildren stops at a loop/try/switch body.
+    // A CallExpression's args and a declarator's initializer are out of its reach.
     if (auto ce = std::dynamic_pointer_cast<CallExpression>(node)) {
         for (auto& a : ce->getArgs()) forEachNode(a.expression, fn);
     } else if (auto vd = std::dynamic_pointer_cast<VariableDeclarator>(node)) {
@@ -141,8 +123,7 @@ void forEachNode(const AbstractSyntaxNodePtr& node,
     node->forEachSubNode([&](const AbstractSyntaxNodePtr& sub) { forEachNode(sub, fn); });
 }
 
-// `"grid:"` → `"grid"`. Parameter labels keep their trailing colon
-// (matching MethodCallExpression); strip it before comparing.
+// `"grid:"` → `"grid"`: parameter labels keep their trailing colon.
 std::string stripLabelColon(const std::string& label) {
     if (!label.empty() && label.back() == ':') {
         return label.substr(0, label.size() - 1);
@@ -150,9 +131,8 @@ std::string stripLabelColon(const std::string& label) {
     return label;
 }
 
-// Flatten a launch dimension argument into its element expressions.
-// The common form is an array literal (`[256]`, `[(n+255)/256]`); a
-// bare scalar is treated as a single-element 1-D dimension.
+// Flatten a launch dimension argument into its element expressions; a bare
+// scalar rather than an array literal is a single-element 1-D dimension.
 std::vector<ExpressionPtr> dimElements(const ExpressionPtr& dimExpr) {
     std::vector<ExpressionPtr> out;
     if (auto arr = std::dynamic_pointer_cast<ArrayLiteralExpression>(dimExpr)) {
@@ -163,10 +143,8 @@ std::vector<ExpressionPtr> dimElements(const ExpressionPtr& dimExpr) {
     return out;
 }
 
-// Build a launch-site record from a `kernel.launch(cfg)(args)`
-// CallExpression. Returns nullptr if the callee isn't a `launch`
-// method call. `kernels` is the already-built kernel list, used to
-// resolve the receiver's simple name to a kernel canonical.
+// Build a launch-site record from a `kernel.launch(cfg)(args)` CallExpression,
+// resolving the receiver against `kernels`; nullptr for an unrelated `launch`.
 XpuMirLaunchSitePtr buildLaunchSite(
         const std::shared_ptr<CallExpression>& call,
         const std::vector<XpuMirKernelPtr>& kernels) {
@@ -176,12 +154,7 @@ XpuMirLaunchSitePtr buildLaunchSite(
 
     auto site = std::make_shared<XpuMirLaunchSite>();
 
-    // Kernel name: the receiver of `<kernel>.launch(...)`. Require it to
-    // resolve to a known @Kernel — every kernel is built before this second
-    // pass runs, so an `obj.launch(...)()` whose receiver matches no kernel is
-    // an unrelated user method named `launch`, not an XPU launch site. (A local
-    // variable that shadows a kernel's short name can still collide by
-    // suffix-match; disambiguating that needs the receiver's resolved type.)
+    // A local shadowing a kernel's short name still collides by suffix-match.
     std::string recv = receiverIdentifier(callee.get());
     bool matched = false;
     for (auto& k : kernels) {
@@ -198,8 +171,6 @@ XpuMirLaunchSitePtr buildLaunchSite(
     }
     if (!matched) return nullptr;
 
-    // launch() config: first positional arg is the stream; labeled
-    // `grid:` / `block:` carry the dimension array literals.
     for (auto& p : callee->getParameters()) {
         std::string label = stripLabelColon(p.label);
         if (label == "grid") {
@@ -211,7 +182,6 @@ XpuMirLaunchSitePtr buildLaunchSite(
         }
     }
 
-    // Trailing (args): the kernel arguments.
     for (auto& a : call->getArgs()) site->kernelArgs.push_back(a.expression);
 
     return site;
@@ -238,10 +208,6 @@ XpuMirKernelPtr XpuMirBuilder::buildKernelForMethod(const MethodPtr& method) {
     k->method = method;
     k->params = buildParams(method);
 
-    // Compose the canonical name as `pkg.Class.method`. The Method
-    // doesn't directly carry the full canonical (it has a separate
-    // signature-mangled form), so we synthesize it from the parent
-    // class's canonical plus the method short name.
     std::string parentCanonical;
     if (method->getParent()) {
         parentCanonical = method->getParent()->toCanonical();
@@ -250,14 +216,11 @@ XpuMirKernelPtr XpuMirBuilder::buildKernelForMethod(const MethodPtr& method) {
         ? method->getName()
         : (parentCanonical + "." + method->getName());
 
-    // Pull @Wave / @Backend values via the typed view from step 1.
     if (auto attr = XpuKernelAttr::from(*method)) {
         k->waveWidth = attr->waveWidth();
         k->backends  = attr->backends();
     }
 
-    // Leaf-builtin walk: populate bodyOps with the Thread / Workgroup /
-    // Barrier reads the device lowering must resolve to nvvm intrinsics.
     collectBodyOps(method, k->bodyOps);
     return k;
 }
@@ -270,9 +233,7 @@ XpuMirModulePtr XpuMirBuilder::buildForModule(const CajetaModulePtr& module) {
             m->kernels.push_back(std::move(k));
         }
     }
-    // Second pass — now that every kernel canonical is known, scan all
-    // method bodies for host-side launch sites and resolve their target
-    // kernels against the kernel list.
+    // Second pass: every kernel canonical must be known before any body is scanned.
     for (auto& method : module->getAllMethods()) {
         if (!method) continue;
         forEachNode(method->getBlock(), [&](const AbstractSyntaxNodePtr& n) {

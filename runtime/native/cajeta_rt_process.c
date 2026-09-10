@@ -1,23 +1,6 @@
-// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
-// ===========================================================================
-// cajeta.process — subprocess control.
-//
-// One-shot `Command.run()` (U1) here; streaming `spawn()` lands in U2. The C
-// bridge BUILDS the cajeta `ProcessResult` object directly — it is handed the
-// result class's vtable + DataLayout field offsets and the `String` class's
-// stride + field offsets, so no cajeta ABI is hardcoded (mirrors
-// __cajeta_args_make). It also does ALL marshalling: it reads the cajeta
-// `String[]` argv/env and `String` cwd straight out of the heap and copies
-// each into NUL-terminated C strings, so the codegen side is just "load the
-// Command fields, gather layout constants, one call".
-//
-// posix_spawn-based (spec §8.3): posix_spawnp resolves argv[0] against PATH and
-// reports exec failures (ENOENT/EACCES) via its return value — that drives the
-// `launched == false` result (spec §8.2, result-flag, no throw). stdout/stderr
-// captures are drained concurrently with poll() so a child filling both pipe
-// buffers can't deadlock (spec §3.2.4).
-// ===========================================================================
+// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c ===
+// cajeta.process — subprocess control over posix_spawnp, which reports an exec
+// failure as launched=false. The bridge builds and marshals the cajeta objects.
 #if !defined(_WIN32)
 #include <spawn.h>
 #include <poll.h>
@@ -27,8 +10,7 @@
 #include <time.h>
 extern char** environ;
 #if defined(__linux__)
-// addchdir_np needs _GNU_SOURCE, which this TU deliberately does not set;
-// forward-declare it (present in glibc >= 2.29).
+// addchdir_np needs _GNU_SOURCE, which this TU does not set (glibc >= 2.29).
 extern int posix_spawn_file_actions_addchdir_np(
     posix_spawn_file_actions_t*, const char*);
 #endif
@@ -37,7 +19,6 @@ extern int posix_spawn_file_actions_addchdir_np(
 #define CJ_PROC_CAP_STDOUT 1
 #define CJ_PROC_CAP_STDERR 2
 
-// Growable byte buffer for draining a captured stream.
 typedef struct { char* data; size_t len; size_t cap; } cj_proc_buf;
 
 static int cj_proc_buf_append(cj_proc_buf* b, const char* src, size_t n) {
@@ -54,18 +35,7 @@ static int cj_proc_buf_append(cj_proc_buf* b, const char* src, size_t n) {
     return 0;
 }
 
-// Copy a cajeta `String*`'s bytes into a fresh NUL-terminated C string.
-//
-// Delegates to __cajeta_string_cstr, the canonical mode-aware accessor: a
-// mode-2 WINDOWED view (every String.substring result — the shape the MCP
-// server builds argv from) keeps `bytes` pointing at the ROOT buffer with the
-// window's byte offset in `ssoCount`, so a naive `bytes + 8` read returns the
-// wrong bytes (the root's prefix), not the window. That produced a garbage
-// argv[0] and posix_spawnp failed with launched()==false. The accessor reads
-// `bytes + 8 + ssoCount` for view strings; its result is valid until the next
-// call on this thread, and we strdup it immediately, so the per-argv loop below
-// is safe. (off_bytes/off_len are now unused — the accessor needs only the
-// String*; kept in the signature so the intrinsic lowering is unchanged.)
+// Copy a `String*` to a fresh C string via the mode-aware __cajeta_string_cstr: a WINDOWED view's bytes are NOT at `bytes + 8`.
 extern const char* __cajeta_string_cstr(void* s);
 static char* cj_proc_str_dup(void* str, int64_t off_bytes, int64_t off_len) {
     (void) off_bytes;
@@ -75,10 +45,7 @@ static char* cj_proc_str_dup(void* str, int64_t off_bytes, int64_t off_len) {
     return strdup(c ? c : "");
 }
 
-// Marshal a cajeta `String[]` into a NULL-terminated char** (each element a
-// freshly malloc'd NUL-terminated copy). Element stride is the full String
-// struct size; each slot holds a String* in its first 8 bytes (see
-// __cajeta_args_make). Returns NULL with *out_n=0 for a null/empty array.
+// Marshal a `String[]` into a NULL-terminated char**; the stride is the whole String struct.
 static char** cj_proc_strarr_dup(void* arr, int64_t str_size,
                                  int64_t off_bytes, int64_t off_len,
                                  int64_t* out_n) {
@@ -105,7 +72,6 @@ static void cj_proc_strarr_free(char** v) {
     free(v);
 }
 
-// Build a cajeta int8[] { i64 count, [count x i8] } holding `len` bytes.
 static void* cj_proc_bytes_to_array(const char* data, size_t len) {
     void* hdr = __cajeta_new_array_header(8, 1, (uint64_t) len);
     if (!hdr) return NULL;            // len==0 → NULL header is fine for cajeta
@@ -113,7 +79,6 @@ static void* cj_proc_bytes_to_array(const char* data, size_t len) {
     return hdr;
 }
 
-// Allocate + populate the cajeta ProcessResult instance from raw field values.
 static void* cj_proc_build_result(
         void* vtable, int64_t res_size,
         int32_t launched, int32_t exited, int32_t exit_code,
@@ -141,7 +106,6 @@ static long cj_proc_now_ms(void) {
     return (long) ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
 }
 
-// One-shot run. See the section banner. Returns a heap ProcessResult*.
 void* __cajeta_proc_run(
         void* argv_arr,          // cajeta String[] (non-null, non-empty)
         void* cwd_str,           // cajeta String* or NULL (inherit cwd)
@@ -225,7 +189,6 @@ void* __cajeta_proc_run(
     int rc = posix_spawnp(&pid, cargv[0], &fa, NULL, cargv, cenv);
     posix_spawn_file_actions_destroy(&fa);
 
-    // Close child ends in the parent.
     if (want_stdin) { close(in_pipe[0]); in_pipe[0] = -1; }
     if (cap_out)    { close(out_pipe[1]); out_pipe[1] = -1; }
     if (cap_err)    { close(err_pipe[1]); err_pipe[1] = -1; }
@@ -237,8 +200,6 @@ void* __cajeta_proc_run(
         goto fail;                       // launch failure → launched=false
     }
 
-    // Write stdin fully then close. v1 assumes stdin fits the pipe/program
-    // without a parallel drain — large streaming stdin is the U2 spawn() path.
     if (want_stdin) {
         const char* p = (const char*) stdin_arr + 8;   // past count word
         int64_t rem = stdin_len;
@@ -250,8 +211,7 @@ void* __cajeta_proc_run(
         close(in_pipe[1]); in_pipe[1] = -1;
     }
 
-    // Concurrently drain stdout + stderr so neither pipe buffer wedges the
-    // child (spec §3.2.4). poll deadline doubles as the run timeout.
+    // Both streams drain concurrently, or a full pipe buffer wedges the child.
     cj_proc_buf ob = {0, 0, 0}, eb = {0, 0, 0};
     int timed_out = 0;
     long deadline = (timeout_ms > 0) ? cj_proc_now_ms() + (long) timeout_ms : 0;
@@ -291,7 +251,6 @@ void* __cajeta_proc_run(
 
     if (timed_out) kill(pid, SIGKILL);
 
-    // If there was nothing to drain but a deadline applies, enforce it now.
     if (!timed_out && timeout_ms > 0 && !cap_out && !cap_err) {
         for (;;) {
             int st;
@@ -340,13 +299,7 @@ fail:
 #undef CJ_FAILRES
 }
 
-// ---- Streaming spawn (cajeta-process U2) --------------------------------
-// A long-lived child whose stdin/stdout/stderr can be wired to live pipes the
-// program reads/writes incrementally, plus wait / wait-with-timeout / kill /
-// pid. There is no auto-close-on-drop destructor in cajeta yet (same as
-// FileReader/FileWriter), so reaping is via an explicit close() (or a blocking
-// wait()) — close() kill()s a still-running child then reaps it (no zombie).
-// v1 wait() blocks the carrier thread; fiber-yielding is a follow-up (spec §6).
+// ---- Streaming spawn: a long-lived child on live pipes. No drop destructor, so close() reaps.
 
 #define CJ_PROC_PIPE_STDIN  8
 #define CJ_PROC_PIPE_STDOUT 16
@@ -361,8 +314,7 @@ typedef struct {
     int status;      // cached wait status once reaped
 } cj_proc_handle;
 
-// Spawn and BUILD the cajeta Process object (handle as int64, plus the three
-// parent-side pipe fds). On launch failure: handle field 0, fds -1.
+// Spawn and BUILD the cajeta Process object; on launch failure, handle 0 and fds -1.
 void* __cajeta_proc_spawn(
         void* argv_arr, void* cwd_str, void* env_arr,
         int32_t stdio_flags,
@@ -426,7 +378,6 @@ void* __cajeta_proc_spawn(
         posix_spawn_file_actions_destroy(&fa);
     }
 
-    // Close the child ends in the parent regardless of outcome.
     if (in_pipe[0]  >= 0) close(in_pipe[0]);
     if (out_pipe[1] >= 0) close(out_pipe[1]);
     if (err_pipe[1] >= 0) close(err_pipe[1]);
@@ -444,7 +395,6 @@ void* __cajeta_proc_spawn(
         }
     }
     if (!h) {
-        // Launch failed (or OOM): close any parent ends we opened.
         if (in_pipe[1]  >= 0) close(in_pipe[1]);
         if (out_pipe[0] >= 0) close(out_pipe[0]);
         if (err_pipe[0] >= 0) close(err_pipe[0]);
@@ -473,10 +423,7 @@ void __cajeta_proc_kill(int64_t handle_i) {
     if (h && !h->reaped) kill(h->pid, SIGKILL);
 }
 
-// Wait (timeout_ms <= 0 blocks until exit and reaps; > 0 polls up to the
-// deadline and, on timeout, returns timedOut WITHOUT killing — the caller
-// decides whether to kill()). Builds + returns a ProcessResult (no captures;
-// streaming output is read through the pipe handles).
+// Wait: timeout_ms <= 0 blocks and reaps; > 0 returns timedOut WITHOUT killing.
 void* __cajeta_proc_wait(
         int64_t handle_i, int64_t timeout_ms,
         void* result_vtable, int64_t res_size,
@@ -519,9 +466,7 @@ void* __cajeta_proc_wait(
         off_timedout, off_stdout, off_stderr);
 }
 
-// Reap + free. Kills a still-running child first so drop/close never leaks a
-// zombie. Closes any open pipe fds. Idempotent on the cajeta side (close()
-// zeroes the handle field after calling this).
+// Reap + free, killing a still-running child first so close never leaks a zombie.
 void __cajeta_proc_release(int64_t handle_i) {
     cj_proc_handle* h = (cj_proc_handle*) (intptr_t) handle_i;
     if (!h) return;
@@ -537,8 +482,7 @@ void __cajeta_proc_release(int64_t handle_i) {
     free(h);
 }
 #else
-// Windows: CreateProcess-based bridge lands with the Windows runtime port.
-// v1 stub reports launched=false so cajeta callers get a clean result.
+// Windows: v1 stubs report launched=false until the CreateProcess bridge lands.
 void* __cajeta_proc_run(
         void* argv_arr, void* cwd_str, void* env_arr, void* stdin_arr,
         int32_t stdin_len, int32_t capture_flags, int64_t timeout_ms,
@@ -563,7 +507,6 @@ void* __cajeta_proc_run(
     return r;
 }
 
-// Windows streaming stubs — report no child (handle 0, fds -1).
 void* __cajeta_proc_spawn(
         void* argv_arr, void* cwd_str, void* env_arr, int32_t stdio_flags,
         int64_t str_size, int64_t str_off_bytes, int64_t str_off_len,
@@ -604,25 +547,12 @@ void* __cajeta_proc_wait(
 void __cajeta_proc_release(int64_t handle_i) { (void) handle_i; }
 #endif  // !_WIN32
 
-// Phase C — stat-touching helpers. POSIX-only.
-//
-// Each helper takes (bytes, length) — the Path's raw int8[] bytes
-// and the byte count — since the cajeta-side `int8[]` storage
-// doesn't carry a null terminator. The helpers copy into a stack
-// buffer with `\0` appended and call the syscall. Returns int32
-// (1/0 for predicates, -1 for hard errors that the cajeta-side
-// will throw IoException for once the hierarchy is wired).
+// Stat helpers take (bytes, length) and NUL-terminate; predicates return 1/0, errors -1.
 
-// opendir/readdir for __cajeta_path_list — mingw-w64 ships dirent.h,
-// so this works on the Windows target too.
 #include <dirent.h>
 
-// Bound on stack-allocated path buffers. Linux PATH_MAX is 4096;
-// callers with longer paths bail with the error sentinel.
 #define __CAJETA_PATH_MAX 4096
 
-// Copy `bytes[0..length)` into `dst` and append '\0'. Returns 0 on
-// success, -1 if length >= dst_size (overflow guard).
 static int __cajeta_copy_path_with_nul(
         char* dst, size_t dst_size,
         const char* bytes, int64_t length) {
@@ -660,26 +590,13 @@ int32_t __cajeta_path_is_symlink(const char* bytes, int64_t length) {
     char path[__CAJETA_PATH_MAX];
     if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return 0;
     struct stat st;
-    // lstat — symlink detection wants the link itself, not the target.
-    if (lstat(path, &st) != 0) return 0;
+    if (lstat(path, &st) != 0) return 0;   // the link itself, not its target
     return S_ISLNK(st.st_mode) ? 1 : 0;
 }
 
-// Fill the caller-supplied FileInfo struct from a stat() call. The
-// layout MUST match runtime/src/cajeta/io/file/FileInfo.cajeta:
-//   { i64 size; i64 createdNanos; i64 modifiedNanos; i64 accessedNanos;
-//     i1 isFile; i1 isDir; i1 isSymlink; i32 permissions; }
-// Returns 0 on success, -1 if stat fails.
-//
-// Note: FileInfo's `bool` fields are i1 in the LLVM lowering and Cajeta
-// stores them with a single byte. The vtable + the boolean fields'
-// padding mean the bool stores are byte-wise aligned. We write each
-// field via byte offsets computed at C compile time to avoid having to
-// chase the exact LLVM struct layout from here. The compile-time
-// offset arithmetic is wrapped in a struct mirror so the offsets line
-// up with Cajeta's struct layout for FileInfo (8 + 8 + 8 + 8 + 1 + 1 +
-// 1 + padding(1) + 4 = 40 bytes, with a leading 8-byte vtable slot
-// = 48 total).
+// Fill the caller's FileInfo from stat(); -1 if stat fails. The struct mirror below
+// MUST match FileInfo.cajeta after its 8-byte vtable slot: { i64 size, created,
+// modified, accessed; i1 isFile, isDir, isSymlink; i32 perms } = 40 bytes, 48 total.
 typedef struct {
     void*    vtable;
     int64_t  size;
@@ -699,8 +616,6 @@ int32_t __cajeta_path_stat(const char* path, void* fileInfo) {
     if (stat(path, &st) != 0) return -1;
     __cajeta_FileInfoLayout* fi = (__cajeta_FileInfoLayout*) fileInfo;
     fi->size = (int64_t) st.st_size;
-    // POSIX-only ns granularity via st_*tim. On older systems fall back
-    // to st_*time × 1e9.
 #ifdef __linux__
     fi->createdNanos =
         (int64_t) st.st_ctim.tv_sec * 1000000000LL + (int64_t) st.st_ctim.tv_nsec;
@@ -715,30 +630,19 @@ int32_t __cajeta_path_stat(const char* path, void* fileInfo) {
 #endif
     fi->isFile = S_ISREG(st.st_mode) ? 1 : 0;
     fi->isDir = S_ISDIR(st.st_mode) ? 1 : 0;
-    // L8: stat() follows symlinks, so st.st_mode is the TARGET's and S_ISLNK would
-    // always be 0. lstat the path itself for the symlink flag (the other fields
-    // intentionally describe the resolved target). On MinGW lstat==stat (stubbed),
-    // preserving the existing "no symlinks" behavior there.
+    // stat() followed the link, so the flag needs an lstat; the rest is the target.
     struct stat lst;
     fi->isSymlink = (lstat(path, &lst) == 0 && S_ISLNK(lst.st_mode)) ? 1 : 0;
     fi->permissions = (int32_t) (st.st_mode & 07777);
     return 0;
 }
 
-// Phase D — directory + mutation helpers.
-
-// Recursive mkdir. Mirrors `mkdir -p path` semantics: creates every
-// missing intermediate component. Idempotent if the path already
-// exists as a directory; fails (returns -1) if any intermediate
-// component exists as a non-directory.
+// Recursive mkdir, as `mkdir -p`; -1 when a component exists as a non-directory.
 int32_t __cajeta_path_mkdirs(const char* bytes, int64_t length) {
     char path[__CAJETA_PATH_MAX];
     if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return -1;
     if (path[0] == '\0') return -1;
 
-    // Walk forward, inserting '\0' at each '/' boundary to mkdir
-    // the intermediate prefix, then restoring the '/' before
-    // continuing.
     for (char* p = path + 1; *p != '\0'; ++p) {
         if (*p == '/') {
             *p = '\0';
@@ -755,7 +659,6 @@ int32_t __cajeta_path_mkdirs(const char* bytes, int64_t length) {
             *p = '/';
         }
     }
-    // Final component.
     struct stat st;
     if (stat(path, &st) == 0) {
         return S_ISDIR(st.st_mode) ? 0 : -1;
@@ -764,10 +667,6 @@ int32_t __cajeta_path_mkdirs(const char* bytes, int64_t length) {
     return 0;
 }
 
-// Single-file / empty-dir unlink. Returns 0 on success, -1 on
-// failure (errno set; caller-side throw lands once IoException is
-// wired). For non-empty directories, callers use
-// `__cajeta_path_delete_recursive` (Phase D follow-up).
 int32_t __cajeta_path_delete(const char* bytes, int64_t length) {
     char path[__CAJETA_PATH_MAX];
     if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return -1;
@@ -779,9 +678,6 @@ int32_t __cajeta_path_delete(const char* bytes, int64_t length) {
     return unlink(path) == 0 ? 0 : -1;
 }
 
-// realpath() wrapper. Returns a CajetaArray header containing the
-// canonical absolute bytes, or NULL on failure. Path comes in as
-// (bytes, length) — copy + null-terminate locally.
 void* __cajeta_path_canonical(const char* bytes, int64_t length) {
     char in[__CAJETA_PATH_MAX];
     if (__cajeta_copy_path_with_nul(in, sizeof(in), bytes, length) != 0) return NULL;
@@ -798,15 +694,8 @@ void* __cajeta_path_canonical(const char* bytes, int64_t length) {
     return hdr;
 }
 
-// Non-recursive directory listing. Returns a CajetaArray header whose
-// int8[] payload is the child entry NAMES ("." and ".." excluded),
-// sorted lexicographically (byte order) and joined by NUL bytes —
-// determinism is part of the contract (Path.list() documents it; the
-// lint/coverage plugins key stable CI diffs off it). One call per
-// directory regardless of entry count; Path.list() splits the buffer
-// and joins each name onto the parent in cajeta. Returns an EMPTY
-// array on open failure as well as for an empty directory — callers
-// that care check isDir() first.
+// Non-recursive listing: a CajetaArray whose int8[] payload holds the child NAMES
+// (no "." or ".."), byte-sorted and NUL-joined — that order is part of the contract.
 static int __cajeta_name_cmp(const void* a, const void* b) {
     return strcmp(*(const char* const*) a, *(const char* const*) b);
 }
@@ -844,8 +733,6 @@ void* __cajeta_path_list(const char* bytes, int64_t length) {
     if (count > 0) {
         qsort(names, count, sizeof(char*), __cajeta_name_cmp);
     }
-    // Payload layout: name1 NUL name2 NUL ... nameN NUL — a trailing
-    // NUL after the last name keeps the cajeta-side split loop uniform.
     void* hdr = __cajeta_new_array_header(8, 1, (uint64_t) total);
     if (hdr) {
         char* out = ((char*) hdr) + 8;
@@ -861,11 +748,7 @@ void* __cajeta_path_list(const char* bytes, int64_t length) {
     return hdr;
 }
 
-// chmod a+x — add the executable bits (owner/group/other) to an existing
-// file, preserving its other permission bits (so a 0644 download becomes
-// 0755). Used by cvm to make a freshly written toolchain binary runnable.
-// Returns 0 on success, -1 on failure. Windows has no POSIX execute bit
-// (runnability is by file extension), so the shim succeeds as a no-op.
+// chmod a+x, preserving the other bits; a no-op success on Windows.
 int32_t __cajeta_path_set_executable(const char* bytes, int64_t length) {
     char path[__CAJETA_PATH_MAX];
     if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return -1;
@@ -880,12 +763,7 @@ int32_t __cajeta_path_set_executable(const char* bytes, int64_t length) {
 #endif
 }
 
-// Create a symbolic link at `link` pointing to `target` (POSIX
-// `symlink(target, link)`, i.e. `ln -s target link`). If `link` already
-// exists it is removed first so the link can be re-pointed — cvm repoints
-// the active-toolchain shim (~/.cajeta/bin/cajeta) this way. Returns 0 on
-// success, -1 on failure. Not supported on Windows v0.1 (CreateSymbolicLink
-// needs elevation / a different model) — returns -1 there.
+// symlink(target, link), removing an existing `link` so it can be re-pointed.
 int32_t __cajeta_path_symlink(const char* targetBytes, int64_t targetLen,
                               const char* linkBytes, int64_t linkLen) {
     char target[__CAJETA_PATH_MAX];
@@ -896,7 +774,6 @@ int32_t __cajeta_path_symlink(const char* targetBytes, int64_t targetLen,
     (void) target; (void) link;
     return -1;
 #else
-    // Replace any existing entry at `link` so the shim can be re-pointed.
     struct stat st;
     if (lstat(link, &st) == 0) {
         unlink(link);
@@ -905,22 +782,7 @@ int32_t __cajeta_path_symlink(const char* targetBytes, int64_t targetLen,
 #endif
 }
 
-// ---------------------------------------------------------------------------
-// At-exit registry — used by @PreDestroy synthesis (AspectModel.md § A11).
-//
-// The DI singleton @PreDestroy hook needs to fire at "process exit"
-// semantics. libc's atexit() works for AOT binaries but dangles in
-// JIT'd test runs: each test compiles a fresh module that's freed
-// before the next test starts, so any function pointer registered
-// from inside the JIT becomes invalid once that test's LLJIT state
-// is destroyed. Routing through this runtime-internal registry lets
-// the caller (a test, or main() in a real binary) explicitly fire
-// handlers at a safe point and clear the list.
-//
-// Handlers run in LIFO order — the newest registration fires first.
-// Each callback receives the instance pointer captured at register
-// time; the user method must have signature `void (this:pointer)`
-// (the ABI-compatible C type used here is `void (*)(void*)`).
+// At-exit registry for @PreDestroy: atexit() dangles in JIT'd runs, so the caller fires these, LIFO.
 
 typedef struct CajetaAtExitNode {
     void (*fn)(void*);
@@ -950,5 +812,3 @@ void __cajeta_run_atexit_handlers(void) {
         n = next;
     }
 }
-
-// ============================================================================

@@ -17,11 +17,8 @@ namespace cajeta::kernel {
 
     namespace {
 
-        // A rendered value accompanies its text with `application/json` only
-        // when the rendering IS json — i.e. the value's own shape round-trips
-        // (spec 4.3). Publishing `application/json: "42"` for a scalar would
-        // have structured-output frontends render a JSON view of a number,
-        // which is noise dressed as capability.
+        // True, filling `out`, only when the rendering IS json: a scalar published
+        // as `application/json` makes frontends render a JSON view of a number.
         bool structuredForm(const std::string& text, dap::Json* out) {
             if (text.empty()) return false;
             char first = '\0';
@@ -48,9 +45,8 @@ namespace cajeta::kernel {
         bool shutdown = false;
         bool restart = false;
 
-        // The request whose output is currently streaming. Read on the
-        // capture PUMP thread (FdCapture calls the stream handler there), so
-        // it is guarded — the execution thread swaps it on every cell.
+        // The request whose output is streaming. Guarded because the capture PUMP
+        // thread reads it while the execution thread swaps it on every cell.
         std::mutex parentMutex;
         JupyterMessage parent;
 
@@ -63,8 +59,7 @@ namespace cajeta::kernel {
             content["execution_state"] = std::string(state);
             JupyterMessage msg = makeReply("status", request, sessionId,
                                            std::move(content));
-            // IOPub is a PUB socket: no caller to route back to, and leaving
-            // the request's identity on it would prepend a bogus topic frame.
+            // IOPub is a PUB socket: a left-over identity becomes a bogus topic frame.
             msg.identities.clear();
             publish(Channel::IOPub, msg);
         }
@@ -86,10 +81,8 @@ namespace cajeta::kernel {
             publishIoPub("stream", parent, std::move(content));
         }
 
-        // The running session, published for the IO thread. `session` itself
-        // is owned by the execution thread and must not be read from another
-        // one — this is the single pointer an interrupt is allowed to follow,
-        // and it is only non-null while a session is live.
+        // The running session, published for the IO thread: `session` belongs to the
+        // execution thread, and this is the only pointer an interrupt may follow.
         std::atomic<KernelSession*> live{nullptr};
 
         KernelSession* ensureSession(std::string* error) {
@@ -99,8 +92,6 @@ namespace cajeta::kernel {
             } else {
                 SessionOptions options;
                 options.projectDir = projectDir;
-                // 7.2.8 — the build runs inside the first execute_request;
-                // narrate it so the cell reads as working, not hung.
                 options.progress = [this](const std::string& phase) {
                     stream("stdout", "[session] " + phase + "…\n");
                 };
@@ -155,12 +146,8 @@ namespace cajeta::kernel {
     }
 
     void KernelProtocol::restartSession() {
-        // Cleared BEFORE the session is torn down: an interrupt racing a
-        // restart must not follow a pointer into a session being destroyed.
+        // Cleared BEFORE teardown: an interrupt must not follow it into a corpse.
         impl_->live.store(nullptr, std::memory_order_release);
-        // Explicit shutdown before release: the session drops its bindings
-        // and joins its carriers in that order, and doing it here rather than
-        // in a destructor keeps the ordering visible (spec 3.3).
         if (impl_->session) impl_->session->shutdown();
         impl_->session.reset();
         impl_->executionCount = 0;
@@ -174,8 +161,7 @@ namespace cajeta::kernel {
         lang["version"] = CAJETA_VERSION;
         lang["mimetype"] = "text/x-cajeta";
         lang["file_extension"] = ".cajeta";
-        // Cajeta's surface syntax is close enough to Java that a frontend's
-        // Java highlighter is right far more often than no highlighter.
+        // Cajeta's surface syntax is close enough that Java highlighting beats none.
         lang["pygments_lexer"] = "java";
         lang["codemirror_mode"] = "text/x-java";
         lang["nbconvert_exporter"] = "script";
@@ -203,8 +189,6 @@ namespace cajeta::kernel {
             parent = request;
         }
 
-        // A silent request runs but leaves no trace: no counter movement, no
-        // input echo, no Out[N] (protocol 5.3, `silent`).
         if (!silent) {
             ++executionCount;
             dap::Json echo = dap::Json::object();
@@ -217,10 +201,7 @@ namespace cajeta::kernel {
         std::string error;
         const bool building = !session;
         KernelSession* s = ensureSession(&error);
-        // 7.2.8 — the narration served its purpose; clear it so the cell's
-        // final state is only its real output. wait=true defers the clear
-        // until the next output arrives, so the last phase line stays
-        // visible right up to the result.
+        // wait=true holds the clear until the next output arrives.
         if (building && s) {
             dap::Json clear = dap::Json::object();
             clear["wait"] = true;
@@ -246,15 +227,9 @@ namespace cajeta::kernel {
 
         CellResult result = s->execute(code, "In[" + std::to_string(count) + "]");
 
-        // Warnings reach the notebook only here: `ok` carries no room for
-        // them, and a warning the user never sees may as well not exist.
-        //
-        // Only the CELL's own diagnostics, though. The session's first
-        // compile pulls the stdlib through the same diagnostics bridge, and
-        // an unfiltered pass republishes forty-odd ownership warnings about
-        // stdlib internals as if the user's two-line cell had provoked them.
-        // A diagnostic that cannot name the cell it came from is not the
-        // user's to read: it is compiler chatter that predates their code.
+        // The only place warnings reach the notebook, and only the CELL's own: the
+        // session's first compile pulls stdlib diagnostics through the same bridge,
+        // which an unfiltered pass would blame on the user's cell.
         const std::string cellName = "In[" + std::to_string(count) + "]";
         for (const auto& d : result.diagnostics) {
             if (d.severity == "error") continue;
@@ -292,10 +267,6 @@ namespace cajeta::kernel {
             reply["user_expressions"] = dap::Json::object();
             reply["payload"] = dap::Json::array();
         } else {
-            // A compile failure and a throw look the same to the frontend —
-            // both are `error` with a type, a message, and a traceback. What
-            // differs is what fills them: the compiler's error id and its
-            // located message, or the thrown type and its `In[N]` frames.
             std::string ename = result.threw
                               ? result.exceptionType
                               : (result.errorId.empty() ? "CompileError" : result.errorId);
@@ -304,14 +275,9 @@ namespace cajeta::kernel {
                 for (const auto& f : result.traceback) {
                     traceback.push_back(f.text.empty() ? f.method : f.text);
                 }
-                // The traceback's LAST line is the message — Python's
-                // convention, and what every frontend renders. Without it a
-                // thrown error showed its frames and nothing else: a
-                // frontend displays `traceback` when it is non-empty and
-                // drops `evalue`, so the reason was carried in the payload
-                // and never seen. "Packages.install threw somewhere" is not
-                // a diagnostic; "'demo' is already loaded at 1.0.0, which
-                // '2.*' excludes — restart the session" is.
+                // The message goes LAST in the traceback: a frontend that renders a
+                // non-empty traceback drops `evalue`, so this is the only place the
+                // reason is seen.
                 if (!result.message.empty()) {
                     traceback.push_back(ename.empty()
                                             ? result.message
@@ -344,8 +310,7 @@ namespace cajeta::kernel {
             classifyCell(request.content.at("code").asString(), &indent);
         dap::Json content = dap::Json::object();
         content["status"] = std::string(completenessName(verdict));
-        // The field is required for `incomplete` and meaningless otherwise,
-        // but frontends read it unconditionally, so it is always present.
+        // Meaningless except for `incomplete`, but frontends read it unconditionally.
         content["indent"] = indent;
         publish(channel, makeReply("is_complete_reply", request, sessionId,
                                    std::move(content)));
@@ -355,10 +320,8 @@ namespace cajeta::kernel {
         Impl& impl = *impl_;
         const std::string type = request.type();
 
-        // An unknown verb is ignored WITHOUT the busy/idle pair: the pair is
-        // a promise that something is being worked on, and a frontend that
-        // sees busy for a message we silently drop is owed an idle it will
-        // eventually get from an unrelated request.
+        // An unknown verb is dropped WITHOUT the busy/idle pair: a busy with no idle
+        // leaves the frontend waiting on work that is never happening.
         const bool known =
             type == "execute_request" || type == "kernel_info_request" ||
             type == "is_complete_request" || type == "shutdown_request" ||
@@ -380,19 +343,14 @@ namespace cajeta::kernel {
             const bool restart = request.content.at("restart").asBool(false);
             dap::Json content = dap::Json::object();
             content["restart"] = restart;
-            // Reply BEFORE tearing anything down: a frontend that never gets
-            // the reply reports the kernel as having died rather than having
-            // stopped, and shows the user a crash dialog for a clean exit.
+            // Reply BEFORE teardown, or a clean exit reads to the frontend as a death.
             impl.publish(channel, makeReply("shutdown_reply", request,
                                             impl.sessionId, std::move(content)));
             impl.shutdown = true;
             impl.restart = restart;
         } else if (type == "interrupt_request") {
-            // Reached only when NO cell is running — a busy execution thread
-            // cannot drain its queue. The transport answers this on its IO
-            // thread instead (that is the case that matters, and the case
-            // spec 5.1 is about); this arm covers the idle one, where per
-            // spec 5.2 the request is a no-op that still gets acknowledged.
+            // Reached only when NO cell is running; the transport answers the busy
+            // case on its IO thread, since this queue never drains during a cell.
             impl.interruptSelf();
             impl.publish(channel, makeReply("interrupt_reply", request,
                                             impl.sessionId, dap::Json::object()));
@@ -409,9 +367,7 @@ namespace cajeta::kernel {
             impl.publish(channel, makeReply("history_reply", request,
                                             impl.sessionId, std::move(content)));
         } else if (type == "complete_request") {
-            // No completion engine yet (the IDE's symbol index is a separate
-            // thread of work). An empty, well-formed reply is what keeps Tab
-            // from hanging the frontend.
+            // No completion engine yet; an empty well-formed reply keeps Tab alive.
             const std::string code = request.content.at("code").asString();
             int cursor = request.content.at("cursor_pos").asInt(
                 static_cast<int>(code.size()));

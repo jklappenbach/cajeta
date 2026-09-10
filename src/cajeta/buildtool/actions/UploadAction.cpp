@@ -1,14 +1,6 @@
-// `upload` — push an artifact to a remote endpoint. Phase 9 ships:
-//
-//   target: http     PUT or POST(multipart) via libcurl
-//   target: s3       wraps `aws s3 cp` (CLI dependency)
-//   target: azure    wraps `az storage blob upload`
-//   target: gcs      wraps `gsutil cp`
-//   target: sftp     `curl --upload-file sftp://…` (libssh2-backed curl)
-//
-// `also` array uploads sidecar files (e.g. the .sig next to a .cja)
-// in one action invocation. Substitution + retry are uniform across
-// every transport.
+// `upload` - push an artifact to a remote endpoint. Targets: http (PUT or multipart
+// POST via libcurl), sftp (curl + libssh2), and s3 / azure / gcs wrapping their CLIs.
+// `also` uploads sidecars in the same invocation; substitution and retry are uniform.
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/Retry.h"
@@ -39,15 +31,12 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Curl write-discard sink — many of these endpoints return
-        // tiny responses we don't care about.
         size_t writeToString(char* p, size_t s, size_t n, void* ud) {
             static_cast<std::string*>(ud)->append(p, s * n);
             return s * n;
         }
 
-        // Read a file's bytes into memory; for any file the upload
-        // action handles, the manageable size fits comfortably.
+        // Read a file's bytes into memory; upload-action inputs fit comfortably.
         llvm::Expected<std::string> readFile(const std::string& path) {
             std::ifstream in(path, std::ios::binary);
             if (!in) {
@@ -71,8 +60,8 @@ namespace cajeta::buildtool {
             return res.code();
         }
 
-        // HTTP PUT a body to a URL via libcurl. Caller pre-substitutes
-        // any ${env.X} references in url + headers.
+        // HTTP PUT a body to a URL via libcurl. The caller pre-substitutes any
+        // ${env.X} references in `url` and `headers`.
         llvm::Expected<long> httpPut(
             const std::string& url,
             const std::string& body,
@@ -85,7 +74,6 @@ namespace cajeta::buildtool {
             ::curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
             ::curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE,
                                static_cast<curl_off_t>(body.size()));
-            // Use a read callback over the buffered body.
             struct Cursor { const std::string* s; size_t pos; };
             Cursor cur{&body, 0};
             ::curl_easy_setopt(curl, CURLOPT_READDATA, &cur);
@@ -120,8 +108,7 @@ namespace cajeta::buildtool {
                 std::string msg = std::string("PUT ") + url +
                                   " failed: " + ::curl_easy_strerror(rc);
                 ::curl_easy_cleanup(curl);
-                // Encode curl-code in the error so the retry layer
-                // can classify.
+                // Encode the curl code in the error so the retry layer can classify it.
                 std::string tag = "[curl=" + std::to_string(code) + "] ";
                 return err(tag + msg);
             }
@@ -131,9 +118,8 @@ namespace cajeta::buildtool {
             return status;
         }
 
-        // HTTP POST a multipart form. Uploads the file as "file"
-        // by default; caller can override via `field-name`. Extra
-        // form fields come from `form-fields`.
+        // HTTP POST a multipart form, uploading the file as "file" unless `field-name`
+        // overrides it; extra form fields come from `form-fields`.
         llvm::Expected<long> httpPostMultipart(
             const std::string& url,
             const std::string& filePath,
@@ -189,10 +175,8 @@ namespace cajeta::buildtool {
             return status;
         }
 
-        // SFTP via curl. libcurl-with-libssh2 understands sftp://
-        // URLs; --upload-file is implicit via CURLOPT_UPLOAD. The
-        // user / password come from the URL form sftp://user@host/path
-        // OR via key-path param (CURLOPT_SSH_PRIVATE_KEYFILE).
+        // SFTP via curl: --upload-file is implicit through CURLOPT_UPLOAD, and the
+        // credentials come from the sftp://user@host/path URL or from `sshKeyPath`.
         llvm::Expected<long> sftpUpload(
             const std::string& url,
             const std::string& filePath,
@@ -242,11 +226,8 @@ namespace cajeta::buildtool {
             return 200L;
         }
 
-        // S3 / Azure / GCS shell-out wrappers. The acceptance is
-        // "artifact + signature upload to <cloud>; URLs consumable by
-        // downstream actions." Cloud-specific auth lives in the
-        // canonical CLI tools — implementing sigv4 / shared-key /
-        // service-account JWTs from scratch buys nothing here.
+        // S3 / Azure / GCS shell-out wrappers. Cloud-specific auth lives in the canonical
+        // CLI tools; reimplementing sigv4 / shared-key / service-account JWTs buys nothing.
         llvm::Expected<std::string> awsS3Put(
             const std::string& filePath,
             const std::string& bucket,
@@ -338,10 +319,6 @@ namespace cajeta::buildtool {
             if (!inputV) return err("upload: missing required 'input'");
             std::string input = inputV->str();
 
-            // Build the list of files to upload — `input` + every
-            // `also` entry. `also` may carry either bare filename
-            // strings (relative to input's dir) or {file, ...}
-            // objects with destination overrides.
             struct ToUpload {
                 std::string localPath;
                 std::string urlOverride; // applied as full URL when set
@@ -509,9 +486,6 @@ namespace cajeta::buildtool {
                 uploadedUrls.push_back(finalUrl);
             }
 
-            // Outputs: `url` for the primary, `urls` JSON-ish for
-            // every uploaded file (semicolon-separated, easy to
-            // consume downstream via substitution).
             result.outputs["url"] = uploadedUrls.empty()
                 ? std::string{} : uploadedUrls.front();
             {

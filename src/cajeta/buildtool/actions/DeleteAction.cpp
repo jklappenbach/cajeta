@@ -1,10 +1,5 @@
-// `delete` — remove files / directories. Native filesystem
-// action. See BuildTool.md Action catalog "Filesystem" row.
-//
-// Params:
-//   paths       (required) string or array of paths to remove
-//   if-exists   (optional, default true) missing paths are OK;
-//               set to false to error when a path doesn't exist
+// `delete` — removes `paths` (a string or an array); `if-exists` (default true)
+// tolerates a missing path. See BuildTool.md Action catalog, "Filesystem" row.
 
 #include "cajeta/buildtool/Action.h"
 
@@ -61,7 +56,6 @@ namespace cajeta::buildtool {
                     return err("delete: '" + p +
                                "' does not exist (if-exists=false)");
                 }
-                // remove_all handles both files and directory trees.
                 auto n = fs::remove_all(path, ec);
                 if (ec) {
                     return err("delete: '" + p + "': " + ec.message());

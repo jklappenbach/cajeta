@@ -1,14 +1,5 @@
-//
-// Vulkan/SPIR-V kernel registration pass — see header.
-//
-// Structurally identical to Nvptx/AmdgpuRegistration: for each @Kernel it
-// lowers a device module, emits the SPIR-V binary, embeds the bytes as a
-// private host-module constant, and appends an llvm.global_ctors entry calling
-// the backend-neutral __cajeta_xpu_register_module(entryName, bytes, len). The
-// runtime keys modules by entry name, so the same launch path resolves a
-// Vulkan kernel exactly as it does an NVIDIA or AMD one — only the binary
-// format behind it (cubin/hsaco → SPIR-V) changed.
-//
+// Vulkan/SPIR-V kernel registration pass — see header. Structurally identical
+// to Nvptx/AmdgpuRegistration; only the binary format differs.
 
 #include "VulkanRegistration.h"
 #include "cajeta/xpu/core/KernelManifest.h"
@@ -44,12 +35,8 @@ namespace vulkan {
                                std::vector<KernelManifest>* manifests) {
         if (kernels.empty()) return 0;
 
-        // A FRESH SPIR-V TargetMachine per kernel (created in the loop below):
-        // LLVM's SPIR-V backend carries codegen state (SPIRVGlobalRegistry) on
-        // the TargetMachine, and reusing one TM across multiple kernels'
-        // emitSpirv corrupts it — a crash in SPIRVEmitIntrinsics on the second
-        // kernel. This probe just confirms the spirv target is in this LLVM
-        // build; if not, there's nothing to emit.
+        // A FRESH TargetMachine per kernel: the SPIR-V backend keeps codegen
+        // state on it, and reusing one across kernels corrupts that state.
         if (!createSpirvTargetMachine(arch)) return 0;
 
         llvm::LLVMContext& ctx = hostModule.getContext();
@@ -67,21 +54,13 @@ namespace vulkan {
 
         // void __cajeta_xpu_register_kernel_params(i8* name, i32 count,
         //                                          i8* kind, i32* byteSize)
-        // The Vulkan rung of the runtime dispatcher needs this to turn the
-        // uniform kernelParams argv into descriptor bindings (scalars -> SSBOs,
-        // buffers -> storage buffers, textures -> sampled images, samplers ->
-        // VkSamplers). kind[i] = KernelParamInfo::Kind for param i.
         llvm::FunctionType* kpTy = llvm::FunctionType::get(
             voidTy, {ptrTy, i32Ty, ptrTy, ptrTy}, false);
         llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
             "__cajeta_xpu_register_kernel_params", kpTy);
 
-        // Emit + register one SPIR-V variant of `method` under `regName`. `software`
-        // selects the SoftwareRayQuery target (the "<name>$sw" variant); a fresh
-        // TargetMachine per call (see above). `registerKparams` is true only for the
-        // primary variant — the param metadata is shared (the launch overrides the
-        // AS bind kind per the recorded impl), so the $sw variant registers only its
-        // module. Returns true on success.
+        // Emits one SPIR-V variant of `method`; `registerKparams` is true only
+        // for the primary variant, since the variants share that metadata.
         auto emitVariant = [&](const MethodPtr& method, const std::string& regName,
                                bool software, bool registerKparams) -> bool {
             auto tm = createSpirvTargetMachine(arch);
@@ -93,14 +72,10 @@ namespace vulkan {
             try {
                 kfn = lowerKernel(method, devMod, software, regName);
             } catch (cajeta::Exception& ex) {
-                // A contradicted @Access declaration is the author's error, not
-                // an unsupported construct: a compile error, never a skip.
+                // A contradicted @Access is the author's error, never a skip.
                 if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
                         || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
-                // Unsupported construct (XPU-N01) — this kernel gets NO device
-                // code for this backend; a launch that lands here at run time
-                // fails with "no registered kernel". Say so at build time —
-                // the silent skip cost a real debugging session (U12).
+                // XPU-N01: no device code, so a launch would find no kernel.
                 fprintf(stderr,
                         "cajeta: note: [xpu-kernel-skipped] %s: no vulkan device "
                         "code — %s\n",
@@ -108,17 +83,13 @@ namespace vulkan {
                 return false;
             }
             if (!kfn) return false;
-            // xpu-tile-manifest §6: access modes off the lowered IR, before the
-            // SPIR-V codegen transforms it.
+            // Access modes come off the lowered IR, before SPIR-V codegen.
             KernelAccessSummary access = classifyKernelAccess(*kfn, method);
 
             std::vector<uint8_t> spirv = emitSpirv(devMod, *tm);
             if (spirv.empty()) return false;  // codegen error (logged)
 
-            // xpu-tile-manifest §2: identity + hash over the SPIR-V that
-            // registers, for the primary variant. Pipeline statistics are a
-            // driver fact at pipeline creation, so the footprint stays absent
-            // (§3.1 "where the driver exposes them") — never zero.
+            // Pipeline statistics are a driver fact, so the footprint is ABSENT.
             std::optional<KernelManifest> manifest;
             if (registerKparams) {
                 KernelManifest m;
@@ -131,7 +102,6 @@ namespace vulkan {
                 manifest = std::move(m);
             }
 
-            // Embed the SPIR-V as a private host-module constant.
             llvm::Constant* dataInit = llvm::ConstantDataArray::get(
                 ctx, llvm::ArrayRef<uint8_t>(spirv.data(), spirv.size()));
             auto* spvGV = new llvm::GlobalVariable(
@@ -140,7 +110,6 @@ namespace vulkan {
                 "xpu.spirv." + regName);
             spvGV->setAlignment(llvm::MaybeAlign(8));
 
-            // ctor: __cajeta_xpu_register_module(regName, spvGV, len)
             llvm::FunctionType* ctorTy = llvm::FunctionType::get(voidTy, false);
             llvm::Function* ctor = llvm::Function::Create(
                 ctorTy, llvm::GlobalValue::InternalLinkage,
@@ -153,9 +122,7 @@ namespace vulkan {
                                  llvm::ConstantInt::get(i64Ty, spirv.size()),
                                  llvm::ConstantInt::get(i32Ty, 2)});  // CAJ_XPU_VULKAN
 
-            // Per-kernel parameter metadata: which args are buffers vs scalars,
-            // and the scalar byte sizes — so the runtime can bind buffers and
-            // wrap scalars in single-element SSBOs at launch.
+            // The runtime binds buffers directly, scalars as 1-element SSBOs.
             if (registerKparams) {
                 std::vector<KernelParamInfo> info =
                     collectKernelParamInfo(method, ctx, hostModule.getDataLayout());
@@ -191,7 +158,6 @@ namespace vulkan {
                                          arch, *manifest);
             b.CreateRetVoid();
 
-            // Run at module-init time (LLJIT: jit->initialize; native: startup).
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
             if (manifest && manifests) manifests->push_back(*manifest);
             return true;
@@ -213,10 +179,7 @@ namespace vulkan {
                              /*registerKparams=*/true))
                 continue;
             ++emitted;
-            // A ray-query kernel also gets a software variant "<name>$sw": the same
-            // kernel lowered with the portable SoftwareRayQuery walk in plain
-            // SPIR-V (AS bound as a storage buffer), selected at launch when the AS
-            // was built as a software BVH on this backend (inc-4 brick #3).
+            // A ray-query kernel also gets a "<name>$sw" software-BVH variant.
             if (usesRayQuery(method))
                 emitVariant(method, entryName + "$sw", /*software=*/true,
                             /*registerKparams=*/false);
@@ -227,9 +190,7 @@ namespace vulkan {
     // --- Graphics shader registration (cajeta-gfx §4) ----------------------
 
     namespace {
-        // Map a graphics method's stage annotation onto the SPIR-V ShaderStage.
-        // Returns nullopt if the method carries no graphics stage (caller should
-        // have filtered on isGraphicsShader first).
+        /// The SPIR-V ShaderStage for a method's stage annotation, or nullopt.
         std::optional<ShaderStage> stageOf(const Method& m) {
             if (isVertex(m))      return ShaderStage::Vertex;
             if (isFragment(m))    return ShaderStage::Fragment;
@@ -242,15 +203,7 @@ namespace vulkan {
         }
     } // namespace
 
-    // The rasterization twin of emitKernelRegistration: each @Vertex/@Fragment/…
-    // method is lowered on its OWN per-stage SPIR-V TargetMachine (the stage
-    // execution model rides the triple env + the entry's hlsl.shader attr), then
-    // its module is embedded + registered under the entry name exactly as a
-    // kernel is — so a graphics shader rides the normal build like a @Kernel. No
-    // kernel-param metadata is emitted: graphics stages bind inputs as interface
-    // variables, not the uniform kernelParams argv (graphics resource descriptors
-    // are a later slice). Stages whose body uses an unsupported construct
-    // (XPU-N01) are skipped, never fatal.
+    // A graphics stage binds inputs as interface variables, so no kparams.
     int emitGraphicsRegistration(const std::vector<MethodPtr>& shaders,
                                  llvm::Module& hostModule,
                                  const std::string& arch) {
@@ -263,8 +216,7 @@ namespace vulkan {
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::IRBuilder<> b(ctx);
 
-        // void __cajeta_xpu_register_module_be(name, image, len, backend) — the
-        // same backend-tagged hook the kernel path registers modules through.
+        // void __cajeta_xpu_register_module_be(name, image, len, backend)
         llvm::FunctionType* regTy =
             llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty, i32Ty}, false);
         llvm::FunctionCallee regFn =
@@ -277,9 +229,7 @@ namespace vulkan {
             auto stage = stageOf(*method);
             if (!stage) continue;
 
-            // A FRESH per-stage TargetMachine per shader (as the kernel path
-            // does): the SPIR-V backend accumulates codegen state on the TM, so
-            // it must not be reused across emitSpirv calls.
+            // A FRESH per-stage TargetMachine, for the reason the kernel path has.
             auto tm = createSpirvTargetMachineForStage(*stage, arch);
             if (!tm) continue;  // this stage's target env isn't in this build
 
@@ -291,8 +241,7 @@ namespace vulkan {
             try {
                 sfn = lowerGraphicsShader(method, devMod, *stage, regName);
             } catch (cajeta::Exception&) {
-                // Unsupported construct (XPU-N01) — leave this stage to nobody;
-                // don't fail the whole compile.
+                // XPU-N01 leaves this stage unregistered, never fatal.
                 continue;
             }
             if (!sfn) continue;
@@ -300,7 +249,6 @@ namespace vulkan {
             std::vector<uint8_t> spirv = emitSpirv(devMod, *tm);
             if (spirv.empty()) continue;  // codegen error (logged)
 
-            // Embed the SPIR-V as a private host-module constant.
             llvm::Constant* dataInit = llvm::ConstantDataArray::get(
                 ctx, llvm::ArrayRef<uint8_t>(spirv.data(), spirv.size()));
             auto* spvGV = new llvm::GlobalVariable(
@@ -309,7 +257,6 @@ namespace vulkan {
                 "xpu.spirv." + regName);
             spvGV->setAlignment(llvm::MaybeAlign(8));
 
-            // ctor: __cajeta_xpu_register_module(regName, spvGV, len)
             llvm::FunctionType* ctorTy = llvm::FunctionType::get(voidTy, false);
             llvm::Function* ctor = llvm::Function::Create(
                 ctorTy, llvm::GlobalValue::InternalLinkage,
@@ -323,7 +270,6 @@ namespace vulkan {
                                  llvm::ConstantInt::get(i32Ty, 2)});  // CAJ_XPU_VULKAN
             b.CreateRetVoid();
 
-            // Run at module-init time (LLJIT: jit->initialize; native: startup).
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
             ++emitted;
         }

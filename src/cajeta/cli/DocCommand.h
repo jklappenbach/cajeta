@@ -1,8 +1,4 @@
-// `cajeta doc` — documentation-generator subcommand.
-//
-// Forwards to the shared cajetadoc CLI (cajetadoc::runCli), the same engine
-// that backs the standalone `cajetadoc` binary. See tools/cajetadoc/ and
-// plans/docs/cajetadoc-tool.md.
+// `cajeta doc` — the documentation subcommand, forwarded to the cajetadoc CLI.
 #ifndef CAJETA_CLI_DOCCOMMAND_H
 #define CAJETA_CLI_DOCCOMMAND_H
 
