@@ -35,7 +35,81 @@ System.stdout.println(C.run());            // count 2, then 22
 
 ## 16.3 `spawn` and `detach`
 
-`spawn call` starts an async call as a child task of the enclosing `scope`; the scope joins it. `detach call` starts a task not bound to a scope; a detached task must own everything it touches (§16.4).
+`spawn call` starts an async call as a child task of the enclosing `scope`, and the scope joins it at the closing brace. The expression yields a `Task<T>`. Binding it gives a handle to `await` for the result, and leaving it unbound hands the join to the scope.
+
+A value borrowed into a spawned task is sound. The scope does not exit until the task finishes, so the borrow's source outlives every use (§16.4).
+
+**Example 16.3-1.** Two children joined at the closing brace. The counter is borrowed into both.
+
+```cajeta
+import cajeta.concurrent.Mutex;
+public final class C {
+    public static async void bump(Mutex<int32> m) {
+        m.withLock((n) -> n + 1);
+        return;
+    }
+    public static int32 run() {
+        Mutex<int32> counter = heap Mutex<int32>(0);
+        scope {
+            spawn bump(counter);        // borrowed into a scoped task
+            spawn bump(counter);
+        }                               // joins both children
+        return counter.get();           // 2
+    }
+}
+```
+
+**Example 16.3-2.** A spawned call bound to a `Task<T>` and awaited for its result.
+
+```cajeta
+public final class C {
+    public static async int32 work(int32 v) { return v + 1; }
+    public static int32 run() {
+        scope {
+            Task<int32> a = spawn work(1);
+            Task<int32> b = spawn work(20);
+            return await a + await b;   // 23
+        }
+    }
+}
+```
+
+`detach call` starts a task bound to no scope. A detached task can outlive the frame that started it, so it must own everything it touches (§16.4). A class-typed argument must be transferred. A fresh `heap T(...)` argument promotes implicitly with no `#` written (Ownership §5.3), and a primitive argument is copied and carries no obligation.
+
+**Example 16.3-3.** A detached task takes the title, and drops the value when it finishes.
+
+```cajeta
+public class Payload {
+    public int32 n;
+    public Payload() { this.n = 0; }
+}
+public final class C {
+    public static async void consume(Payload p) { return; }
+    public static int32 run() {
+        Payload p = heap Payload();
+        detach consume(#p);             // the task owns p
+        return 1;
+    }
+}
+```
+
+**Example 16.3-4.** A rejected program. A borrow into a detached task would dangle when the frame's local drops.
+
+<!-- snippet: skip -->
+```cajeta
+public class Payload {
+    public int32 n;
+    public Payload() { this.n = 0; }
+}
+public final class C {
+    public static async void consume(Payload p) { return; }
+    public static int32 run() {
+        Payload p = heap Payload();
+        detach consume(p);              // CAJETA_ERROR_DETACH_BORROW_CAPTURE
+        return 1;
+    }
+}
+```
 
 > *Discussion.* As of 0.27.0 `spawn` accepts a bare class-method invocation only — an instance-method spawn is rejected with `CAJETA_ERROR_ASYNC_R3A`. Cancellation semantics are implemented in stages; the running status is recorded in the internal concurrency status document and this section binds them when they settle.
 
