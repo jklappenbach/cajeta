@@ -27,13 +27,8 @@ on:
         required: false
         type: boolean
         default: false
-  pull_request:
-    paths:
-      - 'runtime/native/cajeta_xpu_vulkan.c'
-      - 'runtime/native/cajeta_rt_prof_vulkan.c'
-      - 'src/cajeta/xpu/vulkan/**'
-      - 'src/CMakeLists.txt'
-      - '.github/workflows/apple-vulkan.yml'
+  # pull_request trigger removed 2026-09-10: the macOS legs are not ready to
+  # gate pull requests. Run by hand from the Actions tab until they are.
 
 concurrency:
   group: apple-vulkan-${{ github.ref }}
