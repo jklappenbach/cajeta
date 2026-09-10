@@ -1,7 +1,29 @@
-// Abstract classes and abstract methods (spec Classes §8.5). Three checks are
-// missing, so each test here is RED until one lands: allocating a class with
-// an unimplemented abstract method, an abstract method declared with a body,
-// and a class declaring an abstract method without the `abstract` modifier.
+// Abstract classes and abstract methods (spec Classes §8.5).
+//
+// What works today, measured 2026-09-09 on 0.27.0 with `cajeta jit-run`:
+// an abstract base with a concrete subclass dispatches correctly through
+// a base-typed binding, a concrete class that inherits an abstract method
+// without overriding it is rejected with
+// CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED, and an abstract method in one
+// parent is satisfied by a concrete same-signature method in another
+// (test/parser/MultiClassingPhase1Tests.cpp pins that case).
+//
+// Three checks are missing. Each test below is RED until one lands.
+//
+// 1. Allocating a class that still has an unimplemented abstract method
+//    compiles. The empty vtable slot is called at run time and the
+//    process takes SIGSEGV at a null fault address — measured with
+//    `heap Shape()` where Shape declares `public abstract int32 area()`,
+//    exit 139, "SIGSEGV caught — fault addr (nil)". The allocation site
+//    is where this must be rejected.
+// 2. An abstract method declared with a body is accepted and the body is
+//    ignored.
+// 3. A class that declares an abstract method is not required to carry
+//    the `abstract` modifier, so a class that reads as concrete can hold
+//    an empty slot.
+//
+// The expected codes below are named for what they check. Adjust them if
+// the fix picks different ones.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
