@@ -9,10 +9,8 @@
 namespace cajeta::buildtool {
 
     // Validation of one plugin protocol record, and the ONE definition of valid: the
-    // runtime and the conformance suite dispatch on these same rules. Beyond `kind`,
-    // log needs message (level optional); warn message; write text; output key+value;
-    // finding severity+message; result status; error message. An unknown kind is NOT
-    // invalid: a newer build's record is dropped with a warning, which is not malformed.
+    // runtime and the conformance suite dispatch on these same rules. An unknown kind
+    // is NOT invalid — a newer build's record is dropped with a warning.
 
     enum class RecordVerdict {
         Valid,

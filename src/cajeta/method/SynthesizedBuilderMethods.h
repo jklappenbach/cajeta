@@ -21,6 +21,9 @@ namespace cajeta {
                                         const std::string& methodName);
 
         void initParameter();
+        // Emits the raw-IR body `(this, value) -> this`: a GEP to the Builder slot
+        // for `field`, the store, and the return. Throws
+        // CAJETA_ERROR_BUILDER_SETTER_FIELD_INDEX when the field has no LLVM slot.
         void generateCode() override;
         bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 
@@ -37,6 +40,9 @@ namespace cajeta {
                                 CajetaClassPtr outer,
                                 const std::string& methodName = "build");
 
+        // Emits `heap Outer(...)` by hand: __cajeta_alloc, the vtable into slot 0,
+        // then Outer's all-args ctor over the Builder's slots, matched by field NAME.
+        // Throws CAJETA_ERROR_BUILDER_NO_CTOR when that constructor is missing.
         void generateCode() override;
         bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 
@@ -62,6 +68,9 @@ namespace cajeta {
                                          const std::string& methodName = "builder",
                                          std::vector<DefaultEntry> defaults = {});
 
+        // Emits `() -> Builder`: __cajeta_alloc, the vtable into slot 0, then each
+        // @Builder.Default initializer stored into its mirror slot, width-cast to it.
+        // The module builder is swapped for the local one across those initializers.
         void generateCode() override;
         bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 

@@ -1,7 +1,6 @@
-// The repository delegation: the root signs this, and this names the keys allowed to
-// sign release metadata, so the root can stay offline and a compromised online key
-// forges nothing else. A REQUIRED `type` discriminator keeps it from being read as an
-// OrgKeyDocument, which would let any organization's key sign for every other.
+// The repository delegation: the root signs this, naming the keys allowed to sign
+// release metadata, so the root can stay offline. A REQUIRED `type` discriminator keeps
+// it from being read as an OrgKeyDocument, which would cross-authorize organizations.
 
 #pragma once
 

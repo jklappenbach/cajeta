@@ -51,10 +51,9 @@ namespace cajeta {
 
     private:
 
-        // ---- Fixed-layout RTTI (REFL-1) -------------------------------------
-        // #RttiGlobal is a fixed-offset header — one LLVM struct type for every
-        // class — whose variable-length data lives in private globals reached by
-        // pointer. The C mirrors in cajeta_runtime.c stay in lock-step with it.
+        // ---- Fixed-layout RTTI ----------------------------------------------
+        // #RttiGlobal is a fixed-offset header — one LLVM struct type per class — whose
+        // variable-length data lives in private globals; cajeta_runtime.c mirrors it in C.
 
         // emit a private, null-terminated C string global; returns i8* to it.
         llvm::Constant* emitCString(const std::string& s);
@@ -99,10 +98,15 @@ namespace cajeta {
         // Build the per-class descriptor-table globals; return ptr to the
         // table (or null ptr constant when empty).
         llvm::Constant* emitFieldTable(CajetaClassPtr structure);
+        // One row per declared method, carrying its signature hash and its own
+        // parameter table; the implicit `this` is left out of the parameter count.
         llvm::Constant* emitMethodTable(CajetaClassPtr structure);
         // REFL-2C per-class constructor table (#MethodDesc[] shape), ordered by
         // getReflectConstructorList — the index space newInstance switches over.
         llvm::Constant* emitConstructorTable(CajetaClassPtr structure);
+        // The `.rtti.params` global for one method's user-visible parameters — the
+        // implicit leading `this` is skipped — or a null ptr constant when there
+        // are none. Called from emitMethodTable and emitConstructorTable per row.
         llvm::Constant* emitParameterTable(MethodPtr method);
 
         llvm::Type* createAnnotationType(CajetaClassPtr structure);

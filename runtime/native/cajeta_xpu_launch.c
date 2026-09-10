@@ -1,8 +1,6 @@
-// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
+// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c ===
 // --- Texture3D CPU sample/fetch ---------------------------------------------
-// One voxel of the DECODED float volume: index = ((z*h + y)*w + x)*channels, missing
-// channels defaulting G/B = 0, A = 1.
+// One voxel of the DECODED float volume: ((z*h + y)*w + x)*channels; absent G/B = 0, A = 1.
 static inline caj_v4f cajeta_cpu_texel3d(const struct cajeta_cpu_texobj* t,
                                          int x, int y, int z) {
     const float* p = t->data +

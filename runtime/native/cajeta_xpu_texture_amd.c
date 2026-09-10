@@ -1,5 +1,4 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
 // --- HIP texture helpers ----------------------------------------------------
 // On AMD a Texture2D is a hipArray; its texobj is rebuilt at each launch.
 static int cajeta_hip_tex_supported(void) {

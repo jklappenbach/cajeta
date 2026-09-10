@@ -1,8 +1,6 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
 // --- registered kernel modules (device images keyed by entry name + backend) -
-// Each backend's ctor registers ITS image per @Kernel; the launch path resolves
-// by (name, active backend). backend == -1 is legacy and matches any requester.
+// Each backend's ctor registers ITS image per @Kernel; backend -1 matches any requester.
 struct cajeta_xpu_module {
     char name[256];
     int backend;      // CAJ_XPU_* id of the image's consumer, or -1 (legacy/any)
@@ -848,10 +846,8 @@ static void cajeta_xpu_launch_cpu(const char* name,
 }
 
 // --- Buffer<T> device memory (backend-dispatched) ---------------------------
-// Buffer<T>'s stdlib methods forward byte-sized primitives here: the int64
-// handle is the backend's device pointer, buffer-table index, or host block.
-// Buffer MemoryKind ordinals — the stable native contract; MUST match
-// runtime/src/cajeta/xpu/core/MemoryKind.cajeta.
+// The int64 handle is the backend's device pointer, buffer-table index, or host
+// block; the MemoryKind ordinals MUST match xpu/core/MemoryKind.cajeta.
 enum {
     CAJ_MEMKIND_DEVICE  = 0,
     CAJ_MEMKIND_PINNED  = 1,

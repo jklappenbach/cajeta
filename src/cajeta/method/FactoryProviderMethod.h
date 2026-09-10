@@ -16,6 +16,9 @@ namespace cajeta {
                               CajetaModule::FactoryDescriptorPtr descriptor,
                               int providerIdx);
 
+        // Emits the accessor body as raw IR: the @Singleton memo check and its cached
+        // return first, then the factory instance, the provider call with every
+        // @Inject argument resolved, and the store into the memo global.
         void generateCode() override;
         bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 

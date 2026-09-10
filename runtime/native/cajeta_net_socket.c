@@ -174,9 +174,8 @@ static cajeta_native_socket_t cajeta_net_from_fd(int32_t fd) {
 }
 
 // ---- Socket lifecycle + transfer intrinsics ----
-// family/type/protocol are native constants and the addresses opaque (ptr, len) sockaddr
-// buffers; the cajeta layer owns both tables. An fd-returning intrinsic answers the fd
-// or -1, a status one 0 or -1, a byte-count one the count or -1.
+// Addresses cross as opaque (ptr, len) sockaddr buffers. An fd-returning intrinsic
+// answers the fd or -1, a status one 0 or -1, a byte-count one the count or -1.
 
 // Create a socket. Returns the int32 fd, or -1 on failure.
 int32_t __cajeta_net_socket(int32_t family, int32_t type, int32_t protocol) {
@@ -201,8 +200,6 @@ int32_t __cajeta_net_listen(int32_t fd, int32_t backlog) {
     return r == CAJETA_SOCKET_ERROR ? -1 : 0;
 }
 
-// Accepts one pending connection, writing the peer into the caller-sized `addr_out` and
-// updating `*addrlen_inout`; either out pointer may be NULL to discard it.
 // Which intrinsic last produced an error, per thread — Windows only. Winsock reuses
 // WSAEWOULDBLOCK for both "would block" and "connect in flight", so the non-throwing
 // classifiers consult this: connect sets it, every other error path clears it.
@@ -219,6 +216,8 @@ static inline void cajeta_net_note_op(int is_connect) { (void) is_connect; }
 static inline int cajeta_net_last_op_was_connect(void) { return 0; }
 #endif
 
+// Accepts one pending connection, writing the peer into the caller-sized `addr_out` and
+// updating `*addrlen_inout`; either out pointer may be NULL to discard it.
 int32_t __cajeta_net_accept(int32_t fd, void* addr_out, int32_t* addrlen_inout) {
     if (fd < 0) return -1;
     cajeta_net_note_op(0);

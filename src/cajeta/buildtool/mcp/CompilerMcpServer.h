@@ -26,6 +26,9 @@ namespace cajeta::buildtool::mcp {
         // One JSON-RPC message in → serialized response out; nullopt for notifications.
         std::optional<std::string> handleMessage(llvm::StringRef message);
 
+        // The stdio serve loop: one line-delimited JSON-RPC message per line of `in`,
+        // each response written to `out` and flushed. Blank lines and notifications
+        // produce nothing. Returns 0 at end of input; it never fails the process.
         int run(std::istream& in, std::ostream& out);
 
         static llvm::StringRef instructions();

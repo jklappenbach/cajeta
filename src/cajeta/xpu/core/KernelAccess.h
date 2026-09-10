@@ -1,8 +1,6 @@
-//
 // KernelAccess — what a lowered kernel does to each buffer-like parameter,
 // derived off the LOWERED IR by walking every load, store and atomic back
 // through GEPs, casts, phis, selects, slots and resource intrinsics.
-//
 
 #pragma once
 

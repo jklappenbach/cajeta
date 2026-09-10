@@ -661,11 +661,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "threads") {
-        // The entry thread is always id 0 ("main"); every live fiber is keyed by its
-        // stable dbg id.
-        // FIXME(CP6f-2d, specs/archive/carrier-quiesce-spec.md): NOT safe under the
-        // multi-carrier scheduler — only the stopping carrier parks, so the fiber
-        // registry can mutate while this walks it (liveFibers() is a TOCTOU).
+        // FIXME: NOT safe under the multi-carrier scheduler — only the stopping carrier
+        // parks, so the fiber registry can mutate while this walks it (a TOCTOU).
         Json threads = Json::array();
         Json main = Json::object();
         main["id"] = 0;

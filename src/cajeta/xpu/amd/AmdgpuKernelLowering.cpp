@@ -782,15 +782,12 @@ public:
         return b.CreateCall(f, {byteAddr, value}, "wave.rotate");
     }
 
-    // ---- Cooperative matrix: RDNA3 WMMA (matrix cores), CM7 ------------------
-    // gfx11 `v_wmma_*_16x16x16` (wave32): D = A·B + C with each tile DISTRIBUTED across
-    // the wave's 32 lanes and marshalled by hand in load/store, per the hardware layout:
+    // ---- Cooperative matrix: gfx11 `v_wmma_*_16x16x16` (wave32) per-lane layout ----
     //   A  : lane L holds row (L & 15), <16 x elem> over k = 0..15, replicated across
     //        the two 16-lane halves of the wave.
     //   B  : lane L holds column (L & 15), <16 x elem> over k = 0..15.
     //   C/D: <8 x elem> per lane — column (L & 15), rows { 2e + (L >> 4) }.
-    // bf16 A/B ride as <16 x i16>; int8 packs 4 K-values per i32 into <4 x i32> with an
-    // <8 x i32> accumulator. Anything else falls to the portable Software tier.
+    //   bf16 A/B: <16 x i16>.  int8: 4 K-values per i32, <4 x i32> with <8 x i32> acc.
 
     // Native only at 16x16x16: f16/bf16/int8 operands, f32 or i32 accumulator. The role
     // matters — an int32 *operand* has no WMMA while an int32 *accumulator* is native.

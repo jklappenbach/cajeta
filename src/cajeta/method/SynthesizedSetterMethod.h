@@ -21,6 +21,9 @@ namespace cajeta {
         // FormalParameter needs this method as its parent, which the ctor cannot give.
         void initParameter();
 
+        // Emits the whole body: GEP the field, store argument 1 into it, return void.
+        // Runs after initParameter. Throws CAJETA_ERROR_SETTER_FIELD_INDEX when the
+        // field has no LLVM index on the parent.
         void generateCode() override;
 
     private:

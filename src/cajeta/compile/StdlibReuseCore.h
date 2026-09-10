@@ -50,6 +50,9 @@ namespace cajeta {
 
     private:
         StdlibReuseCore() = default;
+        // Snapshots what restoreBaseline() rewinds to: the type and module archives,
+        // the stdlib structures with their per-class reuse baselines, the stdlib
+        // llvm::Module's globals, and xref. Re-taken once the codegen layer is added.
         void captureBaselines();
         // Baseline of the persistent stdlib llvm::Module's global values. A session's
         // additions (external declarations of what it emitted) must not outlive it, or

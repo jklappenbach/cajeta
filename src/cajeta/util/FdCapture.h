@@ -32,6 +32,8 @@ namespace cajeta::util {
         size_t bytesDelivered() const { return delivered_; }
 
     private:
+        // Flushes the stream and hands the sink everything written since the last
+        // call, advancing readOffset_. Run by the poll thread and again by stop().
         void drain();
 
         int fd_ = -1;

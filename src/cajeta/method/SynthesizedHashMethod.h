@@ -14,6 +14,9 @@ namespace cajeta {
     public:
         SynthesizedHashMethod(CajetaModulePtr module, CajetaClassPtr parent);
 
+        // Emits the whole body: seed from __cajeta_hash_seed, then combine each field's
+        // hash in struct-layout order (deepest ancestor first) and return the accumulator.
+        // A class field dispatches through its vtable; a null one contributes the seed.
         void generateCode() override;
     };
 }

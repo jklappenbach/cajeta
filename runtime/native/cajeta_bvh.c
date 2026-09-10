@@ -1,7 +1,4 @@
-// Portable software BVH: a flat, pointer-free tree packed into one contiguous
-// block of float32 words, so it binds like any Buffer<float32> on every backend.
-// Structural integers ride as exact floats — no uint↔float bitcast exists yet.
-// Layout, all float32 words (v1, frozen):
+// Portable software BVH; all float32 words, structural integers as exact floats:
 //   header (8): [0] version [1] nodeCount [2] primCount [3] rootIndex
 //               [4] nodesOffset [5] primRefOffset [6] flags [7] nodeStride
 //   node   (9 each), depth-first, left child at index+1:

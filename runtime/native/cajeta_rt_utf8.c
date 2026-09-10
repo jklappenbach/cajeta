@@ -1,9 +1,6 @@
-// cajeta.lang.Utf8: one 16-byte value overlaid three ways, discriminated by the
-// length word. `base` is always a ROOT CajetaArray header, never interior:
-//   len <= 12   Inline — bytes at byte 4 of the value; POD, no rc.
-//   len >  12   pointer form, data at base+8+off; lenTag >= 0 is Static (a
-//               never-freed root, no rc), lenTag's sign bit is Shared (rc'd).
-// Results of <= 12 bytes are always Inline, so pointer forms are unambiguous.
+// cajeta.lang.Utf8: one 16-byte value overlaid three ways (Inline, Static,
+// Shared) and discriminated by the length word, per the forms in
+// docs/specification/lang/slice-spec.md. `base` is always a ROOT array header.
 
 #define CAJ_UTF8_INLINE_CAP 12
 #define CAJ_UTF8_SHARED_BIT ((int32_t) 1 << 31)

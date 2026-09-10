@@ -24,6 +24,9 @@ namespace cajeta {
             children.push_back(expression);
         }
 
+        // Emits the wrapped expression as an r-value, loading through it when it
+        // evaluates to an l-value so the surrounding slot store has a value to
+        // store. Throws CAJETA_ERROR_UNRESOLVED_EXPRESSION on a `void` initializer.
         llvm::Value* generateCode(CajetaModulePtr module);
     };
 
@@ -59,6 +62,9 @@ namespace cajeta {
         CajetaTypePtr getElementType() const { return elementType; }
         void setElementType(CajetaTypePtr t) { elementType = std::move(t); }
 
+        // Emits the brace initializer as an array populated in source order; returns
+        // null unless setElementType was called first, since the literal carries no
+        // type. Data braces are retired, so only function-typed elements survive.
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

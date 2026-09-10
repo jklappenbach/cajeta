@@ -27,7 +27,12 @@ namespace cajeta::kernel {
         static bool load(const std::string& path, ConnectionInfo* out,
                          std::string* error = nullptr);
 
+        // Serializes every field under its Jupyter connection-file key, the inverse
+        // of load(). Emits all of them, including a defaulted port.
         std::string toJson() const;
+
+        // Writes toJson() plus a newline to `path`, truncating any existing file.
+        // False, with a reason in `error`, when the file cannot be opened.
         bool write(const std::string& path, std::string* error = nullptr) const;
 
         // `tcp://127.0.0.1:9000` for a given port.

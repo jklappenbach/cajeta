@@ -40,8 +40,14 @@ namespace cajeta {
         llvm::Value* createLoad() override;
         llvm::Value* createStore(llvm::Value* value) override;
 
+        // The entry-block pointer slot, created once and initialized on that first
+        // call, so a `heap` local inside a loop does not re-allocate. Null for a
+        // NAME-ONLY binding, which session scope seeds when the type does not resolve.
         llvm::AllocaInst* getOrCreateAllocation() override;
 
+        // Emits the free of the pointed-to allocation at the current insert point.
+        // A block that already has a terminator is skipped: a free after `ret`
+        // would leave dangling instructions and fail LLVM verification.
         void onDelete() override;
     };
 }

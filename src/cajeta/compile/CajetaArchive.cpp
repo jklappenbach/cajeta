@@ -369,9 +369,6 @@ namespace cajeta {
         }
 
         // ---- Trailing index ----
-        // uint32 entry_count, then per entry: uint32 name_length, the name,
-        // uint64 entry_offset (at its name_length field) and uint64 entry_size
-        // (its whole on-disk span). Always written; readers test index_offset.
         uint64_t indexOffset = (uint64_t) out.tellp();
         writeU32LE(out, (uint32_t) entries.size());
         for (std::size_t i = 0; i < entries.size(); ++i) {

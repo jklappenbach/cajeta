@@ -1,9 +1,6 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
 // --- cajeta.lang.Object root methods ----------------------------------------
-// Default bodies for the universal-root methods, overridden per concrete class by the
-// structural synthesizer once auto-extend lands; each takes the cajeta `this` unchanged
-// as `void* self`. `operator==` is absent: its i1 return lowers to i8 and fails verify.
+// Default bodies taking the cajeta `this` as `void* self`; no `operator==` (i1 fails verify).
 
 // Identity hash — the same path as __cajeta_hash_identity.
 int64_t __cajeta_object_hash(void* self) {
@@ -313,9 +310,8 @@ void __cajeta_property_install(const char* keyEqValue) {
 }
 
 // ---------------------------------------------------------------------------
-// The process argument vector (`System.args`). ONE STORE, TWO SPELLINGS: a `main(String[]
-// args)` and `System.args` are fed by the same install call, so they cannot disagree. The
-// strings are COPIED — a host's backing may die first, and a dangling argv reads as data.
+// The process argument vector (`System.args`). One store: `main(String[] args)` and
+// `System.args` share the install call. The strings are COPIED — a host's may die first.
 static char**  __cajeta_argv_store = NULL;
 static int64_t __cajeta_argc_store = 0;
 static pthread_mutex_t __cajeta_args_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -389,9 +385,8 @@ static void __cajeta_install_host_triple(void) {
 }
 
 // ---------------------------------------------------------------------------
-// cajeta.io.file — one-shot reads and writes plus the streaming open/read/write/close
-// set. The one-shot helpers materialize a CajetaArray header (int64 count + raw bytes)
-// in the live set; streaming takes raw fds, where 0 is EOF and negative a hard error.
+// cajeta.io.file — one-shot helpers materialize a CajetaArray header (int64 count + raw
+// bytes) in the live set; the streaming set takes raw fds, 0 for EOF, negative for error.
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>

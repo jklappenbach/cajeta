@@ -1,8 +1,6 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
 // ---- @Inject runtime override registry (test-only DI substitution) ---------
-// Binds a substitute instance for a type, keyed by `reflect.Class` object pointer, in
-// test builds only. Entries are BORROWED: clear() forgets them, it never frees them.
+// Binds a substitute for a type, keyed by `reflect.Class` pointer. Entries are BORROWED.
 typedef struct CajetaInjectOverride {
     void* classObj;
     void* instance;

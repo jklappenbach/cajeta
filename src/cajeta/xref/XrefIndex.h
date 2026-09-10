@@ -106,10 +106,9 @@ namespace cajeta::xref {
         std::vector<Call> calls_;
     };
 
-    // ---- template members (plan 1.5) ---------------------------------------
-    // A template's body walk is skipped, so its members are captured at parse
-    // time with parameter types AS WRITTEN. Always the TEMPLATE's member: an
-    // instantiation has no source and would fragment "who calls add" N ways.
+    // ---- template members ---------------------------------------------------
+    // A template's body walk is skipped, so its members are captured at parse time
+    // with parameter types AS WRITTEN — always the TEMPLATE's, never an instantiation's.
     struct TemplateMember {
         std::string ownerFqn;      // the template's canonical name, no type args
         std::string name;
@@ -139,10 +138,9 @@ namespace cajeta::xref {
     void captureBaseline();
     void registerTemplateMember(TemplateMember member);
 
-    // ---- source-file interning (2.2.8) -------------------------------------
-    // A node's origin file comes from its own token stream, not the module
-    // active during codegen; a synthetic re-parse names none and is excluded.
-    // The returned pointer is stable (the pool is never cleared).
+    // ---- source-file interning ----------------------------------------------
+    // A node's origin file comes from its own token stream, not the module active
+    // during codegen. The returned pointer is stable (the pool is never cleared).
     const std::string* internSourceFile(const std::string& name);
 
     // ---- call sites (Unit 2) -----------------------------------------------

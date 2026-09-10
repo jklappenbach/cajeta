@@ -23,6 +23,9 @@ namespace cajeta {
 
         const string& getRawValue() const { return value; }
 
+        // Builds the concrete literal node for `ctx`: an integer or float form when
+        // the context carries one, otherwise the text form (bool / null / char /
+        // string / text block), which decides its own kind from the token.
         static ExpressionPtr fromContext(CajetaParser::LiteralContext* ctx);
     };
 
@@ -54,8 +57,13 @@ namespace cajeta {
 
         LiteralType getLiteralType() const { return literalType; }
 
+        // Resolves the literal's type from its lexeme kind: boolean, String for both
+        // string and text-block forms, char, and `pointer` for null.
         void resolveTypes(CajetaModulePtr module) override;
 
+        // Emits the constant: i1 for bool, a null pointer, an i32 codepoint for char,
+        // and for strings a private `cajeta.lang.String` global instance -- or, while
+        // class String is still unregistered (bootstrap), the legacy i8* global.
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -87,6 +95,9 @@ namespace cajeta {
 
         void resolveTypes(CajetaModulePtr module) override;
 
+        // Emits the value as a 64-bit ConstantInt in the literal's radix; the radix
+        // prefix, the `_` groupings and an `L` suffix are stripped first, since APInt
+        // wants pure digits. Boundary code coerces the result to the real width.
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -109,6 +120,9 @@ namespace cajeta {
 
         void resolveTypes(CajetaModulePtr module) override;
 
+        // Emits a ConstantFP in the literal's semantics: an f/F suffix selects
+        // IEEEsingle, d/D and unsuffixed IEEEdouble. A literal that fails to parse
+        // yields zero rather than failing the compile.
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

@@ -1,18 +1,6 @@
-// `.cja` (Cajeta ARchive) reader/writer; the container format is specified in
-// docs/specification/buildtool/Compilation.md § Archive format. All integers
-// are little-endian, and writeTo() lays the file out as:
-//
-//   [32-byte header]  "CAJETA01", u32 format_version, u32 flags (bit 0
-//                     manifest compressed, bit 1 entries compressed),
-//                     u64 index_offset, u64 index_length
-//   [manifest]        u64 on-disk length, then UTF-8 JSON
-//   [entry_i]         u32 name_length, name, u8 origin, u8 kind, 2 reserved,
-//                     u64 payload_length, payload
-//   [index]           u32 entry_count, then per entry u32 name_length, name,
-//                     u64 entry_offset, u64 entry_on_disk_size
-//
-// A compressed section is framed `u64 uncompressed_length || zstd_bytes`: the
-// preceding length is the skip distance, the inner one the allocation size.
+// `.cja` (Cajeta ARchive) reader/writer; all integers little-endian. The container
+// format — header, manifest, entry encoding, trailing index, compressed framing —
+// is specified in docs/specification/buildtool/Compilation.md § Archive format.
 
 #pragma once
 

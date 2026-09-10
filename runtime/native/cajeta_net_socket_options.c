@@ -177,9 +177,8 @@ int32_t __cajeta_net_get_only_v6(int32_t fd) {
     return cajeta_opt_get_bool(fd, IPPROTO_IPV6, IPV6_V6ONLY);
 }
 
-// ---- NET-14.1 UDP multicast options ----------------------------------------
-// The family split is asymmetric because the kernels are: IPv4 names the
-// interface by ADDRESS (ip_mreq, INADDR_ANY = default), IPv6 by INDEX
+// ---- UDP multicast options -------------------------------------------------
+// IPv4 names the interface by ADDRESS (ip_mreq, INADDR_ANY = default), IPv6 by INDEX
 // (ipv6_mreq, 0); IPv4's MULTICAST_TTL/LOOP take a u_char where IPv6's take int.
 
 // Octet parameters cross the @Native bridge as cajeta int8[] HEADERS —

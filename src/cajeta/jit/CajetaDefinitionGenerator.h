@@ -35,6 +35,9 @@ namespace cajeta {
         void runUngatedForTest(const std::function<void()>& fn);
 
     private:
+        // Runs `fn` while counting the THREADS inside the gate, so maxThreadsObserved
+        // reports concurrency and not nesting: a thread-local depth keeps same-thread
+        // re-entry at one, and the count unwinds even if `fn` throws.
         void observe(const std::function<void()>& fn);
 
         std::recursive_mutex mutex;

@@ -1,7 +1,6 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
-// Poison-on-free (CompilerModes.md § --poison-free): memsets every heap block to
-// 0xDB just before free(), so a use-after-free traps or reads obviously wrong.
+// Poison-on-free: memsets every heap block to 0xDB just before free(), so a
+// use-after-free traps or reads obviously wrong.
 static int __cajeta_poison_free_enabled = 0;
 
 void __cajeta_set_poison_free(int enabled) {
@@ -1614,16 +1613,9 @@ void __cajeta_arena_reset(uint64_t mark) {
 int64_t __cajeta_arena_bytes(void)    { return (int64_t) __cajeta_arena_ptr()->bump; }
 int64_t __cajeta_arena_retained(void) { return (int64_t) __cajeta_arena_ptr()->retained; }
 
-// cajeta.lang.String wrapper layout (slices plan 6.2.2): the storage is the
-// 16-byte tagged Utf8 core, with `mode` collapsed into the tag.
-//   len <= 12   Inline — the text lives in `data`; self-contained.
-//   len >  12   pointer form: data overlays {i32 off, char* base}, where base is
-//               a ROOT CajetaArray header and the text sits at base + 8 + off.
-//               Tag bits, all of which apply only to this form:
-//     CAJ_STR_SHARED_BIT  the wrapper holds one rc stake on base
-//     CAJ_STR_BORROW_BIT  stakeless view of a heap root; drop must not touch it
-//     CAJ_STR_STATIC_BIT  static root (literals and views of them); no rc ever
-//     no bits             OWNED sole root; drop frees via the owner-drop seam
+// cajeta.lang.String wrapper layout: the 16-byte tagged Utf8 core, `mode` collapsed
+// into the tag — len <= 12 is Inline in `data`, longer overlays {i32 off, char* base}.
+// Tag-bit meanings: docs/specification/lang/String.md, "The tagged core".
 #define CAJ_STR_LEN_MASK   0x1FFFFFFF
 #define CAJ_STR_SHARED_BIT ((int32_t) 1 << 31)
 #define CAJ_STR_BORROW_BIT ((int32_t) 1 << 30)

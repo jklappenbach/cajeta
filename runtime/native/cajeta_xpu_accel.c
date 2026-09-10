@@ -1,5 +1,4 @@
-// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
+// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c ===
 // --- Noun seam: one struct of build/free hooks per backend. Each build reports
 // --- the CajetaAsImpl used; free follows THAT, not the active backend.
 #include "cajeta_noun_impl.h"
@@ -26,10 +25,8 @@ extern int      cajeta_xpu_optix_launch_tri(const char* ptx, uint64_t ptxLen,
                                             uint32_t width);
 
 // --- OptiX ray-query program registry ---------------------------------------
-// An OptiX-impl ray query is a program PIPELINE, not one cuLaunchKernel: a separate
-// PTX module, registered here under the software-BVH cubin's name. `shape`, in sync
-// with OptixRqShape: 0 = AABB candidate (prog1 intersection, prog2 anyhit, prog3
-// miss); 1 = tri nearest-hit, 2 = tri bary, 3 = committed tri (prog1, prog2 miss).
+// An OptiX ray query is a program PIPELINE, not one cuLaunchKernel: a separate PTX
+// module registered here under the software-BVH cubin's name. `shape` = OptixRqShape.
 struct cajeta_optix_rq {
     char name[256];
     const void* ptx;     // OptiX program PTX text (an embedded host constant)

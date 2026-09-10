@@ -53,6 +53,9 @@ namespace cajeta {
         void clear() { bySymbol.clear(); }
 
     private:
+        // Records `module` (deduped) and indexes its methods by LLVM symbol plus the
+        // two reflect thunks per structure. Additive: emplace keeps the first entry
+        // under a symbol, so re-indexing never displaces what the JIT resolved.
         void addModule(const CajetaModulePtr& module);
 
         std::unordered_map<std::string, MethodPtr> bySymbol;

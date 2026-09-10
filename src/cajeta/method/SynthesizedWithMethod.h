@@ -20,6 +20,9 @@ namespace cajeta {
         // Wires the value parameter's parent once the shared_ptr exists, as SynthesizedSetterMethod does.
         void initParameter();
 
+        // Emits the whole body: __cajeta_alloc a copy, memcpy `this` into it, store
+        // argument 1 over the field, return the copy. Idempotent — a second visit would
+        // append a duplicate entry block. Throws CAJETA_ERROR_WITH_RUNTIME / _FIELD_INDEX.
         void generateCode() override;
         bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 

@@ -74,10 +74,17 @@ namespace cajeta {
 
         static map <string, map<string, QualifiedNamePtr>>& getCache();
 
+        // Interns a DOTTED name: everything before the last dot is the package, and a
+        // name with no dot interns under the empty one. `typeName` is taken by value
+        // because it is tokenized in place.
         static QualifiedNamePtr getOrCreate(string typeName);
 
+        // Interns an already-split package/type pair, keyed cache[package][typeName] as
+        // getOrCreate keys it, so both entry points return the same instance.
         static QualifiedNamePtr getOrInsert(string typeName, string packageName);
 
+        // Interns the name a parsed identifier chain spells: the last identifier is the
+        // type, the ones before it the package. A lone identifier lands in "code".
         static QualifiedNamePtr fromContext(std::vector<CajetaParser::IdentifierContext*> identifiers);
 
         static QualifiedNamePtr fromContext(CajetaParser::QualifiedNameContext* ctxQName);

@@ -7,10 +7,8 @@
 namespace cajeta::prof {
 
     namespace {
-        // #ProfMethod — must match CajetaProfMethod in cajeta_rt_prof_instr.c:
-        //   { i8* type, i8* method, i8* file, i64 calls, i64 inclusive_ns,
-        //     i64 outside_calls, i32 registered, i32 reserved, ptr next }
-        // Mutable and zero past the strings, so registration needs no ctor.
+        // #ProfMethod — the LLVM mirror of CajetaProfMethod in cajeta_rt_prof_instr.c,
+        // mutable and zero past the strings, so registration needs no ctor.
         llvm::StructType* profMethodTy(llvm::LLVMContext& ctx) {
             llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
             llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);

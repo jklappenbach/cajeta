@@ -18,7 +18,11 @@ namespace cajeta {
                                  CajetaClassPtr parent,
                                  CajetaClassPtr encoder);
 
+        // Creates the single `byte[] bytes` parameter. Idempotent, and must run
+        // before generateCode, which reads argument 1 as that parameter.
         void initParameter();
+        // Emits `memcpy(this, encoder.decode(bytes))`, then raw-frees the decoded
+        // shell. Throws CAJETA_ERROR_ENCODING_DECODE_MISSING when decode is absent.
         void generateCode() override;
 
     private:
@@ -32,6 +36,8 @@ namespace cajeta {
                                     CajetaClassPtr parent,
                                     CajetaClassPtr encoder);
 
+        // Returns the encoder's `encode(this)` result — an owned byte[] — verbatim.
+        // Throws CAJETA_ERROR_ENCODING_ENCODE_MISSING when encode is absent.
         void generateCode() override;
         bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 

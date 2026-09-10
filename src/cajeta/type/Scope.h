@@ -114,6 +114,9 @@ namespace cajeta {
 
         // Branch-arm move state: snapshot, restore for the sibling, union at the join.
         struct MoveMark { Scope* target; string name; string note; };
+        // Copies the move-log slice past `mark` — owning scope, name, transfer-site
+        // note — so an arm's moves survive the retraction that resets the sibling.
+        // Take it BEFORE retractMovesSince; hand it to reapplyMoves at the join.
         vector<MoveMark> snapshotMovesSince(size_t mark) const;
         void reapplyMoves(const vector<MoveMark>& moves);
 

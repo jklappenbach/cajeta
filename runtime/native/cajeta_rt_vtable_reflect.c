@@ -1,5 +1,4 @@
-// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
+// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c ===
 // Drop-chain validation (CompilerModes.md § --drop-chain-validate): when on, every
 // push / pop / mark_inactive checks the chain invariants and aborts. Default OFF.
 static int __cajeta_drop_chain_validate_enabled = 0;
@@ -431,11 +430,8 @@ int64_t __cajeta_signature_hash(const char* s) {
 }
 
 // Binary-search the vtable for `hash`; NULL when absent, which faults at the call
-// site rather than corrupting memory. VTable byte layout, in sync with
-// StructureMetadata::createVirtualTableType:
-//   [0..1] i16 version, [2..3] i16 count, [4..7] pad (pointer alignment)
-//   [8] parent_vtable (NULL at root), [16] drop_fn, [24] classObject (or NULL)
-//   [32..] [count x { i64 hash, ptr fn }] entries
+// site rather than corrupting memory. The offsets below stay in lock-step with
+// StructureMetadata::createVirtualTableType.
 #define CAJETA_VTABLE_PARENT_OFFSET 8
 #define CAJETA_VTABLE_DROP_FN_OFFSET 16
 #define CAJETA_VTABLE_CLASSOBJECT_OFFSET 24
@@ -1325,10 +1321,9 @@ void __cajeta_string_array_owned_drop(void* sidecar) {
     free(bits);
 }
 
-// ---- title-tracking Unit 4 — class-element array slot bits ------------------
-// The String family's sidecar and bitmap with TITLE semantics: a plain store is a
-// BORROW (unmarked), `a[i] = #x` marks it and releases any owned occupant, and
-// `#a[i]` succeeds only on a marked slot (NULL otherwise, so the call site panics).
+// ---- class-element array slot bits -----------------------------------------
+// Sidecar + bitmap with TITLE semantics: a plain store is a BORROW, `a[i] = #x`
+// marks the slot and releases any owned occupant, `#a[i]` is NULL when unmarked.
 
 void __cajeta_class_array_elem_set_owned(void* sidecar, void** slot,
                                          void* obj) {

@@ -259,6 +259,8 @@ class CajetaType : public Modifiable, public Annotatable,
         // prototype pass calls setBody on that same struct, so references compose.
         void setLlvmType(llvm::Type* t);
 
+        // The interned `T*` type for this type, created on the first request and
+        // reused after; the pointee's LLVM context supplies address space 0.
         CajetaTypePtr toPointerType();
 
         virtual llvm::ConstantInt* getTypeAllocSize(CajetaModulePtr module);
@@ -304,8 +306,12 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static CajetaTypePtr of(llvm::Value* value, CajetaTypePtr parent = nullptr);
 
+        // The registered primitive type `ctx` names (`int32`, `float64`, ...), or nullptr
+        // on a miss — like every registry lookup here, it never inserts.
         static CajetaTypePtr fromContext(CajetaParser::PrimitiveTypeContext* ctx, CajetaModulePtr module);
 
+        // The type of a `void`-or-type position: `void` resolves through the canonical
+        // map, anything else delegates to the typeType overload. Null ctx gives nullptr.
         static CajetaTypePtr fromContext(CajetaParser::TypeTypeOrVoidContext* ctx, CajetaModulePtr module);
 
         static CajetaTypePtr fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module);
@@ -373,10 +379,14 @@ class CajetaType : public Modifiable, public Annotatable,
         // Test stdlib-reuse: capture snapshots every global type container just after the
         // pristine stdlib is built, restore wipes back to it. No-ops in production.
         static void captureBaseline();
+        // Wipes every global type container back to the pristine-stdlib snapshot, and
+        // resets deferred-instantiation state with it. No-op until captureBaseline ran.
         static void restoreBaseline();
         // A SECOND baseline slot, "stdlib + the sibling sweep", restored independently on
         // a warm lint request so it skips the sweep; invalidate forces the next resweep.
         static void captureContextBaseline();
+        // Wipes those same containers back to the SECOND snapshot instead. No-op until
+        // captureContextBaseline ran; invalidateContextBaseline drops the snapshot.
         static void restoreContextBaseline();
         static void invalidateContextBaseline();
         // Free the shared-context LLVM struct NAMES a THROWING compile left behind, so a

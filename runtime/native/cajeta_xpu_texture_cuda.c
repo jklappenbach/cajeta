@@ -1,8 +1,6 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
 // --- CUDA texture / surface runtime (Texture2D + Image2D) -------------------
-// A Texture2D is a CUDA array behind a cajeta_cuda_tex record, its CUtexObject
-// built per launch. Driver structs are mirrored byte-exact; entries are dlsym'd.
+// A Texture2D is a CUDA array behind a cajeta_cuda_tex record; driver structs are mirrored byte-exact.
 
 // CUarray_format: only the formats the NVPTX v4f32 sample path admits.
 enum {

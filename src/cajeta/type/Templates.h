@@ -1,6 +1,3 @@
-//
-// Created by James Klappenbach on 2/19/22.
-//
 // Template type parameters for class declarations. A template is not a type:
 // instantiating it with concrete arguments produces a new, distinct type, and
 // prototype generation defers until a reference site triggers instantiate().

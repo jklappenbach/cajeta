@@ -73,6 +73,9 @@ namespace cajeta {
         instantiationReuseTarget().reset();
     }
 
+    // Completes every queued instantiation whose template has since materialized, and
+    // returns true if any progressed, so the caller's fixpoint re-runs. Index-based: a
+    // completion appends entries mid-iteration, and an unwind clears the whole queue.
     bool CajetaClass::drainDeferredInstantiations() {
         auto& pending = deferredInstantiations();
         if (pending.empty()) return false;
@@ -141,6 +144,8 @@ namespace cajeta {
         return progressed;
     }
 
+    // instantiateInternal, plus the cross-module obligation: a result distinct from
+    // `this` is a real instantiation the current codegen module has to be told about.
     CajetaClassPtr CajetaClass::instantiate(vector<CajetaTypePtr> args) {
         CajetaClassPtr result = instantiateInternal(std::move(args));
         // Only a genuine instantiation (a distinct object from the template)
@@ -152,6 +157,9 @@ namespace cajeta {
         return result;
     }
 
+    // The instantiation proper: fill trailing defaults, short-circuit on placeholder or
+    // bare-template args, check arity and bounds, then reuse the cached instantiation or
+    // re-parse the captured body under the substitution. Returns `this` if not a template.
     CajetaClassPtr CajetaClass::instantiateInternal(vector<CajetaTypePtr> args) {
         if (!isTemplate()) {
             return static_pointer_cast<CajetaClass>(shared_from_this());

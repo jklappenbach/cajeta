@@ -1,9 +1,6 @@
 // The Jupyter protocol verbs. Knows KernelSession, not ZeroMQ: every outbound message
-// goes to a channel-tagged `Sink`. The order an `execute_request` emits is protocol:
-//   IOPub status(busy), IOPub execute_input, IOPub stream*, IOPub execute_result
-//   (only with a unit result), IOPub error (only on failure), Shell execute_reply
-//   (same execution_count), then IOPub status(idle) LAST — that is what tells a
-//   frontend the kernel is free; replying after it makes cells finish out of order.
+// goes to a channel-tagged `Sink`. An execute_request emits IOPub status(busy),
+// execute_input, stream/result/error, the Shell reply, then IOPub status(idle) LAST.
 #pragma once
 
 #include <functional>

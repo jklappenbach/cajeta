@@ -1,6 +1,5 @@
-// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
-// --- R5/Error-model #203: stack-trace capture ---------------------------
+// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c ===
+// --- stack-trace capture --------------------------------------------------
 // At each throw site backtrace() walks the native stack into a side table keyed by throwable.
 
 struct cajeta_trace_entry {

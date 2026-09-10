@@ -201,11 +201,7 @@ namespace nvidia {
                             llvm::GlobalValue::PrivateLinkage, pInit,
                             "xpu.optixptx." + entryName);
                         ptxGV->setAlignment(llvm::MaybeAlign(1));
-                        // Program slots by shape (see __cajeta_xpu_register_optix_rayquery):
-                        //   count    -> prog1=intersection, prog2=anyhit, prog3=miss
-                        //   nearest  -> prog1=closesthit,    prog2=miss,   prog3=""
-                        //   bary     -> prog1=anyhit,        prog2=miss,   prog3=""
-                        //   committed-> prog1=closesthit,    prog2=miss,   prog3=""
+                        // Program slots as __cajeta_xpu_register_optix_rayquery reads them.
                         llvm::Value* rg = b.CreateGlobalString(raygen,
                             "xpu.orgn." + entryName);
                         llvm::Value *p1, *p2, *p3;

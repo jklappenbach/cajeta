@@ -38,6 +38,9 @@ namespace cajeta {
         // Deduped by (file,line,column,code), sorted by span, and capped with a trailing note.
         std::vector<CollectedDiagnostic> finalize() const;
 
+        // Writes finalize()'s diagnostics to stderr: `json` selects the structured
+        // record, otherwise `cajeta: file:line:col: code: message`, with the file
+        // span dropped for a diagnostic that has no line.
         void emit(bool json) const;
 
         // Active-engine cursor, so report sites deep in analysis reach it without threading it through.

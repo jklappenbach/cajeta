@@ -173,8 +173,6 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
 // Repoints every OpControlBarrier at one new WorkgroupMemory|AcquireRelease (0x108) uint
 // constant: LLVM 23 emits the SequentiallyConsistent semantics Vulkan forbids. A new
 // constant, since a user literal could share the existing one. True if anything changed.
-// Word stream: a 5-word header, then instructions headed by (wordCount<<16 | opcode);
-// OpConstant = 43 [type, result, literal], OpControlBarrier = 224 [exec, mem, semantics].
 bool fixupControlBarriers(std::vector<uint8_t>& bytes) {
     if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
     std::vector<uint32_t> w(bytes.size() / 4);

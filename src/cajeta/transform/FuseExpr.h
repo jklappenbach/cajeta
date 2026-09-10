@@ -1,7 +1,5 @@
-//
 // Compile-time fusion of an elementwise tensor expression into one scalar loop
 // over the element index, synthesized as cajeta source and codegen'd.
-//
 #pragma once
 
 #include <string>

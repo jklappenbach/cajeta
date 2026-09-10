@@ -11,9 +11,8 @@
 #  include <dlfcn.h>
 
 // ── The slice of the rocprofiler-sdk ABI this backend calls ──────────────
-// Declared here rather than by including <rocprofiler-sdk/*.h>: the runtime is
-// compiled to bitcode on machines with no ROCm, where a header dependency would
-// make the absent-SDK path unbuildable exactly where it is needed.
+// Declared here rather than including <rocprofiler-sdk/*.h>: the runtime compiles
+// to bitcode on machines with no ROCm, where that dependency would not build.
 typedef int32_t  caj_rocp_status_t;
 typedef uint64_t caj_rocp_timestamp_t;
 typedef uint64_t caj_rocp_thread_id_t;

@@ -52,6 +52,9 @@ namespace cajeta::ownership {
         static bool enabled();
         static void setEnabled(bool on);
 
+        // Appends one ride-through site and prints a `[return-title]` note to stderr.
+        // A `rec.line` of 0 prints `(instantiation)` rather than a wrong number. Does
+        // NOT check enabled() — the caller gates on it.
         static void record(ReturnTitleRecord rec);
         static const std::vector<ReturnTitleRecord>& records();
 

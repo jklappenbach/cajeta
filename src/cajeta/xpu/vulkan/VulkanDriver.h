@@ -54,6 +54,8 @@ namespace vulkan {
         Buffer alloc(std::size_t bytes);
         bool upload(Buffer b, const void* src, std::size_t bytes);
         bool download(void* dst, Buffer b, std::size_t bytes);
+        // Unmaps and destroys `b`'s buffer and device memory, then returns its slot to
+        // the free list for reuse. A no-op on an unknown or already-freed handle.
         void free(Buffer b);
 
         // Builds a pipeline for `entry` out of `spirv`, binds `bindings` as set-0

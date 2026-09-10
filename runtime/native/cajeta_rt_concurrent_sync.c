@@ -1,6 +1,5 @@
-// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
-// --- Threading: scope frames (R5-A) ---------------------------------------
+// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c ===
+// --- Threading: scope frames ----------------------------------------------
 // `scope { }` owns its child tasks; exit waits on every registered done-addr.
 
 void __cajeta_scope_enter(void) {

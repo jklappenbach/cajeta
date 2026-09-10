@@ -103,9 +103,8 @@ static void caj_cupti_say(int32_t state, const char* tried, const char* why) {
 }
 
 // ── WSL identification ───────────────────────────────────────────────────
-// WSL accepts the timestamp callback and then ignores it, so the platform must
-// be identifiable: /proc/version says "microsoft". Matched by hand, because one
-// unresolvable POSIX symbol fails materialization of the whole JIT runtime.
+// WSL accepts the timestamp callback and then ignores it; /proc/version says
+// "microsoft". Matched by hand: one unresolvable POSIX symbol fails the JIT runtime.
 static int caj_cupti_imatch_microsoft(const char* p) {
     static const char kWord[9] = {'m','i','c','r','o','s','o','f','t'};
     for (int i = 0; i < 9; ++i) {
@@ -142,9 +141,8 @@ int32_t __cajeta_prof_cupti_on_wsl(void) {
 }
 
 // ── locate libcupti, honoring CUDA_HOME ──────────────────────────────────
-// CUPTI ships under extras/CUPTI/ inside a toolkit, not on the loader path, so
-// the order is CAJETA_CUPTI_LIB (never fallen back from), $CUDA_HOME and
-// $CUDA_PATH extras/CUPTI/lib64, /usr/local/cuda's, then the bare soname.
+// CUPTI ships under extras/CUPTI/, not on the loader path: CAJETA_CUPTI_LIB (never
+// fallen back from), $CUDA_HOME/$CUDA_PATH extras/CUPTI/lib64, /usr/local/cuda, soname.
 
 #if !defined(_WIN32)
 #  include <dlfcn.h>
@@ -235,14 +233,9 @@ static const char* caj_cupti_liberr(void) {
 }
 #endif
 
-// ── the activity record path ─────────────────────────────────────────────
-// RECORD LAYOUT IS MEASURED: offsetof() over every kernel record version in
-// cupti_activity.h, as version / kind / start / end / correlationId / sizeof,
-//   Kernel2     0   8  16  84  112   <-- the odd one out
+// ── activity records: version / kind / start / end / correlationId / sizeof ──
+//   Kernel2     0   8  16  84  112
 //   Kernel3..9  0  16  24  92  120..208
-// so the prefix through correlationId is stable from Kernel3 on: read it by
-// offset, never cast to a version. Kernel2 would misparse, and the
-// plausibility rejections below are what stop that from being published.
 
 #define CAJ_CUPTI_KIND_KERNEL             3   /* CUPTI_ACTIVITY_KIND_KERNEL */
 #define CAJ_CUPTI_KIND_CONCURRENT_KERNEL 10   /* ..._CONCURRENT_KERNEL */
@@ -367,9 +360,8 @@ int64_t __cajeta_prof_cupti_pops(void)     { return caj_cupti.pops; }
 
 
 // ── correlation, and why the parse is TWO passes ─────────────────────────
-// A kernel record carries CUPTI's correlationId; a SEPARATE record maps it to
-// our external id and is emitted when the range CLOSES, so it normally FOLLOWS
-// its kernel. Measured: kind 39, kind=0 extKind=4 extId=8 corrId=16 sizeof=24.
+// A kernel record carries CUPTI's correlationId; a SEPARATE record maps it to our
+// external id and is emitted when the range CLOSES, so it FOLLOWS its kernel.
 
 #define CAJ_CUPTI_XREC_OFF_KIND    0
 #define CAJ_CUPTI_XREC_OFF_EXT_ID  8
@@ -503,9 +495,8 @@ static void caj_cupti_consume_buffer(uint8_t* buffer, size_t validSize) {
 }
 
 // ── the host clock, on both platforms ────────────────────────────────────
-// CLOCK_MONOTONIC does not exist on the Windows host, and ONE unresolvable
-// POSIX symbol fails the whole JIT runtime. QPC is monotonic, NTP-proof, and
-// its frequency is fixed at boot, so it is read once.
+// CLOCK_MONOTONIC is absent on the Windows host and one unresolvable POSIX symbol
+// fails the whole JIT runtime; QPC is monotonic and its frequency read once at boot.
 static int64_t caj_cupti_host_ns(void) {
 #if defined(_WIN32)
     static LARGE_INTEGER freq;

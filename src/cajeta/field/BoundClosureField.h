@@ -26,6 +26,9 @@ namespace cajeta {
         // composes with the existing l-value machinery). Invocation sites never
         // reach these — they take the direct path in MethodCallExpression.
         llvm::Value* createLoad() override;
+        // Materializes the slot once: an entry alloca whose store of the closure
+        // record is emitted immediately after it, so the record dominates every
+        // forwarded use. Null when there is no record (an invocation-only bind).
         llvm::AllocaInst* getOrCreateAllocation() override;
         llvm::Value* createStore(llvm::Value*) override { return nullptr; }
     };

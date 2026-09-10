@@ -1,7 +1,6 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c ===
-// Integrity, tier demotion and teardown. Nothing here treats "the call
-// succeeded" as evidence, and degradation is never fatal: the ladder floors at
-// HOST, where a submit-to-complete window always exists.
+// Integrity, tier demotion and teardown. Nothing here treats "the call succeeded"
+// as evidence; degradation is never fatal, the ladder floors at HOST.
 
 typedef struct {
     int32_t tier;            // CAJETA_PROF_TIER_*

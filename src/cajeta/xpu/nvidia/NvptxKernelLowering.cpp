@@ -271,10 +271,9 @@ public:
         return readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_laneid);
     }
 
-    // ---- Cooperative matrix: NVIDIA tensor cores (wmma), CM7-NV --------------
-    // m16n16k16 D[f32] = A[f16/bf16]·B[f16/bf16] + C[f32], row-major and warp-
-    // collective. The fragment↔lane layout is implementation-defined, so load
-    // and store MUST go through the NVVM wmma intrinsics on a full warp.
+    // ---- Cooperative matrix: NVIDIA tensor cores (wmma) ----------------------
+    // m16n16k16 D[f32] = A[f16/bf16]·B[f16/bf16] + C[f32], row-major, warp-collective.
+    // The fragment↔lane layout is implementation-defined: load/store MUST use NVVM wmma.
 
     ImplTier coopMatrixTier(llvm::Type* elem, uint32_t rows, uint32_t cols,
                             uint32_t use) override {

@@ -202,6 +202,9 @@ namespace cajeta::kernel {
 
     private:
         KernelSession();
+        // Resolves an unqualified cajeta method name, or null. Candidates are scanned
+        // out of the emitted IR rather than re-mangled, and the newest unit class that
+        // defines the name wins; module order alone would return the oldest.
         void* lookupShort(const std::string& shortName);
         // Turn a thrown Throwable into the cell's structured error: type, message,
         // and a traceback whose frames name cells.

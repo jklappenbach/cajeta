@@ -15,10 +15,9 @@ namespace cajeta {
     using CajetaClassPtr = std::shared_ptr<CajetaClass>;
     using CajetaTypePtr  = std::shared_ptr<CajetaType>;
 
-    // Writes the synthesized body into `out` and returns true when (parent,
-    // methodName, paramTypes) names a Tier-1 entry point; otherwise returns false
-    // and leaves `out` alone. `paramTypes` excludes `this` and is matched exactly,
-    // so a hand-written overload that delegates is not overwritten.
+    // Writes the synthesized body into `out` and returns true when (parent, methodName,
+    // paramTypes) names a Tier-1 entry point; otherwise returns false and leaves `out`
+    // alone. `paramTypes` excludes `this` and is matched exactly, so overloads survive.
     bool synthesizeJsonMethodSource(
         const CajetaClassPtr& parent,
         const std::string& methodName,

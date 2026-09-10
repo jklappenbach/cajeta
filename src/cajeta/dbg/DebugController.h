@@ -75,6 +75,9 @@ namespace cajeta::dbg {
         StopEvent waitForStop();
         // Bounded wait: fills `out` and returns true when one parks in `timeout`.
         bool waitForStop(StopEvent& out, std::chrono::milliseconds timeout);
+        // Resume-all with no pending step: clears the stop here rather than leaving
+        // it to the waking carrier (that clear is asynchronous and the window reads
+        // as a phantom second stop), then wakes every parked carrier.
         void resume();
 
         // Resumes with a pending step: parks at the first safepoint on `fiberId`

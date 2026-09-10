@@ -17,6 +17,9 @@ namespace cajeta {
                                  CajetaClassPtr parent,
                                  StructurePropertyPtr field);
 
+        // Emits the whole body: GEP the field, load it at its STORAGE type (`ptr` for
+        // class refs and arrays, inline otherwise), return it. Throws
+        // CAJETA_ERROR_GETTER_FIELD_INDEX when the field has no index on the parent.
         void generateCode() override;
         bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 

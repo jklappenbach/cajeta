@@ -439,11 +439,8 @@ static const CajetaGpuBackendVtbl caj_gpu_rocm_vtbl = {
 };
 
 // ── NVIDIA / CUPTI ────────────────────────────────────────────────────────
-// Structurally the ROCm backend: the launch id is pushed as CUPTI's external
-// correlation id, and the launch parks until the activity records arrive.
-// ── the event-tier fallback's state (see cajeta_prof_abi.h) ──────────────
-// A driver with no CUDA Toolkit has no CUPTI but does have cuEventRecord. This
-// half owns the arming state; the dispatcher's TU is compiled after this one.
+// Structurally the ROCm backend: the launch id is CUPTI's external correlation
+// id; below it, the event-tier fallback state for drivers that have no CUPTI.
 static int32_t caj_gpu_cuda_events_armed;
 static char    caj_gpu_cuda_events_why[256];
 static int64_t caj_gpu_cuda_event_spans;

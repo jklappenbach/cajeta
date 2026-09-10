@@ -1,5 +1,4 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
 // Vulkan compute binding, dlopen'd (mirrors VulkanDriver.cpp in C): compiled in only
 // when a Vulkan SDK header is present, and every function is resolved at runtime.
 #if defined(__has_include)
@@ -2465,11 +2464,8 @@ static VkDescriptorType cajeta_vkb_desc_type(uint8_t kind) {
 }
 
 // ---- Pipeline cache --------------------------------------------------------
-// Keyed on the kernel blob plus everything baked at creation (block dims, dynamic-
-// shared size, spec values, binding kinds); the grid is a vkCmdDispatch argument.
 // ---- SPIR-V writes-mask scan: which bindings can a kernel STORE through? -----
-// Pointer chains are followed from OpVariable roots; a defeated scan returns
-// all-ones, which can only over-synchronize.
+// Pointer chains are followed from OpVariable roots; a defeated scan returns all-ones.
 static uint64_t caj_vk_spv_written_mask(const uint32_t* w, size_t nwords) {
     if (nwords < 6 || w[0] != 0x07230203u) return ~0ull;
     uint32_t bound = w[3];

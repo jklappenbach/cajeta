@@ -1,7 +1,4 @@
-// Plugin subprocess runtime — see PluginRuntime.h for the surface.
-//
-// ── Protocol spec (v1) ───────────────────────────────────────────
-//
+// Plugin wire protocol v1 — record shapes; see PluginRuntime.h for the surface.
 // Parent → child, stdin, one JSON object:
 //   {"version": 1,
 //    "action":  "<namespaced action name>",
@@ -30,10 +27,6 @@
 //                       "message": "..."}
 //   {"kind": "result",  "status": "ok"}
 //   {"kind": "result",  "status": "error", "message": "..."}
-//
-// Stderr is free-form and forwarded verbatim. Failure is reported by the
-// `result` record, never by a log; a non-zero exit means the plugin crashed
-// or refused to start, and surfaces as a hard error from invokePluginAction.
 
 #include "cajeta/buildtool/PluginRuntime.h"
 
@@ -75,9 +68,8 @@ namespace cajeta::buildtool {
         }
 
         // ── compile-from-cja: the default plugin distribution model ──
-        // A plugin ships as a .cja and the binary is DERIVED: the artifact is
-        // auto-homed into the olla store, AOT-compiled once through a
-        // synthesized shim, and reused until its sha changes. `binary` opts out.
+        // A plugin ships as a .cja and the binary is DERIVED: auto-homed into the olla
+        // store, AOT-compiled through a shim, reused until its sha. `binary` opts out.
 
         std::string runningExecutable() {
 #if !defined(_WIN32)

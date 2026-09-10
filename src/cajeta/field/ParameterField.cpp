@@ -59,10 +59,6 @@ namespace cajeta {
             } else {
                 llvmType = llvm::PointerType::get(*module->getLlvmContext(), 0);
             }
-            // Entry-block alloca: this is lazy, so a first reference in a loop
-            // would otherwise re-allocate stack each iteration.
-            // A paramIndex past the prototype means the ABI decision changed
-            // between prototype and body codegen, so fail NAMING the function.
             if (paramIndex >= (int) llvmFunction->arg_size()) {
                 throw Exception(
                     "parameter index " + std::to_string(paramIndex)
@@ -72,6 +68,8 @@ namespace cajeta {
                         + " declared args) — prototype/body ABI disagreement",
                     "CAJETA_ERROR_PROTOTYPE_ABI_MISMATCH");
             }
+            // Entry-block alloca: lazy, so a first reference in a loop would otherwise
+            // re-allocate stack each iteration.
             alloca = module->createEntryAlloca(llvmType);
             module->getBuilder()->CreateStore(llvmFunction->getArg(paramIndex), alloca);
         }

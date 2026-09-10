@@ -39,6 +39,9 @@ namespace ir {
         // Analyze a closed slice (functions referenced by name resolve within it).
         static CirAnalysisResult analyze(const std::vector<CirFunctionPtr>& slice);
 
+        // Renders `result` as one line per decision — every SPECIALIZE request first,
+        // then every LEAVE-INDIRECT with its failing probe. Diagnostic text only; it
+        // follows the vectors' order, so equal results print identically.
         static std::string print(const CirAnalysisResult& result);
     };
 

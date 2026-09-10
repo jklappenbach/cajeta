@@ -37,6 +37,9 @@ namespace cajeta {
         // per-compile mutable state can make a build unreproducible.
         class VjpRegistry {
         public:
+            // The shipped rule table, seeded once on first call and never mutated:
+            // every differentiable primitive the front end knows, in one instance
+            // shared by all compiles in the process.
             static const VjpRegistry& builtin();
 
             // The rule for `primitive`; nullptr becomes a named compile error.

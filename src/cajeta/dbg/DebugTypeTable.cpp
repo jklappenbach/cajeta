@@ -353,10 +353,9 @@ DebugTypeTable& globalDebugTypeTable() {
     return table;
 }
 
-// ---- sidecar (spec §3.1) ------------------------------------------------
+// ---- sidecar ------------------------------------------------------------
 // Line-oriented, versioned, tab-separated. One `rec` line per MAP ENTRY, alias
-// keys included, so a load reproduces the cold build's exact lookup surface.
-// The major rides the header: an unknown one refuses the whole table.
+// keys included. The major rides the header: an unknown one refuses the table.
 
 namespace {
     const char* kSidecarMagic = "cajeta-typeinfo-v2";

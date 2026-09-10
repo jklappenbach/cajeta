@@ -55,9 +55,8 @@ namespace cajeta {
         void setTransferred(bool v) { transferred = v; }
 
         // The method-level template parameter this formal was DECLARED with
-        // (`toBytes<T>(T value)` -> "T"), immutable once captured: the resolved
-        // CajetaTypePtr is not a reliable record, since the shared placeholder
-        // machinery can later refill that object with a concrete class.
+        // (`toBytes<T>(T value)` -> "T"): the resolved CajetaTypePtr is not a
+        // reliable record, since a shared placeholder can be refilled with a class.
         const string& getDeclaredTypeParamName() const {
             return declaredTypeParamName;
         }
@@ -69,8 +68,14 @@ namespace cajeta {
 
         void setParent(MethodPtr parent);
 
+        // Signature text: annotations, then modifiers, then the canonical type.
+        // `labeled` REPLACES that prefix with `name: `, so a labeled canonical
+        // carries no annotation or modifier text.
         string toCanonical(bool labeled = false);
 
+        // One declared parameter from its parse tree: type, modifiers, annotation
+        // instances, the `#` transfer flag, and the default value kept as an AST node.
+        // Null when the type does not resolve, after CAJETA_ERROR_UNRESOLVED_TYPE.
         static FormalParameterPtr fromContext(CajetaParser::FormalParameterContext* ctx, CajetaModulePtr module);
 
         // The `T... args` varargs form, whose parameter type is `T[]`; the

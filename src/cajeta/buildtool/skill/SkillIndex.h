@@ -65,6 +65,9 @@ namespace cajeta::buildtool::skill {
         std::vector<SkillCandidate> keys_;   // derived; rebuilt, never serialized
         std::map<std::string, std::vector<size_t>> trigrams_;
 
+        // Rebuilds the derived structures from `names_` and `skills_`: the candidate
+        // keys (every name, then every non-empty title) and the trigram postings that
+        // index into them. Must be called after any mutation; build() does it last.
         void buildSearchStructures();
     };
 

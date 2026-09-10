@@ -23,7 +23,12 @@ namespace cajeta {
             const std::string& methodName,
             std::vector<StructurePropertyPtr> fields);
 
+        // Mirrors `fields` into the parameter list, one per field, in order. Idempotent,
+        // and must run before generateCode, which forwards the arguments positionally.
         void initParameters();
+        // Emits the whole body: malloc the parent, store its vtable, call the wrapped
+        // ctor with the arguments, return the owned instance. Throws
+        // CAJETA_ERROR_STATIC_FACTORY_NO_LAYOUT / _NO_CTOR on codegen-ordering failures.
         void generateCode() override;
         bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 

@@ -14,7 +14,11 @@ namespace cajeta {
 
     class MemoryManager {
     private:
+        /** libc `malloc` in `module`, declared `ptr(i64)` on first use and reused
+         *  after; a declaration already present keeps its own type. */
         static llvm::FunctionCallee getMalloc(CajetaModulePtr module);
+        /** libc `free` in `module`, declared `void(ptr)` on first use and reused
+         *  after; a declaration already present keeps its own type. */
         static llvm::FunctionCallee getFree(CajetaModulePtr module);
 
     public:

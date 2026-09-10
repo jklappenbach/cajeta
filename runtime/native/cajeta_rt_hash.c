@@ -1,8 +1,6 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
 // --- general-purpose hashing (cajeta.hash backend) --------------------------
-// The primitives behind Object.hash() and cajeta.hash.*: SplitMix64 for primitive
-// values, XXH3-64 for bytes, both XOR'd with a per-process seed from the CSPRNG.
+// SplitMix64 for primitive values, XXH3-64 for bytes, both XOR'd with a per-process seed.
 
 #include <fcntl.h>
 #include <unistd.h>

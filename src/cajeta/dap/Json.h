@@ -79,7 +79,14 @@ namespace cajeta::dap {
         static const std::string empty_;
         static const Json nullSentinel_;
 
+        // Appends this value's compact serialization to `out`, recursing through
+        // arrays and objects. Whole numbers under 1e15 print as integers, the rest
+        // as %.17g; object keys keep the map's sorted order.
         void dumpTo(std::string& out) const;
+
+        // Appends `s` to `out` as a quoted JSON string: the seven short escapes,
+        // and \u00xx for any other control character below 0x20. Bytes >= 0x20 are
+        // copied through, so UTF-8 input stays UTF-8 rather than being escaped.
         static void dumpString(const std::string& s, std::string& out);
     };
 

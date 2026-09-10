@@ -424,10 +424,8 @@ static const char* const kWaveOps[] = {
 };
 
 // ── Mask-as-data rewrite (divergent wave calls) ────────────────────────────
-// Whether LoopVectorize widens a guarded wave reduce through its masked variant
-// or SCALARIZES it per lane is a COST decision, and a per-lane scalar wave stub
-// is a width-1 identity — silently wrong. So the guard becomes a DATA argument
-// on an unconditional call in the merge block; only memory ops stay predicated.
+// A guarded wave reduce that LoopVectorize SCALARIZES is a width-1 identity, silently
+// wrong, so the guard becomes a DATA argument on an unconditional call in the merge block.
 
 
 // CAJETA_XPU_DEBUG_WAVE: surface LoopVectorize's remarks; no in-process flag.
@@ -761,10 +759,9 @@ void foldWaveVariants(llvm::Function& f) {
             const unsigned total = kfnTy->getNumParams();
             const unsigned nReal = total - kNumCoordParams;     // buffers + scalars
 
-            // --- Per-block wrapper (POCL model, Inc 5B) ---------------------
-            // Loops the work-item index tid.x over [0, ntid.x) calling the
-            // per-work-item kernel, which is then inlined and handed to
-            // LoopVectorize. The launch ABI is 1-D, so tid.y/z are 0.
+            // --- Per-block wrapper (POCL model) -----------------------------
+            // Loops tid.x over [0, ntid.x) calling the per-work-item kernel, which is
+            // then inlined and handed to LoopVectorize; the launch ABI is 1-D.
             std::vector<llvm::Type*> wtys;
             wtys.reserve(nReal + kNumBlockCoordParams + 1);
             for (unsigned i = 0; i < nReal; ++i)
@@ -911,10 +908,8 @@ void foldWaveVariants(llvm::Function& f) {
             b.SetInsertPoint(wExit);
             b.CreateRetVoid();
 
-            // --- Wave-op SIMD setup (Inc 5C) -------------------------------
-            // Give each wave op its VFABI variants and force the work-item loop to
-            // width W. All of it goes in BEFORE inlining; the loop metadata rides
-            // along when InlineFunction moves the latch.
+            // --- Wave-op SIMD setup ----------------------------------------
+            // VFABI variants and the forced loop width W both go in BEFORE inlining.
             const unsigned waveW = cpuVectorWidthI32(hostTm.get(), *wrapper);
             bool waveKernel = false;
             if (waveW >= 2) {
@@ -955,9 +950,8 @@ void foldWaveVariants(llvm::Function& f) {
             }   // end of the barrier-free single-loop wrapper build
 
             // --- Uniform launcher thunk → the per-block wrapper -------------
-            // void __cajeta_xpu_cpu_launch.<name>(ptr argv, ptr coord), called ONCE
-            // PER BLOCK: of coord's 12 i32s the wrapper takes ctaid[3..5],
-            // ntid[6..8], nctaid[9..11]; argv[i] points at argument i's value.
+            // void __cajeta_xpu_cpu_launch.<name>(ptr argv, ptr coord), called ONCE PER
+            // BLOCK: of coord's 12 i32s it takes ctaid[3..5], ntid[6..8], nctaid[9..11].
             llvm::FunctionType* thunkTy =
                 llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
             llvm::Function* thunk = llvm::Function::Create(
