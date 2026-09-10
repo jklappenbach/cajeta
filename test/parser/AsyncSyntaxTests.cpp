@@ -376,7 +376,7 @@ TEST(AsyncSyntaxTests, spawnForkJoinStreamReduceShape) {
         "        list.add(7);\n"
         "        list.add(8);\n"
         "        Splittable<int32> source #= list.stream();\n"
-        "        Stream<int32> share = (Stream<int32>) source.trySplit();\n"
+        "        Stream<int32> share #= (Stream<int32>) source.trySplit();\n"
         "        int32[] partials = heap int32[2];\n"
         "        (int32, int32) -> int32 fn = (a, b) -> a + b;\n"
         "        scope {\n"

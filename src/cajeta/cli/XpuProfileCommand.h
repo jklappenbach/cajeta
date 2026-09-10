@@ -1,14 +1,9 @@
-//
-// `cajeta gpu-profile` — interrogate the active GPU and print its DeviceProfile
-// as one-line JSON (xpu-device-profile U3). env-capture.sh consumes it into the
-// profile suite's env.csv. Nothing is persisted.
-//
-
+// `cajeta gpu-profile` — print the active GPU's DeviceProfile as one-line JSON.
 #pragma once
 
 namespace cajeta {
 
-    // Run `cajeta gpu-profile`: query + measure the device, print JSON, return 0.
+    // Queries and measures the device, prints the JSON, and exits the process.
     int dispatchXpuProfile(int argc, const char** argv);
 
 } // namespace cajeta

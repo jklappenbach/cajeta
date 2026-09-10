@@ -28,7 +28,6 @@ namespace cajeta {
     }
 
     std::vector<CollectedDiagnostic> DiagnosticEngine::finalize() const {
-        // Dedup by (file, line, column, code) — first occurrence wins.
         std::vector<CollectedDiagnostic> out;
         std::set<std::tuple<std::string, int, int, std::string>> seen;
         for (const auto& d : diags_) {
@@ -36,8 +35,6 @@ namespace cajeta {
                 out.push_back(d);
             }
         }
-        // Emit order: by span (file, then line, then column). Unlocated (line <= 0)
-        // sort after located within the same file so precise errors lead.
         std::stable_sort(out.begin(), out.end(),
             [](const CollectedDiagnostic& a, const CollectedDiagnostic& b) {
                 if (a.file != b.file) return a.file < b.file;
@@ -46,7 +43,6 @@ namespace cajeta {
                 if (al != bl) return al < bl;
                 return a.column < b.column;
             });
-        // Cap.
         if (static_cast<int>(out.size()) > CAP) {
             int extra = static_cast<int>(out.size()) - CAP;
             out.resize(CAP);

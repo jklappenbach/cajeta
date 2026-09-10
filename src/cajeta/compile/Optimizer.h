@@ -1,13 +1,5 @@
-//
-// LLVM optimization pipeline helpers (CajetaXPU Increment 5B).
-//
-// Cajeta's codegen path runs ONLY instruction selection (addPassesToEmitFile) —
-// no IR optimization on generated user code. This adds two reusable entry
-// points: a general per-module pipeline (`--opt`) and a focused per-function
-// vectorization pass used to turn the CPU backend's per-block kernel wrapper
-// into SIMD regardless of `--opt`. Both are built on the new PassBuilder API,
-// mirroring the mem2reg setup in the NVPTX/AMDGPU backends.
-//
+// LLVM optimization pipeline helpers. Cajeta's codegen path otherwise runs ONLY
+// instruction selection, with no IR optimization over generated user code.
 
 #pragma once
 
@@ -21,32 +13,20 @@ namespace llvm {
 
 namespace cajeta {
 
-    // Run the standard per-module optimization pipeline at `level` over `m`.
-    // No-op at O0 (preserves the unoptimized-by-default behavior). O2/O3 include
-    // LoopVectorize + SLPVectorizer. `tm` supplies TargetTransformInfo (may be
-    // null, but vectorization needs it to cost-model — pass the host TM).
+    // Run the standard per-module pipeline at `level` over `m`; a no-op at O0.
+    // `tm` may be null, but O2/O3 vectorization cannot cost-model without it.
     void optimizeModule(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level);
 
-    // Run the ThinLTO PRE-LINK pipeline at `level` over `m` — the per-module half
-    // of ThinLTO. It optimizes locally but stops short of transforms that must
-    // wait for the cross-module import decisions made at link time (the lld
-    // ThinLTO backend runs the post-link pipeline + cross-module inlining). At O0
-    // it still runs AlwaysInliner (so `@Inline`/@ValueType take effect). Pair with
-    // a ThinLTO-bitcode-with-summary write so the linker can import across modules.
+    // Run the ThinLTO PRE-LINK half at `level`: local optimization only, plus
+    // AlwaysInliner even at O0. Pair with a bitcode-with-summary write.
     void optimizeModuleThinLTOPreLink(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level);
 
-    // transform-intrinsics U6 (Jit) — run the standard O2 function-simplification
-    // pipeline over one function: SROA/mem2reg, early-CSE/GVN, instcombine, DCE,
-    // simplifycfg. This is the "fusion" a Tier-A Jit(f) applies to the specialized
-    // (possibly already-transformed) body: temporaries eliminated, the composed
-    // form flattened, semantics preserved. `tm` may be null (no TTI cost-modeling
-    // needed — this pipeline does not vectorize).
+    // Run the O2 function-simplification pipeline over one function — the "fusion"
+    // a Tier-A Jit(f) applies to a specialized body. `tm` may be null here.
     void fuseFunction(llvm::Function& f, llvm::TargetMachine* tm);
 
-    // Run a focused vectorization pipeline on a single function: mem2reg,
-    // loop-rotate, LoopVectorize, SLPVectorizer, instcombine, simplifycfg. Used
-    // by the CPU backend to vectorize the per-block kernel wrapper's work-item
-    // loop into SIMD — always, independent of `--opt`. `tm` (host) supplies TTI.
+    // Vectorize a single function, always and independent of `--opt`: the CPU
+    // backend turns its per-block kernel wrapper's work-item loop into SIMD.
     void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm);
 
 } // namespace cajeta

@@ -18,9 +18,7 @@ namespace cajeta {
         : Method(module, field->getName(), CajetaType::of("void"), parent),
           field(field) {
         this->parent = parent;
-        // Parameter setup deferred to initParameter() — we need the
-        // shared_ptr<SynthesizedSetterMethod> to exist before we can
-        // call shared_from_this() to wire FormalParameter::setParent.
+        // Parameter setup is deferred to initParameter(): shared_from_this() needs the shared_ptr to exist first.
     }
 
     void SynthesizedSetterMethod::initParameter() {
@@ -34,8 +32,7 @@ namespace cajeta {
 
     void SynthesizedSetterMethod::generateCode() {
         auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
-        // Method::generatePrototype built llvmFunction with signature
-        // (this, value) -> void. arg(0) is this, arg(1) is the value.
+        // generatePrototype built (this, value) -> void; arg(0) is this, arg(1) the value.
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
@@ -56,10 +53,7 @@ namespace cajeta {
             parent->getLlvmType(), thisPtr, (unsigned) idx,
             std::string("set.") + field->getName());
 
-        // Store at the field's STORAGE shape. The incoming `value` arg
-        // already has the right LLVM type per Method's signature
-        // (class refs → ptr, primitives → native width, views/interfaces
-        // → inline struct). Just store it.
+        // The incoming `value` already carries the field's storage LLVM type, so a plain store is right.
         b.CreateStore(value, fieldPtr);
         b.CreateRetVoid();
     }

@@ -9,8 +9,7 @@
 
 namespace cajeta::dbg {
 
-// Stateless frame-chain accessors, defined in the native runtime copy
-// (runtime/native/cajeta_runtime.c) linked into this binary. See DebugVars.h.
+// Stateless frame-chain accessors from the native runtime copy linked into this binary.
 extern "C" {
     int __cajeta_dbg_frame_depth(void* top);
     void* __cajeta_dbg_frame_prev(void* frame);
@@ -40,11 +39,9 @@ std::vector<DbgFrameInfo> walkFrames(void* top) {
             v.name = nm ? nm : "";
             v.type = ty ? ty : "";
             v.addr = __cajeta_dbg_local_addr(f, i);
-            // CP7-1b: static facets, carried as bytes by the frame chain.
             v.alloc     = static_cast<AllocClass>(__cajeta_dbg_local_alloc(f, i));
             v.ownership  = static_cast<OwnershipRole>(__cajeta_dbg_local_ownership(f, i));
-            // CP7-1c: lifetime is dynamic — derive it now from the owner's
-            // drop-entry `active` flag, read live at this stop (-1 => no entry).
+            // Lifetime is dynamic: read the owner's drop-entry `active` flag live at this stop (-1 = no entry).
             int8_t active = __cajeta_dbg_local_drop_active(f, i);
             LifetimeInputs lin;
             lin.ownership       = v.ownership;
@@ -59,8 +56,6 @@ std::vector<DbgFrameInfo> walkFrames(void* top) {
 }
 
 namespace {
-    // Primitive value categories keyed by cajeta canonical type name. The
-    // matrix mirrors CajetaType::init's NATIVE_TYPE_ENTRY registrations.
     enum class Prim { None, Bool, I8, U8, I16, U16, I32, U32, I64, U64, F32, F64 };
 
     Prim classify(const std::string& type) {
@@ -69,7 +64,6 @@ namespace {
         if (type == "uint8" || type == "uchar") return Prim::U8;
         if (type == "int16") return Prim::I16;
         if (type == "uint16") return Prim::U16;
-        // `char` is a 32-bit Unicode codepoint (see CajetaType::init).
         if (type == "int32" || type == "char") return Prim::I32;
         if (type == "uint32") return Prim::U32;
         if (type == "int64") return Prim::I64;
@@ -79,8 +73,7 @@ namespace {
         return Prim::None;
     }
 
-    // Read a primitive into either the integer or the float domain. Returns
-    // false for non-primitives. boolean/char fold into the integer domain.
+    // Reads a primitive into the integer or the float domain; false for non-primitives.
     bool readNumber(Prim p, void* addr, bool& isFloat,
                     long long& ival, double& dval) {
         isFloat = false;
@@ -154,7 +147,6 @@ std::string formatValue(const std::string& type, void* addr) {
         }
         case Prim::None: break;
     }
-    // Opaque object: the slot holds the heap pointer. Render <type@0xADDR>.
     void* obj = *reinterpret_cast<void**>(addr);
     std::ostringstream os;
     os << "<" << type << "@" << obj << ">";
@@ -206,15 +198,12 @@ bool writeValue(const std::string& type, void* addr,
 bool evaluateCondition(const std::string& expr,
                        const std::vector<DbgVar>& locals,
                        std::string* err) {
-    // A malformed/unevaluable condition stops (returns true) with *err set.
     auto fail = [&](const std::string& m) -> bool {
         if (err) *err = m;
         return true;
     };
 
-    // Locate the comparison operator: first of = < > !, widened to two chars
-    // when followed by '='. This yields ==, !=, <, <=, >, >= (a lone '=' or
-    // '!' is rejected below).
+    // The comparison operator is the first of = < > !, widened to two chars when followed by '='.
     size_t pos = expr.find_first_of("=<>!");
     if (pos == std::string::npos)
         return fail("no comparison operator in condition: " + expr);

@@ -43,7 +43,7 @@ namespace cajeta::xref {
 
         void field(std::ostringstream& out, const char* key, const std::string& val,
                    bool& first) {
-            if (val.empty()) return;          // omit empties — keeps the doc small
+            if (val.empty()) return;
             if (!first) out << ", ";
             out << "\"" << key << "\": \"";
             escapeInto(out, val);
@@ -65,8 +65,7 @@ namespace cajeta::xref {
             }
         }
 
-        // Deterministic ordering: by position, then by identity. Two records that
-        // sort equal are duplicates and get collapsed.
+        // Deterministic order by position; records that sort equal are duplicates.
         bool refLess(const SourceRef& a, const SourceRef& b) {
             if (a.file != b.file) return a.file < b.file;
             if (a.line != b.line) return a.line < b.line;
@@ -133,9 +132,8 @@ namespace cajeta::xref {
             return v;
         }
 
-        // One record as one JSON object. Shared by the whole-document writer
-        // (toJson) and the lint-mode NDJSON stream (toNdjson) so the two can
-        // never drift: a record renders identically wherever it travels.
+        // One record as one JSON object. Shared by toJson and toNdjson so a record
+        // renders identically in the document and in the stream.
         void writeRecord(std::ostringstream& out, const Declaration& d) {
             out << "{";
             bool first = true;
@@ -300,16 +298,10 @@ namespace cajeta::xref {
 
     std::string XrefIndex::toNdjson(const std::string& onlyFile,
                                     const std::string& reportAs) const {
-        // The stream opens by declaring its schema version — the reader's
-        // handshake (spec §2.0.6). Emitted even when nothing else is: a broken
-        // buffer's near-empty stream is still a well-formed, versioned one, so
-        // the consumer can tell "nothing resolved" from "garbled output".
         std::ostringstream out;
         out << "{\"kind\":\"xref\",\"rel\":\"version\",\"record\":{\"major\": "
             << kSchemaMajor << ", \"minor\": " << kSchemaMinor << "}}\n";
 
-        // Same sort + de-dup as the document, so the per-edit stream and a
-        // whole-root export agree on what a record looks like AND in what order.
         auto emitAll = [&](const char* rel, auto records) {
             for (auto& r : records) {
                 if (r.at.file != onlyFile) continue;
@@ -337,8 +329,7 @@ namespace cajeta::xref {
 
     namespace {
 
-        // Strip the source root prefix so recorded paths are root-relative — the
-        // IDE resolves them against its own project root, not this machine's.
+        // Root-relative paths: the IDE resolves them against its own project root.
         std::string relativize(const std::string& file, const std::string& root) {
             if (root.empty() || file.empty()) return file;
             if (file.rfind(root, 0) != 0) return file;
@@ -347,8 +338,7 @@ namespace cajeta::xref {
             return file.substr(at);
         }
 
-        // The modifiers an IDE actually renders. Deliberately a subset — this is a
-        // navigation index, not a mirror of the type system.
+        // The modifiers an IDE renders: deliberately a subset of the type system.
         std::vector<std::string> modifierNames(Modifiable* m) {
             std::vector<std::string> out;
             if (!m) return out;
@@ -365,36 +355,9 @@ namespace cajeta::xref {
             return out;
         }
 
-        // Applied annotations, as canonical FQNs where the annotation type is
-        // known to the compiler.
-        //
-        // The resolution step is LOAD-BEARING, and measured to be so. A bare
-        // `@Test` canonicalizes to package `code` — the compiler's scope for an
-        // unqualified annotation — so what an Annotatable holds is `code.Test`,
-        // not the declaring package. Across the coco tour plus the stdlib that
-        // is 36 rewrites:
-        //
-        //     26  code.Test        -> dev.cajeta.unit.Test
-        //      4  code.Component   -> cajeta.aot.Component
-        //      2  code.BeforeEach  -> dev.cajeta.unit.BeforeEach
-        //      2  code.Disabled    -> dev.cajeta.unit.Disabled
-        //      2  code.Inject      -> cajeta.aot.Inject
-        //
-        // Shipping `code.Test` would be actively misleading: it names a package
-        // no source declares, and a consumer asking "which methods are
-        // dev.cajeta.unit tests" would match nothing while appearing to work.
-        //
-        // COMPILER INTRINSICS (`@Inline`, `@Native`, `@ValueType`, `@Device`)
-        // have no declared type to resolve against and stay as written. They are
-        // also not internally consistent — one index carries both
-        // `code.ValueType` and a bare `ValueType` for the same annotation — so a
-        // consumer matching intrinsics on the string must accept both spellings.
-        // That is the parser's canonicalization, not this export's, and is left
-        // alone here rather than papered over.
-        //
-        // An unresolvable name is emitted AS WRITTEN rather than dropped: an
-        // annotation the index cannot name is still a fact about the
-        // declaration, and silently omitting it would read as "not annotated".
+        // Applied annotations as canonical FQNs where the annotation type is known
+        // to the compiler. Compiler intrinsics, and any name that does not resolve,
+        // are emitted AS WRITTEN rather than dropped.
         std::vector<std::string> annotationNames(Annotatable* a) {
             std::vector<std::string> out;
             if (!a) return out;
@@ -408,10 +371,7 @@ namespace cajeta::xref {
                 }
                 out.push_back(resolved);
             }
-            // Order is the declaration order the parser saw, minus duplicates.
-            // Sorting would be tidier and wrong: `@Order`-style annotations read
-            // top to bottom in the source, and a consumer rendering them back
-            // should show what was written.
+            // Declaration order, minus duplicates: sorting would lose what was written.
             std::vector<std::string> deduped;
             for (auto& n : out) {
                 if (std::find(deduped.begin(), deduped.end(), n) == deduped.end()) {
@@ -421,13 +381,9 @@ namespace cajeta::xref {
             return deduped;
         }
 
-        // The part of a canonical key that identifies the METHOD rather than its
-        // owner: `demo.Dog::speak(pointer)` -> `speak(pointer)`. Two methods
-        // override iff their suffixes match — same name AND same parameter types.
-        //
-        // Name-only matching would be wrong: `Dog.feed(boolean)` merely shares a
-        // name with `Animal.feed(int32)` and overrides nothing. Claiming otherwise
-        // would send "rename the override chain" through an unrelated method.
+        // The part of a canonical key identifying the METHOD, not its owner:
+        // `demo.Dog::speak(pointer)` -> `speak(pointer)`. Two methods override iff
+        // their suffixes match — same name AND same parameter types.
         std::string signatureSuffix(const std::string& canonicalKey) {
             auto at = canonicalKey.find("::");
             return at == std::string::npos ? canonicalKey
@@ -451,12 +407,9 @@ namespace cajeta::xref {
             for (auto& i : c->getImplementedInterfaces()) push(i);
         }
 
-        // A LABEL, not a key (plan 2.2.6). `overloadKey` is the compiler's own
-        // canonical form — `demo.Derived::greet(pointer)` — which is exact but
-        // unreadable: the receiver leaks in as `pointer` and the return type is
-        // absent. That is right as an identity and wrong as the text a Type or Call
-        // Hierarchy node puts in front of a developer, so the two are kept apart:
-        // `signature` renders, `overloadKey` identifies.
+        // The rendered LABEL for a method, not its identity: `signature` renders,
+        // `overloadKey` identifies. The canonical key is exact but unreadable — the
+        // receiver leaks in as `pointer` and the return type is absent.
         std::string displaySignature(const MethodPtr& method, bool isCtor) {
             std::ostringstream s;
             if (!isCtor) {
@@ -466,7 +419,7 @@ namespace cajeta::xref {
             s << method->getName() << "(";
             bool first = true;
             for (auto& p : method->getParameterList()) {
-                if (!p || p->getName() == "this") continue;   // receiver: implicit in source
+                if (!p || p->getName() == "this") continue;
                 if (!first) s << ", ";
                 first = false;
                 if (p->isTransferred()) s << "#";
@@ -477,15 +430,11 @@ namespace cajeta::xref {
             return s.str();
         }
 
+        // The kind an IDE renders for `c`. Order is load-bearing: a view and an
+        // annotation are each a CajetaClass too, so both are discriminated before
+        // the isInterface/isRecord flags, which would report them as "class".
         std::string classKind(const CajetaClassPtr& c) {
-            // CajetaView derives from CajetaClass, so a plain isInterface/isRecord
-            // check silently reports every `view` as a `class`. That is a WRONG
-            // value, not a missing one — the failure mode this whole export exists
-            // to avoid — so discriminate on the concrete type.
             if (std::dynamic_pointer_cast<CajetaView>(c)) return "view";
-            // Before isInterface: an annotation is a name-only CajetaClass
-            // (visitAnnotationTypeDeclaration) whose flags would otherwise read
-            // as a bare "class" — a wrong kind, not a missing one.
             if (c->isAnnotation()) return "annotation";
             if (c->isInterface()) return "interface";
             if (c->isRecordType()) return "record";
@@ -505,13 +454,10 @@ namespace cajeta::xref {
 
     const std::string* internSourceFile(const std::string& name) {
         if (!gCaptureEnabled || name.empty()) return nullptr;
-        // ANTLR's stand-in for a stream nobody named — i.e. a synthesized snippet.
         if (name == antlr4::IntStream::UNKNOWN_SOURCE_NAME) return nullptr;
 
-        // Node-based, so addresses stay valid as the pool grows, and NEVER cleared:
-        // AST nodes hold these pointers for the life of the process, well past any
-        // single compile's resetCapture(). A handful of file names; the memory is
-        // noise, and only allocated at all when --emit-xref is on.
+        // Node-based so addresses stay valid as the pool grows, and NEVER cleared:
+        // AST nodes hold these pointers past any one compile's resetCapture().
         static std::mutex mu;
         static std::set<std::string> pool;
         std::lock_guard<std::mutex> lock(mu);
@@ -531,15 +477,9 @@ namespace cajeta::xref {
         thread_local std::vector<Reference> gReferences;
     }
 
-    // A node with no source file (synthesized body — codec parsers, parallel
-    // chains, template instantiations) pushes a MASK, not nothing.
-    //
-    // Merely declining to push looks safe and is not: a synthesized body is
-    // generated lazily, NESTED inside codegen of the user call that triggered it.
-    // With no site of its own, every call that body makes was attributed to the
-    // innermost site still open — the user's call — so `Csv.parse`'s 27 internal
-    // calls all landed on one line of CsvDemo.cajeta. The mask makes the
-    // unattributable resolution silent instead of misattributed.
+    // A node with no source file pushes a MASK rather than nothing: a synthesized
+    // body is generated nested inside the user call that triggered it, so anything
+    // it resolves would otherwise be attributed to that user's line.
     CallSiteScope::CallSiteScope(const std::string& file, int line, int col) {
         if (!gCaptureEnabled) return;
         const bool valid = !file.empty() && line > 0;
@@ -564,9 +504,6 @@ namespace cajeta::xref {
     void noteResolvedCall(const std::string& calleeKey,
                           const std::string& callerKey,
                           bool isVirtual) {
-        // Omit rather than guess. An empty key, no open call site, or a masked one,
-        // would produce an edge pointing at nothing — or, worse, at the wrong line
-        // of a real file. A missing edge is better than either (spec §1.3).
         if (!gCaptureEnabled || calleeKey.empty() || gOpenSites.empty()) return;
         const OpenSite& site = gOpenSites.back();
         if (!site.valid) return;
@@ -579,14 +516,8 @@ namespace cajeta::xref {
     }
 
     void drainCalls(XrefIndex& index, const std::string& sourceRoot) {
-        // One call site resolves its callee MORE THAN ONCE: the resolve-types pass
-        // runs with no active module (so no caller is known), then codegen runs with
-        // one. Those records are identical except for `caller`, so plain equality
-        // would keep both and report a single call as four.
-        //
-        // Collapse on the identity of the call — (callee, site) — and keep the first
-        // non-empty caller we see. The caller is what makes the relation walkable
-        // upward ("who calls this"), so an empty one must never win over a real one.
+        // One site resolves more than once — resolve-types with no caller known,
+        // then codegen — so collapse on (callee, site); a real caller always wins.
         std::map<std::string, Call> merged;
         for (const auto& c : gCalls) {
             const std::string file = relativize(c.at.file, sourceRoot);
@@ -630,10 +561,6 @@ namespace cajeta::xref {
     }
 
     void drainReferences(XrefIndex& index, const std::string& sourceRoot) {
-        // One type name resolves repeatedly — resolve-types, then codegen, then once
-        // more per template instantiation that re-walks it. All those records are
-        // identical, so collapse on (target, position); the writer's sortedUnique
-        // would too, but doing it here keeps the vector from ballooning first.
         std::set<std::string> seen;
         for (const auto& r : gReferences) {
             const std::string file = relativize(r.at.file, sourceRoot);
@@ -649,10 +576,8 @@ namespace cajeta::xref {
     }
 
     namespace {
-        // Stdlib-reuse baseline (lint-server Unit 1): the capture logs as the
-        // prime left them, restored — not cleared — by resetCapture so a warm
-        // lint starts from the same log state a fresh process's stdlib parse
-        // produces. `valid` guards production, where no prime ever runs.
+        // The capture logs as the stdlib prime left them; resetCapture restores
+        // them instead of clearing, so a warm lint starts from that state.
         struct CaptureBaseline {
             bool valid = false;
             std::vector<TemplateMember> templateMembers;
@@ -689,24 +614,13 @@ namespace cajeta::xref {
     std::string templateKeyFor(const std::string& templateFqn,
                                const std::string& methodName,
                                int declaredParamCount) {
-        // Exact declared-count match, single pass. The caller strips any
-        // leading `this` from the resolved callee's parameter list before
-        // asking, so both sides speak DECLARED arity and no receiver
-        // arithmetic happens here. This replaced two generations of guessing,
-        // each measured wrong (xref-lint-emission-gap 5.1.4/5.1.7): assuming
-        // the receiver is counted emptied every generic METHOD's key (their
-        // lists carry no `this` under lint), and trying both interpretations
-        // in sequence swapped the keys of overloads differing by ONE parameter
-        // — the 3-arg `fold<R>` recorded the 2-arg key, a wrong edge.
         const TemplateMember* hit = nullptr;
         for (const auto& tm : gTemplateMembers) {
             if (tm.ownerFqn != templateFqn || tm.name != methodName) continue;
             if (tm.kind == "field") continue;
             if (tm.declaredParams != declaredParamCount) continue;
-            // Two template members of the same name AND arity cannot be told
-            // apart here: the instantiation's parameter types are substituted
-            // (T -> int32) and no longer comparable with the declared ones.
-            // Omit rather than pick one — a wrong callee renames the wrong code.
+            // Same name AND arity is unresolvable here: the instantiation's
+            // parameter types are substituted and no longer comparable.
             if (hit) return "";
             hit = &tm;
         }
@@ -717,8 +631,8 @@ namespace cajeta::xref {
                                            const std::string& sourceRoot) {
         index.setSourceRoot(sourceRoot);
 
-        // Template members first — captured at parse time because the template's
-        // body walk is skipped and it therefore holds no Method objects (1.5).
+        // Template members first: a template's body walk is skipped, so it holds no
+        // Method objects and the class walk below cannot see its members.
         for (const auto& tm : gTemplateMembers) {
             if (tm.at.line <= 0) continue;
             Declaration d;
@@ -734,12 +648,11 @@ namespace cajeta::xref {
         }
 
         // --- enums --------------------------------------------------------------
-        // An enum is an i32-backed CajetaType carrying ENUM_FLAG, NOT a
-        // CajetaClass, so the class walk below cannot see it. Handled first, and
-        // separately, for exactly that reason (plan 1.4).
+        // An enum is an i32-backed CajetaType carrying ENUM_FLAG, not a
+        // CajetaClass, so the class walk below cannot see it.
         for (auto& [mapKey, type] : CajetaType::getCanonicalMap()) {
             if (!type || !(type->getTypeFlags() & ENUM_FLAG)) continue;
-            if (std::dynamic_pointer_cast<CajetaClass>(type)) continue;  // defensive
+            if (std::dynamic_pointer_cast<CajetaClass>(type)) continue;
 
             const std::string canonical = type->getQName()->toCanonical();
             const std::string shortName = type->getQName()->getTypeName();
@@ -752,8 +665,7 @@ namespace cajeta::xref {
             d.at   = SourceRef{file, type->getDeclLine(), type->getDeclColumn()};
             index.addDeclaration(std::move(d));
 
-            // Constants. The ordinal registry is keyed by the enum's SHORT name;
-            // the position registry is keyed the same way so the two stay in step.
+            // Both enum registries are keyed by the SHORT name, so they stay in step.
             auto& positions = CajetaType::getEnumConstantPositions();
             auto pit = positions.find(shortName);
             if (pit == positions.end()) continue;
@@ -774,27 +686,17 @@ namespace cajeta::xref {
             auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
             if (!klass) continue;
 
-            // NOT the map key. getCanonicalMap() is keyed by BOTH the canonical
-            // FQN and the short name (so `ArrayList` and `cajeta.collection.
-            // ArrayList` both resolve), which means every class is visited twice —
-            // once under a bare name that is not a valid FQN. Ask the type for its
-            // own canonical name instead; the writer's de-duplication then collapses
-            // the second visit.
+            // NOT the map key: getCanonicalMap() is keyed by both the FQN and the
+            // short name, so every class is visited twice, once under a bare name.
             const std::string canonical = klass->getQName()->toCanonical();
 
-            // Skip INSTANTIATIONS (`demo.Box<int32>`). An instantiation is
-            // monomorphized from its template and has no source of its own — its
-            // declaration is the template's. Exporting one record per instantiation
-            // would list the same source method once per element type, fragment
-            // "who calls add" across instantiations, and name FQNs that appear in no
-            // file. The template's members are captured separately (1.5).
+            // Skip INSTANTIATIONS (`demo.Box<int32>`): monomorphized from a
+            // template, they have no source of their own, and the template's own
+            // members are captured separately.
             if (canonical.find('<') != std::string::npos) continue;
 
             const std::string file = relativize(klass->getDeclaringFile(), sourceRoot);
-            // A type with no declaring position was synthesized (mock, template
-            // placeholder, primitive box) — it has no source an IDE could open, so
-            // it is not a declaration. Skip rather than emit a record pointing
-            // nowhere: a bogus target is worse than a missing one.
+            // No declaring position means synthesized — no source an IDE could open.
             if (klass->getDeclLine() <= 0 || file.empty()) continue;
 
             Declaration d;
@@ -806,8 +708,6 @@ namespace cajeta::xref {
             index.addDeclaration(std::move(d));
 
             // --- inheritance: RESOLVED FQNs, never the raw declared name -------
-            // This is the relation cajetadoc structurally cannot supply, and the
-            // one the hierarchy, gutter, and virtual-call features rest on.
             for (auto& parent : klass->getSuperClasses()) {
                 if (!parent) continue;
                 InheritanceEdge e;
@@ -840,7 +740,7 @@ namespace cajeta::xref {
                     f.signature = prop->getType()->toCanonical() + " " + prop->getName();
                 }
                 f.at        = SourceRef{file, prop->getDeclLine(), prop->getDeclColumn()};
-                if (f.at.line <= 0) continue;   // synthesized mirror field
+                if (f.at.line <= 0) continue;
                 index.addDeclaration(std::move(f));
             }
 
@@ -850,15 +750,9 @@ namespace cajeta::xref {
                 const bool isCtor =
                     method->getName() == klass->getQName()->getTypeName();
 
-                // A method with no source position was synthesized. Drop methods
-                // (drop-glue, mocks) have no navigable target and are skipped.
-                //
-                // An IMPLICIT CONSTRUCTOR is different: `heap AllocationDemo()` is a
-                // real call a developer writes and Ctrl-clicks, but the class
-                // declares no constructor, so the compiler makes one with no
-                // position. Declaring it at the CLASS's line gives that call a
-                // target — the class — instead of leaving 102 call edges on
-                // samples/tour pointing at nothing.
+                // A method with no position was synthesized and is skipped, EXCEPT
+                // an implicit constructor: `heap C()` is a real call site, so it is
+                // declared at the class's own line rather than left dangling.
                 int line = method->getDeclLine();
                 int col  = method->getDeclColumn();
                 if (line <= 0) {
@@ -871,11 +765,6 @@ namespace cajeta::xref {
                 m.kind  = isCtor ? "constructor" : "method";
                 m.fqn   = canonical + "." + method->getName();
                 m.owner = canonical;
-                // The overload key is the compiler's OWN canonical unlabeled
-                // signature — the same string whose FNV-1a hash the RTTI uses for
-                // dispatch. Reusing it (rather than minting a fourth copy of
-                // signatureHash, which the source warns must stay in lockstep)
-                // means two same-arity overloads can never collide here.
                 m.overloadKey = method->toCanonical(/*labeled=*/false);
                 m.signature   = displaySignature(method, isCtor);
                 m.modifiers   = modifierNames(method.get());
@@ -884,16 +773,7 @@ namespace cajeta::xref {
                 index.addDeclaration(std::move(m));
             }
 
-            // --- overrides (2.1.7) --------------------------------------------
-            // Matched on the SIGNATURE suffix — name AND parameter types — never on
-            // name alone. `Dog.feed(boolean)` shares a name with
-            // `Animal.feed(int32)` and overrides nothing; a name-only match would
-            // claim it does, and "rename the override chain" would then rewrite an
-            // unrelated method.
-            //
-            // Derived here rather than recorded during resolution: the compiler
-            // already holds each class's methods and its resolved ancestors, so this
-            // needs no instrumentation of the call path.
+            // --- overrides: matched on the signature suffix, never on name alone -
             std::vector<CajetaClassPtr> ancestors;
             std::set<std::string> seenAncestors;
             collectAncestors(klass, ancestors, seenAncestors);
@@ -904,9 +784,7 @@ namespace cajeta::xref {
                 const std::string myKey = method->toCanonical(/*labeled=*/false);
                 const std::string mySig = signatureSuffix(myKey);
 
-                // Nearest ancestor wins: an override edge names the method actually
-                // overridden, which for a 3-deep chain is the parent's, not the
-                // grandparent's. `ancestors` is built parent-first by the walk.
+                // Nearest ancestor wins; `ancestors` is built parent-first.
                 for (auto& anc : ancestors) {
                     bool found = false;
                     for (auto& [ancKey, ancMethod] : anc->getMethods()) {
@@ -914,7 +792,7 @@ namespace cajeta::xref {
                         const std::string ancCanon =
                             ancMethod->toCanonical(/*labeled=*/false);
                         if (signatureSuffix(ancCanon) != mySig) continue;
-                        if (ancCanon == myKey) continue;   // same method, not an override
+                        if (ancCanon == myKey) continue;
 
                         OverrideEdge e;
                         e.method    = myKey;

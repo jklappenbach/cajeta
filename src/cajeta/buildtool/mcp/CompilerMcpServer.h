@@ -1,9 +1,5 @@
-//
-// compiler-mcp — the in-compiler MCP stdio server (specs/archive/compiler-mcp-spec.md).
-// Serves searchSkills / listSkills / getSkills over JSON-RPC 2.0 by calling the
-// skill-discovery cores in-process; the corpus is whatever the compiler embeds
-// plus lockfile archives when a project is present. Stateless and read-only.
-//
+// compiler-mcp — the in-compiler MCP stdio server (specs/archive/compiler-mcp-spec.md):
+// searchSkills / listSkills / getSkills over JSON-RPC 2.0, in-process and read-only.
 #pragma once
 
 #include <iosfwd>
@@ -23,17 +19,16 @@ namespace cajeta::buildtool::mcp {
 
     class CompilerMcpServer {
     public:
-        // Builds the discovery context exactly as the skill CLI does: embedded
-        // corpora always; `<projectDir>/cajeta.lock` + artifact cache when
-        // present (a missing lockfile is not an error).
+        // Builds the discovery context exactly as the skill CLI does; a missing lockfile is not an error.
         static llvm::Expected<CompilerMcpServer> create(std::string version,
                                                         std::string projectDir);
 
-        // One JSON-RPC message in → serialized response out; nullopt for
-        // notifications (requests without an id).
+        // One JSON-RPC message in → serialized response out; nullopt for notifications.
         std::optional<std::string> handleMessage(llvm::StringRef message);
 
-        // Newline-delimited JSON-RPC over in/out until EOF. Returns exit code.
+        // The stdio serve loop: one line-delimited JSON-RPC message per line of `in`,
+        // each response written to `out` and flushed. Blank lines and notifications
+        // produce nothing. Returns 0 at end of input; it never fails the process.
         int run(std::istream& in, std::ostream& out);
 
         static llvm::StringRef instructions();

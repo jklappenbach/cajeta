@@ -1,22 +1,6 @@
-// Utf8 tagged forms — Unit 6b of the slices plan (slice-spec §8).
-//
-// cajeta.lang.Utf8 is a 16-byte value type. Its .cajeta declaration stays
-// {int32 len; int8[12] data}; this file overlays the SAME 16 bytes for the
-// pointer forms, discriminated by the length:
-//   len <= 12          Inline — bytes live in `data`; pure POD, no rc.
-//   len >  12          pointer form {int32 lenTag; int32 off; char* base}:
-//     lenTag >= 0        Static — `base` is a never-freed root (a string
-//                        literal's array header); no rc.
-//     lenTag sign bit    Shared — `base` is an rc'd root in the shared side
-//                        table; copies retain, drops release (the count-word
-//                        sign-bit convention carried into the value).
-// `base` is always a ROOT CajetaArray header (count word + data), never an
-// interior pointer — data starts at base+8+off, mirroring mode-2 Strings.
-// Normalization (spec §8): every <= 12 B result is built Inline, so pointer
-// forms are unambiguous.
-//
-// Included from cajeta_runtime.c AFTER cajeta_rt_shared.c (shared rc API) and
-// cajeta_rt_core.c (cajeta_string_layout, live set, alloc).
+// cajeta.lang.Utf8: one 16-byte value overlaid three ways (Inline, Static,
+// Shared) and discriminated by the length word, per the forms in
+// docs/specification/lang/slice-spec.md. `base` is always a ROOT array header.
 
 #define CAJ_UTF8_INLINE_CAP 12
 #define CAJ_UTF8_SHARED_BIT ((int32_t) 1 << 31)
@@ -33,7 +17,7 @@ static inline int32_t caj_utf8_len(const caj_utf8_layout* u) {
 
 static inline const char* caj_utf8_ptr(const caj_utf8_layout* u) {
     if (caj_utf8_len(u) <= CAJ_UTF8_INLINE_CAP)
-        return (const char*) &u->off;      // Inline: data starts at byte 4
+        return (const char*) &u->off;
     return u->base + 8 + u->off;
 }
 
@@ -47,17 +31,9 @@ int8_t __cajeta_utf8_byte_at(void* u_v, int32_t idx) {
     return (int8_t) caj_utf8_ptr(u)[idx];
 }
 
-// Build `out` from a String (any mode), lifting 6a's 12-byte clamp:
-//   total <= 12               -> Inline copy (normalization rule).
-//   > 12, SSO wrapper region  -> materialize an owned root, rc=1 Shared (a
-//                                wrapper's inline bytes must never be pointed
-//                                at — §8.3 invariant).
-//   > 12, ARENA-backed root   -> materialize, rc=1 Shared (spec §4 arena row:
-//                                the frame arena recycles at scope reset, so
-//                                its buffers can never back a stake).
-//   > 12, mode 0 (owned)      -> promote(root, 2): owner + this stake; Shared.
-//   > 12, mode 2 (windowed)   -> retain(root); offsets accumulate; Shared.
-//   > 12, mode 1 (static)     -> Static; no rc.
+// Build `out` from a String of any mode. Sources whose bytes can be recycled
+// under the value (SSO wrapper regions, arena-backed roots) are materialized
+// into a fresh rc=1 root rather than pointed at.
 void __cajeta_utf8_of_string(void* out_v, void* s_v) {
     caj_utf8_layout* out = (caj_utf8_layout*) out_v;
     cajeta_string_layout* s = (cajeta_string_layout*) s_v;
@@ -66,7 +42,7 @@ void __cajeta_utf8_of_string(void* out_v, void* s_v) {
     out->base = NULL;
     if (!s || caj_str_len(s) <= 0) return;
     int32_t len = caj_str_len(s);
-    if (len <= CAJ_UTF8_INLINE_CAP) {          // covers every Inline source
+    if (len <= CAJ_UTF8_INLINE_CAP) {
         out->lenTag = len;
         memcpy((char*) &out->off, caj_str_ptr(s), (size_t) len);
         return;
@@ -75,7 +51,6 @@ void __cajeta_utf8_of_string(void* out_v, void* s_v) {
     int32_t srcOff = caj_str_off(s);
     int __cajeta_arena_owns(const void* p);
     if (!(s->lenTag & CAJ_STR_STATIC_BIT) && __cajeta_arena_owns(base)) {
-        // Arena root (spec Â§4 arena row): materialize an rc=1 shared root.
         void* buf = caj_str_new_root(base + 8 + srcOff, len);
         __cajeta_shared_promote(buf, 1);
         out->lenTag = len | CAJ_UTF8_SHARED_BIT;
@@ -84,12 +59,11 @@ void __cajeta_utf8_of_string(void* out_v, void* s_v) {
         return;
     }
     if (s->lenTag & CAJ_STR_STATIC_BIT) {
-        out->lenTag = len;                     // Static root: no rc
+        out->lenTag = len;
     } else if (s->lenTag & CAJ_STR_SHARED_BIT) {
         __cajeta_shared_retain(base);
         out->lenTag = len | CAJ_UTF8_SHARED_BIT;
     } else {
-        // OWNED or BORROW source: add-or-create (owner + this stake).
         __cajeta_shared_promote(base, 2);
         out->lenTag = len | CAJ_UTF8_SHARED_BIT;
     }
@@ -103,9 +77,8 @@ void __cajeta_utf8_retain(void* u_v) {
     if (u->lenTag < 0) __cajeta_shared_retain(u->base);
 }
 
-// Drop hook arm: release this stake; last stake frees the root (same contract
-// as __cajeta_string_drop's mode-2 branch). Poisons the value against
-// double-release (a released Utf8 reads as empty Inline).
+// Drop hook arm: release this stake; the last stake frees the root. Poisons the
+// value against double-release — a released Utf8 reads back as empty Inline.
 void __cajeta_utf8_release(void* u_v) {
     caj_utf8_layout* u = (caj_utf8_layout*) u_v;
     if (u->lenTag < 0 && u->base != NULL) {

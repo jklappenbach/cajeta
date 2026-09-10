@@ -1,18 +1,6 @@
-// Stdlib prime-once / restore-many core (lint-server plan 1.2.1).
-//
-// The in-process stdlib-reuse machinery the JIT test harness proved
-// (test/jit/JitTestHelper.cpp, StdlibReuseCache), factored into src/ so the
-// production warm-lint path (`cajeta --lint-server`) can use it. This core
-// owns the shared LLVMContext, the prime Compiler, and the captured
-// baseline; the test cache LAYERS its JIT-specific needs (codegen passes,
-// llvm-level pristineness snapshots, the shared stdlib dylib) on top of it
-// rather than duplicating any of this.
-//
-// Single-threaded by construction: one instance per process, primed and
-// restored from one thread (the lint server is serial — spec §1.5; the JIT
-// harness confines reuse to the priming thread). The underlying baselines
-// (CajetaType / CajetaModule / xref) are thread_local, so an off-owner
-// thread simply sees no baseline and takes the fresh, isolated path.
+// Stdlib prime-once / restore-many core: the shared LLVMContext, the prime Compiler
+// and the captured baseline the warm-lint path reuses. Single-threaded by
+// construction — one instance per process, primed and restored from one thread.
 #pragma once
 
 #include <functional>
@@ -32,44 +20,23 @@ namespace cajeta {
     public:
         static StdlibReuseCore& instance();
 
-        // Prime once (idempotent): bind the shared context, build the prime
-        // Compiler, front-end the stdlib (parse + prototype layout — NO
-        // codegen passes; lint stops before codegen and never needs them),
-        // and capture the post-prime baseline. The stdlib parse runs with
-        // xref capture enabled so the capture baseline holds what a fresh
-        // one-shot `--lint --emit-xref` run's stdlib parse would log.
-        //
-        // Leaves Compiler's shared context SET (pointing at context()); the
-        // caller owns clearing it (Compiler::setSharedContext(nullptr)) when
-        // its reuse scope ends, so unrelated Compilers stay fully isolated.
+        // Prime once (idempotent): bind the shared context, build the prime Compiler,
+        // front-end the stdlib with xref capture on, and capture the baseline. Leaves
+        // Compiler's shared context SET; the caller clears it when its reuse scope ends.
         void ensurePrimed();
 
-        // JIT layering (the test cache): ensure the stdlib is primed AND has
-        // had `layer` applied (e.g. the codegen passes), re-capturing the
-        // baseline afterwards so restores return to the post-layer state.
-        // Safe whichever ran first: if front-end-only lint requests already
-        // used the core, the state is restored to the pristine post-front-end
-        // baseline before the layer runs.
+        // Ensure the stdlib is primed AND has had `layer` applied, re-capturing the
+        // baseline after; restoring to the pristine state first makes the order free.
         void ensureCodegenLayer(const std::function<void(Compiler&)>& layer);
 
-        // Reset every captured global to the post-prime baseline: reuse
-        // epoch, type/module registries (incl. the prescan archive and
-        // placeholder records), stdlib structures, lazy-stdlib bookkeeping,
-        // and method-template instantiations registered on stdlib classes.
-        // xref logs restore separately via xref::resetCapture (which the
-        // lint path already calls per run).
+        // Reset every captured global to the post-prime baseline: epoch, registries,
+        // stdlib structures, lazy bookkeeping, stdlib method-template instantiations.
+        // xref logs restore separately, via xref::resetCapture.
         void restoreBaseline();
 
-        // lint-server sibling-context reuse (spec §4). captureContextBaseline
-        // snapshots "stdlib + the sibling sweep" (type + module registries,
-        // the stdlib module's structures incl. any lazy package a sibling
-        // pulled in, and the lazy bookkeeping) into a SECOND slot, independent
-        // of the pristine stdlib baseline. restoreContextBaseline reinstates it
-        // on a warm request — skipping the sweep — and drops the previous
-        // request's target (its entries aren't in the snapshot). invalidate
-        // forces the next request to resweep. Call capture right after
-        // registerLintContext and before the target is parsed, so the snapshot
-        // excludes the target.
+        // A SECOND baseline slot holding "stdlib + the sibling sweep", so a warm request
+        // can skip the sweep. Capture right after registerLintContext and before the
+        // target is parsed, so the snapshot excludes the target; invalidate forces a resweep.
         void captureContextBaseline();
         void restoreContextBaseline();
         void invalidateContextBaseline();
@@ -83,13 +50,13 @@ namespace cajeta {
 
     private:
         StdlibReuseCore() = default;
+        // Snapshots what restoreBaseline() rewinds to: the type and module archives,
+        // the stdlib structures with their per-class reuse baselines, the stdlib
+        // llvm::Module's globals, and xref. Re-taken once the codegen layer is added.
         void captureBaselines();
-        // The persistent stdlib llvm::Module's own baseline (spec §4.1): the
-        // set of global values present after priming. A session adds to that
-        // module — notably `external global` declarations of instantiations it
-        // emitted into ITS user module — and those additions must not outlive
-        // it, or the next session fails to materialize symbols nothing
-        // defines. See the definitions for the full account.
+        // Baseline of the persistent stdlib llvm::Module's global values. A session's
+        // additions (external declarations of what it emitted) must not outlive it, or
+        // the next session fails to materialize symbols nothing defines.
         void captureLlvmBaseline();
         void restoreLlvmBaseline();
         void pruneAppendingGlobal(llvm::Module& m, const char* name,
@@ -103,9 +70,8 @@ namespace cajeta {
         bool isPrimed = false;
         bool isCodegenLayered = false;
 
-        // Sibling-context slot (spec §4): the stdlib module structures + lazy
-        // state at capture time; the type/module registries live in their own
-        // second slots (CajetaType/CajetaModule::*ContextBaseline).
+        // Sibling-context slot: stdlib structures + lazy state at capture time; the
+        // type/module registries keep their own second slots.
         std::map<std::string, CajetaClassPtr> contextStructures;
         Compiler::LazyStdlibState contextLazyState;
         bool hasContextBaseline = false;

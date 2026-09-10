@@ -1,17 +1,6 @@
-// ============================================================================
-// The `shared` ownership state (docs/specification/lang/slice-spec.md §3).
-//
-// A heap buffer whose slices escape their owner is promoted owned -> shared:
-// co-owned by its remaining owner and every escaped slice, freed exactly once
-// when the last stake drops. The flag is the SIGN BIT of the {i64 count; data}
-// header's count word — no layout change, and any unmasked reader of a shared
-// buffer's count sees a negative value and fails CLOSED (bounds abort), never
-// an overrun. The count of stakes lives in a side table keyed by buffer base,
-// mirroring the live-set (open-addressed, tombstoned, mt-gated). The final
-// release routes through __cajeta_live_set_claim so a racing auto-field-drop
-// still no-ops (the double-free guard is preserved under the new last-drop
-// protocol).
-// ============================================================================
+// The `shared` ownership state (slice-spec §3): a heap buffer whose slices escape
+// is co-owned by its owner and every view, freed once when the last stake drops.
+// The flag is the SIGN BIT of the {i64 count; data} header's count word.
 
 #define CAJETA_SHARED_BIT ((int64_t) 1 << 63)
 #define CAJETA_SHARED_INITIAL_CAPACITY (1 << 14)
@@ -22,21 +11,8 @@ typedef struct {
     int64_t rc;
 } caj_shared_entry;
 
-// The table GROWS. It used to be a fixed 1<<14 array whose insert silently
-// returned once three quarters full, after warning once — and a promotion that
-// fails to insert has already set the buffer's shared bit, so its release finds
-// no entry and the buffer can never be freed. A sizing limit became unbounded
-// memory loss, in exactly the programs big enough to reach it.
-//
-// The limit was not theoretical. `cajeta-coco` parsing a 2.7 MB cross-reference
-// index retains ~12,000 live strings and saturated the table during PARSING,
-// before doing any work: measured 333 promotions for 104 site rows and 11,954+
-// for 13,684 xref records — both linear in retained data. Nothing was leaking;
-// the table was simply too small for a program that holds an index in memory.
-//
-// Growth is amortized doubling with a rehash. The rehash also drops
-// tombstones, which the fixed table accumulated forever — they cost probe
-// length on every lookup and were never reclaimed.
+// The table GROWS by amortized doubling: a fixed table that refused an insert
+// once full leaked every buffer promoted after it, bit set but no entry.
 static caj_shared_entry* __cajeta_shared_table = NULL;
 static int __cajeta_shared_capacity = 0;
 static int __cajeta_shared_entries = 0;
@@ -51,15 +27,12 @@ static inline uint64_t caj_shared_hash(const void* p) {
     return caj_shared_hash_cap(p, __cajeta_shared_capacity);
 }
 
-// Live entries + tombstones, against which the 3/4 load factor is measured.
-// Tombstones MUST count: they occupy slots and lengthen probe sequences, and a
-// table full of them with few live entries would otherwise never be rehashed.
+// Live entries + tombstones: they MUST count, or a table of them never rehashes.
 static inline int caj_shared_occupancy(void) {
     return __cajeta_shared_entries + __cajeta_shared_tombstones;
 }
 
-// Place into a table known to have room. No growth check, no counter updates —
-// used by the rehash, which owns the bookkeeping itself.
+// Place into a table known to have room; the rehash owns the bookkeeping.
 static void caj_shared_place(caj_shared_entry* table, int cap, void* base, int64_t rc) {
     uint64_t idx = caj_shared_hash_cap(base, cap);
     for (;;) {
@@ -73,11 +46,7 @@ static void caj_shared_place(caj_shared_entry* table, int cap, void* base, int64
     }
 }
 
-// Grow to `cap` (or rehash in place at the same size when tombstones are what
-// filled the table). Returns 0 and leaves the table untouched if allocation
-// fails — the caller then falls back to the old refuse-and-leak behaviour,
-// which is the only remaining path that can leak and now requires a genuine
-// out-of-memory condition rather than merely a big program.
+// Grow to `cap`, or rehash in place when tombstones filled it; 0 if calloc fails.
 static int caj_shared_rehash_locked(int cap) {
     caj_shared_entry* fresh = (caj_shared_entry*) calloc((size_t) cap, sizeof(caj_shared_entry));
     if (!fresh) return 0;
@@ -96,10 +65,7 @@ static int caj_shared_rehash_locked(int cap) {
     return 1;
 }
 
-// Ensure there is room for one more insert. Doubles when live entries alone
-// are past the load factor; rehashes at the SAME size when tombstones are the
-// reason, so a long-running program that promotes and releases repeatedly
-// reclaims slots instead of growing without bound.
+// Room for one more insert: double past the load factor, rehash for tombstones.
 static int caj_shared_reserve_locked(void) {
     if (__cajeta_shared_capacity == 0) {
         return caj_shared_rehash_locked(CAJETA_SHARED_INITIAL_CAPACITY);
@@ -145,9 +111,7 @@ static caj_shared_entry* caj_shared_find_locked(void* base) {
 
 static void caj_shared_insert_locked(void* base, int64_t rc) {
     if (!caj_shared_reserve_locked()) {
-        // Out of memory, not out of table. The buffer keeps its shared bit and
-        // will not be freed — the same leak as before, now reachable only when
-        // the allocator itself has failed.
+        // Out of memory, not out of table: the buffer keeps its bit and leaks.
         static int warned = 0;
         if (!warned) {
             fprintf(stderr,
@@ -184,9 +148,7 @@ static void caj_shared_promote_locked(void* base, int64_t stakes) {
     caj_shared_insert_locked(base, stakes);
 }
 
-// Promote owned -> shared with `stakes` co-owners (typically 2: owner + the
-// escaping view). Idempotent-forgiving: promoting an already-shared buffer
-// adds stakes-1 (the owner's stake is already counted).
+// Promote owned -> shared with `stakes` co-owners; already-shared adds stakes-1.
 void __cajeta_shared_promote(void* base, int64_t stakes) {
     if (!base) return;
     if (__atomic_load_n(&__cajeta_live_set_mt, __ATOMIC_ACQUIRE) == 0) {
@@ -198,6 +160,7 @@ void __cajeta_shared_promote(void* base, int64_t stakes) {
     pthread_mutex_unlock(&__cajeta_shared_mu);
 }
 
+// Take one more stake on a shared buffer; no-op when the base is not shared.
 void __cajeta_shared_retain(void* base) {
     if (!base) return;
     if (__atomic_load_n(&__cajeta_live_set_mt, __ATOMIC_ACQUIRE) == 0) {
@@ -238,9 +201,7 @@ static int caj_shared_release_locked(void* base) {
 }
 
 // Drop one stake. Returns 1 iff this was the LAST stake AND the live-set claim
-// succeeded — the caller then owns the free (same contract as a drop
-// dispatcher's claim). A racing claim by an auto-field-drop makes this return
-// 0 and the buffer is not touched.
+// succeeded, in which case the caller owns the free; a racing claim returns 0.
 int __cajeta_shared_release(void* base) {
     if (!base) return 0;
     int last;
@@ -255,10 +216,8 @@ int __cajeta_shared_release(void* base) {
     return __cajeta_live_set_claim(base);
 }
 
-// The owner-drop seam (slice-spec §3.6): drop dispatchers for sliceable
-// buffers call this instead of a bare claim. Unshared (sign bit clear, the
-// overwhelmingly common path) -> ordinary claim, caller frees as today.
-// Shared -> the owner's stake releases; the buffer outlives into its slices.
+// The owner-drop seam (slice-spec §3.6), called by drop dispatchers for sliceable
+// buffers: unshared -> an ordinary claim the caller frees; shared -> release.
 int __cajeta_shared_owner_drop(void* base) {
     if (!base) return 0;
     if (*(const int64_t*) base >= 0) {
@@ -267,16 +226,10 @@ int __cajeta_shared_owner_drop(void* base) {
     return __cajeta_shared_release(base);
 }
 
-// C-string view of a String for the legacy const char* runtime ABI
-// (println/parse/log). Modes 0/1: the data pointer directly (writers guarantee
-// a trailing NUL). Mode 2 (windowed view): the window has no NUL at its end,
-// so materialize into a per-thread growable scratch — valid until the next
-// call on the same thread, which the immediate-consumption ABI satisfies.
+// C-string view of a String for the legacy const char* ABI. Modes 0/1 hand back
+// the data pointer; a windowed view materializes into per-thread scratch.
 const char* __cajeta_string_cstr(void* s_v) {
-    // Ring of per-thread scratch slots: a call site may collect several
-    // cstr results before consuming them (printf with multiple %s args),
-    // so one slot would clobber earlier extractions. Eight slots cover
-    // realistic arities; beyond that the oldest recycles.
+    // A ring, because one call site may collect several results before use.
     enum { CAJ_CSTR_RING = 8 };
     static __thread char* scratch[CAJ_CSTR_RING];
     static __thread int64_t cap[CAJ_CSTR_RING];
@@ -287,37 +240,16 @@ const char* __cajeta_string_cstr(void* s_v) {
     if (len == 0) return "";
     if (caj_str_is_pointer(s)) {
         char* base = caj_str_base(s);
-        // Full-window root at offset 0, and the buffer actually CARRIES a
-        // terminator: there is a byte past the window and it is NUL. Only then
-        // is handing the data out directly safe for a strlen reader.
-        //
-        // This used to test `len == masked_count` on the stated grounds that
-        // "builders guarantee a trailing NUL". That condition is exactly
-        // backwards — it succeeds when the array holds precisely `len` bytes,
-        // i.e. when there is NO room for a terminator — and the guarantee was
-        // not true: StringBuilder.toString allocates `allocBytes(len)` and
-        // hands back `String(#out, len)`, so every string built that way took
-        // this path with no NUL after it and `strlen` ran into the next heap
-        // block. Reproduced in ten lines: printing a 48-byte StringBuilder
-        // result emitted the JSON, then a stray 0x31, then the newline.
-        //
-        // In the field this corrupted the build tool's plugin protocol, whose
-        // records are built with a StringBuilder and written with
-        // System.stdout.println: the reader saw `{...}\x31`, failed to parse
-        // it, and dropped the record. A dropped `log` record was invisible; a
-        // dropped `output` record took a task's result with it.
-        //
-        // The order matters — `masked_count > len` is what makes reading
-        // base[8 + len] in-bounds, so it must be tested first.
+        // Hand the data out directly only for a full-window root that actually
+        // CARRIES a terminator: `masked_count > len` is what makes reading
+        // base[8 + len] in bounds, so it MUST be tested first.
         if (base && caj_str_off(s) == 0
                 && __cajeta_shared_masked_count(base) > len
                 && base[8 + len] == '\0') {
             return base + 8;
         }
     }
-    // Inline text and windowed views have no NUL at the window's end —
-    // materialize into the next ring slot (valid until the ring wraps on
-    // this thread; the immediate-consumption ABI satisfies that).
+    // No NUL at a window's end: materialize into the next ring slot.
     int k = slot;
     slot = (slot + 1) % CAJ_CSTR_RING;
     if (len + 1 > cap[k]) {
@@ -329,27 +261,9 @@ const char* __cajeta_string_cstr(void* s_v) {
     return scratch[k];
 }
 
-// Zero-copy String.substring (slice-spec §7.1; slices plan 2.2.1). Builds a
-// mode-2 WINDOWED view: `bytes` stays the ROOT array header (bounds checks
-// remain valid), the window's byte offset rides the otherwise-unused ssoCount
-// field, and readers add `off = (mode==2) ? (int32) ssoCount : 0`.
-//   SSO source        -> materialized owned copy (never view a wrapper's
-//                        inline region — §8.3 invariant).
-//   mode-0 source     -> promote(root, 2): owner + this view.
-//   mode-2 source     -> retain(root); offsets accumulate (chained substrings
-//                        attribute to the root).
-//   mode-1 source     -> no rc (a static/borrowed root is never written; the
-//                        release at drop no-ops on unregistered roots).
-// Escape resolution (slice-spec §4.2; slices plan Unit 4). Called at an
-// escape site (a plain String field store whose RHS is a scope-owned local
-// wrapper): returns a FRESH wrapper the destination owns — the stored value
-// no longer aliases the source's wrapper (whose declaring scope frees it),
-// and the §4.2 row decides the backing:
-//   SSO / arena root / len <= threshold  -> materialized owned copy (mode 0)
-//   large heap root                      -> stake on the root (promote-or-
-//                                           retain; mode-2 window)
-//   static root (mode 1)                 -> free alias (no rc, mode 1)
-// [D-thresh] = 256 B.
+// Escape resolution (slice-spec §4.2) returns a FRESH wrapper the destination owns:
+// SSO, arena-rooted and <= 256 B copy; larger heap roots take a stake (mode-2
+// window); a static root aliases freely.
 void* __cajeta_string_resolve(void* src_v) {
     cajeta_string_layout* src = (cajeta_string_layout*) src_v;
     if (!src) return NULL;
@@ -379,11 +293,9 @@ void* __cajeta_string_resolve(void* src_v) {
     return out;
 }
 
-// --- Slice<T> escape machinery (slice-spec §7.2; slices plan Unit 7b) -----
-// A Slice<T> VALUE is {T[] store; i64 off; i64 len} — three words, no
-// wrapper. Locals are borrows (zero rc). A slice stored past its scope is
-// RESOLVED in place per the §4.2 table; copies of resolved values retain;
-// value drops release (both sign-bit-gated, so borrows stay free).
+// --- Slice<T> escape machinery (slice-spec §7.2) ----------------------------
+// A Slice<T> VALUE is {T[] store; i64 off; i64 len}: locals are borrows (zero rc),
+// escapes resolve in place, copies retain and drops release, all sign-bit gated.
 
 typedef struct {
     void*   store;    // CajetaArray root header {i64 count; data}
@@ -391,12 +303,8 @@ typedef struct {
     int64_t len;      // window length in elements
 } caj_slice_layout;
 
-// Resolve at an escape site (field store): arena root or payload <= 256 B
-// copies into a FRESH root the destination owns (rc=1 shared, so the value
-// drop's release retires it); a larger heap window takes a stake on the
-// root (promote add-or-create: owner + this value). Static-rooted slices
-// don't exist today (array literals are heap) — the promote row covers any
-// future case safely.
+// Resolve at an escape site: an arena root or a payload <= 256 B copies into a
+// FRESH root the destination owns; a larger heap window stakes the root instead.
 void __cajeta_slice_resolve(void* slice_v, int64_t elemSize) {
     caj_slice_layout* s = (caj_slice_layout*) slice_v;
     if (!s || !s->store || s->len <= 0 || elemSize <= 0) return;
@@ -417,8 +325,7 @@ void __cajeta_slice_resolve(void* slice_v, int64_t elemSize) {
     __cajeta_shared_promote(s->store, 2);
 }
 
-// Copy hook arm: a copy of a RESOLVED (shared-rooted) slice holds its own
-// stake; borrow copies stay free (sign-bit gate).
+// Copy hook arm: a copy of a RESOLVED slice takes a stake; borrows stay free.
 void __cajeta_slice_retain(void* slice_v) {
     caj_slice_layout* s = (caj_slice_layout*) slice_v;
     if (!s || !s->store) return;
@@ -427,9 +334,8 @@ void __cajeta_slice_retain(void* slice_v) {
     }
 }
 
-// Drop hook arm: release the stake of a resolved slice; the last stake
-// frees the root. Borrows (unshared roots) no-op. Poisons against
-// double-release.
+// Drop hook arm: release a resolved slice's stake, the last one freeing the root.
+// Borrows (unshared roots) no-op. Poisons the store against double-release.
 void __cajeta_slice_release(void* slice_v) {
     caj_slice_layout* s = (caj_slice_layout*) slice_v;
     if (!s || !s->store) return;
@@ -444,15 +350,8 @@ void __cajeta_slice_release(void* slice_v) {
     s->len = 0;
 }
 
-// Borrow-mode slice (slices plan 4.2.2 local-borrow downgrade): for a slice
-// the compiler PROVED never leaves its scope (no return, no `#`-move, no
-// lambda capture — field stores and call args resolve at their own sites),
-// the view takes NO stake at all: zero rc traffic, zero side-table touch.
-// The wrapper is an ordinary mode-2 window whose drop's release no-ops on an
-// unregistered root; any later escape of the VALUE resolves (promote is
-// add-or-create). SSO sources still materialize (never alias a wrapper's
-// inline region); arena/heap/static roots alias freely — the borrow dies
-// with its scope, before its root.
+// Borrow-mode slice: a view the compiler PROVED never leaves its scope takes NO
+// stake. A later escape of the VALUE resolves; an SSO source still materializes.
 void* __cajeta_string_slice_borrow(void* src_v, int32_t begin, int32_t len) {
     cajeta_string_layout* src = (cajeta_string_layout*) src_v;
     cajeta_string_layout* out =
@@ -463,22 +362,21 @@ void* __cajeta_string_slice_borrow(void* src_v, int32_t begin, int32_t len) {
         caj_str_set_inline(out, NULL, 0);
         return out;
     }
-    // Normalization (spec Â§8): every <= 12 B result is Inline — a copy is
-    // cheaper than the pointer chase and needs no lifetime at all.
+    // Normalization (spec §8): a result of <= 12 B is Inline, needing no lifetime.
     if (len <= CAJ_STR_INLINE_CAP) {
         caj_str_set_inline(out, caj_str_ptr(src) + begin, len);
         return out;
     }
-    // > 12 B window of a pointer-form source (an Inline source can't produce
-    // one): stakeless BORROW window — zero rc, zero side-table touch. The
-    // STATIC bit rides along so stake-taking consumers of this borrow
-    // (string_slice, utf8_of, resolve) never promote a static root.
+    // Larger window of a pointer-form source: a stakeless BORROW window, with the
+    // STATIC bit riding along so a consumer never promotes a static root.
     int32_t tag = len | CAJ_STR_BORROW_BIT
         | (src->lenTag & CAJ_STR_STATIC_BIT);
     caj_str_set_window(out, tag, caj_str_off(src) + begin, caj_str_base(src));
     return out;
 }
 
+// Zero-copy String.substring (slice-spec §7.1): a mode-2 WINDOWED view whose
+// `bytes` stays the ROOT header, its byte offset riding the unused ssoCount field.
 void* __cajeta_string_slice(void* src_v, int32_t begin, int32_t len) {
     cajeta_string_layout* src = (cajeta_string_layout*) src_v;
     cajeta_string_layout* out =
@@ -489,27 +387,23 @@ void* __cajeta_string_slice(void* src_v, int32_t begin, int32_t len) {
         caj_str_set_inline(out, NULL, 0);
         return out;
     }
-    // Normalization (spec Â§8): <= 12 B results are Inline — no buffer, no
-    // stake, no rc traffic (this also subsumes the old SSO materialize row).
+    // Normalization (spec §8): a result of <= 12 B is Inline — no buffer, no stake.
     if (len <= CAJ_STR_INLINE_CAP) {
         caj_str_set_inline(out, caj_str_ptr(src) + begin, len);
         return out;
     }
     char* base = caj_str_base(src);
     int32_t srcOff = caj_str_off(src);
-    // ARENA-backed root (spec Â§4 arena row): the frame arena recycles at
-    // the scope-exit reset so a stake on it would dangle — materialize a
-    // fresh OWNED root. Static roots are exempt (never arena).
+    // An ARENA-backed root recycles at the scope-exit reset, so a stake on it
+    // would dangle: materialize a fresh OWNED root. Static roots are never arena.
     int __cajeta_arena_owns(const void* p);
     if (!(src->lenTag & CAJ_STR_STATIC_BIT) && __cajeta_arena_owns(base)) {
         void* buf = caj_str_new_root(base + 8 + srcOff + begin, len);
         caj_str_set_window(out, len, 0, buf);
         return out;
     }
-    // Static roots never enter the shared table: no stake, no free. A
-    // borrow-flagged source holds NO stake: add-or-create (owner + this
-    // view). An OWNED source promotes (owner + this view = 2 stakes); a
-    // SHARED source retains one more.
+    // Static roots never enter the shared table: no stake, no free. An owned or
+    // borrow-flagged source promotes (owner + this view); a shared one retains.
     int32_t tag = len;
     if (src->lenTag & CAJ_STR_STATIC_BIT) {
         tag |= CAJ_STR_STATIC_BIT;

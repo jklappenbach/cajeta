@@ -24,13 +24,8 @@ namespace cajeta {
         return p->getQName()->toCanonical();
     }
 
-    // How a bound field decodes off the cursor. Wire type is inferred from the
-    // Cajeta field type (see the @ProtoField doc): integer/bool → VARINT,
-    // String/bytes/message → LEN, float32/float64 → I32/I64 carrying raw
-    // IEEE-754 bits (via Cajeta.f64ToBits/bitsToF64, which reinterpret rather
-    // than convert). @ProtoField's `encoding` option then overrides the integer
-    // choice with zigzag or fixed-width. A field type with no mapping is a
-    // compile error, never a silent omission.
+    // How a bound field decodes off the cursor: inferred from its Cajeta type,
+    // overridden by `encoding`, and a compile error where nothing maps.
     enum class Decode {
         IntVarint,    // int8/16/32/64 + uint* — readVarint, cast to the field width
         ZigzagVarint, // sint32/sint64 — readZigzag, cast to the field width
@@ -45,15 +40,13 @@ namespace cajeta {
         Unsupported
     };
 
-    // The `encoding = "..."` option on @ProtoField. Absent → Default, which
-    // must reproduce pre-option behavior byte for byte.
+    // The `encoding = "..."` option on @ProtoField; absent is Default.
     enum class Encoding { Default, Zigzag, Fixed };
 
     struct Bind {
         int number;            // explicit @ProtoField wire number
         std::string name;      // field name
-        std::string canon;     // scalar: field type canonical. repeated: the
-                               // ELEMENT type canonical (the width cast target)
+        std::string canon;     // scalar: the field type canonical; repeated: the element's
         Decode decode;         // scalar: the kind. repeated: the ELEMENT kind
         bool repeated = false; // an array field (except int8[], which is bytes)
         bool packed = false;   // repeated numeric written as one LEN record
@@ -68,23 +61,16 @@ namespace cajeta {
             || c == "uint32" || c == "uint64";
     }
 
-    // 32- vs 64-bit for the fixed forms. protobuf offers fixed32 and fixed64
-    // only, so narrower fields ride in the 32-bit form.
+    // protobuf has only fixed32/fixed64, so narrower fields ride the 32-bit form.
     bool isWide64Canon(const std::string& c) {
         return c == "int64" || c == "uint64";
     }
 
-    // Classify a NON-array type into a decode strategy. Also used for the
-    // element type of a repeated field, so the two stay in step by
-    // construction: a repeated int64 encodes each element exactly as a scalar
-    // int64 would.
+    // Classifies a NON-array type, and a repeated field's element type with it.
     Decode classifyScalar(const CajetaTypePtr& ty, const std::string& canon) {
         if (canon == "cajeta.lang.String") return Decode::StringLen;
         if (canon == "boolean") return Decode::BoolVarint;
-        // protobuf `float` / `double` are I32 / I64 carrying raw IEEE-754 bits.
-        // Cajeta.f32ToBits/f64ToBits reinterpret rather than convert — a
-        // `(int32) someFloat` would truncate 0.5 to 0 and put that on the wire.
-        // These are compiler intrinsics lowering to a bitcast, so no call.
+        // Raw IEEE-754 bits, reinterpreted: a `(int32)` cast would wire 0.5 as 0.
         if (canon == "float32") return Decode::Float32Bits;
         if (canon == "float64") return Decode::Float64Bits;
         if (canon == "int8" || canon == "int16" || canon == "int32"
@@ -92,16 +78,11 @@ namespace cajeta {
                 || canon == "uint32" || canon == "uint64") {
             return Decode::IntVarint;
         }
-        // A non-String class field is a nested message — decode its LEN payload
-        // and recurse through the synthesizer (Protobuf.parse<Sub>). Primitives
-        // (already handled above) are not CajetaClass, so they don't reach here.
         if (std::dynamic_pointer_cast<CajetaClass>(ty)) return Decode::MessageLen;
         return Decode::Unsupported;
     }
 
-    // Classify a field's type as a scalar. The only array that lands here is
-    // int8[], which is protobuf `bytes`; every other array is a repeated field
-    // and `collectBinds` peels it to its element type before asking.
+    // Classifies a field type; the only array reaching here is int8[] (`bytes`).
     Decode classify(const CajetaTypePtr& ty, const std::string& canon) {
         if (auto arr = std::dynamic_pointer_cast<CajetaArray>(ty)) {
             auto el = arr->getElementType();
@@ -114,10 +95,7 @@ namespace cajeta {
         return classifyScalar(ty, canon);
     }
 
-    // Is this element kind carried by a numeric wire type, i.e. can it be
-    // packed? protobuf allows packing only for primitive numeric fields —
-    // never for String, bytes, or a nested message, whose lengths vary and
-    // which therefore need their own LEN framing per element.
+    // Packable = carried by a numeric wire type; a varying length needs LEN.
     bool isPackableKind(Decode d) {
         return d == Decode::IntVarint || d == Decode::ZigzagVarint
             || d == Decode::Fixed32Int || d == Decode::Fixed64Int
@@ -134,10 +112,7 @@ namespace cajeta {
         return -1;
     }
 
-    // Apply @ProtoField's `encoding` option to the type-inferred decode kind.
-    // An option the field's type cannot carry is a compile error, not a silent
-    // fallback to the default — a wrong encoding is a wire-format bug that would
-    // otherwise surface as garbage at the far end.
+    // Applies `encoding`; one the type cannot carry is a compile error.
     Decode applyEncoding(const CajetaClassPtr& T,
                          const StructurePropertyPtr& prop,
                          const std::string& canon, Decode base) {
@@ -181,12 +156,7 @@ namespace cajeta {
     std::vector<Bind> collectBinds(const CajetaClassPtr& T);
 
     // ---- repeated-field emit ------------------------------------------------
-    //
-    // Decode a repeated field into `e.<name>`. Unlike a scalar, this is emitted
-    // OUTSIDE any slot guard: protobuf cannot distinguish an absent repeated
-    // field from an empty one, so the result is always an array and never null.
-    // The cursor readers already accept both the packed and unpacked wire
-    // forms, so nothing here depends on how the peer chose to send it.
+    // Decodes a repeated field outside any slot guard: absent reads as empty.
     void emitRepeatedParse(std::ostringstream& os, const Bind& b) {
         const std::string N = "(int32) " + std::to_string(b.number);
         const std::string r = "r_" + b.name;      // raw values off the cursor
@@ -195,8 +165,6 @@ namespace cajeta {
         const std::string i = "i_" + b.name;
         const std::string v = "v_" + b.name;
 
-        // Numeric kinds: one cursor call yields every element, already
-        // concatenated across however many records carried them.
         std::string reader;
         std::string rawElem;
         switch (b.decode) {
@@ -211,14 +179,9 @@ namespace cajeta {
         }
 
         if (!reader.empty()) {
-            // `#=`: every `readRepeated*` returns `#T[]`, so this binding takes
-            // a title (ownership §4.6). The callee here is a C++ VARIABLE, so
-            // the source reads `cur.<reader>(...)` — which is why the
-            // callee-anchored sweep could not see this site.
+            // `#=` because every `readRepeated*` returns `#T[]`: the binding takes a title.
             os << "    " << rawElem << "[] " << r << " #= cur." << reader
                << "(" << N << ");\n";
-            // When the element type already matches what the reader returns,
-            // hand the array straight over — no copy.
             const bool direct = (b.decode == Decode::IntVarint
                                  || b.decode == Decode::ZigzagVarint
                                  || b.decode == Decode::Fixed32Int
@@ -249,8 +212,7 @@ namespace cajeta {
             return;
         }
 
-        // LEN-framed elements — String and nested messages. Each occurrence is
-        // one element; packing does not apply, so these walk the slots.
+        // LEN-framed elements are one per occurrence, so these walk the slots.
         const std::string s = "s_" + b.name;
         const std::string bv = "b_" + b.name;
         os << "    int32 " << n << " = cur.repeatedCount(" << N << ");\n";
@@ -275,8 +237,7 @@ namespace cajeta {
         os << "    e." << b.name << " = #" << a << ";\n";
     }
 
-    // Encode a repeated field. A null array writes nothing — the same treatment
-    // String and bytes get, and it decodes back as empty.
+    // Encodes a repeated field; a null array writes nothing and decodes empty.
     void emitRepeatedEncode(std::ostringstream& os, const Bind& b) {
         const std::string N = "(int32) " + std::to_string(b.number);
         const std::string a = "a_" + b.name;
@@ -290,9 +251,7 @@ namespace cajeta {
         os << "        int32 " << n << " = (int32) " << a << ".count();\n";
 
         if (b.packed) {
-            // Packed wants one contiguous run of values. Where the element type
-            // already matches the writer's parameter, pass it straight through;
-            // otherwise widen/reinterpret into a scratch array first.
+            // Packed wants one run, so a mismatched element widens into scratch.
             std::string writer;
             std::string wantElem;
             switch (b.decode) {
@@ -339,8 +298,7 @@ namespace cajeta {
             return;
         }
 
-        // Unpacked: one tagged record per element, using the same writer call
-        // the scalar form of this type would make.
+        // Unpacked: one tagged record per element, by the scalar writer call.
         os << "        int32 " << i << " = 0;\n";
         os << "        while (" << i << " < " << n << ") {\n";
         os << "            " << b.canon << " " << v << " = " << a << "[" << i << "];\n";
@@ -395,8 +353,6 @@ namespace cajeta {
     std::string synthesizeMessageParseBody(const CajetaClassPtr& T) {
         const std::string Tc = T->getQName()->toCanonical();
 
-        // Shared with the encode arm, so the two can never disagree on which
-        // fields bind or how each is encoded.
         std::vector<Bind> binds = collectBinds(T);
 
         const std::string PC = "dev.cajeta.codec.protobuf.ProtobufCursor";
@@ -405,8 +361,7 @@ namespace cajeta {
         os << "    " << PC << " cur = heap " << PC << "(bytes, length);\n";
         os << "    " << Tc << " e = heap " << Tc << "();\n";
         for (auto& b : binds) {
-            // Repeated fields bind unconditionally — absent means empty, not
-            // skipped — so they sit outside the slot guard below.
+            // Repeated fields bind unconditionally, outside the slot guard.
             if (b.repeated) { emitRepeatedParse(os, b); continue; }
             const std::string slot = "s_" + b.name;
             os << "    int32 " << slot << " = cur.slotOf((int32) "
@@ -467,9 +422,7 @@ namespace cajeta {
                     const std::string bv = "b_" + b.name;
                     os << "        int8[] " << bv << " #= cur.readBytes("
                        << slot << ");\n";
-                    // Length BEFORE the ctor adopts #bv; the String local
-                    // then surrenders its title into the field ('#') — the
-                    // 0.9 rules treat a plain store as a lend of a dying temp.
+                    // Count BEFORE the ctor adopts #bv; the local then transfers.
                     os << "        int32 n_" << b.name << " = (int32) "
                        << bv << ".count();\n";
                     os << "        String s_" << b.name
@@ -486,9 +439,7 @@ namespace cajeta {
                     break;
                 }
                 case Decode::MessageLen: {
-                    // Nested message: read the LEN payload, recurse through the
-                    // synthesizer. Same-class static call → short `Protobuf`
-                    // receiver (a fully-qualified static call NULL_OPERANDs).
+                    // The SHORT `Protobuf` receiver: qualified NULL_OPERANDs here.
                     const std::string bv = "b_" + b.name;
                     os << "        int8[] " << bv << " #= cur.readBytes("
                        << slot << ");\n";
@@ -508,18 +459,12 @@ namespace cajeta {
         return os.str();
     }
 
-    // Synthesize `parse(int8[] bytes, int64 length) -> #E[]` for a length-
-    // delimited stream of E messages (each a varint-length-prefixed frame — the
-    // de-facto protobuf "delimited" framing). Two passes: count frames, then bind
-    // each via the single-message `parse<E>` over a copied slice.
+    // Synthesizes `parse(int8[], int64) -> #E[]` over varint-prefixed frames.
     std::string synthesizeStreamParseBody(const CajetaClassPtr& E) {
         const std::string Ec = E->getQName()->toCanonical();
         std::ostringstream os;
         os << "public static #" << Ec << "[] parse(int8[] bytes, int64 length) {\n";
-        // Pass 1: count frames. Every read is bounded by `length`, and each
-        // frame is checked to fit before it is counted — a truncated journal
-        // (a closed socket, a partial write) otherwise walked past the buffer
-        // and then allocated a frame from a length it had already overrun.
+        // A frame is checked to fit before counting, or truncation overruns.
         os << "    int32 count = 0;\n";
         os << "    int64 p = (int64) 0;\n";
         os << "    while (p < length) {\n";
@@ -533,7 +478,6 @@ namespace cajeta {
         os << "        p = p + hl + fl;\n";
         os << "        count = count + 1;\n";
         os << "    }\n";
-        // Pass 2: allocate + bind each frame.
         os << "    " << Ec << "[] outv = heap " << Ec << "[count];\n";
         os << "    p = (int64) 0;\n";
         os << "    int32 i = 0;\n";
@@ -545,8 +489,7 @@ namespace cajeta {
         os << "        int8[] frame = heap int8[fln];\n";
         os << "        int32 k = 0;\n";
         os << "        while (k < fln) {\n";
-        // hoist the compound index to a named local (inline `bytes[start+(cast)k]`
-        // in a hot loop miscompiles — the compound-index-expr gotcha).
+        // The index is hoisted: an inline `bytes[start+(cast)k]` miscompiles.
         os << "            int64 si = start + (int64) k;\n";
         os << "            int8 fb = bytes[si];\n";
         os << "            frame[k] = fb;\n";
@@ -573,9 +516,7 @@ namespace cajeta {
             if (!ty || !ty->getQName()) continue;
             std::string canon = ty->getQName()->toCanonical();
 
-            // An array field is a repeated field — except int8[], which is
-            // protobuf `bytes`: one LEN record, not a repeated int8. That
-            // exception is why the array case cannot simply delegate.
+            // Every array is a repeated field except int8[], which is `bytes`.
             bool repeated = false;
             CajetaTypePtr scalarTy = ty;
             if (auto arr = std::dynamic_pointer_cast<CajetaArray>(ty)) {
@@ -602,13 +543,7 @@ namespace cajeta {
                 ? classifyScalar(scalarTy, canon)
                 : classify(ty, canon);
             if (d == Decode::Unsupported) {
-                // Previously `continue` — the field was dropped from both the
-                // parse and the encode arm with no diagnostic anywhere. A
-                // @ProtoField the author explicitly numbered would simply not
-                // appear on the wire, and the far end would see it as absent
-                // and substitute a default. Failing the build is the only
-                // honest answer: the author asked for a field the codec cannot
-                // carry, and silence turns that into lost data.
+                // A numbered field with no wire mapping fails the build, never drops.
                 reportOrThrow(prop->getDeclLine(), prop->getDeclColumn(),
                     "CAJETA_ERROR_PROTO_FIELD_TYPE",
                     "@ProtoField(" + std::to_string(number) + ") on "
@@ -621,12 +556,7 @@ namespace cajeta {
             }
             d = applyEncoding(T, prop, canon, d);
 
-            // `packed` is tri-state: unset means "use the default", which for a
-            // repeated numeric field is PACKED. That matches proto3 and edition
-            // 2023 (`features.repeated_field_encoding = PACKED`); only proto2
-            // defaulted to expanded. Changing the default is wire-safe because
-            // the format *requires* parsers to accept both forms whatever a
-            // field declares — the declaration only picks what we write.
+            // `packed` unset defaults to PACKED here: parsers must accept both.
             auto ann = prop->findAnnotation("ProtoField");
             const bool packedDeclared = ann && ann->findArg("packed");
             const bool packedAsked = packedDeclared && ann->getBool("packed", false);
@@ -646,8 +576,7 @@ namespace cajeta {
                       "not '" + canon + "'");
             }
 
-            // Non-numeric elements are never packed, declared or not: strings,
-            // bytes and messages carry their own length and have no packed form.
+            // Non-numeric elements are never packed, declared or not.
             bool packed = repeated && isPackableKind(d)
                 && (packedDeclared ? packedAsked : true);
 
@@ -657,9 +586,7 @@ namespace cajeta {
         return binds;
     }
 
-    // Synthesize `toBytes(T value) -> #int8[]` for message T — the encode mirror
-    // of synthesizeMessageParseBody. Field accesses are hoisted to locals before
-    // the writer call (the field-arg-as-method-arg codegen gotcha).
+    // Synthesizes `toBytes(T)`; accesses hoist to locals (field-as-arg miscompiles).
     std::string synthesizeMessageEncodeBody(const CajetaClassPtr& T) {
         const std::string Tc = T->getQName()->toCanonical();
         std::vector<Bind> binds = collectBinds(T);
@@ -737,8 +664,7 @@ namespace cajeta {
         return os.str();
     }
 
-    // Synthesize `toBytes(E[] values) -> #int8[]` — encode each element and frame
-    // it length-delimited (the stream mirror of synthesizeStreamParseBody).
+    // Synthesizes `toBytes(E[]) -> #int8[]`, framing each element delimited.
     std::string synthesizeStreamEncodeBody(const CajetaClassPtr& E) {
         const std::string Ec = E->getQName()->toCanonical();
         const std::string PW = "dev.cajeta.codec.protobuf.ProtobufWriter";

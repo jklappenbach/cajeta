@@ -25,11 +25,10 @@ namespace cajeta::buildtool {
             return s.substr(b, e - b);
         }
 
-        // Glob match supporting `*` (any non-slash) and `**` (any).
-        // Plain substrings match literally.
+        // Glob match supporting `*` (any non-slash) and `**` (any); plain
+        // substrings match literally.
         bool globMatch(const std::string& pattern,
                        const std::string& text) {
-            // Iterative two-pointer with star-backtrack.
             size_t pi = 0, ti = 0;
             size_t starPi = std::string::npos, starTi = 0;
             while (ti < text.size()) {
@@ -40,17 +39,9 @@ namespace cajeta::buildtool {
                         starPi = doubled ? pi + 2 : pi + 1;
                         starTi = ti;
                         pi = starPi;
-                        // `**` lets us cross '/'; `*` doesn't.
-                        // Encode by remembering whether the star
-                        // we just consumed was doubled.
-                        // (Simpler: when not doubled and next char
-                        // is '/' we must stop expansion at '/'.)
-                        // For pragmatism we treat both as "match any
-                        // run including /" here — the cajeta build
-                        // tool uses exclude lists primarily for
-                        // single-segment patterns + `**/` prefixes;
-                        // strict POSIX glob semantics aren't
-                        // necessary for the v1 scope.
+                        // Both `*` and `**` match across '/' here: exclude lists
+                        // are single-segment patterns or `**/` prefixes, so strict
+                        // POSIX glob semantics buy nothing.
                         (void)doubled;
                         continue;
                     }
@@ -120,11 +111,9 @@ namespace cajeta::buildtool {
             std::string t = trim(line);
             if (t.empty()) continue;
             if (t[0] == '#') {
-                // Header comment may carry grain hint.
                 auto p = t.find("grain=");
                 if (p != std::string::npos) {
                     m.grain = t.substr(p + 6);
-                    // Strip trailing whitespace from grain.
                     size_t end = m.grain.find(' ');
                     if (end != std::string::npos) {
                         m.grain = m.grain.substr(0, end);
@@ -347,8 +336,6 @@ namespace cajeta::buildtool {
             std::ofstream o(path, std::ios::binary | std::ios::trunc);
             if (!o) return err("cannot open " + path + " for writing");
             o << consoleSummary(m) << "\n";
-            // Per-file details (sorted by percent ascending so the
-            // worst rises to the top).
             std::vector<CoverageFile> sorted = m.files;
             std::stable_sort(sorted.begin(), sorted.end(),
                              [](const CoverageFile& a,

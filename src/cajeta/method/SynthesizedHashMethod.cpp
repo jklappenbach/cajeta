@@ -11,12 +11,8 @@ using namespace std;
 
 namespace cajeta {
 
-    // FNV-1a 64-bit. Duplicated from the anon namespace in
-    // CajetaClass.cpp where MethodCallExpression uses it for vtable
-    // dispatch — keeping a private copy here avoids exposing the
-    // helper externally and keeps the synthesizer's hash bytes byte-
-    // identical to the dispatch site. If either copy ever drifts,
-    // the runtime's __cajeta_vtable_lookup wouldn't find the slot.
+    // FNV-1a 64-bit, a private copy of CajetaClass.cpp's. The two must stay
+    // byte-identical or __cajeta_vtable_lookup will not find the slot.
     static int64_t synthSignatureHash(const std::string& s) {
         uint64_t h = 0xcbf29ce484222325ULL;
         for (unsigned char c : s) {
@@ -26,14 +22,8 @@ namespace cajeta {
         return (int64_t) h;
     }
 
-    // Find the hash() method on `klass` — the no-formal-parameter form
-    // (parameterList contains only the implicit `this` slot after
-    // generatePrototype). Returns nullptr if absent. By the time the
-    // synthesizer runs (during this class's own prototype generation),
-    // class-typed field references resolve to classes whose own
-    // hash() has been prototyped: either manually declared, or
-    // (when @AutoHash is on those classes too) injected by their own
-    // synthesizeAutoHash pass which runs in declaration order.
+    // The no-argument hash() on `klass` (one parameter: the implicit `this`), or
+    // nullptr. A field class's hash() is already prototyped by the time this runs.
     static MethodPtr findHashMethod(const CajetaClassPtr& klass) {
         if (!klass) return nullptr;
         for (auto& m : klass->getMethodList()) {
@@ -45,10 +35,8 @@ namespace cajeta {
         return nullptr;
     }
 
-    // Throw a diagnostic naming the @AutoHash'd class, the offending
-    // field, and a concrete remediation. The format intentionally
-    // mirrors the example diagnostics in stdlib/ so users
-    // see what the doc promises.
+    // Throws a diagnostic naming the class, the offending field and a concrete
+    // remediation, in the shape the stdlib examples promise.
     [[noreturn]] static void rejectField(
             const CajetaClassPtr& parent,
             const std::string& fieldName,
@@ -82,9 +70,8 @@ namespace cajeta {
         CLASS_INLINE,          // virtual field.hash() via vtable
     };
 
-    // Decide how to hash a field's type, OR throw a diagnostic if the
-    // type isn't supported in v1. CajetaArray inherits from CajetaClass,
-    // so the array case must be checked before the plain class case.
+    // How to hash a field's type, or a diagnostic when it has no handler. Arrays
+    // must be tested BEFORE classes: CajetaArray inherits from CajetaClass.
     static FieldHashKind classifyOrReject(
             const CajetaClassPtr& parent,
             const std::string& fieldName,
@@ -133,10 +120,6 @@ namespace cajeta {
             case FLOAT32_ID:  return FieldHashKind::PRIM_FLOAT32;
             case FLOAT64_ID:  return FieldHashKind::PRIM_FLOAT64;
             default:
-                // Extended-precision (fp4/6/8/16/128), int128/uint128,
-                // bare `pointer`, and the `String` native alias (which
-                // also has POINTER_TYPE_ID) land here. None has a
-                // dedicated runtime hash helper today.
                 rejectField(parent, fieldName, typeName,
                     "no @AutoHash primitive handler for this type yet "
                     "(extended-precision floats, 128-bit integers, "
@@ -163,14 +146,12 @@ namespace cajeta {
         : Method(module, std::string("hash"),
                  CajetaType::of("int64"), parent) {
         this->parent = parent;
-        // Block stays null — generateCode emits IR directly.
     }
 
     void SynthesizedHashMethod::generateCode() {
         auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
-        // Method::generatePrototype already injected `this` as the
-        // first parameter and built llvmFunction with type
-        // (ptr) -> i64. Emit a single entry block, walk fields, ret.
+        // generatePrototype already built the (ptr) -> i64 function with its `this`,
+        // so this emits one entry block, walks the fields, and returns.
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
@@ -203,10 +184,8 @@ namespace cajeta {
 
         llvm::Value* acc = seedAcc;
 
-        // Walk inherited fields first (deepest ancestor's own fields,
-        // then progressively nearer), finally this class's own fields.
-        // Matches CajetaClass::generatePrototype's struct-layout
-        // order so the hash includes every field exactly once.
+        // Deepest ancestor's fields first, own fields last: the struct-layout order
+        // generatePrototype used, so every field is hashed exactly once.
         std::function<void(const CajetaClassPtr&)>
             walkInheritedThenOwn;
         walkInheritedThenOwn = [&](const CajetaClassPtr& cls) {
@@ -230,13 +209,6 @@ namespace cajeta {
                 llvm::Value* fieldHash = nullptr;
 
                 if (kind == FieldHashKind::CLASS_INLINE) {
-                    // Class-typed field stored INLINE in the parent
-                    // struct. The embedded class's vtable* lives at
-                    // its slot 0 — i.e. exactly at fieldPtr. Null-
-                    // check the vtable before dispatch: an
-                    // unininitialized embedded class (e.g. Exception's
-                    // `cause = 0` pattern) would otherwise segfault
-                    // in __cajeta_vtable_lookup.
                     auto fieldKlass = dynamic_pointer_cast<CajetaClass>(fieldType);
                     MethodPtr fieldHashMethod = findHashMethod(fieldKlass);
                     if (!fieldHashMethod) {
@@ -252,23 +224,17 @@ namespace cajeta {
                             "hash() manually on it");
                     }
 
-                    // A class field is embedded INLINE only when its class is a
-                    // value type; a reference class field is stored as a POINTER
-                    // to a heap object. The hash() receiver and the vtable base
-                    // are the OBJECT — the slot itself for inline, the loaded
-                    // heap pointer for a reference. (Before this, a reference
-                    // field's object pointer was misread as the vtable and the
-                    // slot address was passed as `this` — garbage dispatch.)
+                    // A class field is INLINE only when its class is a value type;
+                    // a reference field holds a POINTER. Either way the receiver and
+                    // the vtable base are the OBJECT: the slot, or the loaded pointer.
                     bool inlineEmbedded =
                         fieldKlass && fieldKlass->isValueType();
                     llvm::Value* objPtr = inlineEmbedded
                         ? fieldPtr
                         : b.CreateLoad(ptrTy, fieldPtr,
                               std::string("hash.o.") + prop->getName());
-                    // Inline: null-check the embedded vtable (uninitialized
-                    // object). Reference: null-check the object pointer (unset
-                    // field); the vtable load is deferred to the non-null branch
-                    // so a null field never dereferences.
+                    // Null-probe the vtable when inline, the pointer when a
+                    // reference, so a null field is never dereferenced.
                     llvm::Value* vtableInline = inlineEmbedded
                         ? b.CreateLoad(ptrTy, objPtr,
                               std::string("hash.v.") + prop->getName())
@@ -296,16 +262,12 @@ namespace cajeta {
                             curFn);
                     b.CreateCondBr(isNull, nullBB, callBB);
 
-                    // Null branch — contribute the seed value so a
-                    // null embedded field hashes deterministically
-                    // (and identically across instances).
+                    // A null field contributes the seed, deterministically.
                     b.SetInsertPoint(nullBB);
                     llvm::Value* nullContribution = seedAcc;
                     b.CreateBr(mergeBB);
 
-                    // Non-null branch — vtable virtual dispatch. The vtable is
-                    // at the object's slot 0: reuse the inline load, or load it
-                    // from the (now known non-null) heap pointer for a reference.
+                    // The vtable is at the object's slot 0.
                     b.SetInsertPoint(callBB);
                     llvm::Value* vtableVal = inlineEmbedded
                         ? vtableInline
@@ -332,8 +294,6 @@ namespace cajeta {
                     fieldHash = merged;
 
                 } else {
-                    // Primitive path — load the field, optionally
-                    // coerce, call the appropriate __cajeta_hash_X.
                     llvm::Type* loadTy = fieldType->getLlvmType();
                     llvm::Value* fieldVal = b.CreateLoad(
                         loadTy, fieldPtr,
@@ -381,10 +341,7 @@ namespace cajeta {
                             symbol = "__cajeta_hash_float64";
                             break;
                         default:
-                            // classifyOrReject already threw for
-                            // SKIP_UNREACHABLE / unsupported kinds;
-                            // CLASS_INLINE handled above. Anything
-                            // landing here is a coding bug.
+                            // classifyOrReject threw for every other kind already.
                             continue;
                     }
                     llvm::FunctionType* helperTy =

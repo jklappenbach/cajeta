@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 10/5/22.
-//
+// BlockStatement - base for statements inside a block, plus the default wrapper.
 
 #pragma once
 

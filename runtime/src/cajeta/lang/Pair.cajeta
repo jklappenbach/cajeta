@@ -66,6 +66,16 @@ public final class Pair<K, V> {
         this.second #= second;
     }
 
+    /**
+     * A pair that BORROWS its components — the entry-view shape a container
+     * hands out over its own storage: the pair object is the receiver's to
+     * drop, the components stay the container's. `borrowed` picks the overload.
+     */
+    public Pair(K first, V second, boolean borrowed) {
+        this.first #= first;
+        this.second #= second;
+    }
+
     /** Borrowing reads — the pair keeps its components. */
     @Inline
     public K first()  { return this.first; }

@@ -14,70 +14,44 @@ namespace cajeta {
 
     namespace {
 
-    // True if this field is excluded from JSON deserialization
-    // (READ side). See `docs/specification/codec/json/Json.md` § Field-
-    // level annotations for the asymmetric @JsonIgnore semantics:
-    //
-    //   @JsonIgnore                              — both directions skipped (bare).
-    //   @JsonIgnore(onRead=true)                 — read-skip only.
-    //   @JsonIgnore(onWrite=true)                — write-skip only.
-    //   @JsonIgnore(onRead=true, onWrite=true)   — both (same as bare).
-    //
-    // The bare-annotation default is "skip both" — most users mean
-    // "completely ignore this field." When ANY arg is supplied,
-    // unspecified directions default to false (don't skip), so the
-    // user only has to call out the direction they care about.
+    // True when the field is skipped on the READ side. A bare @JsonIgnore
+    // skips both directions; once any arg is given, unspecified directions
+    // default to false.
     bool isJsonIgnoredOnRead(const StructurePropertyPtr& prop) {
         if (!prop) return false;
         auto ann = prop->findAnnotation("JsonIgnore");
         if (!ann) return false;
-        if (ann->getArgs().empty()) return true;   // bare = both directions.
+        if (ann->getArgs().empty()) return true;
         return ann->getBool("onRead", false);
     }
 
+    // True when the field is skipped on the WRITE side, under the same
+    // bare-versus-argument rule as the read side.
     bool isJsonIgnoredOnWrite(const StructurePropertyPtr& prop) {
         if (!prop) return false;
         auto ann = prop->findAnnotation("JsonIgnore");
         if (!ann) return false;
-        if (ann->getArgs().empty()) return true;   // bare = both directions.
+        if (ann->getArgs().empty()) return true;
         return ann->getBool("onWrite", false);
     }
 
-    // Back-compat helper for call sites that don't yet need the
-    // per-direction split (`isJsonRequired` overrides). True only
-    // when BOTH directions are skipped — a partially-ignored field
-    // with @JsonRequired still has a meaningful read direction.
+    // True only when BOTH directions are skipped — a partially ignored field
+    // still has a meaningful read direction.
     bool isJsonIgnored(const StructurePropertyPtr& prop) {
         return isJsonIgnoredOnRead(prop) && isJsonIgnoredOnWrite(prop);
     }
 
-    // True if `@JsonRequired` is set on the field — the parse body
-    // throws `JsonParseException` after END_OBJECT if no key arm fired
-    // for this field. Tracks via a per-field boolean local
-    // (`req_seen_<fieldName>`) flipped to true inside the matching
-    // arm. Ignored fields can't be required (would never be seen) —
-    // we silently treat @JsonIgnore as overriding @JsonRequired so a
-    // user who annotates both ends up with the @JsonIgnore behavior.
-    // True if the field's static type is `cajeta.lang.Optional<T>`.
-    // The synthesizer routes Optional fields through a dedicated
-    // arm that distinguishes "key absent" (field stays at default
-    // null) from "key present, value null" (Optional.empty()) from
-    // "key present, value present" (Optional.of(v)). Inner T must
-    // be a supported primitive (int32 / int64 / boolean / float64)
-    // or `cajeta.lang.String` in v1; nested-class Optional<T>
-    // lands when the inner-type dispatch shares more code with the
-    // non-Optional arm.
+    // True when the field's static type is `cajeta.lang.Optional<T>`. Those
+    // fields take an arm that separates key-absent from a null value and from
+    // a present value; inner T must be a primitive or String in v1.
     bool isOptionalField(const StructurePropertyPtr& prop) {
         if (!prop) return false;
         auto ty = prop->getType();
         if (!ty) return false;
         auto cls = std::dynamic_pointer_cast<CajetaClass>(ty);
         if (!cls || !cls->getQName()) return false;
-        // The type-name carries the template-args suffix for
-        // instantiated classes (e.g. "Optional<int32>"). Match on
-        // the bare-name prefix so both the template form
-        // ("Optional") and the instantiation form ("Optional<…>")
-        // hit. Package is always "cajeta.lang" for the stdlib type.
+        // Instantiated classes carry the template-arg suffix ("Optional<int32>"),
+        // so match on the bare-name prefix.
         const std::string& name = cls->getQName()->getTypeName();
         bool nameMatch = (name == "Optional")
             || name.compare(0, 9, "Optional<") == 0;
@@ -96,41 +70,26 @@ namespace cajeta {
         return args[0];
     }
 
-    // True if `@JsonRaw` is set — the field's wire bytes pass
-    // through both directions unchanged. Read side captures via
-    // `r.currentRawBytes()`; write side emits via `w.writeRaw`.
-    // The field's static type must be `int8[]` in v1 — the bytes
-    // are the wire form including any quotes / delimiters.
+    // True when @JsonRaw is set: the field's wire bytes pass through both
+    // directions unchanged, so its static type must be int8[] and the bytes
+    // carry their own quotes and delimiters.
     bool isJsonRaw(const StructurePropertyPtr& prop) {
         return prop && prop->findAnnotation("JsonRaw") != nullptr;
     }
 
+    // True when @JsonRequired is set on a read-visible field; the parse body
+    // throws if no key arm fired for it.
     bool isJsonRequired(const StructurePropertyPtr& prop) {
         return prop
             && !isJsonIgnoredOnRead(prop)
             && prop->findAnnotation("JsonRequired") != nullptr;
     }
 
-    // Apply a class-level naming strategy to a field's declared name
-    // to derive the wire key. All five strategies from
-    // `docs/specification/codec/json/Json.md` § Class-level naming:
-    //
-    //   - `"SNAKE_CASE"`  — `firstName` → `first_name`
-    //   - `"KEBAB_CASE"`  — `firstName` → `first-name`
-    //   - `"PASCAL_CASE"` — `firstName` → `FirstName`
-    //   - `"CAMEL_CASE"`  — `firstName` → `firstName` (identity for
-    //                       cajeta's camelCase field convention).
-    //                       The strategy exists so user code can be
-    //                       explicit about its policy and reviewers
-    //                       can spot the wire-key contract at a
-    //                       glance.
-    //   - `"IDENTITY"`    — explicit no-op.
-    //
-    // Empty string (no @JsonNamingStrategy annotation) is also no-op.
-    // Matching is exact case-sensitive on the annotation string.
+    // Wire key derived from a declared field name under a class-level naming
+    // strategy: SNAKE_CASE, KEBAB_CASE and PASCAL_CASE transform; CAMEL_CASE,
+    // IDENTITY and the empty strategy are no-ops.
     std::string applyNamingStrategy(const std::string& strategy,
                                      const std::string& declaredName) {
-        // No-op strategies (and the no-annotation case).
         if (strategy.empty() || strategy == "IDENTITY" || strategy == "CAMEL_CASE") {
             return declaredName;
         }
@@ -159,21 +118,11 @@ namespace cajeta {
             }
             return out;
         }
-        // Unrecognized strategy name — leave as-is. Future strategies
-        // (UPPER_SNAKE_CASE, LOWER_CASE) drop in here as additional
-        // branches.
         return declaredName;
     }
 
-    // Effective wire key for the field. Precedence:
-    //   1. `@JsonProperty("custom_name")` on the field — wins
-    //      unconditionally (per-field overrides class-level).
-    //   2. Class-level `@JsonNamingStrategy("SNAKE_CASE" | "KEBAB_CASE")`
-    //      transform applied to the declared name.
-    //   3. The declared name verbatim.
-    //
-    // Empty `@JsonProperty()` (no value arg) falls through to the
-    // strategy layer rather than overwriting with empty.
+    // Effective wire key for the field: a non-empty @JsonProperty value wins,
+    // otherwise the class-level strategy applied to the declared name.
     std::string effectiveJsonKey(const StructurePropertyPtr& prop,
                                   const std::string& classStrategy) {
         if (!prop) return std::string();
@@ -184,9 +133,8 @@ namespace cajeta {
         return applyNamingStrategy(classStrategy, prop->getName());
     }
 
-    // Class-level naming strategy from `@JsonNamingStrategy("...")`.
-    // Returns empty when absent. Field-level @JsonProperty always
-    // wins over this.
+    // Class-level strategy from @JsonNamingStrategy("..."), or empty when the
+    // annotation is absent.
     std::string classNamingStrategy(const CajetaClassPtr& T) {
         if (!T) return std::string();
         if (auto ann = T->findAnnotation("JsonNamingStrategy")) {
@@ -195,35 +143,14 @@ namespace cajeta {
         return std::string();
     }
 
-    // True when class-level `@JsonStrict` is set — read-side rejects
-    // unknown keys with a JsonParseException instead of silently
-    // consuming the value (the default v1 behavior).
+    // True when class-level @JsonStrict is set: the read side rejects unknown
+    // keys instead of skipping their values.
     bool classIsStrict(const CajetaClassPtr& T) {
         return T && T->findAnnotation("JsonStrict") != nullptr;
     }
 
-    // @JsonInclude policy on a field. All four spec values
-    // (docs/specification/codec/json/Json.md § Field-level annotations):
-    //
-    //   - "ALWAYS" (default) — emit key+value unconditionally
-    //   - "NON_NULL"         — emit only when the field reference
-    //                          is not null. Only meaningful on
-    //                          reference-typed fields (class, array,
-    //                          String); a no-op on primitives.
-    //   - "NEVER"            — never emit. Read-only field (can be
-    //                          parsed, never echoed back). Pair with
-    //                          @JsonIgnore for full read+write skip
-    //                          if that's the intent.
-    //   - "NON_DEFAULT"      — emit only when the field's value
-    //                          differs from its type's default:
-    //                          0 for int*, 0.0 for float*, false
-    //                          for boolean, null for class refs,
-    //                          null for arrays, null for String
-    //                          (String is a class ref post Phase
-    //                          2b-β).
-    //
-    // Returns the string verbatim from the annotation. Empty string
-    // when the annotation is absent.
+    // The @JsonInclude policy verbatim — "ALWAYS", "NON_NULL", "NEVER" or
+    // "NON_DEFAULT" — or empty when the annotation is absent.
     std::string jsonIncludePolicy(const StructurePropertyPtr& prop) {
         if (!prop) return std::string();
         if (auto ann = prop->findAnnotation("JsonInclude")) {
@@ -232,9 +159,8 @@ namespace cajeta {
         return std::string();
     }
 
-    // True if the field's static type is reference-shaped (its slot
-    // can hold null). Used by the @JsonInclude(NON_NULL) gate.
-    // Primitives are never null and so the gate is a no-op there.
+    // True when the field's slot can hold null (class- or array-typed); the
+    // @JsonInclude(NON_NULL) gate is a no-op on primitives.
     bool fieldIsReferenceTyped(const StructurePropertyPtr& prop) {
         if (!prop) return false;
         auto ty = prop->getType();
@@ -244,10 +170,8 @@ namespace cajeta {
         return false;
     }
 
-    // Aliases declared on the field via `@JsonAlias({"a", "b", ...})`.
-    // Returned in the order the user listed them. Empty if no
-    // annotation. The aliases extend the read-side key match — write
-    // still uses the primary (declared name or @JsonProperty) key.
+    // Read-side alternate keys from @JsonAlias, in the order declared. The
+    // write side always uses the primary key.
     std::vector<std::string> jsonAliases(const StructurePropertyPtr& prop) {
         std::vector<std::string> out;
         if (!prop) return out;
@@ -255,7 +179,6 @@ namespace cajeta {
             const auto& list = ann->getStringList("value");
             for (auto& s : list) out.push_back(s);
             if (out.empty()) {
-                // Single-value form: `@JsonAlias("userId")`.
                 std::string single = ann->getString("value");
                 if (!single.empty()) out.push_back(single);
             }
@@ -263,12 +186,8 @@ namespace cajeta {
         return out;
     }
 
-    // Emit a literal byte-comparison guard for a key name. Returns the
-    // body source for the if-condition (without surrounding `if (...)`),
-    // assuming `int8[] kb` and `int32 klen` are in scope and hold the
-    // current KEY token's bytes / length.
-    //
-    // For key "id" → `klen == 2 && kb[0] == (int8) 0x69 && kb[1] == (int8) 0x64`.
+    // If-condition source matching the current KEY's raw bytes against `key`,
+    // assuming `int8[] kb` and `int32 klen` are in scope.
     std::string keyBytesGuard(const std::string& key) {
         std::ostringstream os;
         os << "klen == " << key.size();
@@ -280,9 +199,8 @@ namespace cajeta {
         return os.str();
     }
 
-    // Escape a wire key for embedding as a cajeta string literal — `"` and
-    // `\` become `\"` / `\\`. Wire keys rarely contain either, but a
-    // `@JsonProperty("with\"quote")` would otherwise emit invalid source.
+    // Escape a wire key for embedding in cajeta source: `"` and `\` become
+    // `\"` and `\\`.
     std::string escapeCajetaString(const std::string& s) {
         std::string out;
         out.reserve(s.size() + 2);
@@ -293,40 +211,14 @@ namespace cajeta {
         return out;
     }
 
-    // Index-form key guard: a `JsonIndex.keyEq` call comparing the key at
-    // `keyPos` (an int64 in scope) against the literal `key`. The walk's
-    // raw-byte match has the same semantics as the old `kb`/`klen`
-    // byte-compare guard (a JSON-escaped key won't match a literal name).
+    // Index-form key guard: a JsonIndex.keyEq call comparing the key at
+    // `keyPos` against the literal `key`.
     std::string keyEqGuard(const std::string& key) {
         return "JsonIndex.keyEq(b, keyPos, \"" + escapeCajetaString(key) + "\")";
     }
 
-    // Emit the FULL post-key body for one supported field type — that
-    // is, the statements that consume the value tokens AND assign the
-    // result to out.<field>. The caller is responsible only for the
-    // key-matching guard. For primitive value types this is
-    // `t = r.next(); out.<field> = <reader-call>;`; for nested-class
-    // types it's a single recursive `Json.parseObjectFromReader<NestedT>(r)`
-    // call — the recursive parser will consume the START_OBJECT itself.
-    //
-    // Returns empty string if the type is unsupported (caller emits a
-    // skip-value arm instead).
-    // Emit the single-element read into the local `cajeta.collection.
-    // ArrayList<E>` accumulator `tmp_<field>`. The caller has already
-    // consumed the value's first token via `t = r.next()`, so for
-    // primitive readers (`currentNumberAsInt32` etc.) the reader is
-    // positioned on the value token. Nested-class elements need to
-    // hand the reader to `Json.parseObjectFromReader<E>` instead — but
-    // that helper expects to consume the START_OBJECT itself, so the
-    // caller's `t = r.next()` must NOT have advanced past it. The
-    // array loop handles that by reading the token, checking for
-    // END_ARRAY, and only calling the element reader on a real value
-    // — for nested-class elements the loop pattern differs (peek the
-    // token, dispatch on it) and is emitted by the array-read
-    // builder, not this helper.
-    //
-    // Returns the statement(s) to add one element to the accumulator
-    // for value tokens. Empty string for unsupported element types.
+    // Statements appending one array element to the `tmp_<fieldName>` accumulator;
+    // empty for class elements and for unsupported element types.
     std::string readArrayElementToList(const std::string& fieldName,
                                         const std::string& elementCanon,
                                         bool elementIsClass) {
@@ -344,11 +236,8 @@ namespace cajeta {
             return list + ".add(r.currentNumberAsFloat64());\n";
         }
         if (elementCanon == "cajeta.lang.String") {
-            // Reader leaves currentBytes pointed at the STRING
-            // payload (quotes stripped). Wrap in a String instance,
-            // transferring the buffer via `#sb_` so the local's drop
-            // entry deactivates before scope exit — otherwise the
-            // freshly-constructed String dangles.
+            // `#sb_` transfers the buffer into the String — without it the local's
+            // drop frees what the new String points at.
             return "int8[] sb_" + fieldName + " = r.currentBytes();\n"
                    "                    int32 sl_" + fieldName +
                    " = (int32) sb_" + fieldName + ".count();\n"
@@ -357,31 +246,16 @@ namespace cajeta {
                    ", sl_" + fieldName + "));\n";
         }
         if (elementIsClass) {
-            // For nested-class elements we need the caller to NOT
-            // pre-consume the START_OBJECT token, so this branch is
-            // routed via a separate code path in
-            // readArrayField. Returning empty here signals "use the
-            // class-element loop body."
+            // Class elements need the START_OBJECT left unconsumed; empty here tells
+            // readArrayField to use its class-element loop.
             return "";
         }
         return "";
     }
 
-    // Build the value-side body for an array-typed field. Caller has
-    // already matched the key; this block consumes from the value's
-    // first token (which the array-read fragment fetches itself with
-    // `t = r.next()`) through to assignment of `out.<fieldName>`. For
-    // primitive / String element types the loop's body reads one
-    // value and appends to the accumulator; for nested-class elements
-    // the loop's body recurses into `Json.parseObjectFromReader<E>`
-    // which expects the START_OBJECT token to NOT have been consumed
-    // yet, so we peek-by-token and dispatch.
-    //
-    // `cajeta.collection.ArrayList<E>` is the accumulator. After the
-    // END_ARRAY the entries are copied into a freshly-allocated
-    // `E[]` sized to the accumulator's count(). For E=class, the
-    // generated `heap E[sz]` allocates an array of pointers; each
-    // pointer is set from the corresponding accumulator entry.
+    // Value-side body for an array field: accumulate into an ArrayList<E> from
+    // the value's first token through END_ARRAY, then fill a fresh E[] and
+    // assign it to out.<fieldName>.
     std::string readArrayField(const std::string& fieldName,
                                 CajetaTypePtr elementType) {
         if (!elementType || !elementType->getQName()) return "";
@@ -404,22 +278,9 @@ namespace cajeta {
         os << "            boolean done_" << fieldName << " = false;\n";
         os << "            while (!done_" << fieldName << ") {\n";
         if (elementIsClass) {
-            // Nested-class arrays: peek the next token via
-            // `r.peek()` (added Phase 4b commit 10). If it's
-            // END_ARRAY, consume and exit the loop; otherwise the
-            // peeked token IS the start of an element object, and
-            // we hand the reader (with the cached peek still in
-            // place) to `Json.parseObjectFromReader<E>(r)`. That
-            // helper's first `r.next()` returns the cached
-            // START_OBJECT and the inner parse proceeds normally.
-            //
-            // The recursive-parse result MUST go through an explicit
-            // temp local before the `tmp.add(...)` call —
-            // `tmp.add(Json.parse...)` inline as a single chained
-            // expression has a codegen miss where the call to add()
-            // is silently dropped (the arg expression evaluates but
-            // the outer method dispatch never fires). Until that's
-            // root-caused, route through the temp pattern.
+            // Peek rather than next(): parseObjectFromReader<E> consumes the
+            // START_OBJECT itself. The result must land in a temp local —
+            // `tmp.add(Json.parse...)` inline drops the add() call.
             os << "                JsonToken pt_" << fieldName
                << " = r.peek();\n";
             os << "                if (pt_" << fieldName
@@ -427,11 +288,8 @@ namespace cajeta {
             os << "                    r.next();\n"
                << "                    done_" << fieldName << " = true;\n";
             os << "                } else {\n";
-            // Transfer the parsed element via `#` so the temp local's
-            // drop entry deactivates on the add — without it, the
-            // intermediate's drop fires at this method's scope exit
-            // BEFORE the caller can read `out.items[i]`, freeing the
-            // Inner that `out.items[i]` references.
+            // `#` transfers the element into the list; otherwise the temp's drop frees
+            // the object out.<field>[i] points at.
             os << "                    " << etcanon << " elem_"
                << fieldName
                << " = Json.parseObjectFromReader<" << etcanon
@@ -448,16 +306,9 @@ namespace cajeta {
             os << "                }\n";
         }
         os << "            }\n";
-        // Assign the fresh int32[] / etc. DIRECTLY into out.<field>
-        // — no intermediate local. The intermediate would register a
-        // drop entry that fires at this function's scope exit (before
-        // the caller can read out.<field>), and __cajeta_free_array
-        // would atomically claim the buffer out of the live-allocation
-        // set BEFORE the field auto-drop on `out` has a chance to no-op
-        // on it. Result: the caller's `b.field[i]` reads freed memory.
-        // Going field-direct keeps the buffer's only "named" reference
-        // on the heap class, so the live-set claim runs first through
-        // the class's auto-field-drop walk where it belongs.
+        // Assign the fresh array DIRECTLY into out.<field>: an intermediate local's
+        // drop claims the buffer out of the live set before the class's field-drop
+        // walk, and the caller then reads freed memory.
         os << "            int32 sz_" << fieldName << " = tmp_"
            << fieldName << ".count();\n";
         os << "            out." << fieldName << " #= heap " << etcanon
@@ -465,10 +316,8 @@ namespace cajeta {
         os << "            int32 ii_" << fieldName << " = 0;\n";
         os << "            while (ii_" << fieldName << " < sz_"
            << fieldName << ") {\n";
-        // Class elements were add(#elem)'d — the list slots OWN them, so a
-        // plain get would leave the list dtor freeing what out.<field> now
-        // points at. Extract the title with `#tmp[i]`; primitives/Strings
-        // copy by value / dual-role resolve and keep the plain get.
+        // Class elements were add(#elem)'d, so the list slots own them — `#tmp[i]`
+        // takes the title; primitives and Strings keep the plain get.
         if (elementIsClass) {
             os << "                out." << fieldName << "[ii_"
                << fieldName << "] = #tmp_" << fieldName
@@ -484,30 +333,25 @@ namespace cajeta {
         return os.str();
     }
 
+    // Full post-key body for one field: the statements that consume the value
+    // tokens and assign into out.<field>. Empty when the field type is
+    // unsupported, leaving the caller to emit a skip-value arm.
     std::string readFieldAssignment(const StructurePropertyPtr& prop) {
         const std::string& fieldName = prop->getName();
         CajetaTypePtr ty = prop->getType();
         if (!ty || !ty->getQName()) return "";
-        // @JsonRaw passes the wire bytes through unchanged. Field
-        // must be int8[]; the captured bytes include any quotes /
-        // structural delimiters so a round-trip through
-        // JsonWriter.writeRaw is byte-stable on primitives.
         if (isJsonRaw(prop)) {
             return "t = r.next();\n            out." + fieldName +
                    " #= r.currentRawBytes();\n";
         }
-        // Optional<T> field. Distinguishes "key absent" (handled
-        // by the per-field arm NOT firing — field stays at null,
-        // the default for class refs) from "key present, value
-        // null" (Optional(false, default)) from "key present,
-        // value V" (Optional(true, V)). Inner T must be a
-        // primitive or cajeta.lang.String in v1.
+        // Optional<T>: a present-but-null value becomes an empty Optional, while
+        // key-absent is handled by this arm never firing.
         if (isOptionalField(prop)) {
             auto inner = optionalInnerType(prop);
             if (!inner || !inner->getQName()) return "";
             const std::string& innerCanon = inner->getQName()->toCanonical();
-            std::string readInner;     // reads `inner` into local `v`
-            std::string defaultInner;  // safe default for the empty-Optional value slot
+            std::string readInner;
+            std::string defaultInner;
             if (innerCanon == "int32") {
                 readInner = "int32 v = r.currentNumberAsInt32();";
                 defaultInner = "(int32) 0";
@@ -521,29 +365,20 @@ namespace cajeta {
                 readInner = "float64 v = r.currentNumberAsFloat64();";
                 defaultInner = "(float64) 0.0";
             } else if (innerCanon == "cajeta.lang.String") {
-                // Same `#vb` transfer reasoning as the field-level
-                // branch — the String ctor takes ownership of the
-                // buffer; without `#`, the local's drop fires at
-                // scope exit and the String dangles.
+                // `#vb` transfers the buffer into the String.
                 readInner =
                     "int8[] vb = r.currentBytes();\n"
                     "                int32 vl = (int32) vb.count();\n"
                     "                cajeta.lang.String v = heap cajeta.lang.String("
                     "#vb, vl);";
-                // Default for empty Optional<String> is `null` —
-                // String is a class ref, null is the type-default,
-                // and that avoids the spurious zero-length-String
-                // allocation that would otherwise be a wasted view.
+                // Empty Optional<String> defaults to null rather than a zero-length
+                // String allocation.
                 defaultInner = "null";
             } else {
-                // Unsupported inner type — leave the field at default.
                 return "";
             }
-            // For class-ref inner types (String) we move ownership
-            // of the local `v` into the Optional via `#v` so the
-            // local's scope-exit drop doesn't reclaim the wrapped
-            // String out from under the field. Primitive inner
-            // types don't need the `#` — they're value-copied.
+            // `#v` moves the String into the Optional so the local's drop can't
+            // reclaim it; primitive inner types are value-copied.
             bool innerIsRef = (innerCanon == "cajeta.lang.String");
             std::string presentArg = innerIsRef ? "#v" : "v";
             std::ostringstream os;
@@ -560,9 +395,8 @@ namespace cajeta {
                << "            }\n";
             return os.str();
         }
-        // Array-typed fields take a different path — they're CajetaArray
-        // which inherits from CajetaClass, so the catch-all class branch
-        // below would treat them as nested objects. Check first.
+        // CajetaArray inherits CajetaClass, so array fields must be matched before
+        // the catch-all nested-object branch below.
         if (auto arr = std::dynamic_pointer_cast<CajetaArray>(ty)) {
             return readArrayField(fieldName, arr->getElementType());
         }
@@ -584,13 +418,8 @@ namespace cajeta {
                    " = r.currentNumberAsFloat64();\n";
         }
         if (tcanon == "cajeta.lang.String") {
-            // currentBytes() returns the inner string bytes (quotes
-            // stripped) as an owned #int8[]. Wrap them in a String
-            // instance via the (int8[], int32 byteLength) constructor,
-            // transferring the buffer via `#` so the local's drop
-            // entry deactivates — otherwise scope exit frees the
-            // buffer the freshly-constructed String now points at,
-            // and any subsequent read of the field dangles.
+            // `#` transfers the reader's owned bytes into the String — otherwise scope
+            // exit frees the buffer it now points at.
             return "t = r.next();\n"
                    "            int8[] vbytes_" + fieldName +
                        " = r.currentBytes();\n"
@@ -601,13 +430,8 @@ namespace cajeta {
                        "#vbytes_" + fieldName +
                        ", vlen_" + fieldName + ");\n";
         }
-        // Nested class field — recurse via Json.parseObjectFromReader<NestedT>.
-        // The recursive call consumes the value's START_OBJECT and
-        // END_OBJECT itself; the outer loop should NOT call r.next()
-        // before it. Use the short name `Json` because the wrapper
-        // class lives in cajeta.codec.json — multi-segment FQN
-        // (`cajeta.codec.json.Json`) doesn't resolve through the dot
-        // chain since `cajeta`/`codec`/`json` aren't classes.
+        // The recursive call consumes the value's START_OBJECT and END_OBJECT itself.
+        // Short name `Json`: a multi-segment FQN doesn't resolve through the dot chain.
         if (auto nestedClass = std::dynamic_pointer_cast<CajetaClass>(ty)) {
             return "out." + fieldName +
                    " #= Json.parseObjectFromReader<" +
@@ -616,11 +440,9 @@ namespace cajeta {
         return "";
     }
 
-    // Build the inner field-dispatch loop body. Used by both `parse`
-    // (wrapped in a JsonReader-create preamble) and
-    // `parseObjectFromReader` (called from inside another parse).
-    // Expects locals `T out` and `JsonReader r` to be in scope before
-    // entry, and consumes from START_OBJECT through END_OBJECT.
+    // Inner field-dispatch loop body, shared by `parse` and
+    // `parseObjectFromReader`. Expects locals `T out` and `JsonReader r` in
+    // scope, and consumes from START_OBJECT through END_OBJECT.
     std::string emitObjectLoopBody(const CajetaClassPtr& T,
                                     const std::string& indent) {
         std::string strategy = classNamingStrategy(T);
@@ -631,10 +453,6 @@ namespace cajeta {
         os << indent << "    throw heap JsonParseException(\n";
         os << indent << "        \"Tier-1 parse: expected '{'\", r.position());\n";
         os << indent << "}\n";
-        // Pre-loop: declare a `boolean req_seen_<field>` per
-        // @JsonRequired field, initialized to false. Each matching key
-        // arm flips its flag true; after END_OBJECT we walk the flags
-        // and throw on any still-false.
         std::vector<std::string> requiredKeys;
         for (auto& prop : T->getPropertyList()) {
             if (isJsonRequired(prop)) {
@@ -646,7 +464,6 @@ namespace cajeta {
         }
         os << indent << "while (true) {\n";
         os << indent << "    t = r.next();\n";
-        // END_OBJECT branch — verify required fields THEN return.
         if (requiredKeys.empty()) {
             os << indent << "    if (t == JsonToken.END_OBJECT) { return out; }\n";
         } else {
@@ -674,17 +491,11 @@ namespace cajeta {
         os << indent << "    int32 klen = (int32) kb.count();\n";
         bool first = true;
         for (auto& prop : T->getPropertyList()) {
-            // @JsonIgnore on the read side: drop the per-field arm
-            // entirely so JSON input with this key falls through to
-            // the unknown-key skip arm (the field stays at its
-            // default). Asymmetric @JsonIgnore(onWrite=true) leaves
-            // the read side untouched and only skips emission below.
+            // A read-side @JsonIgnore drops the arm entirely, so the key falls through
+            // to the unknown-key skip.
             if (isJsonIgnoredOnRead(prop)) continue;
             std::string assign = readFieldAssignment(prop);
             if (assign.empty()) continue;
-            // @JsonAlias adds alternate read-side keys. OR every
-            // accepted key together in the arm guard. The primary
-            // (effectiveJsonKey) comes first; aliases append after.
             std::string primary = effectiveJsonKey(prop, strategy);
             std::ostringstream guard;
             guard << "(" << keyBytesGuard(primary) << ")";
@@ -701,14 +512,8 @@ namespace cajeta {
             os << indent << "    }\n";
             first = false;
         }
-        // Unknown-key handling.
-        //   - Default: recursively skip the whole value (scalar or a
-        //     nested object/array subtree) via JsonReader.skipValue() —
-        //     the unmapped bytes are consumed but never decoded (the
-        //     on-demand skip: a struct only materializes the fields it
-        //     maps).
-        //   - `@JsonStrict` class-level: throw JsonParseException
-        //     naming the unknown key.
+        // Unknown keys are skipped whole — scalar or subtree — via
+        // JsonReader.skipValue(), or rejected when the class is @JsonStrict.
         std::string unknownArmBody;
         if (strict) {
             std::ostringstream sb;
@@ -728,18 +533,12 @@ namespace cajeta {
         return os.str();
     }
 
-    // ===================================================================
-    // Index-form (Tier-1 binding) read path. These mirror the *Reader
-    // helpers above but drive the SIMD structural index (JsonIndex) in an
-    // inline walk — no per-token JsonReader.next() boundary. Scope at a
-    // matched key arm: `int8[] b`, `int32[] idx`, `int32 ci` (positioned
-    // at the value's first index entry), `T out`, `int64 keyPos`. Each arm
-    // consumes its value and leaves `ci` at the following separator.
-    // ===================================================================
+    // ===== Index-form (Tier-1 binding) read path =====
+    // Scope at a matched key arm: `int8[] b`, `int32[] idx`, `int32 ci` at the
+    // value's first entry, `T out`, `int64 keyPos`; ci exits at the separator.
 
-    // Array field over the index. `ci` enters at the `[` entry; on exit it
-    // sits at the separator past the `]`. ArrayList<E> accumulates, then a
-    // fresh E[] is filled — same ownership reasoning as readArrayField.
+    // Array field over the index: `ci` enters at the `[` entry and exits at the
+    // separator past the `]`; ownership as in readArrayField.
     std::string readArrayFieldIndexed(const std::string& fieldName,
                                        CajetaTypePtr elementType) {
         if (!elementType || !elementType->getQName()) return "";
@@ -748,8 +547,6 @@ namespace cajeta {
             std::dynamic_pointer_cast<CajetaClass>(elementType) != nullptr;
         const std::string f = fieldName;
         const std::string list = "tmp_" + f;
-        // Per-element body: consume one value at idx[ci] into `list`,
-        // advancing ci. ep_<f> holds idx[ci] (the element value entry).
         std::string elem;
         if (et == "int32") {
             elem = list + ".add(JsonIndex.decodeI32(b, (int64) ep_" + f + ")); ci = ci + 1;\n";
@@ -764,10 +561,8 @@ namespace cajeta {
                    "                    int32 esl_" + f + " = (int32) esb_" + f + ".count();\n"
                    "                    " + list + ".add(heap cajeta.lang.String(#esb_" + f + ", esl_" + f + ")); ci = ci + 1;\n";
         } else if (elementIsClass) {
-            // Proven shape: a #-returning recursive call to a local, then
-            // add(#local) — identical to the old parseObjectFromReader
-            // path, but walkValue(jc) passes a single class pointer (no
-            // array-typed params into the loop's recursive call).
+            // Recursive call into a local, then add(#local): walkValue takes a single
+            // class pointer, never array-typed params.
             elem = "jc.ci = ci;\n"
                    "                    " + et + " e_" + f + " = Json.walkElement<" + et + ">(jc);\n"
                    "                    ci = jc.ci;\n"
@@ -818,12 +613,10 @@ namespace cajeta {
         const std::string& f = prop->getName();
         CajetaTypePtr ty = prop->getType();
         if (!ty || !ty->getQName()) return "";
-        // @JsonRaw: capture wire-form bytes (with delimiters); skip cursor.
         if (isJsonRaw(prop)) {
             return "out." + f + " #= JsonIndex.valueWireBytes(b, idx, ci);\n"
                    "            ci = JsonIndex.skipValue(b, idx, ci);\n";
         }
-        // Optional<T> — null value → empty Optional; else present.
         if (isOptionalField(prop)) {
             auto inner = optionalInnerType(prop);
             if (!inner || !inner->getQName()) return "";
@@ -949,8 +742,8 @@ namespace cajeta {
         os << indent << "        go = false;\n";
         os << indent << "    } else {\n";
         os << indent << "        int64 keyPos = (int64) kp;\n";
-        os << indent << "        ci = ci + 1;\n";   // colon
-        os << indent << "        ci = ci + 1;\n";   // value
+        os << indent << "        ci = ci + 1;\n";
+        os << indent << "        ci = ci + 1;\n";
         bool first = true;
         for (auto& prop : T->getPropertyList()) {
             if (isJsonIgnoredOnRead(prop)) continue;
@@ -993,11 +786,9 @@ namespace cajeta {
         return os.str();
     }
 
-    // The shared walk core: allocate T, lift b/idx/ci out of `jc` into stack
-    // locals (register-resident across the per-key loop), run the walk, sync
-    // the cursor back, return the filled #T. Used verbatim by both
-    // `walkValue<T>` and the top-level `parse<T>` (which INLINES it rather
-    // than calling walkValue — see synthesizeParseBody).
+    // Shared walk core: allocate T, lift b/idx/ci out of `jc` into stack locals
+    // for the per-key loop, run the walk, sync the cursor back and return the
+    // filled #T. Used by walkValue<T> and inlined by parse<T>.
     std::string emitWalkCore(const CajetaClassPtr& T) {
         const std::string& Tc = T->getQName()->toCanonical();
         std::ostringstream os;
@@ -1011,11 +802,9 @@ namespace cajeta {
         return os.str();
     }
 
-    // Synthesize `walkValue<T>(JsonCursor jc)` — the recursive binding walk
-    // for NESTED objects. The single-class-pointer recursion (vs threading
-    // array-typed params) keeps the recursive-instantiation codegen stable —
-    // passing int8[] / int32[] into a recursive call inside a loop produced
-    // cross-function IR that crashed the LLVM backend.
+    // Synthesize `walkValue<T>(JsonCursor jc)`, the recursive walk for nested
+    // objects. It recurses on a single class pointer: threading array-typed
+    // params through a recursive loop produced IR that crashed the backend.
     std::string synthesizeWalkValueBody(const CajetaClassPtr& T,
                                          const std::string& methodName) {
         const std::string& Tc = T->getQName()->toCanonical();
@@ -1027,53 +816,32 @@ namespace cajeta {
         return os.str();
     }
 
-    // Build the synthesized `parse` method body for T. The method
-    // signature is `public static <__T> T parse(int8[] bytes, int64
-    // length) { ... }` with __T as a vacuous template parameter (it
-    // doesn't appear in the body — bodies use concrete type names —
-    // but keeping the <__T> on the signature satisfies the
-    // method-template-instantiation machinery that expects the
-    // synthesized declaration to carry method type parameters).
+    // Body for the synthesized `parse` method on T. The signature carries a
+    // vacuous <__T> type parameter that never appears in the body — the
+    // template-instantiation machinery expects one on the declaration.
     std::string synthesizeParseBody(const CajetaClassPtr& T,
                                      const std::string& methodName) {
-        // Fully-qualify type names in the body — the wrapper class
-        // lives in Json's module (cajeta.codec.json), so short names
-        // for user-package types wouldn't resolve.
-        //
-        // The return type is `#T` (ownership-returning): the parsed
-        // value `out` is freshly heap-allocated and handed to the
-        // caller. Without the `#`, the multi-param borrow-return
-        // check in Method::generatePrototype rejects the signature
-        // — `public static T(int8[], int64)` looks like "return a
-        // borrow from one of two parameters", which is exactly the
-        // shape MemoryModel.md § Function signatures forbids.
+        // Type names are fully qualified: the wrapper class lives in
+        // cajeta.codec.json. The return must be `#T` — a plain multi-param return
+        // reads as "borrow from one of two parameters" and is rejected.
         const std::string& Tcanon = T->getQName()->toCanonical();
         std::ostringstream os;
         os << "public static #" << Tcanon
            << " " << methodName << "(int8[] bytes, int64 length) {\n";
-        // Stage 1: SIMD sparse structural index. jc owns the idx scratch
-        // (allocated in its ctor) so `parse` holds no array local.
-        // #=, not =: the cursor is a fresh heap allocation and owns its
-        // index array. Binding it as a borrow abandoned both on every
-        // parse — 2 live objects per document, the leak that turned
-        // cajeta-llama's ownership probes red.
+        // `#=`, not `=`: jc is a fresh allocation owning its index scratch, and a
+        // borrow bind abandoned both on every parse.
         os << "    JsonCursor jc #= heap JsonCursor(bytes, length);\n";
         os << "    int32 cnt = JsonIndex.build(bytes, length, jc.idx);\n";
-        // Stage 2: INLINE the walk core directly into parse (rather than
-        // calling walkValue<T>). This keeps the top-level instantiation
-        // depth shallow — parse<T> itself holds the object loop and only
-        // calls a DIFFERENT template (walkElement / walkValue) for nested
-        // values, mirroring the proven parseObjectFromReader design. The
-        // extra parse->walkValue<T> layer deepened the recursive-
-        // instantiation chain enough to leak nested drops into this frame.
+        // Stage 2 inlines the walk core rather than calling walkValue<T>: the extra
+        // template layer deepened the recursive-instantiation chain enough to leak
+        // nested drops into this frame.
         os << emitWalkCore(T);
         os << "}\n";
         return os.str();
     }
 
-    // Variant of synthesizeParseBody for the from-existing-reader
-    // entry point. Same field-dispatch loop body; signature takes a
-    // JsonReader instead of bytes/length.
+    // Variant of synthesizeParseBody whose signature takes a JsonReader
+    // instead of bytes/length; same field-dispatch loop body.
     std::string synthesizeParseFromReaderBody(const CajetaClassPtr& T,
                                                 const std::string& methodName) {
         const std::string& Tcanon = T->getQName()->toCanonical();
@@ -1086,32 +854,18 @@ namespace cajeta {
         return os.str();
     }
 
-    // Emit the value-side body for an array field: begin-array,
-    // walk every element with the appropriate per-type writer
-    // call, end-array. Element kinds match the reader's: int32,
-    // int64, boolean, float64, cajeta.lang.String, and nested
-    // class types. v1 assumes the field reference is non-null;
-    // a null array trips the universal `count()` deref at
-    // runtime. A `value.<field> != null` guard with a `w.writeNull()`
-    // fallback is a planned follow-up alongside the @JsonInclude
-    // annotation work.
+    // Value-side body for an array field: begin-array, one writer call per
+    // element, end-array. v1 assumes the field reference is non-null — a null
+    // array trips the count() deref at runtime.
     std::string writeArrayValue(const std::string& fieldName,
                                  CajetaTypePtr elementType) {
         if (!elementType || !elementType->getQName()) return "";
         const std::string& etcanon = elementType->getQName()->toCanonical();
         bool elementIsClass =
             std::dynamic_pointer_cast<CajetaClass>(elementType) != nullptr;
-        // Load the array element into a typed local first, then hand
-        // that local to the writer call. Going `w.writeNumber(value.ns
-        // [wi])` directly hands the GEP slot-pointer to the call site;
-        // MethodCallExpression's arg-coerce path doesn't reach into
-        // ArrayIndexExpression-typed slot pointers, so the JIT verifier
-        // rejects with "Call parameter type does not match function
-        // signature" for ints/floats wider than the array's element
-        // type. The temp-local pattern routes through the
-        // assignment-side load path which DOES materialize the value.
-        // (int32 happened to work pre-fix because the cast `(int64)`
-        // on it triggered a load along the way.)
+        // Load the element into a typed local first: handing `value.f[wi]` straight
+        // to the call passes the GEP slot pointer, which the arg-coerce path misses
+        // and the JIT verifier then rejects.
         std::string elemVar = "ev_" + fieldName;
         std::string writeOne;
         if (etcanon == "int32") {
@@ -1161,30 +915,18 @@ namespace cajeta {
     // if the field type isn't yet supported by the writer arm.
     std::string writeFieldEmit(const StructurePropertyPtr& prop,
                                 const std::string& classStrategy) {
-        // @JsonIgnore on the write side: don't emit a key/value
-        // pair for this field. Asymmetric @JsonIgnore(onRead=true)
-        // leaves the write side untouched.
         if (isJsonIgnoredOnWrite(prop)) return "";
         const std::string& fieldName = prop->getName();
         CajetaTypePtr ty = prop->getType();
         if (!ty || !ty->getQName()) return "";
-        // Array-typed fields take the dedicated array path — same
-        // reason as readFieldAssignment: CajetaArray inherits CajetaClass
-        // and the catch-all class branch would treat them as nested
-        // objects.
+        // Arrays first: CajetaArray inherits CajetaClass.
         std::ostringstream value;
-        // @JsonRaw: pass the field's int8[] bytes verbatim. Same
-        // wire-form round-trip as the read side captured via
-        // currentRawBytes() — primitives only in v1.
         if (isJsonRaw(prop)) {
             value << "w.writeRaw(value." << fieldName
                   << ", (int32) value." << fieldName << ".count());\n";
         } else
-        // Optional<T> field write side. The outer guard (added
-        // below as guardExpr) handles the field-is-null case (key
-        // omitted entirely); inside the guard we still need to
-        // distinguish present-with-value from present-but-empty
-        // (writeNull) and emit the inner type accordingly.
+        // guardExpr below handles the field-is-null case; inside the guard, empty
+        // versus present chooses writeNull over the inner write.
         if (isOptionalField(prop)) {
             auto inner = optionalInnerType(prop);
             if (!inner || !inner->getQName()) return "";
@@ -1226,52 +968,30 @@ namespace cajeta {
             } else if (tcanon == "float64") {
                 value << "w.writeNumber(value." << fieldName << ");\n";
             } else if (tcanon == "cajeta.lang.String") {
-                // String overload: view-safe (a mode-2 field would make raw
-                // .bytes reads window-blind — 10.3.1 audit).
+                // String overload: view-safe, unlike a raw .bytes read on a mode-2 field.
                 value << "w.writeString(value." << fieldName << ");\n";
             } else if (std::dynamic_pointer_cast<CajetaClass>(ty)) {
-                // Nested class field — recurse via toBytesObjectInto.
-                // Short name `Json` for same-package reasons as the read side.
+                // Nested class: short name `Json`, same-package resolution as the read side.
                 value << "Json.toBytesObjectInto<"
                       << tcanon << ">(w, value." << fieldName << ");\n";
             } else {
                 return "";
             }
         }
-        // @JsonInclude("NEVER") — never write. Read-only field;
-        // parsing keeps the value but the writer always omits it.
-        // Returning early here means the writer body emits NO key
-        // and NO value for this field.
         std::string includePolicy = jsonIncludePolicy(prop);
         if (includePolicy == "NEVER") {
             return "";
         }
-        // Use the @JsonProperty-renamed key when present, then the
-        // class-level @JsonNamingStrategy transform, else the declared
-        // name verbatim. Cajeta-level field access (`value.<fieldName>`)
-        // still uses the declared name — only the wire-bytes change.
         std::string wireKey = effectiveJsonKey(prop, classStrategy);
         std::ostringstream os;
-        // @JsonInclude conditional emission. Wraps the key+value
-        // block in a per-policy guard.
-        //
-        //   - NON_NULL    — `value.f != null` (reference-typed only).
-        //   - NON_DEFAULT — `value.f != <type default>`. For class
-        //                   refs / arrays / Strings the default is
-        //                   null, so NON_DEFAULT collapses to
-        //                   NON_NULL on those. For primitives the
-        //                   default is 0 / 0.0 / false.
-        //   - ALWAYS / "" — no guard.
+        // @JsonInclude guard: NON_NULL emits `f != null`; NON_DEFAULT compares
+        // against the type default (null for refs, 0 / 0.0 / false for primitives).
         std::string guardExpr;
         auto fieldTyName = prop->getType() && prop->getType()->getQName()
             ? prop->getType()->getQName()->toCanonical()
             : "";
-        // Optional<T> fields auto-guard on `value.field != null`:
-        // a null Optional ref means the field is "absent" — key
-        // omitted. Inside the guard the inner emit branches on
-        // isEmpty() to choose writeNull vs the inner value.
-        // Explicit @JsonInclude("ALWAYS") opts out and would
-        // NPE at runtime if the field is null — user beware.
+        // A null Optional reference means "absent", so the key is auto-guarded on
+        // `f != null` unless the user explicitly asked for ALWAYS.
         if (isOptionalField(prop) && includePolicy != "ALWAYS") {
             guardExpr = "value." + fieldName + " != null";
         } else if (includePolicy == "NON_NULL" && fieldIsReferenceTyped(prop)) {
@@ -1285,7 +1005,6 @@ namespace cajeta {
             } else if (fieldTyName == "float32" || fieldTyName == "float64") {
                 guardExpr = "value." + fieldName + " != 0.0";
             } else {
-                // Integer-family primitives (int8/16/32/64 and unsigned).
                 guardExpr = "value." + fieldName + " != 0";
             }
         }
@@ -1294,21 +1013,8 @@ namespace cajeta {
         } else {
             os << "        {\n";
         }
-        // String-literal key emission. Pre Phase 2b-β the synthesizer
-        // emitted N lines of `int8[] k = new int8[N]; k[0] = (int8)
-        // 0x..; ...; w.key(k, N);` because String was an opaque
-        // pointer alias. Now String is a class with a literal
-        // codegen path that materializes a view-mode String over
-        // .rodata bytes — one IR call, no per-byte assignment, and
-        // the linker dedupes identical keys across all call sites.
-        // JsonWriter.key(String) is the matching overload.
-        //
-        // Escapes the wire key for cajeta source: double-quote and
-        // backslash become `\"` / `\\`. Wire keys typically come
-        // from field names + a naming strategy transform, so they
-        // rarely contain either, but be defensive — a future
-        // @JsonProperty("with\"quote") would otherwise emit invalid
-        // cajeta source.
+        // Keys emit as string literals through JsonWriter.key(String); escape `"`
+        // and `\` so a @JsonProperty("with\"quote") still yields valid source.
         std::string escaped;
         escaped.reserve(wireKey.size() + 2);
         for (size_t i = 0; i < wireKey.size(); ++i) {
@@ -1322,11 +1028,9 @@ namespace cajeta {
         return os.str();
     }
 
-    // Emit the inner `w.beginObject() ... per-field ... w.endObject()`
-    // sequence. Used by both `toBytes` (which wraps it with a fresh
-    // JsonWriter create + toBytes finalize) and `toBytesObjectInto`
-    // (which receives the writer as a parameter and shares it with
-    // the parent emit).
+    // Emit the `w.beginObject() ... per-field ... w.endObject()` sequence,
+    // shared by `toBytes` (which wraps it in writer create + finalize) and
+    // `toBytesObjectInto` (which is handed the parent's writer).
     std::string emitObjectWriteBody(const CajetaClassPtr& T) {
         std::string strategy = classNamingStrategy(T);
         std::ostringstream os;
@@ -1339,6 +1043,8 @@ namespace cajeta {
         return os.str();
     }
 
+    // Body for the synthesized `toBytes` method on T: create a JsonWriter,
+    // write the object, return its bytes.
     std::string synthesizeToBytesBody(const CajetaClassPtr& T,
                                        const std::string& methodName) {
         const std::string& Tcanon = T->getQName()->toCanonical();
@@ -1352,9 +1058,8 @@ namespace cajeta {
         return os.str();
     }
 
-    // toBytesObjectInto variant — caller supplies the JsonWriter.
-    // No fresh writer creation, no toBytes finalize; just emit the
-    // begin/end-object pair around the field writes.
+    // toBytesObjectInto variant: the caller supplies the JsonWriter, so this
+    // emits only the begin/end-object pair around the field writes.
     std::string synthesizeToBytesObjectIntoBody(const CajetaClassPtr& T,
                                                   const std::string& methodName) {
         const std::string& Tcanon = T->getQName()->toCanonical();
@@ -1388,7 +1093,6 @@ namespace cajeta {
             return false;
         }
         if (args.size() != 1) return false;
-        // T must be a class type (primitives forbidden by the spec).
         auto T = std::dynamic_pointer_cast<CajetaClass>(args[0]);
         if (!T) return false;
         auto dumpIfRequested = [&](const std::string& body) {
@@ -1400,12 +1104,8 @@ namespace cajeta {
                 }
             }
         };
-        // Match by name AND param-type signature so overloads (e.g.
-        // `parse<T>(String)` which delegates to `parse<T>(int8[],
-        // int64)`) keep their hand-written delegation bodies. Without
-        // the param check the synthesizer would silently overwrite
-        // every overload of the same name with the byte-walking body
-        // even when its formals don't have `bytes`/`length` in scope.
+        // Match on name AND param types: without the param check the synthesizer
+        // would overwrite the hand-written bodies of same-named overloads.
         if (methodName == "parse"
                 && paramTypes.size() == 2
                 && paramCanonAt(paramTypes, 0) == "int8[]"
@@ -1421,7 +1121,6 @@ namespace cajeta {
             dumpIfRequested(out);
             return true;
         }
-        // Tier-1 binding walk over the SIMD structural index.
         if (methodName == "walkValue"
                 && paramTypes.size() == 1
                 && paramCanonAt(paramTypes, 0) == "cajeta.codec.json.JsonCursor") {
@@ -1429,14 +1128,8 @@ namespace cajeta {
             dumpIfRequested(out);
             return true;
         }
-        // Type-position match: the param's canonical is EITHER the
-        // template-parameter placeholder name "T" (the unsubstituted
-        // form, which is what the captured methodSource carries) OR
-        // the concrete substituted canonical (in case a future pass
-        // pre-substitutes parameter types before the synthesizer runs).
-        // Cajeta-style convention is single-letter "T" for the type
-        // parameter; user-named ones (e.g. `<R>`) would need expansion
-        // here if they cropped up — none do in v1.
+        // The captured source carries the unsubstituted placeholder "T", so accept
+        // either that or the concrete substituted canonical.
         auto isTPosition = [&](const std::string& canon) -> bool {
             return canon == "T"
                 || canon == T->getQName()->toCanonical();

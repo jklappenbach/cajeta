@@ -1,0 +1,1096 @@
+// ownership-title-classifier — the one classifier (see the header); every rule here is a row of spec §2.1 / §2.3.
+
+#include "TitleClassifier.h"
+
+#include "cajeta/asn/expression/AggregateInitializerExpression.h"
+#include "cajeta/asn/expression/BinaryOpExpression.h"
+#include "cajeta/asn/expression/CallExpression.h"
+#include "cajeta/asn/expression/DotExpression.h"
+#include "cajeta/asn/expression/Identifier.h"
+#include "cajeta/asn/expression/LiteralExpression.h"
+#include "cajeta/asn/expression/MethodCallExpression.h"
+#include "cajeta/asn/expression/NewExpression.h"
+#include "cajeta/compile/CajetaModule.h"
+#include "cajeta/error/Exception.h"
+#include "cajeta/field/Field.h"
+#include "cajeta/field/ParameterField.h"
+#include "cajeta/method/Method.h"
+#include "cajeta/type/CajetaArray.h"
+#include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaFunctionType.h"
+#include "cajeta/type/CajetaView.h"
+#include "cajeta/type/FormalParameter.h"
+#include "cajeta/type/Scope.h"
+
+#include "llvm/IR/IRBuilder.h"
+
+namespace cajeta::ownership {
+
+    namespace {
+
+        bool g_auditEnabled = false;
+        std::vector<TitleShapeRecord> g_records;
+
+        inline bool isLangString(const CajetaTypePtr& t) {
+            auto cls = std::dynamic_pointer_cast<CajetaClass>(t);
+            return cls && cls->getQName()
+                && cls->getQName()->getTypeName() == "String"
+                && cls->getQName()->getPackageName() == "cajeta.lang";
+        }
+
+        // PRIMITIVE_FLAG but not an array: arrays carry the flag yet are droppable buffers.
+        inline bool isOwnershipLessScalar(const CajetaTypePtr& t) {
+            return t && (t->getTypeFlags() & PRIMITIVE_FLAG)
+                && !std::dynamic_pointer_cast<CajetaArray>(t);
+        }
+
+        inline bool isReferenceCast(const CajetaTypePtr& dt) {
+            auto dc = std::dynamic_pointer_cast<CajetaClass>(dt);
+            auto dv = std::dynamic_pointer_cast<CajetaView>(dt);
+            return (bool) dv || (dc && !dc->isInterface() && !dc->isValueType());
+        }
+
+        inline uint32_t typeFlags(const CajetaTypePtr& t) {
+            uint32_t f = 0;
+            if (!t) return f;
+            if (isLangString(t)) f |= TitleShape::kString;
+            if (std::dynamic_pointer_cast<CajetaArray>(t)) f |= TitleShape::kArray;
+            if (std::dynamic_pointer_cast<CajetaView>(t)) f |= TitleShape::kView;
+            if (auto cls = std::dynamic_pointer_cast<CajetaClass>(t)) {
+                if (cls->isInterface()) f |= TitleShape::kInterface;
+                if (cls->isValueType()) f |= TitleShape::kValue;
+            }
+            if (std::dynamic_pointer_cast<CajetaFunctionType>(t)) f |= TitleShape::kFunction;
+            return f;
+        }
+
+        inline TitleShape make(TitleFamily fam, TitleAnswer ans, TitleSource src,
+                               const ExpressionPtr& leaf, uint32_t flags = 0) {
+            TitleShape s;
+            s.family = fam;
+            s.answer = ans;
+            s.source = src;
+            s.flags = flags;
+            s.label = labelOfFamily(fam);
+            s.leaf = leaf;
+            return s;
+        }
+
+        // The join of two arms (§2.1, Conditional): equal static answers fold; else the phi.
+        inline TitleShape join(const TitleShape& a, const TitleShape& b,
+                               const ExpressionPtr& leaf) {
+            TitleShape s = make(TitleFamily::Conditional, TitleAnswer::Runtime,
+                                TitleSource::ArmPhi, leaf,
+                                (uint32_t) ((a.flags | b.flags)
+                                            & (TitleShape::kString | TitleShape::kArray
+                                               | TitleShape::kInterface | TitleShape::kValue
+                                               | TitleShape::kView)));
+            auto hasTitle = [](TitleAnswer x) {
+                return x == TitleAnswer::Owned || x == TitleAnswer::Runtime;
+            };
+            if (!hasTitle(a.answer) && !hasTitle(b.answer)) {
+                s.answer = TitleAnswer::Borrow;
+                s.source = TitleSource::None;
+            } else if (a.answer == TitleAnswer::Owned && b.answer == TitleAnswer::Owned) {
+                s.answer = TitleAnswer::Owned;
+                s.source = TitleSource::None;
+            }
+            return s;
+        }
+
+        inline TitleShape read(TitleFamily fam, const ExpressionPtr& leaf) {
+            return make(fam, TitleAnswer::Borrow, TitleSource::None, leaf,
+                        typeFlags(leaf->getResolvedType()));
+        }
+
+        inline TitleShape scalar(const ExpressionPtr& leaf) {
+            return make(TitleFamily::Scalar, TitleAnswer::Scalar, TitleSource::None, leaf);
+        }
+
+        inline ExpressionPtr childOf(const ExpressionPtr& e, size_t i) {
+            auto& ch = e->getChildren();
+            return i < ch.size() ? std::dynamic_pointer_cast<Expression>(ch[i]) : nullptr;
+        }
+
+        // The shape of a bare identifier read: `this` is a receiver read, anything
+        // else resolves in the scope stack so the local's drop entry, stack-instance
+        // and borrow-origin facts land in the shape's flags.
+        TitleShape localRead(const ExpressionPtr& leaf, const CajetaModulePtr& module) {
+            auto id = std::static_pointer_cast<IdentifierExpression>(leaf);
+            const std::string& name = id->getTextValue();
+            if (name == "this") return read(TitleFamily::ThisRead, leaf);
+            TitleShape s = make(TitleFamily::LocalRead, TitleAnswer::Borrow,
+                                TitleSource::None, leaf);
+            FieldPtr f;
+            if (auto sc = module->getScopeStack().peek()) f = sc->getField(name);
+            if (!f) {
+                s.flags |= typeFlags(leaf->getResolvedType());
+                return s;
+            }
+            s.field = f.get();
+            s.flags |= typeFlags(f->getType());
+            if (f->getDropEntry()) s.flags |= TitleShape::kHasEntry;
+            if (f->isRuntimeConditionalOwner()) s.flags |= TitleShape::kRuntimeOwner;
+            if (f->isStackInstance()) s.flags |= TitleShape::kStack;
+            if (!f->getCallBorrowOrigin().empty() || !f->getParamBorrowOrigin().empty()) {
+                s.flags |= TitleShape::kBorrowOrigin;
+            }
+            if (auto pf = std::dynamic_pointer_cast<ParameterField>(f)) {
+                s.flags |= TitleShape::kIsParam;
+                auto fp = pf->getFormalParameter();
+                if (fp && fp->isTransferred()) s.flags |= TitleShape::kTransferredParam;
+                if (auto m = module->getCurrentMethod()) {
+                    int idx = 0;
+                    for (auto& p : m->getParameterList()) {
+                        if (!p || p->getName() == "this") continue;
+                        if (p->getName() == name) { s.paramIndex = (int8_t) idx; break; }
+                        idx++;
+                    }
+                }
+            } else if (auto m = module->getCurrentMethod()) {
+                if (m->isArenaEligibleLocal(name)) s.flags |= TitleShape::kArena;
+            }
+            if (auto sc = module->getScopeStack().peek()) {
+                if (sc->holdsStaticTitle(name)) s.flags |= TitleShape::kStaticTitle;
+            }
+            return s;
+        }
+
+        TitleShape closureCallShape(const CajetaFunctionTypePtr& fnTy,
+                                    const ExpressionPtr& leaf) {
+            uint32_t flags = typeFlags(leaf->getResolvedType());
+            if (fnTy && fnTy->usesSret()) {
+                return make(TitleFamily::ClosureCall, TitleAnswer::StackBound, TitleSource::None,
+                            leaf, (uint32_t) (flags | TitleShape::kStack));
+            }
+            if (fnTy && !std::dynamic_pointer_cast<CajetaClass>(fnTy->getReturnType())) {
+                return scalar(leaf);
+            }
+            return make(TitleFamily::ClosureCall, TitleAnswer::Runtime, TitleSource::ReturnFlag,
+                        leaf, flags);
+        }
+
+        CajetaFunctionTypePtr functionTypeOfCall(
+                const std::shared_ptr<MethodCallExpression>& mce, const CajetaModulePtr& module) {
+            const std::string& name = mce->getMethodCallName();
+            auto& kids = mce->getChildren();
+            if (kids.empty()) {
+                if (auto sc = module->getScopeStack().peek()) {
+                    if (FieldPtr f = sc->getField(name)) {
+                        return std::dynamic_pointer_cast<CajetaFunctionType>(f->getType());
+                    }
+                }
+                return nullptr;
+            }
+            auto recv = std::dynamic_pointer_cast<Expression>(kids[0]);
+            if (!recv) return nullptr;
+            if (!recv->getResolvedType()) recv->resolveTypes(module);
+            auto recvCls = std::dynamic_pointer_cast<CajetaClass>(recv->getResolvedType());
+            if (!recvCls) return nullptr;
+            auto& props = recvCls->getProperties();
+            auto it = props.find(name);
+            if (it == props.end() || !it->second) return nullptr;
+            return std::dynamic_pointer_cast<CajetaFunctionType>(it->second->getType());
+        }
+
+        // The shape of a call's result: an unresolvable or `#R` callee rides the
+        // return-flag TLS, while an intrinsic lowering, a native forwarder and a
+        // by-value struct return are decided statically here instead.
+        TitleShape callResult(const ExpressionPtr& leaf, const CajetaModulePtr& module) {
+            auto mce = std::static_pointer_cast<MethodCallExpression>(leaf);
+            uint32_t flags = typeFlags(leaf->getResolvedType());
+            if (mce->getMethodCallName() == "__cajeta_inject") {
+                return make(TitleFamily::CallResult, TitleAnswer::Borrow, TitleSource::None, leaf, flags);
+            }
+            MethodPtr rm = mce->getResolvedMethod();
+            if (!rm) {
+                if (CajetaFunctionTypePtr fnTy = functionTypeOfCall(mce, module)) {
+                    return closureCallShape(fnTy, leaf);
+                }
+                MethodPtr decl = MethodCallExpression::resolveArgCalleeShallow(mce, module);
+                // 8.2.4 — AFTER codegen a null resolution is an intrinsic lowering,
+                // which stores no flag, so its stance is a constant, not a stale TLS read.
+                if (mce->hasGenerated() && !mce->getFlaggedTitleValue()) {
+                    if (decl && isOwnershipLessScalar(decl->getReturnType())) return scalar(leaf);
+                    bool owned = mce->bindingTakesTitle();
+                    if (decl) flags |= typeFlags(decl->getReturnType());
+                    if (owned) flags |= TitleShape::kOwnedDecl;
+                    TitleShape s = make(TitleFamily::CallResult,
+                                        owned ? TitleAnswer::Owned : TitleAnswer::Borrow,
+                                        TitleSource::None, leaf, flags);
+                    s.callee = decl.get();
+                    return s;
+                }
+                if (!mce->hasGenerated()) rm = decl;
+            }
+            if (!rm) {
+                return make(TitleFamily::CallResult, TitleAnswer::Runtime,
+                            TitleSource::ReturnFlag, leaf, flags);
+            }
+            flags |= typeFlags(rm->getReturnType());
+            if (isOwnershipLessScalar(rm->getReturnType())) return scalar(leaf);
+            auto withCallee = [&](TitleShape s) { s.callee = rm.get(); return s; };
+            if (rm->returnsStackValue()) {
+                return withCallee(make(TitleFamily::CallResult, TitleAnswer::StackBound,
+                                       TitleSource::None, leaf, (uint32_t) (flags | TitleShape::kStack)));
+            }
+            auto& mods = rm->getModifiers();
+            bool staticDispatch = rm->isStatic()
+                || mods.count(PRIVATE) > 0 || mods.count(FINAL) > 0
+                || (rm->getParent() && rm->getParent()->getModifiers().count(FINAL) > 0);
+            if (rm->isReturnsView()
+                    || (!rm->isReturnsOwnership() && staticDispatch && rm->returnsInteriorView())) {
+                return withCallee(make(TitleFamily::CallResult, TitleAnswer::Borrow,
+                                       TitleSource::None, leaf, (uint32_t) (flags | TitleShape::kView)));
+            }
+            bool ownedDecl = rm->isReturnsOwnership();
+            if (ownedDecl) flags |= TitleShape::kOwnedDecl;
+            if (ownedDecl && rm->returnsStaticTitle()) {
+                return withCallee(make(TitleFamily::CallResult, TitleAnswer::Owned,
+                                       TitleSource::None, leaf, flags));
+            }
+            // A `@Native` forwarding body and a body-less intrinsic return without
+            // storing the flag, so the declared stance is the answer, not a stale TLS.
+            bool storesFlag = rm->emitsReturnFlag() && rm->returnsClassPointer()
+                && !rm->findAnnotation("Native")
+                && (rm->getBlock() != nullptr || rm->isAbstract());
+            if (storesFlag) {
+                return withCallee(make(TitleFamily::CallResult, TitleAnswer::Runtime,
+                                       TitleSource::ReturnFlag, leaf, flags));
+            }
+            return withCallee(make(TitleFamily::CallResult,
+                                   ownedDecl ? TitleAnswer::Owned : TitleAnswer::Borrow,
+                                   TitleSource::None, leaf, flags));
+        }
+
+        TitleShape moveOf(const ExpressionPtr& leaf, const CajetaModulePtr& module);
+
+    }  // namespace
+
+    // No default: -Werror=switch makes an unnamed ExprKind a build failure, so this is total.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic error "-Wswitch"
+#endif
+    TitleShape classify(const ExpressionPtr& e0, const CajetaModulePtr& module) {
+        if (!e0) return make(TitleFamily::Unsupported, TitleAnswer::Scalar, TitleSource::None, e0);
+        ExpressionPtr e = e0;
+        for (;;) {
+            if (e->kind() == ExprKind::Primary) {
+                if (auto c = childOf(e, 0)) { e = c; continue; }
+                break;
+            }
+            if (e->kind() == ExprKind::Cast) {
+                auto ce = std::static_pointer_cast<CastExpression>(e);
+                if (isReferenceCast(ce->getDestType())) {
+                    if (auto c = childOf(e, 0)) { e = c; continue; }
+                }
+                break;
+            }
+            break;
+        }
+        if (!e->getResolvedType()) {
+            try {
+                e->resolveTypes(module);
+            } catch (Exception&) {
+            }
+        }
+        if (isOwnershipLessScalar(e->getResolvedType())) return scalar(e);
+
+        switch (e->kind()) {
+            case ExprKind::Unsupported:
+            case ExprKind::Count:
+                return make(TitleFamily::Unsupported, TitleAnswer::Scalar, TitleSource::None, e);
+            case ExprKind::Primary:            // a bare primary with no child
+                return scalar(e);
+            case ExprKind::Literal:
+                return read(TitleFamily::Literal, e);
+            case ExprKind::ClassLiteral:       // the runtime's cached ClassObject
+                return read(TitleFamily::Literal, e);
+            case ExprKind::This:
+            case ExprKind::Super:
+                return read(TitleFamily::ThisRead, e);
+            case ExprKind::TextLiteral: {
+                auto lit = std::static_pointer_cast<TextLiteralExpression>(e);
+                LiteralType lt = lit->getLiteralType();
+                if (lt == LITERAL_TYPE_STRING || lt == LITERAL_TYPE_TEXT_BLOCK) {
+                    TitleShape s = read(TitleFamily::Literal, e);
+                    s.flags |= TitleShape::kString;
+                    return s;
+                }
+                return scalar(e);              // bool, char, null
+            }
+            case ExprKind::IntegerLiteral:
+            case ExprKind::FloatLiteral:
+            case ExprKind::InstanceOf:
+            case ExprKind::Postfix:
+            case ExprKind::Prefix:
+            case ExprKind::Cast:               // a primitive cast (not peeled)
+            case ExprKind::Detach:
+                return scalar(e);
+            case ExprKind::Identifier:
+                return localRead(e, module);
+            case ExprKind::Dot:
+                return read(TitleFamily::FieldRead, e);
+            case ExprKind::ArrayIndex:
+                return read(TitleFamily::ElementRead, e);
+            case ExprKind::ArraySlice: {
+                TitleShape s = read(TitleFamily::ElementRead, e);
+                s.label = "an array slice";
+                return s;
+            }
+            case ExprKind::ArrayLiteral: {
+                auto al = std::static_pointer_cast<ArrayLiteralExpression>(e);
+                uint32_t f = typeFlags(e->getResolvedType()) | TitleShape::kArray;
+                if (al->isStackAlloc()) f |= TitleShape::kStack;
+                if (al->isArenaEligible()) f |= TitleShape::kArena;
+                bool bound = al->isStackAlloc() || al->isArenaEligible();
+                TitleShape s = make(TitleFamily::Fresh, bound ? TitleAnswer::StackBound : TitleAnswer::Owned,
+                                    TitleSource::None, e, f);
+                if (al->isStackAlloc()) s.label = "a `stack` construction";
+                return s;
+            }
+            case ExprKind::MapLiteral:
+                return make(TitleFamily::Fresh, TitleAnswer::Owned, TitleSource::None, e,
+                            typeFlags(e->getResolvedType()));
+            case ExprKind::Aggregate: {
+                auto ag = std::static_pointer_cast<AggregateInitializerExpression>(e);
+                uint32_t f = typeFlags(e->getResolvedType());
+                if (ag->getStackAlloc()) {
+                    TitleShape s = make(TitleFamily::Fresh, TitleAnswer::StackBound, TitleSource::None, e,
+                                        (uint32_t) (f | TitleShape::kStack));
+                    s.label = "a `stack` construction";
+                    return s;
+                }
+                return make(TitleFamily::Fresh, TitleAnswer::Owned, TitleSource::None, e, f);
+            }
+            case ExprKind::New: {
+                auto ne = std::static_pointer_cast<NewExpression>(e);
+                uint32_t f = typeFlags(e->getResolvedType());
+                if (ne->getStackAlloc()) {
+                    TitleShape s = make(TitleFamily::Fresh, TitleAnswer::StackBound, TitleSource::None, e,
+                                        (uint32_t) (f | TitleShape::kStack));
+                    s.label = "a `stack` construction";
+                    return s;
+                }
+                if (ne->getSharedAlloc()) {
+                    return make(TitleFamily::Fresh, TitleAnswer::Borrow, TitleSource::None, e,
+                                (uint32_t) (f | TitleShape::kShared));
+                }
+                return make(TitleFamily::Fresh, TitleAnswer::Owned, TitleSource::None, e, f);
+            }
+            case ExprKind::BinaryOp: {
+                auto bo = std::static_pointer_cast<BinaryOpExpression>(e);
+                BinaryOp op = bo->getBinaryOp();
+                if (op == BINARY_OP_ADD && isLangString(bo->getResolvedType())) {
+                    uint32_t f = TitleShape::kString;
+                    if (bo->isArenaEligible()) {
+                        return make(TitleFamily::Concat, TitleAnswer::StackBound, TitleSource::None,
+                                    e, (uint32_t) (f | TitleShape::kArena));
+                    }
+                    return make(TitleFamily::Concat, TitleAnswer::Owned, TitleSource::None, e, f);
+                }
+                if (op == BINARY_OP_ASSIGN) {
+                    if (auto rhs = childOf(e, 1)) return classify(rhs, module);
+                }
+                return scalar(e);
+            }
+            case ExprKind::BooleanSwitch: {
+                auto a = childOf(e, 1);
+                auto b = childOf(e, 2);
+                if (!a || !b) return scalar(e);
+                return join(classify(a, module), classify(b, module), e);
+            }
+            case ExprKind::Switch: {
+                auto sw = std::static_pointer_cast<SwitchExpression>(e);
+                bool first = true;
+                TitleShape acc;
+                for (auto& c : sw->getCases()) {
+                    if (!c.body) continue;
+                    TitleShape s = classify(c.body, module);
+                    acc = first ? s : join(acc, s, e);
+                    first = false;
+                }
+                if (first) return scalar(e);
+                if (acc.family != TitleFamily::Conditional) {
+                    acc = join(acc, acc, e);   // one arm: still a conditional by family
+                }
+                return acc;
+            }
+            case ExprKind::MethodCall:
+                return callResult(e, module);
+            case ExprKind::Call: {
+                auto ce = std::static_pointer_cast<CallExpression>(e);
+                CajetaFunctionTypePtr fnTy;
+                if (auto callee = ce->getCallee()) {
+                    if (!callee->getResolvedType()) callee->resolveTypes(module);
+                    fnTy = std::dynamic_pointer_cast<CajetaFunctionType>(callee->getResolvedType());
+                }
+                return closureCallShape(fnTy, e);
+            }
+            case ExprKind::MethodReference:
+            case ExprKind::Lambda:
+                return make(TitleFamily::Closure, TitleAnswer::Owned, TitleSource::None, e);
+            case ExprKind::Move:
+                return moveOf(e, module);
+            case ExprKind::Await:              // the awaited value is the awaiter's
+            case ExprKind::Spawn:              // the Task handle is the binding's
+                return make(TitleFamily::Fresh, TitleAnswer::Owned, TitleSource::None, e,
+                            typeFlags(e->getResolvedType()));
+        }
+        return make(TitleFamily::Unsupported, TitleAnswer::Scalar, TitleSource::None, e);
+    }
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+    namespace {
+        // The shape of a `#x` move: classify the inner expression, then hand it to
+        // moveFrom, which keeps the inner's provenance as the flag's source.
+        TitleShape moveOf(const ExpressionPtr& leaf, const CajetaModulePtr& module) {
+            auto mv = std::static_pointer_cast<MoveExpression>(leaf);
+            auto inner = childOf(leaf, 0);
+            if (!inner) {
+                TitleShape s = make(TitleFamily::Move, TitleAnswer::Owned, TitleSource::None, leaf);
+                if (mv->isSharpStore()) s.flags |= TitleShape::kSharpStore;
+                return s;
+            }
+            TitleShape s = moveFrom(classify(inner, module), mv->isSharpStore());
+            s.leaf = leaf;   // the move node itself: titleFlag() then reads its stashed flag
+            return s;
+        }
+    }  // namespace
+
+    TitleShape moveFrom(const TitleShape& in, bool sharpStore) {
+            TitleShape s = make(TitleFamily::Move, TitleAnswer::Owned, TitleSource::None, in.leaf);
+            if (sharpStore) s.flags |= TitleShape::kSharpStore;
+            s.flags |= in.flags;
+            s.field = in.field;
+            s.paramIndex = in.paramIndex;
+            switch (in.family) {
+                case TitleFamily::LocalRead:
+                    if (in.has(TitleShape::kStack)) {
+                        s.answer = TitleAnswer::StackBound;      // the frame's body, no title
+                    } else if (in.has(TitleShape::kHasEntry)) {
+                        if (in.has(TitleShape::kStaticTitle) && !in.has(TitleShape::kRuntimeOwner)) {
+                            s.answer = TitleAnswer::Owned;
+                        } else {
+                            s.answer = TitleAnswer::Runtime; s.source = TitleSource::DropEntry;
+                        }
+                    } else if (in.has(TitleShape::kIsParam)) {
+                        if (in.has(TitleShape::kTransferredParam)) {
+                            s.answer = TitleAnswer::Owned;           // `#`-formal: the frame's title
+                        } else {
+                            s.answer = TitleAnswer::Runtime; s.source = TitleSource::TransferWord;
+                        }
+                    } else if (in.has(TitleShape::kStaticTitle)) {
+                        s.answer = TitleAnswer::Owned;            // a static owner without an entry
+                    } else {
+                        s.answer = TitleAnswer::Borrow;
+                    }
+                    break;
+                case TitleFamily::FieldRead:
+                case TitleFamily::ElementRead:
+                    s.answer = TitleAnswer::Runtime; s.source = TitleSource::Slot;
+                    break;
+                case TitleFamily::Move:
+                case TitleFamily::CallResult:
+                case TitleFamily::ClosureCall:
+                case TitleFamily::Conditional:
+                case TitleFamily::Fresh:
+                case TitleFamily::Concat:
+                case TitleFamily::Closure:
+                    s.answer = in.answer; s.source = in.source;
+                    break;
+                case TitleFamily::Literal:
+                case TitleFamily::ThisRead:
+                    s.answer = TitleAnswer::Borrow;
+                    break;
+                case TitleFamily::Scalar:
+                case TitleFamily::Unsupported:
+                case TitleFamily::Count:
+                    s.answer = in.answer; s.source = in.source;
+                    break;
+            }
+            return s;
+    }
+
+    TitleVerdict policy(const TitleShape& s, ConsumerRole role) {
+        TitleVerdict v{s.answer, s.source, nullptr, s.label};
+        if (s.answer == TitleAnswer::Scalar) return v;
+        auto escapesBorrowedSlots = [&] {
+            return s.family == TitleFamily::Move && s.field
+                && !s.field->getSlotBorrowedLocals().empty();
+        };
+        switch (role) {
+            case ConsumerRole::StoreString:
+            case ConsumerRole::StoreSlot:
+                if (s.family == TitleFamily::Move && s.answer == TitleAnswer::StackBound) {
+                    v.error = "CAJETA_ERROR_STACK_TRANSFER";
+                } else if (escapesBorrowedSlots()) {
+                    v.error = "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL";
+                } else if (s.family == TitleFamily::LocalRead
+                           && s.has(TitleShape::kIsParam)
+                           && s.has(TitleShape::kTransferredParam)) {
+                    v.answer = TitleAnswer::Owned;
+                    v.source = TitleSource::None;
+                }
+                return v;
+            case ConsumerRole::Bind:
+            case ConsumerRole::Reassign:
+            case ConsumerRole::ArgPlain:
+            case ConsumerRole::Arm:
+            case ConsumerRole::Count:
+                return v;
+            case ConsumerRole::ReturnOwned:
+                if (s.answer == TitleAnswer::StackBound
+                        || (s.family == TitleFamily::LocalRead && s.has(TitleShape::kStack))) {
+                    v.error = "CAJETA_ERROR_STACK_RETURN_ESCAPES";
+                    return v;
+                }
+                if (escapesBorrowedSlots()) {
+                    v.error = "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL";
+                    return v;
+                }
+                if (s.family == TitleFamily::ThisRead) {
+                    v.error = "CAJETA_ERROR_OWNED_RETURN_OF_BORROWED_THIS";
+                    return v;
+                }
+                if (s.family == TitleFamily::Move) return v;
+                if (s.family == TitleFamily::LocalRead) {
+                    if (s.has(TitleShape::kBorrowOrigin)) {
+                        v.error = "CAJETA_ERROR_OWNED_RETURN_OF_BORROW";
+                        return v;
+                    }
+                    if (s.has(TitleShape::kHasEntry)) {
+                        if (s.has(TitleShape::kRuntimeOwner)) {
+                            v.answer = TitleAnswer::Runtime; v.source = TitleSource::DropEntry;
+                        } else {
+                            v.answer = TitleAnswer::Owned; v.source = TitleSource::None;
+                        }
+                        return v;
+                    }
+                    if (s.has(TitleShape::kIsParam)) {
+                        if (s.has(TitleShape::kTransferredParam) || s.has(TitleShape::kInterface)) {
+                            v.answer = TitleAnswer::Owned; v.source = TitleSource::None;
+                            return v;
+                        }
+                        v.error = "CAJETA_ERROR_BORROW_PARAM_ESCAPES";
+                        return v;
+                    }
+                    v.error = "CAJETA_ERROR_OWNED_RETURN_OF_BORROW";
+                    return v;
+                }
+                if (s.family == TitleFamily::Literal && s.has(TitleShape::kString)) {
+                    v.answer = TitleAnswer::Owned; v.source = TitleSource::None;
+                    return v;
+                }
+                if (s.answer == TitleAnswer::Borrow) {
+                    v.error = "CAJETA_ERROR_OWNED_RETURN_OF_BORROW";
+                }
+                return v;
+            case ConsumerRole::ReturnPlain:
+                if (s.family == TitleFamily::Fresh) {
+                    if (s.answer == TitleAnswer::StackBound) {
+                        v.error = "CAJETA_ERROR_STACK_RETURN_ESCAPES";
+                    } else if (s.answer == TitleAnswer::Owned) {
+                        v.error = "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER";
+                    }
+                    return v;
+                }
+                if (s.family == TitleFamily::LocalRead) {
+                    if (s.has(TitleShape::kIsParam)) {
+                        if (s.has(TitleShape::kHasEntry)) {
+                            v.answer = TitleAnswer::Runtime; v.source = TitleSource::DropEntry;
+                        }
+                        return v;
+                    }
+                    if (s.has(TitleShape::kStack)) {
+                        v.error = "CAJETA_ERROR_STACK_RETURN_ESCAPES";
+                        return v;
+                    }
+                    if (s.has(TitleShape::kHasEntry) && !s.has(TitleShape::kValue)
+                            && !s.has(TitleShape::kFunction) && !s.has(TitleShape::kInterface)) {
+                        v.error = "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER";
+                    }
+                    return v;
+                }
+                return v;
+            case ConsumerRole::ArgOwned:
+                if (s.answer == TitleAnswer::StackBound && !s.has(TitleShape::kValue)) {
+                    v.error = "CAJETA_ERROR_STACK_TRANSFER";
+                    return v;
+                }
+                if (escapesBorrowedSlots()) {
+                    v.error = "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL";
+                    return v;
+                }
+                if (s.family == TitleFamily::Literal && s.has(TitleShape::kString)) {
+                    v.answer = TitleAnswer::Owned; v.source = TitleSource::None;
+                    return v;
+                }
+                switch (s.family) {
+                    case TitleFamily::ThisRead:
+                        return v;
+                    case TitleFamily::FieldRead:
+                    case TitleFamily::ElementRead:
+                    case TitleFamily::Literal:
+                        v.error = "CAJETA_ERROR_TRANSFER_REQUIRED";
+                        return v;
+                    case TitleFamily::CallResult:
+                    case TitleFamily::ClosureCall:
+                        if (s.answer == TitleAnswer::Borrow) v.error = "CAJETA_ERROR_TRANSFER_REQUIRED";
+                        return v;
+                    case TitleFamily::LocalRead:
+                        if (s.has(TitleShape::kIsParam) && !s.has(TitleShape::kTransferredParam)) {
+                            v.error = "CAJETA_ERROR_TRANSFER_REQUIRED";   // a borrowed parameter
+                            return v;
+                        }
+                        if (!s.has(TitleShape::kHasEntry) && !s.has(TitleShape::kIsParam)
+                                && !s.has(TitleShape::kArena)) {
+                            v.error = "CAJETA_ERROR_TRANSFER_REQUIRED";   // an entry-less local (5.8)
+                            return v;
+                        }
+                        if (s.has(TitleShape::kHasEntry)) {
+                            v.error = "CAJETA_ERROR_TRANSFER_REQUIRED";
+                        }
+                        return v;
+                    case TitleFamily::Fresh:
+                    case TitleFamily::Concat:
+                    case TitleFamily::Move:
+                    case TitleFamily::Conditional:
+                    case TitleFamily::Closure:
+                    case TitleFamily::Scalar:
+                    case TitleFamily::Unsupported:
+                    case TitleFamily::Count:
+                        return v;
+                }
+                return v;
+        }
+        return v;
+    }
+
+    namespace {
+        // Reads the drop entry's active byte (offset 24) inline. `current`, when
+        // given, is the local's present value: the flag counts only while the entry
+        // still describes it, since a re-assign leaves it on the displaced value.
+        llvm::Value* entryActiveFlag(llvm::Value* entry, const CajetaModulePtr& module,
+                                     llvm::Value* current = nullptr) {
+            auto* builder = module->getBuilder();
+            auto& ctx = *module->getLlvmContext();
+            llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+            llvm::Value* activePtr = builder->CreateInBoundsGEP(
+                llvm::Type::getInt8Ty(ctx), entry,
+                llvm::ConstantInt::get(i64, 24), "title.active.ptr");
+            llvm::Value* active = builder->CreateLoad(
+                llvm::Type::getInt8Ty(ctx), activePtr, "title.active");
+            llvm::Value* flag = builder->CreateZExt(active, i64, "title.flag");
+            if (current && current->getType()->isPointerTy()) {
+                llvm::Value* described = builder->CreateLoad(
+                    llvm::PointerType::get(ctx, 0), entry, "title.obj");
+                llvm::Value* same = builder->CreateICmpEQ(described, current, "title.describes");
+                flag = builder->CreateSelect(same, flag, llvm::ConstantInt::get(i64, 0), "title.flag.own");
+            }
+            return flag;
+        }
+    }  // namespace
+
+    namespace {
+        void throwVerdict(const TitleShape& s, const TitleVerdict& v, const ExpressionPtr& e,
+                          const CajetaModulePtr& module, const char* where) {
+            std::string what = v.error;
+            std::string msg;
+            if (what == "CAJETA_ERROR_STACK_TRANSFER") {
+                msg = std::string("`stack` value transferred into ") + where
+                    + ": a stack instance dies with its frame, so a `#` move into a "
+                      "field or slot that outlives it would dangle. Construct it "
+                      "with `heap` to transfer it, or return it by value (a plain "
+                      "`T` return of `stack T(...)` lands in the caller's frame). "
+                      "See docs/specification/lang/MemoryModel.md § Placement.";
+            } else if (what == "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL") {
+                const char* arr = s.field ? s.field->getName().c_str() : "the array";
+                std::string slotText;
+                std::string localsFix;
+                if (s.field) {
+                    for (auto& p : s.field->getSlotBorrowedLocals()) {
+                        if (slotText.empty()) {
+                            slotText = (p.first >= 0 ? "slot " + std::to_string(p.first)
+                                                     : std::string("a slot"))
+                                + " borrows local `" + p.second + "`";
+                        }
+                        if (!localsFix.empty()) localsFix += ", ";
+                        localsFix += "#" + p.second;
+                    }
+                }
+                msg = std::string("array `") + arr + "` leaves the frame through "
+                    + where + ", but " + slotText + ", which dies with this frame: "
+                      "the slot would dangle. A bare name in an array literal or "
+                      "element store LENDS (like `list.add(x)`); write `"
+                    + localsFix + "` to move the value into the array, or store a "
+                      "copy. See specs/ownership-title-classifier-spec.md 5.10.";
+            } else {
+                msg = std::string(v.error) + " at " + where + " (" + v.label + ")";
+            }
+            throw Exception(msg, what, module->getSourcePath(),
+                            (int) e->getSourceLine(), (int) e->getSourceColumn());
+        }
+    }  // namespace
+
+    void rejectEscape(const ExpressionPtr& e, ConsumerRole role,
+                      const CajetaModulePtr& module, const char* where) {
+        if (!e) return;
+        TitleShape s = classify(e, module);
+        if ((s.family == TitleFamily::Move || s.family == TitleFamily::LocalRead)
+                && s.field && !s.field->getSlotBorrowedLocals().empty()) {
+            TitleVerdict v{s.answer, s.source, "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL", s.label};
+            throwVerdict(s, v, e, module, where);
+        }
+        (void) role;
+    }
+
+    llvm::Value* storeTitleFlag(const ExpressionPtr& e, ConsumerRole role,
+                                const CajetaModulePtr& module, const char* where) {
+        if (!e) return nullptr;
+        return storeTitleFlagOf(classify(e, module), role, e, module, where);
+    }
+
+    llvm::Value* verdictFlag(const TitleShape& s, const TitleVerdict& v,
+                             const CajetaModulePtr& module) {
+        if (v.error || v.answer == TitleAnswer::Scalar) return nullptr;
+        TitleShape r = s;
+        r.answer = v.answer;
+        r.source = v.source;
+        return titleFlag(r, module);
+    }
+
+    llvm::Value* verdictFlagAfterCodegen(const TitleShape& s, const TitleVerdict& v,
+                                         const CajetaModulePtr& module) {
+        if (v.answer == TitleAnswer::Runtime && v.source == TitleSource::ReturnFlag
+                && s.family == TitleFamily::CallResult && !s.callee) {
+            return nullptr;   // an intrinsic lowering: no flag was stored
+        }
+        return verdictFlag(s, v, module);
+    }
+
+    void deactivateLocalEntry(const CajetaModulePtr& module, const FieldPtr& field) {
+        deactivateLocalEntry(module, field.get());
+    }
+
+    void deactivateLocalEntry(const CajetaModulePtr& module, Field* field) {
+        if (!field) return;
+        llvm::Value* entry = field->getDropEntry();
+        if (!entry) return;
+        auto* builder = module->getBuilder();
+        if (field->isEntryMayBeStale() && field->getOrCreateAllocation()) {
+            if (llvm::Function* markIf = module->getRuntimeFunction("__cajeta_drop_mark_inactive_if")) {
+                llvm::Value* current = builder->CreateLoad(
+                    llvm::PointerType::get(*module->getLlvmContext(), 0),
+                    field->getOrCreateAllocation(), "title.current");
+                builder->CreateCall(markIf, {entry, current});
+                return;
+            }
+        }
+        if (llvm::Function* mark = module->getRuntimeFunction("__cajeta_drop_mark_inactive")) {
+            builder->CreateCall(mark, {entry});
+        }
+    }
+
+    ArgTitle classifyArgument(const ExpressionPtr& e, bool callerTransferred,
+                              const CajetaModulePtr& module, const char* where) {
+        ArgTitle a;
+        a.shape = classify(e, module);
+        if (callerTransferred) a.shape = moveFrom(a.shape, /*sharpStore=*/false);
+        TitleVerdict v = policy(a.shape, ConsumerRole::ArgPlain);
+        if (callerTransferred && a.shape.answer == TitleAnswer::StackBound
+                && !a.shape.has(TitleShape::kValue)) {   // a value type moves by copy
+            TitleVerdict sv{a.shape.answer, a.shape.source, "CAJETA_ERROR_STACK_TRANSFER", a.shape.label};
+            throwVerdict(a.shape, sv, e, module, where);
+        }
+        a.flag = verdictFlagAfterCodegen(a.shape, v, module);
+        if (callerTransferred && !a.flag && a.shape.family == TitleFamily::Move
+                && a.shape.source == TitleSource::TransferWord && a.shape.field) {
+            if (a.shape.has(TitleShape::kValue) || a.shape.has(TitleShape::kInterface)) {
+                a.flag = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*module->getLlvmContext()), 1);
+                return a;
+            }
+            const std::string& name = a.shape.field->getName();
+            throw Exception(
+                "cannot transfer borrowed parameter `" + name + "` via `#` — its "
+                "formal is declared plain `T` (borrow), so this scope doesn't own "
+                "the value. Fix: mark the formal `#" + name + "` to receive "
+                "ownership at the outer call site, or restructure to not retain "
+                "the borrow.",
+                "CAJETA_ERROR_BORROW_PARAM_ESCAPES", module->getSourcePath(),
+                (int) e->getSourceLine(), (int) e->getSourceColumn());
+        }
+        return a;
+    }
+
+    void rejectOwnedFormalArgument(const ExpressionPtr& e, bool callerTransferred,
+                                   const CajetaModulePtr& module,
+                                   const std::string& callee, const std::string& formal,
+                                   int line) {
+        if (!e) return;
+        TitleShape top = classify(e, module);
+        const bool viaConditional = top.family == TitleFamily::Conditional && !callerTransferred;
+        auto oneArm = [&](const ExpressionPtr& arm) {
+            TitleShape sh = viaConditional ? classify(arm, module) : top;
+            if (callerTransferred) sh = moveFrom(sh, /*sharpStore=*/false);
+            TitleVerdict v = policy(sh, ConsumerRole::ArgOwned);
+            if (!v.error) return;
+            const std::string code = v.error;
+            if (code != "CAJETA_ERROR_TRANSFER_REQUIRED") {
+                throwVerdict(sh, v, arm, module, "a `#T` argument");
+            }
+            const std::string head = "method `" + callee + "` declares parameter `"
+                + formal + "` as `#T` (ownership transfer required)";
+            const std::string see = " See docs/specification/lang/OwnershipTransfer.md.";
+            const std::string name = sh.field ? sh.field->getName() : std::string();
+            std::string msg;
+            if (sh.family == TitleFamily::LocalRead && sh.has(TitleShape::kIsParam)) {
+                auto m = module->getCurrentMethod();
+                msg = head + ", but `" + name + "` is a BORROWED parameter of `"
+                    + (m ? m->getName() : std::string("?")) + "` — this frame holds no "
+                    "title to surrender, and `#" + name + "` would be rejected for the "
+                    "same reason. Declare the parameter `#" + name + "` to take "
+                    "ownership from your caller, or pass a value this frame owns." + see;
+            } else if (sh.family == TitleFamily::LocalRead && sh.has(TitleShape::kHasEntry)) {
+                msg = head + "; write `#" + name + "` at the call site to surrender "
+                    "ownership of the source local, or pass a fresh `heap T(...)` "
+                    "construction." + see;
+            } else if (sh.family == TitleFamily::LocalRead) {
+                msg = head + ", but `" + name + "` holds a BORROW (it was bound without "
+                    "a title, so this frame never owned what it names): the callee "
+                    "would store a value that dangles once its owner dies. Pass a "
+                    "fresh copy (`#heap ...`), a fresh value, or an owned local "
+                    "surrendered with `#`." + see;
+            } else {
+                msg = head + ", but " + (viaConditional
+                        ? "an arm of the conditional argument is "
+                        : "the argument is ")
+                    + sh.label + " — a borrow. Pass a fresh copy (`#heap ...`) or an "
+                    "owned local surrendered with `#`." + see;
+            }
+            throw Exception(msg, code, module->getSourcePath(), line, -1);
+        };
+        if (viaConditional) {
+            BooleanSwitchExpression::forEachLeafArm(top.leaf, oneArm);
+        } else {
+            oneArm(top.leaf ? top.leaf : e);
+        }
+    }
+
+    llvm::Value* storeTitleFlagOf(const TitleShape& s, ConsumerRole role,
+                                  const ExpressionPtr& e, const CajetaModulePtr& module,
+                                  const char* where) {
+        TitleVerdict v = policy(s, role);
+        if (v.error) throwVerdict(s, v, e, module, where);
+        switch (v.answer) {
+            case TitleAnswer::Owned:
+                return llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(*module->getLlvmContext()), 1);
+            case TitleAnswer::Runtime:
+                return titleFlag(s, module);
+            case TitleAnswer::Borrow:
+            case TitleAnswer::StackBound:
+            case TitleAnswer::Scalar:
+                return nullptr;
+        }
+        return nullptr;
+    }
+
+    llvm::Value* titleFlag(const TitleShape& s, const CajetaModulePtr& module) {
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        switch (s.answer) {
+            case TitleAnswer::Borrow:
+            case TitleAnswer::StackBound:
+            case TitleAnswer::Scalar:
+                return llvm::ConstantInt::get(i64, 0);
+            case TitleAnswer::Owned:
+                return llvm::ConstantInt::get(i64, 1);
+            case TitleAnswer::Runtime:
+                break;
+        }
+        // A move read its source's flag BEFORE deactivating it, so the stashed
+        // value is the truth and the entry must never be re-read.
+        if (s.family == TitleFamily::Move && s.leaf && s.leaf->kind() == ExprKind::Move) {
+            if (llvm::Value* mf = std::static_pointer_cast<MoveExpression>(s.leaf)->getRuntimeTitleFlag()) {
+                return mf;
+            }
+            return llvm::ConstantInt::get(i64, 1);
+        }
+        llvm::Function* fn = builder->GetInsertBlock() ? builder->GetInsertBlock()->getParent() : nullptr;
+        if (s.leaf && fn && s.leaf->titleFlagCacheFor(fn)) {
+            return s.leaf->titleFlagCacheFor(fn);
+        }
+        llvm::Value* v = nullptr;
+        switch (s.source) {
+            case TitleSource::DropEntry: {
+                if (!s.field || !s.field->getDropEntry()) break;
+                llvm::Value* current = nullptr;
+                if (llvm::Value* slot = s.field->isEntryMayBeStale() ? s.field->getOrCreateAllocation() : nullptr) {
+                    current = builder->CreateLoad(
+                        llvm::PointerType::get(*module->getLlvmContext(), 0), slot, "title.current");
+                }
+                v = entryActiveFlag(s.field->getDropEntry(), module, current);
+                break;
+            }
+            case TitleSource::TransferWord: {
+                auto m = module->getCurrentMethod();
+                llvm::Value* word = m ? m->getTransferWordArg() : nullptr;
+                if (!word || s.paramIndex < 0) break;
+                v = builder->CreateAnd(
+                    builder->CreateLShr(word, llvm::ConstantInt::get(i64, (uint64_t) s.paramIndex)),
+                    llvm::ConstantInt::get(i64, 1), "title.word.bit");
+                break;
+            }
+            case TitleSource::ReturnFlag: {
+                // 8.2.4 — a call with no callee after codegen is an intrinsic
+                // lowering: nothing stored the flag, so a read here would be stale.
+                if (s.family == TitleFamily::CallResult && !s.callee) break;
+                if (llvm::Function* gf = module->getRuntimeFunction("__cajeta_return_flag_get")) {
+                    v = builder->CreateCall(gf, {}, "title.ret.flag");
+                }
+                break;
+            }
+            case TitleSource::ArmPhi: {
+                v = conditionalTitleFlag(s.leaf);   // either conditional kind
+                break;
+            }
+            case TitleSource::Slot: {
+                if (s.leaf && s.leaf->kind() == ExprKind::Move) {
+                    v = std::static_pointer_cast<MoveExpression>(s.leaf)->getRuntimeTitleFlag();
+                }
+                break;
+            }
+            case TitleSource::None:
+                break;
+        }
+        if (v && s.leaf && fn) s.leaf->setTitleFlagCache(v, fn);
+        return v;
+    }
+
+    bool TitleShapeAudit::enabled() { return g_auditEnabled; }
+    void TitleShapeAudit::setEnabled(bool on) { g_auditEnabled = on; }
+    void TitleShapeAudit::record(TitleShapeRecord rec) { g_records.push_back(std::move(rec)); }
+    const std::vector<TitleShapeRecord>& TitleShapeAudit::records() { return g_records; }
+    void TitleShapeAudit::clear() { g_records.clear(); }
+
+    void observeTitle(const ExpressionPtr& e, const CajetaModulePtr& module, ConsumerRole role) {
+        if (!g_auditEnabled || !e) return;
+        TitleShape s = classify(e, module);
+        TitleVerdict v = policy(s, role);
+        TitleShapeRecord r;
+        r.file = module->getSourcePath();
+        if (auto hm = module->getCurrentMethod()) {
+            r.holder = (hm->getParent() ? hm->getParent()->toCanonical() + "." : std::string())
+                + hm->getName();
+        }
+        r.line = (int) e->getSourceLine();
+        r.kind = e->kind();
+        r.family = s.family;
+        r.answer = v.answer;
+        r.source = v.source;
+        r.role = role;
+        r.flags = s.flags;
+        g_records.push_back(std::move(r));
+    }
+
+    const char* toString(TitleAnswer a) noexcept {
+        switch (a) {
+            case TitleAnswer::Borrow: return "Borrow";
+            case TitleAnswer::Owned: return "Owned";
+            case TitleAnswer::StackBound: return "StackBound";
+            case TitleAnswer::Runtime: return "Runtime";
+            case TitleAnswer::Scalar: return "Scalar";
+        }
+        return "?";
+    }
+    const char* toString(TitleSource s) noexcept {
+        switch (s) {
+            case TitleSource::None: return "None";
+            case TitleSource::DropEntry: return "DropEntry";
+            case TitleSource::TransferWord: return "TransferWord";
+            case TitleSource::ReturnFlag: return "ReturnFlag";
+            case TitleSource::ArmPhi: return "ArmPhi";
+            case TitleSource::Slot: return "Slot";
+        }
+        return "?";
+    }
+    const char* toString(TitleFamily f) noexcept {
+        switch (f) {
+            case TitleFamily::Literal: return "Literal";
+            case TitleFamily::LocalRead: return "LocalRead";
+            case TitleFamily::ThisRead: return "ThisRead";
+            case TitleFamily::FieldRead: return "FieldRead";
+            case TitleFamily::ElementRead: return "ElementRead";
+            case TitleFamily::Fresh: return "Fresh";
+            case TitleFamily::Concat: return "Concat";
+            case TitleFamily::Move: return "Move";
+            case TitleFamily::CallResult: return "CallResult";
+            case TitleFamily::ClosureCall: return "ClosureCall";
+            case TitleFamily::Conditional: return "Conditional";
+            case TitleFamily::Closure: return "Closure";
+            case TitleFamily::Scalar: return "Scalar";
+            case TitleFamily::Unsupported: return "Unsupported";
+            case TitleFamily::Count: return "Count";
+        }
+        return "?";
+    }
+    const char* toString(ConsumerRole r) noexcept {
+        switch (r) {
+            case ConsumerRole::Bind: return "Bind";
+            case ConsumerRole::StoreString: return "StoreString";
+            case ConsumerRole::StoreSlot: return "StoreSlot";
+            case ConsumerRole::Reassign: return "Reassign";
+            case ConsumerRole::ReturnOwned: return "ReturnOwned";
+            case ConsumerRole::ReturnPlain: return "ReturnPlain";
+            case ConsumerRole::ArgPlain: return "ArgPlain";
+            case ConsumerRole::ArgOwned: return "ArgOwned";
+            case ConsumerRole::Arm: return "Arm";
+            case ConsumerRole::Count: return "Count";
+        }
+        return "?";
+    }
+    const char* toString(ExprKind k) noexcept {
+        switch (k) {
+            case ExprKind::Unsupported: return "Unsupported";
+            case ExprKind::Primary: return "Primary";
+            case ExprKind::Literal: return "Literal";
+            case ExprKind::ClassLiteral: return "ClassLiteral";
+            case ExprKind::This: return "This";
+            case ExprKind::Super: return "Super";
+            case ExprKind::TextLiteral: return "TextLiteral";
+            case ExprKind::IntegerLiteral: return "IntegerLiteral";
+            case ExprKind::FloatLiteral: return "FloatLiteral";
+            case ExprKind::Identifier: return "Identifier";
+            case ExprKind::Dot: return "Dot";
+            case ExprKind::ArrayIndex: return "ArrayIndex";
+            case ExprKind::ArraySlice: return "ArraySlice";
+            case ExprKind::ArrayLiteral: return "ArrayLiteral";
+            case ExprKind::MapLiteral: return "MapLiteral";
+            case ExprKind::Aggregate: return "Aggregate";
+            case ExprKind::New: return "New";
+            case ExprKind::Cast: return "Cast";
+            case ExprKind::Postfix: return "Postfix";
+            case ExprKind::Prefix: return "Prefix";
+            case ExprKind::BinaryOp: return "BinaryOp";
+            case ExprKind::BooleanSwitch: return "BooleanSwitch";
+            case ExprKind::InstanceOf: return "InstanceOf";
+            case ExprKind::MethodCall: return "MethodCall";
+            case ExprKind::Call: return "Call";
+            case ExprKind::MethodReference: return "MethodReference";
+            case ExprKind::Move: return "Move";
+            case ExprKind::Await: return "Await";
+            case ExprKind::Spawn: return "Spawn";
+            case ExprKind::Detach: return "Detach";
+            case ExprKind::Switch: return "Switch";
+            case ExprKind::Lambda: return "Lambda";
+            case ExprKind::Count: return "Count";
+        }
+        return "?";
+    }
+
+}  // namespace cajeta::ownership

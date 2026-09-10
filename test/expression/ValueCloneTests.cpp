@@ -33,7 +33,7 @@ TEST(ValueCloneTests, referenceCloneIsDistinctObject) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Cell a = heap Cell(10);\n"
-        "        Cell b = (Cell) a.clone();\n"
+        "        Cell b #= (Cell) a.clone();\n"
         "        b.v = 99;\n"
         "        Cell c = a;\n"          // alias, not a copy
         "        c.v = 55;\n"
@@ -52,7 +52,7 @@ TEST(ValueCloneTests, cloneDoesNotConsumeReceiver) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Cell a = heap Cell(7);\n"
-        "        Cell b = (Cell) a.clone();\n"
+        "        Cell b #= (Cell) a.clone();\n"
         "        return a.v + b.v;\n"     // 14 — both alive
         "    }\n"
         "}\n");

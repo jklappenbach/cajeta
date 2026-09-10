@@ -9,11 +9,8 @@
 
 namespace cajeta::buildtool {
 
-    // Symbols defined by cajeta_init_embedded.cpp (CMake-generated
-    // via cmake/EmbedInitTemplates.cmake). The shape is duplicated
-    // here as plain structs because the generated file deliberately
-    // pulls in only <cstddef> — keeping the embed compile-fast and
-    // standalone from the rest of the build-tool headers.
+    // Symbols defined by the CMake-generated cajeta_init_embedded.cpp; the shape is
+    // duplicated as plain structs because that file includes only <cstddef>.
     struct InitTemplateFileRow {
         const char* relativePath;
         const char* content;
@@ -89,9 +86,8 @@ namespace cajeta::buildtool {
                 "' (available: " + available + ")");
         }
 
-        // Validate destDir: either doesn't exist (we'll create it)
-        // or exists as a directory. Refuse files-where-a-dir-should-be
-        // outright; that's almost certainly a typo.
+        // destDir must be absent (it is created) or already a directory; a plain
+        // file there is refused as a typo.
         llvm::sys::fs::file_status destStat;
         std::error_code statEc = llvm::sys::fs::status(destDir, destStat);
         bool destExists = !statEc;
@@ -101,9 +97,7 @@ namespace cajeta::buildtool {
                 "' exists and is not a directory");
         }
 
-        // Pre-flight: collect every target path, check for collisions
-        // up front. Writing nothing on collision (unless --force) is
-        // safer than a half-written tree the user has to clean up.
+        // Pre-flight every target: writing nothing on collision beats a half-written tree.
         std::vector<std::string> targets;
         targets.reserve(row->fileCount);
         std::vector<std::string> collisions;
@@ -127,8 +121,6 @@ namespace cajeta::buildtool {
             return cite("cajeta init", msg);
         }
 
-        // Ensure destDir exists. create_directories is a no-op when
-        // the directory is already there.
         if (auto ec = llvm::sys::fs::create_directories(destDir)) {
             return cite("cajeta init",
                 "cannot create destination '" + destDir + "': " +
@@ -141,7 +133,6 @@ namespace cajeta::buildtool {
             const auto& f = g_initTemplateFiles[row->firstFile + i];
             const auto& target = targets[i];
 
-            // Materialize any parent directories the file needs.
             llvm::StringRef parent = llvm::sys::path::parent_path(target);
             if (!parent.empty()) {
                 if (auto ec = llvm::sys::fs::create_directories(parent)) {
@@ -162,9 +153,7 @@ namespace cajeta::buildtool {
                     "write failed for '" + target + "'");
             }
 
-            // Caller expects forward-slash relative paths in the
-            // result (matches how the template declares them, and
-            // matches the writer-order contract on InitWriteResult).
+            // The result carries forward-slash relative paths, as the template declares them.
             result.filesWritten.emplace_back(f.relativePath);
         }
         return result;

@@ -14,7 +14,6 @@ namespace cajeta {
 
     namespace {
 
-    // Canonical of param `i`, or empty if out of range.
     std::string paramCanonAt(
             const std::vector<CajetaTypePtr>& paramTypes, size_t i) {
         if (i >= paramTypes.size()) return std::string();
@@ -23,11 +22,7 @@ namespace cajeta {
         return p->getQName()->toCanonical();
     }
 
-    // How a bound field decodes off the Ion cursor. The cursor returns typed
-    // values directly (Ion is self-describing), so there is no per-field wire
-    // type to track — only the destination Cajeta type. float (tc 4) is parked
-    // (P-ION-FLOAT — no int-bits↔float reinterpret seam); nested struct (Message)
-    // lands in 3.2c (shared symbol table).
+    // Decode strategy per field; Ion is self-describing, so only the destination matters.
     enum class Decode {
         Int,       // int8/16/32/64 + uint* — readInt, cast to the field width
         Bool,      // boolean — readBool
@@ -44,7 +39,6 @@ namespace cajeta {
         CajetaClassPtr nested;     // the field's class (Message only); else null
     };
 
-    // Classify a field's type into a decode strategy.
     Decode classify(const CajetaTypePtr& ty, const std::string& canon) {
         if (auto arr = std::dynamic_pointer_cast<CajetaArray>(ty)) {
             auto el = arr->getElementType();
@@ -65,8 +59,8 @@ namespace cajeta {
         return Decode::Unsupported;
     }
 
-    // Collect the bindable fields of T (every declared field with a supported
-    // type — Ion needs no annotation, the field name IS the binding key).
+    // Bindable fields of T: every declared field with a supported type. Ion needs no
+    // annotation - the field name IS the binding key.
     std::vector<Bind> collectBinds(const CajetaClassPtr& T) {
         std::vector<Bind> binds;
         for (auto& prop : T->getPropertyList()) {
@@ -85,10 +79,8 @@ namespace cajeta {
         return binds;
     }
 
-    // Emit the field binds of struct `T` against cursor `cursorVar`, setting them
-    // on `objVar`. `path` keeps emitted locals unique across nesting depth. A
-    // nested struct field descends with `stepIn` / `stepOut` on the SAME cursor —
-    // the single-cursor / shared-symbol-table model (see codecs-plan §3.2c).
+    // Emit the field binds of `T` off `cursorVar` onto `objVar`; `path` keeps emitted
+    // locals unique per depth. A nested struct steps in and out on the SAME cursor.
     void emitStructBind(std::ostringstream& os, const CajetaClassPtr& T,
                         const std::string& cursorVar, const std::string& objVar,
                         const std::string& path) {
@@ -115,10 +107,8 @@ namespace cajeta {
                        << cursorVar << ".readBool(" << slot << ");\n";
                     break;
                 case Decode::Str: {
-                    // readString returns an OWNED #String: hoist to a local
-                    // (the init-decl adopts it) and surrender the title into
-                    // the field with '#' — a plain store is a lend of a
-                    // dying temp under the 0.9 ownership rules.
+                    // readString/readBytes return OWNED values: adopt into a local with
+                    // `#=`, then surrender with `#`; a plain store lends a dying temp.
                     const std::string sv = "v" + path + "_" + b.name;
                     os << "            String " << sv << " #= "
                        << cursorVar << ".readString(" << slot << ");\n";
@@ -127,8 +117,6 @@ namespace cajeta {
                     break;
                 }
                 case Decode::Bytes: {
-                    // readBytes returns an OWNED #int8[]: same shape as Str
-                    // above — adopt into the local with '#=', then surrender.
                     const std::string bv = "v" + path + "_" + b.name;
                     os << "            int8[] " << bv << " #= "
                        << cursorVar << ".readBytes(" << slot << ");\n";
@@ -156,7 +144,6 @@ namespace cajeta {
         }
     }
 
-    // Synthesize `parse(int8[] bytes, int64 length) -> #T` for struct T.
     std::string synthesizeStructParseBody(const CajetaClassPtr& T) {
         const std::string Tc = T->getQName()->toCanonical();
         const std::string IC = "dev.cajeta.codec.ion.IonCursor";
@@ -170,25 +157,19 @@ namespace cajeta {
         return os.str();
     }
 
-    // Synthesize `parse(int8[] bytes, int64 length) -> #E[]` for a stream of
-    // back-to-back top-level E structs (Ion's analog of protobuf's delimited
-    // framing — Ion values are self-delimiting via their type-descriptor length).
-    // A SINGLE cursor (one shared symbol table) walks the stream with
-    // `nextTopLevel()`; `reset()` rewinds for the count pass. Assumes ≥1
-    // top-level value.
+    // Emit `parse` for a stream of back-to-back top-level E structs. A SINGLE cursor
+    // walks it; `reset()` rewinds for the count pass. Assumes one or more values.
     std::string synthesizeStreamParseBody(const CajetaClassPtr& E) {
         const std::string Ec = E->getQName()->toCanonical();
         const std::string IC = "dev.cajeta.codec.ion.IonCursor";
         std::ostringstream os;
         os << "public static #" << Ec << "[] parse(int8[] bytes, int64 length) {\n";
         os << "    " << IC << " cur = heap " << IC << "(bytes, length);\n";
-        // Pass 1: count top-level values.
         os << "    int32 count = 1;\n";
         os << "    while (cur.nextTopLevel()) {\n";
         os << "        count = count + 1;\n";
         os << "    }\n";
         os << "    cur.reset();\n";
-        // Pass 2: allocate + bind each.
         os << "    " << Ec << "[] outv = heap " << Ec << "[count];\n";
         os << "    int32 i = 0;\n";
         os << "    boolean more = true;\n";
@@ -204,9 +185,8 @@ namespace cajeta {
         return os.str();
     }
 
-    // Emit `w.intern("...")` for every bindable field name of T, recursing into
-    // nested struct types — interning must populate the symbol table BEFORE the
-    // LST is written.
+    // Emit `w.intern("...")` for every bindable field name of T, recursing into nested
+    // structs. Interning must populate the symbol table BEFORE the LST is written.
     void emitInternNames(std::ostringstream& os, const CajetaClassPtr& T,
                          const std::string& w) {
         std::vector<Bind> binds = collectBinds(T);
@@ -218,10 +198,8 @@ namespace cajeta {
         }
     }
 
-    // Emit the field encodes of struct `T` against writer `w`, reading from
-    // `objVar`. Field reads are hoisted to locals (the field-arg codegen gotcha);
-    // a nested struct descends with `beginContainer`/`endContainer(13)` reusing
-    // the same shared interned SIDs. `path` keeps locals unique across depth.
+    // Emit the field encodes of `T` from `objVar` into writer `w`. Field reads are
+    // hoisted to locals; a nested struct uses beginContainer/endContainer(13).
     void emitStructEncode(std::ostringstream& os, const CajetaClassPtr& T,
                           const std::string& w, const std::string& objVar,
                           const std::string& path) {
@@ -247,10 +225,6 @@ namespace cajeta {
                        << "." << b.name << ";\n";
                     os << "    if (" << vloc << " != null) {\n";
                     os << "        " << w << ".writeFieldSid(" << sid << ");\n";
-                    // `#=`: `String.toBytes` returns `#int8[]` (ownership
-                    // §4.6). The lvalue is built by concatenation
-                    // (`sb` + path + `_` + name), which is why neither the
-                    // lvalue- nor the callee-anchored sweep located this one.
                     os << "        int8[] sb" << path << "_" << b.name << " #= "
                        << vloc << ".toBytes();\n";
                     os << "        " << w << ".writeStringValue(sb" << path << "_"
@@ -285,7 +259,6 @@ namespace cajeta {
         }
     }
 
-    // Synthesize `toBytes(T value) -> #int8[]` for struct T.
     std::string synthesizeStructEncodeBody(const CajetaClassPtr& T) {
         const std::string Tc = T->getQName()->toCanonical();
         const std::string IWr = "dev.cajeta.codec.ion.IonWriter";
@@ -303,8 +276,7 @@ namespace cajeta {
         return os.str();
     }
 
-    // Synthesize `toBytes(E[] values) -> #int8[]` — BVM + LST once (interning the
-    // element type's names), then each struct back-to-back.
+    // Emit `toBytes(E[] values)`: BVM + LST once, then each struct back-to-back.
     std::string synthesizeStreamEncodeBody(const CajetaClassPtr& E) {
         const std::string Ec = E->getQName()->toCanonical();
         const std::string IWr = "dev.cajeta.codec.ion.IonWriter";
@@ -354,7 +326,6 @@ namespace cajeta {
         } else {
             if (paramTypes.size() != 1) return false;
         }
-        // T[] (stream) → back-to-back top-level structs; T (class) → one struct.
         std::string label;
         if (auto arr = std::dynamic_pointer_cast<CajetaArray>(args[0])) {
             auto E = std::dynamic_pointer_cast<CajetaClass>(arr->getElementType());

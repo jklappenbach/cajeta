@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 2/19/22.
-//
+// DefaultConstructorMethod - the synthesized no-argument constructor.
 
 #pragma once
 

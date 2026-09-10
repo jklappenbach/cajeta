@@ -1,5 +1,4 @@
-// See CompilerMcpServer.h. JSON-RPC parsing/shaping uses the dap::Json model;
-// tool dispatch lands with the skill tools (plan Unit 3).
+// See CompilerMcpServer.h. JSON-RPC parsing and shaping use the dap::Json model.
 
 #include "cajeta/buildtool/mcp/CompilerMcpServer.h"
 
@@ -21,9 +20,8 @@ namespace cajeta::buildtool::mcp {
 
     namespace {
 
-        // Kept content-identical to the cajeta-written server's initialize
-        // instructions (tools/mcp/src/main/cajeta/mcp/Server.cajeta) — update
-        // both together.
+        // Kept content-identical to the cajeta-written server's instructions in
+        // tools/mcp/src/main/cajeta/mcp/Server.cajeta — update both together.
         constexpr const char* kInstructions =
             "This server provides skills: authoritative, hand-written "
             "implementation guides for cajeta libraries. Before you write or "
@@ -137,7 +135,6 @@ namespace cajeta::buildtool::mcp {
     llvm::Expected<CompilerMcpServer>
     CompilerMcpServer::create(std::string version, std::string projectDir) {
         namespace fs = std::filesystem;
-        // Lockfile optional (discovery spec §2.5): embedded corpora always seed.
         std::vector<ResolvedPackageEntry> packages;
         fs::path lock = fs::path(projectDir) / "cajeta.lock";
         if (fs::exists(lock)) {
@@ -229,7 +226,6 @@ namespace cajeta::buildtool::mcp {
             result["skills"] = skill::listEntriesJsonValue(entries);
             return resultResponse(id, std::move(result));
         }
-        // getSkills
         if (!args.isObject() || !args.at("uris").isArray())
             return errorResponse(id, -32602,
                                  "getSkills requires a 'uris' array");

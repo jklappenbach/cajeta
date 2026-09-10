@@ -1,22 +1,6 @@
-//
-// SPIR-V shader interface variables (cajeta-gfx §4.b).
-//
-// A graphics shader stage talks to the pipeline through INTERFACE VARIABLES —
-// module-global variables in the Input / Output storage classes, decorated with
-// either a Location (vertex attributes, fragment color targets, inter-stage
-// varyings) or a BuiltIn (gl_Position, gl_FragCoord, gl_VertexIndex, …). This is
-// the graphics analog of the compute path's descriptor-bound storage buffers
-// (SpirvKernelLowering): where a @Kernel reads its args from descriptors, a
-// @Vertex/@Fragment shader reads inputs from / writes outputs to these globals.
-//
-// The in-tree LLVM SPIR-V backend encodes an interface variable as a
-// GlobalVariable in addrspace 7 (Input) / 8 (Output) carrying `!spirv.Decorations`
-// metadata — a node of {i32 decoration, i32 operand} pairs — exactly the form
-// LLVM's own position.{vs,ps}.ll uses and that GfxSpirvEmitProbeTests proved
-// emits spirv-val-clean. These builders are that pattern as a typed API for the
-// graphics lowerer to call.
-//
-
+// SPIR-V shader interface variables (cajeta-gfx §4.b): the module-global Input/Output
+// variables a graphics stage talks to the pipeline through, decorated with a Location or
+// a BuiltIn. The graphics analog of the compute path's descriptor-bound storage buffers.
 #pragma once
 
 #include <cstdint>
@@ -32,8 +16,7 @@ namespace cajeta {
 namespace xpu {
 namespace vulkan {
 
-    // The interface storage classes, as the address spaces the in-tree SPIR-V
-    // backend maps to StorageClass Input / Output.
+    // The address spaces the in-tree SPIR-V backend maps to StorageClass Input / Output.
     enum class InterfaceStorage : unsigned {
         Input  = 7,
         Output = 8,
@@ -45,9 +28,7 @@ namespace vulkan {
         Location = 30,
     };
 
-    // The SPIR-V BuiltIn values relevant to the vertex/fragment stages (the set
-    // the §4.b lowering needs; extend as later stages land). Values are the
-    // Khronos SPIR-V BuiltIn enumerants.
+    // The Khronos SPIR-V BuiltIn enumerants used by the vertex/fragment stages.
     enum class SpirvBuiltIn : uint32_t {
         Position      = 0,    // gl_Position   (vertex output)
         PointSize     = 1,    // gl_PointSize  (vertex output)
@@ -58,18 +39,15 @@ namespace vulkan {
         InstanceIndex = 43,   // gl_InstanceIndex (vertex input)
     };
 
-    // Create an interface variable: a GlobalVariable of type `ty` in storage
-    // class `sc` (Input → read-only `constant`, Output → writable `global`),
-    // carrying a single `!spirv.Decorations` pair {decoration, operand}. The
-    // generic builder the two typed wrappers below delegate to.
+    // Create an interface variable: a GlobalVariable of type `ty` in storage class `sc`
+    // carrying one `!spirv.Decorations` pair. The generic builder the wrappers delegate to.
     llvm::GlobalVariable* createInterfaceVar(llvm::Module& m, llvm::Type* ty,
                                              InterfaceStorage sc,
                                              SpirvDecoration decoration,
                                              uint32_t operand,
                                              const std::string& name);
 
-    // A Location-decorated interface variable (vertex attribute, fragment color
-    // output, or an inter-stage varying at slot `location`).
+    // A Location-decorated interface variable at slot `location`.
     llvm::GlobalVariable* createLocationVar(llvm::Module& m, llvm::Type* ty,
                                             InterfaceStorage sc,
                                             uint32_t location,
@@ -81,20 +59,13 @@ namespace vulkan {
                                            SpirvBuiltIn builtIn,
                                            const std::string& name);
 
-    // The PushConstant storage class, as the address space the in-tree SPIR-V
-    // backend maps to StorageClass PushConstant (SPIRVUtils addressSpaceToStorage
-    // Class case 13). Push constants are a stage's small per-draw uniforms — a
-    // third interface flavor beside Input/Output, but ROUTED BY ADDRESS SPACE
-    // rather than a Location/BuiltIn decoration.
+    // The address space the in-tree SPIR-V backend maps to StorageClass PushConstant - a
+    // third interface flavor, routed BY ADDRESS SPACE rather than by a decoration.
     constexpr unsigned kPushConstantAS = 13;
 
-    // Create a push-constant block: a GlobalVariable of struct type `blockTy` in
-    // the PushConstant address space. Vulkan permits exactly ONE such block per
-    // stage, so all of a shader's @PushConstant params share this one struct (one
-    // member each, in declaration order; read via a GEP-into-member + load). NO
-    // manual Block/Offset decoration: the fork's SPIRVPushConstantAccess pass +
-    // backend rewrite the access into an OpAccessChain and lay the struct out as a
-    // Block with member Offsets. `blockTy` must be an llvm::StructType.
+    // Create a push-constant block: a GlobalVariable of struct type `blockTy` in the
+    // PushConstant address space. Vulkan permits exactly ONE per stage, so a shader's
+    // @PushConstant params share this struct; the backend adds Block/Offset decorations.
     llvm::GlobalVariable* createPushConstantBlock(llvm::Module& m,
                                                   llvm::Type* blockTy,
                                                   const std::string& name);

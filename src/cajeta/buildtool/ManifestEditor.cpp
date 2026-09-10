@@ -15,12 +15,7 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Find the position immediately after the opening brace of the
-        // object value bound to `key` at the current scan position.
-        // Operates on raw text — when the manifest follows the canonical
-        // layout (one quoted key, optional whitespace, colon, optional
-        // whitespace, opening brace), this lines up. Returns npos when
-        // the key isn't followed by an object.
+        // Just inside the opening brace of the object bound to `key`, by raw-text scan.
         size_t findObjectOpenAfterKey(const std::string& src,
                                       size_t fromPos,
                                       const std::string& key) {
@@ -38,10 +33,8 @@ namespace cajeta::buildtool {
             return i + 1;  // position just inside the open brace
         }
 
-        // Given a position immediately inside an object's open brace,
-        // return the position of its matching close brace. Skips over
-        // nested objects and string contents (with `\"` escape
-        // awareness). Returns npos on malformed input.
+        // The close brace matching an interior that starts at `insidePos`; nested objects
+        // and string contents are skipped, and malformed input answers npos.
         size_t findMatchingClose(const std::string& src, size_t insidePos) {
             int depth = 1;
             bool inStr = false;
@@ -64,8 +57,7 @@ namespace cajeta::buildtool {
             return std::string::npos;
         }
 
-        // True when the substring (open, close) — the *interior* of an
-        // object — contains only whitespace.
+        // True when an object's interior is only whitespace.
         bool isEmptyInterior(const std::string& src,
                              size_t openPos, size_t closePos) {
             for (size_t i = openPos; i < closePos; ++i) {
@@ -76,32 +68,23 @@ namespace cajeta::buildtool {
             return true;
         }
 
-        // True when the interior contains at least one entry separator
-        // not inside a string at the *current* depth — i.e. the
-        // dependency block already has at least one trailing entry
-        // we need to follow with a comma.
+        // True when the interior already holds an entry, so the next one needs a comma.
         bool hasAnyEntry(const std::string& src,
                          size_t openPos, size_t closePos) {
             return !isEmptyInterior(src, openPos, closePos);
         }
 
-        // Validate the candidate output by parsing it through the
-        // real manifest loader; returns an error citing the failure
-        // when the rewrite produced something invalid.
+        // Parses a candidate rewrite through the real manifest loader.
         llvm::Error validate(const std::string& src) {
             auto m = loadManifestString(src, "<edit-output>");
             if (!m) return m.takeError();
             return llvm::Error::success();
         }
 
-        // Determine the indent (spaces/tabs) used for one level inside
-        // an existing object — by looking at the indentation of an
-        // existing entry within `(openPos, closePos)`. Falls back to
-        // four spaces when the object is empty or we can't tell.
+        // The indent of one level inside an object, taken from an existing entry there;
+        // four spaces when the object is empty or nothing can be read.
         std::string detectInnerIndent(const std::string& src,
                                       size_t openPos, size_t closePos) {
-            // Find the first '\n' inside, then collect leading
-            // whitespace of the following line.
             for (size_t i = openPos; i < closePos; ++i) {
                 if (src[i] == '\n') {
                     size_t j = i + 1;
@@ -117,22 +100,15 @@ namespace cajeta::buildtool {
             return "    ";
         }
 
-        // Locate the per-entry key inside an object scope.
-        // Returns positions (keyStart, valueEnd) describing the entry
-        // span — including the key, colon, value, but NOT any trailing
-        // comma or whitespace. Returns nullopt when the key isn't
-        // present in this scope.
+        // One entry's span in an object scope: key, colon and value, no trailing comma.
         struct EntryLocation {
-            size_t keyStart;     // position of the opening quote of "name"
-            size_t valueEnd;     // position just past the value
-            size_t valueStart;   // position of the opening quote of the value
-                                  // (or the opening brace for object values)
+            size_t keyStart;     // the key's opening quote
+            size_t valueEnd;     // just past the value
+            size_t valueStart;   // the value's first char: a quote, or a brace
         };
 
-        // Skip a JSON value starting at `pos` (which must be at the
-        // first non-whitespace char of the value). Returns position
-        // just past the value. Supports strings, objects, arrays,
-        // numbers, true/false/null.
+        // The position just past the JSON value starting at `pos`, which must be that
+        // value's first non-whitespace char. Strings, objects, arrays and bare tokens.
         size_t skipValue(const std::string& src, size_t pos) {
             if (pos >= src.size()) return pos;
             char c = src[pos];
@@ -167,8 +143,7 @@ namespace cajeta::buildtool {
                 }
                 return src.size();
             }
-            // Bare token: scan until something that ends a value
-            // (comma, whitespace, closing brace/bracket).
+            // Bare token: scan to a comma, whitespace or closing brace or bracket.
             for (size_t i = pos; i < src.size(); ++i) {
                 char ch = src[i];
                 if (ch == ',' || ch == '}' || ch == ']' ||
@@ -190,8 +165,7 @@ namespace cajeta::buildtool {
                 if (pos == std::string::npos || pos >= closePos) {
                     return std::nullopt;
                 }
-                // Ensure we matched at the start of an entry — i.e.
-                // the character before is `{`, `,`, or whitespace.
+                // Only a match at an entry start counts: `{`, `,` or whitespace before.
                 if (pos == 0) { scan = pos + needle.size(); continue; }
                 char before = src[pos - 1];
                 if (before != '{' && before != ',' &&
@@ -199,7 +173,6 @@ namespace cajeta::buildtool {
                     scan = pos + needle.size();
                     continue;
                 }
-                // Validate that the next non-whitespace char is `:`.
                 size_t i = pos + needle.size();
                 while (i < closePos &&
                        std::isspace(static_cast<unsigned char>(src[i]))) ++i;
@@ -219,9 +192,8 @@ namespace cajeta::buildtool {
             return std::nullopt;
         }
 
-        // Add the entry `"<key>": "<value>"` to the object whose interior
-        // spans (openPos, closePos). Preserves the object's
-        // existing indentation style.
+        // Adds `"<key>": "<value>"` to the object whose interior spans (openPos,
+        // closePos), preserving that object's indentation style.
         std::string insertEntry(const std::string& src,
                                 size_t openPos, size_t closePos,
                                 const std::string& key,
@@ -229,8 +201,6 @@ namespace cajeta::buildtool {
             std::string entry = "\"" + key + "\": \"" + value + "\"";
             std::string out = src;
             std::string indent = detectInnerIndent(src, openPos, closePos);
-            // Outer indent (one level less). Best effort: find the
-            // indentation of the line that contains closePos.
             std::string outer;
             for (size_t i = closePos; i-- > 0; ) {
                 if (out[i] == '\n') {
@@ -249,10 +219,8 @@ namespace cajeta::buildtool {
                                        "\n" + outer;
                 out.replace(openPos, closePos - openPos, injected);
             } else {
-                // Insert right AFTER the last existing entry's value
-                // — that way the trailing "\n<outer-indent>}" the
-                // source already had stays intact and the closing
-                // brace remains on its own line.
+                // After the last entry's value, so the source's own trailing newline
+                // and closing brace stay where they were.
                 size_t prev = closePos;
                 while (prev > openPos &&
                        std::isspace(static_cast<unsigned char>(out[prev - 1]))) {
@@ -280,8 +248,7 @@ namespace cajeta::buildtool {
         // Validate first so we don't write garbage on top of garbage.
         if (auto e = validate(source)) return std::move(e);
 
-        // 1. Try to find settings.dependencies.<name> directly. If
-        //    present, rewrite the value in place.
+        // settings.dependencies.<name> present: rewrite the value in place.
         size_t settingsOpen = findObjectOpenAfterKey(source, 0, "settings");
         if (settingsOpen != std::string::npos) {
             size_t settingsClose =
@@ -298,12 +265,7 @@ namespace cajeta::buildtool {
                 }
                 if (auto entry = findEntry(source, depsOpen, depsClose,
                                            name)) {
-                    // Rewrite value in place. The value spans
-                    // [valueStart, valueEnd). For our purposes the
-                    // value is a quoted string; replace with the new
-                    // quoted constraint regardless of the prior shape
-                    // (string OR object — this is the same coercion
-                    // the parser allows on read).
+                    // Whatever the prior shape, the replacement is a quoted constraint.
                     std::string out = source;
                     std::string repl = "\"" + versionConstraint + "\"";
                     out.replace(entry->valueStart,
@@ -318,21 +280,12 @@ namespace cajeta::buildtool {
                 if (auto e = validate(out)) return std::move(e);
                 return out;
             }
-            // Settings exists, no dependencies subobject — add one
-            // as an inner entry of settings.
+            // Settings without dependencies: insert an empty one, then recurse into it.
             std::string inner = "{\n}";
-            // Insert a "dependencies" entry holding an empty object,
-            // then recurse to populate it. Simpler than building the
-            // exact text here.
             std::string out = insertEntry(source,
                                           settingsOpen, settingsClose,
                                           "dependencies", "<inline>");
-            // The inserted entry came out as
-            //   "dependencies": "<inline>"
-            // which won't validate. Patch the value to an empty
-            // object and re-run via the rewrite path so we get
-            // consistent indentation. The marker is unique enough
-            // that find() suffices.
+            // The inserted string entry would not validate: patch it to an empty object.
             std::string marker = "\"dependencies\": \"<inline>\"";
             auto mp = out.find(marker);
             if (mp == std::string::npos) {
@@ -341,12 +294,10 @@ namespace cajeta::buildtool {
             }
             out.replace(mp, marker.size(),
                         "\"dependencies\": {}");
-            // Recurse: now settings.dependencies exists (empty).
             return addDependencyToManifest(out, name, versionConstraint);
         }
 
-        // No settings block at all. Add one with a dependencies
-        // subobject. Inject right after the root object's open brace.
+        // No settings block: add one, with its dependencies subobject, after `{`.
         size_t rootOpen = source.find('{');
         if (rootOpen == std::string::npos) {
             return err("manifest: root object not found");
@@ -356,13 +307,10 @@ namespace cajeta::buildtool {
             return err("manifest: malformed root object");
         }
         // Insert "settings": { "dependencies": { "<name>": "<v>" } }.
-        // Use the same insertEntry helper to handle commas/indent.
         std::string scaffold = "{\n    \"dependencies\": {\n        \"" +
                                name + "\": \"" + versionConstraint +
                                "\"\n    }\n}";
-        // insertEntry can't directly emit nested objects, so we
-        // hand-craft this one. Find the indent style used at the
-        // root by looking at any existing entry.
+        // Hand-crafted, since insertEntry cannot emit nested objects.
         std::string outerIndent;
         for (size_t i = rootOpen + 1; i < rootClose; ++i) {
             if (source[i] == '\n') {
@@ -384,8 +332,7 @@ namespace cajeta::buildtool {
                                 "\"\n" + innerIndent + "}\n" +
                                 outerIndent + "}";
         std::string out = source;
-        // Walk back from rootClose: if the prior non-whitespace is
-        // not `{` and not `,`, we need to add a comma.
+        // A comma is needed unless the prior non-whitespace is `{` or `,`.
         size_t prev = rootClose;
         while (prev > rootOpen + 1 &&
                std::isspace(static_cast<unsigned char>(out[prev - 1]))) {
@@ -406,8 +353,7 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Sibling of findObjectOpenAfterKey for array-valued keys.
-        // Returns the position immediately inside the opening `[`.
+        // findObjectOpenAfterKey's sibling for array-valued keys: just inside the `[`.
         size_t findArrayOpenAfterKey(const std::string& src,
                                      size_t fromPos,
                                      const std::string& key) {
@@ -425,8 +371,7 @@ namespace cajeta::buildtool {
             return i + 1;
         }
 
-        // Find the position of the matching `]` for an array opened
-        // at `insidePos` (the first byte inside `[`).
+        // The matching `]` for an array whose interior starts at `insidePos`.
         size_t findMatchingArrayClose(const std::string& src,
                                       size_t insidePos) {
             int depth = 1;
@@ -482,15 +427,12 @@ namespace cajeta::buildtool {
         std::string oldLit = "\"" + name + "@" + oldVersion + "\"";
         std::string newLit = "\"" + name + "@" + newVersion + "\"";
 
-        // Look for the literal entry inside the array bounds only.
         size_t hit = source.find(oldLit, meltsOpen);
         if (hit == std::string::npos || hit >= meltsClose) {
             return err("melt '" + name + "@" + oldVersion +
                        "' not declared in settings.melts");
         }
-        // Refuse to rewrite when the literal appears more than once
-        // in the array (ambiguity — the user has a duplicate entry,
-        // which should be cleaned up by hand before bumping).
+        // A duplicated literal is ambiguous: it must be cleaned up by hand first.
         size_t second = source.find(oldLit, hit + oldLit.size());
         if (second != std::string::npos && second < meltsClose) {
             return err("melt '" + name + "@" + oldVersion +
@@ -530,13 +472,10 @@ namespace cajeta::buildtool {
             return err("'" + name + "' is not declared in "
                        "settings.dependencies");
         }
-        // Remove the entry [keyStart, valueEnd) along with any
-        // adjacent comma. If there's a comma right after, eat it.
-        // Otherwise eat the comma right before (if any).
+        // Remove the entry with one adjacent comma: the following one, else the leading.
         std::string out = source;
         size_t removeBegin = entry->keyStart;
         size_t removeEnd = entry->valueEnd;
-        // Eat trailing whitespace + comma.
         size_t tail = removeEnd;
         while (tail < depsClose &&
                std::isspace(static_cast<unsigned char>(out[tail]))) ++tail;
@@ -545,8 +484,6 @@ namespace cajeta::buildtool {
             removeEnd = tail + 1;
             ateTrailingComma = true;
         }
-        // If we didn't eat a trailing comma, eat the leading one
-        // (we were the last entry).
         if (!ateTrailingComma) {
             ssize_t head = static_cast<ssize_t>(removeBegin) - 1;
             while (head >= static_cast<ssize_t>(depsOpen) &&
@@ -564,10 +501,7 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Navigate to the `plugins.cajeta.coverage` object's interior
-        // bounds. Returns nullopt when any step is missing — the
-        // coverage CLI surfaces this as "no cajeta.coverage plugin
-        // declared".
+        // The interior bounds of `plugins.cajeta.coverage`; nullopt when a step is missing.
         struct CoverageBlockBounds {
             size_t pluginOpen;    // interior of plugins.cajeta.coverage
             size_t pluginClose;
@@ -591,14 +525,9 @@ namespace cajeta::buildtool {
             return b;
         }
 
-        // The plugins block accepts a string shorthand
-        // (`"cajeta.coverage": "1.0.*"` — the form `cajeta init`'s
-        // archetypes ship) as well as the object form findCoverageBlock
-        // needs. When the shorthand is present, rewrite it in place to
-        // `{ "version": "1.0.*" }` so the exclude editor can proceed —
-        // refusing a manifest the plugin resolver itself accepts made
-        // `cajeta coverage ignore` unusable on every fresh project.
-        // Returns nullopt when no string-form declaration exists.
+        // Rewrites the string shorthand `"cajeta.coverage": "1.0.*"`, which the
+        // archetypes ship and the resolver accepts, into the object form the exclude
+        // editor needs. nullopt when no string-form declaration exists.
         std::optional<std::string> upgradeCoverageShorthand(
             const std::string& src) {
             size_t pluginsOpen = findObjectOpenAfterKey(src, 0, "plugins");
@@ -623,12 +552,8 @@ namespace cajeta::buildtool {
             return out;
         }
 
-        // Walk an array's interior and yield positions for each
-        // object-literal entry. Returns (objectOpen, objectClose)
-        // pairs where `objectOpen` is the position just after `{`
-        // and `objectClose` is the position of the matching `}`.
-        // Non-object array entries (strings — the back-compat form)
-        // are skipped here; the caller scans those separately.
+        // The (interior, close) pair of every object-literal entry in an array; the
+        // back-compat string entries are skipped for the caller to scan separately.
         std::vector<std::pair<size_t, size_t>>
         enumerateObjectEntries(const std::string& src,
                                size_t openPos, size_t closePos) {
@@ -647,19 +572,13 @@ namespace cajeta::buildtool {
                     i = close + 1;
                     continue;
                 }
-                // String entry or other — skip it.
                 i = skipValue(src, i);
             }
             return out;
         }
 
-        // Read a string-typed field out of an object scope. Used to
-        // extract the `kind` and `pattern` of each typed exclude
-        // entry. Returns the raw unescaped string contents, or
-        // nullopt when the field is missing or its value isn't a
-        // string. (We deliberately don't unescape — exclude patterns
-        // shouldn't carry JSON escapes in practice, and a literal
-        // compare is what the duplicate-check needs anyway.)
+        // A string field's contents from an object scope, or nullopt when it is missing
+        // or not a string. Deliberately not unescaped: the duplicate check compares raw.
         std::optional<std::string> readStringField(
             const std::string& src, size_t openPos, size_t closePos,
             const std::string& field) {
@@ -669,19 +588,14 @@ namespace cajeta::buildtool {
                 src[loc->valueStart] != '"') {
                 return std::nullopt;
             }
-            // valueEnd is one past the closing quote (per skipValue).
-            // Strip the surrounding quotes.
+            // valueEnd is one past the closing quote, so strip both quotes.
             if (loc->valueEnd < loc->valueStart + 2) return std::nullopt;
             return src.substr(loc->valueStart + 1,
                               (loc->valueEnd - 1) - (loc->valueStart + 1));
         }
 
-        // Insert (or locate) the `config.exclude` array path inside a
-        // coverage block. On entry `covOpen`/`covClose` mark the
-        // interior of `plugins.cajeta.coverage`. Mutates `src` to
-        // ensure `config` exists (as an object) and `exclude` exists
-        // (as an array inside it). Returns the new source plus the
-        // array's interior bounds.
+        // Ensures `config` and its `exclude` array exist in the coverage block bounded by
+        // covOpen/covClose; answers the rewritten source and the array's interior bounds.
         struct EnsuredExclude {
             std::string source;
             size_t arrayOpen;
@@ -695,7 +609,6 @@ namespace cajeta::buildtool {
             size_t configOpen = findObjectOpenAfterKey(
                 src, covOpen, "config");
             if (configOpen == std::string::npos || configOpen >= covClose) {
-                // Inject an empty config object.
                 std::string out = insertEntry(
                     src, covOpen, covClose, "config", "<inline>");
                 std::string marker = "\"config\": \"<inline>\"";
@@ -705,7 +618,7 @@ namespace cajeta::buildtool {
                                "config block (insert marker not found)");
                 }
                 out.replace(mp, marker.size(), "\"config\": {}");
-                // Re-find now that we've mutated the source.
+                // Every offset must be re-found now that the source has moved.
                 src = out;
                 covOpen = findObjectOpenAfterKey(src, 0, "cajeta.coverage");
                 if (covOpen == std::string::npos) {
@@ -728,7 +641,6 @@ namespace cajeta::buildtool {
             size_t arrayOpen = findArrayOpenAfterKey(
                 src, configOpen, "exclude");
             if (arrayOpen == std::string::npos || arrayOpen >= configClose) {
-                // Inject an empty array.
                 std::string out = insertEntry(
                     src, configOpen, configClose, "exclude", "<inline>");
                 std::string marker = "\"exclude\": \"<inline>\"";
@@ -762,11 +674,8 @@ namespace cajeta::buildtool {
             return r;
         }
 
-        // Escape a string for safe embedding in a JSON string literal.
-        // Handles backslash + double-quote + the common control chars;
-        // sufficient for exclude patterns and reason text (which the
-        // CLI receives as command-line argv, so it's already plain
-        // bytes — we just need to keep the JSON parser happy).
+        // Escapes backslash, double quote and the common control chars — enough for the
+        // plain argv bytes an exclude pattern or reason arrives as.
         std::string jsonEscape(const std::string& s) {
             std::string out;
             out.reserve(s.size() + 2);
@@ -816,10 +725,7 @@ namespace cajeta::buildtool {
                                           bounds->pluginClose);
         if (!ensured) return ensured.takeError();
 
-        // Duplicate check: scan existing entries for the same kind +
-        // pattern. Same pattern with a different reason is still a
-        // duplicate — we'd otherwise accumulate stale entries every
-        // time the IDE re-runs the action.
+        // A different reason is still a duplicate, or IDE re-runs would accumulate.
         std::string src = std::move(ensured->source);
         size_t arrayOpen = ensured->arrayOpen;
         size_t arrayClose = ensured->arrayClose;
@@ -833,15 +739,8 @@ namespace cajeta::buildtool {
             }
         }
 
-        // Indent computation. Two shapes to handle:
-        //   1. Non-empty array — at least one existing entry on its
-        //      own line. Inner indent = the existing entry's indent.
-        //   2. Empty / inline array (`[]`) — no inner content to
-        //      probe. Fall back to the indent of the line that
-        //      contains the array opening, plus one indentation
-        //      step. The "indentation step" is detected by reading
-        //      the manifest's leading indent style elsewhere in the
-        //      source (settings's nesting, root entries).
+        // A non-empty array takes its entries' indent; an empty or inline one has
+        // nothing to probe, so it uses its own line's indent plus one step.
         auto leadingIndentOnLineContaining =
             [&](size_t pos) -> std::string {
                 if (pos > src.size()) return std::string();
@@ -859,8 +758,6 @@ namespace cajeta::buildtool {
                 return lead;
             };
         auto detectOneIndentStep = [&]() -> std::string {
-            // Walk the source; whichever indent appears at the
-            // first nested line is our step size.
             for (size_t i = 0; i + 1 < src.size(); ++i) {
                 if (src[i] != '\n') continue;
                 size_t j = i + 1;
@@ -882,7 +779,6 @@ namespace cajeta::buildtool {
             indent = outer + detectOneIndentStep();
         } else {
             indent = detectInnerIndent(src, arrayOpen, arrayClose);
-            // Outer indent (the array's closing-bracket indent).
             for (size_t i = arrayClose; i-- > 0; ) {
                 if (src[i] == '\n') {
                     size_t j = i + 1;
@@ -897,8 +793,7 @@ namespace cajeta::buildtool {
         }
         std::string innerIndent = indent + detectOneIndentStep();
 
-        // Build the new entry. Always emit kind/pattern/reason in
-        // that order so the on-disk shape is predictable for reviewers.
+        // Always kind, pattern, reason in that order: the on-disk shape is reviewable.
         std::string entry =
             "{\n" +
             innerIndent + "\"kind\": \""    + jsonEscape(kind)    + "\",\n" +
@@ -911,8 +806,7 @@ namespace cajeta::buildtool {
             std::string injected = "\n" + indent + entry + "\n" + outer;
             out.replace(arrayOpen, arrayClose - arrayOpen, injected);
         } else {
-            // Append after the last existing entry — same shape as
-            // insertEntry but adapted for arrays of objects.
+            // After the last entry, as insertEntry does, but for an array of objects.
             size_t prev = arrayClose;
             while (prev > arrayOpen &&
                    std::isspace(static_cast<unsigned char>(out[prev - 1]))) {
@@ -938,17 +832,14 @@ namespace cajeta::buildtool {
 
         auto bounds = findCoverageBlock(source);
         if (!bounds) {
-            // A string-shorthand declaration can't hold entries; that's
-            // "nothing to remove", not an undeclared plugin.
+            // A string shorthand holds no entries: nothing to remove, not undeclared.
             if (upgradeCoverageShorthand(source)) {
                 return err("no exclude entries in cajeta.coverage "
                            "(no config block)");
             }
             return err("no cajeta.coverage plugin declared in plugins");
         }
-        // Don't use ensureExcludeArray here — we'd rather error out
-        // when there's no exclude array to remove from than silently
-        // create one.
+        // Not ensureExcludeArray: with nothing to remove from, this should error.
         size_t configOpen = findObjectOpenAfterKey(
             source, bounds->pluginOpen, "config");
         if (configOpen == std::string::npos ||
@@ -968,8 +859,7 @@ namespace cajeta::buildtool {
             return err("manifest: malformed coverage exclude array");
         }
 
-        // Collect deletion spans first; remove in reverse so earlier
-        // offsets stay valid as we splice out later ones.
+        // Collect the spans first and remove in reverse, so earlier offsets stay valid.
         struct Span { size_t begin; size_t end; };
         std::vector<Span> toRemove;
         auto entries =
@@ -977,22 +867,17 @@ namespace cajeta::buildtool {
         for (const auto& [eOpen, eClose] : entries) {
             auto ePat = readStringField(source, eOpen, eClose, "pattern");
             if (!ePat || *ePat != pattern) continue;
-            // Entry spans from the `{` (eOpen - 1) through `}` (eClose).
             Span s;
             s.begin = eOpen - 1;
             s.end   = eClose + 1;
             toRemove.push_back(s);
         }
-        // Also support the back-compat string-only form: literal
-        // `"<pattern>"` entries get nuked too. Scan for them between
-        // the array bounds, skipping anything inside an existing
-        // object literal (the typed entries we already enumerated).
+        // Back-compat string entries go too, minus hits inside an enumerated object.
         std::string strLit = "\"" + pattern + "\"";
         size_t strScan = arrayOpen;
         while (strScan < arrayClose) {
             size_t hit = source.find(strLit, strScan);
             if (hit == std::string::npos || hit >= arrayClose) break;
-            // Reject hits that fall inside one of the typed objects.
             bool insideObj = false;
             for (const auto& [eOpen, eClose] : entries) {
                 if (hit >= eOpen - 1 && hit <= eClose + 1) {
@@ -1012,21 +897,17 @@ namespace cajeta::buildtool {
             return err("coverage exclude '" + pattern +
                        "' not found");
         }
-        // Sort by begin so the trailing-comma logic operates on
-        // entries in source order.
+        // Sorted by begin so the trailing-comma logic sees source order.
         std::sort(toRemove.begin(), toRemove.end(),
                   [](const Span& a, const Span& b) {
                       return a.begin < b.begin;
                   });
 
         std::string out = source;
-        // Delete in reverse to keep offsets stable. For each entry,
-        // also eat one adjacent comma + the whitespace on whichever
-        // side we ate it (so we don't leave dangling commas).
+        // In reverse, eating one adjacent comma so no dangling comma is left behind.
         for (auto it = toRemove.rbegin(); it != toRemove.rend(); ++it) {
             size_t removeBegin = it->begin;
             size_t removeEnd   = it->end;
-            // Eat trailing whitespace + comma.
             size_t tail = removeEnd;
             while (tail < arrayClose &&
                    std::isspace(static_cast<unsigned char>(out[tail]))) {
@@ -1048,12 +929,8 @@ namespace cajeta::buildtool {
                 }
             }
             out.erase(removeBegin, removeEnd - removeBegin);
-            // arrayClose shifted; the next iteration recomputes none
-            // of this because we walk in reverse and only the
-            // surviving (earlier) spans care about array bounds. The
-            // trailing-comma loop above is conservative — it stops
-            // at the original arrayClose, which is always still a
-            // safe upper bound after deletions.
+            // arrayClose is stale but still an upper bound; the reverse walk keeps every
+            // surviving span earlier than this erasure.
         }
         if (auto e = validate(out)) return std::move(e);
 

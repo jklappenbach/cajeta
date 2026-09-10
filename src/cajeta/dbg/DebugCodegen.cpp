@@ -10,8 +10,6 @@
 namespace cajeta::dbg {
 
     namespace {
-        // Common guard: debug-info on, builder present, current block not yet
-        // terminated. Returns the builder (ready to emit) or nullptr to skip.
         llvm::IRBuilder<>* emitGuard(const cajeta::CajetaModulePtr& module) {
             if (!module->getFlags().debugInfo) return nullptr;
             llvm::IRBuilder<>* builder = module->getBuilder();
@@ -51,25 +49,18 @@ namespace cajeta::dbg {
         if (!builder || !slot) return;
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_dbg_local");
         if (!fn) return;
-        // This local's declared type is a root of the debug type closure: at a
-        // stop it is the key the bridge looks the layout up by, and on a cache
-        // hit the type world that could answer it is gone (debug-type-sidecar
-        // §2.1.1). Registering here — the one site that knows every inspectable
-        // type — costs a string compare per named local at codegen.
+        // A debug-type root: on a cache hit the type world that answers it is gone.
         globalDebugTypeTable().addRoot(type);
         llvm::Value* nameC = builder->CreateGlobalString(name);
         llvm::Value* typeC = builder->CreateGlobalString(type);
-        // The facet enums travel as two i8s, the drop entry as a ptr, matching
-        // __cajeta_dbg_local's (name, type, addr, alloc, ownership, drop_entry)
-        // ABI in cajeta_runtime.c.
+        // __cajeta_dbg_local's ABI in cajeta_runtime.c is
+        // (name, type, addr, alloc, ownership, drop_entry): two i8s, then a ptr.
         llvm::Value* allocC = builder->getInt8(static_cast<uint8_t>(facets.alloc));
         llvm::Value* ownC   = builder->getInt8(static_cast<uint8_t>(facets.ownership));
-        // Non-owners have no drop entry; pass an explicit null ptr.
         llvm::Value* dropC = dropEntry
             ? dropEntry
             : llvm::ConstantPointerNull::get(
                   llvm::PointerType::get(*module->getLlvmContext(), 0));
-        // Opaque pointers: the alloca is already a ptr; no bitcast needed.
         builder->CreateCall(fn, {nameC, typeC, slot, allocC, ownC, dropC});
     }
 
@@ -80,8 +71,7 @@ namespace cajeta::dbg {
 
         llvm::Module* lmod = module->getLlvmModule();
         if (!lmod) return;
-        // Idempotent: a second call would emit a second table and a second ctor,
-        // and the last ctor to run would win.
+        // Idempotent: a second table would bring a second ctor, and the last wins.
         if (lmod->getNamedGlobal("__cajeta.dbg.loctable")) return;
 
         llvm::Function* regFn =
@@ -95,8 +85,6 @@ namespace cajeta::dbg {
         llvm::StructType* entryTy =
             llvm::StructType::get(ctx, {ptrTy, i32Ty, i32Ty, ptrTy});
 
-        // Intern the strings: a file name repeats across every statement in the
-        // file, and a function name across every statement in the method.
         std::map<std::string, llvm::Constant*> interned;
         auto str = [&](const std::string& s) -> llvm::Constant* {
             auto it = interned.find(s);
@@ -130,10 +118,6 @@ namespace cajeta::dbg {
             llvm::GlobalValue::PrivateLinkage,
             llvm::ConstantArray::get(arrTy, entries), "__cajeta.dbg.loctable");
 
-        // Register at module-init (LLJIT: initialize(); native: startup), the
-        // same shape the XPU kernel registry uses. Priority 65535 keeps it after
-        // any ctor that might want to run first; nothing reads the table during
-        // startup.
         llvm::FunctionType* ctorTy =
             llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false);
         llvm::Function* ctor = llvm::Function::Create(

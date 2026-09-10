@@ -28,11 +28,8 @@ namespace cajeta {
         struct Args {
             std::string input;
             std::string output;
-            // Empty, not "generic": that is what `llc` defaults to, and the
-            // two differ in subtarget nop selection — enough to make output
-            // non-identical to the tool this replaces. Matching byte-for-byte
-            // is what lets a caller swap `llc` for `cajeta lower` without
-            // invalidating any cache keyed on the object.
+            // Empty, not "generic": that is what `llc` defaults to, and the two differ in
+            // subtarget nop selection, which would break byte-identical output.
             std::string cpu;
             std::string features;
             std::string relocModel = "pic";
@@ -41,7 +38,6 @@ namespace cajeta {
         };
 
         bool takeValue(std::string_view arg, std::string_view name, std::string& out) {
-            // `--name=value`
             const std::string eq = std::string("--") + std::string(name) + "=";
             if (arg.rfind(eq, 0) == 0) {
                 out = std::string(arg.substr(eq.size()));
@@ -64,9 +60,8 @@ namespace cajeta {
                 if (takeValue(arg, "cpu", a.cpu)) continue;
                 if (takeValue(arg, "features", a.features)) continue;
                 if (takeValue(arg, "relocation-model", a.relocModel)) continue;
-                // `-filetype=obj` is accepted and ignored: it is what an llc
-                // command line says, and accepting it means a caller can be
-                // ported by changing the program name and nothing else.
+                // `-filetype=obj` is accepted and ignored, so an llc command line ports
+                // by changing the program name and nothing else.
                 if (arg.rfind("-filetype=", 0) == 0) {
                     if (arg != "-filetype=obj") {
                         a.error = "only -filetype=obj is supported (got " +
@@ -93,8 +88,7 @@ namespace cajeta {
         std::unique_ptr<llvm::Module> parseInput(
             llvm::LLVMContext& ctx, const std::string& path, const char* verb) {
             llvm::SMDiagnostic err;
-            // parseIRFile takes bitcode and textual IR alike, so `lower`
-            // accepts a .bc without the caller disassembling it first.
+            // parseIRFile takes bitcode and textual IR alike, so no pre-disassembly.
             auto m = llvm::parseIRFile(path, err, ctx);
             if (!m) {
                 std::string msg;
@@ -107,32 +101,9 @@ namespace cajeta {
 
     } // namespace
 
-    // Give the session-install symbols weak definitions before lowering.
-    //
-    // `cajeta_rt_session.c` declares `__cajeta_install_hook` / `_ctx` / `_out`
-    // extern ON PURPOSE: they are DEFINED IN THE HOST, and that file is
-    // compiled twice — into the compiler binary and into the bitcode every JIT
-    // session carries. A definition there would give JIT'd cell code its own
-    // second copy, so the host's registration would be invisible to the very
-    // code that needs it. That reasoning is right and is not changed here.
-    //
-    // But an object lowered for an AOT link has no host at all, so those three
-    // references have nothing to resolve to and the link fails — and it fails
-    // only SOMETIMES, because whether `__cajeta_session_install` survives DCE
-    // depends on the debug-info level. `70ef31ae` fixed exactly this for
-    // `--emit=exe` with a generated weak stub added to the link line. That fix
-    // could not reach here: `cajeta lower` hands the object back to a CALLER
-    // who builds their own link line, and cajeta-coco does precisely that —
-    // its instrument pass lowered the stdlib and then failed on all three
-    // symbols, with the tour gate as the only thing that noticed.
-    //
-    // So the definitions go in the object itself, where the references are.
-    // WEAK, so a host's strong definitions still win wherever a host exists,
-    // and only for symbols this module already references as undefined — a
-    // module that never mentions them is untouched.
-    //
-    // `cajeta lower` is unambiguously ahead-of-time: no JIT reaches it, so the
-    // shadowing hazard the extern exists to prevent cannot arise here.
+    // Give the session-install symbols weak definitions before lowering. They are
+    // extern on purpose (the host defines them), but an AOT object has no host, so the
+    // references would not resolve; weak lets a host's strong definitions still win.
     void defineSessionInstallSymbolsWeakly(llvm::Module& m) {
         static const char* kSessionSymbols[] = {
             "__cajeta_install_hook",   // int32_t (*)(...)  — the host's hook
@@ -142,10 +113,8 @@ namespace cajeta {
         for (const char* name : kSessionSymbols) {
             llvm::GlobalVariable* g = m.getNamedGlobal(name);
             if (g == nullptr || !g->isDeclaration()) continue;
-            // Null pointer / zeroinitializer, which is what the host would
-            // start them at. With a null hook `__cajeta_session_install`
-            // already reports "no live session" — exactly true of an AOT
-            // binary, and a branch it already implements.
+            // Null is what the host starts them at, and `__cajeta_session_install`
+            // already reports "no live session" for a null hook.
             g->setInitializer(llvm::Constant::getNullValue(g->getValueType()));
             g->setLinkage(llvm::GlobalValue::WeakAnyLinkage);
         }
@@ -191,9 +160,8 @@ namespace cajeta {
 
         defineSessionInstallSymbolsWeakly(*module);
 
-        // The module's own triple wins. coco lowers modules this compiler
-        // emitted, so the triple is already right, and overriding it with the
-        // host would silently miscompile a cross-target build.
+        // The module's own triple wins: it was emitted by this compiler, and overriding
+        // it with the host's would silently miscompile a cross-target build.
         std::string tripleStr = module->getTargetTriple().str();
         if (tripleStr.empty()) {
             tripleStr = llvm::sys::getDefaultTargetTriple();
@@ -226,17 +194,9 @@ namespace cajeta {
         }
 
         llvm::TargetOptions opt;
-        // Emit llvm.global_ctors as `.init_array` (modern ELF), not the legacy
-        // `.ctors`. TargetOptions defaults this to FALSE, and a default-
-        // constructed TargetMachine therefore produces objects whose global
-        // constructors modern glibc startup never runs — silently. Compiler.cpp
-        // carries the same line and the same warning; this command emits
-        // objects that link beside those, so it has to agree.
-        //
-        // Caught by byte-comparing this command's output against the `llc` it
-        // replaces: `.ctors`/`.rela.ctors` where llc had
-        // `.init_array`/`.rela.init_array`, five bytes of string table, and
-        // every probe-registration constructor in a coco build quietly dead.
+        // Emit llvm.global_ctors as `.init_array`, not the legacy `.ctors`: TargetOptions
+        // defaults this FALSE, and modern glibc startup silently never runs `.ctors`.
+        // Compiler.cpp carries the same line, and these objects link beside those.
         opt.UseInitArray = true;
         std::unique_ptr<llvm::TargetMachine> tm(
             target->createTargetMachine(triple, cpu, features, opt, rm));

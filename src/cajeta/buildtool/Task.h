@@ -1,11 +1,4 @@
-// Cajeta build-tool task model.
-//
-// A task is a named, declarative sequence of action invocations
-// the user runs via `cajeta <task>`. See BuildTool.md "Tasks"
-// section for the spec, plans/buildtool/build-tool-plan.md Phase 3 for
-// context. Phase 3a (this file) models linear-execution tasks;
-// depends-on / parallel / run-task / when-skip-when composition
-// land in Phase 3b.
+// Cajeta build-tool task model: the manifest `tasks` block and its JSON document.
 
 #pragma once
 
@@ -22,8 +15,7 @@
 
 namespace cajeta::buildtool {
 
-    // Task parameter spec — what the task accepts from the CLI.
-    // Phase 3a recognizes type, default, required, doc.
+    // What the task accepts from the CLI.
     struct TaskParamSpec {
         std::string name;
         std::string type = "string";       // "string" | "bool"
@@ -36,39 +28,27 @@ namespace cajeta::buildtool {
     struct ActionInvocation {
         std::string action;              // action name (e.g. "exec", "build")
         std::string id;                  // optional; id under which outputs are exposed
-        // Raw params as the JSON object form; resolved at invocation
-        // time using the TaskContext's substitution.
         llvm::json::Object params;
 
         std::optional<std::string> whenExpr;
         std::optional<std::string> skipWhenExpr;
     };
 
-    // run-task entry: { "run-task": "<task>", "params": {...}, "id": "..." }.
-    // Invokes another task by name; the called task's outputs become
-    // this entry's outputs (so `${id.field}` reads the called task's
-    // outputs).
+    // run-task entry; the called task's outputs become this entry's outputs.
     struct RunTaskCall {
         std::string taskName;
         std::string id;
-        // Param bindings to pass to the called task. Values are raw
-        // strings (with ${...} references the runner resolves at
-        // invocation time against the calling task's context).
         std::map<std::string, std::string> params;
 
         std::optional<std::string> whenExpr;
         std::optional<std::string> skipWhenExpr;
     };
 
-    // parallel group: { "parallel": [...] }. Children run
-    // concurrently; their outputs merge back into the calling task's
-    // context after every child completes.
+    // Children run concurrently; their outputs merge back after all complete.
     struct ParallelGroup;
     using ParallelGroupPtr = std::shared_ptr<ParallelGroup>;
 
-    // One entry in a task's `actions` array. Tagged union of the
-    // three shapes; the parser determines kind from the entry's
-    // structure.
+    // One entry in a task's `actions` array; a tagged union of the three shapes.
     struct ActionEntry {
         enum class Kind { Invocation, Parallel, RunTask };
         Kind kind = Kind::Invocation;
@@ -82,58 +62,45 @@ namespace cajeta::buildtool {
         std::vector<ActionEntry> children;
     };
 
-    // A named task.
     struct Task {
         std::string name;
         std::optional<std::string> description;
         std::vector<std::string> dependsOn;
         std::vector<TaskParamSpec> params;
         std::vector<ActionEntry> actions;
-        // Outputs the task exposes to callers (via run-task).
         std::map<std::string, std::string> outputs;
         std::optional<std::string> workingDir;
         std::map<std::string, std::string> env;
     };
 
-    // Parse the `tasks` block from a manifest. Returns map keyed by
-    // task name. Errors on malformed task entries.
+    // Parse the `tasks` block from a manifest, keyed by task name.
+    // Errors on malformed task entries.
     llvm::Expected<std::map<std::string, Task>> parseTasks(
         const llvm::json::Object& tasksBlock);
 
-    // Convenience: pull `tasks` out of a Manifest and parse.
     llvm::Expected<std::map<std::string, Task>> parseTasks(
         const Manifest& manifest);
 
-    // Validate the task graph for cycles in `depends-on` references.
-    // Returns an Error naming the cycle members in order, or success
-    // when the graph is acyclic.
+    // Validate the task graph for cycles in `depends-on`. Returns an Error
+    // naming the cycle members in order, or success when the graph is acyclic.
     llvm::Error validateTaskGraph(const std::map<std::string, Task>& tasks);
 
-    // A built-in subcommand the tool exposes (init, add, info, …), surfaced in
-    // the `cajeta tasks --json` document alongside manifest tasks (spec §3.1.2).
+    // A built-in subcommand the tool exposes (init, add, info, ...).
     struct BuiltinCommand {
         std::string name;
         std::string description;
     };
 
-    // Project-level debug-launch coordinates, surfaced at the document root as a
-    // `build` object (widget spec §5.2.2, unit 7). These come from the manifest's
-    // `settings.build` and are exactly what `cajeta dap` consumes: it JIT-runs an
-    // `entryMethod` from a `sourceRoot` — it does NOT load a prebuilt artifact.
-    // So a runnable task's Debug launch is formed from these, not from the build
-    // action's output-path. Both must be known to be debuggable.
+    // Project-level debug-launch coordinates: `cajeta dap` JIT-runs `entryMethod`
+    // from `sourceRoot`, so a Debug launch is formed from these, not from a build.
     struct DebugLaunchCoords {
         std::optional<std::string> sourceRoot;
         std::optional<std::string> entryMethod;
     };
 
-    // Render the `cajeta tasks --json` document (buildtool-widget spec §3):
-    // { manifest, build?{sourceRoot,entryMethod}, tasks[{name,description?,
-    //   dependsOn[],params[],runnable,artifact?}], builtins[] }.
-    // Tasks emit in `tasks` map order (sorted by name). Pure — no I/O — so the
-    // IDE-contract shape is golden-testable. Pretty-printed (2-space). The
-    // `build` object is emitted only when both debug-launch coordinates are
-    // known (entryMethod present); omitted otherwise so the IDE disables Debug.
+    // Render the `cajeta tasks --json` document. Pure, pretty-printed, tasks in
+    // map order. The `build` object is emitted only when both debug-launch
+    // coordinates are known, so the IDE disables Debug otherwise.
     std::string renderTasksJson(const std::string& manifestPath,
                                 const std::map<std::string, Task>& tasks,
                                 const std::vector<BuiltinCommand>& builtins,

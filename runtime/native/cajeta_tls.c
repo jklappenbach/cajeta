@@ -1,28 +1,6 @@
-// cajeta.io.net TLS engine — NET-5.1.
-//
-// Memory-BIO TLS over a portable backend (OpenSSL's libssl here; the same
-// SSL_*/BIO_* surface BoringSSL forked from, so a later static-BoringSSL swap
-// is mechanical — see plan Phase 5 § Design decision). The engine owns NO file
-// descriptor: a connection is an `SSL*` wired to two memory BIOs —
-//   - rbio  (network -> TLS): the Cajeta layer feeds ciphertext it read off the
-//            socket here, via __cajeta_tls_feed_ciphertext;
-//   - wbio  (TLS -> network): the engine writes ciphertext the Cajeta layer
-//            pulls out (via __cajeta_tls_pull_ciphertext) and writes to the
-//            socket.
-// That decoupling is what lets TLS sit on the async reactor (NET-3.x): the
-// handshake/read/write are pure state transitions over the BIOs; all I/O
-// parking happens in the Cajeta `TlsClient` pump (NET-5.2), never in C.
-//
-// Return-code convention (normalized, platform/library constants stay here):
-//   handshake_step / read_plaintext / write_plaintext:
-//     >= 0  progress (bytes for read/write; 0 = handshake complete for step)
-//     CAJETA_TLS_WANT_IO (-1)   need more ciphertext fed / pulled, retry later
-//     CAJETA_TLS_ZERO    (-2)   clean close-notify (read EOF)
-//     CAJETA_TLS_ERROR   (-3)   fatal protocol/library error
-//
-// This file is #included into cajeta_runtime.c so it lands in BOTH the embedded
-// JIT bitcode and the native test object; libssl/libcrypto are linked by the
-// build (src/CMakeLists.txt) so the SSL_* externs resolve at JIT + AOT link.
+// cajeta.io.net TLS engine, #included into cajeta_runtime.c (single-TU build).
+// Memory-BIO TLS over OpenSSL: it owns no descriptor, the Cajeta layer feeding
+// ciphertext into rbio and pulling it from wbio, so no I/O parks in C.
 
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
@@ -32,11 +10,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-// Windows shim for the OS trust store (NET-5.3): wincrypt.h provides
-// CertOpenSystemStore / CertEnumCertificatesInStore but #defines a handful of
-// identifiers (X509_NAME, OCSP_REQUEST, …) that collide with OpenSSL's types.
-// Include it after the OpenSSL headers and drop the colliding macros so the
-// OpenSSL meanings below win. (POSIX needs none of this — see use_system_trust.)
+// wincrypt.h #defines identifiers that collide with OpenSSL's types, so it goes
+// after the OpenSSL headers and those macros are dropped again below.
 #if defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN 1
@@ -52,31 +27,24 @@
 #  undef OCSP_RESPONSE
 #endif
 
+// Normalized results: >= 0 is progress (bytes, or 0 = handshake complete).
 #define CAJETA_TLS_WANT_IO (-1)
 #define CAJETA_TLS_ZERO    (-2)
 #define CAJETA_TLS_ERROR   (-3)
 
-// @Native ABI: an int8[] argument arrives as its CajetaArray HEADER
-// ({ i64 count; data... }), so every buffer pointer below is advanced past the
-// 8-byte header to reach the element data — the same convention __cajeta_sha256_
-// update and the getaddrinfo bridges follow. The explicit length arg is the
-// authoritative byte count; the header's count field is not re-read here.
+// @Native ABI: an int8[] arrives as its CajetaArray header, so buffer pointers
+// advance 8 bytes to the data; the explicit length argument is authoritative.
 #define CAJETA_ARR_DATA(hdr) ((hdr) ? ((char*) (hdr)) + 8 : (char*) 0)
 
-// Ex-data index the server ALPN list (NET-5.4) hangs off an SSL_CTX. Registered
-// once in ensure_init; declared here so that init can assign it.
 static int cajeta_tls_alpn_ex_idx = -1;
 
-// One-time library init. OpenSSL 3.x auto-inits on first use, but doing it
-// explicitly (and idempotently) keeps the engine self-contained and avoids
-// relying on lazy-init ordering under the JIT.
+// Idempotent library init; also registers the ALPN ex-data index above.
 static void cajeta_tls_ensure_init(void) {
     static int done = 0;
     if (done) return;
     done = 1;
     OPENSSL_init_ssl(OPENSSL_INIT_LOAD_SSL_STRINGS
                      | OPENSSL_INIT_LOAD_CRYPTO_STRINGS, NULL);
-    // Register the ex-data slot the server ALPN list hangs off (NET-5.4).
     cajeta_tls_alpn_ex_idx =
         SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 }
@@ -88,10 +56,7 @@ typedef struct {
     int  is_server;
 } cajeta_tls_conn;
 
-// Server-side ALPN (NET-5.4): the supported protocol list (ALPN wire format —
-// each entry a 1-byte length + that many bytes) is copied per-context and
-// attached as SSL_CTX ex_data, so the select callback can read it and ctx_free
-// can release it. The ex-data index is registered once in ensure_init.
+// A server's ALPN list, copied per context and attached to it as ex_data.
 typedef struct {
     unsigned char* data;
     unsigned int   len;
@@ -99,9 +64,7 @@ typedef struct {
 
 // ---- context (shared config: protocol versions, server cert/key) ----------
 
-// Create a TLS context. `is_server` selects the method; both default to a
-// TLS 1.2 floor (1.3 negotiated when both peers support it). Returns an opaque
-// SSL_CTX* (NULL on failure).
+// Creates a TLS context with a TLS 1.2 floor; an opaque SSL_CTX*, or NULL.
 void* __cajeta_tls_ctx_new(int is_server) {
     cajeta_tls_ensure_init();
     const SSL_METHOD* method = is_server ? TLS_server_method()
@@ -112,8 +75,7 @@ void* __cajeta_tls_ctx_new(int is_server) {
     return ctx;
 }
 
-// Server-side: load a certificate (chain) + private key from in-memory PEM
-// bytes (int8[] headers). Returns 0 on success, CAJETA_TLS_ERROR otherwise.
+// Loads a server certificate chain + private key from in-memory PEM bytes.
 int __cajeta_tls_ctx_use_cert_key_pem(void* ctxv,
                                       const void* cert_hdr, int cert_len,
                                       const void* key_hdr, int key_len) {
@@ -143,10 +105,7 @@ int __cajeta_tls_ctx_use_cert_key_pem(void* ctxv,
     return SSL_CTX_check_private_key(ctx) == 1 ? 0 : CAJETA_TLS_ERROR;
 }
 
-// Enable/disable peer-certificate verification on a (client) context.
-// mode != 0 -> SSL_VERIFY_PEER (the handshake fails on an invalid chain);
-// mode == 0 -> SSL_VERIFY_NONE (the engine-only / cert-validation-is-NET-5.3
-// posture the b6.1 tests used). Returns 0.
+// Peer-certificate verification: mode != 0 fails the handshake on a bad chain.
 int __cajeta_tls_ctx_set_verify(void* ctxv, int mode) {
     SSL_CTX* ctx = (SSL_CTX*) ctxv;
     if (!ctx) return CAJETA_TLS_ERROR;
@@ -154,9 +113,7 @@ int __cajeta_tls_ctx_set_verify(void* ctxv, int mode) {
     return 0;
 }
 
-// Add a trust-anchor (CA / self-signed root) from PEM bytes to the context's
-// verification store. May contain a chain — every certificate found is added.
-// Returns 0 if at least one was added, CAJETA_TLS_ERROR otherwise.
+// Adds every trust anchor in `pem` to the store; 0 if at least one was added.
 int __cajeta_tls_ctx_add_trust_pem(void* ctxv, const void* pem_hdr, int len) {
     SSL_CTX* ctx = (SSL_CTX*) ctxv;
     const char* pem = CAJETA_ARR_DATA(pem_hdr);
@@ -175,12 +132,8 @@ int __cajeta_tls_ctx_add_trust_pem(void* ctxv, const void* pem_hdr, int len) {
     return added > 0 ? 0 : CAJETA_TLS_ERROR;
 }
 
-// Load the OPERATING SYSTEM's default trust store into the (client) context, so
-// a real public certificate validates without a caller-supplied anchor
-// (NET-5.3). POSIX-native: OpenSSL's default verify paths (the distro CA bundle
-// / $SSL_CERT_FILE / $SSL_CERT_DIR). Windows shim: enumerate the system "ROOT"
-// store and add each cert to the context's X509_STORE. Returns 0 on success
-// (at least one anchor available), CAJETA_TLS_ERROR otherwise.
+// Loads the OS trust store so public certificates validate without a supplied
+// anchor: OpenSSL's verify paths on POSIX, the system "ROOT" store on Windows.
 int __cajeta_tls_ctx_use_system_trust(void* ctxv) {
     SSL_CTX* ctx = (SSL_CTX*) ctxv;
     if (!ctx) return CAJETA_TLS_ERROR;
@@ -206,10 +159,10 @@ int __cajeta_tls_ctx_use_system_trust(void* ctxv) {
 #endif
 }
 
+// Frees a context, releasing any server ALPN list attached to it as ex_data.
 void __cajeta_tls_ctx_free(void* ctxv) {
     if (!ctxv) return;
     SSL_CTX* ctx = (SSL_CTX*) ctxv;
-    // Release the server ALPN list (NET-5.4) if one was attached.
     if (cajeta_tls_alpn_ex_idx >= 0) {
         cajeta_tls_alpn_list* L =
             (cajeta_tls_alpn_list*) SSL_CTX_get_ex_data(ctx,
@@ -221,8 +174,7 @@ void __cajeta_tls_ctx_free(void* ctxv) {
 
 // ---- connection (per-handshake state + the two memory BIOs) ----------------
 
-// Create a connection on `ctx`. Wires fresh memory BIOs and sets connect/accept
-// state. Returns an opaque cajeta_tls_conn* (NULL on failure).
+// Creates a connection on `ctx` with fresh memory BIOs and connect/accept state.
 void* __cajeta_tls_conn_new(void* ctxv, int is_server) {
     SSL_CTX* ctx = (SSL_CTX*) ctxv;
     if (!ctx) return NULL;
@@ -247,9 +199,7 @@ void* __cajeta_tls_conn_new(void* ctxv, int is_server) {
     return c;
 }
 
-// Client-side SNI: the server name to request (also used for hostname
-// verification at the Cajeta layer), passed as host bytes (int8[]) + length.
-// Copied into a NUL-terminated buffer for the OpenSSL API. 0 / CAJETA_TLS_ERROR.
+// Sets the client SNI server name from host bytes + length; 0 or an error.
 int __cajeta_tls_set_sni(void* connv, const void* host_hdr, int host_len) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     const char* host = CAJETA_ARR_DATA(host_hdr);
@@ -260,10 +210,7 @@ int __cajeta_tls_set_sni(void* connv, const void* host_hdr, int host_len) {
     return SSL_set_tlsext_host_name(c->ssl, name) == 1 ? 0 : CAJETA_TLS_ERROR;
 }
 
-// Enable hostname verification: the peer cert must match `host` (SAN, with the
-// CN fallback + wildcard rules X509_check_host implements). Set before the
-// handshake; a mismatch then fails the handshake with HOSTNAME below.
-// Returns 0 / CAJETA_TLS_ERROR.
+// Requires the peer cert to match `host`; set before the handshake it fails.
 int __cajeta_tls_set_verify_host(void* connv, const void* host_hdr, int host_len) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     const char* host = CAJETA_ARR_DATA(host_hdr);
@@ -274,11 +221,7 @@ int __cajeta_tls_set_verify_host(void* connv, const void* host_hdr, int host_len
     return SSL_set1_host(c->ssl, name) == 1 ? 0 : CAJETA_TLS_ERROR;
 }
 
-// Normalized peer-verification verdict (post-handshake). Maps OpenSSL's
-// X509_V_* result to a stable ordinal the Cajeta layer turns into a
-// CertificateInvalid reason (NET-5.3 / 5.6):
-//   0 OK · 1 EXPIRED (or not-yet-valid) · 2 HOSTNAME · 3 UNTRUSTED
-//   (self-signed / unknown issuer) · 4 OTHER.
+// The post-handshake verdict, as a stable ordinal for CertificateInvalid.
 #define CAJETA_TLS_CERT_OK        0
 #define CAJETA_TLS_CERT_EXPIRED   1
 #define CAJETA_TLS_CERT_HOSTNAME  2
@@ -309,8 +252,7 @@ int __cajeta_tls_verify_result(void* connv) {
     }
 }
 
-// Offer an ALPN protocol list (wire format: each entry is a 1-byte length
-// followed by that many bytes, e.g. "\x08http/1.1"). Returns 0 / error.
+// Offers an ALPN list in wire format: each entry a 1-byte length then its bytes.
 int __cajeta_tls_set_alpn(void* connv, const void* protos_hdr, int len) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     const char* protos = CAJETA_ARR_DATA(protos_hdr);
@@ -320,8 +262,7 @@ int __cajeta_tls_set_alpn(void* connv, const void* protos_hdr, int len) {
                                (unsigned) len) == 0 ? 0 : CAJETA_TLS_ERROR;
 }
 
-// The negotiated ALPN protocol after handshake. Writes up to `max` bytes into
-// `out` and returns the length, or 0 if none negotiated.
+// Writes the negotiated ALPN protocol (up to `max` bytes) into `out`; 0 if none.
 int __cajeta_tls_get_alpn(void* connv, void* out_hdr, int max) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     char* out = CAJETA_ARR_DATA(out_hdr);
@@ -335,12 +276,8 @@ int __cajeta_tls_get_alpn(void* connv, void* out_hdr, int max) {
     return n;
 }
 
-// Server ALPN-select callback (NET-5.4). Reads the server's supported protocol
-// list (attached to the SSL's context as ex_data) and picks the first one the
-// client (`in`) also offered, with SERVER preference. On no overlap it declines
-// ALPN (NOACK) rather than failing the handshake — and crucially never touches
-// `*out` in that case (SSL_select_next_proto's no-overlap fallback writes a
-// client value into *out, which must not be used; cf. CVE-2024-5535).
+// Picks the first server-preferred protocol the client also offered. On no
+// overlap it declines with NOACK, leaving `*out` untouched (cf. CVE-2024-5535).
 static int cajeta_tls_alpn_select_cb(SSL* ssl, const unsigned char** out,
                                      unsigned char* outlen,
                                      const unsigned char* in, unsigned int inlen,
@@ -359,10 +296,8 @@ static int cajeta_tls_alpn_select_cb(SSL* ssl, const unsigned char** out,
     return SSL_TLSEXT_ERR_NOACK;
 }
 
-// Server-side: install the ALPN-select callback with `protos` (ALPN wire
-// format) as the supported list. Set on the CONTEXT (consulted live during each
-// handshake via the SSL's ctx), so it may be called after conn creation. A
-// previous list on the same ctx is freed first. Returns 0 / CAJETA_TLS_ERROR.
+// Installs the ALPN-select callback with `protos`, freeing any previous list. It
+// lives on the CONTEXT, read at each handshake, so it may be set after conn_new.
 int __cajeta_tls_ctx_set_alpn_select(void* ctxv, const void* protos_hdr,
                                      int len) {
     SSL_CTX* ctx = (SSL_CTX*) ctxv;
@@ -389,8 +324,7 @@ int __cajeta_tls_ctx_set_alpn_select(void* ctxv, const void* protos_hdr,
 
 // ---- the memory-BIO pump ---------------------------------------------------
 
-// Feed ciphertext received from the network into the TLS engine.
-// Returns bytes consumed (== len on success) or CAJETA_TLS_ERROR.
+// Feeds network ciphertext in; the bytes consumed (len), or CAJETA_TLS_ERROR.
 int __cajeta_tls_feed_ciphertext(void* connv, const void* buf_hdr, int len) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     const char* buf = CAJETA_ARR_DATA(buf_hdr);
@@ -400,8 +334,6 @@ int __cajeta_tls_feed_ciphertext(void* connv, const void* buf_hdr, int len) {
     return n > 0 ? n : CAJETA_TLS_ERROR;
 }
 
-// Pull ciphertext the engine wants written to the network. Returns the number
-// of bytes copied into `out` (0 if none pending).
 int __cajeta_tls_pull_ciphertext(void* connv, void* out_hdr, int max) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     char* out = CAJETA_ARR_DATA(out_hdr);
@@ -410,14 +342,13 @@ int __cajeta_tls_pull_ciphertext(void* connv, void* out_hdr, int max) {
     return n > 0 ? n : 0;
 }
 
-// How many ciphertext bytes are queued to write to the network.
 int __cajeta_tls_pending_ciphertext(void* connv) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     if (!c) return 0;
     return (int) BIO_ctrl_pending(c->wbio);
 }
 
-// Map an SSL_get_error result on a non-positive ret into our normalized codes.
+// Maps SSL_get_error on a non-positive `ret` onto the normalized codes above.
 static int cajeta_tls_classify(SSL* ssl, int ret) {
     int err = SSL_get_error(ssl, ret);
     switch (err) {
@@ -431,10 +362,7 @@ static int cajeta_tls_classify(SSL* ssl, int ret) {
     }
 }
 
-// Drive one handshake step. Returns 0 when the handshake is complete,
-// CAJETA_TLS_WANT_IO when more ciphertext must be exchanged (pull from wbio,
-// write to peer; feed peer's bytes into rbio; retry), CAJETA_TLS_ERROR on a
-// fatal fault.
+// Drives one handshake step: 0 when complete, WANT_IO to exchange and retry.
 int __cajeta_tls_handshake_step(void* connv) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     if (!c) return CAJETA_TLS_ERROR;
@@ -443,8 +371,7 @@ int __cajeta_tls_handshake_step(void* connv) {
     return cajeta_tls_classify(c->ssl, ret);
 }
 
-// Encrypt + queue `len` plaintext bytes (the ciphertext lands in wbio for the
-// caller to pull). Returns bytes written, CAJETA_TLS_WANT_IO, or error.
+// Encrypts `len` plaintext bytes into wbio for the caller to pull.
 int __cajeta_tls_write_plaintext(void* connv, const void* buf_hdr, int len) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     const char* buf = CAJETA_ARR_DATA(buf_hdr);
@@ -455,9 +382,7 @@ int __cajeta_tls_write_plaintext(void* connv, const void* buf_hdr, int len) {
     return cajeta_tls_classify(c->ssl, n);
 }
 
-// Decrypt available application data into `out`. Returns bytes read,
-// CAJETA_TLS_WANT_IO (feed more ciphertext), CAJETA_TLS_ZERO (peer sent
-// close-notify), or CAJETA_TLS_ERROR.
+// Decrypts available application data into `out`; ZERO = peer close-notify.
 int __cajeta_tls_read_plaintext(void* connv, void* out_hdr, int max) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     char* out = CAJETA_ARR_DATA(out_hdr);
@@ -467,7 +392,6 @@ int __cajeta_tls_read_plaintext(void* connv, void* out_hdr, int max) {
     return cajeta_tls_classify(c->ssl, n);
 }
 
-// Initiate a clean shutdown (queues close-notify into wbio).
 int __cajeta_tls_shutdown(void* connv) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     if (!c) return CAJETA_TLS_ERROR;
@@ -475,7 +399,7 @@ int __cajeta_tls_shutdown(void* connv) {
     return n >= 0 ? 0 : cajeta_tls_classify(c->ssl, n);
 }
 
-// Free a connection (SSL_free releases both BIOs it owns).
+// Frees a connection; SSL_free releases both BIOs it owns.
 void __cajeta_tls_free(void* connv) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
     if (!c) return;

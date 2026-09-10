@@ -4,13 +4,9 @@
 
 namespace cajeta::buildtool {
 
-    // Process-wide diagnostic output format for the compiler subprocesses that
-    // build actions spawn (the `--diag-format` flag; json-diagnostics-spec §2).
-    // Set once at CLI dispatch, read by BuildAction when it builds the compiler
-    // argv — a scoped global like NativeProvision's g_nativePhase, so it applies
-    // uniformly to nested and parallel build actions in one invocation without
-    // threading through the task runner (and stays out of the reproducibility /
-    // property hashes, since diagnostic format never changes the built artifact).
+    // Process-wide diagnostic output format (`--diag-format`) for the compiler
+    // subprocesses build actions spawn. Set once at CLI dispatch, read when
+    // BuildAction builds the argv; deliberately outside the reproducibility hashes.
     void setDiagnosticFormat(DiagFormat format);
     DiagFormat diagnosticFormat();
 

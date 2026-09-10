@@ -1,7 +1,5 @@
-//
 // Front-matter Markdown splitting + parsing.
 // See specs/archive/yaml-frontmatter-spec.md.
-//
 #pragma once
 
 #include <string>
@@ -13,47 +11,29 @@
 
 namespace cajeta::buildtool {
 
-    // Result of splitting a front-matter Markdown document into its YAML header
-    // and Markdown body (spec §2). The header/body are returned as raw text; no
-    // YAML or Markdown is parsed here.
+    // A split document: raw text either side of the fence, nothing parsed.
     struct FrontMatterSplit {
-        // True iff the document began with a `---` frontmatter fence.
-        bool present = false;
-        // YAML header text between the fences (fences excluded), byte-for-byte.
-        // Empty when !present.
-        std::string header;
-        // Markdown body: everything after the closing fence, byte-for-byte; or the
-        // entire input when !present.
-        std::string body;
+        bool present = false;   // the document began with a `---` fence
+        std::string header;     // YAML between the fences, fences excluded
+        std::string body;       // after the closing fence, or the whole input
     };
 
-    // Split a front-matter Markdown document (spec §2).
-    //
-    // A leading `---` line (after an optional UTF-8 BOM) opens the YAML header,
-    // which runs to the next line that is exactly `---` or `...`; the body is
-    // everything after that closing fence, preserved byte-for-byte (including its
-    // line ending). With no leading fence, returns {present=false, header="",
-    // body=source}. An opening `---` with no closing fence is an error.
+    // Split a front-matter Markdown document. A leading `---` (after an optional
+    // BOM) opens the header, which runs to the next line that is exactly `---` or
+    // `...`; both halves keep their bytes. An unclosed opening fence is an error.
     llvm::Expected<FrontMatterSplit> splitFrontMatter(std::string_view source);
 
-    // A parsed front-matter Markdown document (spec §4.1): the YAML header as an
-    // `llvm::json::Value` and the Markdown body verbatim.
     struct FrontMatter {
-        // Parsed frontmatter. An empty object `{}` when the document has no
-        // frontmatter fence.
-        llvm::json::Value frontmatter = llvm::json::Object{};
-        // Markdown body, byte-for-byte.
-        std::string body;
+        llvm::json::Value frontmatter = llvm::json::Object{};   // `{}` when unfenced
+        std::string body;                                       // byte-for-byte
     };
 
-    // Parse a front-matter Markdown document: split off the `---` header
-    // (splitFrontMatter), parse it as YAML (parseYaml), and return it alongside
-    // the verbatim body. With no frontmatter, the value is `{}` and the body is
-    // the whole input. Parse errors name the document-absolute line.
+    // Split off the `---` header, parse it as YAML, and return it alongside the
+    // verbatim body; with no frontmatter the value is `{}` and the body is the
+    // whole input. Parse errors name the document-absolute line.
     llvm::Expected<FrontMatter> parseFrontMatter(std::string_view source);
 
-    // Like parseFrontMatter, but reads `path` from disk. I/O and parse errors
-    // carry the file path (spec uc 4.2.2).
+    // Like parseFrontMatter, but reads `path` from disk; errors carry the path.
     llvm::Expected<FrontMatter> parseFrontMatterFile(llvm::StringRef path);
 
 } // namespace cajeta::buildtool

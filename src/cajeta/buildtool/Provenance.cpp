@@ -20,10 +20,8 @@ namespace cajeta::buildtool {
         constexpr const char* kBuildType =
             "https://cajeta.org/build/v1";
 
-        // Strip the `sha256:` prefix iff present — the SLSA spec's
-        // digest object keys are bare algorithm names with bare
-        // hex values, not the cajeta-internal `sha256:<hex>`
-        // composite form.
+        // SLSA digest objects hold bare hex under a bare algorithm key, not
+        // cajeta's internal `sha256:<hex>` composite form.
         std::string stripSha256Prefix(const std::string& s) {
             if (s.size() >= 7 && s.compare(0, 7, "sha256:") == 0) {
                 return s.substr(7);

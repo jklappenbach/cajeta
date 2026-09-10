@@ -1,0 +1,3 @@
+tour.Tour.main samples/tour/src/main/cajeta
+helloworld.HelloWorld.run samples/HelloWorld/src
+xpubenchreport.Report.run tools/xpubench-report/src

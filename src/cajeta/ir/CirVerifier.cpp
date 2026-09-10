@@ -1,6 +1,4 @@
-//
 // CirVerifier — well-formedness checks. See CirVerifier.h and spec §2.1.4.
-//
 
 #include "CirVerifier.h"
 
@@ -14,7 +12,6 @@ namespace ir {
 std::vector<std::string> CirVerifier::verify(const CirFunction& fn) {
     std::vector<std::string> errors;
 
-    // Block-label lookup (also catches duplicate labels).
     std::unordered_map<std::string, const CirBlock*> byLabel;
     for (auto& bb : fn.blocks) {
         if (byLabel.count(bb->label))
@@ -22,8 +19,7 @@ std::vector<std::string> CirVerifier::verify(const CirFunction& fn) {
         byLabel[bb->label] = bb.get();
     }
 
-    // SSA single-definition: a value is defined by being a function param, a
-    // block param, or an instruction result. No value may be defined twice.
+    // SSA single-definition: a value is defined once, as a function param, a block param, or an instruction result.
     std::unordered_set<const CirValue*> defined;
     auto def = [&](const CirValuePtr& v, const std::string& where) {
         if (!v) return;
@@ -33,8 +29,7 @@ std::vector<std::string> CirVerifier::verify(const CirFunction& fn) {
     for (auto& p : fn.params) def(p, "fn params");
 
     for (auto& bb : fn.blocks) {
-        // Entry-block params alias the function params (same SSA values), so
-        // only count block params as fresh definitions for non-entry blocks.
+        // Entry-block params alias the function params, so only non-entry blocks add fresh definitions.
         bool isEntry = !fn.blocks.empty() && bb.get() == fn.blocks.front().get();
         if (!isEntry)
             for (auto& bp : bb->params) def(bp, "block " + bb->label + " params");
@@ -46,7 +41,6 @@ std::vector<std::string> CirVerifier::verify(const CirFunction& fn) {
             if (inst) def(inst->result, "block " + bb->label);
         }
 
-        // Exactly one terminator, at the end.
         if (!bb->terminator) {
             errors.push_back("block " + bb->label + " has no terminator");
             continue;
@@ -56,8 +50,7 @@ std::vector<std::string> CirVerifier::verify(const CirFunction& fn) {
                              cirOpMnemonic(bb->terminator->op) + "'");
         def(bb->terminator->result, "block " + bb->label + " terminator");
 
-        // Branch targets: arity + type-spelling match against the target's
-        // block parameters.
+        // Branch targets: arity and type spelling must match the target's block parameters.
         for (auto& s : bb->terminator->successors) {
             auto it = byLabel.find(s.label);
             if (it == byLabel.end()) {

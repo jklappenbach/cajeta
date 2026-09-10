@@ -20,8 +20,8 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // sha256 digest is the cache key (with the "sha256:" prefix
-        // stripped) — used to build filenames like `<hex>.cja`.
+        // The cache key is the digest with any "sha256:" prefix stripped, so a
+        // cached file is named `<hex>.cja`.
         std::string keyFromSha(const std::string& full) {
             static const std::string prefix = "sha256:";
             if (full.size() > prefix.size() &&
@@ -38,8 +38,6 @@ namespace cajeta::buildtool {
         namespace fs = std::filesystem;
         projectDir_ = (fs::path(projectRoot) / ".cajeta" / "cache" /
                        "artifacts").string();
-        // homeOverride is unused since U3b: the workstation tier it
-        // parameterized was retired in favor of ~/.olla (OllaStore).
     }
 
     std::string ArtifactCache::sha256OfFile(const std::string& path) {
@@ -98,9 +96,7 @@ namespace cajeta::buildtool {
                        projectDir_ + "': " + ec.message());
         }
 
-        // Copy into the project cache. overwrite_existing keeps
-        // re-inserts idempotent. Cross-project persistence is ~/.olla
-        // (OllaStore), not a second cache tier here (U3b).
+        // overwrite_existing keeps re-inserting the same content idempotent.
         fs::path projectDst = fs::path(projectDir_) / filename;
         fs::copy_file(sourcePath, projectDst,
                       fs::copy_options::overwrite_existing, ec);

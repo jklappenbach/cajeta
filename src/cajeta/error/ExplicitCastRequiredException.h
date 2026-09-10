@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 3/30/23.
-//
+// Marker exception: an implicit conversion was rejected, so the source must cast.
 
 #pragma once
 

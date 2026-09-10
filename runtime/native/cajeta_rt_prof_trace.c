@@ -1,31 +1,13 @@
-// cajeta-profiler Unit 5 — Perfetto trace writer.
-//
-// Perfetto protobuf, emitted directly. No SDK, no third-party build dependency
-// (5.3.b): a .pftrace file is just a sequence of length-delimited TracePacket
-// messages, each written as field 1 of the Trace message. There is no header and
-// no footer, which is precisely what makes spec §7.6 achievable — a trace
-// truncated mid-write stays readable up to the truncation, because every packet
-// carries its own length and nothing at the end is required to interpret what
-// came before.
-//
-// Chrome Trace Event JSON was rejected for this (spec §14.3): its clock-sync
-// events are not parsed by any current consumer, so every timestamp would have
-// to be pre-converted into one domain at emit time — exactly what §6 shows we
-// cannot correctly do.
-//
-// This file holds the wire primitives. They are pure, deterministic, and
-// verified by round-trip; the schema mapping (which field number carries what)
-// is a separate concern and is called out where it begins.
+// Perfetto trace writer: protobuf wire primitives, then the schema mapping. A
+// .pftrace is a bare sequence of length-delimited TracePacket messages, with no
+// header and no footer, which is why a truncated trace stays readable.
 
 // ── protobuf wire primitives ─────────────────────────────────────────────
-// Wire types: 0 varint, 2 length-delimited. Those are the only two needed —
-// every field this writer emits is an integer, a string, or a submessage.
 #define CAJ_PB_WIRE_VARINT 0
 #define CAJ_PB_WIRE_FIXED64 1
 #define CAJ_PB_WIRE_BYTES  2
 
-// Base-128 varint, little-endian groups, high bit = continuation. Returns the
-// number of bytes written (1..10). `out` must have room for 10.
+// Base-128 varint. Returns the bytes written (1..10); `out` must have room for 10.
 int32_t __cajeta_pb_varint(uint8_t* out, uint64_t v) {
     int32_t n = 0;
     do {
@@ -37,10 +19,7 @@ int32_t __cajeta_pb_varint(uint8_t* out, uint64_t v) {
     return n;
 }
 
-// Inverse. Reads at most `max` bytes; sets *consumed. Returns the value, or 0
-// with *consumed = -1 if the encoding runs past `max` or exceeds 10 bytes —
-// a truncated trace ends in exactly this condition and must be detected, not
-// read as a valid small number.
+// Inverse; sets *consumed, or -1 when the encoding runs past `max` or 10 bytes.
 uint64_t __cajeta_pb_varint_read(const uint8_t* in, int32_t max, int32_t* consumed) {
     uint64_t v = 0;
     int32_t shift = 0, n = 0;
@@ -65,18 +44,14 @@ int32_t __cajeta_pb_uint64(uint8_t* out, uint32_t field, uint64_t v) {
     return n + __cajeta_pb_varint(out + n, v);
 }
 
-// field: length-delimited payload (string or submessage — identical on the
-// wire, which is why a submessage can be built in a scratch buffer and then
-// appended without re-encoding).
-// A fixed64 field (wire type 1): eight little-endian bytes, no varint. Needed
-// because TrackEvent.flow_ids is `repeated fixed64` — writing it as a varint
-// yields a packet that parses and a flow that never appears.
+// A fixed64 field: eight little-endian bytes. flow_ids as a varint draws nothing.
 int32_t __cajeta_pb_fixed64(uint8_t* out, uint32_t field, uint64_t v) {
     int32_t n = __cajeta_pb_tag(out, field, CAJ_PB_WIRE_FIXED64);
     for (int32_t i = 0; i < 8; i++) out[n + i] = (uint8_t) ((v >> (i * 8)) & 0xFF);
     return n + 8;
 }
 
+// field: length-delimited payload; a string and a submessage are identical here.
 int32_t __cajeta_pb_bytes(uint8_t* out, uint32_t field,
                           const uint8_t* data, int32_t len) {
     int32_t n = __cajeta_pb_tag(out, field, CAJ_PB_WIRE_BYTES);
@@ -87,15 +62,7 @@ int32_t __cajeta_pb_bytes(uint8_t* out, uint32_t field,
 
 // ── trace assembly ────────────────────────────────────────────────────────
 // Field numbers below are VERIFIED against third_party/perfetto/perfetto_trace.proto
-// (see its PROVENANCE.md for the table and the sha256 they were read from). They
-// are not recalled. A wrong number here yields a file that is valid protobuf and
-// still does not load — every local test passes and the artifact is useless —
-// which is why the proto is vendored and why CI runs trace_processor over the
-// output rather than trusting this comment.
-//
-// Spec §7.7 confines the writer to the stable TrackEvent / TrackDescriptor
-// schema. Anything GPU-specific is an optional addition, because those parts are
-// explicitly outside Perfetto's stability guarantee.
+// (PROVENANCE.md). A wrong one is valid protobuf that still does not load.
 #define CAJ_PB_TRACE_PACKET        1    /* Trace.packet                        */
 #define CAJ_PB_PKT_TIMESTAMP       8    /* TracePacket.timestamp               */
 #define CAJ_PB_PKT_SEQ_ID         10    /* TracePacket.trusted_packet_sequence_id */
@@ -136,31 +103,18 @@ int32_t __cajeta_pb_bytes(uint8_t* out, uint32_t field,
 #define CAJ_TE_SLICE_END   2
 #define CAJ_TE_INSTANT     3
 
-// TracePacket.SequenceFlags. The two are a PAIR and the ordering is not
-// cosmetic — established by CI (run 32489238054), which loaded a trace whose
-// every slice name came back [NULL].
-//
-//   CLEARED  goes on the packet that ESTABLISHES incremental state, i.e. the
-//            first InternedData of a sequence. It means "nothing before this
-//            point applies". Putting it on the first slice instead — as this
-//            file originally did — tells the reader to discard the interned
-//            names emitted just before it.
-//   NEEDS    goes on every packet that CONSUMES incremental state. The proto is
-//            explicit that a reader SKIPS such a packet when no CLEARED has been
-//            seen on the sequence, so a slice referencing name_iid without this
-//            flag silently loses its name rather than failing.
-//
-// Both are wire-valid and field-number-correct in either arrangement, which is
-// exactly why only a real reader could catch this.
+// TracePacket.SequenceFlags, a PAIR: CLEARED goes on the packet that ESTABLISHES
+// incremental state (a sequence's first InternedData), NEEDS on every packet that
+// CONSUMES it. A consumer packet missing NEEDS is skipped and loses its name.
 #define CAJ_PB_SEQ_FLAG_CLEARED 1
 #define CAJ_PB_SEQ_FLAG_NEEDS   2
 
+// Bounded append buffer; `overflow` is sticky, so a short trace never reads whole.
 typedef struct {
     uint8_t* buf;
     int32_t  cap;
     int32_t  len;
-    int32_t  overflow;   // sticky: a caller that ignores it cannot get a
-                         // silently-short trace back
+    int32_t  overflow;
 } CajPbBuf;
 
 static int32_t caj_pb_put(CajPbBuf* b, const uint8_t* d, int32_t n) {
@@ -170,9 +124,7 @@ static int32_t caj_pb_put(CajPbBuf* b, const uint8_t* d, int32_t n) {
     return n;
 }
 
-// Wrap a built payload as one Trace.packet. This framing is the whole reason a
-// truncated trace stays readable (§7.6): every packet carries its own length and
-// nothing at the end of the file is needed to interpret what came before.
+// Wraps a payload as one Trace.packet; the length prefix is what survives a cut.
 static int32_t caj_pb_packet(CajPbBuf* out, const uint8_t* payload, int32_t len) {
     uint8_t hdr[16];
     int32_t n = __cajeta_pb_tag(hdr, CAJ_PB_TRACE_PACKET, CAJ_PB_WIRE_BYTES);
@@ -181,8 +133,7 @@ static int32_t caj_pb_packet(CajPbBuf* out, const uint8_t* payload, int32_t len)
     return caj_pb_put(out, payload, len) ? n + len : 0;
 }
 
-// TrackDescriptor: names a track and optionally parents it, which is what makes
-// device/context/queue a real hierarchy rather than synthetic threads (§7.2).
+// TrackDescriptor: names a track and optionally parents it into a hierarchy.
 int32_t __cajeta_prof_emit_track(CajPbBuf* out, uint64_t uuid,
                                  uint64_t parent_uuid, const char* name) {
     uint8_t td[512];
@@ -197,8 +148,7 @@ int32_t __cajeta_prof_emit_track(CajPbBuf* out, uint64_t uuid,
     return caj_pb_packet(out, pkt, p);
 }
 
-// InternedData carrying one EventName. §7.4: a repeated name is emitted once and
-// referenced by iid thereafter.
+// InternedData carrying one EventName: a name is emitted once, then used by iid.
 int32_t __cajeta_prof_emit_name(CajPbBuf* out, uint32_t seq_id,
                                 uint64_t iid, const char* name,
                                 int32_t first_in_sequence) {
@@ -218,12 +168,8 @@ int32_t __cajeta_prof_emit_name(CajPbBuf* out, uint32_t seq_id,
     return caj_pb_packet(out, pkt, p);
 }
 
-// One TrackEvent. `name_iid` references an interned name; pass 0 with a literal
-// `name` only for one-off events.
-// `extra` is pre-encoded TrackEvent bytes appended verbatim — today the
-// debug annotations §10.6 wants on every device measurement. Passed as bytes
-// rather than as a struct so the annotation vocabulary can grow without this
-// signature moving again; NULL for the common case.
+// One TrackEvent: `name_iid` is an interned name (0 uses `name`), `extra` is
+// pre-encoded TrackEvent bytes or NULL.
 int32_t __cajeta_prof_emit_slice_anno(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
                                       uint64_t track_uuid, int32_t type,
                                       uint64_t name_iid, const char* name,
@@ -240,9 +186,7 @@ int32_t __cajeta_prof_emit_slice_anno(CajPbBuf* out, uint32_t seq_id, uint64_t t
         n += __cajeta_pb_bytes(te + n, CAJ_PB_TE_NAME, (const uint8_t*) name, ln);
     }
     if (source_iid) n += __cajeta_pb_uint64(te + n, CAJ_PB_TE_SOURCE_LOC_IID, source_iid);
-    // A flow needs BOTH ends: the launch site lists the id, the device slice
-    // terminates it. Listing an id on only one event draws no arrow at all,
-    // and the trace still loads (spec §7.3).
+    // A flow needs BOTH ends; one end alone draws no arrow and still loads.
     if (flow_id)
         n += __cajeta_pb_fixed64(te + n,
                                  terminating ? CAJ_PB_TE_TERM_FLOW_IDS
@@ -254,9 +198,7 @@ int32_t __cajeta_prof_emit_slice_anno(CajPbBuf* out, uint32_t seq_id, uint64_t t
     uint8_t pkt[1024];
     int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_TIMESTAMP, ts);
     p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_ID, seq_id);
-    // A slice that references an interned name CONSUMES incremental state.
-    // Without this the reader skips the association and the slice loads with a
-    // null name — the trace still parses, which is the trap.
+    // Without NEEDS the reader skips the association and the name loads null.
     if (name_iid || source_iid)
         p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_FLAGS, CAJ_PB_SEQ_FLAG_NEEDS);
     p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_TRACK_EVENT, te, n);
@@ -273,8 +215,7 @@ int32_t __cajeta_prof_emit_slice_flow(CajPbBuf* out, uint32_t seq_id, uint64_t t
                                          terminating, NULL, 0);
 }
 
-// The flow-free form every non-GPU caller uses. One implementation, so a fix to
-// the sequence flags cannot land in only one of them.
+// The flow-free form every non-GPU caller uses; one implementation for both.
 int32_t __cajeta_prof_emit_slice(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
                                  uint64_t track_uuid, int32_t type,
                                  uint64_t name_iid, const char* name,
@@ -284,11 +225,7 @@ int32_t __cajeta_prof_emit_slice(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
 }
 
 // ── streaming writer + interning table (5.2.c, 5.2.d) ─────────────────────
-// Packets are appended to the file as they are built, never accumulated. A
-// profiled run can be killed at any moment (§7.6), and a writer that buffered
-// the whole trace would lose everything it had — the opposite of the property
-// the packet framing exists to provide. One scratch buffer is reused per packet
-// so the writer allocates nothing after open.
+// Packets are appended as they are built, never accumulated; one scratch buffer.
 #define CAJ_PROF_MAX_INTERNED 4096
 #define CAJ_PROF_SCRATCH 4096
 #define CAJ_PROF_NAME_POOL (256 * 1024)
@@ -297,19 +234,9 @@ typedef struct {
     FILE*       f;
     uint32_t    seq_id;
     int32_t     n_names;
-    // The table OWNS its names. It used to keep the caller's pointer, which is
-    // a dangling reference the moment a caller passes a scratch buffer — and
-    // Unit 6's transform does exactly that, building "Type.method" into a local
-    // before each slice. The failure was silent and total: on the next call the
-    // reused buffer held the NEXT name, strcmp matched it, and every frame
-    // resolved to the first iid. CI run 32491747115 caught it as a trace
-    // containing exactly one distinct name.
+    // The table OWNS its names; a caller's buffer may hold the next name already.
     int32_t     name_off[CAJ_PROF_MAX_INTERNED];
-    // Source locations intern in their OWN iid space (Perfetto keys interning
-    // per field, not per sequence). Keeping them separate is what preserves
-    // §7.4: a method sampled at forty lines is still ONE EventName, with forty
-    // SourceLocations beside it. Folding "file:line" into the slice name would
-    // have minted a fresh interned name per line and defeated the whole table.
+    // Source locations intern in their OWN iid space: one EventName, many of these.
     int32_t     n_srcs;
     int32_t     src_file_off[CAJ_PROF_MAX_INTERNED];
     int32_t     src_func_off[CAJ_PROF_MAX_INTERNED];
@@ -332,6 +259,7 @@ static int32_t caj_prof_flush(CajProfWriter* w, CajPbBuf* b) {
     return b->len;
 }
 
+// Opens `path` for writing and resets the interning tables and counters.
 int32_t __cajeta_prof_trace_open(CajProfWriter* w, const char* path) {
     if (!w || !path) return 0;
     w->f = fopen(path, "wb");
@@ -346,14 +274,8 @@ int32_t __cajeta_prof_trace_open(CajProfWriter* w, const char* path) {
     return 1;
 }
 
-// Returns the iid for `name`, emitting an InternedData packet the first time it
-// is seen (§7.4: a repeated name is emitted once). iids are 1-based; 0 means
-// "not interned", which is what TrackEvent.name_iid treats as absent.
-//
-// Linear scan with strcmp rather than pointer identity: the frame descriptors
-// codegen emits are per-method, so two methods of the same name in different
-// modules carry equal strings at different addresses. Pointer identity would
-// silently emit the same name repeatedly and defeat the interning.
+// Returns the iid for `name`, emitting an InternedData packet the first time it is
+// seen; 0 means "not interned". Compared by CONTENT, never by pointer.
 uint64_t __cajeta_prof_intern(CajProfWriter* w, const char* name) {
     if (!w || !name) return 0;
     for (int32_t i = 0; i < w->n_names; i++) {
@@ -379,9 +301,7 @@ uint64_t __cajeta_prof_intern(CajProfWriter* w, const char* name) {
     return iid;
 }
 
-// Copy a string into the writer's pool, returning its offset or -1. Shared by
-// both interning tables, and the reason neither can be left holding a caller's
-// scratch buffer.
+// Copies a string into the writer's pool, returning its offset or -1.
 static int32_t caj_prof_pool_put(CajProfWriter* w, const char* s) {
     int32_t len = 0;
     while (s[len]) len++;
@@ -416,19 +336,12 @@ static int32_t caj_prof_emit_source(CajProfWriter* w, uint64_t iid,
                             first ? CAJ_PB_SEQ_FLAG_CLEARED : CAJ_PB_SEQ_FLAG_NEEDS);
     p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_INTERNED, id, d);
     CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
-    // caj_pb_packet, NOT caj_pb_put: the payload must be wrapped as
-    // Trace.packet. Writing it raw put unframed bytes in the file, and the
-    // slices then referenced source-location iids that were never emitted. The
-    // trace still LOADED — trace_processor skipped what it could not parse and
-    // reported source_location_iid as an unresolved arg — so nothing failed,
-    // the locations were simply absent.
+    // caj_pb_packet, NOT caj_pb_put: unframed bytes leave iids that never resolve.
     caj_pb_packet(&b, pkt, p);
     return caj_prof_flush(w, &b);
 }
 
-// Intern a (file, function, line) triple. Returns its iid, or 0 if it could not
-// be interned — in which case the caller omits the field rather than pointing a
-// slice at the wrong line.
+// Interns a (file, function, line) triple; 0 means the caller omits the field.
 uint64_t __cajeta_prof_intern_source(CajProfWriter* w, const char* file,
                                      const char* func, int32_t line) {
     if (!w || !file || !func) return 0;
@@ -457,6 +370,7 @@ uint64_t __cajeta_prof_intern_source(CajProfWriter* w, const char* file,
 
 int32_t __cajeta_prof_trace_source_count(CajProfWriter* w) { return w ? w->n_srcs : 0; }
 
+// Emits one TrackDescriptor packet for `uuid`, optionally parented.
 int32_t __cajeta_prof_trace_track(CajProfWriter* w, uint64_t uuid,
                                   uint64_t parent_uuid, const char* name) {
     if (!w || !w->f) return 0;
@@ -465,15 +379,8 @@ int32_t __cajeta_prof_trace_track(CajProfWriter* w, uint64_t uuid,
     return caj_prof_flush(w, &b);
 }
 
-// Interns `name` and emits the slice referencing it. A slice with no name (a
-// SLICE_END) passes name = NULL and carries neither field.
-// `file` and `line` are optional: pass NULL / 0 for a slice with no source
-// position (a SLICE_END, which needs neither).
-//
-// The line recorded is the one observed WHEN THE SLICE OPENED. A frame stays on
-// the stack across many samples at many lines; the slice says where it was first
-// seen, not where it spent its time. Reading it as the latter would be wrong,
-// which is why it is a source_location and not a duration attribution.
+// Interns `name` and emits the slice referencing it; `file` and `line` are optional.
+// The line is the one seen WHEN THE SLICE OPENED, not where the frame spent time.
 int32_t __cajeta_prof_trace_slice_at(CajProfWriter* w, uint64_t ts,
                                      uint64_t track_uuid, int32_t type,
                                      const char* name, const char* file,
@@ -482,8 +389,7 @@ int32_t __cajeta_prof_trace_slice_at(CajProfWriter* w, uint64_t ts,
     uint64_t iid = name ? __cajeta_prof_intern(w, name) : 0;
     uint64_t src = (file && name) ? __cajeta_prof_intern_source(w, file, name, line) : 0;
     CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
-    // iid == 0 with a non-NULL name means the table was full or the intern
-    // failed; fall back to the inline name rather than dropping it.
+    // iid 0 with a non-NULL name means interning failed; fall back to inline.
     __cajeta_prof_emit_slice(&b, w->seq_id, ts, track_uuid, type,
                              iid, iid ? NULL : name, src);
     return caj_prof_flush(w, &b);
@@ -500,10 +406,9 @@ int64_t __cajeta_prof_trace_bytes(CajProfWriter* w)   { return w ? w->bytes : 0;
 int32_t __cajeta_prof_trace_interned(CajProfWriter* w){ return w ? w->n_names : 0; }
 int32_t __cajeta_prof_trace_writer_size(void)         { return (int32_t) sizeof(CajProfWriter); }
 
+// Flushes and closes. There is no footer, which is why a killed run still reads.
 int32_t __cajeta_prof_trace_close(CajProfWriter* w) {
     if (!w || !w->f) return 0;
-    // No footer: there is nothing to write at the end, which is the same
-    // property that makes a killed run's partial trace readable.
     int r = fflush(w->f) == 0;
     fclose(w->f);
     w->f = NULL;
@@ -511,23 +416,8 @@ int32_t __cajeta_prof_trace_close(CajProfWriter* w) {
 }
 
 // ── Unit 6: samples become slices ─────────────────────────────────────────
-// A sampler produces periodic STACKS; Perfetto's TrackEvent model wants
-// SLICES. The conversion is a per-track diff against the previously open stack:
-// frames still present are left open, frames that vanished are closed innermost
-// first, frames that appeared are opened outermost first. Everything still open
-// is closed at drain.
-//
-// WHAT THIS COSTS, stated because a flame graph invites the opposite reading:
-// every slice boundary lands on a SAMPLE TICK, not on a real call boundary. A
-// slice says "this frame was on the stack at these ticks", never "this call
-// started here". At the 1 kHz default a call shorter than a millisecond may not
-// appear at all, and one that does appear has its edges quantized to the
-// interval. That is inherent to sampling — §3's instrumentation tier exists for
-// exact enter/exit — and §7.8 requires the trace record which tier produced a
-// measurement so a reader can tell the two apart.
-//
-// The diff is also why interning matters: a frame that persists across a
-// thousand ticks is named once, not a thousand times.
+// A sampler produces periodic STACKS; TrackEvent wants SLICES. Each sample is diffed
+// against the open stack, and every slice boundary lands on a SAMPLE TICK.
 #define CAJ_PROF_MAX_TRACKS 256
 #define CAJ_PROF_MAX_DEPTH  CAJETA_PROF_MAX_FRAMES
 
@@ -540,19 +430,16 @@ typedef struct {
     const CajetaFrameDesc* open[CAJ_PROF_MAX_DEPTH];   // outermost -> innermost
 } CajProfTrack;
 
-// Stable, readable track names. A fiber gets its debugger id, which is the same
-// id the DAP fibers view shows, so a profile and a debug session name the same
-// fiber the same way.
+// Stable track names; a fiber gets the same debugger id a DAP session shows.
 static void caj_prof_track_name(char* out, int32_t cap, const CajProfTrack* t,
                                 int32_t index) {
     const char* kind = (t->kind == CAJETA_PROF_OWNER_FIBER) ? "fiber" : "thread";
-    // A fiber's id comes from the SAMPLE, not from the handle. Reading it here
-    // meant dereferencing a fiber that a drain-at-exit finds long dead; the
-    // handle is only known live at the moment it was sampled.
+    // The fiber id comes from the SAMPLE: at drain the handle is long dead.
     long id = (t->kind == CAJETA_PROF_OWNER_FIBER) ? (long) t->id : (long) index;
     snprintf(out, (size_t) cap, "cajeta.%s.%ld", kind, id);
 }
 
+// Returns the track for `owner`, emitting its TrackDescriptor on first sight.
 static CajProfTrack* caj_prof_track_for(CajProfTrack* tracks, int32_t* n,
                                         CajProfWriter* w, void* owner,
                                         int32_t kind, int64_t id) {
@@ -564,8 +451,7 @@ static CajProfTrack* caj_prof_track_for(CajProfTrack* tracks, int32_t* n,
     t->kind = kind;
     t->id = id;
     t->depth = 0;
-    // uuid must be stable and non-zero; the handle's address is both, and it is
-    // never dereferenced here.
+    // The handle's address is a stable non-zero uuid, and is never dereferenced.
     t->uuid = (uint64_t) (uintptr_t) owner;
     char name[64];
     caj_prof_track_name(name, (int32_t) sizeof(name), t, *n);
@@ -574,23 +460,14 @@ static CajProfTrack* caj_prof_track_for(CajProfTrack* tracks, int32_t* n,
     return t;
 }
 
-// One frame's display name: "Type.method". Built into a caller buffer so the
-// interning table sees a stable content string.
+// One frame's display name, "Type.method", built into the caller's buffer.
 static void caj_prof_frame_name(char* out, int32_t cap, const CajetaFrameDesc* d) {
     const char* t = (d && d->typeName) ? d->typeName : "?";
     const char* m = (d && d->methodName) ? d->methodName : "?";
     snprintf(out, (size_t) cap, "%s.%s", t, m);
 }
 
-// Convert an ordered run of samples into a trace at `path`. Returns packets
-// written, or 0. The `_meta` form additionally stamps §7.8's run metadata.
-//
-// Takes the samples as a parameter rather than reading the ring, so the exact
-// code CI validates is the code the runtime runs: tools/tracegen builds
-// synthetic samples and calls this under a plain `cc`. A transform that reached
-// into globals could only ever be tested by building the whole toolchain, which
-// is expensive enough that it would not be tested on every change.
-// Defined below, next to the annotation helpers it uses.
+// Defined below, next to the annotation helpers they use.
 int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
                                      const char* tier, int32_t rate_hz,
                                      int32_t ring_cap, int64_t samples,
@@ -610,17 +487,16 @@ typedef struct {
 int64_t __cajeta_prof_gpu_captured_to_trace(CajProfWriter* w, uint64_t ts);
 void    __cajeta_prof_gpu_capture_settle(void);
 
+// Converts an ordered run of samples into a trace at `path`, stamping run metadata
+// when `meta` is given. Samples are a parameter so tracegen drives this exact code.
 int64_t __cajeta_prof_samples_to_trace_meta(const CajetaProfSample* samples,
                                             int64_t n, const char* path,
                                             const CajProfMeta* meta) {
     if (!samples || n <= 0) return 0;
     static CajProfWriter w;
     if (!__cajeta_prof_trace_open(&w, path)) return 0;
-    // Settle the GPU side FIRST: the metadata packet below carries the ROCm
-    // backend's account of itself (§5.2.2), and asking before the last records
-    // are claimed reports rocm_records=0 next to a file full of device spans.
+    // Settle the GPU side FIRST, or the metadata below reports zero ROCm records.
     __cajeta_prof_gpu_capture_settle();
-    // First packet, so it survives a trace truncated moments later.
     if (meta)
         __cajeta_prof_trace_metadata(&w, (uint64_t) samples[0].host_ns,
                                      meta->tier, meta->rate_hz, meta->ring_cap,
@@ -647,17 +523,14 @@ int64_t __cajeta_prof_samples_to_trace_meta(const CajetaProfSample* samples,
             curline[k] = s->frames[n - 1 - k].line;
         }
 
-        // Common prefix with what is already open.
         int32_t common = 0;
         while (common < n && common < t->depth && cur[common] == t->open[common])
             common++;
 
-        // Close what vanished, innermost first — Perfetto requires SLICE_END in
-        // reverse order of SLICE_BEGIN on a track.
+        // Close what vanished, innermost first: SLICE_END must reverse BEGIN.
         for (int32_t k = t->depth - 1; k >= common; k--)
             __cajeta_prof_trace_slice(&w, (uint64_t) s->host_ns, t->uuid,
                                       CAJ_TE_SLICE_END, NULL);
-        // Open what appeared, outermost first.
         for (int32_t k = common; k < n; k++) {
             char name[256];
             caj_prof_frame_name(name, (int32_t) sizeof(name), cur[k]);
@@ -669,23 +542,15 @@ int64_t __cajeta_prof_samples_to_trace_meta(const CajetaProfSample* samples,
         t->depth = n;
     }
 
-    // Close every slice still open, or the trace ends with unterminated slices
-    // and a reader has to guess where they stopped.
+    // Close every slice still open, or the trace ends unterminated.
     for (int32_t i = 0; i < n_tracks; i++)
         for (int32_t k = tracks[i].depth - 1; k >= 0; k--)
             __cajeta_prof_trace_slice(&w, (uint64_t) last_ts, tracks[i].uuid,
                                       CAJ_TE_SLICE_END, NULL);
 
-    // §3.4 — if this build also carries instrumentation probes, its per-method
-    // records go in the SAME trace, on their own track. Two files would make
-    // "which tier produced this number" a question about provenance the reader
-    // has to keep track of by hand.
+    // Instrumentation records go in the SAME trace, on their own track.
     __cajeta_prof_instr_to_trace(&w, (uint64_t) last_ts);
 
-    // 6.6 — and the GPU work this run captured, on its own device/context/queue
-    // tracks, in the SAME file for the same reason (§8.3's one time axis).
-    // Before this, an env-armed run of a GPU program wrote a trace with no
-    // device track at all.
     __cajeta_prof_gpu_captured_to_trace(&w, (uint64_t) last_ts);
 
     int64_t packets = __cajeta_prof_trace_packets(&w);
@@ -693,18 +558,14 @@ int64_t __cajeta_prof_samples_to_trace_meta(const CajetaProfSample* samples,
     return packets;
 }
 
-// An INSTRUMENTED run with no sampler still has a profile to write, and until
-// this existed it wrote nothing: the drain returns early on an empty ring, so
-// `--profiler=instrument` without CAJETA_PROFILER produced exact counts that
-// never left memory.
+// An instrumented run with no sampler still has a profile; the ring drain returns
+// early on an empty ring, so this path is its only writer.
 int64_t __cajeta_prof_instr_only_to_trace(const char* path) {
     if (!__cajeta_prof_instr_is_present()) return 0;
     if (__cajeta_prof_instr_method_count() <= 0) return 0;
     static CajProfWriter w;
     if (!__cajeta_prof_trace_open(&w, path)) return 0;
-    // Timestamp 0: the counters are totals over the run, not events at a
-    // moment, and stamping them with "now" would put them after work they
-    // summarize. The run record carries the same stamp for the same reason.
+    // Timestamp 0: these are run totals, and "now" would postdate the work.
     __cajeta_prof_trace_metadata(&w, 0, "instrumentation", 0, 0, 0, 0, 0);
     __cajeta_prof_instr_to_trace(&w, 0);
     int64_t packets = __cajeta_prof_trace_packets(&w);
@@ -713,16 +574,9 @@ int64_t __cajeta_prof_instr_only_to_trace(const char* path) {
 }
 
 // ── GPU dispatch records -> trace (Unit 7; spec §7.2, §7.3) ───────────────
-//
-// Lives here, beside the sample transform and on the same side of
-// CAJETA_PROF_TRACE_STANDALONE, for the reason the sample transform does: this
-// is what tools/tracegen drives under a plain `cc`, so CI's trace_processor
-// judges the emitter that ships. A GPU transform that could only run with a GPU
-// attached would be checked by nobody.
+// Beside the sample transform and standalone-compilable, so tracegen drives it.
 
-// Track uuids. The top nibble is set so a synthetic track can never collide
-// with a HOST track, whose uuid is a thread handle's address — no pointer on
-// any supported platform reaches bit 60.
+// Track uuids; the top nibble is set so one never collides with a HOST track.
 #define CAJ_GPU_UUID_DEVICE  (0xD000ULL << 48)
 #define CAJ_GPU_UUID_CONTEXT (0xC000ULL << 48)
 #define CAJ_GPU_UUID_QUEUE   (0x9000ULL << 48)
@@ -735,9 +589,7 @@ static uint64_t caj_gpu_uuid(uint64_t base, int32_t backend, int32_t device,
          | (uint64_t) ((uint32_t) queue);
 }
 
-// Mirrors the backend enum in cajeta_xpu_dispatch.c, which is included LATER in
-// the single-TU build and so cannot be referenced from here. Presentation only:
-// a wrong name here mislabels a track and breaks nothing else.
+// Mirrors the backend enum in cajeta_xpu_dispatch.c; presentation only.
 static const char* caj_gpu_backend_name(int32_t backend) {
     switch (backend) {
         case CAJ_GPU_BACKEND_CUDA:   return "cuda";
@@ -750,9 +602,7 @@ static const char* caj_gpu_backend_name(int32_t backend) {
 
 #define CAJ_GPU_MAX_TRACKS 64
 
-// Which track descriptors this writer has already emitted. Held by the caller
-// rather than inside CajProfWriter so the streaming sink can emit across many
-// batches without re-declaring a track it already named.
+// Track descriptors already emitted; held by the caller so batches never redeclare.
 typedef struct {
     uint64_t uuid[CAJ_GPU_MAX_TRACKS];
     int32_t  n;
@@ -766,21 +616,12 @@ static int32_t caj_gpu_track_seen(CajGpuTracks* t, uint64_t uuid) {
     return 0;
 }
 
-// Emit `n` dispatch records into an open writer. Returns packets written.
-// Defined with the metadata writer below; declared here so the GPU emitter can
-// annotate a device slice with the tier and confidence §10.6 requires.
+// Defined with the metadata writer below.
 static int32_t caj_prof_anno_int(uint8_t* out, const char* name, int64_t v);
 
-// §7.5 — one ClockSnapshot pairing the host clock with a device domain, so a
-// reader can reproduce the mapping instead of taking the converted timestamps
-// on trust. The device clock id is sequence-scoped (Perfetto reserves [64,127]
-// for user clocks and scopes them to the emitting sequence), which is why the
-// writer keeps one sequence id for the whole file.
-//
-// unit_multiplier_ns is 1: the device timestamp is recorded here in TICKS,
-// with the tick period carried by the correlation, because a snapshot that
-// pre-converted its own device value would be describing the conversion using
-// the conversion.
+// One ClockSnapshot pairing the host clock with a device domain, so a reader can
+// reproduce the mapping. The device clock id is sequence-scoped and its timestamp
+// is in TICKS (unit_multiplier_ns 1); the correlation carries the period.
 int32_t __cajeta_prof_trace_clock_snapshot(CajProfWriter* w, int32_t domain,
                                            int64_t hostNs, int64_t devTicks) {
     if (!w) return 0;
@@ -811,16 +652,14 @@ int32_t __cajeta_prof_trace_clock_snapshot(CajProfWriter* w, int32_t domain,
     return 1;
 }
 
+// Emits `n` dispatch records into an open writer: clock snapshots, then a launch
+// instant and a device slice per event. Returns packets written.
 int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
                                const CajetaGpuEvent* evs, int32_t n) {
     if (!w || !seen || !evs || n <= 0) return 0;
     int64_t before = __cajeta_prof_trace_packets(w);
 
-    // §7.5 — every calibration this run performed, replayed into the trace
-    // before the spans that depend on it. Emitted here rather than at
-    // calibration time because the writer runs at drain, and a snapshot that
-    // arrived after the spans it explains would be useless to a streaming
-    // reader.
+    // Every calibration replayed BEFORE the spans that depend on it.
     {
         int32_t snaps = __cajeta_prof_clock_snapshot_count();
         for (int32_t i = 0; i < snaps; i++) {
@@ -839,9 +678,7 @@ int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
         uint64_t que = caj_gpu_uuid(CAJ_GPU_UUID_QUEUE,   e->backend, e->device_id, e->queue);
         char nm[128];
 
-        // device -> context -> queue, a real hierarchy (§7.2). A flat set of
-        // three roots would render identically in a one-device trace and wrongly
-        // the moment there are two.
+        // device -> context -> queue is a real hierarchy; flat roots go wrong on two.
         if (!caj_gpu_track_seen(seen, dev)) {
             snprintf(nm, sizeof(nm), "cajeta.xpu.%s device %d", bname, e->device_id);
             __cajeta_prof_trace_track(w, dev, 0, nm);
@@ -854,11 +691,8 @@ int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
             snprintf(nm, sizeof(nm), "queue %lld", (long long) e->queue);
             __cajeta_prof_trace_track(w, que, ctx, nm);
         }
-        // The launching thread's track. Named from the handle rather than from
-        // the sampler's registry index, which this transform cannot see — when
-        // Unit 9 merges the sampled and dispatched halves into one trace the two
-        // namings must be reconciled; the UUID (the handle address) already
-        // agrees, so the merge is a naming fix, not a re-identification.
+        // The launching thread's track; its uuid is the handle address, which a
+        // later merge with the sampler already agrees on.
         uint64_t host = (uint64_t) (uintptr_t) e->host_thread;
         if (host && !caj_gpu_track_seen(seen, host)) {
             snprintf(nm, sizeof(nm), "cajeta.thread.%llu", (unsigned long long) host);
@@ -866,18 +700,12 @@ int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
         }
 
         const char* kn = e->kernel_name ? e->kernel_name : "?";
-        // Host launch site: an instant on the launching thread, carrying the
-        // flow id and the source location, so "which line launched this" is one
-        // click from the device slice (§5.1.2, §7.3).
+        // Host launch site: an instant carrying the flow id and source location.
         if (host) {
             const CajetaFrameDesc* d = e->call_site;
             uint64_t iid = __cajeta_prof_intern(w, kn);
-            // "Type.method", via the SAME helper the sampler uses. Interning
-            // the bare method name here would give one call site two different
-            // names depending on which half of the profiler saw it — `sum` in
-            // the launch flow and `gpu.Reduce.sum` in the sampled stack — and a
-            // reader correlating the two would find no match and have no way to
-            // tell that from the launch genuinely not being sampled.
+            // "Type.method" via the SAME helper the sampler uses, or one site
+            // ends up with two names.
             char qual[192];
             if (d) caj_prof_frame_name(qual, (int32_t) sizeof(qual), d);
             uint64_t src = (d && d->fileName)
@@ -890,23 +718,16 @@ int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
                                           src, (uint64_t) e->launch_id, 0);
             caj_prof_flush(w, &b);
         }
-        // Device execution: a slice on the queue track, terminating the flow.
-        //
-        // §10.6 — the tier and the correlation confidence ride on the
-        // measurement itself, not on a run-level note, because a single run can
-        // mix them: one backend demoted, another not. A developer must never
-        // have to infer that a span in front of them was degraded. §11.3's
-        // integrity flags ride along for the same reason — a flagged span still
-        // renders, and only the annotation says it should not be trusted.
+        // Device execution: a slice on the queue track, terminating the flow. The
+        // tier, clock confidence and integrity flags ride on the measurement
+        // itself - one run can mix them, and a flagged span still renders.
         {
             uint64_t iid = __cajeta_prof_intern(w, kn);
             uint8_t anno[256];
             int32_t a = caj_prof_anno_int(anno, "tier", e->tier);
             a += caj_prof_anno_int(anno + a, "clock_confidence",
                                    __cajeta_prof_clock_confidence(e->backend));
-            // What the checker derives, OR'd with what only the producer could
-            // know (a Vulkan timestamp-register reset is visible solely in the
-            // backend's own span history — §5.5.7).
+            // The checker's flags OR'd with what only the producer can know.
             int32_t integrity = __cajeta_prof_check_dispatch(e)
                               | e->integrity_flags;
             if (integrity != CAJETA_SPAN_OK) {
@@ -932,10 +753,8 @@ int64_t __cajeta_prof_gpu_events_to_trace(const CajetaGpuEvent* evs, int64_t n,
     static CajGpuTracks seen;
     seen.n = 0;
     if (!__cajeta_prof_trace_open(&w, path)) return 0;
-    // §7.8 applies to a device trace exactly as it does to a sampled one, and
-    // this is the run record's only home on this path. The sampler counters are
-    // zero because no sampling happened — which is true, and better than
-    // borrowing the event count to fill a field that means something else.
+    // The run record's only home on this path; the sampler counters are honestly
+    // zero, which beats borrowing a count that means something else.
     __cajeta_prof_trace_metadata(&w, (uint64_t) evs[0].host_launch_ns,
                                  "device", 0, 0, 0, 0, 0);
     __cajeta_prof_gpu_emit(&w, &seen, evs, (int32_t) n);
@@ -949,21 +768,7 @@ int64_t __cajeta_prof_samples_to_trace(const CajetaProfSample* samples,
 }
 
 // ── 6.2.c / spec §7.8: what produced this trace ──────────────────────────
-// An INSTANT event on its own track, carrying the run's configuration and its
-// losses as debug annotations. Emitted first so it is present even in a trace
-// truncated seconds later.
-//
-// The drop count is the reason this exists. The sampler drops on ring overflow
-// rather than blocking — the right call, since blocking would perturb the
-// program it measures — but until now that number lived only in memory. A trace
-// that lost a third of its samples was byte-for-byte indistinguishable from one
-// that lost none, so a flame graph built from a starved ring looked exactly as
-// authoritative as a complete one. §7.8 requires the trace state which tier
-// produced each measurement, and "how much did we miss" is the same question.
-//
-// DebugAnnotation rather than a bespoke packet: it lives on TrackEvent, which
-// §7.7 confines us to, and Perfetto surfaces it in the UI as arguments on the
-// event.
+// One DebugAnnotation, int or string form; returns the bytes written.
 static int32_t caj_prof_anno_int(uint8_t* out, const char* name, int64_t v) {
     uint8_t da[128];
     int32_t ln = 0; while (name[ln]) ln++;
@@ -980,14 +785,9 @@ static int32_t caj_prof_anno_str(uint8_t* out, const char* name, const char* v) 
     return __cajeta_pb_bytes(out, CAJ_PB_TE_DEBUG_ANNOS, da, d);
 }
 
-// §7.8 — per-domain calibration quality, plus the driver identity and active
-// layers the owning backend registered. Emitted only for domains that actually
-// calibrated: an uncalibrated run must not invent a quality figure, because
-// "there wasn't one" and "it was poor" call for different responses.
-//
-// Drift is integer MILLI-ppm. The wire carries no floats, and rounding to whole
-// ppm would render the reference device's −15 ppm (§6.6) as −15 while a −0.4 ppm
-// device became 0 — erasing precisely the term that unit is about.
+// Per-domain calibration quality, driver identity and active layers, for domains
+// that actually calibrated - an uncalibrated run must not invent a figure. Drift
+// is integer MILLI-ppm; whole ppm would erase a sub-ppm device.
 static int32_t caj_prof_calibration_annos(uint8_t* out, int32_t cap) {
     int32_t n = 0;
     int32_t calibrated = 0;
@@ -999,9 +799,7 @@ static int32_t caj_prof_calibration_annos(uint8_t* out, int32_t cap) {
 
     for (int32_t d = 0; d < CAJETA_CLOCK_MAX_DOMAINS; d++) {
         if (!__cajeta_prof_clock_valid(d)) continue;
-        // Six ints and two strings per domain; stop before the buffer rather
-        // than truncate an annotation mid-field, which would corrupt the packet
-        // instead of shortening it.
+        // Stop before the buffer rather than truncate an annotation mid-field.
         if (cap - n < 320) break;
         char key[48];
         snprintf(key, sizeof(key), "clock%d_confidence", d);
@@ -1036,23 +834,10 @@ static int32_t caj_prof_calibration_annos(uint8_t* out, int32_t cap) {
     return n;
 }
 
-// §3.5 / §3.12 / §3.13 — what an INSTRUMENTED build cost, what it left out,
-// and what it was optimized at. Emitted only when instrumentation probes
-// actually exist: a sampled run must not carry a zero-valued instrumentation
-// record, because "no probes were built" and "the probes recorded nothing" are
-// different facts and only one of them means the developer should look again.
-//
-// The overhead is pairs x a CALIBRATED per-pair cost, not a constant. §3.5
-// exists so the developer can judge how much the measurement distorted the
-// program, and a figure this file guessed at would read exactly like a measured
-// one.
 #ifndef CAJETA_PROF_TRACE_STANDALONE
 // ── Unit 8 — what the ROCm backend actually did (§5.2, §6.4) ─────────────
-//
-// Present on every trace from a run that attempted the ROCm backend, including
-// — especially — the runs where it did not work. A degraded trace that looks
-// identical to a device-timed one is the failure §5.2.2 is about, and the state
-// plus the reason are what let a reader tell them apart without being there.
+// Present on every trace that ATTEMPTED ROCm, especially where it did not work:
+// a degraded trace must not look device-timed.
 static int32_t caj_prof_rocm_annos(uint8_t* out, int32_t cap) {
     int32_t n = 0;
     const int32_t state = __cajeta_prof_rocm_state();
@@ -1063,15 +848,12 @@ static int32_t caj_prof_rocm_annos(uint8_t* out, int32_t cap) {
     n += caj_prof_anno_int(out + n, "rocm_tracing", __cajeta_prof_rocm_tracing());
     n += caj_prof_anno_int(out + n, "rocm_launches", __cajeta_prof_rocm_launches());
     n += caj_prof_anno_int(out + n, "rocm_records", __cajeta_prof_rocm_records());
-    // Records that matched no launch of ours — HIP's own fill and copy kernels.
-    // Reported rather than hidden: a reader comparing launches to records would
-    // otherwise conclude the correlation was leaking.
+    // Records matching no launch of ours (HIP's own kernels), reported not hidden.
     n += caj_prof_anno_int(out + n, "rocm_unmatched_records",
                            __cajeta_prof_rocm_unmatched());
     n += caj_prof_anno_int(out + n, "rocm_clock_offset_ns",
                            __cajeta_prof_rocm_clock_offset_ns());
-    // §6.4 — a trace that spans a suspend has everything after the sleep sitting
-    // minutes out of place while rendering perfectly, so the file has to say so.
+    // A trace spanning a suspend renders perfectly, everything after it displaced.
     n += caj_prof_anno_int(out + n, "rocm_suspended", __cajeta_prof_rocm_suspended());
     if (__cajeta_prof_rocm_suspended())
         n += caj_prof_anno_int(out + n, "rocm_suspend_ns",
@@ -1084,6 +866,8 @@ static int32_t caj_prof_rocm_annos(uint8_t* out, int32_t cap) {
 }
 #endif
 
+// What an instrumented build cost, left out, and was optimized at. Emitted only
+// where probes exist: a zero-valued record would read as "the probes found none".
 static int32_t caj_prof_instr_annos(uint8_t* out, int32_t cap) {
     if (!__cajeta_prof_instr_is_present()) return 0;
     if (cap < 512) return 0;
@@ -1099,24 +883,18 @@ static int32_t caj_prof_instr_annos(uint8_t* out, int32_t cap) {
                            __cajeta_prof_instr_probe_ns());
     n += caj_prof_anno_int(out + n, "instr_overhead_ns",
                            __cajeta_prof_instr_overhead_ns());
-    // §3.13 — the flag pins no optimization level, so the level is part of what
-    // every number here means and is never left for the reader to infer.
+    // The flag pins no optimization level, so the level is part of what these mean.
     n += caj_prof_anno_int(out + n, "instr_opt_level",
                            __cajeta_prof_instr_opt_level());
-    // §3.12 — a profile that silently omits code reads as though that code were
-    // free, so the selection travels with the run.
+    // A profile that silently omits code reads as though that code were free.
     const char* sel = __cajeta_prof_instr_selection();
     n += caj_prof_anno_str(out + n, "instr_selection",
                            (sel && sel[0]) ? sel : "all");
     return n;
 }
 
-// §3.4 — the per-method records, on a track of their own. Sampling lands as
-// nested SLICE_BEGIN/END on per-thread tracks; instrumentation lands here as
-// one INSTANT per method, and each carries `source` explicitly as well. Both
-// live in one trace and a consumer can always say which produced a number,
-// which is the whole requirement — a merged timeline whose provenance is a
-// guess is worse than two separate files.
+// The instrumentation track: one INSTANT per method, each carrying `source`, so a
+// consumer can always say which tier produced a number.
 #define CAJ_INSTR_TRACK_UUID (0x1A000ULL << 44)
 
 int64_t __cajeta_prof_instr_to_trace(CajProfWriter* w, uint64_t ts) {
@@ -1144,9 +922,7 @@ int64_t __cajeta_prof_instr_to_trace(CajProfWriter* w, uint64_t ts) {
                                __cajeta_prof_instr_method_calls(i));
         e += caj_prof_anno_int(extra + e, "inclusive_ns",
                                __cajeta_prof_instr_method_inclusive_ns(i));
-        // §3.11 — entries reached with no probed frame beneath them. Recorded
-        // as a fact about this method rather than attributed to the nearest
-        // probed ancestor, which would be a fabricated call edge.
+        // Entries reached with no probed frame beneath, not attributed upward.
         e += caj_prof_anno_int(extra + e, "outside_selection_calls",
                                __cajeta_prof_instr_method_outside_calls(i));
 
@@ -1159,6 +935,9 @@ int64_t __cajeta_prof_instr_to_trace(CajProfWriter* w, uint64_t ts) {
     return __cajeta_prof_trace_packets(w) - before;
 }
 
+// The run record: an INSTANT on its own track carrying the run's configuration
+// and its losses - host and GPU drop counts, calibration, instrumentation - as
+// debug annotations. Emitted first, so it survives a truncated trace.
 int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
                                      const char* tier, int32_t rate_hz,
                                      int32_t ring_cap, int64_t samples,
@@ -1179,27 +958,14 @@ int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
     n += caj_prof_anno_int(te + n, "samples_taken", samples);
     n += caj_prof_anno_int(te + n, "samples_dropped", dropped);
     n += caj_prof_anno_int(te + n, "frames_captured", frames);
-    // Stated as a rate so a reader does not have to divide to learn whether the
-    // profile is trustworthy. Parts per thousand: integer, no float on the wire.
+    // A rate, so a reader need not divide; per mille, since the wire has no float.
     int64_t total = samples + dropped;
     n += caj_prof_anno_int(te + n, "dropped_per_mille",
                            total > 0 ? (dropped * 1000) / total : 0);
 #ifndef CAJETA_PROF_TRACE_STANDALONE
-    // The DEVICE side of the same question. samples_dropped covers the host
-    // sampler only, so the guide's "check the drop count first" had no answer
-    // for a GPU ring that overflowed: a run keeping 8192 of 56,843 launches
-    // produced the same record as one that kept every launch (Julian,
-    // 2026-09-02).
-    //
-    // The CAPTURE ring, which is the one CAJETA_PROFILER_GPU_RING sizes and the
-    // one that overflows under a busy kernel loop. NOT the per-sink queue: its
-    // counters look adjacent and are a different ring entirely, so reporting
-    // them here would read zero while launches were being lost — worse than
-    // saying nothing. Measured while writing this: capture ring 8 vs sink
-    // counters, which stayed at 0.
-    //
-    // The ring OVERWRITES, so what survives is the most recent `capacity`
-    // records and what is lost is the oldest.
+    // The DEVICE side of the same question - samples_dropped covers the host
+    // sampler only. This is the CAPTURE ring (what CAJETA_PROFILER_GPU_RING
+    // sizes), NOT the per-sink queue; it OVERWRITES, so the oldest are lost.
     {
         int64_t gpu_dropped = __cajeta_prof_gpu_capture_dropped();
         int64_t gpu_kept    = __cajeta_prof_gpu_captured();
@@ -1211,7 +977,6 @@ int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
     }
 #endif
     n += caj_prof_calibration_annos(te + n, (int32_t) sizeof(te) - n);
-    // §3.5/§3.12/§3.13 — present only on a build that actually carries probes.
     n += caj_prof_instr_annos(te + n, (int32_t) sizeof(te) - n);
 #ifndef CAJETA_PROF_TRACE_STANDALONE
     n += caj_prof_rocm_annos(te + n, (int32_t) sizeof(te) - n);
@@ -1225,18 +990,11 @@ int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
     return caj_prof_flush(w, &b);
 }
 
-// Everything above is free of the sampler's globals, so tools/tracegen can
-// compile it standalone and CI can validate the real transform. The ring drain
-// below is the one part that cannot be — it reads the sampler's ring — so it is
-// excluded from that build rather than duplicated for it.
+// Above is free of the sampler's globals; the drain below reads the ring.
 #ifndef CAJETA_PROF_TRACE_STANDALONE
 
-// Drain the sampler ring into `path`, consuming tail..head. This is the drain
-// half of 4.2.d: a run that ends normally flushes what it holds, and one that is
-// killed leaves a shorter but still readable trace (§7.6).
-//
-// The ring is contiguous only modulo its capacity, so it is copied into order
-// before conversion. That copy is at drain time, off the sampling path.
+// Drains the sampler ring into `path`, consuming tail..head. The ring is contiguous
+// only modulo capacity, so it is copied into order first, off the sampling path.
 int64_t __cajeta_prof_drain_to_trace(const char* path) {
     if (!__cajeta_prof_ring || __cajeta_prof_ring_cap <= 0) return 0;
     int64_t head = __atomic_load_n(&__cajeta_prof_head, __ATOMIC_ACQUIRE);
@@ -1249,8 +1007,7 @@ int64_t __cajeta_prof_drain_to_trace(const char* path) {
     if (!ordered) return 0;
     for (int64_t i = 0; i < n; i++)
         ordered[i] = __cajeta_prof_ring[(tail + i) % __cajeta_prof_ring_cap];
-    // The drain is the only place that can see BOTH the ring's contents and the
-    // sampler's counters, so it is where §7.8's metadata is stamped.
+    // The drain is the only place that sees both the ring and the counters.
     CajProfMeta meta;
     meta.tier = "sampling";
     meta.rate_hz = __cajeta_prof_interval > 0 ? 1000000 / __cajeta_prof_interval : 0;
@@ -1266,15 +1023,8 @@ int64_t __cajeta_prof_drain_to_trace(const char* path) {
 
 
 // ── 4.2.d: drain-and-flush on normal exit ─────────────────────────────────
-//
-// Until this existed, §9.1's promise — "when CAJETA_PROFILER is set, the run is
-// profiled" — was only half true: the sampler filled the ring and the program
-// exited without writing it. A profiled run produced nothing unless the caller
-// knew to drain by hand, which no user of a default-built binary does.
-//
-// Idempotent, and deliberately so: it is reached from main's epilogue, from
-// System.exit, and from tests, and two of those can happen in one run. A second
-// call must not truncate the file the first one wrote.
+// Drain and flush on normal exit. Idempotent: main's epilogue, System.exit and
+// tests all reach it, and two of those can happen in one run.
 int32_t __cajeta_prof_gpu_trace_detach(void);   // cajeta_rt_prof_gpu.c, later in this TU
 int64_t __cajeta_prof_gpu_only_to_trace(const char* path);   // ditto
 
@@ -1283,27 +1033,21 @@ static volatile int __cajeta_prof_shutdown_done = 0;
 int64_t __cajeta_prof_shutdown(void) {
     if (__atomic_exchange_n(&__cajeta_prof_shutdown_done, 1, __ATOMIC_ACQ_REL))
         return 0;
-    // Stop the sampler BEFORE reading the ring. Draining under a live producer
-    // races head against the copy loop and hands the transform a torn sample —
-    // the kind of corruption that shows up as one impossible stack in a thousand
-    // and gets blamed on the program under test.
+    // Stop the sampler BEFORE reading the ring, or the copy loop races head and
+    // the transform sees a torn sample.
     __cajeta_prof_disarm();
     __cajeta_prof_gpu_trace_detach();           // flush any attached GPU trace
     int64_t packets = __cajeta_prof_drain_to_trace(__cajeta_prof_out_path());
-    // Nothing sampled — but an instrumented build still has exact counts, and
-    // §3.1 promises them whether or not anyone armed the sampler.
+    // Nothing sampled, but an instrumented build still has exact counts.
     if (packets == 0)
         packets = __cajeta_prof_instr_only_to_trace(__cajeta_prof_out_path());
-    // 6.6 — and a run that dispatched to the GPU but collected no samples still
-    // measured something. The drain returns early on an empty ring, so without
-    // this a short GPU program would profile to nothing.
+    // A run that dispatched to the GPU but sampled nothing still measured work.
     if (packets == 0)
         packets = __cajeta_prof_gpu_only_to_trace(__cajeta_prof_out_path());
     return packets;
 }
 
-// Tests arm and drain repeatedly in one process; without this the second run in
-// a process would find shutdown already spent and write nothing.
+// Tests arm and drain repeatedly in one process, so shutdown must be re-armable.
 void __cajeta_prof_shutdown_reset(void) { __cajeta_prof_shutdown_done = 0; }
 
 #endif  /* CAJETA_PROF_TRACE_STANDALONE */

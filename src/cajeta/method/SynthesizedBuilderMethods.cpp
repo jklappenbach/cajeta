@@ -19,9 +19,6 @@ namespace cajeta {
             CajetaModulePtr module, CajetaClassPtr builder,
             StructurePropertyPtr field,
             const std::string& methodName)
-        // Return type is the Builder class itself (for `return this;`
-        // chaining). Method's class-pass-by-pointer rule emits this as
-        // a `ptr` return in the LLVM signature.
         : Method(module, methodName,
                  std::static_pointer_cast<CajetaType>(builder),
                  builder),
@@ -40,8 +37,7 @@ namespace cajeta {
 
     void SynthesizedBuilderSetterMethod::generateCode() {
         auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
-        // (this, value) -> ptr (Builder). Store value into the named
-        // field, return this.
+        // (this, value) -> ptr: stores value into the named field, returns this.
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
@@ -75,23 +71,14 @@ namespace cajeta {
                  builder),
           outer(outer) {
         this->parent = builder;
-        // build() returns a fresh __cajeta_alloc'd instance, so the caller owns
-        // it — the caller's drop chain must fire. Mirrors
-        // SynthesizedStaticFactoryMethod; without this the built object leaks.
+        // build() hands back a fresh allocation the caller must drop.
         this->setReturnsOwnership(true);
     }
 
     void SynthesizedBuildMethod::generateCode() {
         auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
-        // Body:
-        //   Outer* o = __cajeta_alloc(sizeof(Outer));
-        //   o->vtable = &Outer#VTable;     // slot 0
-        //   Outer::Outer(o, this->field1, this->field2, ...);  // all-args ctor
-        //   return o;
-        //
-        // Allocation + vtable init mirrors what ClassCreatorRest emits
-        // for `heap Outer(...)`. The ctor call uses the outer's all-args
-        // ctor LLVM function looked up in the outer's method map.
+        // Emits `heap Outer(...)` by hand: alloc, vtable into slot 0, the outer's
+        // all-args ctor over the builder's fields, then return the instance.
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
@@ -111,25 +98,20 @@ namespace cajeta {
         llvm::Type* outerLlvm = outer->getLlvmType();
         uint64_t outerSize = dl.getTypeAllocSize(outerLlvm);
 
-        // Alloc.
         llvm::Value* newOuter = b.CreateCall(allocFn,
             { llvm::ConstantInt::get(i64Ty, outerSize) }, "build.alloc");
 
-        // Vtable init at slot 0.
         llvm::GlobalVariable* vt = outer->getVirtualTableGlobal();
         if (vt) {
             llvm::Value* vtSlot = b.CreateStructGEP(outerLlvm, newOuter, 0,
                 "build.vt.slot");
-            // Cross-module fixup: ensure the vtable global is reachable
-            // from THIS module (the Builder lives in the same module as
-            // outer in nested-class case, but be defensive).
+            // The vtable global must be reachable from THIS module.
             llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
                 lmod, vt);
             b.CreateStore(vtRef, vtSlot);
         }
 
-        // Find outer's all-args ctor. It has one parameter per non-static
-        // field of outer (plus `this` at position 0).
+        // The all-args ctor: one parameter per non-static field, after `this`.
         std::vector<StructurePropertyPtr> outerFields;
         for (auto& prop : outer->getPropertyList()) {
             if (!prop || prop->isStatic()) continue;
@@ -141,7 +123,6 @@ namespace cajeta {
         for (auto& bucket : outer->getMethods()) {
             MethodPtr m = bucket.second;
             if (!m || !m->isConstructor()) continue;
-            // Match by post-prototype arity.
             auto params = m->getParameterList();
             if (params.size() != expectedArity) continue;
             ctor = m;
@@ -165,15 +146,13 @@ namespace cajeta {
         }
         ctorFn = CajetaModule::ensureFunctionInModule(lmod, ctorFn);
 
-        // Load each Builder field, pass to ctor.
         llvm::Type* builderLlvm = parent->getLlvmType();
         llvm::Value* thisPtr = llvmFunction->getArg(0);
 
         std::vector<llvm::Value*> ctorArgs;
         ctorArgs.push_back(newOuter);
         for (auto& prop : outerFields) {
-            // The Builder mirrors outer's fields by NAME; resolve the
-            // Builder field's slot index.
+            // The Builder mirrors outer's fields by NAME, not by slot order.
             StructurePropertyPtr builderProp;
             for (auto& bp : parent->getPropertyList()) {
                 if (bp && bp->getName() == prop->getName()) {
@@ -192,9 +171,7 @@ namespace cajeta {
                 builderLlvm, thisPtr, (unsigned) bidx,
                 std::string("build.read.") + prop->getName());
 
-            // Load at storage shape. Same logic as the getter: array/
-            // class-ref load as ptr; view / interface / primitive load
-            // at their native type.
+            // Storage shape: arrays and class refs load as ptr, the rest native.
             CajetaTypePtr ft = prop->getType();
             llvm::Type* loadTy;
             bool slotIsPtr = false;
@@ -216,14 +193,9 @@ namespace cajeta {
                 std::string("build.v.") + prop->getName());
             ctorArgs.push_back(v);
         }
-        // Title-tracking Unit 8: the ctor's ABI may carry the trailing
-        // transfer word (needsTransferWord) — pass the builder's field
-        // titles as SURRENDERED (all-ones over the user args): build()
-        // hands its collected values to the outer instance for keeps.
-        // Omitting the word entirely serializes an arg-count-mismatched
-        // call the bitcode READER rejects ("Invalid call record") on the
-        // incremental-cache reload path (JIT verify catches it earlier
-        // in-process, but the .bc writer does not verify).
+        // All-ones transfer word: build() surrenders its collected values to the
+        // instance. The word cannot be omitted — the .bc writer does not verify, so
+        // an arg-count mismatch surfaces only as a reader error on cache reload.
         if (ctor->needsTransferWord()) {
             uint64_t allOwned = ctorArgs.size() > 1
                 ? ((1ull << (ctorArgs.size() - 1)) - 1) : 0;
@@ -248,19 +220,15 @@ namespace cajeta {
           builder(builder),
           defaults(std::move(defaults)) {
         this->parent = outer;
-        // Static: no implicit `this` insertion in Method::generatePrototype.
+        // Static, so generatePrototype inserts no implicit `this`.
         this->addModifier(STATIC);
     }
 
     void SynthesizedBuilderFactoryMethod::generateCode() {
         auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
-        // Static: () -> ptr (Builder). Alloc Builder, init vtable, apply
-        // @Builder.Default initializers (if any), return.
-        // Builder's no-arg ctor zero-inits fields; the alloc itself
-        // already zero-fills via __cajeta_alloc's calloc-style behavior,
-        // so we skip the ctor call. @Builder.Default initializers run
-        // here so users that don't touch the setter for those fields
-        // still see the declared default at build() time.
+        // () -> ptr: alloc, vtable, then the @Builder.Default initializers, which
+        // run here so an untouched setter still shows its declared default. The
+        // no-arg ctor is skipped: the allocation already zero-fills.
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
@@ -290,13 +258,8 @@ namespace cajeta {
             b.CreateStore(vtRef, vtSlot);
         }
 
-        // Apply @Builder.Default initializers. Each initializer's
-        // generateCode uses the module's active IRBuilder (the same
-        // route the existing local-variable + static-field paths take
-        // via `module->getBuilder()`), so we swap our local IRBuilder
-        // onto the module for the duration of each initializer and
-        // restore the previous one after — pattern mirrors Method.cpp's
-        // wrappers around user-body codegen.
+        // An initializer's generateCode emits through the MODULE's builder, so the
+        // local one is swapped in for the duration and restored after.
         if (!defaults.empty()) {
             auto* prevBuilder = module->getBuilder();
             module->setBuilder(&b);
@@ -309,12 +272,7 @@ namespace cajeta {
                 llvm::Value* slot = b.CreateStructGEP(
                     builderLlvm, newBuilder, (unsigned) idx,
                     std::string("bfact.def.") + entry.mirrorField->getName());
-                // Coerce when the initializer's natural LLVM type
-                // doesn't match the field slot's width — int literals
-                // arrive as i64 by default but the slot might be i32;
-                // float literals arrive as f64 but the slot might be
-                // f32 (and vice versa for explicit casts). Mirrors
-                // StackField.cpp's coercion logic.
+                // A literal's natural width (i64, f64) need not be the slot's.
                 llvm::Type* slotTy = entry.mirrorField->getType()
                     ? entry.mirrorField->getType()->getLlvmType()
                     : nullptr;

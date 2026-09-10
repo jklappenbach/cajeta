@@ -1,6 +1,4 @@
-//
 // Minimal HIP runtime wrapper — see header.
-//
 
 #include "HipDriver.h"
 
@@ -29,31 +27,20 @@ namespace {
     void* sym(void* lib, const char* name) { return dlsym(lib, name); }
     void closeLib(void* lib) { dlclose(lib); }
 
-    // Load libamdhip64, preferring the alternatives-canonical ROCm
-    // (/opt/rocm, the update-alternatives target) and then $ROCM_PATH over a
-    // bare soname. Before loading hip from a chosen dir, PIN that dir's
-    // libhsa-runtime with RTLD_GLOBAL so hip's transitive HSA dependency
-    // binds to it by soname instead of being re-resolved through
-    // LD_LIBRARY_PATH. On a box with mixed ROCm installs (or a stale/poisoned
-    // LD_LIBRARY_PATH) the default search can otherwise pull a different,
-    // possibly-broken libhsa and crash deep inside the runtime at code-object
-    // load. On a normal single-install box this pins the same libhsa hip
-    // would load anyway — harmless. Best-effort: any dlopen that fails just
-    // falls through to the next candidate.
+    // Loads libamdhip64 from `dir`, first pinning that dir's libhsa-runtime with
+    // RTLD_GLOBAL so hip's transitive HSA binds by soname rather than through
+    // LD_LIBRARY_PATH (a mixed ROCm install otherwise crashes at code-object load).
     void* loadHipFromDir(const std::string& dir) {
         std::string hsa = dir + "/libhsa-runtime64.so.1";
         std::string hip = dir + "/libamdhip64.so";
-        dlopen(hsa.c_str(), RTLD_NOW | RTLD_GLOBAL);   // pin canonical HSA
+        dlopen(hsa.c_str(), RTLD_NOW | RTLD_GLOBAL);
         return dlopen(hip.c_str(), RTLD_NOW | RTLD_LOCAL);
     }
     void* loadHip() {
-        // 1. Canonical selected ROCm (update-alternatives target).
         if (void* h = loadHipFromDir("/opt/rocm/lib")) return h;
-        // 2. $ROCM_PATH/lib, if set and distinct.
         if (const char* rp = std::getenv("ROCM_PATH")) {
             if (void* h = loadHipFromDir(std::string(rp) + "/lib")) return h;
         }
-        // 3. Trust the dynamic loader (LD_LIBRARY_PATH / ld.so cache).
         for (const char* n : {"libamdhip64.so", "libamdhip64.so.7"}) {
             if (void* h = dlopen(n, RTLD_NOW | RTLD_LOCAL)) return h;
         }
@@ -193,8 +180,7 @@ void HipDriver::free(HipDevicePtr p) {
 
 bool HipDriver::launch(HipFunction f, unsigned gridX, unsigned blockX,
                        void** kernelParams, unsigned sharedMemBytes) {
-    // hipModuleLaunchKernel mirrors cuLaunchKernel: gridDimX is the number of
-    // BLOCKS (work-groups), blockDimX the threads per block.
+    // gridX counts BLOCKS (work-groups), blockX threads per block, as cuLaunchKernel does.
     return ok(api->hipModuleLaunchKernel(f, gridX, 1, 1, blockX, 1, 1,
                                          sharedMemBytes, /*stream=*/nullptr,
                                          kernelParams, /*extra=*/nullptr),

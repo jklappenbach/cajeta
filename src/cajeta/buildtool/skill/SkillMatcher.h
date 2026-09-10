@@ -1,11 +1,5 @@
-//
-// Fuzzy skill matcher (skill-discovery spec §3.5) — the technology core of
-// Search. Typo-tolerant resolution of a query to index keys (canonical names
-// AND titles): a trigram prefilter (SkillIndex::candidates, D.2) narrows the key
-// set, then Damerau–Levenshtein (optimal string alignment, so adjacent
-// transpositions cost 1) scores survivors — per segment for names, token-wise
-// for titles — under a length-scaled threshold. Pure function of (query, index).
-//
+// Fuzzy skill matcher (skill-discovery spec §3.5): a trigram prefilter narrows the key
+// set, then Damerau–Levenshtein scores survivors under a length-scaled threshold.
 #pragma once
 
 #include <string>
@@ -17,8 +11,7 @@
 
 namespace cajeta::buildtool::skill {
 
-    // One ranked match: the key it matched, where it came from, the skill ids it
-    // resolves to, and the edit distance (0 = exact).
+    // One ranked match: the key, where it came from, the skill ids it resolves to, and the edit distance (0 = exact).
     struct SkillMatch {
         std::string key;
         MatchSource source;
@@ -27,14 +20,11 @@ namespace cajeta::buildtool::skill {
     };
 
     struct MatchOptions {
-        // Bypass fuzzy matching — accept only exact (distance 0) keys.
         bool exact = false;
     };
 
-    // Rank index keys by closeness to `query`. Results are ordered exact-first,
-    // then by ascending distance, then Name before Title, then key lexicographic
-    // (a deterministic total order). Returns empty when nothing is within the
-    // length-scaled threshold.
+    // Ranks index keys by closeness to `query`: exact first, then ascending distance,
+    // Name before Title, then lexicographic. Empty when nothing is within threshold.
     std::vector<SkillMatch>
     matchSkills(llvm::StringRef query, const SkillIndex& index, MatchOptions opts = {});
 

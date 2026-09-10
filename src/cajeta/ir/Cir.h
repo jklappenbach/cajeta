@@ -1,18 +1,6 @@
-//
-// Cajeta IR (CIR) — core data structures.
-//
-// CIR is a typed SSA CFG sitting between the type-checked / borrow-checked
-// AST and LLVM codegen (the MIR/SIL analog). See specs/archive/cajeta-ir-spec.md
-// §2. Phase A is analysis-only: CIR is built for a closed slice (a generic
-// function with a function-typed parameter, its callers, and the closures
-// passed) and probed for specializable closure calls; it does not replace
-// codegen. The shape here mirrors the sibling XpuMir containers: thin structs
-// held by shared_ptr, a static printer, glob-built.
-//
-// A program in CIR is a set of CirFunctions; each function is a CFG of
-// CirBlocks; each block is a list of CirInsts ending in a terminator;
-// instructions produce CirValues; values carry a CIR type + an ownership kind.
-//
+// Cajeta IR (CIR) — core data structures: a typed SSA CFG between the checked
+// AST and LLVM codegen. A program is a set of CirFunctions, each a CFG of
+// CirBlocks, each a list of CirInsts ending in a terminator and producing values.
 
 #pragma once
 
@@ -22,11 +10,7 @@
 #include <vector>
 
 namespace cajeta {
-    // Forward declaration only — CIR types ARE CajetaTypes (spec §2.2.1), but
-    // Phase-A hand-built / analysis IR never dereferences the pointer, so we
-    // avoid pulling in the type registry here. `CirType::spelling` is the
-    // authoritative display form; `resolved` is populated once lowered from a
-    // real AST node (Unit 2+).
+    // Forward-declared only: analysis IR never dereferences a CajetaType.
     class CajetaType;
     using CajetaTypePtr = std::shared_ptr<CajetaType>;
 }
@@ -34,21 +18,13 @@ namespace cajeta {
 namespace cajeta {
 namespace ir {
 
-    // ---- Types & ownership (spec §2.2) -------------------------------------
-
-    // Storage/ownership kind of a value. `value` = value-type/primitive held by
-    // value; `owned` = a #-owned heap reference responsible for its drop;
-    // `borrowed` = a non-owning reference bounded by a scope. This is the
-    // information drop-elision / move-opt need and LLVM lacks.
+    // By value, a #-owned heap reference owing a drop, or a scoped borrow.
     enum class CirOwnership { Value, Owned, Borrowed };
 
     // "" for value (printed as absence), "owned" / "borrowed" otherwise.
     const char* cirOwnershipWord(CirOwnership);
 
-    // A CIR type. `spelling` is the human-readable display form used by the
-    // dumper and round-tripped by tests ("i32", "T[]", "(T,T)->i32", "()").
-    // `resolved` is the authoritative CajetaType once lowered from the AST
-    // (nullable: generic params `T` and hand-built IR carry only a spelling).
+    // `resolved` is null until lowered; `spelling` is the round-tripped display.
     struct CirType {
         std::string spelling;
         CajetaTypePtr resolved;
@@ -58,11 +34,7 @@ namespace ir {
         bool isVoid() const { return spelling.empty() || spelling == "()"; }
     };
 
-    // ---- Values (spec §2.1.3) ----------------------------------------------
-
-    // An SSA value (defined once): an instruction result, a block parameter, a
-    // function parameter, or a literal. Every value exposes its CIR type and
-    // ownership kind for analyses.
+    // An SSA value: an instruction result, a parameter, or a literal.
     struct CirValue {
         std::string name;                              // SSA name, printed with leading '%'
         CirType type;
@@ -73,42 +45,27 @@ namespace ir {
     CirValuePtr cirValue(std::string name, CirType type,
                          CirOwnership ownership = CirOwnership::Value);
 
-    // ---- Instructions (spec §2.3) ------------------------------------------
-
-    // Opcode families. A Phase-A subset is actually lowered (Unit 2); the full
-    // set is the target. Operand/payload conventions are documented per family
-    // in CirPrinter.cpp (the single place that decodes them).
+    // The opcode families; CirPrinter.cpp is the single place that decodes their
+    // operand payloads.
     enum class CirOp {
-        // 2.3.1 constants
         ConstInt, ConstFloat, ConstBool, ConstStr, ConstNull,
-        // 2.3.2 arithmetic / logic
         Add, Sub, Mul, Div, Rem, And, Or, Xor, Shl, Shr,
-        // 2.3.2 compare (predicate carried in `symbol`)
         ICmp, FCmp,
-        // 2.3.3 aggregates
         FieldAddr, LoadField, StoreField, ElemAddr, Extract, Insert,
-        // 2.3.4 memory & ownership
         AllocStack, AllocHeap, Load, Store, Move, Drop,
-        // 2.3.5 calls
         Call, CallIndirect, ApplyClosure, CallMethod, CallGeneric,
-        // 2.3.6 closures
         MakeClosure,
-        // 2.3.7 terminators
         Br, CondBr, Switch, Return, Unreachable
     };
 
-    // Mnemonic for the dumper / tests ("add", "apply.closure", "make.closure").
     const char* cirOpMnemonic(CirOp);
 
-    // Is this opcode a block terminator?
     bool cirIsTerminator(CirOp);
 
     struct CirInst;
     using CirInstPtr = std::shared_ptr<CirInst>;
 
-    // A control-flow edge out of a terminator: target block label, the SSA
-    // values passed as that block's parameters, and (switch only) the case
-    // value (nullopt = the default edge or a non-switch edge).
+    // An edge out of a terminator; `caseValue` is set only on a switch's cases.
     struct CirSuccessor {
         std::string label;
         std::vector<CirValuePtr> args;
@@ -117,15 +74,13 @@ namespace ir {
 
     // One instruction. Operand/payload conventions by family:
     //   const.*        -> result; intConst/floatConst/boolConst/symbol payload
-    //   add..shr,icmp  -> operands = [a, b]; icmp/fcmp predicate in `symbol`
+    //   add..shr, icmp/fcmp -> operands=[a, b]; the predicate in `symbol`
     //   field ops      -> operands[0]=object (+[1]=value for store); symbol=field
     //   elem ops       -> operands=[array, index] (+[2]=value for store)
     //   move/drop      -> operands[0]=subject
-    //   call           -> symbol=callee; operands=args
-    //   call.indirect  -> operands[0]=fnptr; rest=args
-    //   apply.closure  -> operands[0]=closure; rest=args
+    //   call, call.generic -> symbol=callee; operands=args; typeArgs
+    //   call.indirect / apply.closure -> operands[0]=fnptr|closure; rest=args
     //   call.method    -> operands[0]=receiver; symbol=selector; rest=args
-    //   call.generic   -> symbol=callee; typeArgs; operands=args
     //   make.closure   -> symbol=target fn; operands=captures; targetKnown set
     //   br/cond_br/switch -> successors (cond_br: [0]=true,[1]=false; operands[0]=cond)
     //   return         -> operands[0]=value (optional)
@@ -146,8 +101,6 @@ namespace ir {
 
     CirInstPtr cirInst(CirOp op);
 
-    // ---- Blocks (spec §2.1.2) ----------------------------------------------
-
     struct CirBlock {
         std::string label;
         std::vector<CirValuePtr> params;     // block params (SSA values passed on entry)
@@ -155,8 +108,6 @@ namespace ir {
         CirInstPtr terminator;               // exactly one
     };
     using CirBlockPtr = std::shared_ptr<CirBlock>;
-
-    // ---- Functions (spec §2.1.1) -------------------------------------------
 
     struct CirFunction {
         std::string name;                        // "Sort.sort"

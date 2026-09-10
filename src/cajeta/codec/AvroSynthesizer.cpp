@@ -22,7 +22,6 @@ namespace cajeta {
         return p->getQName()->toCanonical();
     }
 
-    // Avro decode strategy per field type. float/double parked (P-AVRO-FLOAT).
     enum class Decode { Long, Bool, Str, Bytes, Record, Unsupported };
 
     struct Bind {
@@ -68,8 +67,7 @@ namespace cajeta {
         return binds;
     }
 
-    // Emit positional reads of T's fields against cursor `cur` onto `objVar`.
-    // Nested records recurse inline (Avro encodes them as consecutive fields).
+    // Emits positional reads of T's fields against cursor `cur` onto `objVar`; nested records recurse inline.
     void emitRecordDecode(std::ostringstream& os, const CajetaClassPtr& T,
                           const std::string& cur, const std::string& objVar,
                           const std::string& path) {
@@ -90,8 +88,7 @@ namespace cajeta {
                        << cur << ".readBoolean();\n";
                     break;
                 case Decode::Str: {
-                    // Owned #String return: hoist, then surrender into the
-                    // field with '#' (a plain store lends a dying temp).
+                    // Owned #String return: hoist, then surrender into the field with '#', since a plain store lends a dying temp.
                     const std::string sv = "v" + path + "_" + b.name;
                     os << "    String " << sv << " #= " << cur << ".readString();\n";
                     os << "    " << objVar << "." << b.name << " = #" << sv << ";\n";
@@ -168,7 +165,6 @@ namespace cajeta {
         return os.str();
     }
 
-    // ---- encode (5.3) ------------------------------------------------------
 
     std::string simpleName(const CajetaClassPtr& T) {
         const std::string c = T->getQName()->toCanonical();
@@ -176,14 +172,11 @@ namespace cajeta {
         return p == std::string::npos ? c : c.substr(p + 1);
     }
 
-    // Emit positional writes of T's fields against writer `w` from `objVar`.
-    // `path` keeps hoisted array-field locals unique across nesting.
+    // Emits positional writes of T's fields against writer `w` from `objVar`; `path` keeps hoisted locals unique.
     void emitRecordEncode(std::ostringstream& os, const CajetaClassPtr& T,
                           const std::string& w, const std::string& objVar,
                           const std::string& path) {
-        // Every field is hoisted to a local before being passed — reading a
-        // field off an array-element alias and passing it directly as a method
-        // arg miscompiles (matches the proven Ion stream-encode pattern).
+        // Every field is hoisted to a local first: passing a field read off an array-element alias miscompiles.
         std::vector<Bind> binds = collectBinds(T);
         for (auto& b : binds) {
             const std::string lv = "av" + path + "_" + b.name;
@@ -232,7 +225,6 @@ namespace cajeta {
         }
     }
 
-    // Real Avro record schema JSON — makes the written OCF ecosystem-readable.
     std::string buildSchemaJson(const CajetaClassPtr& T) {
         std::ostringstream js;
         js << "{\"type\":\"record\",\"name\":\"" << simpleName(T)
@@ -249,7 +241,6 @@ namespace cajeta {
         return js.str();
     }
 
-    // Escape a string for embedding as a Cajeta double-quoted literal.
     std::string escapeForCajeta(const std::string& s) {
         std::string out;
         out.reserve(s.size() + 8);
@@ -290,8 +281,7 @@ namespace cajeta {
         os << "    int8[] data #= body.result();\n";
         os << "    int64 dlen = body.size();\n";
         os << "    cajeta.lang.String schema = \"" << schema << "\";\n";
-        // A FQ static call corrupts synthesized codegen (P-COMPILER-FQN); build
-        // the OCF via a FQ constructor instead.
+        // A FQ static call corrupts synthesized codegen (P-COMPILER-FQN), so the OCF is built through a FQ constructor.
         os << "    " << ACW << " cw = heap " << ACW
            << "(data, dlen, (int64) n, schema);\n";
         os << "    return cw.result();\n";

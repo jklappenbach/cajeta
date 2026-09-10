@@ -67,7 +67,7 @@ public class NetErrors {
      * the caller decides whether to `throw` it (the throwing socket
      * path) or inspect it (rarely). Total over the ordinal space.
      */
-    public static #NetException fromErrno(int32 netErrno, String detail) {
+    public static #NetException fromErrno(int32 netErrno, #String detail) {
         if (netErrno == 2) {            // KIND_CONNECTION_REFUSED
             return heap ConnectionRefusedException(detail);
         }

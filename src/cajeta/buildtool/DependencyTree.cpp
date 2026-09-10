@@ -79,8 +79,6 @@ namespace cajeta::buildtool {
                     cycles.push_back(std::move(cyc));
             }
 
-            // List `kids` under `node`, which sits at `level` (root = 0).
-            // Only called when level+1 is within the depth limit.
             void visit(DepNode& node, const std::vector<DependencySpec>& kids,
                        int level) {
                 const int childLevel = level + 1;
@@ -125,8 +123,6 @@ namespace cajeta::buildtool {
         tree.root.name = rootName;
         tree.root.version = rootVersion;
         Walker w(graph, options);
-        // The root is on the path, so a dependency named like the project
-        // closes a cycle through it (§4.2).
         w.path.push_back(rootName);
         w.onPath.insert(rootName);
         if (!(options.depth >= 0 && 1 > options.depth))

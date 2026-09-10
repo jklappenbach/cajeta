@@ -11,8 +11,8 @@
 
 namespace cajeta {
 
-    // Shared codegen helpers (defined in BinaryOpExpression.cpp). Used
-    // by anyone emitting a signed-overflow-trapping arithmetic op.
+    // Emit a signed-overflow-trapping arithmetic op (defined in the .cpp): the trap
+    // is `ud2` behind a `jo`, so every in-language `+`/`*` faults instead of wrapping.
     void emitUbTrap(CajetaModulePtr module,
                     llvm::IRBuilder<>& b,
                     llvm::Value* condTrap,
@@ -25,9 +25,7 @@ namespace cajeta {
                                        const std::string& label);
 
 
-    /**
-     * <assoc=right> expression bop=('=' | '+=' | '-=' | '*=' | '/=' | '&=' | '|=' | '^=' | '>>=' | '>>>=' | '<<=' | '%=') expression
-     */
+    /** Binary operators in grammar order; the assignment forms are right-associative. */
     enum BinaryOp {
         BINARY_OP_ADD,
         BINARY_OP_SUB,
@@ -72,7 +70,7 @@ namespace cajeta {
         MethodPtr overrideMethod;
         bool arenaEligible = false;
     public:
-        BinaryOpExpression(BinaryOp binaryOp, antlr4::Token* token) : Expression(token) {
+        BinaryOpExpression(BinaryOp binaryOp, antlr4::Token* token) : Expression(token) { exprKind = ExprKind::BinaryOp;
             overrideMethod = nullptr;
             this->binaryOp = binaryOp;
 
@@ -125,37 +123,20 @@ namespace cajeta {
 
         bool isAssignment() const { return assignment; }
 
-        // Comparison result typing, override-aware (defined in the .cpp —
-        // needs CajetaClass::resolveMethod). Returns the matching operator
-        // override's declared return type, `boolean` when there is none, or
-        // nullptr when the operand types are not yet resolvable (caller
-        // leaves resolvedType unset for later re-resolution).
+        // Override-aware comparison result type: the override's declared return, `boolean`
+        // when there is none, or nullptr while the operands are still unresolvable.
         CajetaTypePtr comparisonResultType(CajetaModulePtr module);
         BinaryOp getBinaryOp() const { return binaryOp; }
 
-        // Frame-arena routing (frame-arena-plan U2): set by Method's escape pre-pass
-        // when this is a String concat whose result binds to a non-escaping local.
-        // When set, concat codegen bump-allocates the result from the frame arena
-        // (no malloc, no live-set) and the local registers no drop entry.
+        // Set by Method's escape pre-pass for a String concat binding to a non-escaping
+        // local: concat then bump-allocates from the frame arena and registers no drop.
         void setArenaEligible(bool b) { arenaEligible = b; }
         bool isArenaEligible() const { return arenaEligible; }
 
         void resolveTypes(CajetaModulePtr module) override {
-            // Walk children first, then take lhs's type as our result type. A real type
-            // promotion pass would pick the wider of lhs/rhs; for now this matches the
-            // existing assumption in codegen (lhs drives the op type).
             AbstractSyntaxNode::resolveTypes(module);
-            // ...EXCEPT comparisons and short-circuit logical ops, whose
-            // result is boolean (the enum comments above say so; codegen
-            // emits i1). Typing them as the LHS operand let `x > 0` ride the
-            // "number" generic bucket into a boolean formal via closest-
-            // match, but a reference LHS had no such bridge:
-            // `s != null && s.equals(...)` typed as cajeta.lang.String and
-            // missed every overload — a silent resolution miss until
-            // silent-resolution-diagnostics made it NO_MATCHING_OVERLOAD.
-            // (Operator-overloaded EQ/NE also return boolean by stdlib
-            // convention; generateCode re-stamps resolvedType for override
-            // calls regardless.)
+            // Comparisons and short-circuit logicals are boolean, NOT the LHS type: a
+            // reference LHS typed as its own class missed every overload silently.
             switch (binaryOp) {
                 case BINARY_OP_LT:
                 case BINARY_OP_LE:
@@ -163,17 +144,8 @@ namespace cajeta {
                 case BINARY_OP_GE:
                 case BINARY_OP_EQ:
                 case BINARY_OP_NE: {
-                    // nucleo-frame U1 — a class operand may declare a
-                    // comparison override with a NON-boolean return (a DSL
-                    // node: `col.price > 0.0` -> Predicate). Type from the
-                    // override's declared return when one resolves; boolean
-                    // otherwise (every in-tree override returns boolean, so
-                    // this changes nothing for them). When the operand types
-                    // are not yet resolvable (the pre-pass runs before
-                    // locals register), leave the type UNSET so the caller's
-                    // later null-check re-resolution computes it with real
-                    // operand types — a premature boolean stamp is exactly
-                    // what broke argument-position overload resolution.
+                    // A comparison override may return NON-boolean, and unresolvable operands
+                    // leave the type UNSET: a premature boolean stamp breaks overload resolution.
                     resolvedType = comparisonResultType(module);
                     return;
                 }
@@ -194,11 +166,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
 
     private:
-        // B1: `*` on a matrix LHS — matrix multiply (Matrix*Matrix), matrix-
-        // vector (Matrix*Vector), or scalar scale (Matrix*scalar). Sets
-        // resolvedType to the result shape and returns the value, or nullptr if
-        // the op/operands aren't a handled matrix-multiply form (caller falls
-        // through). Defined in BinaryOpExpression.cpp.
+        // `*` on a matrix LHS; sets resolvedType, or returns nullptr for an unhandled form.
         llvm::Value* generateMatrixMul(CajetaModulePtr module, llvm::Value* lhs,
                                        llvm::Value* rhs,
                                        const ExpressionPtr& lhsAst,

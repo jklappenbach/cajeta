@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 2/20/22.
-//
+// ParameterField - a Field backed by an incoming function parameter.
 
 #include "ParameterField.h"
 #include "../compile/CajetaModule.h"
@@ -23,9 +21,7 @@ namespace cajeta {
         if (alloca == nullptr) {
             alloca = this->getOrCreateAllocation();
         }
-        // @ValueType params travel by value: the slot holds the aggregate
-        // INLINE (sized to the type), so a whole-value load reads the type,
-        // not a pointer. Reference types load the `ptr` to the heap body.
+        // A @ValueType slot holds the aggregate INLINE, a reference type a `ptr`.
         if (type->isValueType()) {
             return module->getBuilder()->CreateLoad(type->getLlvmType(), alloca);
         }
@@ -46,18 +42,12 @@ namespace cajeta {
 
     llvm::AllocaInst* ParameterField::getOrCreateAllocation() {
         if (!alloca) {
-            // Match the ABI Method::generatePrototype chose for this slot:
-            // class/array (non-struct) parameters are passed as `ptr`, so
-            // the local slot is `ptr` too. Otherwise (primitives, structs)
-            // alloc the type itself.
+            // Match generatePrototype's ABI: class and array params arrive as `ptr`.
             bool isStruct = dynamic_pointer_cast<CajetaView>(type) != nullptr;
             bool isArr = dynamic_pointer_cast<CajetaArray>(type) != nullptr;
             bool isClassLike = dynamic_pointer_cast<CajetaClass>(type) != nullptr;
             bool isPrim = type && (type->getTypeFlags() & PRIMITIVE_FLAG);
-            // @ValueType params are passed BY VALUE (the aggregate), matching the
-            // signature Method::generatePrototype emits — so the slot must be the
-            // aggregate type, NOT `ptr`. A ptr-sized slot taking a by-value store
-            // overflows into the next param slot and corrupts both operands.
+            // BY VALUE, so the slot is the aggregate: a ptr-sized one overflows.
             bool passByPointer = (isClassLike && !isStruct) && (isArr || !isPrim)
                 && !type->isValueType();
             llvm::Type* llvmType;
@@ -69,16 +59,6 @@ namespace cajeta {
             } else {
                 llvmType = llvm::PointerType::get(*module->getLlvmContext(), 0);
             }
-            // Entry-block slot alloca: getOrCreateAllocation is lazy (first
-            // reference), which can be inside a loop body — an alloca there
-            // would re-allocate stack each iteration (overflow at -O0). The
-            // store stays at the current point; it just references the
-            // entry-block slot (which dominates every use).
-            // A paramIndex past the declared prototype means the ABI decision
-            // (sret / transfer word / by-value record) changed between
-            // prototype and body codegen — a placeholder-era signature. Fail
-            // NAMING the function instead of letting getArg walk garbage
-            // (specs/record-cross-type-return §4).
             if (paramIndex >= (int) llvmFunction->arg_size()) {
                 throw Exception(
                     "parameter index " + std::to_string(paramIndex)
@@ -88,6 +68,8 @@ namespace cajeta {
                         + " declared args) — prototype/body ABI disagreement",
                     "CAJETA_ERROR_PROTOTYPE_ABI_MISMATCH");
             }
+            // Entry-block alloca: lazy, so a first reference in a loop would otherwise
+            // re-allocate stack each iteration.
             alloca = module->createEntryAlloca(llvmType);
             module->getBuilder()->CreateStore(llvmFunction->getArg(paramIndex), alloca);
         }

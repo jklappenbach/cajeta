@@ -1,6 +1,4 @@
-//
 // SPIR-V backend — see header.
-//
 
 #include "SpirvBackend.h"
 
@@ -37,42 +35,12 @@ namespace vulkan {
 
 namespace {
 
-// Enable the SPIR-V extensions cajeta emits. The in-tree SPIR-V backend gates
-// extension opcodes/capabilities behind the `spirv-ext` cl::opt (the same flag
-// llc takes as `--spirv-ext=...`); for in-process emission there is no command
-// line, so we set it programmatically. The SPIRV target's own
-// SPIRVSubtarget::addExtensionsToClOpt would be cleaner, but its header is not
-// shipped in the LLVM artifact, so we drive the registered option directly.
-//
-// `SPV_KHR_ray_query` (cajeta-gpu Part C) is the first; "all of the cutting-edge
-// GPU calls" (cooperative matrix, etc.) extend this list as they land. The
-// parser also accepts "khr" (all KHR) / "all" — kept to an explicit allowlist so
-// emission stays deterministic and only the extensions we test are enabled.
+// Enables the SPIR-V extensions cajeta emits. The in-tree backend gates extension
+// opcodes behind the `spirv-ext` cl::opt, and in-process emission has no command line,
+// so the registered option is driven directly.
 void enableSpirvExtensions() {
-    // Cooperative matrix (CM2) adds +SPV_KHR_cooperative_matrix and
-    // +SPV_KHR_vulkan_memory_model — the latter because a Shader module that
-    // declares CooperativeMatrixKHR must also declare VulkanMemoryModel
-    // (spirv-val), which the backend emits as OpMemoryModel Logical VulkanKHR.
-    // SPV_KHR_bfloat16 gives the bfloat *type* + conversions (portable KHR); we
-    // never emit native bfloat *arithmetic* (that is Intel-only) — the device
-    // lowerer computes bfloat in f32 (widen / op / narrow), the standard GPU
-    // "bf16 is a storage format" model.
-    // SPV_KHR_integer_dot_product gives the DP4a op (OpSDot/OpUDot
-    // PackedVectorFormat4x8Bit) for Vector<int8,4>.dot — without it the backend
-    // falls back to the portable bit-field expansion (correct, but not the
-    // hardware dot-product unit).
-    // SPV_EXT_shader_atomic_float_add / _min_max give the float atomic-RMW ops
-    // (OpAtomicFAddEXT/FMinEXT/FMaxEXT) for Buffer<float32>.atomic{Add,Min,Max}.
-    // SPV_KHR_shader_clock gives OpReadClockKHR (Thread.clock()) — reached from
-    // the Shader flavor via the fork's llvm.spv.read.clock intrinsic.
-    // SPV_KHR_maximal_reconvergence gives OpExecutionMode MaximallyReconvergesKHR
-    // — requested on kernels that use a cross-lane Wave op so the subgroup op
-    // sees the source-converged lanes (no fork; an "enable-maximal-
-    // reconvergence" fn-attr the backend turns into the execution mode).
-    // SPV_KHR_quad_control gives OpGroupNonUniformQuad{All,Any}KHR (the
-    // quad-wide vote, Quad.all/any) — reached from the Shader flavor via the
-    // fork's llvm.spv.quad.* intrinsics; the broadcast/swap ops are core
-    // GroupNonUniformQuad and need no extension.
+    // An explicit allowlist, not "khr" or "all", so only tested extensions are enabled;
+    // vulkan_memory_model rides with cooperative_matrix because spirv-val demands it.
     static const char* kExtensions =
         "+SPV_KHR_ray_query,+SPV_KHR_cooperative_matrix,"
         "+SPV_KHR_vulkan_memory_model,+SPV_KHR_bfloat16,"
@@ -97,24 +65,13 @@ void ensureTargetsInitialized() {
     });
 }
 
-// Run the SPIR-V codegen pipeline to a file type (Assembly = SPIR-V text,
-// Object = SPIR-V binary) into an in-memory buffer. Unlike the AMDGPU backend
-// mem2reg runs pre-emit (see the pipeline below): the in-tree SPIR-V
-// backend lowers Function-storage allocas itself, but a WIDE vector local
-// left in memory becomes spv_load/spv_store intrinsics that bypass the
-// legalizer's wide-vector splitting on shader targets. Returns false (and
-// logs) on failure.
+// Runs the codegen pipeline into an in-memory buffer, as SPIR-V text for Assembly or
+// binary for Object. False, with a log line, on failure.
 bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
                   llvm::CodeGenFileType type, llvm::SmallVectorImpl<char>& out) {
-    // Inline every @Device helper (alwaysinline, internal) into its kernel
-    // before codegen. On NVPTX/AMDGPU a buffer arg is an addrspace(1) pointer
-    // that survives a call, but on SPIR-V a Buffer<T> is a descriptor HANDLE
-    // (spirv.VulkanBuffer) — and the in-tree SPIR-V instruction selector traces
-    // a load/store's handle back to its handlefrombinding WITHIN one function;
-    // a handle passed across a call boundary crashes selectStore. Folding the
-    // helper in (its whole reason for being alwaysinline) keeps every buffer
-    // access in the kernel where the handle is bound. Idempotent + no-op for
-    // helper-free kernels.
+    // A SPIR-V Buffer<T> is a descriptor HANDLE, and the instruction selector traces a
+    // load's handle back to its handlefrombinding WITHIN one function: a handle crossing
+    // a call boundary crashes selectStore, so every @Device helper is inlined first.
     llvm::PassBuilder pb;
     llvm::LoopAnalysisManager lam;
     llvm::FunctionAnalysisManager fam;
@@ -127,37 +84,19 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
     pb.crossRegisterProxies(lam, fam, cgam, mam);
     llvm::ModulePassManager mpm;
     mpm.addPass(llvm::AlwaysInlinerPass());
-    // After inlining, canonicalize each kernel to STRUCTURED control flow before
-    // SPIR-V codegen. The in-tree SPIR-V backend's structurizer rejects the CFG
-    // that results from inlining the SoftwareRayQuery walk (slabHit's multiple
-    // returns + `||` short-circuit, step's stackless loop) — "Selection must be
-    // structured". FixIrreducible + UnifyFunctionExitNodes + StructurizeCFG produce
-    // single-exit, structured regions the backend can lower. A no-op on
-    // already-structured kernels (the native ray-query path is unaffected).
+    // The backend's structurizer rejects the CFG that inlining the software ray-query
+    // walk produces, so the passes below hand it single-exit structured regions instead.
     {
         llvm::FunctionPassManager fpm;
-        // Mem2reg BEFORE codegen (10.12.44): a Vector<int8,16> local that
-        // stays an alloca reaches SPIRVEmitIntrinsics as spv_load/spv_store
-        // of a WIDE vector, and the intrinsic forms bypass the G_LOAD/
-        // G_STORE wide-vector splitting entirely — on a shader target
-        // (MaxVectorSize 4) that is a hard legalizer failure. Promoted to
-        // SSA, the wide values flow through ops the legalizer CAN narrow
-        // (loop-carried ones become G_PHIs, which now split). The old
-        // comment above said PromotePass was unnecessary; on compute
-        // kernels full of vector locals it is load-bearing.
+        // Mem2reg must run BEFORE codegen: a wide vector local left in memory reaches
+        // the backend as spv_load/spv_store, which bypass the legalizer's wide-vector
+        // splitting entirely, and on a shader target that is a hard failure.
         fpm.addPass(llvm::PromotePass());
-        // Clean up after promotion BEFORE codegen. Without these, the
-        // builder's literal instruction stream reaches the backend: a
-        // shuffle-of-bitcast byte slice feeding a packed dot legalizes to
-        // per-byte extract + repack (519 shifts against 128 dots in the
-        // tiled GEMM's ISA), and every LDS index add is a fresh i64 chain.
-        // EarlyCSE dedups the address math; InstCombine folds the
-        // bitcast/shuffle chains into the dword extracts the dot wants.
+        // Without this the builder's literal instruction stream reaches the backend,
+        // where every LDS index add is a fresh i64 chain.
         fpm.addPass(llvm::EarlyCSEPass());
-        // NOT InstCombine: its canonicalizations (FP narrowing to bfloat,
-        // load/GEP reshaping) crash the in-tree SPIRVLegalizePointerCast and
-        // trip the SPV_INTEL_bfloat16_arithmetic guard. EarlyCSE alone
-        // dedups the i64 LDS address chains, which is the win that matters.
+        // NOT InstCombine: its FP narrowing and GEP reshaping crash
+        // SPIRVLegalizePointerCast and trip the bfloat16-arithmetic guard.
         fpm.addPass(llvm::FixIrreduciblePass());
         fpm.addPass(llvm::UnifyFunctionExitNodesPass());
         fpm.addPass(llvm::StructurizeCFGPass());
@@ -165,12 +104,9 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
     }
     mpm.run(m, mam);
 
-    // InstCombine's FP-narrowing canonicalizes fptrunc(op(fpext a, fpext b))
-    // into direct bfloat arithmetic, which the SPIR-V backend only accepts
-    // under SPV_INTEL_bfloat16_arithmetic (not a Vulkan extension). Re-expand:
-    // bf16 math runs as f32 with a trunc back, exactly the shape the source
-    // lowering emits. Semantics match — bf16 ops are DEFINED here as
-    // round-trips through f32.
+    // FP narrowing canonicalizes fptrunc(op(fpext a, fpext b)) into direct bfloat
+    // arithmetic, which needs SPV_INTEL_bfloat16_arithmetic, not a Vulkan extension.
+    // Re-expand it: a bf16 op is DEFINED here as a round-trip through f32.
     {
         llvm::SmallVector<llvm::Instruction*, 8> bf16Ops;
         for (auto& f : m)
@@ -209,10 +145,8 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
         }
     }
 
-    // CAJETA_XPU_DUMP_BC=<dir>: write each kernel module's bitcode (post
-    // inline/structurize, pre codegen) so a legalizer failure can be
-    // reproduced and stepped in the standalone `llc -global-isel` instead
-    // of inside the in-process backend. The 10.12.44 debugging instrument.
+    // CAJETA_XPU_DUMP_BC=<dir>: the post-structurize, pre-codegen bitcode, so a legalizer
+    // failure can be reproduced under a standalone `llc -global-isel`.
     if (const char* dumpDir = std::getenv("CAJETA_XPU_DUMP_BC")) {
         std::string name = "module";
         for (auto& f : m) {
@@ -236,21 +170,9 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
     return true;
 }
 
-// Rewrite every OpControlBarrier's memory-semantics operand to a Vulkan-valid
-// value. LLVM 23's only barrier intrinsic
-// (llvm.spv.group.memory.barrier.with.group.sync) lowers to OpControlBarrier
-// with SequentiallyConsistent (0x10) semantics, which the Vulkan spec forbids
-// (VUID-StandaloneSpirv-MemorySemantics-10866) — so the module fails strict
-// spirv-val and may be rejected by drivers stricter than RADV. We add ONE new
-// uint constant of value WorkgroupMemory|AcquireRelease (0x108) and repoint
-// every barrier to it (rather than mutating the existing constant, which a user
-// literal could share). Operates on the raw SPIR-V word stream; no-op on a
-// non-little-endian / malformed module. Returns true if it changed anything.
-//
-// SPIR-V layout: header is 5 words (magic, version, generator, bound, schema);
-// then a stream of instructions, each starting with (wordCount<<16 | opcode).
-// OpConstant = 43 [type, result, literal]; OpControlBarrier = 224
-// [execScope, memScope, semantics] — all <id> operands referencing constants.
+// Repoints every OpControlBarrier at one new WorkgroupMemory|AcquireRelease (0x108) uint
+// constant: LLVM 23 emits the SequentiallyConsistent semantics Vulkan forbids. A new
+// constant, since a user literal could share the existing one. True if anything changed.
 bool fixupControlBarriers(std::vector<uint8_t>& bytes) {
     if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
     std::vector<uint32_t> w(bytes.size() / 4);
@@ -277,9 +199,8 @@ bool fixupControlBarriers(std::vector<uint8_t>& bytes) {
     }
     if (barrierSemOperand.empty()) return false;
 
-    // Take the uint type + an in-section insertion point from the first
-    // barrier's current semantics constant (guaranteed to be a module-level
-    // OpConstant since a control barrier in a function references it).
+    // The uint type and an insertion point both come from the first barrier's current
+    // semantics constant, which is module-level because a function references it.
     uint32_t curSemId = w[barrierSemOperand[0]];
     auto itType = constTypeId.find(curSemId);
     auto itPos = constInstStart.find(curSemId);
@@ -298,18 +219,9 @@ bool fixupControlBarriers(std::vector<uint8_t>& bytes) {
     return true;
 }
 
-// Make the compute workgroup size a SPECIALIZATION CONSTANT so the launch's
-// `block` dims set it at pipeline creation, instead of the fixed `OpExecutionMode
-// LocalSize 64,1,1` baked by hlsl.numthreads (LLVM 23 has no IR path to a
-// spec-constant LocalSizeId). We add the classic `WorkgroupSize` builtin pattern:
-// three `OpSpecConstant uint` (SpecId 0/1/2, defaulting to the baked dims) + an
-// `OpSpecConstantComposite v3uint` decorated `BuiltIn WorkgroupSize` — which
-// overrides the (retained) LocalSize default. The runtime supplies the three
-// spec constants via VkSpecializationInfo per (bx,by,bz). Raw word-stream surgery
-// like fixupControlBarriers; no-op on a malformed/odd module. SPIR-V op/enum
-// numbers: OpExecutionMode=16, OpTypeInt=21, OpTypeVector=23, OpFunction=54,
-// OpSpecConstant=50, OpSpecConstantComposite=51, OpDecorate=71; LocalSize mode=17,
-// SpecId deco=1, BuiltIn deco=11, WorkgroupSize builtin=25.
+// Makes the workgroup size a spec constant the launch's `block` dims set at pipeline
+// creation, LLVM 23 having no IR path to a spec-constant LocalSizeId: three
+// OpSpecConstant uint plus a composite decorated BuiltIn WorkgroupSize override it.
 bool injectWorkgroupSizeSpecConstant(std::vector<uint8_t>& bytes) {
     if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
     std::vector<uint32_t> w(bytes.size() / 4);
@@ -349,7 +261,6 @@ bool injectWorkgroupSizeSpecConstant(std::vector<uint8_t>& bytes) {
     }
     if (!sawLocalSize || !uintTy || decoEnd == 0 || firstFn == 0) return false;
 
-    // Reserve ids: specX/Y/Z (+ the composite), and a v3uint type if absent.
     uint32_t idX = w[3], idY = idX + 1, idZ = idX + 2, idWg = idX + 3;
     uint32_t nextId = idX + 4;
     std::vector<uint32_t> mkType;     // an OpTypeVector to insert if v3uint absent
@@ -359,7 +270,6 @@ bool injectWorkgroupSizeSpecConstant(std::vector<uint8_t>& bytes) {
     }
     w[3] = nextId;
 
-    // Constants (inserted before the first function): spec constants + composite.
     std::vector<uint32_t> consts;
     auto specConst = [&](uint32_t id, uint32_t def) {
         consts.insert(consts.end(),
@@ -371,14 +281,13 @@ bool injectWorkgroupSizeSpecConstant(std::vector<uint8_t>& bytes) {
                   {(6u << 16) | kOpSpecConstComposite, v3uintTy, idWg,
                    idX, idY, idZ});
 
-    // Decorations: SpecId 0/1/2 on the scalars + BuiltIn WorkgroupSize on composite.
     std::vector<uint32_t> decos = {
         (4u << 16) | kOpDecorate, idX, kSpecId, 0u,
         (4u << 16) | kOpDecorate, idY, kSpecId, 1u,
         (4u << 16) | kOpDecorate, idZ, kSpecId, 2u,
         (4u << 16) | kOpDecorate, idWg, kBuiltIn, kWorkgroupSize};
 
-    // Insert the LATER block first (constants, at firstFn) so decoEnd stays valid.
+    // The later block (constants, at firstFn) goes in first so decoEnd stays valid.
     w.insert(w.begin() + firstFn, consts.begin(), consts.end());
     w.insert(w.begin() + decoEnd, decos.begin(), decos.end());
 
@@ -387,14 +296,9 @@ bool injectWorkgroupSizeSpecConstant(std::vector<uint8_t>& bytes) {
     return true;
 }
 
-// Make a dynamic shared array's LENGTH a specialization constant set from the
-// launch's sharedBytes. The shared lowerer emits a concrete `[256 x T]` internal
-// Workgroup array named `cajeta_dynsh_…` (a 1-elem array would decay to a scalar,
-// and an external/unsized one needs the forbidden Linkage capability). This finds
-// that array via its OpName, adds an OpSpecConstant (SpecId 3, default = the baked
-// length) and repoints the OpTypeArray's length operand to it — the array is then
-// sized at pipeline creation. Op/enum: OpName=5, OpDecorate=71, OpTypeArray=28,
-// OpTypePointer=32, OpConstant=43, OpVariable=59, OpSpecConstant=50; SpecId deco=1.
+// Makes a dynamic shared array's LENGTH a spec constant (SpecId 3) set from the launch's
+// sharedBytes: the array is found by its `cajeta_dynsh_…` OpName and its OpTypeArray
+// length operand repointed, so it is sized at pipeline creation.
 constexpr uint32_t kSpecIdDynShared = 3;   // 0/1/2 are the workgroup-size dims
 bool injectDynamicSharedSpecConstant(std::vector<uint8_t>& bytes) {
     if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
@@ -458,9 +362,8 @@ bool injectDynamicSharedSpecConstant(std::vector<uint8_t>& bytes) {
                         cv->second};                // default = the baked length
     uint32_t deco[4] = {(4u << 16) | kOpDecorate, newId, kSpecId,
                         kSpecIdDynShared};
-    // The spec constant must precede the OpTypeArray that uses it (types/constants
-    // can't forward-reference). Insert it just before the array; decorations
-    // (earlier in the module) may forward-reference, so insert that at decoEnd.
+    // Types and constants cannot forward-reference, so the spec constant goes just before
+    // the array; a decoration may, so it goes at decoEnd.
     size_t arrStart = al->second - 3;               // OpTypeArray instruction start
     w.insert(w.begin() + arrStart, spec, spec + 4); // before the array (later pos)
     w.insert(w.begin() + decoEnd, deco, deco + 4);  // decoEnd < arrStart, unshifted
@@ -470,18 +373,9 @@ bool injectDynamicSharedSpecConstant(std::vector<uint8_t>& bytes) {
     return true;
 }
 
-// Turn ONE user spec-constant witness — a Private OpVariable named
-// `cajeta_spec_<specId>` seeded with the compile-time default (emitted by
-// SpirvKernelLowering::specConstantI32) — into a real OpSpecConstant. Create an
-// OpSpecConstant(int, default) decorated SpecId <specId> (parsed from the name)
-// and repoint the variable's initializer operand to it (a single-operand
-// rewrite, exactly like the dynamic-shared length). The launch can then override
-// it via VkSpecializationInfo (host override = the deferred launch contract;
-// today the runtime supplies nothing for SpecId ≥ 4, so it reads the default).
-// Patches the FIRST unpatched witness (one whose initializer is still a plain
-// OpConstant); injectUserSpecConstants loops until none remain. Op/enum:
-// OpName=5, OpDecorate=71, OpConstant=43, OpVariable=59, OpSpecConstant=50,
-// OpFunction=54; SpecId deco=1.
+// Turns ONE user spec-constant witness — a Private OpVariable named `cajeta_spec_<id>`
+// seeded with the compile-time default — into a real OpSpecConstant, repointing the
+// variable's initializer at it. Patches the FIRST unpatched witness.
 bool injectOneUserSpecConstant(std::vector<uint8_t>& bytes) {
     if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
     std::vector<uint32_t> w(bytes.size() / 4);
@@ -532,9 +426,8 @@ bool injectOneUserSpecConstant(std::vector<uint8_t>& bytes) {
     }
     if (decoEnd == 0 || firstFn == 0) return false;
 
-    // First witness whose initializer is still a plain OpConstant. An already-
-    // patched var points its initializer at the new OpSpecConstant (absent from
-    // constType/constVal), so the lookup below naturally skips it.
+    // A patched variable's initializer is an OpSpecConstant, absent from constVal, so
+    // this lookup skips it and finds the first unpatched witness.
     for (const auto& kv : nameSpecId) {
         auto iw = varInitWord.find(kv.first);
         if (iw == varInitWord.end()) continue;
@@ -550,10 +443,8 @@ bool injectOneUserSpecConstant(std::vector<uint8_t>& bytes) {
         uint32_t spec[4] = {(4u << 16) | kOpSpecConstant, ct->second, newId,
                             cv->second};             // default = the witness seed
         uint32_t deco[4] = {(4u << 16) | kOpDecorate, newId, kSpecId, kv.second};
-        // The spec constant must precede the OpVariable that references it;
-        // insert it just before that variable. Decorations (earlier in the
-        // module) may forward-reference, so insert at decoEnd — which is < the
-        // variable position, hence unshifted by the later insert above it.
+        // The spec constant goes just before the OpVariable that references it; the
+        // decoration goes at decoEnd, which is earlier and so unshifted by that insert.
         size_t varStart = iw->second - 4;            // OpVariable instruction start
         w.insert(w.begin() + varStart, spec, spec + 4);
         w.insert(w.begin() + decoEnd, deco, deco + 4);
@@ -572,9 +463,8 @@ bool injectUserSpecConstants(std::vector<uint8_t>& bytes) {
     return any;
 }
 
-// Build a SPIR-V TargetMachine from an explicit triple string. Self-initializes
-// the target registry. The per-stage and compute entry points both funnel here,
-// so the lookup/createTargetMachine logic lives in one place.
+// A SPIR-V TargetMachine for an explicit triple, initializing the target registry: the
+// per-stage and compute entry points both funnel through here.
 std::unique_ptr<llvm::TargetMachine>
 createTargetMachineForTriple(const std::string& tripleStr) {
     ensureTargetsInitialized();
@@ -590,8 +480,7 @@ createTargetMachineForTriple(const std::string& tripleStr) {
     }
 
     llvm::TargetOptions opt;
-    // SPIR-V is not position-independent like AMDGPU; the default reloc model
-    // is correct.
+    // The default reloc model is right: SPIR-V is not position-independent.
     llvm::TargetMachine* tm = target->createTargetMachine(
         triple, /*CPU=*/"", /*Features=*/"", opt, /*RM=*/std::nullopt);
     return std::unique_ptr<llvm::TargetMachine>(tm);
@@ -628,8 +517,7 @@ std::string spirvStageTriple(ShaderStage stage, const std::string& arch) {
 }
 
 const char* hlslShaderAttr(ShaderStage stage) {
-    // The hlsl.shader attribute spelling coincides with the triple env token
-    // (both are the LLVM/HLSL stage names the in-tree backend recognizes).
+    // The attribute spelling coincides with the triple env token: both are stage names.
     return spirvStageEnv(stage);
 }
 
@@ -661,21 +549,13 @@ std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
         return {};
     }
     std::vector<uint8_t> spirv(buf.begin(), buf.end());
-    // Make any workgroup barrier Vulkan-spec-valid (LLVM 23 emits forbidden
-    // SequentiallyConsistent semantics). No-op for barrier-free kernels.
+    // Each of these word-stream fixups is a no-op on a kernel that lacks its feature.
     fixupControlBarriers(spirv);
-    // Make the workgroup size a spec constant so the launch's block dims set it
-    // at pipeline creation (default = the baked LocalSize). No-op if absent.
     injectWorkgroupSizeSpecConstant(spirv);
-    // Make a dynamic shared array's length a spec constant (SpecId 3) set from
-    // the launch's sharedBytes. No-op for kernels without dynamic shared.
     injectDynamicSharedSpecConstant(spirv);
-    // Turn each Spec.geti witness global into a real OpSpecConstant (SpecId 4+,
-    // default the witness seed). No-op for kernels without Spec.geti.
     injectUserSpecConstants(spirv);
-    // CAJETA_XPU_DUMP_SPV=<dir>: write the FINAL binary (post codegen + all
-    // word-stream fixups) — exactly what vkCreateShaderModule receives, so
-    // spirv-val/spirv-dis triage sees the driver's input, not an approximation.
+    // CAJETA_XPU_DUMP_SPV=<dir>: the FINAL binary, exactly what vkCreateShaderModule
+    // receives, so spirv-val triage sees the driver's input and not an approximation.
     if (const char* dumpDir = std::getenv("CAJETA_XPU_DUMP_SPV")) {
         std::string name = "module";
         for (auto& f : deviceModule) {

@@ -1,6 +1,4 @@
-//
 // SPIR-V (Vulkan) kernel lowering — see header.
-//
 
 #include "SpirvKernelLowering.h"
 #include "SpirvBackend.h"
@@ -27,25 +25,17 @@ namespace vulkan {
 
 namespace {
 
-// SPIR-V StorageBuffer: storage-class enum value 12; the LLVM SPIR-V backend
-// represents its pointers in address space 11. Function (private) allocas live
-// in address space 0. (Probed against LLVM 23 + spirv-val, 2026-05-30.)
+// SPIR-V StorageBuffer pointers live in address space 11 (storage class 12);
+// Function (private) allocas live in address space 0.
 constexpr unsigned kStorageBufferSC = 12;
 constexpr unsigned kStorageBufferAS = 11;
-// Bindless descriptor-array size for a Buffer<T>[] param: a fixed compile-time
-// range (handlefrombinding's `range` operand is a constant). The runtime binds
-// `count` (≤ this) real descriptors and pads the rest with a valid buffer; the
-// kernel reads only bufs[0..count). MUST match the launch marshalling cap
-// (CallExpression.cpp) and the runtime (cajeta_runtime.c).
+// Bindless descriptor-array size for a Buffer<T>[] param — handlefrombinding's
+// `range` is a constant. MUST match the launch marshalling cap and the runtime.
 constexpr unsigned kMaxBindlessBuffers = 16;
 
 #ifndef CAJETA_HAS_SPV_RAY_QUERY
-// This Cajeta compiler was built against an LLVM WITHOUT the cajeta-llvm fork's
-// SPV_KHR_ray_query intrinsics (llvm.spv.ray.query.*) — see plans/c0 /
-// CAJETA-FORK.md. The ray-query *opaque types* are plain string-named
-// TargetExtTypes (fine on stock LLVM), but the *operations* need the fork
-// intrinsics. Rather than make cajeta itself fail to build against stock LLVM, a
-// RayQuery in a kernel becomes a clean lowering-time diagnostic.
+// A RayQuery op needs the cajeta-llvm fork's llvm.spv.ray.query.* intrinsics;
+// on a stock-LLVM build it becomes this clean lowering-time diagnostic.
 [[noreturn]] static void rayQueryNoForkToolchain() {
     throw cajeta::Exception(
         "XPU kernel lowering: SPV_KHR_ray_query is unavailable in this build — the "
@@ -56,10 +46,8 @@ constexpr unsigned kMaxBindlessBuffers = 16;
 #endif
 
 #ifndef CAJETA_HAS_SPV_COOP_MATRIX
-// As above, but for the SPV_KHR_cooperative_matrix operation intrinsics
-// (llvm.spv.cooperative.matrix.*). The OpTypeCooperativeMatrixKHR *type* lowers
-// on stock LLVM; only the ops need the fork. A CooperativeMatrix op in a kernel
-// becomes a clean lowering-time diagnostic on a non-fork toolchain.
+// As above for the SPV_KHR_cooperative_matrix operation intrinsics: the tile
+// TYPE lowers on stock LLVM, only the ops need the fork.
 [[noreturn]] static void coopMatrixNoForkToolchain() {
     throw cajeta::Exception(
         "XPU kernel lowering: SPV_KHR_cooperative_matrix is unavailable in this "
@@ -69,10 +57,8 @@ constexpr unsigned kMaxBindlessBuffers = 16;
 }
 #endif
 
-// target("spirv.VulkanBuffer", [0 x elemTy], StorageBuffer, writable) — the
-// handle type llvm.spv.resource.handlefrombinding returns for a (RW)Structured
-// Buffer<elemTy>. Uniqued by LLVM, so rebuilding with the same args yields the
-// same type (lets getpointer reuse a handle's own type as its overload).
+// The target("spirv.VulkanBuffer", [0 x elemTy], StorageBuffer, writable) handle
+// type handlefrombinding returns for a (RW)StructuredBuffer<elemTy>.
 llvm::TargetExtType* vkBufferType(llvm::LLVMContext& ctx, llvm::Type* elemTy,
                                   bool writable) {
     llvm::Type* runtimeArr = llvm::ArrayType::get(elemTy, 0);
@@ -80,65 +66,42 @@ llvm::TargetExtType* vkBufferType(llvm::LLVMContext& ctx, llvm::Type* elemTy,
                                     {kStorageBufferSC, writable ? 1u : 0u});
 }
 
-// target("spirv.Image", texelTy, Dim, Depth, Arrayed, MS, Sampled, Format) —
-// the handle type llvm.spv.resource.handlefrombinding returns for a 2-D sampled
-// Texture2D. Dim=1 → 2D, Depth=2 → not-a-depth-image, Arrayed=0, MS=0,
-// Sampled=1 → used with a sampler, Format=0 → Unknown. Matches the upstream
-// SampleLevel recipe (OpTypeImage <texel> 2D 2 0 0 1 Unknown). (Item 8 Stage B.)
-// `dimOperand` is the SPIR-V Dim: 0 = 1D, 1 = 2D, 2 = 3D, 3 = Cube (the texture's
-// textureDim kind maps 1→0, 2→1, 3→2, 4→1 (2D-array), 5→3 (cube)). `arrayed` is
-// the Arrayed operand (1 for a 2-D array — the 3rd OpTypeImage int). A 1-D /
-// 3-D / array / cube sampled image binds the same way; only Dim + Arrayed + the
-// coord arity differ. (A 1-D sampled image needs the Sampled1D capability, and a
-// cube the SampledCubeArray-adjacent caps, which the SPIR-V backend emits from
-// the Dim/Arrayed it sees.)
+// The target("spirv.Image") handle type for a SAMPLED texture (Depth=2, MS=0,
+// Sampled=1, Format=Unknown). `dimOperand` is the SPIR-V Dim (0=1D, 1=2D, 2=3D,
+// 3=Cube) and `arrayed` its Arrayed operand; only those and coord arity differ.
 llvm::TargetExtType* vkImageType(llvm::LLVMContext& ctx, llvm::Type* texelTy,
                                  unsigned dimOperand = 1, unsigned arrayed = 0) {
     return llvm::TargetExtType::get(ctx, "spirv.Image", {texelTy},
                                     {dimOperand, 2, arrayed, 0, 1, 0});
 }
 
-// The same OpTypeImage with Sampled=2 → a writable STORAGE image (no sampler) —
-// the handle type for a 2-D Image2D. Dim=1 → 2D, Depth=2, Arrayed=0, MS=0,
-// Sampled=2 → used WITHOUT a sampler (storage), Format=3 → R32f. The format is
-// KNOWN (not Unknown) for two reasons: (1) it matches the runtime image's actual
-// VK_FORMAT_R32_SFLOAT, and (2) Unknown would require StorageImageWriteWithoutFormat,
-// which the SPIR-V backend only makes available for SPIR-V ≥ 1.6 in the Shader env
-// — and cajeta's spirv-unknown-vulkan1.3-compute triple does not pin SPIR-V 1.6,
-// so the write would be unsatisfiable. R32f needs only the always-present Shader
-// capability. Written via llvm.spv.resource.store.2d (OpImageWrite).
+// The same image type with Sampled=2 — a writable STORAGE image, no sampler.
+// Format is R32f, not Unknown: Unknown needs StorageImageWriteWithoutFormat,
+// which the backend offers only for SPIR-V >= 1.6, and cajeta's triple pins none.
 llvm::TargetExtType* vkStorageImageType(llvm::LLVMContext& ctx,
                                         llvm::Type* texelTy) {
     return llvm::TargetExtType::get(ctx, "spirv.Image", {texelTy},
                                     {1, 2, 0, 0, 2, 3});
 }
 
-// target("spirv.Sampler") — the handle type for a Sampler descriptor (→
-// OpTypeSampler). No type/int params; combined with an image at the sample site.
+// The target("spirv.Sampler") handle type for a Sampler descriptor.
 llvm::TargetExtType* vkSamplerType(llvm::LLVMContext& ctx) {
     return llvm::TargetExtType::get(ctx, "spirv.Sampler", {}, {});
 }
 
-// target("spirv.AccelerationStructureKHR") — the handle type for an
-// AccelerationStructure descriptor (→ OpTypeAccelerationStructureKHR). No
-// type/int params (zero-parameterized opaque). handlefrombinding materializes it
-// into a UniformConstant descriptor (set 0, binding = idx) and an OpLoad — the
-// path proven spirv-val-clean in cajeta-gpu Part C increment 2c — and the loaded
-// handle feeds OpRayQueryInitializeKHR. (cajeta-gpu Part C ray query.)
+// The target("spirv.AccelerationStructureKHR") handle type: bound as a
+// UniformConstant descriptor whose loaded handle feeds OpRayQueryInitializeKHR.
 llvm::TargetExtType* vkAccelStructType(llvm::LLVMContext& ctx) {
     return llvm::TargetExtType::get(ctx, "spirv.AccelerationStructureKHR", {}, {});
 }
 
-// target("spirv.RayQueryKHR") — the function-local ray-query opaque
-// (→ OpTypeRayQueryKHR). Allocated per RayQuery kernel local; the alloca is the
-// OpVariable Function the ray-query ops mutate.
+// The function-local target("spirv.RayQueryKHR") opaque, one alloca per local.
 llvm::TargetExtType* vkRayQueryType(llvm::LLVMContext& ctx) {
     return llvm::TargetExtType::get(ctx, "spirv.RayQueryKHR", {}, {});
 }
 
-// target("spirv.CooperativeMatrixKHR", elem, scope, rows, cols, use) — the
-// device cooperative-matrix tile type (→ OpTypeCooperativeMatrixKHR). Scope is
-// always Subgroup (3): the tile is held cooperatively across the wavefront.
+// The device cooperative-matrix tile type. Scope is always Subgroup (3): the
+// tile is held cooperatively across the wavefront.
 llvm::TargetExtType* vkCoopMatrixType(llvm::LLVMContext& ctx, llvm::Type* elem,
                                       uint32_t rows, uint32_t cols,
                                       uint32_t use) {
@@ -147,26 +110,23 @@ llvm::TargetExtType* vkCoopMatrixType(llvm::LLVMContext& ctx, llvm::Type* elem,
                                     {kSubgroupScope, rows, cols, use});
 }
 
-// llvm.spv.resource.getpointer(handle, i32 index) -> ptr addrspace(11). `index`
-// arrives i64-widened from the shared lowerer; SPIR-V wants i32.
+// llvm.spv.resource.getpointer(handle, i32 index) -> ptr addrspace(11); `index`
+// arrives i64-widened from the shared lowerer, and SPIR-V wants i32.
 llvm::Value* getElementPtr(llvm::IRBuilderBase& b, llvm::Module& m,
                            llvm::Value* handle, llvm::Value* index) {
     llvm::LLVMContext& ctx = m.getContext();
     llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
     llvm::PointerType* sbPtr = llvm::PointerType::get(ctx, kStorageBufferAS);
     llvm::Value* i32idx = b.CreateTrunc(index, i32, "bidx");
-    // LLVM 23 made the index operand of llvm.spv.resource.getpointer an
-    // overloaded type (was a fixed i32), so the intrinsic now has three
-    // overload types: {result ptr, handle, index}. Passing only two ran the
-    // signature decoder off the end of the type array.
+    // LLVM 23 overloads the index operand, so the intrinsic takes three overload
+    // types {result ptr, handle, index}; two ran the decoder off the type array.
     llvm::Function* gp = llvm::Intrinsic::getOrInsertDeclaration(
         &m, llvm::Intrinsic::spv_resource_getpointer,
         {sbPtr, handle->getType(), i32});
     return b.CreateCall(gp, {handle, i32idx}, "elem.ptr");
 }
 
-// llvm.spv.resource.handlefrombinding(set, binding, range, index, name) for a
-// descriptor at set 0, the given binding.
+// llvm.spv.resource.handlefrombinding for a descriptor at set 0, `binding`.
 llvm::Value* bindResource(llvm::IRBuilderBase& b, llvm::Module& m,
                           llvm::TargetExtType* bufTy, unsigned binding,
                           const std::string& name) {
@@ -185,11 +145,10 @@ llvm::Value* bindResource(llvm::IRBuilderBase& b, llvm::Module& m,
 class SpirvTarget : public LoweringTarget {
 public:
     const char* name() const override { return "spirv"; }
-    // Vulkan kernel params arrive as descriptors (no-param void main()), so a
-    // bindless buffer-array binds per-access via handlefrombinding, not fn->getArg.
+    // Vulkan kernel params arrive as descriptors (a no-param void main()), so a
+    // bindless buffer array binds per access via handlefrombinding, not fn->getArg.
     bool descriptorBoundParams() const override { return true; }
 
-    // Function (private) storage class — SPIR-V allocas live in addrspace 0.
     unsigned allocaAddressSpace() const override { return 0; }
 
     llvm::Value* threadId(llvm::IRBuilderBase& b, llvm::Module& m,
@@ -200,27 +159,20 @@ public:
                              unsigned dim) override {
         return readCoord(b, m, llvm::Intrinsic::spv_group_id, dim);
     }
-    // Vulkan bakes the workgroup size as a compile-time constant (createKernel
-    // sets numthreads = kVulkanLocalSizeX,1,1). The `WorkgroupSize` BuiltIn must
-    // decorate a CONSTANT in a Vulkan shader — emitting it as a builtin *variable*
-    // (spv_workgroup_size) produces SPIR-V that spirv-val rejects ("BuiltIn
-    // WorkgroupSize must be a constant"), which is why any kernel that read the
-    // block dim (e.g. a cooperative global→LDS staging copy) mis-lowered. Return
-    // the baked constant directly — valid and exactly correct for this fixed size.
+    // The WorkgroupSize BuiltIn must decorate a CONSTANT in a Vulkan shader — as a
+    // builtin variable spirv-val rejects the module — so return the baked LocalSize
+    // constant createKernel put in numthreads.
     llvm::Value* workgroupDim(llvm::IRBuilderBase& /*b*/, llvm::Module& m,
                               unsigned dim) override {
         return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()),
                                       dim == 0 ? kVulkanLocalSizeX : 1);
     }
-    // SPIR-V exposes GlobalInvocationId natively — override the computed default.
     llvm::Value* globalId(llvm::IRBuilderBase& b, llvm::Module& m,
                           unsigned dim) override {
         return readCoord(b, m, llvm::Intrinsic::spv_thread_id, dim);
     }
-    // Grid-stride stride = NumWorkgroups·WorkgroupSize. NumWorkgroups is a valid
-    // builtin; the WorkgroupSize factor is the baked LocalSize constant (the
-    // builtin-variable form is invalid Vulkan — see workgroupDim). GlobalSize
-    // would require the OpenCL Kernel capability, so it is deliberately not used.
+    // Grid-stride stride = NumWorkgroups x the baked LocalSize constant. GlobalSize
+    // would require the OpenCL Kernel capability, so it is deliberately unused.
     llvm::Value* gridSize(llvm::IRBuilderBase& b, llvm::Module& m,
                           unsigned dim) override {
         return b.CreateMul(
@@ -229,8 +181,6 @@ public:
     }
 
     void workgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
-        // Workgroup control + memory barrier in one intrinsic (ordering folded
-        // in by the backend) — cleaner than AMD's fence/s_barrier/fence triple.
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_group_memory_barrier_with_group_sync);
         b.CreateCall(f, {});
@@ -238,11 +188,7 @@ public:
 
     void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m, FenceScope scope,
                      MemoryOrder /*order*/ = MemoryOrder::Default) override {
-        // Memory-only OpMemoryBarrier (no OpControlBarrier / group sync). The
-        // dedicated *_memory_barrier intrinsics carry the scope: Workgroup vs
-        // Device. SpirvBackend's post-emit pass pins the memory-semantics operand
-        // to a Vulkan-valid AcquireRelease, so the fence is AcqRel regardless of
-        // the requested order (Vulkan has no weaker valid memory fence here).
+        // Memory-only OpMemoryBarrier; the post-emit pass pins it to AcquireRelease.
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, scope == FenceScope::Workgroup
                     ? llvm::Intrinsic::spv_group_memory_barrier
@@ -250,16 +196,9 @@ public:
         b.CreateCall(f, {});
     }
 
-    // Specialization constant (Stage 11): a GENUINE OpSpecConstant the launch
-    // can set at pipeline creation. LLVM 23's SPIR-V backend has no spec-constant
-    // IR intrinsic, so we emit a uniquely-named Private (addrspace 10) global
-    // seeded with the default and VOLATILE-load it; the post-emit pass
-    // (injectUserSpecConstants) rewrites that global's initializer into an
-    // OpSpecConstant decorated SpecId = kFirstUserSpecId + slot. The volatile
-    // load stops LLVM from const-folding the never-stored global back to a
-    // literal. Module-scope ⇒ the same value across all invocations, which is
-    // the spec-constant semantics. The runtime supplies no value for SpecId ≥ 4
-    // yet, so it reads the default (host override = the deferred launch contract).
+    // Specialization constant: LLVM 23 has no spec-constant intrinsic, so emit a
+    // uniquely-named Private global seeded with the default and VOLATILE-load it —
+    // the post-emit pass rewrites it to an OpSpecConstant, and volatile stops folding.
     llvm::Value* specConstantI32(llvm::IRBuilderBase& b, llvm::Module& m,
                                  unsigned slot, int32_t defaultValue) override {
         constexpr unsigned kPrivateAS = 10;   // addressSpaceToStorageClass → Private
@@ -283,9 +222,6 @@ public:
         return ld;
     }
 
-    // f32 companion of specConstantI32 — a float witness global the post-emit
-    // pass rewrites into a float OpSpecConstant (the rewrite is type-agnostic:
-    // it reuses the witness OpConstant's type, so no SpirvBackend change needed).
     llvm::Value* specConstantF32(llvm::IRBuilderBase& b, llvm::Module& m,
                                  unsigned slot, float defaultValue) override {
         constexpr unsigned kPrivateAS = 10;   // addressSpaceToStorageClass → Private
@@ -308,21 +244,16 @@ public:
         return ld;
     }
 
-    // Vulkan marks the entry via createKernel's attributes, not a CC here.
     void decorateKernel(llvm::Function* /*fn*/, llvm::Module& /*m*/) override {}
 
-    // Cross-lane subgroup ops (Wave.shuffle/ballot/reduce) only behave as the
-    // source structure implies under maximal reconvergence. Request it: the
-    // backend turns this fn-attr into OpExecutionMode MaximallyReconvergesKHR
-    // (SPV_KHR_maximal_reconvergence, enabled in SpirvBackend). Emitted ONLY for
-    // wave kernels, so non-wave kernels carry no extra device requirement.
+    // Cross-lane subgroup ops behave as written only under maximal reconvergence:
+    // this fn-attr becomes OpExecutionMode MaximallyReconvergesKHR, wave kernels only.
     void onSubgroupOpsUsed(llvm::Function* fn, llvm::Module& /*m*/) override {
         fn->addFnAttr("enable-maximal-reconvergence", "true");
     }
 
-    // The Vulkan compute entry takes NO parameters: `void main()`-style, with
-    // the HLSL compute markers. LocalSize is baked in (Vulkan fixes workgroup
-    // size at SPIR-V compile time). Args arrive via descriptors (materializeParam).
+    // The Vulkan compute entry takes NO parameters — `void main()` with the HLSL
+    // compute markers, LocalSize baked in; args arrive via descriptors.
     llvm::Function* createKernel(
         llvm::Module& m, const std::string& kname,
         const std::vector<KernelParam>& /*params*/) override {
@@ -337,18 +268,14 @@ public:
         return fn;
     }
 
-    // Each kernel arg becomes a descriptor binding at (set 0, binding = idx).
-    // A Buffer<T> yields the storage-buffer handle (kept in bufferBases); a
-    // scalar is read from a single-element storage buffer at that binding and
-    // returned by value (the caller stores it into a mutable slot).
+    // Each kernel arg becomes a descriptor binding at (set 0, binding = idx): a
+    // Buffer<T> yields the handle kept in bufferBases, a scalar is read from a
+    // single-element storage buffer and returned by value.
     llvm::Value* materializeParam(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Function* /*fn*/, unsigned idx,
                                   const KernelParam& p) override {
-        // Texture2D (Item 8): a SAMPLED_IMAGE descriptor; the handle is consumed
-        // only by `tex.sample(...)` via sampleTexture. (set 0, binding = idx.)
         if (p.isTexture) {
-            // textureDim kind → (SPIR-V Dim, Arrayed): 1D=(0,0), 2D=(1,0),
-            // 3D=(2,0), 2D-array=(1,1), cube=(3,0).
+            // textureDim kind -> (Dim, Arrayed): 1D=(0,0), 2D=(1,0), 3D=(2,0), array=(1,1).
             unsigned dimOp = p.textureDim == 3 ? 2u
                            : (p.textureDim == 1 ? 0u
                            : (p.textureDim == 5 ? 3u : 1u));
@@ -357,20 +284,13 @@ public:
                                 vkImageType(m.getContext(), p.type, dimOp, arrayed),
                                 idx, p.name);
         }
-        // Image2D (writable images): a STORAGE_IMAGE descriptor; the handle is
-        // consumed only by `img.store(...)` via storeImage. (set 0, binding = idx.)
         if (p.isImage) {
             return bindResource(b, m, vkStorageImageType(m.getContext(), p.type),
                                 idx, p.name);
         }
-        // Sampler (Item 8): a SAMPLER descriptor. The filter/address modes live
-        // in the runtime VkSampler, not the SPIR-V — here it's just a handle.
         if (p.isSampler) {
             return bindResource(b, m, vkSamplerType(m.getContext()), idx, p.name);
         }
-        // AccelerationStructure (Part C): an ACCELERATION_STRUCTURE_KHR
-        // descriptor; the loaded handle is consumed only by `rq.initialize(as,
-        // ...)`. (set 0, binding = idx — same handlefrombinding path as buffers.)
         if (p.isAccelStruct) {
             return bindResource(b, m, vkAccelStructType(m.getContext()), idx,
                                 p.name);
@@ -379,7 +299,6 @@ public:
             return bindResource(b, m, vkBufferType(m.getContext(), p.type, true),
                                 idx, p.name);
         }
-        // scalar -> single-element (read-only) SSBO, load element 0.
         llvm::Value* handle = bindResource(
             b, m, vkBufferType(m.getContext(), p.type, false), idx, p.name);
         llvm::Value* ptr = getElementPtr(
@@ -388,12 +307,8 @@ public:
         return b.CreateLoad(p.type, ptr, p.name);
     }
 
-    // Texture2D.sample(sampler, u, v) → OpImageSampleExplicitLod … Lod, native
-    // and compute-valid via llvm.spv.resource.samplelevel (LLVM 23). texHandle is
-    // the spirv.Image, samplerHandle the spirv.Sampler (both descriptor handles
-    // from materializeParam). coord = <u, v>; explicit LOD 0 (compute has no
-    // implicit derivatives); no constant offset. Returns the R channel of the
-    // <4 x float> gather (Texture2D's texel is a scalar float in v1). (Stage B.)
+    // Texture2D.sample -> OpImageSampleExplicitLod via llvm.spv.resource.samplelevel:
+    // coord <u,v>, explicit LOD (compute has no derivatives), no offset.
     llvm::Value* sampleTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* texHandle, llvm::Value* samplerHandle,
                                llvm::Value* u, llvm::Value* v,
@@ -407,27 +322,15 @@ public:
         llvm::Value* coord = llvm::PoisonValue::get(v2f);
         coord = b.CreateInsertElement(coord, u, uint64_t(0));
         coord = b.CreateInsertElement(coord, v, uint64_t(1), "tex.coord");
-        // Explicit LOD (0.0 for plain sample; the user's value for sampleLod).
         llvm::Value* offset = llvm::ConstantAggregateZero::get(v2i);
-        // CreateIntrinsic infers the (result, image, sampler, coord, offset)
-        // overloads from the operand types, exactly as clang's HLSL SampleLevel.
         llvm::Value* rgba = b.CreateIntrinsic(
             v4f, llvm::Intrinsic::spv_resource_samplelevel,
             {texHandle, samplerHandle, coord, lod, offset});
-        // Return the full <4 x float> RGBA — Texture2D.sample is typed
-        // Vector<float32,4>; the caller selects a channel with .r/.x. (R32f
-        // images keep the value in lane 0; the bridge stops discarding the rest.)
         return rgba;
     }
 
-    // Texture2D.fetch(x, y) → OpImageFetch at the exact integer coord, mip 0,
-    // no sampler. Uses the fork intrinsic llvm.spv.resource.load.level
-    // (image, coord, lod): because `texHandle` is the *sampled* image (Sampled=1,
-    // from vkImageType), the backend's read/fetch selection picks OpImageFetch
-    // (vs OpImageRead for a Sampled=2 storage image — that is how this differs
-    // from loadImage). The Lod operand is mandatory for OpImageFetch on a
-    // non-multisampled image, and load.level supplies it (= 0 here). Returns the
-    // <4 x float> texel directly (Texture2D.fetch is typed Vector<float32,4>).
+    // Texture2D.fetch -> OpImageFetch via llvm.spv.resource.load.level: texHandle is
+    // a SAMPLED image, and the Lod operand OpImageFetch requires comes from load.level.
     llvm::Value* fetchTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                               llvm::Value* texHandle, llvm::Value* x,
                               llvm::Value* y, llvm::Type* texelTy,
@@ -435,24 +338,16 @@ public:
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         auto* v2i = llvm::FixedVectorType::get(i32, 2);
-        // The result is <4 x T>: <4 x float> for the float formats, <4 x i32> for
-        // the raw-integer formats. `texHandle` is already an integer-sampled image
-        // when T = i32 (materializeParam built spirv.Image with sampled type i32
-        // from p.type), so OpImageFetch on it yields integer texels natively.
         auto* v4t = llvm::FixedVectorType::get(texelTy, 4);
         llvm::Value* coord = llvm::PoisonValue::get(v2i);
         coord = b.CreateInsertElement(coord, x, uint64_t(0));
         coord = b.CreateInsertElement(coord, y, uint64_t(1), "tex.fetch.coord");
-        // Explicit mip LOD (0 for plain fetch; the user value for fetchLod) — the
-        // mandatory OpImageFetch Lod operand load.level supplies.
         return b.CreateIntrinsic(v4t, llvm::Intrinsic::spv_resource_load_level,
                                  {texHandle, coord, lod}, nullptr, "tex.fetch");
     }
 
-    // Texture3D.sample(sampler, u, v, w) → OpImageSampleExplicitLod on a 3-D image
-    // — the 3-coord twin of sampleTexture. texHandle is the 3-D spirv.Image (Dim=2,
-    // bound by materializeParam from textureDim). coord = <u, v, w>; explicit LOD 0;
-    // the constant offset is a <3 x i32> for a 3-D image.
+    // Texture3D.sample -> OpImageSampleExplicitLod on a 3-D image: coord <u,v,w>,
+    // explicit LOD 0, and a <3 x i32> offset.
     llvm::Value* sampleTexture3D(llvm::IRBuilderBase& b, llvm::Module& m,
                                  llvm::Value* texHandle, llvm::Value* samplerHandle,
                                  llvm::Value* u, llvm::Value* v,
@@ -473,8 +368,7 @@ public:
                                  {texHandle, samplerHandle, coord, lod, offset});
     }
 
-    // Texture3D.fetch(x, y, z) → OpImageFetch on a 3-D image at the exact integer
-    // voxel, mip 0, no sampler — the 3-coord twin of fetchTexture. Result <4 x T>.
+    // Texture3D.fetch -> OpImageFetch at an integer voxel, mip 0. Result <4 x T>.
     llvm::Value* fetchTexture3D(llvm::IRBuilderBase& b, llvm::Module& m,
                                 llvm::Value* texHandle, llvm::Value* x,
                                 llvm::Value* y, llvm::Value* z,
@@ -492,11 +386,8 @@ public:
                                  {texHandle, coord, lod}, nullptr, "tex3d.fetch");
     }
 
-    // Texture1D.sample(sampler, u) → OpImageSampleExplicitLod on a 1-D image — the
-    // single-coord twin of sampleTexture. texHandle is the 1-D spirv.Image (Dim=0,
-    // bound by materializeParam from textureDim). The coord is a SCALAR float (a
-    // 1-D image takes a 1-component coordinate, not a vector) and the offset a
-    // scalar i32; explicit LOD 0 (compute has no implicit derivatives).
+    // Texture1D.sample -> OpImageSampleExplicitLod on a 1-D image: the coord is a
+    // SCALAR float and the offset a scalar i32, not vectors.
     llvm::Value* sampleTexture1D(llvm::IRBuilderBase& b, llvm::Module& m,
                                  llvm::Value* texHandle, llvm::Value* samplerHandle,
                                  llvm::Value* u) override {
@@ -510,9 +401,7 @@ public:
                                  {texHandle, samplerHandle, u, lod, offset});
     }
 
-    // Texture1D.fetch(x) → OpImageFetch on a 1-D image at the exact integer texel,
-    // mip 0, no sampler — the single-coord twin of fetchTexture. The coord is a
-    // SCALAR i32. Result <4 x T>.
+    // Texture1D.fetch -> OpImageFetch at a SCALAR i32 texel, mip 0. Result <4 x T>.
     llvm::Value* fetchTexture1D(llvm::IRBuilderBase& b, llvm::Module& m,
                                 llvm::Value* texHandle, llvm::Value* x,
                                 llvm::Type* texelTy) override {
@@ -524,12 +413,8 @@ public:
                                  {texHandle, x, lod}, nullptr, "tex1d.fetch");
     }
 
-    // Texture2DArray.sample(sampler, u, v, layer) → OpImageSampleExplicitLod on an
-    // Arrayed 2-D image — the layered twin of sampleTexture. The coord is a
-    // <3 x float> {u, v, layer} where the 3rd component is the (un-normalized)
-    // array layer; `layer` arrives as i32 and is converted to float. The image is
-    // Arrayed=1 (materializeParam), so the backend reads the 3rd coord as the
-    // layer, not a 3-D w. Explicit LOD 0; <3 x i32> offset.
+    // Texture2DArray.sample -> OpImageSampleExplicitLod on an Arrayed image: the
+    // coord is <u, v, layer>, the layer un-normalized and converted to float.
     llvm::Value* sampleTexture2DArray(llvm::IRBuilderBase& b, llvm::Module& m,
                                       llvm::Value* texHandle,
                                       llvm::Value* samplerHandle, llvm::Value* u,
@@ -551,9 +436,7 @@ public:
                                  {texHandle, samplerHandle, coord, lod, offset});
     }
 
-    // Texture2DArray.fetch(x, y, layer) → OpImageFetch on an Arrayed 2-D image at
-    // the exact integer texel of `layer`, mip 0, no sampler — the layered twin of
-    // fetchTexture. coord = <3 x i32> {x, y, layer}. Result <4 x T>.
+    // Texture2DArray.fetch -> OpImageFetch, coord <3 x i32> {x, y, layer}.
     llvm::Value* fetchTexture2DArray(llvm::IRBuilderBase& b, llvm::Module& m,
                                      llvm::Value* texHandle, llvm::Value* x,
                                      llvm::Value* y, llvm::Value* layer,
@@ -571,12 +454,8 @@ public:
                                  {texHandle, coord, lod}, nullptr, "tex2da.fetch");
     }
 
-    // TextureCube.sample(sampler, x, y, z) → OpImageSampleExplicitLod on a cube
-    // image (Dim=Cube, bound by materializeParam from textureDim 5). The coord is
-    // a <3 x float> DIRECTION (x, y, z) — the HW picks the face + projects; no
-    // normalization needed. Explicit LOD 0. The <3 x i32> offset is constant zero,
-    // which the backend drops (a ConstOffset is illegal on a cube image — but a
-    // zero offset is elided by generateSampleImage, so this stays spirv-val clean).
+    // TextureCube.sample -> OpImageSampleExplicitLod on a cube image: the coord is a
+    // DIRECTION the hardware projects, and the zero offset is elided (illegal here).
     llvm::Value* sampleTextureCube(llvm::IRBuilderBase& b, llvm::Module& m,
                                    llvm::Value* texHandle, llvm::Value* samplerHandle,
                                    llvm::Value* x, llvm::Value* y,
@@ -597,11 +476,8 @@ public:
                                  {texHandle, samplerHandle, coord, lod, offset});
     }
 
-    // Image2D.store(x, y, value) → a single OpImageWrite, native via the fork
-    // intrinsic llvm.spv.resource.store.2d (cajeta-spirv): operands are the
-    // spirv.Image storage handle (Sampled=2), the integer coord <x, y>, and the
-    // texel. OpImageWrite requires a 4-component texel, so the scalar `value` is
-    // splatted into <value, 0, 0, 0> (the R32f image keeps lane 0).
+    // Image2D.store -> OpImageWrite via llvm.spv.resource.store.2d. OpImageWrite
+    // needs a 4-component texel, so a scalar value is splatted into lane 0.
     void storeImage(llvm::IRBuilderBase& b, llvm::Module& m,
                     llvm::Value* imgHandle, llvm::Value* x, llvm::Value* y,
                     llvm::Value* value) override {
@@ -615,18 +491,13 @@ public:
         coord = b.CreateInsertElement(coord, y, uint64_t(1), "img.coord");
         llvm::Value* texel = llvm::ConstantAggregateZero::get(v4f);
         texel = b.CreateInsertElement(texel, value, uint64_t(0), "img.texel");
-        // Overload types: the image handle (any) and the texel vector (anyvector);
-        // the coord (v2i32) is a fixed operand, not overloaded.
         b.CreateIntrinsic(llvm::Intrinsic::spv_resource_store_2d,
                           {imgHandle->getType(), v4f},
                           {imgHandle, coord, texel});
     }
 
-    // Image2D.load(x, y) → a single OpImageRead, native via the fork intrinsic
-    // llvm.spv.resource.load.2d (cajeta-spirv): operands are the spirv.Image
-    // storage handle (Sampled=2) and the integer coord <x, y>. The result is
-    // requested as a scalar f32 — the SPIR-V backend reads the texel as a
-    // <4 x f32> (OpImageRead) and extracts component 0 (the R32f channel).
+    // Image2D.load -> OpImageRead via llvm.spv.resource.load.2d; the result is asked
+    // for as a scalar f32, so the backend extracts component 0 of the texel.
     llvm::Value* loadImage(llvm::IRBuilderBase& b, llvm::Module& m,
                            llvm::Value* imgHandle, llvm::Value* x,
                            llvm::Value* y) override {
@@ -637,41 +508,25 @@ public:
         llvm::Value* coord = llvm::PoisonValue::get(v2i);
         coord = b.CreateInsertElement(coord, x, uint64_t(0));
         coord = b.CreateInsertElement(coord, y, uint64_t(1), "img.coord");
-        // Overload types: the scalar result (f32) and the image handle (any);
-        // the coord (v2i32) is a fixed operand, not overloaded.
         return b.CreateIntrinsic(llvm::Intrinsic::spv_resource_load_2d,
                                  {f32, imgHandle->getType()},
                                  {imgHandle, coord}, nullptr, "img.load");
     }
 
     // --- integer dot product (SPV_KHR_integer_dot_product, DP4a) --------------
-    // Pack the four int8 lanes into an i32 (lane 0 -> low byte = the first
-    // packed component, matching PackedVectorFormat4x8Bit on little-endian GPUs)
-    // and emit llvm.spv.dot4add.{i8,u8}packed(acc, x, y) -> i32. The SPIR-V
-    // backend selects OpSDot/OpUDot ... PackedVectorFormat4x8Bit + OpIAdd, and
-    // injects the DotProduct / DotProductInput4x8BitPacked capabilities + the
-    // SPV_KHR_integer_dot_product extension (or the 1.5/1.6 bit-field expansion
-    // when they are unavailable). Unlike coop-matrix/ray-query, dot4add is a
-    // stock-LLVM intrinsic (the HLSL path), so no fork guard is needed.
+    // Pack four int8 lanes into an i32 — lane 0 is the LOW byte, matching
+    // PackedVectorFormat4x8Bit — then emit llvm.spv.dot4add.{i8,u8}packed.
     llvm::Value* integerDot4x8(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* a, llvm::Value* c, llvm::Value* acc,
                                bool aSigned, bool cSigned) override {
-        // MIXED signedness — what dotAccum means — maps to OpSUDot, whose
-        // FIRST operand packs the signed bytes and SECOND the unsigned
-        // (SPV_KHR_integer_dot_product). Stock LLVM has no intrinsic for it
-        // (only the symmetric dot4add_{i8,u8}packed pair), so the fork adds
-        // spv_dot4add_su8packed with the same (acc, x, y) shape; before it
-        // existed this case fell back to the portable widen, which is
-        // CORRECT but scalar — the whole Vulkan integer tier measured
-        // 1.16 TMAC/s against 9.9 native on the same silicon, and every
-        // quant kernel's dotAccum (unsigned weights x signed activations)
-        // was on that path.
+        // MIXED signedness maps to OpSUDot, whose FIRST operand packs the signed bytes
+        // and second the unsigned. Stock LLVM has only the symmetric pair, so the fork
+        // adds spv_dot4add_su8packed; without it this falls back to a scalar widen.
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* x = b.CreateBitCast(a, i32, "dp4a.x");
         llvm::Value* y = b.CreateBitCast(c, i32, "dp4a.y");
         if (aSigned != cSigned) {
-            // OpSUDot wants (signed, unsigned) — swap when the receiver is
-            // the unsigned side. Integer dot is order-symmetric in value.
+            // OpSUDot wants (signed, unsigned); integer dot is order-symmetric in value.
             llvm::Value* xs = aSigned ? x : y;
             llvm::Value* yu = aSigned ? y : x;
             llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
@@ -685,12 +540,8 @@ public:
         return b.CreateCall(f, {acc, x, y}, "dp4a");
     }
 
-    // Atomic memory scope from the target pointer's storage class. A shared
-    // (Workgroup-storage) pointer — cajeta's `shared T[]`, LLVM addrspace 3 —
-    // needs Workgroup scope; a global StorageBuffer pointer needs Device scope.
-    // Vulkan rejects CrossDevice scope, and an atomic's scope must match where the
-    // memory lives. (The storage-class bit of the memory semantics is derived by
-    // the backend from the pointer itself; here we only pick the scope.)
+    // Atomic memory scope from the pointer's storage class: Workgroup for `shared`
+    // (addrspace 3), Device for a StorageBuffer. Vulkan rejects CrossDevice.
     llvm::SyncScope::ID atomicScope(llvm::Module& m, llvm::Value* ptr) {
         constexpr unsigned kSharedAS = 3;   // matches lowerSharedDecl's addrspace
         const char* name =
@@ -699,13 +550,8 @@ public:
         return m.getContext().getOrInsertSyncScopeID(name);
     }
 
-    // Vulkan memory-model clamp for a user-requested order. A device-scope atomic
-    // with bare Monotonic (None) or SequentiallyConsistent memory semantics is
-    // rejected by strict spirv-val (Vulkan needs storage-class acquire/release
-    // semantics on the atomic) — so raise both to AcquireRelease, the Vulkan
-    // default. Net: Vulkan honours Acquire/Release/AcqRel; Relaxed and SeqCst
-    // clamp UP to AcqRel (CPU/AMD/NVPTX honour Relaxed natively — that's where
-    // the relaxed-atomic perf win lands). Int and float share the constraint.
+    // Vulkan clamp for a requested order: a device-scope atomic with Monotonic or
+    // SequentiallyConsistent semantics fails spirv-val, so both raise to AcquireRelease.
     static llvm::AtomicOrdering vkClamp(llvm::AtomicOrdering o) {
         return (o == llvm::AtomicOrdering::Monotonic ||
                 o == llvm::AtomicOrdering::SequentiallyConsistent)
@@ -713,22 +559,8 @@ public:
     }
 
     // --- float atomics (SPV_EXT_shader_atomic_float_add / _min_max) -----------
-    // Vulkan rejects CrossDevice scope and SequentiallyConsistent / relaxed-with-
-    // storage-class memory semantics on OpAtomicF*EXT, so emit the atomicrmw with
-    // AcquireRelease + the storage-matched scope (Device for global buffers,
-    // Workgroup for `shared` memory — see atomicScope). The op
-    // (OpAtomicFAddEXT/FMinEXT/FMaxEXT) and its capability + extension are
-    // selected by the backend from the BinOp.
-    //
-    // NOTE: FAdd → OpAtomicFAddEXT (VK_EXT_shader_atomic_float, broadly supported
-    // incl. NVIDIA). FMin/FMax → OpAtomicFMin/MaxEXT, which need
-    // VK_EXT_shader_atomic_float2 — supported on RADV but NOT on NVIDIA. There is
-    // no portable SPIR-V fallback: float min/max via an integer-bit-trick or a CAS
-    // loop both require an INTEGER atomic on the float buffer, and SPIR-V logical
-    // addressing forbids reinterpreting a float-typed storage pointer as int. So
-    // float atomic min/max is gated on the device exposing float2 (the device test
-    // skips otherwise); the device feature is enabled in cajeta_runtime.c /
-    // VulkanDriver when present.
+    // AcquireRelease plus the storage-matched scope; FMin/FMax additionally need
+    // VK_EXT_shader_atomic_float2 (absent on NVIDIA, and no portable fallback).
     llvm::Value* atomicFloatRMW(llvm::IRBuilderBase& b, llvm::Module& m,
                                 AtomicFloatOp op, llvm::Value* ptr,
                                 llvm::Value* value,
@@ -744,10 +576,7 @@ public:
             atomicScope(m, ptr));
     }
 
-    // --- integer atomics (core SPIR-V) ----------------------------------------
-    // Same memory-model constraint as the float path: Device scope + AcquireRelease
-    // (Vulkan rejects CrossDevice scope / SequentiallyConsistent). The backend maps
-    // the BinOp to OpAtomicIAdd/ISub/And/Or/Xor/Exchange/SMin/UMin/SMax/UMax.
+    // --- integer atomics (core SPIR-V): same memory-model constraint as floats --
     llvm::Value* atomicIntRMW(llvm::IRBuilderBase& b, llvm::Module& m,
                               AtomicIntOp op, llvm::Value* ptr,
                               llvm::Value* value, bool isSigned,
@@ -775,10 +604,8 @@ public:
             atomicScope(m, ptr));
     }
 
-    // Compare-exchange → OpAtomicCompareExchange. Storage-matched scope (Device
-    // for global, Workgroup for shared); AcquireRelease on success, Acquire on
-    // failure (the failure ordering may not be stronger than success nor carry a
-    // release). Returns the OLD value (element 0).
+    // Compare-exchange -> OpAtomicCompareExchange with the storage-matched scope:
+    // AcquireRelease on success, Acquire on failure. Returns the OLD value.
     llvm::Value* atomicCompareExchange(llvm::IRBuilderBase& b, llvm::Module& m,
                                        llvm::Value* ptr, llvm::Value* expected,
                                        llvm::Value* desired,
@@ -792,64 +619,41 @@ public:
         return b.CreateExtractValue(pair, 0, "atomic.cas.old");
     }
 
-    // --- shader clock (SPV_KHR_shader_clock) ----------------------------------
-    // OpReadClockKHR at Subgroup scope (3), via the fork's llvm.spv.read.clock
-    // intrinsic — the Shader flavor's only reach to the op (the OpReadClockKHR
-    // builtin path is OpenCL-only). The SPIR-V backend injects the ShaderClockKHR
-    // capability + SPV_KHR_shader_clock extension.
+    // --- shader clock: OpReadClockKHR at Subgroup scope (SPV_KHR_shader_clock) --
     llvm::Value* readClock(llvm::IRBuilderBase& b, llvm::Module& m) override {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_read_clock);
         return b.CreateCall(f, {b.getInt32(3)}, "clock");
     }
 
-    // --- ray query (SPV_KHR_ray_query) ----------------------------------------
-    // The ops lower to the llvm.spv.ray.query.* intrinsics + GlobalISel
-    // selection (cajeta-gpu Part C increments 1/2/2c, in the cajeta-llvm fork).
-    // The builtin __spirv_* path can't reach them: it is shader-gated to OpenCL
-    // and ray query is [EnvVulkan]-only.
+    // --- ray query: lowers to the fork's llvm.spv.ray.query.* intrinsics -------
 
-    // A RayQuery local is an alloca of target("spirv.RayQueryKHR")
-    // (→ OpVariable Function of OpTypeRayQueryKHR).
+    // A RayQuery local is an alloca of target("spirv.RayQueryKHR").
     llvm::Type* rayQueryType(llvm::Module& m) override {
         return vkRayQueryType(m.getContext());
     }
 
-    // Tier: native SPV_KHR_cooperative_matrix only for the dtype configs RADV (and
-    // the conformant Vulkan coop-matrix set) actually advertise — f16 and 8-bit
-    // integer A/B operands. bfloat16 is deliberately Software: no Vulkan driver
-    // exposes a bf16 cooperative-matrix config (it needs SPV_INTEL_bfloat16_
-    // arithmetic, an Intel-CPU-only path), so a bf16 tile takes the portable
-    // flat-matmul fallback here — and lights up native WMMA on the AMD backend,
-    // which has a bf16 matrix-core path (llvm.amdgcn.wmma.*.bf16). Without the
-    // fork toolchain the ops can't be emitted at all, so everything is Software.
+    // Native SPV_KHR_cooperative_matrix only for the dtype configs drivers advertise
+    // (f16 and 8-bit integer operands); bf16 has none and takes the portable matmul.
     ImplTier coopMatrixTier(llvm::Type* elem, uint32_t /*rows*/,
                             uint32_t /*cols*/, uint32_t /*use*/) override {
 #if CAJETA_HAS_SPV_COOP_MATRIX
-        // bf16 has no Vulkan cooperative-matrix config — Portable here (and its
-        // accumulator must be bf16 too, so the whole GEMM stays one tier).
         if (elem->isBFloatTy()) return ImplTier::Portable;
-        // f16/int8 multiplicands and their f32/i32 accumulators are the
-        // advertised native set; an integer accumulator is any width.
         if (elem->isHalfTy() || elem->isFloatTy() || elem->isIntegerTy())
             return ImplTier::Native;
 #endif
         return ImplTier::Portable;
     }
 
-    // A CooperativeMatrix local is an alloca of the opaque tile type. Like the
-    // ray-query types, OpTypeCooperativeMatrixKHR lowers via the BuiltinType
-    // machinery on stock LLVM too, so the TYPE builder is unguarded; only the
-    // OPS need the fork intrinsics.
+    // A CooperativeMatrix local is an alloca of the opaque tile type.
     llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type* elem, uint32_t rows,
                                uint32_t cols, uint32_t use) override {
         return vkCoopMatrixType(m.getContext(), elem, rows, cols, use);
     }
 
 #if CAJETA_HAS_SPV_RAY_QUERY
-    // OpRayQueryInitializeKHR rq, as, rayFlags, cullMask, origin, tMin, dir, tMax.
-    // `as` is overloaded on the intrinsic (the AS handle type); origin/direction
-    // are <3 x float>.
+    // OpRayQueryInitializeKHR rq, as, rayFlags, cullMask, origin, tMin, dir, tMax;
+    // `as` is overloaded on the intrinsic and origin/direction are <3 x float>.
     void rayQueryInitialize(llvm::IRBuilderBase& b, llvm::Module& m,
                             llvm::Value* rqPtr, llvm::Value* asHandle,
                             llvm::Value* rayFlags, llvm::Value* cullMask,
@@ -925,8 +729,7 @@ public:
         b.CreateCall(f, {rqPtr, tHit});
     }
 #else
-    // Stock-LLVM build: the ray-query ops need the fork intrinsics. Unnamed params
-    // (no unused-arg warnings); each throws the clean fork-toolchain diagnostic.
+    // Stock-LLVM build: each ray-query op throws the fork-toolchain diagnostic.
     void rayQueryInitialize(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
                             llvm::Value*, llvm::Value*, llvm::Value*, llvm::Value*,
                             llvm::Value*, llvm::Value*, llvm::Value*) override {
@@ -967,17 +770,9 @@ public:
 #endif
 
 #if CAJETA_HAS_SPV_COOP_MATRIX
-    // ptr may be a StorageBuffer (global Buffer<T>) OR a Workgroup (Shared<T>, LDS)
-    // pointer — both are valid OpCooperativeMatrixLoad/StoreKHR sources. The
-    // Workgroup-source (LDS-staged) path relies on two fork SPIR-V backend fixes:
-    // (1) SPIRVEmitIntrinsics keeps undef non-constant array globals correctly
-    // typed (so the staging copy's dynamic index survives), and (2) the
-    // cooperative-matrix selection access-chains an aggregate pointer to its first
-    // element (so a constant-offset Workgroup tile pointer is a scalar pointer, as
-    // the op requires). See cajeta-llvm/UPSTREAM-PRS.md.
-    //
-    // result = OpCooperativeMatrixLoadKHR ptr layout stride. The intrinsic is
-    // overloaded on (result matrix type, pointer type), in signature order.
+    // result = OpCooperativeMatrixLoadKHR ptr layout stride, overloaded on (result
+    // matrix type, pointer type). ptr may be StorageBuffer or Workgroup (LDS); the
+    // Workgroup path relies on two fork SPIR-V backend fixes.
     llvm::Value* coopMatrixLoad(llvm::IRBuilderBase& b, llvm::Module& m,
                                 llvm::Value* ptr, llvm::Value* layout,
                                 llvm::Value* stride, llvm::Type* matrixType,
@@ -985,10 +780,7 @@ public:
                                 uint32_t /*use*/, uint32_t swz = 0,
                                 LdsBlockPad /*blk*/ = {}) override {
         if (swz) {
-            // U5.3: degrade to identity, don't reject. OpCooperativeMatrixLoadKHR
-            // can't permute per element, but swizzleAddr is already identity on
-            // SPIR-V, so the tile was staged unpermuted — an identity load stays
-            // consistent (correct, just no bank-conflict win).
+            // Degrade to identity rather than reject: the tile was staged unpermuted.
             std::cerr << "note: [swizzle-tier] CooperativeMatrix.load from a "
                          "Swizzled<T,S> tile uses the IDENTITY layout on SPIR-V "
                          "(no per-element coop-matrix swizzle); correct, unaccelerated.\n";
@@ -998,15 +790,13 @@ public:
             {matrixType, ptr->getType()});
         return b.CreateCall(f, {ptr, layout, stride}, "cm.load");
     }
-    // OpCooperativeMatrixStoreKHR ptr matrix layout stride (void; overloaded on
-    // pointer type then matrix type).
+    // OpCooperativeMatrixStoreKHR ptr matrix layout stride (void).
     void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
                          llvm::Value* matrixVal, llvm::Value* layout,
                          llvm::Value* stride, uint32_t /*rows*/, uint32_t /*cols*/,
                          uint32_t /*use*/, uint32_t swz = 0,
                          LdsBlockPad /*blk*/ = {}) override {
         if (swz) {
-            // U5.3: degrade to identity, don't reject (see coopMatrixLoad).
             std::cerr << "note: [swizzle-tier] CooperativeMatrix.store to a "
                          "Swizzled<T,S> tile uses the IDENTITY layout on SPIR-V "
                          "(no per-element coop-matrix swizzle); correct, unaccelerated.\n";
@@ -1016,11 +806,8 @@ public:
             {ptr->getType(), matrixVal->getType()});
         b.CreateCall(f, {ptr, matrixVal, layout, stride});
     }
-    // result = OpCooperativeMatrixMulAddKHR A B C [operands] (overloaded on
-    // result, A, B, C). `signFlags` is the KHR Cooperative Matrix Operands
-    // mask; WITHOUT it integer components multiply as UNSIGNED (signed int8
-    // read -1 as 255 — the shader-tier GEMM wrong-values defect, measured by
-    // VkTileProbe 2026-08-25). Float matmuls pass 0 and no literal is emitted.
+    // result = OpCooperativeMatrixMulAddKHR A B C [operands]. `signFlags` is the KHR
+    // Operands mask; without it integer components multiply as UNSIGNED (-1 reads 255).
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* a, llvm::Value* bMat,
                                   llvm::Value* c, llvm::Type* matrixType,
@@ -1032,8 +819,7 @@ public:
             llvm::Type::getInt32Ty(m.getContext()), signFlags);
         return b.CreateCall(f, {a, bMat, c, flags}, "cm.mma");
     }
-    // result = OpCompositeConstruct value (single-scalar splat; overloaded on
-    // result matrix type then scalar value type).
+    // result = OpCompositeConstruct value (single-scalar splat).
     llvm::Value* coopMatrixSplat(llvm::IRBuilderBase& b, llvm::Module& m,
                                  llvm::Value* value,
                                  llvm::Type* matrixType) override {
@@ -1063,16 +849,12 @@ public:
     }
 #endif
 
-    // A @Device helper's Buffer<T> param is the storage-buffer HANDLE the kernel
-    // holds in bufferBases (not a pointer) — so the helper takes it by value and
-    // bufferElementPtr's getElementPtr path works inside the helper too. writable
-    // matches the kernel's binding (materializeParam binds buffers writable=true).
+    // A @Device helper's Buffer<T> param is the storage-buffer HANDLE, taken by value.
     llvm::Type* bufferParamType(llvm::Module& m, llvm::Type* elemTy) override {
         return vkBufferType(m.getContext(), elemTy, /*writable=*/true);
     }
 
-    // Descriptor-buffer handles route through resource.getpointer; shared-mem
-    // globals (addrspace 3) keep the default GEP.
+    // Descriptor handles route through getpointer; shared-mem globals keep the GEP.
     llvm::Value* bufferElementPtr(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* base, llvm::Type* elemTy,
                                   llvm::Value* index) override {
@@ -1083,18 +865,9 @@ public:
         return b.CreateGEP(elemTy, base, {index}, "idx");
     }
 
-    // SPIR-V uses LOGICAL addressing: a buffer is a runtime array of scalars, so
-    // there is no packed `<N x T>` load from a scalar element pointer (the
-    // default, which the pointer backends use, produces invalid SPIR-V). Build
-    // the vector from per-lane scalar loads through bufferElementPtr
-    // (OpCompositeConstruct via insertelement); the store extracts each lane and
-    // writes it scalar. This is the granular form of the spec's §6.1.4
-    // "split into <=4-component ops" — valid for any width SPIR-V admits.
-    // A Workgroup (shared / addrspace 3) tile is at most 64 KB, so its lane
-    // indices fit i32 — and 64-bit index chains are what stops Mesa folding
-    // the per-lane `+j` into the ds_load/ds_store immediate offset field: the
-    // tiled GEMM's steady state showed `v_add_co + v_lshl + ds_load` per
-    // DWORD (two VALU per LDS op). Truncate once, add in i32 with nuw/nsw.
+    // SPIR-V uses LOGICAL addressing: there is no packed <N x T> load from a scalar
+    // element pointer, so build the vector from per-lane scalar loads. Truncate the
+    // index to i32 once — a 64-bit chain stops Mesa folding +j into the ds_* offset.
     static llvm::Value* laneIndexBase(llvm::IRBuilderBase& b,
                                       llvm::Value* base, llvm::Value* index) {
         bool isShared = base->getType()->isPointerTy()
@@ -1139,13 +912,9 @@ public:
         }
     }
 
-    // bufs[idx] → the idx-th descriptor of the runtime descriptor array bound at
-    // `binding`. handlefrombinding(set 0, binding, range = kMaxBindlessBuffers,
-    // index = nonuniformindex(idx)) yields the per-buffer spirv.VulkanBuffer
-    // handle; the inner [i] then runs through bufferElementPtr (getpointer). The
-    // index is wrapped in resource.nonuniformindex so the descriptor access
-    // carries NonUniformEXT (the index may be per-invocation — required by the
-    // spec and emitted by the fork's selectResourceNonUniformIndex).
+    // bufs[idx] -> the idx-th descriptor of the array bound at `binding`, via
+    // handlefrombinding(set 0, binding, range = kMaxBindlessBuffers, index); the
+    // inner [i] then runs through bufferElementPtr.
     llvm::Value* bufferArrayElement(llvm::IRBuilderBase& b, llvm::Module& m,
                                     llvm::Function* /*fn*/, unsigned binding,
                                     llvm::Value* /*arrayBase*/,
@@ -1154,11 +923,7 @@ public:
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         llvm::TargetExtType* bufTy = vkBufferType(ctx, elemTy, /*writable=*/true);
-        // v1: the descriptor index is treated as DYNAMICALLY UNIFORM (e.g. a loop
-        // counter, the same value across the wave) — so no NonUniformEXT
-        // decoration is needed. resource.nonuniformindex (for a per-invocation
-        // index) is a follow-on. The index is passed directly to
-        // handlefrombinding as the descriptor-array element selector.
+        // v1 treats the descriptor index as DYNAMICALLY UNIFORM: no NonUniformEXT.
         llvm::Value* nameStr = b.CreateGlobalString("bufarr", "xpu.res.bufarr");
         llvm::Function* hfb = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_resource_handlefrombinding, {bufTy});
@@ -1171,13 +936,8 @@ public:
             "bufarr.h");
     }
 
-    // Wave ops via the SPIR-V subgroup intrinsics (→ OpGroupNonUniform*).
-    // SubgroupSize builtin (→ OpLoad of the SubgroupSize builtin) — the sibling
-    // of the SubgroupLocalInvocationId read used by waveLaneId. NOT
-    // spv.wave.get.lane.count, which the SPIR-V backend never wired into isel
-    // ("intrinsic selection not implemented", still true through LLVM 23);
-    // spv.subgroup.size IS selected (loadBuiltinInputID), so Wave.width() now
-    // runs on-device on Vulkan.
+    // Wave ops via the SPIR-V subgroup intrinsics. Use spv.subgroup.size, NOT
+    // spv.wave.get.lane.count, which the backend still never wired into isel.
     llvm::Value* waveWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_subgroup_size);
@@ -1192,9 +952,7 @@ public:
     }
     llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m,
                             llvm::Value* pred) override {
-        // spv.subgroup.ballot (→ OpGroupNonUniformBallot) yields a <4 x i32>
-        // (128-bit) mask; combine the low two lanes (covering up to 64 wave
-        // lanes) into the i64 API value. (Renamed from spv.wave.ballot in LLVM 23.)
+        // spv.subgroup.ballot yields a <4 x i32> mask; its low two lanes make the i64.
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
@@ -1208,7 +966,6 @@ public:
     }
     llvm::Value* waveReduceSum(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* value) override {
-        // spv.wave.reduce.sum → OpGroupNonUniformIAdd with the Reduce operation.
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_wave_reduce_sum,
             {llvm::Type::getInt32Ty(m.getContext())});
@@ -1216,7 +973,6 @@ public:
     }
     llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
                             WaveReduceOp op, llvm::Value* value) override {
-        // The GroupNonUniformArithmetic Reduce family (already Shader-reachable).
         llvm::Intrinsic::ID id;
         switch (op) {
             case WaveReduceOp::Max: id = llvm::Intrinsic::spv_wave_reduce_umax; break;
@@ -1231,9 +987,6 @@ public:
     }
     llvm::Value* waveReduceF32(llvm::IRBuilderBase& b, llvm::Module& m,
                                WaveReduceFOp op, llvm::Value* value) override {
-        // The any-ty spv wave-reduce intrinsics specialize on the operand
-        // type: a float operand selects OpGroupNonUniformF{Add,Max} with the
-        // Reduce group operation (10.12.38).
         llvm::Intrinsic::ID id = op == WaveReduceFOp::Sum
             ? llvm::Intrinsic::spv_wave_reduce_sum
             : llvm::Intrinsic::spv_wave_reduce_max;
@@ -1243,8 +996,6 @@ public:
     }
     llvm::Value* waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
                           WaveScanOp op, llvm::Value* value) override {
-        // The native single-op exclusive scan: spv.wave.prefix.{sum,product} →
-        // OpGroupNonUniform{IAdd,IMul} with the ExclusiveScan group operation.
         llvm::Intrinsic::ID id = op == WaveScanOp::Sum
             ? llvm::Intrinsic::spv_wave_prefix_sum
             : llvm::Intrinsic::spv_wave_prefix_product;
@@ -1253,25 +1004,20 @@ public:
         return b.CreateCall(f, {value}, "wavescan");
     }
     llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
-        // SubgroupLocalInvocationId — this invocation's index within the
-        // subgroup (→ OpLoad of the builtin).
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_subgroup_local_invocation_id);
         return b.CreateCall(f, {}, "laneid");
     }
     llvm::Value* waveRotate(llvm::IRBuilderBase& b, llvm::Module& m,
                             llvm::Value* value, llvm::Value* delta) override {
-        // The native single-instruction rotate: spv.subgroup.rotate (the fork
-        // intrinsic) → OpGroupNonUniformRotateKHR at Subgroup scope. Replaces
-        // the base default's laneId+shuffle arithmetic with the hardware op.
+        // Native single-instruction rotate: spv.subgroup.rotate at Subgroup scope.
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_subgroup_rotate,
             {llvm::Type::getInt32Ty(m.getContext())});
         return b.CreateCall(f, {value, delta}, "waverotate");
     }
 
-    // Quad ops → the fork llvm.spv.quad.* intrinsics → the native quad opcodes,
-    // replacing the base defaults' lane arithmetic with single hardware ops.
+    // Quad ops -> the fork llvm.spv.quad.* intrinsics -> native quad opcodes.
     llvm::Value* quadBroadcast(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* value,
                                llvm::Value* index) override {
@@ -1292,7 +1038,6 @@ public:
 
     llvm::Value* quadAll(llvm::IRBuilderBase& b, llvm::Module& m,
                          llvm::Value* pred) override {
-        // SPV_KHR_quad_control: OpGroupNonUniformQuadAllKHR (i1 -> i1, no scope).
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_quad_all);
         return b.CreateCall(f, {pred}, "quadall");
@@ -1305,9 +1050,8 @@ public:
         return b.CreateCall(f, {pred}, "quadany");
     }
 
-    // Vulkan workgroup arrays need a concrete length and can't be external
-    // imports — emit a concrete internal array; emitSpirv's post-emit pass turns
-    // its length into a spec constant set by the launch's sharedBytes.
+    // Vulkan workgroup arrays need a concrete length: emit an internal array whose
+    // length the post-emit pass turns into a spec constant set by sharedBytes.
     bool dynamicSharedNeedsConcreteSize() const override { return true; }
 
 private:
@@ -1320,15 +1064,8 @@ private:
     }
 };
 
-// Software ray-query variant of the Vulkan target (cajeta-gpu inc-4 brick #3).
-// Builds the AccelerationStructure noun as the portable software BVH, so
-// accelImpl() == SoftwareBvh makes the shared lowerer emit the SoftwareRayQuery
-// walk — ordinary SPIR-V compute (buffer reads + math + control flow), no
-// SPV_KHR_ray_query — instead of native OpRayQuery, and the AS parameter binds as
-// a plain float32 storage buffer (the BVH blob the walk reads as bvh[i]) rather
-// than an OpTypeAccelerationStructureKHR descriptor. Everything else is
-// SpirvTarget. Used for the "<name>$sw" kernel variant the launch selects when an
-// AccelerationStructure was built as a software BVH on the Vulkan backend.
+// Software ray-query variant: the AccelerationStructure is a software BVH bound
+// as a plain float32 storage buffer, so the lowerer emits the portable walk.
 class SpirvSoftwareTarget : public SpirvTarget {
 public:
     NounImpl accelImpl() const override { return NounImpl::SoftwareBvh; }
@@ -1347,17 +1084,9 @@ public:
     }
 };
 
-// The graphics fork of SpirvTarget (cajeta-gfx §4.b): lowers a @Vertex/@Fragment
-// shader instead of a compute kernel. It reuses the entire SpirvTarget body walk
-// (math, control flow, buffers) and forks only the pipeline interface:
-//   - createKernel → `void main()` with the STAGE's hlsl.shader attr (no
-//     numthreads — graphics has no workgroup).
-//   - materializeParam → each non-resource param is a stage INPUT interface
-//     variable (a Location-N global), loaded by value; resource params
-//     (buffers/textures) still bind as descriptors via SpirvTarget.
-//   - the `return` value is stored into an OUTPUT interface variable
-//     (shaderOutputReturn / storeShaderOutput): BuiltIn Position for a vertex
-//     stage, a Location-0 color for a fragment stage.
+// The graphics fork of SpirvTarget: it reuses the whole body walk and forks only
+// the pipeline interface — `void main()` with the stage's shader attr, params as
+// Input interface variables, and the return stored to an Output variable.
 class SpirvGraphicsTarget : public SpirvTarget {
 public:
     explicit SpirvGraphicsTarget(ShaderStage stage) : stage_(stage) {}
@@ -1378,12 +1107,8 @@ public:
     llvm::Value* materializeParam(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Function* fn, unsigned idx,
                                   const KernelParam& p) override {
-        // A @PushConstant param: read its member from the stage's single push-
-        // constant block (GEP into the struct global + load). The fork's
-        // SPIRVPushConstantAccess pass rewrites the global access into an
-        // OpAccessChain on the laid-out PushConstant Block. All @PushConstant
-        // params share one block (Vulkan permits exactly one per stage) — see
-        // buildPushConstantBlock.
+        // A @PushConstant param reads its member from the stage's single push-constant
+        // block; the fork's SPIRVPushConstantAccess pass rewrites the global access.
         if (p.isPushConstant && pcGlobal_ && idx < pcMemberOf_.size() &&
             pcMemberOf_[idx] >= 0) {
             llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
@@ -1394,14 +1119,10 @@ public:
                 p.name + ".pc");
             return b.CreateLoad(p.type, member, p.name);
         }
-        // Resource params (buffers/textures/images/samplers/accel structs) still
-        // bind as descriptors — only plain value inputs become interface vars.
         if (p.isBuffer || p.isTexture || p.isImage || p.isSampler ||
             p.isAccelStruct) {
             return SpirvTarget::materializeParam(b, m, fn, idx, p);
         }
-        // A stage input: a Location-N Input interface variable, loaded by value
-        // (the body lowerer stores it into the param's mutable slot).
         llvm::GlobalVariable* in = createLocationVar(
             m, p.type, InterfaceStorage::Input, nextInputLocation_++, p.name);
         return b.CreateLoad(p.type, in, p.name);
@@ -1411,11 +1132,7 @@ public:
 
     void storeShaderOutput(llvm::IRBuilderBase& b, llvm::Module& m,
                            llvm::Function* /*fn*/, llvm::Value* value) override {
-        // Multi-output (cajeta-gfx §4.b-rest B-2): a @ValueType STRUCT return is
-        // one output per field — the shader's outputs/varyings. Positional mapping:
-        // vertex field 0 → BuiltIn Position, fields 1.. → sequential Location
-        // varyings; fragment (& others) every field → a sequential Location color
-        // target. A single scalar/vector return is the one-field case.
+        // A @ValueType STRUCT return is one output per field, mapped positionally.
         if (auto* st = llvm::dyn_cast<llvm::StructType>(value->getType())) {
             for (unsigned i = 0; i < st->getNumElements(); ++i) {
                 llvm::Value* field = b.CreateExtractValue(value, i, "out.field");
@@ -1427,12 +1144,8 @@ public:
     }
 
 private:
-    // Collect every @PushConstant param into ONE struct-typed global in the
-    // PushConstant address space (Vulkan allows exactly one push-constant block per
-    // stage). pcMemberOf_[i] is the struct-member index of param i (or -1 if param
-    // i is not a push constant), so materializeParam can GEP the right field. Called
-    // once from createKernel, which receives the full param list before the body
-    // lowerer materializes any param.
+    // Collect every @PushConstant param into ONE struct global in the PushConstant
+    // address space (one block per stage); pcMemberOf_[i] is param i's member index.
     void buildPushConstantBlock(llvm::Module& m,
                                 const std::vector<KernelParam>& params) {
         pcMemberOf_.assign(params.size(), -1);
@@ -1449,12 +1162,7 @@ private:
         pcGlobal_ = createPushConstantBlock(m, pcStructTy_, "cajeta_pc");
     }
 
-    // The Output interface variable for output `index` (a struct field, or the
-    // sole output), created+cached on first use. Vertex field 0 is BuiltIn
-    // Position; every other output is a sequential Location (vertex varyings begin
-    // at Location 0 for field 1; fragment color targets begin at Location 0 for
-    // field 0). The vertex varying Location and the matching fragment input
-    // Location line up positionally (fragment inputs count up from 0 too).
+    // The Output interface variable for output `index`, created on first use.
     llvm::GlobalVariable* shaderOutputVar(llvm::Module& m, unsigned index,
                                           llvm::Type* ty) {
         if (outputVars_.size() <= index) outputVars_.resize(index + 1, nullptr);
@@ -1475,7 +1183,6 @@ private:
     ShaderStage stage_;
     unsigned nextInputLocation_ = 0;
     std::vector<llvm::GlobalVariable*> outputVars_;
-    // The stage's single push-constant block (null when no @PushConstant params).
     llvm::StructType* pcStructTy_ = nullptr;
     llvm::GlobalVariable* pcGlobal_ = nullptr;
     std::vector<int> pcMemberOf_;

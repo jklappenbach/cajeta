@@ -17,9 +17,7 @@ namespace cajeta::kernel {
         KernelTransport* g_transport = nullptr;
 
         void onSignal(int) {
-            // Async-signal-safe enough: stop() sets an atomic and closes a
-            // queue. No allocation, no locking beyond a mutex the loop holds
-            // only briefly.
+            // Async-signal-safe enough: stop() sets an atomic and closes a queue.
             if (g_transport) g_transport->stop();
         }
 
@@ -34,9 +32,6 @@ namespace cajeta::kernel {
         }
 
         std::filesystem::path runtimeDir() {
-            // Where Jupyter itself looks for connection files, so a
-            // hand-started kernel is discoverable by `jupyter console
-            // --existing`.
             if (const char* runtime = std::getenv("JUPYTER_RUNTIME_DIR")) {
                 return std::filesystem::path(runtime);
             }
@@ -54,8 +49,7 @@ namespace cajeta::kernel {
         argv.push_back(executable);
         argv.push_back("kernel");
         argv.push_back("-f");
-        // Jupyter substitutes the real path for this token when it launches
-        // the kernel. It is a literal, not a placeholder we fill in.
+        // Jupyter substitutes the real path for this token; it is a literal, not a placeholder to fill in.
         argv.push_back("{connection_file}");
 
         dap::Json spec = dap::Json::object();
@@ -115,8 +109,6 @@ namespace cajeta::kernel {
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (matchOption(arg, "connection-file", &connectionFile)) continue;
-            // Jupyter's kernelspec launches with `-f <path>`; supporting only
-            // the long form would mean no frontend could start us.
             if ((arg == "-f" || arg == "--connection-file") && i + 1 < argc) {
                 connectionFile = argv[++i];
                 continue;
@@ -146,9 +138,7 @@ namespace cajeta::kernel {
                 return 1;
             }
         } else {
-            // Every port left at 0 — bind() asks the OS and writes back what
-            // it got, so the file we print names ports that are actually
-            // listening rather than ones we guessed were free.
+            // Every port is left at 0: bind() asks the OS and writes back what it got, so the printed file is accurate.
             info.key = newUuid();
         }
 
@@ -184,8 +174,7 @@ namespace cajeta::kernel {
         int code = transport.run();
 
         g_transport = nullptr;
-        // A connection file WE created is ours to remove; one the frontend
-        // wrote belongs to the frontend, which cleans up its own runtime dir.
+        // A connection file WE created is ours to remove; one the frontend wrote is the frontend's.
         if (generated && !connectionFile.empty()) {
             std::error_code ec;
             std::filesystem::remove(connectionFile, ec);

@@ -1,21 +1,8 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
 // --- CUDA texture / surface runtime (Texture2D + Image2D) -------------------
-// The AMD/Vulkan parity gap, now wired for the NVPTX path. A Texture2D is a
-// CUDA array (cuArrayCreate) whose handle is a pointer to a cajeta_cuda_tex
-// record; the CUtexObject (which carries the image+sampler state the kernel's
-// tex.unified.2d reads) is built per launch in cajeta_xpu_launch_cuda from the
-// array + the paired Sampler's modes. Image2D is the writable twin: a CUDA
-// array bound as a CUsurfObject (no sampler) the kernel writes via sust.b.2d.
-//
-// The driver structs are mirrored here byte-exact (cuda.h is not on the include
-// path); the entry points are dlsym'd (cuArrayCreate_v2 etc.). Scope matches the
-// NVPTX lowering (NvptxKernelLowering): 2-D, float/unorm/half formats sampled to
-// v4f32 (integer textures need the v4s32 intrinsic — not lowered), R32F surface
-// images. 1-D/3-D/array/cube and mipmaps are follow-ons.
+// A Texture2D is a CUDA array behind a cajeta_cuda_tex record; driver structs are mirrored byte-exact.
 
-// CUarray_format (cuda.h). Integer textures aren't supported by the NVPTX v4f32
-// sample path, so only UNSIGNED_INT8 (UNORM), HALF and FLOAT are produced here.
+// CUarray_format: only the formats the NVPTX v4f32 sample path admits.
 enum {
     CAJ_CU_AD_FORMAT_UNSIGNED_INT8  = 0x01,
     CAJ_CU_AD_FORMAT_HALF           = 0x10,
@@ -99,8 +86,7 @@ static int cajeta_cu_surf_supported(void) {
            g_xpu_cuda.cuArrayDestroy;
 }
 
-// cajeta TextureFormat → CUarray_format. Integer formats return 0 (unsupported
-// by the v4f32 NVPTX sample path; the caller skips them).
+// Maps a cajeta TextureFormat to a CUarray_format; integer formats return 0.
 static unsigned int cajeta_cu_array_format(int32_t fmt) {
     if (cajeta_texfmt_is_integer(fmt)) return 0;       // not supported on NVPTX
     if (cajeta_texfmt_is_unorm(fmt))   return CAJ_CU_AD_FORMAT_UNSIGNED_INT8;
@@ -126,9 +112,7 @@ static int64_t cajeta_xpu_cuda_tex_alloc(uint32_t w, uint32_t h, int32_t format)
     return (int64_t) (intptr_t) t;
 }
 
-// Upload host floats into the CUDA array, quantizing/converting to the array's
-// stored type so the device read matches the CPU oracle (UNORM→u8, HALF→f16,
-// FLOAT→f32). `src` is channel-interleaved floats (channels per texel).
+// Uploads interleaved host floats, converting to the array's stored type.
 static void cajeta_xpu_cuda_tex_upload(int64_t handle, const float* src,
                                        uint32_t w, uint32_t h, int32_t format) {
     struct cajeta_cuda_tex* t = (struct cajeta_cuda_tex*) (intptr_t) handle;
@@ -173,9 +157,7 @@ static void cajeta_xpu_cuda_tex_free(int64_t handle) {
     free(t);
 }
 
-// Image2D storage image: an R32F CUDA array bound per launch as a CUsurfObject.
-// Driver-API CUDA arrays are surface-capable directly (no special create flag,
-// unlike the runtime API's cudaArraySurfaceLoadStore).
+// Allocates an Image2D: an R32F CUDA array, surface-capable with no create flag.
 static int64_t cajeta_xpu_cuda_image_alloc(uint32_t w, uint32_t h) {
     if (!cajeta_cu_surf_supported() || w == 0 || h == 0) return 0;
     caj_cu_array_desc ad;
@@ -211,10 +193,7 @@ static void cajeta_xpu_cuda_image_free(int64_t handle) {
     cajeta_xpu_cuda_tex_free(handle);   // same record shape
 }
 
-// Build a CUtexObject from a texture record + the bound Sampler's modes. Returns
-// the u64 handle (0 on failure). NORMALIZED_COORDINATES matches the NVPTX
-// tex.unified.2d normalized (u,v); UNORM reads back as normalized float (no
-// READ_AS_INTEGER).
+// Builds a CUtexObject from a record and the Sampler's modes; the handle, or 0.
 static unsigned long long cajeta_xpu_cuda_make_texobj(int64_t handle,
                                                       int32_t filterMode,
                                                       int32_t addressMode) {
@@ -251,9 +230,8 @@ static unsigned long long cajeta_xpu_cuda_make_surfobj(int64_t handle) {
     return obj;
 }
 
-// __cajeta_xpu_texture_alloc(this, width, height) -> int64 handle.
-// Instance @Native (the Buffer convention): the leading `self` is the cajeta
-// `this`, ignored — the device side is keyed on the returned handle.
+// Allocates a Texture2D on the active backend. As in every @Native entry point
+// here, `self` is the cajeta `this`: ignored, the handle keys the device side.
 int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height,
                                    int32_t format) {
     (void) self;
@@ -271,8 +249,6 @@ int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height,
             t->channels = channels;
             t->levels = 1;       // no mipmaps; level 0 at offset 0
             t->mipoff[0] = 0; t->mipw[0] = width; t->miph[0] = height;
-            // CPU stores DECODED channel-interleaved floats (channels per texel);
-            // UNORM precision is emulated at upload, so the sampler is float-only.
             t->data = (float*) calloc((size_t) width * height * channels,
                                       sizeof(float));
             if (!t->data) { free(t); return 0; }
@@ -288,15 +264,12 @@ int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height,
     }
 }
 
-// __cajeta_xpu_texture_upload(this, handle, host, width, height).
-// `host` is a Cajeta float32[] header — { i64 count, [count x f32] data } — so
-// the texels start at offset 8 (matches __cajeta_xpu_buffer_upload).
+// Uploads a Texture2D. As in every upload/download here, `host` is a cajeta
+// float32[] header, so its interleaved texels start at offset 8.
 void __cajeta_xpu_texture_upload(void* self, int64_t handle, void* host,
                                  uint32_t width, uint32_t height, int32_t format) {
     (void) self;
     if (!handle || !host || width == 0 || height == 0) return;
-    // `host` is a cajeta float32[] header { i64 count, [count x f32] } — the
-    // channel-interleaved float texels (R, or R,G,B,A per texel) start at offset 8.
     const float* src = (const float*) ((const char*) host + 8);
     size_t texels = (size_t) width * height * cajeta_texfmt_channels(format);
     switch (cajeta_xpu_active_backend()) {
@@ -304,14 +277,11 @@ void __cajeta_xpu_texture_upload(void* self, int64_t handle, void* host,
             struct cajeta_cpu_texobj* t =
                 (struct cajeta_cpu_texobj*) (intptr_t) handle;
             if (!t->data) return;
+            // The CPU store emulates the device's storage precision exactly.
             if (cajeta_texfmt_is_unorm(format)) {
-                // Emulate the device's 256-level UNORM quantization on the CPU so
-                // both paths agree bit-for-bit on exactly-representable values.
                 for (size_t i = 0; i < texels; ++i)
                     t->data[i] = (float) cajeta_texfmt_unorm8(src[i]) / 255.0f;
             } else if (cajeta_texfmt_is_half(format)) {
-                // Emulate binary16 storage precision (round-trip through f16) so
-                // the CPU path matches the device's half rounding.
                 for (size_t i = 0; i < texels; ++i)
                     t->data[i] = cajeta_f16_to_f32(cajeta_f32_to_f16(src[i]));
             } else {
@@ -351,12 +321,7 @@ void __cajeta_xpu_texture_free(void* self, int64_t handle) {
 }
 
 // --- Mipmapped Texture2D ----------------------------------------------------
-// A mip chain: level 0 = w x h, level L = max(1, w>>L) x max(1, h>>L). The CPU
-// stores all levels in one buffer with per-level offsets (level 0 at offset 0, so
-// the non-mip read path is unchanged). Vulkan/HIP mip paths land in later
-// increments (default = 1-level fallback so the drop chain still works).
-
-// __cajeta_xpu_texture_alloc_mip(this, w, h, format, levels) -> handle.
+// Level L is max(1, w>>L) x max(1, h>>L), stored at mipoff[L] of one buffer.
 int64_t __cajeta_xpu_texture_alloc_mip(void* self, uint32_t width, uint32_t height,
                                        int32_t format, uint32_t levels) {
     (void) self;
@@ -371,7 +336,6 @@ int64_t __cajeta_xpu_texture_alloc_mip(void* self, uint32_t width, uint32_t heig
             t->w = width; t->h = height; t->d = 1;
             t->format = format; t->channels = channels;
             t->levels = (int) levels;
-            // Lay the mip levels out back-to-back; record each offset + dims.
             size_t off = 0;
             for (uint32_t l = 0; l < levels; ++l) {
                 uint32_t lw = width >> l;  if (lw == 0) lw = 1;
@@ -385,8 +349,6 @@ int64_t __cajeta_xpu_texture_alloc_mip(void* self, uint32_t width, uint32_t heig
             return (int64_t) (intptr_t) t;
         }
         case CAJ_XPU_VULKAN:
-            // A sampled 2-D image with `levels` mip levels; per-level texels are
-            // staged by __cajeta_xpu_texture_upload_level.
             return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 2, 1, levels);
         case CAJ_XPU_HIP:
             return cajeta_xpu_hip_tex_alloc_mip(width, height, format, levels);
@@ -394,7 +356,6 @@ int64_t __cajeta_xpu_texture_alloc_mip(void* self, uint32_t width, uint32_t heig
     }
 }
 
-// __cajeta_xpu_texture_upload_level(this, handle, host, lw, lh, level, format).
 void __cajeta_xpu_texture_upload_level(void* self, int64_t handle, void* host,
                                        uint32_t lw, uint32_t lh, uint32_t level,
                                        int32_t format) {
@@ -430,13 +391,8 @@ void __cajeta_xpu_texture_upload_level(void* self, int64_t handle, void* host,
 }
 
 // --- Texture3D (3-D / volumetric textures) ----------------------------------
-// The volumetric sibling of Texture2D. Distinct __cajeta_xpu_texture3d_* symbols
-// because the 2-D vs 3-D image type (VK_IMAGE_TYPE_3D, hipMalloc3DArray) is fixed
-// at allocation. CPU stores a w*h*d*channels DECODED-float volume (row-major: x
-// fastest, then y, then z). Vulkan/HIP 3-D image paths land in later increments
-// (default = no-op / 0 until then, so the cajeta drop chain still works).
-
-// __cajeta_xpu_texture3d_alloc(this, width, height, depth, format) -> handle.
+// Separate symbols because the image type is fixed at allocation; the CPU
+// volume is row-major, x fastest, then y, then z.
 int64_t __cajeta_xpu_texture3d_alloc(void* self, uint32_t width, uint32_t height,
                                      uint32_t depth, int32_t format) {
     (void) self;
@@ -467,7 +423,6 @@ int64_t __cajeta_xpu_texture3d_alloc(void* self, uint32_t width, uint32_t height
     }
 }
 
-// __cajeta_xpu_texture3d_upload(this, handle, host, width, height, depth, format).
 void __cajeta_xpu_texture3d_upload(void* self, int64_t handle, void* host,
                                    uint32_t width, uint32_t height, uint32_t depth,
                                    int32_t format) {
@@ -492,8 +447,8 @@ void __cajeta_xpu_texture3d_upload(void* self, int64_t handle, void* host,
             return;
         }
         case CAJ_XPU_VULKAN:
-            // cajeta_xpu_vk_tex_upload reads the depth from the texture record,
-            // so the 2-D upload path covers 3-D images unchanged.
+            // The Vulkan upload reads depth from the record, so the 2-D path
+            // covers 3-D images unchanged.
             cajeta_xpu_vk_tex_upload(handle, src, width, height, format);
             return;
         case CAJ_XPU_HIP:
@@ -522,13 +477,7 @@ void __cajeta_xpu_texture3d_free(void* self, int64_t handle) {
 }
 
 // --- Texture1D (read-only 1-D images) ---------------------------------------
-// Texture1D is the linear sibling of Texture2D/Texture3D: a single (width) row.
-// On the CPU it is exactly a 2-D texobj with height = 1, so the alloc/upload
-// below build that shape and every CPU read reuses the 2-D sample/fetch path
-// (the 2-D bilinear collapses to a 1-D lerp when there is one row). Vulkan/HIP
-// are stubbed for 3a and wired in 3b/3c.
-
-// __cajeta_xpu_texture1d_alloc(this, width, format) -> handle.
+// On the CPU a 1-D texture IS a height-1 2-D texobj, so reads reuse that path.
 int64_t __cajeta_xpu_texture1d_alloc(void* self, uint32_t width, int32_t format) {
     (void) self;
     if (width == 0) return 0;
@@ -550,14 +499,12 @@ int64_t __cajeta_xpu_texture1d_alloc(void* self, uint32_t width, int32_t format)
             return (int64_t) (intptr_t) t;
         }
         case CAJ_XPU_VULKAN:
-            // A 1-D sampled image (height = depth = 1, no mips).
             return cajeta_xpu_vk_tex_alloc(width, 1, 0, format, 1, 1, 1, 1);
         case CAJ_XPU_HIP:    return cajeta_xpu_hip_tex1d_alloc(width, format);
         default: return 0;
     }
 }
 
-// __cajeta_xpu_texture1d_upload(this, handle, host, width, format).
 void __cajeta_xpu_texture1d_upload(void* self, int64_t handle, void* host,
                                    uint32_t width, int32_t format) {
     (void) self;
@@ -581,11 +528,9 @@ void __cajeta_xpu_texture1d_upload(void* self, int64_t handle, void* host,
             return;
         }
         case CAJ_XPU_VULKAN:
-            // A 1-D image is height 1; the upload reads depth (= 1) from the record.
             cajeta_xpu_vk_tex_upload(handle, src, width, 1, format);
             return;
         case CAJ_XPU_HIP:
-            // A 1-D hipArray is a height-1 2-D copy — reuse the 2-D upload.
             cajeta_xpu_hip_tex_upload(handle, src, width, 1, format);
             return;
         default: return;
@@ -611,13 +556,7 @@ void __cajeta_xpu_texture1d_free(void* self, int64_t handle) {
 }
 
 // --- Texture2DArray (read-only layered 2-D images) --------------------------
-// A 2-D array is N (width, height) planes. On the CPU it is a cajeta_cpu_texobj
-// whose `d` field is the layer count and whose storage is laid out exactly like
-// a 3-D volume's z slices (so the CPU fetch reuses the 3-D path with z = layer,
-// and sample bilinearly filters within one layer). Vulkan/HIP layered images are
-// wired in A2/A3.
-
-// __cajeta_xpu_texture2darray_alloc(this, width, height, layers, format) -> handle.
+// On the CPU the layers ARE a volume's z slices, `d` holding the layer count.
 int64_t __cajeta_xpu_texture2darray_alloc(void* self, uint32_t width,
                                           uint32_t height, uint32_t layers,
                                           int32_t format) {
@@ -642,7 +581,6 @@ int64_t __cajeta_xpu_texture2darray_alloc(void* self, uint32_t width,
             return (int64_t) (intptr_t) t;
         }
         case CAJ_XPU_VULKAN:
-            // A layered 2-D sampled image: imageKind 4, arrayLayers = layers.
             return cajeta_xpu_vk_tex_alloc(width, height, 0, format, 1, 4, layers, 1);
         case CAJ_XPU_HIP:
             return cajeta_xpu_hip_tex2darray_alloc(width, height, layers, format);
@@ -650,7 +588,6 @@ int64_t __cajeta_xpu_texture2darray_alloc(void* self, uint32_t width,
     }
 }
 
-// __cajeta_xpu_texture2darray_upload(this, handle, host, width, height, layers, format).
 void __cajeta_xpu_texture2darray_upload(void* self, int64_t handle, void* host,
                                         uint32_t width, uint32_t height,
                                         uint32_t layers, int32_t format) {
@@ -676,12 +613,9 @@ void __cajeta_xpu_texture2darray_upload(void* self, int64_t handle, void* host,
             return;
         }
         case CAJ_XPU_VULKAN:
-            // The layered image carries its planes in array layers; the upload
-            // reads layer count + layered flag from the texture record.
             cajeta_xpu_vk_tex_upload(handle, src, width, height, format);
             return;
         case CAJ_XPU_HIP:
-            // A layered hipArray's memcpy3D copies all layers with d = layers.
             cajeta_xpu_hip_tex3d_upload(handle, src, width, height, layers, format);
             return;
         default: return;
@@ -707,12 +641,7 @@ void __cajeta_xpu_texture2darray_free(void* self, int64_t handle) {
 }
 
 // --- TextureCube (read-only cube maps, 6 faces) -----------------------------
-// A cube is 6 square faces in +X,-X,+Y,-Y,+Z,-Z order. On the CPU it is a
-// cajeta_cpu_texobj whose `d` is 6 (the faces are the z slices), so the CPU
-// sampler reuses the volume storage + does the direction→face projection.
-// Vulkan/HIP cube images are wired in B2/B3.
-
-// __cajeta_xpu_texturecube_alloc(this, size, format) -> handle.
+// The 6 faces are z slices in +X,-X,+Y,-Y,+Z,-Z order; the CPU sampler projects.
 int64_t __cajeta_xpu_texturecube_alloc(void* self, uint32_t size, int32_t format) {
     (void) self;
     if (size == 0) return 0;
@@ -735,14 +664,12 @@ int64_t __cajeta_xpu_texturecube_alloc(void* self, uint32_t size, int32_t format
             return (int64_t) (intptr_t) t;
         }
         case CAJ_XPU_VULKAN:
-            // A CUBE_COMPATIBLE 2-D image with 6 array layers (the faces).
             return cajeta_xpu_vk_tex_alloc(size, size, 0, format, 1, 5, 6, 1);
         case CAJ_XPU_HIP:    return cajeta_xpu_hip_texcube_alloc(size, format);
         default: return 0;
     }
 }
 
-// __cajeta_xpu_texturecube_upload(this, handle, host, size, format).
 void __cajeta_xpu_texturecube_upload(void* self, int64_t handle, void* host,
                                      uint32_t size, int32_t format) {
     (void) self;
@@ -766,12 +693,9 @@ void __cajeta_xpu_texturecube_upload(void* self, int64_t handle, void* host,
             return;
         }
         case CAJ_XPU_VULKAN:
-            // The 6 faces are the image's 6 array layers; the upload reads the
-            // layer count + layered flag from the texture record (layers = 6).
             cajeta_xpu_vk_tex_upload(handle, src, size, size, format);
             return;
         case CAJ_XPU_HIP:
-            // A cubemap hipArray's memcpy3D copies all 6 faces with d = 6.
             cajeta_xpu_hip_tex3d_upload(handle, src, size, size, 6, format);
             return;
         default: return;
@@ -797,15 +721,10 @@ void __cajeta_xpu_texturecube_free(void* self, int64_t handle) {
 }
 
 // --- Image2D (writable storage images) --------------------------------------
-// Image2D is the writable twin of Texture2D: a 2-D R32_SFLOAT storage image a
-// kernel writes via `img.store(x, y, value)` (OpImageWrite), and the host reads
-// back with `img.download(out)`. Vulkan (storage image), AMD (surface object),
-// and CPU (the reference host float store); NV returns 0 / no-op so the cajeta
-// drop chain still works. The handle is a backend-specific record/index.
+// A 2-D R32_SFLOAT image a kernel writes and the host downloads; the handle is
+// a backend-specific record or index.
 
-// CPU Image2D: the in-process reference store — a flat R32f host float array in a
-// cajeta_cpu_texobj (channels=1), the writable twin of the CPU texture path. The
-// device kernel writes/reads it via __cajeta_xpu_cpu_image_store/_load below.
+// The CPU reference store: a flat R32f host float array in a cajeta_cpu_texobj.
 static int64_t cajeta_xpu_cpu_image_alloc(uint32_t w, uint32_t h) {
     struct cajeta_cpu_texobj* t =
         (struct cajeta_cpu_texobj*) malloc(sizeof(*t));
@@ -832,7 +751,6 @@ static void cajeta_xpu_cpu_image_free(int64_t handle) {
     free(t);
 }
 
-// __cajeta_xpu_image_alloc(this, width, height) -> int64 handle.
 int64_t __cajeta_xpu_image_alloc(void* self, uint32_t width, uint32_t height) {
     (void) self;
     if (width == 0 || height == 0) return 0;
@@ -849,9 +767,7 @@ int64_t __cajeta_xpu_image_alloc(void* self, uint32_t width, uint32_t height) {
     }
 }
 
-// __cajeta_xpu_image_download(this, handle, host, width, height).
-// `host` is a Cajeta float32[] header — { i64 count, [count x f32] data } — so
-// the texels land at offset 8 (matches __cajeta_xpu_texture_upload in reverse).
+// Reads an Image2D back into the `host` float32[] header, texels at offset 8.
 void __cajeta_xpu_image_download(void* self, int64_t handle, void* host,
                                  uint32_t width, uint32_t height) {
     (void) self;
@@ -886,8 +802,7 @@ void __cajeta_xpu_image_free(void* self, int64_t handle) {
     }
 }
 
-// Portable software BVH builder + layout (the software AccelerationStructure
-// noun). Self-contained pure C, also compiled directly by the builder unit test.
+// The software AccelerationStructure noun; also compiled by its own unit test.
 #include "cajeta_bvh.c"
 
 // --- Noun seam: the resource-provider SPI (cajeta-gpu inc-4 brick #2) --------

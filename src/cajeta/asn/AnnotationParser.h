@@ -1,16 +1,6 @@
-//
-// Shared annotation-instance parsing (REFL-6b).
-//
-// Builds a typed AnnotationInstance (name + captured argument values) from an
-// ANTLR annotation context. Extracted from CajetaLlvmVisitor so the formal-
-// parameter parse path (FormalParameter::fromContext) can capture parameter
-// annotation ARGUMENTS too — previously parameters recorded annotation names
-// only, leaving their reflective #AnnotationDesc rows with argCount 0.
-//
-// The class-body walk (class/field/method/constructor annotations) and the
-// parameter path now share this one implementation, so all owners capture the
-// same argument shapes (scalars, class literals, and *List array forms).
-//
+// Shared annotation-instance parsing: builds a typed AnnotationInstance (name +
+// captured argument values) from an ANTLR annotation context, so the class-body
+// walk and the formal-parameter path capture identical argument shapes.
 
 #pragma once
 
@@ -19,11 +9,9 @@
 
 namespace cajeta {
 
-    // Build an AnnotationInstance from an ANTLR annotation context. Walks
-    // elementValuePairs (`name = value, ...`) or a single bare elementValue
-    // (the unnamed-arg form, stored with name="" and looked up as "value").
-    // Array initializers map to *List kinds (dominant-kind rule). Returns
-    // nullptr when `ann` is null or yields no resolvable name.
+    // Builds an AnnotationInstance from `ann`. Walks elementValuePairs, or a single
+    // bare elementValue (the unnamed form, stored as name="" and read as "value");
+    // array initializers map to *List kinds. Null when `ann` yields no name.
     AnnotationInstancePtr parseAnnotationInstance(CajetaParser::AnnotationContext* ann);
 
 } // namespace cajeta

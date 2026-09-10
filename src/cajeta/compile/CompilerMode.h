@@ -1,18 +1,6 @@
-//
-// CompilerMode + per-feature toggle struct.
-//
-// Spec: docs/CompilerModes.md. The flavor flags (`--debug`, `--release`,
-// `--fast`, `--debug-release`, `--minimal`) on the CLI expand into a
-// CompilerFlags struct, which holds one field per toggleable feature. Per-
-// feature CLI overrides (`--bounds=on`, `--source-tags=on`, etc.) override
-// the flavor default after expansion.
-//
-// Adding a new feature:
-//   1. Add an entry to the relevant enum below (or a new bool field).
-//   2. Add a default for each CompilerMode in CompilerFlags::defaultsForMode.
-//   3. Add CLI parsing in src/main.cpp (mirror the --bounds= pattern).
-//   4. Consume from CajetaModule::getFlags() at the codegen site.
-//
+// CompilerMode and the per-feature toggle struct (docs/CompilerModes.md): a flavor flag
+// expands into CompilerFlags, one field per feature, and the per-feature CLI overrides
+// (`--bounds=on`, ...) are applied after that expansion.
 
 #pragma once
 
@@ -58,63 +46,32 @@ namespace cajeta {
         Verbose,        // code samples + suggested fixes + doc URLs
     };
 
-    // Compiler-diagnostic output format (the `--diag-format` flag; docs/
-    // CompilerModes.md § --diag-format). Text: human-readable stderr (the
-    // unchanged default). Json: one NDJSON diagnostic object per line on stderr
-    // for machine consumers (the IntelliJ plugin, the build tool) so they parse
-    // structured diagnostics instead of regex-scraping free text.
+    // --diag-format. Text is human-readable stderr; Json is one NDJSON object per line
+    // for the plugin and build tool to parse instead of scraping free text.
     enum class DiagFormat { Text, Json };
 
-    // LLVM IR optimization level for generated user code (the `--opt` flag).
-    // Cajeta historically ran NO IR optimization on user code (only codegen);
-    // O0 preserves that. O2/O3 run the full per-module pipeline (incl.
-    // LoopVectorize + SLP). Applies to --emit=obj/exe; see compile/Optimizer.h.
+    // --opt, the IR optimization level for user code on --emit=obj/exe: O0 runs none, as
+    // cajeta always did; O2 and O3 run the full per-module pipeline.
     enum class OptLevel { O0, O1, O2, O3 };
 
-    // Link-time optimization policy (the `--lto` flag). Off: each module is
-    // compiled to a native object and linked — no cross-module inlining (a
-    // stdlib-hot-path method can never inline into user code). Thin: each module
-    // is emitted as ThinLTO bitcode + summary and the cross-module import +
-    // backend runs at link, so e.g. `@Inline` `ArrayList.add` folds into a user
-    // append loop. Full reserved (monolithic LTO) — not yet wired; treated as
-    // Thin. ThinLTO uses the fork's version-matched lld (system lld may differ).
+    // --lto. Off links native objects with no cross-module inlining; Thin emits ThinLTO
+    // bitcode so an `@Inline` stdlib method folds into user code. Full is treated as Thin.
     enum class LtoMode { Off, Thin, Full };
 
-    // Lean linker / DCE policy (the `--link-mode` flag; plans/compiler/
-    // lean-linker-dce.md). Full keeps every class's reflection registration
-    // ctor (today's behavior — keep-everything, defeats --gc-sections); Lean
-    // emits a class's registration ctor only when the class is in the generated
-    // keep-set, so unkept classes lose their llvm.global_ctors anchor and
-    // section-GC strips them. Lean is the intended default for --emit=exe (set
-    // in Compiler from emitMode, not from CompilerMode); Full is the default
-    // everywhere else (JIT/obj/cja) and the `--link-mode=full` / `--keep-all`
-    // opt-out. Step 0a wires the toggle + the gate with a keep-all keep-set
-    // (inert); 0b narrows it via the reachability BFS.
+    // --link-mode. Full keeps every class's registration ctor, defeating --gc-sections;
+    // Lean emits one only for a kept class, so section-GC strips the rest.
     enum class LinkMode { Full, Lean };
 
-    // --tree-shake (Tier-1 RTA; plans/compiler/stdlib-tree-shaking.md). Report is
-    // Phase A (analysis only); On is Phase B (prune unreachable cajeta method
-    // bodies so the linker drops their native deps, e.g. OpenSSL). Default Off.
+    // --tree-shake. Report analyses only; On prunes unreachable method bodies so the
+    // linker can drop their native dependencies.
     enum class TreeShake { Off, Report, On };
 
-    // --debug-info=off|line|full (specs/external-debug-spec.md §2). One switch
-    // over the two independent codegen toggles below it:
-    //   Off  — nothing: no shadow stack, no safepoints, no local records.
-    //   Line — the shadow stack + #FrameDesc only, so a captured trace still
-    //          resolves to Type.method(File.cajeta:NN). Cheapest useful level,
-    //          and the default.
-    //   Full — adds __cajeta_dbg_safepoint / __cajeta_dbg_local, the embedded
-    //          location table, and forced RTTI retention. What an external
-    //          debugger needs.
+    // --debug-info, one switch over the two toggles below. Line, the default, resolves a
+    // trace to Type.method(File.cajeta); Full adds what a debugger needs; Off emits none.
     enum class DebugInfo { Off, Line, Full };
 
-    // --profiler=off|instrument (specs/cajeta-profiler-spec.md §3). A separate
-    // TIER from sampling, not a replacement: sampling answers "where does wall
-    // time go", instrumentation answers "how many times, and how long exactly".
-    //   Off        — no probes emitted, no residual cost (§3.2).
-    //   Instrument — a per-method enter/exit probe pair, so counts are EXACT.
-    // Deliberately not a bool and deliberately not `profileCounters`, which is
-    // the PGO-collection instrumentation and answers a different question.
+    // --profiler. Instrument emits a per-method enter/exit probe pair for exact counts,
+    // a separate tier from sampling and from `profileCounters`, which is PGO collection.
     enum class Profiler { Off, Instrument };
 
     struct CompilerFlags {
@@ -140,26 +97,14 @@ namespace cajeta {
         // ----- profiling -----
         bool            profileCounters     = false;  // PGO-collection instrumentation
 
-        // --profiler=instrument: emit exact-count/exact-time probes (spec §3).
-        // Off by default in every mode — an instrumented build is a build the
-        // developer asked for, and §3.2 promises the un-asked-for build is
-        // byte-identical to one compiled before this flag existed.
+        // Off in every mode: an un-asked-for build stays byte-identical to an older one.
         Profiler        profiler            = Profiler::Off;
 
-        // --profiler-select=<file>: the CONTENTS of the selection, never the
-        // path. Probes are emitted only for selected code (§3.8) — the runtime
-        // filters nothing, which is what makes a narrow selection an overhead
-        // reduction rather than a display preference.
-        //
-        // The contents live here, and the cache key hashes THESE BYTES (§3.10).
-        // Keying on the path passes every other test in this area and then
-        // silently serves objects probed to a selection the user has since
-        // edited in place.
+        // --profiler-select: the CONTENTS, never the path, because the cache key hashes
+        // these bytes; on a path it would serve objects probed to an edited selection.
         std::string     profilerSelect      = "";
 
-        // Where the selection came from, for the trace record (§3.12) and for
-        // diagnostics. Deliberately OUT of the cache key: two build roots that
-        // read the same selection from different paths must share objects.
+        // Where the selection came from, deliberately OUT of the cache key.
         std::string     profilerSelectOrigin = "";
 
         // ----- optimization -----
@@ -167,111 +112,54 @@ namespace cajeta {
         LtoMode         lto                 = LtoMode::Off;  // cross-module LTO for --emit=exe
 
         // ----- lean linker / DCE -----
-        // Class-registration link policy (the --link-mode flag). Defaults Full
-        // (keep every class's registration ctor — today's behavior); Compiler
-        // flips it to Lean for --emit=exe unless the user opts out. Mode-
-        // independent, so defaultsForMode leaves it Full for every CompilerMode.
+        // Mode-independent, so defaultsForMode leaves it Full: Compiler flips it to Lean
+        // for --emit=exe unless the user opts out.
         LinkMode        linkMode            = LinkMode::Full;
-        // --why-kept=<canonical class>: print which reflection site/root kept the
-        // named class in the lean keep-set (empty = off). Diagnostic only.
+        // --why-kept: print what kept this class in the lean keep-set (empty = off).
         std::string     whyKept             = "";
-        // --keepset-json=<path>: write the generated keep-set + provenance to this
-        // JSON file (empty = off; lean builds only).
+        // --keepset-json: write the keep-set and its provenance here (empty = off).
         std::string     keepsetJson         = "";
-        // --emit-xref=<path>: write the compiler's RESOLVED cross-reference index
-        // (declarations, inheritance, references, overrides, calls) to this JSON
-        // file (empty = off). Opt-in: a build that does not ask for it pays nothing.
-        // The IDE consumes this instead of reimplementing Cajeta's resolution in
-        // Kotlin — see specs/ide-symbol-index-spec.md §2 and
-        // specs/schemas/cajeta-xref-v1.schema.json.
+        // --emit-xref: write the resolved cross-reference index the IDE reads (off = "").
         std::string     emitXref            = "";
 
         // ----- tree-shaking (Tier-1 RTA; plans/compiler/stdlib-tree-shaking.md) -----
-        // --tree-shake=off|report|on. On (Phase B/C + Tier-1.5) prunes unreachable
-        // method bodies + dead clinits; Report (Phase A) just prints the analysis.
-        // This field defaults Off, but main.cpp flips it to On for --emit=exe unless
-        // the user passed --tree-shake (mirrors the lean-linker default). Sound by
-        // construction (conservative reachability; Class<Object> keeps every class).
+        // Defaults Off here, but main.cpp flips it to On for --emit=exe unless the user
+        // passed --tree-shake, mirroring the lean-linker default.
         TreeShake       treeShake           = TreeShake::Off;
 
         // ----- debugging -----
-        // The requested level. `debugInfo` and `lineInfo` below are the derived
-        // bools the codegen guards read; applyDebugInfo() keeps all three in
-        // step. They remain independently settable (--line-info=off after a
-        // --debug-info=line, say) — last flag on the command line wins.
+        // The requested level; `debugInfo` and `lineInfo` below are the derived bools the
+        // codegen guards read. Each stays settable on its own, last flag winning.
         DebugInfo       debugInfoLevel      = DebugInfo::Line;
 
-        // Emit __cajeta_dbg_safepoint(loc_id) at each statement boundary so the
-        // in-process debugger (`cajeta dap`) can park the executing fiber at a
-        // breakpoint. Opt-in via --debug-info=full / -g; OFF for every mode by
-        // default (it changes codegen and only matters under a debugger), so
-        // ordinary builds and the existing test suite are unaffected.
+        // The debugger's whole apparatus: safepoints, local records, RTTI retention.
         bool            debugInfo           = false;
 
-        // The SAFEPOINT half of the above, on its own. `--debug-info=full`
-        // turns both on (applyDebugInfo keeps them in step), but a consumer
-        // that wants only statement boundaries can ask for just this.
-        //
-        // Split out for jupyter-kernel U6: the notebook interrupt is taken at
-        // a safepoint, so kernel cells need these — but `debugInfo` also
-        // calls `noteForceAll("--debug-info=full")`, which retains the entire
-        // class registry, and that dragged every stdlib class into a cell's
-        // compile. The first cell then died on `unknown field type
-        // 'bfloat16'` from a stdlib class that does not compile from source
-        // in that world. The kernel wants a place to stop, not a debugger's
-        // worth of metadata, and now it can say so.
+        // The SAFEPOINT half of the above alone, for a consumer that wants a place to
+        // stop without the class-registry retention `debugInfo` forces.
         bool            safepoints          = false;
 
-        // A would-be-UB trap (divide by zero, shift past the width, signed
-        // overflow) UNWINDS to the session guard instead of executing
-        // `llvm.trap`. Off everywhere but a Jupyter cell, and never implied
-        // by a mode: a program that divides by zero should stop at the trap,
-        // which is the whole point of `ubTraps`.
-        //
-        // A notebook is the case where that is the wrong answer. `4 / 0` is
-        // among the most ordinary things a person types by accident, and a
-        // `ud2` takes the kernel, every binding and every earlier cell with
-        // it — the same hole Unit 4 closed for throws, reached by a route
-        // that goes around the exception machinery entirely. The trap site
-        // calls the runtime first and traps only if that RETURNS, so nothing
-        // changes for a module compiled outside a session.
+        // A would-be-UB trap unwinds to the session guard rather than executing
+        // `llvm.trap`, so a notebook's `4 / 0` does not take the kernel with it.
         bool            trapsUnwind         = false;
 
-        // Emit the line-info shadow-stack calls (__cajeta_line_enter/mark/leave)
-        // + a per-method #FrameDesc so a captured stack trace resolves to
-        // Package.Class.method(File.cajeta:NN) with NO debug info (diagnostic-
-        // exceptions §5/§8). Default ON in every flavor (semantic traces are the
-        // ergonomic default); --line-info=off drops all of it for zero cost.
-        // Perf: MEASURED 2026-08-22. The per-CALL enter/leave this flag emits
-        // is at parity with an uninstrumented build on ordinary code (0.11 s
-        // vs 0.11 s at -O3). The per-STATEMENT __cajeta_line_mark that used to
-        // ride along with it cost 3.5-9.4x, so it moved to --debug-info=full
-        // (see emitLineMark). `line` therefore resolves a trace to
-        // Type.method(File.cajeta) for free; `full` adds the exact :NN.
+        // The per-call shadow-stack enter/leave and #FrameDesc that resolve a trace with
+        // no debug info. On everywhere: measured at parity with an uninstrumented build.
         bool            lineInfo            = true;
 
         // ----- experimental perf -----
-        // Skip the per-method prologue __cajeta_scope_enter() (the implicit
-        // function-body structured-concurrency frame). That frame heap-allocs
-        // on EVERY call but is only needed when the body has a bare `spawn`.
-        // PROTOTYPE/UNSAFE: this prototype simply omits it, so it is correct
-        // only for spawn-free code (measures the alloc win; the safe version
-        // lazily pushes the frame at spawn sites). OFF by default.
+        // Skips the prologue __cajeta_scope_enter(), which heap-allocs on every call but
+        // is needed only for a bare `spawn`. UNSAFE: correct only for spawn-free code.
         bool            lazyScope           = false;
 
         // ----- reproducible builds -----
-        // Accepted from the build tool's reproducibility flag set
-        // (Reproducibility.cpp). Stored so the emit stage can honor them where
-        // it embeds timestamps / source paths / RNG salt; harmless when empty.
-        //   --source-date-epoch=<unix-ts>   fixed build timestamp (SOURCE_DATE_EPOCH).
-        //   --debug-prefix-map=<from>=<to>  remap source paths in debug info.
-        //   --seed=<hex>                    deterministic salt for any build RNG.
+        // --source-date-epoch, --debug-prefix-map and --seed, honored where emit embeds
+        // a timestamp, a source path or a build-RNG salt.
         std::string     sourceDateEpoch;
         std::string     debugPrefixMap;
         std::string     seed;
 
-        // Compute the default flag set for a given mode. CLI per-feature
-        // flags override after this expansion.
+        // The default flag set for a mode; per-feature CLI flags override it after.
         static CompilerFlags defaultsForMode(CompilerMode mode) {
             CompilerFlags f;
             switch (mode) {
@@ -329,9 +217,8 @@ namespace cajeta {
         }
     };
 
-    // --debug-info=off|line|full → the level plus the two derived bools. Returns
-    // false on an unknown value, leaving `f` untouched and (when given) filling
-    // `error` with a message naming the accepted set.
+    // Sets the level and its two derived bools. False on an unknown value, leaving `f`
+    // untouched and filling `error`, when given, with the accepted set.
     inline bool applyDebugInfo(const std::string& value, CompilerFlags& f,
                                std::string* error) {
         DebugInfo level;
@@ -346,16 +233,13 @@ namespace cajeta {
         }
         f.debugInfoLevel = level;
         f.debugInfo      = (level == DebugInfo::Full);
-        // Full debug info implies safepoints — that is what a debugger stops
-        // at. Kept in step here so `--debug-info=full` behaves exactly as it
-        // did before the two were separable.
+        // Full implies safepoints: they are what a debugger stops at.
         f.safepoints     = f.debugInfo;
         f.lineInfo       = (level != DebugInfo::Off);
         return true;
     }
 
-    // --profiler=off|instrument. Returns false on an unknown value, leaving
-    // `f` untouched and (when given) filling `error` with the accepted set.
+    // False on an unknown value, leaving `f` untouched and filling `error` when given.
     inline bool applyProfiler(const std::string& value, CompilerFlags& f,
                               std::string* error) {
         if      (value == "off")        f.profiler = Profiler::Off;

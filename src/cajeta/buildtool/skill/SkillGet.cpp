@@ -1,7 +1,4 @@
-//
-// Skill Get core. See SkillGet.h and
-// specs/archive/skill-discovery-spec.md §2.1.
-//
+// Skill Get core. See SkillGet.h and specs/archive/skill-discovery-spec.md §2.1.
 #include "cajeta/buildtool/skill/SkillGet.h"
 
 #include "cajeta/buildtool/skill/EmbeddedStdlibSkills.h"
@@ -16,7 +13,6 @@ namespace cajeta::buildtool::skill {
 
     namespace {
 
-        // Resolve one URI to its payload, or set `out.error`.
         void getOne(llvm::StringRef uriText,
                     llvm::ArrayRef<ResolvedPackageEntry> packages,
                     llvm::function_ref<std::optional<std::string>(llvm::StringRef)>
@@ -27,8 +23,7 @@ namespace cajeta::buildtool::skill {
                 out.error = llvm::toString(uri.takeError());
                 return;
             }
-            // Always-available stdlib skills (spec §2.5): resolve embedded stdlib
-            // payloads before any lockfile archive lookup.
+            // Always-available stdlib skills (spec §2.5): embedded payloads resolve before any lockfile archive lookup.
             if (uri->version == kStdlibSkillVersion) {
                 if (auto payload =
                         embeddedStdlibSkillPayload(uri->library, uri->skillId)) {

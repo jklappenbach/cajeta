@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 10/4/22.
-//
+// FormalParameter - one declared parameter of a method.
 
 #include "FormalParameter.h"
 #include "../compile/CajetaModule.h"
@@ -18,9 +16,8 @@ namespace cajeta {
         set<Modifier> modifiers;
         CajetaTypePtr elemType = CajetaType::fromContext(ctx->typeType(), module);
         if (!elemType) {
-            // Diagnose rather than return null silently: the caller skips a
-            // null parameter, so an unresolved type would otherwise change
-            // the method's arity without a word.
+            // Diagnose rather than return null: the caller skips a null
+            // parameter, so this would silently change the method's arity.
             if (ctx->typeType() != nullptr) {
                 reportOrThrow(ctx->typeType()->getStart(),
                     "CAJETA_ERROR_UNRESOLVED_TYPE",
@@ -29,9 +26,7 @@ namespace cajeta {
             }
             return nullptr;
         }
-        // Wrap as T[] — varargs callers will pack trailing args into a
-        // fresh array of this element type and pass it as the single
-        // value at this parameter slot.
+        // Wrap as T[]: the caller packs trailing args into one array here.
         auto arrType = make_shared<CajetaArray>(module, elemType);
         if (module) {
             module->getStructures()[arrType->toCanonical()] =
@@ -44,19 +39,14 @@ namespace cajeta {
     FormalParameterPtr FormalParameter::fromContext(CajetaParser::FormalParameterContext* ctx, CajetaModulePtr module) {
         FormalParameterPtr parameter = nullptr;
         string name = ctx->variableDeclaratorId()->identifier()->getText();
-        // Constructed empty — parameter annotations (names AND argument values,
-        // REFL-6b) are added below via addAnnotationInstance, which fills the
-        // annotationList / annotations set / annotationInstances in lockstep.
-        // (Passing names here AND adding instances would double-count, the same
-        // trap FieldDeclaration::updateParent hit.)
+        // Constructed empty: addAnnotationInstance below fills the list, the set
+        // and the instances in lockstep, so passing names here would double-count.
         set<QualifiedNamePtr> annotations;
         set<Modifier> modifiers;
         vector<AnnotationInstancePtr> paramAnnotations;
         CajetaParser::TypeTypeContext* ctxType = ctx->typeType();
         CajetaTypePtr type = CajetaType::fromContext(ctxType, module);
         if (ctxType != nullptr && !type) {
-            // Same rationale as the varargs overload above: a silently
-            // dropped parameter mis-arities the method.
             reportOrThrow(ctxType->getStart(),
                 "CAJETA_ERROR_UNRESOLVED_TYPE",
                 "unresolved type '" + ctxType->getText()
@@ -67,8 +57,6 @@ namespace cajeta {
         for (auto& ctxVariableModifier: variableModifiers) {
             CajetaParser::AnnotationContext* ctxAnnotation = ctxVariableModifier->annotation();
             if (ctxAnnotation != nullptr) {
-                // Capture the full typed instance (was: name only) so the
-                // parameter's reflective #AnnotationDesc rows carry arg values.
                 if (auto inst = parseAnnotationInstance(ctxAnnotation)) {
                     paramAnnotations.push_back(inst);
                 }
@@ -82,19 +70,13 @@ namespace cajeta {
             for (auto& inst : paramAnnotations) {
                 parameter->addAnnotationInstance(inst);
             }
-            // `#T x` — parameter takes ownership at the callsite. The token comes
-            // before the type in the grammar (`REFERENCE? typeType`), so checking
-            // ctx->REFERENCE() here is enough.
+            // `#T x` takes ownership at the callsite; the grammar is
+            // `REFERENCE? typeType`, so the token is already parsed by here.
             if (ctx->REFERENCE() != nullptr) {
                 parameter->setTransferred(true);
             }
-            // title-tracking §8.1 (plan 7.2.1) — the §4.2 dissolve and the
-            // borrow-mode gates were retired with owning instantiations: an
-            // authored `#T` formal is a hard must-own edge in every
-            // instantiation (spec §8.2).
-            // Optional default value: `int32 x = 42`. Captured at parse time
-            // so the call-site fill-in path can clone the expression's AST
-            // node and emit it for each missing argument.
+            // The default value is kept as an AST node so the call site can
+            // clone and emit it for each missing argument.
             if (ctx->ASSIGN() && ctx->expression()) {
                 parameter->setDefaultValue(Expression::fromContext(ctx->expression()));
             }

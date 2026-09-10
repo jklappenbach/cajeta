@@ -1,15 +1,6 @@
-// `copy` — copy a file or directory tree from `from` to `to`.
-// Phase 4 native filesystem action. See BuildTool.md Action
-// catalog "Filesystem" row.
-//
-// Params:
-//   from        (required) source path (file or directory)
-//   to          (required) destination path
-//   also        (optional) array of additional source paths copied
-//                          alongside the primary one (Phase 9 uses
-//                          this for `.sig` next to `.cja`)
-//   mkdir       (optional, default true) create dest parent dirs
-//   recursive   (optional, default true) recurse into source dirs
+// `copy` — copies `from` (file or tree) and any `also` paths to `to`; `mkdir`
+// and `recursive` both default to true.
+// See BuildTool.md Action catalog, "Filesystem" row.
 
 #include "cajeta/buildtool/Action.h"
 
@@ -62,9 +53,8 @@ namespace cajeta::buildtool {
             std::error_code ec;
 
             fs::path dest = to->str();
-            // If the destination ends with `/` or is an existing
-            // directory, treat it as a directory; otherwise it's a
-            // file target and `from` is renamed to it.
+            // A dest ending in `/`, or naming an existing directory, is a
+            // directory; otherwise `from` is renamed to it.
             bool destIsDir = (!dest.empty() && dest.string().back() == '/')
                           || fs::is_directory(dest, ec);
             if (destIsDir && mkdirFlag) {
@@ -101,13 +91,8 @@ namespace cajeta::buildtool {
             }
 
             ActionResult r;
-            // Single dest: expose as `path`. Always expose the array
-            // form as `destinations` for callers that handle the
-            // multi-file case.
+            // `path` is the first destination; `destinations` is newline-joined.
             r.outputs["path"] = destinations.front();
-            // Join destinations with newlines for the `destinations`
-            // field; consumers needing structured data should rely on
-            // `path` + their own list construction for now.
             std::string joined;
             for (size_t i = 0; i < destinations.size(); ++i) {
                 if (i) joined += "\n";

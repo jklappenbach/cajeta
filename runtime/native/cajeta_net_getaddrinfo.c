@@ -1,69 +1,6 @@
-// cajeta.io.net — NET-2.1 native name-resolution intrinsics (`getaddrinfo`).
-//
-// This translation unit is **#included once** at the bottom of
-// `cajeta_runtime.c`, *after* `cajeta_net_socket.c` and
-// `cajeta_net_sockaddr.c` (the same single-TU → bitcode → embed build path the
-// NET-1.1 socket + NET-1.2 sockaddr intrinsics ride; see the header of
-// `cajeta_net_socket.c`). The post-socket ordering matters: this file calls the
-// file-static `cajeta_net_ensure_init()` defined in `cajeta_net_socket.c` to
-// guarantee `WSAStartup` ran before `getaddrinfo` on Windows. No CMake change
-// to the bitcode-embed path is required.
-//
-// Scope of NET-2.1 (per plan/cajeta-net-plan.md):
-//
-//   __cajeta_net_getaddrinfo         (host, host_len, port, family) -> result handle
-//   __cajeta_net_getaddrinfo_count   (handle)                       -> address count
-//   __cajeta_net_getaddrinfo_error   ()                             -> normalized resolve errno
-//   __cajeta_net_getaddrinfo_family  (handle, index)                -> cajeta family ordinal
-//   __cajeta_net_getaddrinfo_port    (handle, index)                -> host-order port
-//   __cajeta_net_getaddrinfo_octets  (handle, index, out)           -> octet bytes written
-//   __cajeta_net_freeaddrinfo        (handle)                       -> release the result block
-//
-// `Dns.resolve` (NET-2.2) is the pure-Cajeta wrapper that drives these; it is
-// intentionally NOT here — this file is the native syscall layer only.
-//
-// ## ABI: a result-handle + scalar accessors (no out-params)
-//
-// `getaddrinfo` returns a heap-owned linked list (`struct addrinfo*`). The
-// cajeta `@Native` bridge can't yet return a freshly heap-allocated `int8[]`
-// that registers with the per-thread live-set (the same constraint the SHA-256
-// bridge documents), and an address list is variable-length, so a single
-// "return the bytes" call is the wrong shape. The bridge also has no
-// out-pointer (`pointer*` / `int32*`) form — every `@Native` parameter is a
-// scalar, a `pointer`, or an `int8[]`. So the ABI is an **iterator over an
-// opaque handle**, every call carrying only those bridgeable parameter kinds:
-//
-//   1. `__cajeta_net_getaddrinfo` resolves and stashes the parsed results in a
-//      runtime-owned `struct cajeta_addr_result` block, **returning the opaque
-//      handle as a `pointer`** (NULL on failure / zero results). The cajeta
-//      side reads the count + error through the accessors below.
-//   2. `__cajeta_net_getaddrinfo_family` / `_port` / `_octets` unpack the Nth
-//      result into the exact `(family ordinal, network-order octets,
-//      host-order port)` triple that `__cajeta_net_sockaddr_unpack` already
-//      produces — so the NET-2.2 layer reconstructs each `IpAddress.fromOctets`
-//      + `SocketAddress.of` with the *same* code path it uses for
-//      `accept`/`recvfrom`. One unmarshalling contract across the subsystem.
-//   3. `__cajeta_net_freeaddrinfo` releases the block (the cajeta `Dns` layer
-//      calls this in a `finally`/drop once it has copied every entry out).
-//
-// The native block holds the addresses **pre-parsed** into the cajeta octet
-// form (not the raw `struct addrinfo`), so the platform `getaddrinfo` list is
-// freed immediately inside `__cajeta_net_getaddrinfo` — nothing platform-owned
-// survives the call, which keeps the handle's lifetime trivially ours.
-//
-// ## AddressFamily ordinal contract (mirrors AddressFamily.cajeta)
-//     0 = V4 -> AF_INET  / sockaddr_in
-//     1 = V6 -> AF_INET6 / sockaddr_in6
-// Same ordinal the sockaddr pack/unpack uses; the platform `AF_*` constant
-// never crosses the cajeta boundary.
-//
-// ## Family filter (mirrors the NET-2.2 `AddressFamily` filter)
-//    -1 = both (AF_UNSPEC)   0 = V4-only (AF_INET)   1 = V6-only (AF_INET6)
-//
-// ## Byte order
-// Octets are emitted in **network** order (the order the text form prints);
-// the port crosses the boundary in **host** order — identical to
-// `__cajeta_net_sockaddr_unpack`.
+// cajeta.io.net — NET-2.1 native name resolution (`getaddrinfo`), exposed as an
+// opaque result handle plus scalar accessors. #included once at the bottom of
+// cajeta_runtime.c AFTER cajeta_net_socket.c, whose ensure_init() it calls.
 
 #if defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -91,15 +28,9 @@
 #  define CAJETA_AF_V6 1
 #endif
 
-// ---------------------------------------------------------------------------
-// Normalized resolve-error ordinals.
-//
-// `getaddrinfo` reports failure through its own `EAI_*` return-code space —
-// disjoint from the socket `errno`/`WSAGetLastError` space the NET-1.1 shim
-// normalizes. We collapse the EAI_* codes into a small stable enum the cajeta
-// `Dns` layer (NET-2.5) switches on to pick `UnknownHost` vs `ResolutionFailed`.
-// Keep these ordinals append-only; never renumber.
-// ---------------------------------------------------------------------------
+// Normalized resolve-error ordinals: `getaddrinfo` fails in its own EAI_* space,
+// disjoint from the socket errno space, and the cajeta Dns layer switches on
+// these. Append-only — never renumber.
 enum cajeta_resolve_err {
     CAJETA_RESOLVE_OK          = 0,   // resolved (>= 1 address)
     CAJETA_RESOLVE_NONAME      = 1,   // host not found / no such name  -> UnknownHost
@@ -114,13 +45,11 @@ enum cajeta_resolve_err {
     CAJETA_RESOLVE_OTHER       = 99   // any unmapped EAI_* code
 };
 
-// Thread-local last resolve error, mirroring the socket shim's
-// `__cajeta_net_last_error()` design (the per-thread `errno` analogue). Set on
-// every `__cajeta_net_getaddrinfo` call (to OK on success). `__thread` is the
-// same TLS facility the rest of the runtime relies on.
+// Thread-local last resolve error, set by every __cajeta_net_getaddrinfo call
+// (to OK on success) — the per-thread `errno` analogue for resolution.
 static __thread int32_t g_cajeta_resolve_errno = CAJETA_RESOLVE_OK;
 
-// Map a platform `getaddrinfo` EAI_* return code to the normalized ordinal.
+// Map a platform `getaddrinfo` EAI_* return code to a cajeta_resolve_err.
 static int32_t cajeta_map_eai(int eai) {
 #if defined(_WIN32)
     // Winsock maps EAI_* onto WSA* codes (EAI_NONAME == WSAHOST_NOT_FOUND, etc.).
@@ -153,11 +82,8 @@ static int32_t cajeta_map_eai(int eai) {
 #endif
 }
 
-// ---------------------------------------------------------------------------
-// The runtime-owned, pre-parsed result block. One entry per resolved address,
-// already collapsed to the cajeta `(family, octets, port)` triple so the
-// platform `struct addrinfo` list can be freed before this call returns.
-// ---------------------------------------------------------------------------
+// The runtime-owned result block: one entry per resolved address, pre-parsed to
+// the cajeta triple so the platform addrinfo list is freed before we return.
 struct cajeta_addr_entry {
     int32_t family;       // cajeta ordinal: 0 = V4, 1 = V6
     int32_t port;         // host-order port
@@ -169,40 +95,22 @@ struct cajeta_addr_result {
     struct cajeta_addr_entry* entries;
 };
 
-// ---------------------------------------------------------------------------
-// Resolve `host[0..host_len)` + `port` into a runtime-owned result block.
-//
-//   host       : host bytes (NOT necessarily NUL-terminated — we copy + NUL).
-//                A NULL host (host_len == 0) resolves the passive/loopback
-//                wildcard (AI_PASSIVE-less default: loopback), matching libc.
-//   host_len   : length of `host` in bytes.
-//   port       : 0..65535 service port baked into every returned address.
-//   family     : family filter — -1 both, 0 V4-only, 1 V6-only.
-//
-// Returns the opaque result-block **handle** (a non-NULL `pointer`) on success,
-// or **NULL** on any failure *or* a zero-address resolve. On NULL,
-// `__cajeta_net_getaddrinfo_error()` carries the normalized ordinal (it is set
-// to `OK` only when a non-NULL handle is returned). The handle's address count
-// is read via `__cajeta_net_getaddrinfo_count`; the cajeta side must release it
-// with `__cajeta_net_freeaddrinfo` (NULL-safe, so an unconditional drop call is
-// fine).
-// ---------------------------------------------------------------------------
+// Resolve `host[0..host_len)` (an int8[] header, empty = loopback) and `port`
+// under a family filter (-1 both, 0 V4, 1 V6) into an opaque handle the caller
+// frees with __cajeta_net_freeaddrinfo. NULL on failure or zero addresses.
 void* __cajeta_net_getaddrinfo(const void* host, int32_t host_len,
                                int32_t port, int32_t family) {
     if (host_len < 0 || port < 0 || port > 65535) {
         g_cajeta_resolve_errno = CAJETA_RESOLVE_BADFLAGS;
         return NULL;
     }
-    // Windows needs WSAStartup before getaddrinfo; reuse the socket shim's
-    // idempotent once-guard (this TU is #included after cajeta_net_socket.c,
-    // so the file-static is in scope).
+    // Windows needs WSAStartup before getaddrinfo; the once-guard is idempotent.
     if (!cajeta_net_ensure_init()) {
         g_cajeta_resolve_errno = CAJETA_RESOLVE_SYSTEM;
         return NULL;
     }
 
-    // NUL-terminate the host into a small stack buffer (DNS labels cap the
-    // total name at 253 chars; 256 is safely above any legal hostname).
+    // DNS caps a name at 253 chars, so 256 holds any legal hostname plus NUL.
     char hostbuf[256];
     const char* hostarg = NULL;
     if (host_len > 0) {
@@ -210,16 +118,14 @@ void* __cajeta_net_getaddrinfo(const void* host, int32_t host_len,
             g_cajeta_resolve_errno = CAJETA_RESOLVE_NONAME;  // can't be a real name
             return NULL;
         }
-        // `host` is a cajeta int8[] header — { i64 count, [N x i8] data }; the
-        // host bytes start at +8 (the @Native ABI passes the header, as
-        // __cajeta_sha256_update etc. expect).
+        // The @Native ABI passes an int8[] header { i64 count, [N x i8] data },
+        // so the host bytes start at +8.
         memcpy(hostbuf, (const uint8_t*) host + 8, (size_t) host_len);
         hostbuf[host_len] = '\0';
         hostarg = hostbuf;
     }
 
-    // Service as a decimal string; AI_NUMERICSERV keeps getaddrinfo from
-    // touching /etc/services. The port is baked into the returned sockaddrs.
+    // A decimal service string; AI_NUMERICSERV keeps us out of /etc/services.
     char servbuf[8];
     snprintf(servbuf, sizeof(servbuf), "%d", port);
 
@@ -232,9 +138,8 @@ void* __cajeta_net_getaddrinfo(const void* host, int32_t host_len,
     } else {
         hints.ai_family = AF_UNSPEC;   // both
     }
-    // We resolve for connect-style use: stream sockets, numeric service. The
-    // socktype filter collapses the otherwise-duplicated SOCK_STREAM /
-    // SOCK_DGRAM / SOCK_RAW triples into one address per (family, ip).
+    // The socktype filter collapses the otherwise-duplicated STREAM/DGRAM/RAW
+    // triples into one address per (family, ip).
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
     hints.ai_flags = AI_NUMERICSERV;
@@ -246,7 +151,6 @@ void* __cajeta_net_getaddrinfo(const void* host, int32_t host_len,
         return NULL;
     }
 
-    // Count first so we can size one contiguous entry array.
     int32_t n = 0;
     for (struct addrinfo* ai = res; ai != NULL; ai = ai->ai_next) {
         if (ai->ai_family == AF_INET || ai->ai_family == AF_INET6) {
@@ -295,18 +199,9 @@ void* __cajeta_net_getaddrinfo(const void* host, int32_t host_len,
     return block;
 }
 
-// ---------------------------------------------------------------------------
-// Per-entry accessors. The `(family, port, octets)` triple is read by three
-// scalar/array calls rather than one out-param call, because every `@Native`
-// bridge parameter is a scalar, a `pointer`, or an `int8[]` — there is no
-// out-pointer form. Together they reproduce the exact unmarshalling contract of
-// `__cajeta_net_sockaddr_unpack`, so the NET-2.2 layer feeds the result into
-// the identical `IpAddress.fromOctets` + `SocketAddress.of` path.
-//
-// All three bounds-check (`NULL` handle / out-of-range index) and return a
-// benign sentinel rather than faulting, since the cajeta side iterates
-// `0 .. count-1` and a defensive sentinel beats UB on a caller bug.
-// ---------------------------------------------------------------------------
+// Per-entry accessors: three calls rather than one out-param call, because every
+// @Native parameter is a scalar, a `pointer` or an `int8[]`. All bounds-check
+// and return a sentinel rather than faulting on a caller bug.
 
 // The cajeta AddressFamily ordinal (0 = V4, 1 = V6) of the `index`-th address,
 // or -1 for a NULL handle / out-of-range index.
@@ -334,11 +229,9 @@ int32_t __cajeta_net_getaddrinfo_port(void* handle, int32_t index) {
     return block->entries[index].port;
 }
 
-// Copy the `index`-th address's network-order octets into `octets_out`
-// (caller buffer of >= 16 bytes). Writes 4 bytes for a V4 address, 16 for V6,
-// and returns the number written (4 or 16), or -1 for a NULL handle / NULL
-// buffer / out-of-range index. (The block zero-fills the V4 tail, so a caller
-// that always reads 16 is also safe.)
+// Copy the `index`-th address's network-order octets into `octets_out` (an
+// int8[] of >= 16 bytes), returning the count written — 4 for V4, 16 for V6 —
+// or -1 for a NULL handle / NULL buffer / out-of-range index.
 int32_t __cajeta_net_getaddrinfo_octets(void* handle, int32_t index,
                                         void* octets_out) {
     if (!handle || !octets_out || index < 0) {
@@ -350,16 +243,13 @@ int32_t __cajeta_net_getaddrinfo_octets(void* handle, int32_t index,
     }
     struct cajeta_addr_entry* e = &block->entries[index];
     int32_t n = (e->family == CAJETA_AF_V4) ? 4 : 16;
-    // `octets_out` is a cajeta int8[] header; write the octets into its data
-    // region at +8 (same @Native header ABI as the host arg above).
+    // int8[] header again: the data region starts at +8.
     memcpy((uint8_t*) octets_out + 8, e->octets, (size_t) n);
     return n;
 }
 
-// ---------------------------------------------------------------------------
-// Release a result block. NULL-safe (a zero-result resolve hands back a NULL
-// handle, so the cajeta drop path can call this unconditionally).
-// ---------------------------------------------------------------------------
+// Release a result block. NULL-safe, so the cajeta drop path can call it
+// unconditionally after a zero-result resolve.
 void __cajeta_net_freeaddrinfo(void* handle) {
     if (!handle) {
         return;
@@ -369,19 +259,13 @@ void __cajeta_net_freeaddrinfo(void* handle) {
     free(block);
 }
 
-// ---------------------------------------------------------------------------
-// The normalized `cajeta_resolve_err` ordinal of the last
-// `__cajeta_net_getaddrinfo` call on this thread (thread-local, like the
-// socket shim's `__cajeta_net_last_error`). The NET-2.5 `Dns` layer switches
-// on this to raise `UnknownHost` (NONAME/NODATA) vs `ResolutionFailed`.
-// ---------------------------------------------------------------------------
+// The cajeta_resolve_err ordinal of this thread's last __cajeta_net_getaddrinfo
+// call; the Dns layer switches on it to pick UnknownHost vs ResolutionFailed.
 int32_t __cajeta_net_getaddrinfo_error(void) {
     return g_cajeta_resolve_errno;
 }
 
-// Result count of a handle (convenience; the cajeta side already has the count
-// from the resolve return value, but this keeps the handle self-describing for
-// the entry-iteration loop without re-threading the count through every call).
+// Address count of a handle; 0 for NULL, so the iteration loop is self-bounding.
 int32_t __cajeta_net_getaddrinfo_count(void* handle) {
     if (!handle) {
         return 0;

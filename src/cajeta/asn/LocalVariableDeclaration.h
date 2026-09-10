@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 11/4/22.
-//
+// LocalVariableDeclaration - one `T a, b = e;` statement in a block.
 
 #pragma once
 
@@ -17,18 +15,14 @@ namespace cajeta {
         CajetaTypePtr type;
         list<VariableDeclaratorPtr> variableDeclarators;
     public:
-        // Drop-chain wiring for an owner local, callable from OTHER emission
-        // sites that create ownership after declaration (e.g. a `d = #t`
-        // move-assign into a bare-declared local — slices plan 9.3.1). Binds
-        // the CURRENT slot value as the entry's obj, so call it after the
-        // store.
+        // Drop-chain wiring for an owner local, also callable from emission sites
+        // that create ownership after the declaration. It binds the CURRENT slot
+        // value as the entry's obj, so call it AFTER the store.
         static void emitOwnerDropEntry(CajetaModulePtr module, FieldPtr field,
             const std::string& dropFnName, int allocLine);
 
-        // xref-lint-emission-gap Unit 3 — register this declaration's bindings
-        // during a RESOLVE-ONLY walk, so a later `local.field` has a typed
-        // receiver. No-op in a build: there, generateCode registers the real
-        // (slot-carrying) field and this would only shadow it.
+        // Register these bindings during a RESOLVE-ONLY walk, so a later
+        // `local.field` has a typed receiver. A no-op in a build.
         void resolveTypes(CajetaModulePtr module) override;
 
         LocalVariableDeclaration(set<Modifier>& modifiers,
@@ -40,22 +34,14 @@ namespace cajeta {
             this->variableDeclarators = variableDeclarators;
         }
 
-        // For tree walkers that need to reach sub-expressions hidden in the
-        // private declarator list (e.g. the lambda body's free-variable
-        // scan). The walker visits each declarator's initializer to find
-        // identifiers referenced on the RHS.
+        // For tree walkers reaching into the private declarator list.
         const list<VariableDeclaratorPtr>& getVariableDeclarators() const {
             return variableDeclarators;
         }
 
-        // Declared type for the local. May be null for `var`-style
-        // declarations whose type is inferred from the initializer.
-        // Used by lambda return-type inference to pre-register body
-        // locals in the lambda's resolve-time scope.
+        // Null for a `var`-style declaration, whose type the initializer decides.
         CajetaTypePtr getType() const { return type; }
 
-        // 7.2.4 — declarators are private; each declarator's own children
-        // carry its initializer.
         void forEachSubNode(
                 const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override {
             for (auto& d : variableDeclarators) {

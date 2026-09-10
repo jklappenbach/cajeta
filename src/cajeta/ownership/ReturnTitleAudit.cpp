@@ -26,9 +26,7 @@ namespace cajeta::ownership {
     }
 
     namespace {
-        // -1 = not yet read from the environment; 0/1 = the decided state.
-        // A test's setEnabled wins over the environment for the rest of the
-        // process, which is what makes the OFF-by-default control assertable.
+        // -1 = not yet read from the environment; a test's setEnabled then wins for the process.
         int g_enabled = -1;
         std::vector<ReturnTitleRecord>& sink() {
             static std::vector<ReturnTitleRecord> records;
@@ -55,12 +53,8 @@ namespace cajeta::ownership {
     void ReturnTitleAudit::setEnabled(bool on) { g_enabled = on ? 1 : 0; }
 
     void ReturnTitleAudit::record(ReturnTitleRecord rec) {
-        // One line per site, on the diagnostic channel, so a library build can
-        // be harvested without linking against the compiler.
-        // 8.1.4 — line 0 means "no trustworthy line": a template
-        // monomorphization's AST counts lines into a synthesized instantiation
-        // buffer, not into the file. Print a marker rather than a number, so a
-        // harvest cannot mistake a buffer offset for a file position.
+        // One line per site on the diagnostic channel. Line 0 means "no trustworthy
+        // line" — a monomorphization counts into a synthesized buffer — so a marker prints.
         std::cerr << "cajeta: note: [return-title] " << rec.className << "."
                   << rec.methodName;
         if (rec.line > 0) std::cerr << ":" << rec.line;
@@ -96,13 +90,8 @@ namespace cajeta::ownership {
 
     void ReturnTitleAudit::ownedBind(const std::string& calleeKey,
                                      const std::string& inMethod, int line) {
-        // 8.1.4 — `line <= 0` means the caller could not vouch for it (a
-        // template monomorphization counts lines into a synthesized buffer).
-        // Same rule as the [return-title] record: a marker, never a number
-        // that points somewhere real and wrong. Instantiation records then
-        // dedupe per method+callee rather than per bogus offset, which is the
-        // right granularity anyway — one monomorphization's line tells you
-        // nothing the others don't.
+        // `line <= 0` means the caller could not vouch for it, so a marker prints rather
+        // than a wrong number; instantiation records dedupe per method+callee instead.
         const std::string where = line > 0 ? std::to_string(line)
                                            : std::string("(instantiation)");
         std::string key = inMethod + ":" + where + " <- " + calleeKey;

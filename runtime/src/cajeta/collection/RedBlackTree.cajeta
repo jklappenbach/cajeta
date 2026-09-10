@@ -76,7 +76,7 @@ public final class RedBlackTree<K, V> {
      * @EntryPoint
      */
     public RedBlackTree() {
-        this.root = null;
+        this.root #= null;
         this.nodes = heap ArrayList<RedBlackNode<K, V>>();
         this.sizeCount = 0;
     }
@@ -110,12 +110,11 @@ public final class RedBlackTree<K, V> {
         // as `put(#k, #v)` is released when this call returns. Keys and
         // values must outlive the entry on the caller's own account.
         if (this.root == null) {
-            RedBlackNode<K, V> r = heap RedBlackNode<K, V>(#key, #value);
+            // The registry owns every node; `r` is a borrow, so links record borrows.
+            this.nodes.add(heap RedBlackNode<K, V>(#key, #value));
+            RedBlackNode<K, V> r = this.nodes.get(this.nodes.count() - 1);
             r.red = false;
-            // Borrow link first; the registry add is the node's LAST use
-            // (the `#r` move) — same ordering rule as LinkedList.add.
-            this.root = r;
-            this.nodes.add(#r);
+            this.root #= r;
             this.sizeCount = 1;
             return;
         }
@@ -147,17 +146,17 @@ public final class RedBlackTree<K, V> {
                 return;
             }
         }
-        RedBlackNode<K, V> z = heap RedBlackNode<K, V>(#key, #value);
-        z.parent = parent;
+        // Registry first; `z` is a borrow of it, so the links record borrows.
+        this.nodes.add(heap RedBlackNode<K, V>(#key, #value));
+        RedBlackNode<K, V> z = this.nodes.get(this.nodes.count() - 1);
+        z.parent #= parent;
         if (goLeft) {
-            parent.left = z;
+            parent.left #= z;
         } else {
-            parent.right = z;
+            parent.right #= z;
         }
         this.sizeCount = this.sizeCount + 1;
         this.insertFixup(z);
-        // Registry takes the node's title — z's last use.
-        this.nodes.add(#z);
     }
 
     /**
@@ -341,39 +340,39 @@ public final class RedBlackTree<K, V> {
     @Inline
     private void rotateLeft(RedBlackNode<K, V> x) {
         RedBlackNode<K, V> y = x.right;
-        x.right = y.left;
+        x.right #= y.left;
         if (y.left != null) {
-            y.left.parent = x;
+            y.left.parent #= x;
         }
-        y.parent = x.parent;
+        y.parent #= x.parent;
         if (x.parent == null) {
-            this.root = y;
+            this.root #= y;
         } else if (x == x.parent.left) {
-            x.parent.left = y;
+            x.parent.left #= y;
         } else {
-            x.parent.right = y;
+            x.parent.right #= y;
         }
-        y.left = x;
-        x.parent = y;
+        y.left #= x;
+        x.parent #= y;
     }
 
     /** Right-rotate around `x`, fixing parent links and the root. */
     @Inline
     private void rotateRight(RedBlackNode<K, V> x) {
         RedBlackNode<K, V> y = x.left;
-        x.left = y.right;
+        x.left #= y.right;
         if (y.right != null) {
-            y.right.parent = x;
+            y.right.parent #= x;
         }
-        y.parent = x.parent;
+        y.parent #= x.parent;
         if (x.parent == null) {
-            this.root = y;
+            this.root #= y;
         } else if (x == x.parent.right) {
-            x.parent.right = y;
+            x.parent.right #= y;
         } else {
-            x.parent.left = y;
+            x.parent.left #= y;
         }
-        y.right = x;
-        x.parent = y;
+        y.right #= x;
+        x.parent #= y;
     }
 }

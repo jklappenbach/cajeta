@@ -1,6 +1,4 @@
-//
 // CirPrinter — textual dump of a CirFunction. See CirPrinter.h and spec §2.5.
-//
 
 #include "CirPrinter.h"
 
@@ -16,7 +14,6 @@ namespace {
         return v ? ("%" + v->name) : "%<null>";
     }
 
-    // Comma-joined "%a, %b, ...".
     std::string refList(const std::vector<CirValuePtr>& vs, size_t from = 0) {
         std::string s;
         for (size_t i = from; i < vs.size(); ++i) {
@@ -38,8 +35,7 @@ namespace {
         if (own[0] != '\0') out << ' ' << own;
     }
 
-    // One control-flow edge: "label" or "label(%a, %b)"; switch cases prefix
-    // the case value: "7 -> label".
+    // One control-flow edge: "label" or "label(%a, %b)", a switch case as "7 -> label".
     void printSuccessor(std::ostringstream& out, const CirSuccessor& s) {
         if (s.caseValue.has_value()) out << *s.caseValue << " -> ";
         out << s.label;
@@ -70,7 +66,6 @@ namespace {
 
             case CirOp::ICmp:
             case CirOp::FCmp:
-                // predicate carried in symbol: `icmp.slt %a, %b`
                 out << m;
                 if (!inst->symbol.empty()) out << '.' << inst->symbol;
                 out << ' ' << refList(inst->operands);
@@ -108,7 +103,6 @@ namespace {
                     << '(' << refList(inst->operands, 1) << ')';
                 break;
             case CirOp::ApplyClosure:
-                // apply.closure %cmp(%x, %y)
                 out << m << ' ' << vref(inst->operands.empty() ? nullptr : inst->operands[0])
                     << '(' << refList(inst->operands, 1) << ')';
                 break;
@@ -118,7 +112,6 @@ namespace {
                 break;
 
             case CirOp::MakeClosure:
-                // make.closure cmpNat, [%cap0, ...]
                 out << m << ' ' << inst->symbol << ", [" << refList(inst->operands) << ']';
                 break;
 
@@ -148,7 +141,6 @@ namespace {
                 break;
 
             default:
-                // generic form: `<mnemonic> %a, %b`
                 out << m;
                 if (!inst->operands.empty()) out << ' ' << refList(inst->operands);
                 break;

@@ -1,24 +1,12 @@
-// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
-// --- R5/Error-model #203: stack-trace capture ---------------------------
-//
-// At every throw site, walk the native call stack via backtrace() and
-// store the return-address array in a side table keyed by the throwable
-// pointer. Auto-printed on uncaught throws (when the runtime aborts) and
-// retrievable via __cajeta_get_trace / __cajeta_print_trace for user-
-// invoked introspection. Side-table avoids the Throwable struct-layout
-// problem (subclasses don't carry parent fields in their memory image
-// today — see follow-up #208 — so we can't reliably stash the trace as
-// a field on Throwable). When that's fixed, this can migrate to a real
-// field with no API change at the Cajeta level.
+// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c ===
+// --- stack-trace capture --------------------------------------------------
+// At each throw site backtrace() walks the native stack into a side table keyed by throwable.
 
 struct cajeta_trace_entry {
     void* throwable;
     void** frames;
     int frame_count;
-    // diagnostic-exceptions U3: semantic line-info frames snapshotted from the
-    // shadow line-stack at throw time (innermost-first), or NULL when line-info
-    // was off. Resolved by getStackTrace into StackFrame type/method/file/line.
+    // Semantic line-info frames snapshotted at throw time, or NULL when it was off.
     CajetaShadowFrame* shadow;
     int shadow_count;
     struct cajeta_trace_entry* next;
@@ -29,17 +17,10 @@ static int __cajeta_trace_count = 0;
 static pthread_mutex_t __cajeta_trace_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define CAJETA_TRACE_MAX_FRAMES 64
-// There is no "throwable caught/dropped" hook that frees a trace entry yet, so a
-// throw/catch loop would leak one node + frames array per throw. Bound the table:
-// dedup same-throwable on record, and evict the oldest past this cap.
+// No hook frees a trace entry yet, so the table is bounded: dedup on record, evict oldest.
 #define CAJETA_TRACE_TABLE_CAP 256
 
-// --stack-trace-capture flag (CompilerModes.md § --stack-trace-capture).
-// Defaults on so existing tests + the default ergonomic of "see the
-// stack on uncaught throw" both keep working. JIT init flips it via
-// Options.stackTraceCaptureEnabled. When off, __cajeta_trace_record is
-// a fast no-op — the throwable still surfaces (message + error id) but
-// the trace dump on uncaught throws is empty.
+// The --stack-trace-capture flag, on by default; off makes __cajeta_trace_record a no-op.
 static int __cajeta_stack_trace_capture_enabled = 1;
 
 void __cajeta_set_stack_trace_capture(int enabled) {
@@ -53,18 +34,8 @@ int __cajeta_get_stack_trace_capture(void) {
 static void __cajeta_trace_record(void* throwable) {
     if (!throwable) return;
     if (!__cajeta_stack_trace_capture_enabled) return;
-    // Only the NATIVE backtrace is fiber-hostile: backtrace(3) walks the stack
-    // via frame pointers / DWARF, and on a makecontext-allocated fiber stack the
-    // unwinder reaches the makecontext boundary and SIGSEGVs trying to walk past
-    // it. So it is skipped on a fiber, and a fiber's entry carries no raw
-    // addresses until fiber-aware unwinding lands.
-    //
-    // cajeta-profiler Unit 2: the SHADOW stack is not subject to that at all —
-    // it is a fixed array written by line_enter/mark/leave, read with no
-    // unwinder — and it is what getStackTrace() actually resolves. Skipping the
-    // whole function on a fiber therefore threw away the frames that DO work,
-    // which is why an in-fiber throw reported an empty trace. Capture the shadow
-    // frames on every context; skip only the backtrace(3) call.
+    // Only the NATIVE backtrace is fiber-hostile — backtrace(3) SIGSEGVs at a makecontext
+    // boundary — so it is skipped on a fiber; the SHADOW stack needs no unwinder.
     void* buf[CAJETA_TRACE_MAX_FRAMES];
     int n = 0;
     if (!__cajeta_current_fiber) {
@@ -88,8 +59,6 @@ static void __cajeta_trace_record(void* throwable) {
     e->throwable = throwable;
     e->frames = frames;      // NULL on a fiber; frame_count is 0 to match
     e->frame_count = n;
-    // U3: snapshot the shadow line-stack (semantic frames) alongside the raw
-    // addresses. Present only when codegen emitted line-info (enter/mark/leave).
     e->shadow = NULL;
     e->shadow_count = 0;
     if (sc > 0) {
@@ -101,8 +70,7 @@ static void __cajeta_trace_record(void* throwable) {
         }
     }
     pthread_mutex_lock(&__cajeta_trace_mutex);
-    // Dedup: drop any prior entry for this same throwable address so a reused
-    // address can't surface a stale trace.
+    // Dedup, so a reused throwable address cannot surface a stale trace.
     for (struct cajeta_trace_entry** pp = &__cajeta_trace_table; *pp; ) {
         if ((*pp)->throwable == throwable) {
             struct cajeta_trace_entry* dead = *pp;
@@ -134,8 +102,7 @@ static void __cajeta_trace_record(void* throwable) {
     pthread_mutex_unlock(&__cajeta_trace_mutex);
 }
 
-// Print the trace for `throwable` to fd (1=stdout, 2=stderr). No-op if
-// no trace was recorded for this throwable.
+// Print the trace for `throwable` to fd (1 = stdout, 2 = stderr); no-op when none.
 // Basename of a source path (last component after '/' or '\\').
 static const char* cajeta_basename(const char* p) {
     const char* base = p ? p : "";
@@ -143,11 +110,9 @@ static const char* cajeta_basename(const char* p) {
     return base;
 }
 
-// Print `e`'s frames to `out`. Caller holds __cajeta_trace_mutex; `e` may be NULL
-// (no trace recorded), in which case nothing is printed.
+// Print `e`'s frames to `out`; caller holds __cajeta_trace_mutex and `e` may be NULL.
 static void cajeta_print_frames_locked(struct cajeta_trace_entry* e, FILE* out) {
     if (!e) return;
-    // U3: prefer the semantic shadow frames — Type.method(File.cajeta:NN).
     if (e->shadow && e->shadow_count > 0) {
         for (int i = 0; i < e->shadow_count; i++) {
             const CajetaFrameDesc* d = e->shadow[i].desc;
@@ -159,9 +124,7 @@ static void cajeta_print_frames_locked(struct cajeta_trace_entry* e, FILE* out) 
         }
         return;
     }
-    // Fallback: raw addresses symbolized by the C library. A fiber's entry has
-    // none (backtrace(3) is skipped there), so guard rather than hand
-    // backtrace_symbols a NULL.
+    // Fallback: raw addresses symbolized by the C library; a fiber's entry has none.
     if (!e->frames || e->frame_count <= 0) return;
     char** syms = backtrace_symbols(e->frames, e->frame_count);
     if (syms) {
@@ -180,10 +143,7 @@ void __cajeta_print_trace(void* throwable, int32_t fd) {
     pthread_mutex_unlock(&__cajeta_trace_mutex);
 }
 
-// Copy up to `max` captured frame return-addresses for `throwable` into the
-// Cajeta int64[] `out_arr` (layout { i64 count@0, i64 payload@8 }), returning
-// the number written. 0 when no trace was recorded (capture off / fiber /
-// Windows / already evicted). Powers Throwable.getStackTrace().
+// Copy up to `max` return-addresses for `throwable` into the int64[] `out_arr`.
 int32_t __cajeta_get_trace(void* throwable, void* out_arr, int32_t max) {
     if (!throwable || !out_arr || max <= 0) return 0;
     int64_t cap = *((int64_t*) out_arr);               // element capacity
@@ -201,12 +161,7 @@ int32_t __cajeta_get_trace(void* throwable, void* out_arr, int32_t max) {
     return n;
 }
 
-// Print ONE throwable's header (its message, optionally prefixed "Caused by: ")
-// followed by its captured frames, to fd. Powers Throwable/Exception
-// .printStackTrace(): the Cajeta side calls this per cause-chain link and walks
-// getCause() polymorphically. Message extraction mirrors __cajeta_emit_uncaught
-// (Throwable.message@8 -> String -> int8[] payload@8 / byteLength@16), fully
-// null/low-address guarded so a legacy int-throw can't fault.
+// Print ONE throwable's header and frames to fd; printStackTrace() calls it per link.
 void __cajeta_print_trace_one(void* throwable, int32_t fd, int32_t caused_by) {
     FILE* out = (fd == 1) ? stdout : stderr;
     const char* mbytes = NULL;
@@ -244,18 +199,8 @@ void __cajeta_print_trace_one(void* throwable, int32_t fd, int32_t caused_by) {
     fflush(out);
 }
 
-// Helper for the uncaught-throw path: print the throwable's message
-// (if any) and stack trace to stderr. Mirrors Java/Python's "Exception
-// in thread main: ... \n Traceback: ..." shape. Throwable layout is
-// { vtable, message, ... } so the message field is at offset 8 in
-// any class derived from Throwable — see ErrorModel.md § hierarchy.
-// If the value isn't a Throwable instance (e.g. legacy int throw via
-// IntToPtr), the message read may yield garbage; we print the raw
-// pointer in that case as a hex fallback. The trace is recorded at
-// throw time regardless of whether the throwable carries a message.
-// diagnostic-exceptions Unit 1 (1.2.3): under --diag-format=json an uncaught
-// throw emits one NDJSON diagnostic line instead of free text. Definitions live
-// with the other diagnostic natives further down; forward-declared here.
+// Print the throwable's message and trace to stderr; a legacy int throw prints as hex.
+// Under --diag-format=json this emits one NDJSON line instead; defined further down.
 static int  __cajeta_diag_json_enabled(void);
 static void __cajeta_emit_uncaught_json(void* value);
 static int  cajeta_json_escape(void* strObj, char* out, int outcap);
@@ -266,13 +211,8 @@ static void __cajeta_emit_uncaught(void* value, int is_unrec) {
         return;
     }
     const char* kind = is_unrec ? "unrecoverable" : "uncaught";
-    // Throwable.message (slot 1) is a Cajeta String OBJECT, not a C string:
-    //   Throwable { vtable@0, String message@8 }
-    //   String    { vtable@0, int8[] bytes@8, int32 byteLength@16, ... }
-    //   int8[]    { i64 count@0, payload@8 }
-    // Extract the UTF-8 payload + byteLength and print bounded with %.*s. Every
-    // hop is null/low-address guarded (legacy int throws via IntToPtr, or a
-    // null/empty message); on any failure fall back to the bare hex value.
+    // Throwable { vtable@0, String message@8 }; String { vtable@0, int8[] bytes@8,
+    // int32 byteLength@16 }; int8[] { i64 count@0, payload@8 }. Every hop is guarded.
     const char* mbytes = NULL;
     int mlen = 0;
     if (value && (uintptr_t) value >= 4096) {
@@ -296,11 +236,7 @@ static void __cajeta_emit_uncaught(void* value, int is_unrec) {
             }
         }
     }
-    // write(2), not fprintf(stderr): the caller abort()s (unrecoverable) or
-    // exit()s, and abort() doesn't flush stdio. On Windows stderr is block-
-    // buffered when piped (e.g. under a gtest death test), so an fprintf'd
-    // message never reaches the fd. Format into a stack buffer, then write the
-    // raw bytes to fd 2 directly.
+    // write(2), not fprintf: the caller abort()s without flushing, and Windows buffers.
     char buf[1024];
     int n;
     if (mbytes) {
@@ -320,9 +256,7 @@ static void __cajeta_emit_uncaught(void* value, int is_unrec) {
 __attribute__((noreturn))
 void __cajeta_throw(void* value) {
     __cajeta_trace_record(value);
-    // CP6f-3: exception breakpoint. Notify the debugger BEFORE unwinding drops
-    // or longjmping, so the throwing frame chain (and its locals) are still
-    // live to inspect while parked. No-op when no handler is installed.
+    // Notify the debugger BEFORE unwinding, while the throwing frames are still live.
     {
         cajeta_dbg_exception_fn xh = __cajeta_dbg_exception_handler;
         if (xh) xh(value, __cajeta_dbg_current_fiber_id(),
@@ -336,15 +270,10 @@ void __cajeta_throw(void* value) {
             // Alarm semantics — abort produces a SIGABRT, dump-friendly.
             abort();
         }
-        // Recoverable that escaped every handler. Exit cleanly with a
-        // nonzero code. The runtime's stderr emission above is the user-
-        // facing diagnostic.
+        // A recoverable that escaped every handler: exit cleanly, nonzero.
         exit(1);
     }
-    // Unwind drops between the current top and the catching frame's watermark.
-    // Each active entry runs its drop function once; the entry itself is
-    // stack-allocated in the originating frame, so we only manipulate the
-    // chain pointer here.
+    // Each drop entry is stack-allocated in its own frame, so only the chain moves here.
     struct cajeta_drop_entry** dropTop = __cajeta_drop_top_ptr();
     struct cajeta_drop_entry* watermark = (*excTop)->drop_watermark;
     while (*dropTop != watermark) {
@@ -356,30 +285,13 @@ void __cajeta_throw(void* value) {
         }
         *dropTop = e->prev;
     }
-    // NOTE: a throw does NOT walk the scope chain here. A scope-owned
-    // discarded-spawn task stranded by this throw (its `scope { }` exit
-    // skipped) is still joined + freed by the CATCHING function's
-    // __cajeta_scope_exit_to(entry watermark), which walks every frame
-    // above function entry on the way out — so nothing leaks and every
-    // child is joined before the catcher returns. (Borrow lifetime across
-    // the throw is the static checker's concern, per Concurrency.md.) An
-    // earlier attempt to join per-try here was removed: an exc-frame
-    // watermark can name a scope frame already popped between try-entry
-    // and the throw, so walking to it freed live frames.
-    // U3: the unwound frames never ran __cajeta_line_leave, so restore the
-    // shadow line-stack depth to the catching try-frame's watermark before we
-    // resume in its catch block. Snapshot already taken in __cajeta_trace_record.
+    // A throw does NOT walk the scope chain: the CATCHING function's __cajeta_scope_exit_to
+    // joins every stranded child. Joining per-try here freed frames a watermark had popped.
+    // The unwound frames never ran __cajeta_line_leave, so restore the shadow depth.
     __cajeta_shadow_set_top((*excTop)->shadow_watermark);
-    // U10 (§3.11): and the instrumentation depth, for the same reason — the
-    // unwound frames never ran __cajeta_prof_instr_exit either. Leaving it
-    // high makes every later root call look as though it had a probed
-    // ancestor, which is exactly the fabricated call edge §3.11 forbids.
+    // And the instrumentation depth, or every later root call fabricates a call edge.
     __cajeta_prof_instr_set_depth((*excTop)->instr_watermark);
-    // 9.1: same for the DEBUG frame chain — the unwound frames never ran
-    // __cajeta_dbg_frame_leave, so free every node between the current head
-    // and the catching try-frame's watermark. Only nodes owned by THIS chain
-    // are freed (node-paired ownership); the loop is bounded against a
-    // corrupt chain rather than trusting it.
+    // Same for the DEBUG chain; the loop is bounded rather than trusting the chain.
     {
         struct cajeta_dbg_frame** dbgTop = __cajeta_dbg_top_ptr();
         struct cajeta_dbg_frame* mark = (*excTop)->dbg_watermark;
@@ -400,18 +312,13 @@ void* __cajeta_get_thrown(void) {
 }
 
 // --- I/O helpers: print / println / log (SLF4J-style {} templating) ----------
-//
-// The compiler emits direct calls to these for System.{stdout,stderr,stdin}
-// .{print,println,printf}(...). stream is the file descriptor: 0=stdin,
-// 1=stdout, 2=stderr. Writing to stdin is unusual but supported because the
-// language exposes the same surface on all three streams.
+// `stream` is the file descriptor: 0 = stdin, 1 = stdout, 2 = stderr.
 
 #include <unistd.h>
 
 static void __cajeta_emit(int32_t stream, const char* s, size_t n) {
     if (!s || n == 0) return;
-    // Use write() so output is unbuffered relative to the host's stdio buffers —
-    // matters for tests that capture descriptor-level output.
+    // write(), so output is unbuffered relative to the host's stdio buffers.
     ssize_t r = write(stream, s, n);
     (void) r;  // best-effort; ignore short writes / EBADF
 }
@@ -426,9 +333,7 @@ void __cajeta_println(int32_t stream, const char* s) {
     __cajeta_emit(stream, "\n", 1);
 }
 
-// Primitive overloads — the compiler picks one based on the static type of the
-// argument expression. Integers are widened to i64, floats to f64. Booleans
-// stringify to "true"/"false" (matching Java's PrintStream.println(boolean)).
+// Primitive overloads, picked by the argument's static type; booleans stringify as Java's.
 void __cajeta_print_i64(int32_t stream, int64_t v) {
     char buf[32];
     int n = snprintf(buf, sizeof(buf), "%lld", (long long) v);
@@ -459,13 +364,7 @@ void __cajeta_println_bool(int32_t stream, int32_t v) {
 }
 
 // --- string concatenation helpers --------------------------------------------
-//
-// The compiler emits these when it sees `+` with at least one String operand.
-// Concatenation results and stringified primitives are heap-allocated and leak
-// today — Cajeta's owner/borrower memory model isn't wired through these yet.
-// Acceptable for now: typical workloads concat a bounded number of times per
-// log call, not in tight loops; a future pass will thread the lifetime through
-// the IR.
+// Results and stringified primitives are heap-allocated and LEAK: no owner model yet.
 
 char* __cajeta_i64_to_str(int64_t v) {
     char buf[32];
@@ -478,10 +377,7 @@ char* __cajeta_i64_to_str(int64_t v) {
     return out;
 }
 
-// Lever #1 (string-concat fast path): decimal length of an int64, no allocation.
-// Lets the concat lowering size its destination buffer for an integer operand
-// without first malloc'ing a stringified copy. Counts the sign for negatives;
-// the unsigned magnitude is computed via a wrap-safe negate (handles INT64_MIN).
+// Decimal length of an int64, allocation-free, so a concat can size its buffer.
 int64_t __cajeta_i64_str_len(int64_t v) {
     int64_t n = 0;
     uint64_t u;
@@ -492,13 +388,8 @@ int64_t __cajeta_i64_str_len(int64_t v) {
     return n;
 }
 
-// Lever #1: write the decimal text of an int64 straight into `dst` (no NUL, no
-// allocation) and return the byte count. The concat lowering calls this to format
-// an integer operand directly into the result String's byte storage, eliminating
-// the per-concat __cajeta_i64_to_str malloc/free (60k/iter in the hashmap-string
-// bench). `dst` must hold __cajeta_i64_str_len(v) bytes. Hand-rolled decimal — NOT
-// snprintf: profiling showed snprintf's printf machinery (__printf_buffer/_itoa_word/
-// __vsnprintf) dominating the bench; a digit loop is ~5x cheaper and locale-free.
+// Write an int64's decimal text into `dst` (no NUL, no allocation) and return the byte
+// count; `dst` must hold __cajeta_i64_str_len(v) bytes. Hand-rolled, NOT snprintf.
 int64_t __cajeta_i64_to_buf(int64_t v, char* dst) {
     char tmp[20];
     int i = 0;
@@ -514,11 +405,7 @@ int64_t __cajeta_i64_to_buf(int64_t v, char* dst) {
     return n;
 }
 
-// The UNSIGNED twins of the three helpers above. A uint64 above 2^63 has no
-// signed rendering — formatting it through the int64 path wraps it negative,
-// which is how a hash printed as -5808556873153909620 while comparing equal
-// to 12638187200555641996. The concat lowering picks the pair by the
-// operand's declared signedness; these never emit a sign character.
+// The UNSIGNED twins of the three above: a uint64 past 2^63 wraps through the int64 path.
 char* __cajeta_u64_to_str(uint64_t v) {
     char buf[24];
     int n = snprintf(buf, sizeof(buf), "%llu", (unsigned long long) v);
@@ -560,24 +447,14 @@ char* __cajeta_f64_to_str(double v) {
     return out;
 }
 
-// Boolean stringification returns a static literal — callers must not free it.
-// All other to_str helpers return malloc'd memory; concat treats every input as
-// borrowed (never frees) to keep the rule uniform.
+// Boolean stringification returns a STATIC literal — callers must not free it.
 const char* __cajeta_bool_to_str(int32_t v) {
     return v ? "true" : "false";
 }
 
 // --- wrapper-type toString() formatters (plan W6) ----------------------------
-//
-// `cajeta.lang` numeric/Boolean wrappers render their value into a heap
-// `cajeta.lang.String` using the same length-then-fill idiom the reflection
-// API uses for names (Method.getName / Field.getName): a `_len` native sizes
-// the decimal/`true`/`false` text, then an `_into` native copies it into a
-// caller-allocated `int8[]` whose layout is `{ int64 capacity; bytes... }`
-// (the cajeta array header is the 8-byte count, data follows). No allocation
-// crosses the boundary, so there's nothing to leak — unlike the `_to_str`
-// concat helpers above. Signed/unsigned/float are split so a `uint64` with the
-// high bit set formats as its true magnitude (%llu), not a negative %lld.
+// A `_len` native sizes the text and an `_into` fills a caller-allocated int8[], so
+// nothing allocated crosses the boundary. Unsigned is split out for high-bit values.
 static void cajeta_str_into(void* out, const char* src, int n) {
     if (!out) return;
     if (n < 0) n = 0;
@@ -628,17 +505,9 @@ void __cajeta_bool_to_str_into(int32_t v, void* out) {
 }
 
 // --- diagnostic-exceptions Unit 1: canonical type name + JSON escaping --------
-//
-// Throwable.toJson() builds the NDJSON diagnostic in Cajeta; these two natives
-// supply the pieces Cajeta can't reach: the canonical RTTI type name (the
-// default diagnostic `code`) and JSON-string escaping (mirrors the compiler's
-// jsonEscape in Diagnostics.cpp so runtime + compile-time diagnostics agree).
-// Both use the length-then-fill idiom (see cajeta_str_into above).
+// The pieces Throwable.toJson() cannot reach from Cajeta; both use length-then-fill.
 
-// diagnostic-exceptions Unit 2 (2.1.2): the diagnostic `code` is the throwable
-// type's @DiagnosticCode("...") value when present, else its canonical type
-// name. The annotation name is retained in the class RTTI (no retention filter),
-// so it is readable at runtime with no debug info.
+// The diagnostic `code`: the type's @DiagnosticCode value when present, else its name.
 static const char* cajeta_diag_annotation_code(void* obj) {
     if (!obj || (uintptr_t) obj < 4096) return NULL;
     void* r = cajeta_rtti_from_obj(obj);
@@ -691,9 +560,7 @@ void __cajeta_type_name_into(void* obj, void* out) {
     cajeta_str_into(out, n ? n : "", n ? (int) strlen(n) : 0);
 }
 
-// Escape a cajeta.lang.String's UTF-8 bytes for embedding inside a JSON string
-// literal. `strObj` layout: { vtable@0, int8[] bytes@8, int32 byteLength@16 };
-// int8[] is { int64 count@0, payload@8 }. out == NULL just counts.
+// Escape a String's UTF-8 bytes for a JSON string literal; out == NULL just counts.
 static int cajeta_json_escape(void* strObj, char* out, int outcap) {
     const char* src = NULL;
     int n = 0;
@@ -757,13 +624,7 @@ void __cajeta_json_escape_into(void* strObj, void* out) {
 }
 
 // --- diagnostic-exceptions Unit 2: reflection-serialized `fields` -------------
-//
-// Serialize a throwable's own declared instance fields (excluding the built-in
-// message/cause slots) as a JSON `,"fields":{...}` fragment, driven by the RTTI
-// property table (no per-type code). Primitives → JSON numbers/booleans; String
-// references → escaped strings; other references are skipped. Reuses
-// cajeta_return_kind + the CAJETA_RK_* kinds (cajeta_rt_inject.c). out == NULL
-// counts; returns bytes written (a leading-comma fragment, or 0 when empty).
+// A throwable's own declared fields as a `,"fields":{...}` fragment, from the RTTI table.
 static int cajeta_diag_fields(void* obj, char* out, int outcap) {
     if (!obj || (uintptr_t) obj < 4096) return 0;
     void* r = cajeta_rtti_from_obj(obj);
@@ -836,10 +697,7 @@ void __cajeta_diag_fields_into(void* obj, void* out) {
 }
 
 // --- diagnostic-exceptions Unit 3: semantic-frame accessors ------------------
-//
-// getStackTrace() reads the shadow snapshot recorded at throw time: a count,
-// then per frame a #FrameDesc pointer + line. The desc string readers resolve
-// type/method/file (length-then-fill); the role derives from the type package.
+// getStackTrace() reads the throw-time shadow snapshot: a count, then desc + line per frame.
 
 // Number of semantic (line-info) frames for `throwable`, 0 if none captured.
 int32_t __cajeta_trace_shadow_count(void* throwable) {
@@ -851,8 +709,7 @@ int32_t __cajeta_trace_shadow_count(void* throwable) {
     pthread_mutex_unlock(&__cajeta_trace_mutex);
     return c;
 }
-// The #FrameDesc handle for semantic frame `i` (innermost = 0), or 0. An opaque
-// int64 (CajetaFrameDesc*) so the Cajeta @Native ABI stays pure i64/i32.
+// The #FrameDesc handle for semantic frame `i` (innermost = 0), or 0 — an opaque int64.
 int64_t __cajeta_trace_shadow_desc(void* throwable, int32_t i) {
     if (!throwable || i < 0) return 0;
     pthread_mutex_lock(&__cajeta_trace_mutex);
@@ -913,9 +770,7 @@ int32_t __cajeta_desc_role(int64_t desc) {
     return 0;
 }
 
-// Diagnostic output format for the uncaught-throw path. -1 = uninitialized (read
-// from the CAJETA_DIAG_FORMAT env once); 0 = text; 1 = json. The JIT host sets it
-// explicitly from --diag-format; an AOT exe picks it up from the environment.
+// Diagnostic format for the uncaught-throw path: -1 unread, 0 text, 1 json.
 static int __cajeta_diag_format_json = -1;
 
 void __cajeta_set_diag_format_json(int enabled) {
@@ -929,9 +784,7 @@ static int __cajeta_diag_json_enabled(void) {
     return __cajeta_diag_format_json;
 }
 
-// Write one NDJSON diagnostic line for an uncaught throw (severity/code/message/
-// frames), a superset of the compiler's --diag-format=json shape. Reuses the
-// canonical type name (code), JSON escaping, and the throw-site trace table.
+// One NDJSON diagnostic line for an uncaught throw: severity, code, message, frames.
 static void __cajeta_emit_uncaught_json(void* value) {
     void* strObj = NULL;
     if (value && (uintptr_t) value >= 4096) strObj = ((void**) value)[1];
@@ -941,8 +794,7 @@ static void __cajeta_emit_uncaught_json(void* value) {
     if (!tn) tn = "cajeta.error.Throwable";
     size_t tnlen = strlen(tn);
 
-    // Copy the frame info out under the trace lock: semantic shadow frames when
-    // present (type/method/file/line), else raw return addresses.
+    // Copy the frame info out under the trace lock.
     uintptr_t addrs[CAJETA_TRACE_MAX_FRAMES];
     int addr_count = 0;
     CajetaShadowFrame sh[CAJETA_TRACE_MAX_FRAMES];
@@ -1016,11 +868,7 @@ static void __cajeta_emit_uncaught_json(void* value) {
     free(buf);
 }
 
-// Copy `length` bytes from `data` into a freshly malloc'd null-terminated
-// string. Used by struct-view field reads on `String`-typed fields: the
-// inline bytes in the buffer aren't null-terminated, so we materialize an
-// owned copy that's compatible with the existing String stdlib (strlen,
-// strcmp, etc.). Caller takes ownership of the result.
+// Copy `length` bytes into a malloc'd NUL-terminated string the caller owns.
 char* __cajeta_str_view_to_owned(const char* data, int64_t length) {
     if (length < 0) length = 0;
     char* out = (char*) malloc((size_t) length + 1);
@@ -1034,9 +882,7 @@ int64_t __cajeta_str_len(const char* s) {
     return s ? (int64_t) strlen(s) : 0;
 }
 
-// Returns 1 if both strings are non-null and byte-equal, 0 otherwise. Two nulls
-// are considered NOT equal to match the principle that null is not a value —
-// adjust if/when null-semantics consolidate around Java's behavior.
+// 1 when both strings are non-null and byte-equal; two nulls are NOT equal.
 int32_t __cajeta_str_equals(const char* a, const char* b) {
     if (!a || !b) return 0;
     return strcmp(a, b) == 0 ? 1 : 0;
@@ -1046,9 +892,7 @@ int32_t __cajeta_str_isEmpty(const char* s) {
     return (!s || s[0] == '\0') ? 1 : 0;
 }
 
-// charAt returns the byte at `index` as int8. Out-of-range or null returns 0
-// (matches a zero-default rather than throwing — exceptions in Cajeta require a
-// live try-frame, which a primitive accessor shouldn't assume).
+// The byte at `index` as int8; out-of-range or null gives 0 rather than throwing.
 int8_t __cajeta_str_charAt(const char* s, int64_t index) {
     if (!s || index < 0) return 0;
     size_t n = strlen(s);
@@ -1081,9 +925,7 @@ int32_t __cajeta_str_contains(const char* s, const char* needle) {
     return strstr(s, needle) != NULL ? 1 : 0;
 }
 
-// Returns a malloc'd ASCII-uppercased copy. Non-ASCII bytes pass through
-// unchanged — multibyte/UTF-8 case folding needs a real locale-aware library
-// that's outside the scope of the embedded runtime today.
+// A malloc'd ASCII-uppercased copy; non-ASCII bytes pass through unfolded.
 char* __cajeta_str_toUpperCase(const char* s) {
     if (!s) {
         char* out = (char*) malloc(1);
@@ -1118,8 +960,7 @@ char* __cajeta_str_toLowerCase(const char* s) {
     return out;
 }
 
-// Strip ASCII whitespace from both ends. Mirrors Java's String.trim, which
-// trims only U+0020 and below — not the broader Character.isWhitespace set.
+// Strip ASCII whitespace from both ends, as Java's String.trim does (U+0020 and below).
 char* __cajeta_str_trim(const char* s) {
     if (!s) {
         char* out = (char*) malloc(1);
@@ -1139,8 +980,7 @@ char* __cajeta_str_trim(const char* s) {
     return out;
 }
 
-// Replace every occurrence of `from` in `s` with `to`. Returns malloc'd.
-// If `from` is empty or null, the input is returned as a fresh copy.
+// Replace every `from` in `s` with `to`, malloc'd; an empty `from` returns a fresh copy.
 char* __cajeta_str_replace(const char* s, const char* from, const char* to) {
     if (!s) {
         char* out = (char*) malloc(1);
@@ -1156,7 +996,6 @@ char* __cajeta_str_replace(const char* s, const char* from, const char* to) {
     if (!to) to = "";
     size_t flen = strlen(from);
     size_t tlen = strlen(to);
-    // Count occurrences to size the output buffer.
     size_t count = 0;
     const char* p = s;
     while ((p = strstr(p, from)) != NULL) { count++; p += flen; }

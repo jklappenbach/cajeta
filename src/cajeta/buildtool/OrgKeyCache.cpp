@@ -1,3 +1,5 @@
+// The verifying cache behind OrgKeyCache.h.
+
 #include "cajeta/buildtool/OrgKeyCache.h"
 
 namespace cajeta::buildtool {
@@ -9,9 +11,7 @@ namespace cajeta::buildtool {
                                            "%s", msg.c_str());
         }
 
-        // A repository name and an org name both reach this key. `\x1f`
-        // cannot appear in either, so no pair of them can collide into one
-        // entry — which would let one repository answer for another.
+        // `\x1f` is in neither name, so no two pairs can collide into one entry.
         std::string cacheKey(const std::string& repo, const std::string& org) {
             return repo + "\x1f" + org;
         }
@@ -36,9 +36,7 @@ namespace cajeta::buildtool {
                 if (now < it->second.notAfter) {
                     return std::optional<OrgKeyDocument>{it->second};
                 }
-                // Past its window. Drop it and go back to the repository:
-                // an expired document must be refused however it was
-                // obtained, and "from our own cache" is still obtained.
+                // An expired document is refused however it was obtained.
                 cache_.erase(it);
             }
         }
@@ -46,8 +44,7 @@ namespace cajeta::buildtool {
         auto bytes = repo.organizationKeys(org);
         if (!bytes) return bytes.takeError();
         if (!bytes->has_value()) {
-            // Absence, not failure. The caller decides what a repository
-            // that vouches for nobody is allowed to install (spec 5.4).
+            // Absence, not failure: the caller decides what that permits.
             return std::optional<OrgKeyDocument>{};
         }
 
@@ -60,16 +57,11 @@ namespace cajeta::buildtool {
                        "checked");
         }
 
-        // The freshness rule is applied HERE and not merely available in
-        // the parser. An expired entry is dropped above and refetched, and
-        // a refetch is precisely when a mirror gets to hand back an older
-        // document (spec 2.9).
+        // Enforced HERE: a refetch is when a mirror can hand back an older document.
         auto doc = loadOrgKeyDocument(**bytes, *roots, now, seenIssuedAt);
         if (!doc) return doc.takeError();
         if (doc->organization != org) {
-            // The document has to speak for the org we asked about.
-            // Without this, a repository could answer every request with
-            // one organization's document and borrow its namespaces.
+            // Or a repository could answer every request with one org's document.
             return err("repository '" + repo.name() + "' served a key "
                        "document for '" + doc->organization + "' when asked "
                        "for '" + org + "'");
@@ -78,8 +70,7 @@ namespace cajeta::buildtool {
         std::lock_guard<std::mutex> lk(mu_);
         ++fetches_;
         cache_[key] = *doc;
-        // Remember the high-water mark even after the document itself is
-        // evicted for expiry, or every expiry would reopen the replay.
+        // The mark outlives the document: expiry must not reopen the replay.
         auto& high = seenIssuedAt_[key];
         if (doc->issuedAt > high) high = doc->issuedAt;
         return std::optional<OrgKeyDocument>{*doc};
@@ -113,12 +104,8 @@ namespace cajeta::buildtool {
                        "cannot be checked");
         }
 
-        // The origin binding is enforced inside loadRepositoryDelegation,
-        // against repo.origin(). There was a second comparison here against
-        // repo.name() — the label from the user's own manifest — which is the
-        // bug 1bc40610 fixed in the revocation path and missed in this copy.
-        // The two strings are equal only when a repository is configured
-        // under its own origin, so every real deployment was refused.
+        // The origin binding is enforced inside loadRepositoryDelegation against
+        // repo.origin(); comparing repo.name() here too refuses real deployments.
         std::time_t seenIssuedAt = 0;
         {
             std::lock_guard<std::mutex> lk(mu_);
@@ -132,9 +119,6 @@ namespace cajeta::buildtool {
 
         std::lock_guard<std::mutex> lk(mu_);
         ++fetches_;
-        // The high-water mark outlives the cached delegation deliberately: an
-        // entry expires on every rotation, and if the mark went with it each
-        // expiry would reopen the replay window.
         auto& high = seenIssuedAt_[key];
         if (del->issuedAt > high) high = del->issuedAt;
         delegations_[key] = *del;

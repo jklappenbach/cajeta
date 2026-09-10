@@ -1,6 +1,4 @@
-//
 // CP7-1a: memory-facets classification core. See MemoryFacets.h.
-//
 #include "cajeta/dbg/MemoryFacets.h"
 
 namespace cajeta::dbg {
@@ -15,8 +13,6 @@ namespace cajeta::dbg {
     OwnershipRole deriveOwnershipRole(const FieldFacetInputs& in) {
         // Moved-out dominates: a consumed binding must never read as live.
         if (in.transferredOut) return OwnershipRole::TransferredOut;
-        // Owns a droppable (incl. the owning-view form, which is also a
-        // reference) => Owner, ahead of the borrow check.
         if (in.ownsDrop) return OwnershipRole::Owner;
         if (in.isReference) return OwnershipRole::Borrow;
         return OwnershipRole::Unknown;
@@ -27,16 +23,13 @@ namespace cajeta::dbg {
     }
 
     LifetimeState deriveLifetime(const LifetimeInputs& in) {
-        // Static move-out (the `#`-transferred-out role) dominates.
         if (in.ownership == OwnershipRole::TransferredOut)
             return LifetimeState::MovedOut;
-        // An owner's runtime drop entry decides between still-scheduled-to-drop
-        // and moved-out-at-runtime (the entry was deactivated on transfer).
+        // An owner's runtime drop entry separates still-scheduled-to-drop from moved-out-at-runtime.
         if (in.ownership == OwnershipRole::Owner && in.hasDropEntry)
             return in.dropEntryActive ? LifetimeState::AboutToDrop
                                       : LifetimeState::MovedOut;
-        // Borrows, plain values, and owners without a tracked entry: a
-        // registered local is in scope, so it is live.
+        // Borrows, plain values and owners without a tracked entry: a registered local is in scope, so live.
         return LifetimeState::Live;
     }
 

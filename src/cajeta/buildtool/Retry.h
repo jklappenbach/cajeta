@@ -1,10 +1,5 @@
-// Retry with exponential backoff for transient network failures.
-//
-// Cajeta-side network actions (upload, publish, repo fetch) wrap
-// their attempt in retryWithBackoff so a single 503 from a CDN or a
-// dropped TCP connection doesn't fail the build. Backoff doubles
-// per attempt (capped) and the maximum attempt count is bounded so
-// a permanent failure surfaces in seconds, not minutes.
+// Retry with exponential backoff for transient network failures, bounded in
+// both backoff and attempts so a permanent failure surfaces in seconds.
 
 #pragma once
 
@@ -19,24 +14,16 @@
 namespace cajeta::buildtool {
 
     struct RetryPolicy {
-        // 1 = no retries (one attempt). 3 attempts means try once,
-        // then up to two retries.
-        int maxAttempts = 3;
+        int maxAttempts = 3;   // 1 = one attempt, no retries
         std::chrono::milliseconds initialBackoff{200};
-        // Each successive backoff doubles up to this cap.
-        std::chrono::milliseconds maxBackoff{4000};
-        // Classify the error message as transient (retry) vs
-        // permanent (surface immediately). The classifier sees the
-        // stringified error, NOT the typed llvm::Error — this matches
-        // how Phase 9 actions tag failures (`[curl=N]`, `(status=N)`
-        // markers embedded in the message).
+        std::chrono::milliseconds maxBackoff{4000};   // each backoff doubles to here
+        // Transient (retry) or permanent (surface now)? The classifier sees the
+        // STRINGIFIED error, which is where the actions tag their failures.
         std::function<bool(const std::string&)> isTransient;
     };
 
-    // Run `attempt`. On success: return its result. On error: if the
-    // policy says transient AND attempts remain, sleep the current
-    // backoff and try again. The last error propagates out when all
-    // retries exhaust.
+    // Run `attempt`, retrying while the policy calls the error transient and
+    // attempts remain. The last error propagates out once they exhaust.
     template <typename Fn>
     auto retryWithBackoff(const RetryPolicy& policy, Fn&& attempt)
         -> decltype(attempt()) {
@@ -63,13 +50,10 @@ namespace cajeta::buildtool {
     // 408 / 425 / 429 / 5xx → transient.
     bool isTransientHttpStatus(long status);
 
-    // Connect/resolve/send/recv-timeout → transient. CURLE_OK never
-    // appears in this path (not an error).
+    // Connect/resolve/send/recv-timeout → transient. CURLE_OK never arrives here.
     bool isTransientCurlCode(int curlCode);
 
-    // Default classifier the upload + publish actions install on
-    // their policy: parses `[curl=N]` and `(status=N)` tags out of
-    // the message string.
+    // The default classifier: parses `[curl=N]` and `(status=N)` out of a message.
     bool defaultNetworkTransient(const std::string& msg);
 
 } // namespace cajeta::buildtool

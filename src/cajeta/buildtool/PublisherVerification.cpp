@@ -17,10 +17,7 @@ namespace cajeta::buildtool {
             return out.str();
         }
 
-        // Appended to every refusal. The person reading a failed publisher
-        // check is exactly the one who needs an address they can trust, and
-        // a contact nothing surfaces is a signed field nobody reads — worse
-        // than none, because it looks authoritative (spec 2.10.4).
+        // Appended to every refusal: a contact nothing surfaces is worse than none.
         std::string contactSuffix(const OrgKeyDocument& doc) {
             if (doc.securityContact.uri.empty()) return {};
             std::string out = " Report a problem with '" + doc.organization
@@ -36,8 +33,8 @@ namespace cajeta::buildtool {
     bool namespaceOwns(const std::string& nameSpace, const std::string& name) {
         if (nameSpace.empty() || name.empty()) return false;
         if (name == nameSpace) return true;
-        // The separator is the whole point: without it `dev.cajeta` would
-        // own `dev.cajetaevil`, and an attacker picks the name.
+        // The separator is the whole point: without it `dev.cajeta` would own
+        // `dev.cajetaevil`, and an attacker picks the name.
         return name.size() > nameSpace.size()
             && name.compare(0, nameSpace.size(), nameSpace) == 0
             && name[nameSpace.size()] == '.';
@@ -52,9 +49,7 @@ namespace cajeta::buildtool {
         PublisherVerdict v;
         v.organization = doc.organization;
 
-        // Namespace first. It is the cheapest check and the most
-        // informative failure: "this org does not own that name" tells a
-        // reader something a signature mismatch does not.
+        // Namespace first: cheapest, and the most informative failure.
         bool owned = false;
         for (const auto& ns : doc.namespaces) {
             if (namespaceOwns(ns, artifactName)) { owned = true; break; }
@@ -72,9 +67,7 @@ namespace cajeta::buildtool {
 
         auto usable = doc.usableKeys(now);
         if (usable.empty()) {
-            // An empty set is a legitimate parse result — every key out of
-            // its window — and must read as "cannot verify", never as
-            // "verified". Reporting it separately keeps that explicit.
+            // An empty set is legitimate and reads "cannot verify", not "verified".
             v.check = PublisherCheck::NoUsableKey;
             v.message = "'" + doc.organization + "' has no signing key "
                         "inside its validity window right now, so nothing it "
@@ -84,16 +77,11 @@ namespace cajeta::buildtool {
         }
 
         bool unreadable = false;
-        // A key that WOULD have verified but is revoked. Held rather than
-        // returned immediately: a document may list a revoked key beside a
-        // good one, and the good one still verifies.
+        // Held, not returned: a good key may sit beside this revoked one.
         const RevokedKey* blockedBy = nullptr;
         for (const auto* key : usable) {
             if (revocation) {
                 if (const auto* r = revocation->find(key->id, doc.organization)) {
-                    // Check the signature anyway, so the verdict can say
-                    // "the key that signed this is revoked" rather than the
-                    // much weaker "some revoked key exists".
                     auto match = verifyDetachedEd25519File(
                         artifactPath, signature, key->publicKeyPem);
                     if (!match) {
@@ -107,9 +95,8 @@ namespace cajeta::buildtool {
             auto ok = verifyDetachedEd25519File(artifactPath, signature,
                                                 key->publicKeyPem);
             if (!ok) {
-                // An unusable key is not an answer about the signature.
-                // Remember it, so a document whose keys are ALL unusable
-                // does not report as a clean mismatch.
+                // Remembered, so a document whose keys are ALL unusable does not
+                // report as a clean mismatch.
                 llvm::consumeError(ok.takeError());
                 unreadable = true;
                 continue;
@@ -121,9 +108,6 @@ namespace cajeta::buildtool {
             }
         }
 
-        // Before the generic mismatch: a revoked key that matches is a
-        // different fact from no key matching, and the two send an operator
-        // to different places.
         if (blockedBy) {
             v.check = PublisherCheck::Revoked;
             v.keyId = blockedBy->id;

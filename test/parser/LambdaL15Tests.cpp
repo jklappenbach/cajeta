@@ -102,7 +102,7 @@ TEST(LambdaL15Tests, bareParamsInferFromCtorArgFormal) {
         "public class Holder {\n"
         "    public (int32, int32) -> int32 fn;\n"
         "    public Holder(int32 seed, (int32, int32) -> int32 fn) {\n"
-        "        this.fn = fn;\n"
+        "        this.fn #= fn;\n"                       // Unit 9: a keeper stores with `#=`
         "    }\n"
         "}\n"
         "public final class D {\n"

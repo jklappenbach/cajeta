@@ -1,12 +1,5 @@
-//
-// NVPTX backend — LLVM device-module → PTX assembly.
-//
-// CajetaXPU.md §5.2: the NVIDIA path lowers a device llvm::Module
-// (triple nvptx64-nvidia-cuda) through an NVPTX TargetMachine to PTX
-// text, which `ptxas` then assembles into a .cubin (see assembleCubin,
-// later increment). This header is the LLVM-side seam; it does not
-// depend on the CUDA driver and is testable without a GPU.
-//
+// NVPTX backend: a device llvm::Module lowered to PTX text, which `ptxas` then
+// assembles into a .cubin. Touches no CUDA driver, so it is testable with no GPU.
 
 #pragma once
 
@@ -24,44 +17,30 @@ namespace cajeta {
 namespace xpu {
 namespace nvidia {
 
-    // The device triple. NVPTX 64-bit, CUDA flavor.
     inline constexpr const char* kNvptxTriple = "nvptx64-nvidia-cuda";
 
-    // Create an NVPTX TargetMachine for the given SM arch (e.g.
-    // "sm_89" for an RTX 4090). Returns nullptr if the nvptx64 target
-    // isn't registered in this LLVM build. Self-initializes the LLVM
-    // target registry on first use, so it works without a Compiler.
+    // A TargetMachine for an SM arch, or nullptr if nvptx64 is not registered in
+    // this LLVM build. Self-initializes the registry, so it needs no Compiler.
     std::unique_ptr<llvm::TargetMachine>
     createNvptxTargetMachine(const std::string& arch = "sm_89");
 
-    // Set the NVPTX triple + the TargetMachine's DataLayout on `m` so
-    // codegen against it produces correctly-laid-out device IR.
+    // Set the NVPTX triple and `tm`'s DataLayout on `m`, before any device codegen.
     void configureDeviceModule(llvm::Module& m, llvm::TargetMachine& tm);
 
-    // Emit PTX assembly text for `deviceModule` via `tm`. The module's
-    // triple / DataLayout must already be NVPTX (see
-    // configureDeviceModule). Returns the PTX, or an empty string if
-    // the target machine can't emit assembly.
+    // PTX text for `deviceModule`, which configureDeviceModule must already have
+    // run over; empty if the target machine cannot emit assembly.
     std::string emitPtx(llvm::Module& deviceModule, llvm::TargetMachine& tm);
 
-    // Locate the CUDA `ptxas` assembler: $CUDA_PATH/bin first, then PATH.
-    // Returns an empty string if not found.
+    // The CUDA `ptxas` assembler: $CUDA_PATH/bin first, then PATH; empty if absent.
     std::string findPtxas();
 
-    // Assemble PTX text into a .cubin for `arch` (e.g. "sm_89") by
-    // shelling out to ptxas. Returns the cubin bytes, or empty on failure
-    // (ptxas missing, or a ptxas error — which is logged). This is the
-    // single-arch path; multi-arch fatbin is a later increment. When
-    // `verboseLog` is given, ptxas runs with `-v` and its per-kernel resource
-    // report (registers, smem, spill, stack) is returned in it — the manifest
-    // footprint source (xpu-tile-manifest §3.1).
+    // Shell out to ptxas for a single-arch .cubin; empty bytes on failure. A given
+    // `verboseLog` adds `-v` and returns its per-kernel resource report.
     std::vector<uint8_t> assembleCubin(const std::string& ptx,
                                        const std::string& arch = "sm_89",
                                        std::string* verboseLog = nullptr);
 
-    // One kernel's resource report from `ptxas -v` text: the "Function
-    // properties for <name>" block plus its "Used N registers, ... bytes smem"
-    // line. Fields ptxas did not print are 0.
+    // One kernel's `ptxas -v` report; a field ptxas did not print stays 0.
     struct PtxasKernelStats {
         std::string name;
         unsigned registers = 0;

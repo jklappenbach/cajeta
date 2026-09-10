@@ -1,26 +1,18 @@
-//
-// jupyter-kernel U5 (spec 3.1) — the `cajeta kernel` verb.
-//
+// The `cajeta kernel` verb (jupyter-kernel spec 3.1).
 #pragma once
 
 #include <string>
 
 namespace cajeta::kernel {
 
-    // `cajeta kernel [-f <file> | --connection-file=<file>]`. With no
-    // connection file, one is generated (free ports, fresh key), written next
-    // to the user's runtime dir and printed, so the kernel can be attached to
-    // by hand. Returns the process exit code.
+    // `cajeta kernel [-f <file>]`; with no connection file one is generated, written to the runtime dir and printed.
     int dispatchKernel(int argc, const char* argv[]);
 
-    // The `kernel.json` a Jupyter kernelspec directory needs, pointing at
-    // `executable`. Written by `cajeta init --kernel`.
+    // The `kernel.json` a Jupyter kernelspec directory needs, pointing at `executable`.
     std::string kernelSpecJson(const std::string& executable);
 
-    // Install that kernelspec into the user's Jupyter data directory, so
-    // `jupyter kernelspec list` and Lab's launcher find it. Returns the
-    // kernel.json path written, or an empty string with a reason in `error`.
-    // Refuses to overwrite an existing spec unless `force`.
+    // Installs that kernelspec into the user's Jupyter data directory, refusing to
+    // overwrite unless `force`; returns the kernel.json path, or empty with `error` set.
     std::string installKernelSpec(const std::string& executable, bool force,
                                   std::string* error);
 

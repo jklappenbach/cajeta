@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 3/30/23.
-//
+// Exception for an assignment whose left and right operand types are incompatible.
 
 #pragma once
 

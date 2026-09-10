@@ -34,8 +34,7 @@ namespace cajeta::buildtool {
             return buf.str();
         }
 
-        // nullptr with no error = "this PEM is not a usable ed25519 public
-        // key", which verifyAgainstAnyKey treats as skip-this-key.
+        // Returns nullptr, with no error, when the PEM is not a usable ed25519 key.
         std::unique_ptr<EVP_PKEY, PkeyDeleter> loadEd25519PubFromBio(
                 std::unique_ptr<BIO, BioDeleter> bio) {
             if (!bio) return nullptr;
@@ -58,8 +57,6 @@ namespace cajeta::buildtool {
                 BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()))));
         }
 
-        // One verification body; the two public entry points differ only in
-        // where the key came from.
         llvm::Expected<bool> verifyWith(EVP_PKEY* key,
                                         const std::string& data,
                                         const std::string& signature,
@@ -70,7 +67,7 @@ namespace cajeta::buildtool {
                                      key) != 1) {
                 return err("openssl: DigestVerifyInit failed for " + what);
             }
-            // ed25519 is single-shot: the whole message goes in at once.
+            // ed25519 is single-shot: the whole message goes in one call, no update loop.
             int rv = EVP_DigestVerify(
                 ctx.get(),
                 reinterpret_cast<const unsigned char*>(signature.data()),
@@ -131,7 +128,6 @@ namespace cajeta::buildtool {
         for (const auto& pem : pemPaths) {
             auto ok = verifyDetachedEd25519(dataPath, signature, pem);
             if (!ok) {
-                // An unusable key is not an answer about the signature.
                 llvm::consumeError(ok.takeError());
                 continue;
             }

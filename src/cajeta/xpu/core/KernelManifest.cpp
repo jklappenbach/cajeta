@@ -1,7 +1,4 @@
-//
-// KernelManifest — record, JSON codec, occupancy fill, spill warning and the
-// registration-ctor emission. See the header.
-//
+// KernelManifest — record, JSON codec, occupancy fill, spill warning, registration ctor.
 
 #include "KernelManifest.h"
 #include "DeviceProfile.h"
@@ -266,16 +263,12 @@ namespace xpu {
             host, init->getType(), /*isConstant=*/true,
             llvm::GlobalValue::PrivateLinkage, init, "xpu.manifest." + tag);
         gv->setAlignment(llvm::MaybeAlign(1));
-        // §12.4: a NAMED data section, so the artifact carries the manifest
-        // where a tool can find it (`llvm-readelf -p .cajeta.manifest prog`)
-        // and the runtime reads it from the loaded image — no file, no
-        // storage. The ctor below references the global, so it is never
-        // dropped by the linker's dead-stripping.
+        // §12.4: a NAMED data section, so a tool can find the manifest in the artifact and
+        // the runtime reads it from the loaded image; the ctor below keeps it from stripping.
         gv->setSection(manifestSectionName(host));
         llvm::Value* archStr = b.CreateGlobalString(arch, "xpu.march." + tag);
 
-        // void __cajeta_xpu_register_kernel_manifest(i8* name, i32 backend,
-        //                                            i8* arch, i8* json, i64 len)
+        // void __cajeta_xpu_register_kernel_manifest(i8* name, i32 backend, i8* arch, i8* json, i64 len)
         llvm::FunctionCallee fn = host.getOrInsertFunction(
             "__cajeta_xpu_register_kernel_manifest",
             llvm::FunctionType::get(voidTy, {ptrTy, i32Ty, ptrTy, ptrTy, i64Ty},

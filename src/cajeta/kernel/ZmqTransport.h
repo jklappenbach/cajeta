@@ -1,28 +1,6 @@
-//
-// jupyter-kernel U5 (spec 3.1-3.3) — the ZeroMQ transport.
-//
-// Five sockets, three threads, and a strict rule about which thread touches
-// what:
-//
-//   IO thread         owns EVERY protocol socket. ZeroMQ sockets are not
-//                     thread-safe, so this is the only thread that ever calls
-//                     zmq_msg_send/recv on shell, control, iopub or stdin.
-//                     It polls for inbound frames and drains an outbound
-//                     queue on each turn.
-//   Execution thread  owns the KernelProtocol and, through it, the JIT
-//                     session. The compiler's reuse core keeps thread_local
-//                     baselines (StdlibReuseCore.h:11-15), so every cell
-//                     compile must happen on ONE thread for the session's
-//                     whole life — this one.
-//   Heartbeat thread  owns the hb socket alone and echoes bytes. It never
-//                     touches the protocol, which is the point: it answers
-//                     while a cell is running, so a long cell does not read
-//                     as a dead kernel.
-//
-// Messages cross between the first two through queues, never through shared
-// state. The cell-output pump thread reaches the IO thread the same way, by
-// enqueueing onto the outbound queue.
-//
+// The Jupyter ZeroMQ transport: five sockets over three threads sharing only
+// queues. The IO thread owns every protocol socket (not thread-safe), one
+// execution thread owns every compile (thread_local reuse), hb echoes alone.
 #pragma once
 
 #include <memory>
@@ -30,7 +8,7 @@
 
 namespace cajeta::kernel {
 
-    // A Jupyter connection file. The frontend writes one and passes its path;
+    // A Jupyter connection file: the frontend writes one and passes its path;
     // `cajeta kernel` with no path generates one and prints it.
     struct ConnectionInfo {
         std::string transport = "tcp";
@@ -44,12 +22,17 @@ namespace cajeta::kernel {
         std::string signatureScheme = "hmac-sha256";
         std::string kernelName = "cajeta";
 
-        // Reads and parses `path`. False (with a reason in `error`) if the
-        // file is missing or not a connection file.
+        // Reads and parses `path`; false, with a reason in `error`, if the file
+        // is missing or is not a connection file.
         static bool load(const std::string& path, ConnectionInfo* out,
                          std::string* error = nullptr);
 
+        // Serializes every field under its Jupyter connection-file key, the inverse
+        // of load(). Emits all of them, including a defaulted port.
         std::string toJson() const;
+
+        // Writes toJson() plus a newline to `path`, truncating any existing file.
+        // False, with a reason in `error`, when the file cannot be opened.
         bool write(const std::string& path, std::string* error = nullptr) const;
 
         // `tcp://127.0.0.1:9000` for a given port.
@@ -63,17 +46,14 @@ namespace cajeta::kernel {
         KernelTransport(const KernelTransport&) = delete;
         KernelTransport& operator=(const KernelTransport&) = delete;
 
-        // Bind the five sockets. Ports left at 0 in `info` are chosen by the
-        // OS and written back, so a generated connection file reports the
-        // ports actually in use rather than ones we hoped were free.
+        // Bind the five sockets. Ports left at 0 in `info` are chosen by the OS
+        // and written back, so `info` ends up naming the ports actually in use.
         bool bind(ConnectionInfo* info, std::string* error = nullptr);
 
-        // Run until `shutdown_request` (or `stop()`). Returns the exit code:
-        // 0 for a clean shutdown.
+        // Run until `shutdown_request` or `stop()`; returns the exit code.
         int run();
 
-        // Ask the loop to finish. Safe from any thread — a signal handler
-        // calls it.
+        // Ask the loop to finish. Safe from any thread; a signal handler calls it.
         void stop();
 
     private:

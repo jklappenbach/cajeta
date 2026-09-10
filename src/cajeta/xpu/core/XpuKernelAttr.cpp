@@ -1,6 +1,4 @@
-//
-// Implementation of XpuKernelAttr — see header for shape and rationale.
-//
+// Implementation of XpuKernelAttr — see the header for shape and rationale.
 
 #include "XpuKernelAttr.h"
 
@@ -46,9 +44,8 @@ std::optional<XpuKernelAttr> XpuKernelAttr::from(const Annotatable& a) {
 
     XpuKernelAttr out;
 
-    // @Wave(width = N) — captured by parseAnnotationInstance as a
-    // named Int64 arg. Absent annotation or missing/wrong-kind arg
-    // both leave waveWidth_ unset (lowering picks a target default).
+    // @Wave(width = N): an absent or wrong-kind arg leaves waveWidth_ unset, and
+    // lowering then picks the target default.
     if (auto wave = a.findAnnotation(XpuAttr::Wave)) {
         if (auto* arg = wave->findArg("width")) {
             if (arg->kind == AnnotationArgKind::Int64) {
@@ -57,24 +54,16 @@ std::optional<XpuKernelAttr> XpuKernelAttr::from(const Annotatable& a) {
         }
     }
 
-    // @Backend("nvidia") — unnamed string arg, single form.
-    // @Backend({"nvidia", "amd"}) — StringList form. Both shapes
-    // produce the same backends_ vector; unrecognized names are
-    // dropped silently (a future validation pass surfaces them as
-    // diagnostics at MIR-build time, where the user-facing location
-    // is available).
+    // @Backend("nvidia") and @Backend({"nvidia", "amd"}) both fill backends_.
+    // Unrecognized names are dropped here and diagnosed at MIR-build time, which
+    // is the first point with a user-facing location.
     if (auto backend = a.findAnnotation(XpuAttr::Backend)) {
-        // Single-string form: @Backend("nvidia"). Arg captured with
-        // empty name; findArg("value") routes through.
         const auto& single = backend->getString();
         if (!single.empty()) {
             if (auto b = parseBackend(single)) {
                 out.backends_.push_back(*b);
             }
         }
-        // Multi-string form: @Backend({"nvidia", "amd"}). Captured as
-        // StringList on the unnamed arg; the typed getStringList
-        // accessor returns an empty vector when absent or wrong-kind.
         for (const auto& s : backend->getStringList()) {
             if (auto b = parseBackend(s)) {
                 out.backends_.push_back(*b);
@@ -82,8 +71,7 @@ std::optional<XpuKernelAttr> XpuKernelAttr::from(const Annotatable& a) {
         }
     }
 
-    // @Occupancy(maxThreads = N, minResident = N, maxRegisters = N) — each a
-    // named Int64 arg; all optional. Non-positive values are ignored.
+    // @Occupancy(maxThreads, minResident, maxRegisters): optional named Int64 args; non-positive values are ignored.
     if (auto occ = a.findAnnotation(XpuAttr::Occupancy)) {
         auto readU = [&](const char* key) -> std::optional<unsigned> {
             if (auto* arg = occ->findArg(key)) {

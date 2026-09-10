@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 2/20/22.
-//
+// FormalParameter - one declared parameter of a method.
 
 #pragma once
 
@@ -29,17 +27,11 @@ namespace cajeta {
         MethodPtr parent;
         string name;
         CajetaTypePtr type;
-        // True iff the parameter type is prefixed with `#` (e.g. `#String s`),
-        // meaning the parameter takes ownership of its argument at the callsite.
-        // See `MemoryModel.md` § Borrow / transfer rules.
+        // `#String s` — the parameter takes ownership of its argument.
         bool transferred = false;
-        // `int32 x = 42` — default value expression. Evaluated at the call
-        // site when the caller omits this argument. Stored as an AST node
-        // so the evaluation is lazy (Python-like) and respects the
-        // caller-side scope rather than a value frozen at declaration time.
+        // `int32 x = 42`, an AST node so it evaluates in the caller's scope.
         ExpressionPtr defaultValue;
-        // See getDeclaredTypeParamName below. Empty = not T-var-typed.
-        string declaredTypeParamName;
+        string declaredTypeParamName;   // empty = not T-var-typed
     public:
         ExpressionPtr getDefaultValue() const { return defaultValue; }
         void setDefaultValue(ExpressionPtr e) { defaultValue = std::move(e); }
@@ -62,16 +54,9 @@ namespace cajeta {
         bool isTransferred() const { return transferred; }
         void setTransferred(bool v) { transferred = v; }
 
-        // Set at DECLARATION time when this formal's type is a method-level
-        // template parameter (`toBytes<T>(T value)` -> "T"): the visitor
-        // compares the formal's resolved type against the placeholder it
-        // just pushed for each T-var. The resolved CajetaTypePtr is NOT a
-        // reliable record of this fact — the shared placeholder machinery
-        // can later fill/replace that object with an unrelated concrete
-        // class (observed: the buildtool's first Json.toBytes<Finding>
-        // instantiation left the TEMPLATE's formal claiming 'Finding', so
-        // every codec body synthesizer declined and the placeholder
-        // throw-body shipped). This name is immutable once captured.
+        // The method-level template parameter this formal was DECLARED with
+        // (`toBytes<T>(T value)` -> "T"): the resolved CajetaTypePtr is not a
+        // reliable record, since a shared placeholder can be refilled with a class.
         const string& getDeclaredTypeParamName() const {
             return declaredTypeParamName;
         }
@@ -83,15 +68,18 @@ namespace cajeta {
 
         void setParent(MethodPtr parent);
 
+        // Signature text: annotations, then modifiers, then the canonical type.
+        // `labeled` REPLACES that prefix with `name: `, so a labeled canonical
+        // carries no annotation or modifier text.
         string toCanonical(bool labeled = false);
 
+        // One declared parameter from its parse tree: type, modifiers, annotation
+        // instances, the `#` transfer flag, and the default value kept as an AST node.
+        // Null when the type does not resolve, after CAJETA_ERROR_UNRESOLVED_TYPE.
         static FormalParameterPtr fromContext(CajetaParser::FormalParameterContext* ctx, CajetaModulePtr module);
 
-        // Build a FormalParameter from the `T... args` (varargs) form. The
-        // resulting parameter's type is `T[]` (CajetaArray-wrapped); the
+        // The `T... args` varargs form, whose parameter type is `T[]`; the
         // method-level varargs flag is tracked separately on the Method.
-        // Callers (MethodCallExpression) pack trailing args into a fresh
-        // T[] before passing.
         static FormalParameterPtr fromContext(CajetaParser::LastFormalParameterContext* ctx, CajetaModulePtr module);
 
         string& getName();

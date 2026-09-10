@@ -1,29 +1,13 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c ===
-//
-// cajeta-profiler Unit 12 — the CUPTI backend's loader and binding state
-// (spec §5.4.1, §5.4.2, §10.5, §12.5).
-//
-// This is the Unit-8 pattern on NVIDIA: binding is a STATE, not a
-// success/failure bit, every state carries an actionable sentence, and the
-// entry points are declared here rather than by including <cupti.h> — the
-// runtime compiles to bitcode on machines with no CUDA at all, and the ABSENT
-// path is the one that matters most exactly there. Everything declared is a
-// function pointer or a plain integer, stable across CUPTI versions; what is
-// NOT stable is which symbols exist, and that is what binding checks.
-//
-// What deliberately does NOT live here yet: the Activity buffer machinery,
-// external correlation, and the capability-ladder claims. The last of those
-// is gated on Unit 1's §5.4.4 verdict (what an UNPRIVILEGED user may be
-// promised); the loader is not, which is why it lands first and is exercised
-// by the profiler-tests lanes on PHOENIX and phoenix-wsl.
+// The CUPTI backend's loader and binding state. Binding is a STATE, not a
+// success bit; entry points are declared here so this compiles with no CUDA.
 
 #ifndef CAJETA_PROF_TRACE_STANDALONE
 
 #define CAJ_CUPTI_PATH_MAX 512
 #define CAJ_CUPTI_REASON_MAX 256
 
-// The slice of the CUPTI ABI the backend calls. CUptiResult is a plain enum
-// (0 = CUPTI_SUCCESS); handles are opaque pointers.
+// The slice of the CUPTI ABI the backend calls; handles are opaque pointers.
 typedef int32_t caj_cupti_result_t;
 #define CAJ_CUPTI_SUCCESS 0
 
@@ -54,8 +38,7 @@ typedef struct {
     caj_cupti_pop_external_fn          pop_external;
     caj_cupti_get_timestamp_fn         get_timestamp;
     caj_cupti_get_result_string_fn     get_result_string;
-    // OPTIONAL — see the header note. CUDA 11.6+; absence selects §6.9's
-    // conversion path rather than making the backend absent.
+    // OPTIONAL: CUDA 11.6+. Absence selects the conversion path, not absence.
     caj_cupti_register_ts_cb_fn        register_timestamp_callback;
 } CajCuptiApi;
 
@@ -66,8 +49,7 @@ typedef struct {
 
 #define CAJ_CUPTI_ENTRY(field, sym) { sym, offsetof(CajCuptiApi, field) }
 
-// The CORE set is all-or-nothing, for Unit 8's reason: a partial bind is only
-// discovered mid-measurement, on the path that must degrade instead.
+// The CORE set is all-or-nothing: a partial bind is discovered mid-measurement.
 static const CajCuptiEntry caj_cupti_entries[] = {
     CAJ_CUPTI_ENTRY(subscribe,                   "cuptiSubscribe"),
     CAJ_CUPTI_ENTRY(unsubscribe,                 "cuptiUnsubscribe"),
@@ -90,7 +72,6 @@ typedef struct {
     int32_t    state;
     int32_t    bound;
     int32_t    has_ts_callback;
-    // Unit 12's record path.
     int32_t    degraded;          // §5.4.3 — attached elsewhere; we are a no-op
     int32_t    ts_registered;     // the timestamp callback is in place
     int32_t    ts_status;         // the registration attempt's raw CUptiResult;
@@ -100,18 +81,11 @@ typedef struct {
     int32_t    ts_first;          // ts_registered happened at kinds_enabled == 0
     int64_t    records;           // kernel records decoded and usable
     int64_t    rejected;          // kernel records refused as unusable
-    // The two halves of "a record arrived and still produced no span". A
-    // kernel is only resolvable THROUGH an external-correlation record, so
-    // counting both separates "the mapping records never came" from "they
-    // came and did not match" — which are different bugs with different
-    // fixes, and indistinguishable from `records` alone.
+    // "A record arrived and still produced no span" has two halves: mapping
+    // records that never came, and records that came and did not match.
     int64_t    ext_records;       // external-correlation records noted
     int64_t    unmapped;          // kernel records with no mapping to a launch
-    // Chokepoint ATTEMPTS, counted at entry before any early return. They
-    // count how often the SEAM called, not how often CUPTI accepted — which
-    // is the only way a test can tell "the launch path is wired to this" from
-    // "these two functions work when called directly". 12.2.d was ticked
-    // without that distinction and the wiring did not exist.
+    // Chokepoint ATTEMPTS: how often the SEAM called, not how often CUPTI took.
     int64_t    pushes;
     int64_t    pops;
     CajCuptiApi api;
@@ -128,18 +102,9 @@ static void caj_cupti_say(int32_t state, const char* tried, const char* why) {
     if (why)   snprintf(caj_cupti.reason, sizeof(caj_cupti.reason), "%s", why);
 }
 
-// ── §10.5 / §12.5 — WSL identification ───────────────────────────────────
-//
-// WSL is where run 32439821390 measured the timestamp callback ACCEPTED and
-// then ignored — the records arrived in CUPTI's own domain with every call
-// returning success. The platform therefore has to be identifiable so §6.9's
-// detection is armed where the hazard lives. The kernel says so itself:
-// /proc/version contains "microsoft" (WSL2 spells it lowercase inside
-// "microsoft-standard-WSL2", WSL1 capitalized it), and no non-WSL kernel does.
-// Hand-rolled rather than strncasecmp: the runtime is JIT-materialized, and
-// one POSIX symbol the Windows host cannot resolve fails materialization of
-// the WHOLE runtime — run 32776148357 took all 139 Windows tests down at
-// 65–90 s apiece over exactly this call.
+// ── WSL identification ───────────────────────────────────────────────────
+// WSL accepts the timestamp callback and then ignores it; /proc/version says
+// "microsoft". Matched by hand: one unresolvable POSIX symbol fails the JIT runtime.
 static int caj_cupti_imatch_microsoft(const char* p) {
     static const char kWord[9] = {'m','i','c','r','o','s','o','f','t'};
     for (int i = 0; i < 9; ++i) {
@@ -150,6 +115,8 @@ static int caj_cupti_imatch_microsoft(const char* p) {
     return 1;
 }
 
+// 1 when /proc/version's text names a WSL kernel. Takes the text, not the file,
+// so the identification is testable on any platform.
 int32_t __cajeta_prof_cupti_version_is_wsl(const char* procVersion) {
     if (!procVersion) return 0;
     for (const char* p = procVersion; *p; ++p) {
@@ -173,20 +140,9 @@ int32_t __cajeta_prof_cupti_on_wsl(void) {
 #endif
 }
 
-// ── §5.4.2 — locate libcupti, honoring CUDA_HOME ─────────────────────────
-//
-// CUPTI does NOT live on the default loader path: it ships under
-// extras/CUPTI/ inside a CUDA toolkit, which is why "dlopen the soname" alone
-// finds nothing on a perfectly healthy install. Search order:
-//
-//   1. CAJETA_CUPTI_LIB — explicit override, honored and NOT fallen back
-//      from (a typo must look like a typo, and the absent path must be
-//      testable on machines that have CUPTI).
-//   2. $CUDA_HOME/extras/CUPTI/lib64, then $CUDA_PATH's equivalent — the
-//      documented toolkit layouts.
-//   3. /usr/local/cuda/extras/CUPTI/lib64 — the default toolkit symlink.
-//   4. The bare soname — whatever the loader resolves (covers distro
-//      packages that DO place it on the path).
+// ── locate libcupti, honoring CUDA_HOME ──────────────────────────────────
+// CUPTI ships under extras/CUPTI/, not on the loader path: CAJETA_CUPTI_LIB (never
+// fallen back from), $CUDA_HOME/$CUDA_PATH extras/CUPTI/lib64, /usr/local/cuda, soname.
 
 #if !defined(_WIN32)
 #  include <dlfcn.h>
@@ -228,9 +184,7 @@ static void* caj_cupti_load(char* tried, size_t triedCap) {
 #else  /* _WIN32 */
 #  include <windows.h>
 
-// Windows CUPTI ships a VERSIONED dll (cupti64_<year>.<n>.<n>.dll) under
-// %CUDA_PATH%\extras\CUPTI\lib64, so the name cannot be spelled statically —
-// the directory is globbed instead. The override remains a literal path.
+// Windows CUPTI ships a VERSIONED dll, so its directory is globbed by name.
 static void* caj_cupti_try(const char* path, char* out, size_t outCap) {
     if (!path || !*path) return NULL;
     snprintf(out, outCap, "%s", path);
@@ -279,33 +233,9 @@ static const char* caj_cupti_liberr(void) {
 }
 #endif
 
-// ── Unit 12 — the activity record path (spec §5.4.3, §5.4.5, §6.2) ───────
-//
-// RECORD LAYOUT IS MEASURED, NOT ASSUMED. Compiled against a real
-// cupti_activity.h on 2026-08-30, offsetof() over every kernel record version
-// it declares:
-//
-//   version   kind  start  end  correlationId  sizeof
-//   Kernel2      0      8   16             84     112   <-- the odd one out
-//   Kernel3      0     16   24             92     120
-//   Kernel4      0     16   24             92     144
-//   Kernel5      0     16   24             92     160
-//   Kernel6      0     16   24             92     168
-//   Kernel7      0     16   24             92     176
-//   Kernel8      0     16   24             92     200
-//   Kernel9      0     16   24             92     208
-//
-// The struct grows at the TAIL across eight versions while the prefix through
-// correlationId does not move from Kernel3 on. That is the whole of §5.4.5:
-// read the prefix by offset, never cast the record to a version-specific
-// struct, and a toolkit shipping a newer record version cannot break parsing.
-//
-// Kernel2 (pre-CUDA 9) is the floor and WOULD misparse — its start sits where
-// Kernel3 keeps padding. Nothing in a record identifies its version, so this
-// cannot be detected directly; the plausibility rejections below are what stop
-// a misparse from becoming a published measurement. A Kernel2 record decoded
-// at Kernel3 offsets yields garbage that is overwhelmingly likely to be zero
-// or inverted, which is exactly what they refuse.
+// ── activity records: version / kind / start / end / correlationId / sizeof ──
+//   Kernel2     0   8  16  84  112
+//   Kernel3..9  0  16  24  92  120..208
 
 #define CAJ_CUPTI_KIND_KERNEL             3   /* CUPTI_ACTIVITY_KIND_KERNEL */
 #define CAJ_CUPTI_KIND_CONCURRENT_KERNEL 10   /* ..._CONCURRENT_KERNEL */
@@ -318,40 +248,18 @@ static const char* caj_cupti_liberr(void) {
 #define CAJ_CUPTI_KREC_OFF_CORR  92
 #define CAJ_CUPTI_KREC_PREFIX   (CAJ_CUPTI_KREC_OFF_CORR + 4)   /* 96 */
 
-/* CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED. Spelled as its value for the
- * same reason every other constant here is: this file must compile on a
- * machine with no CUDA at all. */
+/* CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED, spelled as its value: this
+ * file must compile on a machine with no CUDA at all. */
 #define CAJ_CUPTI_ERR_MULTIPLE_SUBSCRIBERS 39
 
 int32_t __cajeta_prof_cupti_kernel_prefix_bytes(void) {
     return CAJ_CUPTI_KREC_PREFIX;
 }
 
-// §12.1.b — CUPTI_ACTIVITY_KIND_KERNEL SERIALIZES kernel execution. Enabling
-// it would change the program being measured rather than observe it, which is
-// a different failure from being wrong: the numbers would be internally
-// consistent and describe a program the user never ran. CONCURRENT_KERNEL is
-// the only kernel kind this backend may enable.
+// KERNEL SERIALIZES execution; CONCURRENT_KERNEL is the only kind allowed.
 int32_t __cajeta_prof_cupti_kind_is_allowed(int32_t kind) {
-    // EXTERNAL_CORRELATION is not a kernel kind and does not serialize
-    // anything: it emits one small record per push/pop, and pass 1 of the
-    // buffer walk reads exactly those to learn which launch a kernel belongs
-    // to. Refusing it would leave every kernel record unmapped, and an
-    // unmapped kernel is DROPPED rather than guessed at (correctly) — so the
-    // backend would deliver records, decode them, and publish no device span
-    // at all, which is the hardest kind of nothing to debug.
-    // DRIVER is admitted for one measured reason: CUPTI emits
-    // EXTERNAL_CORRELATION records as part of the DRIVER/RUNTIME API activity
-    // stream, not independently. With kind 39 enabled ALONE, CUPTI accepts the
-    // enable, reports success, and produces no correlation record at all —
-    // measured 2026-09-04, identically on Windows and WSL: kinds_enabled=2,
-    // configure_rc=1, ext_correlation_records=0, and the one kernel record
-    // dropped as unmapped. cajeta launches through the driver API
-    // (cuLaunchKernel), so DRIVER is the stream its correlations ride.
-    //
-    // It costs a record per driver API call, which is real but bounded. It
-    // does NOT serialize anything — that distinction is the whole reason
-    // KERNEL stays refused while this is allowed.
+    // EXTERNAL_CORRELATION does not serialize and is what a kernel resolves
+    // THROUGH; DRIVER is the stream those correlation records ride on.
     return kind == CAJ_CUPTI_KIND_CONCURRENT_KERNEL
         || kind == CAJ_CUPTI_KIND_EXTERNAL_CORRELATION
         || kind == CAJ_CUPTI_KIND_DRIVER;
@@ -378,25 +286,20 @@ int32_t __cajeta_prof_cupti_decode_kernel(const void* rec, int64_t bytes,
     const unsigned char* p = (const unsigned char*) rec;
     uint64_t start, end;
 
-    /* kind lives at offset 0 in every version, so it is readable before we
-     * know anything else about the record. */
+    /* kind lives at offset 0 in every version. */
     if (!p || bytes < 4) return 0;
     if ((int32_t) caj_cupti_rd32(p + CAJ_CUPTI_KREC_OFF_KIND)
             != CAJ_CUPTI_KIND_CONCURRENT_KERNEL)
         return 0;
 
-    /* §5.4.5 — a record that cannot hold the stable prefix is not decoded.
-     * Reading past it would pick up whatever the buffer holds next, and the
-     * result would look like a valid span. */
+    /* Too small for the stable prefix: decoding would read the next record. */
     if (bytes < CAJ_CUPTI_KREC_PREFIX) return 0;
 
     start = caj_cupti_rd64(p + CAJ_CUPTI_KREC_OFF_START);
     end   = caj_cupti_rd64(p + CAJ_CUPTI_KREC_OFF_END);
 
-    /* §12.1.d — the known CUPTI regression, plus the shape a Kernel2 misparse
-     * takes. Zero is not a time: publishing it would put a span at the epoch
-     * and make every duration computed against it nonsense. Refused and
-     * COUNTED, never clamped -- a clamp would republish the lie as plausible. */
+    /* Zero is not a time, and is the shape a Kernel2 misparse takes: refused
+     * and COUNTED, never clamped — a clamp republishes the lie as plausible. */
     if (start == 0 || end == 0 || end < start) {
         __atomic_add_fetch(&caj_cupti.rejected, 1, __ATOMIC_RELAXED);
         return -1;
@@ -410,11 +313,7 @@ int32_t __cajeta_prof_cupti_decode_kernel(const void* rec, int64_t bytes,
     return 1;
 }
 
-// §5.4.3 — CUPTI permits exactly ONE subscriber per process. A program run
-// under Nsight, or one that loads a second profiling library, hands us
-// MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED. Aborting there would take down a
-// perfectly good program for the sake of a measurement it did not ask for, so
-// the backend becomes a no-op and says why.
+// CUPTI permits ONE subscriber per process: under Nsight the backend no-ops.
 int32_t __cajeta_prof_cupti_note_subscribe_result(int32_t result) {
     if (result == CAJ_CUPTI_ERR_MULTIPLE_SUBSCRIBERS) {
         caj_cupti.degraded = 1;
@@ -437,11 +336,7 @@ int32_t __cajeta_prof_cupti_note_subscribe_result(int32_t result) {
 
 int32_t __cajeta_prof_cupti_degraded(void) { return caj_cupti.degraded; }
 
-// §6.2 / §12.1.c — the callback must be in place BEFORE the first activity
-// kind is enabled, or the records that arrive first are stamped in CUPTI's own
-// domain and silently mixed with converted ones. Recorded as a fact about what
-// happened rather than an intention: ts_first is set only if the registration
-// landed while kinds_enabled was still zero.
+// ts_first records whether the callback landed while kinds_enabled was zero.
 static void caj_cupti_note_ts_registered(void) {
     caj_cupti.ts_registered = 1;
     if (caj_cupti.kinds_enabled == 0) caj_cupti.ts_first = 1;
@@ -451,9 +346,8 @@ int32_t __cajeta_prof_cupti_ts_callback_registered_first(void) {
     return caj_cupti.ts_first;
 }
 
-// 0 = registered, -1 = never attempted (symbol absent), >0 = the CUptiResult
-// the driver refused with. The distinction decides whether §6.9's conversion
-// path is a choice or a fallback, so it is reported rather than inferred.
+// 0 = registered, -1 = never attempted (symbol absent), >0 = the refusing
+// CUptiResult — which decides whether conversion is a choice or a fallback.
 int32_t __cajeta_prof_cupti_ts_status(void)     { return caj_cupti.ts_status; }
 int32_t __cajeta_prof_cupti_ts_registered(void) { return caj_cupti.ts_registered; }
 
@@ -465,33 +359,19 @@ int64_t __cajeta_prof_cupti_pushes(void)   { return caj_cupti.pushes; }
 int64_t __cajeta_prof_cupti_pops(void)     { return caj_cupti.pops; }
 
 
-// ── 12.2.c — correlation, and why the parse is TWO passes ────────────────
-//
-// A kernel record does not carry our launch id. It carries CUPTI's own
-// correlationId, and a SEPARATE record kind maps that to the external id we
-// pushed at the launch chokepoint. So a buffer must be walked twice: pass one
-// builds the map from EXTERNAL_CORRELATION records, pass two resolves kernels
-// through it. One pass would drop every kernel whose mapping record happens to
-// sit later in the same buffer, and that is not a rare ordering - CUPTI emits
-// the correlation record when the range CLOSES, so it normally follows.
-//
-// MEASURED against the same real cupti_activity.h:
-//   CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION = 39
-//   CUpti_ActivityExternalCorrelation:
-//     kind=0  externalKind=4  externalId=8  correlationId=16  sizeof=24
-// Read by offset for the same reason kernel records are.
+// ── correlation, and why the parse is TWO passes ─────────────────────────
+// A kernel record carries CUPTI's correlationId; a SEPARATE record maps it to our
+// external id and is emitted when the range CLOSES, so it FOLLOWS its kernel.
 
 #define CAJ_CUPTI_XREC_OFF_KIND    0
 #define CAJ_CUPTI_XREC_OFF_EXT_ID  8
 #define CAJ_CUPTI_XREC_OFF_CORR   16
 #define CAJ_CUPTI_XREC_BYTES      24
 
-/* CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0 - the slot NVIDIA reserves for tools
- * like this one, so pushing here cannot collide with a framework's own. */
+/* CUSTOM0 — the slot NVIDIA reserves for tools, so a push cannot collide. */
 #define CAJ_CUPTI_EXTERNAL_KIND_CUSTOM0 3
 
-/* CUPTI_ERROR_MAX_LIMIT_REACHED - how GetNextRecord says "buffer exhausted".
- * It is the normal loop terminator, not a failure. */
+/* MAX_LIMIT_REACHED — GetNextRecord's "buffer exhausted"; a loop terminator. */
 #define CAJ_CUPTI_ERR_MAX_LIMIT_REACHED 12
 
 int32_t __cajeta_prof_cupti_decode_external(const void* rec, int64_t bytes,
@@ -510,15 +390,8 @@ int32_t __cajeta_prof_cupti_decode_external(const void* rec, int64_t bytes,
     return 1;
 }
 
-// The map is FIXED SIZE and lives in static storage, because a buffer-complete
-// callback runs on CUPTI's thread and must not allocate. 1024 entries covers a
-// 64 KiB buffer many times over.
-//
-// On overflow it REFUSES and counts rather than evicting or wrapping. An
-// evicted entry would turn into a lookup miss later, which is merely an
-// unattributed kernel; a wrapped one would attribute a kernel to the WRONG
-// launch, which is a plausible-looking measurement that is simply false. The
-// first is a gap in the data and the second is a lie in it.
+// FIXED SIZE in static storage: a buffer-complete callback runs on CUPTI's
+// thread and must not allocate. Overflow refuses; wrapping would mis-attribute.
 #define CAJ_CUPTI_CORR_CAP 1024
 
 typedef struct {
@@ -538,6 +411,7 @@ void __cajeta_prof_cupti_corr_reset(void) {
     caj_cupti_corr_used = 0;
 }
 
+// Record one correlationId → launch id mapping; 0 when the fixed map is full.
 int32_t __cajeta_prof_cupti_corr_note(int32_t correlationId, int64_t externalId) {
     if (correlationId == 0) return 0;      /* 0 is the free marker, not an id */
     if (caj_cupti_corr_used >= CAJ_CUPTI_CORR_CAP) {
@@ -561,14 +435,9 @@ int32_t __cajeta_prof_cupti_corr_lookup(int32_t correlationId, int64_t* external
     return 0;   /* a MISS leaves the output alone - see the test for why */
 }
 
-// ── 12.2.d — the launch chokepoint ───────────────────────────────────────
-//
-// Pushed before the launch and popped after, so every kernel CUPTI records
-// between them carries our launch id. Called from the CUDA vtbl's begin/end in
-// cajeta_rt_prof_gpu.c — and ONLY from there: the vtbl is selected only when
-// tracing() is already true, exactly as the ROCm backend is, so a machine
-// without CUDA runs the host lane and never reaches either of these. They stay
-// defensive about it anyway, since both are reachable from a test.
+// ── the launch chokepoint ────────────────────────────────────────────────
+// Pushed before the launch and popped after, so a kernel CUPTI records between
+// them carries our launch id. Called only from the CUDA vtbl.
 int32_t __cajeta_prof_cupti_tracing(void) {
     return caj_cupti.state == CAJETA_CUPTI_READY
         && !caj_cupti.degraded
@@ -593,9 +462,7 @@ int32_t __cajeta_prof_cupti_pop(void) {
                                       &popped) == 0;
 }
 
-// The two-pass walk itself. Reachable only with a bound CUPTI, so it is
-// exercised on the PHOENIX and phoenix-wsl lanes rather than here; every piece
-// it is built from is testable anywhere.
+// The two-pass walk itself; reachable only with a bound CUPTI.
 static void caj_cupti_consume_buffer(uint8_t* buffer, size_t validSize) {
     void* rec;
     if (!caj_cupti.api.activity_get_next_record || validSize == 0) return;
@@ -621,32 +488,22 @@ static void caj_cupti_consume_buffer(uint8_t* buffer, size_t validSize) {
         if (__cajeta_prof_cupti_decode_kernel(rec, CAJ_CUPTI_KREC_PREFIX,
                                               &start, &end, &corr) != 1)
             continue;
-        /* An unmapped kernel is one we did not launch - a library's own, say.
-         * Attributing it to any launch would invent a measurement. */
+        /* An unmapped kernel is one we did not launch; attributing it invents. */
         if (!__cajeta_prof_cupti_corr_lookup(corr, &ext)) { caj_cupti.unmapped++; continue; }
         __cajeta_prof_gpu_resolve_dispatch(ext, start, end);
     }
 }
 
-// ── §6.8 / §12.2.e — the host clock, on both platforms ───────────────────
-//
-// CLOCK_MONOTONIC does not exist on the Windows host, and this file may NOT
-// reach for a POSIX symbol it cannot resolve there: the runtime is
-// JIT-materialized, and ONE unresolvable symbol fails materialization of the
-// whole runtime. Run 32776148357 took all 139 Windows tests down at 65-90 s
-// apiece over exactly that mistake, in this file.
-//
-// QPC is the Windows counterpart with the properties §6.8 needs: monotonic,
-// not subject to NTP slew, and consistent across cores on any hardware this
-// targets. The frequency is fixed at boot, so it is read once.
+// ── the host clock, on both platforms ────────────────────────────────────
+// CLOCK_MONOTONIC is absent on the Windows host and one unresolvable POSIX symbol
+// fails the whole JIT runtime; QPC is monotonic and its frequency read once at boot.
 static int64_t caj_cupti_host_ns(void) {
 #if defined(_WIN32)
     static LARGE_INTEGER freq;
     LARGE_INTEGER now;
     if (freq.QuadPart == 0 && !QueryPerformanceFrequency(&freq)) return 0;
     if (!QueryPerformanceCounter(&now)) return 0;
-    /* Split to avoid overflowing the multiply: at 10 MHz a raw
-     * ticks * 1e9 overflows int64 after about 29 years of uptime. */
+    /* Split to avoid overflowing the multiply: ticks * 1e9 overflows int64. */
     return (now.QuadPart / freq.QuadPart) * 1000000000LL
          + ((now.QuadPart % freq.QuadPart) * 1000000000LL) / freq.QuadPart;
 #else
@@ -656,18 +513,14 @@ static int64_t caj_cupti_host_ns(void) {
 #endif
 }
 
-// What CUPTI calls to stamp every activity record. Handing it OUR clock is
-// what makes records arrive already in the host domain (§6.2) instead of
-// needing §6.9's conversion after the fact.
+// What CUPTI calls to stamp every record, so they arrive in the host domain.
 static uint64_t caj_cupti_timestamp_cb(void) {
     return (uint64_t) caj_cupti_host_ns();
 }
 
 int64_t __cajeta_prof_cupti_host_ns(void) { return caj_cupti_host_ns(); }
 
-// §12.1.b — the ONLY way this backend enables a kind. Routing every enable
-// through the policy is what makes "KERNEL is never enabled" a property of
-// the code rather than a promise about it.
+// The ONLY way this backend enables a kind, so the KERNEL refusal is structural.
 int32_t __cajeta_prof_cupti_enable_kind(int32_t kind) {
     if (!__cajeta_prof_cupti_kind_is_allowed(kind)) return 0;
     if (caj_cupti.state != CAJETA_CUPTI_READY || caj_cupti.degraded) return 0;
@@ -679,29 +532,16 @@ int32_t __cajeta_prof_cupti_enable_kind(int32_t kind) {
 
 int32_t __cajeta_prof_cupti_kinds_enabled(void) { return caj_cupti.kinds_enabled; }
 
-// ── the arming step (the ROCm backend's __cajeta_prof_rocm_configure twin) ─
-//
-// Binding libcupti is NOT arming. Until the activity buffer callbacks are
-// registered, `caj_cupti_consume_buffer` is unreachable and no record can ever
-// be delivered; until a kind is enabled, none is ever produced. Both were
-// missing, so `__cajeta_prof_cupti_tracing()` — which requires
-// kinds_enabled > 0 — was false in every shipping build and every CUDA launch
-// published at host tier no matter how completely CUPTI bound.
-//
-// The buffer size is a latency/throughput trade, not a correctness one: bigger
-// means fewer completion callbacks and a longer wait before a record becomes
-// visible to a flush. 1 MiB holds several thousand records.
+// ── the arming step ──────────────────────────────────────────────────────
+// Binding libcupti is NOT arming: no record is delivered until the buffer
+// callbacks are registered, and none is produced until a kind is enabled.
 #define CAJ_CUPTI_BUF_BYTES (1024 * 1024)
 
-// CUPTI declares these with CUPTIAPI, which is __stdcall on Windows and empty
-// elsewhere. On x86-64 Windows there is only one calling convention, so a
-// plain function is ABI-identical — the timestamp callback above is already
-// registered the same way and works on the PHOENIX lane.
+// CUPTIAPI is __stdcall on Windows, and x86-64 Windows has one convention.
 static void caj_cupti_buffer_requested(uint8_t** buffer, size_t* size,
                                        size_t* maxNumRecords) {
     uint8_t* p = (uint8_t*) malloc(CAJ_CUPTI_BUF_BYTES);
-    // malloc's alignment already satisfies the 8 bytes CUPTI requires of an
-    // activity buffer on every 64-bit target the runtime builds for.
+    // malloc's alignment already satisfies CUPTI's 8-byte requirement.
     *buffer = p;
     *size = p ? (size_t) CAJ_CUPTI_BUF_BYTES : 0;
     *maxNumRecords = 0;   /* as many as fit */
@@ -715,12 +555,13 @@ static void caj_cupti_buffer_completed(void* context, uint32_t streamId,
     free(buffer);
 }
 
+// Register the activity buffer callbacks and enable the allowed kinds. Returns
+// 1 once the backend is actually tracing.
 int32_t __cajeta_prof_cupti_configure(void) {
     int32_t okKernel, okExternal, okDriver;
     pthread_mutex_lock(&caj_cupti_mutex);
     if (caj_cupti.state != CAJETA_CUPTI_READY || caj_cupti.degraded) {
-        // Nothing here can improve a backend that never bound, and calling
-        // through the api table would be calling through nulls.
+        // Nothing here can improve a backend that never bound.
         pthread_mutex_unlock(&caj_cupti_mutex);
         return 0;
     }
@@ -736,8 +577,7 @@ int32_t __cajeta_prof_cupti_configure(void) {
         pthread_mutex_unlock(&caj_cupti_mutex);
         return 0;
     }
-    // Callbacks BEFORE kinds: a record produced with nowhere to go is a record
-    // lost, and the window between the two calls is real.
+    // Callbacks BEFORE kinds: a record produced with nowhere to go is lost.
     if (caj_cupti.api.activity_register_callbacks(
             (void*) caj_cupti_buffer_requested,
             (void*) caj_cupti_buffer_completed) != CAJ_CUPTI_SUCCESS) {
@@ -750,12 +590,7 @@ int32_t __cajeta_prof_cupti_configure(void) {
     }
     caj_cupti.configured = 1;
 
-    // EXTERNAL_CORRELATION first: it is what a kernel record is resolved
-    // THROUGH, so enabling the kernel kind first would open a window in which
-    // kernels arrive that can never be attributed.
-    // DRIVER first: it is the stream the correlation records ride, so enabling
-    // it after them would open a window in which correlations are requested and
-    // cannot be emitted.
+    // EXTERNAL_CORRELATION and DRIVER first: a kernel resolves THROUGH one.
     okDriver   = __cajeta_prof_cupti_enable_kind(CAJ_CUPTI_KIND_DRIVER);
     okExternal = __cajeta_prof_cupti_enable_kind(CAJ_CUPTI_KIND_EXTERNAL_CORRELATION);
     okKernel   = __cajeta_prof_cupti_enable_kind(CAJ_CUPTI_KIND_CONCURRENT_KERNEL);
@@ -782,10 +617,8 @@ int32_t __cajeta_prof_cupti_configure(void) {
 
 int32_t __cajeta_prof_cupti_configured(void) { return caj_cupti.configured; }
 
-// Drain CUPTI's completed activity buffers. Each buffer that comes back runs
-// through caj_cupti_consume_buffer, which resolves parked launches; whatever
-// is still unclaimed after this has waited long enough and drains at host
-// tier. Safe when nothing bound.
+// Drain CUPTI's completed buffers through caj_cupti_consume_buffer, which
+// resolves the parked launches. Safe when nothing bound.
 int32_t __cajeta_prof_cupti_flush(void) {
     if (!__cajeta_prof_cupti_tracing()) return 0;
     if (!caj_cupti.api.activity_flush_all) return 0;
@@ -794,22 +627,8 @@ int32_t __cajeta_prof_cupti_flush(void) {
 
 void __cajeta_prof_cupti_reset(void) {
     pthread_mutex_lock(&caj_cupti_mutex);
-    // The library handle is deliberately NOT closed, and caj_cupti.path is
-    // kept: once bound, libcupti is PINNED for the life of the process.
-    //
-    // CUPTI patches libcuda's driver dispatch table the first time any CUPTI
-    // API runs — and register_timestamp_callback runs on every bind, WSL2's
-    // refusal (CUptiResult 39) included: it initializes the interception
-    // layer and THEN says no. dlclose would unmap the code those patched
-    // pointers target while the pointers stay in the driver; the next cuInit
-    // calls through the stale hook and the process dies with rip == the dead
-    // address. That was the WSL SIGSEGV in
-    // XpuDeviceProfileNvidiaDeviceTests.rawQueryAnswersOnCuda whenever any
-    // CUPTI test ran earlier in the same binary (gdb: cuInit -> ?? at an
-    // unmapped address, libcupti absent from `info sharedlibrary`). The old
-    // comment here assumed the registration "belongs to the library handle";
-    // it belongs to the driver, which we cannot unpatch. A later init reuses
-    // caj_cupti.lib and rebinds. Every OTHER field resets below.
+    // The handle is deliberately NOT closed: CUPTI patches libcuda's dispatch
+    // table on first use, so dlclose leaves the driver calling unmapped code.
     caj_cupti.state = CAJETA_CUPTI_UNATTEMPTED;
     caj_cupti.bound = 0;
     caj_cupti.has_ts_callback = 0;
@@ -817,9 +636,7 @@ void __cajeta_prof_cupti_reset(void) {
     caj_cupti.ts_registered = 0;
     caj_cupti.ts_status = -1;
     caj_cupti.kinds_enabled = 0;
-    // A later init must configure again (cuptiActivityRegisterCallbacks is
-    // re-registered on the still-loaded library; CUPTI replaces the pair).
-    // NOT because the handle was closed — it wasn't (see above).
+    // A later init must configure again; CUPTI replaces the callback pair.
     caj_cupti.configured = 0;
     caj_cupti.ts_first = 0;
     caj_cupti.records = 0;
@@ -830,8 +647,7 @@ void __cajeta_prof_cupti_reset(void) {
     caj_cupti.pops = 0;
     __cajeta_prof_cupti_corr_reset();
     memset(&caj_cupti.api, 0, sizeof(caj_cupti.api));
-    // caj_cupti.path is kept: it names the pinned library, which is still
-    // loaded — clearing it would report a mapping that is in fact present.
+    // caj_cupti.path is kept: it names the pinned library, still loaded.
     caj_cupti.reason[0] = '\0';
     pthread_mutex_unlock(&caj_cupti_mutex);
 }
@@ -847,6 +663,7 @@ static int caj_cupti_bind(void* lib) {
     return -1;
 }
 
+// Load libcupti, bind the ABI slice, and settle the state with its reason.
 int32_t __cajeta_prof_cupti_init(void) {
     pthread_mutex_lock(&caj_cupti_mutex);
     if (caj_cupti.state != CAJETA_CUPTI_UNATTEMPTED) {
@@ -856,9 +673,7 @@ int32_t __cajeta_prof_cupti_init(void) {
     }
     char tried[CAJ_CUPTI_PATH_MAX];
     tried[0] = '\0';
-    // A handle pinned by an earlier bind is REUSED, never re-dlopen'd (so the
-    // refcount does not creep one per reset/init cycle) and never closed —
-    // see __cajeta_prof_cupti_reset for why the mapping must outlive us.
+    // A pinned handle is REUSED, never re-dlopen'd and never closed — see reset.
     void* lib = caj_cupti.lib;
     if (lib) {
         snprintf(tried, sizeof(tried), "%s", caj_cupti.path);
@@ -889,9 +704,7 @@ int32_t __cajeta_prof_cupti_init(void) {
                      "submit-to-complete",
                      tried, caj_cupti_entries[missing].name,
                      caj_cupti.bound, CAJ_CUPTI_ENTRY_COUNT);
-            // Only a handle loaded by THIS call may be closed: no CUPTI API
-            // has run on it yet, so the driver holds no pointers into it. A
-            // pinned handle (a previous bind's) is left mapped — see reset.
+            // Only a handle loaded by THIS call may be closed: no CUPTI API ran.
             if (lib != caj_cupti.lib) caj_cupti_libclose(lib);
             caj_cupti.bound = 0;
             memset(&caj_cupti.api, 0, sizeof(caj_cupti.api));
@@ -900,30 +713,21 @@ int32_t __cajeta_prof_cupti_init(void) {
             return 0;
         }
     }
-    // The optional half, bound after the core set is certain (a CUPTI old
-    // enough to lack it is still a working backend on §6.9's conversion path).
+    // The optional half, bound once the core set is certain.
     {
         void* fn = caj_cupti_libsym(lib, "cuptiActivityRegisterTimestampCallback");
         caj_cupti.has_ts_callback = fn != NULL;
         if (fn) memcpy(&caj_cupti.api.register_timestamp_callback, &fn, sizeof(fn));
     }
     caj_cupti.lib = lib;
-    // §6.2 / §12.2.b — register the timestamp callback HERE, before any
-    // activity kind can be enabled. Order is the whole point: records that
-    // arrive before the callback is in place are stamped in CUPTI's own
-    // domain, and nothing downstream can tell them from converted ones.
+    // Registered HERE, before any kind can be enabled: records arriving earlier
+    // are stamped in CUPTI's own clock domain.
     if (caj_cupti.has_ts_callback && caj_cupti.api.register_timestamp_callback) {
         caj_cupti.ts_status =
             (int32_t) caj_cupti.api.register_timestamp_callback(caj_cupti_timestamp_cb);
         if (caj_cupti.ts_status == 0) caj_cupti_note_ts_registered();
     }
-    // THREE outcomes, not two. The symbol can be absent, present and accepted,
-    // or present and REFUSED — and the third is real: phoenix-wsl resolves
-    // cuptiActivityRegisterTimestampCallback and then rejects the registration
-    // (measured 2026-08-30, run 33328180931). Discarding that status made a
-    // platform difference look like an ordering bug, and left the operator
-    // with a backend silently on the §6.9 conversion path and nothing saying
-    // so. Binding is a STATE here and every state owes an actionable sentence.
+    // THREE outcomes: absent, accepted, or present and REFUSED (WSL2 does that).
     if (!caj_cupti.has_ts_callback) {
         caj_cupti_say(CAJETA_CUPTI_READY, tried,
                       "CUPTI bound (no cuptiActivityRegisterTimestampCallback in "

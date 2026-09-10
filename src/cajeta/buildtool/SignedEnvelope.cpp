@@ -14,10 +14,8 @@ namespace cajeta::buildtool {
                                            "%s", msg.c_str());
         }
 
-        // The envelope version this build understands. Anything else is
-        // refused rather than interpreted: a future format may move a
-        // security-relevant field, and guessing at it is how a check
-        // silently stops applying.
+        // The only envelope version this build understands; anything else is refused
+        // rather than interpreted, since a later format may move a security field.
         constexpr int kSupportedFormat = 1;
 
     } // namespace

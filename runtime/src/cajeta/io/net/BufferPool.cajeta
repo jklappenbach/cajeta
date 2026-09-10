@@ -107,9 +107,9 @@ public class BufferPool {
     public #ByteBuffer acquire() {
         if (this.idleCount > 0) {
             this.idleCount = this.idleCount - 1;
-            ByteBuffer reused = this.freeList[this.idleCount];
-            // Null the slot so the pool no longer aliases the buffer
-            // it just handed off — the caller is now the sole owner.
+            // `#=` takes the slot's title, then the slot is nulled: the caller
+            // is the sole owner. A plain `=` lends, so the `#` return would lie.
+            ByteBuffer reused #= this.freeList[this.idleCount];
             this.freeList[this.idleCount] = null;
             reused.clear();
             return reused;

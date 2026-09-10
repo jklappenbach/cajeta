@@ -22,10 +22,8 @@ void legalizeCrossModuleRefs(llvm::Module* m) {
         if (auto* g = llvm::dyn_cast<llvm::GlobalVariable>(gv)) {
             if (auto* existing = m->getGlobalVariable(g->getName(), true))
                 return existing;
-            // Thread-locality MUST carry over: under emulated TLS a plain
-            // declaration compiles to a direct load of `X`, but a TLS
-            // definition only ever exports `__emutls_v.X` — the lookup then
-            // fails ("Symbols not found") and the state silently splits.
+            // Thread-locality MUST carry over: a TLS definition exports only
+            // `__emutls_v.X`, so a plain declaration's direct load never resolves.
             return new llvm::GlobalVariable(
                 *m, g->getValueType(), g->isConstant(),
                 llvm::GlobalValue::ExternalLinkage, nullptr, g->getName(),
@@ -34,15 +32,8 @@ void legalizeCrossModuleRefs(llvm::Module* m) {
         return nullptr;
     };
 
-    // Collect every foreign GlobalValue reachable from this module's
-    // instructions, global initializers, AND metadata. Constants are uniqued
-    // per context (shared across modules), so replacement must REBUILD
-    // constant trees via ValueMapper rather than mutate in place. Metadata is
-    // uniqued the same way: linking the embedded runtime into each module
-    // leaves shared MDNodes whose ValueAsMetadata point at ANOTHER module's
-    // copy of a runtime function — the bitcode writer then enumerates that
-    // foreign Function into the plain constant pool, where writeConstants'
-    // unchecked ValueID switch computes a wild jump (5.1.3).
+    // Constants and metadata are uniqued per context, so foreign references must be
+    // REBUILT through ValueMapper; mutating in place corrupts the bitcode writer.
     llvm::ValueToValueMapTy vm;
     std::function<void(llvm::Constant*)> scan = [&](llvm::Constant* c) {
         if (auto* gv = llvm::dyn_cast<llvm::GlobalValue>(c)) {
@@ -97,10 +88,7 @@ void legalizeCrossModuleRefs(llvm::Module* m) {
         for (const llvm::MDNode* node : nmd.operands()) scanMD(node);
     if (vm.empty()) return;
 
-    // No RF_ReuseAndMutateDistinctMDs: distinct MDNodes are SHARED with the
-    // live module, and mutating one in place would rewrite the live module's
-    // metadata to point at this module's declarations. The mapper clones only
-    // the nodes an affected chain actually touches.
+    // No RF_ReuseAndMutateDistinctMDs: distinct MDNodes are shared with the live module.
     constexpr auto flags = llvm::RF_IgnoreMissingLocals;
     for (auto& F : *m) {
         mds.clear();

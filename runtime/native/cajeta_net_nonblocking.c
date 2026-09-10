@@ -1,63 +1,6 @@
-// cajeta.io.net — NET-1.7 non-blocking mode + WouldBlock-as-a-value intrinsics.
-//
-// This translation unit is **#included once** at the bottom of
-// `cajeta_runtime.c` (the same single-TU → bitcode → embed build path the
-// NET-1.1 socket intrinsics ride; see the header of `cajeta_net_socket.c`).
-// It MUST be #included **after** `cajeta_net_socket.c` because it reuses that
-// file's fd-ABI narrowing helpers (`cajeta_net_from_fd`,
-// `CAJETA_SOCKET_ERROR`), the `cajeta_net_raw_errno()` reader, and the
-// `CAJETA_NET_*` ordinal contract — those are file-static in the single TU, so
-// keeping these helpers in a separate file is a *review* boundary, not a
-// *compilation* boundary. No CMake change to the bitcode-embed path is needed.
-//
-// **Scope of NET-1.7** (per plan/cajeta-net-plan.md): "Non-blocking mode
-// toggle on every socket type + `WouldBlock` surfaced as a distinct error
-// (not an exception) so the reactor (NET-3) can drive readiness loops."
-//
-// NET-1.1 already shipped the *write* half of the toggle
-// (`__cajeta_net_set_nonblocking`) and made `recv`/`send`/`sendto`/`recvfrom`/
-// `accept`/`connect` return their failure sentinel while leaving the
-// normalized WouldBlock ordinal readable via `__cajeta_net_last_error()`. What
-// NET-1.7 adds is exactly the two pieces that turn that into a *value-based,
-// non-throwing* contract the whole socket surface (and, later, the reactor)
-// branches on:
-//
-//   __cajeta_net_get_nonblocking  — read the O_NONBLOCK / FIONBIO bit back, so
-//                                   the cajeta `isNonBlocking()` getter and the
-//                                   set→get round-trip test have a query to
-//                                   pin against (NET-1.1 shipped only the
-//                                   setter — there was no way to read it back).
-//   __cajeta_net_is_wouldblock    — the non-throwing classifier: after any I/O
-//                                   intrinsic returns its -1 sentinel, this
-//                                   answers "was that a would-block, or a real
-//                                   error?" as a 1/0 value WITHOUT constructing
-//                                   an exception. This is the whole point of
-//                                   NET-1.7: the hot readiness loop costs no
-//                                   throw — the cajeta layer does
-//                                   `if (n < 0 && Net.isWouldBlock()) return WOULD_BLOCK;`
-//                                   and only falls through to
-//                                   `NetErrors.fromErrno(...)` for a genuine
-//                                   fault.
-//
-// Why a dedicated `is_wouldblock` rather than just comparing
-// `__cajeta_net_last_error() == 1` in cajeta: (1) it keeps the WouldBlock
-// ordinal a single source of truth in C (the cajeta side never hard-codes the
-// "1"), and (2) it lets the classifier also fold in the platform's
-// *connect-in-progress* spelling (EINPROGRESS / WSAEWOULDBLOCK) which, for a
-// non-blocking `connect`, is the readiness equivalent of WouldBlock — the
-// reactor waits for writability in exactly the same way. A separate
-// `__cajeta_net_is_in_progress` exposes that distinctly for callers (the
-// connect path) that want to tell a fresh in-flight connect from a retryable
-// read.
-//
-// On Windows, getting the non-blocking bit back deserves a note:
-// `ioctlsocket(FIONBIO)` is **write-only** — Winsock provides no query for the
-// current blocking mode. So `__cajeta_net_get_nonblocking` maintains a tiny
-// process-side shadow of the last value the cajeta layer *set* per fd, keyed
-// in a small open-addressed table guarded by the existing pthread mutex
-// machinery. POSIX has a real `fcntl(F_GETFL)` query and uses it directly (no
-// shadow), so the shadow is a Windows-only fidelity shim, not the source of
-// truth anywhere a real query exists.
+// cajeta.io.net — NET-1.7 non-blocking mode plus the non-throwing WouldBlock
+// and connect-in-progress classifiers. #included once at the bottom of
+// cajeta_runtime.c, AFTER cajeta_net_socket.c, whose file-statics it reuses.
 
 #if defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -73,18 +16,9 @@
 #include <stdint.h>
 #include <pthread.h>
 
-// ---------------------------------------------------------------------------
-// __cajeta_net_is_wouldblock — non-throwing WouldBlock classifier.
-//
-// Call IMMEDIATELY after an I/O intrinsic (recv/send/sendto/recvfrom/accept)
-// returned its -1 sentinel, on the same thread (errno / WSAGetLastError are
-// thread-local and clobbered by the next syscall). Returns 1 iff the last
-// socket error is EAGAIN/EWOULDBLOCK (POSIX) / WSAEWOULDBLOCK (Winsock), else
-// 0. This is the value the cajeta read/recv/accept surface branches on to
-// return its `WOULD_BLOCK` sentinel instead of throwing — the readiness loop's
-// fast path. It reuses NET-1.1's `cajeta_net_raw_errno()` so there is exactly
-// one place that reads the platform error.
-// ---------------------------------------------------------------------------
+// 1 iff the last socket error was EAGAIN/EWOULDBLOCK (POSIX) or WSAEWOULDBLOCK
+// (Winsock), else 0. Call IMMEDIATELY after an I/O intrinsic's -1 sentinel, on
+// the same thread: the next syscall clobbers the platform error.
 int32_t __cajeta_net_is_wouldblock(void) {
     int e = cajeta_net_raw_errno();
 #if defined(_WIN32)
@@ -100,27 +34,15 @@ int32_t __cajeta_net_is_wouldblock(void) {
 #endif
 }
 
-// ---------------------------------------------------------------------------
-// __cajeta_net_is_in_progress — non-throwing "connect in flight" classifier.
-//
-// A non-blocking `connect` returns -1 with the platform's "operation now in
-// progress" code (POSIX EINPROGRESS; Winsock WSAEWOULDBLOCK — Winsock reuses
-// the would-block code for an in-flight connect). That is NOT a failure: the
-// reactor (Phase 3) then waits for the socket to become *writable* and checks
-// SO_ERROR to learn whether the connect completed. This classifier lets the
-// connect path tell that readiness case apart from a hard connect failure
-// (ECONNREFUSED etc.) without a throw. Returns 1 iff in-progress, else 0.
-// ---------------------------------------------------------------------------
+// 1 iff a non-blocking connect is in flight (POSIX EINPROGRESS; Winsock reuses
+// WSAEWOULDBLOCK). Not a failure: the caller waits for writability and reads
+// SO_ERROR, which is what tells this apart from a hard connect failure.
 int32_t __cajeta_net_is_in_progress(void) {
     int e = cajeta_net_raw_errno();
 #if defined(_WIN32)
-    // Winsock signals a non-blocking connect-in-flight as WSAEWOULDBLOCK; a
-    // re-issued connect on an already-in-flight socket gives WSAEALREADY. The
-    // WSAEWOULDBLOCK reading is only valid when the last intrinsic WAS the
-    // connect — from recv/send/accept it means "would block" (see
-    // cajeta_net_note_op), and reporting that as an in-flight connect is the
-    // misclassification NetNonBlockingTests.wouldBlockClassifiedNotAsHardError
-    // caught on Windows.
+    // The WSAEWOULDBLOCK reading holds only when the last intrinsic WAS the
+    // connect; from recv/send/accept the same code means "would block", and
+    // calling that an in-flight connect is a misclassification.
     if (e == WSAEWOULDBLOCK) return cajeta_net_last_op_was_connect() ? 1 : 0;
     return (e == WSAEINPROGRESS || e == WSAEALREADY) ? 1 : 0;
 #else
@@ -128,14 +50,9 @@ int32_t __cajeta_net_is_in_progress(void) {
 #endif
 }
 
-// ---------------------------------------------------------------------------
-// Windows-only shadow of the last non-blocking value the cajeta layer SET for
-// each fd. Winsock's FIONBIO is write-only, so there is no kernel query for the
-// current blocking mode; we remember what was last requested. The table is a
-// small open-addressed map (linear probe) guarded by one mutex. It is a
-// best-effort fidelity shim for `get_nonblocking` on Windows only — POSIX uses
-// a real fcntl query and never touches this.
-// ---------------------------------------------------------------------------
+// Windows-only shadow of the last non-blocking value SET per fd, because
+// FIONBIO is write-only and Winsock has no query. An open-addressed table under
+// one mutex; POSIX has a real fcntl query and never touches this.
 #if defined(_WIN32)
 #  define CAJETA_NB_SHADOW_CAP 1024
 static pthread_mutex_t g_cajeta_nb_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -171,9 +88,8 @@ static void cajeta_nb_shadow_put(int32_t fd, int32_t val) {
     pthread_mutex_unlock(&g_cajeta_nb_lock);
 }
 
-// Look up `fd`. Returns 0/1 if known, or -1 if the cajeta layer never set the
-// mode on this fd (default OS state is blocking, so a miss reads as blocking=0
-// at the public entry point below).
+// 0/1 for a known `fd`, -1 when the mode was never set on it (the OS default,
+// blocking, is what the public entry point reports for a miss).
 static int32_t cajeta_nb_shadow_get(int32_t fd) {
     int32_t out = -1;
     pthread_mutex_lock(&g_cajeta_nb_lock);
@@ -189,18 +105,9 @@ static int32_t cajeta_nb_shadow_get(int32_t fd) {
 }
 #endif  // _WIN32
 
-// ---------------------------------------------------------------------------
-// __cajeta_net_set_nonblocking_tracked — the toggle the cajeta `setNonBlocking`
-// surface lowers to. It delegates to NET-1.1's `__cajeta_net_set_nonblocking`
-// for the real fcntl/ioctlsocket call, then (on Windows only) updates the
-// shadow so a later `get_nonblocking` reports the right value. On POSIX it is a
-// thin pass-through (the real fcntl query needs no shadow). Returns 0 / -1.
-//
-// Keeping the toggle here under a *tracked* name — rather than re-pointing the
-// NET-1.1 setter — preserves NET-1.1's primitive unchanged (the reactor and
-// the native tests call it directly) while giving the cajeta surface a setter
-// whose effect is queryable on every platform.
-// ---------------------------------------------------------------------------
+// The toggle `setNonBlocking` lowers to: the NET-1.1 setter plus, on Windows,
+// the shadow update that makes the effect queryable. Returns 0 or -1. It is a
+// separate name so the NET-1.1 primitive its callers use stays unchanged.
 int32_t __cajeta_net_set_nonblocking_tracked(int32_t fd, int32_t nonblocking) {
     int32_t r = __cajeta_net_set_nonblocking(fd, nonblocking);
 #if defined(_WIN32)
@@ -209,15 +116,9 @@ int32_t __cajeta_net_set_nonblocking_tracked(int32_t fd, int32_t nonblocking) {
     return r;
 }
 
-// ---------------------------------------------------------------------------
-// __cajeta_net_get_nonblocking — read the non-blocking bit back. Returns 1 if
-// the socket is in non-blocking mode, 0 if blocking, -1 on error / unknown.
-//
-// POSIX: a real `fcntl(F_GETFL)` query — authoritative regardless of who set
-// the flag. Windows: FIONBIO is write-only, so we consult the shadow the
-// tracked setter maintained; a miss (the cajeta layer never set the mode) reads
-// as blocking (0), the OS default for a fresh socket.
-// ---------------------------------------------------------------------------
+// Read the non-blocking bit back: 1 non-blocking, 0 blocking, -1 on error.
+// POSIX asks fcntl(F_GETFL), which is authoritative whoever set the flag;
+// Windows consults the shadow, and a miss reads as the OS default, blocking.
 int32_t __cajeta_net_get_nonblocking(int32_t fd) {
     if (fd < 0) return -1;
 #if defined(_WIN32)

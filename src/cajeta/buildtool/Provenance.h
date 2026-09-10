@@ -1,32 +1,6 @@
-// SLSA-style build attestation — Phase 13.
-//
-// The `publish` action generates an in-toto Statement v1 envelope
-// whose predicate is a SLSA v1 provenance record. The shape
-// matches the spec in docs/BuildTool.md "Build attestation":
-//
-//   { "_type": "https://in-toto.io/Statement/v1",
-//     "subject": [ { "name": "<archive>", "digest": {"sha256": "<hex>"} } ],
-//     "predicateType": "https://slsa.dev/provenance/v1",
-//     "predicate": {
-//       "buildDefinition": {
-//         "buildType": "https://cajeta.org/build/v1",
-//         "externalParameters": { manifest-checksum, lockfile-checksum },
-//         "internalParameters": { compiler-version, flavor, target }
-//       },
-//       "runDetails": {
-//         "builder": { "id": "<builder-id>" },
-//         "metadata": { "startedOn": ..., "finishedOn": ... }
-//       }
-//     }
-//   }
-//
-// The envelope is signed with the same ed25519 key the archive is
-// signed with — reuses the Phase 10 trust-store flow. The signed
-// envelope ships next to the archive as `<archive>.attestation`.
-//
-// Consumers (`cajeta install`) verify the signature against the
-// trust store, then check the provenance's `subject[].digest`
-// matches the archive bytes before extracting anything.
+// SLSA-style build attestation: the `publish` action generates an in-toto
+// Statement v1 envelope whose predicate is a SLSA v1 provenance record, signed
+// with the archive's key and shipped alongside it as `<archive>.attestation`.
 
 #pragma once
 
@@ -36,9 +10,7 @@
 
 namespace cajeta::buildtool {
 
-    // Inputs for composing a provenance record. All strings are
-    // already-rendered values (the composer doesn't substitute
-    // properties — callers do).
+    // Inputs for composing a provenance record; all strings are already rendered.
     struct ProvenanceInputs {
         // Subject:
         std::string archiveName;       // e.g. "dev.cajeta.http-1.2.4.cja"
@@ -55,20 +27,13 @@ namespace cajeta::buildtool {
         std::string finishedOn;         // ISO 8601
     };
 
-    // Compose the JSON Statement envelope. The returned value is a
-    // canonicalized (sorted-key, 2-space-indent) byte string so its
-    // SHA-256 is stable across runs — a precondition for signing.
+    // Compose the JSON Statement envelope, canonicalized (sorted keys, 2-space
+    // indent) so its SHA-256 is stable across runs - a precondition for signing.
     std::string composeProvenanceJson(const ProvenanceInputs& in);
 
-    // Verify a provenance JSON document's structural validity:
-    //   - Statement type / predicate type strings match the spec
-    //   - subject[].digest.sha256 matches `expectedSha256`
-    //   - manifest/lockfile checksums + compiler version are
-    //     populated (non-empty)
-    //
-    // Returns the parsed predicate's `buildDefinition` object for
-    // callers that want to inspect (e.g. record audit trails).
-    // Errors carry one-line citations of the first mismatch.
+    // Verify a provenance document's structure: statement and predicate types, that
+    // subject[].digest.sha256 equals `expectedSha256`, and that the checksum and
+    // compiler-version fields are populated. Returns its buildDefinition fields.
     struct ProvenanceVerifyResult {
         std::string buildType;
         std::string compilerVersion;

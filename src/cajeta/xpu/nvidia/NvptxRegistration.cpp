@@ -1,6 +1,4 @@
-//
 // NVPTX kernel registration pass — see header.
-//
 
 #include "NvptxRegistration.h"
 #include "NvptxBackend.h"
@@ -37,9 +35,7 @@ namespace nvidia {
                                std::vector<KernelManifest>* manifests) {
         if (kernels.empty()) return 0;
 
-        // One NVPTX TargetMachine for all kernels (it's arch-, not kernel-,
-        // specific). If the nvptx64 target isn't in this LLVM build, there's
-        // nothing to emit.
+        // One TargetMachine for every kernel: it is arch-, not kernel-, specific.
         auto tm = createNvptxTargetMachine(arch);
         if (!tm) return 0;
 
@@ -50,35 +46,22 @@ namespace nvidia {
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::IRBuilder<> b(ctx);
 
-        // void __cajeta_xpu_register_module_be(i8* name, i8* image, i64 len,
-        //                                        i32 backend) — backend-tagged
-        // so a multi-backend build keeps one image per backend (name alone
-        // was last-writer-wins across backends).
+        // (i8* name, i8* image, i64 len, i32 backend): backend-tagged so a
+        // multi-backend build keeps one image per backend, not last-writer-wins.
         llvm::FunctionType* regTy =
             llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty, i32Ty}, false);
         llvm::FunctionCallee regFn =
             hostModule.getOrInsertFunction("__cajeta_xpu_register_module_be", regTy);
 
-        // void __cajeta_xpu_register_kernel_params(i8* name, i32 count,
-        //                                          i8* kind, i32* byteSize)
-        // The CUDA launch path reads this to translate Texture2D/Image2D args
-        // into texture/surface objects and to copy bindless Buffer<T>[] handle
-        // arrays to the device (cajeta_xpu_launch_cuda). Without it find_kparams
-        // returns NULL on NVIDIA and those translations silently no-op — the gap
-        // the AMD/Vulkan registration passes already close.
+        // (i8* name, i32 count, i8* kind, i32* byteSize): without it the CUDA launch
+        // path cannot translate Texture2D/Image2D args or copy bindless arrays.
         llvm::FunctionType* kpTy = llvm::FunctionType::get(
             voidTy, {ptrTy, i32Ty, ptrTy, ptrTy}, false);
         llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
             "__cajeta_xpu_register_kernel_params", kpTy);
 
-        // void __cajeta_xpu_register_optix_rayquery(i8* name, i8* ptx, i64 len,
-        //     i32 shape, i8* raygen, i8* prog1, i8* prog2, i8* prog3)
-        // For a ray-query kernel against an OptiX-impl AS the launch is an
-        // optixLaunch pipeline, not cuLaunchKernel; this registers the OptiX
-        // program PTX (a separate module) keyed by the same kernel name. `shape`
-        // selects the launch dispatch + program-slot roles (count: is/anyhit/miss;
-        // nearest: closesthit/miss). The launch path picks optixLaunch when the AS
-        // impl is OptiX, the software cubin otherwise.
+        // (i8* name, i8* ptx, i64 len, i32 shape, i8* raygen, i8* prog1..3): the
+        // OptiX program PTX, for an AS whose launch is an optixLaunch pipeline.
         llvm::FunctionType* rqTy = llvm::FunctionType::get(
             voidTy, {ptrTy, ptrTy, i64Ty, i32Ty, ptrTy, ptrTy, ptrTy, ptrTy}, false);
         llvm::FunctionCallee rqFn = hostModule.getOrInsertFunction(
@@ -89,9 +72,7 @@ namespace nvidia {
             if (!method || !isKernel(*method)) continue;
             const std::string entryName = method->getName();
 
-            // Lower this kernel into a fresh device module + assemble a cubin.
-            // The device lowerer builds types in its own context, so this never
-            // touches the host module until we have bytes.
+            // The device lowerer has its own context; the host module waits for bytes.
             llvm::LLVMContext devCtx;
             llvm::Module devMod("xpu.dev." + entryName, devCtx);
             configureDeviceModule(devMod, *tm);
@@ -99,14 +80,10 @@ namespace nvidia {
             try {
                 kfn = lowerKernel(method, devMod);
             } catch (cajeta::Exception& ex) {
-                // A contradicted @Access declaration is the author's error, not
-                // an unsupported construct: a compile error, never a skip.
+                // A contradicted @Access declaration is a compile error, not a skip.
                 if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
                         || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
-                // Unsupported construct (XPU-N01) — this kernel gets NO device
-                // code for this backend; a launch that lands here at run time
-                // fails with "no registered kernel". Say so at build time —
-                // the silent skip cost a real debugging session (U12).
+                // No device code for this backend; say so, or a launch fails at run time.
                 fprintf(stderr,
                         "cajeta: note: [xpu-kernel-skipped] %s: no nvptx device "
                         "code — %s\n",
@@ -114,8 +91,7 @@ namespace nvidia {
                 continue;
             }
             if (!kfn) continue;
-            // xpu-tile-manifest §6: read the access modes off the lowered IR
-            // before codegen transforms it.
+            // Access modes come off the lowered IR, BEFORE codegen transforms it.
             KernelAccessSummary access = classifyKernelAccess(*kfn, method);
 
             std::string ptx = emitPtx(devMod, *tm);
@@ -124,11 +100,7 @@ namespace nvidia {
             std::vector<uint8_t> cubin = assembleCubin(ptx, arch, &ptxasLog);
             if (cubin.empty()) continue;  // ptxas missing or errored
 
-            // xpu-tile-manifest §2, §3: identity + hash over the cubin that
-            // registers; footprint from `ptxas -v` (registers, static smem,
-            // stack-frame bytes as the scratch figure). The warp is 32 wide
-            // on every NVIDIA part. Occupancy fields need an arch-table row,
-            // which sm_* lacks today — absent, not guessed.
+            // Hash over the cubin that registers; occupancy needs an arch row sm_* lacks.
             KernelManifest manifest;
             manifest.kernel = qualifiedKernelName(method);
             manifest.target = "nvptx/" + arch;
@@ -151,7 +123,6 @@ namespace nvidia {
             applyAccess(manifest, access);
             warnIfSpilling(manifest);
 
-            // Embed the cubin as a private host-module constant.
             llvm::Constant* dataInit = llvm::ConstantDataArray::get(
                 ctx, llvm::ArrayRef<uint8_t>(cubin.data(), cubin.size()));
             auto* cubinGV = new llvm::GlobalVariable(
@@ -160,7 +131,6 @@ namespace nvidia {
                 "xpu.cubin." + entryName);
             cubinGV->setAlignment(llvm::MaybeAlign(8));
 
-            // ctor: __cajeta_xpu_register_module(entryName, cubinGV, len)
             llvm::FunctionType* ctorTy = llvm::FunctionType::get(voidTy, false);
             llvm::Function* ctor = llvm::Function::Create(
                 ctorTy, llvm::GlobalValue::InternalLinkage,
@@ -173,10 +143,7 @@ namespace nvidia {
                                  llvm::ConstantInt::get(i64Ty, cubin.size()),
                                  llvm::ConstantInt::get(i32Ty, 0)});  // CAJ_XPU_CUDA
 
-            // Per-kernel parameter kinds (scalar/buffer/texture/sampler/image/
-            // buffer-array) so the CUDA launch path can translate texture/image
-            // args into texture/surface objects and copy bindless arrays to the
-            // device. Mirrors AmdgpuRegistration / VulkanRegistration.
+            // The parameter kinds the CUDA launch path translates against.
             std::vector<KernelParamInfo> info =
                 collectKernelParamInfo(method, ctx, hostModule.getDataLayout());
             if (!info.empty()) {
@@ -206,13 +173,8 @@ namespace nvidia {
                                     kindGV, szGV});
             }
 
-            // OptiX ray-query program set: a ray-query kernel against an OptiX-impl
-            // AS runs as an optixLaunch pipeline, not cuLaunchKernel. Emit its
-            // program PTX into a SEPARATE module (ptxas rejects the `_optix_*` asm,
-            // so it never goes through assembleCubin) and register it keyed by the
-            // same name + a shape tag. Only the canonical count + triangle nearest-
-            // hit shapes are supported — any other ray-query kernel is Unsupported
-            // and keeps its software cubin (the launch never selects the OptiX path).
+            // The program PTX goes in a SEPARATE module: ptxas rejects `_optix_*` asm.
+            // Only the count and nearest-hit shapes register, the rest stay software.
             OptixRqShape shape = classifyRayQueryShape(method);
             if (shape != OptixRqShape::Unsupported) {
                 try {
@@ -232,7 +194,6 @@ namespace nvidia {
                     }
                     std::string optixPtx = emitPtx(oMod, *tm);
                     if (!optixPtx.empty()) {
-                        // PTX text as a NUL-terminated host constant; len excludes NUL.
                         llvm::Constant* pInit = llvm::ConstantDataArray::getString(
                             ctx, optixPtx, /*AddNull=*/true);
                         auto* ptxGV = new llvm::GlobalVariable(
@@ -240,11 +201,7 @@ namespace nvidia {
                             llvm::GlobalValue::PrivateLinkage, pInit,
                             "xpu.optixptx." + entryName);
                         ptxGV->setAlignment(llvm::MaybeAlign(1));
-                        // Program slots by shape (see __cajeta_xpu_register_optix_rayquery):
-                        //   count    -> prog1=intersection, prog2=anyhit, prog3=miss
-                        //   nearest  -> prog1=closesthit,    prog2=miss,   prog3=""
-                        //   bary     -> prog1=anyhit,        prog2=miss,   prog3=""
-                        //   committed-> prog1=closesthit,    prog2=miss,   prog3=""
+                        // Program slots as __cajeta_xpu_register_optix_rayquery reads them.
                         llvm::Value* rg = b.CreateGlobalString(raygen,
                             "xpu.orgn." + entryName);
                         llvm::Value *p1, *p2, *p3;
@@ -268,14 +225,12 @@ namespace nvidia {
                             rg, p1, p2, p3});
                     }
                 } catch (cajeta::Exception&) {
-                    // Unsupported/non-constant ray-query shape (XPU-N04) — software cubin only.
                 }
             }
             emitManifestRegistration(hostModule, b, nameStr, /*CAJ_XPU_CUDA=*/0,
                                      arch, manifest);
             b.CreateRetVoid();
 
-            // Run at module-init time (LLJIT: jit->initialize; native: startup).
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
             if (manifests) manifests->push_back(manifest);
             ++emitted;

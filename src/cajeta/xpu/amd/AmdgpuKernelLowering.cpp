@@ -25,25 +25,13 @@ namespace {
 class AmdgpuTarget : public LoweringTarget {
 public:
     const char* name() const override { return "amdgpu"; }
-    // `!nontemporal` becomes the slc / nt cache policy on global loads and
-    // stores (SIMemoryLegalizer) — a `@Streaming` buffer streams past L2.
+    // `!nontemporal` becomes the slc / nt cache policy — a @Streaming buffer skips L2.
     bool supportsNontemporal() const override { return true; }
 
-    // No native inline ray query (cajeta has no AMDGPU RT seam — that path is
-    // Vulkan/SPIR-V's OpRayQuery, or a vendor RT extension), so the Acceleration-
-    // Structure noun is built as the portable software BVH and the RayQuery verb
-    // follows to the cajeta.xpu.SoftwareRayQuery walk — the same Portable tier
-    // the CPU and NVPTX backends use. Without this the base default (VulkanNative)
-    // routes RayQuery to rayQueryType(), which throws on AMDGPU. softwareRayQuery()
-    // derives from this in the base; the HIP noun provider uploads the BVH to a
-    // device buffer the kernel reads as bvh[i]. (coopMatrixTier stays the AMD
-    // override below — AMD has native WMMA.)
+    // No AMDGPU inline-ray-query seam, so the Acceleration Structure is a software BVH.
     NounImpl accelImpl() const override { return NounImpl::SoftwareBvh; }
 
-    // AMDGPU allocas MUST live in the private address space (5). An AS-0
-    // alloca here is invalid IR for the AMDGPU backend — the classic first
-    // bug (cajeta-amd.md §2). mem2reg removes most of them before ISA emit;
-    // any survivor is a valid private (scratch) slot.
+    // AMDGPU allocas MUST be private (address space 5); an AS-0 alloca is invalid IR here.
     unsigned allocaAddressSpace() const override { return 5; }
 
     llvm::Value* threadId(llvm::IRBuilderBase& b, llvm::Module& m,
@@ -63,11 +51,8 @@ public:
         return readId(b, m, ids[dim]);
     }
 
-    // Block dim (ntid) is NOT an intrinsic on AMDGPU — it comes from the HSA
-    // kernel dispatch packet (cajeta-amd.md §2). llvm.amdgcn.dispatch.ptr
-    // returns a ptr addrspace(4) to that packet; workgroup_size_{x,y,z} are
-    // uint16 fields at byte offsets 4/6/8 (after the 2-byte header + 2-byte
-    // setup). Load the i16 and widen to i32 to match the other coordinates.
+    // Block dim is not an intrinsic here: llvm.amdgcn.dispatch.ptr gives the HSA dispatch
+    // packet, whose workgroup_size_{x,y,z} are uint16 at byte offsets 4/6/8.
     llvm::Value* workgroupDim(llvm::IRBuilderBase& b, llvm::Module& m,
                               unsigned dim) override {
         llvm::LLVMContext& ctx = m.getContext();
@@ -81,11 +66,8 @@ public:
         return b.CreateZExt(sz16, llvm::Type::getInt32Ty(ctx), "wgsize.i32");
     }
 
-    // Grid-stride stride (Item 6). grid_size_{x,y,z} are uint32 fields of the
-    // HSA dispatch packet at byte offsets 12/16/20 — and already hold the TOTAL
-    // work-item count in each dim (gridDim·blockDim), so this is one load (no
-    // multiply needed, unlike NVPTX). Same dispatch.ptr addrspace(4) packet as
-    // workgroupDim above.
+    // Grid-stride stride: grid_size_{x,y,z} are uint32 at byte offsets 12/16/20 of that
+    // packet and already hold the TOTAL work-item count per dim — no multiply needed.
     llvm::Value* gridSize(llvm::IRBuilderBase& b, llvm::Module& m,
                           unsigned dim) override {
         llvm::LLVMContext& ctx = m.getContext();
@@ -97,10 +79,7 @@ public:
         return b.CreateLoad(llvm::Type::getInt32Ty(ctx), field, "gridsize");
     }
 
-    // Workgroup barrier with LDS-visibility ordering: a workgroup-scoped
-    // release fence, the hardware s_barrier, then a workgroup-scoped acquire
-    // fence — the same shape HIP's __syncthreads() lowers to, so shared-memory
-    // writes before the barrier are visible to reads after it.
+    // Release fence, s_barrier, acquire fence — the shape __syncthreads() lowers to.
     void workgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::SyncScope::ID wg = ctx.getOrInsertSyncScopeID("workgroup");
@@ -111,13 +90,10 @@ public:
         b.CreateFence(llvm::AtomicOrdering::Acquire, wg);
     }
 
+    // A scoped fence at `order`, no s_barrier and so no rendezvous: the sync-scope name
+    // sets the reach ("workgroup" vs "agent"), and Default/Relaxed becomes AcqRel.
     void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m, FenceScope scope,
                      MemoryOrder order = MemoryOrder::Default) override {
-        // A scoped fence at `order` — no s_barrier, so no thread rendezvous. The
-        // AMDGPU sync-scope name selects the reach: "workgroup" (LDS+global
-        // within the block) vs "agent" (the whole device). Default/Relaxed →
-        // AcqRel (a relaxed fence is a no-op). The backend lowers this to the
-        // right s_waitcnt / cache-flush sequence.
         llvm::SyncScope::ID sc = m.getContext().getOrInsertSyncScopeID(
             scope == FenceScope::Workgroup ? "workgroup" : "agent");
         llvm::AtomicOrdering ord =
@@ -127,23 +103,7 @@ public:
         b.CreateFence(ord, sc);
     }
 
-    // Async global->LDS copy (xpu-pipelined-gemm-primitives U2). The LDS-direct
-    // vmem load `global_load_lds_{ubyte,ushort,dword}` exists on GFX9/CDNA and
-    // gfx1250+, but NOT on RDNA1-3.5 (gfx10xx/gfx11xx incl. gfx1151), which fall
-    // back to the synchronous staged copy (see archHasVmemToLds / bundleHasVmemToLds).
-    // Where it IS available, `copy` issues `global_load_lds` per element — the data
-    // goes global->LDS with NO VGPR staging buffer (frees the registers the WMMA
-    // accumulator path is starved for), the key ISA win over the staged
-    // global->reg->LDS path. The workgroup stripes it (e = tid, tid+nthr, ...), so
-    // each wave's lanes coalesce. Element size must be 1/2/4 bytes; wider (e.g.
-    // fp64) falls back to the synchronous strided seam (the fp64 path uses CoopStage,
-    // not AsyncCopy). `commit` is a no-op (no async-mark); `wait` drains outstanding
-    // vmem so the landed LDS is safe to publish through the caller's Barrier — a full
-    // drain, since deep N-stage overlap needs the gfx1250 async-mark path.
-    // True iff `arch` (gfxNNN) has the direct global->LDS load (VMemToLDSLoad in
-    // LLVM): the GFX9/CDNA family and gfx1250+. RDNA1-3.5 (gfx10xx/gfx11xx) and
-    // gfx1200/1201 lack it — emitting global_load_lds there Cannot-selects, so we
-    // fall back to the synchronous staged copy.
+    // True iff `arch` has the direct global->LDS load: GFX9/CDNA and gfx1250+ only.
     static bool archHasVmemToLds(llvm::StringRef arch) {
         if (arch.starts_with("gfx9")) return true;
         unsigned num = 0;
@@ -152,11 +112,7 @@ public:
         return false;
     }
 
-    // A kernel is lowered ONCE but codegen'd for every arch in a multi-arch
-    // bundle, so emitting global_load_lds is safe only when EVERY target arch
-    // supports it — otherwise an unsupporting arch Cannot-selects and the kernel
-    // is silently dropped from the bundle. `cajeta.amdgpu.archlist` carries the
-    // full bundle; fall back to the single-arch flag when it is absent.
+    // Lowered once but codegen'd per arch, so it is usable only when EVERY arch has it.
     static bool bundleHasVmemToLds(llvm::Module& m) {
         auto readFlag = [&](const char* name) -> llvm::StringRef {
             if (auto* f = m.getModuleFlag(name))
@@ -172,21 +128,9 @@ public:
         return !arches.empty();
     }
 
-    // simd-fused-integer-madd 2.2.3 — the native int8 dot unit
-    // (`v_dot4_i32_iu8` / `v_dot4_u32_u8`). Only SPIR-V overrode this seam
-    // before, so every AMD kernel took the base portable widen and left the
-    // instruction unused on hardware that has it.
-    //
-    // MEASURED against llc across the arch list, because the failure mode is a
-    // hard ISel error rather than a slow path — an unsupporting arch in a
-    // multi-arch bundle takes the kernel down with it. llvm.amdgcn.sdot4
-    // selects on gfx906/908/90a/942/950, gfx1011/1012, gfx103x, gfx11xx and
-    // gfx12xx, and FAILS on gfx900, gfx902, gfx940 and gfx1010. Note gfx940
-    // fails while gfx942 works and gfx1010 fails while gfx1011 works, so this
-    // is not a clean numeric threshold — hence the explicit exclusions.
-    //
-    // Unknown arches answer NO. A wrong no costs speed; a wrong yes fails the
-    // build.
+    // True iff `arch` has the native int8 dot unit (v_dot4). NOT a numeric threshold —
+    // gfx940 fails while gfx942 works — and unknown arches answer NO: a wrong yes is an
+    // ISel error, not a slow path.
     static bool archHasDot4(llvm::StringRef arch) {
         unsigned num = 0;
         if (!arch.starts_with("gfx") || arch.drop_front(3).getAsInteger(10, num))
@@ -197,8 +141,7 @@ public:
         return num >= 1100 && num < 1300;
     }
 
-    // Same bundle rule as bundleHasVmemToLds: lowered once, codegen'd for every
-    // arch in the bundle, so the unit is usable only when EVERY arch has it.
+    // Same bundle rule as bundleHasVmemToLds: usable only when EVERY arch has it.
     static bool bundleHasDot4(llvm::Module& m) {
         auto readFlag = [&](const char* name) -> llvm::StringRef {
             if (auto* f = m.getModuleFlag(name))
@@ -214,6 +157,9 @@ public:
         return !arches.empty();
     }
 
+    // The native int8 dot: sudot4 when the operand signs DIFFER (it carries a sign bit per
+    // operand, which sdot4/udot4 cannot express), else sdot4/udot4. Never clamped, so this
+    // tier stays bit-identical with the portable widen it replaces.
     llvm::Value* integerDot4x8(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* a, llvm::Value* c, llvm::Value* acc,
                                bool aSigned, bool cSigned) override {
@@ -223,17 +169,7 @@ public:
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* x = b.CreateBitCast(a, i32, "dp4a.x");
         llvm::Value* y = b.CreateBitCast(c, i32, "dp4a.y");
-        // clamp=false throughout: the non-saturating encoding, so this tier
-        // stays bit-identical with the portable widen it replaces
-        // (simd-fused-integer-madd §4.8/§4.9).
         if (aSigned != cSigned) {
-            // MIXED — what dotAccum actually means, and what sdot4/udot4
-            // cannot express. amdgcn.sudot4 carries a sign bit PER OPERAND:
-            //   a[i] = (a_sign ? a.i8[i] : promoteToSigned(a.u8[i]))
-            // so unsigned weights x signed activations is one instruction
-            // here, not a widen-and-multiply fallback. Emitting sdot4/udot4
-            // off a single shared flag was the defect (measured on gfx1151:
-            // 6440 against the host's -1240).
             llvm::Function* su = llvm::Intrinsic::getOrInsertDeclaration(
                 &m, llvm::Intrinsic::amdgcn_sudot4);
             return b.CreateCall(su, {b.getInt1(aSigned), x,
@@ -246,13 +182,8 @@ public:
         return b.CreateCall(f, {x, y, acc, b.getFalse()}, "dp4a");
     }
 
-    // 16-entry int8 table lookup by 4-bit index via v_perm_b32
-    // (llvm.amdgcn.perm), the byte-permute LUT. Structure mirrors llama.cpp's
-    // get_int_from_table_16 (HIP path): the 16-byte table is four dwords
-    // t0..t3; for each 4-index dword, perm the low (indices 0-7) and high
-    // (8-15) table halves with the 3-bit index, then a third perm selects
-    // low/high per byte from bit 3. v_perm_b32 is baseline GCN/RDNA, so no
-    // arch gate. Non-4-multiple lane counts fall back to the portable gather.
+    // 16-entry int8 LUT by 4-bit index via v_perm_b32: perm the low (0-7) and high (8-15)
+    // table halves with the 3-bit index, then a third perm picks per byte off bit 3.
     llvm::Value* byteLut16(llvm::IRBuilderBase& b, llvm::Module& m,
                            llvm::Value* indices, llvm::Value* table) override {
         auto* ivt = llvm::dyn_cast<llvm::FixedVectorType>(indices->getType());
@@ -287,15 +218,14 @@ public:
         return b.CreateBitCast(out, ivt, "lut.bytes");
     }
 
+    // Async global->LDS copy: where the LDS-direct load exists, global_load_lds per element
+    // with NO VGPR staging, striped across the workgroup. Elements must be 1/2/4 bytes.
     void asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* dstBase,
                    llvm::Type* dstElem, llvm::Value* dstOffset, llvm::Value* srcBase,
                    llvm::Type* srcElem, llvm::Value* srcOffset,
                    llvm::Value* count) override {
         llvm::LLVMContext& ctx = m.getContext();
         uint64_t elemBytes = m.getDataLayout().getTypeStoreSize(srcElem);
-        // No native direct global->LDS on some target arch in the bundle, or a
-        // width the LDS-direct load can't carry (1/2/4 bytes only) — use the
-        // synchronous staged copy (correct on every arch).
         if (!bundleHasVmemToLds(m)
                 || (elemBytes != 1 && elemBytes != 2 && elemBytes != 4)) {
             LoweringTarget::asyncCopy(b, m, dstBase, dstElem, dstOffset, srcBase,
@@ -339,9 +269,8 @@ public:
     // No async-mark on gfx1151 — there is no group counter to close.
     void asyncCommit(llvm::IRBuilderBase&, llvm::Module&) override {}
 
-    // Drain the outstanding global_load_lds writes (a workgroup AcqRel fence the
-    // backend lowers to the right s_waitcnt) so the caller's Barrier publishes
-    // landed data. Full drain — gfx1151 has no async-mark partial wait.
+    // Drain the outstanding global_load_lds writes (a workgroup AcqRel fence the backend
+    // lowers to s_waitcnt) so the caller's Barrier publishes landed data. A full drain.
     void asyncWait(llvm::IRBuilderBase& b, llvm::Module& m,
                    llvm::Value* /*groupsInFlight*/) override {
         llvm::SyncScope::ID wg =
@@ -349,12 +278,8 @@ public:
         b.CreateFence(llvm::AtomicOrdering::AcquireRelease, wg);
     }
 
-    // Instruction-scheduling hints (xpu-kernel-scheduling-hints §3) → the native
-    // amdgcn intrinsics. sched_barrier / sched_group_barrier / iglp_opt are
-    // SCHEDULER directives consumed by the MachineScheduler (no ISA instruction
-    // survives to the output); s_setprio is a real SOPP instruction. All operands
-    // are ImmArg — passed as ConstantInt, already validated/range-checked by the
-    // call-site dispatch.
+    // Scheduling hints → the native amdgcn intrinsics. sched_barrier, sched_group_barrier
+    // and iglp_opt are MachineScheduler directives that emit no ISA; s_setprio is real.
     void schedBarrier(llvm::IRBuilderBase& b, llvm::Module& m,
                       uint32_t mask) override {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
@@ -381,14 +306,8 @@ public:
         b.CreateCall(f, {b.getInt32(strategy)});
     }
 
-    // Conflict-free LDS swizzle for a Swizzled<T,S> tile: permute the flat element
-    // index so consecutive rows of the tile land in different LDS banks. With
-    // row = idx >> log2S and col = idx & (S-1), the physical slot is
-    // row*S + (col ^ (row & (S-1))). The XOR touches only col's bits [0,log2S),
-    // disjoint from the row bits it reads, so it is an involution — applied
-    // identically on every access, the staged data reads back unchanged while the
-    // WMMA fragment loads stop colliding on banks. (S is a power of two; the
-    // frontend rejects anything else.)
+    // Conflict-free LDS swizzle for Swizzled<T,S>: the slot is row*S + (col ^ (row & S-1)).
+    // The XOR touches only col's bits, so it is an involution and data reads back whole.
     llvm::Value* swizzleAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
                              uint32_t stride) override {
         if (stride <= 1) return idx;
@@ -403,11 +322,8 @@ public:
         return b.CreateOr(b.CreateShl(row, shift), perm, "swz.idx");
     }
 
-    // Block-padded LDS tile (BlockPadded<T,Block,Pad> / Tensile LdsBlockSizePerPad):
-    // physical = idx + (idx / period) * pad. The byte-period boundary is independent
-    // of the row/col stride, so the one layout de-conflicts both the wide staging
-    // store and the transposed WMMA read; applied identically on every access, the
-    // staged data reads back unchanged.
+    // Block-padded LDS tile: physical = idx + (idx / period) * pad. The byte period is
+    // independent of the stride, so it de-conflicts the store and the transposed read.
     llvm::Value* blockPadAddr(llvm::IRBuilderBase& b, llvm::Value* idx,
                               uint32_t period, uint32_t pad) override {
         if (period == 0 || pad == 0) return idx;
@@ -419,18 +335,13 @@ public:
         return b.CreateAdd(idx, off, "bp.idx");
     }
 
-    // AMDGPU marks kernels purely by calling convention — no metadata
-    // analogue to nvvm.annotations.
+    // AMDGPU marks kernels purely by calling convention — no annotations metadata.
     void decorateKernel(llvm::Function* fn, llvm::Module& /*m*/) override {
         fn->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
     }
 
-    // @Occupancy override (kernel-occupancy-autotune §3). maxThreads pins the
-    // launch bound (flat-work-group-size — the lever that controls the VGPR
-    // budget on RDNA); minResident pins the occupancy floor (waves-per-eu). On
-    // gfx1151 waves-per-eu is inert, but it is the honest AMD mapping and matters
-    // on other gfx. maxRegisters has no stable per-function AMDGPU attribute, so
-    // it is folded into the occupancy intent rather than set directly.
+    // @Occupancy: maxThreads pins flat-work-group-size (the VGPR-budget lever on RDNA) and
+    // minResident waves-per-eu; maxRegisters has no per-function AMDGPU attribute.
     void applyOccupancy(llvm::Function* fn, const XpuKernelAttr& attr) override {
         if (auto mt = attr.maxThreads()) {
             std::string range = "1," + std::to_string(*mt);
@@ -441,24 +352,14 @@ public:
         }
     }
 
-    // A Texture2D kernel param is a pointer to the HIP texture object, in the
-    // constant address space (4) — the kernarg holds the 64-bit object address,
-    // read through the scalar cache, exactly as HIP's tex2D casts it. The object
-    // is { image SRD (12 dwords) | sampler SRD (8 dwords) }; sampleTexture reads
-    // both. (Item 8 Stage C.)
+    // A texture kernel param points at the HIP texture object in the constant address
+    // space (4): { image SRD (12 dwords) | sampler SRD (8 dwords) }, and sample reads both.
     llvm::Type* textureParamType(llvm::Module& m) override {
         return llvm::PointerType::get(m.getContext(), 4);
     }
 
-    // tex.sample(sampler, u, v) → __ockl_image_sample_2D (ROCm device library,
-    // linked in by AmdgpuBackend when this symbol is referenced). It takes the
-    // image object ptr (= texHandle) and the sampler object ptr (= texHandle +
-    // HIP_SAMPLER_OBJECT_OFFSET_DWORD·4 = +48 bytes) — both addrspace(4) — plus
-    // the normalized <u, v>; it converts coords to unnormalized + emits
-    // image_sample_lz internally (handling the gfx ISA variants). Returns the
-    // <4 x float> gather; v1 takes the R channel. The separate Sampler kernel
-    // arg (samplerHandle) is unused on AMD — its modes are baked into the texture
-    // object at hipCreateTextureObject time, so the sampler SRD rides the object.
+    // tex.sample → __ockl_image_sample_lod_2D: image object ptr, sampler object ptr
+    // (texHandle + 48 bytes), normalized <u,v>, float LOD. samplerHandle is unused here.
     llvm::Value* sampleTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* texHandle,
                                llvm::Value* /*samplerHandle*/, llvm::Value* u,
@@ -469,32 +370,21 @@ public:
         auto* p4 = llvm::PointerType::get(ctx, 4);
         auto* v2f = llvm::FixedVectorType::get(f32, 2);
         auto* v4f = llvm::FixedVectorType::get(f32, 4);
-        // sampler object sits HIP_SAMPLER_OBJECT_OFFSET_DWORD (12) dwords in.
         llvm::Value* sampPtr =
             b.CreateConstGEP1_32(i8, texHandle, 48, "tex.samp.obj");
         llvm::Value* coord = llvm::PoisonValue::get(v2f);
         coord = b.CreateInsertElement(coord, u, uint64_t(0));
         coord = b.CreateInsertElement(coord, v, uint64_t(1), "tex.coord");
-        // Explicit-LOD variant (lod is the float mip level; 0.0 for plain sample
-        // → level 0, exactly as on a single-level image). sampleLod threads the
-        // user LOD here; the mipmapped texobj's maxMipmapLevelClamp admits it.
         auto* fnTy = llvm::FunctionType::get(v4f, {p4, p4, v2f, f32}, false);
         llvm::FunctionCallee s =
             m.getOrInsertFunction("__ockl_image_sample_lod_2D", fnTy);
         llvm::Value* rgba = b.CreateCall(s, {texHandle, sampPtr, coord, lod},
                                          "tex.sample.rgba");
-        // Return the full <4 x float> RGBA — Texture2D.sample is typed
-        // Vector<float32,4>; the caller picks a channel with .r/.x.
         return rgba;
     }
 
-    // tex.fetch(x, y) → __ockl_image_load_2D (ROCm device library, linked by
-    // AmdgpuBackend when an __ockl_image_* symbol is referenced). The unfiltered
-    // twin of sampleTexture: it takes the image object ptr (= texHandle,
-    // addrspace 4) and the integer <x, y> coord — NO sampler (the sampler SRD is
-    // unused for a plain image load), no normalization. The image's format
-    // descriptor still decodes the stored encoding (UNORM byte → [0, 1], half →
-    // float). Returns the <4 x float> texel (Texture2D.fetch is Vector<float32,4>).
+    // tex.fetch → __ockl_image_load_lod_2D, the unfiltered twin: image object ptr, integer
+    // <x,y>, i32 mip level, no sampler and no normalization. The format still decodes.
     llvm::Value* fetchTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                               llvm::Value* texHandle, llvm::Value* x,
                               llvm::Value* y, llvm::Type* texelTy,
@@ -508,13 +398,7 @@ public:
         llvm::Value* coord = llvm::PoisonValue::get(v2i);
         coord = b.CreateInsertElement(coord, x, uint64_t(0));
         coord = b.CreateInsertElement(coord, y, uint64_t(1), "tex.fetch.coord");
-        // ockl exposes only a v4f32-returning 2-D image load. For an integer-format
-        // image the HW image_load is RAW (no normalization / convert on a SINT/UINT
-        // SRD), so the v4f32 result holds the verbatim 32-bit integer bits — bitcast
-        // it to <4 x i32> to recover the integers. There is no int-returning ockl
-        // image-load symbol, and this matches the SPIR-V/CPU paths bit-for-bit.
-        // Explicit-LOD variant (lod is the i32 mip level; 0 for plain fetch →
-        // level 0). fetchLod threads the user LOD here.
+        // An integer-format image loads RAW, so the v4f32 holds verbatim integer bits.
         auto* fnTy = llvm::FunctionType::get(v4f, {p4, v2i, i32}, false);
         llvm::FunctionCallee s =
             m.getOrInsertFunction("__ockl_image_load_lod_2D", fnTy);
@@ -527,10 +411,7 @@ public:
         return rgba;
     }
 
-    // Texture3D.sample(sampler, u, v, w) → __ockl_image_sample_3D (the 3-D twin of
-    // __ockl_image_sample_2D). The 3-D ockl coord is a <4 x float> (u, v, w, 0 —
-    // the 4th lane unused); the sampler object rides the texture object at +48, as
-    // in 2-D. Returns the <4 x float> trilinear gather.
+    // Texture3D.sample → __ockl_image_sample_3D: the coord is <4 x float> {u, v, w, 0}.
     llvm::Value* sampleTexture3D(llvm::IRBuilderBase& b, llvm::Module& m,
                                  llvm::Value* texHandle, llvm::Value* /*samplerHandle*/,
                                  llvm::Value* u, llvm::Value* v,
@@ -554,9 +435,7 @@ public:
         return b.CreateCall(s, {texHandle, sampPtr, coord}, "tex3d.sample.rgba");
     }
 
-    // Texture3D.fetch(x, y, z) → __ockl_image_load_3D (unfiltered 3-D twin). The
-    // 3-D ockl load coord is a <4 x i32> (x, y, z, 0). Float result; bitcast to
-    // <4 x i32> for an integer volume (raw image_load, as in 2-D).
+    // Texture3D.fetch → __ockl_image_load_3D: coord <4 x i32> {x, y, z, 0}, float result.
     llvm::Value* fetchTexture3D(llvm::IRBuilderBase& b, llvm::Module& m,
                                 llvm::Value* texHandle, llvm::Value* x,
                                 llvm::Value* y, llvm::Value* z,
@@ -582,11 +461,8 @@ public:
         return rgba;
     }
 
-    // Texture1D.sample(sampler, u) → __ockl_image_sample_1D (the 1-D twin of
-    // __ockl_image_sample_2D). Unlike 2-D/3-D, the 1-D ockl coord is a SCALAR
-    // float (not a vector); the sampler object rides the texture object at +48,
-    // as in 2-D. Returns the <4 x float> linear gather. No lod variant — mipmaps
-    // are 2-D only.
+    // Texture1D.sample → __ockl_image_sample_1D: unlike 2-D/3-D the coord is a SCALAR
+    // float, and there is no lod variant — mipmaps are 2-D only.
     llvm::Value* sampleTexture1D(llvm::IRBuilderBase& b, llvm::Module& m,
                                  llvm::Value* texHandle,
                                  llvm::Value* /*samplerHandle*/,
@@ -604,9 +480,7 @@ public:
         return b.CreateCall(s, {texHandle, sampPtr, u}, "tex1d.sample.rgba");
     }
 
-    // Texture1D.fetch(x) → __ockl_image_load_1D (unfiltered 1-D twin). The 1-D
-    // ockl load coord is a SCALAR i32. Float result; bitcast to <4 x i32> for an
-    // integer row (raw image_load, as in 2-D).
+    // Texture1D.fetch → __ockl_image_load_1D: the coord is a SCALAR i32.
     llvm::Value* fetchTexture1D(llvm::IRBuilderBase& b, llvm::Module& m,
                                 llvm::Value* texHandle, llvm::Value* x,
                                 llvm::Type* texelTy) override {
@@ -625,11 +499,8 @@ public:
         return rgba;
     }
 
-    // Texture2DArray.sample(sampler, u, v, layer) → __ockl_image_sample_2Da (the
-    // layered twin of __ockl_image_sample_2D). The 2-D-array ockl coord is a
-    // <4 x float> {u, v, layer, 0} — the 3rd lane is the (un-normalized) array
-    // layer; `layer` arrives as i32 and is converted to float. The sampler object
-    // rides the texture object at +48, as in 2-D. Returns the <4 x float> gather.
+    // Texture2DArray.sample → __ockl_image_sample_2Da: the coord is <4 x float>
+    // {u, v, layer, 0}, whose 3rd lane is the UN-normalized layer, converted from i32.
     llvm::Value* sampleTexture2DArray(llvm::IRBuilderBase& b, llvm::Module& m,
                                       llvm::Value* texHandle,
                                       llvm::Value* /*samplerHandle*/,
@@ -655,9 +526,7 @@ public:
         return b.CreateCall(s, {texHandle, sampPtr, coord}, "tex2da.sample.rgba");
     }
 
-    // Texture2DArray.fetch(x, y, layer) → __ockl_image_load_2Da (unfiltered layered
-    // twin). The 2-D-array ockl load coord is a <4 x i32> {x, y, layer, 0}. Float
-    // result; bitcast to <4 x i32> for an integer array (raw image_load, as in 2-D).
+    // Texture2DArray.fetch → __ockl_image_load_2Da: coord <4 x i32> {x, y, layer, 0}.
     llvm::Value* fetchTexture2DArray(llvm::IRBuilderBase& b, llvm::Module& m,
                                      llvm::Value* texHandle, llvm::Value* x,
                                      llvm::Value* y, llvm::Value* layer,
@@ -683,13 +552,9 @@ public:
         return rgba;
     }
 
-    // TextureCube.sample(sampler, x, y, z) — EMULATED. The HIP runtime can't make a
-    // cubemap array on gfx1151 (see runtime cajeta_xpu_hip_texcube_alloc), so the
-    // cube is stored as a 6-LAYER layered array and we do the major-axis face
-    // projection HERE (branchless port of __cajeta_xpu_cpu_texcube_sample_rgba —
-    // same comparisons/order, so AMD bit-matches the CPU oracle), then sample the
-    // chosen face via __ockl_image_sample_2Da (layer = face). Face order
-    // +X,-X,+Y,-Y,+Z,-Z. Limitation: no seamless cross-face filtering (per-face clamp).
+    // TextureCube.sample — EMULATED: HIP cannot make a cubemap array here, so the cube is a
+    // 6-layer array and the major-axis face projection below, branchless and in the CPU
+    // oracle's comparison order, picks the layer. Face order +X,-X,+Y,-Y,+Z,-Z.
     llvm::Value* sampleTextureCube(llvm::IRBuilderBase& b, llvm::Module& m,
                                    llvm::Value* texHandle,
                                    llvm::Value* /*samplerHandle*/, llvm::Value* x,
@@ -706,8 +571,7 @@ public:
         llvm::Value* ax = b.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, x, nullptr, "ax");
         llvm::Value* ay = b.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, y, nullptr, "ay");
         llvm::Value* az = b.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, z, nullptr, "az");
-        // Major-axis selection, matching the CPU if/elseif/else exactly:
-        //   xMajor = ax>=ay && ax>=az ; yMajor = !xMajor && ay>=ax && ay>=az ; else zMajor.
+        // xMajor = ax>=ay && ax>=az ; yMajor = !xMajor && ay>=ax && ay>=az ; else zMajor.
         llvm::Value* xMajor = b.CreateAnd(b.CreateFCmpOGE(ax, ay), b.CreateFCmpOGE(ax, az), "xMajor");
         llvm::Value* yMajor = b.CreateAnd(b.CreateNot(xMajor),
                                  b.CreateAnd(b.CreateFCmpOGE(ay, ax), b.CreateFCmpOGE(ay, az)), "yMajor");
@@ -721,7 +585,6 @@ public:
         llvm::Value* faceZ = b.CreateSelect(zPos, cI(4), cI(5));
         llvm::Value* face = b.CreateSelect(xMajor, faceX,
                               b.CreateSelect(yMajor, faceY, faceZ), "cube.face");
-        // ma = dominant |axis| (guard 0 → 1)
         llvm::Value* ma = b.CreateSelect(xMajor, ax, b.CreateSelect(yMajor, ay, az));
         ma = b.CreateSelect(b.CreateFCmpOEQ(ma, cF(0.0)), cF(1.0), ma, "cube.ma");
         // sc: +X:-z -X:z  Y:x  +Z:x -Z:-x   tc: X:-y  +Y:z -Y:-z  Z:-y
@@ -730,7 +593,6 @@ public:
         llvm::Value* sc = b.CreateSelect(xMajor, scX, b.CreateSelect(yMajor, x, scZ));
         llvm::Value* tcY = b.CreateSelect(yPos, z, negZ);
         llvm::Value* tc = b.CreateSelect(xMajor, negY, b.CreateSelect(yMajor, tcY, negY));
-        // u = 0.5*(sc/ma + 1) ; v = 0.5*(tc/ma + 1)
         llvm::Value* u = b.CreateFMul(cF(0.5), b.CreateFAdd(b.CreateFDiv(sc, ma), cF(1.0)), "cube.u");
         llvm::Value* v = b.CreateFMul(cF(0.5), b.CreateFAdd(b.CreateFDiv(tc, ma), cF(1.0)), "cube.v");
 
@@ -747,18 +609,9 @@ public:
     }
 
     // --- Image2D storage images (the writable twin of Texture2D) --------------
-    //
-    // img.store(x, y, v) / img.load(x, y) → __ockl_image_store_2D /
-    // __ockl_image_load_2D (ROCm device library, linked by AmdgpuBackend when an
-    // __ockl_image_* symbol is referenced). Unlike the sampled texture path these
-    // take NO sampler — a storage image is bound as a surface object (the image
-    // SRD only), so the handle (= imgHandle, a ptr addrspace(4) kernarg, the same
-    // arg model as a texture via textureParamType) is the sole resource operand.
-    // The runtime binds it via hipCreateSurfaceObject with hipArraySurfaceLoadStore.
-    // Coords are the integer <x, y> (NOT normalized); the texel is the R32f <4 x
-    // float> with the scalar value in lane 0 (the R32 image keeps lane 0) — mirror
-    // of the Vulkan OpImageWrite/OpImageRead path so the two agree.
 
+    // img.store → __ockl_image_store_2D. A storage image is a surface object (image SRD
+    // only), so imgHandle is the sole operand; the texel is R32f with the value in lane 0.
     void storeImage(llvm::IRBuilderBase& b, llvm::Module& m,
                     llvm::Value* imgHandle, llvm::Value* x, llvm::Value* y,
                     llvm::Value* value) override {
@@ -771,8 +624,6 @@ public:
         llvm::Value* coord = llvm::PoisonValue::get(v2i);
         coord = b.CreateInsertElement(coord, x, uint64_t(0));
         coord = b.CreateInsertElement(coord, y, uint64_t(1), "img.coord");
-        // R32f texel: value in lane 0, zero elsewhere (the image's R32 format keeps
-        // only lane 0 — same packing the Vulkan storeImage uses).
         llvm::Value* texel = llvm::ConstantAggregateZero::get(v4f);
         texel = b.CreateInsertElement(texel, value, uint64_t(0), "img.texel");
         auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
@@ -782,6 +633,7 @@ public:
         b.CreateCall(s, {imgHandle, coord, texel});
     }
 
+    // img.load → __ockl_image_load_2D, the read twin: the R32f texel is component 0.
     llvm::Value* loadImage(llvm::IRBuilderBase& b, llvm::Module& m,
                            llvm::Value* imgHandle, llvm::Value* x,
                            llvm::Value* y) override {
@@ -798,18 +650,13 @@ public:
         llvm::FunctionCallee s =
             m.getOrInsertFunction("__ockl_image_load_2D", fnTy);
         llvm::Value* rgba = b.CreateCall(s, {imgHandle, coord}, "img.load.rgba");
-        // R32f → the scalar texel is component 0 (same as the Vulkan loadImage).
         return b.CreateExtractElement(rgba, uint64_t(0), "img.load");
     }
 
-    // (Shader clock uses the base default: llvm.readcyclecounter, which the
-    // AMDGPU backend lowers to s_getreg HW_REG_SHADER_CYCLES on RDNA — the GCN/
-    // CDNA s_memrealtime/s_memtime intrinsics are not selectable on gfx11+.)
+    // (Shader clock uses the base default llvm.readcyclecounter; s_memtime dies on gfx11+.)
 
-    // Transcendentals via the ROCm OpenCL math library (ocml): `__ocml_<fn>_f32`
-    // (or `_f64`). AMDGPU mis-lowers `llvm.sin`/etc. (no range reduction), so we
-    // emit the ocml call directly; AmdgpuBackend links ocml.bc when these
-    // `__ocml_` declarations are present. rsqrt is a native amdgcn intrinsic.
+    // Transcendentals via ROCm's ocml (`__ocml_<fn>_f32`/`_f64`): AMDGPU mis-lowers
+    // llvm.sin and friends (no range reduction). rsqrt is a native amdgcn intrinsic.
     llvm::Value* transcendental(llvm::IRBuilderBase& b, llvm::Module& m,
                                 const std::string& name,
                                 llvm::ArrayRef<llvm::Value*> args) override {
@@ -840,9 +687,8 @@ public:
             std::vector<llvm::Value*>(args.begin(), args.end()), "ocml.call");
     }
 
-    // Wave ops. Wavefront size is target-/feature-dependent (32 or 64 on
-    // RDNA; default 32 for compute here). readlane is shuffle-by-index; ballot
-    // returns the wave-width mask (i32 in the wave32 default), widened to i64.
+    // Wave ops. Wavefront size is target-dependent (32 or 64; 32 for compute here);
+    // readlane is shuffle-by-index and ballot's wave-width mask widens to i64.
     llvm::Value* waveWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::amdgcn_wavefrontsize);
@@ -865,16 +711,15 @@ public:
     }
     llvm::Value* waveReduceSum(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* value) override {
-        // wave.reduce.add over i32; strategy operand 0 = default lowering.
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::amdgcn_wave_reduce_add, {i32});
         return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0)}, "wavered");
     }
+    // amdgcn.wave.reduce.{umax,umin,and,or,xor} over i32 — unsigned min/max for the
+    // uint32 surface, strategy operand 0 for the default lowering, as in the f32 twin.
     llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
                             WaveReduceOp op, llvm::Value* value) override {
-        // amdgcn.wave.reduce.{umax,umin,and,or,xor} over i32 (unsigned min/max
-        // for the uint32 surface); strategy operand 0 = default lowering.
         llvm::Intrinsic::ID id;
         switch (op) {
             case WaveReduceOp::Max: id = llvm::Intrinsic::amdgcn_wave_reduce_umax; break;
@@ -889,9 +734,6 @@ public:
     }
     llvm::Value* waveReduceF32(llvm::IRBuilderBase& b, llvm::Module& m,
                                WaveReduceFOp op, llvm::Value* value) override {
-        // amdgcn.wave.reduce.{fadd,fmax} over f32 — the native float wave
-        // reduce (10.12.38); strategy operand 0 = default lowering, same
-        // contract as the integer family above.
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
@@ -902,10 +744,9 @@ public:
         return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0)},
                             "wavered.f");
     }
+    // The canonical lane-id idiom: mbcnt hi(~0, lo(~0, 0)) counts set exec bits below
+    // this lane, giving its index in the wavefront — wave32 and wave64 alike.
     llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
-        // The canonical AMDGPU lane-id idiom: mbcnt counts set bits of the
-        // exec-relative mask below this lane. hi(~0, lo(~0, 0)) = this lane's
-        // index within the wavefront (handles both wave32 and wave64).
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* allOnes = llvm::ConstantInt::get(i32, 0xFFFFFFFFu);
         llvm::Function* lo = llvm::Intrinsic::getOrInsertDeclaration(
@@ -916,25 +757,20 @@ public:
             b.CreateCall(lo, {allOnes, llvm::ConstantInt::get(i32, 0)}, "mbcnt.lo");
         return b.CreateCall(hi, {allOnes, lowCount}, "wave.laneid");
     }
+    // readlane (the uniform waveShuffle) cannot take a per-lane source, so use
+    // ds_bpermute, the divergent intra-wave gather: lane at byte address src*4.
     llvm::Value* waveShuffleDivergent(llvm::IRBuilderBase& b, llvm::Module& m,
                                       llvm::Value* value,
                                       llvm::Value* srcLane) override {
-        // readlane (the uniform waveShuffle) can't take a per-lane source; use
-        // ds_bpermute, the divergent intra-wave gather (reads from lane at byte
-        // address src*4). The portable rotate/scan defaults route through here.
         llvm::Value* byteAddr = b.CreateShl(srcLane, 2, "wave.gather.byte");
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::amdgcn_ds_bpermute);
         return b.CreateCall(f, {byteAddr, value}, "wave.gather");
     }
+    // Rotate's source, (laneId + delta) mod width, is per-lane DIVERGENT, so it takes
+    // ds_bpermute rather than the base default's wave-uniform readlane.
     llvm::Value* waveRotate(llvm::IRBuilderBase& b, llvm::Module& m,
                             llvm::Value* value, llvm::Value* delta) override {
-        // The base default routes through waveShuffle = amdgcn.readlane, which
-        // requires a wave-UNIFORM source lane — but rotate's source
-        // (laneId + delta) mod width is per-lane DIVERGENT. Use ds_bpermute, the
-        // AMDGPU divergent-index intra-wave gather: each lane reads `value` from
-        // the lane at byte address src*4. (gfx11 wave32; covers the 32-lane
-        // window the rotate test verifies.)
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* lane = waveLaneId(b, m);
         llvm::Value* width = waveWidth(b, m);
@@ -946,36 +782,17 @@ public:
         return b.CreateCall(f, {byteAddr, value}, "wave.rotate");
     }
 
-    // ---- Cooperative matrix: RDNA3 WMMA (matrix cores), CM7 ------------------
-    // gfx11/RDNA3.5 `v_wmma_*_16x16x16` (wave32): D[16x16] = A·B + C, with the
-    // tile held DISTRIBUTED across the 32 lanes of the wave. Unlike Vulkan (where
-    // the SPIR-V cooperative-matrix ops distribute implicitly), we marshal each
-    // fragment by hand from/to global memory in load/store, per the hardware
-    // layout:
-    //   A  : lane L holds row (L & 15) of A as <16 x elem>, k = 0..15 (the K
-    //        axis); replicated across the two 16-lane halves of the wave.
-    //   B  : lane L holds column (L & 15) of B as <16 x elem>, k = 0..15.
-    //   C/D: <8 x float> per lane — lane L holds column (L & 15), rows
-    //        { 2*e + (L >> 4) : e = 0..7 } (the wave32 interleaved-row layout).
-    // bf16 A/B are carried as <16 x i16> (the same 16 bits) for the intrinsic.
-    //
-    // int8 (CM8) uses the iu8 WMMA — `v_wmma_i32_16x16x16_iu8`: the 16 K-values
-    // of each A row / B column are packed 4-per-i32 into a <4 x i32> fragment,
-    // and the accumulator is <8 x i32> (D = A·B + C in i32). The fragment row/col
-    // mapping across lanes is identical to the f16/bf16 path — only the per-lane
-    // packing and the intrinsic (signed operands, no clamp) differ.
-    //
-    // Native configs (16x16x16): f16/bf16 A·B → f32 accumulator, int8 A·B → i32
-    // accumulator. Anything else falls to the portable Software tier (CM6).
+    // ---- Cooperative matrix: gfx11 `v_wmma_*_16x16x16` (wave32) per-lane layout ----
+    //   A  : lane L holds row (L & 15), <16 x elem> over k = 0..15, replicated across
+    //        the two 16-lane halves of the wave.
+    //   B  : lane L holds column (L & 15), <16 x elem> over k = 0..15.
+    //   C/D: <8 x elem> per lane — column (L & 15), rows { 2e + (L >> 4) }.
+    //   bf16 A/B: <16 x i16>.  int8: 4 K-values per i32, <4 x i32> with <8 x i32> acc.
 
+    // Native only at 16x16x16: f16/bf16/int8 operands, f32 or i32 accumulator. The role
+    // matters — an int32 *operand* has no WMMA while an int32 *accumulator* is native.
     ImplTier coopMatrixTier(llvm::Type* elem, uint32_t rows, uint32_t cols,
                             uint32_t use) override {
-        // Native 16x16x16 WMMA configs, by tile role:
-        //   A/B operands : f16, bf16, or int8 (the iu8 path).
-        //   accumulator  : f32 (for the f16/bf16 GEMMs) or int32 (for iu8).
-        // The role-awareness keeps an int32 *operand* (no WMMA) on the portable
-        // tier while an int32 *accumulator* (the iu8 output) is native — the two
-        // share an LLVM type but not a config.
         if (rows == 16 && cols == 16) {
             if (use == 2) {
                 if (elem->isFloatTy() || elem->isIntegerTy(32))
@@ -988,35 +805,31 @@ public:
         return ImplTier::Portable;
     }
 
-    // RDNA3 WMMA exists only in the wave32 encoding — mark the kernel so the
-    // AMDGPU subtarget compiles this function at wavefront size 32.
+    // RDNA3 WMMA exists only in the wave32 encoding, so pin the function's wave size.
     void prepareNativeCoopMatrix(llvm::Function* fn) override {
         fn->addFnAttr("target-features", "+wavefrontsize32");
     }
 
+    // The per-lane fragment type for each tile role (see the CM7 layout above).
     llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type* elem,
                                uint32_t /*rows*/, uint32_t /*cols*/,
                                uint32_t use) override {
         llvm::LLVMContext& ctx = m.getContext();
         if (use == 2) {
-            // Accumulator fragment: 8 per lane — f32 for f16/bf16 GEMMs,
-            // i32 for the iu8 (int8) GEMM.
             llvm::Type* ae = elem->isIntegerTy()
                 ? (llvm::Type*) llvm::Type::getInt32Ty(ctx)
                 : (llvm::Type*) llvm::Type::getFloatTy(ctx);
             return llvm::FixedVectorType::get(ae, 8);
         }
-        // int8 A/B operand: the 16 K-values are packed 4-per-i32 → <4 x i32>
-        // (the iu8 WMMA fragment encoding).
         if (elem->isIntegerTy(8))
             return llvm::FixedVectorType::get(llvm::Type::getInt32Ty(ctx), 4);
-        // f16/bf16 A/B operand fragment: 16 elements per lane (bf16 carried as
-        // i16 for the intrinsic).
         llvm::Type* fe = elem->isBFloatTy()
             ? (llvm::Type*) llvm::Type::getInt16Ty(ctx) : elem;
         return llvm::FixedVectorType::get(fe, 16);
     }
 
+    // Assemble this lane's fragment from memory: the int8 A/B path packs 4 consecutive
+    // K-values per i32, little-endian, and every other role loads element by element.
     llvm::Value* coopMatrixLoad(llvm::IRBuilderBase& b, llvm::Module& m,
                                 llvm::Value* ptr, llvm::Value* layout,
                                 llvm::Value* stride, llvm::Type* matrixType,
@@ -1027,35 +840,16 @@ public:
         llvm::Type* fe = vecTy->getElementType();
         unsigned n = vecTy->getNumElements();
         llvm::Value* frag = llvm::UndefValue::get(vecTy);
-        // int8 A/B operand: an <4 x i32> fragment, each i32 packing 4 consecutive
-        // K-values (k = 4*w .. 4*w+3) as little-endian bytes — the iu8 WMMA
-        // encoding. (The accumulator, use==2, is <8 x i32> with one value per
-        // element and takes the generic per-element path below.)
         if (use != 2 && fe->isIntegerTy(32)) {
             llvm::LLVMContext& ctx = m.getContext();
             llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
-            // FAST PATH (threaded-forward-path 10.12.26): when this
-            // lane's 16 fragment bytes are provably CONSECUTIVE — A
-            // (use 0) row-major or B (use 1) column-major, constant
-            // stride divisible by 4, no swizzle, no block pad — load
-            // them as ONE <4 x i32> instead of assembling four words
-            // from sixteen one-byte loads. The byte path measured the
-            // consumer GEMM's memory unit at 97.3% busy on REQUEST
-            // COUNT (512 byte-granularity ops per lane per block), with
-            // waves waiting 32:1 — the per-byte-access lesson at
-            // fragment scale. A little-endian wide load produces
-            // exactly the bytes-shifted-into-words packing below.
+            // FAST PATH: when this lane's 16 fragment bytes are provably CONSECUTIVE, load
+            // them as ONE <4 x i32> — little-endian gives the byte loop's exact packing.
             {
                 auto* cl = llvm::dyn_cast<llvm::ConstantInt>(layout);
                 auto* cs = llvm::dyn_cast<llvm::ConstantInt>(stride);
-                // Contiguity needs only the LAYOUT to be constant —
-                // the stride merely positions each lane's base (the
-                // first build required a constant stride and silently
-                // left every A operand, whose stride is a runtime
-                // kernel parameter, on the sixteen-byte path). A
-                // provably 4-aligned stride upgrades the alignment
-                // hint; otherwise align 1, which gfx11 global loads
-                // handle wide anyway.
+                // Only the LAYOUT need be constant — the stride merely positions each
+                // lane's base. A provably 4-aligned stride upgrades the alignment hint.
                 bool laneRun = cl && n == 4 && swz == 0 &&
                     !blk.period &&
                     ((use == 0 && cl->getZExtValue() == 0) ||
@@ -1082,7 +876,6 @@ public:
                     auto rc = fragCoord(b, m, use, 4 * w + s, layout, stride, swz, blk);
                     llvm::Value* p = b.CreateGEP(i8, ptr, rc, "cm.ld.ptr");
                     llvm::Value* byte = b.CreateLoad(i8, p, "cm.ld");
-                    // zext keeps the raw 8 bits; shift into byte slot s and OR.
                     llvm::Value* bits = b.CreateShl(
                         b.CreateZExt(byte, fe),
                         llvm::ConstantInt::get(fe, s * 8));
@@ -1115,26 +908,19 @@ public:
         }
     }
 
+    // Pick the WMMA intrinsic by A/B element type: <16 x half> f16, <16 x i16> bf16,
+    // <4 x i32> packed int8 (iu8 — signed per signFlags bit 0/1, and never clamped).
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* a, llvm::Value* bMat,
                                   llvm::Value* c, llvm::Type* /*matrixType*/,
                                   uint32_t signFlags) override {
-        // Pick the intrinsic by the A/B element type: <16 x half> -> f16 WMMA,
-        // <16 x i16> -> bf16 WMMA, <4 x i32> (packed int8) -> iu8 WMMA.
         llvm::Type* ae =
             llvm::cast<llvm::FixedVectorType>(a->getType())->getElementType();
         if (ae->isIntegerTy(32)) {
-            // int8 GEMM: D[<8 x i32>] = A[<4 x i32>]·B + C, signed operands,
-            // no output clamp (the i32 accumulator can't overflow a 16-term
-            // sum of int8 products, matching the host int32 reference).
             llvm::LLVMContext& ctx = m.getContext();
             llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
                 &m, llvm::Intrinsic::amdgcn_wmma_i32_16x16x16_iu8,
                 {c->getType(), a->getType()});
-            // The seam's signFlags (A=0x1, B=0x2) become the intrinsic's
-            // per-operand signed booleans — the same fact SPIR-V spells as
-            // the MulAdd operands literal. Was hardcoded signed; reading the
-            // mask keeps a future uint8 tile honest on both tiers.
             llvm::Value* aSg = llvm::ConstantInt::getBool(ctx, (signFlags & 1u) != 0);
             llvm::Value* bSg = llvm::ConstantInt::getBool(ctx, (signFlags & 2u) != 0);
             llvm::Value* fls = llvm::ConstantInt::getFalse(ctx);  // no clamp
@@ -1149,15 +935,10 @@ public:
         return b.CreateCall(f, {a, bMat, c}, "wmma");
     }
 
-    // The fused epilogue verbs run in the accumulator fragment's registers
-    // (xpu-coopmatrix-epilogue Option B): per lane, element e sits at row
-    // `2e + (lane>>4)`, column `lane & 15` — the C/D mapping documented
-    // above — so `rowF[row]` is one LDS load per element and `colF[col]`
-    // ONE per lane, hoisted. Association `(rowF*colF)*C` is the
-    // cross-tier contract (bit-exact against the software tile).
+    // The fused epilogue runs in the accumulator fragment's registers: element e is at row
+    // 2e + (lane>>4), column lane & 15. The association (rowF*colF)*C is a cross-tier contract.
     bool coopMatrixEpilogueSupported() const override { return true; }
-    // The iu8 fragment is the documented <4 x i32> per lane (see the CM7
-    // layout note above), so fromWords is a plain vector build here.
+    // The iu8 fragment is <4 x i32> per lane, so fromWords is a plain vector build.
     bool coopMatrixFromWordsSupported() const override { return true; }
 
     llvm::Value* coopMatrixEpilogueAccum(
@@ -1176,17 +957,13 @@ public:
             b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15));
         llvm::Value* half =
             b.CreateLShr(lane, llvm::ConstantInt::get(i32, 4));
-        // colF[c] is a per-lane constant either way: the S variants
-        // (10.12.31) hand it over as a register value and skip the LDS
-        // load entirely — this was already ONE load per lane, hoisted,
-        // so the scalar form is the same math minus the LDS round trip.
+        // colF[c] is a per-lane constant either way; the S variants pass it in a register.
         llvm::Value* cv = colFScalar
             ? colFScalar
             : b.CreateLoad(
                   colETy, b.CreateGEP(colETy, colFPtr, lane16,
                                       "epi.cf.ptr"),
                   "epi.cf");
-        // Dual form: the second column factor is also per-lane constant.
         llvm::Value* cgv = colGScalar;
         if (!cgv && colGPtr)
             cgv = b.CreateLoad(
@@ -1238,10 +1015,8 @@ public:
     }
 
 private:
-    // The global linear index for fragment element `e` of a tile with the given
-    // `use`, on the current lane — the heart of the WMMA layout. Returns the
-    // element offset into the tile base (row-major `row*stride+col`, column-major
-    // `col*stride+row`).
+    // The element offset into the tile base for fragment element `e` of a tile with role
+    // `use`, on the current lane: row-major `row*stride+col`, column-major `col*stride+row`.
     llvm::Value* fragCoord(llvm::IRBuilderBase& b, llvm::Module& m, uint32_t use,
                            unsigned e, llvm::Value* layout, llvm::Value* stride,
                            uint32_t swz = 0, LdsBlockPad blk = {}) {
@@ -1266,19 +1041,11 @@ private:
         llvm::Value* idx = b.CreateSelect(
             b.CreateICmpEQ(layout, llvm::ConstantInt::get(i32, 0)),
             rowMajor, colMajor, "cm.idx");
-        // Swizzled<T,S> tile: permute the fragment coord by the same conflict-free
-        // XOR the staging used (WMMA sub-tile offsets are S²-aligned, so this
-        // fragment-local swizzle equals the absolute one).
+        // WMMA sub-tile offsets are S²-aligned, so the fragment-local swizzle equals
+        // the absolute one the staging applied.
         if (swz) { idx = swizzleAddr(b, idx, swz); return idx; }
-        // BlockPadded<T,Block,Pad>: when an operand fragment provably fits one pad block
-        // (constant stride, 15*stride+15 < Block) and the panel base is block-aligned, pad
-        // the panel base ALONE and add the per-lane + e term unpadded — pad(panelBase +
-        // lane*stride + e) == pad(panelBase) + lane*stride + e with no block boundary inside
-        // the fragment. The base pad folds to a compile-time constant for a constant panel
-        // offset (the unrolled-K case), so the K-loop carries zero pad VALU and e rides into
-        // the ds_read offset: immediate. Otherwise fall back to padding the e=0 base once and
-        // re-adding e (affine in e, reads stay ds_read_b128). ptr is the bare base; baseOffset
-        // is logical. See specs/archive/amdgpu-constant-folded-lds-spec.md §1.4.
+        // BlockPadded: when the fragment fits one pad block and the panel base is block-
+        // aligned, pad that base ALONE and add per-lane + e unpadded — it folds to a constant.
         if (blk.period) {
             llvm::Value* eC = llvm::ConstantInt::get(i32, e);
             bool canFold = false;

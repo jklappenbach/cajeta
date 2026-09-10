@@ -1,18 +1,6 @@
-// `package` — universal format-conversion verb. Phase 9 ships:
-//
-//   tarball       file/dir → .tar.zst (default) or .tar.gz
-//   zip           file/dir → .zip  (shells to /usr/bin/zip)
-//   container     executable → OCI image-layout (writeOciImage)
-//   uber-archive  .cja + transitive deps → single .cja
-//
-// Deferred to compiler integration (clean v1-cut errors):
-//   obj-tree, uber-ir, static-lib, shared-lib
-//
-// Deferred per-platform installer formats (clean v1-cut errors):
-//   deb, rpm, msi, app-bundle, pkg, dmg, appimage, flatpak, snap
-//
-// Cache key on (input-sha256, format, format-specific-params)
-// keeps repeated packages of unchanged input cheap.
+// The `package` format-conversion verb: tarball, zip, container (OCI layout) and
+// uber-archive (a .cja plus its transitive deps). Every other named format errors
+// as a clean cut. Repeats are cheap: the cache keys on input sha + format + params.
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/Manifest.h"
@@ -88,10 +76,7 @@ namespace cajeta::buildtool {
             return s;
         }
 
-        // Collect every file under `root` (recursively) into TarEntry
-        // records. Paths are relative to root. Root may also be a
-        // single file — in that case the entry's name is the file's
-        // basename.
+        // Every file under `root`, named relative to it; a file `root` gives one entry.
         llvm::Expected<std::vector<TarEntry>> collectEntries(
             const std::filesystem::path& root) {
             namespace fs = std::filesystem;
@@ -123,9 +108,7 @@ namespace cajeta::buildtool {
             return out;
         }
 
-        // Run `argv[0] argv[1..]`. Returns the child's exit code; on
-        // exec failure the error message names the missing tool so
-        // CI failures point at the actionable cause ("install zip").
+        // The child's exit code; an exec failure errors NAMING the missing tool.
         llvm::Expected<int> runChild(const std::vector<std::string>& argv) {
             SubprocessOptions so;
             so.argv = argv;
@@ -138,16 +121,13 @@ namespace cajeta::buildtool {
             return res.code();
         }
 
-        // Compute a stable cache key for (input-sha256, format,
-        // format-specific params). Used to short-circuit repeated
-        // packages of unchanged input.
+        // A stable key over the input sha, the format and the format-specific
+        // params, so repeating a package of unchanged input is free.
         std::string cacheKeyFor(const std::string& inputSha,
                                 const std::string& format,
                                 const llvm::json::Object& params) {
             std::string key = inputSha + "|" + format;
-            // Stable ordering: collect the keys that are format-
-            // specific (everything other than `input` + `format` +
-            // `id`). Sort, then append.
+            // Sorted, so the key does not depend on JSON member order.
             static const std::set<std::string> ignore = {
                 "input", "format", "id", "spec",
             };
@@ -173,6 +153,9 @@ namespace cajeta::buildtool {
     public:
         std::string name() const override { return "package"; }
 
+        // Converts `params.input` to `params.format`, writing `output-path` (or a
+        // path derived from the input) and a `.pkgkey` sidecar for the cache. The
+        // outputs are path, format, sha256 and a cache hit/miss word.
         llvm::Expected<ActionResult> run(
             const llvm::json::Object& params,
             TaskContext& ctx) const override {
@@ -184,9 +167,6 @@ namespace cajeta::buildtool {
             std::string input = inputV->str();
             std::string format = formatV->str();
 
-            // Action-validation: detect input/format mismatch early
-            // rather than mid-pipeline. The five "needs compiler IR"
-            // formats refuse non-IR inputs cleanly.
             namespace fs = std::filesystem;
             std::error_code ec;
             if (!fs::exists(input, ec)) {
@@ -195,14 +175,9 @@ namespace cajeta::buildtool {
             }
             bool inputIsDir = fs::is_directory(input, ec);
 
-            // Deferred formats: per-platform installer + IR-shaped
-            // formats. v1 honors the action contract (it's a known
-            // verb) but errors clearly so the user can swap to a
-            // shipping format without guessing.
+            // Known verbs that do not ship: refused by name, never mid-pipeline.
             static const std::set<std::string> deferredFormats = {
-                // Compiler-integration v1 cuts:
                 "obj-tree", "uber-ir", "static-lib", "shared-lib",
-                // Per-platform installer formats (Phase 9 deferred slices):
                 "deb", "rpm", "msi", "app-bundle", "pkg", "dmg",
                 "appimage", "flatpak", "snap",
             };
@@ -213,8 +188,7 @@ namespace cajeta::buildtool {
                            "'Phase 9 — package action — deferred slices')");
             }
 
-            // Resolve output path: explicit `output-path` wins; else
-            // synthesized from input + format.
+            // An explicit `output-path` wins; otherwise input stem + format suffix.
             std::string outputPath;
             if (auto v = params.getString("output-path")) {
                 outputPath = v->str();
@@ -229,7 +203,6 @@ namespace cajeta::buildtool {
                 else                               outputPath = (dir / stem.string()).string();
             }
 
-            // Tarball-specific switch.
             std::string compression = "zstd";
             if (auto v = params.getString("compression")) {
                 std::string c = v->str();
@@ -241,15 +214,12 @@ namespace cajeta::buildtool {
                 }
             }
 
-            // Cache key + lookup. When the cache hit lives at the
-            // same outputPath, we return without recomputing.
             std::string inputSha = inputIsDir
                 ? std::string{}   // dirs aren't single-file-hashable
                 : sha256OfFile(input);
             std::string cacheKey = cacheKeyFor(inputSha, format, params);
 
-            // Cache hit detection: outputPath exists AND a sidecar
-            // `.cajeta-package-key` file records the same key.
+            // A hit is outputPath existing AND its sidecar recording the same key.
             if (fs::exists(outputPath, ec)) {
                 fs::path keyFile = fs::path(outputPath).string() + ".pkgkey";
                 std::ifstream kf(keyFile);
@@ -276,10 +246,8 @@ namespace cajeta::buildtool {
                     if (!z) return z.takeError();
                     bytes = std::move(*z);
                 } else {
-                    // gzip: shell to `tar -czf`. POSIX tar handles
-                    // both regular files and directory recursion in
-                    // one tool — no need to maintain a second tar
-                    // writer for this path.
+                    // POSIX `tar -czf` covers both files and directory recursion,
+                    // so this path needs no second tar writer.
                     std::vector<std::string> argv{
                         "tar", "-czf", outputPath, "-C",
                         fs::path(input).parent_path().string().empty()
@@ -293,8 +261,6 @@ namespace cajeta::buildtool {
                         return err("package: tarball(gz): tar exited " +
                                    std::to_string(*code));
                     }
-                    // Done — outputPath already filled by tar; skip
-                    // the manual write below.
                     ActionResult r;
                     r.outputs["path"]   = outputPath;
                     r.outputs["format"] = format;
@@ -323,15 +289,12 @@ namespace cajeta::buildtool {
             }
 
             if (format == "zip") {
-                // Shell to /usr/bin/zip. -r recurses dirs; -j junks
-                // paths only when explicitly asked (we honor structure
-                // by default).
+                // `zip -r` recurses; paths keep their structure by default.
                 fs::remove(outputPath, ec);   // zip refuses overwrite
                 std::vector<std::string> argv;
                 if (inputIsDir) {
                     argv = {"zip", "-r", outputPath, "."};
-                    // We chdir into the input dir so paths are
-                    // input-relative inside the zip.
+                    // chdir first, so the archived paths are input-relative.
                     fs::path here = fs::current_path();
                     fs::current_path(input, ec);
                     auto code = runChild(argv);
@@ -419,7 +382,6 @@ namespace cajeta::buildtool {
                                "single .cja file (the entry archive), "
                                "not a directory");
                 }
-                // Bundle entry archive + every transitive dep .cja.
                 std::vector<TarEntry> entries;
                 {
                     std::ifstream in(input, std::ios::binary);
@@ -437,8 +399,7 @@ namespace cajeta::buildtool {
                     auto resolved = resolveProjectDependencies(
                         *ctx.manifest(), projectRoot);
                     if (!resolved) return resolved.takeError();
-                    // Manifest JSON inside the bundle: name/version/sha
-                    // per entry so consumers know what they have.
+                    // bundle.json: name, version and sha per entry, for consumers.
                     llvm::json::Array bundleArr;
                     for (const auto& d : *resolved) {
                         std::ifstream in(d.artifactPath, std::ios::binary);
@@ -454,7 +415,6 @@ namespace cajeta::buildtool {
                             {"artifact", entryName},
                         });
                     }
-                    // Index file lists transitive entries.
                     std::string idx;
                     llvm::raw_string_ostream os(idx);
                     os << llvm::formatv("{0:2}",

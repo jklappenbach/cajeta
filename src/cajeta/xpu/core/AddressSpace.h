@@ -1,21 +1,6 @@
-//
-// XPU address-space enumeration and per-backend lowering tables.
-//
-// Per CajetaXPU.md §3.1.2 there are five address spaces:
-//
-//     Generic   — flat / generic addressing
-//     Global    — device global memory
-//     Shared    — workgroup-shared memory
-//     Constant  — read-only uniform
-//     Private   — per-thread private
-//
-// Each backend maps these to its own integer/storage-class
-// representation. The table below is the literal artifact behind
-// CajetaXPU-Variance.md row 4 (atomic scopes) and row 5 (memory
-// model) — adding AMD/Vulkan later only fills in the unfilled
-// columns of `numberFor()`.
-//
-
+// XPU address-space enumeration and per-backend lowering tables. CajetaXPU.md §3.1.2
+// defines five spaces (Generic, Global, Shared, Constant, Private); each backend maps
+// them to its own integer or storage-class representation in the tables below.
 #pragma once
 
 #include <cstdint>
@@ -44,13 +29,8 @@ namespace xpu {
         return "?";
     }
 
-    // Per-backend address-space numbers (CajetaXPU.md §3.1.2 table).
-    // NVIDIA and AMD share the LLVM address-space convention here;
-    // Vulkan/SPIR-V uses storage classes that are name-based not
-    // numeric — for SPIR-V we map onto OpVariable storage classes
-    // later in the Vulkan lowering pass; `spirvNumberFor` isn't a
-    // real LLVM address space, just a stable integer for tests
-    // (matches the SPIR-V enum value of the storage class).
+    // Per-backend address-space numbers (CajetaXPU.md §3.1.2). NVIDIA and AMD share the
+    // LLVM convention; `spirvNumberFor` is a storage class, not a real address space.
     constexpr int nvidiaNumberFor(AddressSpace as) {
         switch (as) {
             case AddressSpace::Generic:  return 0;
@@ -63,8 +43,7 @@ namespace xpu {
     }
 
     constexpr int amdNumberFor(AddressSpace as) {
-        // AMDGPU agrees with NVPTX on these positions per CajetaXPU.md
-        // §3.1.2; if a future GFX changes them the table forks here.
+        // AMDGPU agrees with NVPTX on these positions; a future GFX forks the table here.
         switch (as) {
             case AddressSpace::Generic:  return 0;
             case AddressSpace::Global:   return 1;
@@ -75,9 +54,8 @@ namespace xpu {
         return 0;
     }
 
-    // SPIR-V storage-class numeric values, per the Khronos spec.
-    // Generic→8 (Function generic), Global→12 (StorageBuffer),
-    // Shared→4 (Workgroup), Constant→2 (Uniform), Private→7 (Function).
+    // SPIR-V storage-class values per Khronos: Generic 8 (Function generic), Global 12
+    // (StorageBuffer), Shared 4 (Workgroup), Constant 2 (Uniform), Private 7 (Function).
     constexpr int spirvNumberFor(AddressSpace as) {
         switch (as) {
             case AddressSpace::Generic:  return 8;
@@ -89,18 +67,12 @@ namespace xpu {
         return 0;
     }
 
-    // Recognition: which AddressSpace does a Cajeta canonical name
-    // refer to? Returns nullopt for any canonical not in the
-    // cajeta.xpu.{Global,Shared,Constant,Private,Generic} set.
-    // Matches just the short class name suffix to admit both the
-    // template-form ("cajeta.xpu.Global") and an instantiated
-    // form ("cajeta.xpu.Global<cajeta.float32>").
+    // Which AddressSpace a Cajeta canonical names; false for any outside cajeta.xpu.
+    // Matches the short class name, so both `Global` and `Global<T>` are recognised.
     inline bool isAddressSpaceCanonical(const std::string& canonical,
                                         AddressSpace& outAs) {
-        // First find where the template-arg list starts (if any).
-        // Then find the last '.' BEFORE that point — find_last_of('.')
-        // on the full string would land inside template args for a
-        // qualified-type arg like Shared<cajeta.float32>.
+        // Find the last '.' BEFORE the template-arg list: find_last_of('.') on the whole
+        // string lands inside the args for a qualified type like Shared<cajeta.float32>.
         auto angle = canonical.find('<');
         auto searchEnd = (angle == std::string::npos)
             ? canonical.size() : angle;

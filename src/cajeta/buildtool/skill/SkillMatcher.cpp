@@ -1,7 +1,4 @@
-//
-// Fuzzy skill matcher. See SkillMatcher.h and
-// specs/archive/skill-discovery-spec.md §3.5.
-//
+// Fuzzy skill matcher. See SkillMatcher.h and specs/archive/skill-discovery-spec.md §3.5.
 #include "cajeta/buildtool/skill/SkillMatcher.h"
 
 #include <algorithm>
@@ -16,8 +13,7 @@ namespace cajeta::buildtool::skill {
 
         constexpr int kInf = std::numeric_limits<int>::max();
 
-        // Optimal string alignment distance (Damerau–Levenshtein restricted to
-        // adjacent transpositions, each cost 1).
+        // Optimal string alignment distance (Damerau–Levenshtein restricted to adjacent transpositions, each cost 1).
         int osa(llvm::StringRef a, llvm::StringRef b) {
             const size_t n = a.size(), m = b.size();
             if (n == 0) return static_cast<int>(m);
@@ -77,7 +73,6 @@ namespace cajeta::buildtool::skill {
             return out;
         }
 
-        // Per-segment edit allowance, scaled by the key segment's length.
         int segAllowance(size_t len) {
             if (len <= 2) return 0;
             if (len <= 5) return 1;
@@ -85,14 +80,11 @@ namespace cajeta::buildtool::skill {
             return static_cast<int>(len / 4);
         }
 
-        // Length-scaled allowance for a whole title.
         int titleAllowance(size_t len) {
             return std::max<int>(1, static_cast<int>(len / 5));
         }
 
-        // Segment-aware name distance: kInf when the segment counts differ or any
-        // segment exceeds its own allowance (so a typo stays local and structure
-        // is respected). Otherwise the summed per-segment OSA distance.
+        // Segment-aware name distance: kInf when segment counts differ or a segment exceeds its allowance, else the summed OSA.
         int nameDistance(llvm::StringRef query, llvm::StringRef key) {
             auto qs = segments(query);
             auto ks = segments(key);
@@ -106,9 +98,7 @@ namespace cajeta::buildtool::skill {
             return total;
         }
 
-        // Title distance: token-wise OSA (case-insensitive) when token counts
-        // match, else whole-string OSA on the lowercased text. kInf when beyond
-        // the length-scaled allowance.
+        // Title distance: token-wise OSA when token counts match, else whole-string; kInf beyond the allowance.
         int titleDistance(llvm::StringRef query, llvm::StringRef key) {
             auto qt = tokens(query);
             auto kt = tokens(key);

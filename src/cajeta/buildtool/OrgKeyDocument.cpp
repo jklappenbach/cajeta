@@ -16,7 +16,6 @@ namespace cajeta::buildtool {
                                            "%s", msg.c_str());
         }
 
-        // Days before month m (0-based) in a non-leap year.
         constexpr int kDaysBeforeMonth[12] = {
             0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
         };
@@ -25,10 +24,8 @@ namespace cajeta::buildtool {
             return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
         }
 
-        // Days from 1970-01-01 to y-m-d. Computed rather than taken from
-        // timegm, which is absent on some of the platforms this ships to and
-        // timezone-sensitive on others; a validity window must not depend on
-        // the host's TZ.
+        // Days from 1970-01-01, computed rather than taken from timegm: a
+        // validity window must not depend on the host's TZ.
         long long daysFromEpoch(int y, int m, int d) {
             long long days = 0;
             for (int year = 1970; year < y; ++year) days += isLeap(year) ? 366 : 365;
@@ -40,9 +37,7 @@ namespace cajeta::buildtool {
     } // namespace
 
     llvm::Expected<std::time_t> parseUtcTimestamp(const std::string& text) {
-        // Exactly YYYY-MM-DDTHH:MM:SSZ. Length is checked first so a longer
-        // string carrying an offset or fractional seconds cannot pass by
-        // matching a prefix.
+        // Exactly YYYY-MM-DDTHH:MM:SSZ, length first so no longer string passes.
         if (text.size() != 20 || text[4] != '-' || text[7] != '-'
             || text[10] != 'T' || text[13] != ':' || text[16] != ':'
             || text[19] != 'Z') {
@@ -124,9 +119,7 @@ namespace cajeta::buildtool {
             const std::vector<RootKey>& roots,
             std::time_t now,
             std::time_t seenIssuedAt) {
-        // Verify BEFORE parsing the payload. Nothing inside an unverified
-        // document should influence anything, including which errors are
-        // reported about it.
+        // Verify BEFORE parsing: nothing unverified may influence anything.
         auto envelope = openSignedEnvelope(envelopeJson, roots,
                                            "organization key document");
         if (!envelope) return envelope.takeError();
@@ -164,9 +157,7 @@ namespace cajeta::buildtool {
             doc.namespaces.push_back(s->str());
         }
 
-        // REQUIRED (spec 2.9.2). An optional issued-at cannot be checked —
-        // a document omitting it would simply skip the comparison, which is
-        // the replay this field exists to stop.
+        // REQUIRED: omitting it would skip the comparison and permit the replay.
         auto issued = obj->getString("issued-at");
         if (!issued) {
             return err("organization key document for '" + doc.organization
@@ -178,8 +169,7 @@ namespace cajeta::buildtool {
         if (!issuedAt) return issuedAt.takeError();
         doc.issuedAt = *issuedAt;
 
-        // Optional, and a half-parsed one is refused: a contact that looks
-        // authoritative and points nowhere is worse than none (spec 2.10).
+        // Optional, but a half-parsed one is refused rather than shown.
         if (const auto* contact = obj->getObject("security-contact")) {
             auto uri = contact->getString("uri");
             if (!uri || uri->empty()) {
@@ -207,19 +197,14 @@ namespace cajeta::buildtool {
         if (!parsedKeys) return parsedKeys.takeError();
         doc.keys = std::move(*parsedKeys);
 
-        // Expiry last, so a malformed document reports what is wrong with it
-        // rather than only that it is old. An expired document is an ERROR,
-        // not a parsed value with a flag: nothing downstream can then hold
-        // one and forget to check (spec 2.5).
+        // Expiry last and as an ERROR, so nothing downstream forgets to check.
         if (now >= doc.notAfter) {
             return err("organization key document for '" + doc.organization
                        + "' expired at " + notAfter->str()
                        + "; it is validly signed but out of date, and a stale "
                          "document is how revocation-by-expiry gets bypassed");
         }
-        // Freshness after expiry, so an old document reports as expired
-        // rather than as rolled back — the two send an operator to
-        // different places.
+        // Freshness after expiry: an old document reports as expired, not rolled back.
         if (seenIssuedAt != 0 && doc.issuedAt < seenIssuedAt) {
             return err("organization key document for '" + doc.organization
                        + "' is older than one already accepted (issued "

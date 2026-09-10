@@ -1,6 +1,4 @@
-//
 // Created by James Klappenbach on 4/14/23.
-//
 
 #include "Identifier.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -9,9 +7,10 @@
 #include "../../type/StructureProperty.h"
 
 namespace cajeta {
+    /// Pins resolvedType to the named field's type, from the active scope or,
+    /// failing that, from a property of the enclosing class. A bare CLASS NAME
+    /// deliberately stays unresolved; see the note at the end of the body.
     void IdentifierExpression::resolveTypes(CajetaModulePtr module) {
-        // Look up the identifier in the active scope and pin our resolvedType to the
-        // referenced field's type. Used downstream by DotExpression and ArrayIndexExpression.
         if (!module->getScopeStack().isEmpty()) {
             FieldPtr field = module->getScopeStack().peek()->getField(identifier);
             if (field) {
@@ -19,10 +18,7 @@ namespace cajeta {
                 return;
             }
         }
-        // Implicit-this fallback: a bare identifier inside an instance
-        // method body might be naming a property of the enclosing class
-        // (the common `x` shorthand for `this.x`). Look up against the
-        // class on the top of the structure stack.
+        // Implicit-this: a bare `x` may be shorthand for `this.x`.
         if (!module->getStructureStack().empty()) {
             auto klass = module->getStructureStack().back();
             if (klass) {
@@ -32,28 +28,16 @@ namespace cajeta {
                 }
             }
         }
-        // Intentionally do NOT resolve class-name identifiers here.
-        // MethodReferenceExpression's resolver distinguishes a value-of-
-        // class-type receiver (`myInstance::next` → BOUND) from a
-        // class-name receiver (`Counter::next` → UNBOUND) using whether
-        // resolvedType is non-null on the LHS expression. Pinning a class
-        // type on the LHS for bare-class-name lookups would collapse the
-        // distinction and break that discriminator. Static-method calls
-        // (`Bar.work()`) handle the class-name fallback in
-        // MethodCallExpression directly.
+        // A class-name identifier is deliberately left unresolved:
+        // MethodReferenceExpression tells `myInstance::next` from `Counter::next`
+        // by whether the LHS has a resolvedType, and pinning one collapses that.
     }
 
+    /// Returns the identifier's ADDRESS: a local's alloca, a static's global,
+    /// or a GEP through `this`. A transferred binding is still readable here,
+    /// since `#` demotes its source to a borrow; the re-transfer check is at `#`.
     llvm::Value* IdentifierExpression::generateCode(CajetaModulePtr module) {
-        // A transferred binding is READABLE. `#` moves the title, not the
-        // binding: the source is demoted to a borrow of the same live
-        // instance, and borrows are readable. Transferring AGAIN is what is
-        // rejected, and that check lives at the `#` operand, not here.
-        // Per `MemoryModel.md` § Static analysis rules and
-        // `specs/transfer-demotes-to-borrow-spec.md` §2.1.
         auto scope = module->getScopeStack().peek();
-        // P3 — definite-assignment check. A local declared without an
-        // initializer is in the scope's NYA set until an assignment
-        // fires; reading it before then is a compile error.
         if (scope && scope->isNotYetAssigned(identifier)) {
             throw Exception("variable '" + identifier
                 + "' may not have been initialized; assign before reading "
@@ -61,16 +45,10 @@ namespace cajeta {
                 "null reference, `stack T()` / `heap T()` for an instance)",
                 "CAJETA_ERROR_VARIABLE_NOT_ASSIGNED");
         }
-        // First: local scope. This is the common path — locals, params,
-        // captures.
         FieldPtr field = scope ? scope->getField(identifier) : nullptr;
         if (field) {
-            // script-units U4 (spec §4.2) — a binding SEEDED from an earlier
-            // unit of the session. The in-unit demoted-read rule does not
-            // cross the seam: a moved-out session binding's borrow validity
-            // cannot be seen from a later unit, so the read is rejected
-            // until the name is rebound. (A redeclaration in this unit
-            // replaces the seeded field, so this branch never fires for it.)
+            // A binding seeded from an earlier session unit: a moved-out one is
+            // rejected, its borrow validity being invisible across the seam.
             if (field->isSessionSeeded()) {
                 if (scope->isBorrow(identifier)) {
                     string note = scope->transferSiteOf(identifier);
@@ -84,15 +62,9 @@ namespace cajeta {
                         module->getScriptHostName(), getSourceLine(),
                         getSourceColumn());
                 }
-                // jupyter-kernel U2 — READ-THROUGH-SESSION. The binding is
-                // alive in the runtime session registry, not in this unit's
-                // frame, so materialize it: ask the registry for the current
-                // occupant and stage it in a local slot, which is the same
-                // shape (a slot holding the value) every other identifier
-                // read returns. Re-read on EVERY access rather than caching
-                // once per unit: an earlier statement in THIS unit may have
-                // rebound the name, and a stale cache would hand back the
-                // dropped value.
+                // The binding lives in the runtime session registry, not this
+                // frame, so it is staged into a local slot on EVERY access: an
+                // earlier statement here may have rebound and dropped it.
                 auto* builder = module->getBuilder();
                 llvm::Function* getFn =
                     module->getRuntimeFunction("__cajeta_session_get");
@@ -105,22 +77,13 @@ namespace cajeta {
                     llvm::Type* slotTy = slot->getAllocatedType();
                     (void) lctx;
                     (void) slotTy;
-                    // Discriminate on the FIELD'S CAJETA TYPE, not on the
-                    // alloca's LLVM type. seedSessionScope picks the field
-                    // KIND from the same flag, so the two agree by
-                    // construction; an LLVM-level check here would not.
+                    // Discriminated on the FIELD'S type, as seedSessionScope was.
                     CajetaTypePtr ft = field->getType();
                     bool primitive = ft && (ft->getTypeFlags() & PRIMITIVE_FLAG);
                     if (primitive) {
-                        // A primitive is BOXED by __cajeta_session_bind_value,
-                        // so the registry hands back the address of the value
-                        // rather than the value itself. Load through the box
-                        // and stage the result in this unit's slot, which for
-                        // a primitive seed is a StackField — an inline slot of
-                        // the value's own type. Returning the box pointer
-                        // directly does NOT work: consumers reach the storage
-                        // through the field, not through the Value this
-                        // returns, so an unwritten slot reads as garbage.
+                        // A primitive is BOXED on bind, so the registry returns
+                        // the value's ADDRESS. The box pointer cannot be returned
+                        // directly: consumers read through the field's own slot.
                         llvm::Value* loaded =
                             builder->CreateLoad(slot->getAllocatedType(), live);
                         builder->CreateStore(loaded, slot);
@@ -132,24 +95,14 @@ namespace cajeta {
             }
             return static_cast<llvm::Value*>(field->getOrCreateAllocation());
         }
-        // Implicit-this fallback: emit the equivalent of `this.identifier`
-        // when the bare name matches a property of the enclosing class.
-        // Loads the `this` pointer from the method's ParameterField, then
-        // GEPs into the class struct at the property's slot. The returned
-        // value is the field's address (l-value), same shape callers get
-        // from a local alloca — l-value-to-r-value coercion uses the
-        // ast's resolvedType to load through.
+        // Implicit-this: emit `this.identifier`, returning the field's ADDRESS.
         if (!module->getStructureStack().empty()) {
             auto klass = module->getStructureStack().back();
             if (klass) {
                 auto it = klass->getProperties().find(identifier);
                 if (it != klass->getProperties().end()) {
-                    // Static field shorthand — `a` inside class Two
-                    // resolves to Two's static field `a` when `a` is
-                    // declared static. Return the global pointer (an
-                    // lvalue); the caller load-throughs as needed.
-                    // This path also covers P6.2 clinit initializers
-                    // where there's no `this` to fall back on.
+                    // A static also takes this path in a clinit initializer,
+                    // where there is no `this` to fall back on.
                     if (it->second->isStatic()) {
                         return static_cast<llvm::Value*>(
                             klass->getOrCreateStaticFieldGlobal(it->second, module));
@@ -165,10 +118,7 @@ namespace cajeta {
                         return builder->CreateStructGEP(klass->getLlvmType(),
                             thisPtr, fieldIdx, identifier);
                     }
-                    // Matched a non-static instance field, but there is no
-                    // `this` in scope (bare reference from a static method or a
-                    // clinit). Fail loud instead of returning null IR that
-                    // SIGSEGVs downstream.
+                    // No `this` in scope: fail loud, not with null IR.
                     throw Exception(
                         "instance field '" + identifier + "' referenced with no "
                         "receiver ('this' not in scope) — qualify it or make the "

@@ -13,16 +13,14 @@ namespace cajeta::prof {
             return s.substr(b, e - b);
         }
 
-        // Recursive glob. `**` consumes any run of characters; `*` consumes any
-        // run that contains no `.`. Both may match empty. Depth is bounded by
-        // the number of wildcards in the pattern, which a human wrote.
+        // Recursive glob: `**` consumes any run of characters, `*` any run without a
+        // '.', and both may match empty. Depth is bounded by the pattern's wildcards.
         bool globAt(const std::string& p, size_t pi,
                     const std::string& n, size_t ni) {
             while (pi < p.size()) {
                 if (p[pi] == '*') {
                     const bool crossesDots = (pi + 1 < p.size() && p[pi + 1] == '*');
                     const size_t next = pi + (crossesDots ? 2 : 1);
-                    // Try every split, shortest first.
                     for (size_t k = ni; k <= n.size(); ++k) {
                         if (globAt(p, next, n, k)) return true;
                         if (k < n.size() && !crossesDots && n[k] == '.') break;
@@ -69,11 +67,7 @@ namespace cajeta::prof {
                     exclude = (kw == "exclude");
                     pattern = rest;
                 } else if (errors) {
-                    // Two words and the first is not a keyword: almost
-                    // certainly a typo. Refusing it is the safe direction —
-                    // silently treating "inlcude a.b" as the pattern
-                    // "inlcude a.b" would match nothing and read as a bug in
-                    // the profiler rather than in the file.
+                    // Two words whose first is not a keyword is almost certainly a typo; refusing it beats matching nothing and reading as a profiler bug.
                     errors->push_back(
                         "profiler selection line " + std::to_string(lineNo) +
                         ": expected `include` or `exclude`, got `" + kw + "`");

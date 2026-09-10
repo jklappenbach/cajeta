@@ -20,11 +20,11 @@
 
 namespace cajeta {
 
+    // Parses the trailing argument list into `args`: an optional label (kept
+    // with its trailing ':'), the expression, and the caller-side `#x` flag.
     CallExpression::CallExpression(
         CajetaParser::ExpressionContext* ctx,
-        antlr4::Token* token) : Expression(token) {
-        // Mirror MethodCallExpression's parameterList handling: each entry is
-        // an optional label (kept with its trailing ':') plus an expression.
+        antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Call;
         if (auto* paramList = ctx->parameterList()) {
             for (auto& ctxParameterEntry : paramList->parameterEntry()) {
                 MethodCallParameter entry;
@@ -33,7 +33,6 @@ namespace cajeta {
                 if (ctxParameterEntry->parameterLabel()) {
                     entry.label = ctxParameterEntry->parameterLabel()->getText();
                 }
-                // Caller-side `#x` transfer (Phase 1 of #68).
                 if (ctxParameterEntry->REFERENCE()) {
                     entry.callerTransferred = true;
                 }
@@ -50,40 +49,16 @@ namespace cajeta {
         }
     }
 
-    // Lower the XPU launch form
-    //   kernel.launch(stream, grid: [gx], block: [bx], sharedBytes: [n])(args...)
-    // to a host-side runtime call:
-    //   __cajeta_xpu_launch(i8* kernelName, i32 gridX, i32 blockX,
-    //                       i32 sharedBytes, ptr argv)
-    // `sharedBytes:` (the dynamic-shared-memory byte count, named to match
-    // cuLaunchKernel's sharedMemBytes and to avoid the `shared` keyword) is
-    // optional, default 0. The label can't be `shared:` — `shared` is the
-    // placement keyword, so it doesn't lex as a parameterLabel IDENTIFIER.
-    // where `argv` is a stack array of pointers to each kernel argument value
-    // (CUDA's kernelParams convention). Buffer<T> args contribute their device
-    // pointer (the `deviceHandle` field); scalars contribute their value.
-    //
-    // The stream argument IS plumbed: its handle is loaded below and passed as
-    // the trailing i64 to __cajeta_xpu_launch, which routes it to
-    // cuLaunchKernel/hipModuleLaunchKernel for per-stream ordering (async copies
-    // + Event cross-stream deps ride the same handle). Vulkan/CPU accept the
-    // handle but run synchronously today (no overlap); Stream.sync() drains it.
+    // Lowers `kernel.launch(stream, grid:[…], block:[…], sharedBytes:[n])(args)`
+    // to the host runtime call __cajeta_xpu_launch(_v3); a callee of function
+    // type instead dispatches through the closure ABI. Returns null (void).
     llvm::Value* CallExpression::generateCode(CajetaModulePtr module) {
-        // Indirect call through a function-typed value — `arr[i](args)`, where
-        // the callee is any expression (an array element, a field, a chained
-        // result) whose resolved type is a CajetaFunctionType. The callee
-        // evaluates to a `ptr` to the closure record; dispatch through the
-        // shared closure ABI (same path as the bare `op(args)` form). This is
-        // what makes an array-of-function-type callable: `((T)->R)[] ops; …
-        // ops[i](x)`. See docs/specification/lang/Lambdas.md.
         if (auto calleeExpr = getCallee()) {
             if (!calleeExpr->getResolvedType()) calleeExpr->resolveTypes(module);
             auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(
                 calleeExpr->getResolvedType());
             if (fnType) {
                 llvm::Value* closurePtr = calleeExpr->generateCode(module);
-                // The element/field load yields the closure-record `ptr`; an
-                // l-value slot (ArrayIndex GEP / field GEP) needs the load.
                 closurePtr = loadIfLValue(module, closurePtr, calleeExpr);
                 return emitClosureCall(module, closurePtr, fnType, args,
                                        resolvedType);
@@ -103,7 +78,6 @@ namespace cajeta {
         llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
 
-        // Kernel name: the receiver identifier of `<kernel>.launch(...)`.
         std::string kernelName;
         if (!callee->getChildren().empty()) {
             if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(
@@ -115,8 +89,6 @@ namespace cajeta {
             throw Exception("launch receiver is not a kernel name", "XPU-N02");
         }
 
-        // Lower one dimension expression (an array element or a bare scalar) to
-        // i32.
         auto lowerOne = [&](const ExpressionPtr& e) -> llvm::Value* {
             llvm::Value* v = e->generateCode(module);
             v = loadIfLValue(module, v, e);
@@ -125,10 +97,8 @@ namespace cajeta {
             }
             return v;
         };
-        // Extract up to 3 dims from a `grid:`/`block:` value — an array literal
-        // `[x]`/`[x,y]`/`[x,y,z]` or a bare scalar (= x). Missing dims default to
-        // 1, so a 1-D launch still works unchanged. Returns false if no x dim
-        // (an empty array) — the caller treats that as a missing grid:/block:.
+        // Fills out[3] from `[x]`/`[x,y]`/`[x,y,z]` or a bare scalar; absent
+        // dims default to 1. Returns false when no dim is given (empty array).
         auto lowerDims = [&](const ExpressionPtr& dimExpr,
                              llvm::Value* out[3]) -> bool {
             std::vector<ExpressionPtr> elems;
@@ -136,7 +106,7 @@ namespace cajeta {
                     std::dynamic_pointer_cast<ArrayLiteralExpression>(dimExpr)) {
                 elems = arr->getElements();
             } else {
-                elems.push_back(dimExpr);   // bare scalar = x dim
+                elems.push_back(dimExpr);
             }
             if (elems.empty()) return false;
             for (unsigned d = 0; d < 3; ++d)
@@ -148,9 +118,9 @@ namespace cajeta {
         llvm::Value* grid[3]  = {nullptr, nullptr, nullptr};
         llvm::Value* block[3] = {nullptr, nullptr, nullptr};
         bool haveGrid = false, haveBlock = false;
-        llvm::Value* sharedBytes = nullptr;   // dynamic shared memory; 0 if absent
-        ExpressionPtr streamExpr;             // the unlabeled first param: the Stream
-        ExpressionPtr specExpr;               // optional `spec:[v0,v1,…]` overrides
+        llvm::Value* sharedBytes = nullptr;
+        ExpressionPtr streamExpr;
+        ExpressionPtr specExpr;
         for (auto& p : callee->getParameters()) {
             std::string label = stripColon(p.label);
             if (label == "grid")  haveGrid  = lowerDims(p.expression, grid);
@@ -159,26 +129,17 @@ namespace cajeta {
                 llvm::Value* sb[3];
                 if (lowerDims(p.expression, sb)) sharedBytes = sb[0];
             }
-            // `spec:[v0,v1,…]` — host overrides for the kernel's user
-            // specialization constants (Spec.geti slot i = entry i). Optional;
-            // absent = every slot reads its compile-time default.
             else if (label == "spec") specExpr = p.expression;
-            // The unlabeled first param is the stream — its `handle` field is
-            // threaded to the runtime so copies + this launch order on it.
             else if (label.empty()) streamExpr = p.expression;
         }
         if (!haveGrid || !haveBlock) {
             throw Exception("launch requires grid: and block: dimensions",
                             "XPU-N02");
         }
-        // `shared:` is the dynamic-shared-memory byte count (cuLaunchKernel
-        // sharedMemBytes). Optional — kernels using only static shared memory
-        // (or none) omit it; default 0.
         if (!sharedBytes) sharedBytes = llvm::ConstantInt::get(i32Ty, 0);
 
-        // Stream handle (i64): the unlabeled launch arg's `handle` field. 0 = the
-        // default stream (preserves the original NULL-stream launch). A real
-        // stream orders this launch with the async copies queued on it.
+        // Stream `handle` (i64) orders this launch with its async copies; 0 =
+        // the default stream.
         llvm::Value* streamHandle = nullptr;
         if (streamExpr) {
             llvm::Value* sv = streamExpr->generateCode(module);
@@ -201,8 +162,7 @@ namespace cajeta {
         }
         if (!streamHandle) streamHandle = llvm::ConstantInt::get(i64Ty, 0);
 
-        // Marshal kernel args into argv = [N x ptr]; each entry points to a
-        // stack slot holding that argument's value.
+        // argv = [N x ptr]: entry i points to a stack slot holding arg i's value.
         size_t n = args.size();
         llvm::ArrayType* argvTy = llvm::ArrayType::get(ptrTy, n ? n : 1);
         llvm::Value* argv = builder->CreateAlloca(argvTy, nullptr, "launch.argv");
@@ -212,30 +172,22 @@ namespace cajeta {
             llvm::Value* v = argExpr->generateCode(module);
             v = loadIfLValue(module, v, argExpr);
 
-            // Buffer<T> arg -> pass its device pointer (the deviceHandle field).
             if (!argExpr->getResolvedType()) argExpr->resolveTypes(module);
             auto klass = std::dynamic_pointer_cast<CajetaClass>(
                 argExpr->getResolvedType());
             bool isBuffer = klass &&
                 klass->toCanonical().rfind("cajeta.xpu.KernelBuffer", 0) == 0;
-            // Texture2D (Item 8): marshalled exactly like a Buffer — its
-            // deviceHandle (the runtime texture-object pointer / image handle)
-            // flows through the kernelParams slot, and the launch borrows it.
             bool isTexture = klass &&
                 (klass->toCanonical().rfind("cajeta.gfx.Texture2D", 0) == 0 ||
                  klass->toCanonical().rfind("cajeta.gfx.Texture3D", 0) == 0 ||
                  klass->toCanonical().rfind("cajeta.gfx.Texture1D", 0) == 0 ||
                  klass->toCanonical().rfind("cajeta.gfx.TextureCube", 0) == 0);
-            // NB: the Texture2D prefix above already matches Texture2DArray.
-            // AccelerationStructure (Part C): a descriptor-bound device BVH. It
-            // marshals via the POD-by-value path below (its deviceHandle is the
-            // first field), but the launch borrows it just like a Buffer/Texture2D.
+            // The Texture2D prefix above already matches Texture2DArray; an
+            // AccelerationStructure marshals by value (deviceHandle is field 0).
             bool isAccel = xpu::isAccelStructType(argExpr->getResolvedType());
 
-            // Buffer<T>[] arg (bindless) — a descriptor ARRAY of buffers. Resolved
-            // type is a CajetaArray whose element is a Buffer<T> (so `klass` above
-            // is null). Marshalled as [i64 count, i64 h0 … h(count-1)] into one
-            // fixed slot; the runtime binds `count` descriptors at this binding.
+            // A bindless Buffer<T>[] resolves to a CajetaArray of Buffer<T>, so
+            // `klass` above is null and the array is tested separately.
             auto arrTy = std::dynamic_pointer_cast<CajetaArray>(
                 argExpr->getResolvedType());
             auto bufElemKlass = arrTy ? std::dynamic_pointer_cast<CajetaClass>(
@@ -244,12 +196,8 @@ namespace cajeta {
             bool isBufferArray = bufElemKlass &&
                 bufElemKlass->toCanonical().rfind("cajeta.xpu.KernelBuffer", 0) == 0;
 
-            // Launch borrow scope (CajetaXPU §3.5/§11): a launch borrows each
-            // device-resource arg (Buffer / Texture2D / AccelerationStructure)
-            // until the next Stream.sync() / Event.waitHost(); record it so a
-            // free/reassign/drop-before-sync is caught (XPU-K02). Hoisted out of
-            // the kind-specific marshalling below so AS (a POD-marshalled handle)
-            // is covered too.
+            // A launch borrows every device-resource arg until the next
+            // sync; recording it lets a free or drop before then fire XPU-K02.
             if (isBuffer || isTexture || isAccel || isBufferArray) {
                 if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(argExpr)) {
                     if (auto sc = module->getScopeStack().peek()) {
@@ -260,12 +208,8 @@ namespace cajeta {
 
             llvm::Value* slot;
             if (isBufferArray) {
-                // Marshal a descriptor array: a fixed [kMaxBindlessBuffers+1 x i64]
-                // slot holding [count, h0 … h(count-1)]. `v` is the array header
-                // pointer ({ i64 size, [0 x ptr] data }); each element is a
-                // Buffer<T> object pointer whose deviceHandle (field idx) is the
-                // device handle. A runtime loop copies the handles. v1 caps the
-                // count at kMaxBindlessBuffers (the fixed descriptor-array size).
+                // Descriptor-array slot: a fixed [kMaxBindlessBuffers+1 x i64]
+                // holding [count, h0 … h(count-1)], filled by an emitted loop.
                 const unsigned kMaxBindlessBuffers = 16;
                 llvm::Type* arrSlotTy =
                     llvm::ArrayType::get(i64Ty, kMaxBindlessBuffers + 1);
@@ -281,17 +225,13 @@ namespace cajeta {
                     (unsigned) bufElemKlass->getFieldLlvmIndex(bit->second);
                 llvm::Type* bufTy = bufElemKlass->getLlvmType();
                 llvm::Value* zero = llvm::ConstantInt::get(i64Ty, 0);
-                // count = header->size
                 llvm::Value* sizePtr = builder->CreateStructGEP(
                     headerTy, v, 0, "bufarr.size.ptr");
                 llvm::Value* count =
                     builder->CreateLoad(i64Ty, sizePtr, "bufarr.count");
-                // ENFORCE the v1 cap: the descriptor array is a fixed
-                // [kMaxBindlessBuffers+1 x i64], so a runtime count > the cap
-                // must be clamped or the slot loop/store overruns the alloca
-                // (OOB stack write + a matching OOB read in the runtime, which
-                // trusts slot[0]). The comment above claimed this cap but it
-                // was never emitted.
+                // The slot is fixed-size, so a runtime count above the cap must
+                // be clamped here or both the store loop and the runtime (which
+                // trusts slot[0]) run off the alloca.
                 {
                     llvm::Value* cap =
                         llvm::ConstantInt::get(i64Ty, kMaxBindlessBuffers);
@@ -300,10 +240,8 @@ namespace cajeta {
                     count = builder->CreateSelect(over, cap, count,
                                                   "bufarr.count.capped");
                 }
-                // slot[0] = count
                 builder->CreateStore(count, builder->CreateInBoundsGEP(
                     arrSlotTy, slot, {zero, zero}, "bufarr.count.slot"));
-                // for (b = 0; b < count; ++b) slot[1+b] = data[b]->deviceHandle
                 llvm::Function* curFn = builder->GetInsertBlock()->getParent();
                 llvm::BasicBlock* condBB =
                     llvm::BasicBlock::Create(ctx, "bufarr.cond", curFn);
@@ -321,7 +259,6 @@ namespace cajeta {
                     builder->CreateICmpULT(bCur, count, "bufarr.more"),
                     bodyBB, endBB);
                 builder->SetInsertPoint(bodyBB);
-                // elemPtr = &data[b] (holds a Buffer* pointer)
                 llvm::Value* elemPtr = builder->CreateInBoundsGEP(
                     headerTy, v,
                     {zero, llvm::ConstantInt::get(
@@ -335,7 +272,6 @@ namespace cajeta {
                     bufTy, bufObj, dhIdx, "bufarr.handle.ptr");
                 llvm::Value* handle =
                     builder->CreateLoad(i64Ty, hPtr, "bufarr.handle");
-                // slot[1 + b] = handle
                 llvm::Value* oneB = builder->CreateAdd(
                     bCur, llvm::ConstantInt::get(i64Ty, 1), "bufarr.slotidx");
                 builder->CreateStore(handle, builder->CreateInBoundsGEP(
@@ -362,15 +298,9 @@ namespace cajeta {
                 builder->CreateStore(handle, slot);
             } else if (klass && (xpu::isPodStructType(klass) ||
                                  xpu::isSamplerType(argExpr->getResolvedType()))) {
-                // POD struct by value (Item 7) — and the Sampler descriptor
-                // (Item 8), which is structurally the same {i32 filterMode,
-                // i32 addressMode} packing (admitted by name, not as a POD, but
-                // marshalled identically on the CPU/SIMT by-value path).
-                // Marshal the FIELDS only into a
-                // packed, vtable-stripped buffer — the exact shape the device
-                // kernel reads (KernelLowering.cpp deviceStructInfo). `v` is a
-                // pointer to the host instance { vtable, fields... }; copy each
-                // field out by its host LLVM index into declaration-order slots.
+                // By-value marshalling for a POD struct or a Sampler: copy the
+                // FIELDS only, in declaration order, into a vtable-stripped
+                // buffer — the shape the device kernel reads (deviceStructInfo).
                 std::vector<llvm::Type*> ftys;
                 std::vector<StructurePropertyPtr> fields;
                 for (auto& prop : klass->getPropertyList()) {
@@ -410,30 +340,23 @@ namespace cajeta {
         llvm::Value* nameStr =
             builder->CreateGlobalString(kernelName, "xpu.kernel.name");
 
-        // Host spec-constant overrides: `spec:[v0,v1,…]` lowers to a stack
-        // `[N x i32]` (entry i overrides slot i); slot-indexed, sparse tail keeps
-        // defaults. Absent → no override (specCount 0). When present we target the
-        // versioned `__cajeta_xpu_launch_v3` (deviceId -1, no language surface yet);
-        // when absent we keep the exact pre-feature `__cajeta_xpu_launch` emit so
-        // every existing launch is byte-identical.
+        // `spec:[v0,v1,…]` lowers to a stack `[N x i32]`, entry i overriding
+        // spec slot i; only overrides select __cajeta_xpu_launch_v3.
         std::vector<llvm::Value*> specVals;
         if (specExpr) {
             std::vector<ExpressionPtr> elems;
             if (auto arr = std::dynamic_pointer_cast<ArrayLiteralExpression>(specExpr))
                 elems = arr->getElements();
             else
-                elems.push_back(specExpr);   // bare scalar = slot 0
+                elems.push_back(specExpr);
             for (auto& e : elems) {
                 llvm::Value* v = e->generateCode(module);
                 v = loadIfLValue(module, v, e);
                 llvm::Type* vt = v->getType();
                 if (vt->isFloatingPointTy()) {
-                    // f32 spec override (Spec.getf): transport the raw 32-bit
-                    // pattern, NOT a numeric conversion (else 1.5f → 1). Narrow
-                    // an f64 literal to f32 first (spec constants are 32-bit),
-                    // then bitcast to the i32 transport word; the consumer
-                    // (CPU __cajeta_xpu_cpu_spec_f32 / a Vulkan float
-                    // OpSpecConstant) reinterprets it back to float.
+                    // A float override travels as its raw 32-bit pattern, not as
+                    // a numeric conversion (else 1.5f → 1); the consumer
+                    // reinterprets the transport word back to float.
                     if (!vt->isFloatTy())
                         v = builder->CreateFPCast(
                             v, llvm::Type::getFloatTy(ctx), "spec.f2f32");
@@ -441,8 +364,6 @@ namespace cajeta {
                 } else if (vt != i32Ty) {
                     v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/false);
                 }
-                // Per-element type-directed: a mixed `spec:[3, 1.5f]` packs each
-                // slot by its own type (int → value word, float → bit pattern).
                 specVals.push_back(v);
             }
         }
@@ -484,10 +405,10 @@ namespace cajeta {
                 launchV3,
                 {nameStr, grid[0], grid[1], grid[2], block[0], block[1],
                  block[2], sharedBytes, argvBase, streamHandle,
-                 llvm::ConstantInt::get(i32Ty, (uint64_t) -1),     // deviceId
-                 llvm::ConstantInt::get(i32Ty, specVals.size()),    // specCount
+                 llvm::ConstantInt::get(i32Ty, (uint64_t) -1),
+                 llvm::ConstantInt::get(i32Ty, specVals.size()),
                  specBase});
-            return nullptr;  // launch is a void statement
+            return nullptr;
         }
 
         // void __cajeta_xpu_launch(i8* name, i32 gridX, i32 gridY, i32 gridZ,
@@ -510,7 +431,7 @@ namespace cajeta {
                             {nameStr, grid[0], grid[1], grid[2],
                              block[0], block[1], block[2], sharedBytes,
                              argvBase, streamHandle});
-        return nullptr;  // launch is a void statement
+        return nullptr;
     }
 
 } // namespace cajeta

@@ -1,6 +1,4 @@
-//
 // Created by James Klappenbach on 10/2/22.
-//
 
 #include <cstring>
 
@@ -29,8 +27,7 @@ namespace cajeta {
         int value = typeName.find('.');
         if (value >= 0) {
             char* str = (char*) typeName.c_str();
-            // strtok_r (not strtok): strtok keeps tokenization state in a global,
-            // so concurrent compiles race on it. The saveptr is local.
+            // strtok_r, not strtok: strtok keeps tokenization state in a global, so concurrent compiles race on it.
             char* saveptr = nullptr;
             char* val = strtok_r(str, ".", &saveptr);
             do {
@@ -57,10 +54,7 @@ namespace cajeta {
     }
 
     QualifiedNamePtr QualifiedName::getOrInsert(string typeName, string packageName) {
-        // Key the shared intern cache as cache[package][typeName], same as
-        // getOrCreate — the old (typeName-outer) keying meant the two entry
-        // points never shared entries, so identical canonical names got
-        // distinct shared_ptrs (breaks pointer-identity comparisons).
+        // Key the shared intern cache as cache[package][typeName], as getOrCreate does, or the two entry points never share entries.
         map<string, QualifiedNamePtr> packagesToTypeName = cache[packageName];
         QualifiedNamePtr qName = packagesToTypeName[typeName];
         if (qName == nullptr) {

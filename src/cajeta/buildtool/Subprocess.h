@@ -1,14 +1,8 @@
 #ifndef CAJETA_BUILDTOOL_SUBPROCESS_H
 #define CAJETA_BUILDTOOL_SUBPROCESS_H
 
-// Portable child-process spawning for the build tool.
-//
-// The build-tool actions (build/test/exec/download/package/upload) and the
-// plugin runtime all need to run an external program, optionally feeding it
-// stdin and capturing stdout/stderr. POSIX does this with fork+exec+waitpid;
-// Windows has no fork, so the same surface is implemented over CreateProcess.
-// This header is the single seam both platforms go through so the call sites
-// stay OS-agnostic.
+// Portable child-process spawning for the build tool: one seam over POSIX
+// fork+exec+waitpid and Windows CreateProcess, so call sites stay OS-agnostic.
 
 #include <string>
 #include <vector>
@@ -16,36 +10,20 @@
 namespace cajeta {
 namespace buildtool {
 
-/// What to run and how its stdio is wired. Pointers are optional inputs/outputs
-/// owned by the caller; a null pointer means "use the default".
+/// What to run and how its stdio is wired. Every pointer is owned by the caller
+/// and null means "inherit the parent's", never "discard".
 struct SubprocessOptions {
-    /// Program + arguments. `argv[0]` is the program; it is resolved against
-    /// PATH (POSIX execvp / Windows SearchPath) when it is not already a path
-    /// to an existing file. Must be non-empty.
+    /// argv[0] is the program, resolved against PATH unless it is already a path.
     std::vector<std::string> argv;
 
-    /// Working directory for the child. Null => inherit the parent's cwd.
-    const std::string* cwd = nullptr;
-
-    /// Full replacement environment as "KEY=VALUE" entries. Null or empty =>
-    /// the child inherits the parent's environment.
-    const std::vector<std::string>* env = nullptr;
-
-    /// Bytes written to the child's stdin (then stdin is closed). Null => the
-    /// child inherits the parent's stdin.
-    const std::string* stdinData = nullptr;
-
-    /// When non-null, the child's stdout is captured here instead of inheriting
-    /// the parent's stdout.
-    std::string* outData = nullptr;
-
-    /// When non-null, the child's stderr is captured here instead of inheriting
-    /// the parent's stderr.
-    std::string* errData = nullptr;
+    const std::string* cwd = nullptr;              ///< null => the parent's cwd
+    const std::vector<std::string>* env = nullptr; ///< full "KEY=VALUE" replacement
+    const std::string* stdinData = nullptr;        ///< written, then stdin closed
+    std::string* outData = nullptr;                ///< non-null captures stdout
+    std::string* errData = nullptr;                ///< non-null captures stderr
 };
 
-/// Outcome of a spawn. `launched` distinguishes "could not start the process"
-/// (error set) from "process ran and returned a status".
+/// `launched` separates "could not start" (error set) from "ran and returned".
 struct SubprocessResult {
     bool launched = false;   ///< true once the child process was created.
     bool exited = false;     ///< true if it terminated normally (WIFEXITED).

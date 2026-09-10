@@ -11,18 +11,10 @@
 using namespace std;
 
 namespace cajeta {
-    /**
-     * Default constructor method
-     * @param name
-     * @param returnType
-     * @param parent
-     */
+    /** Names the synthesized default after the template ORIGIN's simple name, so
+     *  a ctor-less instantiation resolves `Stream(...)` rather than the
+     *  arg-suffixed typeName the instantiation itself carries. */
     DefaultConstructorMethod::DefaultConstructorMethod(CajetaModulePtr module, CajetaClassPtr parent)
-        // A template instantiation's typeName carries the arg suffix
-        // (`Stream<cajeta.int32>`), but constructor calls resolve by the
-        // simple name (`Stream`) — the same name declared ctors get from the
-        // re-parsed template source. Name the synthesized default the same
-        // way or it is unresolvable on ctor-less instantiations.
         : Method(module,
               parent->getTemplateOrigin()
                   ? parent->getTemplateOrigin()->getQName()->getTypeName()
@@ -33,8 +25,10 @@ namespace cajeta {
         block = make_shared<DefaultBlock>();
     }
 
+    /** Emits the default constructor body: scope, default block, then the field
+     *  initializers a class with no declared constructor would otherwise lose. */
     void DefaultConstructorMethod::generateCode() {
-        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
+        auto& llvmFunction = llvmFunctionRef();
         llvmBasicBlock = llvm::BasicBlock::Create(*module->getLlvmContext(), name, llvmFunction);
         builder = new llvm::IRBuilder<>(llvmBasicBlock, llvmBasicBlock->begin());
         builder->SetInsertPoint(llvmBasicBlock);
@@ -44,14 +38,6 @@ namespace cajeta {
         createScope();
         block->generateCode(module);
 
-        // Field initializers. A class with NO declared constructor gets this
-        // default one — and it used to emit an empty body, so `int32 v = 3;`
-        // was silently DROPPED and the field read back 0 (the allocator's
-        // memset was the only thing that ever wrote it). Declaring an empty
-        // `Holder() { }` changed the field's value, which no user would expect.
-        // The user-ctor path (Method.cpp) and the synthesized-ctor path
-        // (SynthesizedConstructorMethod.cpp) both run this loop; this one did
-        // not. Found by silent-resolution diagnostics 3.1.3.
         if (parent && llvmFunction->arg_size() > 0) {
             llvm::Value* thisPtr = llvmFunction->getArg(0);
             for (auto& prop : parent->getPropertyList()) {

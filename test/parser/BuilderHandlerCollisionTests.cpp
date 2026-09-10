@@ -41,7 +41,7 @@ TEST(BuilderHandlerCollisionTests, fieldAndMethodSameNameDispatchesToMethod) {
         "    public Builder() { this.handler = null; }\n"
         "    public static #Builder make() { return heap Builder(); }\n"
         "    public Builder handler((int32) -> #Resp handler) {\n"  // METHOD `handler`
-        "        this.handler = handler; return this;\n"
+        "        this.handler #= handler; return this;\n"   // Unit 9: a keeper stores with `#=`
         "    }\n"
         "    public int32 marker() { return 7; }\n"
         "}\n"
@@ -70,7 +70,7 @@ TEST(BuilderHandlerCollisionTests, fluentBareParamLambdaInfers) {
         "    public static #Builder make() { return heap Builder(); }\n"
         "    public Builder pool(int32 n) { this.poolSize = n; return this; }\n"
         "    public Builder handler((int32) -> #Resp handler) {\n"  // METHOD `handler`
-        "        this.handler = handler; return this;\n"
+        "        this.handler #= handler; return this;\n"   // Unit 9: a keeper stores with `#=`
         "    }\n"
         "}\n"
         "public final class D {\n"

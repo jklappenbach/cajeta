@@ -1,7 +1,4 @@
-// cajeta_amdtex implementation — see cajeta_amdtex.h. Ported verbatim from the
-// proven de-risk probe (plans/gpu/xpu/probes/mipprobe.cpp): the addrlib calls and
-// parameters here are exactly the ones shown to produce bit-exact on-device mip
-// sampling on gfx1151.
+// cajeta_amdtex implementation — see cajeta_amdtex.h; addrlib calls ported verbatim from the proven de-risk probe.
 #include "cajeta_amdtex.h"
 
 #include <cstdlib>
@@ -21,21 +18,16 @@ ADDR_E_RETURNCODE ADDR_API cbFree(const ADDR_FREESYSMEM_INPUT* in) {
     return ADDR_OK;
 }
 
-// gfx11 mip surfaces require a 64KB _X swizzle mode (4KB / non-_X modes assert in
-// addrlib for multi-level 2-D). Proven in the probe.
+// gfx11 mip surfaces require a 64KB _X swizzle mode; 4KB and non-_X modes assert in addrlib.
 constexpr AddrSwizzleMode kMipSwizzle = ADDR_SW_64KB_R_X;  // = 27
 
-// CIASICIDGFXENGINE_ARCTICISLAND — the GFX-engine id AddrCreate expects for
-// GFX9..GFX11 ASICs. Lives in addrlib's internal core/addrlib.h; inlined here so
-// the wrapper depends only on the public addrinterface.h/addrtypes.h headers.
+// The GFX-engine id AddrCreate expects for GFX9..GFX11, inlined so this wrapper needs only addrlib's public headers.
 constexpr int kGfxEngineArcticIsland = 0x0D;
 
 }  // namespace
 
-// Per-architecture addrlib config table. Keyed by the gfx arch token. The triple
-// is (chipFamily, chipExternalRevision, GB_ADDR_CONFIG) — addrlib's AddrCreate
-// inputs. Values verified against amdgpu_query_gpu_info on the listed parts. Add a
-// row (and re-validate the SRD on the metal) to extend to a new gfx11 SKU.
+// Per-architecture addrlib config, keyed by gfx arch token: the triple is
+// (chipFamily, chipExternalRevision, GB_ADDR_CONFIG). Add a row for a new SKU.
 namespace {
 struct GfxConfig {
     const char* arch;
@@ -44,7 +36,6 @@ struct GfxConfig {
     uint32_t gbAddrConfig;
 };
 const GfxConfig kGfxConfigs[] = {
-    // gfx1151 — Strix Halo (Radeon 8060S APU). FAMILY_GFX1150 = 0x96.
     {"gfx1151", 0x96, 0xc1, 0x00000343},
 };
 }  // namespace
@@ -55,7 +46,6 @@ extern "C" int cajeta_amdtex_query_gfx_config(const char* gcnArchName,
     if (!gcnArchName) return 1;
     for (const auto& c : kGfxConfigs) {
         size_t n = std::strlen(c.arch);
-        // Match the arch token, tolerating a trailing ":xnack-"/"+sramecc" suffix.
         if (std::strncmp(gcnArchName, c.arch, n) == 0 &&
             (gcnArchName[n] == '\0' || gcnArchName[n] == ':')) {
             if (family) *family = c.family;

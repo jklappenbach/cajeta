@@ -1,7 +1,4 @@
-//
 // CajetaQuaternion — see header.
-//
-
 #include "CajetaQuaternion.h"
 
 #include "llvm/IR/DerivedTypes.h"
@@ -34,16 +31,14 @@ namespace cajeta {
         : elementType(elementType) {
         qName = QualifiedName::getOrCreate(canonicalName(elementType));
         canonical = qName->toCanonical();
-        // By-value (PRIMITIVE_FLAG so the kernel-arg marshaller passes it like a
-        // vector) and tagged QUATERNION_FLAG so codegen recognizes it. SIGNED is
-        // inherited (float is signed) though it isn't consulted for quaternions.
+        // PRIMITIVE_FLAG makes the kernel-arg marshaller pass it by value like a
+        // vector; QUATERNION_FLAG is what codegen recognizes.
         typeFlags = QUATERNION_FLAG | PRIMITIVE_FLAG
             | (elementType->getTypeFlags() & SIGNED_FLAG);
         llvmType = nullptr;
     }
 
     llvm::Type* CajetaQuaternion::getLlvmType() {
-        // frozen-aware lazy-create (threadsafe U6.2).
         if (llvm::Type* cur = CajetaType::getLlvmType()) return cur;
         llvm::Type* t = llvm::FixedVectorType::get(elementType->getLlvmType(), LANES);
         setLlvmType(t);

@@ -1,18 +1,6 @@
-//
-// Script units (script-units spec §2-§3): a script-shaped compilation unit —
-// loose statements and top-level methods interleaved with type declarations —
-// compiles as an implicit final class with a synthetic static entry. This
-// header owns the SOURCE-LEVEL synthesis: given the parsed script tree and
-// its token stream, produce the ordinary compilation unit the rest of the
-// pipeline already understands. The original token text is spliced verbatim
-// (whitespace and comments ride the HIDDEN channel, so intervals reproduce
-// the source exactly); the wrapper adds only the package default, the class
-// shell, and the entry method.
-//
-// The synthesized entry is `__cajeta_script_entry` and the default package
-// is the reserved `cajeta.script` (spec §3.2). Line fidelity across the
-// splice is script-units U5's diagnostics-mapping work, not done here.
-//
+// SOURCE-LEVEL synthesis of script units: a script-shaped compilation unit is
+// spliced verbatim into the ordinary unit the rest of the pipeline understands —
+// an implicit final class in `cajeta.script` with a synthetic static entry.
 #pragma once
 
 #include <memory>
@@ -33,8 +21,6 @@ namespace cajeta {
     class Expression;
     typedef std::shared_ptr<Expression> ExpressionPtr;
 
-    // The synthesized entry-method name, shared with hosts (`cajeta run`,
-    // the Jupyter kernel) and tests.
     inline const char* scriptEntryName() { return "__cajeta_script_entry"; }
 
     // The reserved default package for package-less script units.
@@ -43,69 +29,36 @@ namespace cajeta {
     // True when the parsed unit took the script alternative.
     bool isScriptUnit(CajetaParser::CompilationUnitContext* ctx);
 
-    // Derive the implicit class name from a source path: file stem,
-    // sanitized to an identifier ([A-Za-z0-9_], '_'-prefixed if it would
-    // start with a digit; "script" if empty).
+    // The implicit class name for a source path: the file stem sanitized to an
+    // identifier, '_'-prefixed if it would start with a digit, "script" if empty.
     std::string scriptClassStem(const std::string& sourcePath);
 
-    // --- U4: the session seam -------------------------------------------
-    // All three helpers self-gate (no-op unless the module is a script unit
-    // compiling into a session / the builder sits in the script entry), so
-    // call sites stay one line.
+    // --- the session seam; all three helpers self-gate to a no-op off a session -
 
-    // Seed the script entry's root scope from the module's SessionState:
-    // one Field per earlier-unit binding (sessionSeeded, no alloca), with
-    // moved bindings pre-demoted so reads reject (spec §4.2). Call right
+    // Seeds the entry's root scope from the module's SessionState, one Field per
+    // earlier-unit binding, moved ones pre-demoted so a read rejects. Call right
     // after the entry method's scope is created.
     void seedSessionScope(CajetaModulePtr module);
 
-    // Write ownership facts back to the SessionState after the entry's body
-    // codegen: this unit's top-level bindings (name, canonical type, moved
-    // state, transfer site) plus moved-state updates for seeded names. Call
-    // before the entry method's scope is destroyed.
+    // Writes this unit's top-level bindings and moved-state updates back to the
+    // SessionState. Call before the entry method's scope is destroyed.
     void writeBackSessionState(CajetaModulePtr module);
 
-    // A `#` transfer moved `name`'s title to a new owner: emit the runtime
-    // call that disarms the session registry slot so drop_all doesn't
-    // double-drop (spec §4.2). No-op unless `name` is a session binding and
-    // the builder is inside the script entry.
+    // Emits the runtime call disarming `name`'s session registry slot after a `#`
+    // transfer, so a later drop_all cannot double-drop it.
     void maybeEmitSessionDisarm(CajetaModulePtr module,
                                 const std::string& name);
 
-    // jupyter-kernel 2.1.3a — refuse a use of a session binding whose class
-    // has been REDEFINED since the value was made (script-units 5.3).
-    //
-    // The two generations share a canonical name and differ only by
-    // `CajetaClass::generationSuffix`, so every type comparison in the
-    // compiler sees a match: passing an old value where the new generation is
-    // declared type-checked cleanly and then read the old object through the
-    // new layout and vtable — a SIGSEGV, not a wrong answer. Call at the
-    // positions that would reinterpret the value: call arguments, and the
-    // right-hand side of an assignment. `position` names the site for the
-    // diagnostic ("parameter `pt`", "the assigned variable").
-    //
-    // Self-gating and cheap: returns immediately unless `expr` is a bare
-    // identifier naming a field marked stale by seedSessionScope. A method
-    // call ON the binding is deliberately NOT a checked position — dispatch
-    // goes through the vtable baked at construction, which is exactly how the
-    // old value keeps its own body.
+    // Refuses a use of a session binding whose class was REDEFINED since the value
+    // was made: both generations share a canonical name, so the type check passes and
+    // the old object is read through the NEW layout. Reinterpreting positions only.
     void rejectStaleGenerationUse(CajetaModulePtr module,
                                   const ExpressionPtr& expr,
                                   const std::string& position);
 
-    // Build the wrapper compilation-unit source. `outCanonical` receives the
-    // implicit class's canonical name (package + '.' + stem) so the caller
-    // can mark it script-synthesized after registration. `outBindings`
-    // receives the names declared at scriptMember level — the unit's
-    // session bindings (spec §4); block-nested locals are not collected.
-    // `outLineMap` (U5) receives the wrapper→host line spans for diagnostic
-    // translation; pass null to skip. `outSyntheticTail` receives whether the
-    // entry's trailing `return 0;` was APPENDED (true) rather than the unit
-    // ending in its own return — the mark jupyter-kernel U3 needs to find the
-    // cell's last statement. This function deliberately does NOT decide
-    // whether that statement produces a value: it works on token text, before
-    // any type is known, and `x + y;` and `xs.add(1);` are indistinguishable
-    // here.
+    // Builds the wrapper source, reporting the implicit class's canonical name, the
+    // scriptMember-level bindings, the wrapper-to-host line spans and whether the
+    // trailing `return 0;` was APPENDED. Token text only: no type is known here.
     std::string synthesizeScriptUnit(antlr4::CommonTokenStream& tokens,
                                      CajetaParser::CompilationUnitContext* ctx,
                                      const std::string& stem,
@@ -114,28 +67,15 @@ namespace cajeta {
                                      ScriptLineMap* outLineMap = nullptr,
                                      bool* outSyntheticTail = nullptr);
 
-    // jupyter-kernel U3 (spec 4.2) — the unit RESULT, i.e. `Out[N]`.
-    //
-    // Called from `ExpressionStatement::generateCode` for the one statement
-    // `Block` marked as the script entry's trailing expression. This is the
-    // half of the decision that synthesis cannot make: a trailing expression
-    // displays its value only if it HAS one, and `void` is a type answer.
-    // Renders `value` — of `expr`'s resolved type — to text and parks it in
-    // the session runtime for the host to collect.
-    //
-    // Self-gating: no-op outside a session compile, for a void/unresolved
-    // type, or at a terminated insert point. A type with no rendering (an
-    // array, a class with no `toString`) degrades to its name rather than
-    // failing the cell — display must never break a successful run.
+    // Renders the unit RESULT (`Out[N]`) and parks it in the session runtime — the
+    // half of the trailing-expression decision synthesis cannot make. A no-op off a
+    // session or for void; an unrenderable type degrades to its name, never fails.
     void emitScriptUnitResult(CajetaModulePtr module, const ExpressionPtr& expr,
                               llvm::Value* value);
 
-    // U5 (spec §6.1) — rewrite a semantic exception into the host's
-    // coordinates: host source name as the file, wrapper lines translated
-    // through the module's line map; an unlocated exception is stamped with
-    // the current statement's host line (Block stamps it per statement).
-    // No-op for ordinary modules. Called at the Method::generateCode
-    // boundary — the single remap point, so it never double-translates.
+    // Rewrites a semantic exception into the host's coordinates through the module's
+    // line map, stamping an unlocated one with the current statement's host line.
+    // Called only at the Method::generateCode boundary, so it never double-translates.
     class Exception;
     void remapScriptException(CajetaModulePtr module, Exception& e);
 

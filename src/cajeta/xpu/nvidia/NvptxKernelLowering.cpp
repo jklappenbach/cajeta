@@ -1,11 +1,5 @@
-//
-// NVPTX kernel lowering — see header.
-//
-// Since the AMD bring-up (cajeta-amd.md), the ~885-line AST walk lives in the
-// shared xpu/lowering/KernelLowering.cpp. This file is now just the NVPTX
-// LoweringTarget — the measured NVIDIA half of the variance surface — plus a
-// thin wrapper preserving the nvidia::lowerKernel(method, module) API.
-//
+// NVPTX kernel lowering — see header. The AST walk is the shared
+// xpu/lowering/KernelLowering.cpp; this file is the NVPTX LoweringTarget.
 
 #include "NvptxKernelLowering.h"
 
@@ -35,22 +29,13 @@ namespace {
 class NvptxTarget : public LoweringTarget {
 public:
     const char* name() const override { return "nvptx"; }
-    // `!nontemporal` becomes the `.cs` (cache-streaming) qualifier on
-    // ld.global / st.global — a `@Streaming` buffer streams past L1/L2.
+    // `!nontemporal` becomes the `.cs` qualifier on ld.global / st.global.
     bool supportsNontemporal() const override { return true; }
 
-    // No native inline ray query (cajeta has no NVPTX RT-core / OptiX seam), so
-    // the AccelerationStructure noun is built as the portable software BVH and
-    // the RayQuery verb follows to the cajeta.xpu.SoftwareRayQuery walk over
-    // a software BVH buffer — the same Portable tier the CPU backend uses
-    // (ray-query-to-core inc 1). Without this the base default (VulkanNative)
-    // routes RayQuery to rayQueryType(), which throws on NVPTX. softwareRayQuery()
-    // derives from this in the base; coopMatrixTier stays the base Portable
-    // (flat-tile matmul) since there is no NVPTX native wmma seam yet.
+    // There is no NVPTX RT-core seam, so the noun builds a software BVH; the
+    // base default routes RayQuery to rayQueryType(), which throws here.
     NounImpl accelImpl() const override { return NounImpl::SoftwareBvh; }
 
-    // NVPTX allocas live in the generic address space (0); mem2reg removes
-    // most before PTX emit.
     unsigned allocaAddressSpace() const override { return 0; }
 
     llvm::Value* threadId(llvm::IRBuilderBase& b, llvm::Module& m,
@@ -77,7 +62,6 @@ public:
             llvm::Intrinsic::nvvm_read_ptx_sreg_ntid_z};
         return readSreg(b, m, ids[dim]);
     }
-    // Grid-stride stride = nctaid·ntid (number of CTAs × CTA size).
     llvm::Value* gridSize(llvm::IRBuilderBase& b, llvm::Module& m,
                           unsigned dim) override {
         static const llvm::Intrinsic::ID nctaid[3] = {
@@ -89,7 +73,6 @@ public:
     }
 
     void workgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
-        // bar.sync 0 — synchronize all threads in the CTA.
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::nvvm_barrier_cta_sync_aligned_all);
         b.CreateCall(f, {llvm::ConstantInt::get(
@@ -98,10 +81,7 @@ public:
 
     void memoryFence(llvm::IRBuilderBase& b, llvm::Module& m, FenceScope scope,
                      MemoryOrder /*order*/ = MemoryOrder::Default) override {
-        // membar — a memory fence with no bar.sync (no thread rendezvous).
-        // membar.cta orders within the CTA (workgroup); membar.gl orders
-        // global memory across the device. membar is a full fence with no
-        // weaker variant, so the requested order doesn't change the op.
+        // membar has no weaker variant, so the order argument changes nothing.
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, scope == FenceScope::Workgroup
                     ? llvm::Intrinsic::nvvm_membar_cta
@@ -109,12 +89,8 @@ public:
         b.CreateCall(f, {});
     }
 
-    // Async global->shared copy via the cp.async family (sm_80+): each thread
-    // strides the panel, issuing one cp.async.ca.shared.global per element — a
-    // direct global->shared transfer that bypasses the register file, the CUDA
-    // analog of CDNA's global_load_lds. commit/wait close + drain the group.
-    // cp.async carries 4/8/16-byte elements only; other widths use the sync
-    // staged copy (the base seam) so the kernel stays correct.
+    // Global->shared copy through cp.async (sm_80+), bypassing the register
+    // file. It carries 4/8/16-byte elements ONLY; other widths need the base seam.
     void asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* dstBase,
                    llvm::Type* dstElem, llvm::Value* dstOffset, llvm::Value* srcBase,
                    llvm::Type* srcElem, llvm::Value* srcOffset,
@@ -161,16 +137,13 @@ public:
         b.SetInsertPoint(exit);
     }
 
-    // Close the current cp.async group (the unit asyncWait counts).
     void asyncCommit(llvm::IRBuilderBase& b, llvm::Module& m) override {
         b.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::nvvm_cp_async_commit_group), {});
     }
 
-    // Block until at most `groupsInFlight` committed cp.async groups remain. PTX
-    // cp.async.wait_group takes an IMMEDIATE, so a constant count (the usual
-    // wait(0) = drain all) lowers directly; a dynamic count drains everything
-    // with cp.async.wait_all (conservative but correct).
+    // Block until at most `groupsInFlight` groups remain. cp.async.wait_group
+    // takes an IMMEDIATE, so a dynamic count must drain all instead.
     void asyncWait(llvm::IRBuilderBase& b, llvm::Module& m,
                    llvm::Value* groupsInFlight) override {
         if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(groupsInFlight)) {
@@ -186,10 +159,8 @@ public:
 
     void devicePrintf(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* fmt,
                       llvm::ArrayRef<llvm::Value*> args) override {
-        // CUDA device printf is the external `i32 vprintf(i8* fmt, i8* args)`:
-        // the varargs are packed (declaration order, f32→double per varargs
-        // promotion) into a stack buffer whose address is the second operand.
-        // Emit-only (no CUDA hardware here).
+        // CUDA device printf is `i32 vprintf(i8* fmt, i8* args)`: the varargs
+        // pack in declaration order (f32→double) into a stack buffer.
         llvm::LLVMContext& ctx = m.getContext();
         auto* i32 = llvm::Type::getInt32Ty(ctx);
         auto* ptr = llvm::PointerType::get(ctx, 0);
@@ -220,7 +191,6 @@ public:
     void decorateKernel(llvm::Function* fn, llvm::Module& m) override {
         llvm::LLVMContext& ctx = m.getContext();
         fn->setCallingConv(llvm::CallingConv::PTX_Kernel);
-        // nvvm.annotations kernel marker (belt-and-suspenders alongside the CC).
         llvm::Metadata* ops[] = {
             llvm::ValueAsMetadata::get(fn),
             llvm::MDString::get(ctx, "kernel"),
@@ -231,9 +201,7 @@ public:
             ->addOperand(llvm::MDNode::get(ctx, ops));
     }
 
-    // @Occupancy override (kernel-occupancy-autotune §3) → nvvm.annotations:
-    // maxThreads→maxntidx (launch bound), minResident→minctasm (min CTAs/SM),
-    // maxRegisters→maxnreg. The portable analogue of the AMDGPU mapping.
+    // @Occupancy → nvvm.annotations: maxntidx, minctasm, maxnreg.
     void applyOccupancy(llvm::Function* fn, const XpuKernelAttr& attr) override {
         llvm::Module& m = *fn->getParent();
         llvm::LLVMContext& ctx = m.getContext();
@@ -258,7 +226,6 @@ public:
     }
     llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
                              llvm::Value* value, llvm::Value* srcLane) override {
-        // shfl.sync.idx.b32: full-warp membermask, idx mode clamp 0x1f.
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::nvvm_shfl_sync_idx_i32);
@@ -268,7 +235,6 @@ public:
     }
     llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m,
                             llvm::Value* pred) override {
-        // vote.ballot.sync over the full warp → i32, widened to the i64 API.
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::nvvm_vote_ballot_sync);
@@ -279,7 +245,7 @@ public:
     }
     llvm::Value* waveReduceSum(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* value) override {
-        // redux.sync.add.s32: full-warp membermask. Requires sm_80+ (Ampere).
+        // redux.sync.add.s32 requires sm_80+.
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::nvvm_redux_sync_add);
@@ -288,8 +254,6 @@ public:
     }
     llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
                             WaveReduceOp op, llvm::Value* value) override {
-        // redux.sync.{umax,umin,and,or,xor}: full-warp membermask, sm_80+.
-        // Unsigned min/max for the uint32 surface. (Emit-only — no NV device.)
         llvm::Intrinsic::ID id;
         switch (op) {
             case WaveReduceOp::Max: id = llvm::Intrinsic::nvvm_redux_sync_umax; break;
@@ -307,20 +271,9 @@ public:
         return readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_laneid);
     }
 
-    // ---- Cooperative matrix: NVIDIA tensor cores (wmma), CM7-NV --------------
-    // m16n16k16 D[f32] = A[f16/bf16] · B[f16/bf16] + C[f32], row-major, warp-
-    // collective. NVIDIA's wmma fragment↔lane layout is implementation-defined
-    // (opaque) — so, UNLIKE AMD's documented RDNA3 layout, we CANNOT hand-marshal
-    // fragments from memory: load/store MUST go through the NVVM wmma.load/store
-    // intrinsics, which distribute/gather the tile across the full warp. The
-    // fragment value IS the intrinsic's literal-struct type ({<2 x half> x 8} for
-    // an A/B operand, {float x 8} for the f32 accumulator); mma takes the
-    // flattened a/b/c struct elements and returns the accumulator struct. We
-    // derive the fragment type FROM the load intrinsic so load/mma/store agree by
-    // construction. v1: row-major operands, 16x16x16, f16/bf16 inputs → f32
-    // accumulate (the on-device tensor-core path matching AMD/Vulkan native).
-    // The launch must use a full warp (block = 32); the cajeta coop tile ops are
-    // unguarded so all 32 lanes participate. (Verified on-device, RTX 4090.)
+    // ---- Cooperative matrix: NVIDIA tensor cores (wmma) ----------------------
+    // m16n16k16 D[f32] = A[f16/bf16]·B[f16/bf16] + C[f32], row-major, warp-collective.
+    // The fragment↔lane layout is implementation-defined: load/store MUST use NVVM wmma.
 
     ImplTier coopMatrixTier(llvm::Type* elem, uint32_t rows, uint32_t cols,
                             uint32_t use) override {
@@ -334,15 +287,13 @@ public:
         return ImplTier::Portable;     // int8/u8, f64, other shapes → portable tile
     }
 
-    // sm_70+ has tensor cores; the target machine targets sm_89, so no extra
-    // kernel ABI attribute is needed (cf. AMD, which must force wave32).
+    // sm_89 already has tensor cores, so no kernel ABI attribute is needed.
     void prepareNativeCoopMatrix(llvm::Function* /*fn*/) override {}
 
     llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type* elem,
                                uint32_t /*rows*/, uint32_t /*cols*/,
                                uint32_t use) override {
-        // The fragment type IS the wmma.load return struct — derive it so the
-        // alloca, the load result, the mma result, and the store input all match.
+        // The fragment type IS the wmma.load return struct: everything matches.
         return nvWmmaLoadDecl(m, use, elem)->getReturnType();
     }
 
@@ -353,10 +304,7 @@ public:
                                 uint32_t use, uint32_t swz = 0,
                                 LdsBlockPad /*blk*/ = {}) override {
         if (swz) {
-            // U5.3: degrade to identity, don't reject. The WMMA whole-tile load
-            // can't permute per element, but swizzleAddr is already identity on
-            // NVPTX, so the Swizzled<T,S> tile was STAGED unpermuted too — an
-            // identity load stays consistent (correct, just no bank-conflict win).
+            // Degrade to identity: NVPTX stages the tile unpermuted too.
             std::cerr << "note: [swizzle-tier] CooperativeMatrix.load from a "
                          "Swizzled<T,S> tile uses the IDENTITY layout on NVPTX "
                          "(no per-element WMMA swizzle); correct, unaccelerated.\n";
@@ -379,7 +327,6 @@ public:
                          "(no per-element WMMA swizzle); correct, unaccelerated.\n";
         }
         requireRowMajor(layout, "store");
-        // store.d.f32.row.stride(ptr, d0..d7, stride).
         llvm::Function* f = nvDecl(
             m, llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_row_stride,
             ptr->getType());
@@ -394,20 +341,9 @@ public:
                                   llvm::Value* a, llvm::Value* bMat,
                                   llvm::Value* c, llvm::Type* /*matrixType*/,
                                   uint32_t /*signFlags*/) override {
-        // signFlags unused: the NVPTX tier is f16/bf16-only today (no integer
-        // mma fragments wired), and float matmuls carry no signedness.
-        // Pick mma by the A fragment's SHAPE, not a scalar probe: f16 A/B
-        // fragments are {<2 x half> x 8}, while bf16 fragments pack two values
-        // per .b32 register and are {i32 x 4} (IntrinsicsNVVM.td
-        // "m16n16k16:a:bf16") — element 0 is a scalar i32, not a vector, so
-        // casting it to FixedVectorType aborted the whole compiling process on
-        // the first bf16 coop-matrix kernel (an LLVM assert is not catchable).
-        // The tier table admits only f16/bf16 A/B natively, so a non-vector
-        // fragment element IS bf16; revisit if an int8 wmma seam lands.
-        //
-        // f16/bf16 A·B with an f32 C accumulator AND f32 D output: the suffix is
-        // the (C,D) element pair — both f32 here (A/B f16 is implicit in the float
-        // wmma family; the bf16 family has only the f32/f32 accumulate variant).
+        // Pick mma by the A fragment's SHAPE, never a scalar probe: f16 A/B is
+        // {<2 x half> x 8} and bf16 is {i32 x 4}, so casting element 0 to
+        // FixedVectorType asserts inside LLVM, uncatchably.
         auto* aFrag = llvm::cast<llvm::StructType>(a->getType());
         bool bf = !llvm::isa<llvm::FixedVectorType>(aFrag->getElementType(0));
         llvm::Intrinsic::ID id = bf
@@ -431,9 +367,8 @@ public:
             elemVal = b.CreateVectorSplat(
                 vt->getNumElements(), coerceScalar(b, value, vt->getElementType()));
         } else if (fe->isIntegerTy(32)) {
-            // bf16 A/B fragment ({i32 x 4}): build the .b32 register image —
-            // the value twice, packed as <2 x bfloat>, bitcast to i32. A plain
-            // coerceScalar would insert an unpacked bfloat into an i32 slot.
+            // bf16 A/B fragment: build the .b32 register image, since a plain
+            // coerceScalar would put an unpacked bfloat in the i32 slot.
             llvm::Type* bfTy = llvm::Type::getBFloatTy(b.getContext());
             llvm::Value* pair =
                 b.CreateVectorSplat(2, coerceScalar(b, value, bfTy));
@@ -447,13 +382,8 @@ public:
         return agg;
     }
 
-    // tex.sample(sampler, u, v) → llvm.nvvm.tex.unified.2d.v4f32.f32 (Item 8
-    // Stage D, emit-only). NVIDIA's "unified" texture fetch takes the i64
-    // cudaTextureObject_t — which bundles the image AND the sampler state — so
-    // the separate Sampler kernel arg is unused here (as on AMD). The default
-    // textureParamType (i64) already gives the handle by value. Returns
-    // {float,float,float,float}; v1 takes the R channel. No NVIDIA hardware
-    // here — proven via the PTX `tex.2d` instruction in the emit test.
+    // tex.sample → llvm.nvvm.tex.unified.2d.v4f32.f32; the i64 handle bundles
+    // image AND sampler state, so the Sampler argument is unused here.
     llvm::Value* sampleTexture(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* texHandle,
                                llvm::Value* /*samplerHandle*/, llvm::Value* u,
@@ -461,9 +391,6 @@ public:
         llvm::Function* tex = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::nvvm_tex_unified_2d_v4f32_f32);
         llvm::Value* rgba = b.CreateCall(tex, {texHandle, u, v}, "tex.rgba");
-        // The unified tex intrinsic returns a {f32,f32,f32,f32} struct; repack
-        // it as a <4 x float> so Texture2D.sample yields a Vector<float32,4>
-        // (the caller selects a channel with .r/.x).
         llvm::Type* f32 = llvm::Type::getFloatTy(m.getContext());
         auto* v4f = llvm::FixedVectorType::get(f32, 4);
         llvm::Value* vec = llvm::PoisonValue::get(v4f);
@@ -474,15 +401,8 @@ public:
         return vec;
     }
 
-    // Image2D storage images (the writable twin of Texture2D, emit-only until the
-    // NVIDIA runner / B5). img.store/img.load → llvm.nvvm.sust.b.2d.i32.trap /
-    // llvm.nvvm.suld.2d.i32.trap (the surface store/load PTX ops). The handle is
-    // the i64 cudaSurfaceObject_t (the default textureParamType, by value); there
-    // is no sampler. Two NVPTX specifics vs the Vulkan/AMD paths: surface coords
-    // are BYTE offsets in x (x*4 for the 4-byte R32 texel; y stays a row index),
-    // and the texel rides as raw i32 bits (the R32f image preserves them — bitcast
-    // f32<->i32). The CUDA surface RUNTIME (cuSurfObjectCreate + the launch
-    // marshalling) lands with B5; this is the compiler lowering, proven via PTX.
+    // Image2D → llvm.nvvm.sust.b.2d / suld.2d: surface coords are BYTE offsets
+    // in x (x*4 for an R32 texel, y stays a row), the texel raw i32 bits.
     void storeImage(llvm::IRBuilderBase& b, llvm::Module& m,
                     llvm::Value* imgHandle, llvm::Value* x, llvm::Value* y,
                     llvm::Value* value) override {
@@ -510,18 +430,15 @@ public:
         return b.CreateBitCast(raw, f32, "img.load");
     }
 
-    // Shader clock: the 64-bit SM clock (clock64) — the NVIDIA analogue of
-    // OpReadClockKHR for Thread.clock(). Emit-only until the NVIDIA runner (B5).
+    // Thread.clock(): the 64-bit SM clock, clock64.
     llvm::Value* readClock(llvm::IRBuilderBase& b, llvm::Module& m) override {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::nvvm_read_ptx_sreg_clock64);
         return b.CreateCall(f, {}, "clock");
     }
 
-    // Transcendentals via NVIDIA libdevice: `__nv_<fn>f` (f32) / `__nv_<fn>`
-    // (f64). NVPTX, like AMDGPU, has no IEEE transcendental instructions; the
-    // libdevice call is the canonical path (linked at cubin time). Emit-only
-    // until the NVIDIA runner lands (B5); rsqrt is the native nvvm intrinsic.
+    // Transcendentals as libdevice calls, `__nv_<fn>f` / `__nv_<fn>`, linked at
+    // cubin time; NVPTX has no IEEE transcendental instructions. rsqrt is native.
     llvm::Value* transcendental(llvm::IRBuilderBase& b, llvm::Module& m,
                                 const std::string& name,
                                 llvm::ArrayRef<llvm::Value*> args) override {
@@ -541,7 +458,6 @@ public:
         if (name == "rsqrt") {
             llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
                 &m, llvm::Intrinsic::nvvm_rsqrt_approx_f, {});
-            // nvvm_rsqrt_approx_f is f32; cast in/out if a double slipped through.
             llvm::Value* x = ft->isFloatTy() ? args[0]
                 : b.CreateFPCast(args[0], llvm::Type::getFloatTy(m.getContext()));
             llvm::Value* r = b.CreateCall(fn, {x});
@@ -583,8 +499,8 @@ private:
         return v;
     }
 
-    // Get an intrinsic declaration, supplying the pointer-overload type when the
-    // intrinsic is overloaded on its address space (the wmma load/store family).
+    // An intrinsic declaration, with the pointer-overload type for intrinsics
+    // overloaded on their address space (the wmma load/store family).
     static llvm::Function* nvDecl(llvm::Module& m, llvm::Intrinsic::ID id,
                                   llvm::Type* ptrTy = nullptr) {
         if (llvm::Intrinsic::isOverloaded(id)) {
@@ -613,15 +529,8 @@ private:
         return nvDecl(m, nvWmmaLoadId(use, elem), ptrTy);
     }
 
-    // The fragment's scalar element from a matrixType built by coopMatrixType:
-    // the vector element for an f16 A/B operand ({<2 x half> x 8}), bfloat for
-    // a bf16 A/B operand ({i32 x 4} — two bf16 packed per .b32 register, so
-    // the i32 is a register image, not the element type), the struct element
-    // for the f32 accumulator ({float x 8}). Used to re-select the load
-    // intrinsic — returning the raw i32 here made a bf16 tile re-select the
-    // f16 load intrinsic, silently mismatching the alloca's fragment type.
-    // i32-packed == bf16 while only f16/bf16 operands are native (tier table);
-    // revisit if an int8 wmma seam lands.
+    // The fragment's scalar element: the vector element for f16 A/B, bfloat for
+    // bf16 A/B ({i32 x 4} is a register image), the struct element for f32.
     static llvm::Type* nvFragScalar(llvm::Type* matrixType) {
         llvm::Type* e0 =
             llvm::cast<llvm::StructType>(matrixType)->getElementType(0);

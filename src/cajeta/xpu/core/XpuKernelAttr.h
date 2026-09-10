@@ -1,16 +1,6 @@
-//
-// Typed view over the XPU annotation cluster on a single declaration.
-//
-// A @Kernel-bearing method may also carry @Wave(width = N) and
-// @Backend("nvidia") (single or list). XpuKernelAttr collects those
-// related annotations into one read-only value so downstream consumers
-// (MIR builder, codegen routing, target selection) don't each re-walk
-// the AnnotationInstance list.
-//
-// Construction is cheap — no allocations beyond the small backends
-// vector — so call sites build a fresh view per access rather than
-// caching on the Annotatable.
-//
+// A typed, read-only view over the XPU annotation cluster (@Kernel plus any
+// @Wave / @Backend / @Occupancy) on one declaration, so consumers need not
+// re-walk the AnnotationInstance list. Build a fresh view per access.
 
 #pragma once
 
@@ -23,50 +13,35 @@
 namespace cajeta {
 namespace xpu {
 
-    // Which backend(s) a kernel is restricted to. An empty backends()
-    // vector on XpuKernelAttr means "no @Backend present" — emit for
-    // every backend the build is configured to target (the variance-
-    // discipline default per CajetaXPU.md §5.6).
+    // Which backend(s) a kernel is restricted to.
     enum class XpuBackend {
         Nvidia,
         Amd,
         Vulkan,
     };
 
-    // Parses a backend short name ("nvidia" / "amd" / "vulkan",
-    // case-insensitive). Returns nullopt on unrecognized input.
+    // Parses a case-insensitive short name; nullopt if unrecognized.
     std::optional<XpuBackend> parseBackend(const std::string& name);
 
-    // Inverse of parseBackend, returning the canonical short name
-    // ("nvidia" / "amd" / "vulkan"). For diagnostics and round-trip
-    // tests.
+    // Inverse of parseBackend: the canonical short name, for diagnostics.
     const char* backendName(XpuBackend b);
 
     class XpuKernelAttr {
     public:
-        // Build from an Annotatable carrying @Kernel (and optionally
-        // @Wave / @Backend). Returns nullopt if @Kernel is absent —
-        // callers can use isKernel() if they only need the boolean.
+        // Build from an Annotatable; nullopt when @Kernel is absent.
         static std::optional<XpuKernelAttr> from(const Annotatable& a);
 
-        // Wave width from @Wave(width = N). nullopt when @Wave is
-        // absent — the lowering pass picks a target default.
+        // @Wave(width = N); nullopt lets the lowering pass pick a target default.
         std::optional<int> waveWidth() const { return waveWidth_; }
 
-        // Backend restriction. Empty when @Backend is absent (emit
-        // for all configured backends). Multi-backend supported via
-        // @Backend({"nvidia", "amd"}).
+        // Backend restriction; empty means emit for every configured backend.
         const std::vector<XpuBackend>& backends() const { return backends_; }
 
-        // Convenience: does this kernel emit for a given backend? An
-        // empty restriction set returns true (no restriction).
+        // Does this kernel emit for `b`? An empty restriction set returns true.
         bool emitsFor(XpuBackend b) const;
 
-        // @Occupancy override (kernel-occupancy-autotune §3) — portable,
-        // vendor-neutral resource logistics. Each is nullopt when absent.
-        //   maxThreads   — max threads per workgroup (launch bound)
-        //   minResident  — min workgroups co-resident per compute unit
-        //   maxRegisters — max registers per thread
+        // @Occupancy overrides: threads per workgroup, workgroups co-resident per
+        // compute unit, registers per thread. Each is nullopt when absent.
         std::optional<unsigned> maxThreads() const { return maxThreads_; }
         std::optional<unsigned> minResident() const { return minResident_; }
         std::optional<unsigned> maxRegisters() const { return maxRegisters_; }

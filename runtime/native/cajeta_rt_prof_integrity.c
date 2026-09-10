@@ -1,16 +1,6 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c ===
-//
-// cajeta-profiler Unit 9 — integrity, tier demotion, teardown
-// (spec §10.2, §10.3, §10.4, §11.1, §11.2).
-//
-// The spec's framing for this whole section is that nearly every failure mode
-// found in the research returns success and plausible numbers. So nothing here
-// treats "the call succeeded" as evidence: each mechanism drives the state that
-// would otherwise be silent and records it where a consumer can read it.
-//
-// Degradation is never fatal. The ladder floors at HOST because a host
-// submit-to-complete window always exists — there is always something honest
-// left to report, so a failing tier costs accuracy and never the run (§10.4).
+// Integrity, tier demotion and teardown. Nothing here treats "the call succeeded"
+// as evidence; degradation is never fatal, the ladder floors at HOST.
 
 typedef struct {
     int32_t tier;            // CAJETA_PROF_TIER_*
@@ -53,9 +43,7 @@ int32_t __cajeta_prof_tier_reason(int32_t domain) {
     return t ? t->reason : CAJETA_DEMOTE_NONE;
 }
 
-// One rung down, never two, and never below HOST. The reason is recorded only
-// the first time: a tier that has already fallen accumulates consequences, and
-// reporting the last of them would name a symptom instead of the cause.
+/// Drops one rung, never below HOST; only the FIRST reason is kept.
 int32_t __cajeta_prof_tier_demote(int32_t domain, int32_t reason) {
     CajTierState* t = caj_tier_at(domain);
     if (!t) return CAJETA_PROF_TIER_HOST;
@@ -73,10 +61,7 @@ int32_t __cajeta_prof_tier_set_record_threshold(int32_t launches) {
     return 1;
 }
 
-// §11.2 — a backend that accepts every launch and delivers nothing is the
-// quietest failure in the system: the trace simply contains no device work,
-// which is indistinguishable from a program that launched none. Count the
-// silence and act on it.
+/// Counts a dispatch, demoting once enough are accepted with no record back.
 int32_t __cajeta_prof_tier_note_launch(int32_t domain) {
     CajTierState* t = caj_tier_at(domain);
     if (!t) return 0;
@@ -115,13 +100,8 @@ int64_t __cajeta_prof_tier_records(int32_t domain) {
     return t ? t->records : 0;
 }
 
-// §11.1 — three checks over a handful of real dispatches, all of which a
-// broken backend passes individually:
-//   * end exceeds start            — a negative span
-//   * duration within a sane bound — a garbage timestamp read as a slow kernel
-//   * consecutive dispatches differ — a STUCK counter, which nothing else sees,
-//     because every span it produces is perfectly well formed on its own
-// A tier that fails any of them is demoted rather than trusted.
+/// Checks `n` dispatches for negative spans, implausible durations and a STUCK
+/// counter, demoting the tier on any failure. Returns 1 when all three pass.
 int32_t __cajeta_prof_tier_verify(int32_t domain, const int64_t* startsNs,
                                   const int64_t* endsNs, int32_t n) {
     if (!startsNs || !endsNs || n <= 0) return 0;
@@ -136,17 +116,15 @@ int32_t __cajeta_prof_tier_verify(int32_t domain, const int64_t* startsNs,
             distinct = 1;
         }
     }
-    // With a single dispatch there is nothing to compare against, so the
-    // stuck-counter check does not apply and must not fail the tier.
+    // One dispatch has nothing to compare against; it must not fail the tier.
     if (ok && n > 1 && !distinct) ok = 0;
 
     if (!ok) __cajeta_prof_tier_demote(domain, CAJETA_DEMOTE_STARTUP_CHECK);
     return ok;
 }
 
-// §10.3 — steps unwind in REVERSE. Step 3 may depend on what step 1
-// established, so unwinding forwards tears down the ground step 3 is standing
-// on. Returns the new depth so a caller can assert its own setup shape.
+/// Pushes one teardown step, returning the new depth so a caller can assert
+/// its setup shape. 0 when the stack is full.
 int32_t __cajeta_prof_undo_push(int32_t domain, CajetaUndoFn fn, void* user) {
     CajTierState* t = caj_tier_at(domain);
     if (!t || !fn) return 0;
@@ -169,10 +147,8 @@ int32_t __cajeta_prof_undo_depth(int32_t domain) {
     return t ? t->undoDepth : 0;
 }
 
-// Run every registered step, newest first, and empty the stack. Emptying it
-// FIRST (into a local copy) is what makes a second unwind a no-op rather than a
-// double teardown — an unwind triggered from two paths at once is exactly the
-// shape a partial initialization produces.
+/// Runs every step newest first and empties the stack. Emptying it FIRST, into
+/// a local copy, is what makes a second unwind a no-op, not a double teardown.
 int32_t __cajeta_prof_undo_unwind(int32_t domain) {
     CajTierState* t = caj_tier_at(domain);
     if (!t) return 0;
@@ -189,16 +165,14 @@ int32_t __cajeta_prof_undo_unwind(int32_t domain) {
     t->undoDepth = 0;
     pthread_mutex_unlock(&caj_tier_mutex);
 
-    // Outside the lock: a teardown step may legitimately call back into the
-    // profiler, and holding the mutex across it would deadlock.
+    // Outside the lock: a step may call back into the profiler and deadlock.
     for (int32_t i = depth - 1; i >= 0; --i) {
         if (fns[i]) fns[i](users[i]);
     }
     return depth;
 }
 
-// Initialization succeeded: drop the steps WITHOUT running them. Without this
-// half, a successful setup tears itself down.
+/// Drops the steps WITHOUT running them, for an initialization that succeeded.
 int32_t __cajeta_prof_undo_commit(int32_t domain) {
     CajTierState* t = caj_tier_at(domain);
     if (!t) return 0;
@@ -209,10 +183,8 @@ int32_t __cajeta_prof_undo_commit(int32_t domain) {
     return depth;
 }
 
-// §10.2 — absent and inaccessible are different diagnoses with different
-// fixes. `access` is the right instrument here despite its TOCTOU reputation:
-// this is a diagnostic, not a gate, and it answers for the CALLING user, which
-// is precisely the question being asked. stat() would answer about the file.
+/// CAJETA_NODE_OK, _ABSENT or _INACCESSIBLE for a device node. `access` despite
+/// its TOCTOU reputation: this is a diagnostic, and it answers for THIS user.
 int32_t __cajeta_prof_probe_node(const char* path) {
     if (!path || !*path) return CAJETA_NODE_ABSENT;
 #if defined(_WIN32)
@@ -221,10 +193,8 @@ int32_t __cajeta_prof_probe_node(const char* path) {
     return CAJETA_NODE_OK;
 #else
     if (access(path, F_OK) != 0) {
-        // EACCES here means a directory on the way is closed to us — the node
-        // may well exist. Reporting it absent would send the developer to
-        // reinstall a driver they already have, which is the exact mistake
-        // §10.2 exists to prevent.
+        // EACCES means a directory on the way is closed to us, so the node may
+        // well exist; calling it absent sends the developer to reinstall.
         return (errno == EACCES) ? CAJETA_NODE_INACCESSIBLE : CAJETA_NODE_ABSENT;
     }
     if (access(path, R_OK) != 0) return CAJETA_NODE_INACCESSIBLE;
@@ -232,10 +202,7 @@ int32_t __cajeta_prof_probe_node(const char* path) {
 #endif
 }
 
-// Program-lifetime strings: a diagnostic that needed freeing would be dropped
-// on the paths that need it most. The permission text names the actual fix
-// because "permission denied" alone leaves the developer to guess which of
-// several groups a given node wants.
+/// Advice for a probe_node status, as a program-lifetime string.
 const char* __cajeta_prof_node_advice(int32_t status, const char* path) {
     (void) path;
     switch (status) {
@@ -253,29 +220,9 @@ const char* __cajeta_prof_node_advice(int32_t status, const char* path) {
     }
 }
 
-// 9.1.a / 6.7.2.c — the device span must sit inside its CAUSAL bracket:
-// [host submit, record resolution]. This is the one check that catches an
-// entire clock domain being wrong: §6.5 measured two backends' preferred
-// domains 5.68 seconds apart, and a lane converted with the wrong domain still
-// renders as a perfectly ordinary span of a perfectly ordinary duration.
-// Nothing internal to the span gives it away — only its position relative to
-// the two host-clock moments that bracket it does: a kernel cannot start
-// before it was submitted, and a record cannot describe an execution that had
-// not finished when the record was read. A shear in either direction pushes
-// one edge out of the bracket.
-//
-// The upper bound is the RESOLUTION time, not host_return_ns. host_return_ns
-// is stamped when the launch call returns, and an asynchronous dispatch
-// executes after that by construction — 6.7's reproduction measured dev_start
-// landing 8.5-491 us past the launch on 144 of 144 healthy dispatches, every
-// one of which the old launch-return bound flagged. A check that fires on
-// every correct span teaches readers to ignore the one flag that exists to
-// catch a sheared domain. When no resolution exists the bracket falls back to
-// host_return_ns — for a synchronous backend that is the truth.
-//
-// A HOST-tier record is exempt from the containment check by construction: its
-// device span IS the host window (see the tier note in this header), so
-// comparing them tests the assignment, not the clock.
+/// The CAJETA_SPAN_* flags for one dispatch: its device span must sit inside
+/// the CAUSAL bracket [host submit, record RESOLUTION] — bounding by
+/// host_return_ns would flag healthy async spans. HOST-tier records are exempt.
 int32_t __cajeta_prof_check_dispatch(const CajetaGpuEvent* ev) {
     if (!ev) return CAJETA_SPAN_UNCORRELATED;
     int32_t flags = CAJETA_SPAN_OK;
@@ -285,8 +232,7 @@ int32_t __cajeta_prof_check_dispatch(const CajetaGpuEvent* ev) {
         flags |= CAJETA_SPAN_IMPLAUSIBLE;
     }
 
-    // A record with no device timing at all is not inconsistent, it is absent;
-    // the tier already says which it is.
+    // No device timing at all is absence, not inconsistency.
     if (ev->tier != CAJETA_PROF_TIER_HOST
             && (ev->dev_start_ns != 0 || ev->dev_end_ns != 0)) {
         const int64_t upper = ev->resolved_ns ? ev->resolved_ns
@@ -295,10 +241,8 @@ int32_t __cajeta_prof_check_dispatch(const CajetaGpuEvent* ev) {
                 || ev->dev_end_ns > upper) {
             flags |= CAJETA_SPAN_OUTSIDE_HOST;
         }
-        // TIER_DEVICE means "a vendor dispatch record supplied this span";
-        // with no resolution behind it that claim has nothing standing behind
-        // it, and the timestamps have no provenance worth trusting (6.7.1.c —
-        // the 6.6.3 trace was first read as exactly this).
+        // TIER_DEVICE claims a vendor record supplied this span; with no
+        // resolution behind it, the timestamps have no provenance.
         if (ev->tier == CAJETA_PROF_TIER_DEVICE && ev->resolved_ns == 0) {
             flags |= CAJETA_SPAN_UNCORRELATED;
         }

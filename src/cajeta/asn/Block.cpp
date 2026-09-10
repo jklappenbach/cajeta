@@ -14,12 +14,9 @@
 
 namespace cajeta {
 
-    // Debugger CP2: when --debug-info is on, emit a call to
-    // __cajeta_dbg_safepoint(loc_id) before a statement so the in-process
-    // debugger can poll for breakpoints at each statement boundary. loc_id
-    // indexes the global DbgLocTable, which maps it back to {file,line,col,fn}.
-    // No-op if the runtime helper can't be resolved or the insert block is
-    // already terminated.
+    // Emit a call to __cajeta_dbg_safepoint(loc_id) ahead of `statement` so the
+    // in-process debugger can poll for breakpoints at statement boundaries; loc_id
+    // indexes the DbgLocTable. No-op without the helper, or after a terminator.
     static void emitDebugSafepoint(CajetaModulePtr module,
                                    const AbstractSyntaxNodePtr& statement) {
         llvm::IRBuilder<>* builder = module->getBuilder();
@@ -33,27 +30,16 @@ namespace cajeta {
         std::string file;
         if (auto method = module->getCurrentMethod()) {
             function = method->getLlvmSymbolName();
-            // The declaring class's file, remapped — same source as #FrameDesc
-            // (external-debug §6). getSourcePath() was the raw ABSOLUTE path,
-            // which is not reproducible across build roots (§3.1.3) and is
-            // EMPTY for every stdlib statement (one module, no source path).
+            // The declaring class's file, remapped — the raw source path is
+            // absolute (not reproducible) and empty for every stdlib statement.
             if (auto parent = method->getParent()) {
                 file = parent->getDeclaringFile();
             }
         }
         if (file.empty()) file = module->remappedSourcePath();
-        // Ranged modules (JIT path) claim ids from their own range so an
-        // edit elsewhere never shifts this module's baked constants; the
-        // dense allocator remains for AOT/lint (and range overflow).
-        // A synthesized method (e.g. a @ValueType `clone`) or a deeply-nested
-        // template instantiation can carry a snippet->file line correction
-        // (lineDelta, TemplateInstantiator §9.2) that overshoots, yielding a
-        // NEGATIVE absolute line. Source lines are 1-based; a negative one is
-        // meaningless to a debugger (it would map a real safepoint to a bogus
-        // location) and is un-matchable by the loc-table's entry shape, which
-        // breaks the safepoint<->entry invariant. Clamp to a valid line.
-        // 9.2 snippet -> file line, shared with the line-info mark below so the
-        // two can never drift apart again (dbg::fileLineFor clamps to 1).
+        // A ranged module claims ids from its own range, so an edit elsewhere never
+        // shifts this module's baked constants. fileLineFor clamps a snippet->file
+        // correction that overshoots into a negative, un-matchable line.
         int dbgLine = dbg::fileLineFor(module, statement->getSourceLine());
         int32_t locId = module->takeDbgLocId();
         if (locId >= 0) {
@@ -74,20 +60,18 @@ namespace cajeta {
         builder->CreateCall(fn, {arg});
     }
 
+    // Emit every child statement in order, bracketed by this block's drop frame,
+    // its arena mark/reset, and the name bindings it shadows — each of which is
+    // torn down at the closing `}` unless a return/throw already left the block.
     llvm::Value* Block::generateCode(CajetaModulePtr module) {
-        // Block-scoped drops: each `{ ... }` is its own drop frame. Locals
-        // declared inside register into this frame; at the closing `}` the
-        // frame's entries fire (LIFO) before the frame is popped. If the
-        // block ran to a terminator (return/throw) mid-way through, the
-        // terminating statement already fired ALL frames' drops on its
-        // way out — we observe the terminator here and skip the fire,
-        // just dropping the frame off the stack.
+        // Each `{ ... }` is its own drop frame: locals declared inside register
+        // into it and fire LIFO at the closing `}`. A terminator mid-block means a
+        // return/throw already fired every frame, so here we only pop.
         auto m = module->getCurrentMethod();
         if (m) m->pushDropFrame();
 
-        // script-units 4.2.4(b) — true only for the entry's root block:
-        // a nested block's declarations are ordinary locals even when they
-        // shadow a session-binding NAME. Restored on every exit path.
+        // True only for the ENTRY's root block: a nested block's declarations are
+        // ordinary locals even when they shadow a session-binding name.
         struct TopLevelGuard {
             CajetaModulePtr mod;
             bool saved;
@@ -100,24 +84,9 @@ namespace cajeta {
 
         auto* builder = module->getBuilder();
 
-        // Frame-arena (frame-arena-plan U2): bracket this block's body with an
-        // arena mark/reset so non-escaping owned concat / primitive-array locals
-        // declared inside are bump-allocated and reclaimed in O(1) at the closing
-        // `}` (per-iteration for a loop body). The reset fires on the same
-        // normal-exit edge as the drop chain (early return/throw already unwind via
-        // emitOwnerDrops; an un-reset frame is reclaimed by an enclosing scope's
-        // reset — never a UAF since arena objects don't escape).
-        //
-        // Gate on whether THIS block directly declares an arena-eligible local, not
-        // merely on m->usesArena() (any arena local anywhere in the method). Arena
-        // allocations only ever happen at a declaration's initializer (see
-        // Method::arenaWalk), and a declaration is always a direct child of its
-        // enclosing block — so this scan is exact: a per-iteration arena local lives
-        // in the loop-body block and still gets its per-iteration reset, while a hot
-        // inner loop that allocates nothing pays zero. The old usesArena() gate
-        // wrapped EVERY block (incl. allocation-free inner loops) in a mark/reset
-        // CALL pair, a ~2.3x regression on integer-array code (e.g. fannkuch's
-        // perm/perm1/count swap loops).
+        // Bracket the body with an arena mark/reset so non-escaping owned locals
+        // are bump-reclaimed in O(1) at the closing `}`. Gated on a DIRECT
+        // arena-eligible declaration: gating on m->usesArena() cost ~2.3x.
         bool blockHasArenaAlloc = false;
         if (m && m->usesArena()) {
             for (auto& child : children) {
@@ -139,57 +108,20 @@ namespace cajeta {
                 arenaMark = builder->CreateCall(markFn, {}, "arena.mark");
             }
         }
-        // EITHER flag. `safepoints` exists so the Jupyter kernel can ask for
-        // statement boundaries WITHOUT the keep-all class-registry retention
-        // that `debugInfo` also implies (CompilerFlags::safepoints explains
-        // why). But debug info without safepoints is not a thing anyone
-        // wants — a debugger stops AT them — so `debugInfo` implies them
-        // here rather than only in `applyDebugInfo`.
-        //
-        // Gating on `safepoints` ALONE was a silent regression for the whole
-        // debugger: `CajetaJitHost` assigns `flags.debugInfo` directly rather
-        // than going through applyDebugInfo, so every JIT debug session
-        // emitted zero safepoints. Nothing caught it because
-        // `SafepointCodegenTests` lives in `cajeta_debug_test`, a second
-        // binary neither ctest nor cajeta_tests.sh runs. Deriving it at the
-        // USE site is what makes the two flags impossible to desync.
+        // EITHER flag: `safepoints` exists so statement boundaries can be had
+        // without debugInfo's registry retention, but debug info without them is
+        // useless — deriving it HERE is what keeps the two from desyncing.
         bool safepoints = module->getFlags().safepoints
                        || module->getFlags().debugInfo;
         bool lineInfo = module->getFlags().lineInfo;
-        // title-tracking §3.1.5 — checkpoint the move log: a block whose
-        // codegen ends in a return/throw never reaches the join, so the
-        // moves it introduced retract (`try { put(#key); return r; } ...
-        // put(#key)` — dynamically exclusive paths). A fallthrough block
-        // keeps them: moved on any joining path = moved after the join.
-        // break/continue emit plain branches and deliberately do NOT
-        // retract (their moves can reach post-loop code).
+        // Checkpoint the move log: a block ending in return/throw never reaches the
+        // join, so its moves retract, while a fallthrough block keeps them.
+        // break/continue emit plain branches and deliberately do NOT retract.
         auto linScope = module->getScopeStack().peek();
         size_t moveMark = linScope ? linScope->moveLogSize() : 0;
-        // Block-scoped NAMES. There is one Scope per method, so a local
-        // declared in here is putField'd into the same map that holds the
-        // method's parameters — permanently rebinding the name for the rest
-        // of the method. When the shadowed outer binding has a different type
-        // the result is malformed IR rather than a diagnostic: given a
-        // `float32[] v` parameter and a `float32 v` declared inside an `if`,
-        // a later `v[i] = ...` indexes the scalar, emitting a GEP/load whose
-        // base operand is a float. Archives are unverified bitcode, so that
-        // ships silently and only surfaces at instruction selection in the
-        // eventual --emit=exe ("Cannot select: f32 = truncate i64"), pointing
-        // at a function far from the declaration that caused it.
-        //
-        // Snapshot the prior binding of every name this block DIRECTLY
-        // declares and restore it at the closing brace. Nested blocks compose
-        // (each restores its own), and sibling blocks that reuse a name no
-        // longer leak into one another.
-        //
-        // Only names that ACTUALLY shadow something are tracked. A declaration
-        // that introduces a fresh name is left bound after the `}` exactly as
-        // before, because analyses that run past the method body look names up
-        // in this map: Method::destroyScope's launch-borrow gate (XPU-K02)
-        // resolves each pending borrow with containsField/getField to find its
-        // drop entry, so unbinding a block-local device buffer would silently
-        // skip the diagnostic. Shadowing is the whole defect — an unshadowed
-        // name has no prior binding to corrupt.
+        // Block-scoped NAMES: there is one Scope per method, so a local declared
+        // here would rebind the name for the rest of the method. Snapshot and
+        // restore ONLY shadowing names — analyses past the body look fresh ones up.
         vector<pair<string, FieldPtr>> shadowed;
         if (linScope) {
             for (auto& child : children) {
@@ -204,17 +136,9 @@ namespace cajeta {
                 }
             }
         }
-        // jupyter-kernel U3 (spec 4.2) — mark the cell's trailing expression,
-        // the candidate for `Out[N]`. Done HERE, at the AST, because the
-        // synthesizer splices token text before any type exists and so cannot
-        // tell `x + y;` (a value to display) from `xs.add(1);` (a statement).
-        // This side only says WHICH statement; ExpressionStatement, which has
-        // the resolved type, decides whether it produces a value at all.
-        //
-        // The candidate is the statement just before the entry's synthesized
-        // trailing `return 0;` — and only when synthesis actually appended
-        // one, since a cell ending in its own `return` has no trailing
-        // expression by definition.
+        // Mark the cell's trailing expression, the candidate for `Out[N]`. Done at
+        // the AST because the synthesizer splices token text before a type exists.
+        // The candidate is the statement before a SYNTHESIZED trailing `return 0;`.
         const AbstractSyntaxNode* resultCandidate = nullptr;
         if (module->isScriptUnit() && module->hasScriptSyntheticTail()
                 && m && m->getName() == scriptEntryName()
@@ -226,45 +150,25 @@ namespace cajeta {
         }
 
         for (auto child: children) {
-            // Stop emitting once the current BB has a terminator —
-            // anything after a return / throw / break / continue is
-            // dead code, and emitting into a terminated BB lands the
-            // instructions AFTER the terminator (invalid IR; LLVM
-            // verify rejects with "Terminator found in the middle of
-            // a basic block"). Hit when a test harness appends a
-            // fallback `return 0;` after a body that already returns,
-            // or when user code intentionally writes `return X;
-            // unused();` for documentation.
+            // Stop once the BB has a terminator: anything after a return/throw is
+            // dead code, and emitting into a terminated BB would land instructions
+            // after the terminator, which the verifier rejects.
             llvm::BasicBlock* insertBB = builder
                 ? builder->GetInsertBlock() : nullptr;
             if (insertBB && insertBB->hasTerminator()) break;
-            // U3: mark the current shadow frame's line at each statement
-            // boundary. BEFORE the safepoint, not after: a debugger stopped AT a
-            // safepoint reads the shadow stack to render the frame, and if the
-            // mark had not run yet the frame would still carry the PREVIOUS
-            // statement's line — `cjbreak F.cajeta:14` would stop and `cjstack`
-            // would report :13 (external-debug §5.1).
-            // script-units U5 — statements in a script module live in
-            // wrapper coordinates; translate to the HOST line for the
-            // line-info shadow stack, and stamp it on the module so an
-            // unlocated semantic error thrown by this statement can be
-            // located (remapScriptException reads it).
+            // Mark the shadow frame's line BEFORE the safepoint: a debugger stopped
+            // at one reads the shadow stack, and a later mark would render the
+            // PREVIOUS statement's line. A script unit marks in HOST coordinates.
             int markLine = child->getSourceLine();
             if (module->isScriptUnit()) {
                 markLine = module->mapScriptLine(markLine);
                 module->setScriptCurrentHostLine(markLine);
             } else {
-                // 9.2 — a generic's body is re-parsed from a synthetic snippet,
-                // so this token's line is a SNIPPET line. The safepoint above
-                // has always corrected it and this mark did not, which is why
-                // F7 into a generic landed correctly while its STACK TRACE and
-                // PROFILE SLICE named a line in the doc comment above the
-                // method. A script unit is never an instantiation, so the two
-                // remappings are alternatives rather than a composition.
+                // A generic's body is re-parsed from a snippet, so this token's
+                // line is a SNIPPET line; a script unit is never an instantiation.
                 markLine = dbg::fileLineFor(module, markLine);
             }
             if (lineInfo) dbg::emitLineMark(module, markLine);
-            // CP2: statement-boundary safepoint before each statement.
             if (safepoints) emitDebugSafepoint(module, child);
             if (resultCandidate && child.get() == resultCandidate) {
                 module->setScriptResultPending(true);
@@ -278,24 +182,17 @@ namespace cajeta {
                 ? bb->getTerminator() : nullptr;
             bool exited = term && (llvm::isa<llvm::ReturnInst>(term)
                                    || llvm::isa<llvm::UnreachableInst>(term));
-            // ThrowStatement ends its BB with `unreachable` then parks the
-            // insert point in a fresh predecessor-less `after_throw` BB (so
-            // trailing dead code still has a home). An empty, unreached,
-            // non-entry insert BB at block end is that same "this path never
-            // joins" signal.
+            // ThrowStatement ends its BB with `unreachable` and parks the insert
+            // point in a fresh empty BB — the same "this path never joins" signal.
             if (!exited && bb && term == nullptr && bb->empty()
                     && bb->hasNPredecessors(0)
                     && bb != &bb->getParent()->getEntryBlock()) {
                 exited = true;
             }
             if (exited) {
-                // script-units U4 — inside the script entry the marks feed
-                // the SESSION write-back: a `return` terminates the unit,
-                // not a join, so retracting would erase the very facts a
-                // later unit's compile must see (spec §4.2). Keep them —
-                // conservative in the safe direction (a moved-looking
-                // binding errors on a cross-unit read; a retracted one
-                // would read dangling).
+                // Inside the script entry these marks feed the SESSION write-back:
+                // a `return` terminates the unit rather than joining it, so
+                // retracting would erase facts a later unit's compile must see.
                 bool scriptEntry = false;
                 if (module->isScriptUnit()) {
                     auto cm = module->getCurrentMethod();
@@ -308,10 +205,7 @@ namespace cajeta {
         }
 
         if (m) {
-            // GetInsertBlock can be null in degenerate cases; bail out
-            // safely. Terminator present means a return/throw already
-            // exited this block — no further IR may be emitted at the
-            // current insert point.
+            // A terminator means a return/throw already left; emit nothing more.
             llvm::BasicBlock* insertBB = builder ? builder->GetInsertBlock() : nullptr;
             if (insertBB && !insertBB->hasTerminator()) {
                 m->emitTopFrameDrops(module);
@@ -325,10 +219,8 @@ namespace cajeta {
             }
             m->popDropFrame();
         }
-        // Undo this block's name bindings last, after the drop/arena teardown
-        // above has finished consulting the scope. Restored in reverse so a
-        // block that declares the same name twice unwinds to the outermost
-        // prior binding.
+        // Undo this block's bindings last, once the drop/arena teardown has
+        // finished consulting the scope; reversed, so a repeated name unwinds fully.
         if (linScope) {
             for (auto it = shadowed.rbegin(); it != shadowed.rend(); ++it) {
                 linScope->restoreBinding(it->first, it->second);

@@ -1,14 +1,5 @@
-//
-// transform-intrinsics Unit 3 — reverse-mode autodiff over a forward DAG, emitted
-// as Tier-A cajeta source (spec §5, §8.1). `Grad(f)` builds the DAG from f's AST,
-// calls reverseModeGrad to compose the VJP rules (VjpRegistry) in reverse into a
-// grad source expression, and emitBackwardSource assembles the backward helper
-// class that returns `GradResult<V,G>{value, grads}`.
-//
-// The forward source of each subexpression is INLINED (the ops are pure), so no
-// SSA temporaries are needed: `Grad((float32 x) -> x*x)` synthesizes
-// `return stack GradResult<float32,float32>(x * x, (1.0f) * x + (1.0f) * x);`.
-//
+// Reverse-mode autodiff: a forward DAG built from f's AST, VJP rules composed in
+// reverse, and a backward helper class emitted as Tier-A cajeta source.
 #pragma once
 
 #include <functional>
@@ -20,14 +11,8 @@ namespace cajeta {
     class Expression;
     namespace transform {
 
-        // U4 — how a call to a user function resolves for the DAG walk. The
-        // resolver (supplied by the Grad recognizer, which has the enclosing
-        // class) maps a call name+arity to either a differentiate-through inline
-        // target (the callee's single return expression + its param names) or a
-        // @NoGrad stop-gradient (the call becomes a constant leaf). `found` false
-        // means "not a resolvable user helper" — the caller then errors as an
-        // unsupported body. The resolver stays in the compiler core so this
-        // transform lib carries no CajetaClass/Method dependency.
+        // How a call to a user function resolves for the DAG walk: an inline
+        // target, a @NoGrad constant leaf, or `found` false, which is an error.
         struct InlineTarget {
             bool found = false;
             bool noGrad = false;             // @NoGrad -> constant leaf
@@ -37,19 +22,13 @@ namespace cajeta {
             std::vector<std::string> paramNames;   // callee params (inline case)
             Expression* body = nullptr;      // callee's single return expr (inline case)
         };
-        // `recv` is the written receiver identifier ("" for a bare same-class
-        // call, "Losses" for a qualified static like `Losses.mse(...)`) — the
-        // resolver maps qualified calls to OTHER classes' static single-return
-        // helpers so stdlib loss functions differentiate through (nn U7).
+        // `recv` is the written receiver ("" for a bare same-class call).
         using CallResolver =
             std::function<InlineTarget(const std::string& recv,
                                        const std::string& name, size_t arity)>;
 
-        // A node in f's forward computation DAG. Nodes are in topological order;
-        // the last node is the output. A leaf carries `valueExpr` = the input
-        // parameter name (isInputParam) or a constant literal; a primitive carries
-        // the VJP primitive id and indices of its operand nodes, and `valueExpr` =
-        // the inlined forward source of the whole subexpression.
+        // A node in f's forward DAG, topologically ordered with back() the output;
+        // `valueExpr` is a leaf's name/literal or a primitive's inlined forward source.
         struct AdNode {
             std::string valueExpr;
             bool isInputParam = false;
@@ -58,14 +37,9 @@ namespace cajeta {
             bool isTensor = false;          // rank tag: this node's value is a tensor
         };
 
-        // Build f's forward DAG from the lambda body expression (nodes in
-        // topological order, back() = output). Input-param leaves are deduped so a
-        // reused input accumulates its cotangents. v1 supports `+ - *` and unary `-`
-        // over scalar parameters, and `Tensor.mul/add/sub/matmul/sum` over tensor
-        // parameters; any other construct returns false and sets *err. `paramIsTensor`
-        // seeds the rank of each input leaf per parameter name (a `Tensor.<op>`
-        // node's rank is structural: elementwise ops stay tensor, `sum` reduces to
-        // scalar), so a multi-arg f can mix scalar and tensor parameters.
+        // Build f's forward DAG from the lambda body, false and *err on any
+        // unsupported construct. Input-param leaves are DEDUPED so a reused input
+        // accumulates its cotangents; `paramIsTensor` seeds each leaf's rank.
         bool buildDag(Expression* body,
                       const std::vector<std::string>& paramNames,
                       const std::map<std::string, bool>& paramIsTensor,
@@ -74,27 +48,17 @@ namespace cajeta {
                       std::map<std::string, size_t>& outParamNodeIndex,
                       std::string* err);
 
-        // Reverse-mode over `nodes` (back() = output): seed the output cotangent to
-        // 1.0f and compose VjpRegistry rules in reverse, returning the grad SOURCE
-        // expression accumulated at `paramIndex`. A primitive with no registered
-        // rule returns "" and sets *missingPrimitive to its id (the §5.3 signal).
-        // `elem` is the tensor element-type spelling (e.g. "float32"); rules and
-        // cotangent accumulation over tensor-tagged nodes are emitted over it.
+        // Compose VjpRegistry rules in reverse from a seed cotangent of 1.0f,
+        // returning the grad source expression accumulated at `paramIndex` and
+        // emitted over element type `elem`; "" and *missingPrimitive if unruled.
         std::string reverseModeGrad(const std::vector<AdNode>& nodes,
                                     size_t paramIndex,
                                     const std::string& elem,
                                     std::string* missingPrimitive);
 
-        // Assemble the Tier-A backward helper-class source. The class holds one
-        // static `make()` that RETURNS the backward as a lambda taking ALL of f's
-        // params (so the closure keeps f's exact arity) but grading only the
-        // selected arg:
-        //   static (P0,P1) -> GradResult<V,G> make() {
-        //       return (P0 p0, P1 p1) -> stack GradResult<V,G>(outputValueExpr, gradExpr);
-        //   }
-        // Returning a lambda reuses the existing closure-record + value-type-sret
-        // machinery — `Grad(f)` recognizer just parse-extracts `make`, codegens it,
-        // and emits a call to it to obtain the closure value.
+        // Assemble the backward helper-class source: one static `make()` returning
+        // the backward as a lambda over ALL of f's params (keeping its arity) but
+        // grading only the selected arg, so existing closure codegen is reused.
         std::string emitBackwardSource(const std::string& className,
                                        const std::vector<std::string>& paramNames,
                                        const std::vector<std::string>& paramTypeNames,
@@ -104,11 +68,8 @@ namespace cajeta {
                                        const std::string& gradExpr,
                                        bool importTensor = false);
 
-        // nucleo-nn-optim U1 — the GradAll<K> variant: one closure returning
-        // GradResult<V, GT[]> with grads for the leading K args in arg order.
-        // The array is built by a sibling static (`grads`) because the lambda
-        // body is a single expression; both methods are codegen'd by the
-        // synthesis seam. `gradTypeName` is the PER-GRAD type (all K share it).
+        // The GradAll<K> variant: one closure returning GradResult<V, GT[]> for the
+        // leading K args; the array is built by a sibling static, as the body is one expression.
         std::string emitGradAllSource(const std::string& className,
                                       const std::vector<std::string>& paramNames,
                                       const std::vector<std::string>& paramTypeNames,

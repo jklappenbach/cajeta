@@ -13,12 +13,9 @@
 
 namespace cajeta {
 
-    // The file a located diagnostic belongs to. `activeModule` is set only
-    // inside synthesis / template-instantiation re-entry (where it names the
-    // TRIGGER's file, which is what such an error must be attributed to), so
-    // it wins. Ordinary codegen leaves it null and sets currentCodegenModule
-    // instead (Method.cpp's CodegenFrame) — without that fallback every
-    // codegen-time located error reports an empty file.
+    // The file a located diagnostic belongs to. The active module wins because it
+    // is set only in synthesis re-entry, where it names the TRIGGER's file; without
+    // the codegen fallback every codegen-time located error reports no file at all.
     static std::string diagnosticFile() {
         if (auto m = CajetaModule::getActiveModule()) return m->getSourcePath();
         if (auto m = CajetaModule::getCurrentCodegenModule()) return m->getSourcePath();
@@ -84,7 +81,6 @@ namespace cajeta {
             return o;
         }
 
-        // Emit a "key": value pair for a string field, or JSON null when empty.
         void strOrNull(std::string& out, const char* key, const std::string& v) {
             out += "\"";
             out += key;
@@ -93,12 +89,7 @@ namespace cajeta {
             else { out += "\""; out += jsonEscape(v); out += "\""; }
         }
 
-        // The one place a record is opened (compiler-jsonl 2.1.1): every record
-        // leads with its `kind`, so a consumer dispatches on the discriminator
-        // instead of inferring the type from which payload fields happen to be
-        // present. Callers append their own fields and close with `}`.
-        // Per-record provenance. Defaults to the compiler; the build tool
-        // swings it per plugin while ingesting that plugin's output.
+        // Per-record provenance; the build tool swings it per ingested plugin.
         std::string g_sourceName;      // lazily defaulted, see jsonSourceName
         std::string g_sourceVersion;
 
@@ -106,16 +97,13 @@ namespace cajeta {
             std::string o = "{\"kind\":\"";
             o += kind;
             o += "\",";
-            // Stamped HERE, at the one place a record is opened, so a new
-            // record kind cannot be added without provenance by forgetting.
+            // Stamped at the one place a record opens, so no kind can forget it.
             strOrNull(o, "source", jsonSourceName());        o += ",";
             strOrNull(o, "sourceVersion", jsonSourceVersion()); o += ",";
             return o;
         }
 
-        // The one place a record is written: one line, one flush, so a consumer
-        // reading the pipe sees each record when it happens rather than at
-        // process exit (spec 1.4.3).
+        // One line, one flush: a consumer reads each record as it happens.
         void writeRecord(std::string& o) {
             o += "}\n";
             std::cerr << o << std::flush;
@@ -128,9 +116,7 @@ namespace cajeta {
                             const std::string& file,
                             int line,
                             int column) {
-        // `kind` leads; every field that was here before is unchanged, in the
-        // same order, with the same meaning (compiler-jsonl 1.4.2 — a new
-        // compiler must not break an installed plugin).
+        // Field order and meaning are frozen: a new compiler must not break a plugin.
         std::string o = openRecord("diagnostic");
         strOrNull(o, "severity", severity); o += ",";
         strOrNull(o, "code", code);         o += ",";
@@ -149,13 +135,7 @@ namespace cajeta {
     bool jsonProgressEnabled() { return g_jsonProgress; }
 
     namespace {
-        // Build provenance, not an argv-derived value: the producer identifies
-        // the compiler that wrote the stream, so it must be the same whether
-        // the emitter is the `cajeta` binary or anything else linking this
-        // library (the lint reuse tests run the driver IN-PROCESS and compare
-        // byte-for-byte against a fresh subprocess — a producer that depended
-        // on main() having run made those two disagree). CAJETA_VERSION is a
-        // global compile definition, so it is available here.
+        // Build provenance, never argv-derived: in-process and subprocess must match.
 #ifndef CAJETA_VERSION
 #define CAJETA_VERSION "0.0.0-unknown"
 #endif
@@ -168,8 +148,6 @@ namespace cajeta {
     const std::string& jsonProducer() { return g_jsonProducer; }
 
     // Per-RECORD provenance, as distinct from the per-STREAM producer above.
-    // Defaulted lazily from the same build-stamped version, so an in-process
-    // stream names the same source as one written by the `cajeta` binary.
     const std::string& jsonSourceName() {
         if (g_sourceName.empty()) g_sourceName = "cajeta";
         return g_sourceName;
@@ -192,11 +170,8 @@ namespace cajeta {
     }
 
     bool resolveDiagFormatFromArgv(int argc, const char* argv[]) {
-        // Only the `--diag-format=<value>` form exists (main.cpp's `match`
-        // takes no space-separated variant), so an exact token compare is the
-        // whole grammar. Text stays the default: anything else, including a
-        // malformed value, leaves the gate alone for the verb's own parser to
-        // reject with a usage message.
+        // Only the `--diag-format=<value>` form exists, so an exact token compare is
+        // the whole grammar; anything else leaves the gate at its text default.
         bool json = false;
         for (int i = 1; i < argc; ++i) {
             const std::string a = argv[i];
@@ -218,12 +193,8 @@ namespace cajeta {
     }
 
     void emitStreamRecordOnce() {
-        // At most once per process: for a verb whose whole run is ONE stream
-        // (a compile, a jit-run). The lint driver uses the unlatched form
-        // instead — each lint response is its own stream, and the warm server
-        // replays a payload that must match a fresh one-shot process byte for
-        // byte (lint-server-spec 1.4.1), which a process-lifetime latch would
-        // break from the second request on.
+        // For a verb whose whole run is ONE stream. The lint driver takes the
+        // unlatched form: a latch would drop its record from request two on.
         static bool emitted = false;
         if (emitted) return;
         emitted = true;
@@ -254,8 +225,7 @@ namespace cajeta {
 
     void logLine(const std::string& level, const std::string& text) {
         if (jsonProgressEnabled()) {
-            // Strip the trailing newline: it belongs to the line-oriented text
-            // form, not to the message a consumer renders.
+            // The trailing newline belongs to the text form, not to the message.
             std::string msg = text;
             while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r'))
                 msg.pop_back();
@@ -307,16 +277,12 @@ namespace cajeta {
         if (!active) return;
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - startedAt).count();
-        // Destructor may run while an exception (a fatal diagnostic) unwinds —
-        // the phase still gets closed, so the IDE never leaves a phase node
-        // spinning forever. emitJsonProgress does not throw.
+        // Runs during unwind too, so the IDE never leaves a phase spinning.
         emitJsonProgress(phase, "finish", label, static_cast<long long>(ms));
     }
 
     int levenshteinDistance(const std::string& a, const std::string& b) {
-        // Two-row rolling DP keeps space at O(min(|a|, |b|)). We swap
-        // so the "inner" string is the shorter one, since the row width
-        // is |b| + 1.
+        // Two-row rolling DP; the swap keeps the row width at min(|a|, |b|) + 1.
         if (a.size() < b.size()) {
             return levenshteinDistance(b, a);
         }
@@ -346,11 +312,7 @@ namespace cajeta {
             const std::vector<std::string>& candidates,
             int maxDistance,
             std::size_t maxSuggestions) {
-        // Score every candidate. Skip exact matches — there's nothing
-        // to suggest if the name already equals the target (that's
-        // not a typo, it's a definition-order or scoping issue and
-        // the caller should not have surfaced "did you mean" in
-        // the first place).
+        // An exact match is not a typo, so it is no suggestion.
         std::vector<std::pair<int, std::string>> scored;
         scored.reserve(candidates.size());
         for (auto& c : candidates) {
@@ -360,9 +322,7 @@ namespace cajeta {
                 scored.emplace_back(d, c);
             }
         }
-        // Sort by distance ascending, then by name ascending so ties
-        // are deterministic across runs (load-bearing for the test
-        // assertions on exact error strings).
+        // Name breaks a distance tie, so the suggestion list is deterministic.
         std::sort(scored.begin(), scored.end(),
             [](const std::pair<int, std::string>& l,
                const std::pair<int, std::string>& r) {

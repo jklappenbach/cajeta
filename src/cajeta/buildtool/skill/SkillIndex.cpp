@@ -1,7 +1,4 @@
-//
-// Per-package skill index build / serialize / query / candidate generation.
-// See SkillIndex.h and specs/archive/skill-discovery-spec.md §2.3, §3.
-//
+// Per-package skill index build / serialize / query / candidate generation. See SkillIndex.h.
 #include "cajeta/buildtool/skill/SkillIndex.h"
 
 #include <llvm/ADT/Twine.h>
@@ -22,8 +19,7 @@ namespace cajeta::buildtool::skill {
                 llvm::inconvertibleErrorCode(), (sourceName + ": " + msg).str());
         }
 
-        // Lowercased trigrams of `text` (whole string when shorter than 3). Used
-        // only for candidate prefiltering, so case-folding widens the net.
+        // Lowercased trigrams of `text`; a prefilter only, so case-folding just widens the net.
         std::vector<std::string> trigramsOf(llvm::StringRef text) {
             std::string s;
             s.reserve(text.size());
@@ -44,9 +40,7 @@ namespace cajeta::buildtool::skill {
             return out;
         }
 
-        // True iff `key` is a hierarchical descendant of `name`: it extends `name`
-        // at a segment boundary ('/' between packages/classes, '.' before a
-        // method). E.g. cajeta/torch/nn ⊃ cajeta/torch/nn/Linear ⊃ …/Linear.fwd.
+        // True iff `key` is a hierarchical descendant of `name`, extending it at a segment boundary.
         bool isDescendant(llvm::StringRef key, llvm::StringRef name) {
             if (key.size() <= name.size() || !key.starts_with(name)) {
                 return false;
@@ -68,11 +62,9 @@ namespace cajeta::buildtool::skill {
     void SkillIndex::buildSearchStructures() {
         keys_.clear();
         trigrams_.clear();
-        // One key per canonical name (resolving to its ids)…
         for (const auto& [name, ids] : names_) {
             keys_.push_back({name, MatchSource::Name, ids});
         }
-        // …and one per non-empty title (resolving to its single skill id).
         for (const auto& [id, entry] : skills_) {
             if (!entry.title.empty()) {
                 keys_.push_back({entry.title, MatchSource::Title, {id}});
@@ -97,7 +89,6 @@ namespace cajeta::buildtool::skill {
                 idx.names_[name].push_back(d.id);
             }
         }
-        // Deterministic, deduped id lists per name.
         for (auto& [name, ids] : idx.names_) {
             std::sort(ids.begin(), ids.end());
             ids.erase(std::unique(ids.begin(), ids.end()), ids.end());

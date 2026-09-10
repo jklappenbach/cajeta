@@ -1,6 +1,4 @@
-//
 // Created by James Klappenbach on 11/14/22.
-//
 
 #pragma once
 
@@ -19,16 +17,10 @@ namespace cajeta {
         string name;
         CajetaTypePtr type;
         int order;
-        // Optional declared initializer (`public static int32 base = 100;`,
-        // or instance-field defaults once those land). For static
-        // properties, evaluated at class-vtable build time and threaded
-        // into the LLVM global's initializer. For instance fields, kept
-        // for future <init> emission. nullptr when no initializer.
+        // Optional declared initializer; for a static property it is evaluated at
+        // class-vtable build time into the LLVM global's initializer. Null when none.
         AbstractSyntaxNodePtr initializer;
-        // Declaration name position (1-based line, 0-based col), taken from the
-        // VariableDeclarator AST node — which, unlike CajetaClass and Method, is
-        // an AbstractSyntaxNode and already carries it. 0 = synthesized.
-        // Consumed by the xref export (ide-symbol-index §2).
+        // Declaration name position from the VariableDeclarator node; 0 = synthesized.
         int declLine = 0;
         int declColumn = 0;
     public:
@@ -85,10 +77,8 @@ namespace cajeta {
         AbstractSyntaxNodePtr getInitializer() const { return initializer; }
         void setInitializer(AbstractSyntaxNodePtr init) { initializer = init; }
 
-        // Which type parameter a scalar `P`-typed field came from (`T value`
-        // on Optional), or -1. Monomorphization loses the fact; the drop walk
-        // needs it to pick the bit-guarded T-origin branch. Set by
-        // TemplateInstantiator's post-walk linkage pass.
+        // Which type parameter a scalar `P`-typed field came from, or -1. Monomorphization
+        // loses the fact, and the drop walk needs it for the bit-guarded T-origin branch.
         int originTypeParamIndex = -1;
 
         int getOriginTypeParamIndex() const { return originTypeParamIndex; }

@@ -32,7 +32,7 @@ namespace cajeta::buildtool {
             return true;
         }
 
-        // Strip the "sha256:" prefix the sha256Hex helper adds.
+        // Strips the "sha256:" prefix the sha256Hex helper adds.
         std::string bareHex(std::string s) {
             const std::string prefix = "sha256:";
             if (s.compare(0, prefix.size(), prefix) == 0) {
@@ -41,15 +41,12 @@ namespace cajeta::buildtool {
             return s;
         }
 
-        // Pull import dotted-names out of `source`'s preamble. Same
-        // shape as ImportExtractor.cajeta in the security-lint plugin
-        // but a tiny C++ version — we don't depend on the plugin.
+        // Pulls import dotted-names out of `source`'s preamble.
         std::vector<std::string> extractImports(const std::string& source) {
             std::vector<std::string> out;
             std::stringstream ss(source);
             std::string line;
             while (std::getline(ss, line)) {
-                // Trim leading whitespace.
                 size_t i = 0;
                 while (i < line.size() &&
                        std::isspace(static_cast<unsigned char>(line[i]))) {
@@ -59,11 +56,9 @@ namespace cajeta::buildtool {
                 if (line[i] == '/' || line[i] == '*') continue;  // comment
                 if (line.compare(i, 8, "package ") == 0) continue;
                 if (line.compare(i, 7, "import ") != 0) {
-                    // First substantive non-import line — preamble done.
                     break;
                 }
                 size_t start = i + 7;
-                // Strip trailing `;` and any whitespace.
                 size_t end = line.size();
                 while (end > start &&
                        (std::isspace(static_cast<unsigned char>(line[end - 1])) ||
@@ -72,7 +67,6 @@ namespace cajeta::buildtool {
                 }
                 if (end <= start) continue;
                 std::string body = line.substr(start, end - start);
-                // Trim trailing `.*` for wildcard imports.
                 if (body.size() >= 2 &&
                     body.compare(body.size() - 2, 2, ".*") == 0) {
                     body.erase(body.size() - 2);
@@ -103,7 +97,6 @@ namespace cajeta::buildtool {
 
     std::optional<std::string> SourceDigestRegistry::resolveImport(
         const std::string& dotted) const {
-        // dotted → relative path with `/` separators + `.cajeta`.
         std::string relPath = dotted;
         std::replace(relPath.begin(), relPath.end(), '.', '/');
         relPath += ".cajeta";
@@ -126,13 +119,11 @@ namespace cajeta::buildtool {
 
     llvm::Expected<std::string> SourceDigestRegistry::digestRec(
         const std::string& sourcePath) {
-        // Memo hit.
         auto cached = transitiveCache_.find(sourcePath);
         if (cached != transitiveCache_.end()) return cached->second;
 
-        // Cycle: leaf-only digest. Cycle members get the file-only
-        // hash; any source change inside the cycle still busts the
-        // dependents because their digest folds in the cycle members.
+        // Cycle: leaf-only digest. A source change inside the cycle still busts the
+        // dependents, whose digest folds in the cycle members.
         if (visiting_.count(sourcePath)) {
             return leafDigest(sourcePath);
         }
@@ -145,10 +136,8 @@ namespace cajeta::buildtool {
         }
         auto imports = extractImports(bytes);
 
-        // Resolve each import + recursively digest. Unresolved imports
-        // (stdlib, deps) contribute the dotted name itself — gives
-        // some keying signal without forcing us to model the
-        // resolved dep graph here.
+        // Unresolved imports (stdlib, deps) contribute the dotted name itself, which
+        // keys the digest without modelling the resolved dependency graph here.
         std::vector<std::string> contributions;
         for (const auto& imp : imports) {
             auto resolved = resolveImport(imp);

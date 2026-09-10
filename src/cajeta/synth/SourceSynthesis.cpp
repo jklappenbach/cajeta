@@ -1,6 +1,4 @@
-//
 // Source-synthesis facility (núcleo Layer-1a). See SourceSynthesis.h.
-//
 #include "cajeta/synth/SourceSynthesis.h"
 #include "cajeta/synth/SourceSynthesisParse.h"
 
@@ -25,8 +23,7 @@ namespace cajeta::synth {
     }
 
     CajetaParser::ClassBodyContext* parseClassBodyFragment(const std::string& src) {
-        // Heap-allocated + intentionally leaked: the parse tree outlives this
-        // call (later codegen derefs its token pointers). See header.
+        // Heap-allocated and intentionally leaked: the parse tree outlives this call, and later codegen derefs its token pointers.
         auto* input = new antlr4::ANTLRInputStream(src);
         auto* lexer = new CajetaLexer(input);
         auto* tokens = new antlr4::CommonTokenStream(lexer);
@@ -54,10 +51,7 @@ namespace cajeta::synth {
     }
 
     namespace {
-        // Map any non-identifier character to '_' so the derived name is a legal
-        // identifier. Deterministic and injective enough for our inputs: the
-        // separators between prefix/trigger/args keep distinct component lists
-        // from aliasing (arity is encoded by the number of separators).
+        // Maps any non-identifier character to '_'; the component separators keep distinct lists from aliasing.
         std::string sanitize(const std::string& s) {
             std::string out;
             out.reserve(s.size());
@@ -73,8 +67,7 @@ namespace cajeta::synth {
                                 const std::string& triggerCanonical,
                                 const std::vector<std::string>& argCanonicals) {
         std::string name = "__" + sanitize(prefix) + "__" + sanitize(triggerCanonical);
-        // Encode arity explicitly so ([]) and ([a,b]) that sanitize to the same
-        // concatenation stay distinct, and so a trailing empty arg can't alias.
+        // Arity is encoded explicitly, so ([]) and ([a,b]) cannot sanitize to the same name.
         name += "__" + std::to_string(argCanonicals.size());
         for (const auto& a : argCanonicals) {
             name += "_" + sanitize(a);

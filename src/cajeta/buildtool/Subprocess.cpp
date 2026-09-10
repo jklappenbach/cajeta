@@ -18,14 +18,10 @@ namespace cajeta {
 namespace buildtool {
 
 #if !defined(_WIN32)
-// ---------------------------------------------------------------------------
-// POSIX backend: fork + exec + waitpid. Consolidates the per-action pipe
-// plumbing that used to be copy-pasted across the build-tool actions.
-// ---------------------------------------------------------------------------
+// --- POSIX backend: fork + exec + waitpid ---------------------------------
 namespace {
 
-// Write the whole buffer to fd, restarting on EINTR / short writes. Returns
-// false on a hard error.
+// Write the whole buffer to fd, restarting on EINTR and short writes; false on error.
 bool writeAll(int fd, const std::string& data) {
     size_t off = 0;
     while (off < data.size()) {
@@ -92,7 +88,6 @@ SubprocessResult runSubprocess(const SubprocessOptions& opt) {
         return r;
     }
 
-    // argv as mutable C strings.
     std::vector<std::string> argStore = opt.argv;
     std::vector<char*> argv;
     argv.reserve(argStore.size() + 1);
@@ -117,11 +112,9 @@ SubprocessResult runSubprocess(const SubprocessOptions& opt) {
     }
 
     if (pid == 0) {
-        // Child. Wire captured streams; leave the rest inherited.
         if (capStdin) ::dup2(inPipe[0], STDIN_FILENO);
         if (capOut)   ::dup2(outPipe[1], STDOUT_FILENO);
         if (capErr)   ::dup2(errPipe[1], STDERR_FILENO);
-        // Close every pipe fd in the child (the dups above kept the std fds).
         ::close(inPipe[0]);  ::close(inPipe[1]);
         ::close(outPipe[0]); ::close(outPipe[1]);
         ::close(errPipe[0]); ::close(errPipe[1]);
@@ -135,9 +128,8 @@ SubprocessResult runSubprocess(const SubprocessOptions& opt) {
             }
         }
 
-        // Swap in the replacement environment (if any) and exec. Setting the
-        // global `environ` before execvp is portable across glibc and macOS,
-        // where execvpe is unavailable.
+        // Setting the global `environ` before execvp is portable across glibc and
+        // macOS, where execvpe is unavailable.
         if (haveEnv) environ = envp.data();
         ::execvp(argv[0], argv.data());
 
@@ -147,7 +139,6 @@ SubprocessResult runSubprocess(const SubprocessOptions& opt) {
         _exit(127);
     }
 
-    // Parent. Close child-side ends.
     closeFd(inPipe[0]);
     closeFd(outPipe[1]);
     closeFd(errPipe[1]);
@@ -166,7 +157,6 @@ SubprocessResult runSubprocess(const SubprocessOptions& opt) {
         pid_t w = ::waitpid(pid, &status, 0);
         if (w < 0) {
             if (errno == EINTR) continue;
-            // Already launched; report the wait failure but keep launched=true.
             r.error = std::string("waitpid: ") + std::strerror(errno);
             return r;
         }
@@ -184,15 +174,10 @@ SubprocessResult runSubprocess(const SubprocessOptions& opt) {
 }
 
 #else
-// ---------------------------------------------------------------------------
-// Windows backend: CreateProcess + anonymous pipes. No fork; the child's stdio
-// is wired through STARTUPINFO handles.
-// ---------------------------------------------------------------------------
+// --- Windows backend: CreateProcess + anonymous pipes ---------------------
 namespace {
 
-// Quote one argument per the MSVC C-runtime command-line parsing rules so the
-// child reconstructs argv exactly. (Backslashes only matter immediately before
-// a quote; an arg with no spaces/quotes is passed verbatim.)
+// Quote one argument per the MSVC C-runtime parsing rules so the child rebuilds argv.
 void appendQuoted(std::string& cmd, const std::string& arg) {
     const bool needQuotes = arg.empty() ||
         arg.find_first_of(" \t\n\v\"") != std::string::npos;
@@ -224,9 +209,7 @@ std::string buildCommandLine(const std::vector<std::string>& argv) {
     return cmd;
 }
 
-// Resolve argv[0] to a concrete executable path. If it already names an
-// existing file, use it as-is; otherwise search PATH with a default .exe
-// extension (mirrors execvp's PATH lookup for bare names like "curl").
+// Resolve argv[0] to an executable path: as-is if it names a file, else a PATH search.
 std::string resolveExecutable(const std::string& prog) {
     DWORD attrs = ::GetFileAttributesA(prog.c_str());
     if (attrs != INVALID_FILE_ATTRIBUTES &&
@@ -248,12 +231,7 @@ std::string msys2Root() {
     return "C:\\msys64";
 }
 
-// Windows CreateProcess can't launch a "#!"-script directly. Peek at `path`;
-// if it begins with a shebang, return the Windows interpreter to run it with
-// (the script then becomes the interpreter's first argument). Returns "" when
-// there is no shebang. POSIX interpreters map onto the MSYS2 shells the build
-// already depends on; this lets the build tool run shell-script plugins, test
-// binaries, and exec actions on Windows just as it does on POSIX.
+// The interpreter for a "#!"-script CreateProcess cannot launch; "" if there is none.
 std::string shebangInterpreter(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return "";
@@ -263,7 +241,6 @@ std::string shebangInterpreter(const std::string& path) {
     std::string line;
     std::getline(in, line);
     if (!line.empty() && line.back() == '\r') line.pop_back();
-    // line is the rest of the shebang, e.g. "/bin/sh" or "/usr/bin/env bash".
     auto has = [&](const char* needle) {
         return line.find(needle) != std::string::npos;
     };
@@ -275,8 +252,7 @@ std::string shebangInterpreter(const std::string& path) {
     return root + "\\usr\\bin\\sh.exe";  // default to sh
 }
 
-// Convert a Windows path to forward slashes — the MSYS2 shells accept this form
-// for a script argument, whereas backslashes can be read as escapes.
+// Convert a Windows path to forward slashes; MSYS2 shells read backslashes as escapes.
 std::string toForwardSlashes(std::string s) {
     for (char& c : s) if (c == '\\') c = '/';
     return s;
@@ -290,10 +266,7 @@ std::string buildEnvBlock(const std::vector<std::string>& env) {
     return block;
 }
 
-// A std handle to hand the child for a stream we are NOT capturing. Falls back
-// to NUL when the parent has no valid handle (e.g. a detached process). Sets
-// `created` when the returned handle is one we own and must close afterwards
-// (the NUL fallback); a real std handle is left for the parent to keep using.
+// A std handle for an uncaptured stream, NUL if the parent has none; `created` = we own it.
 HANDLE inheritedStdHandle(DWORD which, bool& created) {
     created = false;
     HANDLE h = ::GetStdHandle(which);
@@ -338,9 +311,8 @@ SubprocessResult runSubprocess(const SubprocessOptions& opt) {
 
     auto fail = [&](const std::string& msg) {
         auto closeH = [](HANDLE h) { if (h && h != INVALID_HANDLE_VALUE) ::CloseHandle(h); };
-        // Close only handles we own: pipe ends we created, and the NUL
-        // fallbacks. NEVER an inherited real std handle (closing the process's
-        // own stdout/stderr/stdin corrupts it and crashes later output).
+        // NEVER close an inherited real std handle: that corrupts the process's own
+        // stdout/stderr/stdin and crashes later output.
         if (opt.stdinData) { closeH(inRd); closeH(inWr); }
         else if (nulIn)    { closeH(inRd); }
         if (opt.outData)   { closeH(outRd); closeH(outWr); }
@@ -351,10 +323,7 @@ SubprocessResult runSubprocess(const SubprocessOptions& opt) {
         return r;
     };
 
-    // Create pipes only for the streams we drive; for the rest, inherit the
-    // parent's std handle. The parent-side end of each pipe is marked
-    // non-inheritable so the child cannot keep it open (which would wedge the
-    // EOF the parent waits for).
+    // Parent-side pipe ends are non-inheritable, or the child wedges the EOF we wait for.
     if (opt.stdinData) {
         if (!::CreatePipe(&inRd, &inWr, &sa, 0))
             return fail("CreatePipe(stdin) failed");
@@ -378,8 +347,6 @@ SubprocessResult runSubprocess(const SubprocessOptions& opt) {
     }
 
     std::string exe = resolveExecutable(opt.argv[0]);
-    // Shebang emulation: if the target is a "#!"-script, run it through the
-    // mapped interpreter (the script becomes the interpreter's first arg).
     std::vector<std::string> launchArgv = opt.argv;
     std::string interp = shebangInterpreter(exe);
     if (!interp.empty()) {
@@ -421,10 +388,7 @@ SubprocessResult runSubprocess(const SubprocessOptions& opt) {
     }
     r.launched = true;
 
-    // Release the handles the child now owns its own copy of, so the parent
-    // doesn't hold the write/read end that EOF depends on. For captured streams
-    // that's the child-side pipe end; for inherited streams it's only the NUL
-    // fallback we created (a real std handle stays open for the parent's use).
+    // Drop the ends the child now has its own copy of, since EOF depends on them.
     auto closeIf = [](HANDLE& h) { if (h && h != INVALID_HANDLE_VALUE) { ::CloseHandle(h); h = nullptr; } };
     if (opt.stdinData)   closeIf(inRd);   // child's stdin read end
     else if (nulIn)      closeIf(inRd);   // NUL fallback we own

@@ -20,8 +20,7 @@ namespace cajeta {
                  CajetaType::of("void"), parent),
           fields(std::move(fields)) {
         this->parent = parent;
-        // FormalParameter setup deferred to initParameters() so we can
-        // call shared_from_this() to wire each param's parent.
+        // Deferred: shared_from_this() needs the owning shared_ptr to exist.
     }
 
     void SynthesizedConstructorMethod::initParameters() {
@@ -36,18 +35,15 @@ namespace cajeta {
 
     void SynthesizedConstructorMethod::generateCode() {
         auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
-        // Signature post-prototype: (this, field1, field2, ...) -> void.
-        // arg(0) is this; arg(i+1) is fields[i]'s value.
+        // Signature: (this, field1, field2, ...) -> void, so arg(0) is `this`
+        // and arg(i+1) carries fields[i]'s value.
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
 
         llvm::Value* thisPtr = llvmFunction->getArg(0);
 
-        // First: zero-initialize EVERY non-static field so any field not
-        // in `fields` (e.g. @NoArgsConstructor with no per-field defaults)
-        // starts at a defined value. Primitives → 0; class refs / arrays
-        // → null pointer; views / interfaces → undef-zeroed struct.
+        // Pass 1: zero every non-static field, including those outside `fields`.
         for (auto& prop : parent->getPropertyList()) {
             if (!prop || prop->isStatic()) continue;
 
@@ -86,17 +82,9 @@ namespace cajeta {
             b.CreateStore(zeroVal, fp);
         }
 
-        // Second: evaluate any per-field initializer (`int32 x = 5;`)
-        // and store, overriding the zero-init from pass one. Runs
-        // BEFORE arg writes so that ctor params still override
-        // initializers when both apply — Java semantics: field
-        // initializers run as part of the implicit-construction
-        // sequence, then the ctor body (here, the synthesized arg
-        // writes) executes. `module->getBuilder()` is what the
-        // initializer's expression codegen consults, so swap the
-        // module's builder onto our local IRBuilder for the
-        // duration (mirrors SynthesizedBuilderFactoryMethod's
-        // @Builder.Default loop).
+        // Pass 2: per-field initializers, BEFORE the arg writes so a ctor param
+        // still wins when both apply. Initializer codegen reads the module's
+        // builder, so swap ours in for the duration.
         {
             auto* prevBuilder = module->getBuilder();
             module->setBuilder(&b);
@@ -108,10 +96,8 @@ namespace cajeta {
                 if (idx < 0) continue;
                 llvm::Value* initVal = init->generateCode(module);
                 if (!initVal) {
-                    // Twin of the user-ctor path in Method.cpp: the field HAS an
-                    // initializer and it lowered to nothing, so `continue` left
-                    // the field silently zero (silent-resolution diagnostics
-                    // 3.1.3). A class with no user ctor inits its fields HERE.
+                    // The field HAS an initializer that lowered to nothing:
+                    // continuing would leave it silently zero.
                     throw locatedException(
                         init->getSourceLine(), init->getSourceColumn() + 1,
                         "initializer for field '" + prop->getName()
@@ -121,10 +107,6 @@ namespace cajeta {
                 llvm::Value* fp = b.CreateStructGEP(
                     parent->getLlvmType(), thisPtr, (unsigned) idx,
                     std::string("ctor.init.") + prop->getName());
-                // Coerce when the initializer's natural LLVM type
-                // doesn't match the field slot's width. Mirrors
-                // StackField.cpp's coercion logic and the @Builder.
-                // Default coercion arm in SynthesizedBuilderMethods.
                 CajetaTypePtr ft = prop->getType();
                 llvm::Type* slotTy = ft ? ft->getLlvmType() : nullptr;
                 if (slotTy && initVal->getType() != slotTy) {
@@ -144,8 +126,7 @@ namespace cajeta {
             module->setBuilder(prevBuilder);
         }
 
-        // Third: store each param into its target field, in declaration
-        // order. Args at LLVM index i+1 correspond to fields[i].
+        // Pass 3: store each param into its field; arg i+1 is fields[i].
         for (size_t i = 0; i < fields.size(); ++i) {
             auto& prop = fields[i];
             int idx = parent->getFieldLlvmIndex(prop);

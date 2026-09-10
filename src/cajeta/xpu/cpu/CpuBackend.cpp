@@ -1,6 +1,4 @@
-//
 // CPU backend — see header. Host TargetMachine + native object emit.
-//
 
 #include "CpuBackend.h"
 
@@ -48,11 +46,8 @@ std::unique_ptr<llvm::TargetMachine> createCpuTargetMachine() {
                      << "\n";
         return nullptr;
     }
-    // Target the HOST CPU + its native features (AVX2/AVX-512/FMA/...), so
-    // TargetTransformInfo lets LoopVectorize cost-model real SIMD for the CPU
-    // backend's per-block kernel wrapper (Inc 5B) and codegen emits matching
-    // vector instructions. Tradeoff: AOT objects are tuned to this machine —
-    // a `--cpu-arch` baseline knob for portable binaries is a later refinement.
+    // Target the HOST CPU and its native features, so TargetTransformInfo lets
+    // LoopVectorize cost-model real SIMD; AOT objects are then tuned to this machine.
     std::string cpu = std::string(llvm::sys::getHostCPUName());
     std::string features;
     {
@@ -61,10 +56,7 @@ std::unique_ptr<llvm::TargetMachine> createCpuTargetMachine() {
             sf.AddFeature(f.first(), f.second);
         features = sf.getString();
     }
-    // Debug overrides: reproduce ANOTHER host's cost-model decisions here
-    // (e.g. CAJETA_XPU_CPU_MCPU=x86-64 CAJETA_XPU_CPU_MATTR= strips AVX so
-    // LoopVectorize faces NEON-like no-masked-memory costs on an x86 box —
-    // how the arm64-darwin divergent-wave miscompile was reproduced locally).
+    // Debug overrides: reproduce another host's cost-model decisions on this box.
     if (const char* mcpu = std::getenv("CAJETA_XPU_CPU_MCPU")) cpu = mcpu;
     if (const char* mattr = std::getenv("CAJETA_XPU_CPU_MATTR")) features = mattr;
     llvm::TargetOptions opt;

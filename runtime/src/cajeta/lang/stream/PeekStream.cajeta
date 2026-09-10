@@ -33,7 +33,7 @@ public final class PeekStream<T> extends Stream<T> {
      */
     public PeekStream(#Stream<T> source, (T) -> void fn) {
         this.source #= source;
-        this.fn = fn;
+        this.fn #= fn;   // Unit 9 (spec 5.13): the sink model — a literal moves in, a name lends
     }
 
     /**

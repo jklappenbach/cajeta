@@ -1,6 +1,4 @@
-//
 // nucleo-expr — element-level lowering, reduction staging, fused emission.
-//
 #include "cajeta/transform/FuseExpr.h"
 #include "cajeta/transform/GradBackward.h"
 
@@ -12,7 +10,6 @@ namespace cajeta {
                 || primitive == "mul" || primitive == "div"
                 || primitive == "negate" || primitive == "exp"
                 || primitive == "log" || primitive == "sqrt"
-                // Scalar-broadcast family: tensor op loop-invariant scalar.
                 || primitive == "addScalar" || primitive == "subScalar"
                 || primitive == "mulScalar" || primitive == "divScalar";
         }
@@ -31,9 +28,7 @@ namespace cajeta {
             }
             const AdNode& n = nodes[idx];
 
-            // A leaf: an input tensor reads its element; a scalar constant or
-            // non-tensor leaf contributes its source verbatim. THE COLUMN SEAM
-            // (plan X7-seam) is this get1 — the only dense-buffer assumption.
+            // THE COLUMN SEAM (plan X7-seam) is this get1 — the only dense-buffer assumption.
             if (n.primitive.empty()) {
                 if (n.isInputParam && n.isTensor) {
                     return n.valueExpr + ".get1(" + indexVar + ")";
@@ -41,8 +36,7 @@ namespace cajeta {
                 return n.valueExpr;
             }
 
-            // A reduction is loop-INVARIANT: stage it in the preheader and
-            // reference the local inside the loop (spec 3.3).
+            // A reduction is loop-INVARIANT: stage it in the preheader and reference the local (spec 3.3).
             if (isReduction(n.primitive)) {
                 if (!hoists) {
                     if (err) {
@@ -72,10 +66,7 @@ namespace cajeta {
                 ops.push_back(s);
             }
 
-            // Scalar arithmetic — the whole point: no Tensor.* call survives
-            // into the loop body. The scalar-broadcast ops lower to exactly the
-            // same arithmetic as their elementwise twins; the difference was
-            // only ever whether the right operand varies with the index.
+            // Scalar arithmetic — the point of the pass: no Tensor.* call survives into the loop body.
             if (ops.size() == 2) {
                 if (n.primitive == "add" || n.primitive == "addScalar")
                     return "(" + ops[0] + " + " + ops[1] + ")";
@@ -154,8 +145,6 @@ namespace cajeta {
             s += "        return (Tensor" + e + " " + paramName + ") -> {\n";
             s += "            int64 __n = " + paramName + ".size();\n";
             s += hoistBlock(hoists, elem);
-            // The elementwise body fuses INTO the accumulation: no temporary
-            // tensor is built for the reduction's input.
             s += "            " + elem + " __acc = 0.0f;\n";
             s += "            for (int64 __i = 0; __i < __n; __i = __i + 1) {\n";
             s += "                __acc = __acc + " + elemExprSrc + ";\n";

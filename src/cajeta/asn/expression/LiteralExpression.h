@@ -1,7 +1,4 @@
-//
-// Created by James Klappenbach on 4/14/23.
-//
-
+// Literal expression AST nodes: text, integer and float literals.
 #pragma once
 
 #include "Expression.h"
@@ -22,10 +19,13 @@ namespace cajeta {
     protected:
         string value;
     public:
-        LiteralExpression(antlr4::Token* token) : PrimaryExpression(token) { }
+        LiteralExpression(antlr4::Token* token) : PrimaryExpression(token) { exprKind = ExprKind::Literal; }
 
         const string& getRawValue() const { return value; }
 
+        // Builds the concrete literal node for `ctx`: an integer or float form when
+        // the context carries one, otherwise the text form (bool / null / char /
+        // string / text block), which decides its own kind from the token.
         static ExpressionPtr fromContext(CajetaParser::LiteralContext* ctx);
     };
 
@@ -33,7 +33,7 @@ namespace cajeta {
     private:
         LiteralType literalType;
     public:
-        TextLiteralExpression(CajetaParser::LiteralContext* ctx) : LiteralExpression(ctx->getStart()) {
+        TextLiteralExpression(CajetaParser::LiteralContext* ctx) : LiteralExpression(ctx->getStart()) { exprKind = ExprKind::TextLiteral;
             value = ctx->getText();
             if (ctx->BOOL_LITERAL()) {
                 literalType = LITERAL_TYPE_BOOL;
@@ -48,19 +48,22 @@ namespace cajeta {
             }
         }
 
-        // Synthesized literal (no parse context) — e.g. the compiler injects a
-        // string arg for classesAnnotated<@A>(). `rawValue` must already carry
-        // the source form generateCode expects (quotes for STRING).
+        // Synthesized literal: `rawValue` must already be in the source form generateCode expects.
         TextLiteralExpression(string rawValue, LiteralType type)
-            : LiteralExpression(nullptr) {
+            : LiteralExpression(nullptr) { exprKind = ExprKind::TextLiteral;
             value = std::move(rawValue);
             literalType = type;
         }
 
         LiteralType getLiteralType() const { return literalType; }
 
+        // Resolves the literal's type from its lexeme kind: boolean, String for both
+        // string and text-block forms, char, and `pointer` for null.
         void resolveTypes(CajetaModulePtr module) override;
 
+        // Emits the constant: i1 for bool, a null pointer, an i32 codepoint for char,
+        // and for strings a private `cajeta.lang.String` global instance -- or, while
+        // class String is still unregistered (bootstrap), the legacy i8* global.
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -77,7 +80,7 @@ namespace cajeta {
     public:
         IntegerLiteralType getIntegerLiteralType() const { return integerLiteralType; }
 
-        IntegerLiteralExpression(CajetaParser::IntegerLiteralContext* ctx) : LiteralExpression(ctx->getStart()) {
+        IntegerLiteralExpression(CajetaParser::IntegerLiteralContext* ctx) : LiteralExpression(ctx->getStart()) { exprKind = ExprKind::IntegerLiteral;
             value = ctx->getText();
             if (ctx->BINARY_LITERAL()) {
                 integerLiteralType = INTEGER_LITERAL_TYPE_BINARY;
@@ -92,6 +95,9 @@ namespace cajeta {
 
         void resolveTypes(CajetaModulePtr module) override;
 
+        // Emits the value as a 64-bit ConstantInt in the literal's radix; the radix
+        // prefix, the `_` groupings and an `L` suffix are stripped first, since APInt
+        // wants pure digits. Boundary code coerces the result to the real width.
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -103,7 +109,7 @@ namespace cajeta {
     private:
         FloatLiteralType floatLiteralType;
     public:
-        FloatLiteralExpression(CajetaParser::FloatLiteralContext* ctx) : LiteralExpression(ctx->getStart()) {
+        FloatLiteralExpression(CajetaParser::FloatLiteralContext* ctx) : LiteralExpression(ctx->getStart()) { exprKind = ExprKind::FloatLiteral;
             if (ctx->HEX_FLOAT_LITERAL()) {
                 floatLiteralType = FLOAT_LITERAL_HEX;
             } else {
@@ -114,6 +120,9 @@ namespace cajeta {
 
         void resolveTypes(CajetaModulePtr module) override;
 
+        // Emits a ConstantFP in the literal's semantics: an f/F suffix selects
+        // IEEEsingle, d/D and unsuffixed IEEEdouble. A literal that fails to parse
+        // yields zero rather than failing the compile.
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

@@ -1,7 +1,4 @@
-//
-// Skill Search core. See SkillSearch.h and
-// specs/archive/skill-discovery-spec.md §3.2–§3.5.
-//
+// Skill Search core. See SkillSearch.h and specs/archive/skill-discovery-spec.md §3.2–§3.5.
 #include "cajeta/buildtool/skill/SkillSearch.h"
 
 #include <algorithm>
@@ -17,9 +14,7 @@ namespace cajeta::buildtool::skill {
             return ("cja-skill://" + library + "@" + version + "/" + id).str();
         }
 
-        // Ids of the nearest ancestor (by stripping trailing '/'/'.' segments)
-        // that has any bound skill — the "overview" surfaced for a deep query
-        // (spec §3.2). Empty when no ancestor has a skill.
+        // Ids of the nearest ancestor that has any bound skill — the "overview" surfaced for a deep query (§3.2).
         std::vector<std::string> ancestorOverviewIds(const SkillIndex& idx,
                                                      llvm::StringRef name) {
             std::string cur = name.str();
@@ -32,7 +27,6 @@ namespace cajeta::buildtool::skill {
             }
         }
 
-        // Should archive `a` be included given the version / from selection?
         bool includeArchive(const ResolvedSkillArchive& a,
                             const std::optional<std::string>& version,
                             const std::optional<std::string>& from,
@@ -50,8 +44,7 @@ namespace cajeta::buildtool::skill {
             return true; // diamond: every resolved version, tagged
         }
 
-        // "Better" = should win a URI-dedup tie: lower distance, then lower tier,
-        // then a name match over a title match.
+        // "Better" wins a URI-dedup tie: lower distance, then lower tier, then a name match over a title match.
         bool better(const SkillSearchResult& x, const SkillSearchResult& y) {
             if (x.distance != y.distance) return x.distance < y.distance;
             if (x.tier != y.tier) return x.tier < y.tier;
@@ -131,8 +124,7 @@ namespace cajeta::buildtool::skill {
         for (const ResolvedSkillArchive& a : ctx.archives) {
             if (!includeArchive(a, version, from, ctx)) continue;
 
-            // Scope is an exact, prefix-inclusive subtree (query, not fuzzy);
-            // no scope enumerates the whole archive.
+            // Scope is an exact, prefix-inclusive subtree; no scope enumerates the whole archive.
             std::vector<std::string> ids =
                 scope ? a.index.query(*scope, /*hierarchical=*/true)
                       : a.index.allIds();

@@ -1,6 +1,4 @@
-//
-// transform-intrinsics Unit 3 — reverse-mode autodiff + Tier-A backward emission.
-//
+// Reverse-mode autodiff plus Tier-A backward emission. See GradBackward.h.
 #include "cajeta/transform/GradBackward.h"
 #include "cajeta/transform/VjpRegistry.h"
 
@@ -18,8 +16,7 @@ namespace cajeta {
     namespace transform {
 
         namespace {
-            // The `<A,B,...>` spelling of a call's explicit method type args, or ""
-            // if none — reused verbatim to re-inline the forward call source.
+            // The `<A,B,...>` spelling of a call's explicit type args, "" if none.
             std::string typeArgList(MethodCallExpression* mc) {
                 const auto& ta = mc->getExplicitMethodTypeArgs();
                 if (ta.empty()) return "";
@@ -31,9 +28,8 @@ namespace cajeta {
                 return s + ">";
             }
 
-            // Recursively lower expression `e` into DAG nodes; returns its node
-            // index. Input-param leaves are interned via `paramIdx`. On the first
-            // unsupported construct, sets `err` and returns 0 (callers short-circuit).
+            // Lower expression `e` into DAG nodes and return its node index, interning
+            // input-param leaves. Sets `err` and returns 0 on the first unsupported node.
             size_t buildNode(Expression* e,
                              const std::map<std::string, bool>& paramIsTensor,
                              const CallResolver& resolveCall,
@@ -45,8 +41,6 @@ namespace cajeta {
 
                 if (auto* id = dynamic_cast<IdentifierExpression*>(e)) {
                     std::string name = id->getTextValue();
-                    // An inlined callee's parameter (U4): resolves to the node the
-                    // argument was built into, so gradient flows through the call.
                     auto b = bindings.find(name);
                     if (b != bindings.end()) return b->second;
                     auto rank = paramIsTensor.find(name);
@@ -58,13 +52,10 @@ namespace cajeta {
                         paramIdx[name] = idx;
                         return idx;
                     }
-                    // A non-parameter identifier is a scalar constant w.r.t. inputs.
                     nodes.push_back(AdNode{name, false, "", {}, false});
                     return nodes.size() - 1;
                 }
 
-                // A numeric literal is a constant leaf (its source text, zero
-                // cotangent contribution) — e.g. `2.0f * x`, `x - 1.0f`.
                 if (auto* lit = dynamic_cast<LiteralExpression*>(e)) {
                     nodes.push_back(AdNode{lit->getRawValue(), false, "", {}, false});
                     return nodes.size() - 1;
@@ -95,7 +86,6 @@ namespace cajeta {
                     if (!err.empty()) return 0;
                     std::string val = "(" + nodes[li].valueExpr + " " + opStr + " "
                                     + nodes[ri].valueExpr + ")";
-                    // Scalar arithmetic operators only appear in scalar bodies.
                     nodes.push_back(AdNode{val, false, prim, {li, ri}, false});
                     return nodes.size() - 1;
                 }
@@ -116,10 +106,8 @@ namespace cajeta {
                     return nodes.size() - 1;
                 }
 
-                // Static tensor op — `Tensor.<op>(args...)`. The binary elementwise
-                // ops (mul/add/sub/matmul) take 2 operands; `sum` reduces 1 tensor
-                // to a scalar. The forward call source is re-inlined from the (pure)
-                // operand sources and the element type the user wrote at the call.
+                // A static tensor op. The forward call source is re-inlined from the
+                // operand sources and the element type written at the call, both pure.
                 if (auto* mc = dynamic_cast<MethodCallExpression*>(e)) {
                     const auto& mcCh = mc->getChildren();
                     std::string recv;
@@ -131,13 +119,10 @@ namespace cajeta {
                     static const std::set<std::string> tensorOps =
                         {"mul", "add", "sub", "matmul", "sum",
                          "exp", "log", "sqrt", "mean", "relu",
-                         // nucleo-expr U2 — scalar-broadcast family + std.
                          "addScalar", "subScalar", "mulScalar", "divScalar",
                          "std"};
                     static const std::set<std::string> tensorUnary =
                         {"sum", "exp", "log", "sqrt", "mean", "relu"};
-                    // nucleo-autograd U1 — the scalar Math.* intrinsics are the
-                    // scalar spelling of the widened unary primitives.
                     static const std::set<std::string> mathUnary =
                         {"exp", "log", "sqrt"};
                     if (recv == "Math" && mathUnary.count(op)) {
@@ -158,8 +143,7 @@ namespace cajeta {
                     }
                     if (recv == "Tensor" && tensorOps.count(op)) {
                         const auto& args = mc->getParameters();
-                        // `std(t, ddof)` reduces ONE tensor (ddof is a plain
-                        // int, re-inlined verbatim, not a graph operand).
+                        // `std(t, ddof)` reduces ONE tensor; ddof is re-inlined verbatim.
                         size_t nOperands = (tensorUnary.count(op) || op == "std")
                             ? 1 : 2;
                         if (args.size() < nOperands) {
@@ -176,11 +160,8 @@ namespace cajeta {
                             operandIdx.push_back(ci);
                         }
                         std::string ta = typeArgList(mc);
-                        // 8.1.2 — rank validation with the statically-known
-                        // rank-kind and dtype (dims are not in the type system).
-                        // matmul CONTRACTS two tensors and sum REDUCES one, so a
-                        // scalar operand there is definitively wrong; elementwise
-                        // ops are left alone (a scalar operand may be a broadcast).
+                        // matmul CONTRACTS two tensors and sum REDUCES one, so a scalar
+                        // operand is definitively wrong. Elementwise ops may broadcast.
                         auto rankOf = [&](size_t idx) {
                             return nodes[idx].isTensor ? "tensor" : "scalar";
                         };
@@ -209,18 +190,14 @@ namespace cajeta {
                             }
                         }
                         val += ")";
-                        // Elementwise ops stay tensor-ranked; `sum`/`mean` reduce.
                         bool outTensor = (op != "sum" && op != "mean"
                                           && op != "std");
                         nodes.push_back(AdNode{val, false, op, operandIdx, outTensor});
                         return nodes.size() - 1;
                     }
 
-                    // U4 — a call to a user helper. The resolver (compiler core)
-                    // maps it to a differentiate-through inline target or a @NoGrad
-                    // stop-gradient. Build each argument node FIRST (in the caller's
-                    // binding context) so they carry the right forward source and,
-                    // for the inline case, the gradient inputs.
+                    // A call to a user helper, resolved to an inline target or a @NoGrad
+                    // leaf. Argument nodes are built FIRST, in the caller's binding context.
                     const auto& args = mc->getParameters();
                     InlineTarget t = resolveCall
                         ? resolveCall(recv, op, args.size())
@@ -236,10 +213,6 @@ namespace cajeta {
                             argIdx.push_back(ci);
                         }
                         if (t.noGrad) {
-                            // Stop-gradient: forward value = qualified call over the
-                            // arg sources; a leaf (no operands) -> zero cotangent, no
-                            // backward term. The value is preserved so f's value is
-                            // correct (spec §9.2).
                             std::string val = t.qualifiedName + "(";
                             for (size_t k = 0; k < argIdx.size(); ++k) {
                                 if (k) val += ", ";
@@ -249,9 +222,6 @@ namespace cajeta {
                             nodes.push_back(AdNode{val, false, "", {}, t.returnIsTensor});
                             return nodes.size() - 1;
                         }
-                        // Differentiate through: bind the callee's params to the arg
-                        // nodes (shadowing any same-named binding) and walk its
-                        // single return expression, so cotangents flow into the args.
                         if (t.paramNames.size() != args.size() || !t.body) {
                             err = "Grad: cannot inline '" + op + "' — it must be a "
                                   "single-return-expression function whose parameter "
@@ -322,21 +292,18 @@ namespace cajeta {
                 operandExprs.reserve(nd.operands.size());
                 for (size_t oi : nd.operands) operandExprs.push_back(nodes[oi].valueExpr);
 
-                // The rule emits over the tensor surface if it touches a tensor —
-                // `sum`'s node is a scalar but its operand (and its rule) are tensor.
+                // A rule emits over the tensor surface if it touches one: `sum`'s node is
+                // scalar, but its operand and its rule are not.
                 bool ruleTensor = nd.isTensor;
                 for (size_t oi : nd.operands) ruleTensor = ruleTensor || nodes[oi].isTensor;
                 GradSurface ruleSurf{ruleTensor, elem};
 
-                // Parenthesize the incoming cotangent so the rule's fragments compose
-                // without precedence surprises.
+                // Parenthesized so the rule's fragments compose without precedence surprises.
                 std::vector<std::string> contrib =
                     rule->cotangents("(" + cot[i] + ")", operandExprs, ruleSurf);
 
                 for (size_t k = 0; k < nd.operands.size() && k < contrib.size(); ++k) {
                     size_t oi = nd.operands[k];
-                    // Accumulate over the OPERAND's own surface (its rank decides `+`
-                    // vs `Tensor.add<E>`).
                     GradSurface accSurf{nodes[oi].isTensor, elem};
                     cot[oi] = cot[oi].empty() ? contrib[k]
                                               : accSurf.add(cot[oi], contrib[k]);
@@ -354,8 +321,7 @@ namespace cajeta {
                                        const std::string& gradExpr,
                                        bool importTensor) {
             std::string gr = "GradResult<" + valueTypeName + "," + gradTypeName + ">";
-            // `(T0,T1) -> GR` for make()'s return type; `(T0 p0, T1 p1)` for the
-            // returned lambda's param list — the closure keeps f's full arity.
+            // `(T0,T1) -> GR` types make(); `(T0 p0, T1 p1)` is the returned lambda.
             std::string sig, plist;
             for (size_t i = 0; i < paramNames.size(); ++i) {
                 if (i) { sig += ","; plist += ", "; }
@@ -406,11 +372,8 @@ namespace cajeta {
                 "        " + gradTypeName + "[] gs = heap " + gradTypeName + "["
                     + std::to_string(gradExprs.size()) + "];\n";
             for (size_t k = 0; k < gradExprs.size(); ++k) {
-                // 8.2.12 (spec §4.6) — `#=`, because every gradient expression
-                // is a freshly built Tensor (`matmul`, `sumTo`, `mulScalar`, …,
-                // all `#`-returning) and this array owns what it holds:
-                // `grads` is declared `#T[]` and hands the whole thing out. A
-                // plain `=` recorded a borrow of a value nothing owned.
+                // `#=`, because every gradient expression is a freshly built `#`-returning
+                // Tensor and this `#T[]` owns what it holds; `=` would record a borrow.
                 src += "        gs[" + std::to_string(k) + "] #= "
                     + gradExprs[k] + ";\n";
             }

@@ -1,16 +1,6 @@
-// Verify a detached ed25519 signature over an archive against the
-// trust store. Phase 10.
-//
-// Workflow:
-//   1. Determine which key signed: read `<archive>.sig.keyid` (a
-//      sidecar written by sign action / `cajeta archive sign`),
-//      OR honor the caller's explicit `--key-id` override.
-//   2. Look the key up in the trust store (env → user → system).
-//   3. EVP_DigestVerify the detached signature against the archive
-//      bytes.
-//   4. On tampered archive: error includes the computed digest
-//      (sha256 of the archive bytes) so operators can confirm
-//      vs. the expected value out-of-band.
+// Verify a detached ed25519 signature over an archive against the trust store:
+// the signing key comes from the `<archive>.sig.keyid` sidecar (or an explicit
+// override), is looked up env → user → system, then EVP_DigestVerify runs.
 
 #pragma once
 
@@ -24,11 +14,8 @@
 namespace cajeta::cli {
 
     struct VerifyOptions {
-        // Override the key-id to look up (otherwise read from
-        // `<archive>.sig.keyid`).
-        std::optional<std::string> keyIdOverride;
-        // Override the signature path (otherwise `<archive>.sig`).
-        std::optional<std::string> signaturePathOverride;
+        std::optional<std::string> keyIdOverride;          // else the .sig.keyid sidecar
+        std::optional<std::string> signaturePathOverride;  // else `<archive>.sig`
     };
 
     struct VerifyResult {
@@ -37,24 +24,18 @@ namespace cajeta::cli {
         std::string archiveSha256;  // sha256 of the verified bytes
     };
 
-    // Verify an archive's signature. Errors when:
-    //   - No `<archive>.sig` / signaturePathOverride.
-    //   - No `<archive>.sig.keyid` (and no keyIdOverride).
-    //   - key-id not found in any trust-store tier.
-    //   - signature doesn't verify against the archive bytes —
-    //     error names computed vs expected digest pair.
+    // Verify an archive's signature. Errors when the signature or key-id is
+    // missing, when the key-id is in no trust-store tier, or when the signature
+    // does not verify — that last error names the computed and expected digests.
     llvm::Expected<VerifyResult> verifyArchiveSignature(
         const TrustStoreLayout& layout,
         const std::string& archivePath,
         const VerifyOptions& opts = {});
 
-    // Convenience: read the key-id sidecar file `<archive>.sig.keyid`.
-    // Returns the stripped first line. Empty when the file is absent
-    // or empty.
+    // The stripped first line of `<archive>.sig.keyid`; empty when absent.
     std::string readKeyIdSidecar(const std::string& archivePath);
 
-    // Write the key-id sidecar. Used by the sign path so verify can
-    // resolve the matching public key without out-of-band metadata.
+    // Write that sidecar, so verify resolves the public key with no other input.
     llvm::Error writeKeyIdSidecar(const std::string& archivePath,
                                   const std::string& keyId);
 

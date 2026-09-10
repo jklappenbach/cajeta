@@ -1,18 +1,6 @@
-// Binding an artifact to its publisher — publisher-trust spec §4.
-//
-// A signature that verifies proves somebody signed the bytes. This is the
-// step that makes it mean "the organization that owns this name published
-// them": the key must come from that organization's key document, be
-// inside its own validity window, and the artifact's name must fall within
-// the namespaces the document claims. Drop any one of the three and the
-// signature stops proving anything anyone cares about — which is the
-// failure that got GPG removed from PyPI.
-//
-// The organization is never DERIVED from the name (spec §4.4). Dotted
-// names have no fixed arity, so any rule for "how many leading segments
-// are the org" is wrong for someone, and wrong in the direction an
-// attacker picks. Ownership arrives as signed data; this header only takes
-// it as an argument.
+// Binds an artifact to its publisher: the signing key must belong to the org's
+// key document, be inside its window, and the artifact's name must fall in a
+// namespace that document claims. Ownership is passed in, never derived.
 
 #pragma once
 
@@ -24,8 +12,7 @@
 
 namespace cajeta::buildtool {
 
-    // Which check decided the outcome. Callers report this rather than a
-    // bare "verification failed", which sends a reader nowhere (spec 4.3.1).
+    // Which check decided the outcome; reported instead of a bare failure.
     enum class PublisherCheck {
         Verified,
         Namespace,     // the name is outside what this org owns (4.3)
@@ -46,26 +33,14 @@ namespace cajeta::buildtool {
         bool ok() const { return check == PublisherCheck::Verified; }
     };
 
-    // Whether `nameSpace` owns `name`, matched SEGMENT-AWARE (spec 4.3.1).
-    //
-    // `dev.cajeta` owns `dev.cajeta` and `dev.cajeta.http`, and does NOT
-    // own `dev.cajetaevil`. A plain string prefix test passes every case
-    // written with well-behaved names and fails against a name chosen
-    // adversarially, which is the only case that matters.
+    // Whether `nameSpace` owns `name`, matched SEGMENT-AWARE: `dev.cajeta` owns
+    // `dev.cajeta` and `dev.cajeta.http` but not `dev.cajetaevil`, so this is
+    // deliberately not a string prefix test.
     bool namespaceOwns(const std::string& nameSpace, const std::string& name);
 
-    // Verify `artifactPath` against `doc`.
-    //
-    // `signature` is the raw detached ed25519 signature the repository
-    // publishes. `artifactName` is the dotted package name, and `doc` must
-    // already be the document of the organization that signed metadata says
-    // owns it — this function does not decide ownership, it enforces it.
-    // `revocation` is the repository's current revocation statement, or
-    // nullptr when it serves none. A revoked key is skipped as if it were
-    // outside its window, and a signature that ONLY a revoked key verifies
-    // reports `Revoked` rather than `Signature` — an operator sent to
-    // "the signature is wrong" when the answer is "that key was
-    // compromised" loses the incident (spec 2.8).
+    // Verify `artifactPath` against the raw detached ed25519 `signature`, using
+    // `doc` — which the caller must already have chosen as the owning org's — and
+    // `revocation`, or nullptr. A signature only a revoked key verifies is Revoked.
     PublisherVerdict verifyAgainstOrgDocument(const OrgKeyDocument& doc,
                                               const std::string& artifactName,
                                               const std::string& artifactPath,

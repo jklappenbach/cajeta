@@ -6,6 +6,7 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/xref/XrefIndex.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/util/MemoryManager.h"
 #include "cajeta/asn/expression/DotExpression.h"
@@ -16,6 +17,7 @@
 #include "cajeta/error/Exception.h"
 #include "cajeta/field/ParameterField.h"
 #include "cajeta/method/Method.h"
+#include "cajeta/ownership/TitleClassifier.h"
 
 #include <functional>
 
@@ -28,23 +30,14 @@ namespace cajeta {
         }
     }
 
-    // Emits `malloc(sizeof(struct))` (or, when stackAlloc is set, an entry-
-    // block alloca) then dispatches to the matching constructor with the
-    // user-supplied arguments. Returns the instance pointer either way.
     void ClassCreatorRest::resolveTypes(CajetaModulePtr module) {
-        // LINT ONLY — see MethodCallExpression::resolveTypes. Resolving ctor
-        // args this early pins their types before template substitution and
-        // breaks real builds; the build path records constructor edges from
-        // generateCode as it always has.
+        // Lint only: on the build path, resolving ctor args this early pins
+        // their types before template substitution and breaks real builds.
         if (!module || !module->isResolutionOnly()) {
             AbstractSyntaxNode::resolveTypes(module);
             return;
         }
-        // Constructor args live in `parameters`, not `children` — the same
-        // split MethodCallExpression has — so the default walk never reaches
-        // them and a field read inside `heap Foo(b.v)` goes unrecorded.
-        // Best-effort per argument: one that cannot resolve must not cost the
-        // others theirs (xref-lint-emission-gap 4.2.3).
+        // Best effort: an argument that cannot resolve must not cost the others theirs.
         for (auto& child : children) {
             if (!child) continue;
             try { child->resolveTypes(module); } catch (...) { }
@@ -53,32 +46,24 @@ namespace cajeta {
             if (!p.expression) continue;
             try { p.expression->resolveTypes(module); } catch (...) { }
         }
-        // The constructor EDGE is recorded by NewExpression::resolveTypes,
-        // which is where the created type is known — `targetType` here is set
-        // by generateCode and is still null on the lint path.
     }
 
+    // Allocates the instance (caller sret slot under NRVO, entry-block alloca for
+    // `stack`, malloc otherwise), installs the vtable, and invokes the matching
+    // constructor with the transfer word built from the arguments' titles.
     llvm::Value* ClassCreatorRest::generateCode(CajetaModulePtr module) {
-        // xref (ide-symbol-index §2): `heap Foo(args)` / `stack Foo(args)` resolves a
-        // CONSTRUCTOR through CajetaClass::resolveMethod, so open this call site or
-        // the constructor call is recorded against whatever site happens to be open
-        // (or, with none open, dropped). Ctrl-click on `heap Derived(7)` should land
-        // on Derived's constructor.
-        // The file comes from THIS NODE, not from `module` — see
-        // MethodCallExpression::generateCode.
+        // Open the xref call site first, or the constructor edge is recorded
+        // against whatever site happens to be open. The file comes from this
+        // node, not from `module`.
         xref::CallSiteScope xrefSite(getSourceFile(),
                                      getSourceLine(), getSourceColumn());
 
         if (!targetType) {
             return nullptr;
         }
-        // placeholder-owned-field defect (table-fit §2's discipline extended
-        // to codegen): CONSTRUCTION must never build against an unfilled
-        // placeholder — its getLlvmType() is a bare `ptr`, so the alloc
-        // size, instance layout, ctor set, and drop symbol all come out
-        // wrong (malformed IR; the AOT flavor called a garbage pointer).
-        // Materialize the declaring user module on demand — the placeholder
-        // fills in place (same shared_ptr) — and fail LOUDLY if it cannot.
+        // An unfilled placeholder's llvm type is a bare `ptr`, so alloc size,
+        // layout, ctor set and drop symbol all come out wrong: materialize the
+        // declaring module on demand (fills in place) and fail loudly if it cannot.
         if (auto phk = dynamic_pointer_cast<CajetaClass>(targetType)) {
             if (phk->isPlaceholder() && phk->getQName()
                     && CajetaModule::userMaterializeHook) {
@@ -95,10 +80,6 @@ namespace cajeta {
                     "CAJETA_ERROR_UNRESOLVED_PLACEHOLDER");
             }
         }
-        // U2 (plan 2.2.3) — `heap T(#x)` is the shape the cajeta-llama bug
-        // actually took (`heap String(#kb, kl)`). Constructor arguments carry
-        // the same `callerTransferred` flag as call arguments and likewise
-        // build no MoveExpression, so they need the same rejection.
         rejectTransferOfBorrowArgs(module, parameters);
 
         auto* builder = module->getBuilder();
@@ -111,18 +92,11 @@ namespace cajeta {
 
         llvm::Value* instance;
         if (nrvoTarget) {
-            // NRVO: build directly into the caller's sret slot — no separate
-            // alloca/malloc and no copy. The memset + vtable init + ctor below
-            // all run against the caller-owned slot.
+            // NRVO: init and ctor run against the caller-owned sret slot, no copy.
             instance = nrvoTarget;
         } else if (stackAlloc) {
-            // P2a — entry-block alloca for `stack MyClass(args)`. Hoist the
-            // alloca to the function entry so it lives for the whole frame
-            // (LLVM convention; allocas in arbitrary blocks are legal but
-            // confuse mem2reg + can grow the stack frame across loop
-            // iterations). Lifetime is the enclosing scope; the borrow
-            // checker rejects escape (return / heap-field-store) per the
-            // S10.3-generalized check.
+            // Hoisted to the entry block so the alloca lives for the whole frame:
+            // an alloca in a loop body would grow the frame per iteration.
             llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
             llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
                 parentFn->getEntryBlock().begin());
@@ -132,38 +106,17 @@ namespace cajeta {
                 module, allocSize, builder->GetInsertBlock());
         }
 
-        // Zero-init + vtable install (primary slot-0, secondary sub-object
-        // vtables, and the heap drop-fn patch). Factored into
-        // CajetaClass::initInstanceLayout so synthesized construction sites
-        // (throwing capture cast, tryAs, ...) share the exact same logic. The
-        // S7.2 zero-init rationale + the Polymorphic-MI + Gap-1 drop-dispatch
-        // details live there.
         if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
             klass->initInstanceLayout(module, instance, structTy, stackAlloc);
         } else {
-            // Non-class target (no vtable) — just zero the block. Unreached in
-            // practice (ClassCreatorRest always builds a CajetaClass), kept to
-            // preserve the prior unconditional memset behavior exactly.
             builder->CreateMemSet(instance,
                 llvm::ConstantInt::get(llvm::Type::getInt8Ty(llvmCtx), 0),
                 allocSize, llvm::MaybeAlign(8));
         }
 
-        // Lambda-as-ctor-arg expectedType propagation. Mirror the
-        // MethodCallExpression pattern so a bare-identifier lambda
-        // passed to `heap T(...)` / `stack T(...)` / `new T(...)`
-        // borrows its param + return types from the matching ctor's
-        // formal. Without this, `heap Holder(seed, (acc, x) -> ...)`
-        // fails type inference (no LHS signal, no propagator),
-        // forcing every caller to spell typed params explicitly.
-        //
-        // Match the ctor by arity. Constructors are non-static, so the
-        // formal param list includes `this` as element 0 — subtract 1.
-        // Template-instantiation skip from MCE doesn't fire here (ctors
-        // aren't method-templated under the current grammar — the doc
-        // explicitly excludes constructors from method-level templates,
-        // see docs/specification/lang/templates/MethodLevelTemplate.md § Constructors
-        // and operators excluded).
+        // An untyped lambda argument takes its param and return types from the
+        // matching ctor formal; there is no other inference signal. The ctor is
+        // matched by arity, and its formal 0 is `this`, so the count subtracts 1.
         if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
             bool anyLambda = false;
             for (auto& param : parameters) {
@@ -191,7 +144,6 @@ namespace cajeta {
                 }
                 if (candidate && matches == 1) {
                     auto paramList = candidate->getParameterList();
-                    // paramList[0] is `this`; user-visible args start at 1.
                     for (size_t i = 0; i < parameters.size(); ++i) {
                         size_t formalIdx = i + 1;
                         if (formalIdx >= paramList.size()) break;
@@ -208,19 +160,14 @@ namespace cajeta {
             }
         }
 
-        // Resolve parameters and call the constructor. Prefer the expression's
-        // resolvedType when available — `CajetaType::of(llvm::Value*)` can't
-        // recover class-instance types (the LLVM value is just a `ptr` and
-        // doesn't carry the user-class identity). Without this fallback,
-        // passing a class instance as a constructor arg would null-deref
-        // when `Method::buildCanonical` walks parameter types.
+        // The expression's resolvedType is preferred over `CajetaType::of(value)`,
+        // which cannot recover a class-instance type from a bare `ptr`.
         vector<ParameterEntry> entries;
-        // 6.2.5 — flags for PLAIN ctor args that are class-pointer call
-        // results (anonymous rvalues): read each one's return-flag TLS
-        // immediately after its generation (the next arg's call clobbers
-        // it) and forward it into the ctor word below, exactly as
-        // MethodCallExpression's arg loop does.
+        // Each argument's title flag must be read immediately after that argument's
+        // codegen: the next argument's call clobbers the return-flag TLS.
+        std::vector<ownership::ArgTitle> ctorArgTitles(parameters.size());
         std::vector<llvm::Value*> plainArgTempFlags(parameters.size(), nullptr);
+        std::vector<llvm::Value*> ctorArgTitleFlags(parameters.size(), nullptr);
         size_t ctorArgIndex = (size_t) -1;
         for (auto& param : parameters) {
             ++ctorArgIndex;
@@ -228,30 +175,22 @@ namespace cajeta {
                 param.expression->resolveTypes(module);
             }
             llvm::Value* value = param.expression->generateCode(module);
-            if (!param.callerTransferred) {
-                if (auto amce = dynamic_pointer_cast<MethodCallExpression>(
-                        param.expression)) {
-                    MethodPtr am = amce->getResolvedMethod();
-                    if (am && am->returnsClassPointer()
-                            && MethodCallExpression::droppableTempClass(
-                                   amce->getResolvedType())) {
-                        if (llvm::Function* fg = module->getRuntimeFunction(
-                                "__cajeta_return_flag_get")) {
-                            plainArgTempFlags[ctorArgIndex] =
-                                module->getBuilder()->CreateCall(
-                                    fg, {}, "ctor_arg_temp_flag");
-                        }
+            if (ctorArgIndex < ctorArgTitles.size()) {
+                ctorArgTitles[ctorArgIndex] = ownership::classifyArgument(
+                    param.expression, param.callerTransferred, module, "a `#` argument");
+                CajetaTypePtr argTy = param.expression->getResolvedType();
+                bool wordCarrier = param.callerTransferred
+                    || MethodCallExpression::droppableTempClass(argTy) != nullptr
+                    || dynamic_pointer_cast<CajetaArray>(argTy) != nullptr
+                    || dynamic_pointer_cast<CajetaFunctionType>(argTy) != nullptr;
+                if (wordCarrier && ctorArgTitles[ctorArgIndex].flag) {
+                    if (param.callerTransferred) {
+                        ctorArgTitleFlags[ctorArgIndex] = ctorArgTitles[ctorArgIndex].flag;
+                    } else {
+                        plainArgTempFlags[ctorArgIndex] = ctorArgTitles[ctorArgIndex].flag;
                     }
                 }
             }
-            // L-value-to-r-value coercion. Argument expressions can be
-            // local allocas (IdentifierExpression), field GEPs
-            // (DotExpression — covers `this.handle` etc.), or array
-            // slots (ArrayIndexExpression) — all need a load before
-            // the value flows into the constructor. Without this,
-            // ctor params like `pointer handle` receive the slot
-            // address instead of the value, which silently misroutes
-            // every pthread-handle-style argument.
             auto astExpr = dynamic_pointer_cast<Expression>(param.expression);
             value = loadIfLValue(module, value, astExpr);
             CajetaTypePtr paramType = param.expression->getResolvedType();
@@ -259,89 +198,16 @@ namespace cajeta {
             entries.push_back(ParameterEntry(paramType, param.label, value));
         }
         if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
-            // Constructor name is the class's simple type name. For a
-            // template instantiation (e.g. "Container<int32>") the
-            // source-parsed ctor was named after the unparameterized
-            // template ("Container") — fall through to the template
-            // origin's name so we find the real ctor instead of looking
-            // up "Container<int32>" and falling back to the empty
-            // auto-default. Pairs with the Method ctor's same fallback
-            // (Method.cpp's constructor-detection logic).
+            // A template instantiation's ctor was parsed under the unparameterized
+            // name, so look it up there or resolution finds only the auto-default.
             string ctorName = targetType->getQName()->getTypeName();
             if (klass->getTemplateOrigin()) {
                 ctorName = klass->getTemplateOrigin()->getQName()->getTypeName();
             }
-            // # transfer at ctor-call site (#67 + Phase 1 of #68 — see
-            // docs/specification/lang/OwnershipTransfer.md). Two passes:
-            //
-            //   1. Caller-side: any argument the caller wrote `#x` on
-            //      gets its source local's drop deactivated. The caller's
-            //      intent at the source line is authoritative — no need
-            //      to inspect the callee. Required for synthesized
-            //      ctors (e.g. view ctors) where resolveMethod misses.
-            //
-            //   2. Callee-side: a formal marked `#T` whose argument the
-            //      caller did NOT mark `#` is a CONTRACT VIOLATION, not an
-            //      implicit transfer — pass 2 throws
-            //      CAJETA_ERROR_TRANSFER_REQUIRED. A `#T` formal never
-            //      deactivates a caller drop entry on its own; only the
-            //      caller's `#` does.
-            //
-            // Primitives, literals, and locals without drop entries
-            // naturally degrade to no-op (the inner gate fires only on
-            // an IdentifierExpression arg whose Field has a drop entry).
-            // 5.2.4 / 6.2.4 — capture each `#`-arg's TITLE FLAG before Pass 1
-            // deactivates it (MethodCallExpression's rule; a ctor arg's `#`
-            // is the parse-level token, NOT a MoveExpression, so the old
-            // MoveExpression-stash-only composition read null and degraded
-            // EVERY `#formal` ctor arg to a STATIC 1 — a borrow put through
-            // `heap RedBlackNode(#key, #value)` stamped the node's bits
-            // owned and the teardown freed the caller's value). A runtime
-            // owner forwards the flag its entry holds; an entry-less formal
-            // (String/primitive) forwards its own incoming word bit.
-            std::vector<llvm::Value*> ctorArgTitleFlags(parameters.size(), nullptr);
+            // Two passes: the caller's `#x` deactivates its source local's drop entry
+            // (caller intent is authoritative, and synthesized ctors never resolve),
+            // then a `#T` formal whose argument carries no `#` is rejected outright.
             {
-                for (size_t i = 0; i < parameters.size(); ++i) {
-                    if (!parameters[i].callerTransferred) continue;
-                    auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
-                        parameters[i].expression);
-                    if (!idExpr) continue;
-                    auto scope = module->getScopeStack().peek();
-                    if (!scope) continue;
-                    FieldPtr field = scope->getField(idExpr->getTextValue());
-                    if (!field) continue;
-                    if (llvm::Value* entry = field->getDropEntry()) {
-                        if (llvm::Function* flagFn = module->getRuntimeFunction(
-                                "__cajeta_drop_entry_flag")) {
-                            ctorArgTitleFlags[i] = builder->CreateCall(
-                                flagFn, {entry}, "ctor_arg_title_flag");
-                        }
-                        continue;
-                    }
-                    auto pfArg = std::dynamic_pointer_cast<ParameterField>(field);
-                    if (pfArg) {
-                        auto cm = module->getCurrentMethod();
-                        llvm::Value* inWord = cm ? cm->getTransferWordArg()
-                                                 : nullptr;
-                        if (inWord) {
-                            int fpos = -1, seen = -1;
-                            for (auto& fp : cm->getParameterList()) {
-                                if (!fp || fp->getName() == "this") continue;
-                                ++seen;
-                                if (fp->getName() == idExpr->getTextValue()) {
-                                    fpos = seen;
-                                    break;
-                                }
-                            }
-                            if (fpos >= 0 && fpos < 64) {
-                                ctorArgTitleFlags[i] = builder->CreateAnd(
-                                    builder->CreateLShr(inWord,
-                                        builder->getInt64((uint64_t) fpos)),
-                                    builder->getInt64(1), "ctor_fwd_word_bit");
-                            }
-                        }
-                    }
-                }
                 auto deactivateIfClassLocal = [&](size_t argIdx) {
                     if (argIdx >= parameters.size()) return;
                     auto argExprBase = parameters[argIdx].expression;
@@ -359,97 +225,24 @@ namespace cajeta {
                         }
                     }
                 };
-                // Pass 1: caller-side. Phase 3a of #68 — if the `#x`
-                // source is a borrowed class parameter, reject.
                 for (size_t i = 0; i < parameters.size(); ++i) {
                     if (!parameters[i].callerTransferred) continue;
                     auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
                         parameters[i].expression);
                     if (idExpr) {
                         if (auto scope = module->getScopeStack().peek()) {
-                            FieldPtr field = scope->getField(idExpr->getTextValue());
-                            auto pf = std::dynamic_pointer_cast<ParameterField>(field);
-                            if (pf) {
-                                auto formal = pf->getFormalParameter();
-                                // 5.2.4 — RETIRED for class-typed formals: a
-                                // plain formal is a RUNTIME owner (5.2.2), so
-                                // `#formal` as a ctor arg forwards its actual
-                                // flag (the ctor word, composed below). Entry-
-                                // less formals of a WORDED method count too
-                                // (String/primitive get no entry; their word
-                                // bit is still the truth) — same rule as MCE.
-                                auto crCm = module->getCurrentMethod();
-                                bool runtimeOwner = field
-                                    && (field->getDropEntry()
-                                        || (crCm && crCm->getTransferWordArg()));
-                                if (formal && !formal->isTransferred()
-                                        && !runtimeOwner) {
-                                    auto klassParam = std::dynamic_pointer_cast<CajetaClass>(
-                                        field->getType());
-                                    // Value types are Copy (like primitives): `#v` on
-                                    // a value-type param is a no-op copy, never a heap
-                                    // ownership transfer, so it can't escape a borrow.
-                                    // Exempt them so a generic body that spells `#v` as
-                                    // a CTOR arg (LinkedList.add -> LinkedListNode<T>(
-                                    // #value)) instantiates for a value-type T. Mirrors
-                                    // the MethodCallExpression exemption (334d1f6f).
-                                    if (klassParam && !klassParam->isInterface()
-                                            && !klassParam->isValueType()) {
-                                        throw Exception(
-                                            "cannot transfer borrowed parameter `"
-                                                + idExpr->getTextValue() + "` via "
-                                                "`#` — its formal is declared plain `T` "
-                                                "(borrow), so this scope doesn't own the "
-                                                "value. Fix: mark the formal `#"
-                                                + idExpr->getTextValue() + "` to receive "
-                                                "ownership at the outer call site, or "
-                                                "restructure to not retain the borrow.",
-                                            "CAJETA_ERROR_BORROW_PARAM_ESCAPES");
-                                    }
-                                }
-                            } else if (field) {
-                                // title-tracking §3.1.2-3 (plan 2.2.1-2.2.2) —
-                                // ctor-arg linearity, mirroring the
-                                // MethodCallExpression call-arg checks: a
-                                // local ctor-arg `#x` needs a statically-
-                                // active owner and marks the source moved.
-                                const string& nm = idExpr->getTextValue();
-                                auto argKlass = std::dynamic_pointer_cast<CajetaClass>(
+                            const string& nm = idExpr->getTextValue();
+                            FieldPtr field = scope->getField(nm);
+                            if (field && !std::dynamic_pointer_cast<ParameterField>(field)) {
+                                scope->rejectTransferOfBorrow(nm, /*modeCarrying=*/false);
+                                auto kls = std::dynamic_pointer_cast<CajetaClass>(
                                     field->getType());
-                                if (argKlass && !argKlass->isValueType()
-                                        && !argKlass->isSharedCapableValue()
-                                        && !argKlass->isInterface()) {
-                                    if (scope->isBorrow(nm)) {
-                                        // Same violation as moving out of an
-                                        // alias: a transfer demotes its source
-                                        // (transfer-demotes-to-borrow §1.3).
-                                        string note = scope->transferSiteOf(nm);
-                                        throw Exception(
-                                            "cannot transfer ownership of `" + nm
-                                                + "`: it is a borrow"
-                                                + (note.empty() ? "" : " — already "
-                                                    "transferred (" + note + ")")
-                                                + ". You cannot transfer ownership "
-                                                  "more than once, or from a borrow. "
-                                                  "Fix: transfer from the owner, or "
-                                                  "construct a fresh value.",
-                                            "CAJETA_ERROR_MOVE_OF_BORROW");
-                                    }
-                                    if (!field->getDropEntry()) {
-                                        string owner = scope->borrowSourceOf(nm);
-                                        if (!owner.empty()) {
-                                            throw Exception(
-                                                "cannot move out of a borrow: `"
-                                                    + nm + "` does not own its "
-                                                      "value; ownership belongs to `"
-                                                    + owner + "`. Fix: move from the "
-                                                      "owner, or store an owned value "
-                                                      "first.",
-                                                "CAJETA_ERROR_MOVE_OF_BORROW");
-                                        }
-                                    }
+                                if (kls && !kls->isValueType()
+                                        && !kls->isSharedCapableValue()
+                                        && !kls->isInterface()) {
                                     scope->demoteToBorrow(nm,
-                                        "transferred to a constructor at line "
+                                        "transferred to `" + ctorName
+                                            + "` at line "
                                             + std::to_string(getSourceLine()));
                                 }
                             }
@@ -457,21 +250,14 @@ namespace cajeta {
                     }
                     deactivateIfClassLocal(i);
                 }
-                // Pass 2: callee-side `#T` formal — Phase 2 of #68
-                // contract check. If formal is `#T` and the caller
-                // didn't acknowledge transfer (no `#x`, no MoveExpression,
-                // no fresh ctor), throw CAJETA_ERROR_TRANSFER_REQUIRED.
-                // Only fires on a genuine double-free hazard: an
-                // IdentifierExpression of a class-typed local whose
-                // Field carries an active drop entry. See
-                // docs/specification/lang/OwnershipTransfer.md.
                 MethodPtr xferTarget = klass->resolveMethod(
                     ctorName, entries, /*isConstructor=*/true,
                     /*floatingParams=*/false);
                 if (xferTarget) {
                     auto formalParams = xferTarget->getParameterList();
-                    int xferParamOffset = !formalParams.empty()
-                        && formalParams.front()->getName() == "this" ? 1 : 0;
+                    bool hasThisP = !formalParams.empty()
+                        && formalParams.front()->getName() == "this";
+                    int xferParamOffset = hasThisP ? 1 : 0;
                     size_t fIdx = 0;
                     for (auto& fp : formalParams) {
                         if ((int) fIdx < xferParamOffset) { ++fIdx; continue; }
@@ -479,127 +265,31 @@ namespace cajeta {
                         if (argIdx >= parameters.size()) break;
                         ++fIdx;
                         if (!fp->isTransferred()) continue;
-                        if (parameters[argIdx].callerTransferred) continue;
-                        auto argExpr = parameters[argIdx].expression;
-                        if (dynamic_pointer_cast<MoveExpression>(argExpr)) continue;
-                        if (dynamic_pointer_cast<NewExpression>(argExpr)) continue;
-                        // Borrow SHAPES the identifier-only check let through
-                        // (the JsonValue.asString `heap String(this.strBytes,
-                        // n)` corruption, dodged call-side in 65588252): a
-                        // field read, an array-element read, and a
-                        // borrow-returning call are all borrows a consuming
-                        // `#T` ctor formal must not accept — a @Native-cored
-                        // consumer (String.adopt) can never see the runtime
-                        // title flag and frees/adopts unconditionally.
-                        const char* borrowShape = nullptr;
-                        if (dynamic_pointer_cast<DotExpression>(argExpr)) {
-                            borrowShape = "a field read";
-                        } else if (dynamic_pointer_cast<ArrayIndexExpression>(
-                                       argExpr)) {
-                            borrowShape = "an array-element read";
-                        } else if (auto argCall =
-                                       std::dynamic_pointer_cast<MethodCallExpression>(
-                                           argExpr)) {
-                            MethodPtr rm =
-                                MethodCallExpression::resolveArgCalleeShallow(
-                                    argCall, module);
-                            // Arrays carry PRIMITIVE_FLAG but are droppable
-                            // buffers — only ownership-less SCALARS skip.
-                            bool scalarReturn = rm && rm->getReturnType()
-                                && (rm->getReturnType()->getTypeFlags()
-                                    & PRIMITIVE_FLAG)
-                                && !std::dynamic_pointer_cast<CajetaArray>(
-                                       rm->getReturnType());
-                            if (rm && !rm->isReturnsOwnership()
-                                    && rm->getReturnType() && !scalarReturn) {
-                                borrowShape = "a call returning a borrow (no `#R`)";
-                            }
+                        auto escArg = parameters[argIdx].expression;
+                        if (!escArg) continue;
+                        if (escArg->kind() == ExprKind::Move
+                                || parameters[argIdx].callerTransferred) {
+                            ownership::rejectEscape(escArg,
+                                ownership::ConsumerRole::ArgOwned, module,
+                                "a `#T` argument");
                         }
-                        if (borrowShape) {
-                            throw Exception(
-                                "constructor `" + ctorName + "` declares parameter `"
-                                    + fp->getName() + "` as `#T` (ownership transfer "
-                                    "required), but the argument is "
-                                    + borrowShape + " — a borrow. Pass a fresh copy "
-                                    "(`#heap ...`) or an owned local surrendered "
-                                    "with `#`. See docs/specification/lang/"
-                                    "OwnershipTransfer.md.",
-                                "CAJETA_ERROR_TRANSFER_REQUIRED");
-                        }
-                        auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
-                            argExpr);
-                        if (!idExpr) continue;
-                        auto scope = module->getScopeStack().peek();
-                        if (!scope) continue;
-                        FieldPtr field = scope->getField(idExpr->getTextValue());
-                        if (!field || !field->getDropEntry()) continue;
-                        throw Exception(
-                            "constructor `" + ctorName + "` declares parameter `"
-                                + fp->getName() + "` as `#T` (ownership transfer required); "
-                                "write `#" + idExpr->getTextValue() + "` at the call site "
-                                "to surrender ownership of the source local, or pass a "
-                                "fresh `heap T(...)` / `stack T(...)` construction. "
-                                "See docs/specification/lang/OwnershipTransfer.md.",
-                            "CAJETA_ERROR_TRANSFER_REQUIRED");
+                        ownership::rejectOwnedFormalArgument(escArg,
+                            parameters[argIdx].callerTransferred, module,
+                            ctorName, fp->getName(), (int) getSourceLine());
                     }
                 }
             }
-            // title-tracking Unit 5: constructors ride the same trailing
-            // transfer word as ordinary calls (ctors never emitted the
-            // moveMask TLS, so the ABI word is their first per-call channel).
-            // 5.2.4 — runtime-composed, same rule as MethodCallExpression: a
-            // `#x` sourced from a runtime owner forwards the flag it held.
+            // Transfer word: bit i is set when argument i tenders title. A constant
+            // title folds into the literal; a runtime flag is shifted and OR'd in.
             auto* twBuilder = module->getBuilder();
             int64_t ctorTransferWord = 0;
             llvm::Value* ctorWordVal = nullptr;
             for (size_t twi = 0; twi < parameters.size(); ++twi) {
-                // 6.2.5 — owned rvalues surrender WITHOUT `#` (spec §4.1.1):
-                // a plain fresh `heap X()` ctor arg contributes a static 1;
-                // a plain class-pointer call result forwards the flag
-                // stashed at its generation (ctor_arg_temp_flag).
-                if (!parameters[twi].callerTransferred) {
-                    if (llvm::Value* tf = plainArgTempFlags[twi]) {
-                        llvm::Value* tbit = twBuilder->CreateShl(
-                            twBuilder->CreateAnd(tf, twBuilder->getInt64(1)),
-                            twBuilder->getInt64((uint64_t) twi));
-                        ctorWordVal = ctorWordVal
-                            ? twBuilder->CreateOr(ctorWordVal, tbit) : tbit;
-                    } else if (MethodCallExpression::freshHeapCreatorTempClass(
-                            parameters[twi].expression)) {
-                        ctorTransferWord |= ((int64_t) 1) << twi;
-                    } else if (MethodCallExpression::freshHeapArrayLiteralArg(
-                            parameters[twi].expression)) {
-                        // A heap ARRAY LITERAL ctor arg is a fresh owned
-                        // rvalue exactly as `heap X()` is, but it is an
-                        // ArrayLiteralExpression rather than a NewExpression,
-                        // so the creator probe above never matched and the word
-                        // went out 0. The callee's `#V` formal was then told it
-                        // had NOT been surrendered, its `this.f #= formal`
-                        // stored no title, and a later claim panicked
-                        // TITLE_MISS.
-                        //
-                        // `HashMap<String,int32[]> g = ["a": [1,2]]` found it:
-                        // the map literal lowers to `Pair(#K, #V)` plus the
-                        // owning `HashMap(#Pair<K,V>[])` ctor, whose
-                        // `takeSecond()` is the claim that blew up
-                        // (CollectionLiteralTests.MapToList). Scalar- and
-                        // value-type-valued map literals were unaffected, which
-                        // is why only the array case ever surfaced.
-                        ctorTransferWord |= ((int64_t) 1) << twi;
-                    }
-                    continue;
-                }
-                // Pre-deactivation captures first (parse-level `#x` args);
-                // the MoveExpression stash covers `= #x`-shaped arg exprs.
-                llvm::Value* rf = ctorArgTitleFlags[twi];
-                if (!rf) {
-                    if (auto mv = std::dynamic_pointer_cast<MoveExpression>(
-                            parameters[twi].expression)) {
-                        rf = mv->getRuntimeTitleFlag();
-                    }
-                }
-                if (!rf) {
-                    ctorTransferWord |= ((int64_t) 1) << twi;
+                llvm::Value* rf = parameters[twi].callerTransferred
+                    ? ctorArgTitleFlags[twi] : plainArgTempFlags[twi];
+                if (!rf) continue;
+                if (auto* k = llvm::dyn_cast<llvm::ConstantInt>(rf)) {
+                    if (!k->isZero()) ctorTransferWord |= ((int64_t) 1) << twi;
                     continue;
                 }
                 llvm::Value* bit = twBuilder->CreateShl(
@@ -622,14 +312,9 @@ namespace cajeta {
                                 /*explicitMethodTypeArgs=*/{},
                                 /*sretTarget=*/nullptr,
                                 /*transferWord=*/ctorWordVal);
-            // slices 9.4.1 — fresh temps consumed as CTOR arguments have no
-            // drop entry; reclaim them here, at the only site that sees the
-            // temp (mirrors the post-call block in MethodCallExpression::
-            // generateCode). A fresh owned-String temp gets the guarded
-            // string drop; a shared-capable VALUE call-result gets its
-            // stakes released (the ctor's field store retained its own).
-            // `#T` formals and `#x` call-site transfers took ownership —
-            // skipped, exactly as at method call sites.
+            // Fresh temps consumed as ctor arguments have no drop entry, and this is
+            // the only site that sees them: reclaim owned String temps and release
+            // shared-value stakes. Arguments taken by `#T` or `#x` were transferred.
             {
                 MethodPtr ctorTarget = klass->resolveMethod(
                     ctorName, entries, /*isConstructor=*/true,
@@ -647,10 +332,32 @@ namespace cajeta {
                         if (parameters[ai].callerTransferred) continue;
                         llvm::Value* tempV = entries[ai].value;
                         if (!tempV) continue;
-                        if (MethodCallExpression::freshOwnedStringTemp(
-                                parameters[ai].expression)) {
-                            if (strDropFn && tempV->getType()->isPointerTy()) {
+                        if (ai < ctorArgTitles.size()
+                                && ctorArgTitles[ai].shape.has(ownership::TitleShape::kString)
+                                && ctorArgTitles[ai].shape.family != ownership::TitleFamily::Literal
+                                && strDropFn && tempV->getType()->isPointerTy()) {
+                            const auto& at = ctorArgTitles[ai];
+                            if (at.shape.answer == ownership::TitleAnswer::Owned) {
                                 builder->CreateCall(strDropFn, {tempV});
+                            } else if (at.shape.answer == ownership::TitleAnswer::Runtime
+                                    && at.flag) {
+                                if (auto* cf = llvm::dyn_cast<llvm::ConstantInt>(at.flag)) {
+                                    if (!cf->isZero()) builder->CreateCall(strDropFn, {tempV});
+                                } else {
+                                    auto& tctx = *module->getLlvmContext();
+                                    llvm::Function* tfn = builder->GetInsertBlock()->getParent();
+                                    auto* dropBB = llvm::BasicBlock::Create(tctx, "ctor_arg_temp_drop", tfn);
+                                    auto* contBB = llvm::BasicBlock::Create(tctx, "ctor_arg_temp_cont", tfn);
+                                    builder->CreateCondBr(
+                                        builder->CreateICmpNE(at.flag,
+                                            llvm::ConstantInt::get(at.flag->getType(), 0),
+                                            "ctor_arg_temp_owned"),
+                                        dropBB, contBB);
+                                    builder->SetInsertPoint(dropBB);
+                                    builder->CreateCall(strDropFn, {tempV});
+                                    builder->CreateBr(contBB);
+                                    builder->SetInsertPoint(contBB);
+                                }
                             }
                             continue;
                         }
@@ -676,11 +383,9 @@ namespace cajeta {
         return instance;
     }
 
-    // Java-style array allocation: one heap call per dimension level. For `new T[a][b]`
-    // we allocate the outer header of length `a` whose element-type is a pointer to
-    // an inner array, then loop and allocate an inner header of length `b` for each
-    // outer slot. For `new T[a][]` we only allocate the outer; inner slots stay null
-    // (the runtime helper zero-fills via calloc). Returns the outermost header pointer.
+    // Allocates one array header per sized dimension and returns the outermost:
+    // `new T[a][b]` fills each of the outer header's `a` slots with an inner header
+    // of length `b`, while `new T[a][]` leaves the inner slots null (calloc'd).
     llvm::Value* ArrayCreatorRest::generateCode(CajetaModulePtr module) {
         if (!targetType || totalBracketPairs <= 0) {
             return nullptr;
@@ -691,8 +396,7 @@ namespace cajeta {
         llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
         const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
 
-        // Build the type chain: typeChain[0] = T (innermost element),
-        // typeChain[k] = T[][...] wrapped k times. typeChain[N] is the outermost type.
+        // typeChain[0] = T, typeChain[k] = T wrapped k times, so [N] is outermost.
         vector<CajetaTypePtr> typeChain;
         typeChain.push_back(targetType);
         for (int i = 0; i < totalBracketPairs; i++) {
@@ -702,40 +406,18 @@ namespace cajeta {
             typeChain.push_back(wrapped);
         }
 
-        // U3: a non-escaping single-dimension primitive-element array routes its
-        // header through the frame arena (no malloc, no live-set, no drop entry);
-        // the scope-exit reset reclaims it. The escape pre-pass only sets
-        // arenaEligible when totalBracketPairs==1 and the element is primitive, so
-        // there are no inner sub-allocations to worry about. Multi-dim / class-
-        // element creators keep the heap allocator.
+        // An arena header carries no drop entry; the scope-exit reset reclaims it.
+        // arenaEligible is only set for a single-dimension primitive-element array,
+        // so there are never inner sub-allocations to reclaim separately.
         bool useArena = arenaEligible && totalBracketPairs == 1;
         llvm::Function* allocFn = module->getRuntimeFunction(
             useArena ? "__cajeta_new_array_header_arena" : "__cajeta_new_array_header");
         if (!allocFn) {
             return nullptr;
         }
-        // title-stores §3.1 — bit-capable elements (the archived Unit-4
-        // predicate) get the tail-bitmap allocator. Only the innermost
-        // level can qualify: outer levels' elements are arrays, which the
-        // predicate rejects. Arena arrays are primitive-only, so the two
-        // never collide.
-        // title-stores §3.4 — OUTER levels qualify too now: their elements
-        // are arrays, and a jagged slot owns its inner buffer, so the outer
-        // header needs the tail bitmap the arrelem family reads. Fetch the
-        // allocator whenever any level could need it (per-level pick below).
-        // The condition MUST match the per-level pick below, or the pick
-        // short-circuits on a null and silently allocates a header with no
-        // tail bitmap while the stores and the drop walk both use one.
-        //
-        // `totalBracketPairs > 1` covers a LITERAL nested array. It does not
-        // cover an element type that arrives through a TYPE PARAMETER —
-        // `heap T[cap]` with `T = int8[]` inside a generic container has ONE
-        // bracket pair, and `arrayElementCarriesSlotBits` rejects arrays by
-        // its first line. So `ArrayList<int8[]>` allocated a bitmap-less
-        // header, `data[i] #= v` wrote slot bits past the payload, and the
-        // process died in `free` at teardown (plan 8.13). Asking
-        // `arrayElementCarriesArraySlotBits` here is what the level pick
-        // already asks.
+        // Fetch the tail-bitmap allocator whenever any level could need one. This
+        // condition must match the per-level pick below, or a level allocates a
+        // bitmap-less header while its slot stores and drop walk both use one.
         llvm::Function* bitsAllocFn = nullptr;
         if (!useArena && (CajetaClass::arrayElementCarriesSlotBits(targetType)
                 || CajetaClass::arrayElementCarriesArraySlotBits(targetType)
@@ -744,9 +426,8 @@ namespace cajeta {
         }
         llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
 
-        // Recursive emitter: level 0 = outermost. Allocates that level's header and,
-        // when an inner size was specified, loops over the data slots populating them
-        // with recursive sub-allocations.
+        // Recursive emitter, level 0 = outermost: allocates that level's header and,
+        // when a deeper size was given, fills each slot with a sub-allocation.
         std::function<llvm::Value*(int)> emit = [&](int level) -> llvm::Value* {
             if (level >= (int) children.size()) {
                 return llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx, 0));
@@ -756,26 +437,11 @@ namespace cajeta {
                 return nullptr;
             }
 
-            // Resolve this level's user-supplied size, coerced l-value →
-            // r-value. The same fix ArrayIndexExpression needed (see
-            // Expression.cpp): a field-read dimension like
-            // `new int8[this.chunkSize]` or a static-final
-            // `new int8[AsyncWriter.DEFAULT_BUFFER]` returns a GEP /
-            // GlobalVariable slot pointer, not an AllocaInst — the old
-            // alloca-only check left it a `ptr`, and the CreateIntCast
-            // below sext'd a pointer (LLVM verify error: "SExt only
-            // operates on integer"). loadIfLValue loads through GEP and
-            // GlobalVariable slots alike.
+            // A field or static-final dimension arrives as a slot pointer, so it must
+            // be loaded before the int cast below, which cannot sext a pointer.
             llvm::Value* count = children[level]->generateCode(module);
             auto countAst = dynamic_pointer_cast<Expression>(children[level]);
             count = loadIfLValue(module, count, countAst);
-            // A dimension that did not resolve to a VALUE used to reach
-            // `count->getType()` and segfault on null — the compiler dying
-            // with a raw SIGSEGV and no source location at all. A crash is
-            // never an acceptable diagnostic: it says nothing about which
-            // `heap T[n]` was at fault, and the null comes from an ordinary
-            // authoring or resolution failure in `n`, not from a corrupt
-            // state.
             if (count == nullptr) {
                 throw Exception(
                     "array dimension did not resolve to a value at level "
@@ -803,9 +469,7 @@ namespace cajeta {
                 levelHasBits ? bitsAllocFn : allocFn,
                 {headerSize, elemSize, count});
 
-            // If there's a deeper level to populate, loop over `count` slots and assign.
             if (level + 1 < (int) children.size()) {
-                // Counter alloca at function entry to keep the loop clean of repeated allocas.
                 llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
                     parentFn->getEntryBlock().begin());
                 llvm::Value* counterAlloca = entryBuilder.CreateAlloca(i64Ty);
@@ -824,7 +488,7 @@ namespace cajeta {
 
                 builder->SetInsertPoint(loopBody);
                 llvm::Value* inner = emit(level + 1);
-                // Slot = &hdrPtr->data[idx]. GEP indices walk: pointer -> struct -> data array -> element.
+                // &hdrPtr->data[idx]: the indices walk pointer, struct, data, element.
                 vector<llvm::Value*> gepIndices = {
                     llvm::ConstantInt::get(i64Ty, 0),
                     llvm::ConstantInt::get(i32Ty, CajetaArray::DATA_FIELD_INDEX),

@@ -51,8 +51,8 @@ public class MapOrLogStream<T, R> extends Stream<R> {
      */
     public MapOrLogStream(#Stream<T> source, (T) -> #R fn, (T, Exception) -> void logger) {
         this.source #= source;
-        this.fn = fn;
-        this.logger = logger;
+        this.fn #= fn;   // Unit 9 (spec 5.13): the sink model — a literal moves in, a name lends
+        this.logger #= logger;
     }
 
     /**

@@ -24,16 +24,14 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Pull the constraint string for `name` from the manifest's
-        // `settings.dependencies` block. Returns nullopt when the dep
-        // isn't declared.
+        // The constraint string for `name` from the manifest's `settings.dependencies`,
+        // or nullopt when undeclared. Accepts both the string and { "version" } shapes.
         std::optional<std::string> manifestConstraintFor(
             const Manifest& m, const std::string& name) {
             const auto* deps = m.settingsRaw.getObject("dependencies");
             if (!deps) return std::nullopt;
             const llvm::json::Value* v = deps->get(name);
             if (!v) return std::nullopt;
-            // Two accepted shapes — string or { "version": "..." }.
             if (auto s = v->getAsString()) {
                 return s->str();
             }
@@ -45,12 +43,8 @@ namespace cajeta::buildtool {
             return std::nullopt;
         }
 
-        // Extract `settings.capabilities` (array of strings) from a
-        // sidecar manifest's raw JSON bytes. Returns an empty set when
-        // the sidecar is empty, doesn't parse, or doesn't declare any.
-        // (Sidecar-less repos contribute no capabilities; that's the
-        // intended backwards-compat behavior — they trigger no false
-        // capability-change flags.)
+        // `settings.capabilities` from a sidecar manifest's raw JSON. Empty when the sidecar
+        // is missing, unparseable or declares none, so a sidecar-less repo flags nothing.
         std::set<std::string> capabilitiesFromSidecar(
             const std::string& json) {
             std::set<std::string> out;
@@ -87,9 +81,8 @@ namespace cajeta::buildtool {
             return d;
         }
 
-        // Highest version of `name` across all repos. Returns the
-        // version + the first repo that carries it (priority order).
-        // Empty version when no repo has any version of `name`.
+        // Highest version of `name` across all repos, with the first repo (in priority
+        // order) that carries it. Empty version when no repo has any version of `name`.
         struct HighestPick {
             std::string version;
             std::string fromRepo;
@@ -112,9 +105,7 @@ namespace cajeta::buildtool {
             return best;
         }
 
-        // Locate `version` of `name` in the configured repos. Returns
-        // the repo name that carries it (priority order); empty when
-        // no repo has it.
+        // The repo, in priority order, carrying `version` of `name`; empty when none does.
         llvm::Expected<std::string> findRepoCarrying(
             const std::string& name,
             const std::string& version,
@@ -129,10 +120,8 @@ namespace cajeta::buildtool {
             return std::string{};
         }
 
-        // Pull the sidecar `cajeta.json` (raw bytes) for `name@version`
-        // from whichever repo carries it. Empty string when no repo
-        // carries the version, or when the carrying repo has no
-        // sidecar (pre-sidecar archives).
+        // Raw sidecar `cajeta.json` bytes for `name@version` from whichever repo carries
+        // it. Empty when no repo carries the version, or the carrier has no sidecar.
         llvm::Expected<std::string> fetchSidecar(
             const std::string& name,
             const std::string& version,
@@ -153,10 +142,8 @@ namespace cajeta::buildtool {
             return std::string{};  // no repo carries it
         }
 
-        // Map name → sidecar JSON pulled during the baseline
-        // `resolveMvs` walk. The walk returns ResolvedDependency rows
-        // but their sidecar bytes aren't surfaced — re-fetch via the
-        // repo set instead (cheap: cache + listVersions are local).
+        // name -> sidecar JSON for a baseline graph; re-fetched because resolveMvs rows
+        // do not surface the sidecar bytes (cheap: cache + listVersions are local).
         std::unordered_map<std::string, std::string>
         baselineSidecars(
             const std::vector<ResolvedDependency>& baseline,
@@ -202,9 +189,6 @@ namespace cajeta::buildtool {
                        "nothing to upgrade");
         }
 
-        // Build the same repo set the resolver uses. Reuse the
-        // .cajeta/cache/downloads/ stage so HTTP fetches land in the
-        // same place the build sees.
         auto repoSpecs = parseRepositories(m);
         if (!repoSpecs) return repoSpecs.takeError();
         if (repoSpecs->empty()) {
@@ -217,8 +201,6 @@ namespace cajeta::buildtool {
         auto repos = buildRepositories(*repoSpecs, downloadStage);
         if (!repos) return repos.takeError();
 
-        // Names targeted by this upgrade — explicit selection or
-        // every declared direct dep.
         std::vector<std::string> selected;
         if (targetNames.empty()) {
             for (const auto& d : *deps) selected.push_back(d.name);
@@ -234,9 +216,6 @@ namespace cajeta::buildtool {
             }
         }
 
-        // Baseline = current resolved graph (so we can compare new
-        // capabilities against what the consumer is actually shipping
-        // today, not just what's literally written in the manifest).
         ArtifactCache cache(projectRoot, homeOverride);
         auto baseline = resolveProjectDependencies(
             m, projectRoot, homeOverride);
@@ -248,10 +227,7 @@ namespace cajeta::buildtool {
                 oldVersions[r.name] = r.version;
             }
         } else {
-            // A baseline failure is informational, not fatal — the
-            // user is upgrading, possibly to fix an unresolvable
-            // current state. Swallow the error and proceed with
-            // empty old sidecars.
+            // A baseline failure is informational: the user may be upgrading to fix it.
             llvm::consumeError(baseline.takeError());
         }
 
@@ -264,7 +240,6 @@ namespace cajeta::buildtool {
             auto ovIt = oldVersions.find(name);
             if (ovIt != oldVersions.end()) e.oldVersion = ovIt->second;
 
-            // Pick newVersion: explicit when provided, else highest.
             auto evIt = explicitVersions.find(name);
             if (evIt != explicitVersions.end()) {
                 auto carrier = findRepoCarrying(
@@ -290,9 +265,7 @@ namespace cajeta::buildtool {
             e.newConstraint = e.newVersion;  // exact pin
             e.changed = !e.oldVersion.empty() &&
                         e.oldVersion != e.newVersion;
-            // When the baseline was unresolvable (no oldVersion), any
-            // valid new version is a change — the user is fixing the
-            // build.
+            // An unresolvable baseline makes any valid new version a change.
             if (e.oldVersion.empty()) e.changed = true;
 
             if (e.changed) {
@@ -331,9 +304,8 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Parse the typed Melt block from a melt artifact's sidecar
-        // bytes. Returns an empty Melt when the sidecar is missing
-        // or doesn't carry a melt block.
+        // The typed Melt block from a melt artifact's sidecar bytes; an empty Melt
+        // when the sidecar is missing or carries no melt block.
         Melt parseMeltSidecar(const std::string& json) {
             Melt out;
             if (json.empty()) return out;
@@ -351,7 +323,6 @@ namespace cajeta::buildtool {
             return std::move(*typed);
         }
 
-        // Compute the diff between two melts' curated dep tables.
         MeltDependencyDelta diffMeltDeps(
             const std::map<std::string, std::string>& oldT,
             const std::map<std::string, std::string>& newT) {
@@ -400,7 +371,6 @@ namespace cajeta::buildtool {
         auto repos = buildRepositories(*repoSpecs, downloadStage);
         if (!repos) return repos.takeError();
 
-        // Resolve names that are actually selected by this upgrade.
         std::map<std::string, std::string> currentVersions;
         for (const auto& imp : *imports) {
             currentVersions[imp.name] = imp.version;
@@ -426,7 +396,6 @@ namespace cajeta::buildtool {
             e.name = name;
             e.oldVersion = currentVersions[name];
 
-            // Pick newVersion: explicit when provided, else highest.
             auto evIt = explicitVersions.find(name);
             if (evIt != explicitVersions.end()) {
                 auto carrier = findRepoCarrying(name, evIt->second, *repos);

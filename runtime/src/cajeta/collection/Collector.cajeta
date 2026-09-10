@@ -70,8 +70,8 @@ public class Collector<T, R> {
      * ```
      */
     public Collector(() -> #R supplier, (R, T) -> #R accumulator, (R, R) -> #R combiner) {
-        this.supplier = supplier;
-        this.accumulator = accumulator;
-        this.combiner = combiner;
+        this.supplier #= supplier;         // Unit 9 (spec 5.13): the sink model — a literal moves in, a name lends
+        this.accumulator #= accumulator;
+        this.combiner #= combiner;
     }
 }

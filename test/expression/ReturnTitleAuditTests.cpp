@@ -91,7 +91,9 @@ TEST(ReturnTitleAuditTests, plainReturnTailCallIsEnumerated) {
     auto recs = auditCompile(src);
     const ReturnTitleRecord* r = find(recs, "test.D", "viaPlain");
     ASSERT_NE(r, nullptr) << "the ride-through site was not enumerated";
-    EXPECT_EQ(r->carry, TitleCarry::RuntimeFlag);
+    // Spec 7.2.3: `D.fresh` returns a kind-decidable title, so the tail call
+    // folds to the constant — still a title through a plain signature.
+    EXPECT_EQ(r->carry, TitleCarry::StaticTitle);
     EXPECT_EQ(r->via, TitleVia::CallRide);
     // WHICH callee is ridden is the difference between "a title escapes a
     // plain signature" and "the decision moved one frame along", so the count
@@ -210,7 +212,7 @@ TEST(ReturnTitleAuditTests, moveReturnUnderPlainTypeIsEnumerated) {
     auto recs = auditCompile(src);
     const ReturnTitleRecord* r = find(recs, "test.D", "viaMove");
     ASSERT_NE(r, nullptr) << "`return #x` under a plain return was not enumerated";
-    EXPECT_EQ(r->carry, TitleCarry::RuntimeFlag);
+    EXPECT_EQ(r->carry, TitleCarry::StaticTitle);
     EXPECT_EQ(r->via, TitleVia::Move);
 }
 

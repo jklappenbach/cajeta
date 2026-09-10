@@ -21,8 +21,8 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Apply CLI-bound values + defaults to a task's params,
-        // producing the materialized map for the TaskContext.
+        // Materializes a task's params into `ctx` from the CLI-bound values,
+        // falling back to each spec's default.
         llvm::Error bindParams(const Task& task,
                                const TaskInvocationParams& cli,
                                TaskContext& ctx) {
@@ -49,8 +49,8 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
-        // Recursively walk a JSON value, substituting every string-
-        // typed leaf via the TaskContext.
+        // Recursively substitutes every string-typed leaf of a JSON value through
+        // the TaskContext.
         llvm::Expected<llvm::json::Value> substituteValue(
             const llvm::json::Value& v,
             const std::string& whereContext,
@@ -100,10 +100,8 @@ namespace cajeta::buildtool {
             return out;
         }
 
-        // The when/skip-when truthy rule. A substituted string is
-        // "truthy" iff it's not in the falsy set. Deliberately
-        // minimal — no expression language; if you need real logic,
-        // write a user-defined action that wraps `exec`.
+        // The when/skip-when truthy rule: anything outside the falsy set. There is
+        // deliberately no expression language here.
         bool isTruthy(const std::string& s) {
             return !s.empty()
                 && s != "false"
@@ -111,10 +109,8 @@ namespace cajeta::buildtool {
                 && s != "null";
         }
 
-        // Evaluate when / skip-when. Returns:
-        //   true  → skip this action
-        //   false → run this action
-        // Errors propagate (substitution failure).
+        // Evaluates when / skip-when: TRUE means skip this action, false means run
+        // it. A substitution failure propagates as an error.
         llvm::Expected<bool> shouldSkip(
             const std::optional<std::string>& whenExpr,
             const std::optional<std::string>& skipWhenExpr,
@@ -133,9 +129,8 @@ namespace cajeta::buildtool {
             return false;
         }
 
-        // Walk an ActionEntry list, executing each entry in order
-        // against the TaskContext. Recursive — parallel children
-        // dispatch to runEntries() in their own snapshot contexts.
+        // Executes an ActionEntry list in order against the TaskContext. Recursive:
+        // parallel children re-enter here on their own snapshot contexts.
         llvm::Error runEntries(
             const std::map<std::string, Task>& tasks,
             const Task& task,
@@ -146,8 +141,8 @@ namespace cajeta::buildtool {
             std::set<std::string>& executedTasks,
             const std::string& breadcrumbBase);
 
-        // Run-task: invoke another task with substituted params,
-        // capture its outputs, publish them under the entry's id.
+        // Invokes another task with substituted params, publishing its outputs
+        // under the entry's id.
         llvm::Error runOneRunTask(
             const std::map<std::string, Task>& tasks,
             const RunTaskCall& call,
@@ -156,7 +151,6 @@ namespace cajeta::buildtool {
             const ActionRegistry& registry,
             std::set<std::string>& executedTasks,
             const std::string& breadcrumb) {
-            // Resolve when/skip-when first.
             auto skip = shouldSkip(call.whenExpr, call.skipWhenExpr,
                                    breadcrumb, parentCtx);
             if (!skip) return skip.takeError();
@@ -168,9 +162,6 @@ namespace cajeta::buildtool {
                            call.taskName + "'");
             }
 
-            // Substitute the param values against the calling
-            // context, then bind them as the called task's CLI
-            // params.
             TaskInvocationParams cli;
             for (const auto& kv : call.params) {
                 auto resolved = parentCtx.substitute(
@@ -179,23 +170,10 @@ namespace cajeta::buildtool {
                 cli.values[kv.first] = *resolved;
             }
 
-            // Recurse — the called task gets its own TaskContext.
-            // Its dependencies traverse the same executedTasks set so
-            // they don't double-run if also depended on by the
-            // current task.
             const Task& called = it->second;
 
-            // Detect deeper run-task cycles: a task indirectly
-            // calling itself via run-task is harder to detect than
-            // depends-on cycles. Use a small guard via executedTasks
-            // set — but run-task can legitimately invoke a task
-            // multiple times, so we use a per-call-chain set rather
-            // than the same dedupe set. Phase 3b keeps it simple:
-            // detect immediate self-call.
             if (call.taskName == called.name && executedTasks.count(called.name)) {
-                // Already executed via depends-on or a prior run-task;
-                // re-running run-task is allowed (it's an explicit
-                // call), so don't error. Just proceed.
+                // An explicit run-task call may re-run an already-executed task.
             }
 
             TaskContext childCtx(props, parentCtx.manifest());
@@ -203,7 +181,6 @@ namespace cajeta::buildtool {
                 return std::move(e);
             }
 
-            // Reject duplicate ids in the called task before running.
             std::set<std::string> seen;
             for (const auto& entry : called.actions) {
                 std::string id;
@@ -226,8 +203,6 @@ namespace cajeta::buildtool {
                 return std::move(e);
             }
 
-            // Resolve called task's outputs block; publish under the
-            // entry's id (if any).
             std::map<std::string, std::string> calledOutputs;
             for (const auto& kv : called.outputs) {
                 auto resolved = childCtx.substitute(
@@ -242,11 +217,8 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
-        // A `-p name=value` value arrives as a string, but action params are typed
-        // JSON: `params.getBoolean("keep-cache")` returns nothing for the STRING
-        // "true", so an uncoerced overlay would look like it worked and change
-        // nothing. Coerce the shapes an action can ask for; anything else stays a
-        // string (getString sees it unchanged).
+        // A `-p` value arrives as a string but action params are typed JSON, so an
+        // uncoerced overlay silently changes nothing. Non-coercible stays a string.
         llvm::json::Value coerceCliParam(const std::string& raw) {
             if (raw == "true")  return llvm::json::Value(true);
             if (raw == "false") return llvm::json::Value(false);
@@ -260,20 +232,15 @@ namespace cajeta::buildtool {
             return llvm::json::Value(raw);
         }
 
-        // Overlay the invoked task's CLI `-p` params onto an action's params.
-        // The CLI wins over the manifest: an override that the task definition
-        // already pins is exactly what a user is trying to change.
-        //
-        // Every action in the task sees every override. Names are namespaced by
-        // the action catalog (each action reads only the params it documents), so
-        // an unrelated action simply never asks for the key.
+        // Overlays the task's CLI `-p` params onto one action's params, the CLI
+        // winning. Every action sees every override but reads only its own keys.
         void applyCliParamOverrides(llvm::json::Object& params, const TaskContext& ctx) {
             for (const auto& [name, value] : ctx.cliParams()) {
                 params[name] = coerceCliParam(value);
             }
         }
 
-        // Plain action invocation execution.
+        // Runs one plain action invocation from the registry.
         llvm::Error runOneInvocation(
             const ActionInvocation& inv,
             const ActionRegistry& registry,
@@ -310,10 +277,9 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
-        // Parallel group: spawn each child in its own thread with a
-        // snapshot context, join all, merge outputs back into the
-        // parent. If any child errors, collect the first error
-        // (others are reported in passing).
+        // Runs a parallel group: one thread per child on a snapshot context, then
+        // joins, merges outputs back in declaration order, and reports the first
+        // child error with the rest appended.
         llvm::Error runParallel(
             const std::map<std::string, Task>& tasks,
             const Task& task,
@@ -325,14 +291,12 @@ namespace cajeta::buildtool {
             const std::string& breadcrumb) {
             if (group.children.empty()) return llvm::Error::success();
 
-            // Per-child contexts (snapshot of the parent at entry).
             std::vector<TaskContext> childCtxs;
             childCtxs.reserve(group.children.size());
             for (size_t i = 0; i < group.children.size(); ++i) {
                 childCtxs.push_back(parentCtx.snapshot());
             }
 
-            // Per-child error slots.
             std::vector<std::string> childErrors(group.children.size());
             std::vector<std::thread> threads;
             threads.reserve(group.children.size());
@@ -355,12 +319,8 @@ namespace cajeta::buildtool {
             }
             for (auto& t : threads) t.join();
 
-            // Merge each child's outputs back into the parent in
-            // declaration order so the final state is deterministic.
             for (auto& cc : childCtxs) parentCtx.mergeOutputs(cc);
 
-            // Collect errors. First non-empty wins; subsequent ones
-            // surface in the error message.
             std::string combined;
             for (size_t i = 0; i < childErrors.size(); ++i) {
                 if (childErrors[i].empty()) continue;
@@ -410,9 +370,8 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
-        // Topologically sort depends-on graph; return tasks in
-        // execution order (deps before consumers). Assumes the graph
-        // has already been validated for cycles.
+        // Appends `root`'s depends-on closure to `order`, deps before consumers.
+        // Assumes the graph has already been validated for cycles.
         void topoOrder(const std::map<std::string, Task>& tasks,
                        const std::string& root,
                        std::unordered_set<std::string>& visited,
@@ -427,9 +386,8 @@ namespace cajeta::buildtool {
             order.push_back(root);
         }
 
-        // Run one task (its actions + outputs resolution). Does NOT
-        // handle depends-on — that's done by the outer runTask which
-        // topologically expands and calls this in order.
+        // Runs one task's actions and resolves its outputs. Does NOT handle
+        // depends-on: runTask expands that and calls this in order.
         llvm::Expected<std::map<std::string, std::string>> runOneTask(
             const std::map<std::string, Task>& tasks,
             const Task& task,
@@ -442,15 +400,8 @@ namespace cajeta::buildtool {
             if (auto e = bindParams(task, cliParams, ctx)) {
                 return std::move(e);
             }
-            // Beyond the task's declared params, `-p` also reaches the params of
-            // the actions this task runs — so a builtin action's documented params
-            // (e.g. `clean -p keep-cache=true`) work without the project having to
-            // re-declare them in cajeta.json. See TaskContext::setCliParams.
             ctx.setCliParams(cliParams.values);
 
-            // Duplicate id check across this task's top-level
-            // actions (parallel groups themselves have no id, but
-            // their children do — those are checked recursively).
             std::set<std::string> seen;
             for (const auto& e : task.actions) {
                 std::string id;
@@ -471,7 +422,6 @@ namespace cajeta::buildtool {
                 return std::move(e);
             }
 
-            // Resolve outputs block.
             std::map<std::string, std::string> outputs;
             for (const auto& kv : task.outputs) {
                 auto resolved = ctx.substitute(
@@ -493,8 +443,6 @@ namespace cajeta::buildtool {
         const ActionRegistry& registry,
         const Manifest* manifest) {
 
-        // Validate the whole task graph for cycles before any action
-        // fires. Cheap; catches the structural error early.
         if (auto e = validateTaskGraph(tasks)) return std::move(e);
 
         auto tIt = tasks.find(taskName);
@@ -502,8 +450,6 @@ namespace cajeta::buildtool {
             return err("no such task: '" + taskName + "'");
         }
 
-        // Topologically expand depends-on; run each dep in order,
-        // skip already-done within this invocation.
         std::unordered_set<std::string> visited;
         std::vector<std::string> order;
         topoOrder(tasks, taskName, visited, order);
@@ -511,8 +457,7 @@ namespace cajeta::buildtool {
         std::set<std::string> executed;
         std::map<std::string, std::string> lastOutputs;
         for (const auto& name : order) {
-            // CLI-supplied params apply only to the target task,
-            // not to its deps (deps get their declared defaults).
+            // CLI params reach the target task only; deps get their defaults.
             const TaskInvocationParams& p =
                 (name == taskName) ? cliParams : TaskInvocationParams{};
             auto it = tasks.find(name);
@@ -532,11 +477,9 @@ namespace cajeta::buildtool {
 
     namespace {
 
+        // Best-effort substitution for `--show`: an unresolvable reference is left
+        // as a literal `${name}` rather than erroring on a static preview.
         std::string subSafe(const TaskContext& ctx, const std::string& s) {
-            // Best-effort substitute. Leave unresolvable references
-            // as literal `${name}` so `--show` doesn't error on
-            // missing-at-this-point references (which is fine for
-            // a static preview).
             std::string r;
             r.reserve(s.size());
             for (size_t i = 0; i < s.size(); ) {
@@ -585,7 +528,6 @@ namespace cajeta::buildtool {
                 out << "]";
                 return;
             }
-            // Primitive — let llvm::json format it.
             std::string buf;
             llvm::raw_string_ostream os(buf);
             os << v;

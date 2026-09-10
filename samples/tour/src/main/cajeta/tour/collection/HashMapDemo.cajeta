@@ -21,7 +21,8 @@ public class HashMapDemo extends DemoClass {
         HashMap<String, int32> freq = heap HashMap<String, int32>(16);
         int32 i = 0;
         while (i < 8) {
-            String w = words[i];
+            String w = words[i];           // a borrow of the array's element
+            // `freq[w] = …` lends the key; the words array outlives the map.
             if (freq.containsKey(w)) {
                 freq[w] = freq[w] + 1;     // operator[] read + []= write
             } else {

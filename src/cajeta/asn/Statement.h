@@ -22,25 +22,8 @@ namespace cajeta {
     class Statement;
     typedef shared_ptr<Statement> StatementPtr;
 
-//    statement
-//    : blockLabel=block
-//    | IF parExpression statement (ELSE statement)?
-//    | FOR '(' forControl ')' statement
-//    | WHILE parExpression statement
-//    | DO statement WHILE parExpression ';'
-//    | TRY block (catchClause+ finallyBlock? | finallyBlock)
-//    | SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
-//    | SYNCHRONIZED parExpression block
-//    | RETURN expression? ';'
-//    | THROW expression ';'
-//    | BREAK identifier? ';'
-//    | CONTINUE identifier? ';'
-//    | YIELD expression ';' // Java17
-//    | SEMI
-//    | statementExpression=expression ';'
-//    | switchExpression ';'? // Java17
-//    | identifierLabel=identifier ':' statement
-//    ;
+    // The statement AST: one class per alternative of the grammar's `statement`
+    // rule, each carrying the production it was built from.
 
     class Statement : public BlockStatement {
     public:
@@ -48,12 +31,8 @@ namespace cajeta {
 
         static StatementPtr fromContext(CajetaParser::StatementContext* ctx);
 
-        // Public alias to the file-internal block builder so callers outside
-        // Statement.cpp (e.g. LambdaExpression's parser branch, which needs
-        // a Block to wrap a block-form lambda body) can construct a Block
-        // from its parser context without duplicating BlockStatement
-        // assembly logic. Delegates to the same private helper used inside
-        // Statement.cpp.
+        // The file-internal block builder, exposed for callers outside
+        // Statement.cpp (LambdaExpression wraps a block-form body in a Block).
         static BlockPtr buildBlockFromContext(CajetaParser::BlockContext* ctx);
     };
 
@@ -67,9 +46,8 @@ namespace cajeta {
 
         ExpressionPtr getExpression() const { return expression; }
 
-        // The wrapped expression isn't in `children` so the default walk skips it. Forward
-        // explicitly so the type-resolver pre-pass visits every Expression in the tree.
-        // Body in Statement.cpp because Expression is forward-declared here.
+        // The wrapped expression is not in `children`, so the default walk skips
+        // it. Body in the .cpp, since Expression is only forward-declared here.
         void resolveTypes(CajetaModulePtr module) override;
         void forEachSubNode(
             const std::function<void(const AbstractSyntaxNodePtr&)>& fn) override;
@@ -77,13 +55,8 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * blockLabel=block
-     *
-     * A block used in statement position (e.g. the body of `if (x) { ... }`). Wraps
-     * a Block of inner block-statements. The "label" naming is historical — labels
-     * proper (`outer: while (...) ...`) aren't implemented yet.
-     */
+    /** blockLabel=block — a block in statement position, e.g. the body of
+     *  `if (x) { ... }`. The "label" naming is historical: labels are not built. */
     class LabelStatement : public Statement {
     private:
         BlockPtr block;
@@ -91,10 +64,8 @@ namespace cajeta {
         LabelStatement(antlr4::Token* token, BlockPtr block)
             : Statement(token), block(block) { }
 
-        // Block isn't in `children`, so walkers that visit only the
-        // children list (lambda-body free-name collection, transfer-
-        // name collection, value-capture immutability) need this
-        // accessor to descend into nested-block contents.
+        // Block is not in `children`, so walkers that visit only that list need
+        // this accessor to descend into the nested block.
         BlockPtr getBlock() const { return block; }
 
         void resolveTypes(CajetaModulePtr module) override;
@@ -103,13 +74,9 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    // docs/specification/concurrent/Concurrency.md — `scope { ... }` is a structured-concurrency block that
-    // owns every Task spawned inside it; control doesn't leave the block
-    // until every child task has finished or been cancelled. In the sync-
-    // lowering MVP this is just a block: spawns run inline, so there are no
-    // outstanding children at the closing `}`. The class exists now so later
-    // phases (real scheduler, scope-bound joins) have an AST hook without
-    // having to re-parse.
+    // `scope { ... }` — a structured-concurrency block owning every Task spawned
+    // inside it (Concurrency.md). Spawns run inline under the sync-lowering MVP,
+    // so this is just a block; the class exists as the hook for later phases.
     class ScopeStatement : public Statement {
     private:
         BlockPtr block;
@@ -129,9 +96,7 @@ namespace cajeta {
 
     };
 
-    /**
-     * IF parExpression statement (ELSE statement)?
-     */
+    /** IF parExpression statement (ELSE statement)? */
     class IfStatement : public Statement {
     private:
         ExpressionPtr condition;
@@ -142,8 +107,7 @@ namespace cajeta {
                     StatementPtr elseStmt)
             : Statement(token), condition(cond), thenBranch(thenStmt), elseBranch(elseStmt) { }
 
-        // Exposed so external walkers (e.g. the lambda body's free-variable
-        // scan) can reach sub-expressions hidden behind private fields.
+        // Exposed for external walkers, e.g. the lambda free-variable scan.
         ExpressionPtr getCondition() const { return condition; }
         StatementPtr getThenBranch() const { return thenBranch; }
         StatementPtr getElseBranch() const { return elseBranch; }
@@ -155,12 +119,9 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * FOR '(' forControl ')' statement
-     *
-     * C-style: `for (init; cond; update) body`. init may be a local-variable
-     * declaration or a list of expression statements; cond and update are optional.
-     */
+    /** FOR '(' forControl ')' statement — C-style `for (init; cond; update) body`.
+     *  init may be a local declaration or expression statements; cond and update
+     *  are both optional. */
     class ForStatement : public Statement {
     private:
         BlockStatementPtr init;       // LocalVariableDeclaration or ExpressionStatement; may be null
@@ -184,15 +145,9 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * Enhanced for-loop over an iterable (today: arrays only).
-     *
-     *   for ([iteratorType iteratorName ,] elementType elementName : iterable)
-     *       body
-     *
-     * The optional iterator binding is a Cajeta extension that exposes the running
-     * 0-based index alongside the element value.
-     */
+    /** Enhanced for over an iterable (today: arrays only):
+     *  `for ([iteratorType iter,] elementType elem : iterable) body`. The optional
+     *  iterator binding is a Cajeta extension exposing the running 0-based index. */
     class EnhancedForStatement : public Statement {
     private:
         CajetaTypePtr iteratorType;     // null if no iterator binding
@@ -231,9 +186,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * WHILE parExpression statement
-     */
+    /** WHILE parExpression statement */
     class WhileStatement : public Statement {
     private:
         ExpressionPtr condition;
@@ -252,9 +205,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * DO statement WHILE parExpression ';'
-     */
+    /** DO statement WHILE parExpression ';' */
     class DoStatement : public Statement {
     private:
         StatementPtr body;
@@ -273,26 +224,19 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    // One catch clause within a try. Currently single-type per catch (no `T1 | T2`
-    // multi-catch), and the bound variable is implicitly the thrown value loaded via
-    // the runtime accessor.
+    // One catch clause of a try: single-type per catch (no `T1 | T2`), with the
+    // bound variable loaded through the runtime accessor.
     struct CatchClause {
         CajetaTypePtr type;       // exception type (primitives + classes for now)
         string typeNameText;      // the type name AS WRITTEN — re-resolved
-                                  // scoped at resolveTypes (a parse-time bare
-                                  // registry hit can miss sibling-file/archive
-                                  // classes, or land a same-named shadow)
+                                  // scoped at resolveTypes
         string variableName;       // bound name in the catch body
         BlockPtr body;
     };
 
-    /**
-     * TRY block (catchClause+ finallyBlock? | finallyBlock)
-     *
-     * setjmp/longjmp-based exception handling: each try-block allocates a frame on
-     * the stack, registers it with the runtime, and uses setjmp to set a recovery
-     * point. `throw` longjmps back to the most recently registered frame.
-     */
+    /** TRY block (catchClause+ finallyBlock? | finallyBlock) — setjmp/longjmp
+     *  handling: each try allocates a frame and registers it with the runtime,
+     *  and `throw` longjmps back to the most recently registered frame. */
     class TryStatement : public Statement {
     private:
         BlockPtr tryBlock;
@@ -315,28 +259,17 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    // ResourceTryStatement was removed 2026-05-20 together with the
-    // grammar's `TRY resourceSpecification …` alternative —
-    // destructors fire deterministically at scope exit and made
-    // try-with-resources redundant. See docs/MemoryModel.md
-    // § Destructors.
-
-    // One labeled group within a switch — e.g. `case 1: case 2: stmts...`.
-    // `caseValues` are the constant expressions for the case labels; an empty list
-    // with `isDefault=true` means the `default:` group.
+    // One labeled group in a switch (`case 1: case 2: stmts...`). An empty
+    // `caseValues` with isDefault set is the `default:` group.
     struct SwitchGroup {
         std::vector<ExpressionPtr> caseValues;
         bool isDefault = false;
         std::vector<BlockStatementPtr> statements;
     };
 
-    /**
-     * SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
-     *
-     * Classic Java switch over an integer subject. Groups fall through to the next
-     * one unless terminated by `break` or `return`. `default:` matches when no case
-     * does. The new-style `case X -> body` form is out of scope this round.
-     */
+    /** SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}' —
+     *  a classic switch over an integer subject, groups falling through unless
+     *  `break` or `return` ends them. `case X -> body` is out of scope. */
     class SwitchStatement : public Statement {
     private:
         ExpressionPtr subject;
@@ -356,9 +289,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * SYNCHRONIZED parExpression block
-     */
+    /** SYNCHRONIZED parExpression block */
     class SynchronizedStatement : public Statement {
     private:
         ExpressionPtr parExpression;
@@ -369,9 +300,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * RETURN expression? ';'
-     */
+    /** RETURN expression? ';' */
     class ReturnStatement : public Statement {
     private:
         ExpressionPtr expression;
@@ -382,24 +311,15 @@ namespace cajeta {
             : Statement(token), expression(expression),
               modeCarrying(modeCarrying) { }
 
-        // `return #= x` (argument-title-carry): release WHATEVER title this
-        // frame holds, as a runtime bit. Distinct from `return x`, which is
-        // transparent carry (spec §2.8) — a formal forwards the caller's mode
-        // and hands its entry over, while a named local with a drop entry,
-        // owned OR merely borrowed, is rejected by
-        // FRESH_RETURN_NEEDS_TRANSFER (§4.8). And distinct from `return #x`,
-        // which does not itself assert a title — it forwards the mode the
-        // frame holds — but declares the transfer contract, so a frame that
-        // provably holds none is rejected by MOVE_OF_BORROW. A collection slot
-        // may now hold either, so remove-shaped returns cannot decide
-        // statically.
+        // `return #= x` releases WHATEVER title this frame holds, as a runtime
+        // bit — unlike `return x`, which carries the caller's mode transparently,
+        // and `return #x`, which declares the transfer contract without asserting.
         bool isModeCarrying() const { return modeCarrying; }
 
         // Like ExpressionStatement, the returned expression isn't in `children`.
         void resolveTypes(CajetaModulePtr module) override;
 
-        // Exposed so external walkers (e.g. the lambda body's free-variable
-        // scan) can reach the returned expression that isn't in `children`.
+        // Exposed for external walkers; the expression is not in `children`.
         ExpressionPtr getExpression() const { return expression; }
 
         void forEachSubNode(
@@ -407,9 +327,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * THROW expression ';'
-     */
+    /** THROW expression ';' */
     class ThrowStatement : public Statement {
     private:
         ExpressionPtr expression;
@@ -425,9 +343,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * BREAK identifier? ';'
-     */
+    /** BREAK identifier? ';' */
     class BreakStatement : public Statement {
     private:
         string label;   // empty for unlabeled `break;`
@@ -440,9 +356,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * CONTINUE identifier? ';'
-     */
+    /** CONTINUE identifier? ';' */
     class ContinueStatement : public Statement {
     private:
         string label;   // empty for unlabeled `continue;`
@@ -455,9 +369,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * YIELD expression ';' // Java17
-     */
+    /** YIELD expression ';' // Java17 */
     class YieldStatement : public Statement {
     private:
     public:
@@ -466,32 +378,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-//    TODO: Java17 switch statement
-//    /**
-//     * guardedPattern
-//     * : '(' guardedPattern ')'
-//     * | variableModifier* typeType annotation* identifier ('&&' expression)*
-//     * | guardedPattern '&&' expression;
-//     */
-//    class GuardedPattern {
-//        GuardedPattern* guardedPattern;
-//
-//    };
-//
-//    /**
-//     * switchLabeledRule
-//     * : CASE (expressionList | NULL_LITERAL | guardedPattern) (ARROW | COLON) switchRuleOutcome
-//     * | DEFAULT (ARROW | COLON) switchRuleOutcome;
-//     */
-//    class SwitchLabelRule {
-//       list<Expression*>
-//    };
-//    /**
-//     * switchExpression ';'? // Java17
-//     */
-//    class SwitchExpression : public Statement {
-//        Expression* parExpression;
-//    };
+//    TODO: Java17 switch expressions — guarded patterns and `case X ->` rules.
 
     class IdentifierLabel : public Statement {
     private:

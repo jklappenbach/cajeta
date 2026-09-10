@@ -1,11 +1,6 @@
-// Plugin subprocess runtime — spawns a plugin binary, sends the
-// action request as JSON on stdin, reads JSON-line records back from
-// stdout, aggregates them into an ActionResult.
-//
-// The protocol is documented in PluginRuntime.cpp's namespace block —
-// keep that as the canonical spec. The same protocol is what the
-// future in-process (LLJIT) runtime will speak across function-call
-// boundaries instead of pipes; this file is the v1 subprocess host.
+// Plugin subprocess runtime — spawns a plugin binary, sends the action request
+// as JSON on stdin, reads JSON-line records back from stdout and aggregates
+// them into an ActionResult. Protocol: PluginRuntime.cpp's namespace block.
 
 #pragma once
 
@@ -19,28 +14,9 @@
 
 namespace cajeta::buildtool {
 
-    // Dispatch one invocation of a plugin-provided action.
-    //
-    //   plugin       — the resolved plugin owning `actionName`. Must
-    //                  carry a non-empty `binaryPath` (the resolver
-    //                  records it from `details.plugin.binary` in the
-    //                  plugin's sidecar manifest).
-    //   actionName   — the namespaced action name as it appeared in
-    //                  the task (e.g. `"cajeta.coverage.report"`).
-    //                  Echoed back to the plugin so it knows which
-    //                  entry to call when it ships more than one.
-    //   params       — substituted action params (the `${id.field}`
-    //                  expansion already done by the TaskRunner).
-    //                  Passed verbatim to the plugin via stdin.
-    //   ctx          — the task context. The runtime reads workdir +
-    //                  project identity from it for the request, and
-    //                  forwards plugin writes/warns back through it.
-    //
-    // Returns the action result on protocol success — that includes
-    // the plugin reporting a logical error (the ActionResult carries
-    // an error message but the call itself didn't fault). Returns an
-    // llvm::Error only on infrastructure failures: missing binary,
-    // exec failure, plugin crash, malformed protocol records.
+    // Dispatch one invocation of the plugin-provided `actionName`, with
+    // already-substituted `params`. A plugin reporting a logical error still
+    // succeeds; llvm::Error means the call itself faulted.
     llvm::Expected<ActionResult> invokePluginAction(
         const ResolvedPlugin& plugin,
         const std::string& actionName,

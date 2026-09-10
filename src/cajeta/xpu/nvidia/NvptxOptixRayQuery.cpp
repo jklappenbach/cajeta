@@ -1,13 +1,6 @@
-//
-// NVPTX → OptiX RT-core ray-query program emission — see header.
-//
-// The emitted program set reproduces the M0/M1 oracle programs (test/xpu/optix/
-// optix_progs.cu) and the Phase-1 spike IR (test/xpu/optix/optix_progs_ll.ll),
-// parameterized by the @Kernel's launch-params layout. The `_optix_*` inline-asm
-// calls are the exact ABI from the OptiX SDK's optix_device_impl.h — OptiX's module
-// compiler pattern-matches them in the PTX regardless of frontend (proven on the
-// 4090 in M2 Phase 1: optixModuleCreate accepts LLVM-emitted PTX).
-//
+// NVPTX → OptiX ray-query program emission; see the header. The `_optix_*` inline
+// asm is the exact ABI from the SDK's optix_device_impl.h, which OptiX's module
+// compiler pattern-matches in the PTX whatever emitted it.
 
 #include "NvptxOptixRayQuery.h"
 
@@ -39,14 +32,11 @@ namespace nvidia {
 
 namespace {
 
-// NVPTX address spaces: 1 = global, 4 = constant. The `params` launch block is a
-// .const global (OptiX fills it via optixLaunch's pipelineParams); buffer pointers
-// stored in it address global memory.
+// NVPTX address spaces: `params` is .const, the buffer pointers in it are global.
 constexpr unsigned kGlobalAS = 1;
 constexpr unsigned kConstAS = 4;
 
-// Build the 49-in / 32-out `_optix_trace_typed_32` inline-asm callee (the optixTrace
-// ABI). Return type is a 32×i32 struct (the payload out-registers); we read slot 0.
+// The 49-in / 32-out `_optix_trace_typed_32` callee; slot 0 of its 32xi32 result.
 llvm::InlineAsm* makeTraceAsm(llvm::LLVMContext& ctx) {
     auto* i32 = llvm::Type::getInt32Ty(ctx);
     auto* i64 = llvm::Type::getInt64Ty(ctx);
@@ -78,14 +68,13 @@ llvm::InlineAsm* makeTraceAsm(llvm::LLVMContext& ctx) {
     return llvm::InlineAsm::get(fnTy, tmpl, consS, /*hasSideEffects=*/true);
 }
 
-// A single-i32-result optix getter (`call ($0), <op>, ();`).
+// The optix getter call forms: no-arg u32, u32 -> u32, no-arg f32.
 llvm::Value* callU32Getter(llvm::IRBuilder<>& b, const char* op, const char* nm) {
     auto* i32 = llvm::Type::getInt32Ty(b.getContext());
     auto* ia = llvm::InlineAsm::get(llvm::FunctionType::get(i32, false),
         std::string("call ($0), ") + op + ", ();", "=r", /*sideeffect=*/true);
     return b.CreateCall(ia, {}, nm);
 }
-// A u32->u32 optix getter (`call ($0), <op>, ($1);`) — e.g. the hit-kind decoders.
 llvm::Value* callU32Getter1(llvm::IRBuilder<>& b, const char* op, llvm::Value* arg,
                             const char* nm) {
     auto* i32 = llvm::Type::getInt32Ty(b.getContext());
@@ -93,16 +82,13 @@ llvm::Value* callU32Getter1(llvm::IRBuilder<>& b, const char* op, llvm::Value* a
         std::string("call ($0), ") + op + ", ($1);", "=r,r", /*sideeffect=*/true);
     return b.CreateCall(ia, {arg}, nm);
 }
-// A single-f32-result optix getter (`call ($0), <op>, ();`).
 llvm::Value* callF32Getter(llvm::IRBuilder<>& b, const char* op, const char* nm) {
     auto* f32 = llvm::Type::getFloatTy(b.getContext());
     auto* ia = llvm::InlineAsm::get(llvm::FunctionType::get(f32, false),
         std::string("call ($0), ") + op + ", ();", "=f", /*sideeffect=*/true);
     return b.CreateCall(ia, {}, nm);
 }
-// The two-f32-result optix triangle-barycentrics getter
-// (`call ($0, $1), _optix_get_triangle_barycentrics, ();`). Returns the {f,f} struct;
-// the caller extracts slot 0 (u) / slot 1 (v).
+// The barycentrics getter's {f,f} struct: slot 0 is u, slot 1 is v.
 llvm::Value* callBarycentrics(llvm::IRBuilder<>& b, const char* nm) {
     auto* f32 = llvm::Type::getFloatTy(b.getContext());
     auto* retTy = llvm::StructType::get(b.getContext(), {f32, f32});
@@ -119,12 +105,9 @@ llvm::Function* makeEntry(llvm::Module& m, const std::string& name) {
     return fn;
 }
 
-// Recursively collect every MethodCallExpression in a method-body subtree. The
-// branch/loop bodies + conditions + wrapped expressions live behind private
-// accessors (NOT in getChildren), so descend them explicitly — mirrors
-// Method::nodeHasStackReturn. A MethodCallExpression's args are in getParameters(),
-// also off the children list. Kernel bodies are tiny, so the (harmless) double
-// visit of any node that IS in children too is not a concern.
+// Collects every MethodCallExpression under `node`. Branch and loop bodies, and a
+// call's own arguments, sit behind private accessors rather than in getChildren(),
+// so they are descended explicitly and a node may be visited twice, harmlessly.
 void collectCalls(const AbstractSyntaxNodePtr& node,
                   std::vector<std::shared_ptr<MethodCallExpression>>& out) {
     if (!node) return;
@@ -162,11 +145,8 @@ void collectCalls(const AbstractSyntaxNodePtr& node,
     for (const auto& c : node->getChildren()) collectCalls(c, out);
 }
 
-// Evaluate a ray-arg expression to a compile-time float (the nearest shape bakes
-// its single ray's literals into raygen). Handles a float literal and a unary
-// +/- over one. Returns false for anything non-constant — the caller throws
-// XPU-N04 so a dynamic-ray nearest kernel falls to the software cubin, never a
-// silent miscompile.
+// A ray arg as a compile-time float: a float literal, or a unary +/- over one.
+// False for anything else, which the caller turns into XPU-N04.
 bool evalConstF32(const ExpressionPtr& e, float& out) {
     if (!e) return false;
     if (auto fl = std::dynamic_pointer_cast<FloatLiteralExpression>(e)) {
@@ -191,9 +171,7 @@ bool evalConstF32(const ExpressionPtr& e, float& out) {
     return false;
 }
 
-// The single ray baked into a triangle shape's __raygen__. Extracted from the
-// kernel's RayQuery.initialize(AS, rayFlags, cullMask, ox,oy,oz, tMin, dx,dy,dz, tMax)
-// call — args 3..10 must be compile-time-constant floats.
+// The ray baked into a triangle shape's __raygen__, from initialize()'s args 3..10.
 struct ConstRay { float ox, oy, oz, tMin, dx, dy, dz, tMax; };
 ConstRay extractConstRay(const cajeta::MethodPtr& method) {
     std::vector<std::shared_ptr<MethodCallExpression>> calls;
@@ -219,8 +197,7 @@ ConstRay extractConstRay(const cajeta::MethodPtr& method) {
     return r;
 }
 
-// Param-kind tally for a kernel (the signature gate the shape classifier + the
-// emitters share). Uses a throwaway context/layout — only kinds are read.
+// The param-kind tally the shape classifier and the emitters share as their gate.
 struct ParamTally { unsigned accel = 0, buffer = 0, scalar = 0, other = 0; };
 ParamTally tallyParams(const cajeta::MethodPtr& method) {
     llvm::LLVMContext probe;
@@ -241,9 +218,7 @@ ParamTally tallyParams(const cajeta::MethodPtr& method) {
 
 bool nvptxKernelUsesRayQuery(const MethodPtr& method) {
     if (!method) return false;
-    // collectKernelParamInfo needs a context + DataLayout for byteSizes; the kinds
-    // (all we read here) are layout-independent, so a throwaway context + default
-    // layout suffice for the "has an AccelerationStructure param" check.
+    // Kinds are layout-independent, so a throwaway context and layout suffice.
     llvm::LLVMContext probe;
     llvm::DataLayout dl("");
     for (const auto& pi : collectKernelParamInfo(method, probe, dl))
@@ -272,22 +247,17 @@ OptixRqShape classifyRayQueryShape(const MethodPtr& method) {
 
     ParamTally t = tallyParams(method);
     if (committed) {
-        // Triangle nearest-hit: (AccelerationStructure, Buffer outT, Buffer outI).
         if (t.accel == 1 && t.buffer == 2 && t.scalar == 0 && t.other == 0)
             return OptixRqShape::NearestTri;
-        // Committed-triangle per-launch (kTri count / kFront front-face):
-        // (AS, Buffer b0, Buffer b1, Buffer out, count). Per-launch dynamic ray.
         if (t.accel == 1 && t.buffer == 3 && t.scalar == 1 && t.other == 0)
             return OptixRqShape::CommittedTri;
         return OptixRqShape::Unsupported;
     }
     if (candGetter) {
-        // Triangle candidate getters: (AccelerationStructure, Buffer<float32> out).
         if (t.accel == 1 && t.buffer == 1 && t.scalar == 0 && t.other == 0)
             return OptixRqShape::BaryCandidate;
         return OptixRqShape::Unsupported;
     }
-    // AABB candidate count: (AS, Buffer originX/Y/Z, Buffer<uint32> out, count).
     if (t.accel == 1 && t.buffer == 4 && t.scalar == 1 && t.other == 0)
         return OptixRqShape::CountAabb;
     return OptixRqShape::Unsupported;
@@ -300,7 +270,6 @@ std::string emitOptixCountModule(const MethodPtr& method, llvm::Module& m) {
     auto* f32 = llvm::Type::getFloatTy(ctx);
     auto* gptr = llvm::PointerType::get(ctx, kGlobalAS);
 
-    // ---- recognize the canonical AABB-count signature (kind + count) -----------
     auto params = collectKernelParamInfo(method, ctx, m.getDataLayout());
     unsigned nAccel = 0, nBuffer = 0, nScalar = 0, nOther = 0;
     for (const auto& pi : params) {
@@ -323,8 +292,7 @@ std::string emitOptixCountModule(const MethodPtr& method, llvm::Module& m) {
 
     const std::string kname = method->getName();
 
-    // ---- the `params` launch block (.const) — layout per the header contract ----
-    // { handle, originX, originY, originZ, out, n, boxes }
+    // `params` (.const): { handle, originX, originY, originZ, out, n, boxes }
     std::vector<llvm::Type*> fields = {i64, i64, i64, i64, i64, i32, i64};
     auto* paramsTy = llvm::StructType::create(ctx, fields, "RqCountParams");
     auto* paramsG = new llvm::GlobalVariable(
@@ -345,7 +313,6 @@ std::string emitOptixCountModule(const MethodPtr& method, llvm::Module& m) {
 
     auto traceAsm = makeTraceAsm(ctx);
 
-    // ---- __raygen__<k> : per-launch-index ray, optixTrace, write count ----------
     {
         llvm::Function* fn = makeEntry(m, "__raygen__" + kname);
         auto* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
@@ -397,7 +364,6 @@ std::string emitOptixCountModule(const MethodPtr& method, llvm::Module& m) {
         b.CreateRetVoid();
     }
 
-    // ---- __intersection__<k> : point-in-box against params.boxes ----------------
     {
         llvm::Function* fn = makeEntry(m, "__intersection__" + kname);
         auto* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
@@ -436,7 +402,6 @@ std::string emitOptixCountModule(const MethodPtr& method, llvm::Module& m) {
         b.CreateRetVoid();
     }
 
-    // ---- __anyhit__<k> : count this candidate, keep traversing ------------------
     {
         llvm::Function* fn = makeEntry(m, "__anyhit__" + kname);
         b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
@@ -456,7 +421,6 @@ std::string emitOptixCountModule(const MethodPtr& method, llvm::Module& m) {
         b.CreateRetVoid();
     }
 
-    // ---- __miss__<k> : nothing to count ----------------------------------------
     {
         llvm::Function* fn = makeEntry(m, "__miss__" + kname);
         b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
@@ -473,7 +437,6 @@ std::string emitOptixNearestModule(const MethodPtr& method, llvm::Module& m) {
     auto* f32 = llvm::Type::getFloatTy(ctx);
     auto* gptr = llvm::PointerType::get(ctx, kGlobalAS);
 
-    // ---- recognize the canonical triangle nearest-hit shape --------------------
     if (classifyRayQueryShape(method) != OptixRqShape::NearestTri) {
         throw cajeta::Exception(
             "XPU OptiX ray query (v1) nearest-hit supports only the canonical "
@@ -485,14 +448,13 @@ std::string emitOptixNearestModule(const MethodPtr& method, llvm::Module& m) {
             "XPU-N04");
     }
 
-    // ---- extract the single ray from the initialize() literals -----------------
     ConstRay ray = extractConstRay(method);
     const float ox = ray.ox, oy = ray.oy, oz = ray.oz, tMin = ray.tMin;
     const float dx = ray.dx, dy = ray.dy, dz = ray.dz, tMax = ray.tMax;
 
     const std::string kname = method->getName();
 
-    // ---- the `params` launch block (.const) — { handle, outT, outI } -----------
+    // `params` (.const): { handle, outT, outI }
     std::vector<llvm::Type*> fields = {i64, i64, i64};
     auto* paramsTy = llvm::StructType::create(ctx, fields, "RqNearestParams");
     auto* paramsG = new llvm::GlobalVariable(
@@ -513,7 +475,6 @@ std::string emitOptixNearestModule(const MethodPtr& method, llvm::Module& m) {
 
     auto traceAsm = makeTraceAsm(ctx);
 
-    // ---- __raygen__<k> : single baked ray, built-in triangle traversal ---------
     {
         llvm::Function* fn = makeEntry(m, "__raygen__" + kname);
         auto* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
@@ -549,7 +510,6 @@ std::string emitOptixNearestModule(const MethodPtr& method, llvm::Module& m) {
         b.CreateRetVoid();
     }
 
-    // ---- __closesthit__<k> : commit nearest T / type=triangle / prim -----------
     {
         llvm::Function* fn = makeEntry(m, "__closesthit__" + kname);
         b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
@@ -559,7 +519,6 @@ std::string emitOptixNearestModule(const MethodPtr& method, llvm::Module& m) {
         llvm::Value* outI = bufPtr(F_OUTI);
         b.CreateStore(tmax, b.CreateInBoundsGEP(f32, outT,
                           llvm::ConstantInt::get(i64, 0), "outT.0"));
-        // committedType triangle = 1, committedPrimitiveIndex at outI[1].
         b.CreateStore(llvm::ConstantInt::get(i32, 1),
                       b.CreateInBoundsGEP(i32, outI, llvm::ConstantInt::get(i64, 0), "outI.0"));
         b.CreateStore(prim,
@@ -567,7 +526,6 @@ std::string emitOptixNearestModule(const MethodPtr& method, llvm::Module& m) {
         b.CreateRetVoid();
     }
 
-    // ---- __miss__<k> : committed type NONE = 0 ---------------------------------
     {
         llvm::Function* fn = makeEntry(m, "__miss__" + kname);
         b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
@@ -587,7 +545,6 @@ std::string emitOptixBaryModule(const MethodPtr& method, llvm::Module& m) {
     auto* f32 = llvm::Type::getFloatTy(ctx);
     auto* gptr = llvm::PointerType::get(ctx, kGlobalAS);
 
-    // ---- recognize the canonical triangle candidate-getter shape ---------------
     if (classifyRayQueryShape(method) != OptixRqShape::BaryCandidate) {
         throw cajeta::Exception(
             "XPU OptiX ray query (v1) candidate getters supports only the canonical "
@@ -597,12 +554,11 @@ std::string emitOptixBaryModule(const MethodPtr& method, llvm::Module& m) {
             "software tier with CAJETA_GPU_AS_IMPL=software.", "XPU-N04");
     }
 
-    // ---- extract the single ray from the initialize() literals -----------------
     ConstRay ray = extractConstRay(method);
 
     const std::string kname = method->getName();
 
-    // ---- the `params` launch block (.const) — { handle, out } ------------------
+    // `params` (.const): { handle, out }
     std::vector<llvm::Type*> fields = {i64, i64};
     auto* paramsTy = llvm::StructType::create(ctx, fields, "RqBaryParams");
     auto* paramsG = new llvm::GlobalVariable(
@@ -623,7 +579,6 @@ std::string emitOptixBaryModule(const MethodPtr& method, llvm::Module& m) {
 
     auto traceAsm = makeTraceAsm(ctx);
 
-    // ---- __raygen__<k> : single baked ray, built-in triangle traversal ---------
     {
         llvm::Function* fn = makeEntry(m, "__raygen__" + kname);
         auto* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
@@ -659,7 +614,6 @@ std::string emitOptixBaryModule(const MethodPtr& method, llvm::Module& m) {
         b.CreateRetVoid();
     }
 
-    // ---- __anyhit__<k> : read the candidate's t + barycentrics, keep traversing -
     {
         llvm::Function* fn = makeEntry(m, "__anyhit__" + kname);
         b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
@@ -674,7 +628,6 @@ std::string emitOptixBaryModule(const MethodPtr& method, llvm::Module& m) {
                           llvm::ConstantInt::get(i64, 1), "out.1"));
         b.CreateStore(v, b.CreateInBoundsGEP(f32, out,
                           llvm::ConstantInt::get(i64, 2), "out.2"));
-        // optixIgnoreIntersection — never commit; faithful candidate enumeration.
         auto* ignTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false);
         auto* ignAsm = llvm::InlineAsm::get(
             ignTy, "call _optix_ignore_intersection, ();", "", true);
@@ -682,7 +635,6 @@ std::string emitOptixBaryModule(const MethodPtr& method, llvm::Module& m) {
         b.CreateRetVoid();
     }
 
-    // ---- __miss__<k> : nothing (the ray hits; out retains anyhit's writes) ------
     {
         llvm::Function* fn = makeEntry(m, "__miss__" + kname);
         b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
@@ -710,9 +662,7 @@ std::string emitOptixCommittedTriModule(const MethodPtr& method, llvm::Module& m
     if (classifyRayQueryShape(method) != OptixRqShape::CommittedTri)
         throwN04("signature/body mismatch.");
 
-    // ---- buffer param names in signature order (b0, b1, out) -------------------
-    // collectKernelParamInfo (= collectParams) skips an implicit `this`, so filter it
-    // here too to keep the index-zip exact (the @Kernel is static, but be robust).
+    // collectKernelParamInfo skips an implicit `this`; filter it to keep the zip exact.
     auto info = collectKernelParamInfo(method, ctx, m.getDataLayout());
     std::vector<std::string> formal;
     for (auto& p : method->getParameterList())
@@ -724,20 +674,15 @@ std::string emitOptixCommittedTriModule(const MethodPtr& method, llvm::Module& m
     if (bufNames.size() != 3) throwN04("expected exactly 3 Buffer params.");
     enum Field { F_HANDLE = 0, F_B0 = 1, F_B1 = 2, F_OUT = 3, F_N = 4 };
 
-    // ---- resolve each ray component: a constant, or a b0[i]/b1[i] load ----------
     // RayComp.field == -1 means a constant `value`; else it's F_B0/F_B1 (load[i]).
     struct RayComp { int field = -1; float value = 0.0f; };
-    // The raygen loads every b0[...]/b1[...] component at the launch index, so
-    // the subscript must be exactly the launch-index variable: a bare
-    // identifier, identical across all components. A computed index (b0[i+1],
-    // b0[2*i]) or a second, differing index would otherwise be silently loaded
-    // at the launch index instead — the XPU-N04 "never a silent miscompile"
-    // invariant. Pin the shared index name here.
+    // The raygen loads every component AT the launch index, so each subscript must
+    // be that one bare identifier: a computed or differing index would otherwise be
+    // silently read at the launch index instead. Pin the shared name here.
     std::string rayIndexName;
     const auto resolveComp = [&](const ExpressionPtr& e) -> RayComp {
         RayComp rc;
         if (evalConstF32(e, rc.value)) return rc;
-        // A `name[i]` load: ArrayIndexExpression whose base identifier is b0 or b1.
         if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(e)) {
             const auto& kids = ai->getChildren();
             if (kids.size() >= 2) {
@@ -781,7 +726,7 @@ std::string emitOptixCommittedTriModule(const MethodPtr& method, llvm::Module& m
 
     const std::string kname = method->getName();
 
-    // ---- the `params` launch block (.const) — { handle, b0, b1, out, n } -------
+    // `params` (.const): { handle, b0, b1, out, n }
     std::vector<llvm::Type*> fields = {i64, i64, i64, i64, i32};
     auto* paramsTy = llvm::StructType::create(ctx, fields, "RqCommittedTriParams");
     auto* paramsG = new llvm::GlobalVariable(
@@ -800,7 +745,6 @@ std::string emitOptixCommittedTriModule(const MethodPtr& method, llvm::Module& m
     };
     auto traceAsm = makeTraceAsm(ctx);
 
-    // ---- __raygen__<k> : per-launch index, resolved ray, triangle traversal -----
     {
         llvm::Function* fn = makeEntry(m, "__raygen__" + kname);
         auto* entry = llvm::BasicBlock::Create(ctx, "entry", fn);
@@ -813,7 +757,6 @@ std::string emitOptixCommittedTriModule(const MethodPtr& method, llvm::Module& m
 
         b.SetInsertPoint(body);
         llvm::Value* i64idx = b.CreateZExt(i, i64, "i64");
-        // Materialize a ray component: constant, or a per-launch load from its buffer.
         auto comp = [&](const RayComp& rc, const char* nm) -> llvm::Value* {
             if (rc.field < 0) return llvm::ConstantFP::get(f32, rc.value);
             llvm::Value* base = bufPtr((unsigned) rc.field);
@@ -842,7 +785,6 @@ std::string emitOptixCommittedTriModule(const MethodPtr& method, llvm::Module& m
         b.CreateRetVoid();
     }
 
-    // ---- __closesthit__<k> : write out[i] (hit-flag, or front-face 1/2) ---------
     {
         llvm::Function* fn = makeEntry(m, "__closesthit__" + kname);
         b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
@@ -851,7 +793,7 @@ std::string emitOptixCommittedTriModule(const MethodPtr& method, llvm::Module& m
         llvm::Value* out = bufPtr(F_OUT);
         llvm::Value* val;
         if (frontFace) {
-            // optixIsFrontFaceHit = !(backface(hitKind) == 1) -> 1 front / 2 back.
+            // optixIsFrontFaceHit: backface(hitKind)==1 gives 2, else 1.
             llvm::Value* hk = callU32Getter(b, "_optix_get_hit_kind", "hk");
             llvm::Value* bf = callU32Getter1(b, "_optix_get_backface_from_hit_kind", hk, "bf");
             llvm::Value* isBack = b.CreateICmpEQ(bf, llvm::ConstantInt::get(i32, 1), "isBack");
@@ -864,7 +806,6 @@ std::string emitOptixCommittedTriModule(const MethodPtr& method, llvm::Module& m
         b.CreateRetVoid();
     }
 
-    // ---- __miss__<k> : out[i] = 0 (no committed hit) ----------------------------
     {
         llvm::Function* fn = makeEntry(m, "__miss__" + kname);
         b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));

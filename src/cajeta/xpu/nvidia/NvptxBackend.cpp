@@ -1,6 +1,4 @@
-//
 // NVPTX backend — see header.
-//
 
 #include "NvptxBackend.h"
 
@@ -38,11 +36,7 @@ namespace nvidia {
 
 namespace {
 
-// The LLVM target registry is process-global. The Compiler ctor
-// already calls InitializeAll*, but NvptxBackend may be exercised
-// without a Compiler (standalone tooling / tests), so guard a private
-// one-time init. Re-initializing is harmless, but call_once keeps it
-// tidy.
+/// Target registry init; this may run before any Compiler has done it.
 void ensureTargetsInitialized() {
     static std::once_flag once;
     std::call_once(once, [] {
@@ -53,13 +47,7 @@ void ensureTargetsInitialized() {
     });
 }
 
-// Locate NVIDIA's libdevice bitcode. Honors CUDA_PATH, then the canonical
-// /usr/local/cuda symlink, then any versioned sibling — newest last-wins so a
-// box with several toolkits installed picks the highest. Empty if none has it.
-//
-// This is the NVPTX twin of findRocmBitcodeDir(): AMD has resolved __ocml_*
-// out of ocml.bc since B2, and NVPTX emitted __nv_* calls with a comment
-// promising the same ("linked at cubin time") that nothing ever performed.
+/// NVIDIA's libdevice bitcode, or empty if no install has it.
 std::string findLibdevice() {
     auto has = [](const std::string& p) { return llvm::sys::fs::exists(p); };
     auto probe = [&](const std::string& root) -> std::string {
@@ -70,9 +58,7 @@ std::string findLibdevice() {
         if (std::string p = probe(cp); !p.empty()) return p;
     }
     if (std::string p = probe("/usr/local/cuda"); !p.empty()) return p;
-    // Versioned installs, e.g. /usr/local/cuda-13.3. Compare NUMERICALLY, not
-    // lexicographically: "cuda-9.0" sorts above "cuda-13.3" as text, which
-    // would select the oldest toolkit on a box that has both.
+    // Compared NUMERICALLY: "cuda-9.0" sorts above "cuda-13.3" as text.
     std::error_code ec;
     std::string best;
     long bestMajor = -1, bestMinor = -1;
@@ -94,7 +80,7 @@ std::string findLibdevice() {
     return best.empty() ? std::string{} : probe(best);
 }
 
-// True if `m` references any *declaration* whose name starts with `prefix`.
+/// True if `m` references any DECLARATION whose name starts with `prefix`.
 bool referencesDeviceLib(llvm::Module& m, const char* prefix) {
     for (llvm::Function& fn : m)
         if (fn.isDeclaration() && fn.getName().starts_with(prefix))
@@ -102,10 +88,8 @@ bool referencesDeviceLib(llvm::Module& m, const char* prefix) {
     return false;
 }
 
-// Link libdevice into `m`, but ONLY when a __nv_* declaration is outstanding:
-// the overwhelming majority of kernels call no transcendental and must not pay
-// for parsing a ~500 KB bitcode module. LinkOnlyNeeded pulls just the needed
-// function and its transitive deps, not the whole library.
+/// Links libdevice into `m` ONLY when a __nv_* declaration is outstanding: most
+/// kernels must not pay to parse ~500 KB of bitcode. Needed symbols only.
 void linkCudaDeviceLibsIfNeeded(llvm::Module& m) {
     if (!referencesDeviceLib(m, "__nv_")) return;
 
@@ -125,9 +109,7 @@ void linkCudaDeviceLibsIfNeeded(llvm::Module& m) {
                      << err.getMessage() << "\n";
         return;
     }
-    // libdevice ships with its own (older) datalayout/triple; align both to the
-    // destination so the linker does not reject a benign mismatch. Same
-    // treatment linkRocmBitcode gives the ROCm device libs.
+    // Aligning libdevice's older datalayout and triple avoids a benign mismatch.
     lib->setDataLayout(m.getDataLayout());
     lib->setTargetTriple(m.getTargetTriple());
     if (llvm::Linker::linkModules(m, std::move(lib),
@@ -136,12 +118,8 @@ void linkCudaDeviceLibsIfNeeded(llvm::Module& m) {
         return;
     }
 
-    // libdevice bodies are guarded by __nvvm_reflect("__CUDA_FTZ") and friends.
-    // NVPTX's codegen pipeline runs NVVMReflect, but it reads these module
-    // flags to decide what to fold to; without them the reflect calls can
-    // survive as unresolved externs — trading one ptxas failure for another.
-    // 0 = IEEE denormals preserved, matching the non-fast-math default the
-    // rest of the lowering assumes (@FastMath is applied per-instruction).
+    // NVVMReflect folds libdevice's guards using these flags; without them the
+    // reflect calls survive as externs. 0 preserves IEEE denormals.
     if (!m.getModuleFlag("nvvm-reflect-ftz"))
         m.addModuleFlag(llvm::Module::Override, "nvvm-reflect-ftz", (uint32_t) 0);
     if (!m.getModuleFlag("nvvm-reflect-prec-sqrt"))
@@ -152,15 +130,9 @@ void linkCudaDeviceLibsIfNeeded(llvm::Module& m) {
         m.addModuleFlag(llvm::Module::Override, "nvvm-reflect-approx-func", (uint32_t) 0);
 }
 
-// Promote the kernel's entry-block allocas (loop counters, accumulators,
-// reassigned locals — see NvptxKernelLowering's mutable-slot model) into SSA
-// registers before PTX emission. addPassesToEmitFile runs ONLY the codegen
-// pipeline, no IR optimization, so without this the slots stay as .local
-// load/store traffic. mem2reg alone is correct and cheap; running it is
-// purely a quality improvement (alloca PTX is valid for ptxas either way).
+/// Runs the IR pipeline before PTX emission, libdevice linked first so the
+/// merged bodies optimize with the kernel. Nothing else optimizes device IR.
 void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
-    // Resolve libdevice transcendentals FIRST, so the merged bodies go through
-    // mem2reg and codegen with the kernel (the AmdgpuBackend ordering).
     linkCudaDeviceLibsIfNeeded(m);
     llvm::PassBuilder pb(&tm);
     llvm::LoopAnalysisManager lam;
@@ -173,30 +145,19 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     pb.registerLoopAnalyses(lam);
     pb.crossRegisterProxies(lam, fam, cgam, mam);
 
-    // Full IR pipeline before codegen. addPassesToEmitFile runs NO IR passes,
-    // so without this every @Kernel ships UNOPTIMIZED — redundant address math
-    // spills regalloc, and (the correctness half) the AlwaysInline @Device
-    // helpers stay out-of-line. Default O3, matching AmdgpuBackend; override
-    // with CAJETA_XPU_DEVICE_OPT=0|1|2|3.
+    // Default O3; CAJETA_XPU_DEVICE_OPT=0|1|2|3 overrides.
     llvm::ModulePassManager mpm;
     int lvl = 3;
     if (const char* e = std::getenv("CAJETA_XPU_DEVICE_OPT")) lvl = std::atoi(e);
     if (lvl <= 0) {
-        // Correctness floor — UNLIKE AmdgpuBackend's lvl-0 (mem2reg only), the
-        // inliner is NOT optional on nvptx. lowerDeviceFn stamps every @Device
-        // helper `alwaysinline` and passes the kernel's buffer BASE by value,
-        // relying on inlining to splice that base into the kernel's real buffer
-        // access (KernelLowering lowerDeviceFn, "the base flows straight through
-        // inlining"). Left out-of-line, the call reads a bogus base and
-        // cuLaunchKernel returns CUDA_ERROR_ILLEGAL_ADDRESS (700). So even the
-        // minimal fallback runs AlwaysInliner before mem2reg.
+        // The inliner is NOT optional here: lowerDeviceFn passes a @Device
+        // helper the buffer BASE by value and relies on inlining to splice it
+        // in. Left out-of-line the call reads a bogus base and faults at launch.
         mpm.addPass(llvm::AlwaysInlinerPass());
         llvm::FunctionPassManager fpm;
         fpm.addPass(llvm::PromotePass());  // mem2reg
         mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
     } else {
-        // buildPerModuleDefaultPipeline(O1/O2/O3) runs the inliner (which honors
-        // alwaysinline) plus mem2reg and the rest, so the 700 fix holds here too.
         llvm::OptimizationLevel ol = lvl == 1 ? llvm::OptimizationLevel::O1
                                    : lvl == 2 ? llvm::OptimizationLevel::O2
                                               : llvm::OptimizationLevel::O3;
@@ -222,8 +183,7 @@ createNvptxTargetMachine(const std::string& arch) {
     }
 
     llvm::TargetOptions opt;
-    // Default reloc/codegen model is correct for PTX (position-
-    // independent, default code model). ptxas does final placement.
+    // PTX is position-independent and ptxas does final placement.
     llvm::TargetMachine* tm = target->createTargetMachine(
         triple, /*CPU=*/arch, /*Features=*/"", opt, /*RM=*/std::nullopt);
     return std::unique_ptr<llvm::TargetMachine>(tm);
@@ -235,12 +195,7 @@ void configureDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
 }
 
 std::string emitPtx(llvm::Module& deviceModule, llvm::TargetMachine& tm) {
-    // addPassesToEmitFile requires a raw_pwrite_stream; raw_svector_ostream
-    // qualifies (raw_string_ostream does not). PTX is textual, so
-    // AssemblyFile (not ObjectFile); the NVPTX AsmPrinter must be
-    // registered (InitializeAllAsmPrinters).
-    // Promote alloca slots to registers first (the codegen pipeline below
-    // does no IR optimization on its own).
+    // addPassesToEmitFile needs a raw_pwrite_stream; PTX is textual, so AssemblyFile.
     optimizeDeviceModule(deviceModule, tm);
 
     llvm::SmallString<0> buf;
@@ -258,14 +213,12 @@ std::string emitPtx(llvm::Module& deviceModule, llvm::TargetMachine& tm) {
 }
 
 std::string findPtxas() {
-    // 1. $CUDA_PATH/bin (set by the CUDA toolkit installer).
     if (const char* cudaPath = std::getenv("CUDA_PATH")) {
         for (const char* exe : {"/bin/ptxas.exe", "/bin/ptxas"}) {
             std::string p = std::string(cudaPath) + exe;
             if (llvm::sys::fs::exists(p)) return p;
         }
     }
-    // 2. PATH.
     if (auto found = llvm::sys::findProgramByName("ptxas")) return *found;
     return {};
 }
@@ -321,12 +274,8 @@ std::vector<uint8_t> assembleCubin(const std::string& ptx,
         return {};
     }
 
-    // ptxas works on files; round-trip through temporaries. unique paths
-    // avoid collisions across concurrent compiles.
     llvm::SmallString<128> ptxPath, cubinPath;
-    // Guard by reference and construct BEFORE creating the temp files: if the
-    // ptx file is created but the cubin file then fails, the dtor still removes
-    // the orphaned ptx (remove on an empty/absent path is a harmless no-op).
+    // Constructed BEFORE the temp files, so a later failure still removes them.
     struct Cleanup {
         llvm::SmallString<128> &a, &b;
         ~Cleanup() { llvm::sys::fs::remove(a); llvm::sys::fs::remove(b); }
@@ -348,15 +297,13 @@ std::vector<uint8_t> assembleCubin(const std::string& ptx,
         out << ptx;
     }
 
-    // ptxas -arch=sm_89 <in.ptx> -o <out.cubin>. ExecuteAndWait passes argv
-    // directly (no shell), so paths with spaces ("Program Files") are safe.
+    // ExecuteAndWait passes argv directly, so paths with spaces are safe.
     std::string archArg = "-arch=" + arch;
     std::string oFlag = "-o";
     std::string vFlag = "-v";
     llvm::SmallVector<llvm::StringRef, 8> args = {
         ptxas, archArg, ptxPath.str(), oFlag, cubinPath.str()};
-    // `-v` prints the per-kernel resource report on stderr; capture it to a
-    // temp file for the manifest footprint. The cubin is unaffected.
+    // `-v` prints the per-kernel resource report on stderr; the cubin is unaffected.
     llvm::SmallString<128> logPath;
     std::optional<llvm::StringRef> redirects[3] = {std::nullopt, std::nullopt, std::nullopt};
     bool capture = false;

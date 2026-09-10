@@ -11,9 +11,7 @@ namespace doc {
 
 int dispatchDoc(int argc, const char* const* argv) {
 #ifdef CAJETA_HAS_DOC
-    // Drop the leading "cajeta" so the shared CLI sees argv[0] == "doc" and
-    // begins option parsing at the source-root argument — i.e. `cajeta doc
-    // <root> …` is handled identically to `cajetadoc <root> …`.
+    // Drop the leading "cajeta" so the shared CLI sees argv[0] == "doc".
     return cajetadoc::runCli(argc - 1, argv + 1);
 #else
     (void)argc;

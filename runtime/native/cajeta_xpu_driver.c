@@ -1,35 +1,9 @@
-// === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
-// === (single-TU build; not a standalone compilation unit).
-// ============================================================================
-// cajeta.xpu runtime stubs (CajetaXPU phases 1-2, step 2).
-//
-// The cajeta.xpu stdlib classes (Stream / Event / Fence / Thread /
-// Workgroup / Barrier / Wave) declare their methods @Native and forward to
-// the symbols below. LLJIT eagerly materializes all externs at module load
-// time, so these have to exist before any XPU implementation does.
-//
-// Every stub returns the zero value (NULL / 0 / false) or no-ops. Calling
-// any of them in v1 yields a null Stream / zero coordinate / false flag —
-// not a crash. Step 7 (CPU-emulation backend) replaces these with real
-// implementations: thread-local globals for the coordinate readers, a host-
-// side ordered queue for Stream/Event, etc. The native and Vulkan
-// backends (steps 9-11) replace call sites at codegen time so these stubs
-// only fire on the CPU-emulation path.
-//
-// Buffer<T>'s @Native methods are generic; they emit only when a Buffer<T>
-// is instantiated, so no stubs appear here until a real allocator lands.
-// ============================================================================
+// === Cajeta runtime fragment, TEXTUALLY #included into cajeta_runtime.c (single-TU
+// === build). The dlopen'd CUDA / HIP driver bindings and the stubs the @Native
+// === cajeta.xpu classes forward to: LLJIT needs every one of them to exist.
 
-// ============================================================================
-// Launch-failure accounting — a refused dispatch must be VISIBLE to code,
-// not only to stderr. Twice in a row (the static-field alias defect, then
-// cajeta-llm's cross-model staging collision) the driver printed "launch
-// FAILED" while the engine went on to print a plausible answer. Backends
-// bump this whenever a dispatch that should have run did not; the stdlib
-// exposes it as Device.launchFailures() so a harness can assert the delta
-// over a run is zero. Monotonic, process-wide, relaxed — nonzero is the
-// signal, exactness under a race is not required.
-// ============================================================================
+// Launch-failure count: a refused dispatch must be VISIBLE to code, not only on
+// stderr. Backends bump it; the stdlib exposes it as Device.launchFailures().
 static int64_t g_xpu_launch_failures;
 static void cajeta_xpu_note_launch_failure(void) {
     __atomic_fetch_add(&g_xpu_launch_failures, (int64_t) 1, __ATOMIC_RELAXED);
@@ -38,15 +12,9 @@ int64_t __cajeta_xpu_launch_failures(void) {
     return __atomic_load_n(&g_xpu_launch_failures, __ATOMIC_RELAXED);
 }
 
-// ============================================================================
-// CUDA Driver API binding (dlopen'd) — backs the real NVPTX device path.
-// ============================================================================
-// Mirrors src/cajeta/xpu/nvidia/CudaDriver.cpp, but lives in the runtime
-// bitcode so the LLJIT host path resolves these symbols from merged bitcode
-// (the C++ CudaDriver is not visible to the JIT'd module). The driver is
-// bound lazily on first use; an absent GPU/driver leaves every entry a
-// graceful no-op (alloc returns 0, copies/launch return silently) so host
-// code that never touches the device still links and runs.
+// CUDA Driver API binding (dlopen'd), backing the NVPTX device path. Mirrors
+// src/cajeta/xpu/nvidia/CudaDriver.cpp but lives in the runtime bitcode so LLJIT
+// resolves the symbols; an absent driver leaves every entry a graceful no-op.
 
 #if !defined(_WIN32)
 #  include <dlfcn.h>
@@ -62,16 +30,10 @@ struct cajeta_cuda_api {
     int (*cuInit)(unsigned);
     int (*cuDeviceGetCount)(int*);
     int (*cuDeviceGet)(int*, int);
-    // Optional (bound non-fatally): device attribute query, used by the
-    // capability probes (__cajeta_xpu_device_supports) — e.g. compute
-    // capability for the bf16 tensor-core gate. Null on exotic stubs.
     int (*cuDeviceGetAttribute)(int*, int, int);
-    // Device memory size (Device.memoryBytes); optional — absent → 0.
     int (*cuDeviceTotalMem)(size_t*, int);
-    int (*cuDevicePrimaryCtxRetain)(void**, int);  // R4: share the per-device PRIMARY
-                                     // ctx (a process-wide singleton) so the runtime,
-                                     // the JIT-embedded runtime, and the OptiX glue
-                                     // all resolve to ONE CUcontext (RT-core interop).
+    // R4: the PRIMARY context is a process-wide singleton shared with OptiX.
+    int (*cuDevicePrimaryCtxRetain)(void**, int);
     int (*cuCtxSetCurrent)(void*);   // H9: bind the ctx to the launching thread
     int (*cuModuleLoadData)(void**, const void*);
     int (*cuModuleGetFunction)(void**, void*, const char*);
@@ -79,45 +41,30 @@ struct cajeta_cuda_api {
     int (*cuMemAlloc)(cajeta_cudeviceptr*, size_t);
     int (*cuMemcpyHtoD)(cajeta_cudeviceptr, const void*, size_t);
     int (*cuMemcpyDtoH)(void*, cajeta_cudeviceptr, size_t);
-    // Device-to-device copy — the roofline probe's traffic generator, the CUDA
-    // twin of hipMemcpyDtoD. Optional (bound non-fatally): absent just leaves
-    // the bandwidth probe unmeasured, exactly as a missing HIP entry does.
     int (*cuMemcpyDtoD)(cajeta_cudeviceptr, cajeta_cudeviceptr, size_t);
     int (*cuMemFree)(cajeta_cudeviceptr);
-    // Pinned / unified (managed) memory (Buffer MemoryKind); optional — a missing
-    // entry just falls that kind back to plain cuMemAlloc/cuMemFree. Managed
-    // memory (cuMemAllocManaged) is one pointer host AND device see; pinned host
-    // memory (cuMemHostAlloc) is page-locked + device-accessible, freed with
-    // cuMemFreeHost (managed frees with plain cuMemFree).
+    // Pinned / unified memory; optional (pinned frees with cuMemFreeHost).
     int (*cuMemAllocManaged)(cajeta_cudeviceptr*, size_t, unsigned);
     int (*cuMemHostAlloc)(void**, size_t, unsigned);
     int (*cuMemFreeHost)(void*);
-    // Real streams + async copies; optional (bound non-fatally; null → default
-    // stream + synchronous-memcpy fallback).
     int (*cuStreamCreate)(void**, unsigned);
     int (*cuStreamSynchronize)(void*);
     int (*cuStreamDestroy)(void*);
     int (*cuMemcpyHtoDAsync)(cajeta_cudeviceptr, const void*, size_t, void*);
     int (*cuMemcpyDtoHAsync)(void*, cajeta_cudeviceptr, size_t, void*);
-    // Events (Event/Fence); optional. cuEventQuery returns CUDA_SUCCESS(0) when
-    // complete, CUDA_ERROR_NOT_READY otherwise; cuStreamWaitEvent is the device-
-    // side cross-stream wait.
+    // Events; optional. cuEventQuery answers 0 when complete, 600 when not.
     int (*cuEventCreate)(void**, unsigned);
     int (*cuEventRecord)(void*, void*);
     int (*cuEventSynchronize)(void*);
     int (*cuEventQuery)(void*);
     int (*cuStreamWaitEvent)(void*, void*, unsigned);
     int (*cuEventDestroy)(void*);
-    // The profiler's EVENT-tier fallback. Answers FLOAT MILLISECONDS between
-    // two completed events; ships with the driver, unlike CUPTI.
+    // The profiler's EVENT-tier fallback: FLOAT MILLISECONDS between two events.
     int (*cuEventElapsedTime)(float*, void*, void*);
     int (*cuLaunchKernel)(void*, unsigned, unsigned, unsigned,
                           unsigned, unsigned, unsigned, unsigned,
                           void*, void**, void**);
     int (*cuCtxSynchronize)(void);
-    // Texture / surface objects (Texture2D + Image2D) — optional (bound non-
-    // fatally; absent → textures/storage images unavailable on CUDA and the launch
-    // guard skips the dispatch). CUtexObject/CUsurfObject are u64 handles.
     int (*cuArrayCreate)(void**, const void*);            // CUDA_ARRAY_DESCRIPTOR
     int (*cuArrayDestroy)(void*);
     int (*cuMemcpy2D)(const void*);                       // CUDA_MEMCPY2D
@@ -139,10 +86,7 @@ static void* cajeta_xpu_libsym(void* lib, const char* name) {
 #endif
 }
 
-// Portable shared-library open (the open twin of cajeta_xpu_libsym). The CUDA/HIP
-// backends inline LoadLibraryA/dlopen at their single load site; the Vulkan path
-// loops over candidate ICD names, so it shares this helper. RTLD_NOW|RTLD_LOCAL on
-// POSIX matches those backends.
+// Portable shared-library open, the twin of cajeta_xpu_libsym (RTLD_NOW|LOCAL).
 static void* cajeta_xpu_libopen(const char* name) {
 #if defined(_WIN32)
     return (void*) LoadLibraryA(name);
@@ -151,37 +95,15 @@ static void* cajeta_xpu_libopen(const char* name) {
 #endif
 }
 
-// ── the profiler's CUDA event bracket (the EVENT-tier fallback) ──────────
-//
-// CUPTI ships with the CUDA Toolkit; cuEventRecord and cuEventElapsedTime ship
-// with the DRIVER. So on the overwhelmingly common machine — a GPU, a driver,
-// no Toolkit — a pair of events recorded around the launch is the only
-// mechanism that can time a kernel on the device at all. That is one rung
-// below a vendor dispatch record (TIER_EVENT, not TIER_DEVICE) and far above
-// what it replaces, which was the host's submit-to-complete window.
-//
-// The hard constraint is §5.1.3: reading an event's elapsed time requires that
-// event to have COMPLETED, and waiting for that inside the launch path would
-// serialize every launch against its own kernel — producing a beautifully
-// precise trace of a program nobody ran. So nothing here ever waits. Pairs are
-// recorded and parked; a later drain polls with cuEventQuery and resolves only
-// what has already finished.
-//
-// Placement on the host timeline comes from a REFERENCE event, recorded and
-// synchronized once beside a host timestamp. Each span is then
-// ref_host_ns + elapsed(ref, start). Without it a bracket carries a perfectly
-// correct DURATION placed at whatever the device's own epoch happens to be —
-// which reads as a plausible trace right up until a CPU track is laid beside it.
+// The profiler's CUDA event bracket (EVENT tier): cuEventRecord and
+// cuEventElapsedTime ship with the DRIVER, unlike CUPTI. Nothing here waits, and
+// spans are placed against a REFERENCE event recorded beside a host timestamp.
 #define CAJ_CUDA_BRACKET_MAX 256
 
-// cuEventElapsedTime answers FLOAT MILLISECONDS, so its resolution decays as
-// the gap from the reference grows: by 10 s the ulp is about a microsecond,
-// which is the placement error this is willing to carry. Durations never pay
-// it — they come from elapsed(start, end), a small number measured directly.
+// cuEventElapsedTime answers FLOAT MILLISECONDS, so placement decays with the gap.
 #define CAJ_CUDA_ANCHOR_MAX_MS 10000.0f
 
-/* CUDA_ERROR_NOT_READY — how cuEventQuery says "still running". Spelled as its
- * value because this file never includes a CUDA header. */
+/* CUDA_ERROR_NOT_READY, spelled as its value: no CUDA header is included here. */
 #define CAJ_CUDA_ERROR_NOT_READY 600
 
 typedef struct {
@@ -204,19 +126,14 @@ static int caj_cuda_events_bound(void) {
         && g_xpu_cuda.cuEventSynchronize && g_xpu_cuda.cuEventDestroy;
 }
 
-/* Establish (or replace) the host-clock anchor. Synchronizes exactly one event
- * on the NULL stream — which is why this is never reachable from the launch
- * path. Caller holds g_cuda_bracket_lock. */
-// How many attempts to take, and how narrow a host bracket is good enough to
-// stop early at. 20 us is far wider than a warm event needs and far narrower
-// than the 257 us of lazy-init bias the first implementation shipped with.
+// How many attempts to take, and the host-bracket width good enough to stop at.
 #define CAJ_CUDA_ANCHOR_TRIES        4
 #define CAJ_CUDA_ANCHOR_GOOD_ENOUGH  20000   /* ns */
 
-// The last anchor's bracket width — the placement uncertainty every span
-// inherits, kept so the operator can see it rather than infer it.
 static int64_t g_cuda_anchor_spread_ns;
 
+/* Establishes (or replaces) the host-clock anchor, keeping the NARROWEST of
+ * several host brackets. It synchronizes, so never call it from a launch. */
 static int caj_cuda_anchor_locked(void) {
     void* ev = NULL;
     void* warm = NULL;
@@ -225,34 +142,21 @@ static int caj_cuda_anchor_locked(void) {
 
     if (g_xpu_cuda.cuEventCreate(&ev, 0) != 0 || !ev) return 0;
 
-    // Warm the path FIRST. The very first event on a freshly retained context
-    // pays lazy initialization that runs into hundreds of microseconds, and a
-    // reference whose completion is bracketed that loosely is a reference with
-    // hundreds of microseconds of BIAS — not noise, because the delay sits
-    // before the event is processed, so the true completion hugs the end of
-    // the bracket while the midpoint estimate sits in the middle of it.
-    // Measured at -257 us on the first implementation, which placed every span
-    // a quarter-millisecond before the launch that issued it.
+    // Warm the path FIRST: a fresh context's first event pays lazy init as BIAS.
     if (g_xpu_cuda.cuEventCreate(&warm, 0) == 0 && warm) {
         g_xpu_cuda.cuEventRecord(warm, NULL);
         g_xpu_cuda.cuEventSynchronize(warm);
         g_xpu_cuda.cuEventDestroy(warm);
     }
 
-    // The anchor's whole job is to tie ONE device instant to a host instant,
-    // so the width of the host interval that instant is known to lie in IS the
-    // uncertainty. Poll rather than synchronize — a synchronize makes the
-    // interval as wide as its own return latency and biases it late — and take
-    // the NARROWEST of several attempts, since a wide bracket means something
-    // interfered and its midpoint is the estimate least worth keeping.
+    // Poll rather than synchronize, which widens the interval and biases it late.
     for (attempt = 0; attempt < CAJ_CUDA_ANCHOR_TRIES; ++attempt) {
         int64_t before, after, spread;
         int spins = 0;
         before = __cajeta_currentTimeNanos();
         if (g_xpu_cuda.cuEventRecord(ev, NULL) != 0) break;
         while (g_xpu_cuda.cuEventQuery(ev) == CAJ_CUDA_ERROR_NOT_READY) {
-            if (++spins > 1000000) {   /* bounded: a spin that never ends is
-                                        * worse than a coarse anchor */
+            if (++spins > 1000000) {
                 if (g_xpu_cuda.cuEventSynchronize(ev) != 0) break;
                 break;
             }
@@ -262,9 +166,7 @@ static int caj_cuda_anchor_locked(void) {
         if (spread < 0) continue;
         if (bestSpread == 0 || spread < bestSpread) {
             bestSpread = spread;
-            // The completion lies in [before, after]; the midpoint is the
-            // estimate with the smallest worst-case error, and the narrower
-            // the bracket the better that estimate is.
+            // The midpoint of [before, after] has the least worst-case error.
             bestHost = before + spread / 2;
         }
         if (bestSpread <= CAJ_CUDA_ANCHOR_GOOD_ENOUGH) break;
@@ -281,11 +183,8 @@ static int caj_cuda_anchor_locked(void) {
     return 1;
 }
 
-/* Called from the CUDA loader with the context current. Gated on the profiler
- * being armed for the same reason rocprofiler's configure is: creating and
- * synchronizing a reference event is real work an unprofiled run must not pay
- * for. Every outcome reports a sentence — a silently unarmed fallback is
- * indistinguishable from one that armed and found nothing. */
+/* Called from the CUDA loader with the context current, and only when the
+ * profiler is armed. Every outcome reports a sentence. */
 static void caj_cuda_bracket_arm(void) {
     char why[224];
     if (!__cajeta_prof_gpu_is_armed()) {
@@ -319,9 +218,8 @@ static void caj_cuda_bracket_arm(void) {
     __cajeta_prof_cuda_events_note(1, why);
 }
 
-/* Open a bracket for `launchId` on `stream`. Returns a pool slot, or -1 when
- * there is no room or nothing could be recorded — in which case the launch
- * keeps its honest host window and only precision is lost. */
+/* Opens a bracket for `launchId` on `stream`; -1 when the pool is full, and the
+ * launch then keeps its honest host window. */
 static int caj_cuda_bracket_begin(int64_t launchId, void* stream) {
     int i, slot = -1;
     CajCudaBracket* b;
@@ -337,8 +235,6 @@ static int caj_cuda_bracket_begin(int64_t launchId, void* stream) {
         return -1;
     }
     b = &g_cuda_brackets[slot];
-    /* Events are created once and re-recorded for the life of the process;
-     * re-recording an event is exactly what the driver API is for. */
     if (!b->ev_start && g_xpu_cuda.cuEventCreate(&b->ev_start, 0) != 0) b->ev_start = NULL;
     if (!b->ev_end   && g_xpu_cuda.cuEventCreate(&b->ev_end, 0)   != 0) b->ev_end   = NULL;
     if (!b->ev_start || !b->ev_end) {
@@ -358,6 +254,7 @@ static int caj_cuda_bracket_begin(int64_t launchId, void* stream) {
     return slot;
 }
 
+/* Records the bracket's end event; frees the slot if the record fails. */
 static void caj_cuda_bracket_end(int slot, void* stream) {
     if (slot < 0) return;
     if (g_xpu_cuda.cuEventRecord(g_cuda_brackets[slot].ev_end, stream) != 0) {
@@ -367,9 +264,7 @@ static void caj_cuda_bracket_end(int slot, void* stream) {
     }
 }
 
-/* Resolve every bracket whose closing event has already completed. POLLS —
- * never waits — so it is safe from the launch path, and calling it after a
- * stream synchronize is what makes the common case resolve promptly. */
+/* Resolves every bracket whose closing event has completed. POLLS, never waits. */
 static void caj_cuda_bracket_drain(void) {
     int i, live = 0;
     float furthest = 0.0f;
@@ -394,9 +289,7 @@ static void caj_cuda_bracket_drain(void) {
         q = g_xpu_cuda.cuEventQuery(eve);
         if (q == CAJ_CUDA_ERROR_NOT_READY) { live++; continue; }
         if (q != 0) {
-            /* Anything else — a destroyed stream, a context teardown — is not
-             * going to become ready later. Free the slot rather than poll it
-             * forever; the launch's host window still goes out at host tier. */
+            /* Never becoming ready; free the slot rather than poll forever. */
             pthread_mutex_lock(&g_cuda_bracket_lock);
             g_cuda_brackets[i].in_use = 0;
             pthread_mutex_unlock(&g_cuda_bracket_lock);
@@ -418,9 +311,7 @@ static void caj_cuda_bracket_drain(void) {
         __cajeta_prof_cuda_bracket_resolved(id, sNs, eNs);
     }
 
-    /* Re-anchor only with the pool EMPTY. A bracket recorded before the old
-     * reference but resolved after a new one would be measured from an event
-     * that had not happened yet, and elapsed() against it is meaningless. */
+    /* Re-anchor only with the pool EMPTY, or a bracket measures from nothing. */
     if (live == 0 && furthest > CAJ_CUDA_ANCHOR_MAX_MS) {
         pthread_mutex_lock(&g_cuda_bracket_lock);
         for (i = 0; i < CAJ_CUDA_BRACKET_MAX && !g_cuda_brackets[i].in_use; ++i) { }
@@ -429,9 +320,7 @@ static void caj_cuda_bracket_drain(void) {
     }
 }
 
-// Resolve the driver and create a context. Returns 1 on success. Caller holds
-// g_xpu_cuda_lock. Idempotent via the `loaded` tri-state. The driver API
-// exposes size-versioned symbols (cuMemAlloc_v2, …); we bind those explicitly.
+// Resolves the driver and creates a context; caller holds g_xpu_cuda_lock.
 static int cajeta_xpu_cuda_init_locked(void) {
     if (g_xpu_cuda.loaded == 1) return 1;
     if (g_xpu_cuda.loaded == -1) return 0;
@@ -462,15 +351,12 @@ static int cajeta_xpu_cuda_init_locked(void) {
     CAJ_BIND(cuMemFree, "cuMemFree_v2");
     *(void**) (&g_xpu_cuda.cuMemcpyDtoD) =                    // optional (non-fatal)
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemcpyDtoD_v2");
-    // Pinned / unified memory — optional (bound non-fatally; null → kind falls
-    // back to plain device alloc/free).
     *(void**) (&g_xpu_cuda.cuMemAllocManaged) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemAllocManaged");
     *(void**) (&g_xpu_cuda.cuMemHostAlloc) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemHostAlloc");
     *(void**) (&g_xpu_cuda.cuMemFreeHost) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemFreeHost");
-    // Real streams + async copies — optional (non-fatal).
     *(void**) (&g_xpu_cuda.cuStreamCreate) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuStreamCreate");
     *(void**) (&g_xpu_cuda.cuStreamSynchronize) =
@@ -497,7 +383,6 @@ static int cajeta_xpu_cuda_init_locked(void) {
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuEventDestroy_v2");
     *(void**) (&g_xpu_cuda.cuEventElapsedTime) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuEventElapsedTime");
-    // Texture / surface objects — optional (non-fatal).
     *(void**) (&g_xpu_cuda.cuArrayCreate) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuArrayCreate_v2");
     *(void**) (&g_xpu_cuda.cuArrayDestroy) =
@@ -530,14 +415,8 @@ static int cajeta_xpu_cuda_init_locked(void) {
             (void*) g_xpu_cuda.cuEventQuery, (void*) g_xpu_cuda.cuStreamWaitEvent,
             (void*) g_xpu_cuda.cuEventDestroy);
     }
-    // cajeta-profiler §5.4 — CUPTI's counterpart of the rocprofiler configure
-    // the HIP loader does below. Binding libcupti happens lazily on first use;
-    // ARMING it (buffer callbacks + activity kinds) has to happen before the
-    // context that will produce the records exists, or the first launches
-    // produce none. Gated on the profiler being armed, because enabling
-    // activity kinds installs process-wide interception an unprofiled run
-    // should not pay for. Both calls report their own failures and degrade to
-    // the host window, so neither can fail CUDA initialization.
+    // CUPTI's counterpart of the rocprofiler configure below: ARMING must precede
+    // the context that produces the records, or the first launches produce none.
     if (__cajeta_prof_gpu_is_armed()) {
         if (__cajeta_prof_cupti_init()) __cajeta_prof_cupti_configure();
     }
@@ -545,29 +424,17 @@ static int cajeta_xpu_cuda_init_locked(void) {
     int count = 0;
     if (g_xpu_cuda.cuDeviceGetCount(&count) != 0 || count <= 0) return 0;
     if (g_xpu_cuda.cuDeviceGet(&g_xpu_cuda.device, 0) != 0) return 0;
-    // R4 (OptiX RT-core interop): retain the per-device PRIMARY context instead of
-    // creating a private one. The primary context is a process-wide singleton, so the
-    // host runtime object, the JIT-embedded runtime, and the OptiX glue (which also
-    // cuDevicePrimaryCtxRetains) all resolve to the SAME CUcontext — the AS build, the
-    // OptiX pipeline, and the kernel launch share one context (the M1 split, where the
-    // runtime used its own cuCtxCreate ctx, is resolved). Unlike cuCtxCreate,
-    // cuDevicePrimaryCtxRetain does NOT make the context current, so set it current
-    // here to preserve the prior init-thread-current behavior (per-launch SetCurrent
-    // at the launch site, H9, still re-asserts it on worker/fiber threads).
+    // R4: retain the per-device PRIMARY context so the runtime, the JIT runtime
+    // and the OptiX glue share ONE CUcontext. Retain leaves it not current.
     if (g_xpu_cuda.cuDevicePrimaryCtxRetain(&g_xpu_cuda.ctx, g_xpu_cuda.device) != 0) return 0;
     if (g_xpu_cuda.cuCtxSetCurrent) g_xpu_cuda.cuCtxSetCurrent(g_xpu_cuda.ctx);
-    // The profiler's EVENT-tier fallback, armed HERE because the reference
-    // event it anchors spans with needs a current context — and because this
-    // is the CUDA counterpart of the rocprofiler configure the HIP loader
-    // does, which likewise has exactly one moment it can happen in.
+    // Armed HERE because the reference event needs a current context.
     caj_cuda_bracket_arm();
     g_xpu_cuda.loaded = 1;
     return 1;
 }
 
-// Thread-safe "is the device usable?" gate. Once loaded == 1 the bound
-// function pointers and single context are stable, so call sites read them
-// unlocked after this returns true.
+// Thread-safe "is the device usable?" gate; after true, call sites read unlocked.
 static int cajeta_xpu_cuda_ready(void) {
     int ok;
     pthread_mutex_lock(&g_xpu_cuda_lock);
@@ -576,27 +443,14 @@ static int cajeta_xpu_cuda_ready(void) {
     return ok;
 }
 
-// The runtime's CUDA context (post-R4: the per-device PRIMARY context) as a void*, or
-// NULL if CUDA is unavailable. Exposed so the OptiX glue + host probes can confirm the
-// AS build / pipeline / launch all share ONE context (M2 Phase 2). Ensures the backend
-// is initialized so the primary context is retained + current on the calling thread.
+// The runtime's CUDA context (the per-device PRIMARY), or NULL; shared with OptiX.
 void* cajeta_xpu_cuda_context(void) {
     if (!cajeta_xpu_cuda_ready()) return NULL;
     return g_xpu_cuda.ctx;
 }
 
-// ============================================================================
-// HIP Driver API binding (dlopen'd) — backs the real AMDGPU device path.
-// ============================================================================
-// Mirrors src/cajeta/xpu/amd/HipDriver.cpp in C (the C++ HipDriver is
-// compiler/test-only). HIP exports plain C symbols (no size-versioning). Shares
-// g_xpu_cuda_lock for init/load serialization — only one device backend is
-// active per run, so there is no contention. Device pointers are plain void*.
-// --- HIP texture object ABI mirror (Item 8 Stage C) -------------------------
-// The runtime resolves all HIP entry points by dlsym and never includes the
-// ROCm headers (they're not on the default include path and carry C++), so the
-// few structs hipCreateTextureObject needs are mirrored here with byte-exact
-// layout. Enum values match driver_types.h / texture_types.h.
+// HIP Driver API binding (dlopen'd), backing the AMDGPU path; one backend per run.
+// HIP texture-object ABI mirror: the ROCm headers are never included here.
 enum { CAJ_HIP_CHANNEL_SIGNED = 0 };    // hipChannelFormatKindSigned (R32I store)
 enum { CAJ_HIP_CHANNEL_UNSIGNED = 1 };  // hipChannelFormatKindUnsigned (UNORM / R32UI store)
 enum { CAJ_HIP_CHANNEL_FLOAT = 2 };     // hipChannelFormatKindFloat
@@ -673,8 +527,6 @@ struct cajeta_hip_api {
                                  unsigned, unsigned, unsigned, unsigned,
                                  void*, void**, void**);
     int (*hipDeviceSynchronize)(void);
-    // Texture object path (Item 8 Stage C); optional — absent on very old HIP,
-    // in which case texture sampling on AMD is simply unavailable.
     int (*hipMallocArray)(void**, const void*, size_t, size_t, unsigned);
     int (*hipFreeArray)(void*);
     int (*hipMemcpy2DToArray)(void*, size_t, size_t, const void*, size_t,
@@ -682,74 +534,43 @@ struct cajeta_hip_api {
     int (*hipCreateTextureObject)(void**, const void*, const void*,
                                   const void*);
     int (*hipDestroyTextureObject)(void*);
-    // Surface object path (Image2D storage images, the writable twin of the
-    // texture object); optional — absent → AMD storage images unavailable (the
-    // path degrades like mipmaps). hipCreateSurfaceObject builds a writable
-    // surface from an ARRAY resource desc (no sampler); the array must be
-    // allocated with hipArraySurfaceLoadStore. hipMemcpy2DFromArray reads it back.
+    // Surface objects (Image2D); the array needs hipArraySurfaceLoadStore.
     int (*hipCreateSurfaceObject)(void**, const void*);
     int (*hipDestroySurfaceObject)(void*);
     int (*hipMemcpy2DFromArray)(void*, size_t, const void*, size_t, size_t,
                                 size_t, size_t, int);
-    // 3-D array path (Texture3D); optional — absent → 3-D textures unavailable on AMD.
     int (*hipMalloc3DArray)(void**, const void*, struct caj_hip_extent, unsigned);
     int (*hipMemcpy3D)(const void*);
-    // Mipmapped-array path (mip Texture2D); optional — absent → mip textures
-    // unavailable on AMD. hipMallocMipmappedArray takes the extent by value
-    // ({w, h, 0} for 2-D), the level count, and flags; hipGetMipmappedArrayLevel
-    // yields a plain hipArray for one level (copied into via hipMemcpy2DToArray).
+    // Mipmapped arrays; GetMipmappedArrayLevel yields one level as a hipArray.
     int (*hipMallocMipmappedArray)(void**, const void*, struct caj_hip_extent,
                                    unsigned, unsigned);
     int (*hipGetMipmappedArrayLevel)(void**, void*, unsigned);
     int (*hipFreeMipmappedArray)(void*);
-    // Pinned / unified (managed) memory (Buffer MemoryKind); optional — absent →
-    // those kinds fall back to plain hipMalloc. hipMallocManaged gives one
-    // pointer accessible from host AND device (zero-copy on an APU like Strix
-    // Halo); hipHostMalloc gives page-locked, device-accessible host memory
-    // (fast/async DMA); hipHostFree releases the latter (managed memory frees
-    // with plain hipFree).
+    // Pinned / unified memory; managed frees with hipFree, pinned with hipHostFree.
     int (*hipMallocManaged)(void**, size_t, unsigned);
     int (*hipHostMalloc)(void**, size_t, unsigned);
     int (*hipHostFree)(void*);
-    // Real streams + async copies (Buffer.uploadAsync/downloadAsync, stream-
-    // ordered launch); optional — absent → stream create no-ops to the default
-    // stream and async copies fall back to the synchronous memcpy.
     int (*hipStreamCreate)(void**);
     int (*hipStreamSynchronize)(void*);
     int (*hipStreamDestroy)(void*);
     int (*hipMemcpyHtoDAsync)(void*, const void*, size_t, void*);
     int (*hipMemcpyDtoHAsync)(void*, void*, size_t, void*);
-    // Events (Event/Fence cross-stream + host sync); optional — absent → the
-    // synchronous fallback (record/wait no-op, query true). hipEventQuery returns
-    // hipSuccess(0) when complete, hipErrorNotReady otherwise; hipStreamWaitEvent
-    // makes a stream wait on another stream's recorded event (device-side).
     int (*hipEventCreate)(void**);
     int (*hipEventRecord)(void*, void*);
     int (*hipEventSynchronize)(void*);
     int (*hipEventQuery)(void*);
     int (*hipStreamWaitEvent)(void*, void*, unsigned);
     int (*hipEventDestroy)(void*);
-    // Device properties (R0600 ABI). Used only to read gcnArchName for the
-    // addrlib-based mip/cube emulation config lookup; optional.
+    // Device properties (R0600 ABI), read for gcnArchName only; optional.
     int (*hipGetDevicePropertiesR0600)(void*, int);
-    // Per-attribute scalar query (ABI-stable enum) for the device profile.
     int (*hipDeviceGetAttribute)(int*, int, int);
-    // Device-to-device copy for the bandwidth probe (optional).
     int (*hipMemcpyDtoD)(void*, void*, size_t);
-    // Device memory size (Device.memoryBytes); optional — absent → 0
-    // (unknown). On a UMA part (Strix Halo) `total` is the GTT-visible
-    // pool, which IS the device-visible number the residency budget
-    // derives from.
+    // Device memory size; on a UMA part `total` is the GTT-visible pool.
     int (*hipMemGetInfo)(size_t*, size_t*);
 };
 static struct cajeta_hip_api g_xpu_hip;
 
-// --- libcajeta_amdtex (optional) ---------------------------------------------
-// The vendored-addrlib helper for AMD HIP mipmap/cube emulation (option B: a
-// hand-built gfx11 image SRD over an addrlib-tiled hipMalloc). dlopen'd exactly
-// like libamdhip64 so the heavy C++ stays out of the embedded JIT bitcode; when
-// the .so (or a recognised AMD GPU) is absent, the mip/cube emulation degrades to
-// unsupported and the existing fallbacks apply. ABI: runtime/native/amd/cajeta_amdtex.h.
+// The optional vendored-addrlib helper for AMD mip/cube emulation, dlopen'd.
 struct caj_amdtex_layout_c {       // byte-exact mirror of caj_amdtex_layout
     uint64_t surfSize;
     uint32_t baseAlign;
@@ -772,31 +593,17 @@ struct cajeta_amdtex_api {
 };
 static struct cajeta_amdtex_api g_xpu_amdtex;
 
-// HIP texture record: a Texture2D's device handle on AMD is a 1-based-... no, a
-// pointer to one of these (the hipArray + dims). The hipTextureObject is built
-// per launch from this array + the paired Sampler's modes.
-// `array` is the (level-0) plain hipArray for non-mip 2-D/3-D; `mipmap` is the
-// hipMipmappedArray for a mip Texture2D (NULL otherwise) and `levels` its level
-// count (1 = no mipmaps). A mip texture keeps `array` NULL — its per-level arrays
-// come from hipGetMipmappedArrayLevel; the texobj binds the mipmapped array.
+// A Texture2D's AMD device handle: the array plus dims; the texobj is per launch.
 struct cajeta_hip_tex {
     void* array; void* mipmap; uint32_t w, h, d; int32_t format; int levels;
-    // Emulated mip path (option B, AMD only; emulated=1). When the HIP runtime
-    // lacks mipmapped arrays, the mip surface is a plain hipMalloc tiled by
-    // addrlib and sampled through a hand-built gfx11 image SRD. `devAlloc` is the
-    // raw allocation (freed), `devBase` the addrlib-aligned surface base, `addr`
-    // the addrlib handle, `srdBlob` the fine-grain-SVM {imageSRD[8],pad[4],
-    // samplerSRD[4]} texobj rebuilt per launch with the bound sampler's modes.
+    // Emulated mip path (AMD only): addrlib-tiled hipMalloc + a gfx11 image SRD.
     int emulated;
     void* devAlloc; uint64_t devBase; void* addr; void* srdBlob;
     void* stagingHost;   // persistent host copy of the tiled surface (all levels)
     struct caj_amdtex_layout_c layout;
 };
 
-// --- Texture format table ----------------------------------------------------
-// TextureFormat ordinals — MUST match runtime/src/cajeta/xpu/core/TextureFormat.cajeta.
-// All four are float-sampled (sample() returns a vec4): float formats read back
-// as-is, UNORM formats store a byte 0..255 and read back normalized to [0,1].
+// TextureFormat ordinals - MUST match xpu/core/TextureFormat.cajeta (UNORM: [0,1]).
 #define CAJ_TEXFMT_R32F        0
 #define CAJ_TEXFMT_R8_UNORM    1
 #define CAJ_TEXFMT_RGBA8_UNORM 2
@@ -820,13 +627,11 @@ static inline int cajeta_texfmt_is_unorm(int32_t fmt) {
 static inline int cajeta_texfmt_is_half(int32_t fmt) {
     return fmt == CAJ_TEXFMT_R16F || fmt == CAJ_TEXFMT_RGBA16F;
 }
-// Raw 32-bit integer storage formats (signed or unsigned) — stored and fetched
-// verbatim (no normalization / float convert); fetch-only (no hardware filter).
+// Raw 32-bit integer storage: stored and fetched verbatim, and fetch-only.
 static inline int cajeta_texfmt_is_integer(int32_t fmt) {
     return fmt == CAJ_TEXFMT_R32I  || fmt == CAJ_TEXFMT_R32UI ||
            fmt == CAJ_TEXFMT_RGBA32I || fmt == CAJ_TEXFMT_RGBA32UI;
 }
-// True for the unsigned integer formats (HIP channel-kind / VK *_UINT select).
 static inline int cajeta_texfmt_is_unsigned(int32_t fmt) {
     return fmt == CAJ_TEXFMT_R32UI || fmt == CAJ_TEXFMT_RGBA32UI;
 }
@@ -836,7 +641,6 @@ static inline size_t cajeta_texfmt_channel_bytes(int32_t fmt) {
     if (cajeta_texfmt_is_half(fmt))  return 2u;
     return 4u;
 }
-// Bytes per texel in device storage.
 static inline size_t cajeta_texfmt_texel_bytes(int32_t fmt) {
     return (size_t) cajeta_texfmt_channels(fmt) * cajeta_texfmt_channel_bytes(fmt);
 }
@@ -846,8 +650,7 @@ static inline unsigned char cajeta_texfmt_unorm8(float f) {
     if (f >= 1.0f) return 255;
     return (unsigned char) (f * 255.0f + 0.5f);
 }
-// Convert one float32 to IEEE 754 binary16 (round-to-nearest-even), returned as
-// the raw 16-bit pattern. Handles sign, subnormals, overflow→Inf, and NaN.
+// float32 to IEEE 754 binary16 (round-to-nearest-even), as the raw bit pattern.
 static inline uint16_t cajeta_f32_to_f16(float f) {
     uint32_t x;
     memcpy(&x, &f, sizeof(x));
@@ -896,9 +699,7 @@ static inline float cajeta_f16_to_f32(uint16_t h) {
     memcpy(&f, &bits, sizeof(f));
     return f;
 }
-// Encode `texels` (= w*h*channels) channel-interleaved floats from `src` into
-// `dst` in the storage format: float → memcpy, half → binary16, UNORM →
-// quantized bytes. `dst` must hold texels * channel_bytes.
+// Encodes `texels` channel-interleaved floats into `dst` in the storage format.
 static void cajeta_texfmt_encode(void* dst, const float* src, size_t texels,
                                  int32_t fmt) {
     if (cajeta_texfmt_is_unorm(fmt)) {
@@ -913,10 +714,7 @@ static void cajeta_texfmt_encode(void* dst, const float* src, size_t texels,
 }
 
 #if !defined(_WIN32)
-// Load libamdhip64, preferring canonical ROCm (/opt/rocm, the
-// update-alternatives target) then $ROCM_PATH over a bare soname; pin the
-// chosen dir's libhsa-runtime with RTLD_GLOBAL first so hip's transitive HSA
-// dependency binds to it by soname (see HipDriver.cpp for the rationale).
+// Loads libamdhip64, preferring canonical ROCm, and pins its libhsa-runtime first.
 static void* cajeta_xpu_load_hip_from_dir(const char* dir) {
     char hsa[600], hip[600];
     snprintf(hsa, sizeof(hsa), "%s/libhsa-runtime64.so.1", dir);
@@ -964,8 +762,7 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND(hipModuleLaunchKernel, "hipModuleLaunchKernel");
     CAJ_HBIND(hipDeviceSynchronize, "hipDeviceSynchronize");
     #undef CAJ_HBIND
-    // Texture object path (Item 8 Stage C) — optional; a missing entry just
-    // disables AMD texture sampling, it doesn't fail the whole HIP backend.
+    // Optional entries: a missing one disables that path, not the HIP backend.
     #define CAJ_HBIND_OPT(fp, nm)                                              \
         *(void**) (&g_xpu_hip.fp) = cajeta_xpu_libsym(g_xpu_hip.lib, nm)
     CAJ_HBIND_OPT(hipMallocArray, "hipMallocArray");
@@ -1001,14 +798,8 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipMemcpyDtoD, "hipMemcpyDtoD");
     CAJ_HBIND_OPT(hipMemGetInfo, "hipMemGetInfo");
     #undef CAJ_HBIND_OPT
-    // cajeta-profiler §5.2.3 — the one window rocprofiler can be configured in.
-    // It intercepts HIP by installing itself while HIP loads, so this must
-    // happen after libamdhip64's symbols are bound and BEFORE hipInit brings
-    // the runtime up; a line later and the SDK refuses, and no dispatch is ever
-    // traced. Gated on the profiler being armed, because configuring
-    // rocprofiler installs intercepts process-wide and an unprofiled run should
-    // not pay for them. Both calls report their own failures and degrade to the
-    // host window (§10.4), so neither can fail HIP initialization.
+    // The one window rocprofiler can be configured in: it intercepts HIP while
+    // HIP loads, so this runs after the symbols bind and BEFORE hipInit.
     if (__cajeta_prof_gpu_is_armed()) {
         if (__cajeta_prof_rocm_init()) __cajeta_prof_rocm_configure();
     }
@@ -1021,9 +812,7 @@ static int cajeta_xpu_hip_init_locked(void) {
 }
 
 #if !defined(_WIN32)
-// Locate libcajeta_amdtex.so: $CAJETA_AMD_AMDTEX_LIB, then beside the executable
-// (build tree: build-cajeta/; install: bin/ with the .so in ../lib), then by
-// SONAME. Uses /proc/self/exe (no _GNU_SOURCE / dladdr — this TU avoids both).
+// Locates libcajeta_amdtex.so: env, then beside the executable, then by SONAME.
 static void* cajeta_xpu_load_amdtex(void) {
     const char* env = getenv("CAJETA_AMD_AMDTEX_LIB");
     if (env && *env) { void* h = dlopen(env, RTLD_NOW | RTLD_LOCAL); if (h) return h; }
@@ -1034,8 +823,6 @@ static void* cajeta_xpu_load_amdtex(void) {
         char* slash = strrchr(exe, '/'); if (slash) *slash = '\0'; else exe[0] = '\0';
         snprintf(path, sizeof(path), "%s/libcajeta_amdtex.so", exe);
         void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL); if (h) return h;
-        // Build tree: binaries sit in build/src/ and build/test/; the .so lands in
-        // the build root one level up.
         snprintf(path, sizeof(path), "%s/../libcajeta_amdtex.so", exe);
         if ((h = dlopen(path, RTLD_NOW | RTLD_LOCAL))) return h;
         snprintf(path, sizeof(path), "%s/../lib/libcajeta_amdtex.so", exe);
@@ -1069,10 +856,8 @@ static int cajeta_xpu_amdtex_init(void) {
 #endif
 }
 
-// Read this device's gfx arch token (e.g. "gfx1151") into `out`. Scans the
-// (version-stable R0600) device-property blob for a "gfx<digit>" token rather
-// than mirroring the large, drift-prone hipDeviceProp_t — the leading marketing
-// `name` field never contains that token. Returns 1 on success.
+// Reads this device's gfx arch token (e.g. "gfx1151") into `out`; 1 on success. It
+// scans the R0600 blob rather than mirroring the drift-prone hipDeviceProp_t.
 static int cajeta_xpu_hip_gfx_arch(char* out, size_t outLen) {
     if (!g_xpu_hip.hipGetDevicePropertiesR0600) return 0;
     // Over-allocate well past the real struct so the runtime can't overflow.
@@ -1094,16 +879,8 @@ static int cajeta_xpu_hip_gfx_arch(char* out, size_t outLen) {
     return 0;
 }
 
-// Fill *out from the CUDA driver, the twin of the HIP block below. Ordinals are
-// CUdevice_attribute values, every one VALIDATED against a live libcuda.so.1 on
-// an RTX 4090 before this was written (rc=0 on all of them) rather than recalled
-// from cuda.h; the ranges clamp the same way the HIP path does, so a wrong
-// ordinal on some other driver leaves the field 0 instead of poisoning the model.
-//
-// The arch is spelled `sm_<major><minor>` — the SAME string the nvptx backend
-// takes for --xpu-arch, and deliberately NOT a name the arch table knows: an SM
-// *is* the multiprocessor, so buildDeviceModel's unknown-arch path (CU factor 1,
-// occupancy from the live attributes) is already the correct NVIDIA model.
+// Fills *out from the CUDA driver, the twin of the HIP block below. Every ordinal
+// was validated live and every read range-clamped, so a wrong one leaves it 0.
 static int cajeta_xpu_cuda_fill_raw_device(CajetaXpuRawDevice* out) {
     if (!g_xpu_cuda.cuDeviceGetAttribute) return 0;
     int v = 0, dev = g_xpu_cuda.device;
@@ -1131,16 +908,11 @@ static int cajeta_xpu_cuda_fill_raw_device(CajetaXpuRawDevice* out) {
     if (g_xpu_cuda.cuDeviceGetAttribute(&v, 81, dev) == 0 && v >= 1024 && v <= (1 << 20))
         out->ldsBytesPerMP = (uint32_t) v;
 
-    // Tier-B geometry. Same discipline as above: every ordinal validated
-    // against this box's live driver before it was written here (rc=0 on all
-    // of them), and every read range-clamped so a wrong ordinal on some other
-    // driver leaves the field 0 rather than poisoning the model.
-    v = 0;   // MAX_SHARED_MEMORY_PER_BLOCK — the ceiling ptxas checks a static
-             // tile against, and roughly HALF the per-MP budget on NVIDIA.
+    // Tier-B geometry, same discipline: validated ordinals, clamped reads.
+    v = 0;   // MAX_SHARED_MEMORY_PER_BLOCK
     if (g_xpu_cuda.cuDeviceGetAttribute(&v, 8, dev) == 0 && v >= 1024 && v <= (1 << 20))
         out->ldsBytesPerBlock = (uint32_t) v;
-    v = 0;   // MAX_SHARED_MEMORY_PER_BLOCK_OPTIN — reachable only by raising the
-             // launch's dynamic-shared attribute; static tiles never get it.
+    v = 0;   // MAX_SHARED_MEMORY_PER_BLOCK_OPTIN
     if (g_xpu_cuda.cuDeviceGetAttribute(&v, 97, dev) == 0 && v >= 1024 && v <= (1 << 20))
         out->ldsBytesPerBlockOptin = (uint32_t) v;
     v = 0;   // MAX_BLOCKS_PER_MULTIPROCESSOR
@@ -1175,11 +947,8 @@ static int cajeta_xpu_cuda_fill_raw_device(CajetaXpuRawDevice* out) {
     return 1;
 }
 
-// Query the active device into *out for the host-side DeviceModel builder. The
-// arch token is the robust signal; the numeric attributes use ABI-stable
-// hipDeviceGetAttribute ordinals (ROCm 6/7) and are clamped to plausible ranges
-// so a wrong ordinal on another runtime leaves the field 0 rather than poisoning
-// the model. See cajeta_xpu_abi.h.
+// Queries the active device into *out for the host-side DeviceModel builder; the
+// arch token is the robust signal and the numeric ordinals are clamped.
 int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
     if (!out) return 0;
     memset(out, 0, sizeof(*out));
@@ -1190,11 +959,7 @@ int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
     int up = cajeta_xpu_hip_init_locked();
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 
-    // No HIP: try CUDA before giving up. Without this the function returned 0 on
-    // every NVIDIA box, buildDeviceModel fell back to defaultDeviceModel(), and
-    // `cajeta gpu-profile` reported gfx1151-SHAPED constants under arch
-    // "unknown" — wrong numbers rather than absent ones. HIP stays first and
-    // untouched so the AMD path is byte-for-byte what it was.
+    // No HIP: try CUDA, or every NVIDIA box reports gfx-shaped constants.
     if (!up) {
         pthread_mutex_lock(&g_xpu_cuda_lock);
         int cu = cajeta_xpu_cuda_init_locked();
@@ -1231,10 +996,7 @@ int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
     return 1;
 }
 
-// The CUDA half of the roofline probe: same shape as the HIP one below (2*bytes
-// of traffic per pass, best-of-N, host-timed around a full context sync), so the
-// two numbers are directly comparable across vendors. 0.0 when CUDA is absent or
-// any entry point is missing.
+// The CUDA half of the roofline probe, shaped like the HIP one so they compare.
 static double cajeta_xpu_cuda_measure_bandwidth_gbps(uint64_t bytes, int32_t passes) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     int up = cajeta_xpu_cuda_init_locked();
@@ -1266,9 +1028,7 @@ static double cajeta_xpu_cuda_measure_bandwidth_gbps(uint64_t bytes, int32_t pas
     return (2.0 * (double) bytes) / best / 1e9;
 }
 
-// Measure device memory bandwidth (GB/s) from a device-to-device copy of `bytes`
-// (2*bytes traffic: read + write), best of `passes`, host-timed around
-// hipDeviceSynchronize. Returns 0.0 on failure / no GPU / profiling disabled.
+// Measures bandwidth (GB/s) from a d2d copy of `bytes` (2x traffic), best of N.
 double cajeta_xpu_measure_bandwidth_gbps(uint64_t bytes, int32_t passes) {
     const char* dis = getenv("CAJETA_XPU_DEVICE_PROFILE_DISABLE");
     if (dis && dis[0] && dis[0] != '0') return 0.0;
@@ -1305,16 +1065,8 @@ double cajeta_xpu_measure_bandwidth_gbps(uint64_t bytes, int32_t passes) {
     return (2.0 * (double) bytes) / best / 1e9;
 }
 
-// --- per-kernel parameter metadata (the Vulkan launch translation) ----------
-// The compiler registers, per Vulkan-bundled @Kernel, which args are buffers vs
-// scalars and the scalar byte sizes. The Vulkan launch path uses it to turn the
-// uniform kernelParams argv into descriptor bindings: buffers map to existing
-// storage buffers; scalars are copied into transient single-element SSBOs. The
-// pointers are program constant data (valid for the process lifetime).
-// Per-param kind in the launch metadata (matches xpu::KernelParamInfo::kind).
-// The numeric values live exactly once, in CajetaXpuParamKind (the ABI header);
-// these short names are internal aliases for the runtime body below so the
-// literals can never drift from the compiler/FFI contract again.
+// Per-kernel parameter metadata for the Vulkan launch translation: which args are
+// buffers and which scalars. Scalars become transient single-element SSBOs.
 #define CAJETA_KP_SCALAR       CAJETA_XPU_KP_SCALAR
 #define CAJETA_KP_BUFFER       CAJETA_XPU_KP_BUFFER
 #define CAJETA_KP_TEXTURE      CAJETA_XPU_KP_TEXTURE
@@ -1322,7 +1074,6 @@ double cajeta_xpu_measure_bandwidth_gbps(uint64_t bytes, int32_t passes) {
 #define CAJETA_KP_ACCEL        CAJETA_XPU_KP_ACCEL   // AccelerationStructure -> descriptor-bound BVH
 #define CAJETA_KP_IMAGE        CAJETA_XPU_KP_IMAGE   // Image2D (writable) -> STORAGE_IMAGE descriptor
 #define CAJETA_KP_BUFFER_ARRAY CAJETA_XPU_KP_BUFFER_ARRAY  // Buffer<T>[] -> bindless descriptor array
-                                   // (descriptorCount = N; N + handles in argv slot)
 
 // The ABI version queryable by external FFI callers (header/runtime handshake).
 int32_t __cajeta_xpu_abi_version(void) { return CAJETA_XPU_ABI_VERSION; }
@@ -1333,23 +1084,18 @@ struct cajeta_kparams {
     const uint8_t* kind;
     const uint32_t* byteSize;
 };
-// 1024, up from 128 (2026-08-25) — same silent-overflow bug as the module
-// registry: cajeta-llama's suite crossed 128 kernels and dropped entries
-// surfaced only as downstream misbehaviour. Kept equal to
-// CAJETA_XPU_MAX_MODULES by convention.
+// 1024 by convention, equal to CAJETA_XPU_MAX_MODULES; overflow drops kernels.
 #define CAJETA_XPU_MAX_KPARAMS 1024
 static struct cajeta_kparams g_xpu_kparams[CAJETA_XPU_MAX_KPARAMS];
 static int g_xpu_kparam_count;
 
+// Registers (or replaces, by name) a kernel's param metadata; arrays kept by pointer.
 void __cajeta_xpu_register_kernel_params(const char* name, int32_t count,
                                          const uint8_t* kind,
                                          const uint32_t* byteSize) {
     if (!name) return;
     pthread_mutex_lock(&g_xpu_cuda_lock);
-    // M3: dedup by name — re-registration (e.g. a re-run or a second backend)
-    // overwrites the existing entry instead of appending a stale duplicate and
-    // exhausting the fixed table (M backends would otherwise fill it at
-    // CAJETA_XPU_MAX_KPARAMS/M kernels).
+    // Dedup by name: a re-registration overwrites rather than exhausting the table.
     int idx = -1;
     for (int i = 0; i < g_xpu_kparam_count; ++i)
         if (strncmp(g_xpu_kparams[i].name, name,
@@ -1373,8 +1119,7 @@ void __cajeta_xpu_register_kernel_params(const char* name, int32_t count,
     e->count = count;
     e->kind = kind;
     e->byteSize = byteSize;
-    // L9: publish a new slot only after its fields are fully written, so a
-    // lock-free find_kparams can't observe an entry with a stale field set.
+    // Publish a new slot only after its fields are written (lock-free readers).
     if (isNew) g_xpu_kparam_count++;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 }
@@ -1386,6 +1131,3 @@ static struct cajeta_kparams* cajeta_xpu_find_kparams(const char* name) {
             return &g_xpu_kparams[i];
     return NULL;
 }
-
-
-// ============================================================================

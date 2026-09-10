@@ -1,6 +1,4 @@
-//
-// See CajetaTask.h for the design.
-//
+// Task<T> layout, drop wrapper and per-T cache; see CajetaTask.h for the design.
 
 #include "CajetaTask.h"
 #include "CajetaArray.h"
@@ -15,7 +13,7 @@ namespace cajeta {
         if (isFrozen() && CajetaType::rawLlvmType() == nullptr) {
             llvm::LLVMContext* ctx = currentLlvmContext();
             if (!ctx && module) ctx = module->getLlvmContext();
-            if (ctx) setLlvmType(buildLlvmType(ctx));  // U6.4.2: per-thread rebuild
+            if (ctx) setLlvmType(buildLlvmType(ctx));
         }
         return CajetaClass::getLlvmType();
     }
@@ -24,46 +22,27 @@ namespace cajeta {
         : CajetaClass(module) {
         this->elementType = elementType;
         string typeName = string("Task<") + elementType->toCanonical() + ">";
-        // No package prefix — Task is a built-in compiler-synthesized type,
-        // distinct from user-declared `cajeta.concurrent.Task<T>` (which is
-        // the package the doc reserves for it but doesn't exist as a real
-        // class today).
+        // Unqualified by design: Task is compiler-synthesized, not the reserved
+        // `cajeta.concurrent.Task<T>` package name.
         qName = QualifiedName::getOrCreate(typeName);
         canonical = qName->toCanonical();
-        // Expose the element type via the standard CajetaClass
-        // typeArguments interface so the method-template unifier (and
-        // any other generic-machinery walker) can recurse into Task<R>
-        // and bind R from a Task<int32> arg the same way it does for a
-        // user-declared `Optional<R>` formal. Without this `Task<R>`
-        // looks like a non-instantiated class to the unifier — implicit
-        // T-inference through a Task<R> formal silently fails to bind R
-        // (task #47).
+        // Without typeArguments the unifier reads Task<R> as non-instantiated
+        // and silently fails to bind R from a Task<int32> argument.
         setTypeArguments({elementType});
 
-        setLlvmType(buildLlvmType(module->getLlvmContext()));  // U6.4.1
+        setLlvmType(buildLlvmType(module->getLlvmContext()));
         typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
     }
 
-    // U6.4.1 — build (intern) the task's `{ T value, i32 done, ptr exception,
-    // ptr fiber }` struct in `ctx` from the (immutable) element type. Context-
-    // parameterized so the frozen-stdlib path can rebuild it in a thread's own
-    // context (U6.4.2); the ctor calls it with the home module's context.
     llvm::Type* CajetaTask::buildLlvmType(llvm::LLVMContext* ctx) const {
-        // Element-storage type: classes/arrays travel as `ptr` (heap-allocated,
-        // pass-by-reference at the LLVM level). Primitives store their LLVM
-        // type directly.
         llvm::Type* valueLlvm;
         bool isStruct = dynamic_pointer_cast<CajetaView>(elementType) != nullptr;
         bool isArr = dynamic_pointer_cast<CajetaArray>(elementType) != nullptr;
         bool isClassLike = dynamic_pointer_cast<CajetaClass>(elementType) != nullptr;
         bool isPrim = elementType && (elementType->getTypeFlags() & PRIMITIVE_FLAG);
         bool storeAsPtr = (isClassLike && !isStruct) && (isArr || !isPrim);
-        // Void-returning async functions produce a Task<void>; LLVM
-        // doesn't allow void inside a struct, so substitute i8 as a
-        // dead placeholder at the value slot. SpawnExpression's
-        // value-store path detects the void case and skips the store
-        // entirely — the slot is never read either (await on void
-        // returns no value).
+        // LLVM has no void struct member, so Task<void>'s value slot is a dead
+        // i8; SpawnExpression skips the store and await never reads it.
         bool isVoid = elementType && elementType->getLlvmType()
             && elementType->getLlvmType()->isVoidTy();
         if (isVoid) {
@@ -74,12 +53,9 @@ namespace cajeta {
             valueLlvm = elementType->getLlvmType();
         }
 
-        // Layout: { T value, i32 done, ptr exception, ptr fiber }. `done`
-        // is i32 so the C runtime can atomic-store it. `exception` is the
-        // Throwable* the trampoline writes on throw. `fiber` is the
-        // cajeta_fiber* the runtime allocates inside __cajeta_task_run;
-        // scope uses it for R5-C cancellation (set the fiber's cancel_with
-        // so its next await aborts).
+        // { T value, i32 done, ptr exception, ptr fiber }: `done` is i32 for the
+        // runtime's atomic store, `exception` is the Throwable* the trampoline
+        // writes, `fiber` is the cajeta_fiber* __cajeta_task_run allocates.
         vector<llvm::Type*> fields = {
             valueLlvm,
             llvm::Type::getInt32Ty(*ctx),
@@ -91,7 +67,7 @@ namespace cajeta {
     }
 
     llvm::Function* CajetaTask::getOrCreateDropFunction() {
-        auto& llvmDropFunction = dropFnRef();  // U6.3: frozen-aware
+        auto& llvmDropFunction = dropFnRef();
         if (llvmDropFunction) return llvmDropFunction;
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
@@ -99,12 +75,8 @@ namespace cajeta {
         llvm::FunctionType* fnTy = llvm::FunctionType::get(
             llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy}, false);
 
-        // Sanitize the canonical to a valid C identifier so the symbol
-        // reads sensibly in stack traces — same convention CajetaClass
-        // uses, but prefixed `__cajeta_task_` to distinguish from
-        // regular class drop wrappers and to avoid colliding with a
-        // user class literally named `Task` (the synthesized type's
-        // canonical is `Task<...>` which includes angle brackets).
+        // `Task<...>` is not a C identifier, so the canonical is sanitized and
+        // prefixed to keep the symbol clear of a user class named `Task`.
         string dropName = string("__cajeta_task_") + canonical + "_drop";
         for (char& c : dropName) {
             if (c == ':' || c == '.' || c == '<' || c == '>'
@@ -113,30 +85,17 @@ namespace cajeta {
             }
         }
 
-        // Reuse if the JIT module has built this drop fn before
-        // (Task<T> for the same T can be referenced from multiple
-        // spawn sites within one module).
         if (llvm::Function* existing = lmod->getFunction(dropName)) {
             llvmDropFunction = existing;
             return existing;
         }
 
-        // LinkOnceODR so a Task<T> drop fn defined in multiple JIT
-        // modules (stdlib + user modules whose own `async` functions
-        // return Task<T> for the same T) merges to a single definition
-        // at link time rather than triggering "symbol multiply defined".
-        // The bodies are deterministic per-T so ODR holds.
+        // LinkOnceODR merges the per-T body across JIT modules instead of
+        // "symbol multiply defined".
         llvmDropFunction = llvm::Function::Create(fnTy,
             llvm::Function::LinkOnceODRLinkage, dropName, lmod);
-        // COMDAT-based grouping is an ELF/COFF feature and isn't
-        // representable in MachO's object format; LLVM's MachO writer
-        // aborts with "MachO doesn't support COMDATs" when it sees one.
-        // LinkOnceODR linkage alone gives the merge semantics — the
-        // explicit COMDAT was a belt-and-suspenders for ELF/COFF
-        // toolchains that sometimes need the explicit group to dedupe.
-        // Gate on the target's binary format so we keep the explicit
-        // COMDAT where it's supported (Linux, Windows) and skip on
-        // macOS / iOS / watchOS.
+        // The COMDAT only helps ELF/COFF dedupe; LLVM's MachO writer aborts on
+        // one, and LinkOnceODR alone already carries the merge semantics.
         llvm::Triple lmodTriple(lmod->getTargetTriple());
         if (!lmodTriple.isOSBinFormatMachO()) {
             llvmDropFunction->setComdat(lmod->getOrInsertComdat(dropName));
@@ -155,22 +114,16 @@ namespace cajeta {
         b.CreateCondBr(isNull, done, doDrop);
 
         b.SetInsertPoint(doDrop);
-        // Wait for completion before freeing. On the normal fall-through
-        // path Method::generateCode runs __cajeta_scope_exit_to BEFORE
-        // emitOwnerDrops, so by the time this fires the task is already
-        // done and wait is a no-op atomic load. On the throw path, the
-        // unwind in __cajeta_throw fires drops directly — scope_exit_to
-        // doesn't run, so the wait here is what keeps the carrier from
-        // freeing a struct the worker still touches.
+        // On the throw path __cajeta_throw fires drops without scope_exit_to, so
+        // this wait is the only thing keeping the free off a live worker struct.
         llvm::Function* waitFn = module->getRuntimeFunction("__cajeta_task_wait");
         if (waitFn) {
             llvm::Value* doneAddr = b.CreateStructGEP(
                 rawLlvmType(), task, DONE_FIELD_INDEX, "task_done");
             b.CreateCall(waitFn, {doneAddr});
         }
-        // Throw path: scope_exit_to runs AFTER drop chain unwind, so any
-        // scope_register entries pointing into this task become dangling
-        // when free() lands. Deregister first to keep scope_exit_to safe.
+        // Deregister before the free: scope_exit_to runs after the drop chain and
+        // would otherwise walk scope_register entries into freed memory.
         llvm::Function* deregFn = module->getRuntimeFunction(
             "__cajeta_scope_deregister_task");
         if (deregFn) {
@@ -193,9 +146,6 @@ namespace cajeta {
     shared_ptr<CajetaTask> CajetaTask::getOrCreate(CajetaModulePtr module,
                                                     CajetaTypePtr elementType) {
         string key = string("Task<") + elementType->toCanonical() + ">";
-        // Module structure map is the canonical cache for synthesized types.
-        // Look up the existing instance to avoid duplicating layouts (the
-        // LLVM struct type would otherwise multiply).
         auto& structures = module->getStructures();
         auto it = structures.find(key);
         if (it != structures.end()) {

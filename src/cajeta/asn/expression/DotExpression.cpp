@@ -21,10 +21,9 @@
 #include <llvm/IR/Intrinsics.h>
 
 namespace cajeta {
-    DotExpression::DotExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token) : Expression(token) {
-        // The DOT grammar allows several rhs forms (identifier, methodCall, THIS, etc.).
-        // Only the identifier form is fully implemented; for other forms we capture an
-        // empty name and rely on the lhs's codegen to surface the right error.
+    DotExpression::DotExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Dot;
+        // The DOT grammar allows several rhs forms; only the identifier form is
+        // implemented — other forms capture an empty name so the lhs errors.
         if (ctx->identifier()) {
             identifier = ctx->identifier()->getText();
             if (auto* idTok = ctx->identifier()->getStart()) {
@@ -34,9 +33,9 @@ namespace cajeta {
         }
     }
 
+    // Resolve the LHS, look this member up on its resolved class type, and pin
+    // our own type to the member's — enum constants and statics included.
     void DotExpression::resolveTypes(CajetaModulePtr module) {
-        // Resolve the LHS (instance expression) first, then look up our member on its
-        // resolved class type and pin our own type to the member's type.
         AbstractSyntaxNode::resolveTypes(module);
         if (children.empty()) {
             return;
@@ -45,31 +44,17 @@ namespace cajeta {
         if (!lhs) {
             return;
         }
-        // Enum constant reference: `MyEnum.NAME` — resolvedType is int32.
-        // Bind here so diamond inference and other resolveType consumers see
-        // the right type without waiting for generateCode to short-circuit.
+        // Enum constant `MyEnum.NAME`: bound here so diamond inference sees int32.
         if (auto id = dynamic_pointer_cast<IdentifierExpression>(lhs)) {
             const string& ns = id->getTextValue();
             if (CajetaType::lookupEnumConstant(ns, identifier).has_value()) {
-                // Enum constant `MyEnum.NAME` — resolvedType is int32 (the
-                // ordinal's type, which generateCode emits). NOTE: keeping this
-                // int32 (rather than the enum type) is deliberate — resolving it
-                // to the enum type broke enum `==`/codegen across the stdlib.
-                // The int32↔enum overload-resolution gap (an enum-constant arg
-                // failing to match an enum-typed parameter) is closed in
-                // CajetaClass::subtypeDistance instead.
+                // int32, NOT the enum type, is deliberate: resolving to the enum
+                // broke enum `==` across the stdlib. The gap closes in subtypeDistance.
                 resolvedType = CajetaType::of("int32");
                 return;
             }
-            // Static field reference: `Counter.total`. LHS names a class
-            // (it isn't a local variable). Pin LHS's resolvedType to the
-            // class and our own resolvedType to the field's declared
-            // type. Resolved through ofScoped (own package → imports →
-            // global) — the raw short-name key is last-writer-wins across
-            // packages, so a same-named class elsewhere would hijack the
-            // reference. Falling through to the instance-path below would
-            // set klass=null because IdentifierExpression doesn't resolve
-            // class names by default.
+            // Static field `Counter.total`: the LHS names a class, not a local, and
+            // resolves through ofScoped — the raw short-name key is last-writer-wins.
             if (!lhs->getResolvedType()) {
                 auto scoped = CajetaType::ofScoped(ns, module);
                 if (auto staticKlass = dynamic_pointer_cast<CajetaClass>(scoped)) {
@@ -77,15 +62,13 @@ namespace cajeta {
                 }
             }
         }
-        // Vector component access: v.x/.y/.z/.w (and .r/.g/.b/.a) -> element
-        // type. Invalid components are left unresolved here; generateCode emits
-        // the clear diagnostic.
+        // Vector component access: v.x/.y/.z/.w (and .r/.g/.b/.a). An invalid
+        // component is left unresolved here; generateCode emits the diagnostic.
         if (auto vecT = dynamic_pointer_cast<CajetaVector>(lhs->getResolvedType())) {
             int lane = vecops::laneForComponentName(identifier);
             if (lane >= 0 && (unsigned) lane < vecT->getLanes()) {
                 resolvedType = vecT->getElementType();      // single component
             } else {
-                // Multi-component swizzle (`.xy`/`.xyz`/`.xxyy`) -> Vector<T,M>.
                 auto lanes = vecops::swizzleLanes(identifier);
                 bool ok = !lanes.empty();
                 for (int l : lanes)
@@ -101,22 +84,16 @@ namespace cajeta {
             return;
         }
         // Walk the inheritance chain — inherited fields live on ancestors'
-        // properties maps, not on the subclass's own. Mirrors the lookup
-        // in generateCode below.
+        // properties maps, not on the subclass's own.
         std::function<bool(const CajetaClassPtr&)> findProp =
             [&](const CajetaClassPtr& cls) -> bool {
                 auto pit = cls->getProperties().find(identifier);
                 if (pit != cls->getProperties().end()) {
-                    // Capture conversion: field read through a bounded-
-                    // wildcard receiver projects to the bound so chained
-                    // member lookup works (P2-2 item 1; mirrors the MCE
-                    // return-type pin).
+                    // Capture conversion: a bounded-wildcard receiver projects to its bound.
                     resolvedType = CajetaType::captureProject(
                         pit->second->getType());
-                    // xref (2.1.6): `cls` — not `klass` — is the class that actually
-                    // DECLARES this field. For an inherited field the two differ, and
-                    // naming the receiver's class would point Ctrl-click at a type
-                    // that declares nothing of the sort.
+                    // `cls`, not `klass`, is the class that DECLARES this field:
+                    // for an inherited field the two differ.
                     recordFieldXref(cls);
                     return true;
                 }
@@ -129,15 +106,13 @@ namespace cajeta {
     }
 
     // Record `receiver.field` as a reference to the field's declaration. No-op
-    // unless --emit-xref, and skipped entirely when this node came from synthesized
-    // source (getSourceFile() empty) — a snippet's positions are not anywhere.
+    // unless --emit-xref, and skipped for synthesized source, which has no positions.
     void DotExpression::recordFieldXref(const CajetaClassPtr& owner) {
         if (!xref::captureEnabled() || !owner || idLine <= 0) return;
         const string& file = getSourceFile();
         if (file.empty()) return;
 
-        // An instantiation (`Box<int32>`) has no source; its field is declared on
-        // the template, which is what the index carries.
+        // An instantiation has no source; its field is declared on the template.
         string ownerFqn = owner->getQName()->toCanonical();
         auto lt = ownerFqn.find('<');
         if (lt != string::npos) ownerFqn = ownerFqn.substr(0, lt);
@@ -145,25 +120,18 @@ namespace cajeta {
         xref::noteFieldReference(ownerFqn + "." + identifier, file, idLine, idColumn);
     }
 
-    // `a.b` lowers to a struct GEP. lhs may be the alloca holding the struct (stack-local)
-    // or a pointer loaded from the heap; both yield an address we can GEP into. The member
-    // index comes from StructureProperty::getOrder() — set when the class registered its
-    // properties during signature pass.
     llvm::Value* DotExpression::maybeBswap(CajetaModulePtr module, llvm::Value* v,
                                               const ExpressionPtr& receiver) {
         if (!v || !receiver) return v;
         auto recvType = receiver->getResolvedType();
         if (!recvType) return v;
-        // Endianness is view-only — structs are host-endian per docs/specification/lang/Views.md.
-        // Cast specifically to CajetaView so a future struct receiver no-ops
-        // through here.
+        // Endianness is view-only — structs are host-endian. Cast to CajetaView so
+        // a future struct receiver no-ops through here.
         auto viewType = dynamic_pointer_cast<CajetaView>(recvType);
         if (!viewType) return v;
         ViewEndianness e = viewType->getEndianness();
         if (e == ViewEndianness::Host) return v;
-        // v1 assumption: host is little-endian (x86_64, aarch64). When we
-        // grow cross-compile support, this picks the host's order from the
-        // target triple instead.
+        // v1 assumption: the host is little-endian (x86_64, aarch64).
         const bool hostLittle = true;
         bool needBswap = (e == ViewEndianness::Big && hostLittle)
                       || (e == ViewEndianness::Little && !hostLittle);
@@ -210,27 +178,19 @@ namespace cajeta {
         return "";
     }
 
+    // `a.b` lowers to a struct GEP. The lhs may be the alloca holding the struct or
+    // a pointer loaded from the heap; both yield an address to GEP into, and the
+    // member index comes from StructureProperty::getOrder(), set at signature pass.
     llvm::Value* DotExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) {
             return nullptr;
         }
 
-        // A transferred PATH is readable, exactly as a transferred identifier
-        // is: `#person.name` demotes `person.name` to a borrow of the same
-        // live instance rather than killing the path. Re-transferring it is
-        // rejected at the `#` operand instead.
-        // Per `specs/transfer-demotes-to-borrow-spec.md` §2.3.1.
+        // A transferred PATH is readable, exactly as a transferred identifier is:
+        // `#person.name` demotes to a borrow rather than killing the path.
 
-        // Variable obscures type (script-units 6.3.3(a); JLS 6.4.2's
-        // obscuring rule): a bare identifier naming BOTH an in-scope
-        // variable and a class means the VARIABLE. Codegen is sequential,
-        // so the scope holds exactly the locals declared so far — a use
-        // BEFORE the local's declaration still means the class. Checked
-        // once here, consumed by all four sites below: the namespace and
-        // enum-constant short-circuits (a local named `Math` or like an
-        // enum type must not be hijacked by the constant tables), the
-        // static shortcut (which must not hijack `S.total` when `S` is a
-        // local), and the pinned-type repair before the property walk.
+        // Variable obscures type (JLS 6.4.2): an identifier naming both an in-scope
+        // local and a class means the LOCAL. Four short-circuits below consume it.
         FieldPtr obscuringLocal;
         if (auto idLhs = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
             if (auto sc = module->getScopeStack().peek()) {
@@ -238,9 +198,8 @@ namespace cajeta {
             }
         }
 
-        // Static-namespace constants: Math.PI / Math.E / Integer.MAX_VALUE / ... .
-        // These have no instance backing and don't survive the GEP path below, so we
-        // short-circuit them here and emit IR constants directly.
+        // Static-namespace constants (Math.PI, Integer.MAX_VALUE) have no instance
+        // backing and do not survive the GEP path, so they emit as IR constants here.
         if (auto idExpr = obscuringLocal
                 ? nullptr
                 : dynamic_pointer_cast<IdentifierExpression>(children[0])) {
@@ -262,14 +221,10 @@ namespace cajeta {
                 if (identifier == "MIN_VALUE") return llvm::ConstantInt::get(
                     llvm::Type::getInt64Ty(ctx), INT64_MIN, /*isSigned=*/true);
             }
-            // Enum constant: `MyEnum.NAME` resolves to the ordinal i32. The
-            // enum type is registered in canonicalMap; the constant table is
-            // a separate side-map populated by visitEnumDeclaration.
+            // Enum constant: the ordinal i32; the constant table is a side-map.
             if (auto v = CajetaType::lookupEnumConstant(ns, identifier)) {
-                // Type the constant as the ENUM rather than raw int32, so a
-                // method invoked directly on it (`Verb.POST.weight()`) can
-                // reach the enum's companion class. The VALUE is unchanged —
-                // still the ordinal.
+                // Typed as the ENUM, not raw int32, so `Verb.POST.weight()` reaches
+                // the companion class. The VALUE is unchanged — still the ordinal.
                 auto& cmap = CajetaType::getCanonicalMap();
                 auto et = cmap.find(ns);
                 if (et != cmap.end()) {
@@ -280,14 +235,8 @@ namespace cajeta {
             }
         }
 
-        // Static-field-on-class-name shortcut: `Counter.total`. LHS is a
-        // bare identifier naming a class (not a local). The instance
-        // GEP path below assumes LHS resolves to an instance and would
-        // bail at `if (!base)` because IdentifierExpression returns
-        // null for class names. Route to the class's static-field
-        // global instead — returned as an l-value pointer so
-        // loadIfLValue handles reads and BinaryOpExpression's assign
-        // path handles writes.
+        // `Counter.total`: IdentifierExpression returns null for a class name, so the
+        // GEP path would bail; route to the static global, as a writable l-value.
         if (auto idLhs = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
             // ofScoped, not the raw short-name key (see resolveTypes above).
             auto scoped = obscuringLocal
@@ -295,8 +244,7 @@ namespace cajeta {
                 : CajetaType::ofScoped(idLhs->getTextValue(), module);
             {
                 if (auto staticKlass = dynamic_pointer_cast<CajetaClass>(scoped)) {
-                    // Walk the hierarchy: a static declared on a base
-                    // class is visible through derived-class names too.
+                    // A static declared on a base class is visible through derived names.
                     StructurePropertyPtr staticProp;
                     std::function<bool(const CajetaClassPtr&)> findStatic =
                         [&](const CajetaClassPtr& cls) -> bool {
@@ -330,19 +278,14 @@ namespace cajeta {
         if (!lhs) {
             return nullptr;
         }
-        // Variable obscures type, part 2: when the receiver IS an in-scope
-        // local, its declared type wins over whatever the pre-pass pinned
-        // (the pin can be a same-named CLASS — see the comment above the
-        // shortcut). The value (`base`) already came from the local's slot;
-        // this makes the TYPE agree with it.
+        // Variable obscures type, part 2: when the receiver IS an in-scope local its
+        // declared type wins over whatever the pre-pass pinned.
         if (obscuringLocal && obscuringLocal->getType()
             && obscuringLocal->getType() != lhs->getResolvedType()) {
             lhs->setResolvedType(obscuringLocal->getType());
         }
-        // Re-run resolveTypes if the lhs wasn't resolved during the pre-pass —
-        // local variables aren't added to the scope until their declarations
-        // run at codegen time, so identifiers referenced later may have a
-        // null resolvedType at resolve time.
+        // Re-run resolveTypes when the lhs went unresolved in the pre-pass: locals
+        // enter scope only when their declarations run at codegen time.
         if (!lhs->getResolvedType()) {
             lhs->resolveTypes(module);
         }
@@ -350,7 +293,6 @@ namespace cajeta {
         if (auto vecT = dynamic_pointer_cast<CajetaVector>(lhs->getResolvedType())) {
             int lane = vecops::laneForComponentName(identifier);
             if (lane >= 0) {
-                // Single component `.x` -> the element (extractelement).
                 if ((unsigned) lane >= vecT->getLanes()) {
                     throw Exception(
                         "component '." + identifier + "' is out of range for "
@@ -362,7 +304,6 @@ namespace cajeta {
                 return vecops::extractLane(*module->getBuilder(), vecVal,
                                            (unsigned) lane);
             }
-            // Multi-component swizzle `.xy`/`.xyz`/`.xxyy` -> Vector<T,M>.
             auto lanes = vecops::swizzleLanes(identifier);
             if (lanes.empty()) {
                 throw Exception(
@@ -387,21 +328,8 @@ namespace cajeta {
         if (!klass) {
             return nullptr;
         }
-        // Walk the inheritance chain to find the property. The subclass's
-        // own `properties` map only contains its own declared fields;
-        // inherited fields live on the parent's map. Property indices
-        // returned by getFieldLlvmIndex are valid for any descendant's
-        // LLVM struct because subclass structs prepend parent fields at
-        // the parent's indices.
-        //
-        // MultiClassing Phase 1 (P-1): walk the FULL parent set
-        // (not first-match-wins), gather every class that declares a
-        // property by this name, and reject when the gathered set
-        // contains two sibling classes (no inheritance relationship)
-        // and the receiver class itself doesn't shadow the name.
-        // `getProperties()` is per-declaring-class — inherited fields
-        // are NOT in the subclass's map — so a self-shadow shows up
-        // as `klass->getProperties().find(identifier) != end()`.
+        // Gather over the FULL parent set: inherited fields live on the parent's map,
+        // and a name found on two unrelated siblings is ambiguous unless shadowed.
         StructurePropertyPtr lookedUpProperty;
         std::vector<std::pair<CajetaClassPtr, StructurePropertyPtr>> allMatches;
         std::function<void(const CajetaClassPtr&)> gatherProps =
@@ -416,28 +344,19 @@ namespace cajeta {
             };
         gatherProps(klass);
         if (allMatches.empty()) {
-            // A value-type (record / @ValueType) receiver has no static/
-            // package/late-bound member surface — an unmatched name is a
-            // field typo, not something a later resolution pass can claim
-            // (records-spec §5.2). Reference classes keep the silent
-            // fall-through their qualified-name resolution relies on.
+            // A value-type receiver has no static / package / late-bound surface, so
+            // an unmatched name is a field typo, not a later pass's business.
             if (klass->isValueType()) {
                 throw cajeta::Exception(
                     "'" + klass->getQName()->toCanonical()
                         + "' has no field '" + identifier + "'",
                     "CAJETA_ERROR_UNKNOWN_FIELD");
             }
-            // Reference class (2.2.3). We reach here only with a real instance
-            // (`base` is non-null, guarded above), so the receiver is not a bare
-            // type name — statics / enum constants / qualified names bail out
-            // earlier and keep their fall-through. An unmatched name on an
-            // INSTANCE is a field typo, and returning null here is what let
-            // `p.vee` compile to nothing.
+            // We reach here only with a real instance, so an unmatched name is a field
+            // typo; returning null here is what let `p.vee` compile to nothing.
             std::string msg = "no member '" + identifier + "' on '"
                 + klass->getQName()->toCanonical() + "'";
-            // The frame's schema-erased table (spec §4.3.2 wording
-            // contract): typed accessors don't exist on `Table<?>` — say
-            // exactly how to proceed instead of offering a spelling hint.
+            // Typed accessors do not exist on `Table<?>`: say how to proceed, not a hint.
             {
                 auto origin = klass->isInstantiation()
                     ? klass->getTemplateOrigin() : nullptr;
@@ -461,13 +380,11 @@ namespace cajeta {
                 getSourceLine(), getSourceColumn() + 1, msg,
                 "CAJETA_ERROR_MEMBER_NOT_FOUND");
         }
-        // Self-shadow resolves ambiguity. Take the receiver class's
-        // own property if it declared one.
+        // Self-shadow resolves ambiguity: the receiver class's own property wins.
         auto selfPit = klass->getProperties().find(identifier);
         bool selfShadows = (selfPit != klass->getProperties().end());
         if (!selfShadows && allMatches.size() > 1) {
-            // Check for sibling collision: two declaring classes
-            // where neither is ancestor of the other.
+            // Sibling collision: two declaring classes, neither an ancestor.
             std::function<bool(CajetaClassPtr, CajetaClassPtr)> isAncestor =
                 [&](CajetaClassPtr anc, CajetaClassPtr desc) -> bool {
                     if (!anc || !desc) return false;
@@ -504,10 +421,7 @@ namespace cajeta {
                 }
             }
         }
-        // Pick the property — self-shadow wins; otherwise the first
-        // gathered match (DFS / declaration order) is the one to use.
-        // Common-ancestor case (multiple matches but all collapse to
-        // one declaring class) reaches here cleanly.
+        // Self-shadow wins; otherwise the first gathered match, in declaration order.
         CajetaClassPtr pickedDeclaringClass;
         if (selfShadows) {
             lookedUpProperty = selfPit->second;
@@ -516,30 +430,18 @@ namespace cajeta {
             lookedUpProperty = allMatches.front().second;
             pickedDeclaringClass = allMatches.front().first;
         }
-        // Synthesize an iterator-like pair so the existing `it->second`
-        // code below continues to work unchanged. The found property is
-        // what we'd have gotten from a direct map lookup.
+        // Synthesize an iterator-like pair so the `it->second` code below still works.
         std::pair<string, StructurePropertyPtr> foundEntry(identifier, lookedUpProperty);
         auto it = klass->getProperties().find(identifier);
         bool inheritedFromAncestor = (it == klass->getProperties().end());
         if (inheritedFromAncestor) {
-            // Use the synthesized entry so downstream code treats the
-            // inherited property the same as an own one. (it->second is
-            // referenced below; emulate it with the looked-up property.)
+            // Downstream reads the synthesized entry, not `it->second`.
         }
-        // If the receiver is an l-value (an alloca that holds a pointer to the
-        // object), load through it first. The struct/class instance lives at
-        // the address the alloca stores; GEP'ing the alloca directly would
-        // walk the slot, not the object.
+        // An l-value receiver (an alloca holding a pointer) is loaded through first:
+        // GEP'ing the alloca would walk the slot, not the object.
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(base)) {
-            // @ValueType receiver whose slot holds the aggregate INLINE
-            // (StackField allocates `alloca %ValueType`): the alloca address IS
-            // the object, so GEP it directly — loading would yield the aggregate
-            // VALUE, which can't be a GEP base. The allocated-type check is
-            // load-bearing: a value-type METHOD's `this` is still a POINTER
-            // spilled to an `alloca ptr` slot (receiver passed by reference even
-            // for value types), so that case must load through to the object.
-            // Reference types likewise keep a `ptr` slot → load through.
+            // A @ValueType slot holds the aggregate INLINE, so the alloca address IS
+            // the object. A value-type method's `this` is still a ptr slot, and loads.
             bool slotHoldsAggregate =
                 lhs->getResolvedType() && lhs->getResolvedType()->isValueType()
                 && !a->getAllocatedType()->isPointerTy();
@@ -547,54 +449,18 @@ namespace cajeta {
                 base = module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
             }
         } else if (llvm::isa<llvm::GetElementPtrInst>(base)) {
-            // Chained class-field access (`foo.bar.value`) or
-            // implicit-this class-typed field access (`t.v` inside
-            // a method where `t` is `this.t`). The previous step's
-            // generateCode returned a slot GEP into a struct field
-            // that holds a `ptr` to a class instance — not the
-            // instance pointer itself. Load through to dereference.
-            //
-            // The guard:
-            //   - resolvedType must be a CajetaClass (covers
-            //     interface too — CajetaInterface extends
-            //     CajetaClass).
-            //   - It must NOT be a CajetaView, since view fields
-            //     are stored INLINE in the byte buffer and the GEP
-            //     already gives the field's address directly.
-            //   - It must NOT be a ThisExpression or SuperExpression
-            //     LHS (Phase 2 / Phase 3 v2): those primaries return a
-            //     ready-to-use instance pointer (potentially adjusted
-            //     by `adjustForUpcast` for the bracketed `this<Base>` /
-            //     `super<Base>` form). The pointer they hand back is
-            //     the receiver itself, not a slot-holding-pointer. A
-            //     spurious load-through here reads garbage at the
-            //     adjusted offset and downstream GEPs build on it.
-            //
-            // CajetaArray fields also store via pointer indirection
-            // but DotExpression on an array receiver isn't a
-            // supported shape in v1 (arrays go through the index
-            // expression path), so leaving them out doesn't open
-            // a new gap here.
+            // A slot GEP into a field holding a `ptr` to an instance loads through.
+            // Not views (fields are inline), not this/super (already the receiver).
             auto lhsClass = dynamic_pointer_cast<CajetaClass>(lhs->getResolvedType());
             bool lhsIsView = dynamic_pointer_cast<CajetaView>(lhs->getResolvedType()) != nullptr;
             bool lhsIsThisOrSuper =
                 dynamic_pointer_cast<ThisExpression>(lhs) != nullptr
                 || dynamic_pointer_cast<SuperExpression>(lhs) != nullptr;
-            // Interface receivers are 24-byte fat-pointer bodies stored INLINE
-            // (an interface array element / field), so the GEP already points AT
-            // the body — the interface dispatch path (CajetaClass.cpp) GEPs
-            // data/vtable straight from it. Loading through here would read the
-            // body's first word (the data ptr) and dispatch would then deref that
-            // as a body → garbage vtable → crash. (Interface LOCALS are AllocaInst
-            // slots holding a ptr-to-body, loaded correctly by the alloca branch
-            // above; only the inline GEP shape must skip the load.)
+            // An inline interface body is GEP'd directly by dispatch; loading would
+            // read its data ptr as a body. Interface LOCALS load in the branch above.
             bool lhsIsInterface = lhsClass && lhsClass->isInterface();
-            // A @ValueType receiver is stored INLINE (e.g. a value-type element
-            // of an inline `Point[N]` field, or of a heap `Point[]` data
-            // region): the GEP already addresses the aggregate, so loading it
-            // would read the struct's first word as a pointer and crash. Mirror
-            // the alloca branch's `slotHoldsAggregate` guard. Reference-class
-            // elements ARE pointer slots and still need the load-through.
+            // An inline @ValueType element: the GEP already addresses the aggregate,
+            // so a load would read the struct's first word as a pointer.
             bool lhsIsValueType = lhsClass && lhsClass->isValueType();
             if (lhsClass && !lhsIsView && !lhsIsThisOrSuper && !lhsIsInterface
                     && !lhsIsValueType) {
@@ -602,41 +468,20 @@ namespace cajeta {
                 base = module->getBuilder()->CreateLoad(ptrTy, base);
             }
         } else if (auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(base)) {
-            // Static-field receiver (`log.name` where `log` is a static field):
-            // Identifier returns the field's GlobalVariable. A reference-type
-            // static field's global holds a `ptr` to the instance, so load
-            // through to the object before GEP'ing its field — the field-access
-            // twin of the static-field method-receiver load. A value-type static
-            // field stores its aggregate inline, so the global's address IS the
-            // object: GEP it directly.
+            // A reference-type static field's global holds a `ptr` to the instance,
+            // so load through before GEP'ing; a value type is stored inline.
             if (gv->getValueType()->isPointerTy()) {
                 base = module->getBuilder()->CreateLoad(
                     llvm::PointerType::get(*module->getLlvmContext(), 0), gv);
             }
         }
         StructurePropertyPtr property = lookedUpProperty;
-        // Set our own resolvedType so callers can load-through with the right
-        // element type. The pre-pass resolveTypes can't always determine this
-        // (locals aren't in scope until their declarations run at codegen).
-        // captureProject handles bounded-wildcard receivers — `Box<? extends
-        // Animal>.value` projects to Animal so chained member lookup works.
+        // Pin our own resolvedType so callers load through with the right element
+        // type; captureProject projects a bounded-wildcard receiver to its bound.
         resolvedType = CajetaType::captureProject(property->getType());
 
-        // MultiClassing Phase 3 v4 vbase indirection. When the property
-        // is declared on an ancestor of `this`'s static class (not on
-        // klass itself), load `klass`'s vbase pointer for the declaring
-        // class and use it as the base for the field GEP. Replaces the
-        // earlier v2 cross-path-offset trick with a universal mechanism:
-        // diamond and non-diamond cases both work because each class's
-        // ctor sets vbases to point at inline ancestor positions and
-        // diamond descendants overwrite non-first parents' vbase slots
-        // to canonical positions (CajetaClass.cpp + Method.cpp).
-        //
-        // Skipped for view types (CajetaView keeps inline storage with
-        // no vbase machinery) and for cases where the receiver class
-        // doesn't have a vbase slot for the declaring class — falls
-        // back to direct GEP (own field, or single-inheritance case
-        // where the layout walker confirmed no vbase needed).
+        // vbase indirection: a property declared on an ancestor of `this`'s static
+        // class GEPs from klass's vbase pointer. Skipped for views and when absent.
         if (pickedDeclaringClass && klass
                 && pickedDeclaringClass.get() != klass.get()
                 && !dynamic_pointer_cast<CajetaView>(klass)) {
@@ -657,11 +502,8 @@ namespace cajeta {
             }
         }
 
-        // view v1.1 descriptor unwrap: a view with element-array fields
-        // carries its value as a pointer to an arena {i8* data, i64* table}
-        // pair. Unwrap once — every access below (fixed StructGEP, var-size,
-        // post-var) then works on the real data pointer, and var-size
-        // offsets come from the table (O(1), no walk).
+        // view v1.1 descriptor unwrap: a view with element-array fields carries a
+        // pointer to an arena {i8* data, i64* table}. Unwrapped once, here.
         llvm::Value* veaTable = nullptr;
         if (auto descView = dynamic_pointer_cast<CajetaView>(klass)) {
             if (descView->getHasElementArrayField() && base) {
@@ -678,20 +520,12 @@ namespace cajeta {
             }
         }
 
-        // Field index depends on the receiver type. CajetaClass instances
-        // reserve LLVM slot 0 for the vtable pointer, so user fields land at
-        // index getOrder()+1. CajetaView (no vtable) uses getOrder() directly.
+        // CajetaClass instances reserve LLVM slot 0 for the vtable, so user fields sit
+        // at getOrder()+1; CajetaView has no vtable and uses getOrder() directly.
         unsigned fieldIdx = (unsigned) klass->getFieldLlvmIndex(property);
 
-        // Variable-size view fields (`String`, `T[]`) lay out in the wire
-        // format as i32 length + data bytes, all sitting past the LLVM
-        // struct's footprint. For the Kth variable-size field (0-indexed)
-        // we walk K prior length-prefixes at runtime to find this field's
-        // own prefix position. See Views.md § Variable-size fields.
-        //
-        // This branch fires only for view receivers. `isVariableSize`
-        // also returns true for class fields of type String, but those
-        // are normal heap pointers in a vtable-prefixed class layout —
+        // A variable-size view field lays out as i32 length + data past the LLVM
+        // struct, so the Kth of them walks K prior prefixes. View receivers only.
         // they fall through to the standard struct-GEP path below.
         auto viewType = dynamic_pointer_cast<CajetaView>(klass);
         if (viewType && CajetaView::isVariableSize(property)) {
@@ -701,13 +535,8 @@ namespace cajeta {
             llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
             llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
 
-            // Field start offset. Descriptor views (element-array fields
-            // present) read it from the offset table in O(1); plain views
-            // walk every property before this one in declaration order —
-            // emitAccessAdvance handles each kind: String (4+len),
-            // primitive T[] (4+count*sizeof(T) — the old 4+count walk was
-            // correct only for int8[]), and fixed-between-var fields
-            // (+static size).
+            // Field start offset: a descriptor view reads it from the table in O(1),
+            // a plain view walks every prior property through emitAccessAdvance.
             uint64_t fixedPrefixSize = viewType->getFixedSize();
             llvm::Value* offset;
             if (veaTable) {
@@ -730,11 +559,8 @@ namespace cajeta {
                 }
             }
 
-            // Element-array field (view v1.1): whole-field reads have no
-            // materialization (elements are views into the buffer, not
-            // copyable values). The two legitimate consumers — f[i]
-            // (ArrayIndexExpression) and f.count() (MethodCallExpression) —
-            // set the one-shot prefix mode and take the raw prefix pointer.
+            // Element-array field: a whole-field read has no materialization, so only
+            // f[i] and f.count() may take the raw prefix pointer.
             if (CajetaView::isElementArray(property)) {
                 if (elementArrayPrefixMode) {
                     elementArrayPrefixMode = false;
@@ -765,31 +591,20 @@ namespace cajeta {
             llvm::Value* dataPtr = builder->CreateInBoundsGEP(
                 i8Ty, base, dataOffset, identifier + "_data");
 
-            // Materialize an owned value via the right runtime helper
-            // for the field's element type. String → null-terminated UTF-8
-            // copy. T[] → fresh heap array (header + memcpy of data bytes).
+            // Materialize an owned value: String → UTF-8 copy, T[] → fresh heap array.
             auto fieldQn = property->getType()->getQName();
             if (fieldQn && fieldQn->getTypeName() == "String") {
                 llvm::Function* fn = module->getRuntimeFunction("__cajeta_str_view_to_owned");
                 if (!fn) return nullptr;
-                // The runtime helper returns a malloc'd null-terminated
-                // char* — the bytes copied out of the wire buffer. Post
-                // Phase 2b-β String is a CLASS, so we need to materialize
-                // a class String instance around those bytes (vtable +
-                // CajetaArray header + mode=0 owned + cachedCpLength=-1)
-                // so subsequent `.equals` / `.size` / etc. dispatch
-                // correctly. Without this the caller would treat the
-                // raw char* as a class String pointer, vtable-dispatch
-                // would load the first 8 bytes of the payload as the
-                // vtable, and crash on bogus function-pointer addresses.
+                // String is a CLASS, so the helper's malloc'd char* is wrapped in a
+                // String instance; otherwise dispatch reads the payload as a vtable.
                 llvm::Value* cstr = builder->CreateCall(fn, {dataPtr, length64});
                 return wrapCStringIntoClassString(module, cstr, identifier.c_str());
             }
             if (auto arrType = dynamic_pointer_cast<CajetaArray>(property->getType())) {
                 llvm::Function* fn = module->getRuntimeFunction("__cajeta_array_view_to_owned");
                 if (!fn) return nullptr;
-                // Element size from the array's element LLVM type. Required
-                // by the runtime to compute total byte count for memcpy.
+                // Element size drives the runtime's total memcpy byte count.
                 uint64_t elemBytes = 1;
                 if (auto elemTy = arrType->getElementLlvmType(&ctx)) {
                     elemBytes = module->getLlvmModule()->getDataLayout()
@@ -803,19 +618,10 @@ namespace cajeta {
             return dataPtr;
         }
 
-        // Post-variable fixed field access (S5b). A view may now declare
-        // fixed-size fields after a variable-size field. Their LLVM-struct
-        // slot doesn't exist; we walk all preceding var-size length-prefixes
-        // at runtime to find this field's offset, then GEP from `base`.
-        //
-        // The pre-variable fixed fields fall through to the standard
-        // CreateStructGEP path below — their offsets are compile-time-constant
-        // and live in the LLVM struct.
+            // A post-variable fixed field has no LLVM-struct slot: walk the preceding
+            // var-size prefixes at runtime. Pre-variable ones GEP below.
         if (auto viewType = dynamic_pointer_cast<CajetaView>(klass)) {
-            // Find this property's position in propertyList AND count
-            // var-size fields that precede it. If there are no preceding
-            // var-size fields, the field is pre-variable and the standard
-            // path handles it.
+            // No preceding var-size field means the standard path handles it.
             int priorVarSize = 0;
             bool isPostVariable = false;
             for (auto& p : viewType->getPropertyList()) {
@@ -832,8 +638,7 @@ namespace cajeta {
                 llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
                 llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
 
-                // Descriptor view: the field's absolute offset is in the
-                // table — O(1), no walk over preceding var-size fields.
+                // Descriptor view: the absolute offset is in the table, with no walk.
                 if (veaTable) {
                     int slot = viewType->tableSlotOf(property);
                     llvm::Value* tOff = builder->CreateLoad(i64Ty,
@@ -848,19 +653,13 @@ namespace cajeta {
                 uint64_t fixedPrefixSize = viewType->getFixedSize();
                 llvm::Value* offset = llvm::ConstantInt::get(i64Ty, fixedPrefixSize);
 
-                // Walk every property up to (not including) THIS field,
-                // tracking the running offset. emitAccessAdvance handles
-                // every kind — String, primitive T[] (count*sizeof(T)),
-                // fixed-between-var, and element arrays (runtime loop) —
-                // so post-var fixed fields are reachable across all of
-                // them (view v1.1).
+                // Walk every property up to THIS one, tracking the running offset.
                 bool sawVar = false;
                 for (auto& p : viewType->getPropertyList()) {
                     if (p == property) break;
                     bool pVar = CajetaView::isVariableSize(p);
                     if (!sawVar && !pVar) continue;
-                    // Pre-var fixed fields contribute to fixedPrefixSize
-                    // already (handled by the starting offset).
+                    // Pre-var fixed fields are already in fixedPrefixSize.
                     if (pVar) sawVar = true;
                     offset = CajetaView::emitAccessAdvance(
                         module, p, base, offset, viewType->getEndianness());
@@ -868,18 +667,15 @@ namespace cajeta {
 
                 llvm::Value* fieldPtr = builder->CreateInBoundsGEP(
                     i8Ty, base, offset, identifier + "_ptr");
-                // Return as an l-value pointer; caller's loadIfLValue will
-                // load through with the right element type. Mirrors what
-                // CreateStructGEP returns in the standard path.
+                // An l-value pointer; the caller's loadIfLValue does the typed load.
                 return fieldPtr;
             }
         }
 
         llvm::Value* fieldGep = module->getBuilder()->CreateStructGEP(
             klass->getLlvmType(), base, fieldIdx, identifier);
-        // TBAA: object-field access. The disjoint "field" tag lets the optimizer
-        // hoist field loads across array-element stores (which carry the
-        // array-element tag) — array buffers and object storage never overlap.
+        // TBAA: the disjoint "field" tag lets the optimizer hoist field loads across
+        // array-element stores — array buffers and object storage never overlap.
         module->recordTbaaProvenance(fieldGep, CajetaModule::TbaaKind::Field);
         return fieldGep;
     }

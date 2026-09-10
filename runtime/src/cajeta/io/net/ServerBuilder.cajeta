@@ -180,7 +180,7 @@ public class ServerBuilder {
      * @return `this`, for chaining.
      */
     public ServerBuilder handler((TcpStream) -> void h) {
-        this.handler = h;
+        this.handler #= h;   // Unit 9 (spec 5.13): the sink model — a literal moves in, a name lends
         return this;
     }
 

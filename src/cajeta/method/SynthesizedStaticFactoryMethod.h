@@ -1,17 +1,6 @@
 // Compiler-synthesized static factory for `@AllArgsConstructor(staticName="of")`
-// (and the same arg on @NoArgsConstructor / @RequiredArgsConstructor).
-//
-// Lombok-mirror semantic: when `staticName` is supplied on a ctor
-// annotation, the generated ctor is marked PRIVATE and a public
-// static method is synthesized whose body allocates a heap instance,
-// initializes its vtable, calls the (now-private) ctor with the
-// supplied args, and returns the new instance.
-//
-// Visibility note: the `access` arg on the constructor annotation
-// applies to the FACTORY (not the ctor) when `staticName` is set
-// — Lombok parity. The ctor's modifier is force-set to PRIVATE so
-// future visibility-enforcement work guides callers toward the
-// factory.
+// and the same arg on the other ctor annotations: the generated ctor becomes
+// PRIVATE, and the factory heap-allocates, inits the vtable, calls it, and returns.
 
 #pragma once
 
@@ -25,9 +14,8 @@ namespace cajeta {
 
     class SynthesizedStaticFactoryMethod : public Method {
     public:
-        // `ctor` is the synthesized ctor this factory wraps. Their
-        // parameter shapes mirror each other (factory excludes the
-        // implicit `this` the ctor's signature carries).
+        // `ctor` is the synthesized constructor this factory wraps; their parameter
+        // shapes mirror each other, minus the implicit `this`.
         SynthesizedStaticFactoryMethod(
             CajetaModulePtr module,
             CajetaClassPtr parent,
@@ -35,7 +23,12 @@ namespace cajeta {
             const std::string& methodName,
             std::vector<StructurePropertyPtr> fields);
 
+        // Mirrors `fields` into the parameter list, one per field, in order. Idempotent,
+        // and must run before generateCode, which forwards the arguments positionally.
         void initParameters();
+        // Emits the whole body: malloc the parent, store its vtable, call the wrapped
+        // ctor with the arguments, return the owned instance. Throws
+        // CAJETA_ERROR_STATIC_FACTORY_NO_LAYOUT / _NO_CTOR on codegen-ordering failures.
         void generateCode() override;
         bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
 

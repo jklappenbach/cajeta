@@ -1,11 +1,6 @@
-//
-// Skill Search core (skill-discovery spec §3.2–§3.5). Transport-agnostic: takes
-// the resolved set of skill archives + optional version / consumer-scoping, runs
-// the fuzzy matcher (D.4a) per archive, expands hierarchically (exact ∪
-// descendants ∪ nearest-ancestor overview), and returns ranked, version-tagged
-// `cja-skill://` URIs — no CLI types, no I/O, no network. An MCP/CLI adapter
-// wraps this.
-//
+// Skill Search core. Transport-agnostic: over a resolved set of skill archives it
+// runs the fuzzy matcher, expands hierarchically, and returns ranked, version-
+// tagged `cja-skill://` URIs. No CLI types, no I/O, no network — an adapter wraps it.
 #pragma once
 
 #include <map>
@@ -20,26 +15,19 @@
 
 namespace cajeta::buildtool::skill {
 
-    // One resolved library archive's skill data, as Search sees it. A diamond
-    // contributes two entries with the same `library` and different `version`.
+    // One archive's skills; a diamond contributes two entries, one per version.
     struct ResolvedSkillArchive {
         std::string library; // coordinate, e.g. "cajeta.io"
         std::string version; // resolved version, e.g. "1.4.2"
         SkillIndex index;
     };
 
-    // The inputs Search assembles over (built from the lockfile + resolved
-    // archives by the caller — offline).
     struct SkillSearchContext {
         std::vector<ResolvedSkillArchive> archives;
-        // Consumer scoping: module id → (library → resolved version), so `from`
-        // can infer the version the asking module sees (spec §3.4). The module
-        // identifier form is opaque to Search.
+        // module id -> (library -> resolved version); the id's form is opaque here.
         std::map<std::string, std::map<std::string, std::string>> moduleVersions;
     };
 
-    // Why a result surfaced, for ranking (spec §3.2: exact → descendant →
-    // ancestor).
     enum class MatchTier { Exact = 0, Descendant = 1, AncestorOverview = 2 };
 
     struct SkillSearchResult {
@@ -50,15 +38,9 @@ namespace cajeta::buildtool::skill {
         int distance;            // fuzzy edit distance (0 = exact)
     };
 
-    // Search for skills aiding `name`.
-    //   `version` — restrict to that resolved version of the owning library.
-    //   `from`    — infer the version from the asking module's resolution;
-    //               `version` overrides `from`; with neither, every resolved
-    //               version matches (diamond → all, version-tagged). No silent
-    //               pick.
-    //   `opts.exact` — disable fuzzy matching.
-    // Results are deduped by URI and ranked: distance, then tier, then name
-    // before title, then URI. Empty when nothing matches within threshold.
+    // Skills aiding `name`. `version` pins the owning library's version and
+    // overrides `from`, which infers it from the asking module; with neither, EVERY
+    // resolved version matches. Deduped by URI, ranked by distance then tier.
     std::vector<SkillSearchResult> searchSkills(
         llvm::StringRef name,
         std::optional<std::string> version,
@@ -66,19 +48,15 @@ namespace cajeta::buildtool::skill {
         const SkillSearchContext& ctx,
         MatchOptions opts = {});
 
-    // One enumerated skill (spec §3.6): its URI, the canonical names it binds,
-    // and its title.
     struct SkillListEntry {
         std::string uri;
         std::vector<std::string> names;
         std::string title;
     };
 
-    // Enumerate skills in the resolved set (spec §3.6). With no `scope`, lists
-    // every skill; with a library/package `scope`, only that subtree
-    // (prefix-inclusive, §3.2 — exact, NOT fuzzy). `version`/`from` select
-    // versions exactly as Search does (multi-version → version-tagged entries).
-    // Deterministic ordering (by URI).
+    // Enumerate the resolved set, or with a `scope` only that subtree, matched
+    // prefix-inclusive and EXACT rather than fuzzy. `version` and `from` select
+    // versions as Search does; ordering is deterministic, by URI.
     std::vector<SkillListEntry> listSkills(
         std::optional<std::string> scope,
         std::optional<std::string> version,

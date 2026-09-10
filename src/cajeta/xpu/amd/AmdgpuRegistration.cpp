@@ -1,14 +1,5 @@
-//
-// AMDGPU kernel registration pass — see header.
-//
-// Structurally identical to NvptxRegistration: for each @Kernel it lowers a
-// device module, assembles a binary (hsaco here, cubin there), embeds the
-// bytes as a private host-module constant, and appends an llvm.global_ctors
-// entry calling the backend-neutral __cajeta_xpu_register_module(entryName,
-// bytes, len). The runtime keys modules by entry name, so the same launch
-// path resolves an AMD kernel exactly as it does an NVIDIA one — only the
-// binary format behind it changed.
-//
+// AMDGPU kernel registration pass — see header. Structurally identical to
+// NvptxRegistration, differing only in the binary format behind the entry name.
 
 #include "AmdgpuRegistration.h"
 #include "AmdgpuBackend.h"
@@ -43,10 +34,8 @@ namespace amd {
                                std::vector<KernelManifest>* manifests) {
         if (kernels.empty()) return 0;
 
-        // `arch` may be a comma-separated list ("gfx1100,gfx1151") → a multi-arch
-        // bundle. One AMDGPU TargetMachine (from the first arch; the datalayout is
-        // arch-neutral) configures the device modules; assembleHsacoBundle builds
-        // a per-arch hsaco for each and bundles them.
+        // `arch` may be a comma-separated list, giving a multi-arch bundle. One
+        // TargetMachine configures the device modules; the datalayout is arch-neutral.
         std::vector<std::string> archList = splitArchList(arch);
         if (archList.empty()) return 0;
         auto tm = createAmdgpuTargetMachine(archList[0]);
@@ -59,16 +48,12 @@ namespace amd {
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::IRBuilder<> b(ctx);
 
-        // void __cajeta_xpu_register_module(i8* name, i8* image, i64 len)
         llvm::FunctionType* regTy =
             llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty, i32Ty}, false);
         llvm::FunctionCallee regFn =
             hostModule.getOrInsertFunction("__cajeta_xpu_register_module_be", regTy);
 
-        // void __cajeta_xpu_register_kernel_params(i8* name, i32 count,
-        //                                          i8* kind, i32* byteSize)
-        // The HIP launch path reads this to find Texture2D params (Item 8 Stage
-        // C): a texture arg is translated into a hipTextureObject at launch.
+        // register_kernel_params(name, count, kind, byteSize): how launch finds textures.
         llvm::FunctionType* kpTy = llvm::FunctionType::get(
             voidTy, {ptrTy, i32Ty, ptrTy, ptrTy}, false);
         llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
@@ -80,30 +65,23 @@ namespace amd {
             if (!method || !isKernel(*method)) continue;
             const std::string entryName = method->getName();
 
-            // Lower this kernel into a fresh device module + assemble an hsaco.
-            // The device lowerer builds types in its own context, so this never
-            // touches the host module until we have bytes.
+            // The device lowerer has its own context; the host module is untouched until bytes.
             llvm::LLVMContext devCtx;
             llvm::Module devMod("xpu.dev." + entryName, devCtx);
             configureDeviceModule(devMod, *tm);
-            // The single lowered IR is codegen'd for every arch in the bundle;
-            // record the full list so per-subtarget feature gates (the direct
-            // global->LDS load) stay conservative across all of them, not just
-            // archList[0]. See AmdgpuKernelLowering::bundleHasVmemToLds.
+            // One lowered IR is codegen'd for every arch, so record the FULL list: per-
+            // subtarget feature gates must stay conservative across all of them.
             devMod.addModuleFlag(llvm::Module::Warning, "cajeta.amdgpu.archlist",
                                  llvm::MDString::get(devCtx, arch));
             llvm::Function* kfn = nullptr;
             try {
                 kfn = lowerKernel(method, devMod);
             } catch (cajeta::Exception& ex) {
-                // A contradicted @Access declaration is the author's error, not
-                // an unsupported construct: a compile error, never a skip.
+                // A contradicted @Access is the author's error: a compile error, never a skip.
                 if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
                         || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
-                // Unsupported construct (XPU-N01) — this kernel gets NO device
-                // code for this backend; a launch that lands here at run time
-                // fails with "no registered kernel". Say so at build time —
-                // the silent skip cost a real debugging session (U12).
+                // Unsupported construct: this kernel gets NO device code here, and a
+                // launch would fail with "no registered kernel", so say so at build time.
                 fprintf(stderr,
                         "cajeta: note: [xpu-kernel-skipped] %s: no %s device "
                         "code — %s\n",
@@ -111,13 +89,10 @@ namespace amd {
                 continue;
             }
             if (!kfn) continue;
-            // xpu-tile-manifest §6: what the lowered body does to each buffer —
-            // read off the IR now, before assembly transforms it.
+            // What the lowered body does to each buffer, read off the IR before assembly.
             KernelAccessSummary access = classifyKernelAccess(*kfn, method);
 
-            // kernel-occupancy-autotune §2: pin the real launch workgroup size so
-            // the backend budgets registers for the true (small) occupancy.
-            // Keyed by simple kernel name (= entryName, the launch receiver).
+            // Pin the real launch workgroup size so registers are budgeted for it.
             if (auto it = maxThreads.find(entryName); it != maxThreads.end()) {
                 setKernelWorkgroupSize(kfn, it->second);
             }
@@ -127,11 +102,8 @@ namespace amd {
             std::vector<uint8_t> hsaco = bundleHsacos(perArch);
             if (hsaco.empty()) continue;    // bundler missing or errored
 
-            // xpu-tile-manifest §2, §3: one manifest per (kernel, arch), hashed
-            // over and read from the very code object that registers below. A
-            // block is pinned by an @Occupancy clamp or by one constant launch
-            // block (the size the backend budgeted registers for); otherwise the
-            // picker's feasible sizes are recorded (§3.3).
+            // One manifest per (kernel, arch), hashed over the very code object that
+            // registers below; an unpinned block records the picker's feasible sizes.
             std::vector<KernelManifest> kernelManifests;
             {
                 std::optional<unsigned> pinned;
@@ -162,7 +134,6 @@ namespace amd {
                 }
             }
 
-            // Embed the hsaco as a private host-module constant.
             llvm::Constant* dataInit = llvm::ConstantDataArray::get(
                 ctx, llvm::ArrayRef<uint8_t>(hsaco.data(), hsaco.size()));
             auto* hsacoGV = new llvm::GlobalVariable(
@@ -171,7 +142,6 @@ namespace amd {
                 "xpu.hsaco." + entryName);
             hsacoGV->setAlignment(llvm::MaybeAlign(8));
 
-            // ctor: __cajeta_xpu_register_module(entryName, hsacoGV, len)
             llvm::FunctionType* ctorTy = llvm::FunctionType::get(voidTy, false);
             llvm::Function* ctor = llvm::Function::Create(
                 ctorTy, llvm::GlobalValue::InternalLinkage,
@@ -184,8 +154,8 @@ namespace amd {
                                  llvm::ConstantInt::get(i64Ty, hsaco.size()),
                                  llvm::ConstantInt::get(i32Ty, 1)});  // CAJ_XPU_HIP
 
-            // Per-kernel parameter kinds (scalar/buffer/texture/sampler) so the
-            // HIP launch path can translate Texture2D args into texture objects.
+            // Per-kernel parameter kinds, so the HIP launch path can translate Texture2D
+            // args into texture objects.
             std::vector<KernelParamInfo> info =
                 collectKernelParamInfo(method, ctx, hostModule.getDataLayout());
             if (!info.empty()) {
@@ -215,14 +185,11 @@ namespace amd {
                                     kindGV, szGV});
             }
 
-            // The manifests ride the same ctor, so `k.manifest()` reads them
-            // from the artifact at run time (§12.1) — one per arch.
             for (size_t i = 0; i < kernelManifests.size(); ++i)
                 emitManifestRegistration(hostModule, b, nameStr, /*CAJ_XPU_HIP=*/1,
                                          perArch[i].arch, kernelManifests[i]);
             b.CreateRetVoid();
 
-            // Run at module-init time (LLJIT: jit->initialize; native: startup).
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
             if (manifests)
                 manifests->insert(manifests->end(), kernelManifests.begin(),

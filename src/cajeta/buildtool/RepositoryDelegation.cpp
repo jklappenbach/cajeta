@@ -11,9 +11,8 @@ namespace cajeta::buildtool {
                                            "%s", msg.c_str());
         }
 
-        // The signed discriminator. An organization key document does not
-        // carry it, so one can never be read as a delegation — which would
-        // let any organization's key sign release metadata for everybody.
+        // The signed discriminator: an organization key document does not carry it, so
+        // one can never be read as a delegation.
         constexpr const char* kDelegationType = "repository-delegation";
 
     } // namespace
@@ -33,9 +32,7 @@ namespace cajeta::buildtool {
             const std::string& origin,
             std::time_t now,
             std::time_t seenIssuedAt) {
-        // Verify before parsing, as everywhere else: nothing inside an
-        // unverified document influences anything, including which errors
-        // are reported about it.
+        // Verify before parsing: nothing inside an unverified document influences anything.
         auto envelope = openSignedEnvelope(envelopeJson, roots,
                                            "repository delegation");
         if (!envelope) return envelope.takeError();
@@ -48,10 +45,8 @@ namespace cajeta::buildtool {
         auto* obj = body->getAsObject();
         if (!obj) return err("repository delegation: payload is not an object");
 
-        // The type check comes FIRST, before any field is read. A document of
-        // the wrong kind must be refused as the wrong kind, not reported as a
-        // malformed one — the latter invites someone to "fix" it by relaxing
-        // a field requirement.
+        // The type check comes FIRST, before any field is read, so a wrong-kind
+        // document is refused as the wrong kind rather than as a malformed one.
         auto type = obj->getString("type");
         if (!type || *type != kDelegationType) {
             return err("repository delegation: payload is not of type '"
@@ -78,9 +73,6 @@ namespace cajeta::buildtool {
                          "would sign for both");
         }
 
-        // REQUIRED (spec §2.9.2). An optional issued-at cannot be checked —
-        // a delegation omitting it would simply skip the comparison below,
-        // which is the replay the field exists to stop.
         auto issued = obj->getString("issued-at");
         if (!issued) {
             return err("repository delegation for '" + del.repository
@@ -114,9 +106,7 @@ namespace cajeta::buildtool {
                          "delegation is how a revoked signing key keeps "
                          "working");
         }
-        // Freshness after expiry, so an old delegation reports as expired
-        // rather than as rolled back — the two send an operator to different
-        // places.
+        // Freshness after expiry, so an old delegation reports as expired rather than rolled back.
         if (seenIssuedAt != 0 && del.issuedAt < seenIssuedAt) {
             return err("repository delegation for '" + del.repository
                        + "' is older than one already accepted (issued "

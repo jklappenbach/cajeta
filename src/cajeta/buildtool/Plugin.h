@@ -1,22 +1,6 @@
-// Cajeta build-tool plugin model — Phase 7b.
-//
-// A plugin is a `.cja` package whose purpose is to export named
-// actions consumable from tasks. The package's manifest declares
-// the action namespace (typically the package name, e.g.
-// `cajeta.coverage`) plus the capabilities the plugin requires
-// at runtime.
-//
-// This header models:
-//   - The `plugins` block of a consumer's manifest (which plugins
-//     they import + per-plugin config).
-//   - `settings.plugins-allowed-capabilities` (the consumer's
-//     allowlist of capabilities any plugin is permitted to declare).
-//   - The typed resolution result: one entry per plugin with the
-//     resolved version, repo, checksum, and the plugin's own
-//     declared capability set (validated against the allowlist).
-//
-// Subprocess spawning + action dispatch lives in PluginRuntime
-// (separate slice) — this header is just data.
+// Cajeta build-tool plugin model: a plugin is a `.cja` package exporting named
+// actions to tasks. Data only — subprocess spawning and action dispatch live
+// in PluginRuntime.
 
 #pragma once
 
@@ -34,114 +18,68 @@
 
 namespace cajeta::buildtool {
 
-    // One entry from the consumer's `plugins` block.
-    //   "plugins": {
-    //       "cajeta.coverage": {
-    //           "version": "1.0.*",
-    //           "config": { ... }
-    //       }
-    //   }
+    // One entry from the consumer's `plugins` block: a version constraint plus
+    // an opaque per-plugin configuration object.
     struct PluginSpec {
         std::string name;            // namespace (e.g. "cajeta.coverage")
         std::string versionConstraint;
-        // Plugin-specific configuration object. Kept raw — each
-        // plugin documents the shape it accepts. The build tool
-        // forwards this to the plugin's actions as default param
-        // values.
+        // Raw; forwarded to the plugin's actions as default parameter values.
         llvm::json::Object configRaw;
     };
 
-    // One resolved plugin: the artifact, who supplied it, and the
-    // capability set it declared. Mirrors the schema slot reserved
-    // in the lockfile's `plugins` array (Phase 2).
+    // One resolved plugin: the artifact, where it came from, and the capability
+    // set it declared — already validated against the consumer's allowlist.
     struct ResolvedPlugin {
         std::string name;
         std::string version;
         std::string resolvedFromRepo;
         std::string artifactPath;
         std::string sha256;
-        // The plugin's own declared `settings.capabilities`. Already
-        // intersected against the consumer's allowlist by the time
-        // a plugin appears here — anything outside the allowlist
-        // would have caused resolvePlugins() to error.
         std::set<std::string> capabilities;
-        // The sidecar's `details.plugin.main` — a static no-arg method
-        // (`pkg.Class.method`) that reads the protocol request from stdin.
-        // When set and `binary` is absent, the runtime compiles the .cja
-        // into a cached binary on first use (auto-homed in the local olla
-        // store) — running-the-cja is the DEFAULT distribution model;
-        // an explicit `binary` remains the override.
+        // `details.plugin.main`: a static no-arg method reading the protocol
+        // request from stdin. With no `binary` the runtime compiles the .cja to
+        // a cached binary on first use — the default distribution model.
         std::string mainEntry;
-        // The sidecar manifest's raw bytes — written through when the
-        // artifact is auto-homed into the local store.
+        // The sidecar manifest's raw bytes, written through when auto-homed.
         std::string manifestJson;
-        // Artifacts of the plugin's own (flat, v1) `settings.dependencies`,
-        // resolved beside the plugin — the compile classpath.
+        // The plugin's own resolved dependencies — its compile classpath.
         std::vector<std::string> depArtifacts;
-        // The plugin's `details.plugin.binary` field, resolved to an
-        // absolute path. Empty until the plugin lands a binary —
-        // pure-source plugin packages parse successfully but can't
-        // be dispatched at runtime.
+        // `details.plugin.binary` as an absolute path; empty for a pure-source
+        // plugin, which parses but cannot be dispatched at runtime.
         std::string binaryPath;
-        // The plugin's `details.plugin.actions` list — the namespaced
-        // action names this plugin advertises. Drives action-name
-        // dispatch in PluginAction / ActionRegistry. Empty when the
-        // sidecar's plugin block is absent.
+        // `details.plugin.actions`: the namespaced names this plugin advertises,
+        // driving dispatch in PluginAction / ActionRegistry.
         std::vector<std::string> actionNames;
-        // `details.plugin.entries` map: action-name → entry symbol.
-        // The plugin runtime forwards the entry path to the plugin
-        // binary so it knows which entry to call. v1 makes this
-        // round-trip data (the build tool doesn't interpret it);
-        // future in-process dispatch resolves symbols against it.
+        // `details.plugin.entries`, action name → entry symbol: forwarded to the
+        // plugin binary, and otherwise uninterpreted round-trip data in v1.
         std::map<std::string, std::string> entries;
     };
 
-    // Parse `plugins` from the consumer manifest. Each value must be
-    // an object with a `version` string + optional `config` object.
+    // Parses `plugins` from the consumer manifest; each value must be an object
+    // with a `version` string and an optional `config` object.
     llvm::Expected<std::vector<PluginSpec>> parsePlugins(const Manifest& m);
 
-    // Parse `settings.plugins-allowed-capabilities`. Returns an
-    // empty vector when the field is absent — callers default to
-    // `["filesystem"]` per spec for non-first-party plugins.
+    // Parses `settings.plugins-allowed-capabilities`, empty when the field is
+    // absent; the caller then applies the defaults below.
     llvm::Expected<std::vector<std::string>>
     parsePluginsAllowedCapabilities(const Manifest& m);
 
-    // Fetch each declared plugin via the priority-ordered repos,
-    // read its sidecar manifest, validate it's plugin-shaped
-    // (Phase 7b minimum: any package — the spec calls for a
-    // `plugin.id` field; we accept its absence in v1 and use the
-    // package's `details.name`), then check the plugin's declared
-    // `settings.capabilities` against `allowedCapabilities`.
-    //
-    // First-party plugins (the `cajeta.*` namespace) get a less
-    // restrictive default allowlist — they're shipped with the
-    // toolchain and trusted. The full set: filesystem, process,
-    // network. User plugins always face the explicit allowlist.
-    //
-    // Errors:
-    //   - Plugin can't be resolved to a satisfying version.
-    //   - Plugin declares a capability not in the allowlist.
-    //   - Multiple plugins claim the same id (collision).
+    // Fetches each declared plugin through the priority-ordered repos, reads its
+    // sidecar manifest and checks its `settings.capabilities` against
+    // `allowedCapabilities`. Errors on no version, a bad capability, or an id clash.
     llvm::Expected<std::vector<ResolvedPlugin>> resolvePlugins(
         const std::vector<PluginSpec>& specs,
         const std::vector<RepositoryPtr>& repos,
         const std::vector<std::string>& allowedCapabilities,
         ArtifactCache& cache);
 
-    // Returns the default allowlist for plugins NOT in the
-    // `cajeta.*` namespace. Per spec: `["filesystem"]`. Exposed
-    // for tests + callers that want to apply the default when the
-    // consumer didn't declare an explicit allowlist.
+    // The default allowlist outside the `cajeta.*` namespace: `["filesystem"]`.
     std::vector<std::string> defaultUserPluginAllowlist();
 
-    // Returns the default allowlist for `cajeta.*` first-party
-    // plugins. Per spec: less restrictive — includes filesystem,
-    // process, and network.
+    // The wider default for `cajeta.*` plugins: filesystem, process, network.
     std::vector<std::string> defaultFirstPartyPluginAllowlist();
 
-    // Predicate: does `pluginName` live in the `cajeta.*` namespace?
-    // First-party plugins ship with the toolchain and earn the
-    // wider default allowlist.
+    // True iff `pluginName` is first-party, i.e. in the `cajeta.*` namespace.
     bool isFirstPartyPluginName(const std::string& pluginName);
 
 } // namespace cajeta::buildtool

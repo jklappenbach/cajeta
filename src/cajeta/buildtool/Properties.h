@@ -1,13 +1,6 @@
-// Cajeta build-tool property resolution.
-//
-// Properties are the unified ${PROPERTY} substitution mechanism for
-// the manifest. Built-ins (${details.name}, ${flavor}, ${env.NAME},
-// ...) and user-defined properties (from the `properties` block) live
-// in the same flat namespace. Override precedence (highest wins):
+// Build-tool property resolution: ${PROPERTY} substitution over one flat
+// namespace of built-ins and user `properties`, with override precedence
 // CLI -P > CAJETA_PROPERTY_* env > active profile > manifest properties.
-//
-// See BuildTool.md "Properties" for the spec, plans/buildtool/build-tool-plan.md
-// Phase 1 for context.
 
 #pragma once
 
@@ -22,86 +15,53 @@
 
 namespace cajeta::buildtool {
 
-    // Inputs to a resolution pass. The Manifest provides the
-    // user-defined `properties` block + built-in-relevant fields
-    // (details.name/version, etc.); CLI / env overrides plug in
-    // additional values that take precedence over the manifest.
+    // Everything a resolution pass takes beyond the manifest: `cli` from
+    // `-P NAME=VALUE`, `env` from CAJETA_PROPERTY_*, and the flavor / profile /
+    // target context built-ins need. `workspaceRoot` defaults to the manifest's.
     struct PropertyOverrides {
-        // CLI: parsed from `-P NAME=VALUE` flags.
         std::map<std::string, std::string> cli;
-        // Env: from CAJETA_PROPERTY_NAME (uppercased + underscores).
         std::map<std::string, std::string> env;
-        // Optional flavor / profile / target context that built-ins
-        // need to materialize.
         std::optional<std::string> flavor;
         std::optional<std::string> profile;
         std::optional<std::string> target;
-        // Workspace root override (defaults to manifest's directory).
         std::optional<std::string> workspaceRoot;
     };
 
-    // Resolved property set. `values` is the flat name→value map;
-    // `resolutionOrder` records the topological order properties were
-    // resolved in (useful for `cajeta info --properties` output and
-    // for the lockfile). Fixed built-ins (`details.*`, `flavor`,
-    // `profile`, `target`, `workspace.root`, `cajeta.version`) are
-    // materialized into `values` eagerly during `resolveProperties`.
-    // Open-namespace built-ins (`env.*`, `artifact.*`) resolve lazily
-    // via `lookup()`.
+    // The flat name→value table plus the topological resolution order; the fixed
+    // built-ins (`details.*`, `flavor`, `profile`, `target`, …) land eagerly.
     struct ResolvedProperties {
         std::map<std::string, std::string> values;
         std::vector<std::string> resolutionOrder;
 
-        // Lookup that handles both eagerly-resolved entries in
-        // `values` and lazy built-ins. Returns nullopt for genuinely
-        // undefined names.
+        // Covers `values` plus lazy `env.*` / `artifact.*`; nullopt = undefined.
         std::optional<std::string> lookup(const std::string& name) const;
     };
 
-    // Resolve all properties in a manifest with the given overrides.
-    // Returns an error on:
-    //   - cyclic property reference
-    //   - missing property reference (only when actually evaluated;
-    //     unreferenced missing properties are silent until consumed)
-    //   - user property name collides with a built-in
-    //   - shape error (env.NAME built-in needs the env var)
+    // Errors on a cyclic reference, a name colliding with a built-in, or a
+    // missing reference — the last only once something evaluates it.
     llvm::Expected<ResolvedProperties> resolveProperties(
         const Manifest& manifest,
         const PropertyOverrides& overrides = {});
 
-    // Substitute every ${NAME} reference in `s` using the resolved
-    // property table. Each `${NAME}` lookup that's not in `props`
-    // produces an error citing the reference and a where-context.
+    // Substitutes every ${NAME} in `s`; an unresolvable one is an error citing
+    // the reference and `whereContext`.
     llvm::Expected<std::string> substitute(
         const std::string& s,
         const ResolvedProperties& props,
         const std::string& whereContext = "<unknown>");
 
-    // Rewrite ${NAME} references in the manifest's `settings` and
-    // `plugins` blocks in place, using the resolved property table.
-    //
-    // Call this immediately after resolveProperties and before anything
-    // parses those blocks — parseDependencies, parseRepositories,
-    // parsePlugins all read the raw JSON and would otherwise see the
-    // placeholder text.
-    //
-    // `tasks` is deliberately NOT rewritten: action params carry
-    // late-bound references (${id.field} action outputs, ${params.x}
-    // invocation arguments) that only TaskContext can answer at run time.
+    // Rewrites ${NAME} in the `settings` and `plugins` blocks in place. Must run
+    // after resolveProperties and before anything parses those blocks. `tasks`
+    // is left alone: its references are late-bound and only TaskContext answers.
     llvm::Error substituteManifestProperties(
         Manifest& manifest, const ResolvedProperties& props);
 
-    // Helper to populate PropertyOverrides::env from the process
-    // environment. Looks for variables prefixed with CAJETA_PROPERTY_
-    // and converts the suffix back to dotted lowercase form
-    // (CAJETA_PROPERTY_STACK_VERSION → "stack-version"; underscores
-    // in source become hyphens in the property name).
+    // Fills `dst.env` from CAJETA_PROPERTY_* vars, lowercasing the suffix and
+    // turning its underscores into hyphens (…_STACK_VERSION → "stack-version").
     void loadEnvOverrides(PropertyOverrides& dst);
 
-    // Parse one CLI override token (the value passed to `-P` or
-    // `--property=`). Format is NAME=VALUE; everything after the
-    // first `=` is the value (the value itself may contain `=`).
-    // Returns nullopt with a message on malformed input.
+    // Splits one `-P` / `--property=` token at its first `=`; the value keeps any
+    // later `=`. Malformed input is an error, not a silent skip.
     llvm::Expected<std::pair<std::string, std::string>> parseCliOverride(
         const std::string& token);
 

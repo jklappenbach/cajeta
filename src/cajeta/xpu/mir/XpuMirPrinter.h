@@ -1,20 +1,6 @@
-//
-// XpuMirPrinter — text dump of an XpuMirModule / XpuMirKernel.
-//
-// Backs the `--xpu-emit=mir` debug mode. Format is one kernel per
-// block:
-//
-//   kernel <canonical>
-//     wave 32
-//     backend nvidia, amd
-//     param <name> : <type> [addrspace <as>]
-//     ...
-//     body-op <kind> <payload>
-//
-// Stable enough for tests to grep for known substrings; not
-// committed as a wire-format yet (step 9+ may add per-backend
-// metadata that lands here).
-//
+// XpuMirPrinter — text dump of an XpuMirModule / XpuMirKernel, backing the
+// `--xpu-emit=mir` debug mode: one block per kernel, carrying wave, backend,
+// param and body-op lines. Greppable by tests, but not a committed wire format.
 
 #pragma once
 
@@ -28,7 +14,11 @@ namespace mir {
 
     class XpuMirPrinter {
     public:
+        // Every kernel in `module`, in declaration order, each rendered by the kernel
+        // overload and separated by a blank line.
         static std::string print(const XpuMirModule& module);
+        // One kernel block: a `kernel <canonicalName>` header, then the wave, backend,
+        // param and body-op lines, each indented two spaces.
         static std::string print(const XpuMirKernel& kernel);
     };
 

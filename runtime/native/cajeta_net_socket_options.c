@@ -1,53 +1,6 @@
-// cajeta.io.net — NET-1.6 native socket-option surface.
-//
-// This translation unit is **#included once** at the bottom of
-// `cajeta_runtime.c` (the same single-TU -> bitcode -> embed build path the
-// NET-1.1 socket intrinsics ride; see the header of `cajeta_net_socket.c`).
-// It MUST be included AFTER `cajeta_net_socket.c` because it reuses that
-// file's fd-ABI helpers (`cajeta_net_from_fd`, `cajeta_socklen_t`,
-// `CAJETA_SOCKET_ERROR`). No CMake change to the bitcode-embed path is
-// required — only the one `#include "cajeta_net_socket_options.c"` line in
-// `cajeta_runtime.c` alongside the existing net `#include`s.
-//
-// **Scope of NET-1.6** (per plan/cajeta-net-plan.md): the *typed* socket
-// option surface — `setNoDelay` (TCP_NODELAY), `setKeepAlive`
-// (SO_KEEPALIVE), `setReuseAddress`/`setReusePort` (SO_REUSEADDR/SO_REUSEPORT,
-// shipped natively by NET-1.4 in `cajeta_net_listener.c` and *reused* here, not
-// re-implemented), `setRecvBufferSize`/`setSendBufferSize`
-// (SO_RCVBUF/SO_SNDBUF), `setLinger` (SO_LINGER, `struct linger`),
-// `setBroadcast` (SO_BROADCAST, UDP), `setTtl` (IP_TTL / IPV6_UNICAST_HOPS),
-// and IPv6 `setOnlyV6` (IPV6_V6ONLY). Each has a getter.
-//
-// **Why typed intrinsics, not raw `setsockopt` ints from Cajeta.** The whole
-// point (per NET-1.4's note that "the typed, general option surface ... is
-// NET-1.6; it will systematize the constant table") is to keep every platform
-// `#if` — `SOL_SOCKET` / `IPPROTO_TCP` / `IPPROTO_IPV6` / `TCP_NODELAY` /
-// `SO_*` / `IP_TTL` / `IPV6_*` — entirely in C, exactly as NET-1.2 keeps the
-// `AF_*` family constants behind `sockaddr_pack`. The Cajeta `SocketOptions`
-// surface passes only portable booleans / ints / (seconds for linger); it
-// never sees a platform option constant. This mirrors the NET-1.4
-// `__cajeta_net_set_reuseaddr` precedent, one option per pair.
-//
-// **ABI conventions** (identical to the rest of the net layer):
-//   - boolean options: `int32_t __cajeta_net_set_<opt>(int32_t fd, int32_t on)`
-//     returns 0 on success / -1 on failure; the matching getter returns 1 if
-//     enabled, 0 if disabled, -1 on a getsockopt error.
-//   - int-valued options (buffer sizes, TTL): the setter takes the value, the
-//     getter returns the read-back value (>= 0) or -1 on error. The kernel may
-//     round/clamp a requested buffer size, so the getter is the source of
-//     truth (the set->get test asserts the kernel honored the *intent*, e.g.
-//     grew the buffer, not byte-equality — see NetOptionsTests).
-//   - linger: setter takes `(on, seconds)`; on==0 disables (the seconds are
-//     ignored), on!=0 enables with the given linger timeout. The getter writes
-//     `*on_out` / `*seconds_out` and returns 0 / -1.
-//
-// After any -1 the Cajeta layer reads `__cajeta_net_last_error()` (NET-1.1)
-// and raises the mapped `NetException` subtype, exactly as the transfer
-// primitives do.
-//
-// No async here — these are plain `setsockopt`/`getsockopt` calls, valid in
-// both blocking and non-blocking mode; the reactor (Phase 3) sets the same
-// options on its non-blocking sockets through these same symbols.
+// cajeta.io.net — NET-1.6/NET-14.1 typed socket-option intrinsics: every
+// platform SOL_*/IPPROTO_*/SO_* constant stays in C. Textually #included by
+// cajeta_runtime.c AFTER cajeta_net_socket.c, whose fd-ABI helpers it reuses.
 
 #if defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -64,16 +17,7 @@
 #include <stdint.h>
 #include <string.h>
 
-// Reuses the int32 <-> native-handle narrowing + the CAJETA_SOCKET_ERROR /
-// cajeta_socklen_t typedefs from cajeta_net_socket.c (textually #included
-// earlier in cajeta_runtime.c). Keeping these in a separate file is a *review*
-// boundary, not a *compilation* boundary.
-
-// ---------------------------------------------------------------------------
-// Internal helpers: a generic int-valued setsockopt/getsockopt at a given
-// (level, optname). All the typed booleans + int options funnel through these
-// so the platform char*-cast `#if` is written exactly once.
-// ---------------------------------------------------------------------------
+// ---- internal helpers: the single int-valued setsockopt/getsockopt funnel --
 
 // Set an `int`-valued option. Returns 0 / -1.
 static int32_t cajeta_opt_set_int(int32_t fd, int level, int optname, int value) {
@@ -118,11 +62,8 @@ static int32_t cajeta_opt_get_bool(int32_t fd, int level, int optname) {
     return v != 0 ? 1 : 0;
 }
 
-// ---------------------------------------------------------------------------
-// TCP_NODELAY — disable Nagle's algorithm so small writes go out immediately
-// (the canonical latency-vs-throughput knob for request/response protocols).
-// Lives at IPPROTO_TCP; valid only on a SOCK_STREAM socket.
-// ---------------------------------------------------------------------------
+// TCP_NODELAY (IPPROTO_TCP, SOCK_STREAM only) — disable Nagle so small writes
+// go out immediately. Set returns 0/-1, get returns 1/0/-1.
 int32_t __cajeta_net_set_nodelay(int32_t fd, int32_t on) {
     return cajeta_opt_set_bool(fd, IPPROTO_TCP, TCP_NODELAY, on);
 }
@@ -130,12 +71,8 @@ int32_t __cajeta_net_get_nodelay(int32_t fd) {
     return cajeta_opt_get_bool(fd, IPPROTO_TCP, TCP_NODELAY);
 }
 
-// ---------------------------------------------------------------------------
-// SO_KEEPALIVE — enable TCP keepalive probes on an idle connection so a dead
-// peer is eventually detected. SOL_SOCKET level. (The per-probe tuning
-// constants TCP_KEEPIDLE/INTVL/CNT are deliberately out of NET-1.6 scope —
-// they are non-portable in name; only the on/off switch is portable.)
-// ---------------------------------------------------------------------------
+// SO_KEEPALIVE — probe an idle connection so a dead peer is detected. The
+// per-probe TCP_KEEPIDLE/INTVL/CNT tuning is non-portable and not exposed.
 int32_t __cajeta_net_set_keepalive(int32_t fd, int32_t on) {
     return cajeta_opt_set_bool(fd, SOL_SOCKET, SO_KEEPALIVE, on);
 }
@@ -143,12 +80,8 @@ int32_t __cajeta_net_get_keepalive(int32_t fd) {
     return cajeta_opt_get_bool(fd, SOL_SOCKET, SO_KEEPALIVE);
 }
 
-// ---------------------------------------------------------------------------
-// SO_RCVBUF / SO_SNDBUF — kernel socket buffer sizes (bytes). The kernel may
-// round up, clamp, or (on Linux) double the requested value for bookkeeping;
-// the getter returns the *effective* size, so callers read back rather than
-// assume byte-equality. SOL_SOCKET level.
-// ---------------------------------------------------------------------------
+// SO_RCVBUF / SO_SNDBUF — kernel buffer sizes in bytes. The kernel may round,
+// clamp or double the request, so the getter returns the EFFECTIVE size.
 int32_t __cajeta_net_set_recvbuf(int32_t fd, int32_t bytes) {
     if (bytes < 0) return -1;
     return cajeta_opt_set_int(fd, SOL_SOCKET, SO_RCVBUF, (int) bytes);
@@ -168,19 +101,9 @@ int32_t __cajeta_net_get_sendbuf(int32_t fd) {
     return (int32_t) v;
 }
 
-// ---------------------------------------------------------------------------
-// SO_LINGER — control what close() does when unsent data remains. `on`==0
-// disables linger (close returns immediately, the kernel drains in the
-// background — the default). `on`!=0 enables it with `seconds`: close blocks
-// up to `seconds` trying to flush, and on timeout the connection is reset
-// (RST) rather than a graceful FIN. Carried as `struct linger`, the one
-// option whose payload is a struct, not an int — hence its own helper.
-//
-// `struct linger` is identical on POSIX and Winsock: `{ u_short l_onoff;
-// u_short l_linger; }` (Winsock) / `{ int l_onoff; int l_linger; }` (POSIX).
-// We populate the fields portably via the struct members so the field widths
-// are whatever the platform declares.
-// ---------------------------------------------------------------------------
+// SO_LINGER — `on`==0 closes immediately and drains in the background (the
+// default); `on`!=0 makes close block up to `seconds` flushing, then RST. The
+// one option whose payload is a struct, so it does not use the int helpers.
 int32_t __cajeta_net_set_linger(int32_t fd, int32_t on, int32_t seconds) {
     if (fd < 0) return -1;
     if (seconds < 0) seconds = 0;
@@ -198,9 +121,8 @@ int32_t __cajeta_net_set_linger(int32_t fd, int32_t on, int32_t seconds) {
     return r == CAJETA_SOCKET_ERROR ? -1 : 0;
 }
 
-// Read SO_LINGER back: writes 1/0 to `*on_out` and the linger seconds to
-// `*seconds_out`. Either out pointer may be NULL to discard that field.
-// Returns 0 / -1.
+// Read SO_LINGER back into `*on_out` (1/0) and `*seconds_out`; either pointer
+// may be NULL to discard that field. Returns 0 / -1.
 int32_t __cajeta_net_get_linger(int32_t fd, int32_t* on_out, int32_t* seconds_out) {
     if (fd < 0) return -1;
     struct linger lg;
@@ -219,11 +141,8 @@ int32_t __cajeta_net_get_linger(int32_t fd, int32_t* on_out, int32_t* seconds_ou
     return 0;
 }
 
-// ---------------------------------------------------------------------------
-// SO_BROADCAST — permit a UDP socket to send to a broadcast address. SOL_SOCKET
-// level; meaningful only on SOCK_DGRAM. Off by default; the kernel rejects a
-// broadcast sendto without it.
-// ---------------------------------------------------------------------------
+// SO_BROADCAST — permit a SOCK_DGRAM socket to send to a broadcast address;
+// without it the kernel rejects the sendto. Off by default.
 int32_t __cajeta_net_set_broadcast(int32_t fd, int32_t on) {
     return cajeta_opt_set_bool(fd, SOL_SOCKET, SO_BROADCAST, on);
 }
@@ -231,16 +150,9 @@ int32_t __cajeta_net_get_broadcast(int32_t fd) {
     return cajeta_opt_get_bool(fd, SOL_SOCKET, SO_BROADCAST);
 }
 
-// ---------------------------------------------------------------------------
-// TTL / hop limit — the unicast hop limit on outbound packets. For an IPv4
-// socket this is IP_TTL at IPPROTO_IP; for an IPv6 socket it is
-// IPV6_UNICAST_HOPS at IPPROTO_IPV6 (the two families name it differently).
-// The cajeta layer knows the socket's family (it created the socket from the
-// SocketAddress family), so it passes `is_v6` to pick the right pair — keeping
-// the IPPROTO_* / option-name `#if`s here in C.
-//
-// `ttl` is 0..255. Returns 0 / -1 (set) and the read-back value / -1 (get).
-// ---------------------------------------------------------------------------
+// Unicast hop limit, 0..255: IP_TTL for IPv4, IPV6_UNICAST_HOPS for IPv6, so
+// the caller passes the family it created the socket with as `is_v6`. Set
+// returns 0/-1, get returns the read-back value or -1.
 int32_t __cajeta_net_set_ttl(int32_t fd, int32_t is_v6, int32_t ttl) {
     if (ttl < 0 || ttl > 255) return -1;
     if (is_v6) {
@@ -256,13 +168,8 @@ int32_t __cajeta_net_get_ttl(int32_t fd, int32_t is_v6) {
     return (int32_t) v;
 }
 
-// ---------------------------------------------------------------------------
-// IPV6_V6ONLY — when on, an AF_INET6 socket accepts IPv6 traffic only; when
-// off, it also accepts IPv4-mapped (`::ffff:a.b.c.d`) connections (dual-stack).
-// IPPROTO_IPV6 level; valid only on an IPv6 socket. Platform defaults differ
-// (Linux off, the BSDs/Windows on), so callers that care set it explicitly —
-// which is the entire reason this option is exposed.
-// ---------------------------------------------------------------------------
+// IPV6_V6ONLY — on, an AF_INET6 socket takes IPv6 only; off, it also accepts
+// IPv4-mapped peers. Platform defaults differ, so callers set it explicitly.
 int32_t __cajeta_net_set_only_v6(int32_t fd, int32_t on) {
     return cajeta_opt_set_bool(fd, IPPROTO_IPV6, IPV6_V6ONLY, on);
 }
@@ -270,37 +177,18 @@ int32_t __cajeta_net_get_only_v6(int32_t fd) {
     return cajeta_opt_get_bool(fd, IPPROTO_IPV6, IPV6_V6ONLY);
 }
 
-// ===========================================================================
-// NET-14.1 — UDP multicast option intrinsics.
-//
-// Same doctrine as everything above: every platform constant (IP_ADD_MEMBERSHIP
-// vs IPV6_JOIN_GROUP naming, the u_char-vs-int payload width quirk, mreq struct
-// shapes) stays in C; the Cajeta surface passes only the AddressFamily-agnostic
-// pieces — network-order octets, an interface index, portable ints.
-//
-// Family split, deliberately asymmetric because the kernels are:
-//   - IPv4 selects the interface by ADDRESS (`struct ip_mreq.imr_interface`,
-//     INADDR_ANY = kernel default). `ip_mreqn`'s by-index form is Linux-only,
-//     so it is not offered.
-//   - IPv6 selects the interface by INDEX (`struct ipv6_mreq.ipv6mr_interface`,
-//     0 = kernel default). v6 interfaces have no single address to name.
-//
-// Payload-width quirk: IPv4's IP_MULTICAST_TTL and IP_MULTICAST_LOOP take a
-// `u_char` on the BSDs/macOS (an `int` payload fails EINVAL there); Linux
-// accepts either; Winsock wants a DWORD. IPv6's equivalents take an int
-// everywhere. The `#if` lives here, once.
-// ===========================================================================
+// ---- UDP multicast options -------------------------------------------------
+// IPv4 names the interface by ADDRESS (ip_mreq, INADDR_ANY = default), IPv6 by INDEX
+// (ipv6_mreq, 0); IPv4's MULTICAST_TTL/LOOP take a u_char where IPv6's take int.
 
 // Octet parameters cross the @Native bridge as cajeta int8[] HEADERS —
-// `{ i64 count, [N x i8] data }` — so the address bytes live at offset 8
-// (the `__cajeta_sha1_update` convention). NULL stays NULL.
+// `{ i64 count, [N x i8] data }` — so the bytes live at offset 8. NULL stays NULL.
 static const void* cajeta_octets_of(const void* hdr) {
     return hdr ? ((const uint8_t*) hdr) + 8 : (const void*) 0;
 }
 
-// Join/leave an IPv4 group. `group_hdr` = int8[] header holding 4
-// network-order bytes; `iface_hdr` likewise for the interface address, or
-// NULL for the kernel default (INADDR_ANY). Returns 0 / -1.
+// Join/leave an IPv4 group: `group_hdr` holds 4 network-order bytes,
+// `iface_hdr` the interface address or NULL for INADDR_ANY. Returns 0 / -1.
 static int32_t cajeta_mcast_v4(int32_t fd, int optname,
                                const void* group_hdr,
                                const void* iface_hdr) {
@@ -312,7 +200,7 @@ static int32_t cajeta_mcast_v4(int32_t fd, int optname,
     memcpy(&mreq.imr_multiaddr, group_octets, 4);
     if (iface_octets) {
         memcpy(&mreq.imr_interface, iface_octets, 4);
-    }                                   // else zeroed = INADDR_ANY
+    }
     int r = setsockopt(cajeta_net_from_fd(fd), IPPROTO_IP, optname,
 #if defined(_WIN32)
                        (const char*) &mreq,
@@ -332,9 +220,8 @@ int32_t __cajeta_net_mcast_leave_v4(int32_t fd, const void* group_hdr,
     return cajeta_mcast_v4(fd, IP_DROP_MEMBERSHIP, group_hdr, iface_hdr);
 }
 
-// Join/leave an IPv6 group. `group_hdr` = int8[] header holding 16
-// network-order bytes; `iface_index` = interface index, 0 for the kernel
-// default. Returns 0 / -1.
+// Join/leave an IPv6 group: `group_hdr` holds 16 network-order bytes,
+// `iface_index` is the interface index, 0 for the kernel default. Returns 0/-1.
 static int32_t cajeta_mcast_v6(int32_t fd, int optname,
                                const void* group_hdr,
                                int32_t iface_index) {
@@ -363,7 +250,7 @@ int32_t __cajeta_net_mcast_leave_v6(int32_t fd, const void* group_hdr,
     return cajeta_mcast_v6(fd, IPV6_LEAVE_GROUP, group_hdr, iface_index);
 }
 
-// IPv4 u_char-payload option set/get (the TTL/LOOP width quirk — see header).
+// IPv4 u_char-payload option set/get — the TTL/LOOP width quirk noted above.
 static int32_t cajeta_mcast_set_v4_uchar(int32_t fd, int optname, int32_t value) {
     if (fd < 0) return -1;
 #if defined(_WIN32)
@@ -389,8 +276,8 @@ static int32_t cajeta_mcast_get_v4_uchar(int32_t fd, int optname) {
 #endif
 }
 
-// Multicast TTL / hop limit for OUTBOUND multicast (distinct from the unicast
-// IP_TTL / IPV6_UNICAST_HOPS above). Default 1 = link-local, per the RFCs.
+// Multicast TTL / hop limit for OUTBOUND multicast, distinct from the unicast
+// IP_TTL / IPV6_UNICAST_HOPS above. Default 1 = link-local, per the RFCs.
 int32_t __cajeta_net_set_mcast_ttl(int32_t fd, int32_t is_v6, int32_t ttl) {
     if (ttl < 0 || ttl > 255) return -1;
     if (is_v6) {
@@ -407,8 +294,8 @@ int32_t __cajeta_net_get_mcast_ttl(int32_t fd, int32_t is_v6) {
     return cajeta_mcast_get_v4_uchar(fd, IP_MULTICAST_TTL);
 }
 
-// Multicast loopback — whether this host's own group sends are delivered back
-// to local members (OS default: on).
+// Multicast loopback — whether this host's own group sends come back to local
+// members (OS default: on).
 int32_t __cajeta_net_set_mcast_loop(int32_t fd, int32_t is_v6, int32_t on) {
     if (is_v6) {
         return cajeta_opt_set_bool(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, on);
@@ -423,8 +310,8 @@ int32_t __cajeta_net_get_mcast_loop(int32_t fd, int32_t is_v6) {
     return v < 0 ? -1 : (v != 0 ? 1 : 0);
 }
 
-// Outbound multicast interface. Same v4-by-address / v6-by-index split as the
-// membership calls.
+// Outbound multicast interface, with the same v4-by-address / v6-by-index
+// split as the membership calls.
 int32_t __cajeta_net_set_mcast_if_v4(int32_t fd, const void* iface_hdr) {
     const void* iface_octets = cajeta_octets_of(iface_hdr);
     if (fd < 0 || !iface_octets) return -1;
@@ -440,9 +327,8 @@ int32_t __cajeta_net_set_mcast_if_v4(int32_t fd, const void* iface_hdr) {
                        (cajeta_socklen_t) sizeof(addr));
     return r == CAJETA_SOCKET_ERROR ? -1 : 0;
 }
-// Writes the 4 network-order octets of the current outbound interface into
-// the int8[] whose header is `iface_hdr_out` (0.0.0.0 = kernel default).
-// Returns 0 / -1.
+// Writes the 4 network-order octets of the current outbound interface into the
+// int8[] whose header is `iface_hdr_out` (0.0.0.0 = default). Returns 0 / -1.
 int32_t __cajeta_net_get_mcast_if_v4(int32_t fd, void* iface_hdr_out) {
     void* iface_octets_out = iface_hdr_out ? ((uint8_t*) iface_hdr_out) + 8
                                            : (void*) 0;
@@ -471,10 +357,9 @@ int32_t __cajeta_net_get_mcast_if_v6(int32_t fd) {
     return (int32_t) v;
 }
 
-// The socket's address family, read portably off the kernel via getsockname
-// (SO_DOMAIN is Linux-only). Returns 1 for AF_INET6, 0 for AF_INET, -1 on
-// error. The Cajeta option surface uses this for the is_v6 dispatch instead of
-// trusting wrapper-side state that does not exist (UdpSocket stores only fd).
+// The socket's address family read off the kernel via getsockname (SO_DOMAIN
+// is Linux-only): 1 for AF_INET6, 0 for AF_INET, -1 on error. Drives the
+// is_v6 dispatch, since the Cajeta wrappers store only the fd.
 int32_t __cajeta_net_sockname_is_v6(int32_t fd) {
     if (fd < 0) return -1;
     struct sockaddr_storage ss;
@@ -483,14 +368,9 @@ int32_t __cajeta_net_sockname_is_v6(int32_t fd) {
     if (getsockname(cajeta_net_from_fd(fd), (struct sockaddr*) &ss, &len)
             == CAJETA_SOCKET_ERROR) {
 #if defined(_WIN32)
-        // POSIX answers getsockname on an UNBOUND socket with a zeroed address
-        // of the right family; Winsock refuses it with WSAEINVAL, which made
-        // this probe return -1 for every fresh UDP socket on Windows
-        // (NetMulticastOptionsTests.roundTripAndErrors, release full sweep
-        // 2026-09-06). The family is still knowable without binding: it is
-        // fixed at socket() time and Winsock exposes it through
-        // SO_PROTOCOL_INFO's iAddressFamily. Fall back to that on exactly the
-        // unbound case so a genuine bad-fd error still reports -1.
+        // Winsock refuses getsockname on an UNBOUND socket with WSAEINVAL where
+        // POSIX answers with a zeroed address; the family is fixed at socket()
+        // time, so read it from SO_PROTOCOL_INFOW on exactly that case.
         if (WSAGetLastError() == WSAEINVAL) {
             WSAPROTOCOL_INFOW info;
             int ilen = (int) sizeof(info);

@@ -32,12 +32,8 @@ namespace cajeta::ownership {
                             "CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER");
         }
 
-        // `file=` is in the NOTE, not just the engine diagnostic, because the
-        // note is what drives the migration. Without it a record names a class
-        // and a line, and inside a generic body the line is meaningless — which
-        // left the sweep matching on `(lvalue, callee-simple-name)` across every
-        // candidate file and over-matching 4:1. The compiler knows the path; it
-        // should say so rather than make a script infer it.
+        // `file=` goes in the NOTE as well as the diagnostic: the note drives the
+        // migration, and a class plus a line is ambiguous inside a generic body.
         g_ownedBind.report(
             "[owned-bind] " + inMethod + ":" + std::to_string(line)
                 + " lvalue=" + lvalue + " callee=" + calleeKey

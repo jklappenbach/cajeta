@@ -1,9 +1,7 @@
 #pragma once
 
-// DCE Tier-0b keep-set resolution (lean-linker-dce.md §3.2), factored out of
-// the Lean-mode link so the lazy kernel can run the same resolution per cell
-// (lazy-codegen 4.2.4, spec 2.2.1) — the question "what must survive because
-// reflection might want it" has ONE answer, shared by both consumers.
+// DCE Tier-0b keep-set resolution (lean-linker-dce.md §3.2), shared by the Lean-mode
+// link and the lazy kernel so "what must survive reflection" has ONE answer.
 
 #include <map>
 #include <memory>
@@ -12,12 +10,8 @@
 
 namespace cajeta {
 
-    // Resolve the accumulated reflection sites (CajetaModule::reflectionKeep)
-    // against the canonical map into the set of class canonical names whose
-    // registration ctor must be kept. Returns NULL when the accumulator
-    // carries a forces-ALL site — null keep-set means keep everything
-    // (CajetaModule::keepsClass). `keptBy`, when non-null, receives
-    // canon -> first reason kept (provenance for --why-kept / keepset.json).
+    // Resolves the accumulated reflection sites into the class canonical names whose
+    // registration ctor must be kept; NULL keeps everything, `keptBy` gets the reason.
     std::shared_ptr<const std::set<std::string>>
     resolveReflectionKeepSet(std::map<std::string, std::string>* keptBy = nullptr);
 

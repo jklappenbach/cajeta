@@ -33,7 +33,7 @@ public final class MapStream<T, R> extends Stream<R> {
      */
     public MapStream(#Stream<T> source, (T) -> #R fn) {
         this.source #= source;
-        this.fn = fn;
+        this.fn #= fn;   // Unit 9 (spec 5.13): the sink model — a literal moves in, a name lends
     }
 
     /**

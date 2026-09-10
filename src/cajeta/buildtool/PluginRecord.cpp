@@ -6,9 +6,7 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // A required field and the type it must carry. Kept as data rather
-        // than a chain of ifs so the table reads like the spec's table, which
-        // is the thing it has to stay true to.
+        // A required field and the type it must carry, kept as data so the table reads like the spec's.
         enum class FieldType { Str, Int };
 
         struct Requirement {
@@ -76,9 +74,8 @@ namespace cajeta::buildtool {
             }
             return {RecordVerdict::Valid, ""};
         }
-        // Well-formed, but not a kind this build knows. Forward compatibility:
-        // a newer plugin may emit kinds we have never heard of, and refusing
-        // them would make every build tool a ceiling on every plugin.
+        // Well-formed, but not a kind this build knows. A newer plugin may emit kinds
+        // we have never heard of, and refusing them would cap every plugin.
         return {RecordVerdict::UnknownKind,
                 std::string("unrecognised record kind '") + kind->str() + "'"};
     }
@@ -101,10 +98,7 @@ namespace cajeta::buildtool {
                 case '\t': out += "\\t";  emitted += 2; continue;
                 default: break;
             }
-            // Control characters and anything not printable ASCII are escaped
-            // rather than reproduced. This also covers invalid UTF-8: the byte
-            // is shown as an escape, so the output encoding stays intact
-            // whatever the plugin emitted.
+            // Control characters and non-printable ASCII are escaped rather than reproduced, so invalid UTF-8 cannot corrupt the output.
             if (c < 0x20 || c >= 0x7f) {
                 static const char* hex = "0123456789abcdef";
                 out += "\\x";
@@ -154,10 +148,7 @@ namespace cajeta::buildtool {
                 if (*kind == "result") ++results;
             }
         }
-        // A plugin that never says how it finished leaves the build tool to
-        // guess, which is the failure §3 removes by emitting one on the
-        // plugin's behalf. A CONFORMING plugin still has to produce exactly
-        // one — the safety net is not the contract.
+        // A plugin that never says how it finished gets one emitted on its behalf (§3), but a conforming plugin still emits exactly one.
         if (results == 0) {
             report.problems.push_back("no result record: the action never "
                                       "reported how it finished");

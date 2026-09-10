@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 10/5/22.
-//
+// Block - the AST node for a brace-delimited list of statements.
 
 #pragma once
 

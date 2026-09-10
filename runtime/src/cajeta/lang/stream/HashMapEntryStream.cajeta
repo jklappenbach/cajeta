@@ -73,7 +73,8 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Spli
                 K k = this.slots[this.idx].key;
                 V v = this.slots[this.idx].val;
                 this.idx = this.idx + 1;
-                Pair<K, V> p = heap Pair<K, V>(k, v);
+                // A borrowing pair: the map keeps key and value, the consumer owns only the pair.
+                Pair<K, V> p #= heap Pair<K, V>(k, v, true);
                 return stack Optional<Pair<K, V>>(true, #p);
             }
             this.idx = this.idx + 1;

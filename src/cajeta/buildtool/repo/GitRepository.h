@@ -1,24 +1,6 @@
-// GitRepository — clone-and-extract repository driver (Phase 6c).
-//
-// One instance represents one git source pinned to one ref (tag,
-// branch, or commit hash). The dep it serves is determined by
-// reading `details.name` + `details.version` from the cajeta.json
-// at the checked-out tree's `<subdir>/cajeta.json`.
-//
-// Layout per BuildTool.md "Git repository":
-//
-//   <stageDir>/git/<hash(url,ref)>/        clone root
-//   <stageDir>/git/<hash(url,ref)>/<subdir>/cajeta.json
-//   <stageDir>/git/<hash(url,ref)>/<subdir>/build/archive/<n>-<v>.cja
-//
-// Clones happen lazily on first call. `git` is invoked as a child
-// process; the driver fails clearly if the binary isn't on PATH.
-//
-// v1 limitation: `fetch` expects a pre-built `.cja` inside the
-// checkout (under `<subdir>/build/archive/`). Spawning a recursive
-// `cajeta build` against the clone is a future enhancement —
-// today users vendoring via git are expected to ship the artifact
-// alongside source, or run `cajeta build` in the clone manually.
+// Clone-and-extract repository driver: one instance is one git source pinned to
+// one ref, cloned lazily under `<stageDir>/git/<hash(url,ref)>/` by the `git`
+// binary. `fetch` expects a pre-built `.cja` already in `<subdir>/build/archive/`.
 
 #pragma once
 
@@ -42,9 +24,7 @@ namespace cajeta::buildtool {
         GitRepository& operator=(const GitRepository&) = delete;
 
         std::string name() const override { return name_; }
-        // The clone URL is this repository's stable identity. Git repos
-        // serve no signed documents today; when they do, this is what a
-        // delegation would name.
+        // The clone URL, which is this repository's stable identity.
         std::string origin() const override { return cloneUrl_; }
 
         llvm::Expected<std::vector<std::string>> listVersions(
@@ -60,22 +40,18 @@ namespace cajeta::buildtool {
             const std::string& version) const override;
 
     private:
-        // Clone (or refresh) into the deterministic stage path and
-        // check out the configured ref. Idempotent — re-callable
-        // cheaply once the clone exists.
+        // Clone into the deterministic stage path and check out the configured
+        // ref. Idempotent, and cheap to re-call once the clone exists.
         llvm::Error ensureClone() const;
 
-        // Read the checked-out cajeta.json and cache the
-        // `(packageName, version)` it declares. Both fields cached
-        // on first successful read.
+        // Read the checked-out cajeta.json and cache the `(packageName, version)`
+        // it declares, on the first successful read.
         llvm::Error ensureMetadata() const;
 
-        // Filesystem path to the directory containing the dep's
-        // cajeta.json (clone root + optional subdir).
+        // The directory holding the dep's cajeta.json: clone root plus any subdir.
         std::string checkoutDir() const;
 
-        // SHA-256(url + "\n" + ref) truncated, used as the clone dir
-        // name under stageDir/git/.
+        // Truncated SHA-256(url + "\n" + ref), the clone dir name under git/.
         static std::string hashKey(const std::string& url,
                                    const std::string& ref);
 

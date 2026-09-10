@@ -1,12 +1,5 @@
-// Native-dependency resolver (native-deps units 4–5).
-//
-// Unit 4: the requirement model + transitive collection — read each .cja's
-// embedded native metadata (native/native-libraries.json) and union by lib-id,
-// flagging required-but-unprovided libs. Unit 5 adds probe-order resolution +
-// version selection on top of this set.
-//
-// See docs/specification/buildtool/native-deps-spec.md §4.
-
+// Native-dependency resolver: requirement model, transitive collection, probe-order
+// resolution and packaging. See docs/specification/buildtool/native-deps-spec.md §4.
 #pragma once
 
 #include "Manifest.h"
@@ -23,36 +16,28 @@
 
 namespace cajeta::buildtool {
 
-    // One .cja's embedded native metadata (native/native-libraries.json):
-    //   { "requires": ["zstd", …],            // lib-ids the code @Native-binds
-    //     "libraries": { "zstd": {…}, … } }   // resolution metadata
+    // One .cja's embedded native metadata: { requires: [lib-id...], libraries: {id: meta} }.
     struct NativeMeta {
         std::set<std::string> requiredLibs;
         std::map<std::string, NativeLibrary> libraries;
     };
 
-    // The transitive union across a dependency set.
     struct NativeRequirementSet {
         std::set<std::string> required;                  // every lib-id needed
         std::map<std::string, NativeLibrary> libraries;  // id -> resolution metadata
         std::set<std::string> unsatisfied;               // required, no metadata anywhere
-        // id -> the version constraints seen across deps (resolved in unit 5).
         std::map<std::string, std::vector<std::string>> versionConstraints;
     };
 
-    // Parse one .cja's embedded native metadata json.
     llvm::Expected<NativeMeta> parseNativeMeta(
         llvm::StringRef json, const std::string& sourceLabel);
 
-    // Collect + union native requirements across a set of archives (an app's
-    // transitive .cja deps). Order-independent. A required lib-id with no
-    // resolution metadata anywhere lands in `unsatisfied` (fail-loud, §11).
+    // Union native requirements across transitive .cja deps; unmet ids go to `unsatisfied`.
     llvm::Expected<NativeRequirementSet> collectNativeRequirements(
         const std::vector<const cajeta::CajetaArchive*>& archives);
 
     // --- Unit 5: resolution (probe order, version selection, override) ----
 
-    // One required lib resolved to a concrete linker input.
     struct ResolvedNative {
         std::string lib;
         std::string version;       // concrete version chosen
@@ -62,11 +47,7 @@ namespace cajeta::buildtool {
         std::string via;           // provider name, or "override-path"
     };
 
-    // A probe-order source of native artifacts. `supply(lib, version, platform)`
-    // returns a path if this source can provide the artifact, else nullopt.
-    // The resolver tries providers in order; first hit wins. Real providers
-    // (.cja native/, project native/, ~/.cajeta/native cache, system, Olla
-    // fetch) plug in here; tests use stubs.
+    // A probe-order source of native artifacts; providers are tried in order, first hit wins.
     struct NativeProvider {
         std::string name;
         std::function<std::optional<std::string>(
@@ -79,15 +60,12 @@ namespace cajeta::buildtool {
         std::map<std::string, std::string> unresolved;  // id -> reason (→ §11)
     };
 
-    // Choose the highest-compatible version across `constraints` (concrete
-    // "1.5.2" or wildcard "1.5.*"/"1.*"). Incompatible majors → error (4.A).
+    // Highest-compatible version across `constraints`; incompatible majors are an error.
     llvm::Expected<std::string> selectNativeVersion(
         const std::vector<std::string>& constraints);
 
-    // Resolve every required lib in `reqs` for `platform`: a `native-overrides`
-    // entry wins (version replaces constraints; path short-circuits providers),
-    // otherwise the version is selected from the constraints and providers are
-    // tried in order. Unresolvable libs land in `unresolved` with a reason.
+    // Resolve every required lib in `reqs` for `platform`: a `native-overrides` entry wins
+    // and short-circuits providers, else version selection then providers in order.
     NativeResolution resolveNatives(
         const NativeRequirementSet& reqs,
         const std::map<std::string, NativeOverride>& overrides,
@@ -96,8 +74,7 @@ namespace cajeta::buildtool {
 
     // --- Unit 6: default packaging step -----------------------------------
 
-    // Serialize a requirement set to the embedded native-metadata json
-    // ({requires, libraries}) that parseNativeMeta reads. Round-trips.
+    // Serialize a requirement set to the embedded metadata json parseNativeMeta reads.
     std::string serializeNativeMeta(const NativeRequirementSet& reqs);
 
     struct NativePackagingResult {
@@ -105,12 +82,8 @@ namespace cajeta::buildtool {
         std::vector<std::string> missing;  // required libs unresolved everywhere
     };
 
-    // Bake resolved native artifacts into `arc`'s native/ tree (reading each
-    // resolved artifactPath from disk) and embed the metadata json. `slim`
-    // skips baking (no native/), still reporting unresolved-required libs.
-    // Baking is redistributable-agnostic — the `redistributable` flag gates
-    // only Olla mirroring / publisher public bundling (§10), never the app
-    // developer baking a provisioned (embargoed) artifact into their archive.
+    // Bake resolved native artifacts into `arc`'s native/ tree and embed the metadata json;
+    // `slim` skips baking. Baking is redistributable-agnostic - that flag gates only sharing.
     llvm::Expected<NativePackagingResult> bakeNativeArtifacts(
         cajeta::CajetaArchive& arc,
         const NativeRequirementSet& reqs,

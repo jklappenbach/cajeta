@@ -1,17 +1,6 @@
-// Session-binding registry (script-units spec §4).
-//
-// Top-level bindings of a script unit are owned by the SESSION, not by the
-// synthesized entry's drop frame: codegen registers each owner here instead
-// of pushing a function-local drop entry, so the value survives the entry's
-// return. The host decides the session's end: `cajeta run` after the entry
-// returns; the Jupyter kernel at shutdown/reset. Rebinding a name drops the
-// previous occupant immediately and keeps the name's ORIGINAL position, so
-// `__cajeta_session_drop_all` fires in reverse FIRST-binding order — the
-// deterministic mirror of scope-exit drops (spec §4.3/§4.4).
-//
-// Single-threaded by contract: bindings are created and dropped on the
-// session's execution thread (the same thread that owns the compiler
-// front-end reuse machinery). No locking here.
+// Session-binding registry: a script unit's top-level bindings are owned by the
+// SESSION rather than the synthesized entry's drop frame, so they survive its
+// return. The host ends the session. Single-threaded by contract; no locking.
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -27,6 +16,7 @@ static cajeta_session_slot* __cajeta_session_slots = 0;
 static int64_t __cajeta_session_len = 0;
 static int64_t __cajeta_session_cap = 0;
 
+// The slot bound to `name`, or null.
 static cajeta_session_slot* cajeta_session_find(const char* name) {
     for (int64_t i = 0; i < __cajeta_session_len; ++i) {
         if (strcmp(__cajeta_session_slots[i].name, name) == 0) {
@@ -36,12 +26,12 @@ static cajeta_session_slot* cajeta_session_find(const char* name) {
     return 0;
 }
 
+// Bind `obj` under `name`, taking ownership. A rebind drops the old occupant NOW
+// and keeps the name's ORIGINAL position, so drop_all stays reverse first-bind.
 void __cajeta_session_bind(const char* name, void* obj,
                            void (*drop_fn)(void*)) {
     cajeta_session_slot* slot = cajeta_session_find(name);
     if (slot) {
-        // Rebind: drop the old occupant NOW (spec §4.3); the name keeps its
-        // original position for reverse-order drop_all.
         if (slot->obj && slot->drop_fn) slot->drop_fn(slot->obj);
         slot->obj = obj;
         slot->drop_fn = drop_fn;
@@ -63,20 +53,13 @@ void __cajeta_session_bind(const char* name, void* obj,
     s->drop_fn = drop_fn;
 }
 
-// Drop for a BOXED primitive (see __cajeta_session_bind_value): the box is a
-// plain malloc'd buffer, so releasing it is just free.
+// Drop for a boxed primitive: the box is a plain malloc'd buffer.
 static void cajeta_session_free_box(void* p) {
     free(p);
 }
 
-// Bind a PRIMITIVE by value. A primitive top-level binding has no drop entry
-// — nothing owns it, so the owner-promotion path never sees it — and its
-// storage is a slot in the unit entry's frame, which is gone by the time a
-// later unit reads the name. Copy the bytes into a session-owned box instead,
-// and register that with the ordinary bind path so rebinding, reverse-order
-// drop_all, and first-binding position all behave exactly as they do for an
-// owner. `__cajeta_session_get` then returns the box, which IS the address of
-// the value — the reader loads through it directly.
+// Bind a PRIMITIVE by value: its frame slot dies with the entry, so `size` bytes
+// are copied into a session-owned box, which `__cajeta_session_get` returns.
 void __cajeta_session_bind_value(const char* name, const void* src,
                                  int64_t size) {
     if (!src || size <= 0) return;
@@ -86,9 +69,8 @@ void __cajeta_session_bind_value(const char* name, const void* src,
     __cajeta_session_bind(name, box, cajeta_session_free_box);
 }
 
-// Ownership left the session (a `#` transfer moved the binding's title to a
-// new owner): quiet the slot WITHOUT dropping — the new owner drops. The
-// name keeps its position; a later rebind reoccupies the same slot.
+// Ownership left the session (a `#` transfer): quiet the slot WITHOUT dropping,
+// since the new owner drops. A later rebind reoccupies the same slot.
 void __cajeta_session_disarm(const char* name) {
     cajeta_session_slot* slot = cajeta_session_find(name);
     if (!slot) return;
@@ -105,8 +87,7 @@ int64_t __cajeta_session_count(void) {
     return __cajeta_session_len;
 }
 
-// Drop every live binding in reverse first-binding order, then reset the
-// registry to empty (names freed). Safe to call repeatedly.
+// Drop every live binding in reverse first-binding order and empty the registry.
 void __cajeta_session_drop_all(void) {
     for (int64_t i = __cajeta_session_len - 1; i >= 0; --i) {
         cajeta_session_slot* s = &__cajeta_session_slots[i];
@@ -119,20 +100,9 @@ void __cajeta_session_drop_all(void) {
     __cajeta_session_len = 0;
 }
 
-// --- the unit RESULT: Out[N] (jupyter-kernel spec 4.2) --------------------
-//
-// A cell ending in an expression displays that expression's value. The value
-// is rendered to text by CODEGEN, where the expression's type is known, and
-// parked here for the host to collect once the entry returns.
-//
-// It rides a side channel rather than the entry's return value on purpose:
-// whether a trailing expression HAS a value is only decidable after type
-// resolution, long after the entry's signature is fixed. A return-typed
-// result would force that decision on the synthesizer, which sees only token
-// text and cannot tell `x + y;` from `xs.add(1);`.
-//
-// "No result" and "a result that rendered as the empty string" are different
-// answers, so presence is tracked separately from the text.
+// --- the unit RESULT: Out[N] ---------------------------------------------
+// A cell's trailing expression is rendered to text by CODEGEN and parked here.
+// "No result" and "an empty rendering" differ, so presence is tracked apart.
 static char* __cajeta_script_result_text = 0;
 static int __cajeta_script_result_present = 0;
 
@@ -142,13 +112,8 @@ void __cajeta_script_result_clear(void) {
     __cajeta_script_result_present = 0;
 }
 
-// Codegen hands over a C string it does not transfer ownership of (it may be
-// a borrowed window into a String); we copy.
-//
-// A NULL is "nothing rendered" and leaves whatever is already parked — codegen
-// stores a type-name placeholder before attempting a render, so a `toString`
-// returning null degrades to that instead of blanking the result. An empty
-// but non-null string is a real empty result and does replace it.
+// Park a COPY of `text`, which the caller keeps. NULL is "nothing rendered" and
+// leaves what is parked; an empty non-null string is a real, replacing result.
 void __cajeta_script_result(const char* text) {
     if (!text) return;
     free(__cajeta_script_result_text);
@@ -161,60 +126,28 @@ void __cajeta_script_result(const char* text) {
     }
 }
 
-// Borrowed, valid until the next store or clear. Null means the cell had no
-// trailing expression value at all.
+// Borrowed until the next store or clear; null when the cell had no result.
 const char* __cajeta_script_result_get(void) {
     if (!__cajeta_script_result_present) return 0;
     return __cajeta_script_result_text ? __cajeta_script_result_text : "";
 }
 
-// --- session-scoped fault containment (jupyter-kernel spec 4.4) ----------
-//
-// `__cajeta_throw` with no exception frame installed calls exit(1) — right
-// for a program, fatal for a kernel: an uncaught throw in one cell would take
-// the whole session, every binding, and every earlier cell with it. The
-// remedy is to give the cell boundary a frame of its own, so a throw that
-// escapes the cell unwinds HERE instead of out of the process.
-//
-// This is the resident-debug-server deferral, paid.
+// --- session-scoped fault containment -------------------------------------
 
-// Run `entry` with a session-level catch installed. Returns NULL when the
-// call completed (its value in *out_value), or the thrown Throwable.
-// jupyter-kernel U6 (spec 5.1) — interrupting a running cell.
-//
-// The thrown "value" for an interrupt is a SENTINEL ADDRESS, not a Throwable.
-// Nothing dereferences it: the guard below recognizes it by identity before
-// it reaches `__cajeta_is_unrecoverable`, and the kernel renders it from the
-// pointer alone. Constructing a real exception object would mean calling into
-// compiled Cajeta code from a safepoint that may be inside anything.
-// External for the same reason the interrupt flag is (see cajeta_rt_core.c):
-// the marker accessor and the guard's identity test must agree on ONE
-// address, and an internal global can be duplicated across JIT partitions —
-// which here would mean an interrupt the guard fails to recognize and then
-// dereferences as a Throwable.
+// An interrupt's thrown "value" is a SENTINEL ADDRESS, never dereferenced.
+// EXTERNAL: the JIT duplicates internal globals, and identity needs one address.
 char __cajeta_session_interrupt_sentinel = 0;
 
-// The frame an interrupt unwinds TO: the one `__cajeta_session_guard_call`
-// pushed for the cell currently running, or NULL when no cell is. Set and
-// restored by the guard, so it is always a frame whose stack is still live —
-// the property "the outermost link of the chain" does not have.
-//
-// A plain pointer rather than TLS: a session has exactly one execution
-// thread by contract (KernelSession.h), so there is exactly one guarded cell
-// at a time, and a `__thread` here would risk the internal-global
-// duplication the interrupt flag already had to be made external to avoid.
+// The frame an interrupt unwinds TO: the one the guard pushed for the running
+// cell, or NULL. Always live, which the chain's outermost link is not.
 struct cajeta_exception_frame* __cajeta_session_guard_frame = NULL;
 
 void* __cajeta_session_interrupt_marker(void) {
     return &__cajeta_session_interrupt_sentinel;
 }
 
-// The second thing a cell can be stopped BY, and the second sentinel: a
-// would-be-UB trap (divide by zero, shift past the width, signed overflow).
-// The compiler normally lowers those to `llvm.trap` — correct for a program,
-// fatal for a kernel, where `4 / 0` in one cell would take every binding and
-// every earlier cell with it. Under a session the trap site calls
-// `__cajeta_session_trap_unwind` instead, and this is what the guard sees.
+// The other stop, and the other sentinel: a would-be-UB trap (divide by zero,
+// shift past the width, signed overflow) that must not `llvm.trap` the session.
 char __cajeta_session_trap_sentinel = 0;
 static const char* g_trap_what = "arithmetic fault";
 
@@ -222,48 +155,21 @@ void* __cajeta_session_trap_marker(void) {
     return &__cajeta_session_trap_sentinel;
 }
 
-// What the trap was, for the host to render. A string LITERAL from the
-// emitting module, so it lives as long as the code that raised it; never
-// freed here.
+// What the trap was, as a string LITERAL owned by the emitting module.
 const char* __cajeta_session_trap_description(void) {
     return g_trap_what;
 }
 
-// Unwind to the OUTERMOST exception frame on this thread's chain — the
-// session guard's — not the innermost, which is what `__cajeta_throw` would
-// do. Two reasons, and both matter:
-//
-//   * A cell's own `try { } catch (Exception e)` must not swallow an
-//     interrupt. It would bind the sentinel as an object and dereference it,
-//     and "Ctrl-C got eaten by a catch-all in cell 3" is not a thing a
-//     notebook user can debug.
-//   * The guard is where the cell's error is turned into a reply. Landing
-//     anywhere else means the interrupt is reported by code that does not
-//     know it happened.
-//
-// Returns normally when there is no frame to land in — a cell running outside
-// a guard is not interruptible, which is the honest answer rather than a
-// longjmp into nothing.
-// Shared by both stops. `marker` is the sentinel the guard will compare
-// against; everything else — running the skipped frames' drops, repairing the
-// shadow and debug chains to the guard's watermarks — is identical, because
-// what makes an unwind safe has nothing to do with why it happened.
+// Park `marker`, the sentinel the guard compares by identity, and unwind to the
+// SESSION GUARD's frame, not the innermost one `__cajeta_throw` would take: a
+// cell's catch-all must not swallow a stop. Returns when no cell is guarded.
 static void session_unwind_to_guard(void* marker) {
-    // The guard's OWN frame, recorded by the guard. Emphatically not "walk
-    // the chain to its outermost link", which was the first attempt: the
-    // outermost link is not necessarily live. A frame left by an earlier,
-    // completed call has a `jmp_buf` describing a stack that no longer
-    // exists, and longjmping into it faults immediately — which is exactly
-    // what happened, and it happened with all chain repair disabled, which is
-    // how the longjmp itself was identified as the culprit rather than the
-    // bookkeeping around it.
     struct cajeta_exception_frame* outer = __cajeta_session_guard_frame;
     if (!outer) return;
     struct cajeta_exception_frame** excTop = __cajeta_exc_top_ptr();
     if (!*excTop) return;
 
-    // Run the drops the skipped frames own, exactly as __cajeta_throw does on
-    // its way to a catch: an interrupt must not leak what the cell allocated.
+    // Run the drops the skipped frames own, as __cajeta_throw does on its way.
     struct cajeta_drop_entry** dropTop = __cajeta_drop_top_ptr();
     struct cajeta_drop_entry* watermark = outer->drop_watermark;
     while (*dropTop != watermark) {
@@ -272,12 +178,9 @@ static void session_unwind_to_guard(void* marker) {
         if (e->active && e->drop_fn) e->drop_fn(e->obj);
         *dropTop = e->prev;
     }
-    // The unwound frames ran no __cajeta_line_leave / __cajeta_dbg_frame_leave,
-    // so restore both chains to the guard's watermarks — the same repair
-    // __cajeta_throw performs, and for the same reason: a leaked frame makes
-    // every later stack trace and step depth wrong.
+    // The unwound frames ran no line/debug leave; a leaked one skews every trace.
     __cajeta_shadow_set_top(outer->shadow_watermark);
-    __cajeta_prof_instr_set_depth(outer->instr_watermark);   // U10, §3.11
+    __cajeta_prof_instr_set_depth(outer->instr_watermark);
     {
         struct cajeta_dbg_frame** dbgTop = __cajeta_dbg_top_ptr();
         struct cajeta_dbg_frame* mark = outer->dbg_watermark;
@@ -289,62 +192,43 @@ static void session_unwind_to_guard(void* marker) {
         }
     }
     *excTop = outer;
-    // Through the ACCESSOR, never `&sentinel` directly — and the guard reads
-    // it the same way. A global's address is only a reliable identity if
-    // every party sees the same copy, and this runtime is materialized by the
-    // JIT in partitions where an internal global can be duplicated. Going via
-    // the one function symbol makes both sides agree by construction. Getting
-    // this wrong does not misreport the interrupt, it CRASHES: the guard
-    // fails the identity test, decides the sentinel is a Throwable, and
-    // dereferences it.
+    // `marker` came through the ACCESSOR: a failed identity test dereferences it.
     outer->thrown_value = marker;
     longjmp(outer->buf, 1);
 }
 
+// Stop the running cell with the interrupt sentinel.
 void __cajeta_session_interrupt_unwind(void) {
     session_unwind_to_guard(__cajeta_session_interrupt_marker());
 }
 
-// Called from a would-be-UB trap site instead of `llvm.trap`, when the module
-// was compiled for a session. RETURNS NORMALLY when no cell is guarded — the
-// caller then falls through to the ordinary trap, so a program compiled
-// without a session behaves exactly as it did.
+// Called from a would-be-UB trap site instead of `llvm.trap` under a session;
+// `what` is what the host renders. RETURNS NORMALLY when no cell is guarded.
 void __cajeta_session_trap_unwind(const char* what) {
     if (what) g_trap_what = what;
     session_unwind_to_guard(__cajeta_session_trap_marker());
 }
 
-// The guard's captures must be NON-UNWINDING on x86-64 Windows. MSVCRT's
-// longjmp performs a full SEH unwind (RtlUnwindEx) through every frame
-// between the longjmp and the capture whenever the jmp_buf's Frame slot is
-// non-NULL — and mingw's <setjmp.h> setjmp macro captures with a live frame
-// pointer. A cell's throw longjmps from __cajeta_throw across the JIT'd cell
-// frames, whose unwind tables the COFF JIT drops (JitCoffLinking.h
-// dropSehFrames), so that unwind walks unregistered frames and kills the
-// process — KernelProtocolTests.throwingCellRepliesError died with a bare
-// exit 127 on the Windows JIT. `_setjmp(buf, NULL)` is the documented MSVCRT
-// opt-out: a NULL Frame makes longjmp restore registers without unwinding,
-// the same semantics every other platform already has. Codegen's inline
-// try/catch captures make the same choice in ExcFrameSetjmp.h.
+// The guard's captures must be NON-UNWINDING on x86-64 Windows: MSVCRT's longjmp
+// SEH-unwinds to the capture, and the COFF JIT drops the cell frames' unwind
+// tables, so it walks unregistered frames. `_setjmp(buf, NULL)` opts out.
 #if defined(_WIN32) && defined(__x86_64__)
 #define CAJETA_EXC_SETJMP(buf) _setjmp((buf), (void*) 0)
 #else
 #define CAJETA_EXC_SETJMP(buf) setjmp(buf)
 #endif
 
+// Run `entry` under a session-level catch, so a throw escaping the cell lands
+// here instead of exiting the process. Returns NULL when the call completed (its
+// value in *out_value), else the thrown value — a Throwable or a stop sentinel.
 void* __cajeta_session_guard_call(int32_t (*entry)(void), int32_t* out_value) {
-    // Anything read after the longjmp has to survive it: a non-volatile local
-    // modified between setjmp and longjmp is indeterminate, and a parameter
-    // may live in a caller-saved register.
+    // Read after the longjmp: a non-volatile local written before it is indeterminate.
     int32_t (* volatile fn)(void) = entry;
     int32_t* volatile outp = out_value;
     void* volatile scopeMark = __cajeta_scope_save_top();
 
     struct cajeta_exception_frame frame;
     __cajeta_exc_push(&frame);
-    // Publish this frame as the interrupt target while the cell runs, and put
-    // back whatever was there on the way out (nesting stays honest even
-    // though the kernel never nests). U6.
     struct cajeta_exception_frame* volatile priorGuard =
         __cajeta_session_guard_frame;
     __cajeta_session_guard_frame = &frame;
@@ -356,29 +240,16 @@ void* __cajeta_session_guard_call(int32_t (*entry)(void), int32_t* out_value) {
         return NULL;
     }
     __cajeta_session_guard_frame = priorGuard;
-    // Landed from __cajeta_throw's longjmp. It has already unwound the drop
-    // chain to this frame's watermark and restored the line/debug chains; the
-    // value is parked in the frame.
     void* thrown = frame.thrown_value;
     __cajeta_exc_pop();
-    // An INTERRUPT is a sentinel address, not a Throwable — recognized here,
-    // before anything can dereference it. It still needs the drain below (the
-    // cell may have stranded spawned work), so it falls through rather than
-    // returning early.
+    // Recognized before anything can dereference it, but still drained below.
     int interrupted = (thrown == __cajeta_session_interrupt_marker());
-    // A PANIC is not a cell error. The guard is a catch-all, so without this
-    // an UnrecoverableException — reserved for invariant violations — would
-    // be swallowed into a red cell and the session would carry on over a
-    // world it has already been told is broken. Same emit-and-abort the
-    // no-frame path takes (jupyter-kernel 4.3.1).
+    // A PANIC is not a cell error: this catch-all must not swallow one.
     if (!interrupted && __cajeta_is_unrecoverable(thrown)) {
         __cajeta_emit_uncaught(thrown, /*is_unrec=*/1);
         abort();
     }
-    // Join and cancel whatever the throw stranded — the work a CATCHING
-    // Cajeta function does on its way out via __cajeta_scope_exit_to. Under
-    // its own guard, because draining can re-raise a child's trigger, and
-    // that must not reach the process-level uncaught path either.
+    // Join what the throw stranded, guarded: a drain can re-raise a child.
     {
         struct cajeta_exception_frame drain;
         __cajeta_exc_push(&drain);
@@ -390,10 +261,8 @@ void* __cajeta_session_guard_call(int32_t (*entry)(void), int32_t* out_value) {
     return thrown;
 }
 
-// The thrown value's canonical class name, via
-// obj -> vtable -> classObject -> rtti. "" when the value is not a real
-// object (a legacy int throw arrives here as a small integer cast to a
-// pointer, and must not be dereferenced).
+// The thrown value's canonical class name, via obj -> vtable -> classObject ->
+// rtti; "" when the value is not a real object and must not be dereferenced.
 const char* __cajeta_throwable_type(void* v) {
     if (!v || (uintptr_t) v < 4096) return "";
     void* vtable = *(void**) v;
@@ -405,10 +274,8 @@ const char* __cajeta_throwable_type(void* v) {
     return __cajeta_rtti_type_name(rtti);
 }
 
-// Throwable.message into a caller buffer, NUL-terminated. Returns the number
-// of bytes written (0 when there is no message). Same layout walk as the
-// uncaught-throw emitter — Throwable{vtable@0, String message@8} — and the
-// same guards, so a non-Throwable value yields 0 rather than a fault.
+// Throwable.message into `out`, NUL-terminated; returns bytes written, 0 for no
+// message. Walks Throwable{vtable@0, String message@8} with the emitter's guards.
 int32_t __cajeta_throwable_message_into(void* v, char* out, int32_t cap) {
     if (!out || cap <= 0) return 0;
     out[0] = 0;
@@ -433,9 +300,8 @@ int32_t __cajeta_throwable_message_into(void* v, char* out, int32_t cap) {
     return blen;
 }
 
-// How many SEMANTIC frames the throw captured (innermost first). Zero when
-// line-info capture was off — the throwable still carries its type and
-// message, so an error payload is never empty for want of a trace.
+// How many SEMANTIC frames the throw captured (innermost first); zero when
+// line-info capture was off, which is not an error.
 int32_t __cajeta_throwable_frame_count(void* v) {
     pthread_mutex_lock(&__cajeta_trace_mutex);
     struct cajeta_trace_entry* e = __cajeta_trace_table;
@@ -445,9 +311,8 @@ int32_t __cajeta_throwable_frame_count(void* v) {
     return n;
 }
 
-// One frame, as borrowed pointers into the module-lived frame descriptors —
-// valid for the process's life, so the caller may read them after unlocking.
-// Returns 1 on success, 0 when `idx` is out of range.
+// Frame `idx` as borrowed pointers into module-lived descriptors, valid for the
+// process's life. Returns 1, or 0 when `idx` is out of range.
 int32_t __cajeta_throwable_frame(void* v, int32_t idx, const char** type,
                                  const char** method, const char** file,
                                  int32_t* line) {
@@ -468,17 +333,8 @@ int32_t __cajeta_throwable_frame(void* v, int32_t idx, const char** type,
 }
 
 // ---------------------------------------------------------------------
-// notebook-olla-install Unit 2 (spec 2.1, 2.7) — the Packages install
-// bridge.
-//
-// JIT'd `cajeta.session.Packages` calls in here; the host installs the
-// hook. A host with no live session leaves the hook null, and the call
-// reports "no live session" instead of crashing or silently no-opping —
-// the spec 2.7 arm, and the reason the default lives here rather than in
-// the kernel.
-//
-// Single-threaded like the binding registry above: the hook is set on the
-// session thread and called from cell code on that same thread.
+// The Packages install bridge: JIT'd `cajeta.session.Packages` calls in here and
+// the host installs the hook; a null hook reports "no live session", not a no-op.
 
 typedef int32_t (*cajeta_install_hook_fn)(const char* name, int32_t nameLen,
                                           const char* constraint,
@@ -487,18 +343,12 @@ typedef int32_t (*cajeta_install_hook_fn)(const char* name, int32_t nameLen,
                                           char* out, int32_t outCap,
                                           void* ctx);
 
-// DEFINED IN THE HOST, deliberately not here. This file is compiled
-// TWICE: once into the compiler binary, and once (textually, via
-// cajeta_runtime.c) to the bitcode embedded in every JIT session. A static
-// here would give JIT'd cell code its own second copy, so the host's
-// registration would be invisible to the very code that needs it — and the
-// call would report "no live session" from inside a live one. One
-// definition in the host, declared extern here, means both copies address
-// the same object: the JIT resolves these through the process generator.
+// DEFINED IN THE HOST: this file is compiled TWICE (the compiler binary, and
+// every JIT session's bitcode), so a static would give cell code a second copy
+// the host's registration never reaches.
 extern cajeta_install_hook_fn __cajeta_install_hook;
 extern void* __cajeta_install_ctx;
-// The resolved version on success, the failure message on failure. Read
-// back by __cajeta_session_install_message on the very next call.
+// The resolved version on success, the failure message on failure.
 extern char __cajeta_install_out[2048];
 
 extern const char* __cajeta_string_bytes(void* s_v);
@@ -511,8 +361,8 @@ void __cajeta_session_set_install_hook(cajeta_install_hook_fn fn, void* ctx) {
     __cajeta_install_ctx = ctx;
 }
 
-// 0 = installed (out holds the resolved version), non-zero = rejected
-// (out holds the located message).
+// Install a package into the live session: 0 = installed (the buffer holds the
+// resolved version), non-zero = rejected (the buffer holds the message).
 int32_t __cajeta_session_install(void* nameStr, void* conStr, int32_t save) {
     __cajeta_install_out[0] = '\0';
     if (!__cajeta_install_hook) {
@@ -534,9 +384,8 @@ int32_t __cajeta_session_install(void* nameStr, void* conStr, int32_t save) {
                                  __cajeta_install_ctx);
 }
 
-// Wrap the stored text as a fresh String. `donor` supplies the String
-// vtable — a static native has no receiver to take it from, and every
-// caller already holds the `name` argument.
+// Wrap the stored install message as a fresh String; `donor` supplies the String
+// vtable, which a static native has no receiver to take.
 void* __cajeta_session_install_message(void* donor) {
     if (!donor) return 0;
     void* vtable = *(void**) donor;      // vtable is the layout's first field

@@ -1,21 +1,5 @@
-// `sign` — produce a detached ed25519 signature over an
-// archive's bytes. Mirrors the OpenSSL flow that
-// `cajeta archive sign` uses (cli/ArchiveCommands.cpp). See
-// ArchiveManagement.md §8 for the on-disk signature format.
-//
-// Params:
-//   input       (required) path to the file to sign
-//   key-env     OR
-//   key-path    (one required) PEM-encoded ed25519 private key
-//   key-id      (required) opaque identifier stored alongside the
-//               signature; the launcher uses it to look up the
-//               matching public key in the trust store
-//   out         (optional) signature file path; default <input>.sig
-//
-// Outputs:
-//   path        the .sig file
-//   sha256      SHA-256 of the .sig contents (the 64 ed25519 bytes)
-//   key-id      echoed for downstream actions
+// The `sign` action: a detached ed25519 signature over a file's bytes, by the same
+// OpenSSL flow `cajeta archive sign` uses.
 
 #include "cajeta/buildtool/Action.h"
 
@@ -59,6 +43,7 @@ namespace cajeta::buildtool {
         using PkeyPtr  = std::unique_ptr<EVP_PKEY, PkeyFree>;
         using MdCtxPtr = std::unique_ptr<EVP_MD_CTX, MdCtxFree>;
 
+        // Parse a PEM-encoded private key, rejecting anything that is not ed25519.
         llvm::Expected<PkeyPtr> loadPrivateKeyFromPem(const std::string& pemSource) {
             BioPtr bio(BIO_new_mem_buf(pemSource.data(),
                                        static_cast<int>(pemSource.size())));
@@ -73,6 +58,7 @@ namespace cajeta::buildtool {
             return pkey;
         }
 
+        // SHA-256 of `bytes`, rendered as "sha256:<hex>".
         std::string sha256Hex(const std::vector<uint8_t>& bytes) {
             unsigned char digest[SHA256_DIGEST_LENGTH];
             EVP_MD_CTX* ctx = EVP_MD_CTX_new();
@@ -105,6 +91,9 @@ namespace cajeta::buildtool {
     public:
         std::string name() const override { return "sign"; }
 
+        // Requires `input` and `key-id` plus exactly one of `key-env` / `key-path`;
+        // `out` defaults to `<input>.sig`. Reports back the .sig path, its sha256
+        // and the key-id, for downstream actions.
         llvm::Expected<ActionResult> run(
             const llvm::json::Object& params,
             TaskContext& /*ctx*/) const override {
@@ -114,8 +103,6 @@ namespace cajeta::buildtool {
             auto keyId = params.getString("key-id");
             if (!keyId) return err("sign: missing required 'key-id'");
 
-            // Key source: either key-env (read from env var) or
-            // key-path (read from disk).
             std::string pem;
             if (auto envName = params.getString("key-env")) {
                 const char* v = std::getenv(envName->str().c_str());
@@ -140,14 +127,10 @@ namespace cajeta::buildtool {
 
             auto archiveBytes = readFile(input->str());
             if (archiveBytes.empty()) {
-                // Distinguish empty file from unreadable; check
-                // existence-and-size.
                 std::ifstream in(input->str(), std::ios::binary);
                 if (!in) {
                     return err("sign: cannot open input '" + input->str() + "'");
                 }
-                // Empty file is legal; sign produces a signature
-                // over the empty byte string.
             }
 
             MdCtxPtr ctx(EVP_MD_CTX_new());
@@ -172,7 +155,6 @@ namespace cajeta::buildtool {
             }
             sig.resize(sigLen);
 
-            // Output path: explicit `out` or default to <input>.sig.
             std::string outPath;
             if (auto v = params.getString("out")) outPath = v->str();
             else outPath = input->str() + ".sig";
@@ -187,13 +169,8 @@ namespace cajeta::buildtool {
                 return err("sign: short write to '" + outPath + "'");
             }
 
-            // Phase 10: write a key-id sidecar so the launcher's
-            // signature-verify path can resolve the matching public
-            // key without out-of-band metadata. The sidecar lives
-            // alongside the .sig file — `<archive>.sig.keyid` when
-            // `out` defaults to `<archive>.sig`. When the caller
-            // overrides `out`, the sidecar lands next to whatever
-            // was named.
+            // The key-id sidecar beside the signature, `<out>.keyid`, is how the
+            // launcher resolves the public key without out-of-band metadata.
             {
                 std::ofstream kidOut(outPath + ".keyid", std::ios::trunc);
                 if (kidOut) kidOut << keyId->str() << "\n";

@@ -1,22 +1,6 @@
-// `build` — wrap the cajeta compiler binary. Produces one of
-// three first-class artifacts (exploded-ir, archived-ir, or
-// executable) per the `emit` param. See BuildTool.md Action
-// catalog "The build action in detail" subsection.
-//
-// Phase 5a implementation: fork+exec the cajeta binary, translate
-// declarative action params into the compiler's CLI flag set,
-// capture the output path. IR cache + custom-flavor map
-// composition land in Phase 5b.
-//
-// Entry-method resolution precedence:
-//   1. `entry-method` param on the action
-//   2. `binary` param → settings.build.binaries[name].entry-method
-//   3. settings.build.entry-method (manifest default)
-//   4. None of the above + emit=executable → hard error
-//
-// Default emit:
-//   - entry-method resolved → executable
-//   - otherwise              → archived-ir
+// The `build` action: fork+exec the cajeta compiler binary, translating
+// declarative action params into its CLI flag set. Emits exploded-ir,
+// archived-ir or an executable per the `emit` param.
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/DiagnosticFormat.h"
@@ -75,19 +59,15 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Find the cajeta binary path. Prefer the running executable; fall
-        // back to "cajeta" on PATH otherwise.
+        /// The cajeta binary to exec: the running executable when its path is
+        /// known, else "cajeta" resolved on PATH.
         std::string findCajetaBinary() {
             std::string self = cajeta::util::runningExecutablePath();
             return self.empty() ? std::string("cajeta") : self;
         }
 
-        // resolveEntryMethod now lives in OutputLayout.cpp — the default emit
-        // mode depends on it, and emit is what picks the artifact's home, so
-        // `cajeta artifact-path` needs the identical answer.
-
-        // Compute SHA-256 of a file's contents. Returns empty on
-        // error (the caller can decide whether to surface it).
+        /// Compute SHA-256 of a file's contents, formatted "sha256:<hex>".
+        /// Returns an empty string on any read error.
         std::string sha256OfFile(const std::string& path) {
             std::ifstream in(path, std::ios::binary);
             if (!in) return "";
@@ -118,17 +98,16 @@ namespace cajeta::buildtool {
     public:
         std::string name() const override { return "build"; }
 
+        /// Run one `build`: resolve entry/emit/flavor/target from `params` and
+        /// the manifest, consult the artifact and IR caches, then exec the
+        /// compiler. Reports format, flavor, artifact path, size and digest.
         llvm::Expected<ActionResult> run(
             const llvm::json::Object& params,
             TaskContext& ctx) const override {
 
-            // Resolve entry method.
             auto entry = resolveEntryMethod(params, ctx.manifest());
             if (!entry) return entry.takeError();
 
-            // Resolve emit. Defaults: executable when entry-method
-            // resolved; archived-ir otherwise. exploded-ir always
-            // explicit.
             auto emitOr = resolveEmitMode(params, ctx.manifest());
             if (!emitOr) return emitOr.takeError();
             std::string emit = *emitOr;
@@ -140,13 +119,6 @@ namespace cajeta::buildtool {
                            "or settings.build.entry-method");
             }
 
-            // Resolve flavor. Phase 5b: string form (built-in or
-            // custom-flavor name) OR object form
-            // ({base, ...overrides}). resolveFlavor walks the chain,
-            // detects cycles, and yields (effective base, override
-            // map). Overrides are honored by the discriminator (so a
-            // custom-flavor change re-keys the cache); compiler-side
-            // flag emission for them lands in Phase 8.
             std::string flavor;
             llvm::json::Object flavorOverrides;
             {
@@ -166,16 +138,12 @@ namespace cajeta::buildtool {
                 flavorOverrides = std::move(resolved->overrides);
             }
 
-            // Resolve target.
             std::string target = "host";
             if (auto v = params.getString("target")) target = v->str();
 
-            // Resolve profile (compile-time @Profile gating).
             std::string profile;
             if (auto v = params.getString("profile")) profile = v->str();
 
-            // Resolve source / archive roots from settings.build (or
-            // defaults).
             namespace fs = std::filesystem;
             std::string sourceRoot = "src/main/cajeta";
             if (ctx.manifest()) {
@@ -183,19 +151,12 @@ namespace cajeta::buildtool {
                 if (!sb) return sb.takeError();
                 if (sb->sourceRoot) sourceRoot = *sb->sourceRoot;
             }
-            // The four output roots — settings.output (spec §3.3) over
-            // settings.build.output-dir, validated on LOAD so a bad value
-            // stops the build here rather than at first write. Resolved by
-            // the shared module so `cajeta artifact-path` reports exactly
-            // where this build writes.
+            // Shared with `cajeta artifact-path`, so both report one answer.
             auto layoutOr = resolveOutputLayout(ctx.manifest());
             if (!layoutOr) return layoutOr.takeError();
             const OutputLayout layout = std::move(*layoutOr);
             std::string outputDir = layout.root.string();
 
-            // Decide archive-root + output-path per emit. The
-            // compiler binary takes <entry> <source-root> <archive-root>
-            // positionally; -o overrides the output filename.
             fs::path archiveRoot;
             fs::path outputPath;
             std::string compilerEmit;
@@ -207,25 +168,9 @@ namespace cajeta::buildtool {
                                       ? ctx.manifest()->details.name
                                       : "out";
 
-            // build-output-layout §3.1 separates the two roles that used to
-            // share one directory. `archiveRoot` is the ARTIFACT home — where
-            // the deliverable lands and what the task reports. `compilerOut`
-            // is the INTERMEDIATES home — the compiler's third positional,
-            // where it writes per-class objects, bitcode and staging.
-            //
-            // They were the same path, so an exe build left its objects
-            // beside the binary. Beyond the tidiness, that is what made
-            // `details.name` equal to a top-level package name unlinkable:
-            // the exe `build/exe/t` and the object tree `build/exe/t/` are
-            // the same name, and the linker reported "cannot open output
-            // file build/exe/t: Is a directory". Separating the roles removes
-            // the shared parent, which is what cajeta-five's
-            // buildtool-exe-package-name-collision spec predicted would fix
-            // it outright.
-            //
-            // Exploded IR is the exception on purpose: there the emitted IR
-            // tree IS the deliverable, so its artifact home and its output
-            // directory are legitimately one path.
+            // `archiveRoot` is the artifact home, `compilerOut` the compiler's
+            // intermediates home; they must stay distinct or the exe collides
+            // with its own object tree. Exploded IR is one path by design.
             fs::path compilerOut;
             {
                 auto locOr = resolveArtifactLocation(layout, emit, detailsName,
@@ -239,13 +184,10 @@ namespace cajeta::buildtool {
             else if (emit == "archived-ir") { compilerEmit = "cja"; formatLabel = "archived-ir"; }
             else                            { compilerEmit = "exe"; formatLabel = "executable"; }
 
-            // Override output path if the user specified one.
             if (auto v = params.getString("output-path")) {
                 outputPath = v->str();
             }
 
-            // Ensure both homes exist — the artifact's and the
-            // intermediates'. They are the same path only for exploded IR.
             std::error_code ec;
             fs::create_directories(archiveRoot, ec);
             if (ec) {
@@ -258,21 +200,15 @@ namespace cajeta::buildtool {
                            "': " + ec.message());
             }
 
-            // Build the compiler argv. We invoke the same binary
-            // (/proc/self/exe) — the dispatcher's
-            // looksLikeTaskInvocation correctly falls through because
-            // argv[1] is `--mode=...` (starts with `-`) which means
-            // the compiler frontend takes over.
+            // Re-exec of this same binary: the task dispatcher falls through
+            // to the compiler frontend because argv[1] starts with `-`.
             std::string cajetaBin = findCajetaBinary();
 
             std::vector<std::string> argv;
             argv.push_back(cajetaBin);
             argv.push_back("--mode=" + flavor);
             argv.push_back("--emit=" + compilerEmit);
-            // Forward the diagnostic format (json-diagnostics-spec §2): output-only,
-            // so it's kept out of the reproducibility flag set (identical artifact
-            // either way) and just makes the child emit NDJSON on stderr, which
-            // passes straight through to our stderr for the IDE plugin to consume.
+            // Output-only: deliberately not part of the reproducibility set.
             if (diagnosticFormat() == DiagFormat::Json) {
                 argv.push_back("--diag-format=json");
             }
@@ -283,10 +219,6 @@ namespace cajeta::buildtool {
                 argv.push_back("--profile=" + profile);
             }
 
-            // Phase 8: emit the effective property bundle as
-            // `--<key>=<value>` flags. The built-in defaults come from
-            // builtinFlavorProperties; overrides (custom-flavor chain
-            // + inline map) win.
             {
                 ResolvedFlavor rf;
                 rf.base = flavor;
@@ -298,22 +230,15 @@ namespace cajeta::buildtool {
                 }
             }
 
-            // Resolve transitive dependencies (Phase 6b). The manifest's
-            // own directory is the project root — that's where the
-            // local artifact cache lives. Skip cleanly when no deps
-            // declared; surface any resolver error as a build failure.
             if (ctx.manifest()) {
                 std::string projectRoot =
                     projectRootFromManifest(*ctx.manifest());
                 auto graph = resolveProjectGraph(
                     *ctx.manifest(), projectRoot);
                 if (!graph) return graph.takeError();
-                // Java's convention (dependency-tree spec §8): a cycle
-                // through published artifacts is tolerated — the classpath
-                // is flat, and the project owner cannot fix someone else's
-                // manifest — but it is named, once per cycle, with the same
-                // chain `cajeta deps` prints. Workspace-member cycles are
-                // refused elsewhere (Workspace.cpp, topologicallySortMembers).
+                // A cycle through published artifacts warns rather than fails:
+                // the classpath is flat and the owner cannot fix someone else's
+                // manifest. Workspace-member cycles are refused in Workspace.cpp.
                 for (const auto& cyc : findDependencyCycles(
                          ctx.manifest()->details.name, *graph)) {
                     llvm::errs() << "warning: dependency cycle detected: "
@@ -335,9 +260,8 @@ namespace cajeta::buildtool {
                 argv.push_back(outputPath.string());
             }
 
-            // Phase 11: append the reproducibility flag set. Order
-            // is fixed (vocabulary-order, not host-locale-dependent)
-            // so the argv we emit hashes the same across hosts.
+            // Fixed vocabulary order, not host-locale order, so the emitted
+            // argv hashes identically across hosts.
             {
                 std::string projectRootForRepro =
                     ctx.manifest() ? projectRootFromManifest(*ctx.manifest())
@@ -348,26 +272,16 @@ namespace cajeta::buildtool {
                     argv.push_back(std::move(f));
                 }
             }
-            // Point skill embedding (skill-discovery D.3) at the PROJECT root
-            // (where cajeta.json and the hand-authored skills/ dir live) — the
-            // positional source root below is the deeper src/main/cajeta, which
-            // has no skills/.
+            // Skill embedding reads the project root, not the positional source
+            // root below, which is deeper and holds no skills/.
             if (ctx.manifest()) {
                 argv.push_back("--skill-root=" +
                                projectRootFromManifest(*ctx.manifest()));
             }
 
-            // Incremental compilation (incremental-compilation plan Phase 4;
-            // DEFAULT-ON per Phase 5 — `incremental: false` opts out).
-            // Authors a cache-manifest-v1 for the compiler: per-source
-            // transitive digest → IrCache slot; clean when both slots exist.
-            // The discriminator comes from the compiler itself
-            // (--print-cache-discriminator probe on the exact flag set built
-            // above) so flag resolution is never re-derived here.
-            // Layered in FRONT (Phase 0): the whole-artifact cache — same
-            // digests folded into one whole-build key; a hit re-publishes
-            // the cached artifact without any compile at all.
-            // `no-cache: true` bypasses both layers.
+            // Two layers: a whole-artifact cache in front of the per-source IR
+            // cache. The discriminator is probed from the compiler itself, so
+            // flag resolution is never re-derived here.
             bool noCache = false;
             if (auto v = params.getBoolean("no-cache")) noCache = *v;
             bool incremental = !noCache;
@@ -399,9 +313,6 @@ namespace cajeta::buildtool {
                     probeOk = !probeOut.empty();
                 }
                 if (!probeOk) {
-                    // Explicitly requested → fail loud. Default-on → a full
-                    // (non-incremental) build is always sound; degrade so
-                    // e.g. an older toolchain on PATH can't brick builds.
                     if (incrementalExplicit) {
                         return err("build: cache-discriminator probe failed"
                                    " (--print-cache-discriminator)");
@@ -412,7 +323,7 @@ namespace cajeta::buildtool {
                     incremental = false;
                 }
             }
-            fs::path artifactSlot;   // set when the whole-artifact layer is live
+            fs::path artifactSlot;
             if (incremental) {
                 SourceDigestRegistry digests({sourceRoot});
                 std::vector<std::pair<std::string, std::string>> perSource;
@@ -430,15 +341,9 @@ namespace cajeta::buildtool {
                 sourceCount = static_cast<int>(perSource.size());
                 std::sort(perSource.begin(), perSource.end());
 
-                // Non-source inputs the archive EMBEDS. `skills/` is authored
-                // beside cajeta.json, outside the positional source root, so
-                // the .cajeta walk above never sees it — editing a skill left
-                // the key unchanged and the cache re-published an artifact
-                // carrying the OLD skill, byte-identical and silently stale.
-                // Documentation that ships inside the artifact is a build
-                // input like any other. (The generated skills/index.json is
-                // derived from these files' front matter, so digesting the
-                // sources covers it.)
+                // Embedded resources sit beside cajeta.json, outside the
+                // positional source root, so the walk above misses them; their
+                // digests are what keep an edited skill from staying cached.
                 std::vector<std::pair<std::string, std::string>> perResource;
                 if (ctx.manifest()) {
                     fs::path skillRoot =
@@ -461,12 +366,9 @@ namespace cajeta::buildtool {
                 }
                 std::sort(perResource.begin(), perResource.end());
 
-                // Phase 0 whole-artifact layer — single-file artifacts only
-                // (exe/cja); exploded-ir has no one artifact to re-publish.
-                // Key = discriminator ⊕ entry ⊕ every (path, digest) over
-                // sources AND embedded resources: the discriminator already
-                // folds flags/emit/target/profile/classpath, but NOT the entry
-                // method (positional) and not what gets embedded.
+                // Key = discriminator ⊕ entry ⊕ every (path, digest): the
+                // discriminator folds flags/emit/target/profile/classpath, but
+                // not the positional entry method and not what gets embedded.
                 if (!outputPath.empty()) {
                     std::string wholeInput = probeOut;
                     wholeInput.push_back('\0');
@@ -475,8 +377,7 @@ namespace cajeta::buildtool {
                     for (auto& [rel, digest] : perSource) {
                         wholeInput += rel + "=" + digest + "\n";
                     }
-                    // Separated from the source block so a source path can
-                    // never collide with a resource path in the key.
+                    // NUL-separated so a source path cannot collide with one.
                     wholeInput.push_back('\0');
                     for (auto& [rel, digest] : perResource) {
                         wholeInput += rel + "=" + digest + "\n";
@@ -498,15 +399,10 @@ namespace cajeta::buildtool {
                                 fs::perms::owner_exec | fs::perms::group_exec
                                     | fs::perms::others_exec,
                                 fs::perm_options::add, ec2);
-                            // Direct line (not just an action output): task
-                            // output echo depends on the task DECLARING
-                            // outputs, and the skip must be visible always.
                             llvm::outs() << "[cache] hit — re-published "
                                          << outputPath.string() << "\n";
-                            // A cached build spawns no compiler, so it emits no
-                            // phase records — the IDE would show an instant green
-                            // check under an empty tree. Say, structurally, that
-                            // the output came from cache.
+                            // A cached build spawns no compiler and so emits no
+                            // phase records; say structurally where it came from.
                             if (diagnosticFormat() == DiagFormat::Json) {
                                 emitJsonCacheHit(outputPath.string());
                             }
@@ -524,7 +420,6 @@ namespace cajeta::buildtool {
                                 fs::file_size(outputPath, szEc));
                             return hit;
                         }
-                        // Unreadable slot → fall through to a real build.
                     }
                 }
 
@@ -532,9 +427,8 @@ namespace cajeta::buildtool {
                 for (auto& [rel, digest] : perSource) {
                     std::string bcSlot = fs::absolute(
                         irCache.keyFor(probeOut, digest)).string();
-                    // Obligations + native object ride beside the .bc under
-                    // the same key (the .o slot is Phase 6-alt: clean modules
-                    // skip target lowering when it's populated).
+                    // Obligations and native object ride beside the .bc under
+                    // one key; a clean module skips lowering when .o is there.
                     std::string stem = bcSlot.substr(0, bcSlot.size() - 3);
                     std::string oblSlot = stem + ".obligations";
                     bool clean = fs::exists(bcSlot) && fs::exists(oblSlot);
@@ -567,16 +461,12 @@ namespace cajeta::buildtool {
                                + fs::absolute(manifestPath).string());
             }
 
-            // Positional args: <entry-method> <source-root> <archive-root>
+            // Positionals: <entry-method> <source-root> <output-dir>; the third
+            // is where intermediates go, not the deliverable (`-o` set that).
             argv.push_back(entry->empty() ? std::string("*") : *entry);
             argv.push_back(sourceRoot);
-            // The compiler's third positional is its OUTPUT DIRECTORY, i.e.
-            // where intermediates go — not where the deliverable lands, which
-            // `-o` above already set.
             argv.push_back(compilerOut.string());
 
-            // Run the compiler. Its stdout/stderr pass through to the parent
-            // terminal so the developer sees the output.
             SubprocessOptions so;
             so.argv = argv;
             SubprocessResult res = runSubprocess(so);
@@ -590,8 +480,6 @@ namespace cajeta::buildtool {
                            std::to_string(exitCode));
             }
 
-            // Phase 0: record (whole digest → artifact) so the next
-            // no-change build re-publishes without compiling.
             if (!artifactSlot.empty() && !outputPath.empty()) {
                 std::error_code ec3;
                 if (fs::exists(outputPath, ec3)) {
@@ -604,9 +492,6 @@ namespace cajeta::buildtool {
                 }
             }
 
-            // Post-build cache eviction per settings.build.cache. Runs only
-            // after a successful incremental build (the compiler just wrote
-            // fresh slots; oldest-first LRU trims to policy).
             if (incremental && ctx.manifest()) {
                 auto sb = parseSettingsBuild(*ctx.manifest());
                 if (!sb) return sb.takeError();
@@ -620,7 +505,6 @@ namespace cajeta::buildtool {
                 }
             }
 
-            // Capture output.
             ActionResult r;
             r.outputs["format"] = formatLabel;
             r.outputs["flavor"] = flavor;
@@ -638,7 +522,6 @@ namespace cajeta::buildtool {
                         fs::file_size(outputPath, ec2));
                 }
             } else {
-                // exploded-ir — path points at the directory.
                 r.outputs["path"] = archiveRoot.string();
             }
             return r;

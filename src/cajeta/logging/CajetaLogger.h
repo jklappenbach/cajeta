@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 11/6/22.
-//
+// CajetaLogger - glog-backed diagnostics keyed to a parser context and error id.
 
 #pragma once
 

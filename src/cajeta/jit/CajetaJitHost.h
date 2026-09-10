@@ -1,14 +1,7 @@
-//
-// In-process JIT host for the `cajeta` binary. Compiles a Cajeta project
-// (every .cajeta under a source root) to in-memory LLVM IR, merges the
-// embedded runtime + stdlib, builds an LLJIT, and runs a chosen static
-// no-arg entry method inside this process.
-//
-// This productizes the proven pipeline from test/jit/JitTestHelper.cpp into a
-// reusable component. The debugger (`cajeta dap`, future) drives the same host
-// so breakpoints can park the executing fiber in-process. CP1 of the debugger
-// plan: prove the host JIT-runs a program to completion.
-//
+// In-process JIT host for the `cajeta` binary: compiles a project to in-memory
+// IR, merges the embedded runtime + stdlib, builds an LLJIT and runs a static
+// no-arg entry in this process. `cajeta dap` drives the same host.
+
 #pragma once
 
 #include "cajeta/xpu/XpuTarget.h"
@@ -28,71 +21,35 @@ namespace llvm { class DataLayout; }
 namespace cajeta::jit {
 
     struct JitRunOptions {
-        // Directory whose .cajeta files form the compilation unit. Each file's
-        // path-derived package must match its `package` declaration (the normal
-        // compiler convention).
         std::string sourceRoot;
-        // Entry method in dotted `package.Class.method` form. Must be a static,
-        // parameter-less method.
+        // Static, parameter-less entry, dotted `package.Class.method`.
         std::string entryMethod;
-        // Program arguments (reserved; not yet forwarded to the entry, which is
-        // parameter-less for now).
-        std::vector<std::string> programArgs;
+        std::vector<std::string> programArgs;   // reserved; not yet forwarded
         // Reserved for CP2+: emit __cajeta_dbg_safepoint polls + debug frames.
         bool debugInfo = false;
-        // XPU backends to bundle, from `--xpu-backend=<list>`. Empty means
-        // host-only: @Kernel launches then have NO backend to dispatch to.
-        // Before this existed jit-run ignored the flag entirely and a launch
-        // silently no-op'd, leaving every output buffer zero with only a
-        // warning on stderr (threaded-forward-path 8.8).
+        // XPU backends to bundle; empty = host-only, so a @Kernel launch no-ops.
         std::vector<cajeta::xpu::Backend> xpuBackends;
-        // Device arch override for the bundled backend(s).
-        std::string xpuArch;
-        // Resident-world mode (resident-debug-server 4.2.1): reuse the
-        // primed stdlib front-end (StdlibReuseCore) across builds in this
-        // process. Set by the DAP server when the launch request asks;
-        // one-shot paths (jit-run) leave it off and keep full isolation.
+        std::string xpuArch;   // device arch override for those backends
+        // Reuse this process's primed stdlib front-end instead of isolating.
         bool resident = false;
-        // Dependency archives (`.cja`) whose ClassSource entries are ingested
-        // before user sources are parsed — the JIT equivalent of the CLI's
-        // --classpath. Without these a debug launch of a project that declares
-        // dependencies fails to resolve their types ("unresolved type
-        // 'Logger'"), because the JIT builds its modules by hand and never ran
-        // ingestClasspath. Empty = no dependencies, today's behavior.
+        // Dependency `.cja` archives ingested first: the JIT's --classpath.
         std::vector<std::string> classpath;
-        // DI profile for @Profile-selected providers. Empty = the AOT default
-        // ("prod"), so a debug launch resolves the same graph `cajeta build`
-        // does. The JIT previously hardcoded "debug", which no provider
-        // declares — every project with DI components failed to launch.
+        // DI profile for @Profile providers; empty = the AOT default, "prod".
         std::string profile;
-        // Whole-program JIT cache root (fast-debug-launch 4.2.1). Non-empty
-        // enables the cache: a slot keyed on compiler version+flags+entry+
-        // source digests holds the MERGED program bitcode + sidecars, and a
-        // launch whose key matches loads it without constructing a Compiler.
-        // Empty = today's full compile, unconditionally.
+        // Whole-program JIT cache root: a slot keyed on compiler version, flags,
+        // entry and source digests loads without constructing a Compiler.
         std::string cacheDir;
-        // script-units U6 (`cajeta run`): compile exactly this ONE file (a
-        // script unit — or any unit whose synthesized/declared entry is
-        // `__cajeta_script_entry`) instead of walking sourceRoot; entry
-        // lookup switches to the script-entry suffix, and the host drops
-        // session bindings after the entry returns. Empty = normal mode.
+        // `cajeta run`: compile this ONE file instead of walking sourceRoot and
+        // look the entry up by the script-entry suffix. Empty = normal mode.
         std::string scriptFile;
-        // Optional build-progress callback (fast-debug-launch 1.2.2). Invoked
-        // from the calling thread at phase boundaries — phase is one of
-        // "collect", "parse", "codegen", "finalize", "merge", "jit" — and once
-        // per source during "parse" with detail = the source's root-relative
-        // path and current/total = 1-based source counts. Boundary events
-        // carry current = total = 0. Unset = no calls, no behavior change.
+        // Build progress on the calling thread: phase boundaries carry 0/0,
+        // per-source "parse" events 1-based counts.
         std::function<void(const std::string& phase, const std::string& detail,
                            int current, int total)> onProgress;
     };
 
-    // Wall-clock breakdown of one buildJit run (fast-debug-launch 1.2.1).
-    // The named phases are disjoint segments of the same interval, so their
-    // sum never exceeds totalSeconds (loop bookkeeping between segments is
-    // deliberately unattributed). Codegen is split by module owner: the one
-    // process-wide stdlib module vs everything else — the split that decides
-    // whether stdlib cache slots (plan Unit 7) are worth building.
+    // Wall-clock breakdown of one buildJit run. The named phases are disjoint
+    // segments of one interval, so their sum never exceeds totalSeconds.
     struct JitBuildPhases {
         double collectSeconds = 0;        // fs walk + compiler setup + prescan
         double parseSeconds = 0;          // per-source parse (incl. lazy stdlib)
@@ -103,9 +60,7 @@ namespace cajeta::jit {
         double jitSeconds = 0;            // verify + LLJIT build/initialize
         double totalSeconds = 0;          // whole buildJit wall time
 
-        // Sub-phase splits (fast-debug-launch 7.2.1) — each a SUBSET of the
-        // parent segment above, measured inside it. They locate the
-        // edit-relaunch cost the Stage-B rescope targets.
+        // Each a SUBSET of a segment above, measured inside it.
         double parseStdlibSeconds = 0;    // ensureStdlibModule + lazy pkg parses
         double jitSerializeSeconds = 0;   // WriteBitcodeToFile (cold only)
         double jitReparseSeconds = 0;     // parseBitcodeFile round-trip/load
@@ -113,81 +68,52 @@ namespace cajeta::jit {
     };
 
     // Optional diagnostics filled by runJit when a non-null result is passed.
-    // Used by the debugger TDD harness to verify safepoint emission/execution.
     struct JitRunResult {
-        // __cajeta_dbg_safepoint call sites emitted INSIDE the entry function
-        // (static count from the IR — deterministic, one per statement).
+        // Safepoint call sites emitted inside the entry: a static IR count.
         int entrySafepointsEmitted = 0;
-        // __cajeta_dbg_safepoint calls EXECUTED during the entry's run (the JIT
-        // module's counter, reset immediately before invoking the entry so it
-        // measures only the entry's execution, not global ctors).
+        // Safepoints EXECUTED by the entry; global ctors are not counted.
         long safepointsExecuted = 0;
-        // Build-phase wall-clock breakdown (fast-debug-launch 1.2.1).
         JitBuildPhases phases;
-        // True when this launch was served from the whole-program cache slot
-        // (fast-debug-launch 4.1.1) — no Compiler was constructed.
+        // Served from the whole-program cache slot; no Compiler was built.
         bool cacheHit = false;
-        // True when EVERY module materialized from the content-addressed
-        // object pool (fast-debug-launch 6.1.1) — no instruction selection.
         bool objectCacheHit = false;
-        // Per-module delivery counters (resident-debug-server 2.1.3):
-        // objects served from the pool vs compiled this launch. Zero when
-        // cacheDir is unset (no pools).
+        // Objects served from the pool vs compiled here; both 0 without cacheDir.
         int moduleObjectsServed = 0;
         int moduleObjectsCompiled = 0;
-        // xpu-tile-manifest §12.4 (Unit 2.2.2): the kernel manifests the
-        // launch embedded into the lowered module, as the JIT-side in-memory
-        // record. Empty for a host-only run or a cache hit (the cached module
-        // still carries them in its constant data; the runtime serves those).
+        // Kernel manifests embedded into the lowered module; empty for a
+        // host-only run, and on a cache hit the runtime serves the cached copy.
         std::vector<cajeta::xpu::KernelManifest> kernelManifests;
     };
 
-    // Compile + JIT + run. Returns the process-style exit code (0 on success,
-    // non-zero on a compile/JIT/lookup failure). Diagnostics go to stderr.
-    // When `result` is non-null it is populated (see JitRunResult).
+    // Compile + JIT + run, returning a process exit code (non-zero on a
+    // compile/JIT/lookup failure); fills `result` when non-null.
     int runJit(const JitRunOptions& opts, JitRunResult* result = nullptr);
 
-    // Convert a dotted `package.Class.method` entry into the cajeta-mangled
-    // function-name prefix `package.Class::method` (the IR appends the
-    // parameter list in parentheses). Returns "" when `dotted` has no trailing
-    // `.method` segment. Pure; exposed for unit testing.
+    // Convert a dotted `package.Class.method` entry into the mangled prefix
+    // `package.Class::method`; "" when there is no trailing `.method`.
     std::string entryTargetFromDotted(const std::string& dotted);
 
-    // CLI entry: `cajeta jit-run <sourceRoot> <entryMethod> [programArgs...]`.
-    // A developer/diagnostic verb that exercises the JIT host headlessly; the
-    // full `cajeta dap` server (later) reuses runJit().
+    // CLI entry: `cajeta jit-run <sourceRoot> <entryMethod> [args...]`.
     int dispatchJitRun(int argc, const char* argv[]);
 
-    // CLI entry: `cajeta run [flags] <file>.cajeta [args...]` (script-units
-    // spec §7). Compiles the file as a script unit, runs it as a one-unit
-    // session under the JIT host, drops session bindings at exit. A
-    // `cajeta.json` in an ancestor directory supplies the classpath (its
-    // resolved manifest dependencies); standalone otherwise.
+    // CLI entry: `cajeta run [flags] <file>.cajeta [args...]`, one script unit
+    // as a session; an ancestor `cajeta.json` supplies the classpath.
     int dispatchRun(int argc, const char* argv[]);
 
     // --- Debug sessions (CP3) ---------------------------------------------
-    // A source-line breakpoint, matched against emitted safepoints by file
-    // BASENAME + line (so an absolute compiled path matches a bare file name).
+    // A source-line breakpoint, matched to safepoints by file BASENAME + line.
     struct Breakpoint {
         std::string file;   // e.g. "Calc.cajeta"
         int line = 0;
     };
 
-    // Every emitted safepoint whose file BASENAME + line match `bp` — the
-    // locations startDebugSession would arm for it. Empty means the breakpoint
-    // cannot bind: no statement was compiled at that line of that file, so the
-    // program can never stop there. Only meaningful once a session has been
-    // built (the loc table is populated by the compile). Exposed so the DAP
-    // server can answer "why didn't it stop?" instead of leaving the IDE with
-    // a breakpoint that looks armed. Reads the global loc table.
+    // The safepoint locations startDebugSession would arm for `bp`; empty means
+    // it cannot bind. Reads the global loc table, populated by a compile.
     std::vector<int32_t> matchingLocIds(const Breakpoint& bp);
 
-    // A running debug session: the program is compiled with --debug-info,
-    // breakpoints are armed, and the entry runs on a BACKGROUND thread wired to
-    // an in-process DebugController. The caller (the DAP server, or a test)
-    // drives controller().waitForStop()/resume() from another thread, then
-    // join()s for the exit code. The session keeps the Compiler + LLJIT alive
-    // for the program's lifetime. CP4's `cajeta dap` server is built on this.
+    // A running debug session: the entry runs on a BACKGROUND thread, so the
+    // caller drives controller().waitForStop()/resume() from another thread and
+    // join()s for the exit code. Keeps the Compiler + LLJIT alive meanwhile.
     class JitDebugSession {
     public:
         struct Impl;
@@ -196,63 +122,38 @@ namespace cajeta::jit {
         JitDebugSession(const JitDebugSession&) = delete;
         JitDebugSession& operator=(const JitDebugSession&) = delete;
 
-        // The controller driving stop/resume. Stable address for the program's
-        // lifetime. Arm/disarm + waitForStop/resume go through here.
+        // The stop/resume controller; its address is stable for the run.
         cajeta::dbg::DebugController& controller();
 
-        // The JIT's DataLayout — the layout the running program's memory uses.
-        // ValueInspector decodes stopped-state values against this
-        // (debugger-variable-inspection §1.5). Valid for the session's life.
+        // The layout the running program's memory uses, for decoding values.
         const llvm::DataLayout& dataLayout() const;
 
-        // Per-session symbol resolution for the debug type table
-        // (runtime-type-inspection Unit 2): every vtable/static symbol the
-        // table carries, resolved to this run's addresses once at launch.
-        // Empty when the table is (e.g. -g off). Valid for the session's life.
+        // The debug type table's symbols, resolved to this run's addresses.
         const cajeta::dbg::ResolvedTypeSymbols& resolvedTypeSymbols() const;
 
-        // True once the program thread has finished.
         bool isFinished() const;
 
-        // Join the program thread and return its exit code (an int32 entry's
-        // return value, or 0 for a void entry). Idempotent.
+        // Join the program thread for its exit code, 0 for a void entry.
         int join();
 
-        // Debugger CP6f-2b: a snapshot of one live fiber from the runtime's
-        // fiber registry (registered at spawn, removed when the carrier frees a
-        // finished fiber). Read while the program is parked at a breakpoint.
+        // One live fiber, read while the program is parked at a breakpoint.
         struct FiberSnapshot {
             int id;          // stable per-fiber dbg id (1, 2, 3, ...)
-            void* frameTop;  // head of this fiber's debug frame chain
-                             // (feed to DebugVars::walkFrames)
+            void* frameTop;  // head of the fiber's debug frame chain
             int state;       // cajeta_fiber_state enum value
         };
 
-        // Enumerate live fibers from the JIT module's registry. The registry is
-        // populated by the JIT'd program (the embedded-bitcode runtime copy),
-        // so this resolves the __cajeta_dbg_fiber_* accessors via jit->lookup
-        // rather than the host's native runtime copy (whose registry is empty).
-        // Returns empty if the symbols aren't found. Safe to call while parked.
+        // Live fibers from the JIT module's registry: only the JIT'd program
+        // populates it, so the accessors resolve through jit->lookup.
         std::vector<FiberSnapshot> liveFibers();
 
     private:
         std::unique_ptr<Impl> impl_;
     };
 
-    // Start a debug session. Compiles `opts.sourceRoot` (debug-info forced on),
-    // arms `breakpoints` (and break-on-throw when `armExceptions`), installs the
-    // handlers, and launches the entry on a background thread. Arming happens
-    // BEFORE the program thread starts, so a program that throws/hits a bp
-    // immediately can't race past the arm. Returns null on a compile/JIT failure
-    // (with a message in *error when non-null).
-    // `stopOnEntry` parks at the first safepoint (the entry method's first
-    // executable statement) — armed before the thread starts, like exceptions.
-    // `beforeRun` runs after the program is built and armed but before the
-    // program thread starts. That window is where process-global state the
-    // DEBUGGEE should see — but the COMPILER should not — belongs: the DAP
-    // server's launch environment overlay is applied here, so a configuration
-    // that suppresses inherited variables cannot strip the environment the
-    // in-process build itself depends on (PATH, HOME, TMPDIR, ROCM_PATH).
+    // Compile with debug info, arm `breakpoints` (plus break-on-throw and
+    // `stopOnEntry`) and run the entry on a background thread; null on failure,
+    // with *error set. Arming precedes the thread; `beforeRun` is its last gap.
     std::unique_ptr<JitDebugSession> startDebugSession(
         const JitRunOptions& opts,
         const std::vector<Breakpoint>& breakpoints,

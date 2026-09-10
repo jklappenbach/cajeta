@@ -25,8 +25,6 @@ namespace cajeta {
             auto* lib = llvm::dyn_cast<llvm::MDString>(op->getOperand(0));
             auto* sym = llvm::dyn_cast<llvm::MDString>(op->getOperand(1));
             if (!lib || !sym) continue;
-            // DCE-aware gate: the recorded requirement counts only if its
-            // extern symbol still has a use after tree-shaking.
             const llvm::Function* f = m.getFunction(sym->getString());
             if (f && !f->use_empty()) out.insert(lib->getString().str());
         }
@@ -81,10 +79,7 @@ namespace cajeta {
         for (const auto& lib : liveLibs) {
             std::string found;
             for (const auto& dir : searchDirs) {
-                // fs::path composition, not string concat: callers compare the
-                // result against fs-built paths, and on Windows a mixed
-                // "C:\dir/platform/lib.a" fails that comparison even though
-                // it opens fine.
+                // fs::path composition, not string concat: a mixed "C:\dir/platform/lib.a" opens fine but fails the caller's path comparison.
                 const std::filesystem::path base(dir);
                 const std::filesystem::path cands[] = {
                     base / platform / ("lib" + lib + ".a"),
@@ -118,7 +113,6 @@ namespace cajeta {
     std::optional<NativeJitArtifact> findNativeJitArtifact(
             const std::string& lib, const std::string& platform,
             const std::vector<std::string>& searchDirs) {
-        // (candidate path, isStatic), in preference order: shared first.
         auto exists = [](const std::string& p) {
             std::error_code ec;
             return std::filesystem::exists(p, ec);

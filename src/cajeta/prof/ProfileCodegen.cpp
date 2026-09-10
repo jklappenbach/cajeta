@@ -7,14 +7,8 @@
 namespace cajeta::prof {
 
     namespace {
-        // #ProfMethod — must match CajetaProfMethod in cajeta_rt_prof_instr.c.
-        //   { i8* type, i8* method, i8* file,
-        //     i64 calls, i64 inclusive_ns, i64 outside_calls,
-        //     i32 registered, i32 reserved, ptr next }
-        // Mutable (the runtime accumulates into it) and zero-initialized past
-        // the three strings, so registration needs no constructor: the runtime
-        // links each descriptor into its enumeration list the first time a
-        // probe hands it over.
+        // #ProfMethod — the LLVM mirror of CajetaProfMethod in cajeta_rt_prof_instr.c,
+        // mutable and zero past the strings, so registration needs no ctor.
         llvm::StructType* profMethodTy(llvm::LLVMContext& ctx) {
             llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
             llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
@@ -23,7 +17,6 @@ namespace cajeta::prof {
                 ctx, {ptrTy, ptrTy, ptrTy, i64, i64, i64, i32, i32, ptrTy});
         }
 
-        // Guard: profiler on, builder present, current block not terminated.
         llvm::IRBuilder<>* profGuard(const cajeta::CajetaModulePtr& module) {
             if (module->getFlags().profiler != Profiler::Instrument) return nullptr;
             llvm::IRBuilder<>* builder = module->getBuilder();
@@ -33,16 +26,8 @@ namespace cajeta::prof {
             return builder;
         }
 
-        // §3.12/§4.2.e shape: codegen records that instrumentation probes were
-        // emitted at all, via a global ctor rather than a weak extern. Same
-        // reason LineInfoCodegen gives — the runtime bitcode is linked into
-        // each module long before codegen emits its definition, so a weak
-        // default there and a strong one here collide and LLVM silently
-        // renames the second.
-        //
-        // The ctor also publishes the selection string, so a trace can state
-        // what was in force (§3.12) and the optimization level it was built at
-        // (§3.13) without the reader inferring either.
+        // A global ctor, not a weak extern: the runtime bitcode is linked in long
+        // before codegen emits its definition, so the two would collide.
         void ensureInstrRegistered(llvm::Module* mod,
                                    const cajeta::CajetaModulePtr& module) {
             static const char* kCtorName = "__cajeta.profinstr.register";
@@ -68,9 +53,7 @@ namespace cajeta::prof {
     }
 
     const ProfileSelection& selectionFor(const cajeta::CajetaModulePtr& module) {
-        // Per-thread memo. The compiler parses many methods per build and the
-        // selection text does not change inside one; re-parsing it per method
-        // would put a file parse on the emission path.
+        // Memoized per thread: re-parsing would put a file parse on the emission path.
         static thread_local std::string memoText;
         static thread_local bool memoValid = false;
         static thread_local ProfileSelection memoSel;
@@ -125,9 +108,7 @@ namespace cajeta::prof {
             init, ".cajeta.profmethod");
 
         llvm::Value* t0 = builder->CreateCall(fn, {frame.desc});
-        // The slot goes in the ENTRY block so it is a plain stack slot mem2reg
-        // can promote, rather than a dynamic alloca in whatever block the
-        // prologue happens to be building.
+        // In the ENTRY block, so mem2reg can promote it.
         llvm::BasicBlock& entry = builder->GetInsertBlock()->getParent()->getEntryBlock();
         llvm::IRBuilder<> entryB(&entry, entry.getFirstInsertionPt());
         frame.t0Slot = entryB.CreateAlloca(i64, nullptr, "__prof_t0");

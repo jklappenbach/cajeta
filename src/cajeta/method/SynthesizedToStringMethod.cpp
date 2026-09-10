@@ -11,9 +11,8 @@ using namespace std;
 
 namespace cajeta {
 
-    // FNV-1a 64-bit. Local copy that matches the runtime's
-    // __cajeta_vtable_lookup and the same helper in SynthesizedHashMethod
-    // so vtable lookup keys agree byte-for-byte.
+    /// FNV-1a 64-bit over a canonical signature. Must stay byte-for-byte
+    /// identical to the runtime's __cajeta_vtable_lookup hash.
     static int64_t toStringSignatureHash(const std::string& s) {
         uint64_t h = 0xcbf29ce484222325ULL;
         for (unsigned char c : s) {
@@ -23,18 +22,14 @@ namespace cajeta {
         return (int64_t) h;
     }
 
-    // Find the no-arg toString on `klass` (parameterList has just `this`
-    // after generatePrototype, or is empty before). Walks the parent
-    // chain so a class inheriting Object's toString without overriding
-    // still finds it. Returns nullptr if absent — the synthesizer falls
-    // back to printing "null".
+    /// Finds the no-arg toString on `klass`, walking the parent chain so an
+    /// inherited one is found too. Returns nullptr when there is none, which
+    /// makes the synthesizer fall back to printing "null".
     static MethodPtr findToStringMethod(const CajetaClassPtr& klass) {
         if (!klass) return nullptr;
         for (auto& m : klass->getMethodList()) {
             if (!m || m->isConstructor()) continue;
             if (m->getName() != "toString") continue;
-            // Accept both the pre-prototype shape (no params) and the
-            // post-prototype shape (`this` injected at position 0).
             auto params = m->getParameterList();
             if (params.empty()) return m;
             if (params.size() == 1 && params.front()
@@ -48,6 +43,8 @@ namespace cajeta {
         return nullptr;
     }
 
+    /// Throws CAJETA_ERROR_TOSTRING_FIELD naming the field, why it cannot be
+    /// rendered, and what the author should do instead. Never returns.
     [[noreturn]] static void rejectToStringField(
             const CajetaClassPtr& parent,
             const std::string& fieldName,
@@ -83,6 +80,8 @@ namespace cajeta {
         CLASS_REF,           // null-check + virtual .toString()
     };
 
+    /// Maps a field's type to the render strategy, rejecting every type
+    /// @ToString v1 cannot render. Throws rather than returning a sentinel.
     static ToStringKind classifyToStringFieldOrReject(
             const CajetaClassPtr& parent,
             const std::string& fieldName,
@@ -100,8 +99,6 @@ namespace cajeta {
         bool isClassLike = dynamic_pointer_cast<CajetaClass>(type) != nullptr;
 
         if (isView) {
-            // Views are already rejected as class fields at the layout
-            // pass; this branch should never fire in practice.
             rejectToStringField(parent, fieldName, typeName,
                 "view-typed fields can't be embedded in classes "
                 "(see docs/specification/lang/Views.md)",
@@ -115,8 +112,8 @@ namespace cajeta {
                 "declare toString() manually on the enclosing class, or "
                 "annotate the field with @ToString.Exclude to skip it");
         }
-        // String is a POINTER_TYPE_ID with the canonical name "String"
-        // — treat it specially before falling into the class branch.
+        // String is a POINTER_TYPE_ID, so it must be matched by name before
+        // the class branch claims it.
         if (typeName == "cajeta.lang.String" || typeName == "String") {
             return ToStringKind::STRING;
         }
@@ -152,6 +149,8 @@ namespace cajeta {
         }
     }
 
+    /// Returns the module's declaration of `symbol`, creating an external
+    /// one with `fnTy` if this module has not declared it yet.
     static llvm::Function* getOrDeclareTSFn(
             CajetaModulePtr module,
             const std::string& symbol,
@@ -164,23 +163,19 @@ namespace cajeta {
             fnTy, llvm::Function::ExternalLinkage, symbol, lmod);
     }
 
-    // Build a ConstantDataArray of the literal, GEP-load via i8*. The
-    // returned llvm::Value* is a `ptr` to the first byte of the global,
-    // suitable as a `__cajeta_str_concat` arg.
+    /// Interns `s` as a private constant global and returns a `ptr` to its
+    /// first byte, ready to pass to `__cajeta_str_concat`.
     static llvm::Value* emitLiteralPtr(llvm::IRBuilder<>& b,
                                         llvm::Module* lmod,
                                         const std::string& s,
                                         const std::string& name) {
         auto& ctx = lmod->getContext();
         llvm::Constant* strConst = llvm::ConstantDataArray::getString(ctx, s, true);
-        // Dedupe via module's global pool — name-mangled by content hash
-        // wouldn't add much; uniqueness via auto-renaming is fine for now.
         auto* g = new llvm::GlobalVariable(
             *lmod, strConst->getType(), /*isConstant=*/true,
             llvm::GlobalValue::PrivateLinkage, strConst,
             std::string(".ts.lit.") + name);
         g->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-        // GEP &g[0][0] to get an i8*
         llvm::Value* zero = llvm::ConstantInt::get(
             llvm::IntegerType::getInt64Ty(ctx), 0);
         return b.CreateInBoundsGEP(strConst->getType(), g, {zero, zero},
@@ -202,9 +197,11 @@ namespace cajeta {
         this->parent = parent;
     }
 
+    /// Emits the whole body: opener, optional `super=`, one entry per
+    /// rendered field, closer, all concatenated, then wrapped into a real
+    /// cajeta.lang.String. Runs post-prototype, so arg(0) is `this`.
     void SynthesizedToStringMethod::generateCode() {
-        auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
-        // Signature post-prototype: (this) -> String/ptr. arg(0) is this.
+        auto& llvmFunction = llvmFunctionRef();
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
@@ -216,7 +213,6 @@ namespace cajeta {
         llvm::Type* f64Ty = llvm::Type::getDoubleTy(ctx);
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
 
-        // Runtime helper declarations.
         auto* i64ToStrTy   = llvm::FunctionType::get(ptrTy, {i64Ty}, false);
         auto* f64ToStrTy   = llvm::FunctionType::get(ptrTy, {f64Ty}, false);
         auto* boolToStrTy  = llvm::FunctionType::get(ptrTy, {i32Ty}, false);
@@ -237,22 +233,14 @@ namespace cajeta {
 
         bool isJson = (format == ToStringFormat::JSON);
 
-        // Format-dependent opener:
-        //   PROPERTIES: `ClassName(`
-        //   JSON:       `{`
         std::string simpleName = parent->getQName()
             ? parent->getQName()->getTypeName() : "<anon>";
         std::string opener = isJson ? std::string("{") : (simpleName + "(");
 
         llvm::Value* acc = emitLiteralPtr(b, lmod, opener, "open");
 
-        // Field selection:
-        //   - hasExplicitFieldSelection: walk EXACTLY `selectedFields`
-        //     in order (the `of={...}` allowlist form, including the
-        //     `of={}` "render zero fields" case). @Exclude on
-        //     allowlisted fields is ignored — explicit inclusion wins.
-        //   - otherwise: walk declared non-static, non-@Exclude fields
-        //     in declaration order (default behavior).
+        // An explicit `of={...}` allowlist wins over @Exclude, and `of={}`
+        // legitimately renders zero fields.
         std::vector<StructurePropertyPtr> rendered;
         if (hasExplicitFieldSelection) {
             rendered = selectedFields;
@@ -264,13 +252,8 @@ namespace cajeta {
             }
         }
 
-        // `callSuper`: emit `super=<super.toString()>` as the first
-        // rendered entry. Direct call to the immediate parent's
-        // toString function (NOT vtable lookup — vtable would land on
-        // OUR own toString and recurse). Parent's prototype landed
-        // before ours, so its LLVM function exists by now. Skips
-        // silently when there's no super class beyond Object (Object
-        // itself has no synthesized toString in v1).
+        // The super entry is a DIRECT call, not a vtable lookup: a lookup
+        // would resolve to our own toString and recurse forever.
         bool superEmitted = false;
         if (callSuper) {
             CajetaClassPtr superClass;
@@ -287,22 +270,12 @@ namespace cajeta {
                 llvm::Function* sFn = CajetaModule::ensureFunctionInModule(
                     lmod, superToString->getLlvmFunction());
 
-                // Label depends on format:
-                //   PROPERTIES: `super=`
-                //   JSON:       `"super":`
                 std::string superLabel = isJson
                     ? std::string("\"super\":")
                     : std::string("super=");
                 llvm::Value* lbl = emitLiteralPtr(b, lmod, superLabel, "supLbl");
                 acc = b.CreateCall(strConcat, {acc, lbl}, "ts.acc");
 
-                // Direct call: parent's toString(this) returns a real
-                // cajeta.lang.String object (synthesized ones wrap at the
-                // tail; user ones always did) — extract the C string via
-                // the mode-aware cstr helper before concat. JSON nesting
-                // needs the parent to ALSO be @ToString(format=
-                // TO_STRING_JSON) for the result to remain valid JSON —
-                // same caveat as class-ref recursion.
                 llvm::Value* superStr = b.CreateCall(
                     sFn, {thisPtr}, "ts.supcall");
                 superStr = b.CreateCall(strCstr, {superStr}, "ts.supcstr");
@@ -317,17 +290,11 @@ namespace cajeta {
             ToStringKind kind = classifyToStringFieldOrReject(
                 parent, prop->getName(), ftype);
 
-            // Separator before all but the first emitted entry.
-            // `superEmitted` counts as a prior entry, so when callSuper
-            // produced output the very first field gets a leading comma.
             if (i > 0 || superEmitted) {
                 llvm::Value* comma = emitLiteralPtr(b, lmod, ",", "sep");
                 acc = b.CreateCall(strConcat, {acc, comma}, "ts.acc");
             }
 
-            // Field label:
-            //   PROPERTIES: `fieldName=`
-            //   JSON:       `"fieldName":`
             std::string labelText = isJson
                 ? (std::string("\"") + prop->getName() + "\":")
                 : (prop->getName() + "=");
@@ -351,11 +318,9 @@ namespace cajeta {
             llvm::Value* fieldStr = nullptr;
 
             if (kind == ToStringKind::CLASS_REF) {
-                // Load the field's pointer (class refs store as `ptr`).
                 llvm::Value* objPtr = b.CreateLoad(
                     ptrTy, fieldPtr,
                     std::string("ts.objp.") + prop->getName());
-                // Null check: if null, render "null".
                 llvm::Function* curFn = b.GetInsertBlock()->getParent();
                 llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(ctx,
                     std::string("ts.null.") + prop->getName(), curFn);
@@ -371,25 +336,20 @@ namespace cajeta {
                     std::string("ts.isnull.") + prop->getName());
                 b.CreateCondBr(isNull, nullBB, callBB);
 
-                // null arm: produce a literal "null".
                 b.SetInsertPoint(nullBB);
                 llvm::Value* nullLit = emitLiteralPtr(b, lmod, "null", "null");
                 b.CreateBr(mergeBB);
 
-                // non-null arm: vtable dispatch toString().
                 b.SetInsertPoint(callBB);
                 auto fieldKlass = dynamic_pointer_cast<CajetaClass>(ftype);
                 MethodPtr ts = findToStringMethod(fieldKlass);
                 llvm::Value* callStr;
                 if (!ts) {
-                    // No toString anywhere in the chain — produce a
-                    // placeholder. Object.toString() WILL exist once
-                    // Object's synth lands; this is a safety net.
                     callStr = emitLiteralPtr(b, lmod, "<no-toString>", "noTs");
                 } else {
                     int64_t sigHash = toStringSignatureHash(
                         ts->toCanonical(/*labeled=*/false));
-                    // Load vtable from obj (slot 0).
+                    // The vtable pointer is slot 0 of the object.
                     llvm::Value* vtPtr = b.CreateLoad(
                         ptrTy, objPtr,
                         std::string("ts.vt.") + prop->getName());
@@ -400,8 +360,6 @@ namespace cajeta {
                     }, std::string("ts.fn.") + prop->getName());
                     callStr = b.CreateCall(toStringCallTy, fnPtr, {objPtr},
                         std::string("ts.cr.") + prop->getName());
-                    // toString() returns a real String object — extract
-                    // the C string for the concat chain.
                     callStr = b.CreateCall(strCstr, {callStr},
                         std::string("ts.crc.") + prop->getName());
                 }
@@ -414,15 +372,10 @@ namespace cajeta {
                 phi->addIncoming(callStr, callBB);
                 fieldStr = phi;
             } else if (kind == ToStringKind::STRING) {
-                // String is stored as i8* in the slot (POINTER_TYPE_ID).
                 llvm::Value* sPtr = b.CreateLoad(
                     ptrTy, fieldPtr,
                     std::string("ts.s.") + prop->getName());
                 if (isJson) {
-                    // JSON path — the runtime helper reads the tagged core
-                    // (6.2.2) and quote-escapes the window; a null String
-                    // object renders as the `null` token, matching the
-                    // synthesizer's null convention.
                     auto* quoteStrTy = llvm::FunctionType::get(
                         ptrTy, {ptrTy}, false);
                     llvm::Function* quoteStr = getOrDeclareTSFn(
@@ -430,8 +383,6 @@ namespace cajeta {
                     fieldStr = b.CreateCall(quoteStr, {sPtr},
                         std::string("ts.jq.") + prop->getName());
                 } else {
-                    // PROPERTIES path: null-check; render "null" for
-                    // null strings (consistent with class-ref handling).
                     llvm::Function* curFn = b.GetInsertBlock()->getParent();
                     llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(ctx,
                         std::string("ts.snull.") + prop->getName(), curFn);
@@ -449,9 +400,8 @@ namespace cajeta {
                     llvm::Value* nullLit = emitLiteralPtr(b, lmod, "null", "snull");
                     b.CreateBr(mergeBB);
 
-                    // __cajeta_str_concat consumes C strings — extract the
-                    // window via the mode-aware cstr helper (a bare String
-                    // OBJECT pointer here read the vtable bytes as text).
+                    // __cajeta_str_concat consumes C strings; handing it a
+                    // String OBJECT pointer reads the vtable bytes as text.
                     b.SetInsertPoint(okBB);
                     llvm::Value* okCstr = b.CreateCall(strCstr, {sPtr},
                         std::string("ts.scstr.") + prop->getName());
@@ -465,7 +415,6 @@ namespace cajeta {
                     fieldStr = phi;
                 }
             } else {
-                // Primitive path — load, coerce, call __cajeta_X_to_str.
                 llvm::Type* loadTy = ftype->getLlvmType();
                 llvm::Value* val = b.CreateLoad(loadTy, fieldPtr,
                     std::string("ts.v.") + prop->getName());
@@ -498,12 +447,10 @@ namespace cajeta {
                         tsFn = f64ToStr;
                         break;
                     case ToStringKind::PRIM_BOOLEAN:
-                        // Booleans load as i1; zext to i32 for the helper.
                         callArg = b.CreateZExt(val, i32Ty);
                         tsFn = boolToStr;
                         break;
                     default:
-                        // Unreachable — classify rejected anything else.
                         continue;
                 }
                 (void) callArgTy;
@@ -514,16 +461,12 @@ namespace cajeta {
             acc = b.CreateCall(strConcat, {acc, fieldStr}, "ts.acc");
         }
 
-        // Close:
-        //   PROPERTIES: `)`
-        //   JSON:       `}`
         llvm::Value* closeLit = emitLiteralPtr(
             b, lmod, isJson ? std::string("}") : std::string(")"), "close");
         acc = b.CreateCall(strConcat, {acc, closeLit}, "ts.acc");
 
-        // The concat chain built a malloc'd C string; callers expect a real
-        // cajeta.lang.String (String methods / println on toString() results
-        // read the object layout). Wrap-and-free at the boundary.
+        // The concat chain built a malloc'd C string, but callers read the
+        // cajeta.lang.String object layout, so it is wrapped at the boundary.
         auto* wrapTy = llvm::FunctionType::get(
             ptrTy, {ptrTy, ptrTy, i32Ty}, false);
         llvm::Function* strWrap = getOrDeclareTSFn(

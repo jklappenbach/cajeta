@@ -1,13 +1,5 @@
-//
-// `cja-skill://` URI scheme + lockfile resolver (skill-discovery spec §2.2).
-// A skill URI is a logical, resolvable identity:
-//
-//   cja-skill://<library>@<version>/<skill-id>
-//   e.g.  cja-skill://cajeta.io@1.4.2/file-open
-//
-// The <version> is the *resolved* library version, so a held URI is a stable
-// cache key and Get is always exact (spec §3.4).
-//
+// The `cja-skill://<library>@<version>/<skill-id>` URI scheme and its lockfile
+// resolver. The version is the RESOLVED one, so a held URI is a stable cache key.
 #pragma once
 
 #include <optional>
@@ -22,17 +14,15 @@
 
 namespace cajeta::buildtool::skill {
 
-    // A parsed skill URI.
     struct SkillUri {
         std::string library;  // dependency coordinate, e.g. "cajeta.io"
         std::string version;  // resolved version, e.g. "1.4.2"
         std::string skillId;  // skill id within the library, e.g. "file-open"
 
-        // Parse a `cja-skill://<library>@<version>/<skill-id>` URI. Rejects a
-        // wrong scheme, a missing `@`/version, an empty library, or an empty id.
+        // Rejects a wrong scheme, a missing `@` or version, an empty part.
         static llvm::Expected<SkillUri> parse(llvm::StringRef text);
 
-        // Render back to canonical `cja-skill://…` form (round-trips parse()).
+        // Canonical `cja-skill://…` form; round-trips parse().
         std::string format() const;
 
         bool operator==(const SkillUri& o) const {
@@ -41,15 +31,9 @@ namespace cajeta::buildtool::skill {
         }
     };
 
-    // Resolve a skill URI's `<library>@<version>` to a local `.cja` path.
-    //   `packages`        — the resolved lockfile entries (matched by exact
-    //                       name + version, so a returned URI's version pins the
-    //                       resolved archive, never a range — spec §3.4 / D.4.3).
-    //   `lookupArtifact`  — maps an entry's checksum to a local cache path,
-    //                       typically `ArtifactCache::lookup`; nullopt on a cache
-    //                       miss.
-    // Errors: the coordinate isn't in the lockfile, or it is but the artifact
-    // isn't in the local cache.
+    // Resolve `<library>@<version>` to a local `.cja` path. `packages` is matched
+    // by EXACT name + version, never a range; `lookupArtifact` maps a checksum to
+    // a cache path. Errors when the coordinate or the artifact is missing.
     llvm::Expected<std::string> resolveSkillArchive(
         const SkillUri& uri,
         llvm::ArrayRef<ResolvedPackageEntry> packages,

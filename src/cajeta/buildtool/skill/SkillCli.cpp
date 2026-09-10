@@ -1,7 +1,4 @@
-//
-// CLI adapter helpers for skill discovery. See SkillCli.h and
-// specs/archive/skill-discovery-spec.md §1.5.1.
-//
+// CLI adapter helpers for skill discovery. See SkillCli.h and the skill-discovery spec §1.5.1.
 #include "cajeta/buildtool/skill/SkillCli.h"
 
 #include "cajeta/buildtool/skill/EmbeddedStdlibSkills.h"
@@ -18,9 +15,7 @@ namespace cajeta::buildtool::skill {
 
     namespace {
 
-        // Match `--flag value` or `--flag=value`. On match, sets `out` and
-        // advances `i` past any consumed value. Returns true if `args[i]` was
-        // this flag.
+        // Matches `--flag value` or `--flag=value`, advancing `i` past a consumed value.
         bool matchValueFlag(llvm::ArrayRef<std::string> args, size_t& i,
                             llvm::StringRef flag, std::optional<std::string>& out) {
             llvm::StringRef a = args[i];
@@ -123,9 +118,7 @@ namespace cajeta::buildtool::skill {
         llvm::function_ref<std::optional<std::string>(llvm::StringRef)>
             lookupArtifact) {
         SkillSearchContext ctx;
-        // Always-available stdlib skills (spec §2.5): seed the embedded stdlib
-        // archives before any lockfile packages, so discovery returns stdlib
-        // skills with no project / lockfile / dependencies present.
+        // Seed the embedded stdlib archives before any lockfile packages (spec §2.5), so discovery works with no project present.
         const auto& embedded = embeddedStdlibSkillArchives();
         ctx.archives.insert(ctx.archives.end(), embedded.begin(), embedded.end());
         for (const ResolvedPackageEntry& p : packages) {

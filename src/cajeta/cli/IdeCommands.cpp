@@ -26,31 +26,24 @@ namespace fs = std::filesystem;
 
 enum : int { EXIT_OK = 0, EXIT_USAGE = 1, EXIT_NONE = 2, EXIT_IO = 8, EXIT_CORRUPT = 6 };
 
-// The top-level directory name inside the plugin distribution zip
-// (cajeta-idea/lib/*.jar). Stable across versions — it's the Gradle archive
-// base name, not the versioned zip file name — so it's also the installed
-// plugin directory name we create / remove / probe.
+// The Gradle archive base name, so it is also the installed plugin directory.
 constexpr const char* kPluginDirName = "cajeta-idea";
 
-// ---------------------------------------------------------------- minimal zip
-// Just enough ZIP reader to extract the embedded plugin: scan the End Of
-// Central Directory record, walk the central directory, and inflate each
-// entry (STORE or raw DEFLATE) via zlib. No ZIP64 (the plugin is ~18 MB and
-// every entry is well under 4 GB); a 0xFFFFFFFF size field is rejected.
+// Just enough ZIP reader for the embedded plugin: scan the End Of Central
+// Directory, walk it, inflate each entry through zlib. No ZIP64 support.
 
 uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 uint32_t rd32(const uint8_t* p) {
     return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24));
 }
 
+// Inflate a RAW deflate stream, as a ZIP entry carries, into `out`.
 bool inflateRaw(const uint8_t* src, size_t srcLen,
                 std::vector<uint8_t>& out, uint32_t expectedOut) {
     out.resize(expectedOut);
     if (expectedOut == 0) return true;
     z_stream s;
     std::memset(&s, 0, sizeof(s));
-    // Negative window bits → raw deflate stream (no zlib/gzip header), which
-    // is exactly what ZIP local-header entries carry.
     if (inflateInit2(&s, -MAX_WBITS) != Z_OK) return false;
     s.next_in   = const_cast<Bytef*>(src);
     s.avail_in  = (uInt)srcLen;
@@ -61,15 +54,13 @@ bool inflateRaw(const uint8_t* src, size_t srcLen,
     return rc == Z_STREAM_END;
 }
 
-// Extract the embedded zip into destRoot. Entries carry their own relative
-// paths (e.g. "cajeta-idea/lib/foo.jar"), so the plugin lands at
-// destRoot/cajeta-idea/... Returns false on any structural / IO error.
+// Extract the embedded zip into destRoot. Entries carry their own relative paths,
+// so the plugin lands at destRoot/cajeta-idea/...; false on any structural error.
 bool extractEmbeddedZip(const fs::path& destRoot, std::string& err) {
     const uint8_t* zip = cajeta_plugin_zip;
     const size_t   n   = cajeta_plugin_zip_len;
     if (n < 22) { err = "embedded plugin zip is empty or truncated"; return false; }
 
-    // Find EOCD (sig 0x06054b50) by scanning backward; comment is usually empty.
     const uint32_t EOCD_SIG = 0x06054b50u;
     size_t eocd = SIZE_MAX;
     size_t scanStart = n >= (22 + 65535) ? n - (22 + 65535) : 0;
@@ -102,8 +93,6 @@ bool extractEmbeddedZip(const fs::path& destRoot, std::string& err) {
         std::string name((const char*)(zip + p + 46), nameLen);
         p += 46 + nameLen + extraLen + cmtLen;
 
-        // Reject path traversal — the embedded zip is ours, but never write
-        // outside destRoot regardless.
         if (name.find("..") != std::string::npos) {
             err = "unsafe path in zip: " + name; return false;
         }
@@ -115,8 +104,7 @@ bool extractEmbeddedZip(const fs::path& destRoot, std::string& err) {
             continue;
         }
 
-        // Locate the entry data via its LOCAL header (its name/extra lengths
-        // can differ from the central directory's).
+        // The LOCAL header's name and extra lengths can differ from the central one's.
         if (lfhOff + 30 > n || rd32(zip + lfhOff) != LFH_SIG) {
             err = "corrupt local header for " + name; return false;
         }
@@ -146,8 +134,6 @@ bool extractEmbeddedZip(const fs::path& destRoot, std::string& err) {
     return true;
 }
 
-// ---------------------------------------------------------------- IDE layout
-
 fs::path jetbrainsConfigBase() {
 #if defined(_WIN32)
     if (const char* appdata = std::getenv("APPDATA")) return fs::path(appdata) / "JetBrains";
@@ -164,11 +150,8 @@ fs::path jetbrainsConfigBase() {
 #endif
 }
 
-// The plugins directory for a given product dir name (e.g. "IntelliJIdea2025.2").
-// Layout differs per OS (verified against a live JetBrains install):
-//   Windows: %APPDATA%\JetBrains\<product>\plugins
-//   macOS:   ~/Library/Application Support/JetBrains/<product>/plugins
-//   Linux:   ~/.local/share/JetBrains/<product>      (no "plugins" subdir)
+// The plugins directory for a product dir like "IntelliJIdea2025.2": Windows and
+// macOS end in a `plugins` subdir, Linux does not.
 fs::path pluginsDirFor(const std::string& product) {
 #if defined(_WIN32)
     if (const char* appdata = std::getenv("APPDATA"))
@@ -187,14 +170,12 @@ fs::path pluginsDirFor(const std::string& product) {
 #endif
 }
 
-// D11: IDEA only. Match Ultimate ("IntelliJIdea<ver>") and Community
-// ("IdeaIC<ver>" / "IdeaIU<ver>"); skip CLion / PyCharm / Rider / WebStorm etc.
+// IDEA only: Ultimate and Community, never CLion / PyCharm / Rider / WebStorm.
 bool isIdeaProduct(const std::string& name) {
     auto starts = [&](const char* pfx) { return name.rfind(pfx, 0) == 0; };
     return starts("IntelliJIdea") || starts("IdeaIC") || starts("IdeaIU");
 }
 
-// Detected IDEA product dir names (e.g. "IntelliJIdea2025.2"), sorted.
 std::vector<std::string> detectIdeaProducts() {
     std::vector<std::string> out;
     fs::path base = jetbrainsConfigBase();
@@ -210,8 +191,6 @@ std::vector<std::string> detectIdeaProducts() {
 }
 
 bool pluginBundled() { return cajeta_plugin_zip_len > 0; }
-
-// ---------------------------------------------------------------- subcommands
 
 void printIdeUsage() {
     std::cerr <<
@@ -232,7 +211,6 @@ void printIdeUsage() {
         "After install, restart IntelliJ IDEA for the plugin to load.\n";
 }
 
-// Pull a --plugins-dir=<path> override out of args if present.
 bool takePluginsDirOverride(std::vector<std::string>& args, fs::path& out) {
     const std::string pfx = "--plugins-dir=";
     for (auto it = args.begin(); it != args.end(); ++it) {
@@ -241,8 +219,7 @@ bool takePluginsDirOverride(std::vector<std::string>& args, fs::path& out) {
     return false;
 }
 
-// Install into one plugins dir. Idempotent: an existing cajeta-idea dir is
-// removed first so a reinstall replaces rather than merges.
+// An existing cajeta-idea dir is removed first, so a reinstall replaces it.
 int installInto(const fs::path& pluginsDir) {
     std::error_code ec;
     fs::create_directories(pluginsDir, ec);

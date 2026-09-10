@@ -1,6 +1,4 @@
-//
 // CajetaVector — see header.
-//
 
 #include "CajetaVector.h"
 
@@ -44,21 +42,15 @@ namespace cajeta {
         : elementType(elementType), lanes(lanes) {
         qName = QualifiedName::getOrCreate(canonicalName(elementType, lanes));
         canonical = qName->toCanonical();
-        // By-value (PRIMITIVE_FLAG so the kernel-arg marshaller passes it like
-        // a scalar) and tagged VECTOR_FLAG so codegen recognizes it. Not
-        // NUMBER_FLAG — a vector is not a scalar number; element-wise
-        // arithmetic is handled by the dedicated vector path. The element's
-        // SIGNED_FLAG is inherited so integer-vector division picks SDiv/UDiv
-        // correctly.
+        // PRIMITIVE_FLAG so the kernel-arg marshaller passes it like a scalar and VECTOR_FLAG
+        // so codegen recognizes it, never NUMBER_FLAG; SIGNED_FLAG is inherited for SDiv/UDiv.
         typeFlags = VECTOR_FLAG | PRIMITIVE_FLAG
             | (elementType->getTypeFlags() & SIGNED_FLAG);
         llvmType = nullptr;
     }
 
     llvm::Type* CajetaVector::getLlvmType() {
-        // frozen-aware lazy-create (threadsafe U6.2): read/write via the base
-        // accessor so a frozen shared instance binds per-thread, a normal one
-        // inline (identical behavior pre-freeze).
+        // Frozen-aware lazy create: read and write through the base accessor, so a frozen shared instance binds per-thread.
         if (llvm::Type* cur = CajetaType::getLlvmType()) return cur;
         llvm::Type* t = llvm::FixedVectorType::get(elementType->getLlvmType(), lanes);
         setLlvmType(t);

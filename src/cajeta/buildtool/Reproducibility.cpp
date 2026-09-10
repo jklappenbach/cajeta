@@ -33,18 +33,14 @@ namespace cajeta::buildtool {
     std::string resolveSourceDateEpoch(
         const ResolvedProperties& props,
         const std::map<std::string, std::string>& envOverrides) {
-        // 1. CAJETA_SOURCE_DATE_EPOCH (CI knob).
         auto ci = firstNonEmpty(envOverrides, "CAJETA_SOURCE_DATE_EPOCH");
         if (!ci.empty()) return ci;
-        // 2. SOURCE_DATE_EPOCH (the standard).
         auto std = firstNonEmpty(envOverrides, "SOURCE_DATE_EPOCH");
         if (!std.empty()) return std;
-        // 3. Manifest property.
         auto it = props.values.find("cajeta.source-date-epoch");
         if (it != props.values.end() && !it->second.empty()) {
             return it->second;
         }
-        // 4. Hard default.
         return "0";
     }
 

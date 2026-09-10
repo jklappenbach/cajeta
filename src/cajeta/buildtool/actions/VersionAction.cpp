@@ -1,13 +1,5 @@
-// `version` — semver bump / set; writes back to the manifest.
-//
-// Params:
-//   bump        (one of) "major" | "minor" | "patch"   OR
-//   set         (one of) "<semver>"
-//   write-to    (optional, default "./cajeta.json")
-//
-// Outputs:
-//   version     the new version
-//   previous    the old version
+// The `version` action: bump or set the manifest's semver, writing the manifest
+// back in place and reporting the new and previous values.
 
 #include "cajeta/buildtool/Action.h"
 
@@ -42,10 +34,10 @@ namespace cajeta::buildtool {
             }
         };
 
+        // Parse MAJOR.MINOR.PATCH[-prerelease][+build]. Hand-scanned rather than
+        // by std::regex, whose libstdc++ COMDAT symbols collide at link time with
+        // the prebuilt LLVM/lld archives on the mingw toolchain.
         llvm::Expected<Semver> parseSemver(const std::string& s) {
-            // MAJOR.MINOR.PATCH[-prerelease][+build] — hand-parsed (std::regex
-            // is avoided here: its libstdc++ COMDAT symbols collide at link
-            // time with the prebuilt LLVM/lld archives on the mingw toolchain).
             auto bad = [&]() {
                 return err("version: not a valid semver: '" + s + "'");
             };
@@ -62,8 +54,6 @@ namespace cajeta::buildtool {
                 }
                 return true;
             };
-            // `-` and `.` are valid in prerelease/build identifiers, alongside
-            // alphanumerics. `+` separates build metadata, so it is excluded.
             auto isIdent = [](char c) {
                 return std::isalnum(static_cast<unsigned char>(c)) ||
                        c == '.' || c == '-';
@@ -96,16 +86,9 @@ namespace cajeta::buildtool {
             return v;
         }
 
-        // Find the `"version"` field inside the `"details"` block of
-        // a JSONC source and replace its value with `newVersion`.
-        // Returns the previous value via `previous`. Preserves the
-        // rest of the file byte-for-byte (including comments,
-        // formatting, trailing commas).
-        //
-        // Match is best-effort by regex: looks for the *first*
-        // `"version"\s*:\s*"..."` after the *first* `"details"` key.
-        // Sufficient for the canonical manifest shape; more general
-        // edits would need a JSONC editor (out of scope here).
+        // Replace `details.version` in a JSONC source with `newVersion`, returning
+        // the previous value and leaving every other byte — comments, formatting,
+        // trailing commas — untouched. Best-effort: the FIRST such key wins.
         llvm::Expected<std::string> rewriteVersionInPlace(
             std::string& src,
             const std::string& newVersion) {
@@ -113,10 +96,6 @@ namespace cajeta::buildtool {
             if (detailsPos == std::string::npos) {
                 return err("version: manifest has no \"details\" block");
             }
-            // Look for the first `"version" : "..."` field after `"details"`.
-            // Hand-scanned (see parseSemver for why std::regex is avoided): find
-            // each `"version"` key and accept the first one followed by the
-            // `\s*:\s*"value"` shape, capturing the value between the quotes.
             auto isWs = [](char c) {
                 return std::isspace(static_cast<unsigned char>(c)) != 0;
             };
@@ -153,6 +132,8 @@ namespace cajeta::buildtool {
     public:
         std::string name() const override { return "version"; }
 
+        // Takes exactly one of `bump` ("major"/"minor"/"patch") or `set`, plus an
+        // optional `write-to`; reports back `version` and `previous`.
         llvm::Expected<ActionResult> run(
             const llvm::json::Object& params,
             TaskContext& /*ctx*/) const override {
@@ -160,7 +141,6 @@ namespace cajeta::buildtool {
             std::string writeTo = "./cajeta.json";
             if (auto v = params.getString("write-to")) writeTo = v->str();
 
-            // Read the manifest source.
             std::string src;
             {
                 std::ifstream in(writeTo);
@@ -170,7 +150,6 @@ namespace cajeta::buildtool {
                 src = ss.str();
             }
 
-            // Determine the new version.
             std::string newVersionStr;
             auto bump = params.getString("bump");
             auto setV = params.getString("set");
@@ -183,9 +162,8 @@ namespace cajeta::buildtool {
                 if (!sv) return sv.takeError();
                 newVersionStr = sv->toString();
             } else if (bump) {
-                // We need the current version to bump from. Pull it
-                // from the manifest by doing a no-op rewrite and
-                // capturing the previous value, then re-rewriting.
+                // A throwaway rewrite is how the current version is read back;
+                // the real rewrite happens below.
                 std::string scratch = src;
                 auto prev = rewriteVersionInPlace(scratch, "<probe>");
                 if (!prev) return prev.takeError();
@@ -217,7 +195,6 @@ namespace cajeta::buildtool {
                            "or 'set' (<semver>)");
             }
 
-            // Rewrite and persist.
             auto previous = rewriteVersionInPlace(src, newVersionStr);
             if (!previous) return previous.takeError();
 

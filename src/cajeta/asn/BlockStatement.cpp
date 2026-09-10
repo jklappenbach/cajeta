@@ -1,7 +1,3 @@
-//
-// Created by James Klappenbach on 10/5/22.
-//
-
 #include "BlockStatement.h"
 #include "Statement.h"
 #include "../compile/CajetaModule.h"

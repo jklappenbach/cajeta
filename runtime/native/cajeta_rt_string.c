@@ -1,20 +1,8 @@
-// cajeta.lang.String natives over the tagged core (slices plan 6.2.2).
-//
-// The wrapper layout is cajeta_rt_core.c's cajeta_string_layout:
+// cajeta.lang.String natives over the tagged core. Wrapper layout (cajeta_rt_core.c):
 //   { vtable@0, i32 lenTag@8, i32 aux@12, ptr base@16, i32 cachedCpLength@24 }
-// where aux+base double as the Inline text bytes (len <= 12) or the
-// {window offset, root header} pair (len > 12) — see the caj_str_* helpers.
-// Every byte-level String operation lives here so the form dispatch is
-// written exactly once; the .cajeta side keeps only window arithmetic
-// (substring/trim) and the codepoint walks.
-//
-// Included from cajeta_runtime.c AFTER cajeta_rt_shared.c (shared rc API)
-// and cajeta_rt_core.c (layout + helpers, live set, alloc).
+// aux+base are the inline bytes (len <= 12) or the {window offset, root} pair.
 
-// Take FULL ownership of a transferred buffer (the String(#int8[], int32)
-// ctor): <= 12 B copies Inline and frees the buffer; longer adopts it as
-// this wrapper's OWNED root. The caller's drop entry was deactivated by the
-// `#` transfer at the call site, so both arms must consume the buffer.
+// Take FULL ownership of the transferred buffer; both arms must consume it.
 void __cajeta_string_adopt(void* s_v, void* buf, int32_t n) {
     cajeta_string_layout* s = (cajeta_string_layout*) s_v;
     s->cachedCpLength = -1;
@@ -31,11 +19,7 @@ void __cajeta_string_adopt(void* s_v, void* buf, int32_t n) {
     caj_str_set_window(s, n, 0, buf);
 }
 
-// external-debug §4.1.6: a debugger must render a String's CONTENTS, not its
-// address. The tagged layout (inline for <= 12 bytes, windowed root beyond) is
-// not something gdb can decode on its own with no DWARF, so hand it the two
-// facts it needs: the byte length, and a pointer to the bytes. Both `used,
-// retain` — nothing in generated code calls them.
+// Byte length and byte pointer for a debugger; `used, retain`, never called by codegen.
 __attribute__((used, retain))
 int32_t __cajeta_string_byte_len(void* s_v) {
     if (!s_v) return 0;
@@ -49,8 +33,7 @@ const char* __cajeta_string_bytes(void* s_v) {
     return p ? p : "";
 }
 
-// Build a fresh String wrapper from raw bytes (FileReader.readString, the
-// compiler's cstr-wrap sites). Copies; the caller keeps `data`.
+// Build a fresh String wrapper from raw bytes; copies, so the caller keeps `data`.
 void* __cajeta_string_from_buf(const char* data, int64_t len, void* vtable) {
     cajeta_string_layout* out =
         (cajeta_string_layout*) __cajeta_alloc(sizeof(cajeta_string_layout));
@@ -66,7 +49,7 @@ void* __cajeta_string_from_buf(const char* data, int64_t len, void* vtable) {
     return out;
 }
 
-// XXH3 over the window — representation-independent (Utf8.hash parity).
+// XXH3 over the window: representation-independent, for Utf8.hash parity.
 int64_t __cajeta_string_hash(void* s_v) {
     cajeta_string_layout* s = (cajeta_string_layout*) s_v;
     int64_t __cajeta_hash_bytes(const uint8_t* data, int64_t len);
@@ -74,7 +57,6 @@ int64_t __cajeta_string_hash(void* s_v) {
                                (int64_t) caj_str_len(s));
 }
 
-// Byte-for-byte equality over the windows.
 int32_t __cajeta_string_equals(void* a_v, void* b_v) {
     cajeta_string_layout* a = (cajeta_string_layout*) a_v;
     cajeta_string_layout* b = (cajeta_string_layout*) b_v;
@@ -84,8 +66,7 @@ int32_t __cajeta_string_equals(void* a_v, void* b_v) {
     return memcmp(caj_str_ptr(a), caj_str_ptr(b), (size_t) n) == 0;
 }
 
-// Raw byte at `idx`, 0 out of range (the charAt convention; byteAt shares it
-// now that the check costs one compare).
+// Raw byte at `idx`, 0 when out of range (the charAt convention, shared by byteAt).
 int8_t __cajeta_string_byte_at(void* s_v, int32_t idx) {
     cajeta_string_layout* s = (cajeta_string_layout*) s_v;
     if (idx < 0 || idx >= caj_str_len(s)) return 0;
@@ -93,9 +74,6 @@ int8_t __cajeta_string_byte_at(void* s_v, int32_t idx) {
 }
 
 // First byte-index of needle's window in s's window at/after `start`, or -1.
-// Two-byte prefilter over a single scan; clang vectorizes the candidate loop
-// (the cajeta-side AVX2 vload version this replaces is a recorded perf
-// follow-up on the plan).
 int64_t __cajeta_string_index_of(void* s_v, void* n_v, int64_t start) {
     cajeta_string_layout* s = (cajeta_string_layout*) s_v;
     cajeta_string_layout* n = (cajeta_string_layout*) n_v;
@@ -107,10 +85,6 @@ int64_t __cajeta_string_index_of(void* s_v, void* n_v, int64_t start) {
     if (nlen > hlen - start) return -1;
     const char* h = caj_str_ptr(s);
     const char* nd = caj_str_ptr(n);
-    // memchr drives the first-byte skip (libc's is SIMD-dispatched; this
-    // bitcode compiles for a generic target, so the vector width lives in
-    // libc, not here); the last-byte probe filters candidates before the
-    // full memcmp. Replaces the pre-re-core cajeta-side AVX2 vload scan.
     char first = nd[0];
     char last = nd[nlen - 1];
     const char* p = h + start;
@@ -148,8 +122,7 @@ int32_t __cajeta_string_ends_with(void* s_v, void* p_v) {
     return memcmp(caj_str_ptr(s) + (sl - n), caj_str_ptr(p), (size_t) n) == 0;
 }
 
-// Fresh wrapper holding a case-mapped copy (ASCII only, as before). `mode`:
-// 0 = upper, 1 = lower. Reuses the receiver's vtable.
+// Fresh wrapper holding an ASCII case-mapped copy, reusing the receiver's vtable.
 static void* caj_str_case_map(cajeta_string_layout* s, int lower) {
     int32_t n = caj_str_len(s);
     cajeta_string_layout* out =
@@ -192,10 +165,7 @@ void* __cajeta_string_lower(void* s_v) {
     return caj_str_case_map((cajeta_string_layout*) s_v, 1);
 }
 
-// Replace every non-overlapping occurrence of `from` with `repl`; returns a
-// fresh String (or the receiver's exact content copy semantics are preserved
-// by the caller returning `this` when no match / empty pattern — the native
-// returns NULL for "no change" so the .cajeta side can hand back `this`).
+// Replace every non-overlapping `from` with `repl`; NULL means "no change".
 void* __cajeta_string_replace(void* s_v, void* f_v, void* r_v) {
     cajeta_string_layout* s = (cajeta_string_layout*) s_v;
     cajeta_string_layout* f = (cajeta_string_layout*) f_v;
@@ -208,7 +178,6 @@ void* __cajeta_string_replace(void* s_v, void* f_v, void* r_v) {
     const char* h = caj_str_ptr(s);
     const char* fd = caj_str_ptr(f);
     const char* rd = caj_str_ptr(r);
-    // Pass 1: count matches.
     int64_t count = 0;
     for (int64_t i = 0; i + flen <= hlen; ) {
         if (h[i] == fd[0] && memcmp(h + i, fd, (size_t) flen) == 0) {
@@ -235,7 +204,6 @@ void* __cajeta_string_replace(void* s_v, void* f_v, void* r_v) {
         ((char*) buf)[8 + outLen] = 0;
         dst = (char*) buf + 8;
     }
-    // Pass 2: copy through.
     int64_t w = 0;
     for (int64_t i = 0; i < hlen; ) {
         if (i + flen <= hlen && h[i] == fd[0]
@@ -255,10 +223,8 @@ void* __cajeta_string_replace(void* s_v, void* f_v, void* r_v) {
     return out;
 }
 
-// Copy the window into `dst`'s data at byte offset `dstOff`; returns the
-// byte count. ONE native call per bulk consume (StringBuilder.append's
-// spilled path) instead of a per-byte byteAt walk — works for every form.
-// The caller guarantees capacity.
+// Copy the window into `dst`'s data at byte offset `dstOff` and return the byte
+// count; one call per bulk consume, and the caller guarantees capacity.
 int32_t __cajeta_string_copy_to(void* s_v, void* dstArr, int32_t dstOff) {
     cajeta_string_layout* s = (cajeta_string_layout*) s_v;
     int32_t n = caj_str_len(s);
@@ -268,8 +234,7 @@ int32_t __cajeta_string_copy_to(void* s_v, void* dstArr, int32_t dstOff) {
     return n;
 }
 
-// The effective window as a fresh caller-owned int8[] (the view-safe raw-
-// bytes replacement; same contract as before the re-core).
+// The effective window as a fresh caller-owned int8[].
 void* __cajeta_string_to_bytes(void* s_v) {
     cajeta_string_layout* s = (cajeta_string_layout*) s_v;
     int32_t n = caj_str_len(s);
@@ -279,8 +244,7 @@ void* __cajeta_string_to_bytes(void* s_v) {
     return buf;
 }
 
-// FileWriter.writeString support: write the window to fd, return the byte
-// count for the writer's pos bookkeeping.
+// Write the window to `fd`, returning the byte count for the writer's pos.
 int64_t __cajeta_file_write(int32_t fd, const void* data, int64_t len);
 int32_t __cajeta_file_write_string(int32_t fd, void* s_v) {
     cajeta_string_layout* s = (cajeta_string_layout*) s_v;
@@ -289,8 +253,7 @@ int32_t __cajeta_file_write_string(int32_t fd, void* s_v) {
     return n;
 }
 
-// @ToString(JSON) synthesizer support: quote-and-escape a String OBJECT's
-// window into a fresh malloc'd C string (`null` for a null object).
+// Quote-and-escape a String object's window into a fresh malloc'd C string.
 char* __cajeta_json_quote_buf(const char* data, int64_t n);
 char* __cajeta_json_quote_string(void* s_v) {
     if (!s_v) return __cajeta_json_quote_buf(NULL, 0);

@@ -1,6 +1,4 @@
-//
-// Created by James Klappenbach on 11/4/22.
-//
+// Codegen for a declarator's initializer forms.
 
 #include "VariableDeclarator.h"
 #include "../compile/CajetaModule.h"
@@ -15,20 +13,13 @@ namespace cajeta {
     }
 
     llvm::Value* VariableInitializer::generateCode(CajetaModulePtr module) {
-        // An initializer's job is to produce a value that the surrounding
-        // declaration writes into the local's slot. If the wrapped
-        // expression evaluates to an l-value — IdentifierExpression's
-        // alloca for `int32 a = b;`, ArrayIndexExpression's GEP for
-        // `int32 v = arr[i];`, DotExpression's field GEP for
-        // `int32 f = obj.x;` — the slot store needs the r-value loaded
-        // through, not the slot pointer itself. Forward via loadIfLValue
-        // so every consumer of an initializer (StackField, HeapField,
-        // generated stores) sees a real value.
+        // A wrapped expression may evaluate to an l-value (an alloca, a GEP), and
+        // the surrounding slot store needs the r-value loaded through it, so
+        // every initializer is forwarded via loadIfLValue.
         auto& back = children.back();
         llvm::Value* v = back->generateCode(module);
         auto exprAst = dynamic_pointer_cast<Expression>(back);
-        // A `void` call is present but valueless, so the null-init guards miss it
-        // and initializing from one hung the compiler rather than diagnosing (1.2.3).
+        // A `void` call is present but valueless, so the null-init guards miss it.
         if (exprAst && exprAst->getResolvedType()
                 && exprAst->getResolvedType()->toCanonical() == "void") {
             throw locatedException(
@@ -40,22 +31,13 @@ namespace cajeta {
     }
 
     llvm::Value* ArrayInitializer::generateCode(CajetaModulePtr module) {
-        // `int32[] xs = {1, 2, 3}` — allocate an array header of length N and
-        // populate each slot in source order. The caller (LocalVariableDeclaration
-        // or VariableInitializer) is responsible for calling setElementType before
-        // codegen; without it we can't size the allocation or coerce values. The
-        // store loop is shared with the `[...]` literal expression (array-literals
-        // §7) so the two forms cannot drift.
+        // Allocate an array header of length N and populate it in source order;
+        // the caller must have called setElementType or it cannot be sized.
         if (!elementType) {
             return nullptr;
         }
-        // collection-literals Unit 5 — the array brace-initializer `{ ... }` is
-        // retired for value/data arrays: `int32[] xs = {1, 2, 3}` must now be
-        // written `int32[] xs = [1, 2, 3]`. Braces build aggregates and the one
-        // carved-out exception: function-typed device dispatch tables
-        // (`((T) -> R)[] ops = { A::f, B::g }`), whose element type is a function
-        // type. Those lower through KernelLowering on device and through here on
-        // host, and must keep working, so only reject non-function element types.
+        // Brace initializers are retired for data arrays but survive for
+        // function-typed dispatch tables, so only non-function elements fail.
         if (!dynamic_pointer_cast<CajetaFunctionType>(elementType)) {
             throw locatedException(
                 getSourceLine(), getSourceColumn() + 1,

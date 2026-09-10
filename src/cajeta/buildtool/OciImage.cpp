@@ -1,3 +1,4 @@
+// Writes an OCI image layout: rootfs tar+gzip layer, config, manifest, index.
 #include "cajeta/buildtool/OciImage.h"
 
 #include <llvm/Support/Error.h>
@@ -62,10 +63,8 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
-        // POSIX ustar header (512 bytes). One regular-file entry into
-        // a tar buffer. Mirrors the writer in repo/TarZstd.cpp; the
-        // OCI layer tar lives in a different namespace so we keep
-        // its own copy (no cross-file coupling).
+        // Appends one regular-file POSIX ustar entry (512-byte header) to `out`.
+        // A deliberate copy of repo/TarZstd.cpp's writer, to avoid coupling.
         void appendTarEntry(std::string& out,
                             const std::string& name,
                             const std::string& data,
@@ -82,7 +81,6 @@ namespace cajeta::buildtool {
             header[156] = '0';                            // regular file
             std::strncpy(header + 257, "ustar", 5);
             header[263] = '0'; header[264] = '0';         // version
-            // Checksum.
             unsigned chk = 0;
             for (int i = 0; i < 512; ++i) {
                 chk += static_cast<unsigned char>(header[i]);
@@ -91,14 +89,12 @@ namespace cajeta::buildtool {
             header[155] = ' ';
             out.append(header, 512);
             out.append(data);
-            // 512-byte padding.
             if (size_t pad = (512 - data.size() % 512) % 512; pad > 0) {
                 out.append(pad, '\0');
             }
         }
 
-        // gzip-compress `raw` using zlib's deflate (system zlib).
-        // OCI layers default to `application/vnd.oci.image.layer.v1.tar+gzip`.
+        // gzip-compresses `raw` with zlib deflate, per the OCI layer media type.
         std::string gzipBytes(const std::string& raw);
 
         std::string serializeJson(const llvm::json::Value& v) {
@@ -151,7 +147,6 @@ namespace cajeta::buildtool {
         fs::create_directories(fs::path(outDir) / "blobs" / "sha256", ec);
         if (ec) return err("cannot create '" + outDir + "': " + ec.message());
 
-        // Read the executable bytes; this lives in the layer.
         if (!fs::exists(spec.executablePath, ec)) {
             return err("package(container): executable '" +
                        spec.executablePath + "' not found");
@@ -161,17 +156,14 @@ namespace cajeta::buildtool {
             ? fs::path(spec.executablePath).filename().string()
             : spec.entrypointName;
 
-        // Build the rootfs tar: usr/local/bin/<name>.
         std::string rootfsTar;
         appendTarEntry(rootfsTar, "usr/local/bin/" + exeName, exeBytes);
         // Two zero blocks end of tar.
         rootfsTar.append(1024, '\0');
-        // Gzip the layer per OCI media type.
         std::string layerBlob = gzipBytes(rootfsTar);
         std::string layerDigest = sha256OfBytes(layerBlob);
         std::string diffIdDigest = sha256OfBytes(rootfsTar);
 
-        // Config block: minimal but spec-compliant.
         llvm::json::Object envArr;
         std::vector<llvm::json::Value> envList;
         for (const auto& kv : spec.env) {
@@ -216,7 +208,6 @@ namespace cajeta::buildtool {
             llvm::json::Value(std::move(configJson)));
         std::string configDigest = sha256OfBytes(configBytes);
 
-        // Manifest descriptor.
         llvm::json::Object manifestJson{
             {"schemaVersion", 2},
             {"mediaType",
@@ -240,7 +231,6 @@ namespace cajeta::buildtool {
             llvm::json::Value(std::move(manifestJson)));
         std::string manifestDigest = sha256OfBytes(manifestBytes);
 
-        // Index: one manifest descriptor.
         llvm::json::Object indexJson{
             {"schemaVersion", 2},
             {"manifests", llvm::json::Array{
@@ -258,10 +248,8 @@ namespace cajeta::buildtool {
         std::string indexBytes = serializeJson(
             llvm::json::Value(std::move(indexJson)));
 
-        // oci-layout marker.
         std::string layout = R"({"imageLayoutVersion":"1.0.0"})";
 
-        // Write everything content-addressed.
         auto base = fs::path(outDir);
         if (auto e = writeBinary(base / "oci-layout", layout))
             return std::move(e);

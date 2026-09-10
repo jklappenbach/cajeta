@@ -22,6 +22,7 @@ namespace {
 
 const char* kCellMapSrc =
     "package test;\n"
+    "import cajeta.lang.Cajeta;\n"
     "import cajeta.collection.HashMap;\n"
     "public class Cell {\n"
     "    public int32 n;\n"
@@ -54,25 +55,31 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
 // surviving contract is the simpler one — everything is owned, everything is
 // reclaimed once.
 
-// 6.1.1b — `map[k] = v` lends into an owning entry, which no longer type-checks.
-TEST(ContainerTitleTests, indexedLendIsRejected) {
+// 6.1.1b — `map[k] = v` is a LEND: the local keeps its title, the map holds a
+// borrow, and the value is freed exactly once. `m[1] = #mine` is the transfer.
+TEST(ContainerTitleTests, indexedStoreLendsABareOwnedLocal) {
     std::string src = std::string(kCellMapSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Cell mine = heap Cell(9);\n"
-        "        HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
-        "        m[1] = mine;\n"
-        "        return m[1].n;\n"
+        "        int64 l0 = Cajeta.liveCount();\n"
+        "        int32 i = 0;\n"
+        "        while (i < 64) {\n"
+        "            Cell mine = heap Cell(9);\n"
+        "            HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
+        "            m[1] = mine;\n"                   // a lend: `mine` still owns
+        "            if (m[1].n != 9) { return 1; }\n"
+        "            mine.n = 10;\n"                    // still ours to use
+        "            if (m[1].n != 10) { return 2; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (Cajeta.liveCount() != l0) { return 3; }\n"
+        "        return 0;\n"
         "    }\n"
         "}\n";
-    try {
-        CajetaJit::compile(src, "test.D");
-        ADD_FAILURE() << "expected the lend into an owning entry to be rejected";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TRANSFER_REQUIRED");
-        EXPECT_NE(e.getMessage().find("#mine"), std::string::npos)
-            << e.getMessage();
-    }
+    auto jit = CajetaJit::compile(src, "test.D");
+    ASSERT_NE(jit, nullptr);
+    EXPECT_EQ((jit->lookup<int32_t (*)()>("run"))(), 0)
+        << "1/2 = wrong value; 3 = the lent cell leaked or was freed twice";
 }
 
 // …and `map[k] #= v` is the spelling that works. The source is demoted to a

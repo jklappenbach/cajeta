@@ -71,7 +71,6 @@ void Json::dumpTo(std::string& out) const {
         case Type::Null:   out += "null"; break;
         case Type::Bool:   out += (bool_ ? "true" : "false"); break;
         case Type::Number: {
-            // Integers print without a decimal point; others use %g.
             if (std::isfinite(num_) && num_ == std::floor(num_)
                     && std::fabs(num_) < 1e15) {
                 char buf[32];
@@ -223,7 +222,6 @@ struct Parser {
                             else if (h >= 'A' && h <= 'F') code |= (h - 'A' + 10);
                             else { ok = false; return out; }
                         }
-                        // Encode the BMP code point as UTF-8 (enough for DAP).
                         if (code < 0x80) {
                             out += static_cast<char>(code);
                         } else if (code < 0x800) {

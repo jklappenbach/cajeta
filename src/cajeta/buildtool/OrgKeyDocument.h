@@ -1,16 +1,6 @@
-// The organization key document — publisher-trust spec §2.
-//
-// The signed statement binding an organization to its signing keys and the
-// namespaces it owns. A signature that verifies against a key in here means
-// "the organization that owns this name published these bytes"; a signature
-// verified against a key merely sitting in the local trust store means only
-// that somebody signed them. That difference is the whole point of this
-// type, and it is the one PyPI's GPG support never had.
-//
-// Wire format: specs/schemas/org-key-document.json. The payload travels as
-// opaque bytes and the signature covers them exactly as transmitted, so
-// there is no canonical-JSON step for a signer and a verifier to disagree
-// about.
+// The organization key document - publisher-trust spec §2: the signed statement
+// binding an organization to its signing keys and the namespaces it owns. The
+// payload travels as opaque bytes, so the signature covers it exactly as sent.
 
 #pragma once
 
@@ -38,9 +28,7 @@ namespace cajeta::buildtool {
         }
     };
 
-    // Where to report a vulnerability in what this organization publishes
-    // (spec §2.10). Signed because forging it has a victim: a mirror showing
-    // an attacker's address receives the report before the maintainer does.
+    // Where to report a vulnerability in what this organization publishes.
     struct SecurityContact {
         std::string uri;    // mailto: or https:, never a bare address
         std::string label;  // display only
@@ -55,42 +43,19 @@ namespace cajeta::buildtool {
         std::string rootKeyId;      // which root signed it (spec §6.3)
         SecurityContact securityContact;   // empty uri when absent
 
-        // Keys inside their validity window at `now`. Empty is a legitimate
-        // answer for a document whose keys have all expired, and the caller
-        // must treat it as "cannot verify", never as "verified".
+        // Keys inside their validity window at `now`. Empty is legitimate, and the
+        // caller must treat it as "cannot verify", never as "verified".
         std::vector<const OrgSigningKey*> usableKeys(std::time_t now) const;
     };
 
-    // Parse a `keys` array — shared by the organization key document and the
-    // repository delegation, so the rules (ed25519 only, not-after strictly
-    // after not-before) have ONE implementation rather than two that can
-    // drift. `what` names the document in error text.
+    // Parse a `keys` array, shared by the org key document and the repository
+    // delegation so the rules have one implementation. `what` names it in errors.
     llvm::Expected<std::vector<OrgSigningKey>> parseSigningKeys(
         const llvm::json::Array& keys, const std::string& what);
 
-    // Parse and verify an envelope.
-    //
-    // `now` is a PARAMETER rather than read from the clock so expiry is
-    // testable without sleeping, and so a caller can pin the instant a whole
-    // resolve is evaluated against instead of racing midnight partway
-    // through.
-    //
-    // Fails when: the envelope or payload is malformed, the format version
-    // is unrecognised, the signature verifies against none of `rootPemPaths`,
-    // or the document has expired. An expired document is an ERROR and not a
-    // parsed-but-unusable value: nothing downstream should be able to hold
-    // one and forget to check (spec §2.5).
-    // `seenIssuedAt` is the newest `issued-at` already accepted for this
-    // organization, or 0 for "nothing seen yet". An older document is
-    // REFUSED: expiry alone does not stop a replay, because a previous
-    // document is still validly signed and still inside its own window, and
-    // serving it reinstates every key the organization has since removed
-    // (spec §2.9).
-    //
-    // Defaulted, unlike the revocation parameter on
-    // `verifyAgainstOrgDocument`, because 0 is the CORRECT value on a first
-    // fetch rather than a way to skip the check. What guards against the
-    // check never being reached is a test on OrgKeyCache, not the signature.
+    // Parse and verify an envelope against `roots`. `now` is a parameter so a whole
+    // resolve pins one instant. Expiry is an ERROR, and a document older than
+    // `seenIssuedAt` (0 = nothing seen yet) is REFUSED as a replay of removed keys.
     llvm::Expected<OrgKeyDocument> loadOrgKeyDocument(
         const std::string& envelopeJson,
         const std::vector<RootKey>& roots,

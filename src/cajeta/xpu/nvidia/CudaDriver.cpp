@@ -1,6 +1,4 @@
-//
 // Minimal CUDA Driver API wrapper — see header.
-//
 
 #include "CudaDriver.h"
 
@@ -39,8 +37,7 @@ namespace {
 constexpr int CUDA_SUCCESS = 0;
 } // namespace
 
-// Resolved driver entry points. The driver API exposes size-versioned
-// symbols (cuMemAlloc_v2, …); we bind those explicitly.
+// Resolved driver entry points; the API's size-versioned symbols (cuMemAlloc_v2, …) are bound explicitly.
 struct CudaDriver::Api {
     void* lib = nullptr;
     int (*cuInit)(unsigned) = nullptr;
@@ -108,8 +105,6 @@ bool CudaDriver::available() {
 }
 
 CudaDriver::~CudaDriver() {
-    // Context teardown is left to process exit — cuCtxDestroy ordering vs
-    // the dlopen'd lib is fiddly and the process is ending anyway.
     if (api) {
         if (api->lib) closeLib(api->lib);
         delete api;
@@ -118,8 +113,7 @@ CudaDriver::~CudaDriver() {
 
 bool CudaDriver::init() {
     if (initialized) return true;
-    // A prior failed init() may have left an Api (and an open dlopen handle);
-    // release it before retrying so `api` isn't overwritten and leaked.
+    // A prior failed init() may have left an Api and an open dlopen handle; release it before retrying.
     if (api) {
         if (api->lib) closeLib(api->lib);
         delete api;

@@ -32,17 +32,8 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // The built-in standard library: these `cajeta.*` modules ship embedded
-        // in the compiler (cajeta_stdlib_embedded.cpp) and are compiled from
-        // source alongside user code, so they are neither fetched from a
-        // repository nor placed on the classpath — like Go's GOROOT or Zig's
-        // bundled `std`. A project may still *declare* them (the version pins
-        // the stdlib API level), but the resolver satisfies them implicitly.
-        //
-        // Scoped to the actual embedded roots so it does NOT swallow first-party
-        // packages that genuinely resolve (plugins like `cajeta.coverage` /
-        // `cajeta.lint.security`, or `cajeta.testkit`) — those are not stdlib and
-        // ship as their own artifacts. Keep in sync with runtime/src/cajeta/*.
+        // True for the `cajeta.*` modules embedded in the compiler, which the resolver
+        // satisfies implicitly; first-party `cajeta.*` packages still resolve normally.
         bool isBuiltinStdlibDep(const std::string& name) {
             static const char* const kStdlibRoots[] = {
                 "cajeta.codec", "cajeta.collection", "cajeta.error",
@@ -67,9 +58,7 @@ namespace cajeta::buildtool {
             return out;
         }
 
-        // Strip everything after the first `-` or `+`. Used to
-        // separate the numeric core of a semver from prerelease /
-        // build-meta tags.
+        // The numeric core of a semver: everything before the first `-` or `+`.
         std::string semverCore(const std::string& v) {
             size_t cut = v.size();
             for (size_t i = 0; i < v.size(); ++i) {
@@ -129,20 +118,13 @@ namespace cajeta::buildtool {
             return s.substr(b, e - b);
         }
 
-        // A single atomic constraint piece. The full constraint
-        // string is a comma-separated AND of these.
-        //
-        //   op == Eq, operand "1.2.3"   → exact (release-only — does
-        //                                  NOT match "1.2.3-rc1")
-        //   op == Wild, operand "1.2"   → "1.2.*" form
-        //   op == Ge/Gt/Le/Lt           → range operator
+        // One atomic piece of a comma-separated AND. Eq is release-only ("1.2.3"
+        // excludes "1.2.3-rc1"), and Wild holds the segment prefix of a "1.2.*" form.
         enum class Op { Eq, Wild, Ge, Gt, Le, Lt };
         struct Atom { Op op; std::string operand; };
 
-        // Parse one comma-piece. Recognized prefixes (longest-match):
-        //   ">="  ">"  "<="  "<"  "="
-        // No prefix + contains '*' → Wild.
-        // No prefix + bare semver  → Eq.
+        // Parses one comma-piece: a longest-match ">=", ">", "<=", "<" or "=" prefix,
+        // else Wild if the operand contains '*', else Eq.
         llvm::Expected<Atom> parseAtom(const std::string& raw) {
             std::string s = trim(raw);
             if (s.empty()) {
@@ -176,8 +158,6 @@ namespace cajeta::buildtool {
         bool atomMatches(const Atom& a, const std::string& version) {
             switch (a.op) {
                 case Op::Eq:
-                    // Release-only: prereleases (`1.2.3-rc1`) do NOT
-                    // satisfy `1.2.3`. Matches Phase 6a behaviour.
                     return version == a.operand;
                 case Op::Wild: {
                     if (a.operand.empty()) return true;  // bare "*"
@@ -215,12 +195,8 @@ namespace cajeta::buildtool {
         if (constraint == "*") return true;
         if (constraint.empty()) return false;
 
-        // Comma-separated AND. Each piece is parsed into an Atom.
-        // If any piece fails to parse, the whole constraint is
-        // unsatisfiable (returns false rather than raising — keeps
-        // the predicate total at the resolver boundary; bad
-        // constraints are caught at parse time when we add
-        // validation in 6b).
+        // An unparsable piece makes the whole constraint unsatisfiable rather than
+        // raising, which keeps this predicate total at the resolver boundary.
         for (const auto& piece : splitCommas(constraint)) {
             auto atom = parseAtom(piece);
             if (!atom) {
@@ -234,9 +210,7 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Pick the highest version in `candidates` that satisfies
-        // `constraint`. Returns empty string when no candidate
-        // satisfies.
+        // The highest version in `candidates` satisfying `constraint`, else empty.
         std::string highestSatisfying(
             const std::vector<std::string>& candidates,
             const std::string& constraint) {
@@ -254,13 +228,10 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Pick the lowest version in `candidates` that satisfies
-        // every entry in `constraints`. Returns the empty string if
-        // no candidate satisfies the conjunction.
+        // The lowest version in `candidates` satisfying every constraint, else empty.
         std::string lowestSatisfyingAll(
             const std::vector<std::string>& candidates,
             const std::vector<std::string>& constraints) {
-            // Ascending walk — first hit wins.
             std::vector<std::string> sorted = candidates;
             std::sort(sorted.begin(), sorted.end(),
                 [](const std::string& a, const std::string& b) {
@@ -276,18 +247,8 @@ namespace cajeta::buildtool {
             return "";
         }
 
-        // Resolve one dependency against the priority-ordered repos.
-        // Honors the `from` pin; picks the highest version satisfying
-        // `dep.versionConstraint`. Pulls the picked artifact into
-        // the content-addressed cache. Returns a fully populated
-        // ResolvedDependency on success.
-        //
-        // Also fetches the dep's sidecar `cajeta.json` (when the
-        // winning repository can produce one) into
-        // `manifestJsonOut` — callers that need the dep's own
-        // constraints (the MVS walker) avoid a second fetch.
-        // `manifestJsonOut` is left empty when no sidecar is
-        // available.
+        // Resolves one dependency against the priority-ordered repos, honoring `from`,
+        // caching the artifact and leaving its sidecar bytes in `manifestJsonOut`.
         llvm::Expected<ResolvedDependency> resolveOne(
             const DependencySpec& dep,
             const std::vector<RepositoryPtr>& repos,
@@ -348,9 +309,7 @@ namespace cajeta::buildtool {
 
         for (const auto& dep : deps) {
             if (dep.versionConstraint.empty()) {
-                // Phase 6a punts on path / git source forms; their
-                // resolution lands in 6c. Skip with a marker so
-                // callers can decide whether to error or proceed.
+                // A path or git source form carries no constraint and resolves elsewhere.
                 continue;
             }
             std::string _manifestJson;
@@ -363,38 +322,17 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // Per-package state maintained across the MVS fixed-point
-        // iteration. `constraints` accumulates every constraint
-        // string ever declared against this package; `fromRepo` is
-        // the (single) declared `from` pin, if any (conflicts
-        // error). The rest is the currently-picked artifact and
-        // the parsed declared-deps of its sidecar.
-        //
-        // Override interplay (Phase 6b):
-        //   - `directRoot`: this package appears in the project's
-        //     own `dependencies` block. Per spec, direct beats
-        //     override — `overrideConstraint` is ignored when
-        //     `directRoot` is set.
-        //   - `overrideConstraint`: when set (and !directRoot), the
-        //     pick uses ONLY this constraint set, NOT the gathered
-        //     transitive constraints. The gathered set is kept for
-        //     the post-MVS major-downgrade audit.
+        // Per-package state across the MVS fixed-point iteration: every constraint ever
+        // declared, the single `from` pin, the current pick. directRoot beats override.
         struct MvsState {
             std::vector<std::string> constraints;
             std::optional<std::string> fromRepo;
             bool directRoot = false;
             std::optional<std::string> overrideConstraint;
             bool overrideAllowsMajorDowngrade = false;
-            // Phase 6c: path replacement override. When set (and not
-            // shadowed by a directRoot match), the package is resolved
-            // from this local directory instead of through any
-            // repository. Version + artifact + sidecar come from the
-            // directory's own cajeta.json + build/archive layout.
+            // Resolve from this local directory instead of any repository.
             std::optional<std::string> overridePath;
-            // Phase 6c: git replacement override. Same semantics as
-            // overridePath, but the package source is a git URL +
-            // ref pair — the resolver synthesizes a GitRepository on
-            // demand to clone + checkout into the stage dir.
+            // Resolve from this git URL and ref, cloned on demand into the stage dir.
             std::optional<std::string> overrideGitUrl;
             std::optional<std::string> overrideGitRef;
 
@@ -408,9 +346,7 @@ namespace cajeta::buildtool {
             bool everPicked = false;
         };
 
-        // Returns the effective constraint set used for picking:
-        // the override's lone constraint when override is in effect,
-        // else the gathered transitive set.
+        // The override's lone constraint when one is in effect, else the gathered set.
         std::vector<std::string> effectiveConstraints(const MvsState& s) {
             if (s.overrideConstraint && !s.directRoot) {
                 return { *s.overrideConstraint };
@@ -418,10 +354,8 @@ namespace cajeta::buildtool {
             return s.constraints;
         }
 
-        // Pick lowest-satisfying-all across the priority-ordered
-        // repos. Returns the chosen version + repo + artifact
-        // path + sidecar manifest (or empty manifest when the
-        // winning repo can't produce one).
+        // One package's chosen version, its repo, the cached artifact and the sidecar
+        // manifest, which is empty when the winning repo cannot produce one.
         struct MvsPick {
             std::string version;
             std::string resolvedFromRepo;
@@ -430,15 +364,8 @@ namespace cajeta::buildtool {
             std::string manifestJson;
         };
 
-        // Synthesize a pick from a local-path override. Reads the
-        // path's cajeta.json (must declare `details.name == name`),
-        // confirms a pre-built `.cja` at the conventional location,
-        // and surfaces the sidecar's bytes for transitive expansion.
-        //
-        // Symmetric with the GitRepository v1 limitation: a path
-        // override points at a *built* package, not raw source. A
-        // future enhancement can spawn a recursive `cajeta build`
-        // when the artifact is missing.
+        // Builds a pick from a local-path override, whose cajeta.json must declare
+        // `details.name == name` and whose `.cja` must already be built.
         llvm::Expected<MvsPick> pickFromPathOverride(
             const std::string& name,
             const std::string& path,
@@ -522,11 +449,8 @@ namespace cajeta::buildtool {
             return out;
         }
 
-        // Synthesize a pick from a git-replacement override. Builds
-        // an ephemeral GitRepository (clones lazily into the stage
-        // dir), reads the dep's cajeta.json from the checked-out
-        // tree, and serves the pre-built `.cja` via the same
-        // contract as repo-served picks.
+        // Builds a pick from a git override through an ephemeral GitRepository, which
+        // clones lazily into the stage dir; the same built-package contract applies.
         llvm::Expected<MvsPick> pickFromGitOverride(
             const std::string& name,
             const std::string& url,
@@ -566,6 +490,8 @@ namespace cajeta::buildtool {
             return out;
         }
 
+        // Picks the lowest version satisfying every constraint, walking the repos in
+        // priority order: the first repo with any satisfying version wins.
         llvm::Expected<MvsPick> pickLowestForAll(
             const std::string& name,
             const std::vector<std::string>& constraints,
@@ -593,10 +519,8 @@ namespace cajeta::buildtool {
                 out.sha256 = ArtifactCache::sha256OfFile(*cached);
                 if (sidecar->has_value()) out.manifestJson = **sidecar;
 
-                // Write-through: a dep fetched from a remote is mirrored
-                // into ~/.olla so the next resolve is a local hit. Skip
-                // when the hit came from the olla repo itself.
-                // Trust-on-first-use — the fetched bytes define the hash.
+                // Mirror a remote fetch into ~/.olla so the next resolve is a local
+                // hit; trust on first use, so the fetched bytes define the hash.
                 if (!ollaWriteThroughRoot.empty() && repo->name() != "olla") {
                     OllaStore ollaStore(ollaWriteThroughRoot);
                     auto wt = ollaStore.writeVerified(
@@ -634,8 +558,7 @@ namespace cajeta::buildtool {
         const std::string& gitOverrideStageDir,
         const std::string& ollaWriteThroughRoot) {
 
-        // Pre-flight: split overrides into version / path / git forms.
-        // Path and git overrides both land in Phase 6c.
+        // Pre-flight: split the overrides into version, path and git forms.
         std::unordered_map<std::string, const OverrideSpec*> overrideMap;
         std::unordered_map<std::string, const OverrideSpec*> pathOverrideMap;
         std::unordered_map<std::string, const OverrideSpec*> gitOverrideMap;
@@ -663,9 +586,8 @@ namespace cajeta::buildtool {
         std::unordered_map<std::string, MvsState> state;
         std::vector<std::string> insertionOrder;
 
-        // Add a constraint + optional fromRepo for `name`. Returns
-        // true when the constraint set actually changed (caller
-        // marks dirty to trigger a re-pick).
+        // Adds a constraint and optional `from` pin for `name`, returning true when the
+        // set actually changed, which marks the package dirty for a re-pick.
         auto addConstraint = [&](const std::string& name,
                                  const std::string& constraint,
                                  const std::optional<std::string>& fromRepo,
@@ -675,9 +597,7 @@ namespace cajeta::buildtool {
             auto& s = it->second;
             if (inserted) {
                 insertionOrder.push_back(name);
-                // Wire override metadata at first sight — the same
-                // override applies regardless of which BFS step
-                // introduced the package.
+                // Wire override metadata at first sight: which step found it is irrelevant.
                 auto it2 = overrideMap.find(name);
                 if (it2 != overrideMap.end()) {
                     s.overrideConstraint = it2->second->versionConstraint;
@@ -700,7 +620,6 @@ namespace cajeta::buildtool {
             }
 
             bool changed = inserted;
-            // Constraint set is treated as a set (dedupe by string).
             if (std::find(s.constraints.begin(), s.constraints.end(),
                           constraint) == s.constraints.end()) {
                 s.constraints.push_back(constraint);
@@ -724,9 +643,7 @@ namespace cajeta::buildtool {
             return changed;
         };
 
-        // Seed with the root deps. These are flagged directRoot so
-        // any same-named override is ignored (per spec: direct
-        // wins over override).
+        // Root deps are flagged directRoot, so a same-named override is ignored.
         for (const auto& d : deps) {
             if (d.versionConstraint.empty()) continue;  // 6c forms
             auto added = addConstraint(d.name, d.versionConstraint,
@@ -734,12 +651,9 @@ namespace cajeta::buildtool {
             if (!added) return added.takeError();
         }
 
-        // Fixed-point loop. We pick + propagate until no package is
-        // dirty. Each re-pick raises a package's chosen version,
-        // bounded by the version set in the repos, so termination
-        // is guaranteed. We iterate `insertionOrder` repeatedly so
-        // newly-discovered packages get visited in declaration
-        // order — keeps output deterministic.
+        // Pick and propagate until nothing is dirty. A re-pick can only raise a version
+        // within the finite repo set, so this terminates, and walking `insertionOrder`
+        // keeps the output deterministic.
         bool anyDirty = true;
         while (anyDirty) {
             anyDirty = false;
@@ -775,16 +689,8 @@ namespace cajeta::buildtool {
                 s.dirty = false;
 
                 if (versionChanged) {
-                    // Re-parse declared children. The old set is
-                    // discarded — children of the prior version
-                    // contributed constraints which may now be
-                    // stale, but constraints once added stay; that
-                    // can only over-constrain, never break
-                    // correctness. (Over-constraining is the
-                    // conservative MVS choice when versions
-                    // change semantically — a future refinement is
-                    // to drop constraints contributed by a now-
-                    // superseded version.)
+                    // The prior version's children are discarded, but the constraints
+                    // they added stay: that over-constrains, it never breaks the solve.
                     s.childDeps.clear();
                     if (!s.manifestJson.empty()) {
                         auto child = loadManifestString(
@@ -794,9 +700,6 @@ namespace cajeta::buildtool {
                         if (!childDeps) return childDeps.takeError();
                         s.childDeps = std::move(*childDeps);
                     }
-                    // Propagate children's constraints. Each new
-                    // one may mark someone dirty for the next loop
-                    // iteration.
                     for (const auto& cd : s.childDeps) {
                         if (cd.versionConstraint.empty()) continue;
                         auto added = addConstraint(
@@ -805,19 +708,15 @@ namespace cajeta::buildtool {
                         if (!added) return added.takeError();
                         if (*added) anyDirty = true;
                     }
-                    // Re-pick of `name` might have CHANGED s.dirty
-                    // via cycles; preserve that.
+                    // A cycle may have re-dirtied `name` during this pass; preserve that.
                     if (state[name].dirty) anyDirty = true;
                 }
             }
         }
 
-        // Post-MVS audit: any package that was forced by an override
-        // (and is NOT a direct root dep) gets compared against what
-        // the gathered transitive constraints would have selected.
-        // If the override dropped the major version below what
-        // transitives needed, this is the documented hard error
-        // unless allow-major-downgrade is set.
+        // Audit: a package forced by an override, and not a direct root dep, is compared
+        // against what its transitive constraints would have picked. Dropping the major
+        // version below that is an error unless allow-major-downgrade is set.
         for (const auto& name : insertionOrder) {
             const auto& s = state[name];
             bool overridden = (s.overrideConstraint || s.overridePath ||
@@ -826,10 +725,7 @@ namespace cajeta::buildtool {
             if (!overridden) continue;
             if (s.constraints.empty()) continue;  // override unused — nothing to compare
 
-            // Recompute the "what would MVS have picked from the
-            // transitive set alone" baseline. If that set is itself
-            // unsatisfiable, the override RESCUED the build — not
-            // a downgrade situation.
+            // An unsatisfiable transitive set means the override rescued the build.
             auto baseline = pickLowestForAll(
                 name, s.constraints, s.fromRepo, repos, cache,
                 /*ollaWriteThroughRoot=*/"");  // hypothetical — no write-through
@@ -855,8 +751,7 @@ namespace cajeta::buildtool {
 
         ResolvedGraph out;
         out.packages.reserve(insertionOrder.size());
-        // Roots: the direct deps exactly as seeded above (6c forms with an
-        // empty constraint were never added to the solve).
+        // The direct deps as seeded: 6c forms were never added to the solve.
         for (const auto& d : deps) {
             if (d.versionConstraint.empty()) continue;
             out.roots.push_back(d);
@@ -870,8 +765,7 @@ namespace cajeta::buildtool {
             r.artifactPath = s.artifactPath;
             r.sha256 = s.sha256;
             out.packages.push_back(std::move(r));
-            // Edges. No sidecar means the children are UNKNOWN — record
-            // that as opaque rather than as an empty list (spec §2.3).
+            // No sidecar means the children are unknown, which is opaque, not empty.
             if (s.manifestJson.empty()) {
                 out.opaque.insert(name);
                 continue;
@@ -918,11 +812,8 @@ namespace cajeta::buildtool {
         auto deps = parseDependencies(m);
         if (!deps) { closeTotal(); return deps.takeError(); }
 
-        // Drop built-in stdlib (`cajeta.*`) deps before resolution: they are
-        // satisfied by the compiler's embedded stdlib, not fetched. This lets a
-        // project that depends only on the stdlib build with no repositories
-        // configured and with no network — the common case for a fresh
-        // `cajeta init` project (and the bootstrap for first-party tools).
+        // The embedded stdlib satisfies these, so a stdlib-only project resolves with
+        // no repositories configured and no network.
         deps->erase(std::remove_if(deps->begin(), deps->end(),
                         [](const DependencySpec& d) {
                             return isBuiltinStdlibDep(d.name);
@@ -931,35 +822,22 @@ namespace cajeta::buildtool {
 
         auto repoSpecs = parseRepositories(m);
         if (!repoSpecs) { closeTotal(); return repoSpecs.takeError(); }
-        // No early "deps but no repositories" error: the implicit
-        // ~/.olla local repository (prepended below) is always an
-        // available source, so a dependency satisfied by a prior
-        // `cajeta install` resolves with no declared remotes. A dep
-        // present neither locally nor remotely surfaces a clear
-        // per-package error from the pick step.
-        // Remote drivers stage downloads under .cajeta/cache/downloads/
-        // before the ArtifactCache content-addresses them. Living
-        // under the project's own .cajeta keeps interrupted fetches
-        // scoped to the project — `rm -rf .cajeta` is the user's
-        // escape hatch.
+        // No early "deps but no repositories" error: the implicit ~/.olla repository
+        // prepended below is always a source, and the pick step reports what is missing.
+        // Downloads stage under the project's own .cajeta, scoping interrupted fetches.
         std::string downloadStage =
             (std::filesystem::path(projectRoot) / ".cajeta" / "cache" /
              "downloads").string();
         auto repos = buildRepositories(*repoSpecs, downloadStage);
         if (!repos) { closeTotal(); return repos.takeError(); }
 
-        // Phase 6c: resolve declared melts BEFORE looking at deps so
-        // we can substitute `"*"` constraints and append melt-provided
-        // repositories. The melt walk is post-order with cycle
-        // detection (see Melt.cpp::expandMelt).
+        // Melts resolve before deps so their table can substitute `"*"` constraints.
         ArtifactCache cache(projectRoot, homeOverride);
         auto melts = resolveMelts(m, *repos, cache);
         if (!melts) { closeTotal(); return melts.takeError(); }
 
         if (!melts->repositories.empty()) {
-            // Append melt-provided repos and rebuild drivers. The
-            // priority field is preserved; stable_sort keeps
-            // declaration order among ties.
+            // stable_sort keeps declaration order among equal priorities.
             auto specs = *repoSpecs;
             for (const auto& r : melts->repositories) specs.push_back(r);
             std::stable_sort(specs.begin(), specs.end(),
@@ -971,11 +849,8 @@ namespace cajeta::buildtool {
             *repos = std::move(*rebuilt);
         }
 
-        // Substitute `"*"` deps using the melt constraint table.
-        // Anything left with `"*"` at the end is a hard error per spec.
-        // Divergence between a consumer's explicit dep and a melt's
-        // curated version surfaces as warnings (consumer wins, but
-        // the operator sees what they overrode).
+        // Any `"*"` left after this substitution is a hard error; a consumer that
+        // diverges from a melt's curated version wins, with a warning.
         std::map<std::string, std::string> meltProvidedBy;
         std::vector<std::string> meltDivergenceWarnings;
         if (auto e = applyMeltLookups(*deps, *melts, meltProvidedBy,
@@ -995,18 +870,13 @@ namespace cajeta::buildtool {
         auto overrides = parseOverrides(m);
         if (!overrides) { closeTotal(); return overrides.takeError(); }
 
-        // Local-first: prepend the implicit ~/.olla local repository as
-        // the highest-priority source. pickLowestForAll short-circuits
-        // on the first repo with a satisfying version, so a local hit
-        // never touches a declared remote. Root honors $OLLA_HOME, then
-        // homeOverride/$HOME (mirrors the workstation cache override).
+        // Local-first: the pick short-circuits on the first repo with a satisfying
+        // version, so a hit in ~/.olla never touches a declared remote.
         std::string ollaRoot = OllaStore::resolveRoot(homeOverride);
         repos->insert(repos->begin(),
             std::make_shared<FilesystemRepository>("olla", ollaRoot));
 
-        // When timings are requested, decorate each repo with the
-        // recording wrapper. `wrapWithTimings(...,nullptr)` is a
-        // no-op pass-through so the non-timed path pays nothing.
+        // wrapWithTimings passes through on a null pointer, so untimed runs pay nothing.
         std::vector<RepositoryPtr> repoList =
             wrapWithTimings(*repos, timings);
 

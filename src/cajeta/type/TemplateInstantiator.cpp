@@ -1,28 +1,6 @@
-//
-// CajetaClass::instantiate(args) — materialize a concrete class from a
-// template under the supplied arguments. Lives in its own TU so CajetaClass.h
-// doesn't have to drag in the visitor + parser machinery.
-//
-// Flow: synthesize a small re-parseable input from the module's package +
-// imports + the captured template source snippet, parse it with a fresh
-// ANTLR pipeline, find the classDeclaration ctx, push a type-parameter
-// substitution map onto the module, walk the body with the existing visitor
-// (which causes CajetaType::fromContext to substitute `T` to the bound arg),
-// then run the usual prototype generation on the resulting CajetaClass.
-//
-// Result is cached in `module->getStructures()` under the canonical-with-args
-// name (e.g. `pkg.Box<cajeta.int32>`). Subsequent calls with the same args
-// hit the cache.
-//
-// v1 limitations:
-//  - Parameterized supers (`class List<T> extends Container<T>`) parse but
-//    the typeArguments on the super clause are silently dropped. TPL-5 will
-//    extend qExtended to carry typeArgument lists and resolve through the
-//    template instantiation cache.
-//  - No diamond-operator inference here — that's TPL-7. This function takes
-//    pre-resolved CajetaTypePtr args.
-//  - No constraint enforcement — TPL-6.
-//
+// CajetaClass::instantiate — materialize a concrete class from a template by
+// re-parsing its captured source under a type-parameter substitution. Kept in
+// its own TU so CajetaClass.h need not drag in the visitor + parser machinery.
 
 #include "CajetaArray.h"
 #include "CajetaClass.h"
@@ -30,7 +8,7 @@
 #include "../asn/ClassBodyDeclaration.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/CajetaLlvmVisitor.h"
-#include "../compile/Compiler.h"   // Compiler::getSharedContext() — reuse-mode gate
+#include "../compile/Compiler.h"
 #include "../error/Exception.h"
 #include "cajeta/xref/XrefIndex.h"
 #include "CajetaParser.h"
@@ -42,9 +20,8 @@
 
 namespace cajeta {
 
-    // Build `<arg0,arg1,...>` from the type arguments using each arg's
-    // canonical name. Used both for the instantiation's class name suffix
-    // and for the structure-map cache key.
+    // Build `<arg0,arg1,...>` from the args' canonical names — the suffix of
+    // the instantiation's class name and the structure-map cache key.
     static string buildArgSuffix(const vector<CajetaTypePtr>& args) {
         string s = "<";
         for (size_t i = 0; i < args.size(); ++i) {
@@ -55,10 +32,8 @@ namespace cajeta {
         return s;
     }
 
-    // Reconstruct a `package X.Y; import A.B; ...` preamble from what the
-    // module captured during the original parse pass. Required so the
-    // re-parsed snippet resolves the same names the template body was
-    // written against.
+    // Rebuild the module's `package` / `import` preamble so a re-parsed
+    // template snippet resolves the same names its body was written against.
     static string synthesizePreamble(CajetaModulePtr module) {
         string out;
         const string& pkg = module->getQName()->getPackageName();
@@ -86,8 +61,6 @@ namespace cajeta {
     }
 
     // Instantiation cost, split into the ANTLR body re-walk vs LLVM lowering.
-    // Reported by the [defer] line under CAJETA_PRIME_TIMING; the split is what
-    // says whether a change to 7.2.9 landed. Single-threaded compile.
     static long long g_walkNs = 0, g_protoNs = 0, g_instCount = 0;
 
     CajetaClassPtr& CajetaClass::instantiationReuseTarget() {
@@ -100,21 +73,16 @@ namespace cajeta {
         instantiationReuseTarget().reset();
     }
 
+    // Completes every queued instantiation whose template has since materialized, and
+    // returns true if any progressed, so the caller's fixpoint re-runs. Index-based: a
+    // completion appends entries mid-iteration, and an unwind clears the whole queue.
     bool CajetaClass::drainDeferredInstantiations() {
         auto& pending = deferredInstantiations();
         if (pending.empty()) return false;
         bool progressed = false;
-        // Index-based: completing one instantiation can defer others (a
-        // template body that names another not-yet-declared template), and
-        // those append while we iterate.
-        //
-        // Exception hygiene: instantiateInternal can throw a USER diagnostic
-        // (a member synthesizer rejecting the instantiation — FRAME_SCHEMA
-        // et al.). That fails the whole compile, so the queue's remaining
-        // entries — shared_ptrs into THIS compile's object graph — must not
-        // survive into the next Compiler on this thread; and the reuse
-        // target must not stay pointing at the aborted entry for the rest
-        // of this drain's callers. Restore/clear on unwind.
+        // Index-based: completing one instantiation can append more entries
+        // while we iterate. On unwind (a member synthesizer's USER diagnostic)
+        // the queue holds shared_ptrs into THIS compile, so clear and restore.
         struct DrainUnwindGuard {
             vector<DeferredInstantiation>& pending;
             CajetaClassPtr saved;
@@ -135,13 +103,11 @@ namespace cajeta {
             auto& d = pending[i];
             ++diSeen;
             if (!d.templateClass || !d.target) continue;
-            if (d.templateClass->isPlaceholder()) continue;   // still unseen
-            if (!d.target->isPlaceholder()) continue;         // already done
+            if (d.templateClass->isPlaceholder()) continue;
+            if (!d.target->isPlaceholder()) continue;
             CajetaClassPtr& reuse = instantiationReuseTarget();
             CajetaClassPtr saved = reuse;
             reuse = d.target;
-            // The template is real now, so this takes the normal path and
-            // fills `d.target` in place instead of allocating.
             const auto diOne = std::chrono::steady_clock::now();
             d.templateClass->instantiateInternal(d.args);
             if (diTiming) {
@@ -171,7 +137,6 @@ namespace cajeta {
             }
         }
         guard.dismissed = true;
-        // Drop the completed entries.
         pending.erase(std::remove_if(pending.begin(), pending.end(),
             [](const DeferredInstantiation& d) {
                 return !d.target || !d.target->isPlaceholder();
@@ -179,16 +144,12 @@ namespace cajeta {
         return progressed;
     }
 
+    // instantiateInternal, plus the cross-module obligation: a result distinct from
+    // `this` is a real instantiation the current codegen module has to be told about.
     CajetaClassPtr CajetaClass::instantiate(vector<CajetaTypePtr> args) {
         CajetaClassPtr result = instantiateInternal(std::move(args));
-        // Incremental compilation (Phase 2/3): if this produced a genuine
-        // instantiation (a different object than the template `this` — not a
-        // non-template passthrough or placeholder short-circuit) and it's
-        // owned by another module, record it as an obligation of whatever
-        // module's codegen triggered us. noteCrossModuleInstantiation no-ops
-        // outside codegen (currentCodegenModule null) and for same-module
-        // instantiations. This is the single choke point through which every
-        // class-template instantiation flows. (docs/IncrementalCompilation.md.)
+        // Only a genuine instantiation (a distinct object from the template)
+        // is a cross-module obligation; the note no-ops outside codegen.
         if (result && result.get() != this) {
             CajetaModule::noteCrossModuleInstantiation(
                 CajetaModule::getCurrentCodegenModule(), result);
@@ -196,23 +157,17 @@ namespace cajeta {
         return result;
     }
 
+    // The instantiation proper: fill trailing defaults, short-circuit on placeholder or
+    // bare-template args, check arity and bounds, then reuse the cached instantiation or
+    // re-parse the captured body under the substitution. Returns `this` if not a template.
     CajetaClassPtr CajetaClass::instantiateInternal(vector<CajetaTypePtr> args) {
-        // Non-templates pass through unchanged. Lets callers do
-        // `cls->instantiate(args)` without guarding on isTemplate themselves.
         if (!isTemplate()) {
             return static_pointer_cast<CajetaClass>(shared_from_this());
         }
 
-        // Default type arguments — fill omitted TRAILING parameters from their
-        // declared defaults (`class Foo<T = float32>` referenced as `Foo`,
-        // `Foo<>`, or with fewer args than params). Done here, BEFORE the cache
-        // key and arity check below, so `Foo` and `Foo<float32>` fill to the
-        // same arg list → the same canonical name and the same cached
-        // instantiation (one type identity, not two). A param whose default is
-        // empty stops the fill, leaving the arity check to reject the gap — so a
-        // non-defaulted template referenced bare still errors, and a default may
-        // only follow defaults. The default text resolves against the global
-        // canonical map (primitives like `float32`, or a registered class).
+        // Fill omitted TRAILING parameters from their declared defaults before
+        // the cache key, so `Foo` and `Foo<float32>` share one identity; an
+        // empty default stops the fill and the arity check rejects the gap.
         if (args.size() < typeParameters.size()) {
             for (size_t i = args.size(); i < typeParameters.size(); ++i) {
                 const auto& p = typeParameters[i];
@@ -229,99 +184,31 @@ namespace cajeta {
             }
         }
 
-        // Placeholder-arg short-circuit. Two flavors of placeholder
-        // reach here:
-        //
-        //   (a) T-var placeholder — created by the method-template
-        //       visitor when pushing T-vars onto the substitution
-        //       stack. The qName has an EMPTY package; the type
-        //       name is the bare param letter ("T", "R"). Example:
-        //         public final <R> #Stream<R> map((T) -> R fn)
-        //       Return type `Stream<R>` is parsed at declaration
-        //       time with R bound to a placeholder. Building a real
-        //       `Stream<placeholder-R>` would pollute the structure
-        //       cache. Short-circuit — the real instantiation
-        //       happens when the method is later instantiated with
-        //       a concrete R (MethodTemplateInstantiator).
-        //
-        //   (b) Forward-reference placeholder — created by
-        //       CajetaType::fromContext's miss-path when a user
-        //       class is referenced before its declaration is
-        //       body-walked. The qName carries a real package
-        //       (e.g. `test.DemoClass`). The placeholder will be
-        //       FILLED IN PLACE when the class's visitClassDeclaration
-        //       eventually runs — same shared_ptr, just populated.
-        //       So we can proceed with instantiation now; the
-        //       resulting instantiation's references to the
-        //       placeholder shared_ptr auto-upgrade as the
-        //       placeholder fills.
-        //
-        // The bug fixed here: pre-fix we short-circuited BOTH
-        // flavors, so `ArrayList<DemoClass>` in a file parsed
-        // before DemoClass's declaration silently degraded to the
-        // bare `ArrayList` template — `list.add()`/`list.count()`
-        // dispatched against the template's unbound `T` methods,
-        // `sizeCount` never incremented, and `count()` returned 0.
+        // Placeholder args: a T-var placeholder (empty package, from a method
+        // template) must never be baked into the cache, while a forward-ref
+        // placeholder (real package) is filled in place later — let it through.
         for (auto& arg : args) {
             if (auto cls = dynamic_pointer_cast<CajetaClass>(arg)) {
                 if (cls->isPlaceholder()) {
                     bool isTVar = !cls->getQName()
                         || cls->getQName()->getPackageName().empty();
-                    // Templated-INTERFACE instantiation continues to
-                    // short-circuit on any placeholder arg. The
-                    // interface vtable verification is signature-
-                    // strict; building a real `Encoder<placeholder-M>`
-                    // and running the conformance check against an
-                    // implementer that uses `static` methods (a
-                    // @Encoding typeclass pattern) flags the
-                    // static-vs-instance mismatch — pre-fix the
-                    // short-circuit hid that. Until the verification
-                    // learns to accept static methods as substitutes,
-                    // we preserve the pre-fix behavior for
-                    // interfaces.
+                    // Interfaces keep short-circuiting on any placeholder:
+                    // vtable conformance is signature-strict and would reject
+                    // a static-method @Encoding implementer.
                     if (isTVar || interfaceFlag) {
                         return static_pointer_cast<CajetaClass>(
                             shared_from_this());
                     }
-                    // Forward-ref placeholder on a class template —
-                    // fall through to the normal instantiation path.
-                    // Body walk uses CajetaClass::getLlvmType() which
-                    // returns ptr for unfilled placeholders, so
-                    // layouts compose correctly. When the placeholder
-                    // is later filled in, the instantiation's
-                    // references (held by shared_ptr in field types,
-                    // method signatures) see the populated class
-                    // automatically — same shared_ptr identity.
                 }
-                // Also short-circuit when the arg is itself a bare
-                // (uninstantiated) template — the trail left by a
-                // transitive short-circuit one level deeper.
-                // `HashMapEntryStream<K,V> implements Splittable<Pair<K,V>>`
-                // (K,V placeholder) → `Pair.instantiate([K_ph, V_ph])`
-                // returns bare Pair via the check above → without this
-                // second guard, `Splittable.instantiate([bare-Pair])`
-                // proceeds to build a real `Splittable<raw-Pair>` →
-                // `Stream<raw-Pair>` cascade whose ::reduce / ::fold<R>
-                // codegen segfaults on R=raw-Pair (no LLVM type).
+                // A bare (uninstantiated) template arg is the trail of a
+                // deeper short-circuit; building over it starts a cascade
+                // whose codegen has no LLVM type for the raw arg.
                 if (cls->isTemplate() && !cls->getTypeParameters().empty()) {
                     return static_pointer_cast<CajetaClass>(
                         shared_from_this());
                 }
             }
         }
-
-        // Step 5a — template wildcards. The Step 1/2 "erased proxy"
-        // short-circuit was removed: wildcard args now flow through
-        // the normal instantiation path so methods, fields, vtable,
-        // and drop walk are all populated by re-parsing the body
-        // with T → wildcardSentinel substitution active. The
-        // wildcard sentinel is ptr-shaped (STRUCT_FLAG only — see
-        // CajetaType::init) so any `T value` field, `(T) -> R fn`
-        // parameter, or `Stream<T>` reference inside the body lowers
-        // as a pointer slot or a re-entrant Stream<?> instantiation.
-        // The cache below is keyed on canonical-with-args so
-        // `Box<?>` and `Box<int32>` get distinct entries — the same
-        // cache-bucket invariants Step 3 verified still hold.
 
         if (args.size() != typeParameters.size()) {
             throw Exception(
@@ -331,26 +218,11 @@ namespace cajeta {
                 "CAJETA_ERROR_TYPE_PARAMETER_ARITY");
         }
 
-        // Constraint enforcement (TPL-6). For each `<T extends Bound>` pair,
-        // verify the supplied argument satisfies the bound by walking the
-        // argument's supertype chain. Multiple bounds (`<T extends A & B>`)
-        // must all be satisfied. The check is purely compile-time — by the
-        // time IR is emitted only well-typed instantiations exist, so the
-        // runtime never re-validates this.
-        //
-        // Primitives never satisfy class/interface bounds and fall through
-        // to the rejection path — they're not CajetaClass instances and
-        // can't carry a parent chain. That's the intended behavior: bounds
-        // demand a class/interface relationship.
+        // Constraint enforcement: each `<T extends Bound>` is checked by
+        // walking the argument's supertype chain. Primitives carry no chain
+        // and are rejected — bounds demand a class/interface relationship.
         for (size_t i = 0; i < typeParameters.size(); ++i) {
             const auto& param = typeParameters[i];
-            // Parameter-kind check. A non-type (integer) parameter
-            // (`<..., uint32 N>`) requires a compile-time integer-constant
-            // argument (a CajetaConstantType, tagged CONSTANT_FLAG); a type
-            // parameter must NOT receive one. This is what lets
-            // `CooperativeMatrix<T, uint32 Rows, ...>` carry its shape in the
-            // type. Non-type params have empty bounds, so they fall through the
-            // TPL-6 bound check below — this is their only constraint.
             bool argIsConst = args[i] && (args[i]->getTypeFlags() & CONSTANT_FLAG);
             if (param.isNonType && !argIsConst) {
                 throw Exception(
@@ -366,30 +238,14 @@ namespace cajeta {
                     "CAJETA_ERROR_TYPE_PARAMETER_KIND");
             }
             if (param.bounds.empty()) continue;
-            // Wildcard args satisfy any bound by construction —
-            // the unbounded `?` stands for some unknown T-that-fits;
-            // bounded forms (`? extends Bound`) are deferred to Step 6
-            // and won't reach here (the parser rejects them at
-            // CajetaType.cpp:454 under flag-on).
+            // An unbounded `?` stands for some T that fits, so any bound holds.
             if (args[i] && args[i]->isWildcard()) continue;
             auto argClass = dynamic_pointer_cast<CajetaClass>(args[i]);
             for (auto& bound : param.bounds) {
-                // Numerics for Bounded Templates. `T extends Numeric`,
-                // `T extends Integral`, `T extends Floating` are three
-                // built-in pseudo-bounds that admit primitive numeric
-                // type arguments — the bound isn't a class on the
-                // canonical chain, it's a category check against the
-                // primitive flag bits set in CajetaType.h. Boolean is
-                // explicitly excluded from Numeric/Integral even though
-                // it carries INT_FLAG | NUMBER_FLAG (its flags are for
-                // legacy zero/one storage, not arithmetic).
+                // Numeric/Integral/Floating/Complex are marker bounds with dual
+                // conformance: a primitive satisfies intrinsically (type-flag
+                // lattice), a class nominally (`implements`).
                 const std::string& bname = bound->getTypeName();
-                // Numerics for Bounded Templates. `T extends Numeric/Integral/
-                // Floating/Complex` are built-in marker bounds with **dual**
-                // conformance: a primitive satisfies intrinsically (the type-flag
-                // lattice) and a class satisfies nominally (`implements`). Both go
-                // through the single predicate so the class-template site agrees
-                // with the method-template + wildcard sites.
                 if (CajetaClass::isNumericMarkerName(bname)) {
                     if (!CajetaClass::satisfiesNumericMarker(args[i], bname)) {
                         std::string argName = (args[i] && args[i]->getQName())
@@ -412,12 +268,10 @@ namespace cajeta {
                                 + ", or a class implementing cajeta.lang." + bname,
                             "CAJETA_ERROR_TYPE_PARAMETER_BOUND");
                     }
-                    continue;  // bound satisfied (intrinsic or nominal)
+                    continue;
                 }
-                // Resolve the bound: try the bound's full canonical first,
-                // then fall back to its short name (matches how `extends`
-                // names are looked up). canonicalMap holds the template's
-                // entry under both keys.
+                // canonicalMap holds a template under both its canonical and
+                // its short name; `extends` lookups try the canonical first.
                 auto& cmap = CajetaType::getCanonicalMap();
                 CajetaTypePtr boundType;
                 auto it = cmap.find(bound->toCanonical());
@@ -435,8 +289,6 @@ namespace cajeta {
                             + param.name + "' did not resolve to a class",
                         "CAJETA_ERROR_TYPE_PARAMETER_BOUND");
                 }
-                // argClass->isParentOrKind(boundClass) returns true when
-                // boundClass is argClass itself or an ancestor.
                 if (!argClass || !argClass->isParentOrKind(boundClass)) {
                     throw Exception(
                         "template " + qName->toCanonical() + ": argument '"
@@ -449,41 +301,13 @@ namespace cajeta {
             }
         }
 
-        // Cache key: full canonical name with args, e.g. `pkg.Box<cajeta.int32>`.
-        // HISTORICAL — superseded by the title-tracking note below, kept only
-        // because it describes the shape of the gate that was removed:
-        // element-ownership §8.1 (plan 2.1.4) — the value-semantics gate. `#`
-        // demands a separable ownership story from the argument: a primitive
-        // carries none (§8.1.1); a value type owns heap payload only when
-        // shared-capable — Utf8/Slice or a transitive embedder (§8.1.2).
-        // Checked after default-fill normalization and before the cache key so
-        // both source-level threading (via fromContext / NewExpression) and
-        // direct instantiate() callers hit it. Wildcards
-        // and still-unfilled forward-ref placeholders skip — their shape isn't
-        // known yet; arrays own their elements and pass.
-        // title-tracking §8.1 (plan 7.2.1) — the declaration-`#`
-        // owning-required gate and the `#`-type-argument agreement/confinement
-        // gates (value-type/primitive `#`, BORROW_MODE_OWNED) were retired:
-        // type-position `#` errors at parse (TYPE_TRANSFER_RETIRED).
+        // Cache key: full canonical name with args, `pkg.Box<cajeta.int32>`.
         string suffix = buildArgSuffix(args);
         string instCanonical = qName->toCanonical() + suffix;
 
-        // Emit target (resolution/emit separation, reuse-gated). The
-        // instantiation is RESOLVED against `module` (the stdlib template
-        // module — its imports/substitution), but its IR is EMITTED into
-        // `emitOwner`. In production emitOwner == module (bit-for-bit
-        // unchanged). In the stdlib test-reuse path a stdlib template
-        // specialized over a USER type emits into that user type's module, so
-        // the cached stdlib stays pristine across tests. The owner is chosen at
-        // CREATION time (instantiation IR emits during the body walk below, so
-        // the emit module must be known before then) by, in order: the first
-        // user-type argument's emit module (principled — the instantiation can't
-        // outlive its type arg; nested user-type args resolve transitively); the
-        // active codegen frame; the harness's per-test fallback sink. Methods
-        // adopt `inst`'s emit module at construction (Method ctor), so IR
-        // emitted mid-walk already targets the user module — no after-the-fact
-        // reparent. Pure-stdlib instantiations (`Stream<String>`) keep stdlib
-        // args → emitOwner stays the stdlib module (primed once).
+        // Resolution runs against `module` (the template's own imports and
+        // substitution); IR EMITS into `emitOwner`, which must be picked now
+        // because methods adopt it at construction, mid-walk.
         CajetaModulePtr emitOwner = module;
         if (Compiler::getSharedContext()
                 && module == CajetaModule::getStdlibModule()) {
@@ -495,16 +319,9 @@ namespace cajeta {
                     break;
                 }
             }
-            // SESSION policy (jupyter-kernel 2.1.6).
-            // Only reachable when the scan above already decided this is a
-            // USER-typed specialization: those, and only those, move from the
-            // unit that DECLARED the type to the unit being COMPILED. In a
-            // notebook the declaring unit is already sealed in the JIT and can
-            // never take delivery of new IR, so emitting there strands it.
-            // Pure-stdlib specializations (`Stream<String>`) are untouched —
-            // redirecting those into a cell is what corrupted the next session,
-            // since restoreBaseline cannot unwind a stdlib body whose callee
-            // went into a module that died with the previous session.
+            // In a notebook the declaring unit is already sealed in the JIT and
+            // can never take delivery of new IR, so a USER-typed specialization
+            // moves to the unit being compiled; pure-stdlib ones must not.
             if (emitOwner != module && CajetaModule::getActiveUnitModule()) {
                 auto active = CajetaModule::sessionEmitTarget();
                 if (active && active != module) emitOwner = active;
@@ -522,25 +339,17 @@ namespace cajeta {
         }
 
         auto& structures = module->getStructures();
-        // While DRAINING a deferral the canonical name is already registered —
-        // to the placeholder we are about to fill — so the caches must be
-        // bypassed or the drain hands back the very placeholder it came to
-        // complete and nothing ever progresses.
+        // While DRAINING, the canonical name already maps to the placeholder we
+        // came to fill, so the caches must be bypassed or nothing progresses.
         const bool drainingThis = (bool) instantiationReuseTarget();
         auto cached = structures.find(instCanonical);
         if (cached == structures.end()) ++g_instCount;
         if (!drainingThis && cached != structures.end()) {
             return cached->second;
         }
-        // Process-wide check via the structureToModule registry. Templated
-        // classes referenced cross-module produce one instantiation, owned
-        // by whichever module triggered the first build (commonly the user
-        // module that named `T<args>` before the template's real
-        // declaration parsed — placeholder-template path in
-        // CajetaType::fromContext). Without this lookup, a later parse in
-        // the template's actual module would re-build the same `T<args>`,
-        // producing duplicate `#RttiGlobal` / `#VTable` definitions across
-        // .o files and a linker error.
+        // Process-wide: one instantiation per canonical name across modules.
+        // Without this a second module rebuilds the same `T<args>` and the
+        // duplicate #RttiGlobal / #VTable definitions collide at link.
         {
             auto& structToMod = CajetaModule::getStructureToModule();
             auto stIt = structToMod.find(instCanonical);
@@ -553,28 +362,9 @@ namespace cajeta {
             }
         }
 
-        // Reuse-cache hazard gate (test-only; see Compiler::setReuseHazardArmed).
-        // We are past every cache lookup, so this is a NOVEL instantiation about
-        // to be built. When emitOwner != module its IR emits into a per-test user
-        // module, leaving module-bound llvm pointers cached on persistent objects
-        // that outlive that module → cross-module references on the next reusing
-        // test. Abort BEFORE the build emits anything so the harness re-runs this
-        // test on a fresh, fully-isolated Compiler. Disarmed in production and on
-        // the fresh fallback path; a primed (already-cached) instantiation
-        // returned above and never reaches here.
-        //
-        // Twin of the method-template gate (MethodTemplateInstantiator.cpp).
-        // The cross-module CLASS-template emit path was NOT correct under
-        // reuse: the 2026-06-10 W=24 FORCE_EMIT run caught it producing an
-        // invalid GEP into test.Holder<int32>'s interface vtable slots
-        // (TemplatedInterfaceV2Tests.templatedImplementerInterfaceDispatch),
-        // because vtable/layout globals were resolved against the RESOLUTION
-        // module instead of the EMIT module. The 23-site emit-module
-        // reparenting (ensureGlobalInModule → emitTargetLlvmModule) is the
-        // fix; CAJETA_REUSE_FORCE_EMIT=1 selects the reused emit path so it
-        // can be validated the same way the method path was. Default stays
-        // the conservative fresh fallback until a clean full-suite FORCE_EMIT
-        // run blesses it.
+        // A NOVEL instantiation, past every cache. Under test reuse with
+        // emitOwner != module its IR would leave module-bound llvm pointers on
+        // persistent objects — abort unless CAJETA_REUSE_FORCE_EMIT overrides.
         if (Compiler::isReuseHazardArmed() && emitOwner != module) {
             static const bool kForceEmit =
                 std::getenv("CAJETA_REUSE_FORCE_EMIT") != nullptr;
@@ -583,28 +373,18 @@ namespace cajeta {
             }
         }
 
-        // Templated-interface instantiation. We re-parse the captured
-        // interfaceDeclaration source under the type-parameter
-        // substitution and build a real instantiated interface — same
-        // shape as the class path below but targeting an
-        // interfaceDeclaration ctx and walking the interface-body
-        // method signatures inline (visitInterfaceDeclaration's body
-        // walk doesn't have a standalone visitor entry point, so we
-        // duplicate it here with substitution active).
+        // Templated interface: re-parse the captured interfaceDeclaration under
+        // the substitution. visitInterfaceDeclaration has no standalone entry
+        // point, so its body walk is duplicated inline below.
         if (interfaceFlag) {
             if (templateSource.empty()) {
-                // Pre-fix safety net for stdlib interfaces whose
-                // templateSource didn't get captured (e.g. interfaces
-                // declared before the visitor change). Hand back the
-                // template — preserves the pre-fix behavior for
-                // @Encoding's verification-only path. Once stdlib is
-                // re-parsed under the new visitor this branch is dead.
+                // No captured source (the verification-only @Encoding path):
+                // hand the template back unchanged.
                 return static_pointer_cast<CajetaClass>(shared_from_this());
             }
 
-            // The snippet's positions refer to the snippet, not to any file — mask
-            // the parse and the walk so the instantiated body's callees are not
-            // attributed to the user call site that triggered it (2.2.8).
+            // Snippet positions belong to no file: mask xref so the
+            // instantiated body's callees are not attributed to the call site.
             xref::SyntheticSourceScope xrefMask;
 
             string ifInput = synthesizePreamble(module) + templateSource + "\n";
@@ -639,12 +419,6 @@ namespace cajeta {
             auto prevActive = CajetaModule::getActiveModule();
             CajetaModule::setActiveModule(module);
 
-            // Interface grammar: `(EXTENDS typeList)?` — interfaces
-            // don't have an `implements` clause, so we only walk the
-            // single optional typeList. Substitution is already active
-            // (pushed above), so `extends Reader<T>` instantiates to
-            // `Reader<int32>` when this template is being instantiated
-            // for T=int32.
             list<QualifiedNamePtr> ifExtended;
             list<QualifiedNamePtr> ifImplemented;
             if (auto* tl = ifDecl->typeList()) {
@@ -660,13 +434,10 @@ namespace cajeta {
                     }
                 }
             }
-            // Resolution module = `module` (stdlib template); emit target set
-            // separately below so IR lands in the user module in reuse mode.
             auto ifInst = make_shared<CajetaClass>(
                 module, ifInstQName, ifExtended, ifImplemented);
             ifInst->setIsInterface(true);
-            // The instantiation happens at the use site, but the code lives in
-            // the template's file — that is what its frames must name.
+            // The code lives in the template's file — frames must name it.
             ifInst->setDeclaringFile(getDeclaringFile());
             if (emitOwner != module) ifInst->setEmitModule(emitOwner);
             ifInst->setTypeParameters(typeParameters);
@@ -674,17 +445,11 @@ namespace cajeta {
             ifInst->setTemplateOrigin(
                 static_pointer_cast<CajetaClass>(shared_from_this()));
 
-            // Cache BEFORE walking — same self-reference rule as the
-            // class path. Registered under emitOwner (the module whose codegen
-            // worklist emits it and that owns its definition); set
-            // structureToModule too so a self-reference resolves when
-            // emitOwner != module.
+            // Cache BEFORE walking so a self-reference resolves; registered
+            // under emitOwner, plus structureToModule for the != module case.
             emitOwner->getStructures()[instCanonical] = ifInst;
             CajetaModule::getStructureToModule()[instCanonical] = emitOwner;
 
-            // Inline interface-body walk: build abstract methods with
-            // formal-parameter / return types resolved through the
-            // active substitution stack so T → arg.
             auto ifBody = make_shared<ClassBodyDeclaration>(ifDecl->getStart());
             if (auto* body = ifDecl->interfaceBody()) {
                 for (auto* bd : body->interfaceBodyDeclaration()) {
@@ -711,21 +476,13 @@ namespace cajeta {
                         module, methodName, returnType, formals,
                         /*block=*/nullptr, ifInst);
                     method->setAbstract(true);
-                    // `#T foo()` — return transfers ownership. The normal
-                    // visitMethodDeclaration path carries this from the `#`
-                    // (REFERENCE) on typeTypeOrVoid; this inline interface-
-                    // instantiation walk must do the same or callers of the
-                    // instantiated interface method (`Encoder<int32>.encode`)
-                    // misclassify the owned `#int8[]` return as a borrow and
-                    // never free it (leak). See MemoryModel.md.
+                    // This inline walk must carry `#` (transfer) and `^` (view)
+                    // from typeTypeOrVoid as visitMethodDeclaration does, or a
+                    // caller misclassifies an owned return as a borrow (leak).
                     if (common->typeTypeOrVoid()
                             && common->typeTypeOrVoid()->REFERENCE() != nullptr) {
                         method->setReturnsOwnership(true);
                     }
-                    // `^T foo()` — the VIEW stance (spec §4.7) rides the same
-                    // rail for the same reason: dropping it here would let an
-                    // instantiated interface's `^` result be `#`-claimed with
-                    // no diagnostic.
                     if (common->typeTypeOrVoid()
                             && common->typeTypeOrVoid()->CARET() != nullptr) {
                         method->setReturnsView(true);
@@ -736,10 +493,6 @@ namespace cajeta {
             }
             ifInst->setClassBody(ifBody);
 
-            // Emit target propagated to methods at construction (Method ctor
-            // reads parent->getEmitModule(), set above before this walk), so no
-            // after-the-fact reparent is needed. Interface methods are abstract
-            // (no llvm function) anyway.
             ifInst->generatePrototype();
 
             CajetaModule::setActiveModule(prevActive);
@@ -749,11 +502,9 @@ namespace cajeta {
             return ifInst;
         }
 
-        // Re-parse the captured snippet. ANTLR contexts are tied to their
-        // parser's lifetime so we don't retain parse trees across compilation
-        // phases — we re-parse on demand. The result of this expensive work
-        // is cached above; re-parsing only runs once per unique arg list.
-        xref::SyntheticSourceScope xrefMask;   // synthesized snippet — see 2.2.8
+        // ANTLR contexts die with their parser, so the snippet is re-parsed on
+        // demand; the cache above means that runs once per unique arg list.
+        xref::SyntheticSourceScope xrefMask;
 
         string input = synthesizePreamble(module) + templateSource + "\n";
 
@@ -766,9 +517,6 @@ namespace cajeta {
             parseSyntheticCompilationUnit(parser, tokens,
                                           "synthetic:instantiate"));
 
-        // The synthesized input wraps one class (or record) declaration. Find
-        // it; bail loudly if the snippet structure is somehow wrong (would
-        // mean the capture in the visitor produced bad text).
         CajetaParser::ClassDeclarationContext* classDecl = nullptr;
         CajetaParser::RecordDeclarationContext* recordDecl = nullptr;
         for (auto* td : compUnit->typeDeclaration()) {
@@ -779,37 +527,23 @@ namespace cajeta {
             throw "template snippet does not contain a classDeclaration";
         }
 
-        // Build the instantiation's qName: same package as the template,
-        // simple name carries the arg suffix. Canonical comes out to
-        // `pkg.Box<cajeta.int32>` — readable, distinct, and acceptable as
-        // an LLVM struct name.
         string instName = qName->getTypeName() + suffix;
         QualifiedNamePtr instQName = QualifiedName::getOrInsert(
             instName, qName->getPackageName());
 
-        // Build the substitution map (parameter name → arg). Push it before
-        // resolving the extends clause so any parameterized super
-        // (`extends Container<T>`) gets its typeArguments substituted and
-        // routed through instantiate. Without the substitution active here,
-        // `T` in the super's typeArguments would fail to resolve and
-        // parameterized inheritance would silently drop the args.
+        // Push the substitution before resolving `extends`, or `T` in a
+        // parameterized super fails to resolve and its args silently drop.
         map<string, CajetaTypePtr> subst;
         for (size_t i = 0; i < typeParameters.size(); ++i) {
             subst[typeParameters[i].name] = args[i];
         }
         module->pushTypeSubstitution(subst);
-        // Active-module needs to be set here too — fromContext on the super's
-        // typeArguments consults activeModule for the substitution stack.
+        // fromContext consults the active module for the substitution stack.
         auto prevActiveForSupers = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);
 
-        // Resolve the extends/implements clauses. The grammar produces
-        // typeLists in source order under `classDeclaration`. Match
-        // each to its preceding keyword (EXTENDS / IMPLEMENTS / PERMITS)
-        // by token index — same logic the top-level visitor uses. For
-        // each typeType we call fromContext, which knows how to
-        // instantiate parameterized supers/interfaces with the current
-        // substitution active.
+        // The grammar yields the extends / implements / permits typeLists in
+        // source order with no tag: match each to the nearest preceding keyword.
         list<QualifiedNamePtr> instExtended;
         list<QualifiedNamePtr> instImplemented;
         list<vector<QualifiedNamePtr>> instImplementedTypeArgs;
@@ -842,12 +576,6 @@ namespace cajeta {
                         instExtended.push_back(QualifiedName::fromContext(coi));
                     }
                 } else { // implements
-                    // Capture the qName of the (possibly instantiated)
-                    // interface plus its resolved type args. Mirrors
-                    // the top-level visitor's qImplementedTypeArgs path
-                    // so `Holder<T>` in the template captures the
-                    // substituted args (e.g. `{int32}` when Box<T> is
-                    // being instantiated to Box<int32>).
                     instImplemented.push_back(QualifiedName::fromContext(coi));
                     vector<QualifiedNamePtr> argsCaptured;
                     auto targsList = coi->typeArguments();
@@ -860,9 +588,6 @@ namespace cajeta {
                             if (!targ || !targ->typeType()) continue;
                             auto* targTt = targ->typeType();
                             if (auto* targCoi = targTt->classOrInterfaceType()) {
-                                // Substitute the template type parameter
-                                // (e.g. T) with the concrete arg if it
-                                // matches; otherwise keep the identifier.
                                 string argName = targCoi->getText();
                                 auto sit = subst.find(argName);
                                 if (sit != subst.end() && sit->second
@@ -885,16 +610,9 @@ namespace cajeta {
         }
         CajetaModule::setActiveModule(prevActiveForSupers);
 
-        // Auto-extend Object: a template with no explicit `extends` clause
-        // (`class Box<T> { ... }`) implicitly inherits cajeta.lang.Object, just
-        // like a regular class. The visitor injects this for ordinary class
-        // declarations (CajetaLlvmVisitor.h), but instantiations are built here
-        // straight from the parse tree's extends clause, so they bypass that
-        // injection. Without it an instantiation has zero parents and is not
-        // recognized as `<: Object` — so passing one to an `Object` parameter
-        // (e.g. `Class.of(box)`) fails method resolution and silently compiles
-        // to null. Mirror the visitor's rule. Skip Object itself (self-cycle).
-        // Runs before make_shared so the prepared parent list reaches the ctor.
+        // Instantiations are built straight from the parse tree, bypassing the
+        // visitor's implicit `extends Object` injection; without it the class
+        // is not `<: Object` and Object-parameter calls fail resolution.
         bool isObjectItself = instQName
             && instQName->getTypeName() == "Object"
             && instQName->getPackageName() == "cajeta.lang";
@@ -903,19 +621,9 @@ namespace cajeta {
                 QualifiedName::getOrInsert("Object", "cajeta.lang"));
         }
 
-        // Resolution module = `module` (stdlib template — its imports/
-        // substitution drive the body walk); emit target set separately so the
-        // class's own IR + its methods' IR (methods adopt this at construction)
-        // land in the user module in reuse mode. Set emit BEFORE the walk: the
-        // body walk emits method IR (prototype-on-reference), so the emit target
-        // must already be in place.
-        // DEFER when the template itself is only a forward reference. Building
-        // now would derive the layout from fields nobody has parsed and copy an
-        // annotation list that is still empty — see DeferredInstantiation in
-        // CajetaClass.h. Registered under the instantiation's canonical name so
-        // every reference shares one identity, then filled in place once the
-        // template is real. `instantiationReuseTarget` is set only while
-        // draining (template already materialized), so this cannot loop.
+        // DEFER while the template is itself a forward reference: building now
+        // would derive the layout from fields nobody has parsed. Register a
+        // placeholder under the canonical name, filled in place at drain.
         if (isPlaceholder() && !instantiationReuseTarget()) {
             auto ph = make_shared<CajetaClass>(module, instQName,
                                                instExtended, instImplemented);
@@ -930,28 +638,18 @@ namespace cajeta {
             d.target = ph;
             d.canonical = instCanonical;
             deferredInstantiations().push_back(d);
-            // The frame pushed for the supers resolution above must not
-            // outlive this early return: leaking it buries the CALLER's
-            // frame, so e.g. a method template's own `R` stops resolving
-            // for the rest of its declaration walk the moment a formal
-            // triggers a deferred first instantiation
-            // (TableLoaderMaterializationTests, `wrap<R>(#Column<float64>)`
-            // — return type `Table<R>` died on "unresolved template
-            // argument" with Column's {T} sitting on top of the stack).
+            // Pop the frame pushed for the supers resolution: leaking it buries
+            // the CALLER's frame for the rest of its declaration walk.
             module->popTypeSubstitution();
             return ph;
         }
 
         CajetaClassPtr inst;
         if (CajetaClassPtr reuse = instantiationReuseTarget()) {
-            // CONSUME it immediately. The body walk below instantiates other
+            // CONSUME it immediately: the body walk instantiates other
             // templates, and a target left set would make each of those bypass
-            // its cache and try to fill this same object — unbounded
-            // recursion. It applies to exactly one instantiation: this one.
+            // its cache and try to fill this same object.
             instantiationReuseTarget() = nullptr;
-            // Completing a deferral: populate the very object earlier
-            // references captured, so their shared_ptr stays valid and now
-            // points at a finished class.
             inst = reuse;
             inst->fillFromDeclaration(module, instQName, instExtended,
                                       instImplemented);
@@ -959,91 +657,53 @@ namespace cajeta {
             inst = make_shared<CajetaClass>(module, instQName, instExtended,
                                             instImplemented);
         }
-        // The instantiation happens at the use site, but the code lives in the
-        // template's file — that is what its frames must name.
+        // The code lives in the template's file — frames must name it.
         inst->setDeclaringFile(getDeclaringFile());
-        // 9.2: this class body was re-parsed from a synthetic snippet, so every
-        // method's token lines are SNIPPET lines (they merely look plausible —
-        // the preamble puts them in the file's range; live symptom: F7 into
-        // ArrayList::add landed 10 lines off, in the doc comment). The whole
-        // snippet shifts uniformly, so one delta — the template's true class
-        // declLine minus the snippet's — corrects every method in it.
+        // Methods re-parsed from a synthetic snippet carry SNIPPET line
+        // numbers. The snippet shifts uniformly, so one delta — the template's
+        // true declLine minus the snippet's — corrects every method in it.
         if (declLine > 0 && classDecl && classDecl->getStart()) {
             const int snippetClassLine = (int) classDecl->getStart()->getLine();
             if (snippetClassLine > 0) {
-                // Stored on the CLASS: methods do not exist yet here (the
-                // body walk runs later), and the shift is uniform anyway.
                 inst->setDbgLineDelta(declLine - snippetClassLine);
             }
         }
         if (recordDecl) inst->setRecordType(true);
         if (emitOwner != module) inst->setEmitModule(emitOwner);
-        // Carry the template's class-level annotations onto the instantiation —
-        // they describe the class shape, which the instantiation shares (e.g.
-        // @ValueType Entry<K,V> -> Entry<int32,int32> must also be a by-value POD,
-        // so generatePrototype below sets VALUE_TYPE_FLAG and the entry stores
-        // inline in arrays instead of boxing). The instantiation body is walked
-        // via visitClassBody, which never re-runs the visitClassDeclaration
-        // annotation handling, so this transfer is the only path.
+        // The instantiation body is walked via visitClassBody, which never
+        // re-runs visitClassDeclaration's annotation handling, so this is the
+        // only path for class-level annotations (@ValueType layout, etc.).
         for (auto& ann : this->getAnnotationInstances()) {
             inst->addAnnotationInstance(ann);
         }
         inst->setQImplementedTypeArgs(std::move(instImplementedTypeArgs));
-        inst->setTypeParameters(typeParameters);   // retained for debugging / introspection
+        inst->setTypeParameters(typeParameters);
         inst->setTypeArguments(args);
-        // Remember which template produced this instantiation. Used by
-        // inferDiamondArgs (TPL-N3) to recognize that `List<int32>` is "a
-        // List" when unifying against a `List<T>` parameter declaration.
         inst->setTemplateOrigin(static_pointer_cast<CajetaClass>(shared_from_this()));
-        // Carry the template's class modifiers (final / abstract / access) onto
-        // the instantiation. Without this, `final class ArrayList<T>` produces a
-        // NON-final `ArrayList<int32>`, so every `add()` on it stays vtable-
-        // dispatched and can't be devirtualized/inlined. The modifiers are a
-        // property of the class shape, not the type arguments, so they copy
-        // verbatim.
+        // Modifiers are a property of the class shape, not the type arguments.
+        // Without the copy, `final class ArrayList<T>` yields a non-final
+        // instantiation whose `add()` stays vtable-dispatched.
         inst->getModifiers() = this->getModifiers();
 
-        // Cache BEFORE we walk the body. Lets self-referential templates
-        // like `class List<T> { List<T> next; }` resolve their own type
-        // during the walk — the second reference finds the partially-built
-        // instantiation in the cache instead of recursing forever. Registered
-        // under `emitOwner` (== module in production); a self-reference during
-        // the walk then resolves via the structureToModule branch above (the
-        // `module->getStructures()` check misses when emitOwner != module, so
-        // structureToModule must be set here too, before the walk).
+        // Cache BEFORE the walk so a self-referential `List<T> next` resolves
+        // against the partially-built instantiation instead of recursing.
         emitOwner->getStructures()[instCanonical] = inst;
         CajetaModule::getStructureToModule()[instCanonical] = emitOwner;
 
-        // Isolate the instantiation walk with a clean structure stack
-        // containing only `inst`. The visitor's `visitMethodDeclaration`
-        // reads `pModule->getStructureStack().front()` to set the method's
-        // parent class — if instantiation is triggered while another class
-        // is being walked (e.g. D::run mentions `Box<int32> b`), `.front()`
-        // would return that outer class and Box's methods would erroneously
-        // become D's methods.
+        // The visitor takes a method's parent from structureStack.front(), so
+        // the walk needs a stack holding only `inst` — otherwise a class being
+        // walked further out would adopt the template's methods.
         auto& stack = module->getStructureStack();
         list<CajetaClassPtr> savedStack;
         savedStack.swap(stack);
         stack.push_back(inst);
 
-        // Make this module the active one during the walk so deeper helpers
-        // that didn't thread `module` through (parse-time Expression /
-        // CajetaType construction) can find it and consult its substitution
-        // stack. Save+restore around the walk so nested instantiations don't
-        // step on each other's active-module state.
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);
 
-        // Walk the body with a fresh visitor sharing this module. visitClassBody
-        // returns a ClassBodyDeclarationPtr we hand to inst->setClassBody, then
-        // generatePrototype lowers the class to LLVM types + functions exactly
-        // as it would for a non-templated class.
-        //
-        // The walk / synthesis / generatePrototype can throw (e.g.
-        // CAJETA_ERROR_VTABLE_SLOT_UNRESOLVED in an incremental build). Guard so
-        // the substitution frame, active-module, and structure stack are
-        // restored on a throw — otherwise a caught-and-continued compile runs
-        // with a corrupted module state.
+        // The walk, the synthesizers and generatePrototype can all throw;
+        // restore the substitution frame, active module and structure stack on
+        // unwind, or a caught-and-continued compile runs with corrupt state.
         try {
         const auto walkT0 = std::chrono::steady_clock::now();
         CajetaLlvmVisitor visitor(module);
@@ -1053,11 +713,9 @@ namespace cajeta {
         g_walkNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - walkT0).count();
 
-        // Field→type-param linkage: the walk above resolved every field
-        // type through the substitution stack, so a bare `P` field no longer
-        // knows it CAME FROM a type parameter. Record the index on the
-        // instantiated property so the drop walk can pick the bit-guarded
-        // T-origin branch (emitDropBodyInline).
+        // The walk resolved field types through the substitution, so a bare `P`
+        // field no longer knows it CAME FROM a type parameter: record the index
+        // for the drop walk's T-origin branch (emitDropBodyInline).
         if (classDecl && classDecl->classBody()) {
             for (auto* bodyDecl : classDecl->classBody()->classBodyDeclaration()) {
                 auto* member = bodyDecl->memberDeclaration();
@@ -1100,27 +758,12 @@ namespace cajeta {
             }
         }
 
-        // Instantiation-time member synthesis (source-synthesis facility,
-        // spec §1.5 member/instantiation-time cell). The declaration-time seam
-        // in visitClassDeclaration never ran for this concrete class — the
-        // instantiation body is walked via visitClassBody above — so run the
-        // registered member synthesizers here, with type args now bound. This
-        // is where `Table<Tick>` reflects Tick's fields and injects one typed
-        // column accessor per field (Unit 5). The substitution frame is still
-        // pushed (popped below), and it runs BEFORE generatePrototype so the
-        // injected members are laid out and lowered like any other. The
-        // instantiation cache above makes this fire once per monomorphization,
-        // which is the memoization the accessor set needs (spec §8.3).
+        // The declaration-time synthesizer seam never ran for this class (its
+        // body came through visitClassBody), so member + companion synthesizers
+        // run here with type args bound, before generatePrototype lays them out.
         visitor.runMemberSynthesizers(inst);
-        // Companion classes ride the same instantiation-time hook (the
-        // `<Record>Cols` builder a Table<Record>'s lambdas receive).
         visitor.runCompanionSynthesizers(inst);
 
-        // Emit target was set on `inst` before the walk and propagated to each
-        // method at construction (Method ctor reads parent->getEmitModule()), so
-        // any IR the walk emitted already targets the emit module — no
-        // after-the-fact reparent. generatePrototype emits the class's own
-        // vtable/RTTI/struct into the emit module via its own swap.
         {
             const auto protoT0 = std::chrono::steady_clock::now();
             inst->generatePrototype();
@@ -1145,24 +788,10 @@ namespace cajeta {
     }
 
     // --- Diamond inference (TPL-7) ----------------------------------------
-    //
-    // Walk the template's captured snippet, find constructor declarations,
-    // and unify each ctor's parameter types against the supplied argument
-    // types. v1 is flat: we look only at the syntactic identifier of each
-    // formal parameter's typeType, comparing it directly against type-
-    // parameter names. Nested template arguments in parameter types
-    // (`Box<List<T>>(...)`) aren't analyzed.
-    //
-    // Returns the resolved type arguments in declaration order. Throws on
-    // ambiguous overload, conflicting bindings, or any type parameter left
-    // unbound.
 
-    // Unify a single (formal parameter typeType, arg CajetaType) pair.
-    // Adds bindings to `bindings` as type-parameter names get matched. Returns
-    // false on any conflict (same T bound to two different args, parameterized
-    // name with mismatched outer template, etc.). Recursive: nested template
-    // arguments in formal parameter types (`List<T>`, `Box<Pair<A, B>>`) are
-    // walked alongside the arg's typeArguments structure.
+    // Unify one (formal parameter typeType, arg type) pair, adding bindings as
+    // type-parameter names match; false on any conflict. Recursive: nested args
+    // in `List<T>` / `Box<Pair<A,B>>` walk alongside the arg's typeArguments.
     static bool unifyParam(
         CajetaParser::TypeTypeContext* paramTT,
         CajetaTypePtr argType,
@@ -1170,8 +799,7 @@ namespace cajeta {
         std::map<string, CajetaTypePtr>& bindings) {
         if (!paramTT || !argType) return false;
 
-        // Primitive or array formal slot: v1 doesn't do strict type-checks
-        // here, but they also can't contribute to template-parameter bindings.
+        // Primitive and array slots cannot bind a type parameter.
         if (paramTT->primitiveType()) return true;
         if (!paramTT->LBRACK().empty()) return true;
 
@@ -1179,14 +807,13 @@ namespace cajeta {
         if (!coi) return true;
 
         const auto& ids = coi->identifier();
-        if (ids.size() != 1) return true;       // qualified name — v1 skip
+        if (ids.size() != 1) return true;
         const string ident = ids[0]->getText();
         auto* targs = coi->typeArguments(0);
 
-        // Pure type-parameter slot (e.g. `T` formal).
         if (paramNames.count(ident)) {
             if (targs) {
-                // `T<...>` doesn't make sense — T is a type, not a template.
+                // A type parameter is a type, not a template.
                 return false;
             }
             auto existing = bindings.find(ident);
@@ -1197,9 +824,6 @@ namespace cajeta {
             return existing->second->toCanonical() == argType->toCanonical();
         }
 
-        // Concrete named slot (e.g. `List<T>` or `Box`). When parameterized,
-        // argType must be an instantiation whose templateOrigin's short name
-        // matches the formal, and inner args must unify pairwise.
         if (targs) {
             auto argClass = dynamic_pointer_cast<CajetaClass>(argType);
             if (!argClass || !argClass->isInstantiation()) return false;
@@ -1219,9 +843,8 @@ namespace cajeta {
             return true;
         }
 
-        // Plain concrete name (no type args): v1 skips strict checks. Caller
-        // is responsible for ensuring the arg is compatible at the call site
-        // — diamond inference is just about binding the T's.
+        // A concrete unparameterized slot binds nothing; call-site
+        // compatibility is the caller's own check.
         return true;
     }
 
@@ -1234,10 +857,9 @@ namespace cajeta {
                 "CAJETA_ERROR_TYPE_INFERENCE");
         }
 
-        // Re-parse the captured snippet to walk constructor declarations.
-        // Same machinery as instantiate, just used for inspection — we
-        // don't push substitutions or emit IR here.
-        xref::SyntheticSourceScope xrefMask;   // synthesized snippet — see 2.2.8
+        // The same re-parse as instantiate, for inspection only: no
+        // substitution is pushed and no IR is emitted.
+        xref::SyntheticSourceScope xrefMask;
 
         string input = synthesizePreamble(module) + templateSource + "\n";
         antlr4::ANTLRInputStream inputStream(input);
@@ -1266,15 +888,10 @@ namespace cajeta {
                 "CAJETA_ERROR_TYPE_INFERENCE");
         }
 
-        // Pre-compute a set of declared type-parameter names — these are the
-        // names we'll match formal-parameter identifiers against.
         std::set<string> paramNames;
         for (auto& p : typeParameters) paramNames.insert(p.name);
 
-        // Collect every viable constructor's binding map. A "viable" ctor is
-        // one whose arity matches `argTypes`. v1 doesn't do widening / boxing
-        // conversions; argument types must hit the same template-parameter
-        // slot consistently.
+        // A ctor is viable when its arity matches; v1 does no widening/boxing.
         vector<std::map<string, CajetaTypePtr>> viableBindings;
 
         for (auto* bdCtx : declBody->classBodyDeclaration()) {
@@ -1317,8 +934,6 @@ namespace cajeta {
                 "CAJETA_ERROR_TYPE_INFERENCE");
         }
 
-        // Single viable binding — assemble args in typeParameter declaration
-        // order. Every parameter must have been bound.
         vector<CajetaTypePtr> resolved;
         for (auto& tp : typeParameters) {
             auto it = viableBindings[0].find(tp.name);

@@ -1,6 +1,4 @@
-//
 // Created by James Klappenbach on 11/6/22.
-//
 
 #include "LiteralUtils.h"
 #include "../error/Exception.h"
@@ -11,12 +9,8 @@ using namespace std;
 
 namespace cajeta {
 
-    // The converters take the grammar's RAW token text: an optional sign, an
-    // optional radix prefix (0x / 0b; octal's is its leading 0), digit-group
-    // underscores, and an optional l/L suffix (DECIMAL_LITERAL etc. in
-    // CajetaLexer.g4). Each strips that dressing itself, so callers can pass
-    // getRawValue() straight through. A character the lexer should have made
-    // impossible throws a catchable Exception, never a raw std::string.
+    // The converters take the grammar's RAW token text — sign, radix prefix, grouping
+    // underscores, l/L suffix — and strip it themselves; a lexer-impossible character throws.
     namespace {
 
     struct LiteralScan {

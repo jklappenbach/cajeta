@@ -1,20 +1,6 @@
-//
-// CPU kernel registration — lower each @Kernel to host code, link it into the
-// host module, and register its function pointer with the runtime.
-//
-// Unlike the GPU registrations (Nvptx/Amdgpu/Vulkan), there is no device binary
-// to embed: a CPU kernel *is* host code. So this lowers the kernel into the host
-// module under a decorated symbol (__cajeta_xpu_cpu.<name>), emits a uniform
-// launcher thunk (__cajeta_xpu_cpu_launch.<name>) that unpacks the kernelParams
-// argv + the per-work-item coordinate vector and calls the kernel, and emits a
-// global ctor calling __cajeta_xpu_register_cpu_kernel(entryName, &launchThunk)
-// — the CPU analog of the neutral __cajeta_xpu_register_module(name, bytes, len).
-// CpuDriver / the runtime dispatcher (Increment 4) resolves a launch to the thunk
-// pointer and drives it over the grid.
-//
-// Kernels whose body uses an unsupported construct (XPU-N01, e.g. a workgroup
-// barrier) are skipped — never throws on a per-kernel basis.
-//
+// CPU kernel registration. A CPU kernel IS host code, so there is no binary to
+// embed: the kernel is lowered into the host module as __cajeta_xpu_cpu.<name>,
+// wrapped in a launcher thunk, and registered by a global ctor.
 
 #pragma once
 
@@ -36,12 +22,9 @@ namespace xpu {
 
 namespace cpu {
 
-    // Lower each @Kernel in `kernels` to host code, link into `hostModule`, and
-    // emit a registration ctor per kernel. Returns the number embedded. `arch`
-    // is ignored (the CPU backend has no arch); it is present for a uniform
-    // backend-registration signature. `manifests`, when given, receives one
-    // identity-only KernelManifest per kernel (xpu-tile-manifest §2.4: the CPU
-    // has no VGPR / LDS footprint, so those fields are absent, never zero).
+    // Lower each @Kernel into `hostModule` with a registration ctor, returning
+    // how many. `arch` is ignored, present only for a uniform backend signature;
+    // a CPU `manifests` entry is identity-only, its footprint absent, never zero.
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
                                const std::string& arch = "",

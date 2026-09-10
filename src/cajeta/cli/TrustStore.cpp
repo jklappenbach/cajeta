@@ -106,8 +106,6 @@ namespace cajeta::cli {
         const TrustStoreLayout& layout) {
         std::vector<TrustStoreEntry> out;
         std::set<std::string> seen;
-        // Tier order matches roots vector — but list each only once,
-        // attributing it to the winning tier.
         for (size_t i = 0; i < layout.roots.size(); ++i) {
             std::string tier;
             if (layout.roots[i] == layout.envRoot)         tier = "env";
@@ -167,7 +165,6 @@ namespace cajeta::cli {
                        dest.string() + "' (use `trust remove " +
                        keyId + "` first)");
         }
-        // Validate the input is an Ed25519 public key PEM.
         std::ifstream in(pemPath);
         if (!in) {
             return err("trust add: cannot read '" + pemPath + "'");
@@ -193,7 +190,6 @@ namespace cajeta::cli {
             return err("trust add: '" + pemPath +
                        "' is not an ed25519 public key");
         }
-        // Copy bytes.
         std::ofstream out(dest, std::ios::binary | std::ios::trunc);
         if (!out) {
             return err("trust add: cannot write '" + dest.string() + "'");
