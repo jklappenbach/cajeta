@@ -1,6 +1,6 @@
 # 11 — Templates & Wildcards
 
-This chapter defines Cajeta's template model. Templates are monomorphized: each distinct type argument produces a distinct compiled instantiation with its own layout, vtable, and drop function. There is no erasure on the instantiation path; the erased view exists only where the program asks for it, through wildcards (§11.3).
+This chapter defines Cajeta's template model. Templates are monomorphized: each distinct type argument produces a distinct compiled instantiation with its own layout, vtable, and drop function. There is no erasure on the instantiation path. The erased view exists only where the program asks for it, through wildcards (§11.3).
 
 ## 11.1 The Template Model
 
@@ -21,7 +21,7 @@ xs.add(5);
 System.stdout.println("" + b.get() + " " + xs[0]);    // 41 5
 ```
 
-Boxed wrappers (Types §3.1) exist only for the boundary where a template slot requires a class type; the template model itself does not require them.
+Boxed wrappers (Types §3.1) exist only for the boundary where a template slot requires a class type. The template model itself does not require them.
 
 ## 11.2 Template Declarations
 
@@ -33,7 +33,7 @@ Type parameters appear on class declarations (`class Box<T>`) and on methods. A 
 
 A wildcard type argument stands for an unknown but tracked argument: `T<?>` (unbounded), `T<? extends Bound>` (some subtype of `Bound`), `T<? super Bound>` (some supertype). A wildcard type is usable wherever a type is: parameters, locals, fields.
 
-Soundness follows producer/consumer polarity: a `? extends` view can be read at its bound but not written through — the unknown argument could be any subtype, so no written value is safe; a `? super` view can be written at the bound but reads only at `Object`. Writing through a `? extends` view is a compile-time error.
+Soundness follows producer/consumer polarity: a `? extends` view can be read at its bound but not written through — the unknown argument could be any subtype, so no written value is safe. A `? super` view can be written at the bound but reads only at `Object`. Writing through a `? extends` view is a compile-time error.
 
 **Example 11.3-1.** One method over every instantiation.
 
@@ -62,10 +62,10 @@ public final class C {
 }
 ```
 
-Two wildcard occurrences are not assumed to be the same unknown type; identity is tracked through capture types where the language must reason about "the same unknown `T`".
+Two wildcard occurrences are not assumed to be the same unknown type. Identity is tracked through capture types where the language must reason about "the same unknown `T`".
 
-> *Discussion.* A lint flags wildcard-typed access in hot loops, where the erased view defeats monomorphized code paths; suppress it per rule with `@SuppressLint` (Annotations §10.3) when the erased view is the point. The migration from the current receiver-identity heuristic to first-class capture identity is in flight.
+> *Discussion.* A lint flags wildcard-typed access in hot loops, where the erased view defeats monomorphized code paths. Suppress it per rule with `@SuppressLint` (Annotations §10.3) when the erased view is the point. The migration from the current receiver-identity heuristic to first-class capture identity is in flight.
 
 ## 11.4 Instantiation Across Archives
 
-A library's templates ship in its `.cja` archive in compilable form; a consumer's instantiations with new type arguments are compiled in the consuming build against the shipped definition. A template instantiation error is therefore reported at the *instantiation site*, in the consumer, with the declaration it failed against.
+A library's templates ship in its `.cja` archive in compilable form. A consumer's instantiations with new type arguments are compiled in the consuming build against the shipped definition. A template instantiation error is therefore reported at the *instantiation site*, in the consumer, with the declaration it failed against.

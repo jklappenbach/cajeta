@@ -14,24 +14,24 @@ The operator set over primitives: arithmetic `+ - * / %`, bitwise `& | ^ ~`, shi
 
 ## 14.3 Method Invocation
 
-An invocation names a receiver (or a class, for statics), a method, and arguments. Overload selection is by name and parameter types; transfer mode is not part of the signature (Ownership §5.5.1).
+An invocation names a receiver (or a class, for statics), a method, and arguments. Overload selection is by name and parameter types. Transfer mode is not part of the signature (Ownership §5.5.1).
 
 Each class-typed argument travels with the caller's ownership decision: `f(x)` lends, `f(#x)` transfers, and the hidden per-call flag tells the callee which it got (Ownership §5.5). A call result binds per the callee's return spelling: a `#T` result must be received with `#=` (Ownership §5.5.2).
 
 ## 14.4 Instantiation Expressions
 
-`stack T(args)` and `heap T(args)` construct an instance (Allocation §4.1) and are expressions: they may initialize a binding, pass as an argument, or stand in any value position. Construction selects a constructor by argument types; the absence of a match is a compile-time error, `CAJETA_ERROR_NO_MATCHING_CONSTRUCTOR` — an instance is never left with its constructor unrun.
+`stack T(args)` and `heap T(args)` construct an instance (Allocation §4.1) and are expressions: they may initialize a binding, pass as an argument, or stand in any value position. Construction selects a constructor by argument types. The absence of a match is a compile-time error, `CAJETA_ERROR_NO_MATCHING_CONSTRUCTOR` — an instance is never left with its constructor unrun.
 
 An anonymous `heap T(args)` in transfer position promotes its title implicitly (Allocation §4.1).
 
 ## 14.5 Lambdas
 
-A lambda `(params) -> expr` or `(params) -> { statements }` is a function-typed value; `(int32) -> int32` is the type of a function from `int32` to `int32`.
+A lambda `(params) -> expr` or `(params) -> { statements }` is a function-typed value. `(int32) -> int32` is the type of a function from `int32` to `int32`.
 
 Capture follows the memory model, with no separate capture syntax:
 
-- **Primitives capture by value**, copied at capture time; later mutation of the source is invisible to the closure.
-- **Class-typed values capture as borrows** by default; `#name` in the body transfers the capture.
+- **Primitives capture by value**, copied at capture time, so later mutation of the source is invisible to the closure.
+- **Class-typed values capture as borrows** by default, and `#name` in the body transfers the capture.
 - **A lambda with no captures is a bare function**: the function value's captures pointer is null and calls dispatch directly, so non-capturing lambdas add no cost.
 
 **Example 14.5-1.** Value capture, a capturing lambda, and a pipeline.
@@ -51,15 +51,15 @@ int32 sum = xs.stream()
 System.stdout.println(sum);          // 72
 ```
 
-> *Discussion.* Compile-time rejection of a closure-captured borrow that outlives its source is interim as of 0.27.0 — a lint plus debug-runtime checks rather than a strict type error; strict enforcement is planned. Per-lambda type parameters are not supported; a class-level `T` referenced in a lambda body is fine.
+> *Discussion.* Compile-time rejection of a closure-captured borrow that outlives its source is interim as of 0.27.0 — a lint plus debug-runtime checks rather than a strict type error. Strict enforcement is planned. Per-lambda type parameters are not supported, and a class-level `T` referenced in a lambda body is fine.
 
 ## 14.6 Method References
 
-`::` forms a function value from an existing method; each form desugars to a lambda, and the desugaring determines the captures:
+`::` forms a function value from an existing method. Each form desugars to a lambda, and the desugaring determines the captures:
 
 - `MyClass::staticMethod` — no captures.
 - `obj::method` — captures `obj` (a borrow, by default).
-- `MyClass::instanceMethod` — unbound: the receiver becomes the first parameter; no captures.
+- `MyClass::instanceMethod` — unbound, so the receiver becomes the first parameter. No captures.
 - `MyClass::heap` — a constructor reference producing a fresh instance.
 
 ## 14.7 Ownership Spellings in Expressions

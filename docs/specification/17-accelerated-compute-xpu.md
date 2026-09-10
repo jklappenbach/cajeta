@@ -4,7 +4,7 @@ This chapter defines the accelerator programming model, package `cajeta.xpu`. On
 
 ## 17.1 Kernel Declarations and the Device Subset
 
-`@Kernel` on a static method makes it a device entry point; `@Device` marks a static helper callable from kernel code; `@Backend` restricts a declaration to named backends; `@Wave` marks wave-level code (§17.5). `@FastMath` permits fused floating-point contraction in the marked kernel.
+`@Kernel` on a static method makes it a device entry point. `@Device` marks a static helper callable from kernel code, `@Backend` restricts a declaration to named backends, and `@Wave` marks wave-level code (§17.5). `@FastMath` permits fused floating-point contraction in the marked kernel.
 
 A kernel body is ordinary Cajeta restricted to the device subset:
 
@@ -20,15 +20,15 @@ The grid-stride loop is built in: `for (i, T v : buf.range(n))` iterates a buffe
 
 ## 17.3 Memory
 
-- **`KernelBuffer<T>`** is device memory, allocated on the host (`heap KernelBuffer<float32>(n)`), filled and drained with `upload(hostArray)` / `download(hostArray)` (and their `Async` forms against a stream). Kernels index it; host code does not.
+- **`KernelBuffer<T>`** is device memory, allocated on the host (`heap KernelBuffer<float32>(n)`), filled and drained with `upload(hostArray)` / `download(hostArray)` (and their `Async` forms against a stream). Kernels index it, and host code does not.
 - **Workgroup-shared memory** is declared in-kernel: `Shared<float64> tile = shared float64[512];`. `Barrier` synchronizes the workgroup.
-- **Atomics and `MemoryOrder`** provide device-side atomic operations; `AsyncCopy` overlaps global-to-shared movement with compute where the backend supports it.
+- **Atomics and `MemoryOrder`** provide device-side atomic operations. `AsyncCopy` overlaps global-to-shared movement with compute where the backend supports it.
 
 ## 17.4 Kernel Arguments
 
-A kernel's parameters marshal by kind: `KernelBuffer<T>` as a device handle; primitives by value; a plain class whose fields are all primitives — a POD, no inheritance, no marker interface — by value, read-only, field-by-field; `Texture2D` with `Sampler` for sampled reads (`tex.sample(s, u, v)`, explicit-LOD, with cube and mipmapped variants); `@PushConstant` where the backend has the concept. Ownership of buffer arguments is §17.6.
+A kernel's parameters marshal by kind. `KernelBuffer<T>` marshals as a device handle, primitives by value, and a plain class whose fields are all primitives — a POD, no inheritance, no marker interface — by value, read-only, field-by-field. `Texture2D` with `Sampler` marshals for sampled reads (`tex.sample(s, u, v)`, explicit-LOD, with cube and mipmapped variants), and `@PushConstant` where the backend has the concept. Ownership of buffer arguments is §17.6.
 
-**Example 17.4-1.** The canonical kernel shape. Requires an XPU-enabled build (`--xpu-backend=…`); the compute pipeline is pinned by the on-device test suites.
+**Example 17.4-1.** The canonical kernel shape. Requires an XPU-enabled build (`--xpu-backend=…`). The compute pipeline is pinned by the on-device test suites.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -63,25 +63,25 @@ public final class K {
 
 ## 17.6 Launch, Completion, and Ownership
 
-`kernel.launch(stream, grid: […], block: […])(args)` enqueues on a `KernelStream`; `stream.sync()` completes it, and `Event`s order work across streams. The runtime backend dispatcher selects among the backends bundled in the binary — CUDA, then HIP, then Vulkan, then CPU — at launch time; kernel code written to the portable surface runs wherever the program lands.
+`kernel.launch(stream, grid: […], block: […])(args)` enqueues on a `KernelStream`. `stream.sync()` completes it, and `Event`s order work across streams. The runtime backend dispatcher selects among the backends bundled in the binary — CUDA, then HIP, then Vulkan, then CPU — at launch time, so kernel code written to the portable surface runs wherever the program lands.
 
 The borrow checker holds across the boundary: a buffer lent to a launch is borrowed by the in-flight kernel, and the borrow resolves at `sync()` — a program cannot drop or re-transfer a buffer an enqueued kernel still reads. This is the deferred-borrow-until-sync rule.
 
 ## 17.7 Capabilities
 
-`Capability` / `Capabilities` express per-device feature availability — wave operations, cooperative matrix, texture kinds — and programs query them at run time; `@Backend` gates code at compile time. A feature absent on the selected backend is either emulated where the specification says so (AMD cube and mipmapped textures are emulated over layered arrays and a hand-built descriptor) or unavailable through the capability query, never silently wrong.
+`Capability` / `Capabilities` express per-device feature availability — wave operations, cooperative matrix, texture kinds — and programs query them at run time. `@Backend` gates code at compile time. A feature absent on the selected backend is either emulated where the specification says so (AMD cube and mipmapped textures are emulated over layered arrays and a hand-built descriptor) or unavailable through the capability query, never silently wrong.
 
 ## 17.8 Kernel Scheduling
 
-Every launch is also a **submission**: `Scheduler.submit(sub)` records a `KernelSubmission` — geometry, policy, and the kernel's read/write sets — and returns the kernel's resource descriptor. The access sets are the raw material of the dependency DAG; the launch takes its geometry from the recorded submission.
+Every launch is also a **submission**: `Scheduler.submit(sub)` records a `KernelSubmission` — geometry, policy, and the kernel's read/write sets — and returns the kernel's resource descriptor. The access sets are the raw material of the dependency DAG, and the launch takes its geometry from the recorded submission.
 
-The scheduling model over that seam:
+The scheduling model over that interface:
 
 - **Kernel manifests.** For each (kernel, target) pair the compiler emits a manifest beside the artifact: footprint from the code object (registers, spill, shared memory), cost expressions over the kernel's own parameters, access modes (including `accumulate` and `streaming`), tile granularity, restartability and group-boundary yield points.
 - **Scheduling behavior.** The scheduler derives each submission's arithmetic class against a measured per-device ridge — never a declared one — builds the DAG from access sets, admits co-runners by footprint and complementarity, reserves compute (CU-mask or green context) as the precondition for co-running, paces launches, and captures short-kernel chains for replay. A persisted per-device calibration set carries the measurements.
-- **Goals and constraints.** A submission's policy is one of `throughput`, `latency`, `frameBudget`, or `energy`; the scheduler optimizes the mix of resident kernels against the policy and the hardware profile (`TargetDescriptor` plus calibration).
+- **Goals and constraints.** A submission's policy is one of `throughput`, `latency`, `frameBudget`, or `energy`, and the scheduler optimizes the mix of resident kernels against the policy and the hardware profile (`TargetDescriptor` plus calibration).
 - **Workload conformance profiles** — game rendering, multimodal ML, ML training, engineering simulation — define what a conforming scheduler must deliver for each workload shape.
 
-> *Discussion.* The `submit` seam ships and records; the scheduler behind it is in active development under the `xpu-tile-manifest`, `xpu-tile-scheduling`, and `xpu-tile-workload-profiles` specifications (all approved 2026-09-06). Until those units land, `submit` gates nothing — the launch after it executes immediately — and the behavior described above is design, not yet guarantee. The seam is the compatibility contract: call sites written against it are unchanged when the scheduler arrives.
+> *Discussion.* The `submit` API ships and records. The scheduler behind it is in active development under the `xpu-tile-manifest`, `xpu-tile-scheduling`, and `xpu-tile-workload-profiles` specifications (all approved 2026-09-06). Until those units land, `submit` gates nothing — the launch after it executes immediately — and the behavior described above is design, not yet guarantee. The API is the compatibility contract. Call sites written against it are unchanged when the scheduler arrives.
 
-> *Discussion.* Backend verification status varies by feature and is tracked in the internal capability matrix; the CPU, Vulkan, and AMD columns of the core model are device-measured, with some NVIDIA paths verified at emission only. Graphics execution (raster and ray-tracing pipelines) is not part of `cajeta.xpu`; it is the `cajeta.render` layer's, outside this specification.
+> *Discussion.* Backend verification status varies by feature and is tracked in the internal capability matrix. The CPU, Vulkan, and AMD columns of the core model are device-measured, with some NVIDIA paths verified at emission only. Graphics execution (raster and ray-tracing pipelines) is not part of `cajeta.xpu` — it is the `cajeta.render` layer's, outside this specification.

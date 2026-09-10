@@ -12,9 +12,9 @@ interfaceDeclaration
 
 An interface declares abstract methods: a signature and no body. An interface has no fields, no constructors, and no default method bodies, by design — a type that wants to hand implementations down the hierarchy is a class, and multiple inheritance of behavior covers the reuse case that default methods patch over in single-inheritance languages.
 
-An interface may extend one or more interfaces; the extending interface's contract is the union of its own methods and everything inherited.
+An interface may extend one or more interfaces. The extending interface's contract is the union of its own methods and everything inherited.
 
-> *Discussion.* As of 0.27.0 a method body inside an interface parses without a diagnostic and is ignored; the rejection is bound here and enforcement follows.
+> *Discussion.* As of 0.27.0 a method body inside an interface parses without a diagnostic and is ignored. The rejection is bound here and enforcement follows.
 
 ## 9.2 Implementing Classes
 
@@ -30,7 +30,7 @@ public class Broken implements Ider { }    // CAJETA_ERROR_INTERFACE_NOT_IMPLEME
 Ider i = heap Broken();
 ```
 
-A class may both extend classes and implement interfaces; a method inherited from a behavior base can satisfy an interface obligation when its signature matches.
+A class may both extend classes and implement interfaces. A method inherited from a behavior base can satisfy an interface obligation when its signature matches.
 
 ## 9.3 Interface Types
 
@@ -59,4 +59,4 @@ C.run();
 
 ## 9.4 Choosing Interfaces or Behavior Bases
 
-An interface says *what* a type can do and holds nothing; a behavior base (Classes §8.4) brings a concrete implementation and possibly state. Declare an interface when independent implementations must be substitutable behind one contract; extend a behavior base when the point is sharing one implementation. The two compose: a class may extend bases for its machinery and implement interfaces for its contracts.
+An interface says *what* a type can do and holds nothing. A behavior base (Classes §8.4) brings a concrete implementation and possibly state. Declare an interface when independent implementations must be substitutable behind one contract. Extend a behavior base when the point is sharing one implementation. The two compose — a class may extend bases for its machinery and implement interfaces for its contracts.

@@ -13,9 +13,9 @@ Throwable                       carries `message`
     └── RecoverableException    normal failure the caller may handle
 ```
 
-A user-defined exception extends one of the two tiers; the choice is the author's statement about whether callers are expected to handle it. Domain exceptions live in their owning packages (`cajeta.io.file.IoException`, `cajeta.time.DateTimeException`, …), each extending a root.
+A user-defined exception extends one of the two tiers. The choice is the author's statement about whether callers are expected to handle it. Domain exceptions live in their owning packages (`cajeta.io.file.IoException`, `cajeta.time.DateTimeException`, …), each extending a root.
 
-`Exception(message)` and `Exception(message, cause)` are the constructor shapes; `getCause()` returns an `Optional<Throwable>`, and printing walks the cause chain so every layer's contribution is visible.
+`Exception(message)` and `Exception(message, cause)` are the constructor shapes. `getCause()` returns an `Optional<Throwable>`, and printing walks the cause chain so every layer's contribution is visible.
 
 ## 15.2 `throw` and Handler Selection
 
@@ -49,7 +49,7 @@ public final class C {
 System.stdout.println(C.run());     // specific: disk / caught: wrapped / 2
 ```
 
-Throwing an `UnrecoverableException` terminates the process after the drop chain unwinds; it is not intended to be handled, and matching it in a general `catch` does not change its meaning.
+Throwing an `UnrecoverableException` terminates the process after the drop chain unwinds. It is not intended to be handled, and matching it in a general `catch` does not change its meaning.
 
 An uncaught throw in a script unit prints the message and a trace and exits non-zero (Script Units §18).
 
@@ -112,11 +112,11 @@ Statement syntax and clause placement are Statements §13.5.
 
 ## 15.4 `throws` Clauses
 
-A method's `throws` clause lists the `RecoverableException` subtypes that can flow out of it. The clause documents; the compiler warns when a call site does not acknowledge a declared throw, and never rejects — there is no enforced checked-exception cascade.
+A method's `throws` clause lists the `RecoverableException` subtypes that can flow out of it. The clause documents. The compiler warns when a call site does not acknowledge a declared throw, and never rejects — there is no enforced checked-exception cascade.
 
 ## 15.5 Stack Traces
 
-`Throwable.getStackTrace()` returns `StackFrame[]`; each frame carries the declaring type, method, source file, and line. Frames of script units render as `<script>` with the host file and line — the synthesized wrapper class and entry never appear (Script Units §18). Tracebacks in diagnostics name the user's source positions the same way.
+`Throwable.getStackTrace()` returns `StackFrame[]`. Each frame carries the declaring type, method, source file, and line. Frames of script units render as `<script>` with the host file and line — the synthesized wrapper class and entry never appear (Script Units §18). Tracebacks in diagnostics name the user's source positions the same way.
 
 > *Discussion.* Trace capture on every `RecoverableException` throw is deliberately not promised — capture has a cost, and the recoverable tier is the hot one. A structured-diagnostics refactor (typed context fields, stable ids, one schema spanning compile-time and runtime diagnostics, semantic traces for fiber `await` chains) is specified in draft and will revise this section when it ships.
 
