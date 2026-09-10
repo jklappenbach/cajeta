@@ -38,6 +38,15 @@
 #include "../../runtime/native/cajeta_rt_prof_instr.c"
 #include "../../runtime/native/cajeta_rt_prof_trace.c"
 
+// The GPU capture ring lives in cajeta_rt_prof_gpu.c and reads the device
+// backends' globals; like the sampler's ring drain it is excluded here, so the
+// transform settles nothing and emits no captured device work.
+void    __cajeta_prof_gpu_capture_settle(void) {}
+int64_t __cajeta_prof_gpu_captured_to_trace(CajProfWriter* w, uint64_t ts) {
+    (void) w; (void) ts;
+    return 0;
+}
+
 // No fiber-scheduler stub is needed any more: the transform reads the fiber's
 // display id out of the SAMPLE (captured when the sample was taken) rather than
 // dereferencing the handle at drain time, so nothing here has to fake the
