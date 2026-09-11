@@ -46,15 +46,35 @@ public final class Toolchains {
         return true;
     }
 
-    // Repoint the active-toolchain shim (bin/cajeta) at
-    // versions/<version>/cajeta. Creates bin/ if missing and replaces any
-    // existing shim. Returns true on success (false if the symlink call
-    // failed — e.g. Windows v0.1, which has no elevation-free symlink).
+    // Repoint the active-toolchain shim at versions/<version>/cajeta[.exe].
+    // Creates bin/ if missing and replaces any existing shim. Returns true on
+    // success.
+    //
+    // Two mechanisms, because Windows has no elevation-free symlink —
+    // __cajeta_path_symlink returns -1 there unconditionally, so the POSIX
+    // path did not merely degrade on Windows, it never worked. There the shim
+    // is a batch wrapper (bin/cajeta.cmd) that execs the active toolchain and
+    // forwards its arguments; `%*` passes them through and `@` keeps the line
+    // itself off stdout, so `cajeta --version` prints only cajeta's output.
     public static boolean repointShim(String home, String version) {
         Path.of(Home.binDir(home)).mkdirs();
-        Path shim   #= Path.of(Home.shimFile(home));
-        Path target #= Path.of(Home.versionBin(home, version));
-        return shim.symlinkTo(target);
+        String shimPath #= Home.shimFile(home);
+        String target   #= Home.versionBin(home, version);
+
+        if (Home.isWindows()) {
+            Path existing #= Path.of(shimPath);
+            if (existing.exists()) {
+                existing.delete();
+            }
+            FileWriter writer #= File.openWrite(shimPath, OpenMode.WRITE);
+            writer.writeString("@\"" + target + "\" %*\n");
+            writer.close();
+            return true;
+        }
+
+        Path shim   #= Path.of(shimPath);
+        Path tgt    #= Path.of(target);
+        return shim.symlinkTo(tgt);
     }
 
     // ── helpers ─────────────────────────────────────────────────────

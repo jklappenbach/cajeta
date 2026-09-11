@@ -17,7 +17,16 @@ import cajeta.lang.System;
 //   settings                 — default toolchain + config (key = value)
 public final class Home {
 
-    // The resolved ~/.cajeta directory, or null if even $HOME is unset
+    // True on Windows. The runtime publishes the host triple as
+    // `cajeta.host.triple` and fixes it to x86_64-w64-mingw32 there; cvm
+    // already resolves release assets by that key, so it is the platform
+    // signal cvm has, and it needs no new runtime surface.
+    public static boolean isWindows() {
+        String triple = System.property.get("cajeta.host.triple");
+        return triple != null && triple.contains("mingw32");
+    }
+
+    // The resolved ~/.cajeta directory, or null if no home can be determined
     // (a broken environment cvm can't recover from on its own).
     public static #String dir() {
         String explicit = System.env.get("CAJETA_HOME");
@@ -35,6 +44,16 @@ public final class Home {
             return home + "/.cajeta";
         }
 
+        // Windows sets USERPROFILE, not HOME — cmd.exe and PowerShell leave
+        // HOME unset entirely, so without this cvm resolved NO home at all
+        // there and could not install anything. (HOME is checked first because
+        // an MSYS2/git-bash shell sets both, and honoring it keeps a cvm run
+        // from that shell consistent with one from cmd.)
+        String profile = System.env.get("USERPROFILE");
+        if (profile != null && !profile.isEmpty()) {
+            return profile + "/.cajeta";
+        }
+
         return null;
     }
 
@@ -43,8 +62,18 @@ public final class Home {
     public static #String versionsDir(String home) { return home + "/versions"; }
     public static #String settingsFile(String home){ return home + "/settings"; }
 
-    // The active-toolchain shim — bin/cajeta, the `cajeta` that lands on PATH.
-    public static #String shimFile(String home)    { return home + "/bin/cajeta"; }
+    // The active-toolchain shim — the `cajeta` that lands on PATH.
+    //
+    // On Windows it is bin/cajeta.cmd, not bin/cajeta: PE has no
+    // elevation-free symlink (__cajeta_path_symlink returns -1 there
+    // unconditionally), so the shim is a one-line batch wrapper instead, and
+    // .cmd is in PATHEXT so typing `cajeta` still finds it.
+    public static #String shimFile(String home) {
+        if (isWindows()) {
+            return home + "/bin/cajeta.cmd";
+        }
+        return home + "/bin/cajeta";
+    }
 
     // A specific installed toolchain's directory and its binary. These
     // take two reference parameters and return a freshly built string, so
@@ -53,7 +82,14 @@ public final class Home {
     public static #String versionDir(String home, String version) {
         return home + "/versions/" + version;
     }
+    // Windows will not execute a file without an executable extension, so the
+    // installed toolchain must be cajeta.exe there. Writing it extensionless
+    // (as this did) produced an install that reported success and then could
+    // not be run at all.
     public static #String versionBin(String home, String version) {
+        if (isWindows()) {
+            return home + "/versions/" + version + "/cajeta.exe";
+        }
         return home + "/versions/" + version + "/cajeta";
     }
 }

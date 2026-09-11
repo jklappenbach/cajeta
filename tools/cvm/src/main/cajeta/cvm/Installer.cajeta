@@ -129,7 +129,18 @@ public final class Installer {
         }
 
         // ── 6. make it the active toolchain ─────────────────────────
-        Toolchains.repointShim(home, version);
+        // The return value is checked, not discarded: on Windows the symlink
+        // this used to make always failed (no elevation-free symlink on PE),
+        // and because the result was ignored cvm printed "installed ... and
+        // set it as the default" over an install with NO shim at all. A
+        // toolchain that is on disk but not on PATH is not installed.
+        if (!Toolchains.repointShim(home, version)) {
+            System.stderr.println("cvm: installed cajeta " + version + " to "
+                + binPath + ", but could not point "
+                + Home.shimFile(home) + " at it — the toolchain is on disk "
+                + "but not on PATH.");
+            return 1;
+        }
         Toolchains.writeDefault(home, version);
 
         System.stdout.println("cvm: installed cajeta " + version
