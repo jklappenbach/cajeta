@@ -1028,7 +1028,11 @@ namespace cajeta {
                     // A spawn pushes its own entry so a bare `spawn foo();` is
                     // still freed; bound to a local, the local's entry below is
                     // the owner, so mark the spawn's transient entry inactive.
-                    if (auto spawn = dynamic_pointer_cast<SpawnExpression>(children[0])) {
+                    // `#=` wraps the spawn in a MoveExpression: unwrap it, or
+                    // both entries stay armed and the Task is freed twice.
+                    auto spawnInit = dynamic_pointer_cast<Expression>(children[0]);
+                    if (isMoveKind(spawnInit)) spawnInit = moveInner(spawnInit);
+                    if (auto spawn = dynamic_pointer_cast<SpawnExpression>(spawnInit)) {
                         if (llvm::Value* spawnEntry = spawn->getDropEntry()) {
                             if (llvm::Function* markInactive = module->getRuntimeFunction(
                                     "__cajeta_drop_mark_inactive")) {
