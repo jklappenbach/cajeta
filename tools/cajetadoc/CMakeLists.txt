@@ -70,6 +70,16 @@ target_include_directories(cajetadoc_parser PUBLIC
     ${PROJECT_SOURCE_DIR}/generated/lex
     ${PROJECT_SOURCE_DIR}/generated/parser)
 target_link_libraries(cajetadoc_parser PUBLIC ${CAJETADOC_ANTLR4_RUNTIME_LIB})
+# winpthreads, PUBLIC so it reaches cajetadoc and cajetadoc_test and lands
+# AFTER the antlr4 archive they all link. The static antlr4 runtime reaches
+# std::call_once, which libstdc++ lowers to pthread_once; mingw g++ implicitly
+# appends winpthreads to its own link line, clang++ does not, so this leg fails
+# on `undefined reference to pthread_once' the moment it is built with clang.
+# Same defect and same fix as the one in src/CMakeLists.txt, but these targets
+# do not link cajeta_lib, so they did not inherit it.
+if(WIN32)
+    target_link_libraries(cajetadoc_parser PUBLIC pthread)
+endif()
 
 # --- standalone binary -----------------------------------------------------
 add_executable(cajetadoc main.cpp)

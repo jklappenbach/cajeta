@@ -219,6 +219,17 @@ jobs:
       run:
         shell: ${{ matrix.shell }}
 
+    # ONE switch for the Windows static link, read by both the glog step and
+    # Configure. They have to agree: glog is the only dep MSYS2 ships
+    # shared-only, so the static build needs a from-source glog on glog_ROOT —
+    # but pointing a SHARED build at that same static glog reintroduces the
+    # exact conflict the shared link exists to avoid (libglog.a's std::regex
+    # instantiations vs the clang-built fork's, 8x multiple definition,
+    # measured in run 34416584191). Currently OFF: see the blocked-on-one-C++-
+    # toolchain note on CAJETA_STATIC_WINDOWS in src/CMakeLists.txt.
+    env:
+      CAJETA_STATIC_WINDOWS: 'ON'
+
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -359,6 +370,7 @@ jobs:
             mingw-w64-x86_64-openssl
             mingw-w64-x86_64-curl
             mingw-w64-x86_64-vulkan-headers
+            mingw-w64-x86_64-pkgconf
             tar
             vim
             zip
@@ -477,6 +489,45 @@ jobs:
       # because the dependency install already happened above per-platform.
       # The cmake configure that setup.sh runs is portable across all
       # three host paths (apt Linux, brew macOS, MSYS2 mingw-w64-cmake).
+      # ---- glog, built static (Windows only) ----------------------------
+      # Every other Windows dependency ships a static archive in MSYS2; glog
+      # ships ONLY libglog.dll.a + libglog-2.dll (verified against the mingw64
+      # repo 2026-09-07, package 0.7.1-10 — its file list has no .a). One
+      # remaining DLL would defeat the whole point, because cvm installs a
+      # SINGLE file and cannot carry a sidecar. So build glog from source with
+      # BUILD_SHARED_LIBS=OFF and point find_package at it via glog_ROOT.
+      # gflags/unwind are off: cajeta uses neither directly (only
+      # src/cajeta/logging/CajetaLogger.cpp includes glog at all), and each
+      # would drag another shared library back in.
+      - name: Build glog static (Windows)
+        if: runner.os == 'Windows' && env.CAJETA_STATIC_WINDOWS == 'ON'
+        run: |
+          set -euo pipefail
+          # LLVM_DIR was put in GITHUB_ENV by the fetch step and is
+          # <fork>/lib/cmake/llvm; the fork's clang is its sibling <fork>/bin.
+          # Derived here as well as in Configure because this step runs first,
+          # and glog MUST be built by the same compiler as cajeta or its
+          # COMDATs will not match (that mismatch is the whole reason the g++
+          # static link failed).
+          FORK_ROOT="${LLVM_DIR%/lib/cmake/llvm}"
+          GLOG_PREFIX="$PWD/.glog-static"
+          if [ ! -f "$GLOG_PREFIX/lib/libglog.a" ]; then
+            rm -rf .glog-src .glog-build "$GLOG_PREFIX"
+            git clone --depth 1 --branch v0.7.1 https://github.com/google/glog .glog-src
+            cmake -S .glog-src -B .glog-build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_COMPILER="${FORK_ROOT}/bin/clang.exe" \
+              -DCMAKE_CXX_COMPILER="${FORK_ROOT}/bin/clang++.exe" \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DWITH_GFLAGS=OFF -DWITH_UNWIND=none -DBUILD_TESTING=OFF \
+              -DCMAKE_INSTALL_PREFIX="$GLOG_PREFIX"
+            cmake --build .glog-build --target install
+          fi
+          [ -f "$GLOG_PREFIX/lib/libglog.a" ] \
+            || { echo "::error::glog static build produced no libglog.a"; exit 1; }
+          echo "glog_ROOT=$GLOG_PREFIX" >> "$GITHUB_ENV"
+          echo "static glog at $GLOG_PREFIX"
+
       - name: Configure
         run: |
           set -euo pipefail
@@ -491,7 +542,19 @@ jobs:
           # (v0.21.0/v0.21.1 both did, silently).
           CMAKE_EXTRA=("-DCAJETA_REQUIRE_ZMQ=ON")
           if [ "${{ runner.os }}" = "Windows" ]; then
-            export CC=gcc CXX=g++
+            # The fork's OWN clang, not MSYS2's: installing mingw clang would
+            # put a stock LLVM 22 on the lib search path, which is the "two
+            # LLVMs" trap this leg's package list deliberately avoids. cajeta
+            # must be compiled by the same C++ toolchain that built the fork's
+            # LLVM archives (clang) or a static link cannot merge their COMDATs
+            # — the gcc build failed on exactly that. Measured 2026-09-09: the
+            # fork's clang++ compiles the whole tree with zero errors.
+            _FORK="${LLVM_DIR%/lib/cmake/llvm}"
+            export CC="${_FORK}/bin/clang.exe" CXX="${_FORK}/bin/clang++.exe"
+            # Passed explicitly rather than left to the CMake default, so the
+            # job-level switch is the single source of truth for both this and
+            # the glog step above.
+            CMAKE_EXTRA+=("-DCAJETA_STATIC_WINDOWS=${CAJETA_STATIC_WINDOWS}")
             # This self-hosted runner reuses build/ across runs, and CMake
             # caches every find_ result. setup-msys2 (update: true) can move
             # the toolchain between runs while cached include/lib paths keep
@@ -775,18 +838,79 @@ jobs:
       - name: Stage release contents
         run: |
           set -euo pipefail
+          # nullglob: with a static Windows link there are no DLLs, and an
+          # unmatched glob must expand to nothing rather than to itself.
+          shopt -s nullglob
           V="${{ steps.version.outputs.ref_version }}"
           T="${{ matrix.target }}"
           STAGE="cajeta-v${V}-${T}"
           mkdir -p "$STAGE/bin" "$STAGE"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp build/src/cajeta.exe "$STAGE/bin/"
+            # cajeta.exe is NOT self-contained on Windows. D2 chose to reach
+            # self-containedness there by BUNDLING the MinGW DLLs rather than
+            # static-linking, and only the MSI ever did it — CPack runs the
+            # install() rules, and install(RUNTIME_DEPENDENCY_SET) resolves the
+            # import table. A bare `cp` of the exe shipped an archive that dies
+            # at load time on any host without MSYS2 on PATH:
+            #   "The code execution cannot proceed because libzmq.dll was not
+            #    found." (measured on the shipped v0.27.0 zip; the exe imports
+            #    11 non-system DLLs — libzmq is just the first one named.)
+            # So stage through the SAME install rules the MSI uses and take
+            # their bin/, which carries the exe plus every resolved DLL.
+            # With CAJETA_STATIC_WINDOWS=ON (the default) there are no DLLs to
+            # carry — the exe imports only Windows system libraries — so the
+            # glob is allowed to match nothing. The copy stays because it is
+            # what makes a CAJETA_STATIC_WINDOWS=OFF build shippable too, and
+            # the import-table gate below is what actually decides either way.
+            rm -rf .stage-install
+            cmake --install build --prefix .stage-install --component cajeta
+            cp .stage-install/bin/cajeta.exe "$STAGE/bin/"
+            dlls=(.stage-install/bin/*.dll)
+            if [ ${#dlls[@]} -gt 0 ]; then
+              cp "${dlls[@]}" "$STAGE/bin/"
+              echo "staged ${#dlls[@]} bundled DLL(s) beside cajeta.exe"
+            else
+              echo "no DLLs to bundle — cajeta.exe is statically linked"
+            fi
           else
             cp build/src/cajeta "$STAGE/bin/"
           fi
           cp VERSION README.md "$STAGE/"
           [ -f LICENSE ] && cp LICENSE "$STAGE/" || true
           echo "STAGE_DIR=$STAGE" >> "$GITHUB_ENV"
+
+      # Gate: the staged Windows tree must be loadable on a host with no MSYS2.
+      # v0.27.0 shipped a zip holding cajeta.exe alone; it dies in the loader
+      # before main(), so no test that RUNS the binary on the build host (which
+      # has MSYS2 on PATH) can see it. Read the import table instead and assert
+      # every non-system DLL sits beside the exe. Asserting the gate FIRES:
+      # revert the staging step above to `cp build/src/cajeta.exe` and this
+      # step fails, listing libzmq.dll among the missing.
+      - name: Verify the staged Windows tree carries its DLLs
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          EXE="$STAGE_DIR/bin/cajeta.exe"
+          [ -f "$EXE" ] || { echo "::error::no $EXE to verify"; exit 1; }
+          missing=0
+          while read -r dll; do
+            case "$dll" in
+              # Shipped by Windows itself — must NOT be bundled.
+              api-ms-*|ext-ms-*|[Kk][Ee][Rr][Nn][Ee][Ll]32.dll|[Nn][Tt][Dd][Ll][Ll].dll) continue ;;
+            esac
+            if [ -f "$STAGE_DIR/bin/$dll" ]; then continue; fi
+            # A system DLL resolves out of System32; anything else must be beside the exe.
+            if [ -f "/c/Windows/System32/$dll" ]; then continue; fi
+            echo "::error::$dll is imported by cajeta.exe but is neither bundled nor a system DLL"
+            missing=$((missing + 1))
+          done < <(objdump -p "$EXE" | sed -n 's/^\s*DLL Name:\s*//p' | sort -u)
+          if [ "$missing" -gt 0 ]; then
+            echo "::error::$missing unbundled import(s) — this archive would fail at load time off-runner"
+            exit 1
+          fi
+          bundled=("$STAGE_DIR/bin/"*.dll)
+          echo "all imports satisfied (${#bundled[@]} DLL(s) bundled beside the exe)"
 
       # ---- cvm download asset (D12) ------------------------------------
       # cvm installs the BARE binary — it writes the downloaded bytes

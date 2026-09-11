@@ -21,6 +21,60 @@ set(Java_JAVA_EXECUTABLE "java")
 set(ANTLR_EXECUTABLE $ENV{ANTLR_EXECUTABLE})
 add_definitions(-DANTLR4CPP_STATIC)
 
+# ---- Windows: static third-party linkage (D2) ---------------------------
+# cajeta.exe reaches Windows through three channels — the MSI, the archive,
+# and the bare binary cvm downloads. Only the MSI could carry DLLs beside the
+# exe (CPack runs install(RUNTIME_DEPENDENCY_SET)), so the other two shipped
+# an exe whose 11 non-system imports were absent and died in the loader before
+# main() with "libzmq.dll was not found". D2 originally chose DLL bundling for
+# Windows, but that cannot serve cvm at all: cvm installs a SINGLE file and has
+# no extractor, so a bundle it cannot carry is not a fix.
+#
+# MEASURED 2026-09-07 on the MSYS2 the release leg uses: every dependency
+# except glog ships a static archive, and a full static link of curl + zmq +
+# OpenSSL + zstd + zlib + antlr4 resolves and RUNS under PATH=System32 alone
+# (probe imported only ADVAPI32/CRYPT32/IPHLPAPI/KERNEL32/Secur32/USER32/
+# WLDAP32/WS2_32/bcrypt/msvcrt). glog ships shared-only in MSYS2, so the
+# release workflow builds it static from source and puts it on CMAKE_PREFIX_PATH.
+#
+# DEFAULT OFF — BLOCKED, measured 2026-09-09 (release run 34411080977).
+# The third-party half works: with the closure and macros below, curl, zmq,
+# OpenSSL, zstd, zlib and antlr4 all link statically. What cannot link is the
+# C++ RUNTIME, because the prebuilt cajeta-llvm fork for Windows is built by
+# MSYS2 **clang 22.1.8** (its archives carry that .comment stamp) while
+# cajeta's own C++ is built by mingw **g++ 16.2.0** — deliberately, since
+# clang++ on mingw does not auto-link winpthreads. Dynamic linking hid this:
+# COMDAT duplicates resolved to libstdc++-6.dll's single definition, and glog
+# was a DLL whose objects never entered the link at all. `-static` forces both
+# toolchains' objects into one link, and they are not interchangeable:
+#
+#   libglog.a vs libLLVMSPIRVCodeGen.a  8x multiple definition (std::regex
+#                                       instantiated by g++ AND by clang)
+#   libgcc_eh.a vs libunwind.a          6x multiple definition (two SEH
+#                                       unwinders: gcc's and clang's)
+#   libstdc++.a vs fork objects        70x "duplicate section has different
+#                                       size" (typeinfo COMDATs differ
+#                                       between the two compilers)
+#
+# So a single self-contained exe needs ONE C++ toolchain across cajeta and the
+# fork — either build cajeta with clang, or rebuild the fork with g++. Until
+# that is decided, OFF keeps the shared link, and the archive channel is
+# correct anyway because the release staging bundles whatever DLLs the install
+# rules resolve. cvm remains unfixed; see specs/INDEX.md.
+option(CAJETA_STATIC_WINDOWS
+       "Link Windows third-party deps statically so cajeta.exe is self-contained" OFF)
+set(CAJETA_ANTLR4_LIB_NAMES antlr4-runtime)
+if(WIN32 AND CAJETA_STATIC_WINDOWS)
+    # MinGW names the DLL import lib lib<x>.dll.a and the static archive
+    # lib<x>.a. CMake's default suffix order puts .dll.a first, which is how
+    # every find_package below silently selected the shared build. Flipping the
+    # order makes the SAME find_package calls resolve the static archives.
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".lib")
+    set(OPENSSL_USE_STATIC_LIBS ON)
+    # antlr4's static archive is not lib<name>.a but a distinct package file.
+    list(PREPEND CAJETA_ANTLR4_LIB_NAMES antlr4-runtime-static)
+endif()
+
 find_package(glog 0.6.0 REQUIRED)
 find_package(GTest REQUIRED)
 # zlib backs the embedded-IDE-plugin extraction (`cajeta ide install`): the
@@ -37,6 +91,41 @@ find_package(OpenSSL REQUIRED)
 # header surface is reachable from test code that exercises the
 # in-process HTTP fixture server.
 find_package(CURL REQUIRED)
+
+# A STATIC libcurl needs its whole transitive closure named on the link line —
+# FindCURL yields only the archive itself, and GNU ld resolves archives in one
+# left-to-right pass. pkg-config knows the closure from libcurl.pc's
+# Libs.private (ssl, crypto, z, ssh2, brotli, zstd, nghttp2, ngtcp2, psl,
+# unistring, iconv, idn2, plus the Win32 imports curl's schannel + LDAP need).
+# Measured 2026-09-07: without this the link fails on ~200 undefined refs.
+set(CAJETA_WIN_STATIC_LIBS "")
+set(CAJETA_WIN_ZMQ_STATIC_LIBS "")
+if(WIN32 AND CAJETA_STATIC_WINDOWS)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(CAJETA_CURLPC REQUIRED libcurl)
+    list(APPEND CAJETA_WIN_STATIC_LIBS ${CAJETA_CURLPC_STATIC_LDFLAGS})
+    # libzmq.a's own closure, kept SEPARATE from curl's because it has to land
+    # in a different place on the link line. libzmq is linked further down (its
+    # own target_link_libraries call, after this list), and GNU ld resolves
+    # archives in ONE left-to-right pass: a library listed before the archive
+    # that needs it has already been passed over. Measured — putting these in
+    # CAJETA_WIN_STATIC_LIBS above put libsodium.a and -liphlpapi BEFORE
+    # libzmq.a and left 138 undefined refs from libzmq.a's curve_client,
+    # curve_server, ip_resolver and random objects.
+    #
+    # sodium: libzmq.a calls it for CURVE crypto, but MSYS2's libzmq.pc
+    # declares only "-lstdc++ -liphlpapi -lpthread" in Libs.private — the
+    # sodium dependency is missing from the .pc, so name it here.
+    # iphlpapi: zmq's ip_resolver wants GetAdaptersAddresses / if_nametoindex.
+    find_library(CAJETA_SODIUM_LIB NAMES sodium)
+    if(CAJETA_SODIUM_LIB)
+        list(APPEND CAJETA_WIN_ZMQ_STATIC_LIBS ${CAJETA_SODIUM_LIB})
+    endif()
+    list(APPEND CAJETA_WIN_ZMQ_STATIC_LIBS iphlpapi)
+    message(STATUS "Windows static link closure (curl): ${CAJETA_WIN_STATIC_LIBS}")
+    message(STATUS "Windows static link closure (zmq):  ${CAJETA_WIN_ZMQ_STATIC_LIBS}")
+endif()
+
 # zlib is used unconditionally by the OCI image writer (Phase 9, gzip
 # layer encoding). It's also pulled in by lld below — that block stays
 # but is now redundant on the linker side. Doubling the find_package
@@ -80,12 +169,41 @@ if(NOT TARGET zstd::libzstd_shared)
                 /usr/lib
                 /usr/local/lib)
     if(ZSTD_LIBRARY)
-        add_library(zstd::libzstd_shared SHARED IMPORTED)
+        # UNKNOWN, not SHARED — the same reason the libzmq block below gives:
+        # find_library returns whatever file it found, and on Windows a SHARED
+        # IMPORTED target with no IMPORTED_IMPLIB is a configure error. That
+        # was survivable while this only ever resolved libzstd.dll.a; under
+        # CAJETA_STATIC_WINDOWS it resolves libzstd.a, where SHARED is simply
+        # the wrong type. UNKNOWN is correct for both.
+        add_library(zstd::libzstd_shared UNKNOWN IMPORTED)
         set_target_properties(zstd::libzstd_shared PROPERTIES
                 IMPORTED_LOCATION ${ZSTD_LIBRARY})
         message(STATUS "Created fallback zstd::libzstd_shared -> ${ZSTD_LIBRARY}")
     else()
         message(FATAL_ERROR "Could not locate libzstd. Install libzstd-dev (Linux), brew install zstd (macOS), or vcpkg install zstd (Windows).")
+    endif()
+endif()
+
+# The fork's LLVMExports.cmake records a dependency on the target name
+# `zstd::libzstd_shared`, and MSYS2's zstdConfig gives that target an
+# IMPORTED_IMPLIB of libzstd.dll.a. So LLVM drags the DLL in by name no matter
+# what cajeta itself links, which is why libzstd.dll survived as one of the last
+# two non-system imports after everything else had gone static — and then, once
+# cajeta also linked zstd::libzstd_static, both landed on the line and collided
+# (5x multiple definition of ZSTD_*, measured 2026-09-09).
+#
+# Point that one target at the static archive instead. Retargeting is the fix
+# rather than swapping the name, because the name is baked into the fork's
+# exports and is not ours to change.
+if(WIN32 AND CAJETA_STATIC_WINDOWS AND TARGET zstd::libzstd_shared)
+    find_library(CAJETA_ZSTD_STATIC_LIB NAMES zstd)
+    if(CAJETA_ZSTD_STATIC_LIB AND NOT CAJETA_ZSTD_STATIC_LIB MATCHES "\\.dll\\.a$")
+        set_target_properties(zstd::libzstd_shared PROPERTIES
+                IMPORTED_IMPLIB          "${CAJETA_ZSTD_STATIC_LIB}"
+                IMPORTED_IMPLIB_RELEASE  "${CAJETA_ZSTD_STATIC_LIB}"
+                IMPORTED_LOCATION        "${CAJETA_ZSTD_STATIC_LIB}"
+                IMPORTED_LOCATION_RELEASE "${CAJETA_ZSTD_STATIC_LIB}")
+        message(STATUS "Retargeted zstd::libzstd_shared -> ${CAJETA_ZSTD_STATIC_LIB}")
     endif()
 endif()
 
@@ -382,7 +500,7 @@ find_path(ANTLR4_INCLUDE_DIR
             C:/vcpkg/installed/x64-windows/include
         PATHS /usr/include /usr/local/include)
 find_library(ANTLR4_RUNTIME_LIB
-        NAMES antlr4-runtime
+        NAMES ${CAJETA_ANTLR4_LIB_NAMES}
         HINTS
             /opt/homebrew/opt/antlr4-cpp-runtime/lib
             /usr/local/opt/antlr4-cpp-runtime/lib
@@ -1131,6 +1249,29 @@ if(NOT WIN32 AND NOT CAJETA_USE_LLVM_DYLIB)
         CACHE INTERNAL "Version script localizing llvm::* (comgr interposition fix)")
 endif()
 
+# zstd and curl are reached through CMake imported targets whose location is an
+# IMPORT LIBRARY (lib<x>.dll.a) on MSYS2, and an absolute path defeats both the
+# find_library suffix preference and `-static`: the linker is handed the import
+# lib directly, so the exe kept importing libzstd.dll and libcurl-4.dll even
+# with everything else static (measured 2026-09-09 — those two were the last
+# non-system imports left).
+#
+# zstd: MSYS2 does ship zstdConfig.cmake (contrary to the fallback comment
+# above, which is why that fallback is not what runs here) and it exports a
+# libzstd_static target — use it.
+# curl: MSYS2's CURLConfig exports only a shared CURL::libcurl (IMPORTED_IMPLIB),
+# with no static twin, so drop the target entirely and let the pkg-config
+# closure in CAJETA_WIN_STATIC_LIBS carry `-lcurl`, which `-static` resolves to
+# libcurl.a.
+set(CAJETA_ZSTD_LINK zstd)
+set(CAJETA_CURL_LINK CURL::libcurl)
+if(WIN32 AND CAJETA_STATIC_WINDOWS)
+    if(TARGET zstd::libzstd_static)
+        set(CAJETA_ZSTD_LINK zstd::libzstd_static)
+    endif()
+    set(CAJETA_CURL_LINK "")
+endif()
+
 add_library(${CMAKE_PROJECT_NAME}_lib STATIC ${SOURCES} ${GENERATED_SOURCES})
 target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         PUBLIC
@@ -1145,16 +1286,24 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         ${CAJETA_LLD_LIBS}
         ${LLVM_LIBS}
         glog::glog
-        zstd
+        ${CAJETA_ZSTD_LINK}
         ZLIB::ZLIB
         OpenSSL::SSL
         OpenSSL::Crypto
-        CURL::libcurl)
+        ${CAJETA_CURL_LINK}
+        # Empty off Windows / when CAJETA_STATIC_WINDOWS=OFF. Must follow
+        # CURL::libcurl: GNU ld resolves static archives in one left-to-right
+        # pass, so the closure has to come after the archive that needs it.
+        ${CAJETA_WIN_STATIC_LIBS})
 # The Jupyter transport, when libzmq was found. CAJETA_HAVE_ZMQ is PUBLIC so
 # main.cpp's verb dispatch and the transport tests agree with the library
 # about whether `cajeta kernel` exists.
 if(CAJETA_ZMQ_TARGET)
-    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC ${CAJETA_ZMQ_TARGET})
+    # Empty unless Windows+static. MUST follow ${CAJETA_ZMQ_TARGET} on the link
+    # line — libsodium and iphlpapi satisfy references made BY libzmq.a, and
+    # GNU ld's single left-to-right pass will not go back for them.
+    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC
+            ${CAJETA_ZMQ_TARGET} ${CAJETA_WIN_ZMQ_STATIC_LIBS})
     target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAVE_ZMQ=1)
 endif()
 # The native runtime (cajeta_runtime.c, embedded in this lib) uses
@@ -1169,6 +1318,36 @@ if(WIN32)
     # NET-5.3). PUBLIC so every consumer (cajeta.exe, cajeta_test,
     # cajeta_debug_test) inherits the import lib.
     target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC bcrypt ws2_32 crypt32)
+    # winpthreads, AGAIN and deliberately last. `pthread` is already in the
+    # main target_link_libraries call above, but it lands at link-line position
+    # 17 while libLLVMCore.a — which references pthread_rwlock_rdlock/wrlock/
+    # unlock from PassRegistry — lands at 149, and GNU ld resolves in one
+    # left-to-right pass. mingw g++ hides this by implicitly appending
+    # winpthreads to its own link line; clang++ does not, so building with the
+    # fork's clang++ fails on exactly those symbols (measured 2026-09-09: the
+    # ONLY failure in an otherwise clean 1081-target clang build). This
+    # separate call is appended after the LLVM archives, which is where a
+    # library they depend on has to sit.
+    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC pthread)
+    if(CAJETA_STATIC_WINDOWS)
+        # Headers that declare their API __declspec(dllimport) unless told the
+        # link is static. Without these the compiler emits __imp_<sym> and the
+        # static archive — which defines the plain symbol — cannot satisfy it.
+        # PUBLIC is load-bearing: `add_definitions(-DANTLR4CPP_STATIC)` at the
+        # top of this file is DIRECTORY-scoped, so it reaches src/ but not
+        # test/, and the first static build failed on 14 __imp__ZN6antlr4*
+        # references from ScriptUnitParseTests / XpuLaunchGrammarTests /
+        # KernelTransportTests alone. Propagating from the target covers every
+        # consumer (cajeta.exe, cajeta_test, cajeta_debug_test).
+        target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC
+                ANTLR4CPP_STATIC ZMQ_STATIC CURL_STATICLIB)
+        # The MinGW runtime itself — libgcc_s_seh-1.dll, libstdc++-6.dll and
+        # libwinpthread-1.dll were three of the 11 missing imports. PUBLIC so
+        # every consumer links the same way; a half-static link would still
+        # need the DLLs at load time.
+        target_link_options(${CMAKE_PROJECT_NAME}_lib PUBLIC
+                -static -static-libgcc -static-libstdc++)
+    endif()
 endif()
 target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
         ${PROJECT_SOURCE_DIR}/src
