@@ -13,7 +13,7 @@ A binding to a title-bearing value is in one of two states. The state is inferre
 
 The **title** is the ownership stake in a value, the right and the obligation to drop it. A **borrow** is a reference without the title.
 
-One resolution operates beside the two states without adding a third. An escaping borrow of an immutable leaf buffer — a `String` produced by `substring` is the canonical case — resolves into a copy, or into a shared stake in the backing buffer. A stake is a property of the buffer, not of the binding. A runtime count co-owns the buffer, and the last stake frees it. The binding itself is a borrow. Stakes are specified in Arrays, Views & Slices §12.
+One resolution operates beside the two states without adding a third. An escaping borrow of an immutable leaf buffer — a `String` produced by `substring` is the canonical case — resolves into a copy, or into a shared stake in the backing buffer. A stake is a property of the buffer, not of the binding. A runtime count co-owns the buffer, and the last stake frees it. The binding itself is a borrow. Stakes are specified in Arrays, Views, Slices & Records §12.
 
 ## 5.2 The Borrow Operator
 
@@ -73,7 +73,7 @@ Two further rules protect borrows.
 - **Anonymous owners.** A chained access whose root is an unnamed temporary, where an intermediate step borrows into the temporary, is a compile-time error. The temporary drops at the end of the expression and the borrow would dangle. Binding the intermediate to a name resolves it.
 - **Alias mutation.** A live borrow into a value blocks mutation of, or through, that value's path. Iteration is a borrow construct, so mutating a collection inside its own `for`-each body is a compile-time error.
 
-> *Discussion.* An escaping borrow whose source is an eligible immutable leaf buffer does not error. It resolves into a copy or a shared stake (Arrays, Views & Slices §12). The error-and-`#` discipline described in this chapter is the rule for identity objects and mutable values. At script top level, bindings live in the session scope, and a top-level borrow of a session binding is `CAJETA_ERROR_SESSION_BORROW_ESCAPE` (Script Units §18).
+> *Discussion.* An escaping borrow whose source is an eligible immutable leaf buffer does not error. It resolves into a copy or a shared stake (Arrays, Views, Slices & Records §12). The error-and-`#` discipline described in this chapter is the rule for identity objects and mutable values. At script top level, bindings live in the session scope, and a top-level borrow of a session binding is `CAJETA_ERROR_SESSION_BORROW_ESCAPE` (Script Units §18).
 
 ## 5.3 Transfers
 

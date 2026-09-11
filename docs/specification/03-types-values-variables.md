@@ -34,7 +34,7 @@ System.stdout.println("codepoint: " + (int32) cp);    // 233
 
 ## 3.2 Reference Types
 
-The reference types are classes (Classes §8), interfaces (Interfaces §9), and arrays (Arrays, Views & Slices §12). A `view` declaration also introduces a type (Arrays, Views & Slices §12).
+The reference types are classes (Classes §8), interfaces (Interfaces §9), and arrays (Arrays, Views, Slices & Records §12). A `view` declaration also introduces a type (Arrays, Views, Slices & Records §12).
 
 A class is one type regardless of where its instances are placed: `stack MyClass()` and `heap MyClass()` produce values of the same type `MyClass`, and placement is chosen at the allocation site, not in the declaration (Allocation §4). The borrow checker tracks lifetime, and the type system does not.
 

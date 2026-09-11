@@ -15,7 +15,7 @@ The chapters that define each construct's semantics:
 | `interfaceDeclaration` | Interfaces §9 |
 | `annotationTypeDeclaration`, annotation application | Annotations & Aspects §10 |
 | `typeParameters`, wildcards | Templates & Wildcards §11 |
-| `viewDeclaration`, array types | Arrays, Views & Slices §12 |
+| `viewDeclaration`, `recordDeclaration`, array types | Arrays, Views, Slices & Records §12 |
 | Statements, `switch`, patterns, labels, `try` | Statements & Patterns §13 |
 | `expression`, lambdas, method references, `instanceof` | Expressions §14 |
 | `SHARP_ASSIGN` / `REFERENCE` semantics | Ownership §5 |

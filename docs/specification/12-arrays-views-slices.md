@@ -1,6 +1,6 @@
-# 12 — Arrays, Views & Slices
+# 12 — Arrays, Views, Slices & Records
 
-This chapter defines the three bulk-data forms. Arrays are the indexed storage type, `view` types are zero-copy overlays that read and write a byte buffer in a declared wire layout, and slices are values that co-own an immutable backing buffer through shared stakes.
+This chapter defines four ways to shape data. Arrays are the indexed storage type. `view` types are zero-copy overlays that read and write a byte buffer in a declared wire layout. Slices are values that co-own an immutable backing buffer through shared stakes. A `record` is a named value-type aggregate of typed fields, and §12.4 sets it against `view`, the form it is most often confused with.
 
 ## 12.1 Arrays
 
@@ -87,3 +87,74 @@ System.stdout.println(C.tail());     // world
 ```
 
 > *Discussion.* `Slice<T>` — the generalization of the mechanism beyond `String` — is designed but not shipped. When it lands, this section governs it with `String` as one producer among several.
+
+## 12.4 Records
+
+A `record` is a named value-type aggregate of typed fields. A record value is the data. Assigning one copies it, there is no reference identity behind it, and it carries no per-instance header. A record has no vtable, so its methods and operators dispatch directly.
+
+```text
+recordDeclaration
+    : RECORD identifier typeParameters?
+      (EXTENDS typeList)?
+      (IMPLEMENTS typeList)?
+      classBody
+    ;
+```
+
+A record is constructed with the named aggregate initializer, which binds each field by name and is order-free. Field access is by name, and an unknown field name is a compile-time error rather than a runtime lookup.
+
+**Example 12.4-1.** Construction and field access.
+
+```cajeta
+record Point {
+    int32 x;
+    int32 y;
+}
+public final class C {
+    public static int32 run() {
+        Point p = Point { x: 3, y: 4 };
+        return p.x * 10 + p.y;      // 34
+    }
+}
+```
+
+**Records are immutable.** Assigning to a field is a compile-time error, `CAJETA_ERROR_RECORD_IMMUTABLE`. An updated value is produced by `with`, which copies the record and replaces the named fields.
+
+**Example 12.4-2.** Copy-with. The original is unchanged, because `q` is a separate value.
+
+```cajeta
+record Point {
+    int32 x;
+    int32 y;
+}
+public final class C {
+    public static int32 run() {
+        Point p = Point { x: 3, y: 4 };
+        Point q = p.with(y: 9);
+        return q.x * 10 + q.y;      // 39
+    }
+}
+```
+
+Two rules keep a record a value.
+
+- **Fields are value types** — a primitive, a `Vector`, another record, or an `@ValueType` class. A field of a heap class type is a compile-time error, `CAJETA_ERROR_VALUE_TYPE`. An identity reference inside a value would defeat the copy.
+- **A record implements no interface.** `record R implements I` parses and is rejected with `CAJETA_ERROR_RECORD_IMPLEMENTS`. Interface dispatch needs a vtable and a record has none. A type that must be reached polymorphically is a class (Classes §8).
+
+### 12.4.1 Records and Views
+
+A record and a view both describe a fixed set of typed fields with no vtable, and they exist for opposite purposes. A view names bytes it does not own. A record is the value itself.
+
+| | `view` (§12.2) | `record` |
+|---|---|---|
+| Storage | none of its own — an overlay on a buffer supplied from outside | the fields are the value, carried by whoever holds it |
+| Layout | declared byte-exact, with endianness, because the wire decides it | the compiler's, subject to the value-type rules |
+| Writing a field | writes through into the buffer | rejected — `with` produces a new value |
+| Lifetime | borrows the buffer, and cannot outlive it | the value's own, copied wherever it goes |
+| Construction | `Header(buf)` validates the bytes cover the fields | `Point { x: 3, y: 4 }` supplies the fields |
+
+Parse or emit a wire format with a view. Model a data shape with a record. A view without a buffer means nothing, and a record needs no buffer at all.
+
+Both exclude class-typed fields, for different reasons. In a view, a pointer read out of bytes the program did not write is a wild pointer. In a record, an identity reference would survive a copy that is supposed to be independent.
+
+> *Discussion.* Records reach further than this chapter states. They carry schemas as type arguments (`Table<Tick>`), they support static vtable-free composition through `extends`, and they are the data-modeling primitive the núcleo typed surface stands on. Positional construction, field defaults, and destructuring are recorded as open in `nucleo/records-spec.md` and are not specified here. That document also still describes `record` as unimplemented, which is stale — every rule in this section is enforced by the shipped compiler.

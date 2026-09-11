@@ -42,7 +42,7 @@ The framework annotations live in `cajeta.*` packages, grouped by what they driv
 
 - **Synthesis** (`cajeta.synth`) — `@Getter`, `@Setter`, `@ToString`, `@EqualsAndHashCode`, `@Data`, `@Value`, `@Builder`, `@NoArgsConstructor`, `@AllArgsConstructor`, `@RequiredArgsConstructor`, `@With`, `@AutoHash`. The compiler synthesizes the corresponding members, and a user-written member of the same signature wins over the synthesized one.
 - **Dependency injection and aspects** (`cajeta.aot`) — §10.4 and §10.5.
-- **Wire formats** (`cajeta.wire`) — `@BigEndian`, `@LittleEndian`, `@HostEndian`, `@Align` on `view` classes (Arrays, Views & Slices §12).
+- **Wire formats** (`cajeta.wire`) — `@BigEndian`, `@LittleEndian`, `@HostEndian`, `@Align` on `view` classes (Arrays, Views, Slices & Records §12).
 - **FFI** (`cajeta.ffi`) — `@Native(value = "symbol")`: the method body is a forwarding call to the named native symbol.
 - **Lint** (`cajeta.lint`) — `@SuppressLint("rule-id", …)` silences the listed rules in its scope. There is no catch-all.
 - **Verification** (`cajeta.lang`) — `@Override` and its kin: checked by the compiler, no code emitted.
