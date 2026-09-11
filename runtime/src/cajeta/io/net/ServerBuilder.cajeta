@@ -243,9 +243,9 @@ public class ServerBuilder {
         }
         if (this.backlog >= 1) {
             return this.serverModel.bindServerWithBacklog(
-                this.address, this.backlog, this.handler);
+                this.address, this.backlog, #this.handler);
         }
-        return this.serverModel.bindServer(this.address, this.handler);
+        return this.serverModel.bindServer(this.address, #this.handler);
     }
 
     /**

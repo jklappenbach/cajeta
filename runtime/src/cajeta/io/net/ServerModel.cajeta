@@ -180,7 +180,7 @@ public class ServerModel {
      * model-selection surface a future
      * [`ServerBuilder`](ServerBuilder.cajeta) (NET-4.5) wires.
      */
-    public #Server bindServer(SocketAddress addr, (TcpStream) -> void handler) {
+    public #Server bindServer(SocketAddress addr, #(TcpStream) -> void handler) {
         if (this.kind == ServerModel.SHARED_POOL_KIND) {
             SharedPoolServer pool #= SharedPoolServer.bind(addr, this.poolSize, #handler);
             return #pool;
@@ -196,7 +196,7 @@ public class ServerModel {
      * its kernel accept queue (the NET-4.4 knob both models honor).
      */
     public #Server bindServerWithBacklog(SocketAddress addr, int32 backlog,
-                                         (TcpStream) -> void handler) {
+                                         #(TcpStream) -> void handler) {
         if (this.kind == ServerModel.SHARED_POOL_KIND) {
             SharedPoolServer pool #=
                 SharedPoolServer.bindWithBacklog(addr, backlog, this.poolSize, #handler);

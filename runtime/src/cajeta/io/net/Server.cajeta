@@ -102,7 +102,7 @@ public class Server {
      * instance starts in [`ServerState.NEW`](ServerState.cajeta#NEW) with
      * a zero in-flight count.
      */
-    public Server(TcpListener listener, (TcpStream) -> void handler) {
+    public Server(TcpListener listener, #(TcpStream) -> void handler) {
         this.listener #= listener;
         this.handler #= handler;   // Unit 9 (spec 5.13): the sink model — a literal moves in, a name lends
         this.state = heap AtomicInt32(ServerState.NEW);
@@ -160,12 +160,17 @@ public class Server {
      * @return an owned, bound — but not yet serving — `Server`.
      * @EntryPoint
      */
-    public static #Server bind(SocketAddress addr, (TcpStream) -> void handler) {
+    public static #Server bind(SocketAddress addr, #(TcpStream) -> void handler) {
         TcpListener l #= TcpListener.bind(addr);
         // `#l` moves the listener into the new Server: without the move the
         // local is dropped when this factory returns and the server's
         // `listener` field dangles (closed fd + freed object).
-        return heap Server(#l, #handler);   // Unit 9 (spec 5.13): forward the title that arrived — a literal moves on, a name stays lent
+        // Both titles are surrendered by the caller (`#` parameters), so both
+        // moves are real. This used to read "forward the title that arrived",
+        // which is only true for the listener: `handler` was a PLAIN parameter,
+        // i.e. a borrow, and `#` on a borrow forwards the borrow. The Server
+        // then outlived the closure it pointed at.
+        return heap Server(#l, #handler);
     }
 
     /**
@@ -178,7 +183,7 @@ public class Server {
      * @EntryPoint
      */
     public static #Server bindWithBacklog(SocketAddress addr, int32 backlog,
-                                          (TcpStream) -> void handler) {
+                                          #(TcpStream) -> void handler) {
         TcpListener l #= TcpListener.bindWithBacklog(addr, backlog);
         return heap Server(#l, #handler);   // Unit 9 (spec 5.13): forward the title that arrived — a literal moves on, a name stays lent
     }

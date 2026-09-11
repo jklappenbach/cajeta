@@ -141,7 +141,7 @@ public class SharedPoolServer extends Server {
      * [`Server`](Server.cajeta#Server) constructor body exactly.
      */
     public SharedPoolServer(TcpListener listener, int32 poolSize,
-                            (TcpStream) -> void handler) {
+                            #(TcpStream) -> void handler) {
         this.listener #= listener;
         this.handler #= handler;   // Unit 9 (spec 5.13): the sink model — a literal moves in, a name lends
         this.state = heap AtomicInt32(ServerState.NEW);
@@ -176,7 +176,7 @@ public class SharedPoolServer extends Server {
      * @return an owned, bound — but not yet serving — `SharedPoolServer`.
      */
     public static #SharedPoolServer bind(SocketAddress addr, int32 poolSize,
-                                         (TcpStream) -> void handler) {
+                                         #(TcpStream) -> void handler) {
         TcpListener l #= TcpListener.bind(addr);
         // `#l` moves the listener in (see Server.bind) so the factory's
         // scope-exit drop can't leave the field dangling.
@@ -193,7 +193,7 @@ public class SharedPoolServer extends Server {
      */
     public static #SharedPoolServer bindWithBacklog(SocketAddress addr,
                                                     int32 backlog, int32 poolSize,
-                                                    (TcpStream) -> void handler) {
+                                                    #(TcpStream) -> void handler) {
         TcpListener l #= TcpListener.bindWithBacklog(addr, backlog);
         return heap SharedPoolServer(#l, poolSize, #handler);   // Unit 9 (spec 5.13): forward the title that arrived
     }
