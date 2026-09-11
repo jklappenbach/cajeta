@@ -35,7 +35,7 @@ namespace cajeta {
     };
 
     enum class NullChecks {
-        On,             // compare+branch, throw NullPointerException
+        On,             // compare+branch, throw NullReferenceException
         Off,            // no check; null-deref is UB
         Trap,           // compare+branch to @llvm.trap
     };

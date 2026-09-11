@@ -253,7 +253,7 @@ public Response fetch(@NonNull Url url) { ... }
 ```
 
 - On parameter: synthesizes a null-check at method entry; throws
-  `NullPointerException` (or traps under `--null-checks=trap`) on
+  `NullReferenceException` (or traps under `--null-checks=trap`) on
   null. Composes with `--null-checks` from `CompilerModes.md`.
 - On field: enforced at construction. `@RequiredArgsConstructor`
   picks up `@NonNull` fields. Field accesses don't re-check

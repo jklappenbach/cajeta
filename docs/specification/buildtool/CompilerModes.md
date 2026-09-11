@@ -158,7 +158,7 @@ elides the check.
 ### `--null-checks=on|off|trap`
 
 Null-receiver checks before virtual dispatch + field load. `on`
-raises `NullPointerException`; `trap` branches to `@llvm.trap`
+raises `NullReferenceException`; `trap` branches to `@llvm.trap`
 (SIGILL, no unwind) like `--bounds=trap`; `off` elides the check.
 
 - Debug default: `on`.
