@@ -9,10 +9,14 @@
     designed around AI agents from the ground up: the compiler is an MCP
     server, and every library ships the guidance an agent needs to use it.
   </p>
+  <!-- Site-absolute, not `../guide/README.md`. These anchors are RAW HTML, and
+       rehype-docs-links only rewrites `a` elements in the parsed hast tree —
+       a raw block never becomes one, so a `.md` href here ships verbatim and
+       404s. Markdown links elsewhere in the docs are rewritten and stay `.md`. -->
   <div class="hero-ctas">
-    <a class="button primary" href="../guide/README.md">Read the guide</a>
-    <a class="button ghost" href="../guide/01-installation.md">Install with cvm</a>
-    <a class="button ghost" href="../stdlib/README.md">Browse the stdlib</a>
+    <a class="button primary" href="/guide/">Read the guide</a>
+    <a class="button ghost" href="/guide/01-installation/">Install with cvm</a>
+    <a class="button ghost" href="/stdlib/">Browse the stdlib</a>
   </div>
 </section>
 

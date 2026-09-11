@@ -941,6 +941,66 @@ jobs:
           printf '%s\t%s\t%s\n' "$T" "$ASSET" "$SHA" > "cvm-dist/${T}.cvmmeta"
           echo "cvm asset: ${ASSET}  sha256=${SHA}"
 
+      # ---- cvm itself (D12) --------------------------------------------
+      # The step above ships the COMPILER that cvm installs. This one ships
+      # cvm. Without it the install story circles: the guide says "use cvm",
+      # getting cvm means building from source, and building from source
+      # needs the compiler cvm exists to install.
+      #
+      # cvm is written in Cajeta and compiled by the compiler this leg just
+      # built — dogfooding, and the reason this can't move to its own job.
+      # tools/cvm/cajeta.json declares `target: host` and every matrix leg
+      # runs natively on its own triple, so the matrix yields one cvm per
+      # platform with no cross-compilation.
+      #
+      # Published as a BARE executable like the compiler asset: cvm bootstraps
+      # a machine that has nothing, so the download has to run after chmod +x
+      # with no extractor in the picture.
+      - name: Build cvm
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.ref_version }}"
+          T="${{ matrix.target }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            CAJETA="$PWD/build/src/cajeta.exe"
+            ASSET="cvm-v${V}-${T}.exe"
+          else
+            CAJETA="$PWD/build/src/cajeta"
+            ASSET="cvm-v${V}-${T}"
+          fi
+          [ -x "$CAJETA" ] || { echo "::error::no compiler at $CAJETA to build cvm with"; exit 1; }
+
+          # `cajeta <task>` runs the named cajeta.json task. `release` is the
+          # optimized flavor; the default `build` task is debug.
+          ( cd tools/cvm && "$CAJETA" release )
+
+          # output-path is build/cvm. Whether a .exe suffix lands on it is the
+          # host toolchain's call, so accept either.
+          BUILT=""
+          for c in tools/cvm/build/cvm tools/cvm/build/cvm.exe; do
+            [ -f "$c" ] && { BUILT="$c"; break; }
+          done
+          if [ -z "$BUILT" ]; then
+            echo "::error::cvm build left no binary in tools/cvm/build"
+            ls -laR tools/cvm/build || true
+            exit 1
+          fi
+
+          mkdir -p cvm-dist
+          cp "$BUILT" "cvm-dist/${ASSET}"
+          chmod +x "cvm-dist/${ASSET}" || true
+          if command -v sha256sum >/dev/null 2>&1; then
+            SHA=$(sha256sum "cvm-dist/${ASSET}" | cut -d' ' -f1)
+          else
+            SHA=$(shasum -a 256 "cvm-dist/${ASSET}" | cut -d' ' -f1)
+          fi
+          printf '%s  %s\n' "$SHA" "$ASSET" > "cvm-dist/${ASSET}.sha256"
+          # Read by the release job to give cvm its own entry in index.json,
+          # so `cvm self update` has a manifest to resolve against.
+          printf '%s\t%s\t%s\n' "$T" "$ASSET" "$SHA" > "cvm-dist/${T}.cvmselfmeta"
+          echo "cvm binary: ${ASSET}  sha256=${SHA}"
+
       - name: Archive (tar.gz)
         if: matrix.archive_ext == 'tar.gz'
         run: tar -czf "${STAGE_DIR}.tar.gz" "$STAGE_DIR"
@@ -1090,12 +1150,29 @@ jobs:
             echo "::warning::no .cvmmeta files found — skipping cvm manifest"
             exit 0
           fi
-          printf '{ "schemaVersion": 1, "version": "%s", "assets": { %s } }\n' \
-            "$V" "$ASSETS" > release-assets/index.json
+          # cvm's OWN binaries, keyed the same way under a separate `cvm` key.
+          # Additive and optional: a schemaVersion-1 reader that doesn't know
+          # the key ignores it, so this stays inside the version contract while
+          # giving `cvm self update` a manifest to resolve against.
+          CVM=""
+          while IFS=$'\t' read -r T ASSET SHA; do
+            [ -n "$T" ] || continue
+            ENTRY="\"${T}\": { \"url\": \"${BASE}/${ASSET}\", \"sha256\": \"${SHA}\" }"
+            if [ -z "$CVM" ]; then CVM="$ENTRY"; else CVM="${CVM}, ${ENTRY}"; fi
+          done < <(find artifacts -type f -name '*.cvmselfmeta' -exec cat {} + 2>/dev/null | sort)
+          if [ -n "$CVM" ]; then
+            printf '{ "schemaVersion": 1, "version": "%s", "assets": { %s }, "cvm": { %s } }\n' \
+              "$V" "$ASSETS" "$CVM" > release-assets/index.json
+          else
+            echo "::warning::no .cvmselfmeta files found — index.json will carry no cvm entry"
+            printf '{ "schemaVersion": 1, "version": "%s", "assets": { %s } }\n' \
+              "$V" "$ASSETS" > release-assets/index.json
+          fi
           echo "=== index.json ==="; cat release-assets/index.json
           # The bare binaries cvm downloads (raw exe per triple — not the
-          # tarballs/zips, which cvm can't extract).
-          find artifacts -type f -name 'cajeta-v*' \
+          # tarballs/zips, which cvm can't extract), plus cvm itself and the
+          # checksum files that go beside it.
+          find artifacts -type f \( -name 'cajeta-v*' -o -name 'cvm-v*' \) \
             ! -name '*.tar.gz' ! -name '*.zip' -exec cp {} release-assets/ \;
           echo "=== release-assets ==="; ls -la release-assets
 
@@ -1136,6 +1213,52 @@ jobs:
             artifacts/**/*.sha256
             release-assets/index.json
             release-assets/cajeta-v*
+            release-assets/cvm-v*
+
+      # ---- keep the docs pointing at the release just published ---------
+      # README's version line and the download tables in README + the install
+      # guide were hand-maintained, so they drifted behind the tag. Regenerate
+      # them from `release-assets/` — what the release actually carries, not
+      # what the matrix hoped to build — and commit to main.
+      #
+      # Dry-run stops at the diff and prints it. A prerelease is skipped too:
+      # `v0.3.0-rc1` is not what a reader landing on the README should be
+      # pointed at.
+      - name: Update README + install guide from the release
+        if: steps.params.outputs.prerelease != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.params.outputs.tag }}"
+          # Dry-run has no tag; use the would-be one so the preview is real.
+          [ -n "$TAG" ] || TAG="v${{ steps.params.outputs.ref_version }}"
+          chmod +x scripts/update-release-docs.sh
+          # Both trees: release-assets holds the bare binaries, artifacts the
+          # per-leg archives.
+          scripts/update-release-docs.sh "$TAG" release-assets artifacts
+          git --no-pager diff -- README.md docs/guide/01-installation.md
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Commit the docs update
+        if: steps.params.outputs.mode != 'dry-run' && steps.params.outputs.prerelease != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- README.md docs/guide/01-installation.md; then
+            echo "::notice::docs already match ${{ steps.params.outputs.tag }} — nothing to commit"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md docs/guide/01-installation.md
+          git commit -m "docs: release links for ${{ steps.params.outputs.tag }} [skip ci]"
+          # The tag was built from a commit on main, but main may have moved
+          # while the matrix ran. Rebase onto it rather than force-pushing
+          # over whatever landed in the meantime.
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
 
       - name: Dry-run summary
         if: steps.params.outputs.mode == 'dry-run'

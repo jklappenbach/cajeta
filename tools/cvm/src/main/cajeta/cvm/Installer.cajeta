@@ -44,8 +44,8 @@ public final class Installer {
         HttpClient client = heap HttpClient();
 
         // ── 1. fetch the manifest ───────────────────────────────────
-        String manifestUrl = Catalog.manifestUrl(selector);
-        HttpResponse mresp = client.get(manifestUrl);
+        String manifestUrl #= Catalog.manifestUrl(selector);
+        HttpResponse mresp #= client.get(manifestUrl);
         if (mresp.status != 200) {
             System.stderr.println("cvm: could not fetch the release manifest "
                 + "(HTTP " + mresp.status + ") " + manifestUrl);
@@ -100,7 +100,7 @@ public final class Installer {
         // ── 3. download the binary ──────────────────────────────────
         System.stdout.println("cvm: downloading cajeta " + version
             + " (" + triple + ")...");
-        HttpResponse aresp = client.get(url);
+        HttpResponse aresp #= client.get(url);
         if (aresp.status != 200) {
             System.stderr.println("cvm: download failed (HTTP "
                 + aresp.status + ") " + url);
@@ -121,7 +121,7 @@ public final class Installer {
 
         // ── 5. install the bytes ────────────────────────────────────
         Path.of(Home.versionDir(home, version)).mkdirs();
-        String binPath = Home.versionBin(home, version);
+        String binPath #= Home.versionBin(home, version);
         File.writeAllBytes(binPath, binary, (int32) binaryLen);
         if (!Path.of(binPath).setExecutable()) {
             System.stderr.println("cvm: warning: could not set the executable "

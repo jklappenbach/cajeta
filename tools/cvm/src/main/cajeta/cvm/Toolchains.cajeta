@@ -26,7 +26,7 @@ public final class Toolchains {
     // The active (default) toolchain version recorded in settings, or null
     // if none has been set (or the settings file doesn't exist yet).
     public static String activeVersion(String home) {
-        String path = Home.settingsFile(home);
+        String path #= Home.settingsFile(home);
         if (!Path.of(path).exists()) {
             return null;
         }

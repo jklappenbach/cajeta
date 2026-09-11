@@ -27,7 +27,7 @@ public final class Catalog {
     // "latest release asset" path; a concrete version targets that release's
     // tag directory (v<version>). Both resolve to a static `index.json`.
     public static #String manifestUrl(String selector) {
-        String b = Catalog.base();
+        String b #= Catalog.base();
         if (selector.equals("latest")) {
             return b + "/latest/download/index.json";
         }

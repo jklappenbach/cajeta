@@ -85,7 +85,7 @@ public final class Cvm {
             selector = args[2];
         }
 
-        String home = Home.dir();
+        String home #= Home.dir();
         if (home == null) {
             System.stderr.println("cvm: cannot resolve a home directory "
                 + "(set $CAJETA_HOME or $HOME).");
@@ -108,7 +108,7 @@ public final class Cvm {
         }
         String version = args[2];
 
-        String home = Home.dir();
+        String home #= Home.dir();
         if (home == null) {
             System.stderr.println("cvm: cannot resolve a home directory "
                 + "(set $CAJETA_HOME or $HOME).");
@@ -142,7 +142,7 @@ public final class Cvm {
     // and the shim. (Listing every `cajeta` on PATH and who owns each is
     // the network/Phase-2 half — it needs process exec to walk PATH.)
     private static int32 which() {
-        String home = Home.dir();
+        String home #= Home.dir();
         if (home == null) {
             System.stderr.println("cvm: cannot resolve a home directory "
                 + "(set $CAJETA_HOME or $HOME).");
@@ -177,7 +177,7 @@ public final class Cvm {
         reportEnv("XDG_DATA_HOME");
         reportEnv("HOME");
 
-        String home = Home.dir();
+        String home #= Home.dir();
         if (home == null) {
             System.stdout.println("  resolved home:  <none> "
                 + "(set $CAJETA_HOME or $HOME)");
