@@ -9,8 +9,10 @@
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
+#ifndef _WIN32
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
@@ -157,6 +159,9 @@ const char* FOLDED_LL =
 } // namespace
 
 TEST(IrCorpusDiffToolTests, identicalModuloNumberingIsSameAndExitZero) {
+#ifdef _WIN32
+    GTEST_SKIP() << "drives the tool through POSIX shell commands (mkdir -p)";
+#endif
     Tool t;
     ASSERT_TRUE(t.build()) << readFile(t.work + "/build.log");
     std::string base = t.work + "/same/base", cand = t.work + "/same/cand";
@@ -171,6 +176,9 @@ TEST(IrCorpusDiffToolTests, identicalModuloNumberingIsSameAndExitZero) {
 }
 
 TEST(IrCorpusDiffToolTests, aRealChangeIsReportedWithItsLinesAndExitOne) {
+#ifdef _WIN32
+    GTEST_SKIP() << "drives the tool through POSIX shell commands (mkdir -p)";
+#endif
     Tool t;
     ASSERT_TRUE(t.build()) << readFile(t.work + "/build.log");
     std::string base = t.work + "/chg/base", cand = t.work + "/chg/cand";
@@ -189,6 +197,9 @@ TEST(IrCorpusDiffToolTests, aRealChangeIsReportedWithItsLinesAndExitOne) {
 }
 
 TEST(IrCorpusDiffToolTests, aFoldedConstantBranchIsFoldedNotChanged) {
+#ifdef _WIN32
+    GTEST_SKIP() << "drives the tool through POSIX shell commands (mkdir -p)";
+#endif
     Tool t;
     ASSERT_TRUE(t.build()) << readFile(t.work + "/build.log");
     if (t.opt.empty()) GTEST_SKIP() << "no opt binary under CAJETA_LLVM_BIN";
@@ -208,6 +219,9 @@ TEST(IrCorpusDiffToolTests, aFoldedConstantBranchIsFoldedNotChanged) {
 }
 
 TEST(IrCorpusDiffToolTests, countReportsInstructionsPerFunctionAndTotal) {
+#ifdef _WIN32
+    GTEST_SKIP() << "drives the tool through POSIX shell commands (mkdir -p)";
+#endif
     Tool t;
     ASSERT_TRUE(t.build()) << readFile(t.work + "/build.log");
     std::string dir = t.work + "/count";
