@@ -157,6 +157,8 @@ public final class C {
 
 `#=` is a passthrough. It hands along whatever title its source actually holds — a transfer when the source owns, a borrow when it does not. `#=` is a single token, so an ownership store cannot be half-written. When the source owns, the store is a transfer and the source is demoted (§5.3). When the source is a borrow, the destination borrows and nothing is demoted.
 
+A source holds no title in two ways, and `#=` forwards a borrow from either. A name that **never owned** — an alias, a field read, the result of a plain call — is one. A name **demoted** by an earlier transfer is the other. Neither has a title to give, so the destination borrows, nothing is demoted a second time, and the owner still drops the value exactly once. `#=` therefore never raises `CAJETA_ERROR_MOVE_OF_BORROW`. That diagnostic belongs to `#v` (§5.6), which asserts that its source holds a title to surrender.
+
 The destination may be a local binding, a field, or an element. A field or element store records the arrived mode in the slot's own ownership bit. A `#T` result is received the same way (§5.5.2), and a formal forwards its arrived mode through `#=` (§5.5).
 
 **Example 5.4-1.** A passthrough into a local. The source owns, so the title moves.
@@ -297,15 +299,17 @@ The receiving local's *type* never carries the marker. `#Point q = …` is a com
 
 ## 5.6 Restrictions on Transfer
 
-`#` hands along a title, so applying it to a value the compiler can prove holds no title is a compile-time error, `CAJETA_ERROR_MOVE_OF_BORROW`. The proven-borrow cases are
+This section governs `#v`, the transfer spelling. `#v` asserts that its source holds a title to surrender, so applying it to a value the compiler can prove holds none is a compile-time error, `CAJETA_ERROR_MOVE_OF_BORROW`. The proven-borrow cases are
 
 - a local that borrows another local (`T b = a; … #b`)
 - a local bound to a borrow returned by a plain (non-`#`) method
 - a source that has already been transferred, since transferring twice is transferring from a borrow (§5.3)
 
+None of this reaches `#=`. A passthrough asserts nothing and claims nothing, so from a titleless source it simply forwards a borrow (§5.4). `b #= a` followed by `c #= a` is a transfer followed by a borrow, and it compiles.
+
 Plain formals are excluded deliberately. Their mode is a runtime fact fixed at the call site (§5.5), and rejecting `#p` statically would outlaw every mode-forwarding wrapper.
 
-**Example 5.6-1.** A rejected program. A second transfer from the same source.
+**Example 5.6-1.** A rejected program. The second `#a` demands a title that the first one already took.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -313,14 +317,28 @@ public final class C {
     public static int32 run() {
         int8[] a = heap int8[4];
         a[0] = (int8) 7;
-        int8[] b #= a;
-        int8[] c #= a;      // CAJETA_ERROR_MOVE_OF_BORROW
+        int8[] b = #a;
+        int8[] c = #a;      // CAJETA_ERROR_MOVE_OF_BORROW
         return (int32) c[0];
     }
 }
 ```
 
-> *Discussion.* At script top level the store-form check does not yet fire. The two stores of Example 5.6-1, written as loose statements, compile today. The gap is recorded as disabled pinning tests in `test/jit/SessionBindingTests.cpp`, and this section governs once they pass.
+**Example 5.6-2.** The same shape spelled `#=` is legal. `b` takes the title, and `c` borrows what `a` has left.
+
+```cajeta
+public final class C {
+    public static int32 run() {
+        int8[] a = heap int8[4];
+        a[0] = (int8) 7;
+        int8[] b #= a;
+        int8[] c #= a;
+        return (int32) c[0];    // 7
+    }
+}
+```
+
+> *Discussion.* At script top level the transfer check does not yet fire. The two transfers of Example 5.6-1, written as loose statements, compile today. The gap is recorded as disabled pinning tests in `test/jit/SessionBindingTests.cpp`, and this section governs once they pass.
 
 ## 5.7 Escapes and Retention
 

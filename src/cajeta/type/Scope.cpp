@@ -106,6 +106,16 @@ namespace cajeta {
                 && !klass->isSharedCapableValue();
         if (!titleBearing) return;
 
+        // EVERY check here belongs to `#v`, which ASSERTS that its source holds
+        // a title to surrender. `#=` asserts nothing: it forwards whatever mode
+        // the source has, so a titleless source simply makes the destination a
+        // borrow — no second owner is minted and nothing can double-free. That
+        // is true however the source came to be titleless, whether it never
+        // owned (an alias, a field read, a plain call's result) or was demoted
+        // by an earlier transfer. `dst = #src` twice is the error; `dst #= src`
+        // twice is a transfer followed by a borrow.
+        if (modeCarrying) return;
+
         // (a) Demoted by an EARLIER transfer. Formals included: `isBorrow` is
         // true only once THIS method transferred the name, never from a lend.
         if (isBorrow(name)) {
@@ -119,10 +129,6 @@ namespace cajeta {
                       "construct a fresh value.",
                 "CAJETA_ERROR_MOVE_OF_BORROW");
         }
-
-        // A `#=` claims no title, it forwards the source's mode, so the two
-        // PROVENANCE checks below cannot apply to it. (a) above still does.
-        if (modeCarrying) return;
 
         // A formal's ownership is decided at the call site and carried at run
         // time, so rejecting `#p` statically would outlaw mode-forwarding.

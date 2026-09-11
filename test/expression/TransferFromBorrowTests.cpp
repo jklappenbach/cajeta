@@ -4,6 +4,12 @@
 // ownership out of a borrow. Transferring twice IS transferring from a
 // borrow, so both cases are one error: CAJETA_ERROR_MOVE_OF_BORROW.
 //
+// That rule governs `#v` ONLY. `#v` asserts its source holds a title to hand
+// over; `#=` asserts nothing and forwards whatever mode the source has, so a
+// `#=` store from a borrow — demoted or never-owned — is legal and yields a
+// borrow. The 3.1.x cases below therefore use `= #x` for the rejections, with
+// `#=` companions pinning the forwarding half.
+//
 // Unit 2 deleted the read rejections, and the old double-transfer diagnostic
 // came from one of them. These tests establish whether double transfer is
 // currently rejected at all — a silent acceptance here would be a hole Unit 2
@@ -77,11 +83,26 @@ std::string messageOf(const std::string& body) {
 }  // namespace
 
 // 3.1.1 — the headline case. Transferring twice is transferring from a borrow.
+// Spelled `= #t`: `#v` ASSERTS that its source holds a title to surrender, and
+// the first transfer took it.
 TEST(TransferFromBorrowTests, secondTransferOfALocalIsMoveOfBorrow) {
     EXPECT_EQ(errorOf(
         "        Tag t = heap Tag(1);\n"
+        "        Tag a = #t;\n"
+        "        Tag b = #t;\n"), "CAJETA_ERROR_MOVE_OF_BORROW");
+}
+
+// 3.1.1b — the same shape spelled `#=` is LEGAL. A passthrough asserts nothing
+// about its source: from an owner it transfers, from a borrow it forwards the
+// borrow. `a` takes the title, `b` borrows what `t` has left, and `a` stays the
+// single dropper — no second owner, nothing to double-free. This was pinned the
+// other way until the passthrough/transfer split; the rejection belongs to `#v`
+// alone. Companion coverage in PassthroughFromBorrowTests.
+TEST(TransferFromBorrowTests, secondSharpStoreOfALocalForwardsABorrow) {
+    EXPECT_EQ(errorOf(
+        "        Tag t = heap Tag(1);\n"
         "        Tag a #= t;\n"
-        "        Tag b #= t;\n"), "CAJETA_ERROR_MOVE_OF_BORROW");
+        "        Tag b #= t;\n"), "");
 }
 
 // 3.1.2 — same through a container mutator (spec 3.2.3).
@@ -108,21 +129,33 @@ TEST(TransferFromBorrowTests, transferFromAnAliasStillNamesTheOwner) {
     EXPECT_EQ(errorOf(
         "        Tag t = heap Tag(1);\n"
         "        Tag alias = t;\n"
-        "        Tag x #= alias;\n"), "CAJETA_ERROR_MOVE_OF_BORROW");
+        "        Tag x = #alias;\n"), "CAJETA_ERROR_MOVE_OF_BORROW");
     EXPECT_NE(messageOf(
         "        Tag t = heap Tag(1);\n"
         "        Tag alias = t;\n"
-        "        Tag x #= alias;\n").find("`t`"), std::string::npos)
+        "        Tag x = #alias;\n").find("`t`"), std::string::npos)
         << "the diagnostic must still name the owner";
 }
 
-// 3.1.5 — a demoted binding as a `#=` source: statically a borrow.
-TEST(TransferFromBorrowTests, sharpAssignFromDemotedBindingIsMoveOfBorrow) {
+// 3.1.4b — `#=` from that same alias forwards the borrow instead. The
+// declaration form must agree with the assignment form: both are `#=`.
+TEST(TransferFromBorrowTests, sharpStoreFromAnAliasForwardsABorrow) {
+    EXPECT_EQ(errorOf(
+        "        Tag t = heap Tag(1);\n"
+        "        Tag alias = t;\n"
+        "        Tag x #= alias;\n"), "");
+}
+
+// 3.1.5 — a demoted binding as a `#=` source. The field forwards the borrow:
+// `a` still owns the Tag and still drops it, and `h.c` records the arrived
+// mode, which is a borrow. Transferring out of the same demoted binding with
+// `#t` remains the error (3.1.3).
+TEST(TransferFromBorrowTests, sharpAssignFromDemotedBindingForwardsABorrow) {
     EXPECT_EQ(errorOf(
         "        Tag t = heap Tag(1);\n"
         "        Tag a #= t;\n"
         "        H h = heap H();\n"
-        "        h.c #= t;\n"), "CAJETA_ERROR_MOVE_OF_BORROW");
+        "        h.c #= t;\n"), "");
 }
 
 // 3.1.6 — THE REGRESSION PIN (spec 1.4, 2.2.8).
@@ -171,12 +204,12 @@ TEST(TransferFromBorrowTests, everyTransferDiagnosticStatesTheRule) {
     const char* kRule = "cannot transfer ownership more than once, or from a borrow";
     EXPECT_NE(messageOf(                       // demoted by an earlier transfer
         "        Tag t = heap Tag(1);\n"
-        "        Tag a #= t;\n"
-        "        Tag b #= t;\n").find(kRule), std::string::npos);
+        "        Tag a = #t;\n"
+        "        Tag b = #t;\n").find(kRule), std::string::npos);
     EXPECT_NE(messageOf(                       // never owned — an alias
         "        Tag t = heap Tag(1);\n"
         "        Tag alias = t;\n"
-        "        Tag x #= alias;\n").find(kRule), std::string::npos);
+        "        Tag x = #alias;\n").find(kRule), std::string::npos);
 }
 
 // 1.4.1 retired: `#= #x` no longer errors at all — the mode-carrying claim

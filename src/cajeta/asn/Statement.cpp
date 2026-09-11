@@ -109,6 +109,14 @@ namespace cajeta {
                                 auto mv = make_shared<MoveExpression>(
                                     vdCtx->variableInitializer()->getStart());
                                 mv->setSharpStore(true);
+                                // MODE-CARRYING, exactly as the assignment form
+                                // marks it (Expression.cpp): `#=` forwards the
+                                // source's mode and claims no title, so the
+                                // transfer-of-a-borrow rejection must not fire
+                                // here either. Without this flag the declaration
+                                // `T c #= b` rejected a borrow that the
+                                // assignment `c #= b` accepted.
+                                mv->setModeCarrying(true);
                                 mv->addChild(inner);
                                 initializer = make_shared<VariableInitializer>(
                                     mv, vdCtx->variableInitializer()->getStart());

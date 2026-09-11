@@ -2776,10 +2776,15 @@ bool cajetaRhsCarriesRedundantSharp(
                 // `#x` demands a statically active owner: a borrow-shaped class local owns no
                 // title, and moving out of it would mint a second active owner.
                 const string& mvName = idExpr->getTextValue();
-                // A mode-carrying `#=` is partially exempt, and the flag says which part: it
-                // records the source's mode rather than claiming a title, so only the
-                // double-transfer rejection can apply to it.
-                scope->rejectTransferOfBorrow(mvName, isModeCarrying());
+                // A `#=` records the source's mode rather than claiming a title, so the
+                // rejection — which exists for `#v`, an ASSERTION that the source holds a
+                // title — never applies to it. `isSharpStore()` is the reliable test: every
+                // `#=` sets it, in the assignment form and the declaration form alike,
+                // whereas `modeCarrying` is absent from the node that
+                // HeapField::getOrCreateAllocation re-generates for a declaration's
+                // initializer (LocalVariableDeclaration -> putField -> that path).
+                scope->rejectTransferOfBorrow(mvName,
+                                              isModeCarrying() || isSharpStore());
                 // A `#=` CONSUMES its source only when the source statically holds a title: a
                 // borrowed one has none to hand over, so a single lent local may feed several
                 // slots. Gated on isSharpStore(), since consumption is a fact about the SOURCE.
