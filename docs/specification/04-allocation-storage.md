@@ -16,7 +16,7 @@ int8[] buf = heap int8[4096];
 
 A `heap` variable implies ownership: the variable that receives the allocation owns the instance, and the developer decides the owning scope by deciding where that variable lives. Ownership of a heap object can be transferred between variables, and a heap object can be borrowed without moving ownership. Ownership §5 defines both. The instance is released when its owner drops (§4.2).
 
-The keyword is not part of the type: `stack MyClass()` and `heap MyClass()` produce the same type `MyClass` (Types §3.2), and a method receiving a `MyClass` does not know or care where it was allocated.
+The keyword is not part of the type: `stack MyClass()` and `heap MyClass()` produce the same type `MyClass` (Types §3.3), and a method receiving a `MyClass` does not know or care where it was allocated.
 
 Allocation is always explicit at the use site. There is no implicit boxing, no implicit copy construction, and no implicit heap traffic.
 
@@ -24,7 +24,7 @@ An anonymous `heap T(...)` expression in transfer position — a field store, an
 
 ## 4.2 The Drop Chain
 
-Both owning and `stack` objects are dropped when they reach the end of their scope — a method invocation, or a scope block inside a method (Types §3.3). There is no explicit method call to delete an object: destruction and reclamation are handled entirely as part of the drop.
+Both owning and `stack` objects are dropped when they reach the end of their scope — a method invocation, or a scope block inside a method (Types §3.4). There is no explicit method call to delete an object: destruction and reclamation are handled entirely as part of the drop.
 
 The mechanism is a per-thread chain of drop entries. Declaring an owning or `stack` local arms an entry, and the entries of a lexical block fire at the block's closing brace, in reverse declaration order. Firing an entry runs the instance's destructors and, for a heap instance, frees its memory (Ownership §5.9 specifies how transfer moves an entry's obligation).
 

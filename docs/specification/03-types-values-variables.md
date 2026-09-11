@@ -32,7 +32,42 @@ System.stdout.println("codepoint: " + (int32) cp);    // 233
 
 > *Discussion.* Boxed wrapper classes (`Int32`, `Int64`, `Float32`, `Float64`, `Boolean`, `UInt8`…`UInt64`) exist so primitives can occupy class-typed template slots such as `Collection<T>` elements. Boxing happens at that boundary and nowhere else. They are library types, documented in the Stdlib Reference.
 
-## 3.2 Reference Types
+## 3.2 Vectors
+
+`Vector<T, N>` is a fixed-width numeric vector — `N` lanes of element type `T`. It is a value type with no fields and no methods. Every operation on it lowers to a machine vector instruction, and the same lowering serves host code and kernel code, so a vector expression means the same thing in both (Accelerated Compute §17).
+
+`T` must be a numeric primitive other than `boolean`. Anything else is a compile-time error, `CAJETA_ERROR_VECTOR_ELEMENT_TYPE`. `N` is a non-type type argument and must be a positive integer constant, `CAJETA_ERROR_VECTOR_LENGTH`.
+
+Arithmetic operators apply lane-wise, so `v * v` squares every lane. An array loads and stores whole vectors through `vload<N>` and `vstore`, and the first four lanes are readable by component as `.x`, `.y`, `.z`, and `.w`.
+
+**Example 3.2-1.** Lane-wise arithmetic, then component access.
+
+```cajeta
+public final class C {
+    public static int32 run() {
+        float32[] a = [ 1.0f, 2.0f, 3.0f, 4.0f ];
+        Vector<float32,4> v = a.vload<4>(0);
+        Vector<float32,4> d = v + v;
+        return (int32)(d.x + d.y + d.z + d.w);   // 20
+    }
+}
+```
+
+**Example 3.2-2.** Eight lanes squared, then horizontally summed.
+
+```cajeta
+public final class C {
+    public static int32 run() {
+        float64[] a = [ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0 ];
+        Vector<float64,8> v = a.vload<8>(0);
+        return (int32) Cajeta.vsum8f64(v * v);   // 204
+    }
+}
+```
+
+A vector is a value type, so it is a legal record field (Arrays, Views, Slices & Records §12.4).
+
+## 3.3 Reference Types
 
 The reference types are classes (Classes §8), interfaces (Interfaces §9), and arrays (Arrays, Views, Slices & Records §12). A `view` declaration also introduces a type (Arrays, Views, Slices & Records §12).
 
@@ -40,7 +75,7 @@ A class is one type regardless of where its instances are placed: `stack MyClass
 
 Class instances always pass and return by pointer, never by value — there is no object slicing, no implicit copy construction, and no implicit boxing. A stack-allocated instance returned by value travels through a caller-allocated slot (Allocation §4).
 
-## 3.3 Kinds of Variables and Scope
+## 3.4 Kinds of Variables and Scope
 
 A **scope** is the region of a program a variable lives in. For a local variable it is a method invocation, or a scope block (`{ … }`) inside a method: the scope runs from the declaration to the closing brace of the declaring block, and one invocation of a method is one instance of every scope in its body. A static variable is scoped for the lifetime of the application, from program start to exit (Execution §20). A session binding is scoped to the session (Script Units §18). Reaching the end of a scope is what triggers a drop (Allocation §4). Name resolution and shadowing within scopes are Names §7.
 
@@ -50,11 +85,11 @@ A **scope** is the region of a program a variable lives in. For a local variable
 - **Array elements and slots** — indexed storage. A slot records its own ownership bit (Ownership §5.4, Arrays §12).
 - **Session bindings** — top-level declarations of a script unit. They bind into the session scope and outlive the entry frame (Script Units §18).
 
-## 3.4 Definite Assignment
+## 3.5 Definite Assignment
 
 A local variable may be declared without an initializer. Reading it before every path to the read assigns it is a compile-time error, `CAJETA_ERROR_VARIABLE_NOT_ASSIGNED`. The rule is the same for primitive-typed and reference-typed locals: an unassigned reference is not observable as a null — the read is rejected.
 
-**Example 3.4-1.** A rejected program: a read before assignment.
+**Example 3.5-1.** A rejected program: a read before assignment.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -68,7 +103,7 @@ public final class C {
 
 `null` is a literal assignable to any reference-typed variable. Assigning `null` to an owning binding releases its value early (Allocation §4).
 
-## 3.5 Type Parameters and Wildcards
+## 3.6 Type Parameters and Wildcards
 
 A class or method may declare type parameters. Parameterized classes are not genericized, and there is no run-time type erasure. As in C++, each parameterized type declaration generates a distinct type in the language that can then be inspected at run time through reflection, or leveraged by AoT compilation. `Box<int32>` and `Box<float64>` are two types, each with its own generated code and layout, and neither is assignable to the other. A wildcard `?` may stand for an unknown type argument at a use site. The full rules — declaration, bounds, deduction, specialization, and instantiation across archive boundaries — are Templates & Wildcards §11.
 
