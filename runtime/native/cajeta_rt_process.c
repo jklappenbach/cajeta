@@ -763,6 +763,38 @@ int32_t __cajeta_path_set_executable(const char* bytes, int64_t length) {
 #endif
 }
 
+// The platform path separator, as a byte: '\\' (92) on Windows, '/' (47)
+// elsewhere. Exists so a LIBRARY never has to work this out for itself.
+//
+// dev.cajeta.http did, and the way it had to is the point: it read the
+// `cajeta.host.triple` system property and searched it for the substring
+// "mingw32". That is a library reaching around the standard library to
+// re-derive a platform fact the runtime already knows, and it is exactly the
+// kind of thing that makes "write once, run anywhere" false in practice —
+// every library that serves files has to rediscover it, and each one can get
+// it wrong independently. http's static-file serving was entirely broken on
+// Windows for a whole release because of this one byte.
+int32_t __cajeta_path_separator(void) {
+#if defined(_WIN32)
+    return 92;   /* '\\' */
+#else
+    return 47;   /* '/'  */
+#endif
+}
+
+// Whether THIS host can create symbolic links (see __cajeta_path_symlink).
+// A library that wants to degrade gracefully currently has no way to ask:
+// `symlinkTo` answers false for "unsupported here" and false for "it failed",
+// which are different facts and want different handling — a test should SKIP
+// on the first and FAIL on the second.
+int32_t __cajeta_path_symlinks_supported(void) {
+#if defined(_WIN32)
+    return 0;
+#else
+    return 1;
+#endif
+}
+
 // symlink(target, link), removing an existing `link` so it can be re-pointed.
 int32_t __cajeta_path_symlink(const char* targetBytes, int64_t targetLen,
                               const char* linkBytes, int64_t linkLen) {

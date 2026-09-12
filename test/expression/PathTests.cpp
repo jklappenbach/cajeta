@@ -193,3 +193,37 @@ TEST(PathTests, canonicalResolvesSymlinkFreePathToItself) {
 #endif
 }
 
+
+// --- platform facts the stdlib owns, so libraries don't re-derive them ---
+//
+// These two exist because a library had to work them out for itself and got
+// it wrong. `dev.cajeta.http`'s static-file middleware read the
+// `cajeta.host.triple` system property and searched it for "mingw32" to find
+// the path separator; its static serving was entirely broken on Windows for a
+// full release. A platform fact the runtime already knows belongs in the
+// standard library, asserted, not rediscovered per library.
+
+TEST(PathTests, separatorIsThePlatformsOwn) {
+    // Asserted against the compiling platform rather than a constant, so this
+    // is a real cross-platform claim and not a restatement of the source.
+#if defined(_WIN32)
+    constexpr int32_t kWant = 92;   // '\'
+#else
+    constexpr int32_t kWant = 47;   // '/'
+#endif
+    EXPECT_EQ(runI32(makeSource("return (int32) Path.separator();")), kWant);
+}
+
+TEST(PathTests, symlinkSupportIsAskableRatherThanGuessed) {
+    // `symlinkTo` answers false both for "unsupported here" and for "tried and
+    // failed". Those are different facts: a test should SKIP on the first and
+    // FAIL on the second, and until this query existed it could not tell them
+    // apart — so it guessed from the host triple, or skipped unconditionally.
+#if defined(_WIN32)
+    constexpr int32_t kWant = 0;
+#else
+    constexpr int32_t kWant = 1;
+#endif
+    EXPECT_EQ(runI32(makeSource(
+        "if (Path.symlinksSupported()) { return 1; } return 0;")), kWant);
+}

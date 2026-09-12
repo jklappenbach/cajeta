@@ -339,6 +339,56 @@ public class Path {
     }
 
     /**
+     * The platform's path separator as a byte — `\` (92) on Windows, `/`
+     * (47) everywhere else.
+     *
+     * This exists so a LIBRARY never has to work it out for itself. Without
+     * it, `dev.cajeta.http`'s static-file middleware read the
+     * `cajeta.host.triple` system property and searched it for the substring
+     * `"mingw32"` — a library reaching around the standard library to
+     * re-derive a platform fact the runtime already knew. That is the exact
+     * shape of a broken portability promise: every library that touches paths
+     * has to rediscover this, and each one can get it wrong on its own. http's
+     * static file serving was entirely broken on Windows for a full release
+     * over this one byte.
+     *
+     * Note the CONTRACT is narrow on purpose: this is the separator the host
+     * produces, for code that must compare or build native path bytes. Path's
+     * own textual form stays '/'-separated (see the class docs) — this is not
+     * an invitation to hand-roll path joining, which [`join`](#join) does.
+     *
+     * ```cajeta
+     * if (bytes[i] == Path.separator()) { ... }   // not a triple sniff
+     * ```
+     */
+    public static int8 separator() {
+        return (int8) Path.separatorNative();
+    }
+
+    @Native("__cajeta_path_separator")
+    private static int32 separatorNative();
+
+    /**
+     * Whether this host can create symbolic links at all.
+     *
+     * [`symlinkTo`](#symlinkTo) answers `false` both for "this host cannot do
+     * it" and for "it was attempted and failed", which are different facts
+     * that want different handling — a test should SKIP on the first and FAIL
+     * on the second, and until now it had no way to tell them apart. It is
+     * `false` on Windows, where elevation-free symlinks are not supported.
+     *
+     * ```cajeta
+     * if (!Path.symlinksSupported()) { skip("no symlink(2) on this host"); }
+     * ```
+     */
+    public static boolean symlinksSupported() {
+        return Path.symlinksSupportedNative() == 1;
+    }
+
+    @Native("__cajeta_path_symlinks_supported")
+    private static int32 symlinksSupportedNative();
+
+    /**
      * Create THIS path as a symbolic link pointing at `target`
      * (POSIX `symlink(target, this)`, i.e. `ln -s target this`). If
      * this path already exists it is replaced, so the link can be
