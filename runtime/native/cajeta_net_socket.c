@@ -344,8 +344,30 @@ int64_t __cajeta_net_recvfrom(int32_t fd, void* buf, int64_t len, int32_t flags,
 extern int32_t __cajeta_io_close_fd(int32_t fd);
 
 // Closes the socket; idempotent, as the cajeta layer nulls its fd field. Returns 0 / -1.
+int32_t __cajeta_net_shutdown(int32_t fd, int32_t how);
+
 int32_t __cajeta_net_close(int32_t fd) {
     if (fd < 0) return 0;   // already closed — no-op success
+    // Half-close the write side BEFORE closing, so bytes already in the send
+    // buffer are delivered rather than discarded.
+    //
+    // MEASURED, server writes a 51-byte response and closes while 200 bytes the
+    // peer sent sit unread (a slowloris mid-request — exactly http's 408 path):
+    //
+    //                              linux   windows
+    //     close()                   51 B      0 B
+    //     shutdown(WR), close()     51 B     51 B
+    //
+    // Winsock answers a close() that still has unread input with an RST, and an
+    // RST discards whatever is queued to send. Linux delivers it. So every
+    // error response http writes on a stalled connection — 408, 413, 431 — was
+    // written and then thrown away on Windows, and the peer read nothing.
+    //
+    // Unconditional rather than _WIN32-only: one close semantic on every host
+    // is the point, and the Linux column above shows it costs nothing there.
+    // The return is ignored on purpose — shutdown is meaningless on a listener
+    // and on an already-shutdown socket, and neither is a close failure.
+    (void) __cajeta_net_shutdown(fd, 1);
     // Order matters: wake the waiters while `fd` is still valid, then close. A fiber
     // woken this way retries, gets EBADF, and the library maps it to a NetException.
 #if defined(__linux__)
