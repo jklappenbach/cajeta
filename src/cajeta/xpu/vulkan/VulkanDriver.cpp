@@ -588,9 +588,14 @@ bool VulkanDriver::coopMatrixAvailable() {
     auto getCoopProps =
         reinterpret_cast<PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR>(
             gipa(inst, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
+    // Needed to ask each device whether it implements VK_KHR_cooperative_matrix
+    // BEFORE calling the query below — see the per-device check in the loop.
+    auto enumExt =
+        reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
+            gipa(inst, "vkEnumerateDeviceExtensionProperties"));
 
     bool ok = false;
-    if (destroyInstance && enumDevs && getQueueProps && getCoopProps) {
+    if (destroyInstance && enumDevs && getQueueProps && getCoopProps && enumExt) {
         uint32_t count = 0;
         enumDevs(inst, &count, nullptr);
         std::vector<VkPhysicalDevice> devs(count);
@@ -604,6 +609,31 @@ bool VulkanDriver::coopMatrixAvailable() {
             for (auto& q : qp)
                 if (q.queueFlags & VK_QUEUE_COMPUTE_BIT) { compute = true; break; }
             if (!compute) continue;
+
+            // The non-null `getCoopProps` above is NOT evidence the device can
+            // answer it. `vkGetInstanceProcAddr` hands back a loader TRAMPOLINE
+            // for any function the loader knows, supported or not; the
+            // trampoline then dispatches through a per-ICD slot that is null
+            // when the ICD does not implement the extension, so the call jumps
+            // to address 0. MEASURED here: SIGSEGV with rip=0x0 on a host whose
+            // only Vulkan device is llvmpipe, which has no cooperative-matrix
+            // support — four XpuCooperativeMatrixDeviceTests crashed (exit 139)
+            // rather than skipping. The pointer check is necessary and not
+            // sufficient; the device must be asked directly, which is exactly
+            // what the VK_EXT_shader_atomic_float2 probe below already does.
+            uint32_t en = 0;
+            enumExt(pd, nullptr, &en, nullptr);
+            if (!en || en > 4096) continue;
+            std::vector<VkExtensionProperties> ep(en);
+            enumExt(pd, nullptr, &en, ep.data());
+            bool hasCoop = false;
+            for (auto& e : ep)
+                if (!strcmp(e.extensionName,
+                            VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)) {
+                    hasCoop = true;
+                    break;
+                }
+            if (!hasCoop) continue;
 
             uint32_t pn = 0;
             if (getCoopProps(pd, &pn, nullptr) != VK_SUCCESS || pn == 0) continue;
