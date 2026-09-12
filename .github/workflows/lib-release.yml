@@ -57,6 +57,20 @@ on:
         type: string
         required: false
         default: '30'
+      windows-test-command:
+        description: >
+          Command running the library's suite on WINDOWS. Empty (the default)
+          means NO WINDOWS LEG — the library's Windows status is then only as
+          fresh as its last hand-run validation, which is exactly how
+          dev.cajeta.http 0.2.0 shipped with static file serving entirely
+          broken on Windows and a green tag to show for it. Set it.
+
+          Separate from `test-command` because the two rarely spell the same:
+          a POSIX-only harness step (symlinks, `/dev/null`, `VAR=x cmd`
+          prefixes) has to be skipped or spelled differently under MSYS2.
+        type: string
+        required: false
+        default: ''
     # NOT required: only the two tag-gated publish steps use these, and
     # `required: true` fails the call at EVALUATION time — so a repo without
     # publish credentials couldn't even build+test on a main push (cajeta-gossip
@@ -74,8 +88,79 @@ permissions:
   contents: write
 
 jobs:
+  # Build + run the suite on Windows BEFORE the Linux job can publish.
+  #
+  # Opt-in (see `windows-test-command`) so every existing caller keeps its
+  # current behaviour, but where it IS set this is a gate, not a report: the
+  # release job below refuses to publish over a red Windows leg. A library
+  # whose Windows status is unknown at tag time is a library that ships
+  # broken on Windows, and that has already happened once.
+  #
+  # The toolchain comes from the release's prebuilt mingw .exe rather than a
+  # from-source build. A library leg only needs a COMPILER, and building the
+  # compiler on a hosted runner costs hours.
+  windows-test:
+    if: inputs.windows-test-command != ''
+    runs-on: windows-latest
+    timeout-minutes: ${{ fromJSON(inputs.test-timeout-minutes) + 20 }}
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      # MSYS2 first: this job's default shell is `msys2 {0}`, so it must exist
+      # before any run: step, including the toolchain fetch below. `path-type:
+      # inherit` is what lets its bash see the Windows PATH.
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          path-type: inherit
+          install: >-
+            tar
+            unzip
+            zip
+            binutils
+
+      - name: Install cajeta toolchain (${{ inputs.cajeta-version }})
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /usr/local/bin
+          gh release download "${{ inputs.cajeta-version }}" \
+            --repo jklappenbach/cajeta \
+            --pattern '*x86_64-w64-mingw32.exe' --dir /tmp/cajeta-win
+          # One asset matches; name it plainly so `cajeta` resolves on PATH.
+          mv /tmp/cajeta-win/*x86_64-w64-mingw32.exe /usr/local/bin/cajeta.exe
+          chmod +x /usr/local/bin/cajeta.exe
+          cajeta --version || cajeta version || true
+
+      - name: Build library .cja (Windows)
+        run: cajeta build
+
+      # Same reasoning as the Linux leg's cap: these suites bind loopback
+      # sockets and run live servers, and a server test that never returns
+      # hangs rather than fails. Windows has produced exactly that failure
+      # mode (a client waiting on a connection nobody accepted), so the
+      # bound matters more here, not less.
+      - name: Run the test suite (Windows)
+        timeout-minutes: ${{ fromJSON(inputs.test-timeout-minutes) }}
+        run: ${{ inputs.windows-test-command }}
+
   release:
     runs-on: ubuntu-latest
+    # `always()` because `needs` on a SKIPPED job would otherwise skip this one
+    # too, which would silently disable releases for every caller that has not
+    # opted into the Windows leg. Success-or-skipped is the intended gate: a
+    # FAILED or CANCELLED Windows leg stops the publish.
+    needs: [windows-test]
+    if: >-
+      always() &&
+      (needs.windows-test.result == 'success' ||
+       needs.windows-test.result == 'skipped')
     steps:
       - uses: actions/checkout@v4
 
