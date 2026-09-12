@@ -296,6 +296,72 @@ public final class Reactor {
         return ready;
     }
 
+    /**
+     * Deadline-bounded twin of [`pollPark`](#pollPark), and for the same
+     * reason: on a host whose native timed await BLOCKS THE CARRIER, handing
+     * it a deadline hands it the carrier for that long.
+     *
+     * This is not hypothetical and it is not small. `awaitReadableTimed`
+     * called [`awaitReadableTimedNative`](#awaitReadableTimedNative)
+     * unconditionally, and off Linux that native is the blocking
+     * [`pollFd`](#pollFd) probe. So an `HttpClient` with a 15-SECOND exchange
+     * timeout parked on a loopback read took its carrier out of service for
+     * up to fifteen seconds — starving every fiber co-hosted on it, including
+     * the SERVER fiber that would have produced the very bytes being awaited.
+     * The deadline then elapsed, the read failed with `readWithin: deadline
+     * elapsed before data arrived`, and it looked like a network flake.
+     * MEASURED on Windows: four such failures in one run across four
+     * unrelated loopback suites, every one of them this.
+     *
+     * The untimed [`awaitReadable`](#awaitReadable) had been fixed for this
+     * (it branches on
+     * [`awaitCarrierBlockingNative`](#awaitCarrierBlockingNative) and runs
+     * `pollPark`); the TIMED siblings never were, and the comment on
+     * `awaitReadableTimed` claiming the native "parks the fiber instead" is
+     * true only on Linux.
+     *
+     * Same probe-and-back-off shape as `pollPark`, with the deadline checked
+     * between naps so the budget is honored without ever holding the carrier.
+     *
+     * @param fd        the socket descriptor to wait on.
+     * @param interest  [`READ`](#READ) / [`WRITE`](#WRITE).
+     * @param timeoutMs the budget; negative means no deadline, which
+     *                  degenerates to `pollPark`.
+     * @return [`READY`](#READY) / [`TIMEOUT`](#TIMEOUT) / [`ERROR`](#ERROR).
+     */
+    static int32 pollParkTimed(int32 fd, int32 interest, int32 timeoutMs) {
+        int64 deadline = Reactor.nowMillis() + (int64) timeoutMs;
+        int64 backoff = 50000;          // 50us first nap, doubles to a 2ms cap
+        int32 result = Reactor.ERROR;
+        boolean done = false;
+        while (!done) {
+            int32 r = Reactor.pollFdNative(fd, interest, 0);
+            if (r == Reactor.READY) {
+                result = Reactor.READY;
+                done = true;
+            } else {
+                if (r == Reactor.ERROR) {
+                    result = Reactor.ERROR;
+                    done = true;
+                } else {
+                    // Check the deadline only AFTER a non-ready probe, so a
+                    // socket that is already readable never reports TIMEOUT
+                    // just because the budget happened to be spent.
+                    if (timeoutMs >= 0 && Reactor.nowMillis() >= deadline) {
+                        result = Reactor.TIMEOUT;
+                        done = true;
+                    } else {
+                        Cajeta.fiberSleepNanos(backoff);
+                        if (backoff < 2000000) {
+                            backoff = backoff * 2;
+                        }
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
     static boolean awaitReadable(int32 fd) {
         Reactor.register(fd, Reactor.READ);
         boolean ready = false;
@@ -420,7 +486,11 @@ public final class Reactor {
             // fiber, including the peer whose bytes are being awaited (the
             // cajeta-http loopback head-read flake). The native parks the
             // fiber instead; non-fiber callers still block, same contract.
-            r = Reactor.awaitReadableTimedNative(fd, timeoutMs);
+            if (Reactor.awaitCarrierBlockingNative() == 1) {
+                r = Reactor.pollParkTimed(fd, Reactor.READ, timeoutMs);
+            } else {
+                r = Reactor.awaitReadableTimedNative(fd, timeoutMs);
+            }
         } finally {
             Reactor.deregister(fd);
         }
@@ -445,7 +515,11 @@ public final class Reactor {
         int32 r = Reactor.ERROR;
         try {
             // Fiber-parking timed wait — see awaitReadableTimed's note.
-            r = Reactor.awaitWritableTimedNative(fd, timeoutMs);
+            if (Reactor.awaitCarrierBlockingNative() == 1) {
+                r = Reactor.pollParkTimed(fd, Reactor.WRITE, timeoutMs);
+            } else {
+                r = Reactor.awaitWritableTimedNative(fd, timeoutMs);
+            }
         } finally {
             Reactor.deregister(fd);
         }
