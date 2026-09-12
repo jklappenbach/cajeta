@@ -20,6 +20,9 @@
 #include "../jit/JitTestHelper.h"
 
 #include <chrono>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 #include <cstdint>
 #include <string>
 
@@ -98,3 +101,76 @@ TEST(TimerTests, mainThreadCompletesImmediatelyWhenDoneAlreadySet) {
     // compile too made this vacuous — it passed either way.)
     EXPECT_LE(elapsed_ms, 5000);
 }
+
+// The timer thread's own wait. `deadline_ns` is CLOCK_MONOTONIC, but
+// pthread_cond_timedwait reads abstime on CLOCK_REALTIME, so feeding it the
+// raw monotonic value named a moment in 1970 and the wait returned ETIMEDOUT
+// instantly — the loop spun for as long as any fiber timer was pending,
+// reacquiring the mutex that every fiber park and unpark also needs.
+//
+// Measured as CPU burned, not as latency or as a runtime counter, and both
+// of those alternatives were tried first:
+//
+//   - Latency cannot see this at all. The sleeping fiber still wakes on
+//     schedule; the spin costs a core, not a deadline. Both arms below took
+//     305ms of wall clock.
+//   - A counter incremented inside the timer loop reads 0 here. The JIT links
+//     the EMBEDDED bitcode runtime into the module under test, so it bumps its
+//     own copy of the variable while the accessor the test calls resolves to
+//     the test binary's separate native copy. That is a blind instrument, and
+//     a blind instrument reports health (CLAUDE.md §5).
+//
+// getrusage(RUSAGE_SELF) escapes both problems: it sums every thread in the
+// process regardless of which runtime copy they run, and it is immune to a
+// busy box, since a parallel sweep's other suites are separate processes.
+//
+// A/B over the one-line clock change, same source, same machine:
+//     broken   wall 304ms   cpu 217ms
+//     fixed    wall 305ms   cpu 6.8ms
+#if defined(_WIN32)
+TEST(TimerTests, DISABLED_timerThreadSleepsBetweenExpiriesRatherThanSpinning) {}
+#else
+TEST(TimerTests, timerThreadSleepsBetweenExpiriesRatherThanSpinning) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 napper() {\n"
+        "        Tasks.sleepMillis(300);\n"
+        "        return 7;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Task<int32> t = spawn napper();\n"
+        "        return await t;\n"
+        "    }\n"
+        "}\n";
+    // Compile first: the JIT is seconds of real CPU and would swamp the
+    // milliseconds this measures.
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+
+    struct rusage ru0, ru1;
+    getrusage(RUSAGE_SELF, &ru0);
+    auto w0 = std::chrono::steady_clock::now();
+    int32_t result = fn();
+    int64_t wallUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - w0).count();
+    getrusage(RUSAGE_SELF, &ru1);
+
+    auto deltaUs = [](const struct timeval& a, const struct timeval& b) {
+        return (int64_t) (b.tv_sec - a.tv_sec) * 1000000 + (b.tv_usec - a.tv_usec);
+    };
+    int64_t cpuUs = deltaUs(ru0.ru_utime, ru1.ru_utime)
+                  + deltaUs(ru0.ru_stime, ru1.ru_stime);
+
+    EXPECT_EQ(result, 7);
+    // The sleep really has to happen, or there is no pending timer to spin on
+    // and the CPU bound below passes vacuously.
+    EXPECT_GE(wallUs, 250000) << "the fiber did not actually sleep";
+    // A quarter of the window sits ~11x above the healthy 6.8ms and ~3x below
+    // the 217ms the spin cost, so neither arm is near the line.
+    EXPECT_LT(cpuUs, wallUs / 4)
+        << "burned " << cpuUs << "us of CPU across a " << wallUs
+        << "us sleep — the timer thread is spinning, not waiting "
+           "(CLOCK_MONOTONIC deadline handed to a CLOCK_REALTIME abstime?)";
+}
+#endif

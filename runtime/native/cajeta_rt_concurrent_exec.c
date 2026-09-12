@@ -1002,11 +1002,32 @@ static void* __cajeta_timer_loop_body(void* arg) {
         }
         if (__cajeta_timer_head) {
             int64_t deadline = __cajeta_timer_head->deadline_ns;
+            // deadline_ns is CLOCK_MONOTONIC (it came from __cajeta_now_ns), but
+            // pthread_cond_timedwait reads abstime on CLOCK_REALTIME. Handing it
+            // the monotonic value names a moment in 1970 — already long past — so
+            // the wait returned ETIMEDOUT instantly and this loop spun. MEASURED
+            // before the fix: a 200ms deadline waited 10us on Linux and 23us on
+            // Windows, ~20000x short. The old comment called that "fine for an
+            // upper bound", which is true of CORRECTNESS and false of COST: the
+            // loop reacquires __cajeta_task_mutex every few microseconds, and
+            // that is the same mutex every fiber park and unpark needs.
+            //
+            // It stayed invisible on Linux because the epoll engine services I/O
+            // waits directly and leaves the timer wheel empty (the branch below
+            // waits untimed). On every other host Reactor.pollPark drives all
+            // socket readiness through fiberSleepNanos, so the wheel is never
+            // empty and the timer thread spun for the life of the process.
+            //
+            // Convert through the elapsed interval, the way the sibling
+            // __cajeta_task_wait_timeout below already does.
+            int64_t remaining_ns = deadline - __cajeta_now_ns();
+            if (remaining_ns < 0) remaining_ns = 0;
             struct timespec ts;
-            ts.tv_sec = (time_t) (deadline / 1000000000LL);
-            ts.tv_nsec = (long) (deadline % 1000000000LL);
-            // A CLOCK_REALTIME timedwait against a monotonic deadline is fine
-            // for an upper bound; the fiber-side check catches up either way.
+            clock_gettime(CLOCK_REALTIME, &ts);
+            int64_t abs_ns = (int64_t) ts.tv_sec * 1000000000LL
+                           + (int64_t) ts.tv_nsec + remaining_ns;
+            ts.tv_sec = (time_t) (abs_ns / 1000000000LL);
+            ts.tv_nsec = (long) (abs_ns % 1000000000LL);
             pthread_cond_timedwait(&__cajeta_timer_cond,
                                     &__cajeta_task_mutex, &ts);
         } else {
