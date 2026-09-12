@@ -400,13 +400,29 @@ TEST(VectorDotAccumTests, dotAndDotAccumDifferOnAnUnsignedReceiver) {
 
 // 1.2.3 — the reinterpretation that makes the VNNI tier reachable.
 TEST(VectorDotAccumTests, asUnsignedReachesTheVnniTier) {
+    // The same host guard the two siblings above carry, and for the same
+    // reason: `runI32` JIT-compiles AND EXECUTES. Asking it for a named VNNI
+    // cpu on a host that is not one is incoherent — the JIT lowers for the
+    // HOST target machine, so cascadelake-width v64i8 arrives at an avx2
+    // legalizer that cannot split it, and the process dies with
+    // `LLVM ERROR: Do not know how to split the result of this operator!`
+    // (exit 134) instead of failing or skipping.
+    //
+    // This is a test-harness limit, NOT a codegen bug; measured by compiling
+    // this exact source AOT with `--emit=obj --cpu=<x>` for cascadelake,
+    // skylake-avx512, znver4, haswell and x86-64 — all five succeed. Only the
+    // JIT, which cannot retarget away from the host, is affected. Guarding
+    // only the IR assertion (as this test did) left the RUN unguarded, which
+    // is the half that aborts.
+    if (!hostHasVnni()) {
+        GTEST_SKIP() << "host has neither avx512vnni nor avxvnni; the JIT "
+                        "cannot execute a foreign VNNI target here";
+    }
     std::string ir;
     EXPECT_EQ(runI32(AS_UNSIGNED, true, &ir, namedVnniCpu()), 1);
-    if (hostHasVnni()) {
-        EXPECT_NE(ir.find("vpdpbusd"), std::string::npos)
-            << "int8[]-held nibbles reinterpreted unsigned must reach VNNI; "
-               "this is the shape every packed-weight kernel actually has";
-    }
+    EXPECT_NE(ir.find("vpdpbusd"), std::string::npos)
+        << "int8[]-held nibbles reinterpreted unsigned must reach VNNI; "
+           "this is the shape every packed-weight kernel actually has";
 }
 
 // 2.1.1 — the pre-VNNI x86 tier agrees bit-for-bit with the VNNI one.
