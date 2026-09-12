@@ -54,16 +54,43 @@ static inline void __cajeta_w32_makecontext(ucontext_t* uc, void (*func)(void), 
     SIZE_T stack_size = uc->uc_stack.ss_size > 0
         ? (SIZE_T) uc->uc_stack.ss_size : 64 * 1024;
     uc->fiber = CreateFiber(stack_size, __cajeta_w32_fiber_trampoline, uc);
+    if (!uc->fiber) {
+        // Unchecked, this is silent and fatal-by-hang rather than fatal: a NULL
+        // handle makes the swap below a no-op, so the carrier neither runs, frees
+        // nor requeues the fiber — it is dropped, and every awaiter blocks
+        // forever with all carriers idle. Fail the way the POSIX stack allocator
+        // already does instead.
+        fprintf(stderr, "cajeta: CreateFiber failed for a %llu KiB fiber stack "
+                        "(GetLastError=%lu)\n",
+                (unsigned long long) (stack_size / 1024),
+                (unsigned long) GetLastError());
+        abort();
+    }
 }
 
 static inline int __cajeta_w32_swapcontext(ucontext_t* from, ucontext_t* to) {
     if (!IsThreadAFiber()) {
         LPVOID cur = ConvertThreadToFiber(NULL);
+        if (!cur) {
+            fprintf(stderr, "cajeta: ConvertThreadToFiber failed "
+                            "(GetLastError=%lu)\n", (unsigned long) GetLastError());
+            abort();
+        }
         if (from) from->fiber = cur;
     } else if (from && !from->fiber) {
         from->fiber = GetCurrentFiber();
     }
-    if (to && to->fiber) SwitchToFiber(to->fiber);
+    if (!to) return 0;
+    if (!to->fiber) {
+        // Silently returning here is what loses a fiber. The caller believes it
+        // suspended (or dispatched); control simply falls through, and the fiber
+        // is never scheduled again. There is no correct recovery at this point,
+        // so say which invariant broke rather than hang.
+        fprintf(stderr, "cajeta: swapcontext target has no fiber handle -- "
+                        "a fiber would be dropped here\n");
+        abort();
+    }
+    SwitchToFiber(to->fiber);
     return 0;
 }
 
@@ -643,12 +670,23 @@ static void* __cajeta_carrier_loop_body(void* arg) {
 
         __cajeta_current_fiber = f;
         f->state = CAJETA_FIBER_RUNNING;
-        if (!f->stack) {
+        // Windows never fills `stack`: CreateFiber allocates the fiber's stack
+        // itself, so the malloc'd one was pure waste — a second committed MiB
+        // per fiber, which is exactly the pressure that makes CreateFiber fail.
+        // `ctx.fiber` is the "already primed" sentinel there instead.
+#if defined(_WIN32)
+        int needs_prime = (f->ctx.fiber == NULL);
+#else
+        int needs_prime = (f->stack == NULL);
+#endif
+        if (needs_prime) {
             // First-resume init: allocate the stack and prime the context to
             // dispatch __cajeta_fiber_entry. uc_link points at this thread's
             // carrier_ctx; the cross-carrier uc_link handoff is unsolved.
             size_t stack_size = __cajeta_fiber_stack_alloc_size();
+#if !defined(_WIN32)
             f->stack = __cajeta_fiber_stack_alloc();   // guard-paged on POSIX
+#endif
             // First dispatch pins the fiber to this carrier (see home_carrier).
             f->home_carrier = self->carrier_id;
             __cajeta_getcontext(&f->ctx);
