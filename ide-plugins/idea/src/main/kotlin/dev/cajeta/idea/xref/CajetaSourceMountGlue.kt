@@ -127,6 +127,44 @@ object CajetaSourceMountGlue {
         OwnArchive.classpath(dependencyArchives(basePath), ownArchive(compilerPath, basePath))
 
     /**
+     * Whether the own archive is usable, for reporting (Unit 4.2.2).
+     *
+     * The degraded state looks exactly like the bug this spec fixes — without the
+     * archive a project's own types do not resolve — so an unbuilt project shows
+     * the same red underlines and the developer cannot tell which it is.
+     *
+     * Staleness is measured against the MAIN source root, because that is what
+     * the archive is built from; a newer test file does not make the archive
+     * stale. The walk reads mtimes only, no file contents, and happens once per
+     * lint — negligible beside the lint subprocess itself.
+     */
+    fun archiveHealth(compilerPath: String, basePath: String?): ArchiveHealth.State {
+        if (basePath == null || compilerPath.isBlank()) return ArchiveHealth.State.OK
+        val base = File(basePath)
+        if (!base.isDirectory) return ArchiveHealth.State.OK
+        val resolution = OwnArchive.resolveWith(
+            runArtifactPath = { flavor -> artifactPath(compilerPath, base, flavor) },
+            exists = { Files.isRegularFile(it) },
+        )
+        val mainRoot = dev.cajeta.idea.buildtool.CajetaRoots.conventionalSourceRoot(basePath)
+        return ArchiveHealth.assess(
+            archiveMtime = resolution.path?.let(::mtimeOf),
+            newestSourceMtime = newestSourceMtime(mainRoot),
+            declared = resolution.declared,
+        )
+    }
+
+    /** Newest mtime among `.cajeta` files under [root], or null if there are none. */
+    private fun newestSourceMtime(root: String): Long? {
+        val dir = File(root)
+        if (!dir.isDirectory) return null
+        return dir.walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".cajeta") }
+            .map { it.lastModified() }
+            .maxOrNull()
+    }
+
+    /**
      * `cajeta artifact-path --flavor=<f>` in the project directory → (exit, stdout).
      *
      * Run with the project as the working directory rather than passing

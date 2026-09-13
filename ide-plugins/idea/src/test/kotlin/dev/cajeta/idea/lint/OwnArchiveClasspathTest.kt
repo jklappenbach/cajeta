@@ -176,6 +176,38 @@ class OwnArchiveClasspathTest {
         )
     }
 
+    /** 4.1.1 / 4.3.1 / 4.3.2 — the states against a REAL project, not just the
+     *  pure assessor. A built project is silent; the same project with its
+     *  archive removed reports ABSENT and still lints (no build is triggered). */
+    @Test
+    fun aBuiltProjectIsSilentAndAnUnbuiltOneReportsAbsent() {
+        val fx = twoRootFixture()
+        val glue = dev.cajeta.idea.xref.CajetaSourceMountGlue
+        assertEquals(
+            "a built project must say nothing",
+            dev.cajeta.idea.xref.ArchiveHealth.State.OK,
+            glue.archiveHealth(fx.compilerPath(), fx.root.toString()),
+        )
+
+        val art = fx.artifact()
+        val hidden = java.nio.file.Path.of("$art.hidden")
+        java.nio.file.Files.move(art, hidden)
+        try {
+            assertEquals(
+                "with the archive gone, the reason must be reported",
+                dev.cajeta.idea.xref.ArchiveHealth.State.ABSENT,
+                glue.archiveHealth(fx.compilerPath(), fx.root.toString()),
+            )
+            assertTrue(
+                "and lint still runs rather than failing or building",
+                fx.lintUnresolved(fx.testFile, fx.testRoot, classpath = emptyList()).isNotEmpty(),
+            )
+            assertTrue("no build may be triggered", !java.nio.file.Files.exists(art))
+        } finally {
+            java.nio.file.Files.move(hidden, art)
+        }
+    }
+
     /** 6.1.4 — the does-not-fire control. Without the own archive the export is
      *  empty of the project's own symbols; that is the pre-existing behaviour
      *  this unit changes, and stating it keeps 6.1.2 from being vacuous. */

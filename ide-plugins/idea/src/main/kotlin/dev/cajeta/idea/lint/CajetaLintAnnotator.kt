@@ -43,8 +43,17 @@ class CajetaLintAnnotator : ExternalAnnotator<LintInput, LintOutput>() {
         val compilerPath = dev.cajeta.idea.settings.CajetaSettings.instance.compilerPath
         val configured = compilerPath.isNotBlank() &&
             java.io.File(compilerPath).canExecute()
+        // Unit 4: an unbuilt or stale own archive degrades resolution in a way
+        // that looks IDENTICAL to the bug this spec fixed — the project's own
+        // types stop resolving — so say which it is rather than leaving the
+        // developer to guess from red underlines.
+        val archive =
+            if (configured)
+                dev.cajeta.idea.xref.CajetaSourceMountGlue
+                    .archiveHealth(compilerPath, file.project.basePath)
+            else dev.cajeta.idea.xref.ArchiveHealth.State.OK
         dev.cajeta.idea.xref.CajetaXrefFreshness.getInstance(file.project)
-            .updateFromLint(configured, output.xref)
+            .updateFromLint(configured, output.xref, archive)
 
         // Feed the index off the EDT. A version-only stream (broken buffer)
         // has no records, so the previous shard is KEPT (spec 2.0.5); an

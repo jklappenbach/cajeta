@@ -45,19 +45,43 @@ object OwnArchive {
         flavors: List<String> = DEFAULT_FLAVORS,
         runArtifactPath: (flavor: String) -> Pair<Int, String>,
         exists: (Path) -> Boolean,
-    ): Path? {
+    ): Path? = resolveWith(flavors, runArtifactPath, exists).path
+
+    /**
+     * [resolve], keeping the distinction a bare null throws away: whether the
+     * manifest DECLARES an artifact at all.
+     *
+     * "Declared but never built" and "declares no artifact" both yield no path,
+     * and they want opposite handling. The first is worth telling the developer
+     * about — it is why their own types do not resolve. The second is an ordinary
+     * application project with nothing to say, and reporting it would put a
+     * permanent false "project not built" notice on every such project, which is
+     * how notices get trained away.
+     */
+    fun resolveWith(
+        flavors: List<String> = DEFAULT_FLAVORS,
+        runArtifactPath: (flavor: String) -> Pair<Int, String>,
+        exists: (Path) -> Boolean,
+    ): Resolution {
+        var declaredAnywhere = false
         for (flavor in flavors) {
             val (exitCode, stdout) = try {
                 runArtifactPath(flavor)
             } catch (e: Exception) {
-                return null   // a compiler we cannot run will not answer for another flavor
+                // A compiler we cannot run will not answer for another flavor,
+                // and it tells us nothing about what the manifest declares.
+                return Resolution(null, declared = false)
             }
             if (exitCode != 0) continue
-            val declared = parse(stdout) ?: continue
-            if (exists(declared)) return declared
+            val named = parse(stdout) ?: continue
+            declaredAnywhere = true
+            if (exists(named)) return Resolution(named, declared = true)
         }
-        return null
+        return Resolution(null, declaredAnywhere)
     }
+
+    /** A resolved archive, and whether the manifest declared one at all. */
+    data class Resolution(val path: Path?, val declared: Boolean)
 
     /**
      * The lint classpath: dependencies first, exactly as given, with the own
