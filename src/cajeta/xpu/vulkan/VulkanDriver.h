@@ -34,6 +34,17 @@ namespace vulkan {
         // 16x16x16, Subgroup scope, f16/f16 -> f32.
         static bool coopMatrixAvailable();
 
+        // The first compute device's SUBGROUP (wave) width, or 0 when it cannot
+        // be determined. Needed because a wave op's result is a function of this
+        // number, so a test that hardcodes a width is asserting a property of the
+        // hardware it was written on rather than of the code under test.
+        //
+        // It is not always a GPU width: llvmpipe, the software rasterizer that
+        // stands in for a GPU on a machine with no Vulkan hardware, reports
+        // 8 (min = max = 8). Every wave test here used to assert 32-or-64 and so
+        // failed on it — six failures that said nothing about the wave ops.
+        static std::uint32_t subgroupWidth();
+
         // True iff shader_atomic_float2 + shaderBufferFloat32AtomicMinMax are there:
         // the only way to run Buffer<float32>.atomic{Min,Max}, absent on NVIDIA.
         static bool shaderAtomicFloatMinMaxAvailable();

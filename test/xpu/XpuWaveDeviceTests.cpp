@@ -34,6 +34,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Target/TargetMachine.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -185,8 +186,29 @@ const char* kRotateSource =
 
 constexpr unsigned kRotateVerify = 31;  // lanes 0..30: (L+1) never wraps
 
-void expectRotatedLaneId(const std::vector<uint32_t>& out) {
-    for (unsigned i = 0; i < kRotateVerify; ++i)
+// How many lanes of the FIRST wave a check may look at.
+//
+// Every window below was written as "lanes 0..31, present at any wave width",
+// which is true of 32 and 64 and false below them. It is not a hypothetical
+// width: llvmpipe — the software rasterizer that stands in for a GPU on a box
+// with no Vulkan hardware — reports a subgroup size of 8 (min = max = 8). Lane
+// 8 is then in the SECOND wave, where `readlane(lane 3)` holds a different
+// value and `ballot(t < 4)` is 0, so the expectations legitimately do not hold
+// and six Vulkan wave tests failed on a device that was working correctly.
+//
+// `reported` of 0 means the backend cannot tell us (the AMD and NVIDIA drivers
+// here do not expose it), and those are real GPUs whose waves are 32 or 64 —
+// so fall back to the old window rather than weaken their coverage.
+inline unsigned waveWindow(unsigned cap, unsigned reported) {
+    return reported ? std::min(cap, reported) : cap;
+}
+
+void expectRotatedLaneId(const std::vector<uint32_t>& out,
+                         unsigned width = 0) {
+    // Rotate wraps at the wave edge, so the last lane of a wave is excluded.
+    const unsigned n = width ? std::min(kRotateVerify, width - 1) : kRotateVerify;
+    ASSERT_GT(n, 0u) << "wave width " << width << " leaves no lane to check";
+    for (unsigned i = 0; i < n; ++i)
         EXPECT_EQ(out[i], i + 1) << "lane " << i << " rotated value";
 }
 
@@ -250,8 +272,9 @@ const char* kScanSource =
 
 constexpr unsigned kScanBlock = 64;  // multiple of 32 and 64 ⇒ full occupancy
 
-void expectScans(const std::vector<uint32_t>& out, unsigned n) {
-    for (unsigned i = 0; i < 32; ++i) {
+void expectScans(const std::vector<uint32_t>& out, unsigned n,
+                 unsigned width = 0) {
+    for (unsigned i = 0; i < waveWindow(32u, width); ++i) {
         EXPECT_EQ(out[i], i) << "prefixSum lane " << i;
         EXPECT_EQ(out[n + i], 1u << i) << "prefixProduct lane " << i;
     }
@@ -259,11 +282,23 @@ void expectScans(const std::vector<uint32_t>& out, unsigned n) {
 
 // reduceSum(1) over a full wave == wave width; the only real wave sizes are 32
 // and 64, and every lane must agree (block is a multiple of both).
-void expectUniformWaveWidth(const std::vector<uint32_t>& out) {
+void expectUniformWaveWidth(const std::vector<uint32_t>& out,
+                            unsigned width = 0) {
     ASSERT_FALSE(out.empty());
     uint32_t w = out[0];
-    EXPECT_TRUE(w == 32u || w == 64u) << "reduceSum(1) = " << w
-        << " is not a valid wave width (expected a genuine cross-lane sum)";
+    // The claim being made is "this was a GENUINE cross-lane sum", not "the
+    // hardware is 32 or 64 wide". Where the device reports its width, assert
+    // against that; the > 1 check is what actually catches a no-op lowering,
+    // and it holds at every width.
+    EXPECT_GT(w, 1u) << "reduceSum(1) = " << w
+        << " — a wave of 1 means the reduction did not cross lanes";
+    if (width) {
+        EXPECT_EQ(w, width) << "reduceSum(1) = " << w
+            << " disagrees with the device's reported wave width " << width;
+    } else {
+        EXPECT_TRUE(w == 32u || w == 64u) << "reduceSum(1) = " << w
+            << " is not a valid wave width (expected a genuine cross-lane sum)";
+    }
     for (size_t i = 0; i < out.size(); ++i)
         EXPECT_EQ(out[i], w) << "lane " << i << " disagrees on the wave sum";
 }
@@ -271,11 +306,19 @@ void expectUniformWaveWidth(const std::vector<uint32_t>& out) {
 // Float twin: reduceSumF32(1.0f) == width and reduceMaxF32(laneId+1) == width,
 // exactly, at either real wave size.
 void expectUniformWaveWidthF(const std::vector<float>& sum,
-                             const std::vector<float>& mx) {
+                             const std::vector<float>& mx,
+                             unsigned width = 0) {
     ASSERT_FALSE(sum.empty());
     float w = sum[0];
-    EXPECT_TRUE(w == 32.0f || w == 64.0f) << "reduceSumF32(1) = " << w
-        << " is not a valid wave width (expected a genuine cross-lane fadd)";
+    EXPECT_GT(w, 1.0f) << "reduceSumF32(1) = " << w
+        << " — a wave of 1 means the reduction did not cross lanes";
+    if (width) {
+        EXPECT_EQ(w, static_cast<float>(width)) << "reduceSumF32(1) = " << w
+            << " disagrees with the device's reported wave width " << width;
+    } else {
+        EXPECT_TRUE(w == 32.0f || w == 64.0f) << "reduceSumF32(1) = " << w
+            << " is not a valid wave width (expected a genuine cross-lane fadd)";
+    }
     for (size_t i = 0; i < sum.size(); ++i) {
         EXPECT_EQ(sum[i], w) << "lane " << i << " disagrees on the wave fsum";
         EXPECT_EQ(mx[i], w) << "lane " << i << " disagrees on the wave fmax";
@@ -355,7 +398,9 @@ TEST(XpuWaveDeviceTests, vulkanShuffleBallotRunsOnDevice) {
     std::vector<uint32_t> out(threads, 0);
     ASSERT_TRUE(vk.download(out.data(), dOut, threads * sizeof(uint32_t)));
     vk.free(dOut);
-    for (unsigned i = 0; i < kVerify; ++i)
+    // Only the first wave, and only as far as THIS device's wave goes.
+    const unsigned verify = waveWindow(kVerify, cajeta::xpu::vulkan::VulkanDriver::subgroupWidth());
+    for (unsigned i = 0; i < verify; ++i)
         EXPECT_EQ(out[i], kExpected) << "lane " << i;
 }
 
@@ -495,7 +540,7 @@ TEST(XpuWaveDeviceTests, vulkanReduceF32RunsOnDevice) {
     vk.free(dIn);
     vk.free(dSum);
     vk.free(dMax);
-    expectUniformWaveWidthF(sum, mx);
+    expectUniformWaveWidthF(sum, mx, cajeta::xpu::vulkan::VulkanDriver::subgroupWidth());
 }
 
 TEST(XpuWaveDeviceTests, vulkanReduceSumRunsOnDevice) {
@@ -536,7 +581,7 @@ TEST(XpuWaveDeviceTests, vulkanReduceSumRunsOnDevice) {
     ASSERT_TRUE(vk.download(out.data(), dOut, bytes));
     vk.free(dIn);
     vk.free(dOut);
-    expectUniformWaveWidth(out);
+    expectUniformWaveWidth(out, cajeta::xpu::vulkan::VulkanDriver::subgroupWidth());
 }
 
 
@@ -614,7 +659,7 @@ TEST(XpuWaveDeviceTests, vulkanWaveWidthRunsOnDevice) {
     std::vector<uint32_t> out(threads, 0);
     ASSERT_TRUE(vk.download(out.data(), dOut, threads * sizeof(uint32_t)));
     vk.free(dOut);
-    expectUniformWaveWidth(out);
+    expectUniformWaveWidth(out, cajeta::xpu::vulkan::VulkanDriver::subgroupWidth());
 }
 
 TEST(XpuWaveDeviceTests, amdgpuRotateRunsOnDevice) {
@@ -686,7 +731,7 @@ TEST(XpuWaveDeviceTests, vulkanRotateRunsOnDevice) {
     std::vector<uint32_t> out(threads, 0);
     ASSERT_TRUE(vk.download(out.data(), dOut, threads * sizeof(uint32_t)));
     vk.free(dOut);
-    expectRotatedLaneId(out);
+    expectRotatedLaneId(out, cajeta::xpu::vulkan::VulkanDriver::subgroupWidth());
 }
 
 TEST(XpuWaveDeviceTests, amdgpuReduceFamilyRunsOnDevice) {
@@ -799,7 +844,7 @@ TEST(XpuWaveDeviceTests, vulkanPrefixScanRunsOnDevice) {
     std::vector<uint32_t> out(2 * n, 0);
     ASSERT_TRUE(vk.download(out.data(), dOut, 2 * n * sizeof(uint32_t)));
     vk.free(dOut); vk.free(dN);
-    expectScans(out, n);
+    expectScans(out, n, cajeta::xpu::vulkan::VulkanDriver::subgroupWidth());
 }
 
 // ===========================================================================

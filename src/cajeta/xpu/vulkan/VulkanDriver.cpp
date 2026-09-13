@@ -545,6 +545,86 @@ bool VulkanDriver::rayQueryAvailable() {
     return ok;
 }
 
+// The first compute device's subgroup (wave) width, 0 if undeterminable.
+// See the header for why a test must ask rather than assume.
+std::uint32_t VulkanDriver::subgroupWidth() {
+    void* lib = nullptr;
+#if defined(__APPLE__)
+    for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
+                             "libMoltenVK.dylib"}) {
+#elif defined(_WIN32)
+    for (const char* name : {"vulkan-1.dll"}) {
+#else
+    for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
+#endif
+        lib = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+        if (lib) break;
+    }
+    if (!lib) return 0;
+    auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+        dlsym(lib, "vkGetInstanceProcAddr"));
+    if (!gipa) { dlclose(lib); return 0; }
+    auto createInstance = reinterpret_cast<PFN_vkCreateInstance>(
+        gipa(VK_NULL_HANDLE, "vkCreateInstance"));
+    if (!createInstance) { dlclose(lib); return 0; }
+    VkApplicationInfo app{};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    // 1.1 is the floor for VkPhysicalDeviceSubgroupProperties and the
+    // vkGetPhysicalDeviceProperties2 that carries it.
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ici.pApplicationInfo = &app;
+    const char* portExt = nullptr;
+    cajPortability(gipa, ici, portExt);
+    VkInstance inst = VK_NULL_HANDLE;
+    if (createInstance(&ici, nullptr, &inst) != VK_SUCCESS) {
+        dlclose(lib);
+        return 0;
+    }
+    auto destroyInstance = reinterpret_cast<PFN_vkDestroyInstance>(
+        gipa(inst, "vkDestroyInstance"));
+    auto enumDevs = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(
+        gipa(inst, "vkEnumeratePhysicalDevices"));
+    auto getQueueProps =
+        reinterpret_cast<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
+            gipa(inst, "vkGetPhysicalDeviceQueueFamilyProperties"));
+    auto getProps2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
+        gipa(inst, "vkGetPhysicalDeviceProperties2"));
+
+    std::uint32_t width = 0;
+    if (destroyInstance && enumDevs && getQueueProps && getProps2) {
+        uint32_t count = 0;
+        enumDevs(inst, &count, nullptr);
+        std::vector<VkPhysicalDevice> devs(count);
+        if (count) enumDevs(inst, &count, devs.data());
+        for (VkPhysicalDevice pd : devs) {
+            uint32_t qn = 0;
+            getQueueProps(pd, &qn, nullptr);
+            std::vector<VkQueueFamilyProperties> qp(qn);
+            if (qn) getQueueProps(pd, &qn, qp.data());
+            bool compute = false;
+            for (auto& q : qp)
+                if (q.queueFlags & VK_QUEUE_COMPUTE_BIT) { compute = true; break; }
+            if (!compute) continue;
+
+            // The FIRST compute device, matching what init() binds — a width
+            // read off a different device would be worse than none at all.
+            VkPhysicalDeviceSubgroupProperties sg{};
+            sg.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+            VkPhysicalDeviceProperties2 p2{};
+            p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            p2.pNext = &sg;
+            getProps2(pd, &p2);
+            width = sg.subgroupSize;
+            break;
+        }
+    }
+    if (destroyInstance) destroyInstance(inst, nullptr);
+    dlclose(lib);
+    return width;
+}
+
 bool VulkanDriver::coopMatrixAvailable() {
     void* lib = nullptr;
 #if defined(__APPLE__)
@@ -1052,6 +1132,7 @@ bool VulkanDriver::available() { return false; }
 bool VulkanDriver::builtWithVulkan() { return false; }
 bool VulkanDriver::rayQueryAvailable() { return false; }
 bool VulkanDriver::coopMatrixAvailable() { return false; }
+std::uint32_t VulkanDriver::subgroupWidth() { return 0; }
 bool VulkanDriver::shaderAtomicFloatMinMaxAvailable() { return false; }
 bool VulkanDriver::shaderAtomicInt64Available() { return false; }
 bool VulkanDriver::init() { return false; }
