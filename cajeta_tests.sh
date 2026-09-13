@@ -271,7 +271,40 @@ TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 # host's own measurements. Refresh the seed with scripts/update-test-durations.sh.
 DURATIONS_FILE="${CAJETA_TEST_DURATIONS:-$SCRIPT_DIR/.test-durations.tsv}"
 DURATIONS_SEED="${CAJETA_TEST_DURATIONS_SEED:-$SCRIPT_DIR/test/test-durations.seed.tsv}"
-if [ -s "$DURATIONS_FILE" ]; then
+# Per TEST, and the LARGER of the two — not one file wholesale.
+#
+# Picking a file looks equivalent and is not. The local file is built from the
+# tests a run actually completed, so it is routinely INCOMPLETE, and a
+# non-empty one then shadowed the seed for every test it happened to be
+# missing. MEASURED: ForkPerTestModeTests.matchesSerialAndPrimesOnce (seed
+# 219s), ResampleTests.downsampleAlignmentDynamicFormAndFailLoudMatrix (266s)
+# and SortJoinTests.sortOrderJoinFamilyKeyErrorsAndPushdownMatrix (295s) were
+# all absent locally, so each fell to the 120s floor, was killed as a TIMEOUT,
+# recorded no duration BECAUSE it was killed, and was therefore still absent
+# next run. Three healthy tests reported as hangs, every sweep, with the answer
+# already checked in one file away.
+#
+# The max() matters for a second, sneakier case: a local entry can be present
+# but far too SMALL, because a test that fails fast records how long it took to
+# FAIL. IncrementalBuild.TourSmokeBuildsIncrementally sat at 98s locally (it
+# died on its first build) against 632s in the seed; once fixed it runs 297s,
+# so a live-wins budget of 98s*BATCH_SLACK would have converted the failure
+# straight into a timeout. A budget is a safety bound — taking the larger of
+# what we know is the conservative direction, and BATCH_SLACK scales it anyway.
+if [ -s "$DURATIONS_FILE" ] && [ -s "$DURATIONS_SEED" ]; then
+    _durmerged="${DURATIONS_FILE}.merged.$$"
+    if awk -F'\t' '
+            FNR==NR { if ($1 != "") d[$1] = $2; next }
+            { if (!($1 in d) || $2+0 > d[$1]+0) d[$1] = $2 }
+            END { for (k in d) print k "\t" d[k] }
+        ' "$DURATIONS_FILE" "$DURATIONS_SEED" > "$_durmerged" 2>/dev/null \
+       && [ -s "$_durmerged" ]; then
+        mv "$_durmerged" "$DURATIONS_FILE" 2>/dev/null || rm -f "$_durmerged"
+    else
+        rm -f "$_durmerged"
+    fi
+    DURATIONS_READ="$DURATIONS_FILE"
+elif [ -s "$DURATIONS_FILE" ]; then
     DURATIONS_READ="$DURATIONS_FILE"
 elif [ -s "$DURATIONS_SEED" ]; then
     DURATIONS_READ="$DURATIONS_SEED"
