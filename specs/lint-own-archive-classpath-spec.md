@@ -51,9 +51,16 @@ export.
 - **1.5.3** Resolution must not depend on a build the developer did not ask for.
 
 ### 1.6 Non-goals
-- **1.6.1** Multi-root source resolution. `lint-source-root-spec` §1.4 defers it,
-  and repeating `--source-root` does not union roots — the compiler takes the last
-  one (measured: 3 errors, all `Check`). Nothing here changes that.
+- **1.6.1** Multi-root source **resolution**. `lint-source-root-spec` §1.4 defers
+  it, and repeating `--source-root` does not union roots — the compiler takes the
+  last one (measured: 3 errors, all `Check`). Nothing here changes that: one root
+  plus a classpath resolves correctly, which is the whole point of §2.
+
+  **Amended 2026-09-13.** This non-goal was read too broadly when the spec was
+  written. Resolution and **coverage** are different questions, and only the first
+  is out of scope. A file resolves against one root, but the xref export must
+  still *visit* every root or the files in the unvisited ones are absent from the
+  index entirely. Coverage is now §8, and it is in scope.
 - **1.6.2** Which xref **relations** are emitted (call edges, field references).
   That is `xref-lint-emission-gap`. This spec governs whether the project's own
   types resolve **at all**; that plan governs what is emitted once they do. The two
@@ -140,6 +147,9 @@ changed, after spawn — the server is restarted so the new context takes effect
 ### 6.4 When the whole-root `--emit-xref` export runs, the own archive is on its
 classpath, so the shard it produces carries the project's own symbols.
 
+This is necessary and **not sufficient** — it fixes what the export can resolve,
+not which files it covers. See §8.
+
 ### 6.5 When a per-edit lint stream overwrites the whole-root shard, the project's
 own Ctrl-click targets survive. Without the archive those references are dropped as
 dangling, and the per-edit stream erases them from the shard — the same mechanism
@@ -158,3 +168,55 @@ and §4.2's reason is visible.
 
 ### 7.4 When a single-root project is linted, behaviour is unchanged — no
 regression for projects that never had this problem.
+
+## 8. Export coverage — every source root
+
+Added 2026-09-13, after the §2 fix shipped and Ctrl-click stayed dead.
+
+`CajetaXrefRebuildAction` exports `CajetaRoots.conventionalSourceRoot(base)`,
+which is `<base>/src/main/cajeta` when that exists. A project whose tests live
+elsewhere therefore has **no index for its tests at all** — not a weaker index, an
+absent one. Measured on `cajeta-http` with the §2 fix in place and the project
+built: the exported shard names `HttpSerializer` 587 times and `ServerTests` **0**
+times. Every import in that file is dead because the file it is clicking *from* was
+never visited.
+
+There is no convention to lean on. Surveyed 2026-09-13: `cajeta-http` uses
+`test/src`; `cajeta-codec` and `cajeta-logging` use `src/test/cajeta`. No manifest
+declares a test root.
+
+### 8.1 When the index is rebuilt, every source root the project has is exported,
+not only the conventional main root.
+
+### 8.2 When source roots are discovered, they are derived the way lint derives
+one: a `.cajeta` file's declared `package a.b.c` is stripped from the tail of its
+path, and what remains is a root. The distinct roots so found are the set to
+export. This is the same rule as `CajetacRunner.sourceRootOf`, so what the export
+covers and what lint resolves against agree by construction rather than by two
+conventions kept in step by hand.
+
+### 8.3 When roots are discovered, `build/`, `tmp/`, `.cajeta/` and any other
+generated or vendored tree are excluded, so a stale copy of the sources under
+`build/` is never mistaken for a root.
+
+### 8.4 When a file declares no package, or its on-disk layout does not match its
+package, its own directory is the root — the same fallback `sourceRootOf` takes.
+
+### 8.5 When several roots are exported, their records accumulate rather than
+replace one another. Shards are written per source file
+(`CajetaXrefShards.shardName(sourceRelPath)`), so two export passes over different
+roots write disjoint shards and no merge step is needed.
+
+### 8.6 When a project has exactly one source root, exactly one export runs and the
+behaviour is unchanged from today.
+
+### 8.7 When a root is exported, the own archive is on its classpath (§6.4), so a
+test-root file resolves the project's own types as Ctrl-click targets.
+
+### 8.8 When the rebuild reports progress, it names the root being exported, since
+a multi-root rebuild is longer than a single-root one and a silent pause reads as
+a hang.
+
+### 8.9 Acceptance — Ctrl-click from an import in
+`cajeta-http/test/src/.../ServerTests.cajeta` lands in the importing type's
+declaration, and the exported shard names `ServerTests`.

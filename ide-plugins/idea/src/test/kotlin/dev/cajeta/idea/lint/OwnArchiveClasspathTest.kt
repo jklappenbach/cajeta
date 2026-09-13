@@ -119,6 +119,37 @@ class OwnArchiveClasspathTest {
         )
     }
 
+    /** 6.1.1 / 6.1.2 — the whole-root xref export is what the shard is built
+     *  from, and therefore what Ctrl-click resolves against. With the own
+     *  archive on its classpath the export carries the project's own symbols,
+     *  so an import in a test-root file has a target.
+     *
+     *  This is the second reported symptom ("the imports are not clickable"),
+     *  and it is NOT fixed by the one-shot lint path in Unit 3 — the export is
+     *  a separate invocation with its own classpath. */
+    @Test
+    fun theWholeRootExportCarriesTheProjectsOwnSymbols() {
+        val fx = twoRootFixture()
+        val json = fx.exportXref(fx.testRoot, classpath = listOf(fx.artifact()))
+        assertTrue(
+            "the export must name the project's own type so Ctrl-click has a target",
+            json.contains("Greeter"),
+        )
+    }
+
+    /** 6.1.4 — the does-not-fire control. Without the own archive the export is
+     *  empty of the project's own symbols; that is the pre-existing behaviour
+     *  this unit changes, and stating it keeps 6.1.2 from being vacuous. */
+    @Test
+    fun withoutTheOwnArchiveTheExportHasNoneOfThoseSymbols() {
+        val fx = twoRootFixture()
+        val json = fx.exportXref(fx.testRoot, classpath = emptyList())
+        assertTrue(
+            "without the archive the export cannot name the project's own type; got ${json.length} bytes",
+            !json.contains("Greeter"),
+        )
+    }
+
     /** 1.1.4 — the does-not-fire case. With the archive present a genuinely
      *  undefined type is STILL reported, so a clean run cannot be mistaken for
      *  suppressed diagnostics. */

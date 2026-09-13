@@ -52,10 +52,19 @@ class CajetaXrefRebuildAction : AnAction("Rebuild Cajeta Index") {
                         val out = Files.createTempFile("cajeta-xref-", ".json")
                         // Pass resolved dependency .cja's on the classpath so the
                         // export carries their declarations — otherwise Ctrl-click
-                        // into a dependency type has no target (§8.3.1).
+                        // into a dependency type has no target (§8.3.1) — PLUS the
+                        // project's OWN archive (lint-own-archive-classpath 6.2.1).
+                        //
+                        // The own archive matters most here. Exporting a separate
+                        // TEST source root without it yields NOTHING to click:
+                        // measured on the two-root fixture, 0 records and 0
+                        // mentions of the project's own type, against 45 mentions
+                        // with it. That is the "imports are not clickable" symptom,
+                        // and the one-shot lint fix does not reach it — this export
+                        // is its own invocation with its own classpath.
                         val argv = mutableListOf(compilerPath, "--lint", srcRoot,
                             "--emit-xref=$out", "--diag-format=json")
-                        val deps = CajetaSourceMountGlue.dependencyArchives(base)
+                        val deps = CajetaSourceMountGlue.lintClasspath(compilerPath, base)
                         if (deps.isNotEmpty())
                             argv.add("--classpath=" + deps.joinToString(",") { it.toString() })
                         val p = ProcessBuilder(argv)

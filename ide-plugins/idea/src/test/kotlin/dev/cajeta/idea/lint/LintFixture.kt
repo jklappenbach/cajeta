@@ -60,6 +60,24 @@ class LintFixture private constructor(
      *  run with the project as their working directory. */
     fun abs(rel: String): String = root.resolve(rel).toString()
 
+    /** The whole-root xref export over [sourceRoot] — the document the shard is
+     *  ingested from, and therefore what Ctrl-click resolves against. Returns
+     *  the raw JSON. */
+    fun exportXref(sourceRoot: String, classpath: List<Path>): String {
+        val out = Files.createTempFile("cajeta-xref-", ".json")
+        val argv = mutableListOf(compiler(), "--lint", sourceRoot,
+                                 "--emit-xref=$out", "--diag-format=json")
+        if (classpath.isNotEmpty()) argv += "--classpath=" + classpath.joinToString(",")
+        run(argv, root)
+        return try {
+            Files.readString(out)
+        } catch (e: Exception) {
+            ""
+        } finally {
+            runCatching { Files.deleteIfExists(out) }
+        }
+    }
+
     /** The configured compiler, for tests that build an argv themselves. */
     fun compilerPath(): String = compiler()
 
