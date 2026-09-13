@@ -110,3 +110,42 @@ TEST(XpuAutotune, refusesNegativeValues) {
     EXPECT_EQ(rc, 0);
     std::filesystem::remove_all(dir);
 }
+
+// No writable store still tunes ONCE PER EXECUTION: the value is remembered in
+// memory, recall returns it, and persists() reports that the next run will have
+// to tune again. This is the read-only-box contract.
+TEST(XpuAutotune, survivesAnUnwritableStoreForThisExecution) {
+    int rc = runWith(
+        "        Autotune.remember(\"/proc/cajeta-cannot-write\", \"w\", 61);\n"
+        "        Optional<int32> a = Autotune.recall(\"/proc/cajeta-cannot-write\", \"w\");\n"
+        "        if (!a.isPresent()) { return 1; }\n"
+        "        if (a.get() != 61) { return 2; }\n"
+        "        if (Autotune.persists()) { return 3; }\n"
+        "        return 0;\n", "/proc/cajeta-cannot-write");
+    EXPECT_EQ(rc, 0);
+}
+
+// An empty directory means "no store at all", which must still tune in memory
+// rather than recompute on every call.
+TEST(XpuAutotune, emptyDirectoryTunesInMemoryOnly) {
+    int rc = runWith(
+        "        Optional<int32> a = Autotune.recall(\"\", \"w\");\n"
+        "        if (a.isPresent()) { return 1; }\n"
+        "        Autotune.remember(\"\", \"w\", 62);\n"
+        "        Optional<int32> b = Autotune.recall(\"\", \"w\");\n"
+        "        if (!b.isPresent() || b.get() != 62) { return 2; }\n"
+        "        return 0;\n", "");
+    EXPECT_EQ(rc, 0);
+}
+
+// claimOnce is the latch a LAZY calibration hangs on: true the first time a
+// kernel path asks, false forever after, independent of any store.
+TEST(XpuAutotune, claimOnceFiresExactlyOncePerExecution) {
+    int rc = runWith(
+        "        if (!Autotune.claimOnce(\"characterize\")) { return 1; }\n"
+        "        if (Autotune.claimOnce(\"characterize\")) { return 2; }\n"
+        "        if (Autotune.claimOnce(\"characterize\")) { return 3; }\n"
+        "        if (!Autotune.claimOnce(\"other\")) { return 4; }\n"
+        "        return 0;\n", "");
+    EXPECT_EQ(rc, 0);
+}
