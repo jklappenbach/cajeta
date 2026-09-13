@@ -34,6 +34,8 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <cctype>
 #include <cstdlib>
 #include <string>
 #include <thread>
@@ -210,6 +212,48 @@ CajetaJit::Options cudaOptions() {
     return o;
 }
 
+
+// Is a CONCURRENT_KERNEL record's timestamp trustworthy as a HOST-domain time
+// on this box?
+//
+// On WSL2 it is not, and that is this suite's documented lane split: the header
+// says these run on PHOENIX and skip on phoenix-wsl. The skip used to happen by
+// accident — the WSL2 driver REFUSED cuptiActivityRegisterTimestampCallback
+// (CUptiResult 39), so CUPTI never reached READY. Driver 610.62 changed that.
+// CUPTI now binds AND the callback registers (ts_status 0), so the incidental
+// skip stopped firing and the suite began asserting host-domain bounds in the
+// one environment it was never meant to validate.
+//
+// Registration is not the same as effect. MEASURED across three runs on
+// WSL2 + 610.62, with the callback registered and records otherwise healthy
+// (1 activity record, 0 rejected, 0 unmapped, span 1.2us inside a ~1ms host
+// window), dev_end_ns ran 2300s / 2143s / 2108s past host_return_ns. A kernel
+// record's timestamps come off the GPU's own clock and are normalized by the
+// driver rather than produced by the callback, and under WSL2 that
+// normalization does not land in the VM's CLOCK_MONOTONIC. The deltas are not
+// even a fixed epoch shift — the two clocks did not advance at the same rate
+// between runs — so a static anchor cannot repair it either; this was tried
+// and did not work.
+//
+// So: keep every claim that does not depend on the domain (arming, the
+// kernel's answer, record arrival, correlation, tiering) and skip only the ones
+// that do, loudly. The alternative — normalizing OUTSIDE_HOST away — is exactly
+// what the AMD side did once, and it taught readers to ignore the one flag that
+// exists to catch a sheared clock domain.
+bool hostDomainTimestampsAreTrustworthy() {
+#if defined(__linux__)
+    std::FILE* f = std::fopen("/proc/version", "r");
+    if (!f) return true;
+    char buf[512] = {0};
+    const size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+    std::fclose(f);
+    buf[n] = '\0';
+    for (char* q = buf; *q; ++q) *q = (char) std::tolower((unsigned char) *q);
+    if (std::strstr(buf, "microsoft") || std::strstr(buf, "wsl")) return false;
+#endif
+    return true;
+}
+
 } // namespace
 
 
@@ -363,8 +407,17 @@ TEST(ProfilerCudaDispatchDevice, dispatchRecordsCarryDeviceSpansAndTheLaunchId) 
     // domain; if that registration were skipped or refused, raw CUPTI
     // timestamps would put the kernel somewhere else entirely — which is
     // precisely the WSL2 failure mode, and this bound is what would catch it.
-    EXPECT_GT(device->dev_start_ns, device->host_launch_ns - 1000000000LL);
-    EXPECT_LT(device->dev_end_ns, device->host_return_ns + 1000000000LL);
+    const bool hostDomain = hostDomainTimestampsAreTrustworthy();
+    if (hostDomain) {
+        EXPECT_GT(device->dev_start_ns, device->host_launch_ns - 1000000000LL);
+        EXPECT_LT(device->dev_end_ns, device->host_return_ns + 1000000000LL);
+    } else {
+        std::printf(" RESULT u12_host_domain_skipped=1 dev_end_ns=%lld "
+                    "host_return_ns=%lld delta_ns=%lld\n",
+                    (long long) device->dev_end_ns,
+                    (long long) device->host_return_ns,
+                    (long long) (device->dev_end_ns - device->host_return_ns));
+    }
 
     // The positive control for the backend's own self-check: records DID
     // arrive, so the device path must still be enabled. Without this, a
@@ -398,9 +451,23 @@ TEST(ProfilerCudaDispatchDevice, dispatchRecordsCarryDeviceSpansAndTheLaunchId) 
     // OUTSIDE_HOST, which taught readers to ignore the one flag that exists to
     // catch a sheared clock domain.
     ASSERT_NE(s.checkDispatch, nullptr);
-    EXPECT_EQ(s.checkDispatch(device), CAJETA_SPAN_OK)
-        << "a real device span from a healthy run was flagged (flags="
-        << s.checkDispatch(device) << ")";
+    if (hostDomain) {
+        EXPECT_EQ(s.checkDispatch(device), CAJETA_SPAN_OK)
+            << "a real device span from a healthy run was flagged (flags="
+            << s.checkDispatch(device) << ")";
+    } else {
+        // The checker is still exercised, and OUTSIDE_HOST is the ONE flag
+        // allowed to be set here — anything else is a real defect this lane
+        // can still catch.
+        const int32_t flags = s.checkDispatch(device);
+        EXPECT_EQ(flags & ~CAJETA_SPAN_OUTSIDE_HOST, 0)
+            << "a WSL2 span carried a flag beyond the expected sheared clock "
+               "domain (flags=" << flags << ")";
+        GTEST_SKIP() << "WSL2: kernel records do not arrive in the host clock "
+                        "domain (see hostDomainTimestampsAreTrustworthy); the "
+                        "host-domain claims of this suite belong to the PHOENIX "
+                        "lane. Everything domain-independent above ran.";
+    }
 }
 
 
