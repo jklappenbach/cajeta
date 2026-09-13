@@ -149,3 +149,56 @@ TEST(XpuAutotune, claimOnceFiresExactlyOncePerExecution) {
         "        return 0;\n", "");
     EXPECT_EQ(rc, 0);
 }
+
+// A hint tuned against different code is DISCARDED, not trusted, and the
+// discard is reported in one identifiable line. Stale hints are the failure
+// that is invisible without an alert.
+TEST(XpuAutotune, discardsAndReportsAHintTunedForAnotherBuild) {
+    std::string dir = tuneDir();
+    testing::internal::CaptureStderr();
+    int rc = runWith(
+        "        Autotune.rememberFor(dir, \"w\", 60, \"build-A\");\n"
+        "        Optional<int32> a = Autotune.recallFor(dir, \"w\", \"build-A\");\n"
+        "        if (!a.isPresent() || a.get() != 60) { return 1; }\n"
+        "        return 0;\n", dir);
+    std::string out = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(rc, 0) << out;
+    EXPECT_EQ(out.find("XPU-T02"), std::string::npos)
+        << "a matching build must not warn: " << out;
+
+    // Same store, different build: the hint must not survive, and must say so.
+    testing::internal::CaptureStderr();
+    int rc2 = runWith(
+        "        Optional<int32> a = Autotune.recallFor(dir, \"w\", \"build-B\");\n"
+        "        if (a.isPresent()) { return 1; }\n"
+        "        Optional<int32> b = Autotune.recallFor(dir, \"w\", \"build-B\");\n"
+        "        if (b.isPresent()) { return 2; }\n"
+        "        return 0;\n", dir);
+    std::string out2 = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(rc2, 0) << out2;
+    EXPECT_NE(out2.find("XPU-T02"), std::string::npos) << out2;
+    EXPECT_NE(out2.find("knob=w"), std::string::npos) << out2;
+    EXPECT_NE(out2.find("device="), std::string::npos) << out2;
+    EXPECT_NE(out2.find("value=60"), std::string::npos) << out2;
+    EXPECT_NE(out2.find("report this line"), std::string::npos) << out2;
+    std::filesystem::remove_all(dir);
+}
+
+// An underperforming hint is reported with both values and then dropped, so
+// the next execution tunes again instead of repeating a known-worse choice.
+TEST(XpuAutotune, reportsAndDropsAnUnderperformingHint) {
+    std::string dir = tuneDir();
+    testing::internal::CaptureStderr();
+    int rc = runWith(
+        "        Autotune.remember(dir, \"w\", 60);\n"
+        "        Autotune.reportUnderperforming(dir, \"w\", 60, 72);\n"
+        "        Optional<int32> a = Autotune.recall(dir, \"w\");\n"
+        "        if (a.isPresent()) { return 1; }\n"
+        "        return 0;\n", dir);
+    std::string out = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(rc, 0) << out;
+    EXPECT_NE(out.find("XPU-T01"), std::string::npos) << out;
+    EXPECT_NE(out.find("used=60"), std::string::npos) << out;
+    EXPECT_NE(out.find("better=72"), std::string::npos) << out;
+    std::filesystem::remove_all(dir);
+}

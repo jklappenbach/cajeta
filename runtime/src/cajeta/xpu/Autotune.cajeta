@@ -5,6 +5,7 @@ import cajeta.io.file.Path;
 import cajeta.error.Exception;
 import cajeta.lang.Optional;
 import cajeta.lang.String;
+import cajeta.lang.System;
 import cajeta.xpu.Device;
 
 /**
@@ -194,6 +195,137 @@ public final class Autotune {
         return;
     }
 
+
+    // ---- alerting ------------------------------------------------------ //
+    // A hint that stopped being right must SAY SO, in a line that identifies
+    // itself completely: the code, the machine, the knob, the value, and why.
+    // Everything needed to reproduce it is on the one line, so it can be
+    // pasted into a report without a log hunt around it.
+    //
+    //   XPU-T01  the hint was used and measured WORSE than an alternative
+    //   XPU-T02  the hint was discarded: written for a different build
+    //   XPU-T03  the hint was discarded: unreadable, or not for this device
+
+    static void warn(String code, String name, String detail) {
+        String key #= Autotune.deviceKey();
+        System.stderr.println("cajeta.xpu: warning: [xpu-tune-hint] " + code
+            + " knob=" + name + " device=" + key + " " + detail
+            + " -- report this line");
+        return;
+    }
+
+    static boolean sameText(int8[] b, String s) {
+        if (b == null) { return false; }
+        int8[] w #= s.toBytes();
+        int64 n = (int64) w.count();
+        int64 have = (int64) b.count();
+        // A trailing newline from a hand-edited file is not a difference.
+        while (have > 0L && (b[have - 1L] == 10 || b[have - 1L] == 13)) {
+            have = have - 1L;
+        }
+        if (have != n) { return false; }
+        int64 i = 0;
+        while (i < n) {
+            if (b[i] != w[i]) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    static void removeMem(String name) {
+        int32 at = Autotune.findMem(name);
+        if (at < 0) { return; }
+        int32 i = at;
+        while (i < Autotune.memN - 1) {
+            Autotune.memName[i] #= Autotune.memName[i + 1];
+            Autotune.memVal[i] = Autotune.memVal[i + 1];
+            i = i + 1;
+        }
+        Autotune.memN = Autotune.memN - 1;
+        return;
+    }
+
+    /** Drop `name` for this device, from memory and from the store, so the
+     *  next execution tunes it again. */
+    public static void invalidate(String dir, String name) {
+        Autotune.removeMem(name);
+        if (dir.byteLength() == 0) { return; }
+        String key #= Autotune.deviceKey();
+        String p #= dir + "/" + key + "/" + name;
+        String sp #= p + ".for";
+        try {
+            Path f #= Path.of(p);
+            if (f.exists()) { f.delete(); }
+            Path s #= Path.of(sp);
+            if (s.exists()) { s.delete(); }
+        } catch (Exception e) {
+        }
+        return;
+    }
+
+    /**
+     * Record `value` along with the build it was tuned against, so a later
+     * run can tell whether the hint still describes the same code. `buildId`
+     * is the caller's: a compiler version, a kernel code hash, or both.
+     */
+    public static void rememberFor(String dir, String name, int32 value,
+                                   String buildId) {
+        Autotune.remember(dir, name, value);
+        if (dir.byteLength() == 0) { return; }
+        String key #= Autotune.deviceKey();
+        String sp #= dir + "/" + key + "/" + name + ".for";
+        int8[] b #= buildId.toBytes();
+        try {
+            File.writeAllBytes(sp, b, (int64) b.count());
+        } catch (Exception e) {
+        }
+        return;
+    }
+
+    /**
+     * The tuned value for `name`, but only if it was tuned against
+     * `buildId`. A hint written for different code is DISCARDED and reported
+     * (XPU-T02) rather than trusted: it was measured on a kernel that no
+     * longer exists, and a stale hint is exactly the failure that is
+     * invisible without an alert.
+     */
+    public static Optional<int32> recallFor(String dir, String name,
+                                            String buildId) {
+        int32 m = Autotune.findMem(name);
+        if (m >= 0) { return stack Optional<int32>(true, Autotune.memVal[m]); }
+        Optional<int32> v = Autotune.recall(dir, name);
+        if (!v.isPresent()) { return v; }
+        if (dir.byteLength() == 0) { return v; }
+        String key #= Autotune.deviceKey();
+        String sp #= dir + "/" + key + "/" + name + ".for";
+        Path s #= Path.of(sp);
+        boolean ok = false;
+        if (s.exists()) {
+            int8[] b #= File.readAllBytes(sp);
+            ok = Autotune.sameText(b, buildId);
+        }
+        if (!ok) {
+            Autotune.warn("XPU-T02", name, "value=" + v.get()
+                + " tunedFor=<absent or different> nowBuild=" + buildId);
+            Autotune.invalidate(dir, name);
+            return stack Optional<int32>(false, 0);
+        }
+        return v;
+    }
+
+    /**
+     * Report that the hint in use was measured WORSE than `better` (XPU-T01),
+     * and drop it so the next execution tunes again. The caller is whoever
+     * measured; this only records and alerts, because a tuner that silently
+     * keeps a losing value is the thing being guarded against.
+     */
+    public static void reportUnderperforming(String dir, String name,
+                                             int32 used, int32 better) {
+        Autotune.warn("XPU-T01", name,
+            "used=" + used + " better=" + better + " reason=underperformed");
+        Autotune.invalidate(dir, name);
+        return;
+    }
     // Decimal digits only; -1 for anything else, so a truncated or hand-edited
     // file reads as absent rather than as a number that happens to parse.
     static int32 parseInt(int8[] b, int64 len) {
