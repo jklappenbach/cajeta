@@ -316,7 +316,7 @@ int64_t __cajeta_xpu_device_geometry(int32_t key) {
     if (g_xpu_geo_state != 1) return 0;
     switch ((CajetaXpuGeometryKey) key) {
         case CAJETA_XPU_GEO_MP_COUNT:              return g_xpu_geo.multiprocessorCount;
-        case CAJETA_XPU_GEO_SIMDS_PER_MP:          return cajeta_xpu_simds_per_mp(g_xpu_geo.archName);
+        case CAJETA_XPU_GEO_SIMDS_PER_MP:          return cajeta_xpu_simds_per_mp_of(&g_xpu_geo);
         case CAJETA_XPU_GEO_WAVE_SIZE:             return g_xpu_geo.waveSize;
         case CAJETA_XPU_GEO_MAX_THREADS_PER_BLOCK: return g_xpu_geo.maxThreadsPerBlock;
         /* The per-block ceiling falls back to the per-MP budget when the

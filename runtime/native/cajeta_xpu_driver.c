@@ -953,6 +953,16 @@ static int cajeta_xpu_cuda_fill_raw_device(CajetaXpuRawDevice* out) {
     return 1;
 }
 
+// Has the process been pointed at Vulkan explicitly? Read from the environment
+// rather than through the backend selector on purpose: selecting is a device
+// touch that CACHES, and a profile query must not strand a program that
+// registers its backends afterwards. Device.force() therefore does not steer
+// this query — the env var and the availability order below do.
+static int cajeta_xpu_vulkan_preferred(void) {
+    const char* b = getenv("CAJETA_XPU_BACKEND");
+    return (b && strcmp(b, "vulkan") == 0) ? 1 : 0;
+}
+
 // Queries the active device into *out for the host-side DeviceModel builder; the
 // arch token is the robust signal and the numeric ordinals are clamped.
 int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
@@ -960,6 +970,12 @@ int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
     memset(out, 0, sizeof(*out));
     const char* dis = getenv("CAJETA_XPU_DEVICE_PROFILE_DISABLE");
     if (dis && dis[0] && dis[0] != '0') return 0;
+
+    // An explicit Vulkan request wins over a CUDA/HIP stack that happens to be
+    // installed: on a mixed box those describe a DIFFERENT device than the one
+    // the dispatch path will use.
+    if (cajeta_xpu_vulkan_preferred() && cajeta_xpu_query_raw_device_vulkan(out))
+        return 1;
 
     pthread_mutex_lock(&g_xpu_cuda_lock);
     int up = cajeta_xpu_hip_init_locked();
@@ -971,9 +987,15 @@ int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
         int cu = cajeta_xpu_cuda_init_locked();
         int ok = cu ? cajeta_xpu_cuda_fill_raw_device(out) : 0;
         pthread_mutex_unlock(&g_xpu_cuda_lock);
-        if (!ok) return 0;
-        out->valid = 1;
-        return 1;
+        if (ok) {
+            out->valid = 1;
+            return 1;
+        }
+        // Neither vendor runtime: Vulkan is the portable way to ask, and the
+        // one an unknown part answers through. Without it every field below
+        // stays 0 and each kernel falls back to a literal measured on one part.
+        memset(out, 0, sizeof(*out));
+        return cajeta_xpu_query_raw_device_vulkan(out);
     }
 
     if (!cajeta_xpu_hip_gfx_arch(out->archName, sizeof(out->archName))) return 0;

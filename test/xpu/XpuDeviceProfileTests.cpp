@@ -428,13 +428,18 @@ TEST(XpuDeviceProfileTests, invalidQueryLeavesTierBAtDefaults) {
 
 // 2.1.1 — THE AMD-PRESERVATION GATE. Linear.cajeta:167 derives its frozen
 // TARGET_BLOCKS = 80 as "5120 rows / 64 rows per workgroup = 80 workgroups x
-// 2 wave32 waves = 160 waves = exactly one per SIMD on this part's 40 CUs".
+// 2 wave32 waves = 160 waves" — which is TWO per SIMD on this part's 80 SIMD32
+// (40 CUs x 2), not one per SIMD on 160 that do not exist.
 // The law must reproduce that number from queried facts alone.
 TEST(XpuDeviceProfileTests, dispatchLawReproducesTheFrozenAmdConstant) {
     DeviceModel m = buildDeviceModel(gfx1151Props());
-    EXPECT_EQ(m.simdsPerMP, 8u) << "RDNA WGP = 2 CUs x 4 SIMD32";
+    // An RDNA CU has TWO SIMD32 and a WGP pairs two CUs, so a WGP has 4, not
+    // 8. The frozen 80 survives because the AMD target is TWO waves per SIMD,
+    // which is now stated as the empirical factor it is.
+    EXPECT_EQ(m.simdsPerMP, 4u) << "RDNA WGP = 2 CUs x 2 SIMD32";
+    EXPECT_EQ(m.wavesPerSimdTarget, 2u) << "the measured AMD oversubscription";
     EXPECT_EQ(dispatchBlocks(m, /*wavesPerBlock=*/2), 80u)
-        << "20 WGP x 8 SIMD / 2 waves per block = 80 — the frozen constant";
+        << "20 WGP x 4 SIMD x 2 waves per SIMD / 2 per block = 80";
 }
 
 // 2.1.2 — the same law on Ada. 80 of a possible 256 is the 3.2x

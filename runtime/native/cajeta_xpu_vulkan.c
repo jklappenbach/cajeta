@@ -3458,6 +3458,227 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
 }
 
 
+// --- device geometry ------------------------------------------------------
+//
+// The portable half of the machine model. CUDA and HIP each answer this from a
+// vendor attribute list; Vulkan is the backend an UNKNOWN part arrives through,
+// and it answers the same questions from core properties every conformant ICD
+// implements, so a field is 0 here only when no vendor extension carries it.
+//
+// Discipline, in the order it matters:
+//   * every entry point comes through vkGetInstanceProcAddr and is optional —
+//     a missing symbol degrades a field to 0, never a crash;
+//   * every extension is probed by NAME in the device's list before its
+//     property struct is chained in, never assumed from a driver id;
+//   * 0 means UNKNOWN and is never a budget: an unanswerable field is left
+//     alone so the caller keeps its own measured constant, and no value is ever
+//     borrowed from another vendor's part.
+//
+// Caller holds g_xpu_cuda_lock and has brought the device up.
+static int cajeta_xpu_vk_fill_raw_device(CajetaXpuRawDevice* out) {
+    if (!out || g_xpu_vk.loaded != 1 || !g_xpu_vk.instance ||
+        !g_xpu_vk.phys || !g_xpu_vk.getInstanceProcAddr)
+        return 0;
+
+    PFN_vkGetPhysicalDeviceProperties getProps =
+        (PFN_vkGetPhysicalDeviceProperties) g_xpu_vk.getInstanceProcAddr(
+            g_xpu_vk.instance, "vkGetPhysicalDeviceProperties");
+    PFN_vkGetPhysicalDeviceProperties2 getProps2 =
+        (PFN_vkGetPhysicalDeviceProperties2) g_xpu_vk.getInstanceProcAddr(
+            g_xpu_vk.instance, "vkGetPhysicalDeviceProperties2");
+    if (!getProps && !getProps2) return 0;
+
+    // Which vendor property structs this ICD will answer. Chaining an
+    // unsupported one is undefined, so the name list gates every pNext below.
+    int hasAmdCore = 0, hasNvSm = 0;
+    PFN_vkEnumerateDeviceExtensionProperties enumDevExt =
+        (PFN_vkEnumerateDeviceExtensionProperties) g_xpu_vk.getInstanceProcAddr(
+            g_xpu_vk.instance, "vkEnumerateDeviceExtensionProperties");
+    if (enumDevExt) {
+        uint32_t extCount = 0;
+        enumDevExt(g_xpu_vk.phys, NULL, &extCount, NULL);
+        if (extCount > 0 && extCount <= 4096) {
+            VkExtensionProperties* exts = (VkExtensionProperties*)
+                malloc(sizeof(VkExtensionProperties) * extCount);
+            if (exts) {
+                enumDevExt(g_xpu_vk.phys, NULL, &extCount, exts);
+                for (uint32_t i = 0; i < extCount; ++i) {
+#if defined(VK_AMD_shader_core_properties)
+                    if (!strcmp(exts[i].extensionName,
+                                VK_AMD_SHADER_CORE_PROPERTIES_EXTENSION_NAME))
+                        hasAmdCore = 1;
+#endif
+#if defined(VK_NV_shader_sm_builtins)
+                    if (!strcmp(exts[i].extensionName,
+                                VK_NV_SHADER_SM_BUILTINS_EXTENSION_NAME))
+                        hasNvSm = 1;
+#endif
+                }
+                free(exts);
+            }
+        }
+    }
+
+    VkPhysicalDeviceProperties props;
+    memset(&props, 0, sizeof(props));
+    uint32_t subgroupSize = 0;
+#if defined(VK_AMD_shader_core_properties)
+    VkPhysicalDeviceShaderCorePropertiesAMD amd;
+    memset(&amd, 0, sizeof(amd));
+    amd.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CORE_PROPERTIES_AMD;
+#endif
+#if defined(VK_NV_shader_sm_builtins)
+    VkPhysicalDeviceShaderSMBuiltinsPropertiesNV nv;
+    memset(&nv, 0, sizeof(nv));
+    nv.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SM_BUILTINS_PROPERTIES_NV;
+#endif
+    if (getProps2) {
+        void* chain = NULL;
+#if defined(VK_AMD_shader_core_properties)
+        if (hasAmdCore) { amd.pNext = chain; chain = &amd; }
+#endif
+#if defined(VK_NV_shader_sm_builtins)
+        if (hasNvSm) { nv.pNext = chain; chain = &nv; }
+#endif
+#if defined(VK_VERSION_1_1)
+        VkPhysicalDeviceSubgroupProperties sg;
+        memset(&sg, 0, sizeof(sg));
+        sg.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+        sg.pNext = chain;
+        chain = &sg;
+#endif
+        VkPhysicalDeviceProperties2 p2;
+        memset(&p2, 0, sizeof(p2));
+        p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        p2.pNext = chain;
+        getProps2(g_xpu_vk.phys, &p2);
+        props = p2.properties;
+#if defined(VK_VERSION_1_1)
+        subgroupSize = sg.subgroupSize;
+#endif
+    } else {
+        getProps(g_xpu_vk.phys, &props);
+        hasAmdCore = 0;      // no properties2, no vendor chain
+        hasNvSm = 0;
+    }
+    if (props.deviceName[0] == '\0' &&
+        props.limits.maxComputeWorkGroupInvocations == 0)
+        return 0;            // nothing came back: not a device we read
+
+    // --- core Vulkan, portable across every vendor -------------------------
+    // The DEVICE NAME, not a gfx/sm token: Vulkan has no arch token, and
+    // inventing one would hand the arch table a key it must not match on.
+    // deviceName is up to VK_MAX_PHYSICAL_DEVICE_NAME_SIZE (256); truncating to
+    // the 64-byte field is deliberate, so the cut is spelled out rather than
+    // left to a format string.
+    {
+        size_t n = strlen(props.deviceName);
+        if (n > sizeof(out->archName) - 1) n = sizeof(out->archName) - 1;
+        memcpy(out->archName, props.deviceName, n);
+        out->archName[n] = '\0';
+    }
+
+    // The width kernels ACTUALLY run at. caj_vk_pipe_get pins
+    // requiredSubgroupSize to 32 whenever subgroup-size control is usable
+    // (RADV's gfx11 wave64 default hangs the cooperating kernels), so the
+    // driver's advertised default describes a width no cajeta kernel executes
+    // at — measured 64 on RADV/gfx1151, where HIP reports 32 for the same part.
+    {
+        uint32_t wave = g_xpu_vk.subgroupCtl ? 32u : subgroupSize;
+        if (wave >= 4u && wave <= 128u && (wave & (wave - 1u)) == 0u)
+            out->waveSize = wave;
+    }
+    if (props.limits.maxComputeWorkGroupInvocations >= 1 &&
+        props.limits.maxComputeWorkGroupInvocations <= 4096)
+        out->maxThreadsPerBlock = props.limits.maxComputeWorkGroupInvocations;
+    if (props.limits.maxComputeWorkGroupSize[0] >= 1 &&
+        props.limits.maxComputeWorkGroupSize[0] <= 4096)
+        out->maxBlockDimX = props.limits.maxComputeWorkGroupSize[0];
+    if (props.limits.maxComputeWorkGroupCount[0] >= 1)
+        out->maxGridDimX = props.limits.maxComputeWorkGroupCount[0];
+    if (props.limits.maxComputeSharedMemorySize >= 1024 &&
+        props.limits.maxComputeSharedMemorySize <= (1u << 20))
+        out->ldsBytesPerBlock = props.limits.maxComputeSharedMemorySize;
+    out->integrated =
+        props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 1 : 0;
+
+    // Device memory is the sum of the DEVICE_LOCAL heaps: a discrete part has
+    // one, an APU reports a carve-out beside its host-visible heap.
+    {
+        uint64_t devLocal = 0;
+        for (uint32_t i = 0; i < g_xpu_vk.memProps.memoryHeapCount &&
+                             i < VK_MAX_MEMORY_HEAPS; ++i)
+            if (g_xpu_vk.memProps.memoryHeaps[i].flags &
+                VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+                devLocal += (uint64_t) g_xpu_vk.memProps.memoryHeaps[i].size;
+        out->totalGlobalMemBytes = devLocal;
+    }
+
+    // --- vendor extensions, absent => 0 ------------------------------------
+#if defined(VK_AMD_shader_core_properties)
+    if (hasAmdCore && amd.shaderEngineCount && amd.shaderArraysPerEngineCount &&
+        amd.computeUnitsPerShaderArray && amd.simdPerComputeUnit) {
+        const uint32_t cus = amd.shaderEngineCount *
+                             amd.shaderArraysPerEngineCount *
+                             amd.computeUnitsPerShaderArray;
+        // WHICH UNIT THIS COUNTS. RDNA pairs two CUs into a work-group
+        // processor and the HIP driver reports WGPs as multiprocessorCount
+        // (20 on gfx1151, 40 physical CUs); GCN/CDNA has no WGP and reports
+        // CUs. simdPerComputeUnit is the MEASURED discriminator — 2 on gfx10+,
+        // 4 on GCN — so the pairing is read off the device, never off a name,
+        // and the value matches what HIP reports for the same part.
+        const uint32_t cusPerMp = amd.simdPerComputeUnit == 2u ? 2u : 1u;
+        const uint32_t simdsPerMp = amd.simdPerComputeUnit * cusPerMp;
+        if (cus >= cusPerMp && cus <= 4096u) {
+            out->multiprocessorCount = cus / cusPerMp;
+            out->simdsPerMP = simdsPerMp;      // 4 on RDNA and on GCN alike
+        }
+        // Register FILE per MP, in 32-bit registers. A VGPR spans wavefrontSize
+        // lanes, so vgprsPerSimd * wavefrontSize is the per-SIMD file and the
+        // product is invariant under which wave width the driver expresses it
+        // in. Measured on gfx1151: 768 * 64 * 4 = 196608, exactly HIP's
+        // MaxRegistersPerMultiprocessor.
+        if (out->simdsPerMP && amd.vgprsPerSimd &&
+            (amd.wavefrontSize == 32u || amd.wavefrontSize == 64u)) {
+            const uint64_t regs = (uint64_t) amd.vgprsPerSimd *
+                                  amd.wavefrontSize * out->simdsPerMP;
+            if (regs >= 1024u && regs <= (1u << 22))
+                out->regsPerMP = (uint32_t) regs;
+        }
+        // Thread residency per MP: the wave cap per SIMD times the SIMDs in one
+        // MP times the wave width. Measured on gfx1151: 16 * 4 * 32 = 2048,
+        // exactly HIP's MaxThreadsPerMultiProcessor. CAVEAT: on GCN this is the
+        // ARCHITECTED cap (10 waves/SIMD -> 2560) and HIP reports its own 2048.
+        if (out->simdsPerMP && out->waveSize && amd.wavefrontsPerSimd) {
+            const uint64_t th = (uint64_t) amd.wavefrontsPerSimd *
+                                out->simdsPerMP * out->waveSize;
+            if (th >= 64u && th <= 8192u) out->threadsPerMP = (uint32_t) th;
+        }
+        // ldsBytesPerMP stays 0 on purpose: VkPhysicalDeviceShaderCorePropertiesAMD
+        // carries no LDS size, and reading the per-WORKGROUP cap as the per-MP
+        // budget is exactly the substitution rule 1 forbids (on NVIDIA the two
+        // differ by 2x). The caller keeps its own constant.
+    }
+#endif
+#if defined(VK_NV_shader_sm_builtins)
+    if (hasNvSm && nv.shaderSMCount && nv.shaderSMCount <= 4096u) {
+        // NVIDIA's multiprocessor is the SM, reported directly and with no
+        // folding — the same unit the CUDA branch reports.
+        out->multiprocessorCount = nv.shaderSMCount;
+        if (out->waveSize && nv.shaderWarpsPerSM) {
+            const uint64_t th = (uint64_t) nv.shaderWarpsPerSM * out->waveSize;
+            if (th >= 64u && th <= 8192u) out->threadsPerMP = (uint32_t) th;
+        }
+        // regsPerMP and simdsPerMP stay 0: Vulkan exposes neither the register
+        // file nor the SM's scheduler-partition count on NVIDIA, and an RTX
+        // part must never inherit an AMD register file.
+    }
+#endif
+
+    out->valid = 1;
+    return 1;
+}
+
 int32_t __cajeta_xpu_vk_built(void) { return 1; }
 
 // Status is VK_SUCCESS only once a device is up.
@@ -3472,6 +3693,9 @@ int32_t __cajeta_xpu_vk_init_status(void) {
 
 #else  // no Vulkan SDK header at runtime-build time — Vulkan unavailable.
 static int cajeta_xpu_vulkan_init_locked(void) { return 0; }
+static int cajeta_xpu_vk_fill_raw_device(CajetaXpuRawDevice* out) {
+    (void) out; return 0;
+}
 int32_t __cajeta_xpu_vk_built(void)                 { return 0; }
 uint32_t    __cajeta_xpu_vk_driver_id(void)   { return 0; }
 const char* __cajeta_xpu_vk_driver_name(void) { return ""; }
@@ -3538,5 +3762,22 @@ static int cajeta_xpu_vk_launch(const void* s, uint64_t l, const char* e,
     (void) sharedBytes; (void) userSpecCount; (void) userSpecValues; return 0;
 }
 #endif  // CAJETA_RT_HAS_VULKAN
+
+// The Vulkan branch of the device query, addressable whatever the process
+// selected. cajeta_xpu_query_raw_device reaches it through the same helper; a
+// box with a working CUDA/HIP stack answers from that stack there, so this is
+// how the geometry suite gets at the Vulkan reading on such a box.
+int32_t cajeta_xpu_query_raw_device_vulkan(CajetaXpuRawDevice* out) {
+    if (!out) return 0;
+    memset(out, 0, sizeof(*out));
+    const char* dis = getenv("CAJETA_XPU_DEVICE_PROFILE_DISABLE");
+    if (dis && dis[0] && dis[0] != '0') return 0;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    const int ok = cajeta_xpu_vulkan_init_locked()
+                 ? cajeta_xpu_vk_fill_raw_device(out) : 0;
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    if (!ok) memset(out, 0, sizeof(*out));
+    return ok ? 1 : 0;
+}
 
 // --- registered kernel modules (cubin images keyed by PTX entry name) -------

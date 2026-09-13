@@ -34,6 +34,9 @@ namespace xpu {
         unsigned maxBlockDimX        = 0;   // block clamp         (attr 2)
         uint64_t totalGlobalMemBytes = 0;   // cuDeviceTotalMem
         bool     integrated          = false; // APU (attr 18): a copy is not a transfer
+        // MEASURED scheduler partitions per MP, where the query can read them
+        // (Vulkan, VK_AMD_shader_core_properties). 0 -> the arch-name constant.
+        unsigned simdsPerMP          = 0;
         bool     valid               = false; // false -> query failed / disabled
     };
 
@@ -51,7 +54,12 @@ namespace xpu {
         unsigned cuCount            = 0;      // PHYSICAL CUs = mpCount * cuPerMp
         unsigned mpCount            = 0;      // driver multiprocessors, UNSCALED
         // An ARCH constant: threadsPerMP/waveSize gives 1.5 on Ada, a cap not a count.
-        unsigned simdsPerMP         = 8;
+        unsigned simdsPerMP         = 4;
+        // Waves per SIMD the dispatch law AIMS for. EMPIRICAL, not a hardware
+        // fact: 1 saturates an NVIDIA SM partition, while the measured AMD
+        // target is 2 per SIMD. Until 2026-09-13 the AMD factor hid inside a
+        // doubled simdsPerMP, which made a wrong SIMD count look like physics.
+        unsigned wavesPerSimdTarget = 1;
         // The per-BLOCK ceiling a static tile is checked against; 0 = per-MP.
         unsigned ldsBytesPerBlock      = 0;
         unsigned ldsBytesPerBlockOptin = 0;

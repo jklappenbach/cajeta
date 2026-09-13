@@ -99,10 +99,19 @@ DeviceModel buildDeviceModel(const RawDeviceProps& props) {
         m.maxBlockDimX          = props.maxBlockDimX;
         m.totalGlobalMemBytes   = props.totalGlobalMemBytes;
         m.integrated            = props.integrated;
-        // Shared with cajeta_xpu_abi.h so Device and this model cannot drift; 0
-        // means neither spelling, so the table value stands.
-        if (unsigned s = cajeta_xpu_simds_per_mp(m.archName.c_str()))
+        // A REPORTED partition count beats the arch-name constant: the name is a
+        // proxy, and the Vulkan query carries a device name that is not a token
+        // at all. Shared with cajeta_xpu_abi.h so Device and this model cannot
+        // drift; 0 from both spellings leaves the table value standing.
+        if (props.simdsPerMP)
+            m.simdsPerMP = props.simdsPerMP;
+        else if (unsigned s = cajeta_xpu_simds_per_mp(m.archName.c_str()))
             m.simdsPerMP = s;
+        // AMD wants two waves per SIMD, measured; NVIDIA one. Keyed on the
+        // arch token because it is a TUNING choice per family, not a fact the
+        // driver reports -- and the right long-term home for it is a tuned
+        // value discovered per machine.
+        if (m.archName.rfind("gfx", 0) == 0) { m.wavesPerSimdTarget = 2; }
     }
 
     m.queried = props.valid;
@@ -123,7 +132,8 @@ unsigned ldsCeilingPerBlock(const DeviceModel& m) {
 unsigned dispatchBlocks(const DeviceModel& m, unsigned wavesPerBlock) {
     if (!m.queried || wavesPerBlock == 0) return 0;
     if (m.mpCount == 0 || m.simdsPerMP == 0) return 0;
-    return (m.mpCount * m.simdsPerMP) / wavesPerBlock;
+    unsigned target = m.wavesPerSimdTarget ? m.wavesPerSimdTarget : 1;
+    return (m.mpCount * m.simdsPerMP * target) / wavesPerBlock;
 }
 
 // The reported memory clock is the DDR half-rate, so the factor of two is the
@@ -156,6 +166,7 @@ DeviceModel queryLiveDeviceModel() {
             props.maxBlockDimX          = raw.maxBlockDimX;
             props.totalGlobalMemBytes   = raw.totalGlobalMemBytes;
             props.integrated            = raw.integrated != 0;
+            props.simdsPerMP            = raw.simdsPerMP;
             props.valid               = true;
         }
         return buildDeviceModel(props);

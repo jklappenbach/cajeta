@@ -78,16 +78,41 @@ typedef struct CajetaXpuRawDevice {
     uint32_t maxBlockDimX;          /* block clamp            (CUDA attr 2)     */
     uint64_t totalGlobalMemBytes;   /* cuDeviceTotalMem                         */
     int32_t  integrated;            /* 1 = APU                (CUDA attr 18)    */
+    /* MEASURED scheduler partitions per multiprocessor, APPENDED. Only a
+     * backend that can read the real number fills it (Vulkan, from
+     * VK_AMD_shader_core_properties); 0 means the query could not answer and
+     * cajeta_xpu_simds_per_mp's arch-name constant stands. */
+    uint32_t simdsPerMP;
 } CajetaXpuRawDevice;
 
 /* Scheduler partitions per multiprocessor: an ARCH constant, not a driver
- * attribute and not derivable from threadsPerMP/waveSize. An RDNA WGP is
- * 2 CUs x 4 SIMD32 = 8, an NVIDIA SM has 4, 0 unknown; never interchangeable. */
+ * attribute and not derivable from threadsPerMP/waveSize.
+ *
+ * An RDNA compute unit has TWO SIMD32 and a WGP pairs two CUs, so a WGP --
+ * which is what HIP counts as a multiprocessor -- has 4. VK_AMD_shader_core_
+ * properties reports simdPerComputeUnit = 2 on gfx1151, and 196608 registers
+ * over 4 SIMDs is 1536 per lane, which is RDNA3's 192 KB register file per
+ * SIMD; both confirm 4. A GCN CU has 4 SIMD16 and IS the multiprocessor, so
+ * it is 4 as well, and an NVIDIA SM has 4 scheduler partitions. 0 unknown.
+ *
+ * This was 8 for gfx until 2026-09-13, which double-counted RDNA's SIMDs to
+ * make the dispatch law reproduce a measured block target. That target is
+ * real; it is now carried by DeviceModel::wavesPerSimdTarget, where it reads
+ * as the empirical oversubscription it is rather than as a hardware fact. */
 static inline uint32_t cajeta_xpu_simds_per_mp(const char* archName) {
     if (!archName) return 0;
     if (archName[0] == 's' && archName[1] == 'm' && archName[2] == '_') return 4;
-    if (archName[0] == 'g' && archName[1] == 'f' && archName[2] == 'x') return 8;
+    if (archName[0] == 'g' && archName[1] == 'f' && archName[2] == 'x') return 4;
     return 0;
+}
+
+/* The same fact, preferring what the device REPORTED over what its name
+ * implies: an arch token is a proxy the moment a part ships that the table has
+ * never seen, and a Vulkan device name is not a token at all. */
+static inline uint32_t cajeta_xpu_simds_per_mp_of(const CajetaXpuRawDevice* d) {
+    if (!d) return 0;
+    if (d->simdsPerMP) return d->simdsPerMP;
+    return cajeta_xpu_simds_per_mp(d->archName);
 }
 
 /* Keys for cajeta.xpu.Device's geometry surface — APPEND-ONLY, never renumbered. */
@@ -129,6 +154,12 @@ int64_t __cajeta_xpu_kernel_footprint(void* nameArr, int64_t len, int32_t key);
 /* Fills *out (zeroed first) from the active device. Returns 1 on success, 0 with
  * out->valid 0 when there is no GPU or profiling is disabled by env. */
 int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out);
+
+/* The same, pinned to the VULKAN physical device whatever the process selected.
+ * Vulkan is the backend an unknown part arrives through, so its branch is
+ * addressable on its own — the geometry suite drives it directly on a box whose
+ * CUDA/HIP path would otherwise win. 0 when Vulkan is unavailable. */
+int32_t cajeta_xpu_query_raw_device_vulkan(CajetaXpuRawDevice* out);
 
 /* --- kernel manifests (xpu-tile-manifest §12.1) ---------------------------- *
  * Records the per-(kernel, target) manifest JSON emitted beside the device code.
