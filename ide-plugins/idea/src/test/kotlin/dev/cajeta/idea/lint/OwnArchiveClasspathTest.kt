@@ -137,6 +137,45 @@ class OwnArchiveClasspathTest {
         )
     }
 
+    /** 7.1.8 — the end-to-end check that would have caught the coverage gap.
+     *
+     *  Unit 6 made the export able to RESOLVE the project's own types; it did
+     *  not make the export VISIT the test root. Exporting only the conventional
+     *  root leaves the test file absent from the index, so every import in it is
+     *  dead — measured on cajeta-http, the shard named `HttpSerializer` 587 times
+     *  and `ServerTests` 0. Discovering roots and exporting each is what fixes
+     *  it, and this asserts the test class actually lands in a document. */
+    @Test
+    fun exportingEveryDiscoveredRootReachesTheTestClass() {
+        val fx = twoRootFixture()
+        val roots = dev.cajeta.idea.buildtool.CajetaRoots.sourceRootsOf(fx.root.toString())
+        assertTrue("both source roots must be discovered; got $roots", roots.size >= 2)
+        val combined = roots.joinToString("\n") { fx.exportXref(it, classpath = listOf(fx.artifact())) }
+        assertTrue(
+            "the exported documents must name the TEST class, not only the library class",
+            combined.contains("UseGreeter"),
+        )
+        assertTrue(
+            "...and still name the library class",
+            combined.contains("Greeter"),
+        )
+    }
+
+    /** The does-not-fire control for 7.1.8: exporting ONLY the conventional root
+     *  reproduces the bug — the test class is absent. Without this, 7.1.8 could
+     *  pass for the wrong reason. */
+    @Test
+    fun exportingOnlyTheConventionalRootMissesTheTestClass() {
+        val fx = twoRootFixture()
+        val conventional = dev.cajeta.idea.buildtool.CajetaRoots
+            .conventionalSourceRoot(fx.root.toString())
+        val json = fx.exportXref(conventional, classpath = listOf(fx.artifact()))
+        assertTrue(
+            "the conventional root alone cannot reach the test class — that is the bug",
+            !json.contains("UseGreeter"),
+        )
+    }
+
     /** 6.1.4 — the does-not-fire control. Without the own archive the export is
      *  empty of the project's own symbols; that is the pre-existing behaviour
      *  this unit changes, and stating it keeps 6.1.2 from being vacuous. */

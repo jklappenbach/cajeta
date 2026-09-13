@@ -41,47 +41,66 @@ class CajetaXrefRebuildAction : AnAction("Rebuild Cajeta Index") {
             // The compiler wants the SOURCE root. Resolved through the shared
             // convention so this export and the debug run configuration always
             // describe the same tree (run-config-ergonomics 2.2.3 / spec 3.1.3).
-            val srcRoot = dev.cajeta.idea.buildtool.CajetaRoots
-                .conventionalSourceRoot(base)
+            // EVERY source root, not just the conventional one
+            // (lint-own-archive-classpath 7.2.2). Exporting only
+            // `src/main/cajeta` left a project whose tests live elsewhere with no
+            // index for them AT ALL — measured on cajeta-http, the shard named
+            // `HttpSerializer` 587 times and `ServerTests` 0, so every import in
+            // that file was dead because the file it clicks FROM was never
+            // visited. Falls back to the conventional root when discovery finds
+            // nothing (an empty or unreadable tree), so behaviour is unchanged
+            // for a project with no sources yet.
+            val srcRoots = dev.cajeta.idea.buildtool.CajetaRoots
+                .sourceRootsOf(base)
+                .ifEmpty { listOf(dev.cajeta.idea.buildtool.CajetaRoots.conventionalSourceRoot(base)) }
 
             freshness.refreshStarted()
             object : Task.Backgroundable(project, "Rebuilding Cajeta index", true) {
                 override fun run(indicator: ProgressIndicator) {
                     indicator.isIndeterminate = true
                     try {
-                        val out = Files.createTempFile("cajeta-xref-", ".json")
-                        // Pass resolved dependency .cja's on the classpath so the
-                        // export carries their declarations — otherwise Ctrl-click
-                        // into a dependency type has no target (§8.3.1) — PLUS the
-                        // project's OWN archive (lint-own-archive-classpath 6.2.1).
-                        //
-                        // The own archive matters most here. Exporting a separate
-                        // TEST source root without it yields NOTHING to click:
+                        // The classpath is per PROJECT, not per root — resolve it
+                        // once. Dependency .cja's carry their declarations so
+                        // Ctrl-click into a dependency type has a target (§8.3.1),
+                        // PLUS the project's own archive (6.2.1), without which
+                        // exporting a test root yields nothing to click at all:
                         // measured on the two-root fixture, 0 records and 0
-                        // mentions of the project's own type, against 45 mentions
-                        // with it. That is the "imports are not clickable" symptom,
-                        // and the one-shot lint fix does not reach it — this export
-                        // is its own invocation with its own classpath.
-                        val argv = mutableListOf(compilerPath, "--lint", srcRoot,
-                            "--emit-xref=$out", "--diag-format=json")
+                        // mentions of the project's own type, against 45 with it.
                         val deps = CajetaSourceMountGlue.lintClasspath(compilerPath, base)
-                        if (deps.isNotEmpty())
-                            argv.add("--classpath=" + deps.joinToString(",") { it.toString() })
-                        val p = ProcessBuilder(argv)
-                            .redirectErrorStream(false).start()
-                        p.inputStream.bufferedReader().readText()
-                        p.errorStream.bufferedReader().readText()
-                        if (!p.waitFor(600, TimeUnit.SECONDS)) {
-                            p.destroyForcibly()
-                            freshness.refreshFailed("whole-root export timed out")
-                            return
-                        }
-                        val doc = String(Files.readAllBytes(out))
-                        Files.deleteIfExists(out)
-                        if (!CajetaXrefShards.ingestDocument(project, doc)) {
-                            freshness.refreshFailed(
-                                "export refused (unreadable or unknown schema major)")
-                            return
+                        for ((i, srcRoot) in srcRoots.withIndex()) {
+                            // Name the root: a multi-root rebuild is longer than a
+                            // single-root one, and a silent pause reads as a hang
+                            // (spec §8.8).
+                            indicator.text =
+                                if (srcRoots.size > 1)
+                                    "Exporting ${File(srcRoot).name} (${i + 1}/${srcRoots.size})"
+                                else "Exporting ${File(srcRoot).name}"
+
+                            val out = Files.createTempFile("cajeta-xref-", ".json")
+                            val argv = mutableListOf(compilerPath, "--lint", srcRoot,
+                                "--emit-xref=$out", "--diag-format=json")
+                            if (deps.isNotEmpty())
+                                argv.add("--classpath=" + deps.joinToString(",") { it.toString() })
+                            val p = ProcessBuilder(argv)
+                                .redirectErrorStream(false).start()
+                            p.inputStream.bufferedReader().readText()
+                            p.errorStream.bufferedReader().readText()
+                            if (!p.waitFor(600, TimeUnit.SECONDS)) {
+                                p.destroyForcibly()
+                                Files.deleteIfExists(out)
+                                freshness.refreshFailed("export of $srcRoot timed out")
+                                return
+                            }
+                            val doc = String(Files.readAllBytes(out))
+                            Files.deleteIfExists(out)
+                            // Shards are per SOURCE FILE, so roots write disjoint
+                            // shards and these passes accumulate — no merge step,
+                            // and no pass clobbers another (spec §8.5).
+                            if (!CajetaXrefShards.ingestDocument(project, doc)) {
+                                freshness.refreshFailed(
+                                    "export of $srcRoot refused (unreadable or unknown schema major)")
+                                return
+                            }
                         }
                         freshness.refreshSucceeded()
                         // The manual rebuild is the developer's "fix everything"
