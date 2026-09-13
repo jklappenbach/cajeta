@@ -271,4 +271,51 @@ public final class KernelManifest {
 
     @Native("__cajeta_xpu_kernel_manifest_json")
     private static #int8[] nativeJson(int8[] name, int64 len);
+
+    // ---- measured footprint: what the DRIVER allocated, on this device ---- //
+    // The accessors above report what the COMPILER modelled for a target it
+    // could not see. These ask the loaded module instead, so they answer on
+    // hardware no arch table knows -- the case where the modelled numbers are
+    // absent entirely. Static, because there is no manifest to hang them on
+    // when the compiler never produced one for this part.
+    //
+    // Empty when the backend exposes no such query (Vulkan today), when the
+    // kernel registered no device code, or when its module fails to load.
+    // A caller keeps whatever it modelled rather than substituting a guess.
+
+    static final int32 KFP_REGS_PER_THREAD  = 0;
+    static final int32 KFP_SPILL_BYTES      = 1;
+    static final int32 KFP_LDS_STATIC_BYTES = 2;
+    static final int32 KFP_MAX_THREADS      = 3;
+
+    static Optional<int32> measured(String kernelName, int32 key) {
+        int8[] b #= kernelName.toBytes();
+        int64 v = KernelManifest.nativeFootprint(b, (int64) b.count(), key);
+        if (v <= 0L) { return stack Optional<int32>(false, 0); }
+        return stack Optional<int32>(true, (int32) v);
+    }
+
+    /** Vector registers per work-item the driver actually allocated. */
+    public static Optional<int32> measuredRegsPerThread(String kernelName) {
+        return KernelManifest.measured(kernelName,
+            KernelManifest.KFP_REGS_PER_THREAD);
+    }
+    /** Scratch bytes per work-item: non-empty only when the kernel spills. */
+    public static Optional<int32> measuredSpillBytes(String kernelName) {
+        return KernelManifest.measured(kernelName,
+            KernelManifest.KFP_SPILL_BYTES);
+    }
+    /** Static shared memory per work-group, as loaded. */
+    public static Optional<int32> measuredLdsStaticBytes(String kernelName) {
+        return KernelManifest.measured(kernelName,
+            KernelManifest.KFP_LDS_STATIC_BYTES);
+    }
+    /** The largest work-group this code object will accept. */
+    public static Optional<int32> measuredMaxThreads(String kernelName) {
+        return KernelManifest.measured(kernelName,
+            KernelManifest.KFP_MAX_THREADS);
+    }
+
+    @Native("__cajeta_xpu_kernel_footprint")
+    private static int64 nativeFootprint(int8[] name, int64 len, int32 key);
 }

@@ -340,6 +340,65 @@ int64_t __cajeta_xpu_device_geometry(int32_t key) {
     return 0;
 }
 
+// Per-kernel footprint, MEASURED on the loaded module. The compile-time
+// manifest models occupancy for a part that is not present; this asks the
+// driver what it actually allocated, which is the number that is true on the
+// hardware in front of us. 0 = the backend cannot answer, so a caller keeps
+// whatever it modelled rather than substituting a guess.
+//
+// CUDA and HIP share CUfunction_attribute's numbering: 0 max-threads,
+// 1 static shared, 3 local (spill) bytes, 4 registers per thread.
+int64_t __cajeta_xpu_kernel_footprint(void* nameArr, int64_t len, int32_t key) {
+    if (!nameArr || len <= 0 || len > 255) return 0;
+    char name[256];
+    memcpy(name, (const char*) nameArr + 8, (size_t) len);
+    name[len] = 0;
+    int attr;
+    switch ((CajetaXpuKernelFootprintKey) key) {
+        case CAJETA_XPU_KFP_REGS_PER_THREAD:  attr = 4; break;
+        case CAJETA_XPU_KFP_SPILL_BYTES:      attr = 3; break;
+        case CAJETA_XPU_KFP_LDS_STATIC_BYTES: attr = 1; break;
+        case CAJETA_XPU_KFP_MAX_THREADS:      attr = 0; break;
+        default: return 0;
+    }
+    int be = cajeta_xpu_active_backend();
+    if (be != CAJ_XPU_CUDA && be != CAJ_XPU_HIP) return 0;
+
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    struct cajeta_xpu_module* e = cajeta_xpu_find_module(name, be);
+    void* fn = NULL;
+    if (e) {
+        // Resolve on demand: a calibration pass asks before the first launch.
+        if (be == CAJ_XPU_CUDA) {
+            if (!e->module && g_xpu_cuda.cuModuleLoadData &&
+                g_xpu_cuda.cuModuleLoadData(&e->module, e->image) != 0)
+                e->module = NULL;
+            if (e->module && !e->function &&
+                g_xpu_cuda.cuModuleGetFunction(&e->function, e->module, name) != 0)
+                e->function = NULL;
+        } else {
+            if (!e->module && g_xpu_hip.hipModuleLoadData &&
+                g_xpu_hip.hipModuleLoadData(&e->module, e->image) != 0)
+                e->module = NULL;
+            if (e->module && !e->function &&
+                g_xpu_hip.hipModuleGetFunction(&e->function, e->module, name) != 0)
+                e->function = NULL;
+        }
+        fn = e->function;
+    }
+    int value = 0;
+    int ok = 0;
+    if (fn) {
+        if (be == CAJ_XPU_CUDA && g_xpu_cuda.cuFuncGetAttribute)
+            ok = g_xpu_cuda.cuFuncGetAttribute(&value, attr, fn) == 0;
+        else if (be == CAJ_XPU_HIP && g_xpu_hip.hipFuncGetAttribute)
+            ok = g_xpu_hip.hipFuncGetAttribute(&value, attr, fn) == 0;
+    }
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    if (!ok || value < 0) return 0;
+    return (int64_t) value;
+}
+
 // Device.memoryBytes() — the active device's total visible memory, 0 when the
 // backend cannot answer. A device touch; on a UMA part HIP reports the GTT pool.
 int64_t __cajeta_xpu_device_memory_bytes(void) {

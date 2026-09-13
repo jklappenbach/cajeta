@@ -37,6 +37,7 @@ struct cajeta_cuda_api {
     int (*cuCtxSetCurrent)(void*);   // H9: bind the ctx to the launching thread
     int (*cuModuleLoadData)(void**, const void*);
     int (*cuModuleGetFunction)(void**, void*, const char*);
+    int (*cuFuncGetAttribute)(int*, int, void*);
     int (*cuModuleGetGlobal)(cajeta_cudeviceptr*, size_t*, void*, const char*);
     int (*cuMemAlloc)(cajeta_cudeviceptr*, size_t);
     int (*cuMemcpyHtoD)(cajeta_cudeviceptr, const void*, size_t);
@@ -345,6 +346,8 @@ static int cajeta_xpu_cuda_init_locked(void) {
     CAJ_BIND(cuCtxSetCurrent, "cuCtxSetCurrent");
     CAJ_BIND(cuModuleLoadData, "cuModuleLoadData");
     CAJ_BIND(cuModuleGetFunction, "cuModuleGetFunction");
+    *(void**) (&g_xpu_cuda.cuFuncGetAttribute) =                // optional (non-fatal)
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuFuncGetAttribute");
     CAJ_BIND(cuMemAlloc, "cuMemAlloc_v2");
     CAJ_BIND(cuMemcpyHtoD, "cuMemcpyHtoD_v2");
     CAJ_BIND(cuMemcpyDtoH, "cuMemcpyDtoH_v2");
@@ -518,6 +521,7 @@ struct cajeta_hip_api {
     int (*hipSetDevice)(int);
     int (*hipModuleLoadData)(void**, const void*);
     int (*hipModuleGetFunction)(void**, void*, const char*);
+    int (*hipFuncGetAttribute)(int*, int, void*);
     int (*hipModuleGetGlobal)(void**, size_t*, void*, const char*);
     int (*hipMalloc)(void**, size_t);
     int (*hipMemcpyHtoD)(void*, const void*, size_t);
@@ -755,6 +759,8 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND(hipSetDevice, "hipSetDevice");
     CAJ_HBIND(hipModuleLoadData, "hipModuleLoadData");
     CAJ_HBIND(hipModuleGetFunction, "hipModuleGetFunction");
+    *(void**) (&g_xpu_hip.hipFuncGetAttribute) =               // optional (non-fatal)
+        cajeta_xpu_libsym(g_xpu_hip.lib, "hipFuncGetAttribute");
     CAJ_HBIND(hipMalloc, "hipMalloc");
     CAJ_HBIND(hipMemcpyHtoD, "hipMemcpyHtoD");
     CAJ_HBIND(hipMemcpyDtoH, "hipMemcpyDtoH");

@@ -112,6 +112,20 @@ typedef enum CajetaXpuGeometryKey {
 /* Returns 0 for an unknown key, an unqueryable device or an unreported fact. */
 int64_t __cajeta_xpu_device_geometry(int32_t key);
 
+/* Per-kernel footprint MEASURED on the loaded module, not modelled ahead of the
+ * device. The compile-time manifest has to predict occupancy for a part that is
+ * not present; this asks the driver what it actually allocated. Append-only. */
+typedef enum CajetaXpuKernelFootprintKey {
+    CAJETA_XPU_KFP_REGS_PER_THREAD  = 0,
+    CAJETA_XPU_KFP_SPILL_BYTES      = 1,  /* private/scratch per work-item   */
+    CAJETA_XPU_KFP_LDS_STATIC_BYTES = 2,  /* static shared per work-group    */
+    CAJETA_XPU_KFP_MAX_THREADS      = 3   /* group size the code object caps */
+} CajetaXpuKernelFootprintKey;
+
+/* Returns 0 when the backend cannot answer, the kernel is not registered, or
+ * its module fails to load. Loads and resolves the kernel if needed. */
+int64_t __cajeta_xpu_kernel_footprint(void* nameArr, int64_t len, int32_t key);
+
 /* Fills *out (zeroed first) from the active device. Returns 1 on success, 0 with
  * out->valid 0 when there is no GPU or profiling is disabled by env. */
 int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out);
