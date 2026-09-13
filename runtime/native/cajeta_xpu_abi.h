@@ -131,7 +131,12 @@ typedef enum CajetaXpuGeometryKey {
     CAJETA_XPU_GEO_REGS_PER_MP            = 11,
     CAJETA_XPU_GEO_THREADS_PER_MP         = 12,
     CAJETA_XPU_GEO_MAX_GRID_DIM_X         = 13,
-    CAJETA_XPU_GEO_MAX_BLOCK_DIM_X        = 14
+    CAJETA_XPU_GEO_MAX_BLOCK_DIM_X        = 14,
+    /* Waves per SIMD the dispatch law aims for: EMPIRICAL, not a hardware
+     * fact. 2 on AMD, 1 on NVIDIA. Until 2026-09-13 the AMD factor hid
+     * inside a doubled SIMDS_PER_MP, which made a wrong SIMD count look
+     * like physics; splitting them keeps both honest. */
+    CAJETA_XPU_GEO_WAVES_PER_SIMD_TARGET  = 15
 } CajetaXpuGeometryKey;
 
 /* Returns 0 for an unknown key, an unqueryable device or an unreported fact. */

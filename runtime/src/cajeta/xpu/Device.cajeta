@@ -245,6 +245,7 @@ public final class Device {
     static final int32 GEO_THREADS_PER_MP        = 12;
     static final int32 GEO_MAX_GRID_DIM_X        = 13;
     static final int32 GEO_MAX_BLOCK_DIM_X       = 14;
+    static final int32 GEO_WAVES_PER_SIMD_TARGET = 15;
 
     /**
      * Multiprocessors the driver reports: SMs on NVIDIA, WGPs on RDNA
@@ -276,6 +277,22 @@ public final class Device {
      *
      * @EntryPoint
      */
+    /**
+     * Waves per SIMD the dispatch law aims for. EMPIRICAL, not a hardware
+     * fact: 1 saturates an NVIDIA SM partition and the measured AMD target
+     * is 2. It is stated separately because it used to hide inside a
+     * doubled { #simdsPerMultiprocessor}, where a tuning choice read
+     * as physics. 1 when the device is unknown, so the law degrades to
+     * "one block's worth of waves per SIMD" rather than to zero.
+     *
+     * 
+     */
+    public static int32 wavesPerSimdTarget() {
+        int32 t = (int32) Device.nativeGeometry(Device.GEO_WAVES_PER_SIMD_TARGET);
+        if (t <= 0) { return 1; }
+        return t;
+    }
+
     public static int32 simdCount() {
         return Device.multiprocessorCount() * Device.simdsPerMultiprocessor();
     }
@@ -285,7 +302,8 @@ public final class Device {
      * block's worth of waves, given a kernel that puts `wavesPerBlock`
      * waves on a SIMD.
      *
-     *   blocks = (multiprocessors x SIMDs per multiprocessor) / wavesPerBlock
+     *   blocks = (multiprocessors x SIMDs per MP x waves per SIMD target)
+     *            / wavesPerBlock
      *
      * This is a SATURATION target and deliberately NOT an occupancy
      * maximum. Measured on gfx1151: past this point the extra waves shared
@@ -307,7 +325,7 @@ public final class Device {
         if (simds <= 0) {
             return 0;
         }
-        return simds / wavesPerBlock;
+        return simds * Device.wavesPerSimdTarget() / wavesPerBlock;
     }
 
     /**

@@ -336,6 +336,11 @@ int64_t __cajeta_xpu_device_geometry(int32_t key) {
         case CAJETA_XPU_GEO_THREADS_PER_MP:        return g_xpu_geo.threadsPerMP;
         case CAJETA_XPU_GEO_MAX_GRID_DIM_X:        return g_xpu_geo.maxGridDimX;
         case CAJETA_XPU_GEO_MAX_BLOCK_DIM_X:       return g_xpu_geo.maxBlockDimX;
+        case CAJETA_XPU_GEO_WAVES_PER_SIMD_TARGET: {
+            const char* a = g_xpu_geo.archName;
+            if (a[0] == 'g' && a[1] == 'f' && a[2] == 'x') return 2;
+            return 1;
+        }
     }
     return 0;
 }
