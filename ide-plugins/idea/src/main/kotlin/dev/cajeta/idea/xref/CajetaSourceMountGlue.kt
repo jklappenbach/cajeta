@@ -96,6 +96,60 @@ object CajetaSourceMountGlue {
             identity, defaultCacheRoot(), stdlibExtractor(compilerPath))
     }
 
+    /**
+     * The project's own build artifact for the lint classpath (Unit 2.2.1), or
+     * null when there is none to use — see [OwnArchive.resolve] for what null
+     * covers. Cached per project so a subprocess does not run on every
+     * keystroke (2.3.2).
+     *
+     * A found archive stays cached while its mtime is unchanged; an absent one
+     * is re-checked after [ABSENT_TTL_MS] so a project built mid-session is
+     * picked up without an IDE restart (spec §4.4).
+     */
+    fun ownArchive(compilerPath: String, basePath: String?): Path? {
+        if (basePath == null || compilerPath.isBlank()) return null
+        val base = File(basePath)
+        if (!base.isDirectory) return null
+
+        return ownArchiveCache.get(basePath, mtimeOf = ::mtimeOf) {
+            OwnArchive.resolve(
+                runArtifactPath = { flavor -> artifactPath(compilerPath, base, flavor) },
+                exists = { Files.isRegularFile(it) },
+            )
+        }
+    }
+
+    private fun mtimeOf(p: Path): Long? =
+        runCatching { Files.getLastModifiedTime(p).toMillis() }.getOrNull()
+
+    /** The full lint classpath: resolved dependencies, then the own archive. */
+    fun lintClasspath(compilerPath: String, basePath: String?): List<Path> =
+        OwnArchive.classpath(dependencyArchives(basePath), ownArchive(compilerPath, basePath))
+
+    /**
+     * `cajeta artifact-path --flavor=<f>` in the project directory → (exit, stdout).
+     *
+     * Run with the project as the working directory rather than passing
+     * `--manifest`: the printed path is resolved against the PROCESS CWD, not
+     * against the manifest's own directory, so `--manifest=/p/cajeta.json` from
+     * elsewhere prints `<cwd>/build/archive/...` — a path that does not exist.
+     * Measured 2026-09-13.
+     */
+    private fun artifactPath(compilerPath: String, base: File, flavor: String): Pair<Int, String> {
+        val p = ProcessBuilder(compilerPath, "artifact-path", "--flavor=$flavor")
+            .directory(base)
+            .redirectErrorStream(true)
+            .start()
+        val out = p.inputStream.bufferedReader().readText()
+        if (!p.waitFor(30, TimeUnit.SECONDS)) {
+            p.destroyForcibly()
+            return -1 to ""
+        }
+        return p.exitValue() to out
+    }
+
+    private val ownArchiveCache = OwnArchive.Cache()
+
     private fun run(argv: List<String>): Int = try {
         val p = ProcessBuilder(argv).redirectErrorStream(true).start()
         p.inputStream.bufferedReader().readText()
