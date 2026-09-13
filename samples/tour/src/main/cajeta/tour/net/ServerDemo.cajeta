@@ -73,15 +73,19 @@ public class ServerDemo extends DemoClass {
             "sharedPool(8) records Model B with 8 workers");
         System.stdout.println("  builder: default Model A; .model(sharedPool(8)) -> Model B");
 
-        // 3. The live core. The listener and handler live in this
-        // scope, and the server borrows them — the core starts in
-        // ServerState.NEW with nothing in flight.
+        // 3. The live core. The listener is LENT — it lives in this scope
+        // and outlives the server — while the handler is TRANSFERRED, because
+        // `Server` keeps it in a field and its parameter is spelled `#T` to
+        // say so at the call site. That is the convention for a non-sink that
+        // captures an argument: a plain parameter quietly retaining a value is
+        // invisible to the caller. Hence `#h`, not `h`.
+        // The core starts in ServerState.NEW with nothing in flight.
         (TcpStream) -> void h = (conn) -> ServerDemo.echoOnce(conn);
         IpAddress lip #= IpAddress.loopbackV4();
         SocketAddress bindAddr #= SocketAddress.of(#lip, 0);
         TcpListener listener #= TcpListener.bind(bindAddr);
         int32 port = listener.boundPort();
-        Server s = heap Server(listener, h);
+        Server s = heap Server(listener, #h);
         this.check(s.currentState() == ServerState.NEW,
             "a built server starts in NEW");
         this.check(port > 0, "bind :0 resolves an ephemeral port");
