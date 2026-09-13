@@ -274,6 +274,51 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     }
 
     /**
+     * Device-only intrinsic — the INTEGER accumulate: on an `int32`
+     * accumulator tile (`Use = 2`), for every element of the current
+     * lane's fragment,
+     *
+     *     iacc[r][c] += colS * this[r][c]
+     *
+     * `iacc` is a same-shape `CooperativeMatrix<int32, Rows, Cols, 2>`
+     * and `colS` a per-lane register value — the factor for THIS LANE's
+     * column, the same lane-local contract as
+     * {@link #scaledAccumIntoS}. This folds a small integer per-K-slice
+     * scale into an int32 accumulator so the float drain (the
+     * `scaledAccumIntoS` epilogue) runs ONCE per outer block instead of
+     * once per sub-block: no convert, no fma, no rank-1 term per slice.
+     *
+     * CONTRACT — 24 BITS: `colS` and every element of the receiver must
+     * lie in [-2^23, 2^23). The lowering is the full-rate 24-bit
+     * multiply (a 32-bit multiply is quarter-rate and gives the epilogue
+     * back), so a wider operand is silently truncated. Q4_K is the
+     * motivating case and fits by construction: a 32-K int8 dot is at
+     * most 32*127*127 in magnitude and the 6-bit sub-block scale is at
+     * most 63, so the product stays well inside 24 bits.
+     *
+     * NATIVE-ONLY, same rejection rule as {@link #scaledAccumIntoS}: a
+     * tier that cannot lower this natively REJECTS the kernel with a
+     * named diagnostic — never a silent demote.
+     */
+    public void scaledAccumI32(CooperativeMatrix<int32, Rows, Cols, 2> iacc,
+                               int32 colS) {
+    }
+
+    /**
+     * Device-only intrinsic — {@link #rank1Accum} with a SCALAR column
+     * factor: on a `float32` accumulator tile (`Use = 2`),
+     *
+     *     this[r][c] += rowG[r] * colG
+     *
+     * `colG` is a per-lane register value under the same lane-local
+     * contract as {@link #scaledAccumIntoS}; `rowG` stays a Shared
+     * vector (and accepts a slice) because rows are genuinely
+     * cross-lane. NATIVE-ONLY, same rejection rule.
+     */
+    public void rank1AccumS(Shared<float32> rowG, float32 colG) {
+    }
+
+    /**
      * Device-only intrinsic: set THIS LANE's operand fragment from four
      * packed words — the register-direct feed for an int8 A or B tile
      * (xpu-coopmatrix-fromwords). The per-lane contract is the native

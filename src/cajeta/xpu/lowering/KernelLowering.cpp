@@ -44,6 +44,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
 #include <functional>
@@ -603,6 +604,66 @@ private:
         unsupported("statement form in kernel body");
     }
 
+    // What a kernel-level name is already bound to, across every name map this
+    // lowering keeps. `kind` is null when the name is free.
+    struct DeviceBinding {
+        const char* kind = nullptr;
+        llvm::Type* type = nullptr;
+    };
+
+    DeviceBinding deviceBindingOf(const std::string& nm) {
+        if (auto it = slotTypes.find(nm); it != slotTypes.end())
+            return {"a scalar/vector local", it->second};
+        if (arrayShared.count(nm) || bufferBases.count(nm)) {
+            auto et = bufferElems.find(nm);
+            return {"a Shared<T>/buffer base",
+                    et != bufferElems.end() ? et->second : nullptr};
+        }
+        if (auto it = coopMatrixSlots.find(nm); it != coopMatrixSlots.end())
+            return {"a cooperative-matrix tile", it->second.matrixType};
+        if (auto it = structValues.find(nm); it != structValues.end())
+            return {"a @ValueType/struct value", it->second->getType()};
+        if (auto it = bufferArrayBindings.find(nm);
+                it != bufferArrayBindings.end())
+            return {"a Buffer<T>[] binding", it->second.elemTy};
+        if (rayQuerySlots.count(nm)) return {"a RayQuery", nullptr};
+        if (textureHandles.count(nm)) return {"a texture", nullptr};
+        if (imageHandles.count(nm)) return {"a storage image", nullptr};
+        if (samplerHandles.count(nm)) return {"a sampler", nullptr};
+        if (accelHandles.count(nm))
+            return {"an acceleration structure", nullptr};
+        if (callables.count(nm)) return {"a device callable", nullptr};
+        if (values.count(nm)) return {"a scalar/vector local", nullptr};
+        return {};
+    }
+
+    static std::string describeBinding(const DeviceBinding& b) {
+        std::string s = b.kind;
+        if (b.type) {
+            std::string t;
+            llvm::raw_string_ostream os(t);
+            b.type->print(os);
+            os.flush();
+            s += " of type " + t;
+        }
+        return s;
+    }
+
+    // A kernel body has no block scope down here - the lowering keeps FLAT
+    // per-name maps - so a redeclaration under a name that is already bound
+    // rebinds one kind over another and every read after it silently takes the
+    // wrong slot. Sibling blocks reusing a name at the SAME kind and type is
+    // what existing kernels do and stays legal; anything else is rejected.
+    void checkKernelRedeclare(const std::string& nm, const char* kind,
+                              llvm::Type* ty) {
+        DeviceBinding prior = deviceBindingOf(nm);
+        if (!prior.kind) return;
+        if (prior.type == ty && std::string(prior.kind) == kind) return;
+        unsupported("kernel body redeclares '" + nm + "' with a different "
+                    "type (first bound as " + describeBinding(prior) +
+                    "); rename the inner local");
+    }
+
     void lowerLocalDecl(const std::shared_ptr<LocalVariableDeclaration>& lvd) {
         CajetaTypePtr declType = lvd->getType();
         for (auto& vd : lvd->getVariableDeclarators()) {
@@ -616,11 +677,15 @@ private:
                     : target.rayQueryType(mod);
                 if (!rqTy)
                     unsupported("software RayQuery needs cajeta.xpu.SwRayCursor");
+                checkKernelRedeclare(nm, "a RayQuery", nullptr);
                 rayQuerySlots[nm] = entryAlloca(rqTy, nm);
                 continue;
             }
             if (isCooperativeMatrixType(declType) || isTileType(declType)) {
-                coopMatrixSlots[nm] = buildCoopMatrixSlot(declType, nm);
+                CoopMatrixSlot cms = buildCoopMatrixSlot(declType, nm);
+                checkKernelRedeclare(nm, "a cooperative-matrix tile",
+                                     cms.matrixType);
+                coopMatrixSlots[nm] = cms;
                 continue;
             }
             if (declType && declType->isValueType()) {
@@ -635,6 +700,8 @@ private:
                     auto initExpr = std::dynamic_pointer_cast<Expression>(
                         init->getChildren()[0]);
                     llvm::Value* v = coerceTo(lowerExpr(initExpr), si.type);
+                    checkKernelRedeclare(nm, "a @ValueType/struct value",
+                                         si.type);
                     structValues[nm] = v;
                     structFields[nm] = si;
                     valueTypeNames[nm] = declType;
@@ -642,12 +709,14 @@ private:
                 }
             }
             if (auto fnT = std::dynamic_pointer_cast<CajetaFunctionType>(declType)) {
+                checkKernelRedeclare(nm, "a device callable", nullptr);
                 lowerCallableDecl(nm, fnT, vd->getInitializer());
                 continue;
             }
             if (auto arrT = std::dynamic_pointer_cast<CajetaArray>(declType)) {
                 if (auto efn = std::dynamic_pointer_cast<CajetaFunctionType>(
                         arrT->getElementType())) {
+                    checkKernelRedeclare(nm, "a device callable", nullptr);
                     lowerCallableDecl(nm, efn, vd->getInitializer());
                     continue;
                 }
@@ -669,6 +738,7 @@ private:
             auto init = vd->getInitializer();
             if (!init || init->getChildren().empty()) {
                 if (!slotTy) unsupported("uninitialized local of non-scalar type");
+                checkKernelRedeclare(nm, "a scalar/vector local", slotTy);
                 values[nm] = entryAlloca(slotTy, nm);
                 slotTypes[nm] = slotTy;
                 signedness[nm] = typeIsSigned(declType);
@@ -691,6 +761,7 @@ private:
             }
             llvm::Value* v = lowerExpr(initExpr);
             if (!slotTy) slotTy = v->getType();  // infer slot type from initializer
+            checkKernelRedeclare(nm, "a scalar/vector local", slotTy);
             llvm::Value* slot = entryAlloca(slotTy, nm);
             builder.CreateStore(coerceTo(v, slotTy, exprSigned(initExpr)), slot);
             values[nm] = slot;
@@ -714,6 +785,7 @@ private:
         }
         if (!elemTy) unsupported("shared local '" + nm +
                                  "' needs a scalar element type (Shared<T>)");
+        checkKernelRedeclare(nm, "a Shared<T>/buffer base", elemTy);
 
         uint32_t swizStride = 0;
         if (declType && declType->toCanonical().compare(
@@ -845,6 +917,7 @@ private:
         }
         if (!elemTy) unsupported("shared array literal '" + nm +
                                  "' needs a scalar element type (Shared<T>)");
+        checkKernelRedeclare(nm, "a Shared<T>/buffer base", elemTy);
         const auto& elems = lit->getElements();
         uint64_t n = elems.size();
         if (n == 0) unsupported("shared array literal '" + nm +
@@ -3428,7 +3501,9 @@ private:
                     if (mn == "scaledAccumInto" || mn == "rank1Accum" ||
                         mn == "scaledAccumInto2" ||
                         mn == "scaledAccumIntoS" ||
-                        mn == "scaledAccumInto2S")
+                        mn == "scaledAccumInto2S" ||
+                        mn == "rank1AccumS" ||
+                        mn == "scaledAccumI32")
                         anyEpilogueVerb = true;
                 }
                 if (auto lvd =
@@ -4036,14 +4111,49 @@ private:
             builder.CreateStore(v, slot.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
+        if (name == "scaledAccumI32") {
+            if (args.size() != 2)
+                unsupported("CooperativeMatrix.scaledAccumI32 expects "
+                            "(iacc, colS)");
+            if (!target.coopMatrixEpilogueSupported())
+                unsupported("CooperativeMatrix.scaledAccumI32: no native "
+                            "epilogue lowering on this backend (tier scan "
+                            "should have demoted)");
+            CoopMatrixSlot iacc = resolveCoopMatrixArg(args[0].expression);
+            if (iacc.software)
+                unsupported("CooperativeMatrix.scaledAccumI32: iacc must "
+                            "share the receiver's (native) tier");
+            if (iacc.rows != slot.rows || iacc.cols != slot.cols)
+                unsupported("CooperativeMatrix.scaledAccumI32: receiver and "
+                            "iacc must share Rows/Cols");
+            if (slot.use != 2 || iacc.use != 2)
+                unsupported("CooperativeMatrix.scaledAccumI32: accumulator "
+                            "tiles (Use=2) only");
+            if (!slot.elemType->isIntegerTy(32) ||
+                !iacc.elemType->isIntegerTy(32))
+                unsupported("CooperativeMatrix.scaledAccumI32: both the "
+                            "receiver and iacc must be int32 accumulators");
+            llvm::Value* colS =
+                coerceTo(lowerExpr(args[1].expression), i32,
+                         exprSigned(args[1].expression));
+            llvm::Value* accVal =
+                builder.CreateLoad(slot.matrixType, slot.alloca, recv + ".val");
+            llvm::Value* iaccVal =
+                builder.CreateLoad(iacc.matrixType, iacc.alloca, "epi.iacc");
+            llvm::Value* v = target.coopMatrixScaledAccumI32(
+                builder, mod, accVal, iaccVal, colS);
+            builder.CreateStore(v, iacc.alloca);
+            return llvm::ConstantInt::get(i32, 0);
+        }
         if (name == "scaledAccumInto" || name == "rank1Accum" ||
             name == "scaledAccumInto2" || name == "scaledAccumIntoS" ||
-            name == "scaledAccumInto2S") {
-            const bool scaled = (name != "rank1Accum");
+            name == "scaledAccumInto2S" || name == "rank1AccumS") {
+            const bool scaled = (name != "rank1Accum" && name != "rank1AccumS");
             const bool dual = (name == "scaledAccumInto2" ||
                                name == "scaledAccumInto2S");
             const bool scalarCol = (name == "scaledAccumIntoS" ||
-                                    name == "scaledAccumInto2S");
+                                    name == "scaledAccumInto2S" ||
+                                    name == "rank1AccumS");
             const size_t want = dual ? 5 : (scaled ? 3 : 2);
             if (args.size() != want)
                 unsupported(std::string("CooperativeMatrix.") + name +
@@ -4244,15 +4354,25 @@ private:
                         "software tile has no lane mapping). Stage the "
                         "widened bytes and `load` them on this tier");
         }
-        if (name == "scaledAccumIntoS" || name == "scaledAccumInto2S") {
+        if (name == "scaledAccumIntoS" || name == "scaledAccumInto2S" ||
+            name == "rank1AccumS") {
+            const char* vectorForm = name == "scaledAccumIntoS"
+                ? "scaledAccumInto"
+                : (name == "scaledAccumInto2S" ? "scaledAccumInto2"
+                                               : "rank1Accum");
             unsupported(std::string("CooperativeMatrix.") + name +
                         ": NATIVE-ONLY (the scalar colF/colG is this "
                         "lane's column factor; the software tile has no "
                         "lane-column mapping). Use the Shared-vector "
-                        "form " +
-                        (name == "scaledAccumIntoS" ? "scaledAccumInto"
-                                                    : "scaledAccumInto2") +
-                        " on this tier");
+                        "form " + vectorForm + " on this tier");
+        }
+        if (name == "scaledAccumI32") {
+            unsupported("CooperativeMatrix.scaledAccumI32: NATIVE-ONLY (the "
+                        "scalar colS is this lane's column factor and the "
+                        "24-bit multiply is a native-tier instruction; the "
+                        "software tile has no lane-column mapping). Drain "
+                        "each sub-block through scaledAccumInto on this "
+                        "tier");
         }
         // Element order and association are the CONTRACT every tier shares: one
         // fma chain per element, `(rowF[r] * colF[c]) * this[r][c]` then add.
@@ -5821,6 +5941,18 @@ llvm::Value* LoweringTarget::coopMatrixEpilogueAccum(
     // Unreachable by construction: the tier scan demotes verb-using kernels on
     // any backend where coopMatrixEpilogueSupported() is false.
     throw coopMatrixUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::coopMatrixScaledAccumI32(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*accVal*/,
+    llvm::Value* /*iaccVal*/, llvm::Value* /*colS*/) {
+    // A backend that claims coopMatrixEpilogueSupported() owes this override:
+    // the 24-bit multiply is per-ISA and there is no portable stand-in that
+    // keeps the full-rate contract.
+    unsupported("CooperativeMatrix.scaledAccumI32: the '" +
+                std::string(name()) + "' backend reports native epilogue "
+                "support but does not implement the 24-bit integer "
+                "accumulate");
 }
 
 llvm::Type* LoweringTarget::bufferParamType(llvm::Module& m,

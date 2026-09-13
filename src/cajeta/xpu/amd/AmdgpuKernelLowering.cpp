@@ -999,6 +999,30 @@ public:
         return out;
     }
 
+    // The integer accumulate: the receiver and iacc are both int32 accumulator
+    // fragments, so element e of one is element e of the other and no lane/row
+    // math is needed. llvm.amdgcn.mul.i24 is the 24-bit multiply - FULL rate,
+    // where a plain i32 multiply lowers to quarter-rate v_mul_lo_u32 - and the
+    // backend folds the mul24 + add into a single v_mad_i32_i24.
+    llvm::Value* coopMatrixScaledAccumI32(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
+            llvm::Value* iaccVal, llvm::Value* colS) override {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Function* mul24 = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_mul_i24, {i32});
+        auto* vecTy = llvm::cast<llvm::FixedVectorType>(iaccVal->getType());
+        unsigned n = vecTy->getNumElements();
+        llvm::Value* out = iaccVal;
+        for (unsigned e = 0; e < n; ++e) {
+            llvm::Value* av = b.CreateExtractElement(accVal, e);
+            llvm::Value* prod = b.CreateCall(mul24, {av, colS}, "epi.mul24");
+            llvm::Value* cur = b.CreateExtractElement(out, e);
+            out = b.CreateInsertElement(out, b.CreateAdd(cur, prod), e,
+                                        "epi.iacc");
+        }
+        return out;
+    }
+
     llvm::Value* coopMatrixSplat(llvm::IRBuilderBase& b, llvm::Module& m,
                                  llvm::Value* value,
                                  llvm::Type* matrixType) override {
