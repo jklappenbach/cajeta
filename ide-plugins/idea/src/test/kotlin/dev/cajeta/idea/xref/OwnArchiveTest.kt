@@ -79,11 +79,29 @@ class OwnArchiveTest {
     }
 
     /** 2.1.5 — the own archive is APPENDED; dependency entries keep their
-     *  content and order, so dependency types go on resolving. */
+     *  content and order, so dependency types go on resolving.
+     *
+     *  The expectation is spelled out element by element ON PURPOSE. Writing it
+     *  as `deps + declared` is the trap this test exists to catch: `Path` is
+     *  `Iterable<Path>`, so `List<Path> + Path` resolves to `plus(Iterable)` and
+     *  splatters the path into its name segments. Computing the expected value
+     *  that way made an earlier version of this test agree with a broken
+     *  implementation. */
     @Test
     fun theOwnArchiveIsAppendedAndDependenciesAreUntouched() {
-        val deps = listOf(Path.of("/p/.cajeta/cache/artifacts/aa.cja"), Path.of("/p/.cajeta/cache/artifacts/bb.cja"))
-        assertEquals(deps + declared, OwnArchive.classpath(deps, declared))
+        val aa = Path.of("/p/.cajeta/cache/artifacts/aa.cja")
+        val bb = Path.of("/p/.cajeta/cache/artifacts/bb.cja")
+        assertEquals(listOf(aa, bb, declared), OwnArchive.classpath(listOf(aa, bb), declared))
+    }
+
+    /** 2.1.5 — the same claim stated as the failure mode: no entry may be a
+     *  bare path segment. A splattered `Path` shows up as "p", "build", … */
+    @Test
+    fun theClasspathIsNeverSplatteredIntoPathSegments() {
+        val deps = listOf(Path.of("/p/.cajeta/cache/artifacts/aa.cja"))
+        val cp = OwnArchive.classpath(deps, declared)
+        assertEquals("every entry must be a full path, not a name element", 2, cp.size)
+        cp.forEach { assertEquals("entry must be absolute: $it", true, it.isAbsolute) }
     }
 
     /** 2.1.5 — with no own archive the classpath is exactly the dependencies. */

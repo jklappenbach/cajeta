@@ -41,6 +41,13 @@ class LintFixture private constructor(
     fun lintUnresolved(file: String, sourceRoot: String, classpath: List<Path>): List<String> {
         val argv = mutableListOf(compiler(), "--lint", file, "--source-root", sourceRoot)
         if (classpath.isNotEmpty()) argv += "--classpath=" + classpath.joinToString(",")
+        return unresolvedFrom(argv)
+    }
+
+    /** Run an argv built by the PLUGIN and report the same thing — so a test can
+     *  assert against what the plugin would really invoke, not a hand-rolled
+     *  command line that happens to agree with it. */
+    fun unresolvedFrom(argv: List<String>): List<String> {
         val out = run(argv, root)
         return out.lineSequence()
             .filter { it.contains(UNRESOLVED_TYPE) }
@@ -48,6 +55,13 @@ class LintFixture private constructor(
             .distinct()
             .toList()
     }
+
+    /** Absolute form of a fixture-relative path, for argv builders that do not
+     *  run with the project as their working directory. */
+    fun abs(rel: String): String = root.resolve(rel).toString()
+
+    /** The configured compiler, for tests that build an argv themselves. */
+    fun compilerPath(): String = compiler()
 
     fun delete() {
         root.toFile().deleteRecursively()

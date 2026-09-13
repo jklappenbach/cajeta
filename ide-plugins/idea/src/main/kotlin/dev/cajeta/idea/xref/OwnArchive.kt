@@ -64,12 +64,18 @@ object OwnArchive {
      * archive appended. Dependency entries are never reordered or dropped —
      * a dependency type that stops resolving would clobber its Ctrl-click
      * targets on the next per-edit lint.
+     *
+     * `plusElement`, never `+`: [Path] implements `Iterable<Path>`, so
+     * `List<Path> + Path` binds to `plus(Iterable)` and splatters the archive
+     * into its name segments — `/p/build/archive/lib.cja` becomes the four
+     * entries `p`, `build`, `archive`, `lib.cja`, none of which is a real file.
+     * Silent: the classpath is still a `List<Path>` of the right type.
      */
     fun classpath(dependencies: List<Path>, own: Path?): List<Path> =
         when {
             own == null -> dependencies
             dependencies.contains(own) -> dependencies
-            else -> dependencies + own
+            else -> dependencies.plusElement(own)
         }
 
     /**

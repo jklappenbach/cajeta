@@ -95,6 +95,30 @@ class OwnArchiveClasspathTest {
         )
     }
 
+    /** 3.1.4 — the red→green test for the fix. Builds the argv the way the
+     *  PLUGIN builds it (source root from `sourceRootOf`, classpath from the
+     *  production discovery in Unit 2) and asserts the project's own types
+     *  resolve. Fails before Unit 3's wiring, passes after. */
+    @Test
+    fun thePluginsOwnArgvResolvesTheProjectsOwnTypes() {
+        val fx = twoRootFixture()
+        val file = fx.abs(fx.testFile)
+        val sourceRoot = CajetacRunner.sourceRootOf(file, java.io.File(file).readText())
+        val classpath = dev.cajeta.idea.xref.CajetaSourceMountGlue
+            .lintClasspath(fx.compilerPath(), fx.root.toString())
+        val argv = CajetacRunner.lintArgv(
+            fx.compilerPath(), file, sourceRoot, null, emitXref = false, classpath = classpath,
+        )
+        assertTrue(
+            "the production classpath must carry the project's own archive; got $classpath",
+            classpath.any { it.toString().endsWith(".cja") },
+        )
+        assertEquals(
+            "the plugin's own argv must resolve the project's own types",
+            emptyList<String>(), fx.unresolvedFrom(argv),
+        )
+    }
+
     /** 1.1.4 — the does-not-fire case. With the archive present a genuinely
      *  undefined type is STILL reported, so a clean run cannot be mistaken for
      *  suppressed diagnostics. */
