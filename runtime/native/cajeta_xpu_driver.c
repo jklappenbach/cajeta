@@ -32,6 +32,7 @@ struct cajeta_cuda_api {
     int (*cuDeviceGet)(int*, int);
     int (*cuDeviceGetAttribute)(int*, int, int);
     int (*cuDeviceTotalMem)(size_t*, int);
+    int (*cuMemGetInfo)(size_t*, size_t*);
     // R4: the PRIMARY context is a process-wide singleton shared with OptiX.
     int (*cuDevicePrimaryCtxRetain)(void**, int);
     int (*cuCtxSetCurrent)(void*);   // H9: bind the ctx to the launching thread
@@ -342,6 +343,8 @@ static int cajeta_xpu_cuda_init_locked(void) {
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuDeviceGetAttribute");
     *(void**) (&g_xpu_cuda.cuDeviceTotalMem) =                // optional (non-fatal)
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuDeviceTotalMem_v2");
+    *(void**) (&g_xpu_cuda.cuMemGetInfo) =                    // optional (non-fatal)
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemGetInfo_v2");
     CAJ_BIND(cuDevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain");  // NO _v2 suffix
     CAJ_BIND(cuCtxSetCurrent, "cuCtxSetCurrent");
     CAJ_BIND(cuModuleLoadData, "cuModuleLoadData");

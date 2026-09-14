@@ -453,6 +453,34 @@ int64_t __cajeta_xpu_device_memory_bytes(void) {
     }
 }
 
+// Device.freeMemoryBytes() — what the active device says it can still hand
+// out, 0 when the backend cannot answer. A device touch, like memoryBytes.
+//
+// The counterpart to memoryBytes, and the number a resident-weight policy
+// actually needs: on a UMA part memoryBytes reports the GTT POOL, which is a
+// capacity, and an allocator that budgets against a capacity discovers the
+// ceiling by failing. Both HIP and CUDA hand back free and total from ONE
+// call and this runtime was already making it for the total alone.
+int64_t __cajeta_xpu_device_free_memory_bytes(void) {
+    int be = cajeta_xpu_active_backend();
+    switch (be) {
+        case CAJ_XPU_CUDA: {
+            size_t memfree = 0, total = 0;
+            if (!g_xpu_cuda.cuMemGetInfo) return 0;
+            if (g_xpu_cuda.cuMemGetInfo(&memfree, &total) != 0) return 0;
+            return (int64_t) memfree;
+        }
+        case CAJ_XPU_HIP: {
+            size_t memfree = 0, total = 0;
+            if (!g_xpu_hip.hipMemGetInfo) return 0;
+            if (g_xpu_hip.hipMemGetInfo(&memfree, &total) != 0) return 0;
+            return (int64_t) memfree;
+        }
+        default:
+            return 0;
+    }
+}
+
 extern int cajeta_xpu_optix_available(void);
 
 // Device.supports(Capability) — does the active device advertise `cap` natively?

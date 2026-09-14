@@ -155,6 +155,30 @@ public final class Device {
         return Device.nativeMemoryBytes();
     }
 
+    /**
+     * What the active device says it can still hand out, in bytes — 0 when
+     * the backend cannot answer.
+     *
+     * The counterpart to {@link #memoryBytes}, and the one a residency
+     * policy wants. `memoryBytes` is a CAPACITY: on a UMA part it reports
+     * the whole GTT pool, which is shared with the host page cache, so an
+     * allocator that budgets against it finds the ceiling by failing.
+     * This is the driver's own free-space accounting, from the same single
+     * call (`hipMemGetInfo` / `cuMemGetInfo`) that answers the total.
+     *
+     * A LEVEL, NOT AN EVENT. Neither runtime offers a pressure
+     * notification, so a policy built on this polls a watermark; there is
+     * nothing to wake on.
+     *
+     * A DEVICE TOUCH, like {@link #memoryBytes}: asking selects the
+     * backend if selection has not happened yet.
+     *
+     * @EntryPoint
+     */
+    public static int64 freeMemoryBytes() {
+        return Device.nativeFreeMemoryBytes();
+    }
+
     // The active backend probes its device features by capability ordinal (the
     // stable Capability contract). Returns 0 / 1.
     @Native("__cajeta_xpu_device_supports")
@@ -178,6 +202,9 @@ public final class Device {
 
     @Native("__cajeta_xpu_device_memory_bytes")
     private static int64 nativeMemoryBytes();
+
+    @Native("__cajeta_xpu_device_free_memory_bytes")
+    private static int64 nativeFreeMemoryBytes();
 
     /**
      * Is `name`'s device code actually REGISTERED for the active backend?
