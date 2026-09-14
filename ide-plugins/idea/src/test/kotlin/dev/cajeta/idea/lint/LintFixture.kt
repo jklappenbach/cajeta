@@ -44,17 +44,14 @@ class LintFixture private constructor(
         return unresolvedFrom(argv)
     }
 
+    /** Raw compiler output for an argv built by the PLUGIN, for tests that read
+     *  something other than diagnostics out of it — the `--emit-xref` stream. */
+    fun outputOf(argv: List<String>): String = run(argv, root)
+
     /** Run an argv built by the PLUGIN and report the same thing — so a test can
      *  assert against what the plugin would really invoke, not a hand-rolled
      *  command line that happens to agree with it. */
-    fun unresolvedFrom(argv: List<String>): List<String> {
-        val out = run(argv, root)
-        return out.lineSequence()
-            .filter { it.contains(UNRESOLVED_TYPE) }
-            .mapNotNull { QUOTED.find(it)?.groupValues?.get(1) }
-            .distinct()
-            .toList()
-    }
+    fun unresolvedFrom(argv: List<String>): List<String> = unresolvedIn(run(argv, root))
 
     /** Absolute form of a fixture-relative path, for argv builders that do not
      *  run with the project as their working directory. */
@@ -86,6 +83,18 @@ class LintFixture private constructor(
     }
 
     companion object {
+        /** The unresolved-type names in a block of compiler output, wherever it
+         *  came from. The warm `--lint-server` answers with the SAME NDJSON on
+         *  its stdout that a one-shot writes to stderr (lint-server-spec §5), so
+         *  both paths are read by this one function — which is also what makes
+         *  comparing them (plan 5.3.1) mean anything. */
+        fun unresolvedIn(output: String): List<String> =
+            output.lineSequence()
+                .filter { it.contains(UNRESOLVED_TYPE) }
+                .mapNotNull { QUOTED.find(it)?.groupValues?.get(1) }
+                .distinct()
+                .toList()
+
         private const val UNRESOLVED_TYPE = "CAJETA_ERROR_UNRESOLVED_TYPE"
         private val QUOTED = Regex("unresolved type '([^']+)'")
         private const val PKG = "com/example/library"

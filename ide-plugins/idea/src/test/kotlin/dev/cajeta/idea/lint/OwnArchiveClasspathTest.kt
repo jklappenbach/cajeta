@@ -221,6 +221,56 @@ class OwnArchiveClasspathTest {
         )
     }
 
+    /** 6.1.3 — the shard-clobber hole (spec §6.5).
+     *
+     *  The per-edit lint stream OVERWRITES the whole-root export's shard for the
+     *  file being edited (`CajetaXrefShards.ingestStream`), so whatever that
+     *  stream fails to resolve is not merely missing from it — it is erased from
+     *  the index Unit 6 just populated. The same mechanism is already documented
+     *  for dependency targets at `CajetaLintAnnotator.kt:20-24`; the project's own
+     *  types are the case that was left out.
+     *
+     *  Asserted against the real shard TEXT, which is what lands on disk, rather
+     *  than against the record list — a record the shard writer drops would pass
+     *  a record-level check and still break Ctrl-click. */
+    @Test
+    fun aPerEditLintStreamKeepsTheProjectsOwnTargets() {
+        val fx = twoRootFixture()
+
+        // The FULLY QUALIFIED name, never the bare one. The test class is called
+        // `UseGreeter`, so `contains("Greeter")` is true of a shard carrying only
+        // the file's OWN declarations — which is exactly the clobbered state this
+        // is supposed to detect. Written that way first, and the does-not-fire
+        // half below is what caught it.
+        val own = "com.example.library.Greeter"
+
+        fun shardFor(classpath: List<java.nio.file.Path>): String {
+            val argv = CajetacRunner.lintArgv(
+                fx.compilerPath(), fx.abs(fx.testFile), fx.abs(fx.testRoot),
+                shadow = null, emitXref = true, classpath = classpath,
+            )
+            val stream = XrefStreamParser.demux(fx.outputOf(argv))
+            assertTrue("the stream must be readable, or this proves nothing", stream.supported)
+            assertTrue(
+                "the stream must carry this file's own declarations either way, " +
+                "or the comparison below is between two empty shards",
+                stream.records.any { it.rel == "declarations" },
+            )
+            return dev.cajeta.idea.xref.CajetaXrefShards.shardText(stream.records)
+        }
+
+        assertTrue(
+            "the per-edit stream that overwrites the shard must still carry the " +
+            "project's own targets",
+            shardFor(listOf(fx.artifact())).contains(own),
+        )
+        assertTrue(
+            "...and without the archive it does not — that is the clobber this " +
+            "unit closes, and stating it keeps the assertion above from being vacuous",
+            !shardFor(emptyList()).contains(own),
+        )
+    }
+
     /** 1.1.4 — the does-not-fire case. With the archive present a genuinely
      *  undefined type is STILL reported, so a clean run cannot be mistaken for
      *  suppressed diagnostics. */
