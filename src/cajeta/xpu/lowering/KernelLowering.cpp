@@ -403,6 +403,11 @@ private:
         llvm::Type* elemType = nullptr;     // device scalar (storage) element type
         bool elemSigned = true;             // the only carrier: LLVM ints are signless
         uint32_t rows = 0, cols = 0, use = 0;
+        // Distributed software tile: the tile is spread across the wave's lanes
+        // instead of replicated in every one. `perLane` elements live here;
+        // `waveW` is the width the layout was derived for (see coopDistributeW).
+        bool distributed = false;
+        uint32_t waveW = 0, perLane = 0;
     };
     std::map<std::string, CoopMatrixSlot> coopMatrixSlots;
     // Tile<T,Rows,Cols>: the SPIR-V "Use" (A=0 / B=1 / accumulator=2) is hidden
@@ -411,6 +416,11 @@ private:
     // Set by scanCoopMatrixTiers when this kernel's tiles straddle tiers. A tier
     // belongs to the GEMM, so a straddling kernel demotes every tile to Portable.
     bool coopStraddleDemote = false;
+    // Non-zero when every portable tile in this kernel may be DISTRIBUTED across
+    // the wave rather than replicated per work-item: the value is the wave width
+    // the layout is derived for. Set by scanCoopMatrixTiers, which is the only
+    // place that sees all the tiles and all the verbs at once.
+    uint32_t coopDistributeW = 0;
     // (dtype,shape) keys already announced, so the mma-tiering note fires once.
     std::set<std::string> notedCoopTiers;
 
@@ -3485,6 +3495,47 @@ private:
             mc->getChildren()[0]);
     }
 
+    /**
+     * Can this kernel's portable tiles be DISTRIBUTED across the wave instead of
+     * replicated in every work-item? Replication is what makes a software tile
+     * cost Rows*Cols per lane in scratch and Rows*Cols*Depth MACs per lane, every
+     * lane computing the identical tile.
+     *
+     * The distributed layout, for a wave of W lanes and a C-column tile, with
+     * G = W/C lane groups, lane l owning column c = l%C and group g = l/C:
+     *
+     *   accumulator / A-operand rows   r = g, g+G, g+2G, ...   (R/G per lane)
+     *   B-operand                      B[k][c] for all k       (K per lane)
+     *   A-operand storage              linear stride-W         (R*K/W per lane)
+     *
+     * mma then reads A[g + i*G][k] as a wave shuffle of A_local[i] from lane
+     * g*K + k — a UNIFORM element index with a per-lane source, which is exactly
+     * what waveShuffleDivergent provides. That identity needs K == C, so this is
+     * gated on every portable tile in the kernel being the same square shape.
+     *
+     * All-or-nothing per kernel, because mma reads three slots and they must
+     * share a layout. Any verb beyond splat/load/store/mma disables it rather
+     * than silently taking the replicated path for one tile and not another.
+     */
+    void decideCoopDistribution(
+            const std::set<std::pair<uint32_t, uint32_t>>& shapes,
+            bool verbsOk, bool anyPortable) {
+        coopDistributeW = 0;
+        if (!anyPortable || !verbsOk || shapes.size() != 1) return;
+        const char* env = std::getenv("CAJETA_GPU_COOPMATRIX_DIST");
+        if (!env || std::string(env) != "on") return;   // opt-in while it settles
+        unsigned W = target.distributedCoopMatrixWaveWidth();
+        if (W == 0) return;
+        uint32_t R = shapes.begin()->first, C = shapes.begin()->second;
+        if (R == 0 || C == 0 || R != C) return;         // K == C is the identity
+        if (W % C != 0) return;
+        uint32_t G = W / C;
+        if (G == 0 || R % G != 0) return;
+        if ((R * C) % W != 0) return;
+        coopDistributeW = W;
+        target.prepareDistributedCoopMatrix(fn);
+    }
+
     // Decide the cooperative-matrix tier for the KERNEL rather than per tile:
     // walk the body's tile declarations, ask the target for each base tier, and
     // record whether they straddle. Must run before any slot is built.
@@ -3492,6 +3543,10 @@ private:
         bool anyNative = false;
         bool anyPortable = false;
         bool anyEpilogueVerb = false;
+        // For the distribute decision: every portable tile's shape, and whether
+        // the body uses only the four verbs the distributed layout implements.
+        std::set<std::pair<uint32_t, uint32_t>> portableShapes;
+        bool distributableVerbsOnly = true;
         std::function<void(const AbstractSyntaxNodePtr&)> walk =
             [&](const AbstractSyntaxNodePtr& node) {
                 if (!node) return;
@@ -3505,6 +3560,12 @@ private:
                         mn == "rank1AccumS" ||
                         mn == "scaledAccumI32")
                         anyEpilogueVerb = true;
+                    if (mn == "fromWords" || mn == "scaledAccumInto" ||
+                        mn == "scaledAccumInto2" || mn == "rank1Accum" ||
+                        mn == "scaledAccumIntoS" ||
+                        mn == "scaledAccumInto2S" || mn == "rank1AccumS" ||
+                        mn == "scaledAccumI32")
+                        distributableVerbsOnly = false;
                 }
                 if (auto lvd =
                         std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
@@ -3540,6 +3601,9 @@ private:
                                             anyNative = true;
                                         else
                                             anyPortable = true;
+                                        portableShapes.insert(
+                                            {(uint32_t) r->getValue(),
+                                             (uint32_t) c->getValue()});
                                     }
                                 }
                             }
@@ -3550,6 +3614,8 @@ private:
             };
         walk(root);
         coopStraddleDemote = anyNative && anyPortable;
+        decideCoopDistribution(portableShapes, distributableVerbsOnly,
+                               anyPortable || coopStraddleDemote);
         if (anyEpilogueVerb && anyNative &&
             !target.coopMatrixEpilogueSupported()) {
             coopStraddleDemote = true;
@@ -3616,7 +3682,19 @@ private:
         }
         if (tier == LoweringTarget::ImplTier::Portable) {
             s.software = true;
-            s.matrixType = llvm::ArrayType::get(elem, (uint64_t) s.rows * s.cols);
+            uint64_t slots = (uint64_t) s.rows * s.cols;
+            if (coopDistributeW != 0) {
+                s.distributed = true;
+                s.waveW = coopDistributeW;
+                // B holds one column for every k (K == cols here), the others a
+                // 1/W share of the tile. B is the wide one and sets no more than
+                // cols elements, so every slot is at most max(cols, R*C/W).
+                s.perLane = (s.use == 1)
+                    ? s.rows
+                    : (uint32_t) (slots / s.waveW);
+                slots = s.perLane;
+            }
+            s.matrixType = llvm::ArrayType::get(elem, slots);
             s.alloca = entryAlloca(s.matrixType, nm);
             // A software tile is the WHOLE Rows*Cols matrix, per work-item, and
             // its indices are loop variables, so it lands in scratch and shows up
@@ -4248,6 +4326,211 @@ private:
         unsupported("CooperativeMatrix." + name + "()");
     }
 
+    // ---- distributed software tile -------------------------------------- //
+    // The lane's own identity, as the layout uses it: c = lane % cols is the
+    // column this lane owns, g = lane / cols is its group among G = W/cols.
+    struct LaneId { llvm::Value* lane; llvm::Value* c; llvm::Value* g; };
+    LaneId distLane(const CoopMatrixSlot& s) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Value* lane = target.waveLaneId(builder, mod);
+        llvm::Value* cols = llvm::ConstantInt::get(i32, s.cols);
+        return { lane, builder.CreateURem(lane, cols),
+                 builder.CreateUDiv(lane, cols) };
+    }
+
+    // The (row, col) this lane's element `i` carries, for an accumulator or an
+    // A-operand held row-blocked: row = g + i*G, col = c.
+    void distRowCol(const CoopMatrixSlot& s, const LaneId& id, llvm::Value* i,
+                    llvm::Value*& r, llvm::Value*& c) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        uint32_t G = s.waveW / s.cols;
+        r = builder.CreateAdd(id.g,
+                              builder.CreateMul(i, llvm::ConstantInt::get(i32, G)));
+        c = id.c;
+    }
+
+    llvm::Value* distElemPtr(const CoopMatrixSlot& s, llvm::Value* i) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        return builder.CreateGEP(s.matrixType, s.alloca,
+                                 {llvm::ConstantInt::get(i32, 0), i}, "cm.dist");
+    }
+
+    // One element's buffer index under `layout` (0 row-major, 1 column-major).
+    llvm::Value* distBufIdx(llvm::Value* r, llvm::Value* c, llvm::Value* layout,
+                            llvm::Value* stride, llvm::Value* offset) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Value* rm = builder.CreateAdd(builder.CreateMul(r, stride), c);
+        llvm::Value* cm = builder.CreateAdd(builder.CreateMul(c, stride), r);
+        llvm::Value* sel = builder.CreateSelect(
+            builder.CreateICmpEQ(layout, llvm::ConstantInt::get(i32, 0)), rm, cm);
+        return builder.CreateAdd(offset, sel);
+    }
+
+    /**
+     * splat / load / store / mma on a tile spread across the wave. Each lane
+     * touches its own share, so the work and the scratch both fall by the wave
+     * width; `store` writes each element once instead of W times.
+     *
+     * Returns false when `name` is not one of the four, so the caller can fall
+     * through to the replicated path rather than silently do the wrong thing.
+     */
+    bool lowerCoopMatrixDistributed(const CoopMatrixSlot& slot,
+                                    const std::string& name,
+                                    const std::shared_ptr<MethodCallExpression>& mc,
+                                    llvm::Value*& result) {
+        const auto& args = mc->getParameters();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* elem = slot.elemType;
+        const uint32_t K = slot.rows;          // == cols, enforced at decide time
+        result = llvm::ConstantInt::get(i32, 0);
+
+        if (name == "splat") {
+            if (args.size() != 1)
+                unsupported("CooperativeMatrix.splat expects (value)");
+            llvm::Value* val = coerceTo(lowerExpr(args[0].expression), elem);
+            emitCountedLoop(slot.perLane, [&](llvm::Value* i) {
+                builder.CreateStore(val, distElemPtr(slot, i));
+            });
+            return true;
+        }
+
+        if (name == "load" || name == "store") {
+            if (args.size() != 4)
+                unsupported("CooperativeMatrix." + name +
+                            " expects (Buffer, offset, layout, stride)");
+            llvm::Value* base = nullptr; llvm::Type* bElem = nullptr;
+            if (!resolveBufferBase(args[0].expression, base, bElem))
+                unsupported("CooperativeMatrix." + name +
+                            ": argument must be a Buffer kernel parameter");
+            llvm::Value* offset = coerceTo(lowerExpr(args[1].expression), i32);
+            llvm::Value* layout = coerceTo(lowerExpr(args[2].expression), i32);
+            llvm::Value* stride = coerceTo(lowerExpr(args[3].expression), i32);
+            bool isLoad = (name == "load");
+            LaneId id = distLane(slot);
+            emitCountedLoop(slot.perLane, [&](llvm::Value* i) {
+                llvm::Value* r = nullptr; llvm::Value* c = nullptr;
+                if (slot.use == 1) {
+                    // B: this lane owns column c for every k, so element i is
+                    // (k = i, col = c).
+                    r = i; c = id.c;
+                } else if (slot.use == 0) {
+                    // A: linear stride-W ownership, lin = i*W + lane. Consecutive
+                    // lanes take consecutive columns, so the access coalesces.
+                    llvm::Value* lin = builder.CreateAdd(
+                        builder.CreateMul(i, llvm::ConstantInt::get(i32, slot.waveW)),
+                        id.lane);
+                    llvm::Value* kc = llvm::ConstantInt::get(i32, slot.cols);
+                    r = builder.CreateUDiv(lin, kc);
+                    c = builder.CreateURem(lin, kc);
+                } else {
+                    distRowCol(slot, id, i, r, c);
+                }
+                llvm::Value* bidx = maybeSwizzle(
+                    base, builder.CreateZExt(
+                              distBufIdx(r, c, layout, stride, offset), i64));
+                llvm::Value* bptr =
+                    target.bufferElementPtr(builder, mod, base, bElem, bidx);
+                llvm::Value* tptr = distElemPtr(slot, i);
+                if (isLoad) {
+                    builder.CreateStore(
+                        coerceTo(builder.CreateLoad(bElem, bptr, "cm.ld"), elem),
+                        tptr);
+                } else {
+                    builder.CreateStore(
+                        coerceTo(builder.CreateLoad(elem, tptr, "cm.st"), bElem),
+                        bptr);
+                }
+            });
+            return true;
+        }
+
+        if (name == "mma") {
+            if (args.size() != 2)
+                unsupported("CooperativeMatrix.mma expects (a, b)");
+            CoopMatrixSlot a = resolveCoopMatrixArg(args[0].expression);
+            CoopMatrixSlot b = resolveCoopMatrixArg(args[1].expression);
+            if (!a.distributed || !b.distributed)
+                unsupported("CooperativeMatrix.mma: distributed accumulator with "
+                            "a non-distributed operand");
+            llvm::Type* acc = slot.elemType;
+            bool fp = acc->isFloatingPointTy();
+            llvm::Type* compTy = fp ? llvm::Type::getFloatTy(ctx) : acc;
+            LaneId id = distLane(slot);
+            // A[g + i*G][k] lives at A_local[i] on lane g*K + k: the element
+            // index is UNIFORM across the wave and only the source lane varies,
+            // which is what waveShuffleDivergent is for.
+            emitCountedLoop(slot.perLane, [&](llvm::Value* i) {
+                llvm::Value* sumPtr = entryAlloca(compTy, "cm.dsum");
+                builder.CreateStore(
+                    coerceTo(builder.CreateLoad(acc, distElemPtr(slot, i)), compTy),
+                    sumPtr);
+                llvm::Value* aLocal =
+                    builder.CreateLoad(a.elemType, distElemPtr(a, i), "cm.a");
+                emitCountedLoop(K, [&](llvm::Value* k) {
+                    llvm::Value* src = builder.CreateAdd(
+                        builder.CreateMul(id.g, llvm::ConstantInt::get(i32, K)), k);
+                    llvm::Value* av = coerceTo(
+                        waveShuffleValue(aLocal, src, a.elemType), compTy);
+                    llvm::Value* bv = coerceTo(
+                        builder.CreateLoad(b.elemType, distElemPtr(b, k), "cm.b"),
+                        compTy);
+                    llvm::Value* prod =
+                        fp ? builder.CreateFMul(av, bv) : builder.CreateMul(av, bv);
+                    llvm::Value* cur = builder.CreateLoad(compTy, sumPtr);
+                    builder.CreateStore(
+                        fp ? builder.CreateFAdd(cur, prod)
+                           : builder.CreateAdd(cur, prod),
+                        sumPtr);
+                });
+                builder.CreateStore(
+                    coerceTo(builder.CreateLoad(compTy, sumPtr), acc),
+                    distElemPtr(slot, i));
+            });
+            return true;
+        }
+        return false;
+    }
+
+    // Shuffle one tile element from `srcLane`. The wave ops carry i32, so a
+    // narrower or floating element is punned through an i32 and punned back.
+    llvm::Value* waveShuffleValue(llvm::Value* v, llvm::Value* srcLane,
+                                  llvm::Type* elem) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Value* raw = v;
+        if (elem->isFloatTy())        raw = builder.CreateBitCast(v, i32);
+        else if (elem->isDoubleTy()) {
+            // f64 needs two lanes' worth of payload: shuffle each half.
+            llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+            llvm::Value* bits = builder.CreateBitCast(v, i64);
+            llvm::Value* lo = builder.CreateTrunc(bits, i32);
+            llvm::Value* hi = builder.CreateTrunc(
+                builder.CreateLShr(bits, llvm::ConstantInt::get(i64, 32)), i32);
+            llvm::Value* slo = target.waveShuffleDivergent(builder, mod, lo, srcLane);
+            llvm::Value* shi = target.waveShuffleDivergent(builder, mod, hi, srcLane);
+            usedSubgroupOp_ = true;
+            llvm::Value* joined = builder.CreateOr(
+                builder.CreateZExt(slo, i64),
+                builder.CreateShl(builder.CreateZExt(shi, i64),
+                                  llvm::ConstantInt::get(i64, 32)));
+            return builder.CreateBitCast(joined, elem);
+        }
+        else if (elem->isHalfTy() || elem->isBFloatTy())
+            raw = builder.CreateZExt(
+                builder.CreateBitCast(v, llvm::Type::getInt16Ty(ctx)), i32);
+        else if (elem->isIntegerTy() && elem->getIntegerBitWidth() < 32)
+            raw = builder.CreateZExt(v, i32);
+        llvm::Value* sh = target.waveShuffleDivergent(builder, mod, raw, srcLane);
+        usedSubgroupOp_ = true;
+        if (elem->isFloatTy()) return builder.CreateBitCast(sh, elem);
+        if (elem->isHalfTy() || elem->isBFloatTy())
+            return builder.CreateBitCast(
+                builder.CreateTrunc(sh, llvm::Type::getInt16Ty(ctx)), elem);
+        if (elem->isIntegerTy() && elem->getIntegerBitWidth() < 32)
+            return builder.CreateTrunc(sh, elem);
+        return sh;
+    }
+
     // Software cooperative-matrix ops: the slot is a flat `[R*C x elem]` tile.
     // splat fills it, load/store gather/scatter it from a Buffer, and mma runs a
     // triple loop; FP GEMMs accumulate in f32 and narrow on store.
@@ -4260,6 +4543,15 @@ private:
         llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
         llvm::Type* elem = slot.elemType;
         const uint32_t R = slot.rows, C = slot.cols;
+
+        if (slot.distributed) {
+            llvm::Value* r = nullptr;
+            if (lowerCoopMatrixDistributed(slot, name, mc, r)) return r;
+            // decideCoopDistribution admits only splat/load/store/mma, so
+            // arriving here means that gate and this dispatch disagree.
+            unsupported("CooperativeMatrix." + name +
+                        "() on a distributed software tile");
+        }
 
         if (name == "splat") {
             if (args.size() != 1)

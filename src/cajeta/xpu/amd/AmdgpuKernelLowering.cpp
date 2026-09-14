@@ -810,6 +810,14 @@ public:
         fn->addFnAttr("target-features", "+wavefrontsize32");
     }
 
+    // A distributed software tile derives its lane mapping from the wave width at
+    // COMPILE time, so the width has to be pinned exactly as the WMMA encoding
+    // pins it. wave32 is the one RDNA3+ guarantees.
+    unsigned distributedCoopMatrixWaveWidth() override { return 32; }
+    void prepareDistributedCoopMatrix(llvm::Function* fn) override {
+        fn->addFnAttr("target-features", "+wavefrontsize32");
+    }
+
     // The per-lane fragment type for each tile role (see the CM7 layout above).
     llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type* elem,
                                uint32_t /*rows*/, uint32_t /*cols*/,

@@ -558,6 +558,86 @@ TEST(XpuKernelManifest, softwareCoopTileSpillNamesTheTileNotRegisters) {
     EXPECT_EQ(err.find("a spilling kernel is not tuned"), std::string::npos) << err;
 }
 
+// A DISTRIBUTED software tile spreads the tile across the wave instead of
+// replicating it in every work-item, so the scratch goes away entirely: a
+// 16x16 f32 GEMM drops from 3076 bytes per work-item to zero. Opt-in while it
+// settles; the env var is read in decideCoopDistribution.
+TEST(XpuKernelManifest, distributedSoftwareCoopTileRemovesTheScratch) {
+    CAJETA_SKIP_IF_NO_HIP();
+    auto footprintWith = [](const char* mode) {
+        if (mode) setenv("CAJETA_GPU_COOPMATRIX_DIST", mode, 1);
+        else      unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+        Compiler compiler;
+        auto module = compileForInspection(
+            compiler, std::string(kImports) + coopF32Source() + kEnd);
+        auto k = findMethod(module->getStructures()["test.M"], "coopf32");
+        EXPECT_NE(k, nullptr);
+        llvm::LLVMContext ctx;
+        llvm::Module host("xpu_manifest_host", ctx);
+        std::vector<KernelManifest> out;
+        testing::internal::CaptureStderr();
+        cajeta::xpu::amd::emitKernelRegistration({k}, host, "gfx1151", {}, &out);
+        testing::internal::GetCapturedStderr();
+        unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+        return out;
+    };
+    auto replicated = footprintWith(nullptr);
+    ASSERT_EQ(replicated.size(), 1u);
+    ASSERT_TRUE(replicated[0].spillBytes.has_value());
+    // The control: without the flag the tile IS replicated and DOES spill, so a
+    // zero below means the distribution worked rather than that the kernel never
+    // had scratch to begin with.
+    EXPECT_GT(*replicated[0].spillBytes, 3000u) << cajeta::xpu::toJson(replicated[0]);
+
+    auto distributed = footprintWith("on");
+    ASSERT_EQ(distributed.size(), 1u);
+    ASSERT_TRUE(distributed[0].spillBytes.has_value());
+    EXPECT_EQ(*distributed[0].spillBytes, 0u) << cajeta::xpu::toJson(distributed[0]);
+    // A distributed tile derives its lane mapping at compile time, so the wave
+    // width must be pinned exactly as the WMMA encoding pins it.
+    EXPECT_EQ(distributed[0].waveWidth.value_or(0), 32u);
+}
+
+// Distribution is all-or-nothing per kernel: mma reads three slots and they
+// must share a layout, and the lane mapping needs K == cols. A kernel holding
+// two different portable shapes therefore stays REPLICATED — the guard has to
+// decline, not distribute one tile and not another.
+TEST(XpuKernelManifest, mixedShapeKernelIsNotDistributed) {
+    CAJETA_SKIP_IF_NO_HIP();
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    Compiler compiler;
+    std::string src = std::string(kImports) +
+        "    @Kernel\n"
+        "    public static void twoShapes(KernelBuffer<float32> c,\n"
+        "                                 KernelBuffer<float32> a,\n"
+        "                                 KernelBuffer<float32> b, uint32 cols) {\n"
+        "        CooperativeMatrix<float32,16,16,2> mc;\n"
+        "        mc.splat(0.0f);\n"
+        "        CooperativeMatrix<float32,16,16,0> ma;\n"
+        "        CooperativeMatrix<float32,16,16,1> mb;\n"
+        "        ma.load(a, 0, 0, cols);\n"
+        "        mb.load(b, 0, 0, cols);\n"
+        "        mc.mma(ma, mb);\n"
+        "        CooperativeMatrix<float32,32,32,2> big;\n"
+        "        big.splat(1.0f);\n"
+        "        big.store(c, 0, 0, cols);\n"
+        "        mc.store(c, 0, 0, cols);\n"
+        "    }\n" + kEnd;
+    auto module = compileForInspection(compiler, src);
+    auto k = findMethod(module->getStructures()["test.M"], "twoShapes");
+    ASSERT_NE(k, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module host("xpu_manifest_host", ctx);
+    std::vector<KernelManifest> out;
+    testing::internal::CaptureStderr();
+    cajeta::xpu::amd::emitKernelRegistration({k}, host, "gfx1151", {}, &out);
+    std::string err = testing::internal::GetCapturedStderr();
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    ASSERT_EQ(out.size(), 1u);
+    // Still replicated: 3 x 16x16 x 4 + 32x32 x 4 = 7168 bytes in scratch.
+    EXPECT_GT(out[0].spillBytes.value_or(0), 7000u) << err;
+}
+
 // The other half: a kernel that spills with NO software tile must still get the
 // generic register-pressure advice. A branch that fires on everything is not a
 // diagnosis.
