@@ -1127,15 +1127,32 @@ void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len) {
 // Is `kernelName` LAUNCHABLE on the active backend (device code registered, and on
 // Vulkan its kparams too)? Lets a route degrade rather than issue a loud no-op.
 // STATIC native (no `this`); `nameArr` is an int8[] whose payload starts at +8.
+void* __cajeta_xpu_lookup_cpu_kernel(const char* name);
+
 int32_t __cajeta_xpu_kernel_available(void* nameArr, int64_t len) {
     if (!nameArr || len <= 0 || len > 255) return 0;
     char name[256];
     memcpy(name, (const char*) nameArr + 8, (size_t) len);
     name[len] = 0;
     int backend = cajeta_xpu_active_backend();
-    // Registry semantics differ: Vulkan registers one SPIR-V module PER KERNEL, while
-    // HIP/CUDA register per-unit fatbins, resolve at launch, and compile every kernel
-    // — so availability on those backends is unconditional.
+    // Registry semantics differ: Vulkan registers one SPIR-V module PER KERNEL and the
+    // CPU backend one THUNK per kernel, while HIP/CUDA register per-unit fatbins,
+    // resolve at launch, and compile every kernel — so availability is unconditional
+    // on those two and a real question on the other two.
+    //
+    // CPU used to fall into the unconditional arm, and that was a silent-wrong-answer
+    // bug, not a cosmetic one: the CPU backend SKIPS kernels it cannot lower (a
+    // barrier under divergent control flow, a cooperative-matrix tile), so
+    // `kernelAvailable` answered yes for a kernel whose launch then printed
+    // "no registered CPU kernel" and returned without writing the output buffer. A
+    // caller that uses this to pick a route — which is the entire point of the
+    // function — selected the missing kernel and read back whatever was in the
+    // buffer. Measured 2026-09-14 on cajeta-llm: the Q8_0 Mw8 prefill route was
+    // chosen on cpu, both its kernels no-opped, and the engine returned zeros as an
+    // answer with nothing failing.
+    if (backend == CAJ_XPU_CPU) {
+        return __cajeta_xpu_lookup_cpu_kernel(name) ? 1 : 0;
+    }
     if (backend != CAJ_XPU_VULKAN) return 1;
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(name, backend);
