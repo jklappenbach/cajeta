@@ -23,6 +23,19 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <cstdio>
 
+namespace {
+    // Per-work-item bytes of portable software CooperativeMatrix storage the
+    // lowering recorded on this kernel; 0 when it used none.
+    uint64_t softwareCoopTileBytesOf(const llvm::Function* kfn) {
+        if (!kfn || !kfn->hasFnAttribute("cajeta-cooptile-bytes")) return 0;
+        llvm::StringRef v =
+            kfn->getFnAttribute("cajeta-cooptile-bytes").getValueAsString();
+        uint64_t bytes = 0;
+        if (v.getAsInteger(10, bytes)) return 0;
+        return bytes;
+    }
+} // namespace
+
 namespace cajeta {
 namespace xpu {
 namespace amd {
@@ -129,7 +142,7 @@ namespace amd {
                     }
                     fillOccupancy(m, ah.arch, pinned);
                     applyAccess(m, access);
-                    warnIfSpilling(m);
+                    warnIfSpilling(m, softwareCoopTileBytesOf(kfn));
                     kernelManifests.push_back(std::move(m));
                 }
             }

@@ -502,6 +502,85 @@ TEST(XpuKernelManifest, spillingKernelRecordsSpillAndWarns) {
     EXPECT_EQ(quiet[0].spillBytes.value_or(1), 0u);
 }
 
+// A float32 cooperative matmul. AMD exposes no native 16x16 config for an f32
+// A/B operand, so all three tiles take the PORTABLE software tier, where a tile
+// is the whole Rows*Cols array in scratch, per work-item: 3 x 256 x 4 = 3072 B.
+std::string coopF32Source() {
+    return
+        "    @Kernel\n"
+        "    public static void coopf32(KernelBuffer<float32> c, KernelBuffer<float32> a,\n"
+        "                               KernelBuffer<float32> b, uint32 cols, uint32 depth) {\n"
+        "        uint32 ktiles = depth / 16;\n"
+        "        CooperativeMatrix<float32,16,16,2> mc;\n"
+        "        mc.splat(0.0f);\n"
+        "        CooperativeMatrix<float32,16,16,0> ma;\n"
+        "        CooperativeMatrix<float32,16,16,1> mb;\n"
+        "        uint32 kk = 0;\n"
+        "        while (kk < ktiles) {\n"
+        "            ma.load(a, kk * 16, 0, depth);\n"
+        "            mb.load(b, kk * 16 * cols, 0, cols);\n"
+        "            mc.mma(ma, mb);\n"
+        "            kk = kk + 1;\n"
+        "        }\n"
+        "        mc.store(c, 0, 0, cols);\n"
+        "    }\n";
+}
+
+// The spill warning must tell the truth about WHY. A portable software
+// CooperativeMatrix IS an in-scratch array, so "cut live registers or pin a
+// smaller block" is advice the author cannot act on — and a warning nobody can
+// act on is one everybody learns to skip. Three stdlib Ewise.matmul kernels
+// spilled 1232 / 3076 / 6152 bytes and printed on every amdgpu build of
+// cajeta-llm for weeks, read as noise, because of exactly that.
+TEST(XpuKernelManifest, softwareCoopTileSpillNamesTheTileNotRegisters) {
+    CAJETA_SKIP_IF_NO_HIP();
+    Compiler compiler;
+    auto module = compileForInspection(compiler,
+                                       std::string(kImports) + coopF32Source() + kEnd);
+    auto k = findMethod(module->getStructures()["test.M"], "coopf32");
+    ASSERT_NE(k, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module host("xpu_manifest_host", ctx);
+    std::vector<KernelManifest> out;
+    testing::internal::CaptureStderr();
+    cajeta::xpu::amd::emitKernelRegistration({k}, host, "gfx1151", {}, &out);
+    std::string err = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(out.size(), 1u);
+    ASSERT_TRUE(out[0].spillBytes.has_value());
+    EXPECT_GT(*out[0].spillBytes, 0u) << cajeta::xpu::toJson(out[0]);
+    EXPECT_NE(err.find("[xpu-kernel-spill]"), std::string::npos) << err;
+    EXPECT_NE(err.find("PORTABLE SOFTWARE CooperativeMatrix"), std::string::npos)
+        << err;
+    // The declared tile bytes are named, so the reader can see the scratch
+    // accounted for rather than guess at it.
+    EXPECT_NE(err.find("3072 bytes"), std::string::npos) << err;
+    // And the misleading remedy is NOT offered for this kernel.
+    EXPECT_EQ(err.find("a spilling kernel is not tuned"), std::string::npos) << err;
+}
+
+// The other half: a kernel that spills with NO software tile must still get the
+// generic register-pressure advice. A branch that fires on everything is not a
+// diagnosis.
+TEST(XpuKernelManifest, ordinarySpillStillNamesRegisterPressure) {
+    CAJETA_SKIP_IF_NO_HIP();
+    Compiler compiler;
+    auto module = compileForInspection(compiler,
+                                       std::string(kImports) + spillerSource() + kEnd);
+    auto k = findMethod(module->getStructures()["test.M"], "spiller");
+    ASSERT_NE(k, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module host("xpu_manifest_host", ctx);
+    std::vector<KernelManifest> out;
+    testing::internal::CaptureStderr();
+    cajeta::xpu::amd::emitKernelRegistration({k}, host, "gfx1151", {}, &out);
+    std::string err = testing::internal::GetCapturedStderr();
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_GT(out[0].spillBytes.value_or(0), 0u);
+    EXPECT_NE(err.find("a spilling kernel is not tuned"), std::string::npos) << err;
+    EXPECT_EQ(err.find("PORTABLE SOFTWARE CooperativeMatrix"), std::string::npos)
+        << err;
+}
+
 TEST(XpuKernelManifest, noSpillNoWarning) {
     CAJETA_SKIP_IF_NO_HIP();
     Compiler compiler;

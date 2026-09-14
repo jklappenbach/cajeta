@@ -233,8 +233,31 @@ namespace xpu {
                 occupancyLimiterName(model, m.feasibleBlocks.front(), *m.vgpr, lds);
     }
 
-    bool warnIfSpilling(const KernelManifest& m) {
+    bool warnIfSpilling(const KernelManifest& m, uint64_t softwareCoopTileBytes) {
         if (!m.spillBytes || *m.spillBytes == 0) return false;
+        // A portable software CooperativeMatrix IS an in-scratch array: the whole
+        // Rows*Cols tile, per work-item, indexed by loop variables. When that
+        // accounts for the scratch, the generic advice below is not just useless
+        // but misleading, and a warning nobody can act on is a warning everybody
+        // learns to skip. Name the cause and the only real remedy: a dtype
+        // combination the backend has a native config for.
+        if (softwareCoopTileBytes > 0 &&
+            softwareCoopTileBytes * 2 >= (uint64_t) *m.spillBytes) {
+            std::fprintf(stderr,
+                         "cajeta: warning: [xpu-kernel-spill] %s on %s: %u bytes "
+                         "of scratch per work-item (vgpr=%u). The kernel declares "
+                         "%llu bytes of PORTABLE SOFTWARE CooperativeMatrix per "
+                         "work-item — the whole Rows*Cols tile, because this "
+                         "backend exposes no native config for its dtype — so the "
+                         "scratch is the tile, not untuned register pressure. "
+                         "Cutting live registers or pinning a smaller block will "
+                         "not move it; use a dtype combination the backend "
+                         "implements natively (see the [mma-tiering] note)\n",
+                         m.kernel.c_str(), m.target.c_str(), *m.spillBytes,
+                         m.vgpr.value_or(0),
+                         (unsigned long long) softwareCoopTileBytes);
+            return true;
+        }
         std::fprintf(stderr,
                      "cajeta: warning: [xpu-kernel-spill] %s on %s: %u bytes of "
                      "scratch per work-item (vgpr=%u); a spilling kernel is not "

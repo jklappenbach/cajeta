@@ -3618,6 +3618,13 @@ private:
             s.software = true;
             s.matrixType = llvm::ArrayType::get(elem, (uint64_t) s.rows * s.cols);
             s.alloca = entryAlloca(s.matrixType, nm);
+            // A software tile is the WHOLE Rows*Cols matrix, per work-item, and
+            // its indices are loop variables, so it lands in scratch and shows up
+            // as a spill. Record the bytes on the function: the spill warning is
+            // otherwise read as "this kernel is untuned", and its advice — cut
+            // live registers, pin a smaller block — is the wrong remedy here.
+            noteSoftwareCoopTileBytes(
+                (uint64_t) mod.getDataLayout().getTypeAllocSize(s.matrixType));
             if (s.use == 0)
                 noteSoftwareCoopMatrix(elem, s.rows, s.cols,
                                        baseTier == LoweringTarget::ImplTier::Native
@@ -3629,6 +3636,19 @@ private:
             target.prepareNativeCoopMatrix(fn);   // e.g. AMD: mark the kernel wave32
         }
         return s;
+    }
+
+    // Running total of software coop-tile bytes per work-item, kept on the
+    // function so the backend's spill warning can name the real cause.
+    void noteSoftwareCoopTileBytes(uint64_t bytes) {
+        uint64_t total = bytes;
+        if (fn->hasFnAttribute("cajeta-cooptile-bytes")) {
+            llvm::StringRef cur =
+                fn->getFnAttribute("cajeta-cooptile-bytes").getValueAsString();
+            uint64_t prev = 0;
+            if (!cur.getAsInteger(10, prev)) total += prev;
+        }
+        fn->addFnAttr("cajeta-cooptile-bytes", std::to_string(total));
     }
 
     // The cajeta dtype name for a device scalar type, for diagnostics.

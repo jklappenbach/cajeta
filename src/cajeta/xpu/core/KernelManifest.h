@@ -101,7 +101,11 @@ namespace xpu {
 
     // Warns on stderr when spillBytes > 0, so a spilling kernel is never silently
     // accepted as tuned. True if it warned.
-    bool warnIfSpilling(const KernelManifest& m);
+    /** `softwareCoopTileBytes` = per-work-item bytes of portable software
+     *  CooperativeMatrix storage, from the function's cajeta-cooptile-bytes
+     *  attribute; 0 when the kernel has none. */
+    bool warnIfSpilling(const KernelManifest& m,
+                        uint64_t softwareCoopTileBytes = 0);
 
     // Embeds `m` as JSON in `host` and emits, at the builder's insert point in a
     // registration ctor, the __cajeta_xpu_register_kernel_manifest call that lets
