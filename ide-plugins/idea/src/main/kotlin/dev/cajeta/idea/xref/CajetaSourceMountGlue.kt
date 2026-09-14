@@ -96,6 +96,98 @@ object CajetaSourceMountGlue {
             identity, defaultCacheRoot(), stdlibExtractor(compilerPath))
     }
 
+    /**
+     * The project's own build artifact for the lint classpath (Unit 2.2.1), or
+     * null when there is none to use — see [OwnArchive.resolve] for what null
+     * covers. Cached per project so a subprocess does not run on every
+     * keystroke (2.3.2).
+     *
+     * A found archive stays cached while its mtime is unchanged; an absent one
+     * is re-checked after [ABSENT_TTL_MS] so a project built mid-session is
+     * picked up without an IDE restart (spec §4.4).
+     */
+    fun ownArchive(compilerPath: String, basePath: String?): Path? {
+        if (basePath == null || compilerPath.isBlank()) return null
+        val base = File(basePath)
+        if (!base.isDirectory) return null
+
+        return ownArchiveCache.get(basePath, mtimeOf = ::mtimeOf) {
+            OwnArchive.resolve(
+                runArtifactPath = { flavor -> artifactPath(compilerPath, base, flavor) },
+                exists = { Files.isRegularFile(it) },
+            )
+        }
+    }
+
+    private fun mtimeOf(p: Path): Long? =
+        runCatching { Files.getLastModifiedTime(p).toMillis() }.getOrNull()
+
+    /** The full lint classpath: resolved dependencies, then the own archive. */
+    fun lintClasspath(compilerPath: String, basePath: String?): List<Path> =
+        OwnArchive.classpath(dependencyArchives(basePath), ownArchive(compilerPath, basePath))
+
+    /**
+     * Whether the own archive is usable, for reporting (Unit 4.2.2).
+     *
+     * The degraded state looks exactly like the bug this spec fixes — without the
+     * archive a project's own types do not resolve — so an unbuilt project shows
+     * the same red underlines and the developer cannot tell which it is.
+     *
+     * Staleness is measured against the MAIN source root, because that is what
+     * the archive is built from; a newer test file does not make the archive
+     * stale. The walk reads mtimes only, no file contents, and happens once per
+     * lint — negligible beside the lint subprocess itself.
+     */
+    fun archiveHealth(compilerPath: String, basePath: String?): ArchiveHealth.State {
+        if (basePath == null || compilerPath.isBlank()) return ArchiveHealth.State.OK
+        val base = File(basePath)
+        if (!base.isDirectory) return ArchiveHealth.State.OK
+        val resolution = OwnArchive.resolveWith(
+            runArtifactPath = { flavor -> artifactPath(compilerPath, base, flavor) },
+            exists = { Files.isRegularFile(it) },
+        )
+        val mainRoot = dev.cajeta.idea.buildtool.CajetaRoots.conventionalSourceRoot(basePath)
+        return ArchiveHealth.assess(
+            archiveMtime = resolution.path?.let(::mtimeOf),
+            newestSourceMtime = newestSourceMtime(mainRoot),
+            declared = resolution.declared,
+        )
+    }
+
+    /** Newest mtime among `.cajeta` files under [root], or null if there are none. */
+    private fun newestSourceMtime(root: String): Long? {
+        val dir = File(root)
+        if (!dir.isDirectory) return null
+        return dir.walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".cajeta") }
+            .map { it.lastModified() }
+            .maxOrNull()
+    }
+
+    /**
+     * `cajeta artifact-path --flavor=<f>` in the project directory → (exit, stdout).
+     *
+     * Run with the project as the working directory rather than passing
+     * `--manifest`: the printed path is resolved against the PROCESS CWD, not
+     * against the manifest's own directory, so `--manifest=/p/cajeta.json` from
+     * elsewhere prints `<cwd>/build/archive/...` — a path that does not exist.
+     * Measured 2026-09-13.
+     */
+    private fun artifactPath(compilerPath: String, base: File, flavor: String): Pair<Int, String> {
+        val p = ProcessBuilder(compilerPath, "artifact-path", "--flavor=$flavor")
+            .directory(base)
+            .redirectErrorStream(true)
+            .start()
+        val out = p.inputStream.bufferedReader().readText()
+        if (!p.waitFor(30, TimeUnit.SECONDS)) {
+            p.destroyForcibly()
+            return -1 to ""
+        }
+        return p.exitValue() to out
+    }
+
+    private val ownArchiveCache = OwnArchive.Cache()
+
     private fun run(argv: List<String>): Int = try {
         val p = ProcessBuilder(argv).redirectErrorStream(true).start()
         p.inputStream.bufferedReader().readText()
