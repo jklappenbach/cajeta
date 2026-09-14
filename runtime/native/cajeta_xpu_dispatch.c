@@ -1,3 +1,4 @@
+#include <string.h>
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
 // --- registered kernel modules (device images keyed by entry name + backend) -
 // Each backend's ctor registers ITS image per @Kernel; backend -1 matches any requester.
@@ -945,8 +946,78 @@ enum {
     CAJ_MEMKIND_PINNED  = 1,
     CAJ_MEMKIND_UNIFIED = 2
 };
+// --- CAJETA_XPU_ALLOC_TRACE: a device-memory ledger attributed to cajeta
+// source lines. Every buffer alloc/free prints its bytes, the running total,
+// and the innermost cajeta frame OUTSIDE cajeta.xpu (the site that asked),
+// plus that frame's caller. Process RSS cannot see device memory on any
+// backend (hipMalloc on a UMA part is GTT, pinned outside the process), so
+// "who allocated the other N GB" has no instrument without this.
+#include <pthread.h>
+extern int32_t __cajeta_stack_depth(void);
+extern const char* __cajeta_stack_type(int32_t i);
+extern const char* __cajeta_stack_method(int32_t i);
+extern const char* __cajeta_stack_file(int32_t i);
+extern int32_t __cajeta_stack_line(int32_t i);
+static int caj_alloc_trace_on(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("CAJETA_XPU_ALLOC_TRACE") ? 1 : 0;
+    return on;
+}
+// handle -> bytes, so a free can report what it released. Open addressing
+// over a fixed table; a run allocates thousands of buffers, not millions.
+#define CAJ_LEDGER_SLOTS 65536
+static struct { int64_t h; uint64_t b; } caj_ledger[CAJ_LEDGER_SLOTS];
+static uint64_t caj_ledger_total;
+static pthread_mutex_t caj_ledger_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t caj_ledger_slot(int64_t h) {
+    uint64_t x = (uint64_t) h; x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33;
+    return (uint32_t) (x & (CAJ_LEDGER_SLOTS - 1));
+}
+static void caj_ledger_site(char* out, size_t cap) {
+    int32_t n = __cajeta_stack_depth();
+    int32_t i = 0;
+    // Skip frames inside cajeta.xpu itself: the constructor is never the answer.
+    while (i < n && strncmp(__cajeta_stack_type(i), "cajeta.xpu.", 11) == 0) i++;
+    if (i >= n) { snprintf(out, cap, "<no cajeta frame>"); return; }
+    const char* f0 = __cajeta_stack_file(i);
+    const char* b0 = f0; for (const char* q = f0; *q; q++) if (*q == '/') b0 = q + 1;
+    int w = snprintf(out, cap, "%s.%s(%s:%d)", __cajeta_stack_type(i),
+                     __cajeta_stack_method(i), b0, __cajeta_stack_line(i));
+    if (i + 1 < n && w > 0 && (size_t) w < cap) {
+        const char* f1 = __cajeta_stack_file(i + 1);
+        const char* b1 = f1; for (const char* q = f1; *q; q++) if (*q == '/') b1 = q + 1;
+        snprintf(out + w, cap - (size_t) w, " <- %s.%s(%s:%d)", __cajeta_stack_type(i + 1),
+                 __cajeta_stack_method(i + 1), b1, __cajeta_stack_line(i + 1));
+    }
+}
+static void caj_ledger_note(int64_t h, uint64_t bytes, int32_t kind, int alloc) {
+    char site[512];
+    caj_ledger_site(site, sizeof site);
+    pthread_mutex_lock(&caj_ledger_mu);
+    uint32_t s = caj_ledger_slot(h);
+    if (alloc) {
+        for (uint32_t k = 0; k < CAJ_LEDGER_SLOTS; k++, s = (s + 1) & (CAJ_LEDGER_SLOTS - 1))
+            if (caj_ledger[s].h == 0) { caj_ledger[s].h = h; caj_ledger[s].b = bytes; break; }
+        caj_ledger_total += bytes;
+    } else {
+        for (uint32_t k = 0; k < CAJ_LEDGER_SLOTS; k++, s = (s + 1) & (CAJ_LEDGER_SLOTS - 1)) {
+            if (caj_ledger[s].h == h) { bytes = caj_ledger[s].b; caj_ledger[s].h = 0; break; }
+            if (caj_ledger[s].h == 0) break;
+        }
+        caj_ledger_total -= bytes;
+    }
+    fprintf(stderr, "[xpu-alloc] %c%llu kind=%d total=%llu  %s\n", alloc ? '+' : '-',
+            (unsigned long long) bytes, kind, (unsigned long long) caj_ledger_total, site);
+    pthread_mutex_unlock(&caj_ledger_mu);
+}
+static int64_t caj_buffer_alloc_raw(uint64_t byteCount, int32_t kind);
 int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind) {
     (void) self;
+    int64_t h = caj_buffer_alloc_raw(byteCount, kind);
+    if (h && caj_alloc_trace_on()) caj_ledger_note(h, byteCount, kind, 1);
+    return h;
+}
+static int64_t caj_buffer_alloc_raw(uint64_t byteCount, int32_t kind) {
     if (byteCount == 0) return 0;
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA: {
@@ -1335,6 +1406,7 @@ void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
 void __cajeta_xpu_buffer_free(void* self, int64_t handle, int32_t kind) {
     (void) self;
     if (!handle) return;
+    if (caj_alloc_trace_on()) caj_ledger_note(handle, 0, kind, 0);
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA:
             // Pinned frees with cuMemFreeHost; device + managed with cuMemFree.
