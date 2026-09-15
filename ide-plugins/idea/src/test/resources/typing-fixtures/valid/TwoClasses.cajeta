@@ -1,0 +1,15 @@
+package demo;
+
+public final class Alpha {
+    public int32 run() {
+        int32 x = 1;
+        return x;
+    }
+}
+
+final class Beta {
+    public int32 go() {
+        int32 y = 2;
+        return y;
+    }
+}
