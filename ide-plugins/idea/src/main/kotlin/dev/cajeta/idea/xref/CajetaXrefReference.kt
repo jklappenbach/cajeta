@@ -49,9 +49,13 @@ class CajetaXrefReference(element: CajetaIdentifier) :
             val col = off - doc.getLineStartOffset(line - 1)
             val rel = xrefRelPath(file)
             if (rel != null) {
-                val use = XrefQuery.usesIn(project, rel).firstOrNull {
+                val uses = XrefQuery.usesIn(project, rel).filter {
                     intOf(it, "line") == line && intOf(it, "col") == col
                 }
+                // A constructor site carries both the call edge and the created
+                // type's reference; the constructor is the more specific target.
+                val use = uses.firstOrNull { it.opt("callee") is Json.Str }
+                    ?: uses.firstOrNull()
                 if (use != null) {
                     val decls = when {
                         use.opt("target") is Json.Str ->

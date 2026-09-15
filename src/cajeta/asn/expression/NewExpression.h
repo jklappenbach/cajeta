@@ -142,6 +142,10 @@ namespace cajeta {
                 }
             }
             recordCreatedTypeXref(createdTypeToken);
+            if (creatorRest && createdTypeToken)
+                creatorRest->setXrefAnchor(
+                    (int) createdTypeToken->getLine(),
+                    (int) createdTypeToken->getCharPositionInLine());
         }
 
         const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }

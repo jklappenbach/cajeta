@@ -112,6 +112,59 @@ class CajetaXrefReferenceTest : BasePlatformTestCase() {
             l1, doc.getLineNumber(resolved.textOffset) + 1)
     }
 
+    // ---- xref-lint-emission-gap 7.1.6 — constructor wins over the type -----------
+
+    fun testAConstructorSiteResolvesToTheConstructorNotTheClass() {
+        val boxText = "package demo;\npublic class Box {\n" +
+            "    public Box(int32 n) {\n    }\n}\n"
+        myFixture.addFileToProject("demo/Box.cajeta", boxText)
+        val userText = "package demo;\npublic class Maker {\n" +
+            "    public void go() {\n        Box b = heap Box(8);\n    }\n}\n"
+        val user = myFixture.addFileToProject("demo/Maker.cajeta", userText)
+
+        val ctorKey = "demo.Box::Box(pointer,int32)"
+        val (cl, cc) = lineColOf(boxText, "Box(int32")
+        val (kl, kc) = lineColOf(boxText, "class Box")
+        val (ul, uc) = lineColOf(userText, "Box(8")
+        addShard("demo_Box",
+            line("declarations",
+                """{"fqn": "demo.Box", "kind": "class", "file": "demo/Box.cajeta", "line": $kl, "col": ${kc + 6}}"""),
+            line("declarations",
+                """{"fqn": "demo.Box.Box", "kind": "constructor", "owner": "demo.Box", "overloadKey": "$ctorKey", "file": "demo/Box.cajeta", "line": $cl, "col": $cc}"""))
+        // Both records sit on the SAME identifier, which is what Unit 7 creates.
+        addShard("demo_Maker",
+            line("references",
+                """{"target": "demo.Box", "kind": "type", "file": "demo/Maker.cajeta", "line": $ul, "col": $uc}"""),
+            line("calls",
+                """{"callee": "$ctorKey", "caller": "demo.Maker::go(pointer)", "file": "demo/Maker.cajeta", "line": $ul, "col": $uc}"""))
+
+        val resolved = refAt(user, "Box(8")!!.resolve()
+        assertNotNull("constructor site did not resolve", resolved)
+        val doc = myFixture.getDocument(resolved!!.containingFile)!!
+        assertEquals("resolved to the class, not the constructor",
+            cl, doc.getLineNumber(resolved.textOffset) + 1)
+    }
+
+    fun testATypeSiteWithNoCallStillResolvesToTheClass() {
+        val boxText = "package demo;\npublic class Crate {\n}\n"
+        myFixture.addFileToProject("demo/Crate.cajeta", boxText)
+        val userText = "package demo;\npublic class Holder {\n    Crate c;\n}\n"
+        val user = myFixture.addFileToProject("demo/Holder.cajeta", userText)
+
+        val (dl, dc) = lineColOf(boxText, "Crate")
+        val (ul, uc) = lineColOf(userText, "Crate")
+        addShard("demo_Crate",
+            line("declarations",
+                """{"fqn": "demo.Crate", "kind": "class", "file": "demo/Crate.cajeta", "line": $dl, "col": $dc}"""))
+        addShard("demo_Holder",
+            line("references",
+                """{"target": "demo.Crate", "kind": "type", "file": "demo/Holder.cajeta", "line": $ul, "col": $uc}"""))
+
+        val resolved = refAt(user, "Crate")!!.resolve()
+        assertNotNull("plain type ref must still resolve", resolved)
+        assertEquals("Crate.cajeta", resolved!!.containingFile.name)
+    }
+
     // ---- 7.1.3 — ambiguity is a candidate set, not a guess -----------------------
 
     fun testAmbiguityYieldsTheCandidateSetNotAGuess() {
