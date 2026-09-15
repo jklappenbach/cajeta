@@ -292,7 +292,9 @@ namespace cajeta {
 
         // Re-parse every classpath archive's ClassSource entries into fresh modules, once,
         // after the stdlib parse. Public because the JIT host drives the phases by hand.
-        void ingestClasspath();
+        // Parse every --classpath archive's ClassSource entries. Reports each
+        // failure and continues; false if any entry could not be read or parsed.
+        [[nodiscard]] bool ingestClasspath();
 
         // Which stdlib packages are parsed (eager + on-demand) is process-global: the first
         // two are probes, resetLazyStdlibState clears the bookkeeping for a harness.
