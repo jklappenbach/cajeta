@@ -149,6 +149,11 @@ work — they have nothing to resolve.
   declaration.
 - **3.1.3** An inherited member resolves to the ancestor that declares it, not
   to the receiver's class.
+- **3.1.4** A call edge is anchored on the **identifier a reader would click**,
+  not on the enclosing expression. An edge anchored on a keyword is unreachable:
+  the IDE resolves a reference from the clicked element's own offset, so a
+  position no identifier occupies can never be followed, however correct the
+  edge's target is. *(Added 2026-09-15 — see 3.2.5.)*
 
 ### 3.2 Use cases
 - **3.2.1** When Ctrl-clicking `value` in `c.value()` at
@@ -160,6 +165,23 @@ work — they have nothing to resolve.
   declaration in `DemoClass.cajeta` opens.
 - **3.2.4** When the index has no edge for a symbol, nothing happens — never a
   jump to a wrong target.
+- **3.2.5** When Ctrl-clicking the type name in `heap SseChannel(8)`, the
+  **constructor** declaration opens, not the class declaration.
+- **3.2.6** When a constructor is reached through `stack`, the same holds — the
+  allocation keyword does not change where the edge is anchored.
+
+**Reported 2026-09-15** ("clicking on any constructor in ServerTests takes me to
+the start of the class") and measured the same day. The constructor edge is
+emitted with the right target and the wrong position: it is anchored on the
+`heap`/`stack` keyword rather than on the type identifier. In `samples/tour`,
+**237 of 258** constructor calls are anchored on an allocation keyword (heap 209,
+stack 28) against **0 of 2227** method calls — the method path narrows to the
+name token, the allocation path uses the expression node's own start.
+
+The click therefore lands on the type identifier, which carries only a TYPE
+reference, and that resolves to the class. The IDE is doing the only thing the
+data permits; nothing in the plugin is wrong. §3.2.1's method case passes
+throughout, which is why every acceptance pass to date missed this.
 
 ## 4 The acceptance gap itself
 
@@ -169,12 +191,18 @@ work — they have nothing to resolve.
   not count.
 - **4.1.2** A relation that is empty across a whole sample project must fail
   that check rather than pass silently.
+- **4.1.3** A relation must be checked for WHERE it points, not only that it
+  exists. Counting edges cannot see a correct edge at an unclickable position —
+  3.2.5 survived every count this plan took, all of which were green.
 
 ### 4.2 Use cases
 - **4.2.1** When a relation the plugin reads is empty for `samples/tour`, the
   check fails and names the relation.
 - **4.2.2** When the lint and full-build exports of `samples/tour` disagree on
   any relation, the check fails and names the difference.
+- **4.2.3** When any call edge in `samples/tour` is anchored on a position whose
+  source text does not begin an identifier, the check fails and names the file,
+  line and column.
 
 ## 5 Impact on ide-symbol-index
 
