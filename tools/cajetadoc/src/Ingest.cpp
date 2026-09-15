@@ -169,7 +169,9 @@ public:
                 package.doc = std::make_shared<DocComment>(parseDocComment(pdoc));
             }
         }
-        for (auto* td : cu->typeDeclaration()) {
+        for (auto* member : cu->scriptMember()) {
+            auto* td = member->typeDeclaration();
+            if (td == nullptr) continue;
             Type t;
             if (buildType(td, pkg, t)) package.types.push_back(std::move(t));
         }

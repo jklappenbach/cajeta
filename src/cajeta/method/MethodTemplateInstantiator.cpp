@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <iostream>
 #include "cajeta/xref/XrefIndex.h"
+#include "cajeta/compile/ScriptUnitSynthesis.h"
 
 namespace cajeta {
 
@@ -364,7 +365,7 @@ namespace cajeta {
         auto* compUnit = cajeta::synth::parseSynthesizedUnit(input);
 
         CajetaParser::ClassDeclarationContext* classDecl = nullptr;
-        for (auto* td : compUnit->typeDeclaration()) {
+        for (auto* td : cajeta::typeDeclarationsOf(compUnit)) {
             if (auto* cd = td->classDeclaration()) {
                 classDecl = cd;
                 break;

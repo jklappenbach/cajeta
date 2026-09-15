@@ -18,6 +18,7 @@
 
 #include "CajetaLexer.h"
 #include "CajetaParser.h"
+#include "cajeta/compile/ScriptUnitSynthesis.h"
 
 #include <string>
 
@@ -40,9 +41,7 @@ struct ParsedUnit {
 
     size_t syntaxErrors() { return parser.getNumberOfSyntaxErrors(); }
     std::string tree() { return ctx->toStringTree(&parser); }
-    bool isScriptShape() {
-        return tree().find("scriptMember") != std::string::npos;
-    }
+    bool isScriptShape() { return cajeta::isScriptUnit(ctx); }
 };
 
 }  // namespace
@@ -77,9 +76,8 @@ TEST(ScriptUnitParseTests, mixedMembersParse) {
     EXPECT_NE(std::string::npos, p.tree().find("classDeclaration"));
 }
 
-// 1.1.3 / spec 2.4 — an ordinary unit still parses cleanly and does NOT take
-// the script alternative: no scriptMember node appears in its tree, and its
-// typeDeclaration list is intact.
+// 1.1.3 / spec 2.4 — an ordinary unit still parses cleanly and is NOT a
+// script unit; its type declarations are intact.
 TEST(ScriptUnitParseTests, ordinaryUnitsUnchanged) {
     ParsedUnit p(
         "package demo;\n"
@@ -90,7 +88,7 @@ TEST(ScriptUnitParseTests, ordinaryUnitsUnchanged) {
     EXPECT_EQ(0u, p.syntaxErrors());
     EXPECT_FALSE(p.isScriptShape());
     ASSERT_NE(nullptr, p.ctx);
-    EXPECT_EQ(1u, p.ctx->typeDeclaration().size());
+    EXPECT_EQ(1u, cajeta::typeDeclarationsOf(p.ctx).size());
 }
 
 // Grammar-change regression: the empty unit (EOF only) stays legal.
@@ -136,4 +134,23 @@ TEST(ScriptUnitParseTests, trailingExpressionParses) {
         "a + b;\n");
     EXPECT_EQ(0u, p.syntaxErrors());
     EXPECT_TRUE(p.isScriptShape());
+}
+
+// parse-error-locality 1.1.4 / spec 2.2.5, 3.2.1 — script-ness is a property
+// of the member list, and it must not move when the top-level rule does.
+TEST(ScriptUnitParseTests, aClassPlusOneStatementIsAScriptUnit) {
+    ParsedUnit p(
+        "public class App {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n"
+        "int32 x = App.run();\n");
+    EXPECT_EQ(0u, p.syntaxErrors());
+    EXPECT_TRUE(p.isScriptShape());
+    EXPECT_EQ(1u, cajeta::typeDeclarationsOf(p.ctx).size());
+}
+
+TEST(ScriptUnitParseTests, straySemicolonsOnlyAreNotAScriptUnit) {
+    ParsedUnit p("package demo;\n;\n;\n");
+    EXPECT_EQ(0u, p.syntaxErrors());
+    EXPECT_FALSE(p.isScriptShape());
 }
