@@ -245,6 +245,13 @@
             implementation="dev.cajeta.idea.debugger.CajetaExceptionBreakpointType"/>
     </extensions>
 
+    <applicationListeners>
+        <!-- parse-error-locality §4: a document's pinned use positions die
+             with its last editor. -->
+        <listener class="dev.cajeta.idea.xref.CajetaXrefPositions$EditorClosed"
+                  topic="com.intellij.openapi.editor.event.EditorFactoryListener"/>
+    </applicationListeners>
+
     <projectListeners>
         <!-- cajeta-profiler 11.2.e (spec §9.5): a run this plugin armed opens
              its own trace when it finishes. Only armed runs are picked up;

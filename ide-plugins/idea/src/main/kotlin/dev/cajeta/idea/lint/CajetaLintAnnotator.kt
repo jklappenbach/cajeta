@@ -4,16 +4,21 @@ import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.ExternalAnnotator
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
+import dev.cajeta.idea.xref.CajetaXrefPositions
 import dev.cajeta.idea.xref.CajetaXrefShards
 
-data class LintInput(val path: String, val text: String, val basePath: String?)
+data class LintInput(val path: String, val text: String, val basePath: String?,
+                     val stamp: Long = 0L)
 
 class CajetaLintAnnotator : ExternalAnnotator<LintInput, LintOutput>() {
 
     override fun collectInformation(file: PsiFile): LintInput? {
         val path = file.virtualFile?.path ?: return null
-        return LintInput(path, file.text, file.project.basePath)
+        val stamp = PsiDocumentManager.getInstance(file.project)
+            .getDocument(file)?.modificationStamp ?: 0L
+        return LintInput(path, file.text, file.project.basePath, stamp)
     }
 
     // ide-symbol-index Unit 6 (6.2.4): the per-edit lint run now carries the
@@ -24,6 +29,7 @@ class CajetaLintAnnotator : ExternalAnnotator<LintInput, LintOutput>() {
     override fun doAnnotate(input: LintInput): LintOutput =
         CajetacRunner.lintWithXref(input.path, input.text, emitXref = true,
                                    basePath = input.basePath)
+            .copy(sourceStamp = input.stamp)
 
     override fun apply(file: PsiFile, output: LintOutput, holder: AnnotationHolder) {
         for (d in output.diagnostics) {
@@ -63,6 +69,12 @@ class CajetaLintAnnotator : ExternalAnnotator<LintInput, LintOutput>() {
             val records = output.xref.records
             ApplicationManager.getApplication().executeOnPooledThread {
                 CajetaXrefShards.ingestStream(project, records)
+            }
+            // Pin the use positions to the document only if it still holds the
+            // linted text; an edit that landed meanwhile is caught by the next lint.
+            val doc = PsiDocumentManager.getInstance(project).getDocument(file)
+            if (doc != null && doc.modificationStamp == output.sourceStamp) {
+                CajetaXrefPositions.anchor(doc, records)
             }
         }
     }

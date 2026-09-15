@@ -9,4 +9,6 @@ package dev.cajeta.idea.lint
 data class LintOutput(
     val diagnostics: List<Diagnostic>,
     val xref: XrefStream,
+    /** Modification stamp of the document the linted text came from, 0 if none. */
+    val sourceStamp: Long = 0L,
 )
