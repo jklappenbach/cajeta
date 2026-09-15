@@ -289,8 +289,13 @@ static int32_t caj_gpu_rocm_init(void) { return __cajeta_prof_rocm_init(); }
 
 // ── the pending table ─────────────────────────────────────────────────────
 // A dispatch record arrives after the launch that caused it returned, so a
-// launch awaiting its span PARKS here; full publishes at host tier instead.
-#define CAJ_GPU_PENDING_MAX 256
+// launch awaiting its span PARKS here; full publishes at host tier instead,
+// with the launch's HOST bracket standing in for a device span. A host that
+// never syncs enqueues a whole prefill step ahead of the records - a 32-layer
+// MoE step is ~1000 launches - so the table must hold a step, or the run's
+// second half reads as thousands of 60 us kernels. The overflow count rides
+// the trace metadata as gpu_pending_overflow; the summary prints it.
+#define CAJ_GPU_PENDING_MAX 16384
 
 typedef struct {
     int32_t        in_use;

@@ -43,6 +43,8 @@ namespace cajeta::prof {
         /** The device CAPTURE ring's own accounting. It overwrites its oldest records,
          *  so a lossy run keeps the tail: averages survive, totals do not. -1 = unknown. */
         int64_t gpuRecordsKept = -1;
+        int64_t gpuPendingOverflow = 0;
+        int64_t gpuPendingUnclaimed = 0;
         int64_t gpuRecordsDropped = -1;
     };
 

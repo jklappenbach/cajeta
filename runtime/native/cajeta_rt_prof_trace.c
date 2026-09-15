@@ -974,6 +974,12 @@ int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
         n += caj_prof_anno_int(te + n, "gpu_records_kept", gpu_kept);
         n += caj_prof_anno_int(te + n, "gpu_dropped_per_mille",
                                gpu_total > 0 ? (gpu_dropped * 1000) / gpu_total : 0);
+        // Launches the pending table could not park: published at HOST tier,
+        // so their spans are enqueue brackets, not device time.
+        n += caj_prof_anno_int(te + n, "gpu_pending_overflow",
+                               __cajeta_prof_gpu_pending_overflow());
+        n += caj_prof_anno_int(te + n, "gpu_pending_unclaimed",
+                               __cajeta_prof_gpu_pending_unclaimed());
     }
 #endif
     n += caj_prof_calibration_annos(te + n, (int32_t) sizeof(te) - n);

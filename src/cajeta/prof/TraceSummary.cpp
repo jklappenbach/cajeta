@@ -180,6 +180,8 @@ namespace cajeta::prof {
                         for (const auto& a : annos) {
                             if (a.first == "gpu_records_kept") out->gpuRecordsKept = a.second;
                             else if (a.first == "gpu_records_dropped") out->gpuRecordsDropped = a.second;
+                            else if (a.first == "gpu_pending_overflow") out->gpuPendingOverflow = a.second;
+                            else if (a.first == "gpu_pending_unclaimed") out->gpuPendingUnclaimed = a.second;
                         }
                     }
                 }
@@ -403,8 +405,9 @@ namespace cajeta::prof {
 
         if (csv) {
             if (sum.gpuRecordsKept >= 0) {
-                std::printf("# gpu_records_kept=%" PRId64 " gpu_records_dropped=%" PRId64 "\n",
-                            sum.gpuRecordsKept, sum.gpuRecordsDropped);
+                std::printf("# gpu_records_kept=%" PRId64 " gpu_records_dropped=%" PRId64
+                            " gpu_pending_overflow=%" PRId64 "\n",
+                            sum.gpuRecordsKept, sum.gpuRecordsDropped, sum.gpuPendingOverflow);
             }
             std::printf("name,count,total_ns,self_ns,avg_ns,max_ns\n");
             for (const auto& r : sum.rows) {
@@ -448,6 +451,13 @@ namespace cajeta::prof {
                 std::printf("the capture ring overwrote its oldest records: averages stand, "
                             "totals and shares are over the kept tail — "
                             "set CAJETA_PROFILER_GPU_RING above the launch count\n");
+            }
+            if (sum.gpuPendingOverflow > 0 || sum.gpuPendingUnclaimed > 0) {
+                std::printf("pending table: %" PRId64 " launches overflowed it and carry HOST "
+                            "brackets, not device spans; %" PRId64 " parked and never matched — "
+                            "the host ran that far ahead of the dispatch records, so "
+                            "those kernels' spans are NOT device time\n",
+                            sum.gpuPendingOverflow, sum.gpuPendingUnclaimed);
             }
         }
         return 0;
