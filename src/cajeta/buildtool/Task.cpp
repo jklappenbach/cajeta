@@ -5,7 +5,9 @@
 #include <llvm/Support/raw_ostream.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -80,6 +82,31 @@ namespace cajeta::buildtool {
                                      const llvm::json::Value& v,
                                      ActionEntry& out);
 
+        /** Rejects an exec `command` that carries whitespace with no `args`:
+         *  exec runs a program directly, never a shell. Names the split form. */
+        llvm::Error rejectShellLineCommand(const std::string& taskName,
+                                           const std::string& breadcrumb,
+                                           const ActionInvocation& inv) {
+            auto cmd = inv.params.getString("command");
+            if (!cmd || inv.params.get("args")) return llvm::Error::success();
+            std::string c = cmd->str();
+            if (c.find("${") != std::string::npos) return llvm::Error::success();
+            if (c.find_first_of(" \t") == std::string::npos) return llvm::Error::success();
+            if (std::filesystem::exists(c)) return llvm::Error::success();
+            std::vector<std::string> words;
+            std::istringstream in(c);
+            for (std::string w; in >> w;) words.push_back(w);
+            std::string args;
+            for (size_t i = 1; i < words.size(); ++i) {
+                if (i > 1) args += ", ";
+                args += "\"" + words[i] + "\"";
+            }
+            return err("task '" + taskName + "': " + breadcrumb +
+                       " exec command '" + c + "' is a shell line, but exec runs "
+                       "a program directly with no shell; write \"command\": \"" +
+                       words[0] + "\", \"args\": [" + args + "]");
+        }
+
         llvm::Error parseActionInvocation(const std::string& taskName,
                                           const std::string& breadcrumb,
                                           const llvm::json::Object& obj,
@@ -97,6 +124,9 @@ namespace cajeta::buildtool {
             for (const auto& kv : obj) {
                 if (kActionMetaFields.count(kv.first.str())) continue;
                 out.params[kv.first] = kv.second;
+            }
+            if (out.action == "exec") {
+                return rejectShellLineCommand(taskName, breadcrumb, out);
             }
             return llvm::Error::success();
         }
