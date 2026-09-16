@@ -74,3 +74,34 @@ TEST(JsonFloat, floatObjectParses) {
         "        JsonValue x = o.get(\"x\");\n"
         "        return (int32) (x.asFloat64() * 100.0);\n"), 150);
 }
+
+// An integer literal wider than int64 widens to float64 rather than
+// throwing — JSON has one number type, and Hugging Face tokenizer
+// configs carry `model_max_length` near 1e30.
+TEST(JsonFloat, wideIntegerWidensToFloat) {
+    EXPECT_EQ(runI32(parseTo("1000000000000000019884624838656") +
+        "        if (v.kind() != JsonValue.NUMBER) { return -1; }\n"
+        "        if (!v.isFloat()) { return -2; }\n"
+        "        return (int32) (v.asFloat64() / 1.0e28 + 0.5);\n"), 100);
+    EXPECT_EQ(runI32(parseTo("-1000000000000000019884624838656") +
+        "        if (!v.isFloat()) { return -2; }\n"
+        "        return (int32) (v.asFloat64() / 1.0e28 - 0.5);\n"), -100);
+}
+
+// The int64 limits themselves stay exact integers; one past them widens.
+TEST(JsonFloat, int64LimitsStayInteger) {
+    EXPECT_EQ(runI32(parseTo("9223372036854775807") +
+        "        if (v.isFloat()) { return -1; }\n"
+        "        if (v.asInt64() != 9223372036854775807L) { return -2; }\n"
+        "        return 1;\n"), 1);
+    EXPECT_EQ(runI32(parseTo("-9223372036854775808") +
+        "        if (v.isFloat()) { return -1; }\n"
+        "        if (v.asInt64() != -9223372036854775807L - 1L) { return -2; }\n"
+        "        return 1;\n"), 1);
+    EXPECT_EQ(runI32(parseTo("9223372036854775808") +
+        "        if (!v.isFloat()) { return -1; }\n"
+        "        return 1;\n"), 1);
+    EXPECT_EQ(runI32(parseTo("0000000000000000000000042") +
+        "        if (v.isFloat()) { return -1; }\n"
+        "        return (int32) v.asInt64();\n"), 42);
+}

@@ -835,6 +835,35 @@ public final class JsonReader {
         return false;
     }
 
+    /** True iff the current integer `NUMBER` token fits `int64`: at most
+     *  18 significant digits, or 19 no greater than the limit. */
+    public boolean currentNumberFitsInt64() {
+        int64 i = this.tokenStart;
+        int64 end = this.tokenEnd;
+        boolean negative = false;
+        if (i < end && this.input[i] == (int8) 45) {   // '-'
+            negative = true;
+            i = i + 1;
+        }
+        while (i < end && this.input[i] == (int8) 48) {   // leading '0'
+            i = i + 1;
+        }
+        int64 digits = end - i;
+        if (digits < 19) { return true; }
+        if (digits > 19) { return false; }
+        int32[] lim = [9, 2, 2, 3, 3, 7, 2, 0, 3, 6, 8, 5, 4, 7, 7, 5, 8, 0, 7];
+        int64 k = 0;
+        while (k < 19) {
+            int32 d = ((int32) this.input[i + k]) - 48;
+            int32 l = lim[k];
+            if (negative && k == 18) { l = 8; }
+            if (d < l) { return true; }
+            if (d > l) { return false; }
+            k = k + 1;
+        }
+        return true;
+    }
+
     public int64 currentNumberAsInt64() {
         int64 i = this.tokenStart;
         int64 end = this.tokenEnd;
@@ -1037,8 +1066,10 @@ public final class JsonReader {
             v.setStringOwned(#bytes, len);
         } else if (t == JsonToken.NUMBER) {
             // Integer literals keep the exact int64 path; a fraction or
-            // exponent in the span widens to float64 (twitter/canada).
-            if (this.currentNumberIsFloat()) {
+            // exponent in the span widens to float64 (twitter/canada), and
+            // so does an integer wider than int64.
+            if (this.currentNumberIsFloat()
+                    || !this.currentNumberFitsInt64()) {
                 v.setFloat(this.currentNumberAsFloat64());
             } else {
                 v.setNumber(this.currentNumberAsInt64());
