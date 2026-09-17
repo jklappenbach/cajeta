@@ -37,7 +37,8 @@ public static Cell  viaPlain() { return D.fresh(); }   // returns a TITLE
 
 [`SignatureAbiTests.tailCallThroughPlainReturnKeepsTitle`]
 So `T x = someCall()` is not a lend: the local's drop entry is armed
-from the arriving flag (`LocalVariableDeclaration.cpp:251`).
+from the arriving flag (`LocalVariableDeclaration.cpp:821`,
+`ownership::titleFlag(initShape, module)` under `initIsFlaggedCall`).
 
 **2.2 `#x` on a borrow does NOT transfer — it forwards the mode it was
 handed.** The lender keeps title and frees on drop, so a receiver that
