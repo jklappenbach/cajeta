@@ -90,6 +90,161 @@ ceiling, and everything that matters is how the wave touches memory.
   busy. The kernels were already bit-identical; the launch count was
   the cost.
 
+### 25.2.1 Example — an integer decode wave
+
+The IQ4_NL mat-vec on the integer route, as shipped. One wave per
+row; each lane owns one 32-element block; the nibble reaches int8
+through a 16-entry codebook in a single `lut4`; two `dotSum`s against
+the q8_K-packed activation; one wave reduction; lane 0 stores.
+
+`cajeta-llm/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta:14962-15009`
+
+```cajeta
+/**
+ * WAVE-COOPERATIVE IQ4_NL x q8_K. Q4_0's twin — one LANE per
+ * 32-element block, the same 16-byte payload and f16 scale — with
+ * the nibble through a codebook instead of `q - 8`.
+ *
+ * `dotSum` takes a SIGNED receiver, so the codebook feeds it
+ * directly — no bias term, where Q4_0 rides its -8 on the
+ * activation sum to keep its quants unsigned.
+ */
+@Kernel
+public static void iq4nlQ8WaveMatVecKernel(KernelBuffer<float32> y,
+        KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+        uint32 rows, int64 blocksPerRow, int64 yOff) {
+    uint32 lane = KernelThread.x();
+    uint32 row = KernelThread.globalIdX() / 32;
+    int64 prefix = ((blocksPerRow * 2L + 3L) / 4L) * 4L;
+    int64 rowBytes = prefix + blocksPerRow * 16L;
+    Vector<int8,16> kv = QuantKernel.iq4Kv();
+    float32 acc = 0.0f;
+    if (row < rows) {
+        int64 i = (int64) row;
+        int64 wb = (int64) lane;
+        while (wb < blocksPerRow) {
+            int64 ro = i * rowBytes + prefix + wb * 16L;
+            float32 d = QuantKernel.scaleAtDev(packed,
+                i * rowBytes / 2L + wb);
+            Vector<int8,16> qs = packed.vload<16>(ro);
+            Vector<int8,16> dl = (qs & 15).lut4(kv);
+            Vector<int8,16> dh = ((qs >> 4) & 15).lut4(kv);
+            int64 ab = wb / 8L;
+            int64 xb = ab * 320L + (wb % 8L) * 32L;
+            Vector<int8,16> a0 = xp.vload<16>(xb);
+            Vector<int8,16> a1 = xp.vload<16>(xb + 16L);
+            int32 dot = dl.dotSum(a0, 0) + dh.dotSum(a1, 0);
+            Vector<int8,4> dv = xp.vload<4>(ab * 320L + 288L);
+            float32 xs = Cajeta.bitsToF32(((int32) dv[0] & 255)
+                | (((int32) dv[1] & 255) << 8)
+                | (((int32) dv[2] & 255) << 16)
+                | (((int32) dv[3] & 255) << 24));
+            acc = acc + d * xs * (float32) dot;
+            wb = wb + 32L;
+        }
+    }
+    float32 tot = Wave.reduceSumF32(acc);
+    if (lane == 0 && row < rows) {
+        y[yOff + (int64) row] = tot;
+    }
+}
+```
+
+What to read in it:
+
+- `int64 i = (int64) row;` then `i * rowBytes + prefix + wb * 16L` —
+  the resident layout: a row is its f16 scale prefix, padded to a
+  dword, then dword-clean 16-byte payloads. `scaleAtDev(packed,
+  i * rowBytes / 2L + wb)` reads the block's scale from that prefix.
+- `int64 wb = (int64) lane; ... wb = wb + 32L;` — lane `l` takes
+  blocks `l, l+32, ...`: consecutive lanes read consecutive 16-byte
+  payloads, which is the coalesced mapping (208 against 162 GB/s).
+- `(qs & 15).lut4(kv)` and `((qs >> 4) & 15).lut4(kv)` — the codebook
+  maps a nibble to **int8**, never to f16; that is what lets the dot
+  stay integer. `dl.dotSum(a0, 0)` is signed × signed: the receiver is
+  the int8 weight vector, the argument the int8 activation.
+- `ab = wb / 8L; xb = ab * 320L + (wb % 8L) * 32L;` — a q8_K block is
+  320 bytes: 256 int8 values, eight int32 sub-block sums at +256, one
+  f32 scale at +288. Eight weight blocks of 32 share one q8_K block.
+- `acc = acc + d * xs * (float32) dot;` — one float multiply per
+  block, after the integer dot. Reduce first, scale once.
+- `Wave.reduceSumF32(acc)` then `if (lane == 0 ...)` — the reduction is
+  the hardware's; no LDS tree.
+
+This kernel decodes the IQ4_NL 8B at 211 GB/s; the Q4_0 twin it was
+modelled on reads 213. Its first draft folded a +128 bias into the
+table for a mixed unsigned × signed dot and was wrong by 140%: read
+the family's proven idiom (`iqDot16` in the same file) before
+inventing one.
+
+### 25.2.2 Example — the same kernel, grouped over experts
+
+The IQ3_XXS id twin. Everything in the dot loop is the dense wave
+kernel's; three things change, and they are the whole of "grouped
+dispatch": which slab row the wave reads, where its activation starts,
+and where its output lands.
+
+`cajeta-llm/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta:13146-13186`
+
+```cajeta
+/**
+ * 6.4.3 cause 3 — the IQ3_XXS id twin of
+ * {@link #iq3xxsQ8WaveMatVecKernel}: one wave per (selection slot,
+ * row) against the bank's whole slab, the dot loop unchanged. The
+ * codebook experts dispatched one launch per expert per projection
+ * because this kernel did not exist.
+ */
+@Kernel
+public static void iq3xxsQ8IdMatVecKernel(KernelBuffer<float32> y,
+        KernelBuffer<int8> slab, KernelBuffer<int8> xp,
+        KernelBuffer<int32> grid, KernelBuffer<int32> sel,
+        uint32 rowsPerExpert, int64 blocksPerRow, int64 xRowBlocks,
+        int64 yOff) {
+    uint32 lane = KernelThread.x();
+    uint32 wave = KernelThread.globalIdX() / 32;
+    uint32 kk = wave / rowsPerExpert;
+    uint32 row = wave - kk * rowsPerExpert;
+    int64 prefix = ((blocksPerRow * 2L + 3L) / 4L) * 4L;
+    int64 rowBytes = prefix + blocksPerRow * 96L;
+    float32 acc = 0.0f;
+    if (row < rowsPerExpert) {
+        int64 i = (int64) sel[(int64) kk] * (int64) rowsPerExpert
+            + (int64) row;
+        int64 xbase = (int64) kk * xRowBlocks;
+        int64 sub = (int64) (lane & 7);
+        int64 b = (int64) (lane >> 3);
+        while (b < blocksPerRow) {
+            int64 xb = (xbase + b) * 320L + sub * 32L;
+            float32 v = QuantKernel.iq3xxsSub(slab, xp, grid,
+                i * rowBytes + prefix + b * 96L, sub, xb);
+            acc = acc + QuantKernel.scaleAtDev(slab,
+                i * rowBytes / 2L + b)
+                * QuantKernel.q8kScaleAtDev(xp, xbase + b) * 0.25f * v;
+            b = b + 4L;
+        }
+    }
+    float32 tot = Wave.reduceSumF32(acc);
+    if (lane == 0 && row < rowsPerExpert) {
+        y[yOff + (int64) kk * (int64) rowsPerExpert + (int64) row] = tot;
+    }
+}
+```
+
+- `kk = wave / rowsPerExpert; row = wave - kk * rowsPerExpert;` — the
+  grid is `rowsPerExpert × used` waves, flattened. `kk` is the
+  selection slot, `row` the output row within the expert.
+- `i = sel[kk] * rowsPerExpert + row` — the row's offset in the bank's
+  contiguous slab, through the device-side selection buffer. One
+  launch covers every selected expert; nothing is read back to pick.
+- `xbase = kk * xRowBlocks` — 0 in decode (every expert reads the one
+  staged token), `width/256` when each slot has its own row.
+- `y[yOff + kk * rowsPerExpert + row]` — output slot-major, so the
+  combine reads `used` contiguous rows.
+
+Bit-identical to `used` per-expert launches of the dense kernel over
+the same slab (§25.7's gate), and the difference between 39.9 and
+122.1 t/s on a 60-expert model: the launch count, not the arithmetic.
+
 ## 25.3 Prefill: fill the device, then feed the tile
 
 A prefill GEMM is compute- or L2-bound only once every SIMD has work.
@@ -120,6 +275,42 @@ Before tuning a tile, check that the grid can fill the device.
   tile pair requires `hd == 128`; a 96-wide head silently takes the
   scalar pair. That is a routing row (§25.6), not a kernel bug.
 
+### 25.3.1 Example — a grid that cannot fill the device
+
+The per-expert coop launch for IQ4_NL, first sixteen lines. The kernel
+body is not the lesson; the grid is.
+
+`cajeta-llm/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta:4971-4986`
+
+```cajeta
+public static void iq4nlF16CoopAutoLaunchNoSync(KernelBuffer<float32> y,
+        KernelBuffer<int32> packed, KernelBuffer<float16> xh,
+        int64 rows, int64 outDim, int64 cols) {
+    int64 wgL = (outDim / 128L) * (rows / 128L);
+    KernelStream s = QuantKernel.stream();
+    // 6.4.3: a ragged MoE expert batch takes the halved tile rather
+    // than paying for 128 rows it does not have.
+    if (QuantKernel.coopN64 && rows % 128L != 0L && rows % 64L == 0L) {
+        iq4nlF16CoopN64Kernel.launch(s,
+            grid: [(uint32) ((outDim / 128L) * (rows / 64L))],
+            block: [256])
+            (y, packed, xh, (uint32) rows, (uint32) outDim,
+             (uint32) (outDim / 128L), cols / 32L);
+        return;
+    }
+    if (cols > 8192L) {
+```
+
+`grid: [(outDim / 128L) * (rows / 64L)]` — for one expert's down
+projection, `outDim` 2048 and ~34 routed tokens padded to 64, that is
+sixteen workgroups of 256 threads. The kernel has 89 VGPRs, no spill
+and three resident groups a CU in its manifest; it moved 1.62 MB in
+182 µs, 8.9 GB/s, because sixteen workgroups leave most of the device
+idle and 3810 such launches ran in series. The `rows % 128L != 0L`
+test chose the halved tile correctly — the tile is right, the launch
+shape is wrong. The fix is the id-GEMM shape of §25.2.2 applied to a
+GEMM: one launch over an expert map.
+
 ## 25.4 Bind: one layout, and the copy that reads the lines
 
 Weights are converted at upload, once. The rules are the decode rules
@@ -145,6 +336,126 @@ applied to a copy.
   part the GTT limit is reached before `MemAvailable`; a device request
   one byte over 2 MB costs two 2 MB blocks. `Device.freeMemoryBytes()`
   and the allocation trace, not RSS.
+
+### 25.4.1 Example — the split, one item per dword
+
+The payload half of the resident split, and the launcher that gates it.
+
+`cajeta-llm/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta:6353-6386`
+
+```cajeta
+/**
+ * The DWORD form of {@link #splitKernel}: one work item per payload
+ * dword rather than one wave per block.
+ *
+ * The scale sits at one END of the block by construction, so a
+ * block's payload is a single contiguous run in the source, and its
+ * destination is dword-aligned because the row prefix is padded to
+ * one. The byte form gave every block a 64-lane wave and walked it
+ * a byte at a time: an 18-byte IQ4_NL block left 46 lanes idle and
+ * issued 18 byte-writes where this issues 4 dword-writes, coalesced
+ * across the wave.
+ */
+@Kernel
+public static void splitPayloadKernel(KernelBuffer<int32> outW,
+        KernelBuffer<int8> src, uint32 total, int64 blockBase,
+        uint32 blockBytes, uint32 payloadWords, uint32 srcPayloadOff,
+        int64 bpr, int64 prefixWords, int64 rowWords) {
+    uint32 t = KernelThread.globalIdX();
+    if (t < total) {
+        int64 b = (int64) (t / payloadWords);
+        int64 k = (int64) (t % payloadWords);
+        int64 gb = blockBase + b;
+        int64 row = gb / bpr;
+        int64 j = gb - row * bpr;
+        int64 so = b * (int64) blockBytes + (int64) srcPayloadOff
+            + k * 4L;
+        int32 w = ((int32) src[so] & 255)
+            | (((int32) src[so + 1L] & 255) << 8)
+            | (((int32) src[so + 2L] & 255) << 16)
+            | (((int32) src[so + 3L] & 255) << 24);
+        outW[row * rowWords + prefixWords
+            + j * (int64) payloadWords + k] = w;
+    }
+}
+```
+
+- One work item per payload **dword**, `t / payloadWords` the block and
+  `t % payloadWords` the word within it — not one 64-lane wave per
+  block walking bytes. On an 18-byte block the wave form left 46 lanes
+  idle; this form dispatches 16× fewer threads and cut load 10.6%.
+- `outW` is `KernelBuffer<int32>`, the byte buffer's word view: the
+  store is a dword because the row prefix is padded to one and every
+  payload is dword-clean by construction.
+- The source read is four byte loads assembled with shifts — the file
+  block is not aligned, the resident row is.
+
+`cajeta-llm/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta:6491-6539`
+
+```cajeta
+public static void splitLaunch(KernelBuffer<int8> out,
+        KernelBuffer<int8> src, int64 nBlocks, int64 blockBase,
+        int32 ty, int64 bpr) {
+    KernelStream s = QuantKernel.stream();
+    int64 prefix = Quant.rowPrefixBytes(ty, bpr);
+    int64 rowBytes = Quant.rowResidentBytes(ty, bpr);
+    int64 pay = (int64) Quant.payloadBytes(ty);
+    int64 scaleB = (int64) Quant.scaleBytes(ty);
+    int64 scaleOff = (int64) Quant.scaleOffset(ty);
+    if (pay % 4L == 0L && prefix % 4L == 0L && rowBytes % 4L == 0L) {
+        KernelBuffer<int32> outW #= out.wordView();
+        int64 pw = pay / 4L;
+        int64 total = nBlocks * pw;
+        int64 srcPayOff = 0L;
+        if (scaleOff == 0L) { srcPayOff = scaleB; }
+        splitPayloadKernel.launch(s,
+            grid: [(uint32) ((total + 255L) / 256L)], block: [256])
+            (outW, src, (uint32) total, blockBase,
+             (uint32) Quant.blockBytes(ty), (uint32) pw,
+             (uint32) srcPayOff, bpr, prefix / 4L, rowBytes / 4L);
+        if (scaleB == 2L && blockBase % bpr == 0L
+                && nBlocks % bpr == 0L) {
+            int64 pfw = prefix / 4L;
+            int64 st = (nBlocks / bpr) * pfw;
+            QuantKernel.scaleWordLaunches =
+                QuantKernel.scaleWordLaunches + 1L;
+            splitScaleWordKernel.launch(s,
+                grid: [(uint32) ((st + 255L) / 256L)], block: [256])
+                (outW, src, (uint32) st, blockBase / bpr,
+                 (uint32) Quant.blockBytes(ty), (uint32) scaleOff,
+                 bpr, pfw, rowBytes / 4L);
+        } else {
+            splitScaleKernel.launch(s,
+                grid: [(uint32) ((nBlocks + 255L) / 256L)], block: [256])
+                (out, src, (uint32) nBlocks, blockBase,
+                 (uint32) Quant.blockBytes(ty), (uint32) scaleB,
+                 (uint32) scaleOff, bpr, rowBytes);
+        }
+        s.sync();
+        return;
+    }
+    splitKernel.launch(s, grid: [(uint32) nBlocks], block: [64])
+        (out, src, (uint32) nBlocks, blockBase,
+         (uint32) Quant.blockBytes(ty), (uint32) Quant.payloadBytes(ty),
+         (uint32) Quant.scaleBytes(ty), (uint32) Quant.scaleOffset(ty),
+         bpr, prefix, Quant.rowResidentBytes(ty, bpr));
+    s.sync();
+    return;
+}
+```
+
+- The dword form is taken only when `pay % 4 == 0 && prefix % 4 == 0
+  && rowBytes % 4 == 0`; the byte kernel stays for anything else. A
+  route with a shape constraint keeps its fallback and names it.
+- The scale half takes its own dword kernel only when the chunk starts
+  and ends on a row (`blockBase % bpr == 0 && nBlocks % bpr == 0`),
+  because a prefix dword spans two blocks of the same row; and
+  `scaleWordLaunches` counts it, so a test can assert the branch fired
+  (§25.7.2). That scale kernel is read-amplification bound at the
+  ceiling — 49 lines pulled per 2 useful bytes — which no mapping
+  fixes; folding it into the payload pass is the open item.
+- `s.sync()` at the end: bind-time work pays one round trip per chunk
+  and is allowed to. Decode is not (§25.5).
 
 ## 25.5 Execution: launches, syncs, and what the compiler will not tell you
 
@@ -182,6 +493,66 @@ fed one format's bytes through another's decoder. A route is a row; a
 row's `needs` is a `Capability`; every row has a test that it fires and
 a test that it does not.
 
+### 25.6.1 Example — a predicate and the dispatcher it guards
+
+`Linear.packedWaveReady` and `matvecPackedKeep`, as they are now. Until
+2026-09-17 the predicate ended `return (this.q8 && this.wave) ||
+this.wave6;` and the dispatcher was `if (q8 && wave) { q4k } else {
+q6k }`. Widening the predicate alone would have sent codebook bytes
+through the Q6_K decoder — wrong logits, no crash — which is why a
+route's admission and its arms must change together, and why the
+audit checks that an admitted format has an arm.
+
+`cajeta-llm/src/main/cajeta/dev/cajeta/llm/model/Linear.cajeta:3118-3126`
+
+```cajeta
+boolean packedWaveReady() {
+    if (this.packedTy < 0 || !QuantKernel.routingEnabled()) {
+        return false;
+    }
+    this.ensureDevice();
+    if (this.hasEpilogue() || !this.packedAct) { return false; }
+    return (this.q8 && this.wave) || this.wave6 || this.waveIq
+        || this.wave4nl;
+}
+```
+
+`cajeta-llm/src/main/cajeta/dev/cajeta/llm/model/Linear.cajeta:3135-3156`
+
+```cajeta
+boolean matvecPackedKeep(KernelBuffer<int8> xp) {
+    if (!this.packedWaveReady()) { return false; }
+    if (this.q8 && this.wave) {
+        QuantKernel.q4kQ8WaveMatVecLaunchNoSync(this.yDev, this.payloadDev,
+            xp, (int64) this.outDim, (int64) this.inDim, 0L);
+    } else if (this.wave6) {
+        QuantKernel.q6kQ8WaveMatVecLaunchNoSync(this.yDev, this.payloadDev,
+            xp, (int64) this.outDim, (int64) this.inDim, 0L);
+    } else if (this.waveIq) {
+        QuantKernel.iqQ8WaveMatVecLaunchNoSync(this.packedTy, this.yDev,
+            this.payloadDev, xp, (int64) this.outDim,
+            (int64) this.inDim, 0L);
+    } else if (this.wave4nl) {
+        QuantKernel.iq4nlQ8WaveMatVecLaunchNoSync(this.yDev,
+            this.payloadDev, xp, (int64) this.outDim,
+            (int64) this.inDim, 0L);
+    } else {
+        return false;
+    }
+    Linear.nLaunches = Linear.nLaunches + 1L;
+    return true;
+}
+```
+
+- `this.waveIq || this.wave4nl` — the predicate now asks "on an integer
+  wave route", which is what it always meant. In the route table this
+  is a row's `admits`, derived from `qAct`.
+- Every branch is explicit and the last is `return false`. A bare
+  `else` is a dispatcher with an arm for a format it was never asked
+  to serve.
+- `Linear.nLaunches + 1` — the launch count is instrumented at the
+  dispatch, so a census can be checked against it.
+
 ## 25.7 Measuring: the order that does not lie
 
 1. **Bit gate first.** A kernel that is faster and not the same kernel
@@ -213,3 +584,140 @@ a test that it does not.
    its own Vulkan backend and the bare name misreads.
 10. **The first model in a loop runs cold.** Re-measure a surprise on
     its own.
+
+### 25.7.1 Example — the bit gate for a grouped kernel
+
+The test that admitted §25.2.2's kernel. It builds a slab of six
+experts from a real fixture, gives each expert a different block
+rotation so a kernel that ignored `sel` cannot agree by accident,
+packs one activation, and compares the grouped launch against the
+per-expert wave launches it replaces — `==`, never a tolerance.
+
+`cajeta-llm/src/test/cajeta/dev/cajeta/llm/selftest/MoeCodebookIdMatVecTest.cajeta:84-167`
+
+```cajeta
+static void check(int32 ty, String fixture) {
+    String be #= Device.activeBackend();
+    if (be.equals("cpu") || be.equals("none")) { return; }
+    if (!Linear.residentEnabled()) { return; }
+    int64 E = 6L;
+    int64 rows = 64L;
+    int64 cols = 2048L;
+    int32 used = 3;
+    KernelBuffer<int8> slab #= MoeCodebookIdMatVecTest.slabOf(ty,
+        fixture, E, rows, cols);
+    float32[] xv #= heap float32[cols];
+    int64 j = 0;
+    while (j < cols) {
+        xv[j] = (float32) ((j % 25L) - 12L) / 64.0f;
+        j = j + 1;
+    }
+    KernelBuffer<float32> xf #= heap KernelBuffer<float32>((uint64) cols);
+    xf.upload(xv, cols);
+    KernelBuffer<int8> xp #= heap KernelBuffer<int8>(
+        (uint64) ((cols / 256L) * 320L));
+    QuantKernel.q8kPackLaunchNoSync(xp, xf, cols);
+
+    int32[] ids #= heap int32[used];
+    ids[0] = 4;
+    ids[1] = 0;
+    ids[2] = 3;
+    KernelBuffer<int32> sel #= heap KernelBuffer<int32>((uint64) used);
+    sel.upload(ids, (int64) used);
+    int64 n = (int64) used * rows;
+    KernelBuffer<float32> yId #= heap KernelBuffer<float32>((uint64) n);
+    KernelBuffer<float32> yWv #= heap KernelBuffer<float32>((uint64) n);
+
+    boolean ok = QuantKernel.idMatVecLaunchNoSync(ty, yId, slab, xp,
+        sel, used, rows, cols, 0L);
+    if (!ok) {
+        Assert.fail("ty=" + ty + ": no id mat-vec kernel");
+    }
+    int64 resRow = Quant.rowResidentBytes(ty,
+        cols / (int64) Quant.blockElems(ty));
+    int32 k = 0;
+    while (k < used) {
+        KernelBuffer<int8> ex #= slab.slice(
+            (uint64) ((int64) ids[k] * rows * resRow),
+            (uint64) (rows * resRow));
+        if (ty == Quant.GG_IQ4_NL) {
+            QuantKernel.iq4nlQ8WaveMatVecLaunchNoSync(yWv, ex, xp,
+                rows, cols, (int64) k * rows);
+        } else {
+            QuantKernel.iqQ8WaveMatVecLaunchNoSync(ty, yWv, ex, xp,
+                rows, cols, (int64) k * rows);
+        }
+        k = k + 1;
+    }
+    KernelStream s = QuantKernel.stream();
+    s.sync();
+    float32[] a #= heap float32[n];
+    float32[] b #= heap float32[n];
+    yId.download(a, n);
+    yWv.download(b, n);
+    int64 diff = 0L;
+    int64 nan = 0L;
+    boolean nz = false;
+    int64 i = 0;
+    while (i < n) {
+        if (a[i] != b[i]) {
+            if (diff < 4L) {
+                System.stdout.println("   ty=" + ty + " row " + i
+                    + ": id " + a[i] + " wave " + b[i]);
+            }
+            diff = diff + 1L;
+        }
+        if (a[i] != 0.0f && a[i] == a[i]) { nz = true; }
+        if (a[i] != a[i]) { nan = nan + 1L; }
+        i = i + 1;
+    }
+    Assert.equals(0L, diff);
+    // A NaN output compares unequal to itself, so it would read as a
+    // kernel disagreement AND satisfy a bare non-zero check.
+    Assert.equals(0L, nan);
+    Assert.isTrue(nz);
+    System.stdout.println("   ty=" + ty + " id == wave over " + n
+        + " rows");
+    return;
+}
+```
+
+- `a[i] != a[i]` counts NaN, and the non-zero check demands
+  `a[i] == a[i]` as well. The first version of this fixture rotated
+  *resident* bytes, slid the f16 scale field onto payload bytes, and
+  produced NaN on both arms — which compares unequal to itself and
+  would have satisfied a bare "not all zero." Validate the instrument.
+- `QuantKernel.stream().sync()` once, after every launch on both arms.
+
+### 25.7.2 Example — a test that the route fires, and one that it does not
+
+For the split's dword scale kernel (§25.4.1). The existing byte-exact
+tests would have gone green without executing a line of the new
+kernel — their chunks end mid-row, so both took the fallback. Hence a
+counter on the branch and a pair of tests against it.
+
+`cajeta-llm/src/test/cajeta/dev/cajeta/llm/selftest/ResidentLayoutTest.cajeta:190-205`
+
+```cajeta
+@Test
+public void theScaleSplitTakesTheDwordKernelOnARowAlignedChunk() {
+    String be #= Device.activeBackend();
+    if (be.equals("cpu") || be.equals("none")) { return; }
+    int64 before = QuantKernel.scaleWordLaunchCount();
+    ResidentLayoutTest.checkDeviceSplit(Quant.GG_IQ4_NL, "iq4_nl.bin",
+        13L, 317L, 0L);
+    ResidentLayoutTest.checkDeviceSplit(Quant.GG_Q6_K, "q6_k.bin",
+        7L, 53L, 0L);
+    int64 fired = QuantKernel.scaleWordLaunchCount() - before;
+    if (fired != 2L) {
+        Assert.fail("a row-aligned split took the dword scale kernel "
+            + fired + " times, wanted 2");
+    }
+    return;
+}
+```
+
+The twin, `theScaleSplitKeepsTheBlockKernelOnAChunkThatEndsMidRow`,
+splits at `first = 2000` with `bpr = 317` and asserts the counter did
+not move. Red first at "0 times, wanted 2"; the byte-exactness half of
+the same test passed while red. That is the pair every route row gets.
