@@ -30,7 +30,13 @@ namespace cajeta::prof {
         /** Report host frames instead of device work; off by default so a per-kernel
          *  table never silently sums host frames in beside the kernels. */
         bool host = false;
+        /** Also measure the idle between consecutive slices on each track: a
+         *  histogram and the largest gaps, with the kernels either side. */
+        bool gaps = false;
     };
+
+    struct GapBucket { int64_t upToNs; int64_t count; int64_t totalNs; };
+    struct Gap { int64_t ns; int64_t relTs; std::string before; std::string after; };
 
     struct Summary {
         std::vector<KernelStat> rows;      // sorted by totalNs, descending
@@ -46,6 +52,11 @@ namespace cajeta::prof {
         int64_t gpuPendingOverflow = 0;
         int64_t gpuPendingUnclaimed = 0;
         int64_t gpuRecordsDropped = -1;
+        /** `--gaps`: idle between consecutive slices of one track, in the window. */
+        std::vector<GapBucket> gapHist;
+        std::vector<Gap> topGaps;          // largest first
+        int64_t gapTotalNs = 0;
+        int64_t gapCount = 0;
     };
 
     /** Total per kernel. False with `err` set when the file cannot be read; an empty

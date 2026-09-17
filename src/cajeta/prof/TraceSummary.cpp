@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <functional>
 #include <cinttypes>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -108,6 +109,46 @@ namespace cajeta::prof {
 
     } // namespace
 
+    namespace {
+
+        // Idle between consecutive slices of one track: sorted by start, the gap
+        // is next.start - prev.end, clamped at zero where slices overlap.
+        template <class Rec>
+        void collectGaps(const std::vector<Rec>& recs, int64_t t0,
+                         const SummaryOptions& opts, Summary* out) {
+            std::unordered_map<uint64_t, std::vector<const Rec*>> byTrack;
+            for (const auto& r : recs) {
+                const int64_t rel = r.ts - t0;
+                if (rel < opts.fromNs) continue;
+                if (opts.toNs >= 0 && rel > opts.toNs) continue;
+                byTrack[r.track].push_back(&r);
+            }
+            static const int64_t edgesNs[] = {1000, 2000, 4000, 8000, 16000, 64000,
+                                              256000, 1000000, INT64_MAX};
+            for (int64_t e : edgesNs) out->gapHist.push_back(GapBucket{e, 0, 0});
+            for (auto& kv : byTrack) {
+                auto& v = kv.second;
+                std::sort(v.begin(), v.end(),
+                          [](const Rec* a, const Rec* b) { return a->ts < b->ts; });
+                for (size_t i = 1; i < v.size(); i++) {
+                    int64_t g = v[i]->ts - (v[i - 1]->ts + v[i - 1]->dur);
+                    if (g < 0) g = 0;
+                    out->gapCount++;
+                    out->gapTotalNs += g;
+                    for (auto& b : out->gapHist) {
+                        if (g < b.upToNs) { b.count++; b.totalNs += g; break; }
+                    }
+                    out->topGaps.push_back(Gap{g, v[i - 1]->ts + v[i - 1]->dur - t0,
+                                               v[i - 1]->name, v[i]->name});
+                }
+            }
+            std::sort(out->topGaps.begin(), out->topGaps.end(),
+                      [](const Gap& a, const Gap& b) { return a.ns > b.ns; });
+            if (out->topGaps.size() > 12) out->topGaps.resize(12);
+        }
+
+    } // namespace
+
     bool summarize(const std::string& path, const SummaryOptions& opts,
                    Summary* out, std::string* err) {
         FILE* f = std::fopen(path.c_str(), "rb");
@@ -190,7 +231,7 @@ namespace cajeta::prof {
 
         // Pair BEGIN with END per track: the writer emits boundaries, not durations.
         std::unordered_map<uint64_t, std::vector<Open>> stacks;
-        struct Rec { std::string name; int64_t ts; int64_t dur; int64_t self; };
+        struct Rec { std::string name; int64_t ts; int64_t dur; int64_t self; uint64_t track; };
         std::vector<Rec> recs;
         int64_t tracks = 0;
         bool sawTrack = false;
@@ -243,7 +284,7 @@ namespace cajeta::prof {
                 // Clamped: an unmatched child or stepped clock would make self time negative.
                 int64_t self = dur - o.childNs;
                 if (self < 0) self = 0;
-                recs.push_back(Rec{o.name, o.ts, dur, self});
+                recs.push_back(Rec{o.name, o.ts, dur, self, uuid});
                 if (!st.empty()) st.back().childNs += dur;
             }
         });
@@ -276,6 +317,7 @@ namespace cajeta::prof {
             hi = std::max(hi, r.ts + r.dur);
         }
         out->spanNs = first ? 0 : hi - lo;
+        if (opts.gaps) collectGaps(recs, t0, opts, out);
         for (auto& kv : byName) {
             out->totalSelfNs += kv.second.selfNs;
             out->rows.push_back(kv.second);
@@ -330,6 +372,8 @@ namespace cajeta::prof {
                 "  --from=<dur>   window start, relative to the first slice\n"
                 "  --to=<dur>     window end (default: the whole run)\n"
                 "  --host         total HOST frames instead of device kernels\n"
+                "  --gaps         the idle between consecutive slices: a histogram\n"
+                "                 and the largest gaps with the kernels either side\n"
                 "  --csv          machine-readable output; its first line is\n"
                 "                 `# gpu_records_kept=N gpu_records_dropped=M` when\n"
                 "                 the trace carries the device ring's accounting\n"
@@ -368,6 +412,8 @@ namespace cajeta::prof {
                 opts.host = true;
             } else if (a == "--csv") {
                 csv = true;
+            } else if (a == "--gaps") {
+                opts.gaps = true;
             } else if (a == "--help" || a == "-h") {
                 return usage();
             } else if (!a.empty() && a[0] == '-') {
@@ -438,6 +484,23 @@ namespace cajeta::prof {
                     "self %s, wall %s\n",
                     sum.sliceCount, sum.trackCount,
                     fmtNs(sum.totalSelfNs).c_str(), fmtNs(sum.spanNs).c_str());
+        if (opts.gaps) {
+            std::printf("\ngaps between consecutive slices: %" PRId64 " gaps, idle %s "
+                        "(%.1f%% of wall)\n", sum.gapCount, fmtNs(sum.gapTotalNs).c_str(),
+                        sum.spanNs > 0 ? 100.0 * (double) sum.gapTotalNs / (double) sum.spanNs : 0.0);
+            std::printf("%10s %8s %12s %12s\n", "gap <", "count", "idle", "avg");
+            for (const auto& b : sum.gapHist) {
+                std::printf("%10s %8" PRId64 " %12s %12s\n",
+                            b.upToNs == INT64_MAX ? "more" : fmtNs(b.upToNs).c_str(),
+                            b.count, fmtNs(b.totalNs).c_str(),
+                            fmtNs(b.count > 0 ? b.totalNs / b.count : 0).c_str());
+            }
+            std::printf("largest:\n");
+            for (const auto& g : sum.topGaps) {
+                std::printf("  %10s at %10s  %s -> %s\n", fmtNs(g.ns).c_str(),
+                            fmtNs(g.relTs).c_str(), g.before.c_str(), g.after.c_str());
+            }
+        }
         if (opts.host) {
             std::printf("`total` counts a frame's children too, so that column "
                         "sums to more than the run is long.\n");
