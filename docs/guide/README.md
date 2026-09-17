@@ -50,5 +50,6 @@ One chapter per package area, mirroring the tour. *(Planned.)*
 | Chapter | |
 |---|---|
 | [23 Profiling](23-profiling.md) | The sampling profiler, `.pftrace` output, reading a trace |
+| [25 Writing XPU Kernels](25-xpu-kernels.md) | Kernels at the device's ceiling for decode, prefill, bind and fused chains — every rule measured — and the routing contract that admits them |
 
 GPU kernels, graphics, embedded targets, further toolchain deep-dives. *(Planned.)*

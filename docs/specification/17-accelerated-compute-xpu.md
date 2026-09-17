@@ -85,3 +85,11 @@ The scheduling model over that interface:
 > *Discussion.* The `submit` API ships and records. The scheduler behind it is in active development under the `xpu-tile-manifest`, `xpu-tile-scheduling`, and `xpu-tile-workload-profiles` specifications (all approved 2026-09-06). Until those units land, `submit` gates nothing — the launch after it executes immediately — and the behavior described above is design, not yet guarantee. The API is the compatibility contract. Call sites written against it are unchanged when the scheduler arrives.
 
 > *Discussion.* Backend verification status varies by feature and is tracked in the internal capability matrix. The CPU, Vulkan, and AMD columns of the core model are device-measured, with some NVIDIA paths verified at emission only. Graphics execution (raster and ray-tracing pipelines) is not part of `cajeta.xpu` — it is the `cajeta.render` layer's, outside this specification.
+
+## 17.9 Kernel Routing
+
+Which kernel serves which data format in which regime is a declaration
+the layer audits, not a predicate each package restates: see
+[cajeta.xpu — Kernel Routing](xpu/CajetaXPU-Routing.md) and, for how to
+write a kernel that the routing can admit, the
+[kernel-writing guide](../guide/25-xpu-kernels.md).
