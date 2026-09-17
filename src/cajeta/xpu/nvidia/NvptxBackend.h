@@ -32,7 +32,47 @@ namespace nvidia {
     std::string emitPtx(llvm::Module& deviceModule, llvm::TargetMachine& tm);
 
     // The CUDA `ptxas` assembler: $CUDA_PATH/bin first, then PATH; empty if absent.
+    // CUDA_PATH is consulted FIRST so a box whose PATH holds a stale ptxas can be
+    // steered without reordering PATH — see kMinPtxasVersion for why that matters.
     std::string findPtxas();
+
+    // A ptxas release, as `ptxas --version` prints it. {0,0} means the version
+    // could not be read, which is treated as unknown rather than as old.
+    struct PtxasVersion {
+        int major = 0;
+        int minor = 0;
+
+        constexpr bool unknown() const { return major == 0 && minor == 0; }
+        constexpr bool operator==(const PtxasVersion& o) const {
+            return major == o.major && minor == o.minor;
+        }
+        constexpr bool operator!=(const PtxasVersion& o) const { return !(*this == o); }
+        // Compared NUMERICALLY on both components: 12.10 is newer than 12.9.
+        constexpr bool operator<(const PtxasVersion& o) const {
+            return major != o.major ? major < o.major : minor < o.minor;
+        }
+    };
+
+    // The oldest ptxas cajeta will assemble with. CUDA 12.0's ptxas (12.0.140,
+    // what Ubuntu's `nvidia-cuda-toolkit` installs at /usr/bin/ptxas) allocates
+    // a loop-invariant local-frame base onto the enclosing loop's induction
+    // uniform, so the portable software CooperativeMatrix kernel stores from
+    // 1024 bytes past its accumulator — silently, with no ptxas diagnostic.
+    // Measured 2026-09-17: 12.0 wrong, 12.9 and 13.3 correct.
+    inline constexpr PtxasVersion kMinPtxasVersion{12, 1};
+
+    // The `release X.Y` of `ptxas --version` output; {0,0} when absent.
+    PtxasVersion parsePtxasVersion(const std::string& versionText);
+
+    // May cajeta assemble with this release? An UNKNOWN version passes: refusing
+    // because `--version` was unreadable would break a working toolchain, and
+    // ptxas still rejects PTX it cannot handle. A version known to be below the
+    // floor does NOT pass — that one returns wrong answers rather than errors.
+    bool ptxasVersionSupported(const PtxasVersion& v);
+
+    // `ptxas --version` for the assembler at `ptxasPath`, or unknown if it
+    // cannot be run. Result is cached per path: this shells out.
+    PtxasVersion queryPtxasVersion(const std::string& ptxasPath);
 
     // Shell out to ptxas for a single-arch .cubin; empty bytes on failure. A given
     // `verboseLog` adds `-v` and returns its per-kernel resource report.

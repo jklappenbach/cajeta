@@ -3,6 +3,8 @@
 #include "NvptxBackend.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -26,7 +28,9 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
+#include <set>
 #include <optional>
 #include <sstream>
 
@@ -209,7 +213,18 @@ std::string emitPtx(llvm::Module& deviceModule, llvm::TargetMachine& tm) {
         return {};
     }
     pm.run(deviceModule);
-    return std::string(buf.begin(), buf.end());
+    std::string ptx(buf.begin(), buf.end());
+    // Same debugging seam as AMDGPU's CAJETA_XPU_DUMP_BC: a directory to drop
+    // the emitted PTX into, so a kernel that misbehaves only inside a full test
+    // run can be diffed against the same kernel compiled in isolation.
+    if (const char* dumpDir = std::getenv("CAJETA_XPU_DUMP_PTX")) {
+        std::error_code ec;
+        llvm::raw_fd_ostream out(
+            std::string(dumpDir) + "/" + deviceModule.getName().str() + ".ptx",
+            ec);
+        if (!ec) out << ptx;
+    }
+    return ptx;
 }
 
 std::string findPtxas() {
@@ -221,6 +236,65 @@ std::string findPtxas() {
     }
     if (auto found = llvm::sys::findProgramByName("ptxas")) return *found;
     return {};
+}
+
+PtxasVersion parsePtxasVersion(const std::string& versionText) {
+    // "Cuda compilation tools, release 12.0, V12.0.140" — the release pair is
+    // what NVIDIA versions the assembler by; the build number after V adds
+    // nothing this gate needs.
+    size_t at = versionText.find("release ");
+    if (at == std::string::npos) return {};
+    llvm::StringRef rest(versionText);
+    rest = rest.substr(at + std::strlen("release "));
+    llvm::StringRef majStr = rest.take_while(llvm::isDigit);
+    if (majStr.empty()) return {};
+    rest = rest.substr(majStr.size());
+    if (!rest.consume_front(".")) return {};
+    llvm::StringRef minStr = rest.take_while(llvm::isDigit);
+    if (minStr.empty()) return {};
+    PtxasVersion v;
+    if (majStr.getAsInteger(10, v.major)) return {};
+    if (minStr.getAsInteger(10, v.minor)) return {};
+    // A genuine release is never 0.0, so the unknown sentinel stays unambiguous.
+    if (v.unknown()) return {};
+    return v;
+}
+
+bool ptxasVersionSupported(const PtxasVersion& v) {
+    if (v.unknown()) return true;
+    return !(v < kMinPtxasVersion);
+}
+
+PtxasVersion queryPtxasVersion(const std::string& ptxasPath) {
+    // Cached per path: assembleCubin runs once per kernel, and spawning ptxas
+    // just to re-read a constant would be paid on every one of them.
+    static std::map<std::string, PtxasVersion> cache;
+    static std::mutex cacheMutex;
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        auto it = cache.find(ptxasPath);
+        if (it != cache.end()) return it->second;
+    }
+
+    PtxasVersion v;
+    llvm::SmallString<128> logPath;
+    if (!llvm::sys::fs::createTemporaryFile("cajeta_ptxas_ver", "txt", logPath)) {
+        std::string flag = "--version";
+        llvm::SmallVector<llvm::StringRef, 2> args = {ptxasPath, flag};
+        // ptxas prints --version on stdout; capture only that.
+        std::optional<llvm::StringRef> redirects[3] = {
+            std::nullopt, llvm::StringRef(logPath), std::nullopt};
+        if (llvm::sys::ExecuteAndWait(ptxasPath, args, /*Env=*/std::nullopt,
+                                      redirects) == 0) {
+            if (auto buf = llvm::MemoryBuffer::getFile(logPath, /*IsText=*/true))
+                v = parsePtxasVersion((*buf)->getBuffer().str());
+        }
+        llvm::sys::fs::remove(logPath);
+    }
+
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    cache[ptxasPath] = v;
+    return v;
 }
 
 std::vector<PtxasKernelStats> parsePtxasVerbose(const std::string& text) {
@@ -271,6 +345,34 @@ std::vector<uint8_t> assembleCubin(const std::string& ptx,
     if (ptxas.empty()) {
         llvm::errs() << "cajeta.xpu.nvidia: ptxas not found (set CUDA_PATH or "
                         "put ptxas on PATH)\n";
+        return {};
+    }
+
+    // Which assembler was picked is invisible until it matters, and when it
+    // matters it is a WRONG ANSWER rather than an error — so name it once, and
+    // refuse outright below the floor. Reported per path so a run that somehow
+    // switches assemblers says so.
+    PtxasVersion ver = queryPtxasVersion(ptxas);
+    if (!ptxasVersionSupported(ver)) {
+        static std::set<std::string> refused;
+        static std::mutex refusedMutex;
+        bool first;
+        {
+            std::lock_guard<std::mutex> lock(refusedMutex);
+            first = refused.insert(ptxas).second;
+        }
+        if (first) {
+            llvm::errs()
+                << "cajeta.xpu.nvidia: refusing to assemble with " << ptxas
+                << " (CUDA " << ver.major << "." << ver.minor
+                << "); cajeta requires " << kMinPtxasVersion.major << "."
+                << kMinPtxasVersion.minor << " or newer.\n"
+                << "  CUDA 12.0's ptxas miscompiles cooperative-matrix kernels "
+                   "that spill a tile to the local frame — silently, with no "
+                   "diagnostic and wrong device results.\n"
+                << "  Point CUDA_PATH at a newer toolkit "
+                   "(e.g. CUDA_PATH=/usr/local/cuda).\n";
+        }
         return {};
     }
 

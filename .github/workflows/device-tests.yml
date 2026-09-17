@@ -234,11 +234,26 @@ jobs:
       # The real work. --gtest_brief is NOT used: it hides skips, and a skip is
       # precisely the outcome this workflow exists to make visible. Output is
       # kept so the summary step can count what actually executed.
+      #
+      # CUDA_PATH is not decoration: findPtxas() consults it BEFORE PATH, and
+      # the WSL runner's service environment has neither CUDA_PATH nor
+      # /usr/local/cuda/bin on PATH — so it fell through to /usr/bin/ptxas,
+      # which is CUDA 12.0.140 from Ubuntu's `nvidia-cuda-toolkit`. That ptxas
+      # MISCOMPILES the portable software CooperativeMatrix kernel (it puts the
+      # store's local-frame base on the mma loop's induction uniform, so the
+      # kernel writes back its A and B tiles instead of the product) and emits
+      # no diagnostic while doing it. portableMatmulOnNvptxDevice failed on this
+      # leg for five nightlies, 2026-09-13 .. 2026-09-17, while the Windows leg
+      # — which finds CUDA 12.9 on PATH — passed throughout. The Windows leg is
+      # left alone; its own resolution is already correct.
       - name: Run device tests
         env:
           CAJETA_SOURCE_ROOT: ${{ github.workspace }}
         run: |
           set -euo pipefail
+          if [ "${{ runner.os }}" != "Windows" ] && [ -x /usr/local/cuda/bin/ptxas ]; then
+            export CUDA_PATH=/usr/local/cuda
+          fi
           FILTER='${{ inputs.filter }}'
           # Default: the device suites plus the coop-matrix lowering pins —
           # the pins are compile-side but backend-shaped (NVPTX bf16 fragments,
