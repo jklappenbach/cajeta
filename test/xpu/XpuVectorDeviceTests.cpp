@@ -1079,6 +1079,68 @@ TEST(XpuVectorDeviceTests, lut4EmitsAmdPerm) {
         << "lut4 must lower to the byte-permute LUT on AMD";
 }
 
+// An index the caller has visibly masked so no byte can reach 8 cannot read the
+// table's high half, so the high perm and the per-byte select that chooses
+// between the halves are dead: one v_perm_b32 a dword instead of three. LLVM
+// will not find this — the select's byte selector DOES fold to the constant
+// 0x03020100 under -O2, but nothing simplifies amdgcn.perm(a, b, 0x03020100)
+// to b. Measured on cajeta-llm's IQ2 decode waves: 48 perms a loop body -> 16.
+//
+// idx = {0..15} & 7, table as above, so dec == kv[i & 7] and
+// out = dec[5]*100 + dec[9]*10 + dec[15] = 6*100 + 1*10 + 12 = 622.
+const char* kLut4LowHalfSource =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "public class LUT {\n"
+    "    @Kernel\n"
+    "    public static void lut(KernelBuffer<int32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<int8,16> kv = heap Vector<int8,16>(0,1,2,3,4,6,8,12,"
+    "0,-1,-2,-3,-4,-6,-8,-12);\n"
+    "            Vector<int8,16> idx = heap Vector<int8,16>(0,1,2,3,4,5,6,7,"
+    "8,9,10,11,12,13,14,15);\n"
+    "            Vector<int8,16> dec = (idx & 7).lut4(kv);\n"
+    "            out[i] = (int32) dec[5] * 100 + (int32) dec[9] * 10\n"
+    "                + (int32) dec[15];\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
+const int32_t kLut4LowHalfExpected = 622;
+
+static std::size_t countPerms(const char* source, const char* moduleName) {
+    using namespace cajeta::xpu::amd;
+    Compiler compiler;
+    auto module = compileForInspection(compiler, source);
+    auto k = findMethod(module->getStructures()["test.LUT"], "lut");
+    if (k == nullptr) return 0;
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    if (tm == nullptr) return 0;
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule(moduleName, deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    if (lowerKernel(k, deviceModule) == nullptr) return 0;
+    std::string ir;
+    { llvm::raw_string_ostream os(ir); deviceModule.print(os, nullptr); }
+    std::size_t n = 0;
+    for (std::size_t at = ir.find("call i32 @llvm.amdgcn.perm");
+         at != std::string::npos;
+         at = ir.find("call i32 @llvm.amdgcn.perm", at + 1))
+        ++n;
+    return n;
+}
+
+// The pair: the check must FIRE on a masked index and NOT fire on `& 15`, which
+// is every other caller in the fleet (mxfp4, iq4_nl) and must keep both halves.
+TEST(XpuVectorDeviceTests, lut4MaskedToLowHalfTakesOnePermPerDword) {
+    EXPECT_EQ(countPerms(kLut4LowHalfSource, "xpu_lut4_lowhalf"), 4u)
+        << "a low-half index must take one perm per dword";
+    EXPECT_EQ(countPerms(kLut4Source, "xpu_lut4_full"), 12u)
+        << "a full 4-bit index must keep both table halves and the select";
+}
+
 TEST(XpuVectorDeviceTests, lut4RunsOnAmdDevice) {
     using namespace cajeta::xpu::amd;
     if (!HipDriver::available()) GTEST_SKIP() << "no HIP device";

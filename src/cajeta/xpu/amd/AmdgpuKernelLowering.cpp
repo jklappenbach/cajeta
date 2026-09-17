@@ -182,13 +182,74 @@ public:
         return b.CreateCall(f, {x, y, acc, b.getFalse()}, "dp4a");
     }
 
+    // A vector receiver arrives as a load of the slot it was stored to, through any number
+    // of bitcasts; peel back to the value that built it.
+    static llvm::Value* peelVectorValue(llvm::Value* v) {
+        for (int hop = 0; hop < 8; ++hop) {
+            if (auto* bc = llvm::dyn_cast<llvm::BitCastInst>(v)) {
+                v = bc->getOperand(0);
+                continue;
+            }
+            auto* ld = llvm::dyn_cast<llvm::LoadInst>(v);
+            if (ld == nullptr) break;
+            auto* al = llvm::dyn_cast<llvm::AllocaInst>(ld->getPointerOperand());
+            if (al == nullptr) break;
+            llvm::StoreInst* only = nullptr;
+            bool multi = false;
+            for (llvm::User* u : al->users())
+                if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+                    if (only != nullptr) multi = true;
+                    only = st;
+                }
+            if (only == nullptr || multi || only->getParent() != ld->getParent()
+                    || !only->comesBefore(ld))
+                break;
+            v = only->getValueOperand();
+        }
+        return v;
+    }
+
+    // Bit 3 clear in every byte of a constant vector, whatever lane width it is spelled in.
+    static bool allBytesBelowEight(llvm::Constant* c) {
+        while (auto* ce = llvm::dyn_cast<llvm::ConstantExpr>(c)) {
+            if (ce->getOpcode() != llvm::Instruction::BitCast) return false;
+            c = ce->getOperand(0);
+        }
+        auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(c->getType());
+        if (vt == nullptr) return false;
+        for (unsigned i = 0; i < vt->getNumElements(); ++i) {
+            auto* e = llvm::dyn_cast_or_null<llvm::ConstantInt>(
+                c->getAggregateElement(i));
+            if (e == nullptr) return false;
+            const llvm::APInt& v = e->getValue();
+            for (unsigned bit = 3; bit < v.getBitWidth(); bit += 8)
+                if (v[bit]) return false;
+        }
+        return true;
+    }
+
+    // An index the caller has visibly masked so no byte reaches 8 cannot read the table's
+    // high half.
+    static bool masksOffHighHalf(llvm::Value* indices) {
+        auto* op = llvm::dyn_cast<llvm::BinaryOperator>(peelVectorValue(indices));
+        if (op == nullptr || op->getOpcode() != llvm::Instruction::And)
+            return false;
+        for (unsigned i = 0; i < 2; ++i)
+            if (auto* c = llvm::dyn_cast<llvm::Constant>(op->getOperand(i)))
+                if (allBytesBelowEight(c)) return true;
+        return false;
+    }
+
     // 16-entry int8 LUT by 4-bit index via v_perm_b32: perm the low (0-7) and high (8-15)
-    // table halves with the 3-bit index, then a third perm picks per byte off bit 3.
+    // table halves with the 3-bit index, then a third perm picks per byte off bit 3. An
+    // index the caller has visibly masked to 0-7 skips the high half and its select, which
+    // is the whole lookup in one perm.
     llvm::Value* byteLut16(llvm::IRBuilderBase& b, llvm::Module& m,
                            llvm::Value* indices, llvm::Value* table) override {
         auto* ivt = llvm::dyn_cast<llvm::FixedVectorType>(indices->getType());
         if (ivt == nullptr || (ivt->getNumElements() % 4) != 0)
             return LoweringTarget::byteLut16(b, m, indices, table);
+        bool loHalfOnly = masksOffHighHalf(indices);
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         unsigned groups = ivt->getNumElements() / 4;
         auto* t4 = llvm::FixedVectorType::get(i32, 4);
@@ -209,6 +270,10 @@ public:
             llvm::Value* idx = b.CreateExtractElement(idxW, g, "lut.g");
             llvm::Value* sel = b.CreateAnd(idx, m7, "lut.sel");
             llvm::Value* lo = b.CreateCall(perm, {t1, t0, sel}, "lut.lo");
+            if (loHalfOnly) {
+                out = b.CreateInsertElement(out, lo, g, "lut.out");
+                continue;
+            }
             llvm::Value* hi = b.CreateCall(perm, {t3, t2, sel}, "lut.hi");
             llvm::Value* mb = b.CreateOr(base,
                 b.CreateLShr(b.CreateAnd(idx, m8), b.getInt32(1)), "lut.mb");
