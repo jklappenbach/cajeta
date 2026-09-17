@@ -15,11 +15,23 @@ namespace cajeta {
         CajetaTypePtr targetType;
         // When set, ClassCreatorRest constructs directly into this caller-provided slot.
         llvm::Value* nrvoTarget = nullptr;
+        int xrefLine = 0;
+        int xrefColumn = -1;
     public:
         CreatorRest(antlr4::Token* token) : AbstractSyntaxNode(token) { }
 
         void setTargetType(CajetaTypePtr t) { targetType = t; }
         void setNrvoTarget(llvm::Value* t) { nrvoTarget = t; }
+
+        /// Anchor the constructor's xref call edge on the created type's
+        /// identifier instead of this node's `heap`/`stack` keyword.
+        void setXrefAnchor(int line, int column) {
+            xrefLine = line; xrefColumn = column;
+        }
+        int getXrefLine() const { return xrefLine > 0 ? xrefLine : getSourceLine(); }
+        int getXrefColumn() const {
+            return xrefLine > 0 ? xrefColumn : getSourceColumn();
+        }
 
         static shared_ptr<CreatorRest> fromContext(CajetaParser::CreatorContext* ctx, antlr4::Token* token);
     };

@@ -27,6 +27,7 @@
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/error/Diagnostics.h"
+#include "cajeta/compile/ScriptUnitSynthesis.h"
 
 
 namespace cajeta {
@@ -87,7 +88,7 @@ namespace cajeta {
                     + res.classSource;
                 auto* unit = cajeta::synth::parseSynthesizedUnit(source);
                 CajetaParser::ClassDeclarationContext* classDecl = nullptr;
-                for (auto* td : unit->typeDeclaration()) {
+                for (auto* td : typeDeclarationsOf(unit)) {
                     if (auto* cd = td->classDeclaration()) { classDecl = cd; break; }
                 }
                 if (!classDecl) {
@@ -424,14 +425,8 @@ namespace cajeta {
             for (auto& importDeclarationContext: ctx->importDeclaration()) {
                 pModule->onImportDeclaration(importDeclarationContext);
             }
-            for (auto& typeDeclarationContext: ctx->typeDeclaration()) {
+            for (auto* typeDeclarationContext : typeDeclarationsOf(ctx)) {
                 pModule->onStructureDeclaration(visitChildren(typeDeclarationContext));
-            }
-            for (auto& scriptMemberContext: ctx->scriptMember()) {
-                if (scriptMemberContext->typeDeclaration() != nullptr) {
-                    pModule->onStructureDeclaration(
-                        visitChildren(scriptMemberContext->typeDeclaration()));
-                }
             }
             return std::any(nullptr);
         }

@@ -55,8 +55,22 @@ class CajetaXrefFreshness {
     fun refreshSucceeded() { publish(Snapshot(State.FRESH, null)) }
     fun refreshFailed(reason: String) { publish(Snapshot(State.STALE, reason)) }
 
-    /** Per-edit lint outcome → state. Called by the annotator's apply(). */
-    fun updateFromLint(compilerConfigured: Boolean, stream: XrefStream) {
+    /**
+     * Per-edit lint outcome → state. Called by the annotator's apply().
+     *
+     * [archive] reports whether the project's own build artifact is usable
+     * (lint-own-archive-classpath Unit 4). It is published here, on the existing
+     * project-state channel, rather than as a diagnostic in the buffer: the
+     * source is fine, the BUILD is missing or behind, and anchoring that to a
+     * range would read as a defect in the file (spec §4.3). Publishing through
+     * the same snapshot also means it is shown once and updated on change, not
+     * repeated per keystroke (4.3.3).
+     */
+    fun updateFromLint(
+        compilerConfigured: Boolean,
+        stream: XrefStream,
+        archive: ArchiveHealth.State = ArchiveHealth.State.OK,
+    ) {
         when {
             !compilerConfigured -> publish(Snapshot(State.UNAVAILABLE,
                 "Cajeta compiler not configured — xref navigation is off; " +
@@ -65,6 +79,13 @@ class CajetaXrefFreshness {
                 "compiler emits xref schema major ${stream.versionMajor}; " +
                 "this plugin speaks ${XrefStreamParser.SUPPORTED_MAJOR} — " +
                 "records refused rather than misread"))
+            // The archive states degrade rather than disable: lint ran and its
+            // records are good, so the index is FRESH — what is missing is the
+            // project's own declarations, and the reason says so.
+            archive == ArchiveHealth.State.ABSENT ->
+                publish(Snapshot(State.STALE, ArchiveHealth.reason(archive)))
+            archive == ArchiveHealth.State.STALE ->
+                publish(Snapshot(State.STALE, ArchiveHealth.reason(archive)))
             else -> publish(Snapshot(State.FRESH, null))
         }
     }

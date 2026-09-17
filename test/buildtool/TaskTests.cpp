@@ -7,6 +7,8 @@
 #include <gtest/gtest.h>
 #include <llvm/Support/Error.h>
 
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 using cajeta::buildtool::loadManifestString;
@@ -144,4 +146,62 @@ TEST(TaskTests, errorsOnUnknownParamType) {
     ASSERT_FALSE((bool)tasks);
     auto msg = errorText(tasks.takeError());
     EXPECT_NE(msg.find("unsupported type 'intMaybe'"), std::string::npos);
+}
+
+// ─── exec command shape ─────────────────────────────────────
+// exec runs a program directly, never a shell. A `command` carrying
+// whitespace with no `args` is a shell line by mistake; the manifest
+// load names the task and the split form instead of failing at exec time.
+
+TEST(TaskTests, execCommandWithSpacesAndNoArgsNamesTheSplitForm) {
+    auto m = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": {
+            "clean": { "actions": [ { "action": "exec", "command": "rm -rf build" } ] }
+        }
+    })");
+    auto tasks = parseTasks(m);
+    ASSERT_FALSE((bool)tasks);
+    auto msg = errorText(tasks.takeError());
+    EXPECT_NE(msg.find("task 'clean'"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("actions[0]"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("\"command\": \"rm\", \"args\": [\"-rf\", \"build\"]"),
+              std::string::npos) << msg;
+}
+
+TEST(TaskTests, execCommandWithArgsIsAccepted) {
+    auto m = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": {
+            "clean": { "actions": [
+                { "action": "exec", "command": "rm", "args": ["-rf", "build"] } ] }
+        }
+    })");
+    ASSERT_TRUE((bool)parseTasks(m));
+}
+
+TEST(TaskTests, execCommandWithASubstitutionIsAccepted) {
+    auto m = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": {
+            "t": { "actions": [ { "action": "exec", "command": "${tool} run" } ] }
+        }
+    })");
+    ASSERT_TRUE((bool)parseTasks(m));
+}
+
+TEST(TaskTests, execCommandNamingAnExistingFileWithSpacesIsAccepted) {
+    auto dir = std::filesystem::temp_directory_path() / "cajeta task tests";
+    std::filesystem::create_directories(dir);
+    auto tool = dir / "my tool";
+    std::ofstream(tool) << "#!/bin/sh\n";
+    auto m = mustLoad(std::string(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": {
+            "t": { "actions": [ { "action": "exec", "command": ")") +
+        tool.string() + R"(" } ] }
+        }
+    })");
+    EXPECT_TRUE((bool)parseTasks(m));
+    std::filesystem::remove_all(dir);
 }

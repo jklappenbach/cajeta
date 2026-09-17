@@ -45,13 +45,24 @@ class CajetaXrefReference(element: CajetaIdentifier) :
         val doc = PsiDocumentManager.getInstance(project).getDocument(file)
         if (doc != null) {
             val off = element.textRange.startOffset
-            val line = doc.getLineNumber(off) + 1
-            val col = off - doc.getLineStartOffset(line - 1)
+            val curLine = doc.getLineNumber(off) + 1
+            val curCol = off - doc.getLineStartOffset(curLine - 1)
+            // A use pinned by the last lint follows the document's edits; a
+            // moved pin must still name what the record targets (wrong > missing).
+            val pinned = CajetaXrefPositions.recordedPositionAt(doc, off)
+            val line = pinned?.line ?: curLine
+            val col = pinned?.col ?: curCol
+            val moved = pinned != null && (line != curLine || col != curCol)
             val rel = xrefRelPath(file)
             if (rel != null) {
-                val use = XrefQuery.usesIn(project, rel).firstOrNull {
-                    intOf(it, "line") == line && intOf(it, "col") == col
+                val uses = XrefQuery.usesIn(project, rel).filter {
+                    intOf(it, "line") == line && intOf(it, "col") == col &&
+                        (!moved || targetSimpleName(it) == element.text)
                 }
+                // A constructor site carries both the call edge and the created
+                // type's reference; the constructor is the more specific target.
+                val use = uses.firstOrNull { it.opt("callee") is Json.Str }
+                    ?: uses.firstOrNull()
                 if (use != null) {
                     val decls = when {
                         use.opt("target") is Json.Str ->
@@ -86,6 +97,16 @@ class CajetaXrefReference(element: CajetaIdentifier) :
 
         private fun strOf(o: Json.Obj, field: String): String? =
             (o.opt(field) as? Json.Str)?.value
+
+        /** The simple name a use record targets: the FQN's last segment, or
+         *  an overload key's method name. */
+        internal fun targetSimpleName(use: Json.Obj): String? {
+            strOf(use, "target")?.let { return it.substringAfterLast('.') }
+            strOf(use, "callee")?.let {
+                return it.substringBefore('(').substringAfterLast("::").substringAfterLast('.')
+            }
+            return null
+        }
 
         /**
          * The file's export identity: root-relative path derived from the

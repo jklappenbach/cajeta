@@ -501,7 +501,8 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
                                          : " dependency archives"));
             for (const auto& cp : archives) impl.compiler->addClasspath(cp);
             try {
-                impl.compiler->ingestClasspath();
+                // Already reported; an interactive session continues with what resolved.
+                (void) impl.compiler->ingestClasspath();
                 // Definitions, not just declarations — the JIT links what it
                 // RUNS, and the ingest alone leaves dep symbols unresolved.
                 impl.compiler->linkClasspathModules();
@@ -2063,7 +2064,8 @@ bool KernelSession::installArchive(const std::string& cjaPath,
             }
 
             impl.compiler->addClasspath(key);
-            impl.compiler->ingestClasspath();
+            // Already reported; an interactive session continues with what resolved.
+            (void) impl.compiler->ingestClasspath();
             impl.compiler->linkClasspathModules();
 
             for (auto& m : impl.compiler->getModules()) {

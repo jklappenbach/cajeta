@@ -1,0 +1,8 @@
+package demo;
+
+public final class UnterminatedString {
+    public int32 second() {
+        String s = "abc;
+        return 0;
+    }
+}

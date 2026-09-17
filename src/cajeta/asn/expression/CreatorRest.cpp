@@ -56,7 +56,7 @@ namespace cajeta {
         // against whatever site happens to be open. The file comes from this
         // node, not from `module`.
         xref::CallSiteScope xrefSite(getSourceFile(),
-                                     getSourceLine(), getSourceColumn());
+                                     getXrefLine(), getXrefColumn());
 
         if (!targetType) {
             return nullptr;

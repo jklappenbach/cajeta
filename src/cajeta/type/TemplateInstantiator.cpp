@@ -17,6 +17,7 @@
 #include "antlr4-runtime/antlr4-runtime.h"
 
 #include <cassert>
+#include "cajeta/compile/ScriptUnitSynthesis.h"
 
 namespace cajeta {
 
@@ -397,7 +398,7 @@ namespace cajeta {
                 parseSyntheticCompilationUnit(ifParser, ifTokens,
                                               "synthetic:interface"));
             CajetaParser::InterfaceDeclarationContext* ifDecl = nullptr;
-            for (auto* td : ifUnit->typeDeclaration()) {
+            for (auto* td : cajeta::typeDeclarationsOf(ifUnit)) {
                 if (auto* id = td->interfaceDeclaration()) {
                     ifDecl = id;
                     break;
@@ -519,7 +520,7 @@ namespace cajeta {
 
         CajetaParser::ClassDeclarationContext* classDecl = nullptr;
         CajetaParser::RecordDeclarationContext* recordDecl = nullptr;
-        for (auto* td : compUnit->typeDeclaration()) {
+        for (auto* td : cajeta::typeDeclarationsOf(compUnit)) {
             if ((classDecl = td->classDeclaration())) break;
             if ((recordDecl = td->recordDeclaration())) break;
         }
@@ -872,7 +873,7 @@ namespace cajeta {
                                           "synthetic:inspect"));
 
         CajetaParser::ClassBodyContext* declBody = nullptr;
-        for (auto* td : compUnit->typeDeclaration()) {
+        for (auto* td : cajeta::typeDeclarationsOf(compUnit)) {
             if (auto* cd = td->classDeclaration()) {
                 declBody = cd->classBody();
                 break;

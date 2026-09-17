@@ -52,9 +52,18 @@ object CajetacRunner {
             val sourceRoot = sourceRootOf(filePath, bufferText)
             // Same dependency archives the whole-root rebuild passes, so the
             // buffer's references into a dependency resolve and survive into the
-            // shard instead of being clobbered on the next edit (§8.3.1).
+            // shard instead of being clobbered on the next edit (§8.3.1) — PLUS
+            // the project's OWN archive (lint-own-archive-classpath 3.2.1).
+            //
+            // The own archive is what lets a file in a separate TEST source root
+            // resolve its own project's types: `sourceRootOf` above correctly
+            // yields that test root, which does not contain the library, and the
+            // dependency cache holds only dependencies. `run-tests.sh` already
+            // compiles such a suite exactly this way — one source root plus the
+            // project's own .cja. Measured on cajeta-http ServerTests.cajeta:
+            // 13 unresolved types without it, 0 with it.
             val classpath = dev.cajeta.idea.xref.CajetaSourceMountGlue
-                .dependencyArchives(basePath)
+                .lintClasspath(compilerPath, basePath)
             // Route through the warm --lint-server daemon when enabled; its
             // response payload is byte-identical to one-shot stderr, so the same
             // demux/parse below produces the same LintOutput either way
@@ -111,7 +120,17 @@ object CajetacRunner {
     /** The project source root for [filePath]: its directory with the file's
      *  `package a.b.c;` path segments stripped off the tail (so `<root>/a/b/c/
      *  Foo.cajeta` → `<root>`). Falls back to the file's own directory when there
-     *  is no package or the on-disk layout doesn't match the package. */
+     *  is no package or the on-disk layout doesn't match the package.
+     *
+     *  This is CORRECT for a file in a separate test source root and must not be
+     *  widened. `test/src/dev/cajeta/http/test/ServerTests.cajeta` with `package
+     *  dev.cajeta.http.test` yields `test/src`, which is exactly the root
+     *  `run-tests.sh` compiles that suite against. When such a file could not
+     *  resolve its own project's types the gap was the CLASSPATH — the project's
+     *  own `.cja` was missing from it — not this root. Widening to the project
+     *  root also resolves, but costs ~50% more lint wall time and pulls in
+     *  `build/`, `tmp/` and `samples/` (lint-own-archive-classpath spec §1.5.2,
+     *  §2.3). */
     internal fun sourceRootOf(filePath: String, bufferText: String): String {
         val parent = File(filePath).parentFile ?: return File(filePath).absolutePath
         val pkg = PACKAGE_RE.find(bufferText)?.groupValues?.get(1)

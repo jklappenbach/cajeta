@@ -15,6 +15,7 @@
 //     (4.1.8, raised by Unit 3's acceptance item 3.3.2).
 #include <gtest/gtest.h>
 
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -230,7 +231,12 @@ TEST(XrefLintCallEdge, TheReportedClassesDemoCallsResolveUnderLint) {
 TEST(XrefLintCallEdge, EveryCallEdgeAnchorsOnTheCalleeName) {
     if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
     const fs::path tour = fs::path(sourceRoot()) / "samples/tour/src/main/cajeta";
-    const fs::path src = tour / "tour/lang/ClassesDemo.cajeta";
+    // ClassesDemo carries both `heap` and `stack` constructions.
+    const std::string r = "tour/lang/ClassesDemo.cajeta";
+    int checked = 0;
+    int ctors = 0;
+    {
+    const fs::path src = tour / r;
     if (!fs::exists(src)) GTEST_SKIP() << "samples/tour not present";
 
     auto errFile = freshTempDir("anchor") / "stderr.txt";
@@ -240,12 +246,13 @@ TEST(XrefLintCallEdge, EveryCallEdgeAnchorsOnTheCalleeName) {
         + " --emit-xref --diag-format=json"
         + " > " CAJETA_XCE_DEVNULL " 2> " + errFile.string()).c_str());
     const std::string stream = slurp(errFile);
-    ASSERT_FALSE(stream.empty());
+    ASSERT_FALSE(stream.empty()) << "no stream for " << r;
 
-    int checked = 0;
     std::istringstream in(stream);
     for (std::string line; std::getline(in, line); ) {
         if (!has(line, "\"rel\":\"calls\"")) continue;
+        // A single-file lint can capture edges sited in sibling files.
+        if (strField(line, "file") != r) continue;
         const int ln = intField(line, "line");
         const int col = intField(line, "col");
         const std::string callee = strField(line, "callee");
@@ -257,12 +264,8 @@ TEST(XrefLintCallEdge, EveryCallEdgeAnchorsOnTheCalleeName) {
         std::string simple = callee.substr(colons + 2);
         simple = simple.substr(0, simple.find('('));
 
-        // A CONSTRUCTOR anchors on its `heap`/`stack` keyword rather than the
-        // type name, and the type name at that site is separately covered by a
-        // references[kind=type] edge, so clicking it already resolves. Excluded
-        // deliberately rather than silently: see the note in NewExpression.
-        if (simple == callee.substr(0, colons).substr(
-                callee.substr(0, colons).rfind('.') + 1)) continue;
+        // Constructors included (Unit 7): the type-reference edge at the same
+        // site resolves to the CLASS, not the constructor, which is the defect.
 
         const std::string text = lineOf(src, ln);
         ASSERT_FALSE(text.empty()) << "line " << ln << " is empty in " << src;
@@ -274,10 +277,63 @@ TEST(XrefLintCallEdge, EveryCallEdgeAnchorsOnTheCalleeName) {
             << text.substr(col, simple.size()) << "`. The IDE looks this site "
                "up by the identifier the developer clicked, so an edge anchored "
                "anywhere else is invisible to Ctrl-click.\n  line: " << text;
+        if (simple == callee.substr(0, colons).substr(
+                callee.substr(0, colons).rfind('.') + 1)) ++ctors;
         ++checked;
+    }
     }
     EXPECT_GT(checked, 0) << "no call edges were checked, so this test proved "
                              "nothing — the export or the fixture changed";
+    EXPECT_GT(ctors, 0) << "no CONSTRUCTOR edge was checked, so the Unit 7 "
+                           "anchoring is not actually covered here";
+}
+
+// Spec 4.2.3 — weaker than the name match above and true corpus-wide: a chain
+// head anchors on the receiver's method, not the callee, but it is still an
+// identifier. An anchor that is not one cannot be clicked at all.
+TEST(XrefLintCallEdge, EveryCallAnchorBeginsAnIdentifier) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    const fs::path tour = fs::path(sourceRoot()) / "samples/tour/src/main/cajeta";
+    if (!fs::exists(tour)) GTEST_SKIP() << "samples/tour not present";
+    const std::vector<std::string> rel = {
+        "tour/lang/ClassesDemo.cajeta",
+        "tour/lang/InheritanceDemo.cajeta",
+        "tour/collection/CollectorsDemo.cajeta",
+        "tour/lang/PairDemo.cajeta",
+    };
+
+    int checked = 0;
+    for (const auto& r : rel) {
+        const fs::path src = tour / r;
+        if (!fs::exists(src)) continue;
+        auto errFile = freshTempDir("ident") / "stderr.txt";
+        (void) std::system((compilerBinary()
+            + " --lint " + src.string()
+            + " --source-root " + tour.string()
+            + " --emit-xref --diag-format=json"
+            + " > " CAJETA_XCE_DEVNULL " 2> " + errFile.string()).c_str());
+        const std::string stream = slurp(errFile);
+        ASSERT_FALSE(stream.empty()) << "no stream for " << r;
+
+        std::istringstream in(stream);
+        for (std::string line; std::getline(in, line); ) {
+            if (!has(line, "\"rel\":\"calls\"")) continue;
+            if (strField(line, "file") != r) continue;
+            const int ln = intField(line, "line");
+            const int col = intField(line, "col");
+            if (ln < 0 || col < 0) continue;
+            const std::string text = lineOf(src, ln);
+            ASSERT_LT((size_t) col, text.size())
+                << r << " call anchor " << ln << ":" << col << " past the line";
+            const char c = text[col];
+            EXPECT_TRUE(std::isalpha((unsigned char) c) || c == '_')
+                << r << " call anchor at " << ln << ":" << col
+                << " does not begin an identifier — it sits on `" << c
+                << "`, which no developer can click.\n  line: " << text;
+            ++checked;
+        }
+    }
+    EXPECT_GT(checked, 0) << "no anchors checked; the fixture or export changed";
 }
 
 // ── 4.1.2 — overloads keep distinct callee keys ───────────────────────────

@@ -911,7 +911,27 @@ int main(int argc, const char* argv[]) {
                                  "--emit-xref=<path> (whole-root xref export)\n";
                 return 1;
             }
-            return compiler.lintRoot(lintFile) > 0 ? 1 : 0;
+            // Guarded like compile() below; an escaping exception otherwise
+            // reaches std::terminate and the reason is lost to the signal handler.
+            try {
+                return compiler.lintRoot(lintFile) > 0 ? 1 : 0;
+            } catch (cajeta::SyntaxErrorException&) {
+                return 1;   // parse diagnostics already emitted
+            } catch (cajeta::Exception& e) {
+                if (compiler.getFlags().diagFormat == cajeta::DiagFormat::Json)
+                    cajeta::emitJsonDiagnostic("error", e.getErrorId(),
+                                               e.getMessage(), e.getFile(),
+                                               e.getLine(), e.getColumn());
+                else
+                    std::cerr << "cajeta: " << e.getMessage() << "\n";
+                return 1;
+            } catch (const std::exception& e) {
+                if (compiler.getFlags().diagFormat == cajeta::DiagFormat::Json)
+                    cajeta::emitJsonDiagnostic("error", "", e.what());
+                else
+                    std::cerr << "cajeta: " << e.what() << "\n";
+                return 1;
+            }
         }
 
         // Single-file lint emits xref on the DIAGNOSTIC channel (bare

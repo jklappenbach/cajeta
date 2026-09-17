@@ -246,6 +246,11 @@ LINE_COMMENT:       '//' ~[\r\n]*    -> channel(HIDDEN);
 
 IDENTIFIER:         Letter LetterOrDigit*;
 
+// Last token rule: matches any character no rule above did, so the token stream
+// covers every character. Without it the lexer SKIPS the character and IntelliJ's
+// highlighter throws on the gap the moment a quote is opened.
+ERRCHAR:            .;
+
 // Fragment rules
 
 fragment ExponentPart

@@ -38,6 +38,52 @@ object CajetaRoots {
     fun conventionalSourceRoot(basePath: String): String =
         File(basePath, "src/main/cajeta").takeIf { it.isDirectory }?.path ?: basePath
 
+    /** Trees that hold copies of sources rather than sources: discovering a root
+     *  inside one would export a stale duplicate of the real tree. */
+    private val EXCLUDED_DIRS = setOf(
+        "build", "tmp", ".cajeta", ".git", ".idea", "out", "target", "node_modules",
+    )
+
+    /** Enough of a file to carry its `package` declaration; the rest is not read. */
+    private const val HEAD_BYTES = 8192
+
+    /**
+     * EVERY source root the project has (lint-own-archive-classpath spec §8.2),
+     * stably ordered.
+     *
+     * [conventionalSourceRoot] answers "the one root" and is right for a run
+     * configuration, which launches one entry point. It is wrong for the xref
+     * export, which must VISIT every root: a project whose tests live outside
+     * `src/main/cajeta` had no index for them at all, so every import in a test
+     * file was dead. Measured on cajeta-http — the shard named `HttpSerializer`
+     * 587 times and `ServerTests` 0.
+     *
+     * Roots are DERIVED, not matched against conventional paths. There is no
+     * convention to match: surveyed 2026-09-13, cajeta-http uses `test/src`
+     * while cajeta-codec and cajeta-logging use `src/test/cajeta`, and no
+     * manifest declares a test root — so a candidate list would silently give a
+     * fourth layout no index, and an empty shard looks exactly like an unbuilt
+     * project. Instead each file's declared package is stripped from the tail of
+     * its path, which is [dev.cajeta.idea.lint.CajetacRunner.sourceRootOf] — the
+     * SAME function lint uses to pick its root, called rather than copied, so
+     * coverage and resolution cannot drift apart.
+     */
+    fun sourceRootsOf(basePath: String): List<String> {
+        val base = File(basePath)
+        if (!base.isDirectory) return emptyList()
+        val roots = LinkedHashSet<String>()
+        base.walkTopDown()
+            .onEnter { it == base || it.name !in EXCLUDED_DIRS && !it.name.startsWith(".") }
+            .filter { it.isFile && it.name.endsWith(".cajeta") }
+            .forEach { f ->
+                val head = runCatching {
+                    f.inputStream().use { s -> String(s.readNBytes(HEAD_BYTES)) }
+                }.getOrNull() ?: return@forEach
+                roots.add(dev.cajeta.idea.lint.CajetacRunner.sourceRootOf(f.path, head))
+            }
+        return roots.sorted()
+    }
+
     /**
      * The source root to prefill for a project (spec 3.1.1), in order:
      * [manifestSourceRoot] resolved against [basePath], then the convention

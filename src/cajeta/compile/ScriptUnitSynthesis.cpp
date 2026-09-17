@@ -49,7 +49,21 @@ namespace cajeta {
     }  // namespace
 
     bool isScriptUnit(CajetaParser::CompilationUnitContext* ctx) {
-        return ctx != nullptr && !ctx->scriptMember().empty();
+        if (!ctx) return false;
+        for (auto* member : ctx->scriptMember()) {
+            if (member->typeDeclaration() == nullptr) return true;
+        }
+        return false;
+    }
+
+    std::vector<CajetaParser::TypeDeclarationContext*> typeDeclarationsOf(
+            CajetaParser::CompilationUnitContext* ctx) {
+        std::vector<CajetaParser::TypeDeclarationContext*> out;
+        if (!ctx) return out;
+        for (auto* member : ctx->scriptMember()) {
+            if (auto* td = member->typeDeclaration()) out.push_back(td);
+        }
+        return out;
     }
 
     std::string scriptClassStem(const std::string& sourcePath) {
@@ -68,11 +82,9 @@ namespace cajeta {
     namespace {
 
         // The names a top-level local declaration binds (the session bindings).
-        void collectBindingNames(CajetaParser::BlockStatementContext* bs,
+        void collectBindingNames(CajetaParser::LocalVariableDeclarationContext* lvd,
                                  std::vector<std::string>* out) {
-            if (bs == nullptr || out == nullptr) return;
-            auto* lvd = bs->localVariableDeclaration();
-            if (lvd == nullptr) return;
+            if (lvd == nullptr || out == nullptr) return;
             if (auto* vds = lvd->variableDeclarators()) {
                 for (auto* vd : vds->variableDeclarator()) {
                     if (vd->variableDeclaratorId()
@@ -135,7 +147,7 @@ namespace cajeta {
         std::vector<WrapperSeg> hoistedTypes;
         std::vector<WrapperSeg> methods;
         std::vector<WrapperSeg> body;
-        CajetaParser::BlockStatementContext* lastStatement = nullptr;
+        antlr4::ParserRuleContext* lastStatement = nullptr;
         for (auto* member : ctx->scriptMember()) {
             if (auto* td = member->typeDeclaration()) {
                 hoistedTypes.push_back(
@@ -154,11 +166,15 @@ namespace cajeta {
                 line += textOf(tokens, md);
                 line += "\n";
                 methods.push_back({std::move(line), hostLineOf(md)});
-            } else if (auto* bs = member->blockStatement()) {
+            } else if (auto* lvd = member->localVariableDeclaration()) {
                 body.push_back(
-                    {"        " + textOf(tokens, bs) + "\n", hostLineOf(bs)});
-                lastStatement = bs;
-                collectBindingNames(bs, outBindings);
+                    {"        " + textOf(tokens, member) + "\n", hostLineOf(member)});
+                lastStatement = member;
+                collectBindingNames(lvd, outBindings);
+            } else if (auto* st = member->statement()) {
+                body.push_back(
+                    {"        " + textOf(tokens, st) + "\n", hostLineOf(st)});
+                lastStatement = st;
             }
         }
 

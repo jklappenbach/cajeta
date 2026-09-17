@@ -41,8 +41,7 @@ options { tokenVocab=CajetaLexer; }
 // SCRIPT UNIT — an implicit class + synthetic entry, synthesized in the
 // front end, never spelled in source.
 compilationUnit
-    : packageDeclaration? importDeclaration* typeDeclaration* EOF
-    | packageDeclaration? importDeclaration* scriptMember+ EOF
+    : packageDeclaration? importDeclaration* scriptMember* EOF
     ;
 
 // typeDeclaration first so a top-level class in a script registers as a
@@ -51,7 +50,8 @@ compilationUnit
 scriptMember
     : typeDeclaration
     | modifier* methodDeclaration
-    | blockStatement
+    | localVariableDeclaration ';'
+    | statement
     ;
 
 packageDeclaration

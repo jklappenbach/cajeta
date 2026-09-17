@@ -57,6 +57,14 @@ on:
         type: string
         required: false
         default: '30'
+      windows-job-timeout-minutes:
+        description: >-
+          Cap on the whole Windows job: MSYS2 setup, toolchain fetch, build and
+          tests. GitHub expressions cannot add, so this is not derived from
+          `test-timeout-minutes`; raise both when a suite needs more than 40.
+        type: string
+        required: false
+        default: '60'
       windows-test-command:
         description: >
           Command running the library's suite on WINDOWS. Empty (the default)
@@ -102,7 +110,7 @@ jobs:
   windows-test:
     if: inputs.windows-test-command != ''
     runs-on: windows-latest
-    timeout-minutes: ${{ fromJSON(inputs.test-timeout-minutes) + 20 }}
+    timeout-minutes: ${{ fromJSON(inputs.windows-job-timeout-minutes) }}
     defaults:
       run:
         shell: msys2 {0}

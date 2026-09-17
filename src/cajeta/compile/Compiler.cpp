@@ -1217,8 +1217,9 @@ namespace cajeta {
     // Read every classpath archive and re-parse each ClassSource entry into a fresh
     // module registered in the canonical-name map. Those modules live in
     // `externalModules`, and the emitter never writes their IR out.
-    void Compiler::ingestClasspath() {
-        if (classpath.empty()) return;
+    bool Compiler::ingestClasspath() {
+        if (classpath.empty()) return true;
+        bool classpathFailed = false;
         const bool cpTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
         auto cpStart = std::chrono::steady_clock::now();
         auto cpMark = cpStart;
@@ -1281,9 +1282,11 @@ namespace cajeta {
                     prescanSource(input);
                 }
             } catch (const std::exception& e) {
+                // Report and skip; rethrowing here reached no handler on the lint path.
+                classpathFailed = true;
                 logLine("error", "cajeta: --classpath read failed for `"
                                  + cpPath + "`: " + e.what() + "\n");
-                throw;
+                continue;
             }
         }
 
@@ -1294,6 +1297,8 @@ namespace cajeta {
         // Phase 2 - full parse. Each ClassSource entry becomes a standalone module
         // whose LLVM module is a throwaway: the archive's own `.bc` is authoritative.
         for (const auto& cpPath : classpath) {
+          // Phase 1 already reported an unreadable entry; stay silent, just skip it.
+          try {
             auto arc = CajetaArchive::readFrom(cpPath);
             for (const auto& entry : arc.getEntries()) {
                 if (entry.kindTag != CajetaArchive::EntryKind::ClassSource)
@@ -1352,9 +1357,34 @@ namespace cajeta {
                 std::string text(
                     (const char*) entry.data.data(), entry.data.size());
                 antlr4::ANTLRInputStream input(text);
-                parseSource(extMod, input, /*label=*/"");
+                // Report and skip one unparseable class; the active module is
+                // restored on both paths so later parses are unaffected.
+                try {
+                    parseSource(extMod, input, /*label=*/"");
+                } catch (SyntaxErrorException&) {
+                    classpathFailed = true;   // diagnostics already emitted
+                } catch (cajeta::Exception& e) {
+                    classpathFailed = true;
+                    if (getFlags().diagFormat == DiagFormat::Json)
+                        emitJsonDiagnostic("error", e.getErrorId(), e.getMessage(),
+                                           cpPath + "!" + entry.name);
+                    else
+                        std::cerr << "cajeta: " << cpPath << "!" << entry.name
+                                  << ": " << e.getMessage() << "\n";
+                } catch (const std::exception& e) {
+                    classpathFailed = true;
+                    if (getFlags().diagFormat == DiagFormat::Json)
+                        emitJsonDiagnostic("error", "", e.what(),
+                                           cpPath + "!" + entry.name);
+                    else
+                        std::cerr << "cajeta: " << cpPath << "!" << entry.name
+                                  << ": " << e.what() << "\n";
+                }
                 CajetaModule::setActiveModule(prevActive);
             }
+          } catch (const std::exception&) {
+            classpathFailed = true;
+          }
         }
 
         // Lay out every parsed classpath class so its methods become resolvable
@@ -1363,6 +1393,7 @@ namespace cajeta {
         cpPhase("parse dep sources");
         CajetaModule::buildPendingPrototypes();
         cpPhase("buildPendingPrototypes");
+        return !classpathFailed;
     }
 
     CajetaModulePtr Compiler::ensureStdlibModule() {
@@ -1554,7 +1585,8 @@ namespace cajeta {
         // Ingest --classpath so a single-file lint resolves dependency types exactly
         // as the whole-root export does. Gated by skipContextRegistration: a warm
         // restore already holds these, and re-ingest makes the dep's @Inject ambiguous.
-        if (!skipContextRegistration) ingestClasspath();
+        // Per-edit lint proceeds against whatever resolved; already reported.
+        if (!skipContextRegistration) (void) ingestClasspath();
 
         const bool json = getFlags().diagFormat == DiagFormat::Json;
 
@@ -1792,7 +1824,7 @@ namespace cajeta {
         xref::setCaptureEnabled(!flags.emitXref.empty());
 
         ensureStdlibModule();
-        ingestClasspath();
+        const bool classpathClean = ingestClasspath();
         const bool json = getFlags().diagFormat == DiagFormat::Json;
         prescanSourceRoot(root, json);
 
@@ -1815,7 +1847,7 @@ namespace cajeta {
 
         // One broken file must not sink the other N-1; errors still surface on the
         // diagnostic channel, the export just is not hostage to them.
-        int failed = 0;
+        int failed = classpathClean ? 0 : 1;
         for (const auto& path : files) {
             try {
                 CajetaModulePtr module = createModule(path, rootSlash, rootSlash);
@@ -1971,7 +2003,13 @@ namespace cajeta {
 
         // Register every classpath class in the canonical-name map BEFORE the
         // user-source prescan. Their own bitcode is never emitted from here.
-        ingestClasspath();
+        // Fatal for a build, unlike lint: a missing type would emit a wrong artifact.
+        if (!ingestClasspath()) {
+            throw cajeta::Exception(
+                "one or more --classpath entries could not be ingested; "
+                "see the diagnostics above",
+                "CAJETA_ERROR_CLASSPATH_UNREADABLE");
+        }
 
         {
             ProgressPhase phase("prescan", "Scanning sources");

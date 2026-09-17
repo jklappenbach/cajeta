@@ -3084,6 +3084,13 @@ task's declared capabilities. Non-zero exit aborts the task
 (unless `--continue-on-error` is set). Outputs (`stdout`,
 `stderr`, `exit-code`) are captured for downstream actions.
 
+`command` names the program and `args` its arguments; no shell is
+involved, so `"command": "rm -rf build"` would look for a program by
+that whole name. A `command` carrying whitespace with no `args` is
+rejected when the manifest loads, and the error names the split form
+(`"command": "rm", "args": ["-rf", "build"]`). A command holding a
+`${...}` substitution or naming an existing file is left alone.
+
 Use sparingly — every declarative alternative gets sandboxing,
 retry, structured logging, parallelization, and cross-platform
 behavior for free; `exec` opts out of all of that.

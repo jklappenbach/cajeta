@@ -220,8 +220,8 @@ namespace cajeta {
         if (!match) return;
 
         xref::CallSiteScope xrefSite(creatorRest->getSourceFile(),
-                                     creatorRest->getSourceLine(),
-                                     creatorRest->getSourceColumn());
+                                     creatorRest->getXrefLine(),
+                                     creatorRest->getXrefColumn());
         CajetaClass::noteResolvedCallXref(match, /*isConstructor=*/true, module);
     }
 

@@ -1002,7 +1002,8 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     if (!opts.classpath.empty()) {
         for (const auto& cp : opts.classpath) compiler->addClasspath(cp);
         try {
-            compiler->ingestClasspath();
+            // Already reported; an interactive session continues with what resolved.
+            (void) compiler->ingestClasspath();
             compiler->linkClasspathModules();
         } catch (cajeta::Exception& e) {
             cajeta::logLine("error",

@@ -555,7 +555,7 @@ namespace cajeta {
 
         auto* compUnit = cajeta::synth::parseSynthesizedUnit(source);
         CajetaParser::ClassDeclarationContext* classDecl = nullptr;
-        for (auto* td : compUnit->typeDeclaration()) {
+        for (auto* td : cajeta::typeDeclarationsOf(compUnit)) {
             if (auto* cd = td->classDeclaration()) { classDecl = cd; break; }
         }
         if (!classDecl) {

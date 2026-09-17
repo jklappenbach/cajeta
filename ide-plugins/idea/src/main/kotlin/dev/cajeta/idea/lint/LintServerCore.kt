@@ -50,9 +50,28 @@ class LintServerCore(
      * a server stale, which is exactly how this behaved before Unit 5.
      */
     private val identityOf: (() -> String?)? = null,
+    /**
+     * The identity of the START-TIME context this core spawns servers with —
+     * source root and classpath, which are server startup flags and not
+     * per-request fields (lint-own-archive-classpath Unit 5, spec §6.3). Read
+     * once at spawn and re-read on every later request; a change means the live
+     * server is answering from a context that no longer exists.
+     *
+     * The project's own archive is the case that needs it: `cajeta build`
+     * rewrites it at the same path, so the daemon's argv is identical across the
+     * rebuild and nothing path-shaped can notice. Null-configured, this core
+     * behaves exactly as it did before Unit 5.
+     */
+    private val contextIdentityOf: (() -> String?)? = null,
     /** A live server was found to be running replaced code; it is being torn
      *  down and respawned. (reported identity, identity on disk now) */
     private val onStale: (String, String?) -> Unit = { _, _ -> },
+    /** A live server's start-time context changed under it — an archive was
+     *  rebuilt or appeared — so it is being torn down and respawned.
+     *  (identity at spawn, identity now) Separate from [onStale] because the two
+     *  have different causes and a developer chasing "my build didn't take
+     *  effect" needs to be told WHICH. */
+    private val onContextChanged: (String, String?) -> Unit = { _, _ -> },
     /** A FRESH server disagreed with the binary we believe we are calling, so
      *  the comparison is unusable and has been switched off for this core. */
     private val onCheckDisabled: (String, String?) -> Unit = { _, _ -> },
@@ -84,6 +103,12 @@ class LintServerCore(
     // two are not reading the same bytes, so comparing them again would restart
     // on every edit.
     private var identityCheckDisabled = false
+    // The context identity read at the moment the live server was spawned. This
+    // is OUR reading compared against OUR reading, not against anything the
+    // server reports, so a fresh server always agrees with itself — the
+    // permanent disagreement `identityCheckDisabled` defends against cannot
+    // arise here, and no latch is needed.
+    private var spawnContext: String? = null
 
     @Synchronized
     fun lint(req: LintServerRequest): Result {
@@ -143,17 +168,21 @@ class LintServerCore(
     private fun ensureReady(): LintServerTransport? {
         val live = transport
         if (live != null && live.isAlive() && ready) {
-            val reported = serverBinary
-            if (identityOf == null || identityCheckDisabled || reported == null) return live
-            val current = currentIdentity()
-            if (current == reported) return live
-            // The compiler was rebuilt (or went missing) under a live daemon.
-            // Serving from it means a fix that silently does not take effect —
-            // and, on the xref path, a stale shard overwriting a good one. A
-            // stale server is not a failure, so no backoff applies: tear it
-            // down and fall through to a fresh spawn.
-            onStale(reported, current)
-            closeTransport()
+            // Two ways a live server can be answering from something that no
+            // longer exists: the compiler under it was rebuilt, or the context it
+            // primed itself with was. Either way serving from it means a fix that
+            // silently does not take effect — and, on the xref path, a stale shard
+            // overwriting a good one. Neither is a FAILURE, so no backoff applies:
+            // tear the server down and fall through to one fresh spawn.
+            val binary = staleBinary()
+            if (binary != null) {
+                onStale(binary.first, binary.second)
+                closeTransport()
+            } else {
+                val context = changedContext() ?: return live
+                onContextChanged(context.first, context.second)
+                closeTransport()
+            }
         }
 
         // Respawn — but not immediately after a failure (§2.5 backoff), so a
@@ -188,6 +217,10 @@ class LintServerCore(
         supported = major == SUPPORTED_MAJOR
         serverBinary =
             ((root.opt("binary") as? Json.Obj)?.opt("id") as? Json.Str)?.value
+        // Stamp the context this server was primed with, so a later reading has
+        // something to disagree with. Taken AFTER the handshake: a server that
+        // never came up has no context to be stale against.
+        spawnContext = currentContext()
         ready = true
         lastFailNanos = null
 
@@ -207,10 +240,37 @@ class LintServerCore(
         return t
     }
 
+    /** Why the live server is running replaced code, as (what it reported at
+     *  handshake, what is on disk now) — or null when it may be reused. A server
+     *  that reported no identity (one older than §2.8) cannot be judged. */
+    private fun staleBinary(): Pair<String, String?>? {
+        val reported = serverBinary ?: return null
+        if (identityOf == null || identityCheckDisabled) return null
+        val current = currentIdentity()
+        return if (current == reported) null else reported to current
+    }
+
+    /** Why the live server's start-time context no longer holds, as (identity at
+     *  spawn, identity now) — or null when it may be reused. A reading that
+     *  cannot be taken is not a verdict, so it reuses. */
+    private fun changedContext(): Pair<String, String?>? {
+        if (contextIdentityOf == null) return null
+        val at = spawnContext ?: return null
+        val now = currentContext() ?: return null
+        return if (now == at) null else at to now
+    }
+
     /** Our reading of the configured binary. A check that throws is a broken
      *  instrument, not a verdict, so it reads as "cannot tell". */
     private fun currentIdentity(): String? {
         val f = identityOf ?: return null
+        return try { f() } catch (_: Exception) { null }
+    }
+
+    /** Our reading of the spawn context, with the same discipline: a reading
+     *  that throws reads as "cannot tell" and never restarts a healthy daemon. */
+    private fun currentContext(): String? {
+        val f = contextIdentityOf ?: return null
         return try { f() } catch (_: Exception) { null }
     }
 
@@ -227,6 +287,7 @@ class LintServerCore(
         transport = null
         ready = false
         serverBinary = null
+        spawnContext = null
     }
 
     private fun controlKind(line: String): String? {

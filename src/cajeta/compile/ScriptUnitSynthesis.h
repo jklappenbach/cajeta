@@ -26,8 +26,13 @@ namespace cajeta {
     // The reserved default package for package-less script units.
     inline const char* scriptDefaultPackage() { return "cajeta.script"; }
 
-    // True when the parsed unit took the script alternative.
+    // True when any file-scope member is not a type declaration.
     bool isScriptUnit(CajetaParser::CompilationUnitContext* ctx);
+
+    // Every type declaration of the unit in source order, wherever the grammar
+    // placed it; the one enumeration all consumers of the unit shape share.
+    std::vector<CajetaParser::TypeDeclarationContext*> typeDeclarationsOf(
+        CajetaParser::CompilationUnitContext* ctx);
 
     // The implicit class name for a source path: the file stem sanitized to an
     // identifier, '_'-prefixed if it would start with a digit, "script" if empty.
