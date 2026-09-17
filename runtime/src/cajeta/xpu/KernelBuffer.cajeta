@@ -402,6 +402,18 @@ public final class KernelBuffer<T> {
         return #w;
     }
 
+    /** The same storage as float16 elements (byte length a multiple of 2),
+     *  so an f16 scale packed among quantized bytes loads through the
+     *  hardware convert instead of a bit-manipulation decode. */
+    public #KernelBuffer<float16> halfView() {
+        int64 base = this.deviceSlice(this.deviceHandle, (uint64) 0);
+        KernelBuffer<float16> h = heap KernelBuffer<float16>(base,
+            this.length() * elementBytes() / (uint64) 2);
+        h.owned = false;
+        h.kind = this.kind;
+        return #h;
+    }
+
     // Backend-aware sub-range address resolution. Pointer backends fold the
     // byte offset into the device pointer; Vulkan (handle = buffer-table index)
     // resolves it into a view record carrying the descriptor offset. byteOffset
