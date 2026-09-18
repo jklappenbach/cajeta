@@ -1,6 +1,7 @@
 # Route table — spec
 
-Status: draft. Registered in [INDEX.md](INDEX.md). Plan: none yet.
+Status: approved 2026-09-18. Registered in [INDEX.md](INDEX.md).
+Plan: [`agents/route-table-plan.md`](../agents/route-table-plan.md).
 Layer: `cajeta.xpu`. First registrant: cajeta-llm. Architecture note:
 [`docs/specification/xpu/CajetaXPU-Routing.md`](../docs/specification/xpu/CajetaXPU-Routing.md).
 Companion guide: [Writing XPU kernels](../docs/guide/25-xpu-kernels.md).
