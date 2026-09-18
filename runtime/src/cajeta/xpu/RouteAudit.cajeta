@@ -1,0 +1,204 @@
+package cajeta.xpu;
+
+import cajeta.lang.String;
+
+/**
+ * What a {@link RouteTable} does and does not serve, as a report a test asserts
+ * against. Built by {@link RouteTable#audit} over the registrant's own queries.
+ *
+ * It walks the STATIC half only. The runtime half depends on a bound weight and
+ * a live device, and an audit that needed either would not run as a host test —
+ * which is the whole reason it can run in the same commit as the route it
+ * checks, against every format that exists, before any model is loaded.
+ *
+ * The cell is a {@link RouteClause} and not a boolean, because "this row serves
+ * another format" and "this row serves this format and your width does not fit"
+ * are the two answers a reader needs to tell apart.
+ */
+public final class RouteAudit {
+    RouteTable table;
+    RouteQuery[] queries;
+    RouteClause[] cells;
+    int32 nq;
+    int32 nr;
+
+    public RouteAudit(RouteTable table, RouteQuery[] queries) {
+        this.table #= table;
+        this.queries #= queries;
+        this.nq = (int32) queries.count();
+        this.nr = table.count();
+        this.cells = heap RouteClause[(int64) this.nq * (int64) this.nr];
+        int32 qi = 0;
+        while (qi < this.nq) {
+            int32 ri = 0;
+            while (ri < this.nr) {
+                this.cells[(int64) (qi * this.nr + ri)] =
+                    table.clauseOf(table.rowAt(ri), queries[qi]);
+                ri = ri + 1;
+            }
+            qi = qi + 1;
+        }
+    }
+
+    /** How many queries the registrant handed in. */
+    public int32 queryCount() { return this.nq; }
+
+    /** How many rows were registered when the walk ran. */
+    public int32 rowCount() { return this.nr; }
+
+    /** Query `qi`, as the registrant built it. */
+    public RouteQuery queryAt(int32 qi) { return this.queries[qi]; }
+
+    /** Row `ri`, in registration order. */
+    public Route rowAt(int32 ri) { return this.table.rowAt(ri); }
+
+    /** What row `ri` answered for query `qi`. */
+    public RouteClause clauseAt(int32 qi, int32 ri) {
+        return this.cells[(int64) (qi * this.nr + ri)];
+    }
+
+    /** Whether row `ri` serves query `qi`. */
+    public boolean admits(int32 qi, int32 ri) {
+        return this.clauseAt(qi, ri) == RouteClause.Taken;
+    }
+
+    /** How many rows serve query `qi`. */
+    public int32 servedBy(int32 qi) {
+        int32 n = 0;
+        int32 ri = 0;
+        while (ri < this.nr) {
+            if (this.admits(qi, ri)) { n = n + 1; }
+            ri = ri + 1;
+        }
+        return n;
+    }
+
+    /** No row serves query `qi` — the answer a newly added format gets. */
+    public boolean unserved(int32 qi) { return this.servedBy(qi) == 0; }
+
+    public int32 unservedCount() {
+        int32 n = 0;
+        int32 qi = 0;
+        while (qi < this.nq) {
+            if (this.unserved(qi)) { n = n + 1; }
+            qi = qi + 1;
+        }
+        return n;
+    }
+
+    public int32 firstUnserved() {
+        int32 qi = 0;
+        while (qi < this.nq) {
+            if (this.unserved(qi)) { return qi; }
+            qi = qi + 1;
+        }
+        return 0 - 1;
+    }
+
+    /**
+     * More than one row serves query `qi`. Priority decides which runs; this
+     * says the choice was MADE, rather than leaving it to whichever row a
+     * reader happens to find first (spec §3.4.6).
+     */
+    public boolean shadowed(int32 qi) { return this.servedBy(qi) > 1; }
+
+    public int32 shadowedCount() {
+        int32 n = 0;
+        int32 qi = 0;
+        while (qi < this.nq) {
+            if (this.shadowed(qi)) { n = n + 1; }
+            qi = qi + 1;
+        }
+        return n;
+    }
+
+    public int32 firstShadowed() {
+        int32 qi = 0;
+        while (qi < this.nq) {
+            if (this.shadowed(qi)) { return qi; }
+            qi = qi + 1;
+        }
+        return 0 - 1;
+    }
+
+    /** How many of the queries row `ri` serves — its does-fire half. */
+    public int32 firesFor(int32 ri) {
+        int32 n = 0;
+        int32 qi = 0;
+        while (qi < this.nq) {
+            if (this.admits(qi, ri)) { n = n + 1; }
+            qi = qi + 1;
+        }
+        return n;
+    }
+
+    /**
+     * Row `ri` serves nothing the registrant asked about. Either its format
+     * left the set or its shape gate refuses everything — a predicate that
+     * silently disabled a whole check read as a clean run for an hour.
+     */
+    public boolean neverFires(int32 ri) { return this.firesFor(ri) == 0; }
+
+    public int32 neverFiringCount() {
+        int32 n = 0;
+        int32 ri = 0;
+        while (ri < this.nr) {
+            if (this.neverFires(ri)) { n = n + 1; }
+            ri = ri + 1;
+        }
+        return n;
+    }
+
+    public int32 firstNeverFiring() {
+        int32 ri = 0;
+        while (ri < this.nr) {
+            if (this.neverFires(ri)) { return ri; }
+            ri = ri + 1;
+        }
+        return 0 - 1;
+    }
+
+    /** The whole walk as text: one line per query, then the dead rows. */
+    public #String report() {
+        String out = "route audit: " + this.nr + " rows, " + this.nq
+            + " queries\n";
+        int32 qi = 0;
+        while (qi < this.nq) {
+            RouteQuery q = this.queries[qi];
+            out = out + "  ty " + q.ty + " " + q.regime.toName() + ": ";
+            int32 served = this.servedBy(qi);
+            if (served == 0) {
+                out = out + "unserved\n";
+                int32 ri = 0;
+                while (ri < this.nr) {
+                    out = out + "      " + this.rowAt(ri).name() + ": "
+                        + this.clauseAt(qi, ri).toName() + "\n";
+                    ri = ri + 1;
+                }
+            } else {
+                int32 ri = 0;
+                int32 written = 0;
+                while (ri < this.nr) {
+                    if (this.admits(qi, ri)) {
+                        if (written > 0) { out = out + ", "; }
+                        out = out + this.rowAt(ri).name();
+                        written = written + 1;
+                    }
+                    ri = ri + 1;
+                }
+                if (served > 1) { out = out + "  (shadowed)"; }
+                out = out + "\n";
+            }
+            qi = qi + 1;
+        }
+        int32 ri = 0;
+        while (ri < this.nr) {
+            if (this.neverFires(ri)) {
+                out = out + "  row " + this.rowAt(ri).name()
+                    + ": never fires\n";
+            }
+            ri = ri + 1;
+        }
+        return out;
+    }
+}
