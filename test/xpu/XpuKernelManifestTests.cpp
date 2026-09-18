@@ -9,6 +9,7 @@
 // need `ld.lld` to produce a code object, so they gate on HIP hardware (the
 // XpuDeviceTestUtil rule for AOT artifacts); the CPU tests are GPU-free.
 #include "gtest/gtest.h"
+#include "../PortableEnv.h"   // portable setenv/unsetenv on MinGW
 
 #include "../jit/JitTestHelper.h"
 #include "XpuDeviceTestUtil.h"
