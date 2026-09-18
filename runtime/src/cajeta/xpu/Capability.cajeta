@@ -1,5 +1,7 @@
 package cajeta.xpu;
 
+import cajeta.lang.String;
+
 /**
  * A runtime device capability — a hardware feature the **active** device may or
  * may not advertise, queried with {@link Device#supports}. This is the model's
@@ -36,10 +38,20 @@ public enum Capability {
                          //     mix); Vulkan answers false (no bf16 coop config —
                          //     the kernel is compile-skipped there); CUDA needs
                          //     sm_80+, HIP needs RDNA3+ (gfx11xx/gfx12xx).
-    AtomicInt64          // 3 — Buffer<int64|uint64>.atomic* runs natively.
+    AtomicInt64;         // 3 — Buffer<int64|uint64>.atomic* runs natively.
                          //     Vulkan reports the device's own
                          //     VK_KHR_shader_atomic_int64 verdict; neither
                          //     Apple driver advertises it, so both answer
                          //     false (apple-vulkan spec 4.6). CPU/CUDA/HIP
                          //     answer true.
+
+    /** The name a diagnostic record or a route audit prints. */
+    public #String toName() {
+        if (this == Capability.RayQueryNative) { return "RayQueryNative"; }
+        if (this == Capability.RayQueryRtCore) { return "RayQueryRtCore"; }
+        if (this == Capability.CoopMatrixBf16F32Acc) {
+            return "CoopMatrixBf16F32Acc";
+        }
+        return "AtomicInt64";
+    }
 }

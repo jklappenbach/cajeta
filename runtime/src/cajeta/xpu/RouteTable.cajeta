@@ -159,14 +159,30 @@ public final class RouteTable {
     }
 
     /**
-     * The ONE static test, and the clause it stopped at. `admissible`, `pick`,
-     * the refusal and the audit all read this, so what the selector decides
-     * and what the diagnostic says cannot drift apart.
+     * The DECLARED half: format, regime, shape, and nothing that asks the
+     * device. This is what the audit walks, and it is why the audit gives the
+     * same answer on a laptop and on the target part.
+     *
+     * A capability is a fact about the box; whether the table has a row for a
+     * format is not. Ruling on both at once would report every row unserved on
+     * a machine without the hardware — which is the machine you are most
+     * likely to be adding a format on.
      */
-    public RouteClause clauseOf(Route r, RouteQuery q) {
+    public RouteClause shapeClauseOf(Route r, RouteQuery q) {
         if (r.format() != q.ty) { return RouteClause.Format; }
         if (r.regime() != q.regime) { return RouteClause.Regime; }
         if (r.shapeRefusal(q) != null) { return RouteClause.Shape; }
+        return RouteClause.Taken;
+    }
+
+    /**
+     * {@link #shapeClauseOf} plus the ACTIVE device — the whole static test,
+     * and what the selector resolves on. `admissible`, `pick` and the refusal
+     * all read this, so what runs and what the diagnostic says cannot drift.
+     */
+    public RouteClause clauseOf(Route r, RouteQuery q) {
+        RouteClause c = this.shapeClauseOf(r, q);
+        if (c != RouteClause.Taken) { return c; }
         if (this.missingNeed(r) >= 0) { return RouteClause.Unsupported; }
         return RouteClause.Taken;
     }
@@ -259,6 +275,8 @@ public final class RouteTable {
      * The format set and the queries are the REGISTRANT's. The table knows a
      * regime and an opaque `ty`, so an audit of GGUF quantizations and an audit
      * of histogram bin counts are the same walk.
+     *
+     * What a row NEEDS is reported, never ruled on — see {@link RouteAudit}.
      */
     public #RouteAudit audit(RouteQuery[] queries) {
         return heap RouteAudit(this, queries);
@@ -275,7 +293,7 @@ public final class RouteTable {
         int32 n = 0;
         int32 i = 0;
         while (i < (int32) queries.count()) {
-            if (this.clauseOf(r, queries[i]) == RouteClause.Taken) {
+            if (this.shapeClauseOf(r, queries[i]) == RouteClause.Taken) {
                 n = n + 1;
             }
             i = i + 1;

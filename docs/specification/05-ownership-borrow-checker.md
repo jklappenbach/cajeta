@@ -299,27 +299,35 @@ The receiving local's *type* never carries the marker. `#Point q = …` is a com
 
 ## 5.6 Restrictions on Transfer
 
-This section governs `#v`, the transfer spelling. `#v` asserts that its source holds a title to surrender, so applying it to a value the compiler can prove holds none is a compile-time error, `CAJETA_ERROR_MOVE_OF_BORROW`. The proven-borrow cases are
+This section governs `#`, the transfer spelling. `#` asserts that its source holds a title to surrender, so the restriction is a single rule: **you cannot transfer from a borrow.** Applying `#` to a value the compiler can prove holds no title is a compile-time error, `CAJETA_ERROR_MOVE_OF_BORROW`.
 
-- a local that borrows another local (`T b = a; … #b`)
-- a local bound to a borrow returned by a plain (non-`#`) method
-- a source that has already been transferred, since transferring twice is transferring from a borrow (§5.3)
+A transferred source becomes a borrow, so a second transfer is the same rule seen twice, not a separate one:
+
+```
+T a = heap T();
+T b = #a;      // valid   -- a holds the title, b takes it
+T c = #a;      // rejected -- a is a borrow now
+```
+
+Lending reaches the same place by the other road. `T b = a` lends, so `#b` is a transfer from a borrow and is rejected for the identical reason.
+
+What the compiler can PROVE holds no title is the limit of the rule. A local bound to a plain (non-`#`) call is not provably a borrow, because a plain return is runtime-conditional (§5.5.2) — it may well arrive carrying a title. `T b = lend(a); T c = #b;` therefore compiles, and whether it is correct is decided at run time.
 
 None of this reaches `#=`. A passthrough asserts nothing and claims nothing, so from a titleless source it simply forwards a borrow (§5.4). `b #= a` followed by `c #= a` is a transfer followed by a borrow, and it compiles.
 
 Plain formals are excluded deliberately. Their mode is a runtime fact fixed at the call site (§5.5), and rejecting `#p` statically would outlaw every mode-forwarding wrapper.
 
-**Example 5.6-1.** A rejected program. The second `#a` demands a title that the first one already took.
+**Example 5.6-1.** A transfer from a borrow is rejected.
 
 <!-- snippet: skip -->
 ```cajeta
+public class T { public int32 v; public T(int32 v) { this.v = v; } }
 public final class C {
     public static int32 run() {
-        int8[] a = heap int8[4];
-        a[0] = (int8) 7;
-        int8[] b = #a;
-        int8[] c = #a;      // CAJETA_ERROR_MOVE_OF_BORROW
-        return (int32) c[0];
+        T a = heap T(7);
+        T b = #a;
+        T c = #a;           // CAJETA_ERROR_MOVE_OF_BORROW
+        return c.v;
     }
 }
 ```
@@ -346,7 +354,7 @@ A plain store and a plain argument lend. Two rules keep a lend from outliving it
 
 **Dangling lend.** If a method lends a local into a receiver that *retains* it, storing it into a field, and the receiver then escapes the method, the escape is a compile-time error. The receiver would leave holding a pointer to a local that is about to drop. The check fires only when the callee actually retains, because a method that merely reads its argument cannot strand anything and does not poison its receiver. The fix is to say what was meant. `h.c #= s` gives the holder the title.
 
-**Example 5.7-1.** A rejected program. A retained lend escapes.
+**Example 5.7-1.** A dangling lend is rejected.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -367,7 +375,7 @@ public final class C {
 
 **Captured borrow parameter.** A plain store of a plain formal into a field or element is a compile-time error, `CAJETA_ERROR_CAPTURED_BORROW_PARAM`. The field would borrow, while the formal's armed drop entry frees the value at callee exit on exactly the calls that surrendered it. Spell `this.f #= v` to record whatever title arrived, or `this.f = v.clone()` to keep a copy. Stores this check cannot reach — a nested path such as `this.head.prev = v`, or a source that is a runtime-conditional owner rather than a formal — warn instead (`CAJETA_WARN_PLAIN_RETAIN_STORE`).
 
-**Example 5.7-2.** A rejected program. A plain formal captured by a field.
+**Example 5.7-2.** A captured borrow parameter is rejected.
 
 <!-- snippet: skip -->
 ```cajeta

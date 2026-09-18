@@ -1,7 +1,8 @@
 # Route table — spec
 
 Status: approved 2026-09-18, **§3 amended 2026-09-18** (Julian) — see
-§3.0, whose third correction was found building Unit 2. Registered in [INDEX.md](INDEX.md).
+§3.0, whose third correction was found building Unit 2 and whose
+fourth was found by a question about `Device.supports`. Registered in [INDEX.md](INDEX.md).
 Plan: [`agents/route-table-plan.md`](../agents/route-table-plan.md).
 Layer: `cajeta.xpu`. First registrant: cajeta-llm. Architecture note:
 [`docs/specification/xpu/CajetaXPU-Routing.md`](../docs/specification/xpu/CajetaXPU-Routing.md).
@@ -155,6 +156,17 @@ carries the query, the receiver and the operands. A row's `fits` cannot
 reach bound state because its parameter has no receiver to reach it
 through.
 
+**The audit rules on what is DECLARED, never on the device** — found
+when Julian asked whether `Device.supports` returning false for
+everything was a bug. It is not: a program with no kernels bundles no
+backend, so the device is `none` and every capability answers false,
+while the same query on the CPU backend answers true for two of four.
+But it exposed that `needs` sat in the half the audit walks, so the
+audit's verdict moved with the box it ran on — and it was documented as
+device-free. `needs` stays in `admissible` and `pick`; the audit walks
+format, regime and shape, and reports what each row declares it needs.
+See §3.3.
+
 **A half answers with the GATE that refused, not with a boolean** — and
 this one was found building the refusal (§3.4.4), against
 `zeroSyncReady`, which is the predicate the row has to replace. That
@@ -206,10 +218,24 @@ format itself.
 ### 3.3 One audit
 
 `theRouteTableInvariant`: for every `ty` in `Quant.supported()` and
-every row, the row either admits `ty` or refuses it by name. The audit
-walks the STATIC half only — `admissible`, over registrant-built
-queries — because the runtime half depends on a bound weight and a live
-device, and an audit that needed either would not run in a host test.
+every row, the row either admits `ty` or refuses it by name.
+
+The audit walks the **declared** half — format, regime, shape — over
+registrant-built queries. Not the runtime half, which depends on a
+bound weight; and **not `needs`**, which depends on the device the
+process happened to select. Both would make the audit answer differently
+depending on where it ran, and neither is a property of the table. A row
+whose `needs` the local box cannot satisfy still counts as serving its
+format, because it does: what it lacks is hardware, not a row. Ruling on
+that would report a whole table unserved on the machine you are most
+likely to be adding a format on.
+
+What a row needs is **reported, not ruled on** — the audit lists each
+row's declared `Capability` set, so "this format has a row, and that row
+wants `AtomicInt64`" is answerable without the part in hand. `needs`
+stays in `admissible` and `pick`, where asking the live device is the
+whole point.
+
 There is no dispatcher probe: at one row per kernel variant, a row that
 admits a format has exactly one kernel for it and no arm to omit. Per
 row, a does-fire test and a does-not-fire test, as codebook-quants

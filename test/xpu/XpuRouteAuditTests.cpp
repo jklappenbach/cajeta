@@ -26,6 +26,7 @@ const char* kAuditRegistrant =
     "import cajeta.lang.Cajeta;\n"
     "import cajeta.lang.String;\n"
     "import cajeta.xpu.Capability;\n"
+    "import cajeta.xpu.Device;\n"
     "import cajeta.xpu.Regime;\n"
     "import cajeta.xpu.Route;\n"
     "import cajeta.xpu.RouteAudit;\n"
@@ -51,12 +52,18 @@ const char* kAuditRegistrant =
     "    int32 fmt;\n"
     "    int32 pri;\n"
     "    int32 align;\n"
+    "    Capability[] caps;\n"
     "    public V(String n, Regime g, int32 f, int32 p, int32 a) {\n"
     "        this.nm #= n;\n"
     "        this.rg = g;\n"
     "        this.fmt = f;\n"
     "        this.pri = p;\n"
     "        this.align = a;\n"
+    "        this.caps = null;\n"
+    "    }\n"
+    "    public V needing(Capability[] c) {\n"
+    "        this.caps #= c;\n"
+    "        return this;\n"
     "    }\n"
     "    public String name() { return this.nm; }\n"
     "    public Regime regime() { return this.rg; }\n"
@@ -69,7 +76,7 @@ const char* kAuditRegistrant =
     "        }\n"
     "        return \"not a weight query\";\n"
     "    }\n"
-    "    public Capability[] needs() { return null; }\n"
+    "    public Capability[] needs() { return this.caps; }\n"
     "    public String readyRefusal(RouteCall c) {\n"
     "        V.readyCalls = V.readyCalls + 1;\n"
     "        return \"the audit reached bound state\";\n"
@@ -272,6 +279,64 @@ TEST(XpuRouteAudit, theFormatSetAndTheQueriesBelongToTheRegistrant) {
         "        if (b.rowCount() != 4) { return 4; }\n"
         "        if (b.neverFiringCount() != 4) { return 5; }\n"
         "        if (b.unservedCount() != 0) { return 6; }\n"
+        "        return 0;\n");
+    EXPECT_EQ(rc, 0);
+}
+
+// The audit's answer does not depend on the DEVICE, and this is the point of
+// keeping `needs` out of its verdict. A capability is a fact about the box;
+// whether the table has a row for a format is not. An audit that conflated
+// them would report every row unserved on a machine without the part — which
+// is to say, on the machine where you are most likely to be adding a format.
+TEST(XpuRouteAudit, theAuditsAnswerDoesNotDependOnTheDevice) {
+    int rc = runAudit(
+        "        Capability[] rt = heap Capability[1];\n"
+        "        rt[0] = Capability.RayQueryRtCore;\n"
+        "        RouteTable u = heap RouteTable();\n"
+        "        u.register(heap V(\"needs-rt\", Regime.DecodeRow, 12, 20,\n"
+        "            256).needing(rt));\n"
+        "        WQuery q = heap WQuery(Regime.DecodeRow, 12, 2048);\n"
+        "        RouteQuery[] one = heap RouteQuery[1];\n"
+        "        one[0] = q;\n"
+        "\n"
+        "        if (Device.supports(Capability.RayQueryRtCore)) { return 1; }\n"
+        "        if (u.admissible(q) != null) { return 2; }\n"
+        "\n"
+        "        RouteAudit a #= u.audit(one);\n"
+        "        if (a.clauseAt(0, 0) != RouteClause.Taken) { return 3; }\n"
+        "        if (!a.admits(0, 0)) { return 4; }\n"
+        "        if (a.servedBy(0) != 1) { return 5; }\n"
+        "        if (a.unserved(0)) { return 6; }\n"
+        "        if (a.neverFires(0)) { return 7; }\n"
+        "        if (u.auditRow(u.rowAt(0), one) != 1) { return 8; }\n"
+        "        return 0;\n");
+    EXPECT_EQ(rc, 0);
+}
+
+// What a row needs is REPORTED, not ruled on. Dropping it from the verdict
+// must not drop it from the walk: "this format has a row, and that row wants
+// AtomicInt64" is the answer a reader adding a format needs, and it is one
+// they can get without the part in hand.
+TEST(XpuRouteAudit, theAuditReportsWhatARowNeedsAsAFactNotAVerdict) {
+    int rc = runAudit(
+        "        Capability[] two = heap Capability[2];\n"
+        "        two[0] = Capability.AtomicInt64;\n"
+        "        two[1] = Capability.RayQueryRtCore;\n"
+        "        RouteTable u = heap RouteTable();\n"
+        "        u.register(heap V(\"bare\", Regime.DecodeRow, 12, 10, 1));\n"
+        "        u.register(heap V(\"hungry\", Regime.DecodeRow, 12, 20,\n"
+        "            1).needing(two));\n"
+        "        RouteQuery[] one = heap RouteQuery[1];\n"
+        "        one[0] = heap WQuery(Regime.DecodeRow, 12, 2048);\n"
+        "        RouteAudit a #= u.audit(one);\n"
+        "        if (a.needsCount(0) != 0) { return 1; }\n"
+        "        if (a.needsCount(1) != 2) { return 2; }\n"
+        "        if (a.needAt(1, 0) != Capability.AtomicInt64) { return 3; }\n"
+        "        if (a.needAt(1, 1) != Capability.RayQueryRtCore) { return 4; }\n"
+        "        String rep #= a.report();\n"
+        "        if (!rep.contains(\"AtomicInt64\")) { return 5; }\n"
+        "        if (!rep.contains(\"RayQueryRtCore\")) { return 6; }\n"
+        "        if (!rep.contains(\"hungry\")) { return 7; }\n"
         "        return 0;\n");
     EXPECT_EQ(rc, 0);
 }

@@ -95,8 +95,26 @@ const char* kWeightRegistrant =
     "}\n"
     "\n";
 
-int runWeights(const std::string& body) {
-    std::string program = std::string(kWeightRegistrant) +
+// A program with no kernels bundles no backend: the compiler emits the
+// `__cajeta_xpu_register_backend` ctor only for programs that have kernels, so
+// `Device.activeBackend()` is "none" and every capability answers false. That
+// is not a device saying no — it is no device at all, and a capability test run
+// against it exercises one half of its predicate and calls it covered.
+//
+// One trivial kernel gives the program a device. Only the capability test needs
+// it; the rest of the suite is about shapes and states, not hardware.
+const char* kKernelSoABackendBundles =
+    "public final class K {\n"
+    "    @Kernel\n"
+    "    public static void noop(uint32 i, float32[] y, uint32 n) {\n"
+    "        if (i < n) { y[i] = y[i]; }\n"
+    "        return;\n"
+    "    }\n"
+    "}\n"
+    "\n";
+
+int runWeights(const std::string& body, const char* extra = "") {
+    std::string program = std::string(kWeightRegistrant) + extra +
         "public final class T {\n"
         "    public static int32 run() {\n"
         "        RouteTable t = heap RouteTable();\n"
@@ -187,41 +205,71 @@ TEST(XpuRouteTable, aRegimeIsPartOfTheKey) {
     EXPECT_EQ(rc, 0);
 }
 
-// 1.1.4 — `needs` is checked against the ACTIVE device, in both directions.
+// 1.1.4 — `needs` is checked against the ACTIVE device, in BOTH directions,
+// and the fire half is the point.
 //
-// The predicate is "every capability this row names is supported", and both of
-// its answers are exercised without a device: a row naming nothing (null) and
-// a row naming an empty list are taken, a row naming one the device lacks is
-// not. What a host test CANNOT exercise is a capability the device HAS — this
-// harness registers no backend, so `Device.supports` answers false to
-// everything — hence the biconditional on the third row rather than a guess
-// about what the CPU advertises.
+// The program carries a kernel, so a backend bundles and the device has an
+// identity: on the CPU backend `AtomicInt64` and `CoopMatrixBf16F32Acc` answer
+// true while the two ray-query capabilities answer false. The assertion is the
+// biconditional against whatever the device actually says, so it is correct on
+// any backend — and the counters at the end FAIL the test if either half went
+// unexercised, because a capability test that only ever sees "no" is the guard
+// that skips nowhere.
+//
+// rc 3 means the backend cache was already set to "none" before this ran. The
+// selection is per PROCESS and latches on first touch, so a capability test
+// added to this suite without a kernel of its own would poison this one.
 TEST(XpuRouteTable, aRowIsTakenExactlyWhenTheDeviceHasWhatItNeeds) {
     int rc = runWeights(
+        "        String be #= Device.activeBackend();\n"
+        "        if (be.equals(\"none\")) { return 3; }\n"
+        "        Capability[] a = heap Capability[1];\n"
+        "        a[0] = Capability.AtomicInt64;\n"
+        "        Capability[] cm = heap Capability[1];\n"
+        "        cm[0] = Capability.CoopMatrixBf16F32Acc;\n"
+        "        Capability[] rq = heap Capability[1];\n"
+        "        rq[0] = Capability.RayQueryNative;\n"
         "        Capability[] rt = heap Capability[1];\n"
         "        rt[0] = Capability.RayQueryRtCore;\n"
         "        Capability[] none = heap Capability[0];\n"
-        "        t.register(heap V(\"needs-rt\", Regime.DecodeRow, 12, 30,\n"
-        "            256, rt, false));\n"
-        "        t.register(heap V(\"empty-list\", Regime.DecodeRow, 12, 20,\n"
-        "            256, none, false));\n"
-        "        t.register(heap V(\"null-list\", Regime.DecodeRow, 12, 10,\n"
-        "            256, null, false));\n"
-        "        WQuery q = heap WQuery(Regime.DecodeRow, 12, 1024);\n"
-        "        Route got = t.admissible(q);\n"
-        "        if (got == null) { return 1; }\n"
-        "        boolean has = Device.supports(Capability.RayQueryRtCore);\n"
-        "        if (has && !got.name().equals(\"needs-rt\")) { return 2; }\n"
-        "        if (!has && !got.name().equals(\"empty-list\")) { return 3; }\n"
-        "        if (!has && t.admitCount(q) != 2) { return 4; }\n"
-        "        if (has && t.admitCount(q) != 3) { return 5; }\n"
-        "        RouteTable only = heap RouteTable();\n"
-        "        only.register(heap V(\"rt\", Regime.DecodeRow, 12, 30, 256,\n"
-        "            rt, false));\n"
-        "        if (!has && only.admissible(q) != null) { return 6; }\n"
-        "        return 0;\n");
+        "\n"
+        "        int32 fired = 0;\n"
+        "        int32 refused = 0;\n"
+        "        int32 k = 0;\n"
+        "        while (k < 5) {\n"
+        "            Capability[] caps = none;\n"
+        "            boolean want = true;\n"
+        "            if (k == 1) { caps = a; }\n"
+        "            if (k == 2) { caps = cm; }\n"
+        "            if (k == 3) { caps = rq; }\n"
+        "            if (k == 4) { caps = rt; }\n"
+        "            if (k == 1) { want = Device.supports(Capability.AtomicInt64); }\n"
+        "            if (k == 2) {\n"
+        "                want = Device.supports(Capability.CoopMatrixBf16F32Acc);\n"
+        "            }\n"
+        "            if (k == 3) { want = Device.supports(Capability.RayQueryNative); }\n"
+        "            if (k == 4) { want = Device.supports(Capability.RayQueryRtCore); }\n"
+        "            RouteTable one = heap RouteTable();\n"
+        "            one.register(heap V(\"row\", Regime.DecodeRow, 12, 10,\n"
+        "                256, caps, false));\n"
+        "            WQuery q = heap WQuery(Regime.DecodeRow, 12, 1024);\n"
+        "            boolean got = one.admissible(q) != null;\n"
+        "            if (got != want) { return 10 + k; }\n"
+        "            if (one.admitCount(q) != (want ? 1 : 0)) { return 20 + k; }\n"
+        "            if (k > 0) {\n"
+        "                if (want) { fired = fired + 1; }\n"
+        "                if (!want) { refused = refused + 1; }\n"
+        "            }\n"
+        "            k = k + 1;\n"
+        "        }\n"
+        "        if (fired == 0) { return 1; }\n"
+        "        if (refused == 0) { return 2; }\n"
+        "        if (be.equals(\"none\")) { return 3; }\n"
+        "        return 0;\n",
+        kKernelSoABackendBundles);
     EXPECT_EQ(rc, 0);
 }
+
 
 // 1.1.5 — registration order does not reach the answer.
 TEST(XpuRouteTable, registrationOrderDoesNotChangeTheAnswer) {

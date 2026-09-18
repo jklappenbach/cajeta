@@ -744,9 +744,10 @@ if (this.row == null) {
 
 ### 25.6.4 Example — the audit, and what it will not check
 
-`audit` walks the static half over the registrant's own queries. Nothing
-is bound, no device is asked, and that is what lets it run in the same
-commit as the route it checks.
+`audit` walks the **declared** half over the registrant's own queries —
+format, regime, shape. Nothing is bound, and no device is asked, which
+is what lets it run in the same commit as the route it checks and on a
+machine with none of the hardware.
 
 <!-- snippet: skip -->
 
@@ -774,9 +775,17 @@ Assert.equals(a.neverFiringCount(), 0);
   and assert both halves. §25.7.2 is that pair written against a real
   kernel.
 
-What the audit will not do is ask `readyRefusal`. It has no receiver and
-no device, so a slab that did not bind is invisible to it — that
-refusal is `whyNotPicked`'s, at bind, in the route record.
+- `a.needsCount(ri)` / `a.needAt(ri, k)` list what a row DECLARES it
+  needs. The audit reports that and does not rule on it: a capability is
+  a fact about the box, and a row the local machine cannot run still
+  serves its format. `needs` is `pick`'s question, on the live device.
+
+What the audit will not do is ask `readyRefusal`, or ask the device. A
+slab that did not bind and a capability this box lacks are both
+invisible to it — those refusals are `whyNotPicked`'s, at bind, in the
+route record. The test is the same one as for the two halves: if the
+answer could change with where or when the walk ran, it is not the
+audit's to give.
 
 ## 25.7 Measuring: the order that does not lie
 

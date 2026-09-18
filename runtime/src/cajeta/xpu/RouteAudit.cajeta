@@ -6,10 +6,18 @@ import cajeta.lang.String;
  * What a {@link RouteTable} does and does not serve, as a report a test asserts
  * against. Built by {@link RouteTable#audit} over the registrant's own queries.
  *
- * It walks the STATIC half only. The runtime half depends on a bound weight and
- * a live device, and an audit that needed either would not run as a host test —
- * which is the whole reason it can run in the same commit as the route it
- * checks, against every format that exists, before any model is loaded.
+ * It walks the DECLARED half only — format, regime, shape. The runtime half
+ * depends on a bound weight, and `needs` depends on the device the process
+ * happens to have selected; an audit that ruled on either would answer
+ * differently on the box it ran on, and that is not a property of the table.
+ * Walking only what is declared is the whole reason it can run in the same
+ * commit as the route it checks, against every format that exists, before any
+ * model is loaded and on a machine with none of the hardware.
+ *
+ * What a row needs is still REPORTED — `needsCount` / `needAt`, and a line in
+ * `report()`. "This format has a row, and that row wants `AtomicInt64`" is the
+ * answer someone adding a format wants, and they can have it without the part
+ * in hand.
  *
  * The cell is a {@link RouteClause} and not a boolean, because "this row serves
  * another format" and "this row serves this format and your width does not fit"
@@ -33,7 +41,7 @@ public final class RouteAudit {
             int32 ri = 0;
             while (ri < this.nr) {
                 this.cells[(int64) (qi * this.nr + ri)] =
-                    table.clauseOf(table.rowAt(ri), queries[qi]);
+                    table.shapeClauseOf(table.rowAt(ri), queries[qi]);
                 ri = ri + 1;
             }
             qi = qi + 1;
@@ -158,6 +166,18 @@ public final class RouteAudit {
         return 0 - 1;
     }
 
+    /** How many capabilities row `ri` DECLARES it needs. */
+    public int32 needsCount(int32 ri) {
+        Capability[] n = this.rowAt(ri).needs();
+        if (n == null) { return 0; }
+        return (int32) n.count();
+    }
+
+    /** Capability `k` of row `ri`'s declared needs. */
+    public Capability needAt(int32 ri, int32 k) {
+        return this.rowAt(ri).needs()[k];
+    }
+
     /** The whole walk as text: one line per query, then the dead rows. */
     public #String report() {
         String out = "route audit: " + this.nr + " rows, " + this.nq
@@ -196,6 +216,17 @@ public final class RouteAudit {
             if (this.neverFires(ri)) {
                 out = out + "  row " + this.rowAt(ri).name()
                     + ": never fires\n";
+            }
+            int32 nn = this.needsCount(ri);
+            if (nn > 0) {
+                out = out + "  row " + this.rowAt(ri).name() + ": needs ";
+                int32 k = 0;
+                while (k < nn) {
+                    if (k > 0) { out = out + ", "; }
+                    out = out + this.needAt(ri, k).toName();
+                    k = k + 1;
+                }
+                out = out + "\n";
             }
             ri = ri + 1;
         }

@@ -117,16 +117,26 @@ is explained in one line, not by bisection.
 
 ## 4. The audit
 
-`RouteTable.audit(queries)` walks the **static half only**, over the
-registrant's own queries, and returns a report: per (query, row) the
-clause that answered; per query how many rows serve it, and whether the
-choice was shadowed; per row how many queries it fires for.
+`RouteTable.audit(queries)` walks the **declared half** — format,
+regime, shape — over the registrant's own queries, and returns a report:
+per (query, row) the clause that answered; per query how many rows serve
+it, and whether the choice was shadowed; per row how many queries it
+fires for, and what capabilities it declares it needs.
 
-Static-only is what makes it a host test — no device, no bound weight —
-and that is what lets it run in the same commit as the route it checks,
-against every format that exists. Adding a format names every row that
-lacks it before any model is loaded; adding a row runs it against every
-format that exists.
+Declared-only is what makes it a host test, and the line is sharper than
+"no bound weight". `needs` is also excluded, because it asks the live
+device: a process that selected no backend answers false to every
+capability, and one on the wrong part answers differently again. An
+audit that ruled on `needs` would call a whole table unserved on a
+machine without the hardware — the machine you are most likely to be
+adding a format on. A row whose capability the local box lacks still
+serves its format; what is missing is silicon, not a row.
+
+So the audit **reports** each row's declared `Capability` set rather than
+ruling on it, and `needs` stays in `admissible` and `pick`, where asking
+the live device is the whole point. The result is that adding a format
+names every row that lacks it before any model is loaded, from any
+machine; adding a row runs it against every format that exists.
 
 There is no dispatcher probe. At one row per kernel variant, a row that
 admits a format has exactly one kernel for it and no arm to omit.
