@@ -2,6 +2,11 @@
 
 **Status:** draft · **Axis:** xpu / cajeta-llm tuning · **Opened:** 2026-09-03
 
+**SUPERSEDED 2026-09-18** by [`xpu-kernel-adaptor`](../xpu-kernel-adaptor-spec.md),
+which generalizes this draft: it made the DEVICE half queryable, and the adaptor
+adds the kernel half (declaration) and the reconciliation. §2 tiers and §2.4's
+frozen-site inventory are absorbed there as the work list. Never registered, no plan.
+
 ## 1. Definition
 
 Cajeta's GPU kernels and their launch shapes are currently sized by constants
