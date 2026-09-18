@@ -489,9 +489,28 @@ audit — [Kernel Routing](../specification/xpu/CajetaXPU-Routing.md).
 The failure it prevents was measured four times in one day: a predicate
 that named two formats where it meant "on an integer route", each
 costing a whole route, one of them with a bare `else` that would have
-fed one format's bytes through another's decoder. A route is a row; a
-row's `needs` is a `Capability`; every row has a test that it fires and
-a test that it does not.
+fed one format's bytes through another's decoder.
+
+Three rules carry it. The rest of this section is what each looks like
+in code you can read today.
+
+- **One row is one kernel variant**, not a family with arms. Q4_K's
+  wave variant and its packed variant are two rows, and `priority`
+  orders them. A family row keeps its arms, an arm-set keeps its bare
+  `else`, and that `else` is the defect.
+- **A static constraint and a runtime one go in different halves.**
+  `shapeRefusal(query)` is pure and the audit walks it with nothing
+  bound; `readyRefusal(call)` reads the receiver and no audit can check
+  it. The types enforce the split — a query carries no receiver to
+  reach through, so a static gate cannot read a slab even by accident.
+- **A half answers with the gate, not with `false`.** Both return the
+  row's own name for what refused, or null to admit. A string literal
+  is a static instance, so naming costs nothing, and there is one
+  statement of each gate instead of a predicate plus a list of reasons
+  beside it.
+
+A row's `needs` is a `Capability`, never a backend name. Every row owes
+a test that it fires and a test that it does not (§25.7.2).
 
 ### 25.6.1 Example — a predicate and the dispatcher it guards
 
@@ -545,13 +564,219 @@ boolean matvecPackedKeep(KernelBuffer<int8> xp) {
 ```
 
 - `this.waveIq || this.wave4nl` — the predicate now asks "on an integer
-  wave route", which is what it always meant. In the route table this
-  is a row's `admits`, derived from `qAct`.
+  wave route", which is what it always meant. Each of those booleans is
+  one row: the predicate and its matching arm become a `format()` and a
+  `dispatch()` that has nothing left to choose.
 - Every branch is explicit and the last is `return false`. A bare
   `else` is a dispatcher with an arm for a format it was never asked
-  to serve.
+  to serve. One row per variant is how that `else` stops existing —
+  there is no arm to omit and nothing to fall through to.
 - `Linear.nLaunches + 1` — the launch count is instrumented at the
   dispatch, so a census can be checked against it.
+
+### 25.6.2 Example — which half a constraint belongs in
+
+`ExpertBank.idReady`, as it is now. Four lines answering two different
+questions at once: which formats this row is for, and whether this
+bank's widen actually happened. Widening it for a new format also
+claims that format's slab is ready — that conflation is the defect, not
+an incidental of it, and it is why one predicate cannot be both halves.
+
+`cajeta-llm/src/main/cajeta/dev/cajeta/llm/model/ExpertBank.cajeta:929-936`
+
+<!-- snippet: skip -->
+
+```cajeta
+public boolean idReady() {
+    if (this.packedTy == 12 || this.packedTy == 14) { return true; }
+    if (ExpertBank.codebookId(this.packedTy)) { return true; }
+    return ExpertBank.widenSlabOn && !this.widenRefused
+        && (this.packedTy == Quant.GG_Q8_0
+            || this.packedTy == Quant.GG_Q5_0
+            || this.packedTy == Quant.GG_Q4_0);
+}
+```
+
+- `packedTy == 12 || packedTy == 14`, and `codebookId`'s twin list, are
+  the row's `format()`. They are not a constraint at all — they are the
+  key the table resolves on, and a list of them in a predicate is the
+  duplicated knowledge the table removes.
+- `this.widenRefused` is written by a bind that failed: the receiver's
+  state, so `readyRefusal`.
+- `ExpertBank.widenSlabOn` is a mutable static — an A/B arm someone can
+  flip at run time. It goes in `readyRefusal` too, not in the static
+  half, and the test is not "is this value known at compile time" but
+  "can the audit's answer change depending on when it ran". A global
+  switch fails that; a query field does not.
+
+`MoeFfn.zeroSyncReady` (`MoeFfn.cajeta:1248-1288`) is the same reading
+with every case present: nine gates with nine sentences in the
+`moe-row-route` record. Three are per-bank format tests, so they become
+the `format()` of three rows. Four are shape — `gating != 1`,
+`hidden % 256`, `widthN % 32`, the shared expert's width — and go in
+`shapeRefusal`, where the audit can walk them with nothing bound. Two
+read a slab that did or did not bind, and go in `readyRefusal`. Each
+keeps its own sentence, which is the whole reason a half answers with
+the gate rather than with `false`: collapse them and you have
+reproduced the thing the table was built to remove.
+
+### 25.6.3 Example — the row those predicates become
+
+The shape of one row. The registrant declares its static facts once, on
+its own `RouteQuery` subclass, and both halves read them; the receiver
+and the operands ride on `RouteCall`. The llm rows land with
+codebook-quants 9.2.9.
+
+```cajeta
+import cajeta.lang.String;
+import cajeta.xpu.Capability;
+import cajeta.xpu.Regime;
+import cajeta.xpu.Route;
+import cajeta.xpu.RouteCall;
+import cajeta.xpu.RouteQuery;
+
+public final class WeightQuery extends RouteQuery {
+    public int32 inDim;
+    public int32 outDim;
+    public WeightQuery(Regime g, int32 ty, int32 inDim, int32 outDim) {
+        this.regime = g;
+        this.ty = ty;
+        this.inDim = inDim;
+        this.outDim = outDim;
+    }
+}
+
+public final class WeightCall extends RouteCall {
+    public boolean slabBound;
+    public boolean widened;
+    public WeightCall(WeightQuery q, boolean slabBound, boolean widened) {
+        this.query #= q;
+        this.slabBound = slabBound;
+        this.widened = widened;
+    }
+}
+
+public final class IntWaveRow implements Route {
+    String nm;
+    int32 fmt;
+    Capability[] caps;
+
+    public IntWaveRow(String nm, int32 fmt, Capability[] caps) {
+        this.nm #= nm;
+        this.fmt = fmt;
+        this.caps #= caps;
+    }
+
+    public String name() { return this.nm; }
+    public Regime regime() { return Regime.DecodeRow; }
+    public int32 format() { return this.fmt; }
+    public int32 priority() { return 20; }
+    public Capability[] needs() { return this.caps; }
+
+    public String shapeRefusal(RouteQuery q) {
+        if (q instanceof WeightQuery w) {
+            if (w.inDim % 256 != 0) { return "in width not 256-aligned"; }
+            if (w.outDim % 32 != 0) { return "out width not 32-aligned"; }
+            return null;
+        }
+        return "not a weight query";
+    }
+
+    public String readyRefusal(RouteCall c) {
+        if (c instanceof WeightCall w) {
+            if (!w.slabBound) { return "slab is not bound"; }
+            if (!w.widened) { return "slab is not widened"; }
+            return null;
+        }
+        return "not a weight call";
+    }
+
+    public void dispatch(RouteCall c) {
+        return;
+    }
+}
+```
+
+- `format()` is one format. A second variant for the same format is a
+  second row with a different `priority()`; the audit reports the pair
+  as shadowed rather than letting the choice be implicit.
+- `shapeRefusal` names which width refused. A row with one gate could
+  have returned a boolean; a row with four could not, and every real
+  one has four.
+- `readyRefusal` reads `WeightCall`. It could not read it from
+  `shapeRefusal` — that parameter is a `RouteQuery` and has no receiver
+  on it.
+- `dispatch` is where the launch goes, and it is the only arm: one
+  `k.launch(...)`, no `if`, nothing to fall through. Compare
+  `matvecPackedKeep` above, which is five arms and a bare `else`.
+- `needs()` returns a stored list, so the selector asking it costs no
+  allocation. `null` means the row needs nothing.
+
+Registration is once, at start-up; resolution is once, **at bind**. The
+weight stores the row it got and the launch is one virtual call — this
+is the same trade the sixteen booleans on `Linear` make today, with the
+knowledge in one place instead of sixteen.
+
+<!-- snippet: skip -->
+
+```cajeta
+table.register(heap IntWaveRow("q4k-int-wave", Quant.GG_Q4_K, null));
+
+WeightCall call = heap WeightCall(this.query, this.slabBound,
+    this.widened);
+this.row = table.pick(call);
+if (this.row == null) {
+    RouteRefusal why #= table.whyNotPicked(call);
+    Diag.emit("weight-route", 0 - 1, why.text(), 0L, 0L, 0L, 0L, 0L, 0L);
+}
+```
+
+- `pick` returns the row or nothing, and allocates nothing either way.
+  The refusal is built by `whyNotPicked`, on the branch that is already
+  about to print — so a route record costs the path that took the row
+  nothing at all.
+- `why.text()` names the row and the gate in one line. The failure this
+  replaces is a census showing the old kernels and no way to tell which
+  of a dozen predicates said no.
+- Nothing here tests a format. If you find yourself writing
+  `ty == GG_IQ3_XXS || ty == GG_IQ4_NL` outside a row's `format()`, that
+  is the list the table exists to delete.
+
+### 25.6.4 Example — the audit, and what it will not check
+
+`audit` walks the static half over the registrant's own queries. Nothing
+is bound, no device is asked, and that is what lets it run in the same
+commit as the route it checks.
+
+<!-- snippet: skip -->
+
+```cajeta
+RouteQuery[] qs = heap RouteQuery[3];
+qs[0] = heap WeightQuery(Regime.DecodeRow, Quant.GG_Q4_K, 2048, 4096);
+qs[1] = heap WeightQuery(Regime.DecodeRow, Quant.GG_IQ3_XXS, 1408, 4096);
+qs[2] = heap WeightQuery(Regime.DecodeRow, Quant.GG_IQ4_NL, 2048, 4096);
+RouteAudit a #= table.audit(qs);
+Assert.equals(a.unservedCount(), 0);
+Assert.equals(a.neverFiringCount(), 0);
+```
+
+- `unservedCount()` is the check that a new format has a row. Run it
+  over the package's whole format set and it names every row that lacks
+  the format, the day the format lands.
+- `neverFiringCount()` is the other direction: a row that serves
+  nothing in the set has a format that left it, or a gate that refuses
+  everything. A predicate that silently disabled a whole check once read
+  as a clean run for an hour.
+- `a.shadowed(qi)` says two rows admit one query. Priority still
+  decides; the point is that the choice is visible.
+- `table.auditRow(row, qs)` is the per-row fire / no-fire count — hand
+  it the row's own format at shapes that should and should not take it,
+  and assert both halves. §25.7.2 is that pair written against a real
+  kernel.
+
+What the audit will not do is ask `readyRefusal`. It has no receiver and
+no device, so a slab that did not bind is invisible to it — that
+refusal is `whyNotPicked`'s, at bind, in the route record.
 
 ## 25.7 Measuring: the order that does not lie
 
