@@ -1,0 +1,45 @@
+package cajeta.xpu;
+
+import cajeta.lang.String;
+
+/**
+ * One row of the selection contract: which kernel serves which format, in
+ * which regime, on which device. Packages register rows and keep the
+ * dispatchers; the layer owns the selector and the audit.
+ *
+ * A route is an interface a registrant implements rather than a record of
+ * function values, because a dispatcher launches kernels and a kernel launch
+ * inside a lambda has unreachable captured buffers in launch codegen.
+ *
+ * `dispatch` answers for itself instead of declaring what it handles beside
+ * the arms that handle it: a list next to the switch it duplicates is exactly
+ * the knowledge this contract exists to stop restating.
+ */
+public interface Route {
+
+    /** What a refusal, a route record or the audit prints for this row. */
+    String name();
+
+    /** The call shape this row serves. */
+    Regime regime();
+
+    /** Order among rows that admit the same work; higher is consulted first. */
+    int32 priority();
+
+    /** Whether this row serves format `ty` at shape `s`. */
+    boolean admits(int32 ty, RouteShape s);
+
+    /**
+     * Whether the ACTIVE device can run this row — the row's own
+     * {@link Device#supports} queries, never a backend name. A row that needs
+     * nothing answers true.
+     */
+    boolean deviceReady();
+
+    /**
+     * Take the call, or refuse it: true when an arm handled it, false from the
+     * terminal else. Under `c.dryRun` an arm reports without launching, which
+     * is how the audit reaches every arm without a device.
+     */
+    boolean dispatch(RouteCall c);
+}

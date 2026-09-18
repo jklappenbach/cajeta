@@ -1,0 +1,21 @@
+package cajeta.xpu;
+
+/**
+ * What a {@link Route#dispatch} is handed: the work being routed, plus the
+ * dry-run flag the audit drives it with. A registrant EXTENDS this to carry
+ * its own operands — the layer cannot know what a kernel needs, and a row
+ * that reached for them through a closure would put a kernel launch inside a
+ * lambda, where its captured buffers are unreachable in launch codegen.
+ */
+public class RouteCall {
+    public int32 ty;
+    public RouteShape shape;
+    /** Take the arm and report, but launch nothing. */
+    public boolean dryRun;
+
+    public RouteCall(int32 ty, RouteShape shape) {
+        this.ty = ty;
+        this.shape #= shape;
+        this.dryRun = false;
+    }
+}

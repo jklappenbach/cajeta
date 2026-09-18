@@ -1,0 +1,30 @@
+package cajeta.xpu;
+
+/**
+ * The shape constraints a {@link Route} tests, as one object rather than a
+ * parameter per constraint — a divisibility rule is the commonest reason a
+ * row refuses, and rows disagree about which dimension it applies to.
+ *
+ * Caller-owned and REUSED. `pick` is consulted per launch, so a shape
+ * allocated per call would put an allocation on the decode path; hold one and
+ * {@link #set} it.
+ */
+public final class RouteShape {
+    public int32 inDim;
+    public int32 outDim;
+    public int32 batch;
+
+    public RouteShape(int32 inDim, int32 outDim, int32 batch) {
+        this.inDim = inDim;
+        this.outDim = outDim;
+        this.batch = batch;
+    }
+
+    /** Re-aim this shape at another call, allocating nothing. */
+    public void set(int32 inDim, int32 outDim, int32 batch) {
+        this.inDim = inDim;
+        this.outDim = outDim;
+        this.batch = batch;
+        return;
+    }
+}

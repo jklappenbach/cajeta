@@ -1,0 +1,73 @@
+package cajeta.xpu;
+
+import cajeta.collection.ArrayList;
+
+/**
+ * The rows a package registers and the one selector that consults them.
+ *
+ * It replaces the per-route predicates that restate, once per file, which
+ * format may take which kernel. Those drift: a predicate written when a route
+ * was added names the formats that existed then, and the next format is
+ * refused silently by a route nobody thought to look at.
+ *
+ * Rows are BORROWED — the registrant owns them and outlives the table — so a
+ * table is a view of a registration, not a container of routes.
+ */
+public final class RouteTable {
+    ArrayList<Route> rows;
+
+    public RouteTable() {
+        this.rows = heap ArrayList<Route>();
+    }
+
+    /** Add a row. Registration order does not reach {@link #pick}. */
+    public void register(Route r) {
+        this.rows.add(r);
+        return;
+    }
+
+    /**
+     * The highest-priority row that serves `ty` at `s` in `regime` on this
+     * device, or null when none does — never the last row consulted, which is
+     * the fallthrough that sends one format's bytes through another's kernel.
+     */
+    public Route pick(Regime regime, int32 ty, RouteShape s) {
+        Route best = null;
+        int32 bestPri = 0;
+        int32 i = 0;
+        while (i < this.rows.count()) {
+            Route r = this.rows.get(i);
+            if (r.regime() == regime && r.admits(ty, s) && r.deviceReady()) {
+                if (best == null || r.priority() > bestPri) {
+                    best = r;
+                    bestPri = r.priority();
+                }
+            }
+            i = i + 1;
+        }
+        return best;
+    }
+
+    /**
+     * How many rows admit this work, device readiness aside. More than one
+     * means a shadowed row: the seed of measured selection, reported rather
+     * than acted on.
+     */
+    public int32 admitCount(Regime regime, int32 ty, RouteShape s) {
+        int32 n = 0;
+        int32 i = 0;
+        while (i < this.rows.count()) {
+            Route r = this.rows.get(i);
+            if (r.regime() == regime && r.admits(ty, s)) {
+                n = n + 1;
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+
+    /** How many rows are registered. */
+    public int32 count() {
+        return this.rows.count();
+    }
+}

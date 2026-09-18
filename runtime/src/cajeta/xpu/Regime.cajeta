@@ -1,0 +1,16 @@
+package cajeta.xpu;
+
+/**
+ * The regime a {@link Route} serves — the shape of the call, not the shape of
+ * the data. One format is routinely served by different kernels at M = 1 and
+ * at a full tile, so the regime is part of the selector's key rather than a
+ * flag a row carries.
+ *
+ * The ordinal is the stable tag — append only, do not reorder.
+ */
+public enum Regime {
+    DecodeRow,      // 0 — one row, M = 1
+    PrefillBatch,   // 1 — M at or above a tile
+    Bind,           // 2 — the resident layout chosen when data is bound
+    FusedTail       // 3 — a route that fuses what two rows would do separately
+}
