@@ -1,21 +1,18 @@
 package cajeta.xpu;
 
 /**
- * What a {@link Route#dispatch} is handed: the work being routed, plus the
- * dry-run flag the audit drives it with. A registrant EXTENDS this to carry
- * its own operands — the layer cannot know what a kernel needs, and a row
- * that reached for them through a closure would put a kernel launch inside a
- * lambda, where its captured buffers are unreachable in launch codegen.
+ * The RUNTIME question, and what a row is dispatched with: the static query
+ * plus whatever the registrant extends this with — the receiver, the operands,
+ * the slice being launched.
+ *
+ * It HOLDS a query rather than extending one, so a registrant's call type can
+ * extend this and still carry its own query subclass; the static facts are
+ * declared once and read by both halves.
  */
 public class RouteCall {
-    public int32 ty;
-    public RouteShape shape;
-    /** Take the arm and report, but launch nothing. */
-    public boolean dryRun;
+    public RouteQuery query;
 
-    public RouteCall(int32 ty, RouteShape shape) {
-        this.ty = ty;
-        this.shape #= shape;
-        this.dryRun = false;
+    public RouteCall(RouteQuery q) {
+        this.query #= q;
     }
 }

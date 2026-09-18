@@ -1,0 +1,21 @@
+package cajeta.xpu;
+
+/**
+ * The STATIC question a row is asked: the regime, the format, and whatever
+ * declared facts the registrant extends this with — dimensions, block
+ * alignment, a fused row's co-formats.
+ *
+ * It carries NO receiver, and that is the whole point. {@link Route#fits}
+ * takes one of these, so a row's static admissibility cannot reach a bound
+ * weight's state however much its author might want to. The runtime half asks
+ * {@link RouteCall}, which carries a query and the receiver both.
+ */
+public class RouteQuery {
+    public Regime regime;
+    public int32 ty;
+
+    public RouteQuery(Regime regime, int32 ty) {
+        this.regime = regime;
+        this.ty = ty;
+    }
+}

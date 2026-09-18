@@ -1,6 +1,7 @@
 # Route table — spec
 
-Status: approved 2026-09-18. Registered in [INDEX.md](INDEX.md).
+Status: approved 2026-09-18, **§3 amended 2026-09-18** (Julian) — see
+§3.0. Registered in [INDEX.md](INDEX.md).
 Plan: [`agents/route-table-plan.md`](../agents/route-table-plan.md).
 Layer: `cajeta.xpu`. First registrant: cajeta-llm. Architecture note:
 [`docs/specification/xpu/CajetaXPU-Routing.md`](../docs/specification/xpu/CajetaXPU-Routing.md).
@@ -117,36 +118,83 @@ there is nothing to select among. Deferred to §7.
 
 ## 3. Proposed solution
 
+### 3.0 Amendment: granularity, and the two halves of admission
+
+The first implementation of §3.1 was measured against the call sites it
+has to replace and did not fit them. Two corrections, both load-bearing.
+
+**A row is one kernel variant admitting ONE format**, not a family
+admitting a set. `Linear.launchOne` dispatches on sixteen booleans —
+`q8`, `packed1`, `wave`, `wave6`, `wave2`, `wave3`, `wave5`, `wave8`,
+`waveT1`, `waveT2`, `wave40`, `wave50`, `wave4nl`, `wavef`, `waveH`,
+`waveIq` — computed once in `ensureDevice` and read at every launch.
+Those booleans ARE the route, and they are what a row replaces: the
+weight resolves its row at bind and stores it, and the launch is one
+virtual call. A family-with-arms row leaves the arms, which means it
+leaves a bare `else` to fall through and needs every arm audited by a
+dry-run flag it can forget to honour. At one row per variant there are
+no arms: Q4_K's wave row and its packed row are two rows of the same
+format, `priority` orders them, and the shadowed-row report of §3.4.6
+is exactly that choice.
+
+**Admission has a static half and a runtime half, and they are
+different questions.** `ExpertBank.idReady()` today answers both at
+once: it names formats AND reads `slabDev`, `deqSlabDev`,
+`widenRefused` and the static `widenSlabOn`. `zeroSyncReady` goes
+further and calls `ensureSlab()`, which binds and can fail. Tangling
+them is the defect, not an incidental of it — it is why widening the
+predicate alone would have fed codebook bytes through the Q6_K decoder.
+So a row answers them separately: `fits` is pure over declared facts
+and is what the audit walks with nothing bound; `ready` reads bound
+state and is a runtime refusal the audit cannot and must not check.
+
+The split is enforced by TYPE, not by discipline. `fits` takes a
+`RouteQuery` — regime, format, and whatever static facts the registrant
+extends it with. `ready` and `dispatch` take a `RouteCall`, which
+extends `RouteQuery` with the receiver and the operands. A row's `fits`
+cannot reach bound state because its parameter has no receiver to reach
+it through.
+
 ### 3.1 A route is a row
 
 | field | meaning |
 |---|---|
 | `name` | what the diag prints when it refuses or takes it |
 | `regime` | decode-row (M = 1), prefill-batch (M ≥ tile), bind, fused tail |
-| `admits(ty, shape)` | the formats and shape constraints (`inDim % 256`, `outDim % tile`, block alignment) |
-| `needs` | capability the device must have — a query, never a backend name |
-| `dispatch(...)` | the launcher; every admitted format has an arm |
-| `priority` | order among rows that admit the same (format, regime) |
+| `format` | the ONE format this variant serves |
+| `fits(query)` | static shape constraints (`inDim % 256`, `outDim % tile`, block alignment, a fused row's co-formats) — pure, and auditable with nothing bound |
+| `needs` | capabilities the device must have — queries, never a backend name; a stored list, so asking costs no allocation |
+| `ready(call)` | the runtime half: is this weight's slab bound, was its widen refused, is the static switch on |
+| `dispatch(call)` | the launcher. One variant, one kernel: no arms, so no bare `else` |
+| `priority` | order among rows serving the same (format, regime) |
 
-`admits` is derived where it can be — an integer-wave row admits what
-`qAct` admits — and enumerated only where the route genuinely serves a
-named set (the k-quant id route serves Q4_K and Q6_K because those are
-the kernels that exist). Either way it is in the row.
+A fused row keys on the format of the tensor that names it and puts the
+co-formats of its other operands in `fits`, where the audit can read
+them — which is how `idDownCombineTail` should have been declared.
 
 ### 3.2 One selector
 
-`RouteTable.pick(regime, ty, shape)` returns the first admitting row by
-priority, or a refusal that names the last row consulted and the clause
-that refused. The `moe-row-route` and `moe-batch-route` records read
-the same object. No caller tests a format itself.
+Two entry points over one test, so they cannot drift.
+`RouteTable.admissible(query)` is the static half — format, regime,
+`fits`, `needs` — and answers with nothing bound, which is what the
+audit walks. `RouteTable.pick(call)` is that plus `ready`, and is what
+a registrant calls AT BIND to resolve a weight's row once and store it.
+Either returns the highest-priority row, or a refusal naming the last
+row consulted and the clause that refused. The `moe-row-route` and
+`moe-batch-route` records read the same object. No caller tests a
+format itself.
 
 ### 3.3 One audit
 
 `theRouteTableInvariant`: for every `ty` in `Quant.supported()` and
-every row, the row either admits `ty` or refuses it by name; and for
-every admitted `(row, ty)`, the row's dispatcher has an arm for `ty` —
-which a bare `else` fails on the first run. Per row, a does-fire test
-and a does-not-fire test, as codebook-quants 9.2.7 did.
+every row, the row either admits `ty` or refuses it by name. The audit
+walks the STATIC half only — `admissible`, over registrant-built
+queries — because the runtime half depends on a bound weight and a live
+device, and an audit that needed either would not run in a host test.
+There is no dispatcher probe: at one row per kernel variant, a row that
+admits a format has exactly one kernel for it and no arm to omit. Per
+row, a does-fire test and a does-not-fire test, as codebook-quants
+9.2.7 did.
 
 ### 3.4 Use cases
 

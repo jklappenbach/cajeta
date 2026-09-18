@@ -1,12 +1,13 @@
 //
-// XpuRouteTableTests — the selection contract's rows and selector.
+// XpuRouteTableTests — the selection contract's rows and resolution.
 //
 // A route table exists because the knowledge of which kernel serves which
 // format kept being restated from memory, once per route, in whichever file
-// the route lived (route-table spec §1.1). These tests hold the selector to
-// the one behaviour that replaces those predicates: registration order does
-// not matter, priority decides among rows that admit the same work, a regime
-// is part of the key, and a row whose device cannot run it is not picked.
+// the route lived (route-table spec §1.1). Two properties carry that, and
+// both are asserted here: a row is ONE kernel variant serving ONE format, so
+// there is no arm to omit; and admission has a static half the audit can walk
+// with nothing bound and a runtime half it cannot, kept apart by the type of
+// the question asked (spec §3.0).
 //
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
@@ -16,49 +17,85 @@ using cajeta_test::CajetaJit;
 
 namespace {
 
-// One configurable row: it admits a single format, in a single regime, and
-// reports whether its device is ready. Everything the selector does is a
-// function of those, so one shape covers every test here.
-const char* kRow =
+// A weight-shaped registrant: its static facts are a width, its runtime state
+// is whether a slab bound. `fits` is handed a query and so has no way to read
+// `slabBound` even by accident — there is no receiver in a query.
+const char* kWeightRegistrant =
     "package test;\n"
     "import cajeta.lang.Cajeta;\n"
     "import cajeta.lang.String;\n"
+    "import cajeta.xpu.Capability;\n"
+    "import cajeta.xpu.Device;\n"
     "import cajeta.xpu.Regime;\n"
     "import cajeta.xpu.Route;\n"
     "import cajeta.xpu.RouteCall;\n"
-    "import cajeta.xpu.RouteShape;\n"
+    "import cajeta.xpu.RouteQuery;\n"
     "import cajeta.xpu.RouteTable;\n"
     "\n"
-    "public final class R implements Route {\n"
+    "public final class WQuery extends RouteQuery {\n"
+    "    public int32 inDim;\n"
+    "    public WQuery(Regime g, int32 ty, int32 inDim) {\n"
+    "        this.regime = g;\n"
+    "        this.ty = ty;\n"
+    "        this.inDim = inDim;\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "public final class WCall extends RouteCall {\n"
+    "    public boolean slabBound;\n"
+    "    public WCall(WQuery q, boolean bound) {\n"
+    "        this.query #= q;\n"
+    "        this.slabBound = bound;\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "public final class V implements Route {\n"
+    "    public static int32 dispatched;\n"
     "    String nm;\n"
     "    Regime rg;\n"
+    "    int32 fmt;\n"
     "    int32 pri;\n"
-    "    int32 want;\n"
-    "    boolean rdy;\n"
-    "    public R(String n, Regime g, int32 p, int32 t, boolean r) {\n"
+    "    int32 align;\n"
+    "    Capability[] caps;\n"
+    "    boolean needSlab;\n"
+    "    public V(String n, Regime g, int32 f, int32 p, int32 a,\n"
+    "             Capability[] c, boolean ns) {\n"
     "        this.nm #= n;\n"
     "        this.rg = g;\n"
+    "        this.fmt = f;\n"
     "        this.pri = p;\n"
-    "        this.want = t;\n"
-    "        this.rdy = r;\n"
+    "        this.align = a;\n"
+    "        this.caps #= c;\n"
+    "        this.needSlab = ns;\n"
     "    }\n"
     "    public String name() { return this.nm; }\n"
     "    public Regime regime() { return this.rg; }\n"
+    "    public int32 format() { return this.fmt; }\n"
     "    public int32 priority() { return this.pri; }\n"
-    "    public boolean admits(int32 ty, RouteShape s) {\n"
-    "        return ty == this.want;\n"
+    "    public boolean fits(RouteQuery q) {\n"
+    "        if (q instanceof WQuery w) {\n"
+    "            return w.inDim % this.align == 0;\n"
+    "        }\n"
+    "        return false;\n"
     "    }\n"
-    "    public boolean deviceReady() { return this.rdy; }\n"
-    "    public boolean dispatch(RouteCall c) { return true; }\n"
+    "    public Capability[] needs() { return this.caps; }\n"
+    "    public boolean ready(RouteCall c) {\n"
+    "        if (!this.needSlab) { return true; }\n"
+    "        if (c instanceof WCall w) { return w.slabBound; }\n"
+    "        return false;\n"
+    "    }\n"
+    "    public void dispatch(RouteCall c) {\n"
+    "        V.dispatched = V.dispatched + 1;\n"
+    "        return;\n"
+    "    }\n"
     "}\n"
     "\n";
 
-int runWith(const std::string& body) {
-    std::string program = std::string(kRow) +
+int runWeights(const std::string& body) {
+    std::string program = std::string(kWeightRegistrant) +
         "public final class T {\n"
         "    public static int32 run() {\n"
         "        RouteTable t = heap RouteTable();\n"
-        "        RouteShape s = heap RouteShape(1408, 2048, 1);\n"
         + body +
         "    }\n"
         "}\n";
@@ -73,93 +110,130 @@ int runWith(const std::string& body) {
 
 } // namespace
 
-// 1.1.1 — two rows admit the same (format, regime); the higher priority wins
-// and the shadowed one is countable, which is the seed of measured selection
-// (spec §3.4.6) without doing it yet.
-TEST(XpuRouteTable, priorityDecidesAmongRowsThatAdmitTheSameWork) {
-    int rc = runWith(
-        "        R lo = heap R(\"lo\", Regime.DecodeRow, 10, 12, true);\n"
-        "        R hi = heap R(\"hi\", Regime.DecodeRow, 20, 12, true);\n"
-        "        t.register(lo);\n"
-        "        t.register(hi);\n"
-        "        Route got = t.pick(Regime.DecodeRow, 12, s);\n"
+// 1.1.1 — Q4_K's wave variant and its packed variant are two rows of the same
+// format. Priority decides, and the shadowed one is countable (spec §3.4.6).
+TEST(XpuRouteTable, priorityDecidesBetweenTwoVariantsOfOneFormat) {
+    int rc = runWeights(
+        "        V packed = heap V(\"q4k-packed\", Regime.DecodeRow, 12, 10,\n"
+        "            256, null, false);\n"
+        "        V wave = heap V(\"q4k-wave\", Regime.DecodeRow, 12, 20,\n"
+        "            256, null, false);\n"
+        "        t.register(packed);\n"
+        "        t.register(wave);\n"
+        "        WQuery q = heap WQuery(Regime.DecodeRow, 12, 1024);\n"
+        "        Route got = t.admissible(q);\n"
         "        if (got == null) { return 1; }\n"
-        "        if (!got.name().equals(\"hi\")) { return 2; }\n"
-        "        if (t.admitCount(Regime.DecodeRow, 12, s) != 2) { return 3; }\n"
+        "        if (!got.name().equals(\"q4k-wave\")) { return 2; }\n"
+        "        if (t.admitCount(q) != 2) { return 3; }\n"
         "        return 0;\n");
     EXPECT_EQ(rc, 0);
 }
 
-// 1.1.2 — when nothing admits, the selector refuses. It must NOT hand back the
-// last row consulted: that is the fallthrough that shipped codebook bytes into
-// the Q6_K decoder, wrong logits and no crash (spec §1.1).
+// 1.1.2 — nothing serving the format returns nothing, and NOT the last row
+// consulted: that fallthrough is what sent codebook bytes through the Q6_K
+// decoder, wrong logits and no crash (spec §1.1).
 TEST(XpuRouteTable, refusesRatherThanReturningTheLastRowConsulted) {
-    int rc = runWith(
-        "        R a = heap R(\"a\", Regime.DecodeRow, 10, 12, true);\n"
-        "        R b = heap R(\"b\", Regime.DecodeRow, 20, 14, true);\n"
-        "        t.register(a);\n"
-        "        t.register(b);\n"
-        "        if (t.pick(Regime.DecodeRow, 23, s) != null) { return 1; }\n"
-        "        if (t.admitCount(Regime.DecodeRow, 23, s) != 0) { return 2; }\n"
+    int rc = runWeights(
+        "        t.register(heap V(\"a\", Regime.DecodeRow, 12, 10, 256,\n"
+        "            null, false));\n"
+        "        t.register(heap V(\"b\", Regime.DecodeRow, 14, 20, 256,\n"
+        "            null, false));\n"
+        "        WQuery q = heap WQuery(Regime.DecodeRow, 23, 1024);\n"
+        "        if (t.admissible(q) != null) { return 1; }\n"
+        "        if (t.admitCount(q) != 0) { return 2; }\n"
         "        return 0;\n");
     EXPECT_EQ(rc, 0);
 }
 
-// 1.1.3 — the regime is part of the key. A format served at decode and refused
-// in the prefill batch is the ordinary case, not the exception.
+// 1.1.2b — a shape the row does not fit is refused on the STATIC half, with
+// nothing bound. 1408 is the routed down projection's width and is not a
+// multiple of 256; that is a real refusal, not a synthetic one.
+TEST(XpuRouteTable, aShapeTheRowDoesNotFitIsRefusedStatically) {
+    int rc = runWeights(
+        "        t.register(heap V(\"wave256\", Regime.DecodeRow, 12, 20,\n"
+        "            256, null, false));\n"
+        "        t.register(heap V(\"wave32\", Regime.DecodeRow, 12, 10,\n"
+        "            32, null, false));\n"
+        "        WQuery wide = heap WQuery(Regime.DecodeRow, 12, 2048);\n"
+        "        Route a = t.admissible(wide);\n"
+        "        if (a == null || !a.name().equals(\"wave256\")) { return 1; }\n"
+        "        WQuery odd = heap WQuery(Regime.DecodeRow, 12, 1408);\n"
+        "        Route b = t.admissible(odd);\n"
+        "        if (b == null || !b.name().equals(\"wave32\")) { return 2; }\n"
+        "        if (t.admitCount(odd) != 1) { return 3; }\n"
+        "        return 0;\n");
+    EXPECT_EQ(rc, 0);
+}
+
+// 1.1.3 — the regime is part of the key.
 TEST(XpuRouteTable, aRegimeIsPartOfTheKey) {
-    int rc = runWith(
-        "        R d = heap R(\"dec\", Regime.DecodeRow, 10, 12, true);\n"
-        "        R p = heap R(\"pre\", Regime.PrefillBatch, 10, 14, true);\n"
-        "        t.register(d);\n"
-        "        t.register(p);\n"
-        "        Route g1 = t.pick(Regime.DecodeRow, 12, s);\n"
-        "        if (g1 == null) { return 1; }\n"
-        "        if (!g1.name().equals(\"dec\")) { return 2; }\n"
-        "        if (t.pick(Regime.PrefillBatch, 12, s) != null) { return 3; }\n"
-        "        Route g2 = t.pick(Regime.PrefillBatch, 14, s);\n"
-        "        if (g2 == null) { return 4; }\n"
-        "        if (!g2.name().equals(\"pre\")) { return 5; }\n"
-        "        if (t.pick(Regime.DecodeRow, 14, s) != null) { return 6; }\n"
+    int rc = runWeights(
+        "        t.register(heap V(\"dec\", Regime.DecodeRow, 12, 10, 256,\n"
+        "            null, false));\n"
+        "        t.register(heap V(\"pre\", Regime.PrefillBatch, 12, 10, 256,\n"
+        "            null, false));\n"
+        "        WQuery d = heap WQuery(Regime.DecodeRow, 12, 1024);\n"
+        "        WQuery p = heap WQuery(Regime.PrefillBatch, 12, 1024);\n"
+        "        Route g1 = t.admissible(d);\n"
+        "        Route g2 = t.admissible(p);\n"
+        "        if (g1 == null || !g1.name().equals(\"dec\")) { return 1; }\n"
+        "        if (g2 == null || !g2.name().equals(\"pre\")) { return 2; }\n"
+        "        if (t.admitCount(d) != 1) { return 3; }\n"
         "        return 0;\n");
     EXPECT_EQ(rc, 0);
 }
 
-// 1.1.4 — a row the device cannot run is skipped even at the top priority, and
-// a lower row takes the work. With no runnable row left, the table refuses.
-TEST(XpuRouteTable, aRowTheDeviceCannotRunIsNotPicked) {
-    int rc = runWith(
-        "        R no = heap R(\"needs\", Regime.DecodeRow, 30, 12, false);\n"
-        "        R ok = heap R(\"plain\", Regime.DecodeRow, 10, 12, true);\n"
-        "        t.register(no);\n"
-        "        t.register(ok);\n"
-        "        Route got = t.pick(Regime.DecodeRow, 12, s);\n"
+// 1.1.4 — `needs` is checked against the ACTIVE device, in both directions.
+//
+// The predicate is "every capability this row names is supported", and both of
+// its answers are exercised without a device: a row naming nothing (null) and
+// a row naming an empty list are taken, a row naming one the device lacks is
+// not. What a host test CANNOT exercise is a capability the device HAS — this
+// harness registers no backend, so `Device.supports` answers false to
+// everything — hence the biconditional on the third row rather than a guess
+// about what the CPU advertises.
+TEST(XpuRouteTable, aRowIsTakenExactlyWhenTheDeviceHasWhatItNeeds) {
+    int rc = runWeights(
+        "        Capability[] rt = heap Capability[1];\n"
+        "        rt[0] = Capability.RayQueryRtCore;\n"
+        "        Capability[] none = heap Capability[0];\n"
+        "        t.register(heap V(\"needs-rt\", Regime.DecodeRow, 12, 30,\n"
+        "            256, rt, false));\n"
+        "        t.register(heap V(\"empty-list\", Regime.DecodeRow, 12, 20,\n"
+        "            256, none, false));\n"
+        "        t.register(heap V(\"null-list\", Regime.DecodeRow, 12, 10,\n"
+        "            256, null, false));\n"
+        "        WQuery q = heap WQuery(Regime.DecodeRow, 12, 1024);\n"
+        "        Route got = t.admissible(q);\n"
         "        if (got == null) { return 1; }\n"
-        "        if (!got.name().equals(\"plain\")) { return 2; }\n"
-        "        RouteTable t2 = heap RouteTable();\n"
-        "        R only = heap R(\"only\", Regime.DecodeRow, 30, 12, false);\n"
-        "        t2.register(only);\n"
-        "        if (t2.pick(Regime.DecodeRow, 12, s) != null) { return 3; }\n"
+        "        boolean has = Device.supports(Capability.RayQueryRtCore);\n"
+        "        if (has && !got.name().equals(\"needs-rt\")) { return 2; }\n"
+        "        if (!has && !got.name().equals(\"empty-list\")) { return 3; }\n"
+        "        if (!has && t.admitCount(q) != 2) { return 4; }\n"
+        "        if (has && t.admitCount(q) != 3) { return 5; }\n"
+        "        RouteTable only = heap RouteTable();\n"
+        "        only.register(heap V(\"rt\", Regime.DecodeRow, 12, 30, 256,\n"
+        "            rt, false));\n"
+        "        if (!has && only.admissible(q) != null) { return 6; }\n"
         "        return 0;\n");
     EXPECT_EQ(rc, 0);
 }
 
-// 1.1.5 — registration order does not reach the answer. Rows are declared in
-// whatever order a package's files are walked, and the compiler's own source
-// order is load-bearing elsewhere, so this is not a free property.
+// 1.1.5 — registration order does not reach the answer.
 TEST(XpuRouteTable, registrationOrderDoesNotChangeTheAnswer) {
-    int rc = runWith(
-        "        R lo = heap R(\"lo\", Regime.DecodeRow, 10, 12, true);\n"
-        "        R hi = heap R(\"hi\", Regime.DecodeRow, 20, 12, true);\n"
-        "        t.register(hi);\n"
-        "        t.register(lo);\n"
-        "        Route g1 = t.pick(Regime.DecodeRow, 12, s);\n"
+    int rc = runWeights(
+        "        t.register(heap V(\"hi\", Regime.DecodeRow, 12, 20, 256,\n"
+        "            null, false));\n"
+        "        t.register(heap V(\"lo\", Regime.DecodeRow, 12, 10, 256,\n"
+        "            null, false));\n"
         "        RouteTable t2 = heap RouteTable();\n"
-        "        R lo2 = heap R(\"lo\", Regime.DecodeRow, 10, 12, true);\n"
-        "        R hi2 = heap R(\"hi\", Regime.DecodeRow, 20, 12, true);\n"
-        "        t2.register(lo2);\n"
-        "        t2.register(hi2);\n"
-        "        Route g2 = t2.pick(Regime.DecodeRow, 12, s);\n"
+        "        t2.register(heap V(\"lo\", Regime.DecodeRow, 12, 10, 256,\n"
+        "            null, false));\n"
+        "        t2.register(heap V(\"hi\", Regime.DecodeRow, 12, 20, 256,\n"
+        "            null, false));\n"
+        "        WQuery q = heap WQuery(Regime.DecodeRow, 12, 1024);\n"
+        "        Route g1 = t.admissible(q);\n"
+        "        Route g2 = t2.admissible(q);\n"
         "        if (g1 == null || g2 == null) { return 1; }\n"
         "        if (!g1.name().equals(g2.name())) { return 2; }\n"
         "        if (!g1.name().equals(\"hi\")) { return 3; }\n"
@@ -167,32 +241,121 @@ TEST(XpuRouteTable, registrationOrderDoesNotChangeTheAnswer) {
     EXPECT_EQ(rc, 0);
 }
 
-// 1.3.2 — `pick` is consulted per launch, so it must allocate nothing on the
-// hit path. The second half is the control: the counter DOES move when
-// something really allocates, so a flat reading is evidence and not a dead
-// instrument. The control has to be chosen, not assumed: the counter does not
-// see a small non-escaping class or an array, so a `RouteShape` control read
-// as flat for the same reason a broken `pick` would have.
-TEST(XpuRouteTable, pickAllocatesNothingOnTheHitPath) {
-    int rc = runWith(
-        "        R a = heap R(\"a\", Regime.DecodeRow, 10, 12, true);\n"
-        "        t.register(a);\n"
-        "        Route warm = t.pick(Regime.DecodeRow, 12, s);\n"
-        "        if (warm == null) { return 1; }\n"
-        "        int64 b0 = Cajeta.allocatedBytes();\n"
-        "        int32 k = 0;\n"
-        "        while (k < 256) {\n"
-        "            Route got = t.pick(Regime.DecodeRow, 12, s);\n"
-        "            if (got == null) { return 2; }\n"
-        "            k = k + 1;\n"
-        "        }\n"
-        "        int64 b1 = Cajeta.allocatedBytes();\n"
-        "        if (b1 != b0) { return 3; }\n"
-        "        RouteTable other = heap RouteTable();\n"
-        "        if (other.count() != 0) { return 4; }\n"
-        "        int64 b2 = Cajeta.allocatedBytes();\n"
-        "        if (b2 <= b1) { return 5; }\n"
+// 1.1.6 — THE SPLIT, and the unit's point. A row that fits but whose slab has
+// not bound is ADMISSIBLE and not PICKED. `ExpertBank.idReady` answers both
+// questions at once today, which is why widening it alone would have fed
+// codebook bytes to a kernel that cannot read them.
+TEST(XpuRouteTable, aRowThatFitsButIsNotReadyIsAdmissibleAndNotPicked) {
+    int rc = runWeights(
+        "        t.register(heap V(\"slab\", Regime.DecodeRow, 12, 30, 256,\n"
+        "            null, true));\n"
+        "        t.register(heap V(\"host\", Regime.DecodeRow, 12, 10, 256,\n"
+        "            null, false));\n"
+        "        WQuery q = heap WQuery(Regime.DecodeRow, 12, 1024);\n"
+        "        Route stat = t.admissible(q);\n"
+        "        if (stat == null || !stat.name().equals(\"slab\")) { return 1; }\n"
+        "        if (t.admitCount(q) != 2) { return 2; }\n"
+        "        WCall unbound = heap WCall(q, false);\n"
+        "        Route a = t.pick(unbound);\n"
+        "        if (a == null || !a.name().equals(\"host\")) { return 3; }\n"
+        "        WCall bound = heap WCall(q, true);\n"
+        "        Route b = t.pick(bound);\n"
+        "        if (b == null || !b.name().equals(\"slab\")) { return 4; }\n"
         "        return 0;\n");
     EXPECT_EQ(rc, 0);
 }
 
+// 1.1.7 — the static half never reads runtime state. A row whose `ready` reads
+// `slabBound` gives the SAME admissible answer for both bindings, because the
+// query it is asked with carries no receiver to read it through.
+TEST(XpuRouteTable, theStaticHalfCannotSeeRuntimeState) {
+    int rc = runWeights(
+        "        t.register(heap V(\"slab\", Regime.DecodeRow, 12, 10, 256,\n"
+        "            null, true));\n"
+        "        WQuery q = heap WQuery(Regime.DecodeRow, 12, 1024);\n"
+        "        Route s1 = t.admissible(q);\n"
+        "        if (s1 == null) { return 1; }\n"
+        "        WCall unbound = heap WCall(q, false);\n"
+        "        if (t.pick(unbound) != null) { return 2; }\n"
+        "        Route s2 = t.admissible(q);\n"
+        "        if (s2 == null) { return 3; }\n"
+        "        if (!s1.name().equals(s2.name())) { return 4; }\n"
+        "        return 0;\n");
+    EXPECT_EQ(rc, 0);
+}
+
+// 1.1.9 — resolution is a bind-time call, but it still must not allocate: a
+// registrant re-resolving on a rebind should not churn. The control is chosen
+// rather than assumed — `Cajeta.allocatedBytes()` does not see a small
+// non-escaping class or an array, so the obvious control would read flat for
+// the same reason a broken selector would.
+TEST(XpuRouteTable, resolutionAllocatesNothingBeyondTheQuery) {
+    int rc = runWeights(
+        "        t.register(heap V(\"a\", Regime.DecodeRow, 12, 10, 256,\n"
+        "            null, false));\n"
+        "        WQuery q = heap WQuery(Regime.DecodeRow, 12, 1024);\n"
+        "        WCall c = heap WCall(q, true);\n"
+        "        Route warm = t.pick(c);\n"
+        "        if (warm == null) { return 1; }\n"
+        "        int64 b0 = Cajeta.allocatedBytes();\n"
+        "        int32 k = 0;\n"
+        "        while (k < 256) {\n"
+        "            Route got = t.pick(c);\n"
+        "            if (got == null) { return 2; }\n"
+        "            if (t.admissible(q) == null) { return 3; }\n"
+        "            k = k + 1;\n"
+        "        }\n"
+        "        int64 b1 = Cajeta.allocatedBytes();\n"
+        "        if (b1 != b0) { return 4; }\n"
+        "        RouteTable other = heap RouteTable();\n"
+        "        if (other.count() != 0) { return 5; }\n"
+        "        int64 b2 = Cajeta.allocatedBytes();\n"
+        "        if (b2 <= b1) { return 6; }\n"
+        "        return 0;\n");
+    EXPECT_EQ(rc, 0);
+}
+
+// A row dispatches without choosing: one variant, one kernel, no arm to omit.
+TEST(XpuRouteTable, aPickedRowDispatchesWithoutChoosing) {
+    int rc = runWeights(
+        "        t.register(heap V(\"only\", Regime.DecodeRow, 12, 10, 256,\n"
+        "            null, false));\n"
+        "        WQuery q = heap WQuery(Regime.DecodeRow, 12, 1024);\n"
+        "        WCall c = heap WCall(q, true);\n"
+        "        V.dispatched = 0;\n"
+        "        Route got = t.pick(c);\n"
+        "        if (got == null) { return 1; }\n"
+        "        got.dispatch(c);\n"
+        "        got.dispatch(c);\n"
+        "        if (V.dispatched != 2) { return 2; }\n"
+        "        return 0;\n");
+    EXPECT_EQ(rc, 0);
+}
+
+// The candidate set, ordered — what a measured selector ranks when `priority`
+// is only a declared default. On hardware nobody has measured, that default is
+// a guess, so the set has to be reachable and not just its first element.
+TEST(XpuRouteTable, theAdmissibleSetIsEnumerableHighestPriorityFirst) {
+    int rc = runWeights(
+        "        t.register(heap V(\"mid\", Regime.DecodeRow, 12, 20, 256,\n"
+        "            null, false));\n"
+        "        t.register(heap V(\"low\", Regime.DecodeRow, 12, 10, 256,\n"
+        "            null, false));\n"
+        "        t.register(heap V(\"top\", Regime.DecodeRow, 12, 30, 256,\n"
+        "            null, false));\n"
+        "        t.register(heap V(\"other\", Regime.DecodeRow, 14, 99, 256,\n"
+        "            null, false));\n"
+        "        WQuery q = heap WQuery(Regime.DecodeRow, 12, 1024);\n"
+        "        Route[] out = heap Route[4];\n"
+        "        int32 n = t.candidates(q, out);\n"
+        "        if (n != 3) { return 1; }\n"
+        "        if (!out[0].name().equals(\"top\")) { return 2; }\n"
+        "        if (!out[1].name().equals(\"mid\")) { return 3; }\n"
+        "        if (!out[2].name().equals(\"low\")) { return 4; }\n"
+        "        Route[] small = heap Route[2];\n"
+        "        int32 m = t.candidates(q, small);\n"
+        "        if (m != 3) { return 5; }\n"
+        "        if (!small[0].name().equals(\"top\")) { return 6; }\n"
+        "        return 0;\n");
+    EXPECT_EQ(rc, 0);
+}

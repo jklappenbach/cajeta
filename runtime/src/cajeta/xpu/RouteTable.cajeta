@@ -3,12 +3,16 @@ package cajeta.xpu;
 import cajeta.collection.ArrayList;
 
 /**
- * The rows a package registers and the one selector that consults them.
+ * The rows a package registers and the selector that resolves among them.
  *
  * It replaces the per-route predicates that restate, once per file, which
  * format may take which kernel. Those drift: a predicate written when a route
  * was added names the formats that existed then, and the next format is
  * refused silently by a route nobody thought to look at.
+ *
+ * Resolution is a BIND-time call. A weight asks {@link #pick} once and stores
+ * the row it got, the way it stores the booleans that row replaces; the launch
+ * is then one virtual call and not a table walk.
  *
  * Rows are BORROWED — the registrant owns them and outlives the table — so a
  * table is a view of a registration, not a container of routes.
@@ -20,24 +24,24 @@ public final class RouteTable {
         this.rows = heap ArrayList<Route>();
     }
 
-    /** Add a row. Registration order does not reach {@link #pick}. */
+    /** Add a row. Registration order does not reach the answer. */
     public void register(Route r) {
         this.rows.add(r);
         return;
     }
 
     /**
-     * The highest-priority row that serves `ty` at `s` in `regime` on this
-     * device, or null when none does — never the last row consulted, which is
-     * the fallthrough that sends one format's bytes through another's kernel.
+     * The static half, and what the audit walks: the highest-priority row
+     * serving `q`'s format and regime whose shape fits and whose capabilities
+     * the device has — with nothing bound and no receiver in hand.
      */
-    public Route pick(Regime regime, int32 ty, RouteShape s) {
+    public Route admissible(RouteQuery q) {
         Route best = null;
         int32 bestPri = 0;
         int32 i = 0;
         while (i < this.rows.count()) {
             Route r = this.rows.get(i);
-            if (r.regime() == regime && r.admits(ty, s) && r.deviceReady()) {
+            if (this.staticAdmits(r, q)) {
                 if (best == null || r.priority() > bestPri) {
                     best = r;
                     bestPri = r.priority();
@@ -49,16 +53,36 @@ public final class RouteTable {
     }
 
     /**
-     * How many rows admit this work, device readiness aside. More than one
-     * means a shadowed row: the seed of measured selection, reported rather
-     * than acted on.
+     * {@link #admissible} and READY for this call — the bind-time resolution.
+     * A row that fits but whose slab has not bound is skipped here and still
+     * reported by the audit, which is the distinction `idReady` loses.
      */
-    public int32 admitCount(Regime regime, int32 ty, RouteShape s) {
-        int32 n = 0;
+    public Route pick(RouteCall c) {
+        Route best = null;
+        int32 bestPri = 0;
         int32 i = 0;
         while (i < this.rows.count()) {
             Route r = this.rows.get(i);
-            if (r.regime() == regime && r.admits(ty, s)) {
+            if (this.staticAdmits(r, c.query) && r.ready(c)) {
+                if (best == null || r.priority() > bestPri) {
+                    best = r;
+                    bestPri = r.priority();
+                }
+            }
+            i = i + 1;
+        }
+        return best;
+    }
+
+    /**
+     * How many rows are statically admissible. More than one means a shadowed
+     * row: the seed of measured selection, reported rather than acted on.
+     */
+    public int32 admitCount(RouteQuery q) {
+        int32 n = 0;
+        int32 i = 0;
+        while (i < this.rows.count()) {
+            if (this.staticAdmits(this.rows.get(i), q)) {
                 n = n + 1;
             }
             i = i + 1;
@@ -66,8 +90,85 @@ public final class RouteTable {
         return n;
     }
 
+    /**
+     * Every statically admissible row for `q`, highest `priority` first,
+     * written into `out`; the return is the TOTAL found, so a caller whose
+     * buffer was short can tell.
+     *
+     * This is the candidate set, and it is the seam measured selection needs:
+     * `priority` is a DECLARED default, and on hardware nobody has measured it
+     * is a guess. A selector that ranks these by the tile manifest's footprint
+     * or by what the `Autotune` store recorded on this device ranks within a
+     * set that is already correct, because admissibility and readiness have
+     * both been answered. Fast and wrong is not on the table.
+     */
+    public int32 candidates(RouteQuery q, Route[] out) {
+        int32 cap = (int32) out.count();
+        int32 n = 0;
+        int32 i = 0;
+        while (i < this.rows.count()) {
+            if (this.staticAdmits(this.rows.get(i), q)) { n = n + 1; }
+            i = i + 1;
+        }
+        // Ordered by SELECTION over indices, never by moving rows through a
+        // temporary: an interface array element is stored inline and a local
+        // bound to one aliases the slot, so a three-way swap writes the same
+        // row into both.
+        int32 filled = 0;
+        int32 prevPri = 0;
+        int32 prevIdx = 0 - 1;
+        boolean havePrev = false;
+        while (filled < cap) {
+            int32 bestIdx = 0 - 1;
+            int32 bestPri = 0;
+            int32 j = 0;
+            while (j < this.rows.count()) {
+                Route r = this.rows.get(j);
+                if (this.staticAdmits(r, q)) {
+                    int32 p = r.priority();
+                    boolean after = !havePrev || p < prevPri
+                        || (p == prevPri && j > prevIdx);
+                    boolean better = bestIdx < 0 || p > bestPri
+                        || (p == bestPri && j < bestIdx);
+                    if (after && better) {
+                        bestIdx = j;
+                        bestPri = p;
+                    }
+                }
+                j = j + 1;
+            }
+            if (bestIdx < 0) { break; }
+            out[filled] = this.rows.get(bestIdx);
+            filled = filled + 1;
+            prevPri = bestPri;
+            prevIdx = bestIdx;
+            havePrev = true;
+        }
+        return n;
+    }
+
     /** How many rows are registered. */
     public int32 count() {
         return this.rows.count();
+    }
+
+    /** Row `i`, for the audit's walk. */
+    public Route rowAt(int32 i) {
+        return this.rows.get(i);
+    }
+
+    /** The one static test, so `admissible` and `pick` cannot drift. */
+    boolean staticAdmits(Route r, RouteQuery q) {
+        if (r.regime() != q.regime) { return false; }
+        if (r.format() != q.ty) { return false; }
+        if (!r.fits(q)) { return false; }
+        Capability[] n = r.needs();
+        if (n == null) { return true; }
+        int32 k = 0;
+        while (k < (int32) n.count()) {
+            if (!Device.supports(n[k])) { return false; }
+            k = k + 1;
+        }
+        return true;
     }
 }

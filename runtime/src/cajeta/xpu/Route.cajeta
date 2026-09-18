@@ -3,17 +3,24 @@ package cajeta.xpu;
 import cajeta.lang.String;
 
 /**
- * One row of the selection contract: which kernel serves which format, in
- * which regime, on which device. Packages register rows and keep the
- * dispatchers; the layer owns the selector and the audit.
+ * One row of the selection contract: ONE kernel variant, serving ONE format,
+ * in one regime. Q4_K's wave variant and its packed variant are two rows, and
+ * {@link #priority} orders them.
  *
- * A route is an interface a registrant implements rather than a record of
- * function values, because a dispatcher launches kernels and a kernel launch
- * inside a lambda has unreachable captured buffers in launch codegen.
+ * One variant per row is what lets `dispatch` have no arms — and so no bare
+ * `else` for a new format to fall through, which is the shape of defect this
+ * contract exists to stop. It is also what a weight stores in place of the
+ * sixteen booleans it resolves at bind today.
  *
- * `dispatch` answers for itself instead of declaring what it handles beside
- * the arms that handle it: a list next to the switch it duplicates is exactly
- * the knowledge this contract exists to stop restating.
+ * A route is an interface a registrant implements, never a record of function
+ * values: a dispatcher launches kernels, and a kernel launch inside a lambda
+ * has unreachable captured buffers in launch codegen.
+ *
+ * Admission has two halves and they are different questions. {@link #fits} is
+ * pure over declared facts and is what the audit walks with nothing bound;
+ * {@link #ready} reads the receiver's state — a slab that did or did not bind,
+ * a widen that was refused — and is a runtime refusal no audit can check.
+ * Tangling them is the defect, not an incidental of it.
  */
 public interface Route {
 
@@ -23,23 +30,28 @@ public interface Route {
     /** The call shape this row serves. */
     Regime regime();
 
-    /** Order among rows that admit the same work; higher is consulted first. */
+    /** The one format this variant serves. */
+    int32 format();
+
+    /** Order among rows serving the same (format, regime); higher first. */
     int32 priority();
 
-    /** Whether this row serves format `ty` at shape `s`. */
-    boolean admits(int32 ty, RouteShape s);
+    /**
+     * The static half: does this row serve `q`'s shape. Pure over `q`'s
+     * declared facts — there is no receiver in a query to read.
+     */
+    boolean fits(RouteQuery q);
 
     /**
-     * Whether the ACTIVE device can run this row — the row's own
-     * {@link Device#supports} queries, never a backend name. A row that needs
-     * nothing answers true.
+     * Capabilities the active device must have, or null for none. A STORED
+     * list, so asking costs no allocation and a refusal can name which one
+     * was missing.
      */
-    boolean deviceReady();
+    Capability[] needs();
 
-    /**
-     * Take the call, or refuse it: true when an arm handled it, false from the
-     * terminal else. Under `c.dryRun` an arm reports without launching, which
-     * is how the audit reaches every arm without a device.
-     */
-    boolean dispatch(RouteCall c);
+    /** The runtime half: is this receiver's state ready for the row. */
+    boolean ready(RouteCall c);
+
+    /** Launch. One variant, one kernel: nothing to choose here. */
+    void dispatch(RouteCall c);
 }
