@@ -3,7 +3,8 @@
 How the layer decides which kernel runs. Companion to
 [CajetaXPU.md](CajetaXPU.md) (the substrate) and the
 [kernel-writing guide](../../guide/25-xpu-kernels.md) (how to write one).
-Specified by [`specs/route-table-spec.md`](../../../specs/route-table-spec.md).
+Specified by [`specs/archive/route-table-spec.md`](../../../specs/archive/route-table-spec.md)
+(closed 2026-09-18).
 
 ## 1. Three questions, three homes
 

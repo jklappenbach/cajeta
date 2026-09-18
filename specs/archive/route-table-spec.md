@@ -2,11 +2,11 @@
 
 Status: approved 2026-09-18, **§3 amended 2026-09-18** (Julian) — see
 §3.0, whose third correction was found building Unit 2 and whose
-fourth was found by a question about `Device.supports`. Registered in [INDEX.md](INDEX.md).
-Plan: [`agents/route-table-plan.md`](../agents/route-table-plan.md).
+fourth was found by a question about `Device.supports`. Closed 2026-09-18; the plan is archived beside it.
+Plan: [`agents/archive/route-table-plan.md`](../../agents/archive/route-table-plan.md).
 Layer: `cajeta.xpu`. First registrant: cajeta-llm. Architecture note:
-[`docs/specification/xpu/CajetaXPU-Routing.md`](../docs/specification/xpu/CajetaXPU-Routing.md).
-Companion guide: [Writing XPU kernels](../docs/guide/25-xpu-kernels.md).
+[`docs/specification/xpu/CajetaXPU-Routing.md`](../../docs/specification/xpu/CajetaXPU-Routing.md).
+Companion guide: [Writing XPU kernels](../../docs/guide/25-xpu-kernels.md).
 
 ## 1. Definition
 
