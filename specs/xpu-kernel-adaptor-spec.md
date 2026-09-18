@@ -55,33 +55,35 @@ Measured, each with its source.
   production reaches, through a fallback arm.
 - **Capability is not data.** Every "can this device do X" fact is
   expressed as whether a `LoweringTarget` subclass overrides a virtual
-  method; none of it reaches `DeviceProfile` and none is queryable from
+  method. None of it reaches `DeviceProfile` and none is queryable from
   cajeta source (findings §7.4).
 
 ### 1.2 Scope
 
-The declaration vocabulary on a kernel; the profile made reachable and
-authoritative at run time; the adaptor that reconciles the two at BIND
-and answers with a launch configuration or a named refusal; adaptation
-by launch geometry and specialization constants; and a bounded empirical
-search where the model says the device is unmodelable.
+- The declaration vocabulary on a kernel.
+- The profile made reachable and authoritative at run time.
+- The adaptor that reconciles the two at BIND, answering with a launch
+  configuration or a named refusal.
+- Adaptation by launch geometry and specialization constants.
+- A bounded empirical search where the model says the device is
+  unmodelable.
 
 ### 1.3 Non-goals
 
 - **Ranking the survivors.** When several configurations or variants
   satisfy a device, choosing the fastest is the cost model's — the tile
   manifest's measured expressions, the scheduler's ridge, `Autotune`.
-  This spec produces correct candidates; it does not order them.
+  This spec produces correct candidates. It does not order them.
 - **Choosing among data formats.** That is the route table. No
   adaptation turns a Q4_K decoder into an IQ3_XXS one.
 - **Self-tuning across runs.** Recording a winner and improving on it
   between processes is the hardware-profile research plan's Q5.
-- **Writing kernels.** The adaptor configures a kernel; it does not
+- **Writing kernels.** The adaptor configures a kernel. It does not
   author one.
 
 ## 2. The kernel declares what only its author knows
 
-An author declares what only an author knows; everything else is
+An author declares what only an author knows. Everything else is
 measured or derived from the body. A code object reveals that a kernel
 burns 84 VGPRs. It cannot reveal that the body assumes 32 lanes.
 

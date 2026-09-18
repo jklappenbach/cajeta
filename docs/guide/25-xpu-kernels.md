@@ -500,7 +500,7 @@ in code you can read today.
   `else`, and that `else` is the defect.
 - **A static constraint and a runtime one go in different halves.**
   `shapeRefusal(query)` is pure and the audit walks it with nothing
-  bound; `readyRefusal(call)` reads the receiver and no audit can check
+  bound. `readyRefusal(call)` reads the receiver and no audit can check
   it. The types enforce the split — a query carries no receiver to
   reach through, so a static gate cannot read a slab even by accident.
 - **A half answers with the gate, not with `false`.** Both return the
@@ -607,7 +607,7 @@ public boolean idReady() {
   flip at run time. It goes in `readyRefusal` too, not in the static
   half, and the test is not "is this value known at compile time" but
   "can the audit's answer change depending on when it ran". A global
-  switch fails that; a query field does not.
+  switch fails that. A query field does not.
 
 `MoeFfn.zeroSyncReady` (`MoeFfn.cajeta:1248-1288`) is the same reading
 with every case present: nine gates with nine sentences in the
@@ -623,7 +623,7 @@ reproduced the thing the table was built to remove.
 ### 25.6.3 Example — the row those predicates become
 
 The shape of one row. The registrant declares its static facts once, on
-its own `RouteQuery` subclass, and both halves read them; the receiver
+its own `RouteQuery` subclass, and both halves read them. The receiver
 and the operands ride on `RouteCall`. The llm rows land with
 codebook-quants 9.2.9.
 
@@ -698,7 +698,7 @@ public final class IntWaveRow implements Route {
 ```
 
 - `format()` is one format. A second variant for the same format is a
-  second row with a different `priority()`; the audit reports the pair
+  second row with a different `priority()`, and the audit reports the pair
   as shadowed rather than letting the choice be implicit.
 - `shapeRefusal` names which width refused. A row with one gate could
   have returned a boolean; a row with four could not, and every real
@@ -712,7 +712,7 @@ public final class IntWaveRow implements Route {
 - `needs()` returns a stored list, so the selector asking it costs no
   allocation. `null` means the row needs nothing.
 
-Registration is once, at start-up; resolution is once, **at bind**. The
+Registration is once, at start-up. Resolution is once, **at bind**. The
 weight stores the row it got and the launch is one virtual call — this
 is the same trade the sixteen booleans on `Linear` make today, with the
 knowledge in one place instead of sixteen.
@@ -769,7 +769,7 @@ Assert.equals(a.neverFiringCount(), 0);
   everything. A predicate that silently disabled a whole check once read
   as a clean run for an hour.
 - `a.shadowed(qi)` says two rows admit one query. Priority still
-  decides; the point is that the choice is visible.
+  decides. The point is that the choice is visible.
 - `table.auditRow(row, qs)` is the per-row fire / no-fire count — hand
   it the row's own format at shapes that should and should not take it,
   and assert both halves. §25.7.2 is that pair written against a real
