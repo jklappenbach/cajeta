@@ -1640,6 +1640,34 @@ namespace cajeta {
     // Lowers `return`: enforces the `#T`, `^T` and plain-return contracts, runs
     // the advice, try-finally, scope-exit and drop chains, then stores the return
     // title flag immediately before the `ret`.
+    /**
+     * Load an interface's 24-byte body through `bodyPtr`, or a zeroed body when
+     * that pointer is null — an interface local holding null stores a null body
+     * pointer, and the unguarded load reads address zero.
+     */
+    static llvm::Value* loadIfaceBodyOrZero(CajetaModulePtr module,
+                                            llvm::IRBuilder<>* builder,
+                                            llvm::Type* fatTy,
+                                            llvm::Value* bodyPtr) {
+        auto& ctx = *module->getLlvmContext();
+        llvm::Function* fn = builder->GetInsertBlock()->getParent();
+        auto* loadBB = llvm::BasicBlock::Create(ctx, "iface_body_load", fn);
+        auto* nullBB = llvm::BasicBlock::Create(ctx, "iface_body_null", fn);
+        auto* contBB = llvm::BasicBlock::Create(ctx, "iface_body_cont", fn);
+        builder->CreateCondBr(builder->CreateIsNull(bodyPtr), nullBB, loadBB);
+        builder->SetInsertPoint(loadBB);
+        llvm::Value* loaded = builder->CreateLoad(fatTy, bodyPtr);
+        llvm::BasicBlock* loadEnd = builder->GetInsertBlock();
+        builder->CreateBr(contBB);
+        builder->SetInsertPoint(nullBB);
+        builder->CreateBr(contBB);
+        builder->SetInsertPoint(contBB);
+        llvm::PHINode* phi = builder->CreatePHI(fatTy, 2);
+        phi->addIncoming(loaded, loadEnd);
+        phi->addIncoming(llvm::Constant::getNullValue(fatTy), nullBB);
+        return phi;
+    }
+
     llvm::Value* ReturnStatement::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         if (expression && expression->kind() == ExprKind::Move) {
@@ -2264,8 +2292,12 @@ namespace cajeta {
                             llvm::AllocaInst* slot = field->getOrCreateAllocation();
                             llvm::Value* bodyPtr = builder->CreateLoad(
                                 slot->getAllocatedType(), slot);
-                            val = builder->CreateLoad(
-                                byValRet->getLlvmType(), bodyPtr);
+                            // The slot holds null when the local holds null, and
+                            // a null interface is a ZEROED body, not 24 bytes
+                            // read off address zero.
+                            val = loadIfaceBodyOrZero(
+                                module, builder, byValRet->getLlvmType(),
+                                bodyPtr);
                             if (auto curM = module->getCurrentMethod()) {
                                 curM->emitAfterAdvice(module);
                                 curM->emitAfterReturningAdvice(module);
@@ -2473,9 +2505,17 @@ namespace cajeta {
             } else if (retTy->isIntegerTy() && valTy->isFloatingPointTy()) {
                 val = builder->CreateFPToSI(val, retTy);
             } else if (retTy->isAggregateType() && valTy->isPointerTy()) {
-                // By-value aggregate return: the signature returns the struct, but
-                // `return stack V(...)` yielded a pointer to it.
-                val = builder->CreateLoad(retTy, val);
+                if (llvm::isa<llvm::ConstantPointerNull>(val)) {
+                    // `return null` from an interface-returning method: the wrap
+                    // above skips it (there is no source class to take a vtable
+                    // from), so without this the load reads the fat pointer off
+                    // address zero.
+                    val = llvm::Constant::getNullValue(retTy);
+                } else {
+                    // By-value aggregate return: the signature returns the struct,
+                    // but `return stack V(...)` yielded a pointer to it.
+                    val = builder->CreateLoad(retTy, val);
+                }
             } else if ((retTy->isFloatingPointTy() || retTy->isIntegerTy())
                     && valTy->isPointerTy()) {
                 // A scalar return type with a pointer operand can only mean "load
