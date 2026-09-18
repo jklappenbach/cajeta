@@ -783,7 +783,7 @@ Assert.equals(a.neverFiringCount(), 0);
 What the audit will not do is ask `readyRefusal`, or ask the device. A
 slab that did not bind and a capability this box lacks are both
 invisible to it — those refusals are `whyNotPicked`'s, at bind, in the
-route record. The test is the same one as for the two halves: if the
+route record. This is the same question the two halves answer: if the
 answer could change with where or when the walk ran, it is not the
 audit's to give.
 

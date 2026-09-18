@@ -81,9 +81,9 @@ search where the model says the device is unmodelable.
 
 ## 2. The kernel declares what only its author knows
 
-The line is: **declare the semantics, derive the cost.** A code object
-reveals that a kernel burns 84 VGPRs; it cannot reveal that the body
-assumes 32 lanes. The first is measured, the second must be said.
+An author declares what only an author knows; everything else is
+measured or derived from the body. A code object reveals that a kernel
+burns 84 VGPRs. It cannot reveal that the body assumes 32 lanes.
 
 - **2.1** When a kernel's correctness depends on a device quantity, it
   declares that dependence, and the declaration is on the KERNEL rather
@@ -158,8 +158,8 @@ guidance second, search last and bounded** — an analytical model reaches
 (tritonBLAS, findings §9.1), so search is what runs where the model
 declines to answer.
 
-- **6.1** When the profile marks a device unmodelable,
-  `LaunchPick.needsSweep` is already that signal, the adaptor verifies
+- **6.1** When the profile marks a device unmodelable — and
+  `LaunchPick.needsSweep` is already that signal — the adaptor verifies
   its choice empirically instead of trusting it.
 - **6.2** When a search runs, it is BOUNDED — a stated budget of
   configurations and of time, never an open sweep.
