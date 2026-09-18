@@ -312,5 +312,13 @@ that the row type is not shaped like a GGUF quantization.
   manifest, the scheduling calibration set and `Autotune`.
 - The `xpu-tile-workload-profiles` multimodal-ML witness reads its
   routes from this table rather than from the llm package's flags.
+- **Fleet calibration, and it is the gap for datacenter scale-out.**
+  `candidates` plus `Autotune` lets one machine discover the best
+  admissible row for its own part and recall it. It does not let a
+  fleet SHARE that: every node rediscovers it, per process, and there
+  is no versioning tying a recorded winner to the kernel set that was
+  measured. A new part arriving across a fleet therefore pays its sweep
+  once per node rather than once. Not this spec's, but it is the first
+  thing that hurts at scale and nothing else currently owns it.
 
 Each is its own spec; each assumes this table exists.
