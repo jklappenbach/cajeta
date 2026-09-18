@@ -1,5 +1,7 @@
 package cajeta.xpu;
 
+import cajeta.lang.String;
+
 /**
  * The regime a {@link Route} serves — the shape of the call, not the shape of
  * the data. One format is routinely served by different kernels at M = 1 and
@@ -12,5 +14,13 @@ public enum Regime {
     DecodeRow,      // 0 — one row, M = 1
     PrefillBatch,   // 1 — M at or above a tile
     Bind,           // 2 — the resident layout chosen when data is bound
-    FusedTail       // 3 — a route that fuses what two rows would do separately
+    FusedTail;      // 3 — a route that fuses what two rows would do separately
+
+    /** The word a diagnostic record prints for this regime. */
+    public #String toName() {
+        if (this == Regime.DecodeRow) { return "DecodeRow"; }
+        if (this == Regime.PrefillBatch) { return "PrefillBatch"; }
+        if (this == Regime.Bind) { return "Bind"; }
+        return "FusedTail";
+    }
 }

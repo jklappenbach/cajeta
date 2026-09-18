@@ -1,6 +1,7 @@
 package cajeta.xpu;
 
 import cajeta.collection.ArrayList;
+import cajeta.lang.String;
 
 /**
  * The rows a package registers and the selector that resolves among them.
@@ -63,7 +64,7 @@ public final class RouteTable {
         int32 i = 0;
         while (i < this.rows.count()) {
             Route r = this.rows.get(i);
-            if (this.staticAdmits(r, c.query) && r.ready(c)) {
+            if (this.staticAdmits(r, c.query) && r.readyRefusal(c) == null) {
                 if (best == null || r.priority() > bestPri) {
                     best = r;
                     bestPri = r.priority();
@@ -157,18 +158,107 @@ public final class RouteTable {
         return this.rows.get(i);
     }
 
-    /** The one static test, so `admissible` and `pick` cannot drift. */
+    /**
+     * The ONE static test, and the clause it stopped at. `admissible`, `pick`,
+     * the refusal and the audit all read this, so what the selector decides
+     * and what the diagnostic says cannot drift apart.
+     */
+    public RouteClause clauseOf(Route r, RouteQuery q) {
+        if (r.format() != q.ty) { return RouteClause.Format; }
+        if (r.regime() != q.regime) { return RouteClause.Regime; }
+        if (r.shapeRefusal(q) != null) { return RouteClause.Shape; }
+        if (this.missingNeed(r) >= 0) { return RouteClause.Unsupported; }
+        return RouteClause.Taken;
+    }
+
     boolean staticAdmits(Route r, RouteQuery q) {
-        if (r.regime() != q.regime) { return false; }
-        if (r.format() != q.ty) { return false; }
-        if (!r.fits(q)) { return false; }
+        return this.clauseOf(r, q) == RouteClause.Taken;
+    }
+
+    /** Index into `r.needs()` of the first capability this device lacks. */
+    int32 missingNeed(Route r) {
         Capability[] n = r.needs();
-        if (n == null) { return true; }
+        if (n == null) { return 0 - 1; }
         int32 k = 0;
         while (k < (int32) n.count()) {
-            if (!Device.supports(n[k])) { return false; }
+            if (!Device.supports(n[k])) { return k; }
             k = k + 1;
         }
-        return true;
+        return 0 - 1;
+    }
+
+    /**
+     * Why nothing was admissible for `q`, or null when something was.
+     *
+     * Asked on the refusal path only: resolution itself stays the
+     * allocation-free bind-time call it is, and the cost of naming a refusal
+     * is paid where something is about to be printed.
+     */
+    public #RouteRefusal whyNotAdmissible(RouteQuery q) {
+        if (this.admissible(q) != null) { return null; }
+        return this.refusalFor(q, null);
+    }
+
+    /** Why nothing was picked for `c`, or null when something was. */
+    public #RouteRefusal whyNotPicked(RouteCall c) {
+        if (this.pick(c) != null) { return null; }
+        return this.refusalFor(c.query, c);
+    }
+
+    /**
+     * The row that got FURTHEST, and the clause that stopped it. `c` null asks
+     * the static half alone; with a call, a row that passes the static half
+     * has been refused by its own `readyRefusal`.
+     */
+    #RouteRefusal refusalFor(RouteQuery q, RouteCall c) {
+        if (this.rows.count() == 0) {
+            return heap RouteRefusal(null, RouteClause.Empty, q.regime, q.ty,
+                null, 0 - 1);
+        }
+        Route best = null;
+        RouteClause bestClause = RouteClause.Empty;
+        int32 bestRank = 0 - 1;
+        int32 bestPri = 0;
+        int32 i = 0;
+        while (i < this.rows.count()) {
+            Route r = this.rows.get(i);
+            RouteClause cl = this.clauseOf(r, q);
+            if (cl == RouteClause.Taken) { cl = RouteClause.Ready; }
+            int32 rank = RouteTable.rankOf(cl);
+            boolean better = rank > bestRank
+                || (rank == bestRank && r.priority() > bestPri);
+            if (better) {
+                best = r;
+                bestClause = cl;
+                bestRank = rank;
+                bestPri = r.priority();
+            }
+            i = i + 1;
+        }
+        if (bestClause == RouteClause.Shape) {
+            return heap RouteRefusal(best, bestClause, q.regime, q.ty,
+                best.shapeRefusal(q), 0 - 1);
+        }
+        if (bestClause == RouteClause.Unsupported) {
+            return heap RouteRefusal(best, bestClause, q.regime, q.ty,
+                null, this.missingNeed(best));
+        }
+        if (bestClause == RouteClause.Ready) {
+            String gate = null;
+            if (c != null) { gate = best.readyRefusal(c); }
+            return heap RouteRefusal(best, bestClause, q.regime, q.ty,
+                gate, 0 - 1);
+        }
+        return heap RouteRefusal(best, bestClause, q.regime, q.ty, null, 0 - 1);
+    }
+
+    /** How far a clause got. The refusal names the row that got furthest. */
+    static int32 rankOf(RouteClause c) {
+        if (c == RouteClause.Format) { return 1; }
+        if (c == RouteClause.Regime) { return 2; }
+        if (c == RouteClause.Shape) { return 3; }
+        if (c == RouteClause.Unsupported) { return 4; }
+        if (c == RouteClause.Ready) { return 5; }
+        return 0;
     }
 }

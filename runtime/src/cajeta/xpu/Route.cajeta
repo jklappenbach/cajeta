@@ -16,9 +16,9 @@ import cajeta.lang.String;
  * values: a dispatcher launches kernels, and a kernel launch inside a lambda
  * has unreachable captured buffers in launch codegen.
  *
- * Admission has two halves and they are different questions. {@link #fits} is
- * pure over declared facts and is what the audit walks with nothing bound;
- * {@link #ready} reads the receiver's state — a slab that did or did not bind,
+ * Admission has two halves and they are different questions. {@link #shapeRefusal}
+ * is pure over declared facts and is what the audit walks with nothing bound;
+ * {@link #readyRefusal} reads the receiver's state — a slab that did or did not bind,
  * a widen that was refused — and is a runtime refusal no audit can check.
  * Tangling them is the defect, not an incidental of it.
  */
@@ -37,10 +37,16 @@ public interface Route {
     int32 priority();
 
     /**
-     * The static half: does this row serve `q`'s shape. Pure over `q`'s
-     * declared facts — there is no receiver in a query to read.
+     * The static half: null when this row serves `q`'s shape, otherwise the
+     * row's own name for the constraint that refused. Pure over `q`'s declared
+     * facts — there is no receiver in a query to read.
+     *
+     * A gate NAME rather than a bare false, because a row usually has several:
+     * the zero-sync moe row tests gating, hidden alignment and expert width,
+     * and each has its own sentence in the record this replaces. String
+     * literals are static, so naming a gate costs no allocation.
      */
-    boolean fits(RouteQuery q);
+    String shapeRefusal(RouteQuery q);
 
     /**
      * Capabilities the active device must have, or null for none. A STORED
@@ -49,8 +55,12 @@ public interface Route {
      */
     Capability[] needs();
 
-    /** The runtime half: is this receiver's state ready for the row. */
-    boolean ready(RouteCall c);
+    /**
+     * The runtime half: null when this receiver is ready, otherwise the row's
+     * own name for the gate that refused — a slab that has not bound, a widen
+     * that was declined, a static switch that is off.
+     */
+    String readyRefusal(RouteCall c);
 
     /** Launch. One variant, one kernel: nothing to choose here. */
     void dispatch(RouteCall c);

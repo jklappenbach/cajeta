@@ -1,0 +1,62 @@
+package cajeta.xpu;
+
+import cajeta.lang.String;
+
+/**
+ * Why no row took the work: the row that came closest, the clause that stopped
+ * it, and the row's own word for the gate.
+ *
+ * The row named is the one that reached the FURTHEST clause, not the one
+ * consulted last. Registration order does not reach the selector's answer, and
+ * a diagnostic that reintroduced it would put that order back in the one place
+ * a reader trusts.
+ *
+ * The gate text is the ROW's, not the table's. A row routinely has several
+ * gates in one half — the zero-sync moe row has four static and two runtime —
+ * and a refusal that coarsened them to "shape" or "not ready" would lose
+ * exactly the fact a census is read for.
+ */
+public final class RouteRefusal {
+
+    /** The row that came closest, or null when the table had none to try. */
+    public Route row;
+
+    /** Which test refused. */
+    public RouteClause clause;
+
+    /** The regime asked for. */
+    public Regime regime;
+
+    /** The format asked for. */
+    public int32 ty;
+
+    /** The row's own name for the gate, where the clause has one. */
+    public String detail;
+
+    /** Index into the row's `needs()` of the missing capability, else -1. */
+    public int32 needIndex;
+
+    public RouteRefusal(Route row, RouteClause clause, Regime regime,
+            int32 ty, String detail, int32 needIndex) {
+        this.row #= row;
+        this.clause = clause;
+        this.regime = regime;
+        this.ty = ty;
+        this.detail #= detail;
+        this.needIndex = needIndex;
+    }
+
+    /** The one-line form a diagnostic record carries. */
+    public #String text() {
+        String head = "route ty " + this.ty + " " + this.regime.toName() + ": ";
+        if (this.row == null) {
+            return head + this.clause.toName();
+        }
+        String body = head + this.row.name() + " refused ("
+            + this.clause.toName();
+        if (this.detail == null) {
+            return body + ")";
+        }
+        return body + ": " + this.detail + ")";
+    }
+}

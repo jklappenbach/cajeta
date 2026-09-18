@@ -1,0 +1,36 @@
+package cajeta.xpu;
+
+import cajeta.lang.String;
+
+/**
+ * Which test stopped a {@link Route}. A clause is a value rather than a
+ * sentence because the failure this contract replaces was not that a route
+ * refused — it was that reading WHICH route refused, and why, took bisection.
+ * A test can tell these apart; a reader of a string cannot.
+ *
+ * The order is the order {@link RouteTable#clauseOf} applies them, and it is
+ * also how FAR a row got. A refusal names the row that reached the highest
+ * clause, never the one that happened to be consulted last.
+ *
+ * The ordinal is the stable tag — append only, do not reorder.
+ */
+public enum RouteClause {
+    Taken,          // 0 — not a refusal: this row serves the query
+    Empty,          // 1 — no rows registered at all
+    Format,         // 2 — this row serves a different format
+    Regime,         // 3 — this row serves a different call shape
+    Shape,          // 4 — the static half refused; the detail is the row's gate
+    Unsupported,    // 5 — the device lacks a capability `needs` names
+    Ready;          // 6 — the runtime half refused; the detail is the row's gate
+
+    /** The word a diagnostic record prints for this clause. */
+    public #String toName() {
+        if (this == RouteClause.Taken) { return "taken"; }
+        if (this == RouteClause.Empty) { return "no rows registered"; }
+        if (this == RouteClause.Format) { return "format"; }
+        if (this == RouteClause.Regime) { return "regime"; }
+        if (this == RouteClause.Shape) { return "shape"; }
+        if (this == RouteClause.Unsupported) { return "capability"; }
+        return "ready";
+    }
+}

@@ -1,7 +1,7 @@
 # Route table — spec
 
 Status: approved 2026-09-18, **§3 amended 2026-09-18** (Julian) — see
-§3.0. Registered in [INDEX.md](INDEX.md).
+§3.0, whose third correction was found building Unit 2. Registered in [INDEX.md](INDEX.md).
 Plan: [`agents/route-table-plan.md`](../agents/route-table-plan.md).
 Layer: `cajeta.xpu`. First registrant: cajeta-llm. Architecture note:
 [`docs/specification/xpu/CajetaXPU-Routing.md`](../docs/specification/xpu/CajetaXPU-Routing.md).
@@ -151,9 +151,23 @@ state and is a runtime refusal the audit cannot and must not check.
 The split is enforced by TYPE, not by discipline. `fits` takes a
 `RouteQuery` — regime, format, and whatever static facts the registrant
 extends it with. `ready` and `dispatch` take a `RouteCall`, which
-extends `RouteQuery` with the receiver and the operands. A row's `fits`
-cannot reach bound state because its parameter has no receiver to reach
-it through.
+carries the query, the receiver and the operands. A row's `fits` cannot
+reach bound state because its parameter has no receiver to reach it
+through.
+
+**A half answers with the GATE that refused, not with a boolean** — and
+this one was found building the refusal (§3.4.4), against
+`zeroSyncReady`, which is the predicate the row has to replace. That
+predicate has nine gates, each with its own sentence in the
+`moe-row-route` record: four are shape tests, three are per-bank format
+tests, two read a slab. Four collapse into `fits` and two into `ready`,
+so a half that answered `false` would coarsen six distinct sentences
+into two — the opposite of §1.1's complaint, delivered by the mechanism
+that was supposed to fix it. So both halves return a `String`: null
+when they admit, otherwise the row's own name for the gate. Naming
+costs nothing — a cajeta string literal is a static view-mode instance,
+not an allocation — and there is one statement of each gate rather than
+a predicate and a matching list of reasons that can drift apart.
 
 ### 3.1 A route is a row
 
@@ -162,9 +176,9 @@ it through.
 | `name` | what the diag prints when it refuses or takes it |
 | `regime` | decode-row (M = 1), prefill-batch (M ≥ tile), bind, fused tail |
 | `format` | the ONE format this variant serves |
-| `fits(query)` | static shape constraints (`inDim % 256`, `outDim % tile`, block alignment, a fused row's co-formats) — pure, and auditable with nothing bound |
+| `shapeRefusal(query)` | the static half: null when the shape fits, else the gate that refused (`inDim % 256`, `outDim % tile`, block alignment, a fused row's co-formats) — pure, and auditable with nothing bound |
 | `needs` | capabilities the device must have — queries, never a backend name; a stored list, so asking costs no allocation |
-| `ready(call)` | the runtime half: is this weight's slab bound, was its widen refused, is the static switch on |
+| `readyRefusal(call)` | the runtime half: null when ready, else the gate — this weight's slab did not bind, its widen was refused, the static switch is off |
 | `dispatch(call)` | the launcher. One variant, one kernel: no arms, so no bare `else` |
 | `priority` | order among rows serving the same (format, regime) |
 
@@ -179,8 +193,13 @@ Two entry points over one test, so they cannot drift.
 `fits`, `needs` — and answers with nothing bound, which is what the
 audit walks. `RouteTable.pick(call)` is that plus `ready`, and is what
 a registrant calls AT BIND to resolve a weight's row once and store it.
-Either returns the highest-priority row, or a refusal naming the last
-row consulted and the clause that refused. The `moe-row-route` and
+Either returns the highest-priority row, or nothing; the refusal is
+built by `whyNotAdmissible` / `whyNotPicked` on the path that already
+refused, so resolution itself allocates nothing. A refusal names the
+row that got FURTHEST through the clauses — format, regime, shape,
+capability, readiness — and never the row consulted last, because
+registration order does not reach the selector's answer and must not
+reach the diagnostic's either. The `moe-row-route` and
 `moe-batch-route` records read the same object. No caller tests a
 format itself.
 
