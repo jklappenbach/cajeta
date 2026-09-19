@@ -202,3 +202,27 @@ TEST(XpuAutotune, reportsAndDropsAnUnderperformingHint) {
     EXPECT_NE(out.find("better=72"), std::string::npos) << out;
     std::filesystem::remove_all(dir);
 }
+
+// The in-process memo must not answer ahead of the build check.
+//
+// Keyed by name alone it returned a value measured against kernels that no
+// longer exist, which is precisely what `recallFor` exists to prevent. The
+// coverage above could not see it: each arm runs in its OWN process, so the
+// memo is always empty by the time the differing build is asked. A sweep that
+// remembers and then resolves in one process is the real shape, and it was
+// the shape with no test.
+TEST(XpuAutotune, theMemoDoesNotAnswerAheadOfTheBuildCheck) {
+    std::string dir = tuneDir();
+    testing::internal::CaptureStderr();
+    int rc = runWith(
+        "        Autotune.rememberFor(dir, \"w\", 60, \"build-A\");\n"
+        "        Optional<int32> same = Autotune.recallFor(dir, \"w\", \"build-A\");\n"
+        "        if (!same.isPresent() || same.get() != 60) { return 1; }\n"
+        "        Optional<int32> other = Autotune.recallFor(dir, \"w\", \"build-B\");\n"
+        "        if (other.isPresent()) { return 2; }\n"
+        "        return 0;\n", dir);
+    std::string out = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(rc, 0) << out;
+    EXPECT_NE(out.find("XPU-T02"), std::string::npos)
+        << "a differing build must be reported, not silently trusted: " << out;
+}

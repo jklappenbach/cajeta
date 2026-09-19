@@ -61,6 +61,11 @@ public final class Autotune {
     // use runs once and is reused for the life of the process.
     static String[] memName;
     static int32[] memVal;
+    // The build the memoized value was VERIFIED against, empty when it was
+    // never checked. Without this the memo answers `recallFor` before the
+    // build id is compared, which is the one failure that function exists to
+    // prevent.
+    static String[] memBuild;
     static int32 memN = 0;
     static int32 memCap = 0;
     // Names already claimed by claimOnce, so a once-per-execution job cannot
@@ -80,22 +85,36 @@ public final class Autotune {
         return 0 - 1;
     }
 
+    /** Record the build a memoized value was verified against. */
+    static void markMem(String name, String buildId) {
+        int32 at = Autotune.findMem(name);
+        if (at >= 0) { Autotune.memBuild[at] #= buildId; }
+        return;
+    }
+
     static void putMem(String name, int32 value) {
         int32 at = Autotune.findMem(name);
-        if (at >= 0) { Autotune.memVal[at] = value; return; }
+        if (at >= 0) {
+            Autotune.memVal[at] = value;
+            Autotune.memBuild[at] #= "";
+            return;
+        }
         if (Autotune.memN == Autotune.memCap) {
             int32 cap = Autotune.memCap * 2;
             if (cap < 8) { cap = 8; }
             String[] nn #= heap String[cap];
             int32[] nv #= heap int32[cap];
+            String[] nb = heap String[cap];
             int32 i = 0;
             while (i < Autotune.memN) {
                 nn[i] #= Autotune.memName[i];
                 nv[i] = Autotune.memVal[i];
+                nb[i] #= Autotune.memBuild[i];
                 i = i + 1;
             }
             Autotune.memName #= nn;
             Autotune.memVal #= nv;
+            Autotune.memBuild #= nb;
             Autotune.memCap = cap;
         }
         // A COPY of the name: the caller's String may be a temporary, and a
@@ -103,6 +122,7 @@ public final class Autotune {
         String c #= "" + name;
         Autotune.memName[Autotune.memN] #= c;
         Autotune.memVal[Autotune.memN] = value;
+        Autotune.memBuild[Autotune.memN] #= "";
         Autotune.memN = Autotune.memN + 1;
         return;
     }
@@ -271,6 +291,7 @@ public final class Autotune {
     public static void rememberFor(String dir, String name, int32 value,
                                    String buildId) {
         Autotune.remember(dir, name, value);
+        Autotune.markMem(name, buildId);
         if (dir.byteLength() == 0) { return; }
         String key #= Autotune.deviceKey();
         String sp #= dir + "/" + key + "/" + name + ".for";
@@ -291,8 +312,15 @@ public final class Autotune {
      */
     public static Optional<int32> recallFor(String dir, String name,
                                             String buildId) {
+        // The memo answers only when it was verified against THIS build.
+        // Keyed by name alone it would return a value measured against
+        // kernels that no longer exist, which is the failure this function
+        // exists to prevent.
         int32 m = Autotune.findMem(name);
-        if (m >= 0) { return stack Optional<int32>(true, Autotune.memVal[m]); }
+        if (m >= 0 && Autotune.memBuild[m].byteLength() > 0
+                && Autotune.memBuild[m].equals(buildId)) {
+            return stack Optional<int32>(true, Autotune.memVal[m]);
+        }
         Optional<int32> v = Autotune.recall(dir, name);
         if (!v.isPresent()) { return v; }
         if (dir.byteLength() == 0) { return v; }
@@ -310,6 +338,7 @@ public final class Autotune {
             Autotune.invalidate(dir, name);
             return stack Optional<int32>(false, 0);
         }
+        Autotune.markMem(name, buildId);
         return v;
     }
 
