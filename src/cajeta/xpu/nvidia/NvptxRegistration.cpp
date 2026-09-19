@@ -126,6 +126,7 @@ namespace nvidia {
                 manifest.vgpr = st.registers;
                 manifest.ldsStaticBytes = st.smemBytes;
                 manifest.spillBytes = st.stackBytes;
+                manifest.spillStoreBytes = st.spillStoreBytes;
             }
             {
                 std::optional<unsigned> pinned;

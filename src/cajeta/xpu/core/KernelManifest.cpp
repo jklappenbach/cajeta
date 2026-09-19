@@ -89,6 +89,7 @@ namespace xpu {
         putU(footprint, "vgpr", m.vgpr);
         putU(footprint, "sgpr", m.sgpr);
         putU(footprint, "spillBytes", m.spillBytes);
+        putU(footprint, "spillStoreBytes", m.spillStoreBytes);
         putU(footprint, "ldsStaticBytes", m.ldsStaticBytes);
         putS(footprint, "ldsDynamicParam", m.ldsDynamicParam);
         putU(footprint, "threadsPerGroup", m.threadsPerGroup);
@@ -158,6 +159,7 @@ namespace xpu {
             m.vgpr = getU(*fp, "vgpr");
             m.sgpr = getU(*fp, "sgpr");
             m.spillBytes = getU(*fp, "spillBytes");
+            m.spillStoreBytes = getU(*fp, "spillStoreBytes");
             m.ldsStaticBytes = getU(*fp, "ldsStaticBytes");
             m.ldsDynamicParam = getS(*fp, "ldsDynamicParam");
             m.threadsPerGroup = getU(*fp, "threadsPerGroup");
@@ -256,6 +258,29 @@ namespace xpu {
                          m.kernel.c_str(), m.target.c_str(), *m.spillBytes,
                          m.vgpr.value_or(0),
                          (unsigned long long) softwareCoopTileBytes);
+            return true;
+        }
+        // A stack frame with ZERO spill stores is not register pressure: the
+        // backend had no instruction for something and legalized it through
+        // memory. Measured 2026-09-19, this was the cause for 31 of the 31
+        // kernels then spilling in cajeta-llm — `q4kMatVecKernelIL` paid 64
+        // bytes at vgpr=48, with 207 registers of headroom, and the advice
+        // below sent a day after live registers that were never the problem.
+        // ptxas reports the two numbers separately and we already parse both,
+        // so say which one this is. ABSENT is not zero: a backend that reports
+        // only one number gets the general wording, not a diagnosis.
+        if (m.spillStoreBytes && *m.spillStoreBytes == 0) {
+            std::fprintf(stderr,
+                         "cajeta: warning: [xpu-kernel-spill] %s on %s: %u bytes "
+                         "of scratch per work-item (vgpr=%u), and ptxas reports "
+                         "ZERO spill stores — so this is NOT register pressure: "
+                         "some construct was legalized through memory by the "
+                         "backend. Cutting live registers or pinning a smaller "
+                         "block will not move it. Look for a dynamically indexed "
+                         "vector or a table the backend has no register form "
+                         "for, and fix it in the lowering\n",
+                         m.kernel.c_str(), m.target.c_str(), *m.spillBytes,
+                         m.vgpr.value_or(0));
             return true;
         }
         std::fprintf(stderr,

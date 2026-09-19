@@ -36,6 +36,21 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
+#include <cstdio>
+#ifndef _WIN32
+#  include <unistd.h>
+#else
+#  include <io.h>
+#  define dup _dup
+#  define dup2 _dup2
+#  define close _close
+#  define fileno _fileno
+#  define getpid _getpid
+#  ifndef STDERR_FILENO
+#    define STDERR_FILENO 2
+#  endif
+#endif
 #include <fstream>
 #include <random>
 #include <regex>
@@ -868,6 +883,7 @@ TEST(XpuKernelManifest, schemaAndRecordAgreeFieldForField) {
     m.vgpr = 40;
     m.sgpr = 24;
     m.spillBytes = 0;
+    m.spillStoreBytes = 0;
     m.ldsStaticBytes = 4096;
     m.ldsDynamicParam = "sharedBytes";
     m.threadsPerGroup = 256;
@@ -893,6 +909,7 @@ TEST(XpuKernelManifest, schemaAndRecordAgreeFieldForField) {
     EXPECT_EQ(back.vgpr, m.vgpr);
     EXPECT_EQ(back.sgpr, m.sgpr);
     EXPECT_EQ(back.spillBytes, m.spillBytes);
+    EXPECT_EQ(back.spillStoreBytes, m.spillStoreBytes);
     EXPECT_EQ(back.ldsStaticBytes, m.ldsStaticBytes);
     EXPECT_EQ(back.ldsDynamicParam, m.ldsDynamicParam);
     EXPECT_EQ(back.threadsPerGroup, m.threadsPerGroup);
@@ -958,4 +975,138 @@ TEST(XpuKernelManifest, ptxasVerboseParserReadsRegistersSmemAndSpill) {
     EXPECT_EQ(stats[1].registers, 12u);
     EXPECT_EQ(stats[1].smemBytes, 0u);
     EXPECT_EQ(stats[1].spillStoreBytes, 0u);
+}
+
+// ---------------------------------------------------------------------------
+// 1.5.5.5 — the gate must name WHICH kind of scratch it saw.
+//
+// `spillBytes` is ptxas's "bytes stack frame", and for every kernel that
+// carried one in cajeta-llm on 2026-09-19 the gate's advice ("cut live
+// registers or pin a smaller block") was wrong. Three causes wear that one
+// number and two of them have nothing to do with register pressure:
+//
+//   stack frame > 0, spill stores == 0   a construct the backend legalized
+//                                        through memory. Remedy: a lowering
+//                                        override. (lut4's table, a dynamic
+//                                        lane read — both fixed in 9cce4162.)
+//   stack frame > 0, spill stores > 0    real register pressure. The only
+//                                        case the old advice fits.
+//
+// ptxas reports the two separately and the compiler ALREADY parses both
+// (`NvptxBackend.cpp` fills PtxasKernelStats::spillStoreBytes); the manifest
+// simply dropped one. These pin that it is carried and that the message
+// branches on it.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Capture stderr across a call, so the gate's actual words can be asserted
+// rather than just its return value.
+std::string captureStderr(const std::function<void()>& body) {
+    ::fflush(stderr);
+    const int saved = ::dup(STDERR_FILENO);
+    std::string path = (std::filesystem::temp_directory_path()
+        / ("cajeta_gate_" + std::to_string(::getpid()) + ".txt")).string();
+    FILE* tmp = ::fopen(path.c_str(), "w+");
+    if (tmp == nullptr) { body(); return {}; }
+    ::dup2(::fileno(tmp), STDERR_FILENO);
+    body();
+    ::fflush(stderr);
+    ::dup2(saved, STDERR_FILENO);
+    ::close(saved);
+    std::rewind(tmp);
+    std::string out;
+    char buf[4096];
+    while (std::size_t n = ::fread(buf, 1, sizeof(buf), tmp)) out.append(buf, n);
+    ::fclose(tmp);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    return out;
+}
+
+KernelManifest spillingManifest(unsigned stackFrame,
+                                std::optional<unsigned> spillStores) {
+    KernelManifest m;
+    m.kernel = "dev.example.K.k";
+    m.target = "nvptx/sm_89";
+    m.vgpr = 48;
+    m.spillBytes = stackFrame;
+    m.spillStoreBytes = spillStores;
+    return m;
+}
+
+} // namespace
+
+// FIRES: a frame with no spill stores is a lowering gap, and the gate must
+// say so instead of sending the reader after live registers. 48 registers
+// against sm_89's 255 is the case that cost a day.
+TEST(XpuKernelManifest, aFrameWithNoSpillStoresIsNotCalledRegisterPressure) {
+    const KernelManifest m = spillingManifest(64, 0);
+    std::string err;
+    bool warned = false;
+    err = captureStderr([&] { warned = cajeta::xpu::warnIfSpilling(m); });
+    EXPECT_TRUE(warned);
+    EXPECT_NE(err.find("legalized"), std::string::npos)
+        << "the gate must name the cause it can distinguish:\n" << err;
+    EXPECT_EQ(err.find("cut live registers"), std::string::npos)
+        << "register-pressure advice on a kernel with zero spill stores:\n"
+        << err;
+}
+
+// DOES NOT FIRE: real register pressure must keep the old advice, which is
+// correct for it. Without this the change could simply delete the message.
+TEST(XpuKernelManifest, realRegisterPressureStillSaysCutLiveRegisters) {
+    KernelManifest m = spillingManifest(232, 364);
+    m.vgpr = 255;
+    std::string err;
+    bool warned = false;
+    err = captureStderr([&] { warned = cajeta::xpu::warnIfSpilling(m); });
+    EXPECT_TRUE(warned);
+    EXPECT_NE(err.find("cut live registers"), std::string::npos)
+        << "a genuine register spill must still get the register advice:\n"
+        << err;
+    EXPECT_EQ(err.find("legalized"), std::string::npos) << err;
+}
+
+// A backend that reports no spill-store counter at all (amdgpu gives one
+// private-segment number) must keep the old wording rather than claim a
+// diagnosis it cannot make. Absent is not zero.
+TEST(XpuKernelManifest, anAbsentSpillStoreCountMakesNoClaim) {
+    KernelManifest m = spillingManifest(64, std::nullopt);
+    m.target = "amdgpu/gfx1151";
+    std::string err;
+    err = captureStderr([&] { cajeta::xpu::warnIfSpilling(m); });
+    EXPECT_EQ(err.find("legalized"), std::string::npos)
+        << "absent must not be read as zero:\n" << err;
+    EXPECT_NE(err.find("cut live registers"), std::string::npos) << err;
+}
+
+// The coop-tile special case already outranks both, and must keep doing so.
+TEST(XpuKernelManifest, theCoopTileCauseStillOutranksTheFrameSplit) {
+    const KernelManifest m = spillingManifest(1536, 0);
+    std::string err;
+    err = captureStderr([&] { cajeta::xpu::warnIfSpilling(m, 1536); });
+    EXPECT_NE(err.find("PORTABLE SOFTWARE CooperativeMatrix"),
+              std::string::npos) << err;
+    EXPECT_EQ(err.find("legalized"), std::string::npos) << err;
+}
+
+// The new field round-trips, so a manifest read back from disk can still be
+// classified.
+TEST(XpuKernelManifest, spillStoreBytesRoundTrips) {
+    KernelManifest m;
+    m.kernel = "dev.example.K.k";
+    m.target = "nvptx/sm_89";
+    m.codeHash = "sha256:" + std::string(64, 'a');
+    m.compilerVersion = "0.0.0-test";
+    m.vgpr = 255;
+    m.spillBytes = 232;
+    m.spillStoreBytes = 364;
+
+    const std::string json = cajeta::xpu::toJson(m);
+    EXPECT_TRUE(validateAgainstSchema(json).empty()) << json;
+    KernelManifest back;
+    std::string err;
+    ASSERT_TRUE(cajeta::xpu::fromJson(json, back, &err)) << err;
+    EXPECT_EQ(back.spillStoreBytes, m.spillStoreBytes);
 }
