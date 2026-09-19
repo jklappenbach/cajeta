@@ -271,6 +271,128 @@ public:
         return readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_laneid);
     }
 
+    // `v[i]` with a runtime `i`: a select chain, not the backend's stack frame.
+    //
+    // NVPTX legalizes a dynamic extractelement by writing the whole vector to
+    // the local frame and loading one lane back. On a GPU that is scratch, and
+    // the spill gate reports it as untuned register pressure — which it is not:
+    // `q4kMatVecKernelIL` paid 64 bytes for it at vgpr=48, with 207 registers
+    // of headroom. Worse, the vector is usually rebuilt inside the loop that
+    // indexes it, so the stores re-execute every iteration.
+    //
+    // The lanes are already live SSA values, so choosing among them costs N-1
+    // `selp` and no memory. Two further properties worth stating: an
+    // out-of-range index selects `i mod N` instead of yielding poison, which is
+    // strictly safer than the extractelement this replaces; and the chain is
+    // uniform across the warp whether or not `i` is, where the frame round trip
+    // is not.
+    //
+    // Capped at 16 lanes. Every depot measured in the llm library was 16, 32 or
+    // 64 bytes — 4, 8 or 16 lanes — and past that the chain stops being
+    // obviously cheaper than the round trip, so a wider vector keeps the
+    // default rather than being guessed at.
+    llvm::Value* extractLaneDynamic(llvm::IRBuilderBase& b, llvm::Module& m,
+                                    llvm::Value* vec,
+                                    llvm::Value* idx) override {
+        auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(vec->getType());
+        const unsigned n = vt ? vt->getNumElements() : 0;
+        if (vt == nullptr || llvm::isa<llvm::ConstantInt>(idx)
+                || n < 2 || n > 16 || (n & (n - 1)) != 0
+                || !vt->getElementType()->isSingleValueType())
+            return LoweringTarget::extractLaneDynamic(b, m, vec, idx);
+
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Value* k = b.CreateZExtOrTrunc(idx, i32, "lane.i");
+        llvm::Value* zero = llvm::ConstantInt::get(i32, 0);
+        std::vector<llvm::Value*> cur;
+        cur.reserve(n);
+        for (unsigned i = 0; i < n; ++i)
+            cur.push_back(b.CreateExtractElement(vec, i, "lane.v"));
+        for (unsigned bit = 0; (1u << bit) < n; ++bit) {
+            llvm::Value* set = b.CreateICmpNE(
+                b.CreateAnd(k, llvm::ConstantInt::get(i32, 1u << bit),
+                            "lane.m"),
+                zero, "lane.b");
+            std::vector<llvm::Value*> next;
+            next.reserve(cur.size() / 2);
+            for (std::size_t j = 0; j + 1 < cur.size(); j += 2)
+                next.push_back(
+                    b.CreateSelect(set, cur[j + 1], cur[j], "lane.sel"));
+            cur.swap(next);
+        }
+        return cur.front();
+    }
+
+    // 16-entry int8 LUT by 4-bit index via prmt.b32, the NVPTX byte permute.
+    //
+    // Without this the shared default allocas the table and gathers it a lane at
+    // a time. An alloca is `.local` here, so each lut4 cost 16 BYTES OF SCRATCH
+    // per work-item and 16 `ld.local.b8` — measured on sm_89 as a clean
+    // dose-response, 0 / 16 / 32 bytes for 0 / 1 / 2 calls, and it is the whole
+    // of the 32 bytes the spill gate reports for the Q4_K/MXFP4/IQ4_NL mat-vecs
+    // (they call lut4 twice, for the low and high nibble).
+    //
+    // prmt is NOT v_perm_b32 with a different name, and transliterating the
+    // AMDGPU override would be wrong in two ways:
+    //
+    //   * the selector is four NIBBLES (16 bits), not four BYTES (32 bits), so
+    //     the four byte indices must be compacted first;
+    //   * a selector nibble whose bit 3 is set means "replicate the sign bit of
+    //     the selected byte", not "byte 8". Every selector built below is masked
+    //     so bit 3 is clear, which keeps the permute in plain byte-select mode.
+    //
+    // The compaction is pure ALU: with the index bytes at bits 0/8/16/24,
+    // `x = m | (m >> 4)` lands b0,b1 in bits 0-7 and b2,b3 in bits 16-23, and
+    // `x | (x >> 8)` then lands all four nibbles in the low 16 bits. Doing it on
+    // the full 4-bit index (rather than per half) means the same compaction
+    // serves both the table selector and the half-select.
+    llvm::Value* byteLut16(llvm::IRBuilderBase& b, llvm::Module& m,
+                           llvm::Value* indices, llvm::Value* table) override {
+        auto* ivt = llvm::dyn_cast<llvm::FixedVectorType>(indices->getType());
+        if (ivt == nullptr || (ivt->getNumElements() % 4) != 0)
+            return LoweringTarget::byteLut16(b, m, indices, table);
+        const bool loHalfOnly = masksOffHighHalf(indices);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        const unsigned groups = ivt->getNumElements() / 4;
+        auto* t4 = llvm::FixedVectorType::get(i32, 4);
+        llvm::Value* tw = b.CreateBitCast(table, t4, "lut.tw");
+        llvm::Value* t0 = b.CreateExtractElement(tw, (uint64_t) 0, "lut.t0");
+        llvm::Value* t1 = b.CreateExtractElement(tw, (uint64_t) 1, "lut.t1");
+        llvm::Value* t2 = b.CreateExtractElement(tw, (uint64_t) 2, "lut.t2");
+        llvm::Value* t3 = b.CreateExtractElement(tw, (uint64_t) 3, "lut.t3");
+        auto* iw = llvm::FixedVectorType::get(i32, groups);
+        llvm::Value* idxW = b.CreateBitCast(indices, iw, "lut.iw");
+        llvm::Function* prmt = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::nvvm_prmt);
+        llvm::Value* nibMask  = llvm::ConstantInt::get(i32, 0x0F0F0F0Fu);
+        llvm::Value* pairMask = llvm::ConstantInt::get(i32, 0x00FF00FFu);
+        llvm::Value* selMask  = llvm::ConstantInt::get(i32, 0x00007777u);
+        llvm::Value* hiMask   = llvm::ConstantInt::get(i32, 0x00008888u);
+        llvm::Value* base     = llvm::ConstantInt::get(i32, 0x00003210u);
+        llvm::Value* out = llvm::UndefValue::get(iw);
+        for (unsigned g = 0; g < groups; ++g) {
+            llvm::Value* idx = b.CreateExtractElement(idxW, g, "lut.g");
+            // four byte indices -> four nibbles, in the low 16 bits
+            llvm::Value* n = b.CreateAnd(idx, nibMask, "lut.n");
+            n = b.CreateAnd(b.CreateOr(n, b.CreateLShr(n, 4), "lut.p"),
+                            pairMask, "lut.pm");
+            n = b.CreateOr(n, b.CreateLShr(n, 8), "lut.nib");
+            llvm::Value* sel = b.CreateAnd(n, selMask, "lut.sel");
+            llvm::Value* lo = b.CreateCall(prmt, {t0, t1, sel}, "lut.lo");
+            if (loHalfOnly) {
+                out = b.CreateInsertElement(out, lo, g, "lut.out");
+                continue;
+            }
+            llvm::Value* hi = b.CreateCall(prmt, {t2, t3, sel}, "lut.hi");
+            // nibble i picks byte i of `lo` or byte i+4 of `hi`, off index bit 3
+            llvm::Value* mb = b.CreateOr(base,
+                b.CreateLShr(b.CreateAnd(n, hiMask, "lut.h"), 1), "lut.mb");
+            llvm::Value* res = b.CreateCall(prmt, {lo, hi, mb}, "lut.res");
+            out = b.CreateInsertElement(out, res, g, "lut.out");
+        }
+        return b.CreateBitCast(out, ivt, "lut.bytes");
+    }
+
     // ---- Cooperative matrix: NVIDIA tensor cores (wmma) ----------------------
     // m16n16k16 D[f32] = A[f16/bf16]·B[f16/bf16] + C[f32], row-major, warp-collective.
     // The fragment↔lane layout is implementation-defined: load/store MUST use NVVM wmma.
