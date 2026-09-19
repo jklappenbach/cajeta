@@ -28,6 +28,7 @@
 #include <gtest/gtest.h>
 
 #include "../jit/JitTestHelper.h"
+#include "KernelLoweringProbe.h"
 #include "cajeta/xpu/XpuTarget.h"
 #include "cajeta/xpu/nvidia/NvptxBackend.h"
 #include "cajeta/xpu/nvidia/NvptxKernelLowering.h"
@@ -49,6 +50,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+using namespace cajeta::xpu::probe;
 
 namespace {
 
@@ -108,53 +111,14 @@ const char* kColLoadSource =
     "    public static int32 run() { return 1; }\n"
     "}\n";
 
-cajeta::CajetaModulePtr compileForInspection(cajeta::Compiler& compiler,
-                                             const std::string& source) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = std::filesystem::temp_directory_path()
-              / ("cajeta_nvptx_colmajor_" + std::to_string(rng()));
-    std::filesystem::create_directories(base / "test");
-    std::ofstream(base / "test" / "M.cajeta") << source;
-    auto archive = std::filesystem::temp_directory_path()
-                 / ("cajeta_nvptx_colmajor_arch_" + std::to_string(rng()));
-    std::filesystem::create_directories(archive);
-    auto full = base / "test" / "M.cajeta";
-    auto m = compiler.createModule(full.string(), base.string(),
-                                   archive.string());
-    compiler.compile(m);
-    return m;
-}
-
-cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
-                             const std::string& name) {
-    for (auto& [k, m] : klass->getMethods())
-        if (m && m->getName() == name) return m;
-    return nullptr;
-}
-
-// Lower `kernelName` for sm_89 and return its PTX. Empty string if the
-// kernel refused to lower, with the reason in `why`.
+// Lower `kernelName` for sm_89 and return its PTX, empty with the reason in
+// `why`. Shared probe (KernelLoweringProbe.h) behind this file's shape.
 std::string ptxFor(const std::string& source, const std::string& kernelName,
                    std::string* why) {
-    cajeta::Compiler compiler;
-    auto module = compileForInspection(compiler, source);
-    auto klass = module->getStructures()["test.M"];
-    if (!klass) { *why = "test.M did not compile"; return {}; }
-    auto k = findMethod(klass, kernelName);
-    if (!k) { *why = "kernel " + kernelName + " not found"; return {}; }
-
-    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
-    if (!tm) { *why = "no sm_89 target machine"; return {}; }
-    llvm::LLVMContext ctx;
-    llvm::Module dev("nvptx_colmajor_dev", ctx);
-    cajeta::xpu::nvidia::configureDeviceModule(dev, *tm);
-    try {
-        cajeta::xpu::nvidia::lowerKernel(k, dev);
-    } catch (const std::exception& e) {
-        *why = e.what();
-        return {};
-    }
-    return cajeta::xpu::nvidia::emitPtx(dev, *tm);
+    const Lowered l = lowerForNvptx(source, kernelName, "test.M", "sm_89",
+                                    "colmajor");
+    if (!l.ok) { *why = l.why; return {}; }
+    return l.ptx;
 }
 
 } // namespace
@@ -254,24 +218,8 @@ const char* kBothLayoutsSource =
 bool runTile(const std::string& kernelName, const std::vector<_Float16>& a,
              const std::vector<_Float16>& b, std::vector<float>* out,
              std::string* why) {
-    cajeta::Compiler compiler;
-    auto module = compileForInspection(compiler, kBothLayoutsSource);
-    auto klass = module->getStructures()["test.M"];
-    if (!klass) { *why = "test.M did not compile"; return false; }
-    auto k = findMethod(klass, kernelName);
-    if (!k) { *why = "no kernel " + kernelName; return false; }
-
-    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
-    if (!tm) { *why = "no sm_89 target machine"; return false; }
-    llvm::LLVMContext ctx;
-    llvm::Module dev("nvptx_colmajor_numerics", ctx);
-    cajeta::xpu::nvidia::configureDeviceModule(dev, *tm);
-    try {
-        cajeta::xpu::nvidia::lowerKernel(k, dev);
-    } catch (const std::exception& e) { *why = e.what(); return false; }
-
-    std::string ptx = cajeta::xpu::nvidia::emitPtx(dev, *tm);
-    if (ptx.empty()) { *why = "no ptx"; return false; }
+    const std::string ptx = ptxFor(kBothLayoutsSource, kernelName, why);
+    if (ptx.empty()) return false;
     std::vector<uint8_t> cubin = cajeta::xpu::nvidia::assembleCubin(ptx, "sm_89");
     if (cubin.empty()) { *why = "ptxas rejected the PTX"; return false; }
 

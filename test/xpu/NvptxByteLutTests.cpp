@@ -34,6 +34,7 @@
 
 #include <gtest/gtest.h>
 
+#include "KernelLoweringProbe.h"
 #include "cajeta/xpu/nvidia/NvptxBackend.h"
 #include "cajeta/xpu/nvidia/NvptxKernelLowering.h"
 #include "cajeta/xpu/nvidia/CudaDriver.h"
@@ -53,6 +54,8 @@
 #include <random>
 #include <string>
 #include <vector>
+
+using namespace cajeta::xpu::probe;
 
 namespace {
 
@@ -104,61 +107,14 @@ const char* kSource =
     "    public static int32 run() { return 1; }\n"
     "}\n";
 
-cajeta::CajetaModulePtr compileForInspection(cajeta::Compiler& compiler,
-                                             const std::string& source) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = std::filesystem::temp_directory_path()
-              / ("cajeta_nvptx_bytelut_" + std::to_string(rng()));
-    std::filesystem::create_directories(base / "test");
-    std::ofstream(base / "test" / "M.cajeta") << source;
-    auto archive = std::filesystem::temp_directory_path()
-                 / ("cajeta_nvptx_bytelut_arch_" + std::to_string(rng()));
-    std::filesystem::create_directories(archive);
-    auto full = base / "test" / "M.cajeta";
-    auto m = compiler.createModule(full.string(), base.string(),
-                                   archive.string());
-    compiler.compile(m);
-    return m;
-}
-
-cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
-                             const std::string& name) {
-    for (auto& [k, m] : klass->getMethods())
-        if (m && m->getName() == name) return m;
-    return nullptr;
-}
-
-// Lower one kernel for sm_89. `ir` gets the device IR, `ptx` the assembly.
-// False with the reason in `why` if it refused to lower.
+// Shared probe (KernelLoweringProbe.h) behind this file's existing shape,
+// so the call sites below read as they did.
 bool lowerOne(const std::string& kernelName, std::string* ir,
               std::string* ptx, std::string* why) {
-    cajeta::Compiler compiler;
-    auto module = compileForInspection(compiler, kSource);
-    auto klass = module->getStructures()["test.M"];
-    if (!klass) { *why = "test.M did not compile"; return false; }
-    auto k = findMethod(klass, kernelName);
-    if (!k) { *why = "kernel " + kernelName + " not found"; return false; }
-    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
-    if (!tm) { *why = "no sm_89 target machine"; return false; }
-    llvm::LLVMContext ctx;
-    llvm::Module dev("nvptx_bytelut_dev", ctx);
-    cajeta::xpu::nvidia::configureDeviceModule(dev, *tm);
-    try {
-        cajeta::xpu::nvidia::lowerKernel(k, dev);
-    } catch (const std::exception& e) { *why = e.what(); return false; }
-    ir->clear();
-    { llvm::raw_string_ostream os(*ir); dev.print(os, nullptr); }
-    *ptx = cajeta::xpu::nvidia::emitPtx(dev, *tm);
-    if (ptx->empty()) { *why = "no ptx"; return false; }
-    return true;
-}
-
-std::size_t countOf(const std::string& hay, const std::string& needle) {
-    std::size_t n = 0;
-    for (std::size_t at = hay.find(needle); at != std::string::npos;
-         at = hay.find(needle, at + 1))
-        ++n;
-    return n;
+    const Lowered l = lowerForNvptx(kSource, kernelName, "test.M", "sm_89",
+                                    "bytelut");
+    *ir = l.ir; *ptx = l.ptx; *why = l.why;
+    return l.ok;
 }
 
 } // namespace
