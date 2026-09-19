@@ -811,7 +811,8 @@ public:
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* a, llvm::Value* bMat,
                                   llvm::Value* c, llvm::Type* matrixType,
-                                  uint32_t signFlags) override {
+                                  uint32_t signFlags, uint32_t /*aLayout*/ = 0,
+                                  uint32_t /*bLayout*/ = 0) override {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_cooperative_matrix_muladd,
             {matrixType, a->getType(), bMat->getType(), c->getType()});
@@ -840,7 +841,7 @@ public:
     }
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
                                   llvm::Value*, llvm::Value*, llvm::Type*,
-                                  uint32_t) override {
+                                  uint32_t, uint32_t = 0, uint32_t = 0) override {
         coopMatrixNoForkToolchain();
     }
     llvm::Value* coopMatrixSplat(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,

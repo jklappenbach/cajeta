@@ -408,6 +408,11 @@ private:
         // `waveW` is the width the layout was derived for (see coopDistributeW).
         bool distributed = false;
         uint32_t waveW = 0, perLane = 0;
+        // The layout this fragment was LOADED with (0 row, 1 col). NVPTX's
+        // wmma.mma encodes the A/B pair in the instruction, so the multiply
+        // has to know what the loads chose. Recorded per VARIABLE, which is
+        // the right granularity: a fragment has one layout.
+        uint32_t layout = 0;
     };
     std::map<std::string, CoopMatrixSlot> coopMatrixSlots;
     // Tile<T,Rows,Cols>: the SPIR-V "Use" (A=0 / B=1 / accumulator=2) is hidden
@@ -4139,6 +4144,13 @@ private:
                     builder, mod, ptr, layout, stride, slot.matrixType,
                     slot.rows, slot.cols, slot.use, swz, blk);
                 builder.CreateStore(v, slot.alloca);
+                // Remember what this fragment was loaded as, so the multiply
+                // can pair the layouts. `slot` is a COPY, so record through
+                // the map. A non-constant layout stays 0: the targets that
+                // care already refuse it by name at the load above.
+                if (auto* lc = llvm::dyn_cast<llvm::ConstantInt>(layout))
+                    coopMatrixSlots[recv].layout =
+                        (uint32_t) lc->getZExtValue();
             } else {
                 llvm::Value* v = builder.CreateLoad(slot.matrixType, slot.alloca,
                                                     recv + ".val");
@@ -4205,7 +4217,8 @@ private:
             if (slot.elemSigned) signFlags |= 0x4u | 0x8u;
             llvm::Value* v = target.coopMatrixMulAdd(builder, mod, aVal, bVal,
                                                      cVal, slot.matrixType,
-                                                     signFlags);
+                                                     signFlags, a.layout,
+                                                     b.layout);
             builder.CreateStore(v, slot.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
@@ -6234,7 +6247,7 @@ void LoweringTarget::coopMatrixStore(
 llvm::Value* LoweringTarget::coopMatrixMulAdd(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*a*/,
     llvm::Value* /*bMat*/, llvm::Value* /*c*/, llvm::Type* /*matrixType*/,
-    uint32_t /*signFlags*/) {
+    uint32_t /*signFlags*/, uint32_t /*aLayout*/, uint32_t /*bLayout*/) {
     throw coopMatrixUnsupported(name());
 }
 

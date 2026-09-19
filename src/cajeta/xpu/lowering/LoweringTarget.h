@@ -491,10 +491,16 @@ namespace xpu {
 
         // c.mma(a, b) → a*b+c. `signFlags` (A 0x1, B 0x2, C 0x4, Result 0x8) carries
         // the multiply's signedness as DATA — int types are signless in LLVM/SPIR-V.
+        // `aLayout`/`bLayout` are the layouts the A and B fragments were
+        // LOADED with (0 row-major, 1 col-major). NVPTX needs them because
+        // wmma.mma encodes the pair in the instruction — row.row, row.col,
+        // col.row, col.col — so a col-loaded operand fed to a row.row
+        // multiply lowers cleanly and computes the wrong product. Targets
+        // that reorient at load time can ignore both.
         virtual llvm::Value* coopMatrixMulAdd(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
             llvm::Value* bMat, llvm::Value* c, llvm::Type* matrixType,
-            uint32_t signFlags);
+            uint32_t signFlags, uint32_t aLayout = 0, uint32_t bLayout = 0);
 
         // m.splat(value) → a tile with every element = `value` (the zero/initial
         // accumulator), result type `matrixType` (→ OpCompositeConstruct).

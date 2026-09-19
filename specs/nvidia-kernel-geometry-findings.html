@@ -1,0 +1,717 @@
+<title>Kernel Geometry on Ada</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;450;600&display=swap">
+<style>
+:root{
+  --ink:#101619; --paper:#F5F8F8; --surface:#FFFFFF; --surface-2:#EDF2F2;
+  --line:#D4DDDF; --line-strong:#B6C4C7; --muted:#57696F;
+  --accent:#0F5F6D; --accent-soft:#E2EFF1;
+  --good:#2C6A4F; --good-soft:#E3F0E9;
+  --warn:#94520F; --warn-soft:#F7ECDC;
+  --crit:#8C2A21; --crit-soft:#F8E5E2;
+  --rule:2px solid var(--accent);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ink:#DDE7E9; --paper:#0B1113; --surface:#121B1E; --surface-2:#172327;
+    --line:#222F33; --line-strong:#33454A; --muted:#93A6AC;
+    --accent:#58B7C8; --accent-soft:#122C32;
+    --good:#66B994; --good-soft:#12271F;
+    --warn:#D9973F; --warn-soft:#2A1F10;
+    --crit:#DB7D72; --crit-soft:#2B1512;
+  }
+}
+:root[data-theme="dark"]{
+  --ink:#DDE7E9; --paper:#0B1113; --surface:#121B1E; --surface-2:#172327;
+  --line:#222F33; --line-strong:#33454A; --muted:#93A6AC;
+  --accent:#58B7C8; --accent-soft:#122C32;
+  --good:#66B994; --good-soft:#12271F;
+  --warn:#D9973F; --warn-soft:#2A1F10;
+  --crit:#DB7D72; --crit-soft:#2B1512;
+}
+
+*{box-sizing:border-box}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+  font-size:15px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px; margin:0 auto; padding:0 28px 96px}
+.prose{max-width:74ch}
+h1,h2,h3{font-family:"IBM Plex Sans Condensed","Helvetica Neue",Arial,sans-serif; text-wrap:balance; margin:0}
+code,.m,th.m,td.m{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace; font-variant-numeric:tabular-nums}
+
+/* ---------- masthead ---------- */
+header{border-bottom:var(--rule); padding:44px 0 20px; margin-bottom:8px}
+.eyebrow{
+  font-family:"IBM Plex Sans Condensed",sans-serif; font-weight:600;
+  text-transform:uppercase; letter-spacing:.14em; font-size:12px; color:var(--accent);
+}
+h1{font-size:clamp(30px,4.4vw,46px); font-weight:700; letter-spacing:-.015em; line-height:1.08; margin:10px 0 12px}
+.standfirst{font-size:17px; color:var(--muted); max-width:70ch; margin:0}
+
+/* readout strip */
+.readout{
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr));
+  gap:0; border:1px solid var(--line); border-radius:3px; overflow:hidden;
+  margin:26px 0 0; background:var(--surface);
+}
+.readout div{padding:11px 14px; border-right:1px solid var(--line)}
+.readout div:last-child{border-right:0}
+.readout dt{font-size:10.5px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); font-family:"IBM Plex Sans Condensed",sans-serif; font-weight:600}
+.readout dd{margin:3px 0 0; font-family:"IBM Plex Mono",monospace; font-size:13px; font-weight:500}
+
+/* ---------- sections ---------- */
+section{margin-top:56px; scroll-margin-top:20px}
+.sechead{display:flex; align-items:baseline; gap:14px; border-bottom:1px solid var(--line-strong); padding-bottom:9px; margin-bottom:22px}
+.secnum{font-family:"IBM Plex Mono",monospace; font-size:13px; color:var(--accent); font-weight:600; flex:none}
+h2{font-size:25px; font-weight:600; letter-spacing:-.01em}
+h3{font-size:16.5px; font-weight:600; margin:32px 0 10px; letter-spacing:.002em}
+p{margin:0 0 14px}
+.prose p:last-child{margin-bottom:0}
+
+/* ---------- tables ---------- */
+.scroll{overflow-x:auto; border:1px solid var(--line); border-radius:3px; background:var(--surface); margin:18px 0}
+table{border-collapse:collapse; width:100%; font-size:13.5px}
+caption{
+  caption-side:top; text-align:left; padding:11px 14px; background:var(--surface-2);
+  border-bottom:1px solid var(--line); font-family:"IBM Plex Sans Condensed",sans-serif;
+  font-weight:600; font-size:13px; letter-spacing:.03em; color:var(--ink);
+}
+caption span{font-family:"IBM Plex Sans",sans-serif; font-weight:400; color:var(--muted); letter-spacing:0}
+th,td{padding:7px 14px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top}
+thead th{
+  font-family:"IBM Plex Sans Condensed",sans-serif; font-weight:600; font-size:11.5px;
+  text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
+  background:var(--surface); position:sticky; top:0; border-bottom:1px solid var(--line-strong);
+}
+tbody tr:last-child td{border-bottom:0}
+td.m,th.m{font-family:"IBM Plex Mono",monospace; font-size:12.5px; white-space:nowrap}
+td.num{text-align:right; font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; white-space:nowrap}
+tbody tr:hover{background:var(--surface-2)}
+.rowlabel{font-weight:500}
+
+/* ---------- pills ---------- */
+.pill{
+  display:inline-block; padding:1px 8px; border-radius:2px; font-size:11px;
+  font-family:"IBM Plex Sans Condensed",sans-serif; font-weight:600;
+  text-transform:uppercase; letter-spacing:.06em; white-space:nowrap;
+}
+.p-good{background:var(--good-soft); color:var(--good); border:1px solid var(--good)}
+.p-warn{background:var(--warn-soft); color:var(--warn); border:1px solid var(--warn)}
+.p-crit{background:var(--crit-soft); color:var(--crit); border:1px solid var(--crit)}
+.p-flat{background:var(--surface-2); color:var(--muted); border:1px solid var(--line-strong)}
+
+/* ---------- verdict cards ---------- */
+.verdicts{display:grid; grid-template-columns:repeat(auto-fit,minmax(268px,1fr)); gap:16px; margin:22px 0 0}
+.verdict{border:1px solid var(--line); border-top:3px solid var(--line-strong); background:var(--surface); padding:16px 17px 17px}
+.verdict.good{border-top-color:var(--good)}
+.verdict.warn{border-top-color:var(--warn)}
+.verdict.crit{border-top-color:var(--crit)}
+.verdict h3{margin:9px 0 7px; font-size:15.5px}
+.verdict p{font-size:13.5px; color:var(--muted); margin:0}
+.verdict .fig{font-family:"IBM Plex Mono",monospace; font-size:21px; font-weight:600; color:var(--ink); display:block; margin-top:9px}
+
+/* ---------- occupancy bars ---------- */
+.bar{display:flex; align-items:center; gap:9px; min-width:190px}
+.track{flex:1; height:9px; background:var(--surface-2); border:1px solid var(--line); border-radius:1px; overflow:hidden; min-width:90px}
+.fill{height:100%; display:block}
+.f-good{background:var(--good)} .f-warn{background:var(--warn)} .f-crit{background:var(--crit)}
+.barnum{font-family:"IBM Plex Mono",monospace; font-size:12px; width:42px; text-align:right; flex:none}
+
+/* ---------- callouts ---------- */
+.note{
+  border-left:3px solid var(--accent); background:var(--accent-soft);
+  padding:13px 17px; margin:20px 0; font-size:14px;
+}
+.note strong{font-weight:600}
+.note.crit{border-left-color:var(--crit); background:var(--crit-soft)}
+.note.warn{border-left-color:var(--warn); background:var(--warn-soft)}
+.note p{margin:0 0 8px} .note p:last-child{margin:0}
+
+pre{
+  background:var(--surface); border:1px solid var(--line); border-left:3px solid var(--line-strong);
+  padding:12px 15px; overflow-x:auto; font-family:"IBM Plex Mono",monospace;
+  font-size:12.5px; line-height:1.55; margin:16px 0;
+}
+.src{font-size:12px; color:var(--muted); margin-top:7px; font-style:italic}
+ul{margin:0 0 14px; padding-left:20px} li{margin-bottom:6px}
+a{color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">cajeta · xpu · device audit</div>
+  <h1>Kernel Geometry on Ada</h1>
+  <p class="standfirst">Every launch parameter cajeta configures, what llama.cpp configures for the same work, and what the two devices actually report — measured on an RTX 4090 with gfx1151 as the reference the current values were fitted to.</p>
+  <dl class="readout">
+    <div><dt>Host</dt><dd>Phoenix · WSL2</dd></div>
+    <div><dt>Device</dt><dd>RTX 4090 sm_89</dd></div>
+    <div><dt>Driver / CUDA</dt><dd>610.62 · 13.3</dd></div>
+    <div><dt>cajeta</dt><dd>main 44a3daa3</dd></div>
+    <div><dt>cajeta-llm</dt><dd>main 20d8d86</dd></div>
+    <div><dt>llama.cpp</dt><dd>67a17c1</dd></div>
+    <div><dt>Date</dt><dd>2026-09-18</dd></div>
+  </dl>
+</header>
+
+<section id="summary">
+  <div class="sechead"><span class="secnum">00</span><h2>What transfers, and what does not</h2></div>
+  <div class="prose">
+    <p>The kernels are correct on NVIDIA. Every numerical check run today passed, including the wave32 cooperative paths. What does not transfer is the <em>geometry</em>: the block sizes, row-per-wave factors and LDS tile extents were fitted by hand on one gfx1151 part, and three of them are wrong here in ways that are derivable from numbers the driver already reports.</p>
+  </div>
+  <div class="verdicts">
+    <div class="verdict good">
+      <span class="pill p-good">Transfers</span>
+      <h3>Arithmetic and correctness</h3>
+      <p>Wave width is 32 on both parts, so the 44 kernels that hardcode <code>globalIdX() / 32</code> are accidentally correct here. MXFP4 scalar, fast3, coop and coopQ8 all verify against the reference, and 88 device tests executed on the card without a failure.</p>
+      <span class="fig">0 of 142 failed</span>
+    </div>
+    <div class="verdict warn">
+      <span class="pill p-warn">Degrades</span>
+      <h3>Block and grid sizing</h3>
+      <p>A 32-thread block caps Ada at half occupancy through a resident-block limit that does not bind on gfx1151. The grid, sized for a 20-WGP part, leaves a 128-SM part two thirds empty.</p>
+      <span class="fig">7.2× swing</span>
+    </div>
+    <div class="verdict crit">
+      <span class="pill p-crit">Does not run</span>
+      <h3>Most coop variants</h3>
+      <p>Five of six Q4_K coop variants — X1, X3, N256, N256G and the router that picks them — fail at launch with <em>no registered kernel</em>, while <code>Device.kernelAvailable()</code> reports every one of them present. See §9.</p>
+      <span class="fig">5 of 6 absent</span>
+    </div>
+  </div>
+  <div class="note">
+    <p><strong>The single controlled measurement.</strong> The same Q4_K wave mat-vec kernel, moving the same 31.5 MB, reaches <strong>348.8 GB/s</strong> at 14336 output rows and <strong>48.4 GB/s</strong> at 4096 output rows. Nothing differs but the row count, and therefore the number of workgroups the launcher creates. On gfx1151 both row counts fill the machine; on Ada only the larger one does.</p>
+  </div>
+</section>
+
+<section id="devices">
+  <div class="sechead"><span class="secnum">01</span><h2>What the two devices report</h2></div>
+  <div class="prose">
+    <p>The live query is correct on NVIDIA as of today — <code>estimated:false</code>, real ordinals, measured roofline. That is new: the hardware-profile findings recorded this same command returning <code>arch:"unknown", cu:0</code> with gfx1151 defaults on 2026-09-02. The runtime half of the profile has since been fixed. The compile-time half has not, which is §3.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <caption>1.1 Device model, side by side <span>— 4090 column measured live via <code>cajeta gpu-profile</code>; gfx1151 column from the arch table row plus values derived from the recorded dispatch constant</span></caption>
+    <thead><tr><th>Setting</th><th class="m">RTX 4090 · sm_89</th><th class="m">gfx1151 · RDNA3.5</th><th>Ratio / note</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel">Wave / warp width</td><td class="m">32</td><td class="m">32</td><td>identical — the one thing that transfers free</td><td>driver</td></tr>
+      <tr><td class="rowlabel">Multiprocessors</td><td class="m">128 SM</td><td class="m">20 WGP (40 CU)</td><td><strong>6.4×</strong> more scheduling units</td><td>driver</td></tr>
+      <tr><td class="rowlabel">SIMDs per MP</td><td class="m">4</td><td class="m">4</td><td>identical</td><td>arch constant</td></tr>
+      <tr><td class="rowlabel">Waves per SIMD target</td><td class="m">1</td><td class="m">2</td><td>a <em>tuning</em> choice, set by <code>gfx</code> name prefix</td><td>hardcoded</td></tr>
+      <tr><td class="rowlabel">Max waves per MP</td><td class="m">48</td><td class="m">64</td><td>0.75×</td><td>driver / table</td></tr>
+      <tr><td class="rowlabel">Total wave slots</td><td class="m">6144</td><td class="m">1280</td><td><strong>4.8×</strong> — the grid must scale with this</td><td>derived</td></tr>
+      <tr><td class="rowlabel">Max resident blocks per MP</td><td class="m">24</td><td class="m">not reported (no clamp)</td><td><span class="pill p-warn">binds on Ada only</span></td><td>driver attr 106</td></tr>
+      <tr><td class="rowlabel">Registers per MP</td><td class="m">65536</td><td class="m">196608</td><td>0.33× — a third the register file</td><td>driver / table</td></tr>
+      <tr><td class="rowlabel">Max threads per block</td><td class="m">1024</td><td class="m">1024</td><td>identical</td><td>driver</td></tr>
+      <tr><td class="rowlabel">Shared memory per MP</td><td class="m">102400</td><td class="m">65536</td><td>1.56×</td><td>driver / table</td></tr>
+      <tr><td class="rowlabel">Shared memory per <em>block</em></td><td class="m">49152</td><td class="m">65536 (per MP)</td><td><span class="pill p-crit">the hard ceiling on Ada</span></td><td>driver attr 8</td></tr>
+      <tr><td class="rowlabel">Shared per block, opt-in</td><td class="m">101376</td><td class="m">—</td><td>needs <code>cuFuncSetAttribute</code>; nothing calls it</td><td>driver attr 97</td></tr>
+      <tr><td class="rowlabel">L2 cache</td><td class="m">75497472 (72 MB)</td><td class="m">not reported on HIP</td><td>large enough to hold a whole projection</td><td>driver attr 38</td></tr>
+      <tr><td class="rowlabel">Memory bandwidth, measured</td><td class="m">859.2 GB/s</td><td class="m">~238 GB/s</td><td><strong>3.6×</strong> — the expected speedup ceiling</td><td>roofline probe</td></tr>
+      <tr><td class="rowlabel">Memory bandwidth, theoretical</td><td class="m">1008.1 GB/s</td><td class="m">~256 GB/s</td><td>4090 achieves 85% of peak</td><td>bus width × clock</td></tr>
+      <tr><td class="rowlabel">Integrated (APU)</td><td class="m">false</td><td class="m">true</td><td>a copy is a real transfer here</td><td>driver attr 18</td></tr>
+      <tr><td class="rowlabel">Model is estimated?</td><td class="m">false</td><td class="m">false</td><td>both fully modelled at runtime</td><td>—</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note">
+    <p><strong>Two numbers drive everything below.</strong> The 4090 has <strong>4.8× the wave slots</strong> and <strong>3.6× the memory bandwidth</strong> of gfx1151. A kernel set tuned to saturate the smaller part will neither fill nor feed the larger one unless its launch geometry scales with those two figures.</p>
+  </div>
+</section>
+
+<section id="ours">
+  <div class="sechead"><span class="secnum">02</span><h2>What cajeta configures</h2></div>
+  <div class="prose">
+    <p>All 144 device kernels live in one file, <code>QuantKernel.cajeta</code> (18,912 lines). It consults the device <strong>twice</strong>, both times inside a single helper that one kernel calls.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <caption>2.1 Declaration and derivation inventory <span>— counted mechanically across <code>QuantKernel.cajeta</code></span></caption>
+    <thead><tr><th>Quantity</th><th class="m">Count</th><th>Reading</th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel"><code>@Kernel</code> methods</td><td class="num">144</td><td>the whole device surface of the engine</td></tr>
+      <tr><td class="rowlabel">Launch sites</td><td class="num">162</td><td>some kernels launched from several launchers</td></tr>
+      <tr><td class="rowlabel">Launch sites with a <em>frozen</em> block</td><td class="num">161</td><td><span class="pill p-warn">99.4%</span></td></tr>
+      <tr><td class="rowlabel">Launch sites with a <em>device-derived</em> block</td><td class="num">1</td><td><code>q2kQ8WaveMatVecKernel</code>, via <code>waveRowBlock()</code></td></tr>
+      <tr><td class="rowlabel"><code>Device.*</code> calls in the file</td><td class="num">2</td><td><code>waveSize()</code>, <code>maxThreadsPerBlock()</code></td></tr>
+      <tr><td class="rowlabel">Kernels reading <code>Wave.width()</code></td><td class="num">0</td><td>the width API exists and is unused</td></tr>
+      <tr><td class="rowlabel">Kernels reading <code>Group.width()</code></td><td class="num">2</td><td>the two converted precedents</td></tr>
+      <tr><td class="rowlabel">Kernels with <code>globalIdX() / 32</code></td><td class="num">44</td><td>correct at wave 32 and one row per group</td></tr>
+      <tr><td class="rowlabel">Literal <code>32</code> occurrences</td><td class="num">901</td><td>mixed wave-coupled, format and tile constants</td></tr>
+      <tr><td class="rowlabel"><code>@Occupancy</code> declarations</td><td class="num">1</td><td><code>maxThreads = 512</code> on <code>q6kF16CoopN256GKernel</code></td></tr>
+      <tr><td class="rowlabel"><code>@FastMath</code> declarations</td><td class="num">0</td><td>—</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <caption>2.2 Block size, by where it comes from <span>— all 162 launch sites</span></caption>
+    <thead><tr><th>Block expression</th><th class="m">Threads</th><th class="num">Sites</th><th>Origin</th></tr></thead>
+    <tbody>
+      <tr><td class="m">block: [256]</td><td class="m">256</td><td class="num">86</td><td>literal</td></tr>
+      <tr><td class="m">block: [32]</td><td class="m">32</td><td class="num">43</td><td>literal — the wave-per-row family</td></tr>
+      <tr><td class="m">block: [blk]</td><td class="m">64</td><td class="num">20</td><td><code>ROWS_PER_BLOCK</code>, a named constant</td></tr>
+      <tr><td class="m">block: [128]</td><td class="m">128</td><td class="num">7</td><td>literal</td></tr>
+      <tr><td class="m">block: [64]</td><td class="m">64</td><td class="num">5</td><td>literal</td></tr>
+      <tr><td class="m">block: [waveRowBlock()]</td><td class="m">derived</td><td class="num">1</td><td><span class="pill p-good">reads the device</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <caption>2.3 Kernel families <span>— 144 kernels grouped by role</span></caption>
+    <thead><tr><th>Family</th><th class="num">Kernels</th><th>Dominant block</th><th class="num">Max LDS</th><th class="num">Use <code>/32</code></th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel">Cooperative / tiled</td><td class="num">58</td><td class="m">256 (51 sites)</td><td class="num">55296</td><td class="num">0</td></tr>
+      <tr><td class="rowlabel">Utility</td><td class="num">30</td><td class="m">256 (18 sites)</td><td class="num">20492</td><td class="num">9</td></tr>
+      <tr><td class="rowlabel">Wave mat-vec</td><td class="num">28</td><td class="m">32 (25 sites)</td><td class="num">8192</td><td class="num">26</td></tr>
+      <tr><td class="rowlabel">Scalar mat-vec</td><td class="num">21</td><td class="m">64 (15 sites)</td><td class="num">1024</td><td class="num">5</td></tr>
+      <tr><td class="rowlabel">Batch GEMM</td><td class="num">5</td><td class="m">32 (4 sites)</td><td class="num">0</td><td class="num">4</td></tr>
+      <tr><td class="rowlabel">MMQ tile</td><td class="num">2</td><td class="m">256</td><td class="num">2816</td><td class="num">0</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>2.4 One family, four launch strategies</h3>
+  <div class="prose">
+    <p>The wave mat-vec family is 25 kernels doing the same shape of work on different quant formats. They are launched four different ways, and the differences track no property of the data.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <caption>2.4 Wave mat-vec launch geometry <span>— grid expression as written at the call site</span></caption>
+    <thead><tr><th>Kernel</th><th class="m">Grid</th><th class="m">Block</th><th>Rows per group</th></tr></thead>
+    <tbody>
+      <tr><td class="m">q4kQ8WaveMatVecKernel</td><td class="m">waves</td><td class="m">32</td><td>4 — derived value discarded for a literal</td></tr>
+      <tr><td class="m">q6kQ8WaveMatVecKernel</td><td class="m">waves</td><td class="m">32</td><td>4 — same override</td></tr>
+      <tr><td class="m">qkvWaveMatVecKernel</td><td class="m">waves</td><td class="m">32</td><td>4</td></tr>
+      <tr><td class="m">iq3xxsQkvWaveMatVecKernel</td><td class="m">waves</td><td class="m">32</td><td>4</td></tr>
+      <tr><td class="m">q3kQ8WaveMatVecKernel</td><td class="m">ur</td><td class="m">32</td><td>1</td></tr>
+      <tr><td class="m">q5kQ8WaveMatVecKernel</td><td class="m">ur</td><td class="m">32</td><td>1</td></tr>
+      <tr><td class="m">q80Q8WaveMatVecKernel</td><td class="m">ur</td><td class="m">32</td><td>1</td></tr>
+      <tr><td class="m">iq3sQ8WaveMatVecKernel</td><td class="m">ur</td><td class="m">32</td><td>1</td></tr>
+      <tr><td class="m">iq3xxsQ8WaveMatVecKernel</td><td class="m">ur</td><td class="m">32</td><td>1</td></tr>
+      <tr><td class="m">iq2sQ8WaveMatVecLdsKernel</td><td class="m">ur</td><td class="m">32</td><td>1</td></tr>
+      <tr><td class="m">q40F32/Q8WaveMatVecKernel</td><td class="m">(uint32) rows</td><td class="m">32</td><td>1</td></tr>
+      <tr><td class="m">q50F32/Q8WaveMatVecKernel</td><td class="m">(uint32) rows</td><td class="m">32</td><td>1</td></tr>
+      <tr><td class="m">q80F32WaveMatVecKernel</td><td class="m">(uint32) rows</td><td class="m">32</td><td>1</td></tr>
+      <tr><td class="m">f16F32WaveMatVecKernel</td><td class="m">(uint32) rows</td><td class="m">32</td><td>1</td></tr>
+      <tr><td class="m">iq4nlF32/Q8WaveMatVecKernel</td><td class="m">(uint32) rows</td><td class="m">32</td><td>1</td></tr>
+      <tr><td class="m">tq10/tq20Q8WaveMatVecKernel</td><td class="m">(uint32) rows</td><td class="m">32</td><td>1</td></tr>
+      <tr><td class="m">iq2xxs/iq2xs/iq2sQ8WaveMatVecKernel</td><td class="m">(ur + 1) / 2</td><td class="m">32</td><td>2</td></tr>
+      <tr><td class="m">q2kQ8WaveMatVecKernel</td><td class="m">waveRowGrid(rows)</td><td class="m">waveRowBlock()</td><td><span class="pill p-good">derived + clamped</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <pre>// q4kQ8WaveMatVecLaunchNoSync — the derived value is computed, then dropped
+int64 rpw = QuantKernel.rowsPerWave(cols / 256L);
+if (rpw == 1L) { rpw = 4L; }   // unit 60: four row slots per wave
+uint32 waves = (uint32) ((rows + rpw - 1L) / rpw);
+q4kQ8WaveMatVecKernel.launch(s, grid: [waves], block: [32]) ...</pre>
+  <p class="src">QuantKernel.cajeta:12423 — <code>rowsPerWave()</code> is called and its answer overridden by a literal 4 measured on gfx1151.</p>
+
+  <h3>2.5 The tuned path that nothing writes</h3>
+  <div class="prose">
+    <p><code>waveRowsPerBlock()</code> is the one device-aware helper. It recalls a per-machine value through <code>Autotune.recallFor</code>, falls back to a default, and clamps the group to the device thread limit. Three things keep it inert: only <code>q2kQ8Wave</code> calls it, no production code ever writes a value, and the tune directory defaults to empty so the recall is skipped entirely. Its fallback is <code>rpb = 1</code>, so on this box it resolves to a 32-thread group.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <caption>2.6 Shared-memory demand against the Ada per-block ceiling <span>— static extents parsed from the <code>Shared&lt;&gt;</code> declarations, and <strong>confirmed against the compiler in §9.3</strong>: once a kernel fully lowers, its manifest reports exactly these numbers. A lower figure means the kernel lowered only partially.</span></caption>
+    <thead><tr><th>Kernel</th><th class="num">LDS bytes</th><th class="num">Ada 49152</th><th class="num">gfx1151 65536</th><th>Status on Ada</th></tr></thead>
+    <tbody>
+      <tr><td class="m">q6kF16CoopN256Kernel</td><td class="num">55296</td><td class="num">over by 6144</td><td class="num">fits</td><td><span class="pill p-crit">will not launch</span></td></tr>
+      <tr><td class="m">q4kF16CoopN256Kernel</td><td class="num">55296</td><td class="num">over by 6144</td><td class="num">fits</td><td><span class="pill p-crit">will not launch</span></td></tr>
+      <tr><td class="m">q6kF16CoopKernel</td><td class="num">36864</td><td class="num">fits</td><td class="num">fits</td><td><span class="pill p-warn">2 blocks/MP</span></td></tr>
+      <tr><td class="m">q4kF16CoopKernel</td><td class="num">36864</td><td class="num">fits</td><td class="num">fits</td><td><span class="pill p-warn">2 blocks/MP</span></td></tr>
+      <tr><td class="m">iq3xxsF16CoopIdN64Kernel</td><td class="num">28160</td><td class="num">fits</td><td class="num">fits</td><td><span class="pill p-flat">ok</span></td></tr>
+      <tr><td class="m">iq4nlF16CoopIdN64Kernel</td><td class="num">26624</td><td class="num">fits</td><td class="num">fits</td><td><span class="pill p-flat">ok</span></td></tr>
+      <tr><td class="m">iq2sF16Coop{X3,N64,N256}Kernel</td><td class="num">26624</td><td class="num">fits</td><td class="num">fits</td><td><span class="pill p-flat">ok</span></td></tr>
+      <tr><td class="m">moeGroupKernel</td><td class="num">20492</td><td class="num">fits</td><td class="num">fits</td><td><span class="pill p-flat">ok</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="llama">
+  <div class="sechead"><span class="secnum">03</span><h2>What llama.cpp configures</h2></div>
+  <div class="prose">
+    <p>llama.cpp answers the same question with an explicit per-architecture parameter table, selected at run time from the compute capability. Nothing in its decode or prefill path is a single constant shared across vendors.</p>
+  </div>
+
+  <h3>3.1 Decode — the <code>mmvq</code> parameter table</h3>
+  <div class="prose">
+    <p>Block shape is <code>dim3(warp_size, nwarps, 1)</code>, where <code>nwarps</code> comes from <code>calc_nwarps(type, ncols_dst, table_id)</code> and the row count from <code>calc_rows_per_block(...)</code>. There are seven table ids. <strong>Ada resolves to <code>GENERIC</code>; gfx1151 resolves to <code>RDNA2</code></strong> — RDNA3.5 is explicitly folded in with RDNA2 at <code>mmvq.cu:102</code>.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <caption>3.1 mmvq geometry for a single-column mat-vec <span>— <code>ncols_dst = 1</code>, the decode case</span></caption>
+    <thead><tr><th>Device</th><th class="m">Table id</th><th class="num">nwarps</th><th class="num">Block threads</th><th class="num">Rows per block</th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel">RTX 4090 (Ada)</td><td class="m">MMVQ_PARAMETERS_GENERIC</td><td class="num">4</td><td class="num">128</td><td class="num">1</td></tr>
+      <tr><td class="rowlabel">gfx1151 (RDNA3.5)</td><td class="m">MMVQ_PARAMETERS_RDNA2</td><td class="num">1</td><td class="num">32</td><td class="num">1</td></tr>
+      <tr><td class="rowlabel">RDNA4</td><td class="m">MMVQ_PARAMETERS_RDNA4</td><td class="num">8 (whitelisted types)</td><td class="num">256</td><td class="num">1</td></tr>
+      <tr><td class="rowlabel">RDNA3.0</td><td class="m">MMVQ_PARAMETERS_RDNA3_0</td><td class="num">8 / 2 / 1 by type</td><td class="num">256 / 64 / 32</td><td class="num">1</td></tr>
+      <tr><td class="rowlabel">Turing</td><td class="m">MMVQ_PARAMETERS_TURING</td><td class="num">2 for k-quants, else 4</td><td class="num">64 / 128</td><td class="num">1</td></tr>
+      <tr><td class="rowlabel">GCN / CDNA</td><td class="m">MMVQ_PARAMETERS_GCN</td><td class="num">2</td><td class="num">64 / 128</td><td class="num">1</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="note">
+    <p><strong>Read the first two rows together.</strong> For the same kernel and the same quant type, llama.cpp launches a <strong>128-thread block on Ada and a 32-thread block on gfx1151</strong>. cajeta uses 32 on both. Our value is exactly llama.cpp's AMD value.</p>
+  </div>
+
+  <h3>3.2 Prefill — the MMQ config tables</h3>
+  <div class="prose">
+    <p>The batched path is parameterized per architecture, per quant type and per batch width, as nine separate config headers holding 2,027 <code>CASE</code> rows between them.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <caption>3.2 MMQ config files <span>— <code>CASE(type, nthreads, occupancy, I, J, sram_layout, K_vram, stream_k, fallback)</code></span></caption>
+    <thead><tr><th>Architecture family</th><th class="m">File</th><th class="num">Rows</th><th class="num">Types</th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel">Ampere → used for Ada</td><td class="m">mmq-config-ampere.cuh</td><td class="num">352</td><td class="num">22</td></tr>
+      <tr><td class="rowlabel">RDNA3.5 → gfx1151</td><td class="m">mmq-config-rdna3-5.cuh</td><td class="num">260</td><td class="num">22</td></tr>
+      <tr><td class="rowlabel">RDNA4</td><td class="m">mmq-config-rdna4.cuh</td><td class="num">260</td><td class="num">22</td></tr>
+      <tr><td class="rowlabel">RDNA3.0</td><td class="m">mmq-config-rdna3.cuh</td><td class="num">243</td><td class="num">22</td></tr>
+      <tr><td class="rowlabel">RDNA2</td><td class="m">mmq-config-rdna2.cuh</td><td class="num">242</td><td class="num">22</td></tr>
+      <tr><td class="rowlabel">Pascal dp4a</td><td class="m">mmq-config-pascal-dp4a.cuh</td><td class="num">242</td><td class="num">22</td></tr>
+      <tr><td class="rowlabel">Pascal and older</td><td class="m">mmq-config-pascal-older.cuh</td><td class="num">242</td><td class="num">22</td></tr>
+      <tr><td class="rowlabel">CDNA</td><td class="m">mmq-config-cdna.cuh</td><td class="num">154</td><td class="num">22</td></tr>
+      <tr><td class="rowlabel">Blackwell</td><td class="m">mmq-config-blackwell.cuh</td><td class="num">32</td><td class="num">2</td></tr>
+      <tr><td class="rowlabel"><strong>Total</strong></td><td class="m">9 files</td><td class="num"><strong>2027</strong></td><td class="num">—</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <caption>3.3 The same quant types, Ada vs gfx1151 <span>— nthreads / occupancy / tile-I / stream-k, <code>fallback=false</code>. Every cell differs.</span></caption>
+    <thead><tr><th>Batch width J</th><th>Types</th><th class="m">Ada</th><th class="m">gfx1151</th><th>What differs</th></tr></thead>
+    <tbody>
+      <tr><td class="m">16</td><td>all 22</td><td class="m">256 / 1 / 128 / on</td><td class="m">128 / 2 / 64 / off</td><td>block 2×, tile 2×, occupancy target, stream-k</td></tr>
+      <tr><td class="m">32</td><td>all 22</td><td class="m">256 / 1 / 128 / on</td><td class="m">128 / 2 / 64 / off</td><td>block 2×, tile 2×, occupancy target, stream-k</td></tr>
+      <tr><td class="m">64</td><td>all 22</td><td class="m">256 / 1 / 128 / on</td><td class="m">256 / 2 / 128 / off</td><td>occupancy target, stream-k</td></tr>
+      <tr><td class="m">128</td><td>all 22</td><td class="m">256 / 1 / 128 / on</td><td class="m">256 / 2 / 128 / off</td><td>occupancy target, stream-k</td></tr>
+      <tr><td class="m">8</td><td>all 22</td><td class="m">256 / 1 / 128 / on</td><td class="m">no row — falls back</td><td>the shape is not served on RDNA3.5</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>3.4 Wave width, their side</h3>
+  <pre>static constexpr __device__ int ggml_cuda_get_physical_warp_size() {
+#if defined(GGML_USE_HIP) &amp;&amp; (defined(__GFX9__) || defined(__GFX8__))
+    return 64;
+#else
+    return 32;
+#endif
+}</pre>
+  <p class="src">common.cuh:374 — a compile-time constant per target, threaded through every block-dim computation rather than written as a literal at launch sites.</p>
+</section>
+
+<section id="reconciler">
+  <div class="sechead"><span class="secnum">04</span><h2>The reconciler we already ship, and why it is silent here</h2></div>
+  <div class="prose">
+    <p>cajeta has an occupancy model: <code>occupancy()</code>, <code>occupancyLimiterName()</code>, <code>candidateBlocks()</code>, <code>pickLaunch()</code>, <code>LaunchPick</code>. It is not dead code — <code>KernelManifest.cpp</code> calls it and writes <code>feasibleBlocks</code> and <code>occupancyLimiter</code> into every kernel's manifest, and cajeta source can read them back through <code>KernelManifest.of(name)</code>.</p>
+    <p>It produces nothing on NVIDIA. <code>fillOccupancy()</code> begins <code>if (!lookupArch(archName, model)) return;</code> and the arch table has exactly two rows, both AMD:</p>
+  </div>
+  <pre>constexpr std::array&lt;ArchRow, 2&gt; kArchTable = {{
+    {"gfx1151", 32, 1024, 196608, 64, 65536, 32, 4, 2},
+    {"gfx1100", 32, 1024, 196608, 64, 65536, 32, 4, 2},
+}};</pre>
+  <p class="src">DeviceProfile.cpp:30 — there is no <code>sm_89</code> row, and no NVIDIA row of any kind.</p>
+
+  <div class="prose">
+    <p>Measured rather than inferred — a probe compiled for nvptx, asking the manifest on this 4090:</p>
+  </div>
+  <pre>backend            : cuda          mf.waveWidth       : 32
+waveSize           : 32            mf.vgpr            : 8
+multiprocessors    : 128           mf.ldsStaticBytes  : 0
+maxBlocksPerMP     : 24            mf.occupancyLimiter: ABSENT
+dispatchBlocks(1)  : 512           mf.hasFeasible     : false
+dispatchBlocks(2)  : 256           lookupArch("sm_89"): NOT FOUND</pre>
+
+  <div class="note warn">
+    <p><strong>Two device models, only one of which knows NVIDIA.</strong> The <em>runtime</em> model (<code>queryLiveDeviceModel</code>) is correct here and reports everything in §1. The <em>compile-time</em> model (<code>lookupArch</code>) is AMD-only, and the block-size advice is wired to the compile-time one. So the component that would answer "what block should this kernel use" is structurally unable to answer for this part — the same shape as <code>KernelIsa</code> being AMD-only.</p>
+  </div>
+
+  <h3>4.1 What the model says when you feed it the live device</h3>
+  <div class="prose">
+    <p>Running the shipped <code>occupancy()</code> against the live 4090 model, and against the gfx1151 table row, for the footprint of a wave mat-vec kernel:</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <caption>4.1 Occupancy by block size <span>— vgpr 32, no shared memory; output of the shipped model, not an estimate</span></caption>
+    <thead><tr><th class="m">Block</th><th>RTX 4090 · waves per SM</th><th>gfx1151 · waves per WGP</th><th>Limiter</th></tr></thead>
+    <tbody>
+      <tr><td class="m">32</td>
+        <td><div class="bar"><div class="track"><span class="fill f-crit" style="width:50%"></span></div><span class="barnum">50%</span></div><span class="m">24 of 48</span></td>
+        <td><div class="bar"><div class="track"><span class="fill f-good" style="width:100%"></span></div><span class="barnum">100%</span></div><span class="m">64 of 64</span></td>
+        <td class="m">waveSlots</td></tr>
+      <tr><td class="m">64</td>
+        <td><div class="bar"><div class="track"><span class="fill f-good" style="width:100%"></span></div><span class="barnum">100%</span></div><span class="m">48 of 48</span></td>
+        <td><div class="bar"><div class="track"><span class="fill f-good" style="width:100%"></span></div><span class="barnum">100%</span></div><span class="m">64 of 64</span></td>
+        <td class="m">waveSlots</td></tr>
+      <tr><td class="m">128</td>
+        <td><div class="bar"><div class="track"><span class="fill f-good" style="width:100%"></span></div><span class="barnum">100%</span></div><span class="m">48 of 48</span></td>
+        <td><div class="bar"><div class="track"><span class="fill f-good" style="width:100%"></span></div><span class="barnum">100%</span></div><span class="m">64 of 64</span></td>
+        <td class="m">waveSlots</td></tr>
+      <tr><td class="m">256</td>
+        <td><div class="bar"><div class="track"><span class="fill f-good" style="width:100%"></span></div><span class="barnum">100%</span></div><span class="m">48 of 48</span></td>
+        <td><div class="bar"><div class="track"><span class="fill f-good" style="width:100%"></span></div><span class="barnum">100%</span></div><span class="m">64 of 64</span></td>
+        <td class="m">waveSlots</td></tr>
+      <tr><td class="m">256 + 55296 B LDS</td>
+        <td><div class="bar"><div class="track"><span class="fill f-crit" style="width:2%"></span></div><span class="barnum">0%</span></div><span class="m">does not fit</span></td>
+        <td><div class="bar"><div class="track"><span class="fill f-warn" style="width:12%"></span></div><span class="barnum">12%</span></div><span class="m">8 of 64</span></td>
+        <td class="m">lds</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="prose">
+    <p>The 32-thread block is <strong>optimal on gfx1151 and half-rate on Ada</strong>, and the reason is a single driver attribute: Ada reports a resident-block cap of 24 per SM, so 24 one-warp blocks fill only 24 of 48 warp slots. gfx1151 reports no such cap. This is the whole mechanism, and it needs no benchmark to see — only the attribute, which the runtime already has.</p>
+  </div>
+</section>
+
+<section id="measured">
+  <div class="sechead"><span class="secnum">05</span><h2>Measured on the part</h2></div>
+
+  <h3>5.1 The controlled pair</h3>
+  <div class="prose">
+    <p><code>CodebookBandwidth</code> cycles weights through a 160 MB pool so the reads are DRAM-cold, with the Q4_K wave kernel as its declared control. Two of its shapes move <em>identical</em> bytes and differ only in how the launcher divides them.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <caption>5.1 Same kernel, same bytes, different row count <span>— Q4_K wave mat-vec, measured on the 4090</span></caption>
+    <thead><tr><th class="m">rows × cols</th><th class="num">Bytes</th><th class="num">Workgroups</th><th class="num">Warps issued</th><th>Machine fill</th><th class="num">Achieved</th></tr></thead>
+    <tbody>
+      <tr><td class="m">14336 × 4096</td><td class="num">31.5 MB</td><td class="num">3584</td><td class="num">3584</td><td><div class="bar"><div class="track"><span class="fill f-good" style="width:100%"></span></div><span class="barnum">100%</span></div></td><td class="num"><strong>348.8 GB/s</strong></td></tr>
+      <tr><td class="m">4096 × 14336</td><td class="num">31.5 MB</td><td class="num">1024</td><td class="num">1024</td><td><div class="bar"><div class="track"><span class="fill f-crit" style="width:33%"></span></div><span class="barnum">33%</span></div></td><td class="num"><strong>48.4 GB/s</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="prose">
+    <p>With a 32-thread block, Ada can hold 24 blocks × 1 warp = 3072 warps across 128 SMs. A 14336-row projection issues 3584 workgroups and saturates that; a 4096-row projection issues 1024 and reaches a third of it. On gfx1151 the same 1024 workgroups are 80% of that part's 1280 wave slots — which is why the geometry was never wrong there.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <caption>5.2 Per-format achieved bandwidth, DRAM-cold <span>— measured on the 4090 against an 859 GB/s measured roofline</span></caption>
+    <thead><tr><th>Format</th><th class="num">14336 × 4096</th><th class="num">4096 × 14336</th><th class="num">4096 × 4096</th><th class="num">1024 × 4096</th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel m">q4_K <span class="pill p-flat">control</span></td><td class="num">348.8</td><td class="num">48.4</td><td class="num">165.6</td><td class="num">15.2</td></tr>
+      <tr><td class="rowlabel m">tq2_0</td><td class="num">150.0</td><td class="num">37.4</td><td class="num">72.6</td><td class="num">14.1</td></tr>
+      <tr><td class="rowlabel m">tq1_0</td><td class="num">79.9</td><td class="num">20.3</td><td class="num">46.3</td><td class="num">10.5</td></tr>
+      <tr><td class="rowlabel m">iq2_xxs</td><td class="num">144.7</td><td class="num">40.1</td><td class="num">73.0</td><td class="num">12.5</td></tr>
+      <tr><td class="rowlabel m">iq2_xs</td><td class="num">48.1</td><td class="num">41.3</td><td class="num">88.7</td><td class="num">14.3</td></tr>
+      <tr><td class="rowlabel m">iq2_s</td><td class="num">48.8</td><td class="num">47.4</td><td class="num">98.8</td><td class="num">15.5</td></tr>
+      <tr><td class="rowlabel m">iq3_xxs</td><td class="num">50.7</td><td class="num">24.8</td><td class="num">107.4</td><td class="num">18.9</td></tr>
+      <tr><td class="rowlabel m">iq3_s</td><td class="num">25.3</td><td class="num">25.0</td><td class="num">118.4</td><td class="num">19.6</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="prose">
+    <p>The control row is the one to read first. On gfx1151 this kernel reproduces roughly 200 GB/s against a ~238 GB/s roofline — about 84% of the part. The best number here is 348.8 GB/s against 859 GB/s, or 41%, and the shape the engine actually dispatches for an FFN down-projection is the 48.4 GB/s row, at 5.6%.</p>
+  </div>
+
+  <h3>5.3 The oracle</h3>
+  <div class="note warn">
+    <p><strong>Not directly comparable to the table above, and the reason matters.</strong> <code>test-backend-ops</code> repeats one 31.5 MB tensor, which fits entirely inside the 4090's 72 MB L2. Its implied rate for q4_K is ~2300 GB/s — well above the 859 GB/s DRAM roofline — so these are cache-resident figures. They bound what the hardware can do for a hot weight; they are not a DRAM-cold decode measurement. Use them as a per-format <em>ceiling</em>, not as a target for the numbers in 5.2.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <caption>5.3 llama.cpp CUDA per-type MUL_MAT <span>— µs/run, m=4096 k=14336, measured on this 4090</span></caption>
+    <thead><tr><th>Type</th><th class="num">n=1</th><th class="num">n=2</th><th class="num">n=4</th><th class="num">n=8</th><th class="num">n=512</th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel m">q4_0</td><td class="num">12.20</td><td class="num">15.69</td><td class="num">24.44</td><td class="num">31.68</td><td class="num">279.74</td></tr>
+      <tr><td class="rowlabel m">q8_0</td><td class="num">17.45</td><td class="num">23.52</td><td class="num">29.69</td><td class="num">38.82</td><td class="num">283.90</td></tr>
+      <tr><td class="rowlabel m">q2_K</td><td class="num">14.72</td><td class="num">18.02</td><td class="num">29.81</td><td class="num">22.74</td><td class="num">373.68</td></tr>
+      <tr><td class="rowlabel m">q3_K</td><td class="num">23.72</td><td class="num">25.96</td><td class="num">35.08</td><td class="num">25.36</td><td class="num">317.72</td></tr>
+      <tr><td class="rowlabel m">q4_K</td><td class="num">13.33</td><td class="num">20.02</td><td class="num">33.97</td><td class="num">25.09</td><td class="num">282.84</td></tr>
+      <tr><td class="rowlabel m">q5_K</td><td class="num">15.25</td><td class="num">21.55</td><td class="num">33.13</td><td class="num">22.04</td><td class="num">323.96</td></tr>
+      <tr><td class="rowlabel m">q6_K</td><td class="num">22.62</td><td class="num">25.61</td><td class="num">35.98</td><td class="num">52.34</td><td class="num">344.87</td></tr>
+      <tr><td class="rowlabel m">iq4_nl</td><td class="num">13.39</td><td class="num">16.22</td><td class="num">24.90</td><td class="num">32.72</td><td class="num">254.20</td></tr>
+      <tr><td class="rowlabel m">iq4_xs</td><td class="num">12.04</td><td class="num">13.57</td><td class="num">19.88</td><td class="num">36.02</td><td class="num">246.48</td></tr>
+      <tr><td class="rowlabel m">iq2_xxs</td><td class="num">13.70</td><td class="num">14.99</td><td class="num">21.37</td><td class="num">32.47</td><td class="num">259.76</td></tr>
+      <tr><td class="rowlabel m">iq2_s</td><td class="num">16.70</td><td class="num">18.18</td><td class="num">25.10</td><td class="num">39.33</td><td class="num">323.52</td></tr>
+      <tr><td class="rowlabel m">iq3_xxs</td><td class="num">18.97</td><td class="num">20.88</td><td class="num">25.68</td><td class="num">44.39</td><td class="num">309.88</td></tr>
+      <tr><td class="rowlabel m">mxfp4</td><td class="num">15.87</td><td class="num">17.63</td><td class="num">27.27</td><td class="num">39.33</td><td class="num">266.47</td></tr>
+      <tr><td class="rowlabel m">f16</td><td class="num">123.28</td><td class="num">121.67</td><td class="num">120.61</td><td class="num">118.69</td><td class="num">289.49</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="prose">
+    <p>One cross-vendor anchor is available directly. <code>Mxfp4Bench</code> records llama.cpp's MXFP4 MUL_MAT at this exact shape as <strong>58.4 µs on gfx1151</strong>; here it is <strong>15.87 µs</strong>, a 3.68× gain that tracks the 3.6× bandwidth ratio almost exactly. cajeta's own <code>coopQ8</code> arm beat llama.cpp on gfx1151 at 43 µs. Carrying that same 1.36× advantage across would put a correctly-configured cajeta MXFP4 kernel near 11.7 µs on this part.</p>
+  </div>
+
+  <h3>5.4 Correctness</h3>
+  <div class="scroll">
+  <table>
+    <caption>5.4 What ran, and what it said</caption>
+    <thead><tr><th>Check</th><th>Result</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel">MXFP4 fast3 vs scalar</td><td><span class="pill p-good">pass</span></td><td class="m">maxRel 1.10e-05, 0 bad</td></tr>
+      <tr><td class="rowlabel">MXFP4 coop vs scalar (wave32)</td><td><span class="pill p-good">pass</span></td><td class="m">maxRel 9.15e-06, 0 bad</td></tr>
+      <tr><td class="rowlabel">MXFP4 coopQ8 vs scalar</td><td><span class="pill p-good">pass</span></td><td class="m">maxRel 5.17e-03, 0 bad — activation quantization</td></tr>
+      <tr><td class="rowlabel">XpuCooperativeMatrixDeviceTests.portableMatmulOnNvptxDevice</td><td><span class="pill p-good">pass</span></td><td>red on this leg since 2026-09-06; the ptxas 13.3 pin holds</td></tr>
+      <tr><td class="rowlabel">XpuCooperativeMatrixDeviceTests.nativeMatmulOnNvptxDevice</td><td><span class="pill p-good">pass</span></td><td class="m">5441 ms</td></tr>
+      <tr><td class="rowlabel">Device test sweep (non-Vulkan), complete</td><td><span class="pill p-good">0 failures</span></td><td>142 tests across 26 suites in 24.9 min — <strong>88 executed on the 4090</strong>, 54 skipped for absent hardware</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="matrix">
+  <div class="sechead"><span class="secnum">06</span><h2>Setting by setting: does the AMD value transfer?</h2></div>
+  <div class="scroll">
+  <table>
+    <caption>6.1 Transfer matrix <span>— every tuned quantity in the kernel set</span></caption>
+    <thead><tr><th>Setting</th><th class="m">Our value</th><th class="m">Fitted on</th><th class="m">llama.cpp, Ada</th><th>Transfers?</th><th>Mechanism</th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel">Wave width assumption</td><td class="m">32 (literal ×901)</td><td class="m">gfx1151</td><td class="m">32</td><td><span class="pill p-good">yes</span></td><td>warp is 32 on all NVIDIA parts</td></tr>
+      <tr><td class="rowlabel">Wave mat-vec block</td><td class="m">32</td><td class="m">gfx1151</td><td class="m">128</td><td><span class="pill p-crit">no</span></td><td>24-block/SM cap halves occupancy</td></tr>
+      <tr><td class="rowlabel">Rows per wave, Q4_K/Q6_K</td><td class="m">4 (overrides derived 1)</td><td class="m">gfx1151</td><td class="m">1 row, 4 warps</td><td><span class="pill p-crit">no</span></td><td>inverts the decomposition; starves the grid</td></tr>
+      <tr><td class="rowlabel"><code>ROWS_PER_BLOCK</code></td><td class="m">64</td><td class="m">gfx1151</td><td class="m">I = 128 tile</td><td><span class="pill p-warn">unverified</span></td><td>tile height differs 2× in their table</td></tr>
+      <tr><td class="rowlabel">Coop tile LDS</td><td class="m">55296 B</td><td class="m">gfx1151</td><td class="m">≤ 49152 or opt-in</td><td><span class="pill p-crit">no</span></td><td>exceeds Ada's per-block ceiling outright</td></tr>
+      <tr><td class="rowlabel">Occupancy target</td><td class="m">1 declaration total</td><td class="m">gfx1151</td><td class="m">1 (Ada) / 2 (RDNA3.5)</td><td><span class="pill p-crit">no</span></td><td>they flip it per architecture</td></tr>
+      <tr><td class="rowlabel">Waves per SIMD target</td><td class="m">2 if name starts <code>gfx</code></td><td class="m">gfx1151</td><td class="m">n/a</td><td><span class="pill p-good">handled</span></td><td>already vendor-conditional; 1 on NVIDIA</td></tr>
+      <tr><td class="rowlabel">Dispatch block count</td><td class="m">derived</td><td class="m">—</td><td class="m">derived</td><td><span class="pill p-good">yes</span></td><td><code>Linear.targetBlocks()</code>: 80 → 256 here</td></tr>
+      <tr><td class="rowlabel">Stream-k</td><td class="m">not implemented</td><td class="m">—</td><td class="m">on for Ada</td><td><span class="pill p-flat">absent</span></td><td>they enable it on NVIDIA, disable on RDNA</td></tr>
+      <tr><td class="rowlabel">Launch overhead assumption</td><td class="m">~2.2 µs (gfx1151)</td><td class="m">gfx1151</td><td class="m">—</td><td><span class="pill p-warn">unverified</span></td><td>CUDA null-kernel launch is reported 3–7 µs</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="instruments">
+  <div class="sechead"><span class="secnum">07</span><h2>Instrument and environment notes</h2></div>
+  <div class="prose">
+    <p>Things that had to be fixed or worked around to get any number at all, recorded because each would cost the next person the same hour.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <caption>7.1 Findings about the box, not the code</caption>
+    <thead><tr><th>Finding</th><th>Effect</th><th>Workaround</th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel">A stale <code>libnvidia-ptxjitcompiler.so.1</code> (580.178.04) in <code>/lib/x86_64-linux-gnu</code> shadows the WSL driver's own (610.62)</td><td><span class="pill p-crit">SIGSEGV</span> in <code>cudaGetDeviceCount</code> for any CUDA app — llama.cpp crashed with no output at all</td><td class="m">LD_LIBRARY_PATH=/usr/lib/wsl/drivers/nv_dispsi.inf_*</td></tr>
+      <tr><td class="rowlabel">WSL exposes no NVIDIA Vulkan ICD</td><td><code>vulkaninfo</code> enumerates only llvmpipe, so every Vulkan device test here measures a CPU rasterizer</td><td>the Vulkan comparison needs the Windows leg</td></tr>
+      <tr><td class="rowlabel">Distro <code>nvidia-cuda-toolkit</code> 12.0 installed beside CUDA 13.3</td><td>CMake picked the 12.0 <code>nvcc</code> with 13.3's <code>ptxas</code>; the probe rejected <code>sm_52</code></td><td class="m">-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc</td></tr>
+      <tr><td class="rowlabel">Profiler GPU tier produces no device queue track</td><td>no per-kernel device timing available; §5 is host-timed instead</td><td>host timing, which is also what <code>us/run</code> is</td></tr>
+      <tr><td class="rowlabel"><code>cajeta-unit</code> will not build against current cajeta main</td><td><code>CAJETA_ERROR_CAPTURED_BORROW_PARAM</code> on a stored <code>pred</code> parameter</td><td>used the prebuilt 0.2.4 archive</td></tr>
+      <tr><td class="rowlabel">cajeta-llm <code>origin/main</code> test tree does not compile</td><td><code>MoeIdKernelTest:210</code> passes 12 args to a 15-parameter <code>moeGroupLaunchNoSync</code>; the library gained parameters 2026-09-17, the test was last touched 2026-09-02</td><td>benches run from the library instead</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="note">
+    <p><strong>One thing to unblock separately.</strong> The suite break above means the llm test tree on <code>origin/main</code> cannot be run on any backend, so the nvptx bit gate currently rests on the bench probes rather than the 350-test suite.</p>
+  </div>
+</section>
+
+<section id="coop">
+  <div class="sechead"><span class="secnum">09</span><h2>The coop/tile family, measured</h2></div>
+  <div class="prose">
+    <p>Added 2026-09-19. The coop/tile family is 58 of the 144 kernels and carries the prefill GEMM. Two probes were compiled against the kernel sources so the runtime registry is populated: one asking <code>Device.kernelAvailable()</code> and the manifest for all 58, one launching the six Q4_K variants at prefill shapes.</p>
+    <p>The result supersedes this report's earlier reading of the family, which was inferred from source declarations rather than measured.</p>
+  </div>
+
+  <div class="note crit">
+    <p><strong><code>Device.kernelAvailable()</code> does not agree with the launch path.</strong> Both of these lines come from the same process, in this order:</p>
+    <pre style="margin:10px 0 0">q4kF16CoopN256Kernel registered: true
+cajeta.xpu: no registered kernel 'q4kF16CoopN256Kernel' to launch</pre>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <caption>9.1 Q4_K coop variants at tokens=256 <span>— "ran" means the output buffer came back non-zero after being zeroed</span></caption>
+    <thead><tr><th>Variant</th><th class="m">Block</th><th class="m">kernelAvailable</th><th>Launched?</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel m">q4kF16CoopKernel</td><td class="m">128</td><td class="m">true</td><td><span class="pill p-good">ran</span></td><td>the only one; also the only one with a manifest</td></tr>
+      <tr><td class="rowlabel m">q4kF16CoopX1Kernel</td><td class="m">256</td><td class="m">true</td><td><span class="pill p-crit">no registered kernel</span></td><td>—</td></tr>
+      <tr><td class="rowlabel m">q4kF16CoopX3Kernel</td><td class="m">256</td><td class="m">true</td><td><span class="pill p-crit">no registered kernel</span></td><td>also what the Auto router selects</td></tr>
+      <tr><td class="rowlabel m">q4kF16CoopN256Kernel</td><td class="m">256</td><td class="m">true</td><td><span class="pill p-crit">no registered kernel</span></td><td>the 55,296 B tile — absent, not rejected for size</td></tr>
+      <tr><td class="rowlabel m">q4kF16CoopN256GKernel</td><td class="m">256</td><td class="m">true</td><td><span class="pill p-crit">no registered kernel</span></td><td>the one <code>@Occupancy</code> declaration in the tree</td></tr>
+      <tr><td class="rowlabel m">Auto router</td><td class="m">—</td><td class="m">—</td><td><span class="pill p-crit">no registered kernel</span></td><td>routes to X3 / X1, neither of which exists here</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <caption>9.2 Manifests across the 58 coop kernels <span>— <code>KernelManifest.of(name)</code> on nvptx</span></caption>
+    <thead><tr><th>Kernel</th><th class="num">vgpr</th><th class="num">lds</th><th class="num">spill</th><th class="num">wave</th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel m">mxfp4MatVecKernelCoop</td><td class="num">40</td><td class="num">0</td><td class="num">32</td><td class="num">32</td></tr>
+      <tr><td class="rowlabel m">mxfp4MatVecKernelCoopQ8</td><td class="num">40</td><td class="num">0</td><td class="num">32</td><td class="num">32</td></tr>
+      <tr><td class="rowlabel m">mxfp4MatVecKernelCoopQ8Surface</td><td class="num">40</td><td class="num">0</td><td class="num">32</td><td class="num">32</td></tr>
+      <tr><td class="rowlabel m">q4kF16CoopKernel</td><td class="num">56</td><td class="num">8192</td><td class="num">32</td><td class="num">32</td></tr>
+      <tr><td class="rowlabel">the other 54</td><td class="num" colspan="4">no manifest</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="prose">
+    <p>Three consequences. The four that do have manifests all <strong>spill</strong> 32 bytes to scratch, which is the failure mode the orders note we cannot otherwise see on NVIDIA without <code>KernelIsa</code>. <code>q4kF16CoopKernel</code>'s manifest reports 8,192 B of shared memory where its two <code>Shared&lt;float16&gt;[128 * 72]</code> declarations sum to 36,864 — so §2.6's column describes the source, not the allocation. And <code>QuantKernel.tuneBuildId()</code> is built on <code>KernelManifest.of(...)</code>, whose contract returns <code>"none"</code> when the manifest is absent, which would make any <code>Autotune</code> hint unrecallable for a kernel in the 54.</p>
+  </div>
+
+  <div class="note warn">
+    <p><strong>No timing is quoted for this family, deliberately.</strong> The one variant that ran returned 119.4 µs at tokens=256 / outDim=14336 / K=4096. That work is 30.1 GFLOP, which implies <strong>252 TFLOPS</strong> against the 4090's ~165 TFLOPS dense FP16 peak — impossible, so the harness is measuring something other than execution, most likely not synchronizing the launches it queues. The number is recorded here only as the reason it is not being reported as performance. The registration result above is categorical and does not depend on it.</p>
+  </div>
+
+  <div class="note">
+    <p><strong>Open, and worth testing next.</strong> <code>Linear</code> latches ten routing decisions from <code>Device.kernelAvailable</code> — <code>q4kWmmaMwKernel</code>, <code>q4kWmmaDeqMw8/Mw4</code>, <code>q6kWmmaDeqMw8/Mw4</code>, <code>q5k</code>, <code>q80</code>, <code>q2k</code>, <code>q3kWmmaDeqMw8</code> and <code>q6kQ8BatchMatMulKernel</code>. If that predicate lies about those the way it lies about the coop kernels, the engine routes to kernels that never run and the output is silently zero. That is a hypothesis, not a measurement — the Wmma names have not been probed — but it is a candidate mechanism for the standing report that nvptx generation emits garbage tokens.</p>
+  </div>
+</section>
+
+<section id="tier">
+  <div class="sechead"><span class="secnum">09.3</span><h2>Why the coop family is missing, and what it costs to fix</h2></div>
+  <div class="prose">
+    <p>Added 2026-09-19. The compiler says why, 78 times per nvptx build, in notes nobody was collecting: <code>[xpu-kernel-skipped] &lt;kernel&gt;: no nvptx device code — &lt;reason&gt;</code>. These are NOTES, so a build missing 78 kernels is green.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <caption>9.3 The tier vise <span>— two reasons, 78 kernels, one defect</span></caption>
+    <thead><tr><th class="num">Kernels</th><th>Reason</th><th>Tier that refuses</th></tr></thead>
+    <tbody>
+      <tr><td class="num">63</td><td>NVPTX native cooperative matrix v1 accepts only row-major operands (layout 0); these pass a non-row-major or non-constant layout</td><td><span class="pill p-warn">native</span></td></tr>
+      <tr><td class="num">15</td><td><code>scaledAccumIntoS</code>, <code>scaledAccumI32</code>, <code>fromWords</code>, <code>scaledAccumInto2S</code> are NATIVE-ONLY with no software-tier form</td><td><span class="pill p-warn">portable</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="scroll">
+  <table>
+    <caption>9.4 Forcing the portable tier <span>— <code>CAJETA_GPU_COOPMATRIX_IMPL=software</code>, measured on the 4090</span></caption>
+    <thead><tr><th>Measure</th><th class="num">Native tier</th><th class="num">Software tier</th></tr></thead>
+    <tbody>
+      <tr><td class="rowlabel">Kernels skipped at lowering</td><td class="num">78</td><td class="num"><strong>15</strong></td></tr>
+      <tr><td class="rowlabel">Coop kernels with a manifest</td><td class="num">4 of 58</td><td class="num"><strong>56 of 58</strong></td></tr>
+      <tr><td class="rowlabel">Scratch per work-item, median</td><td class="num">32 B</td><td class="num"><strong>11,264 B</strong></td></tr>
+      <tr><td class="rowlabel">Scratch per work-item, max</td><td class="num">32 B</td><td class="num"><strong>20,480 B</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="note warn">
+    <p><strong>The portable tier is a correctness escape hatch, not a performance answer.</strong> It makes 56 of 58 coop kernels exist on nvptx, and it costs a median 11 KB of scratch per work-item — about 5 MB of local memory per 256-thread block. The portable tile <em>is</em> the scratch, which is the case the compiler's own spill warning already names. The real fix is to resolve the vise: teach the native path non-row-major operands, give the software tier the four native-only operations, or re-tile to row-major.</p>
+  </div>
+  <div class="note crit">
+    <p><strong>Two kernels fail on both tiers</strong> — <code>q4kF16CoopN256Kernel</code> and <code>q6kF16CoopN256Kernel</code>, the two whose <code>Shared</code> declarations sum to 55,296 B against Ada's 49,152 per-block ceiling. §2 called this correctly; a partial lowering on the native tier briefly made it look wrong.</p>
+  </div>
+</section>
+
+<section id="scope">
+  <div class="sechead"><span class="secnum">08</span><h2>Scope of this report</h2></div>
+  <div class="prose">
+    <p>Measured on the 4090: the device model, the occupancy model's answers, per-format DRAM-cold bandwidth for eight formats at four shapes, llama.cpp's per-type MUL_MAT across five batch widths, MXFP4 numerical parity, and the non-Vulkan device tests.</p>
+    <p>Read from source, not measured: llama.cpp's parameter tables, and cajeta's launch geometry inventory across all 144 kernels.</p>
+    <p>Taken from prior records rather than re-measured: gfx1151's achieved bandwidth (~200 GB/s for the Q4_K control, ~238 GB/s roofline) and llama.cpp's 58.4 µs MXFP4 figure there. No AMD hardware is attached to this box, so every gfx1151 number is cited rather than reproduced.</p>
+    <p>Not covered: Vulkan on NVIDIA, which this host cannot reach; MoE <code>MUL_MAT_ID</code> shapes; and end-to-end tokens per second, which needs the llm CLI path rather than the kernel benches.</p>
+  </div>
+</section>
+
+</div>

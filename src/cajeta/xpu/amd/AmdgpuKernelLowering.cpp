@@ -986,7 +986,8 @@ public:
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* a, llvm::Value* bMat,
                                   llvm::Value* c, llvm::Type* /*matrixType*/,
-                                  uint32_t signFlags) override {
+                                  uint32_t signFlags, uint32_t /*aLayout*/ = 0,
+                                  uint32_t /*bLayout*/ = 0) override {
         llvm::Type* ae =
             llvm::cast<llvm::FixedVectorType>(a->getType())->getElementType();
         if (ae->isIntegerTy(32)) {

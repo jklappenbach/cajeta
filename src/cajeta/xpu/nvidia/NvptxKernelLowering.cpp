@@ -309,9 +309,9 @@ public:
                          "Swizzled<T,S> tile uses the IDENTITY layout on NVPTX "
                          "(no per-element WMMA swizzle); correct, unaccelerated.\n";
         }
-        requireRowMajor(layout, "load");
-        llvm::Function* f =
-            nvWmmaLoadDecl(m, use, nvFragScalar(matrixType), ptr->getType());
+        uint32_t lay = constLayout(layout, "load");
+        llvm::Function* f = nvWmmaLoadDecl(m, use, nvFragScalar(matrixType),
+                                           ptr->getType(), lay);
         return b.CreateCall(f, {ptr, stride}, "wmma.ld");
     }
 
@@ -326,9 +326,11 @@ public:
                          "Swizzled<T,S> tile uses the IDENTITY layout on NVPTX "
                          "(no per-element WMMA swizzle); correct, unaccelerated.\n";
         }
-        requireRowMajor(layout, "store");
+        uint32_t lay = constLayout(layout, "store");
         llvm::Function* f = nvDecl(
-            m, llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_row_stride,
+            m, lay == 1
+                   ? llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_col_stride
+                   : llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_row_stride,
             ptr->getType());
         std::vector<llvm::Value*> args;
         args.push_back(ptr);
@@ -340,15 +342,29 @@ public:
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* a, llvm::Value* bMat,
                                   llvm::Value* c, llvm::Type* /*matrixType*/,
-                                  uint32_t /*signFlags*/) override {
+                                  uint32_t /*signFlags*/, uint32_t aLayout = 0,
+                                  uint32_t bLayout = 0) override {
         // Pick mma by the A fragment's SHAPE, never a scalar probe: f16 A/B is
         // {<2 x half> x 8} and bf16 is {i32 x 4}, so casting element 0 to
         // FixedVectorType asserts inside LLVM, uncatchably.
         auto* aFrag = llvm::cast<llvm::StructType>(a->getType());
         bool bf = !llvm::isa<llvm::FixedVectorType>(aFrag->getElementType(0));
-        llvm::Intrinsic::ID id = bf
-            ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_bf16
-            : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_f32_f32;
+        // wmma.mma encodes BOTH operand layouts. Pairing them wrongly lowers
+        // cleanly and computes the wrong product, which is why the layouts
+        // are threaded here from the loads rather than assumed row/row.
+        bool aCol = aLayout == 1, bCol = bLayout == 1;
+        llvm::Intrinsic::ID id;
+        if (bf) {
+            id = aCol ? (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_col_bf16
+                              : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_row_bf16)
+                      : (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_col_bf16
+                              : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_bf16);
+        } else {
+            id = aCol ? (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_col_f32_f32
+                              : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_row_f32_f32)
+                      : (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_col_f32_f32
+                              : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_f32_f32);
+        }
         std::vector<llvm::Value*> args;
         appendStructElems(b, a, args);
         appendStructElems(b, bMat, args);
@@ -512,21 +528,35 @@ private:
         return llvm::Intrinsic::getOrInsertDeclaration(&m, id);
     }
 
-    // The row-major-stride wmma.load intrinsic for (use, element type).
-    static llvm::Intrinsic::ID nvWmmaLoadId(uint32_t use, llvm::Type* elem) {
+    // The wmma.load intrinsic for (use, element type, layout). Layout 1 is
+    // col-major: NVIDIA WMMA takes it natively and the fork ships every
+    // `_col_stride` form, so this is a selection and not a capability.
+    static llvm::Intrinsic::ID nvWmmaLoadId(uint32_t use, llvm::Type* elem,
+                                            uint32_t layout = 0) {
         bool bf = elem->isBFloatTy();
-        if (use == 0)
+        bool col = layout == 1;
+        if (use == 0) {
+            if (col)
+                return bf ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_bf16_col_stride
+                          : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_f16_col_stride;
             return bf ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_bf16_row_stride
                       : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_f16_row_stride;
-        if (use == 1)
+        }
+        if (use == 1) {
+            if (col)
+                return bf ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_b_bf16_col_stride
+                          : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_b_f16_col_stride;
             return bf ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_b_bf16_row_stride
                       : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_b_f16_row_stride;
-        return llvm::Intrinsic::nvvm_wmma_m16n16k16_load_c_f32_row_stride;  // use 2
+        }
+        return col ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_c_f32_col_stride
+                   : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_c_f32_row_stride;
     }
     static llvm::Function* nvWmmaLoadDecl(llvm::Module& m, uint32_t use,
                                           llvm::Type* elem,
-                                          llvm::Type* ptrTy = nullptr) {
-        return nvDecl(m, nvWmmaLoadId(use, elem), ptrTy);
+                                          llvm::Type* ptrTy = nullptr,
+                                          uint32_t layout = 0) {
+        return nvDecl(m, nvWmmaLoadId(use, elem, layout), ptrTy);
     }
 
     // The fragment's scalar element: the vector element for f16 A/B, bfloat for
@@ -541,15 +571,28 @@ private:
         return e0;
     }
 
-    void requireRowMajor(llvm::Value* layout, const char* op) {
+    // Row-major (0) and col-major (1) are both native. A NON-CONSTANT layout
+    // still refuses: wmma encodes the layout in the instruction, so it has to
+    // be known when the instruction is selected. Measured 2026-09-19 across
+    // cajeta-llm: 739 of 1121 coop sites pass layout 1 and none passes a
+    // non-constant, so this arm is the one that mattered.
+    uint32_t constLayout(llvm::Value* layout, const char* op) {
         auto* ci = llvm::dyn_cast<llvm::ConstantInt>(layout);
-        if (!ci || !ci->isZero())
+        if (!ci)
             throw cajeta::Exception(
-                std::string("XPU NVPTX native cooperative matrix (v1) supports "
-                "only row-major operands (layout 0); CooperativeMatrix.") + op +
-                " got a non-row-major or non-constant layout. Use row-major tiles, "
-                "or force the portable tier with CAJETA_GPU_COOPMATRIX_IMPL="
-                "software.", "XPU-N04");
+                std::string("XPU NVPTX cooperative matrix: CooperativeMatrix.") +
+                op + " got a NON-CONSTANT layout. wmma encodes the operand "
+                "layout in the instruction, so it must be known at lowering. "
+                "Pass a constant 0 (row-major) or 1 (col-major), or force the "
+                "portable tier with CAJETA_GPU_COOPMATRIX_IMPL=software.",
+                "XPU-N04");
+        uint64_t v = ci->getZExtValue();
+        if (v > 1)
+            throw cajeta::Exception(
+                std::string("XPU NVPTX cooperative matrix: CooperativeMatrix.") +
+                op + " got layout " + std::to_string(v) +
+                "; only 0 (row-major) and 1 (col-major) exist.", "XPU-N04");
+        return (uint32_t) v;
     }
 };
 
