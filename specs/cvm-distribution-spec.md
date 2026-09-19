@@ -75,24 +75,60 @@ proves it.
 
 ### 2.7 Where the list comes from
 
-`index.json` is published **per release**, so it can describe the release
-that carries it and cannot enumerate its siblings. Enumeration needs a
-source that knows about all of them.
+`index.json` is published **per release**, at both
+`releases/download/<tag>/index.json` and the rolling
+`releases/latest/download/index.json`. So a stable well-known URL already
+exists, and it already carries per-triple assets with checksums. What it
+cannot do is describe its siblings, because each release publishes its
+own.
 
-GitHub's releases API is that source: `GET /repos/{owner}/{repo}/releases`
-returns every release with its assets. The costs are real and must be
-designed for rather than discovered.
+Enumeration therefore needs a second document that outlives any one
+release: a **catalog**, written by the release job.
 
-- **2.7.1** Unauthenticated requests are rate limited to 60 per hour per
-  IP. `list` must work unauthenticated for an ordinary user, so it makes
-  ONE request and does not walk assets per release.
-- **2.7.2** When a token is present in the environment, it is used, and
-  the limit stops mattering for developers and CI.
-- **2.7.3** When the rate limit is hit, the message says so and says
-  when it resets, rather than reporting a network error.
-- **2.7.4** The host triple is matched against asset NAMES from the one
-  listing response. The naming is already fixed by release.yml:
-  `cajeta-v<version>-<triple>` and `cvm-v<version>-<triple>`.
+The alternative considered and rejected was having each cvm query
+GitHub's releases API. It works, and it was the first draft of this
+spec, but it puts a 60-per-hour unauthenticated rate limit in front of
+every user, it couples cvm to where the project happens to be hosted, and
+it answers the wrong question. GitHub reports what releases EXIST,
+including ones whose platform legs failed partway or whose assets are
+incomplete. What an installer needs is what is INSTALLABLE.
+
+- **2.7.1** The catalog lives at a stable well-known URL, and that URL is
+  the only location knowledge cvm carries.
+- **2.7.2** The release job REGENERATES it from the published set rather
+  than appending to it. An appended file drifts the first time a run is
+  re-run or a release is removed.
+- **2.7.3** It contains only releases whose every platform leg completed.
+  A release that shipped three of four triples is not installable on the
+  fourth and must not appear as though it is.
+- **2.7.4** The release job is the only thing that queries GitHub. It is
+  authenticated, it runs once per release rather than once per user, and
+  the rate limit stops being a design constraint.
+- **2.7.5** An entry carries the version, the per-triple asset URL and
+  SHA-256, and whether the entry is valid.
+- **2.7.6** A release can be marked **yanked**, and cvm refuses to
+  install a yanked version unless explicitly forced. GitHub has no yank
+  concept for releases, so without this a bad release cannot be
+  retracted and an installer will keep offering it.
+- **2.7.7** The release job FAILS when the catalog it just wrote does not
+  contain the version it just published. Without that guard the failure
+  mode is silent staleness, where `install latest` serves an old version
+  while a newer one exists and nothing reports anything.
+- **2.7.8** cvm contains no knowledge of GitHub. It fetches one document
+  and parses it.
+
+### 2.8 Where the catalog is stored
+
+Committed to the repository and written by the release job. History then
+shows every change, and a yank is a reviewable commit. The cost is that
+the workflow needs write access to the default branch.
+
+Two alternatives remain viable and are recorded rather than discarded. A
+dedicated mutable release whose single asset is replaced each time needs
+no repository write and reuses the upload path the job already has. And
+`olla.cajeta.dev`, which cvm's own manifest already declares as a
+repository, is existing infrastructure, though it is a package registry
+rather than a release index.
 
 ## 3. Install
 
