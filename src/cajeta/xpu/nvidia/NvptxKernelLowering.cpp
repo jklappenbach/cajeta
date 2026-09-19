@@ -400,13 +400,21 @@ public:
     ImplTier coopMatrixTier(llvm::Type* elem, uint32_t rows, uint32_t cols,
                             uint32_t use) override {
         if (rows == 16 && cols == 16) {
-            if (use == 2) {                              // accumulator (v1: f32)
-                if (elem->isFloatTy()) return ImplTier::Native;
-            } else if (elem->isHalfTy() || elem->isBFloatTy()) {  // A/B operand
+            if (use == 2) {                        // accumulator: f32 or s32
+                if (elem->isFloatTy() || elem->isIntegerTy(32))
+                    return ImplTier::Native;
+            } else if (elem->isHalfTy() || elem->isBFloatTy()   // A/B operand
+                       || elem->isIntegerTy(8)) {
                 return ImplTier::Native;
             }
         }
-        return ImplTier::Portable;     // int8/u8, f64, other shapes → portable tile
+        // f64 and every other shape keep the portable tile. 8-bit operands go
+        // native from here (4A.2.7): they were 58 of the 66 tier fallbacks the
+        // llm library emitted on sm_89, and the tile IS their scratch. The
+        // signedness question they raise cannot be answered HERE — this hook
+        // sees one operand at a time and LLVM integers are signless — so it is
+        // settled in coopMatrixMulAdd, which has both operands' signFlags.
+        return ImplTier::Portable;
     }
 
     // sm_89 already has tensor cores, so no kernel ABI attribute is needed.
@@ -449,11 +457,21 @@ public:
                          "(no per-element WMMA swizzle); correct, unaccelerated.\n";
         }
         uint32_t lay = constLayout(layout, "store");
-        llvm::Function* f = nvDecl(
-            m, lay == 1
-                   ? llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_col_stride
-                   : llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_row_stride,
-            ptr->getType());
+        // An s32 accumulator is {i32 x 8}; f32's is {float x 8}. The element
+        // type picks the store, and getting it wrong is an IR verifier error
+        // rather than a silent miscompile, which is the one mercy here.
+        auto* dFrag = llvm::cast<llvm::StructType>(matrixVal->getType());
+        const bool i32Acc = dFrag->getElementType(0)->isIntegerTy(32);
+        llvm::Intrinsic::ID sid;
+        if (i32Acc)
+            sid = lay == 1
+                ? llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_s32_col_stride
+                : llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_s32_row_stride;
+        else
+            sid = lay == 1
+                ? llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_col_stride
+                : llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_row_stride;
+        llvm::Function* f = nvDecl(m, sid, ptr->getType());
         std::vector<llvm::Value*> args;
         args.push_back(ptr);
         appendStructElems(b, matrixVal, args);
@@ -464,7 +482,7 @@ public:
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* a, llvm::Value* bMat,
                                   llvm::Value* c, llvm::Type* /*matrixType*/,
-                                  uint32_t /*signFlags*/, uint32_t aLayout = 0,
+                                  uint32_t signFlags, uint32_t aLayout = 0,
                                   uint32_t bLayout = 0) override {
         // Pick mma by the A fragment's SHAPE, never a scalar probe: f16 A/B is
         // {<2 x half> x 8} and bf16 is {i32 x 4}, so casting element 0 to
@@ -476,6 +494,49 @@ public:
         // are threaded here from the loads rather than assumed row/row.
         bool aCol = aLayout == 1, bCol = bLayout == 1;
         llvm::Intrinsic::ID id;
+
+        // 8-bit operands: {i32 x 2}, which the shape distinguishes from
+        // bf16's {i32 x 4} (4A.2.7).
+        if (bf && aFrag->getNumElements() == 2) {
+            // PTX has .s8 and .u8 and NO MIXED FORM, so A and B must agree.
+            // Picking one silently would read a signed -1 as 255. Refuse and
+            // name the escape hatch instead — this combination is expressible
+            // (dotAccum takes unsigned weights against signed activations) and
+            // simply has no instruction.
+            const bool aSigned = (signFlags & 0x1u) != 0;
+            const bool bSigned = (signFlags & 0x2u) != 0;
+            if (aSigned != bSigned)
+                throw cajeta::Exception(
+                    std::string("XPU NVPTX cooperative matrix: "
+                    "CooperativeMatrix.mma got mismatched operand SIGNEDNESS (")
+                    + (aSigned ? "signed" : "unsigned") + " A against "
+                    + (bSigned ? "signed" : "unsigned") + " B). wmma has .s8 "
+                    "and .u8 8-bit forms and no mixed one, and executing one "
+                    "as the other reads -1 as 255. Give both operands the same "
+                    "dtype, or force the portable tier with "
+                    "CAJETA_GPU_COOPMATRIX_IMPL=software.", "XPU-N04");
+            // The NON-saturating form, deliberately: the portable software
+            // tile accumulates with plain mul/add carrying no nsw/nuw, so it
+            // WRAPS. `.satfinite` clamps, which would agree on every input
+            // that does not overflow and disagree on the ones that do — and
+            // this backend is checked against that tile bit for bit.
+            if (aSigned)
+                id = aCol ? (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_col_s8
+                                  : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_row_s8)
+                          : (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_col_s8
+                                  : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_s8);
+            else
+                id = aCol ? (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_col_u8
+                                  : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_row_u8)
+                          : (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_col_u8
+                                  : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_u8);
+            std::vector<llvm::Value*> iargs;
+            appendStructElems(b, a, iargs);
+            appendStructElems(b, bMat, iargs);
+            appendStructElems(b, c, iargs);
+            return b.CreateCall(nvDecl(m, id), iargs, "wmma.mma");
+        }
+
         if (bf) {
             id = aCol ? (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_col_bf16
                               : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_row_bf16)
@@ -657,6 +718,20 @@ private:
                                             uint32_t layout = 0) {
         bool bf = elem->isBFloatTy();
         bool col = layout == 1;
+        // 8-bit operands and their 32-bit accumulator. The LOAD does not care
+        // about signedness — s8 and u8 fragments are the same {i32 x 2} register
+        // image and the load only moves bytes — so `s8` is used for both and the
+        // interpretation is chosen at the mma, which is where it means anything.
+        if (elem->isIntegerTy(8)) {
+            if (use == 0)
+                return col ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_s8_col_stride
+                           : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_s8_row_stride;
+            return col ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_b_s8_col_stride
+                       : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_b_s8_row_stride;
+        }
+        if (use == 2 && elem->isIntegerTy(32))
+            return col ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_c_s32_col_stride
+                       : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_c_s32_row_stride;
         if (use == 0) {
             if (col)
                 return bf ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_bf16_col_stride
@@ -681,16 +756,35 @@ private:
         return nvDecl(m, nvWmmaLoadId(use, elem, layout), ptrTy);
     }
 
-    // The fragment's scalar element: the vector element for f16 A/B, bfloat for
-    // bf16 A/B ({i32 x 4} is a register image), the struct element for f32.
+    // The fragment's scalar element, recovered from the fragment's SHAPE.
+    //
+    // Three of the five register images are `{i32 x n}` and a scalar probe
+    // cannot tell them apart, so the COUNT carries the answer. Verified
+    // against the IR verifier, 2026-09-19:
+    //
+    //     f16  A/B   {<2 x half> x 8}   vector members
+    //     bf16 A/B   {i32 x 4}
+    //     s8   A/B   {i32 x 2}
+    //     s32  C/D   {i32 x 8}
+    //     f32  C/D   {float x 8}        float members
+    //
+    // Adding a shape that collides with one of these must extend this, not
+    // reuse it — reading an s8 fragment as bf16 lowers cleanly and computes
+    // nonsense.
     static llvm::Type* nvFragScalar(llvm::Type* matrixType) {
-        llvm::Type* e0 =
-            llvm::cast<llvm::StructType>(matrixType)->getElementType(0);
+        auto* st = llvm::cast<llvm::StructType>(matrixType);
+        llvm::Type* e0 = st->getElementType(0);
         if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(e0))
-            return vt->getElementType();
-        if (e0->isIntegerTy(32))
-            return llvm::Type::getBFloatTy(matrixType->getContext());
-        return e0;
+            return vt->getElementType();                      // f16
+        if (e0->isIntegerTy(32)) {
+            llvm::LLVMContext& ctx = matrixType->getContext();
+            switch (st->getNumElements()) {
+                case 2: return llvm::Type::getInt8Ty(ctx);    // s8/u8 A/B
+                case 8: return llvm::Type::getInt32Ty(ctx);   // s32 C/D
+                default: return llvm::Type::getBFloatTy(ctx); // bf16 A/B ({i32 x 4})
+            }
+        }
+        return e0;                                            // f32
     }
 
     // Row-major (0) and col-major (1) are both native. A NON-CONSTANT layout

@@ -40,6 +40,7 @@
 
 #pragma once
 
+#include "cajeta/error/Exception.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/method/Method.h"
@@ -128,8 +129,16 @@ inline Lowered lowerForNvptx(const std::string& source,
     llvm::LLVMContext ctx;
     llvm::Module dev("probe_dev", ctx);
     nvidia::configureDeviceModule(dev, *tm);
+    // BOTH catches are load-bearing. `cajeta::Exception` — which is what the
+    // compiler's own refusals are — does NOT derive from std::exception, so a
+    // std::exception-only catch lets a refusal escape as an "unknown C++
+    // exception" and the test dies instead of reporting a reason. Measured
+    // 2026-09-19 against the mixed-signedness refusal in 4A.2.7.
     try {
         nvidia::lowerKernel(k, dev);
+    } catch (cajeta::Exception& e) {
+        out.why = e.getMessage();
+        return out;
     } catch (const std::exception& e) { out.why = e.what(); return out; }
     { llvm::raw_string_ostream os(out.ir); dev.print(os, nullptr); }
     out.ptx = nvidia::emitPtx(dev, *tm);
