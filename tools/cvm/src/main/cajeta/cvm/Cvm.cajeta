@@ -28,17 +28,17 @@ public final class Cvm {
     // toolchain version it manages). Tracks repo VERSION at release time.
     private static String VERSION = "0.1.0";
 
-    // Program entry. `args` is the full C-style argv: args[0] is the
-    // program path, args[1..] are the user arguments (cajeta forwards argv
-    // verbatim through the --emit=exe main shim). Returns the process exit
-    // code: 0 ok, 1 usage error, 2 not-yet-built.
+    // Program entry. `args` holds the USER arguments only — `cvm which`
+    // arrives as args[0] == "which". The --emit=exe main shim does not
+    // prepend the program path, so there is no argv[0] to skip. Returns the
+    // process exit code: 0 ok, 1 usage error, 2 not-yet-built.
     public static int32 main(String[] args) {
-        if (args.count() < 2) {
+        if (args.count() < 1) {
             usage();
             return 1;
         }
 
-        String cmd = args[1];
+        String cmd = args[0];
 
         if (cmd.equals("--version") || cmd.equals("-V") || cmd.equals("version")) {
             System.stdout.println("cvm " + VERSION);
@@ -81,8 +81,8 @@ public final class Cvm {
     // ~/.cajeta/versions/<ver>, and make it the active toolchain.
     private static int32 install(String[] args) {
         String selector = "latest";
-        if (args.count() > 2) {
-            selector = args[2];
+        if (args.count() > 1) {
+            selector = args[1];
         }
 
         String home #= Home.dir();
@@ -101,12 +101,12 @@ public final class Cvm {
     // settings. (Installing a toolchain over the network is the separate
     // `install` verb — D12 Phase 1 network half.)
     private static int32 setDefault(String[] args) {
-        if (args.count() < 3) {
+        if (args.count() < 2) {
             System.stderr.println("cvm: 'default' needs a version "
                 + "(e.g. 'cvm default 1.0').");
             return 1;
         }
-        String version = args[2];
+        String version = args[1];
 
         String home #= Home.dir();
         if (home == null) {
@@ -204,7 +204,7 @@ public final class Cvm {
     // shim install, which self-updates. Version-independence makes a stale
     // PM-managed cvm harmless regardless.
     private static int32 self(String[] args) {
-        if (args.count() < 3 || !args[2].equals("update")) {
+        if (args.count() < 2 || !args[1].equals("update")) {
             System.stderr.println("cvm: usage: cvm self update");
             return 1;
         }
