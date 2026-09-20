@@ -107,10 +107,32 @@ DeviceModel buildDeviceModel(const RawDeviceProps& props) {
             m.simdsPerMP = props.simdsPerMP;
         else if (unsigned s = cajeta_xpu_simds_per_mp(m.archName.c_str()))
             m.simdsPerMP = s;
-        // AMD wants two waves per SIMD, measured; NVIDIA one. Keyed on the
-        // arch token because it is a TUNING choice per family, not a fact the
-        // driver reports -- and the right long-term home for it is a tuned
-        // value discovered per machine.
+        // A SEED for the dispatch floor, not an answer. Keyed on the arch
+        // token because it is a tuning choice per family, not a fact the
+        // driver reports -- which makes it the one per-device constant in
+        // this file and a thing to remove, not to extend.
+        //
+        // MEASURED 2026-09-19, and the seed is badly wrong on Ada. Sweeping
+        // the interleaved Q4_K mat-vec over a 288 MB (cache-defeating)
+        // weight on sm_89, at 2 waves per block:
+        //
+        //     80 wg (gfx1151's answer)    84.8 GB/s
+        //    256 wg (this seed, NVIDIA)  260.4
+        //   2048 wg (whole problem)      654.7   <- still climbing
+        //
+        // The implied target for Ada is ~8 waves per SIMD, against the 1
+        // this leaves standing. Worse, it is not a different CONSTANT but a
+        // different CURVE SHAPE: gfx1151 has a real interior peak (extra
+        // waves evict each other from a 32 MB MALL on LPDDR5X) while Ada is
+        // monotonic to the whole problem (72 MB of L2 on ~1 TB/s GDDR6X
+        // needs many waves in flight to saturate). No formula over driver
+        // attributes covers both, so the answer has to be MEASURED per
+        // machine -- spec §1.4's third tier, via cajeta.xpu.Autotune.
+        //
+        // Do NOT add a second arch token here with 8 in it. That is the
+        // llama.cpp pattern this project exists to avoid, and the plan's
+        // own rule: a constant written to make a number better is a unit
+        // failure.
         if (m.archName.rfind("gfx", 0) == 0) { m.wavesPerSimdTarget = 2; }
     }
 
@@ -126,9 +148,15 @@ unsigned ldsCeilingPerBlock(const DeviceModel& m) {
     return m.ldsBytesPerBlock ? m.ldsBytesPerBlock : m.ldsBytesPerMP;
 }
 
-// Every SIMD on the part divided by the waves one block puts on one SIMD. This is
-// a SATURATION target, not an occupancy maximum: past it, waves evict each other
-// from L1/L2. 0 when unqueried — a guess would read as a measurement.
+// Every SIMD on the part divided by the waves one block puts on one SIMD.
+//
+// A FLOOR, not a maximum. This used to claim it was a saturation point past
+// which waves evict each other from L1/L2 — true on gfx1151, where it was
+// measured, and false on Ada, where throughput climbs monotonically 2.5x
+// beyond this figure (see buildDeviceModel). A caller is right to tune ABOVE
+// what this returns; it is wrong to treat it as a ceiling.
+//
+// 0 when unqueried — a guess would read as a measurement.
 unsigned dispatchBlocks(const DeviceModel& m, unsigned wavesPerBlock) {
     if (!m.queried || wavesPerBlock == 0) return 0;
     if (m.mpCount == 0 || m.simdsPerMP == 0) return 0;
