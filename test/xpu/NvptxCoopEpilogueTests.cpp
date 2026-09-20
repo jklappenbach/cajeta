@@ -136,6 +136,48 @@ const char* kScaledSource =
     "    public static int32 run() { return 1; }\n"
     "}\n";
 
+// The SCALAR column form, and the gap that let a wrong epilogue ship for a
+// day. Every test above drives `rank1Accum` / `scaledAccumInto`, whose column
+// factor is a Shared VECTOR the lowering indexes by the element's own column.
+// `rank1AccumS` / `scaledAccumIntoS` / `scaledAccumI32` pass ONE register
+// value instead, on the contract (CooperativeMatrix.cajeta:247) that "on the
+// native WMMA mapping the column of every element a lane holds is `lane & 15`".
+//
+// That premise is AMD's. On NVIDIA's m16n16k16 a lane's eight accumulator
+// elements span FOUR columns — `col2 + {0, 1, 8, 9}` — so one scalar cannot be
+// the factor for all of them, and the first lowering used it for all eight.
+// Column 0 came out right and everything else was wrong, which is precisely
+// what cajeta-llm's eleven "Mw" kernels reported: element 0 correct, row 1
+// onward wrong, on every kernel that used an S-form.
+//
+// The kernel below passes `colF = 1 + (lane & 15)`, so under the contract
+// cell (r, c) must be `1 + c` — the cell names its own column. A scalar
+// applied to the whole fragment instead yields `1 + lane`, which is a
+// readable permutation rather than a near miss.
+const char* kScalarColSource =
+    "package test;\n"
+    "import cajeta.xpu.Barrier;\n"
+    "import cajeta.xpu.CooperativeMatrix;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "import cajeta.xpu.Shared;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void epiScalarCol(KernelBuffer<float32> rowIn,\n"
+    "            KernelBuffer<float32> colIn, KernelBuffer<float32> out) {\n"
+    "        Shared<float32> rowF = shared float32[16];\n"
+    "        uint32 lane = KernelThread.x();\n"
+    "        if (lane < 16) { rowF[lane] = rowIn[lane]; }\n"
+    "        Barrier.workgroup();\n"
+    "        float32 cv = colIn[(int64) (lane & 15)];\n"
+    "        CooperativeMatrix<float32,16,16,2> facc;\n"
+    "        facc.splat(0.0f);\n"
+    "        facc.rank1AccumS(rowF, cv);\n"
+    "        facc.store(out, 0, 0, 16);\n"
+    "    }\n"
+    "    public static int32 run() { return 1; }\n"
+    "}\n";
+
 Lowered lower(const char* src, const std::string& kernel) {
     return lowerForNvptx(src, kernel, "test.M", "sm_89", "coopepi");
 }
@@ -265,6 +307,40 @@ TEST(NvptxCoopEpilogueTests, theFragmentLayoutPlacesEveryElementAtItsOwnRowAndCo
                 (int) colProbe[r * N + c] != (int) c)
                 bad = true;
     if (bad) reportMapping(rowProbe, colProbe);
+}
+
+// The scalar column factor must reach EVERY column of the lane's fragment,
+// not just the one the AMD layout would have given it. rowF is all ones and
+// colF is `1 + c`, so every cell must equal its own column index plus one.
+TEST(NvptxCoopEpilogueTests, theScalarColumnFormReachesEveryColumnOfTheFragment) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    ASSERT_TRUE(loweredNatively(kScalarColSource, "epiScalarCol"));
+
+    std::vector<float> ones(N, 1.0f), colRamp(N);
+    for (unsigned i = 0; i < N; ++i) colRamp[i] = 1.0f + (float) i;
+
+    std::string why;
+    std::vector<float> got;
+    ASSERT_TRUE(runEpilogue(kScalarColSource, "epiScalarCol", ones, colRamp,
+                            &got, &why))
+        << why;
+
+    std::size_t bad = 0;
+    for (unsigned r = 0; r < N; ++r)
+        for (unsigned c = 0; c < N; ++c) {
+            const float want = 1.0f + (float) c;
+            const float have = got[r * N + c];
+            if (have == want) continue;
+            if (++bad <= 6)
+                ADD_FAILURE()
+                    << "(" << r << "," << c << ") = " << have << ", want "
+                    << want << "; the value present is column "
+                    << (int) (have - 1.0f)
+                    << ", so the scalar was taken from the lane that owns THAT"
+                       " column instead of this one";
+        }
+    EXPECT_EQ(bad, 0u) << bad << " of " << TILE << " cells took the wrong "
+                          "column's factor";
 }
 
 // The acceptance gate. The native epilogue must return exactly what the

@@ -788,6 +788,37 @@ public:
         return 0;
     }
 
+    // THE SCALAR COLUMN FACTOR, and the one place AMD's fragment layout is
+    // baked into a portable contract. CooperativeMatrix.cajeta:247 states it
+    // outright: "on the native WMMA mapping the column of every element a
+    // lane holds is `lane & 15`, so `colF[c]` is a per-lane constant". That
+    // is TRUE ON AMD, where a wave32 lane owns exactly one column. It is
+    // FALSE HERE: an m16n16k16 accumulator gives each lane eight elements
+    // spanning FOUR columns, `col2 + {0, 1, 8, 9}`.
+    //
+    // The first version of this epilogue used the one scalar for all eight
+    // elements. Column 0 came out right and the rest did not, which is
+    // exactly what eleven cajeta-llm "Mw" kernels reported — element 0
+    // correct, row 1 onward wrong — and what
+    // NvptxCoopEpilogueTests.theScalarColumnFormReachesEveryColumnOfTheFragment
+    // measures directly: 240 of 256 cells took another column's factor.
+    //
+    // The rest of the contract is what makes the fix exact rather than a
+    // guess: "both lanes holding column `c` pass the same value", so column
+    // c's factor is whatever lane c holds. One shuffle recovers it. Four
+    // distinct columns per lane means at most four shuffles for a whole
+    // fragment, against an LDS round trip and a barrier for the vector form
+    // — the S-verbs keep the saving they were introduced for.
+    llvm::Value* scalarColFactor(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 llvm::Value* scalar, llvm::Value* col) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Type* ty = scalar->getType();
+        llvm::Value* bits = ty->isIntegerTy(32) ? scalar
+                                                : b.CreateBitCast(scalar, i32);
+        llvm::Value* got = waveShuffle(b, m, bits, col);
+        return ty->isIntegerTy(32) ? got : b.CreateBitCast(got, ty);
+    }
+
     llvm::Value* coopMatrixEpilogueAccum(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
             llvm::Value* faccVal, llvm::Value* rowFPtr, llvm::Type* rowETy,
@@ -844,7 +875,7 @@ public:
                 rowETy, b.CreateGEP(rowETy, rowFPtr, row, "epi.rf.ptr"),
                 "epi.rf");
             llvm::Value* cv = colFScalar
-                ? colFScalar
+                ? scalarColFactor(b, m, colFScalar, col)
                 : b.CreateLoad(
                       colETy, b.CreateGEP(colETy, colFPtr, col, "epi.cf.ptr"),
                       "epi.cf");
@@ -856,7 +887,8 @@ public:
                 term = b.CreateFMul(term, av);
             }
             if (rowGPtr) {
-                llvm::Value* cgv = colGScalar;
+                llvm::Value* cgv = colGScalar
+                    ? scalarColFactor(b, m, colGScalar, col) : nullptr;
                 if (!cgv && colGPtr)
                     cgv = b.CreateLoad(
                         colETy,
@@ -873,21 +905,53 @@ public:
         return out;
     }
 
-    // iacc[e] += colS * acc[e]. Elementwise over the fragment, so unlike the
-    // float epilogue above this needs NO layout at all -- element e of one
-    // accumulator is element e of the other. NVIDIA has no 24-bit multiply
-    // intrinsic to reach for the way AMD does with llvm.amdgcn.mul.i24, and a
-    // plain i32 multiply is already full rate here, so this is CreateMul.
+    // iacc[e] += colS * acc[e]. The accumulator-to-accumulator part needs no
+    // layout — element e of one is element e of the other — but `colS` is a
+    // per-lane COLUMN factor under the same contract as scaledAccumIntoS, so
+    // it needs the layout for exactly the same reason.
+    //
+    // CORRECTION, 2026-09-20. This comment used to read "unlike the float
+    // epilogue above this needs NO layout at all", and that was wrong in the
+    // half that mattered. It described the accumulator mapping and then drew
+    // a conclusion about the scale, which is a different value with a
+    // different rule. The five `theQ*Mw8DeqKernelAgreesWith...` failures were
+    // this verb, not the float one.
+    //
+    // NVIDIA has no 24-bit multiply intrinsic to reach for the way AMD does
+    // with llvm.amdgcn.mul.i24, and a plain i32 multiply is already full rate
+    // here, so the product itself is CreateMul.
     llvm::Value* coopMatrixScaledAccumI32(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
             llvm::Value* iaccVal, llvm::Value* colS) override {
-        (void) m;
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         const unsigned n = fragCount(iaccVal->getType());
+        if (n != 8)
+            throw cajeta::Exception(
+                std::string("XPU NVPTX cooperative matrix: "
+                "CooperativeMatrix.scaledAccumI32 takes a per-lane column "
+                "factor, so it needs the element-to-(row,column) mapping, and "
+                "that is established here only for the 8-element m16n16k16 "
+                "accumulator. This one has ") + std::to_string(n) +
+                " elements. Add the shape to NvptxCoopEpilogueTests and read "
+                "the mapping off the failure, or force the portable tier with "
+                "CAJETA_GPU_COOPMATRIX_IMPL=software.", "XPU-N04");
+
+        llvm::Value* lane = waveLaneId(b, m);
+        llvm::Value* col2 = b.CreateShl(
+            b.CreateAnd(lane, llvm::ConstantInt::get(i32, 3)),
+            llvm::ConstantInt::get(i32, 1), "i32epi.col2");
         llvm::Value* out = iaccVal;
         for (unsigned e = 0; e < n; ++e) {
+            const unsigned h = e >> 2;
+            const unsigned j = e & 3;
+            llvm::Value* col = b.CreateAdd(
+                col2, llvm::ConstantInt::get(i32, 8u * h + (j & 1u)),
+                "i32epi.col");
+            llvm::Value* cs = scalarColFactor(b, m, colS, col);
             llvm::Value* av = fragGet(b, accVal, e);
             llvm::Value* cur = fragGet(b, out, e);
-            out = fragSet(b, out, b.CreateAdd(cur, b.CreateMul(av, colS)), e);
+            out = fragSet(b, out, b.CreateAdd(cur, b.CreateMul(av, cs)), e);
         }
         return out;
     }
