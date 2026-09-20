@@ -136,7 +136,112 @@ bool runFromWords(std::vector<int32_t>* out, std::string* why) {
     return true;
 }
 
+// EIGHT WAVES, which is the gap between the single-warp test above and the
+// kernels that failed. Those run 8 waves per block and each stages a
+// different operand at the same moment, so a wrong wave slice shows up here
+// and nowhere else. Every wave is given its own value range, so a wave
+// reading its neighbour's columns is visible as the neighbour's numbers.
+const char* kMultiWaveSource =
+    "package test;\n"
+    "import cajeta.xpu.CooperativeMatrix;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    @Occupancy(maxThreads = 256)\n"
+    "    public static void fwMw(KernelBuffer<int8> ident,\n"
+    "            KernelBuffer<int32> words, KernelBuffer<int32> out) {\n"
+    "        uint32 tid = KernelThread.x();\n"
+    "        uint32 wid = tid / 32;\n"
+    "        CooperativeMatrix<int8,16,16,0> ma;\n"
+    "        ma.load(ident, 0, 0, 16);\n"
+    "        CooperativeMatrix<int8,16,16,1> mb;\n"
+    "        mb.fromWords(words[(int64) tid * 4L],\n"
+    "                     words[(int64) tid * 4L + 1L],\n"
+    "                     words[(int64) tid * 4L + 2L],\n"
+    "                     words[(int64) tid * 4L + 3L]);\n"
+    "        CooperativeMatrix<int32,16,16,2> mc;\n"
+    "        mc.splat(0);\n"
+    "        mc.mma(ma, mb);\n"
+    "        mc.store(out, wid * 256, 0, 16);\n"
+    "    }\n"
+    "    public static int32 run() { return 1; }\n"
+    "}\n";
+
+// Wave w contributes 1 + k + 16*(n%7) + 100*w, so a slice collision reads as
+// another wave's hundreds digit.
+int8_t cellValueW(unsigned k, unsigned n, unsigned w) {
+    return (int8_t) (1 + (int) k + 16 * (int) (n % 7) + 100 * (int) w);
+}
+
 } // namespace
+
+TEST(NvptxCoopFromWordsTests, eachWaveStagesIntoItsOwnSlice) {
+    CAJETA_SKIP_IF_NO_CUDA();
+
+    const Lowered l =
+        lowerForNvptx(kMultiWaveSource, "fwMw", "test.M", "sm_89", "coopfwmw");
+    ASSERT_TRUE(l.ok) << l.why;
+    std::vector<uint8_t> cubin =
+        cajeta::xpu::nvidia::assembleCubin(l.ptx, "sm_89");
+    ASSERT_FALSE(cubin.empty()) << "ptxas rejected the PTX";
+
+    cajeta::xpu::nvidia::CudaDriver cuda;
+    ASSERT_TRUE(cuda.init());
+    auto mod = cuda.loadModule(cubin.data(), cubin.size());
+    ASSERT_TRUE(mod);
+    auto fn = cuda.getFunction(mod, "fwMw");
+    ASSERT_TRUE(fn);
+
+    constexpr unsigned WAVES = 8;
+    std::vector<int8_t> ident(TILE, 0);
+    for (unsigned i = 0; i < N; ++i) ident[i * N + i] = 1;
+
+    std::vector<int32_t> words(WAVES * 32 * 4, 0);
+    for (unsigned t = 0; t < WAVES * 32; ++t) {
+        const unsigned w = t / 32, n = (t % 32) % N;
+        for (unsigned q = 0; q < 4; ++q) {
+            uint32_t packed = 0;
+            for (unsigned byte = 0; byte < 4; ++byte)
+                packed |= ((uint32_t) (uint8_t) cellValueW(q * 4 + byte, n, w))
+                          << (8 * byte);
+            words[t * 4 + q] = (int32_t) packed;
+        }
+    }
+
+    auto dI = cuda.alloc(TILE);
+    auto dW = cuda.alloc(words.size() * sizeof(int32_t));
+    auto dO = cuda.alloc(WAVES * TILE * sizeof(int32_t));
+    cuda.memcpyHtoD(dI, (void*) ident.data(), TILE);
+    cuda.memcpyHtoD(dW, (void*) words.data(), words.size() * sizeof(int32_t));
+    void* params[] = { &dI, &dW, &dO };
+    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, /*block=*/WAVES * 32, params));
+    ASSERT_TRUE(cuda.synchronize());
+    std::vector<int32_t> got(WAVES * TILE, INT32_MIN);
+    ASSERT_TRUE(cuda.memcpyDtoH(got.data(), dO,
+                                WAVES * TILE * sizeof(int32_t)));
+    cuda.free(dI); cuda.free(dW); cuda.free(dO);
+
+    std::size_t bad = 0;
+    std::string detail;
+    for (unsigned w = 0; w < WAVES; ++w)
+        for (unsigned k = 0; k < N; ++k)
+            for (unsigned n = 0; n < N; ++n) {
+                const int want = (int) cellValueW(k, n, w);
+                const int have = got[w * TILE + k * N + n];
+                if (have == want) continue;
+                if (bad < 8)
+                    detail += "    wave " + std::to_string(w) + " (k=" +
+                              std::to_string(k) + ",n=" + std::to_string(n) +
+                              ") want " + std::to_string(want) + " got " +
+                              std::to_string(have) + "\n";
+                ++bad;
+            }
+    EXPECT_EQ(bad, 0u)
+        << bad << " of " << (WAVES * TILE) << " cells wrong across 8 waves — "
+           "the per-wave staging slices overlap:\n" << detail;
+}
+
 
 // The contract, measured. Identity times B is B, so out[k*16 + n] must be the
 // byte the lane owning column n contributed for row k. A wrong staging layout

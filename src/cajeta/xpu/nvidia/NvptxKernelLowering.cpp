@@ -712,10 +712,30 @@ public:
 
         llvm::Value* wavePtr =
             b.CreateGEP(i8, stage, {waveOff}, "fw.waveptr");
-        return coopMatrixLoad(b, m, wavePtr,
-                              llvm::ConstantInt::get(i32, 1),   // col-major
-                              llvm::ConstantInt::get(i32, cols),
-                              matrixType, rows, cols, use);
+        llvm::Value* frag =
+            coopMatrixLoad(b, m, wavePtr,
+                           llvm::ConstantInt::get(i32, 1),   // col-major
+                           llvm::ConstantInt::get(i32, cols),
+                           matrixType, rows, cols, use);
+
+        // A SECOND sync, for the hazard in the other direction. Every call in
+        // a kernel shares this one buffer, so the next `fromWords` round
+        // stores over what this load is still reading -- write-after-read, not
+        // read-after-write. It is tempting to assume a warp's lanes move in
+        // lockstep and skip it; since Volta they do not, independent thread
+        // scheduling lets them diverge and reconverge freely, so a lane can
+        // reach the next store while its neighbour is still loading.
+        //
+        // HONESTY NOTE: this was added on the hypothesis that the hazard
+        // explained two llm kernels disagreeing with their reference. IT DID
+        // NOT -- the suite was unchanged with and without it, and the cause
+        // proved to be elsewhere. It is kept because the hazard is real
+        // regardless of that bug, and costs one warp sync per call. Do not
+        // read it as a measured fix for anything.
+        b.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
+                         &m, llvm::Intrinsic::nvvm_bar_warp_sync),
+                     {llvm::ConstantInt::get(i32, 0xffffffffu)});
+        return frag;
     }
 
     // --- the fused GEMM epilogue (plan 4A.2.8) ----------------------------
