@@ -2904,8 +2904,18 @@ namespace cajeta {
         scanLive(externalModules);
         std::vector<std::string> nativeArchives;
         if (!liveNativeLibs.empty()) {
+            const std::string platform = hostNativePlatform();
+            auto searchDirs = nativeLinkSearchDirs();
+            // A dependency carries its static library inside its own `.cja`.
+            // Stage those out first and search them BEFORE the ambient dirs, so
+            // a build resolves against the exact artifact its classpath pins
+            // rather than whatever a previous install left in ~/.cajeta/native.
+            if (auto staged = stageClasspathNativeArtifacts(
+                    classpath, platform, archiveRootPath)) {
+                searchDirs.insert(searchDirs.begin(), *staged);
+            }
             auto resolved = resolveNativeArchivesForLink(
-                liveNativeLibs, hostNativePlatform(), nativeLinkSearchDirs());
+                liveNativeLibs, platform, searchDirs);
             if (!resolved) {
                 cerr << "cajeta: --emit=exe: "
                      << llvm::toString(resolved.takeError()) << std::endl;

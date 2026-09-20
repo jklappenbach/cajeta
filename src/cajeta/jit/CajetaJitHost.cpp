@@ -708,7 +708,23 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
         (void) execSession;
         const char prefix = out.jit->getDataLayout().getGlobalPrefix();
         const std::string platform = cajeta::hostNativePlatform();
-        const std::vector<std::string> dirs = cajeta::nativeLinkSearchDirs();
+        std::vector<std::string> dirs = cajeta::nativeLinkSearchDirs();
+        // The same staging the AOT link does. A dependency's static library
+        // lives inside its `.cja`, and the JIT loads files too, so without this
+        // a JIT run resolves a native lib only where something else has already
+        // unpacked it by hand.
+        {
+            std::error_code stageEc;
+            const auto stage = std::filesystem::temp_directory_path()
+                             / "cajeta-jit-native";
+            std::filesystem::create_directories(stage, stageEc);
+            if (!stageEc) {
+                if (auto staged = cajeta::stageClasspathNativeArtifacts(
+                        opts.classpath, platform, stage.string())) {
+                    dirs.insert(dirs.begin(), *staged);
+                }
+            }
+        }
         for (const auto& lib : liveNativeLibs) {
             auto art = cajeta::findNativeJitArtifact(lib, platform, dirs);
             if (!art) continue;  // absent -> lazy lookup fails loud only if needed

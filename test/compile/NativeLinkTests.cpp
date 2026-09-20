@@ -7,6 +7,7 @@
 // unused native lib is never resolved/linked/fail-loud.
 
 #include "cajeta/compile/NativeLink.h"
+#include "cajeta/compile/CajetaArchive.h"
 
 #include <gtest/gtest.h>
 #include <llvm/IR/BasicBlock.h>
@@ -107,6 +108,57 @@ TEST(NativeLinkTests, unresolvedLiveLibFailsLoud) {
     EXPECT_NE(msg.find("zstd"), std::string::npos);
     EXPECT_NE(msg.find("not found"), std::string::npos);
     std::filesystem::remove_all(empty);
+}
+
+// A dependency ships its static library INSIDE its `.cja`. Staging explodes
+// `native/<platform>/…` out to disk so the linker, which takes files and not
+// archive members, can resolve it. Without this a cvm release build could not
+// link zlib on any machine that had not staged it by hand.
+TEST(NativeLinkTests, stagesNativeArtifactsOutOfAClasspathArchive) {
+    auto tmp = std::filesystem::temp_directory_path() / "nd-stage";
+    std::filesystem::remove_all(tmp);
+    std::filesystem::create_directories(tmp);
+    const std::string cja = (tmp / "dep.cja").string();
+    const std::vector<uint8_t> bytes = {'!', '<', 'a', 'r', 'c', 'h', '>', 10};
+
+    CajetaArchive arc("dev.test.dep", "1.0", CajetaArchive::Kind::Cja);
+    arc.addNativeArtifact("linux-x64", "libcajeta_zlib.a", bytes);
+    arc.writeTo(cja);
+
+    const std::string stageRoot = (tmp / "out").string();
+    auto staged = stageClasspathNativeArtifacts({cja}, "linux-x64", stageRoot);
+    ASSERT_TRUE((bool) staged);
+    EXPECT_EQ(*staged, (std::filesystem::path(stageRoot) / "native").string());
+
+    const auto landed = std::filesystem::path(*staged) / "linux-x64"
+                      / "libcajeta_zlib.a";
+    ASSERT_TRUE(std::filesystem::exists(landed));
+    std::ifstream in(landed, std::ios::binary);
+    std::vector<uint8_t> got((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+    EXPECT_EQ(got, bytes);
+
+    // And the resolver finds it there, which is the whole point.
+    auto r = resolveNativeArchivesForLink({"cajeta_zlib"}, "linux-x64",
+                                          {*staged});
+    ASSERT_TRUE((bool) r);
+    ASSERT_EQ(r->size(), 1u);
+    EXPECT_EQ((*r)[0], landed.string());
+
+    // Idempotent: a byte-identical artifact is not rewritten, so repeated
+    // builds do not churn the linker's inputs.
+    auto before = std::filesystem::last_write_time(landed);
+    auto again = stageClasspathNativeArtifacts({cja}, "linux-x64", stageRoot);
+    ASSERT_TRUE((bool) again);
+    EXPECT_EQ(std::filesystem::last_write_time(landed), before);
+
+    // A platform the archive does not carry stages nothing.
+    EXPECT_FALSE((bool) stageClasspathNativeArtifacts({cja}, "darwin-arm64",
+                                                      stageRoot));
+    // So does an empty classpath.
+    EXPECT_FALSE((bool) stageClasspathNativeArtifacts({}, "linux-x64",
+                                                      stageRoot));
+    std::filesystem::remove_all(tmp);
 }
 
 // hostNativePlatform produces an os-arch triple.
