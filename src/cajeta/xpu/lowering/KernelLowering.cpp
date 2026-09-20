@@ -4203,10 +4203,12 @@ private:
                 unsupported("CooperativeMatrix.fromWords expects "
                             "(w0, w1, w2, w3)");
             if (!target.coopMatrixFromWordsSupported())
-                unsupported("CooperativeMatrix.fromWords: NATIVE-ONLY on "
-                            "backends with an explicit per-lane fragment "
-                            "(AMD WMMA); the " + std::string(target.name()) +
-                            " cooperative matrix is opaque");
+                unsupported("CooperativeMatrix.fromWords: lane L supplies "
+                            "the tile's row/column L mod 16, and the " +
+                            std::string(target.name()) + " backend has no "
+                            "lowering that distributes those slices into a "
+                            "fragment. Stage the widened bytes in Shared<T> "
+                            "and `load` them on this backend");
             if (slot.use == 2)
                 unsupported("CooperativeMatrix.fromWords: an A or B "
                             "operand tile, not an accumulator");
@@ -4709,11 +4711,22 @@ private:
             return llvm::ConstantInt::get(i32, 0);
         }
 
+        // These verbs distribute one slice of the tile per lane: lane L
+        // supplies row/column `L mod Cols`, and the wave collectively
+        // supplies the whole thing. The portable tile has no wave to
+        // distribute across — it is REPLICATED, every work-item holding the
+        // entire matrix, which is sound only while every lane's inputs are
+        // identical. A per-lane slice is lane-varying by construction, so
+        // there is no answer here at any price: taking the calling
+        // work-item's value for all Cols would compile, run, and be wrong.
+        // Refuse by name, and say which spelling does work.
         if (name == "fromWords") {
-            unsupported("CooperativeMatrix.fromWords: NATIVE-ONLY (the "
-                        "words are this lane's fragment row/column; the "
-                        "software tile has no lane mapping). Stage the "
-                        "widened bytes and `load` them on this tier");
+            unsupported("CooperativeMatrix.fromWords: lane L supplies the "
+                        "tile's row/column L mod 16, and this tier's tile is "
+                        "replicated per work-item rather than distributed "
+                        "across a wave, so there is no lane to take the other "
+                        "fifteen slices from. Stage the widened bytes in "
+                        "Shared<T> and `load` them here");
         }
         if (name == "scaledAccumIntoS" || name == "scaledAccumInto2S" ||
             name == "rank1AccumS") {
@@ -4722,18 +4735,20 @@ private:
                 : (name == "scaledAccumInto2S" ? "scaledAccumInto2"
                                                : "rank1Accum");
             unsupported(std::string("CooperativeMatrix.") + name +
-                        ": NATIVE-ONLY (the scalar colF/colG is this "
-                        "lane's column factor; the software tile has no "
-                        "lane-column mapping). Use the Shared-vector "
-                        "form " + vectorForm + " on this tier");
+                        ": lane L supplies the factor for column L mod Cols, "
+                        "and this tier's tile is replicated per work-item "
+                        "rather than distributed across a wave, so the other "
+                        "columns' factors are in no lane it can reach. Use "
+                        "the Shared-vector form " + vectorForm + " here, "
+                        "which is indexed by the element's own column");
         }
         if (name == "scaledAccumI32") {
-            unsupported("CooperativeMatrix.scaledAccumI32: NATIVE-ONLY (the "
-                        "scalar colS is this lane's column factor and the "
-                        "24-bit multiply is a native-tier instruction; the "
-                        "software tile has no lane-column mapping). Drain "
-                        "each sub-block through scaledAccumInto on this "
-                        "tier");
+            unsupported("CooperativeMatrix.scaledAccumI32: lane L supplies "
+                        "the factor for column L mod Cols (and the 24-bit "
+                        "multiply is a native-tier instruction), and this "
+                        "tier's tile is replicated per work-item rather than "
+                        "distributed across a wave. Drain each sub-block "
+                        "through the Shared-vector scaledAccumInto here");
         }
         // Element order and association are the CONTRACT every tier shares: one
         // fma chain per element, `(rowF[r] * colF[c]) * this[r][c]` then add.

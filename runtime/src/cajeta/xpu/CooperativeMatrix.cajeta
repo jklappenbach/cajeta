@@ -245,27 +245,48 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     }
 
     /**
-     * Device-only intrinsic — {@link #scaledAccumInto} with a SCALAR
-     * column factor (threaded-forward-path 10.12.31): on the native
-     * WMMA mapping the column of every element a lane holds is
-     * `lane & 15`, so `colF[c]` is a per-lane constant — this variant
-     * passes it as a plain register value instead of a Shared vector,
-     * deleting the LDS staging and its wave-uniform branch at the call
-     * site. CONTRACT: `colF` must be the factor for THIS LANE's column
-     * (both lanes holding column `c` pass the same value); `rowF`
-     * stays a Shared vector because rows are genuinely cross-lane.
-     * NATIVE-ONLY: the software tile has no lane-column mapping, so a
-     * tier that cannot lower this natively REJECTS the kernel with a
-     * named diagnostic — never a silent demote.
+     * Device-only intrinsic — {@link #scaledAccumInto} with the column
+     * factors held in REGISTERS across the wave instead of staged in a
+     * Shared vector (threaded-forward-path 10.12.31). It deletes the
+     * LDS round trip and its wave-uniform branch at the call site.
+     *
+     * CONTRACT — read this as tile algebra, not as a fragment layout.
+     * The wave collectively supplies the whole column vector, and
+     *
+     *     lane L supplies the factor for column `L mod Cols`.
+     *
+     * Every lane with the same `L mod Cols` passes the same value.
+     * That is the WHOLE contract: it says which column each lane is
+     * responsible for and nothing about which elements that lane's
+     * fragment happens to hold. Each backend redistributes as its own
+     * fragment requires — on AMD the two coincide and the value is used
+     * as-is; on NVIDIA a lane's eight accumulator elements span four
+     * columns, so the lowering shuffles column `c`'s factor out of lane
+     * `c`, at most four times per fragment. `rowF` stays a Shared
+     * vector because rows are genuinely cross-lane.
+     *
+     * THE CONTRACT USED TO READ "the column of every element a lane
+     * holds is `lane & 15`", which is AMD's fragment layout written
+     * into a portable API. The NVIDIA lowering believed it and applied
+     * one scalar to all eight elements; eleven cajeta-llm kernels
+     * returned column 0 correctly and everything else wrong. If you add
+     * a verb here, say which SLICE OF THE TILE a lane supplies, never
+     * which registers it owns.
+     *
+     * NATIVE-ONLY. A tier with no wave to distribute across — the
+     * replicated software tile, whose every work-item holds the whole
+     * matrix — REJECTS the kernel with a named diagnostic rather than
+     * silently using one lane's factor for every column. Use the
+     * Shared-vector {@link #scaledAccumInto} there.
      */
     public void scaledAccumIntoS(CooperativeMatrix<float32, Rows, Cols, 2> facc,
                                  Shared<float32> rowF, float32 colF) {
     }
 
     /**
-     * Device-only intrinsic — {@link #scaledAccumInto2} with SCALAR
-     * column factors (10.12.31): `colF`/`colG` are per-lane register
-     * values under the same lane-local contract as
+     * Device-only intrinsic — {@link #scaledAccumInto2} with the column
+     * factors in registers (10.12.31): lane L supplies `colF` and
+     * `colG` for column `L mod Cols`, the same contract as
      * {@link #scaledAccumIntoS}. NATIVE-ONLY, same rejection rule.
      */
     public void scaledAccumInto2S(CooperativeMatrix<float32, Rows, Cols, 2> facc,
@@ -275,15 +296,18 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
 
     /**
      * Device-only intrinsic — the INTEGER accumulate: on an `int32`
-     * accumulator tile (`Use = 2`), for every element of the current
-     * lane's fragment,
+     * accumulator tile (`Use = 2`), for every element of the tile,
      *
-     *     iacc[r][c] += colS * this[r][c]
+     *     iacc[r][c] += colS(c) * this[r][c]
+     *
+     * where `colS(c)` is the value lane `c mod Cols` passed. Which
+     * elements a given lane's registers hold is the backend's business,
+     * not the caller's.
      *
      * `iacc` is a same-shape `CooperativeMatrix<int32, Rows, Cols, 2>`
-     * and `colS` a per-lane register value — the factor for THIS LANE's
-     * column, the same lane-local contract as
-     * {@link #scaledAccumIntoS}. This folds a small integer per-K-slice
+     * and `colS` a register value under the same contract as
+     * {@link #scaledAccumIntoS}: lane L supplies the factor for column
+     * `L mod Cols`, and the backend redistributes. This folds a small integer per-K-slice
      * scale into an int32 accumulator so the float drain (the
      * `scaledAccumIntoS` epilogue) runs ONCE per outer block instead of
      * once per sub-block: no convert, no fma, no rank-1 term per slice.
@@ -305,30 +329,39 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     }
 
     /**
-     * Device-only intrinsic — {@link #rank1Accum} with a SCALAR column
-     * factor: on a `float32` accumulator tile (`Use = 2`),
+     * Device-only intrinsic — {@link #rank1Accum} with the column
+     * factor in a register: on a `float32` accumulator tile
+     * (`Use = 2`),
      *
      *     this[r][c] += rowG[r] * colG
      *
-     * `colG` is a per-lane register value under the same lane-local
-     * contract as {@link #scaledAccumIntoS}; `rowG` stays a Shared
-     * vector (and accepts a slice) because rows are genuinely
+     * `colG` is under the same contract as {@link #scaledAccumIntoS}:
+     * lane L supplies the factor for column `L mod Cols`. `rowG` stays
+     * a Shared vector (and accepts a slice) because rows are genuinely
      * cross-lane. NATIVE-ONLY, same rejection rule.
      */
     public void rank1AccumS(Shared<float32> rowG, float32 colG) {
     }
 
     /**
-     * Device-only intrinsic: set THIS LANE's operand fragment from four
-     * packed words — the register-direct feed for an int8 A or B tile
-     * (xpu-coopmatrix-fromwords). The per-lane contract is the native
-     * fragment layout: for A (`Use` 0) the lane holds row `lane & 15`,
-     * for B (`Use` 1) column `lane & 15`, and the sixteen K-values
-     * k = 0..15 arrive as little-endian bytes — `w0` carries k 0..3,
-     * `w1` k 4..7, `w2` k 8..11, `w3` k 12..15. The two 16-lane halves
-     * of a wave32 must present the same words for the same `lane & 15`,
-     * which they do by construction when the words derive from
-     * `lane & 15`.
+     * Device-only intrinsic: feed an int8 A or B operand tile straight
+     * from packed registers (xpu-coopmatrix-fromwords).
+     *
+     * CONTRACT — tile algebra, like {@link #scaledAccumIntoS}, and for
+     * the same reason. The wave collectively supplies the whole tile:
+     *
+     *     lane L supplies row (`Use` 0) or column (`Use` 1)
+     *     `L mod 16`, as its sixteen K-values k = 0..15 in
+     *     little-endian bytes — `w0` carries k 0..3, `w1` k 4..7,
+     *     `w2` k 8..11, `w3` k 12..15.
+     *
+     * Lanes sharing an `L mod 16` present the same words, which they do
+     * by construction when the words derive from `L mod 16`. Nothing
+     * here says which registers the lane's fragment occupies: on AMD
+     * the iu8 operand IS four i32s per lane and the words go straight
+     * in, while on NVIDIA the fragment is an opaque `{i32 x 2}` and the
+     * lowering stages the words through one shared slice per wave and
+     * re-loads the tile.
      *
      * This is what lets a k-quant GEMM widen nibbles straight into the
      * matrix-core operand: a `load` can only read a fragment from
@@ -337,12 +370,11 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * that reads pre-widened bytes. With `fromWords` the lane reads its
      * own 16 packed bytes, extracts, and presents the fragment.
      *
-     * NATIVE-ONLY, on backends whose fragment is an explicit per-lane
-     * encoding (AMD WMMA: the iu8 operand IS four i32s per lane). The
-     * software tile has no lane mapping and the SPIR-V cooperative
-     * matrix is opaque, so those tiers REJECT the kernel with a named
-     * diagnostic — never a silent demote. Only the 16x16 int8 operand
-     * shapes (`Use` 0 or 1) are accepted.
+     * NATIVE-ONLY. A tier with no wave to distribute across — the
+     * replicated software tile, whose every work-item holds the whole
+     * matrix — REJECTS the kernel with a named diagnostic rather than
+     * quietly taking one lane's words for the whole tile. Only the
+     * 16x16 int8 operand shapes (`Use` 0 or 1) are accepted.
      */
     public void fromWords(int32 w0, int32 w1, int32 w2, int32 w3) {
     }

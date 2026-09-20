@@ -151,11 +151,16 @@ TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsLowerNativelyOnAmdgpu) {
         << "int8+scalar epilogue is native on amdgpu:\n" << err;
 }
 
-// 10.12.31 — the scalar variants are NATIVE-ONLY: a backend without
-// native epilogue support (SPIR-V) demotes the tiles, and the software
-// tile then REJECTS the kernel with the named NATIVE-ONLY diagnostic —
-// never a silent wrong-answer demote (the scalar is one lane's column
-// factor; the software tile owns all sixteen columns).
+// 10.12.31 — a backend without native epilogue support (SPIR-V) demotes
+// the tiles, and the replicated software tile then REJECTS the kernel by
+// name rather than taking the calling work-item's factor for all sixteen
+// columns, which would compile, run and be wrong.
+//
+// The anchor moved off the literal "NATIVE-ONLY" with the contract rewrite:
+// that word described the verb as belonging to one tier, when what is
+// actually true is that lane L supplies column L mod Cols and a tier with no
+// wave cannot reach the other lanes. NVPTX redistributes by shuffle and
+// supports the verb, so "native-only" was never the real line.
 TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsRejectLoudlyOffNative) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Spirv, scalarEpiKernel(),
@@ -163,8 +168,11 @@ TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsRejectLoudlyOffNative) {
     EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
         << "off-native the scalar verbs must SKIP the kernel loudly:\n"
         << err;
-    EXPECT_NE(err.find("NATIVE-ONLY"), std::string::npos)
-        << "the skip must carry the NATIVE-ONLY explanation:\n" << err;
+    EXPECT_NE(err.find("lane L supplies the factor for column"),
+              std::string::npos)
+        << "the skip must state the contract it could not meet:\n" << err;
+    EXPECT_NE(err.find("Shared-vector"), std::string::npos)
+        << "the skip must name the spelling that works here:\n" << err;
 }
 
 // 2.1.2 (does not fire) — the same kernel minus the verbs stays on the

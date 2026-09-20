@@ -224,26 +224,41 @@ TEST(XpuCoopFromWordsTests, lowersNativelyOnAmdgpu) {
         << "int8 + fromWords is native on amdgpu:\n" << err;
 }
 
-// The SPIR-V cooperative matrix is opaque: no per-lane fragment to build,
-// so the kernel is REJECTED with the NATIVE-ONLY diagnostic.
+// SPIR-V has no lowering that distributes the per-lane slices into a
+// fragment, so the kernel is REJECTED — loudly, and with the spelling that
+// does work on this backend.
+//
+// WHAT THESE TWO ASSERT, AND WHY IT CHANGED. They used to anchor on the
+// literal token "NATIVE-ONLY". That word named the old contract, which said
+// the words ARE this lane's fragment — AMD's layout written into a portable
+// API, and the shape of defect that broke eleven kernels on NVIDIA. The
+// contract now says lane L supplies the tile's row/column L mod 16 and each
+// backend distributes; NVPTX distributes through a shared slice and so
+// SUPPORTS the verb, which "native-only" never had a way to express. What
+// the refusal must still do is say WHY and say WHAT TO USE INSTEAD, so that
+// is what these assert now.
 TEST(XpuCoopFromWordsTests, rejectsLoudlyOnSpirv) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Spirv, kFromWordsSource,
                        &err), 1);
     EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
         << "off-native fromWords must SKIP the kernel loudly:\n" << err;
-    EXPECT_NE(err.find("NATIVE-ONLY"), std::string::npos)
-        << "the skip must carry the NATIVE-ONLY explanation:\n" << err;
+    EXPECT_NE(err.find("lane L supplies"), std::string::npos)
+        << "the skip must state the contract it could not meet:\n" << err;
+    EXPECT_NE(err.find("Shared<T>"), std::string::npos)
+        << "the skip must name the spelling that works here:\n" << err;
 }
 
-// The software tile has no lane mapping: same loud rejection on the cpu
-// backend.
+// The portable tile is replicated per work-item, so there is no lane to take
+// the other fifteen slices from: same loud rejection on the cpu backend.
 TEST(XpuCoopFromWordsTests, rejectsLoudlyOnCpu) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Cpu, kFromWordsSource,
                        &err), 1);
     EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
         << "the software tile must SKIP the kernel loudly:\n" << err;
-    EXPECT_NE(err.find("NATIVE-ONLY"), std::string::npos)
-        << "the skip must carry the NATIVE-ONLY explanation:\n" << err;
+    EXPECT_NE(err.find("lane L supplies"), std::string::npos)
+        << "the skip must state the contract it could not meet:\n" << err;
+    EXPECT_NE(err.find("Shared<T>"), std::string::npos)
+        << "the skip must name the spelling that works here:\n" << err;
 }
