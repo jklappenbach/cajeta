@@ -27,8 +27,9 @@ the reactor, never the carrier thread.
 Negative routing — this package does **not**: open the TCP connection (do that with
 [`TcpStream.connect`](../net/TcpStream.cajeta) / [`TcpListener.bind`](../net/TcpListener.cajeta)
 first, then wrap); parse HTTP/WS (the codecs above the `ByteChannel` do); manage cert
-files (you pass PEM **bytes + length**, not paths); or expose a record read deadline
-(`readWithin`'s `timeoutMs` is advisory and delegates to the unbounded read).
+files (you pass PEM **bytes + length**, not paths). `readWithin` does honour
+`timeoutMs`: each ciphertext read the record layer needs is bounded by what is
+left of the budget, and `TimedOutException` is raised when it elapses.
 
 ## Inventory
 

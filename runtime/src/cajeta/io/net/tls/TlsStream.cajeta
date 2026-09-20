@@ -3,6 +3,8 @@ package cajeta.io.net.tls;
 import cajeta.lang.String;
 import cajeta.io.net.TcpStream;
 import cajeta.io.net.ByteChannel;
+import cajeta.io.net.TimedOutException;
+import cajeta.io.net.reactor.Reactor;
 
 /**
  * A TLS connection over a live [`TcpStream`](../TcpStream.cajeta) (**NET-5.2**).
@@ -232,14 +234,61 @@ public class TlsStream implements ByteChannel {
     }
 
     /**
-     * [`ByteChannel.readWithin`](../ByteChannel.cajeta#readWithin): v1 TLS has
-     * no record-level read deadline, so this delegates to the unbounded
-     * [`readAsync`](#readAsync) (the slowloris guard applies at the plaintext
-     * socket layer; a TLS-terminating server reads under the OS socket
-     * timeout). `timeoutMs` is advisory here.
+     * [`ByteChannel.readWithin`](../ByteChannel.cajeta#readWithin): read
+     * decrypted application data under a deadline, throwing
+     * [`TimedOutException`](../TimedOutException.cajeta) when it elapses.
      */
     public int64 readWithin(int8[] buf, int64 offset, int64 length, int32 timeoutMs) {
-        return this.readAsync(buf, offset, length);
+        if (timeoutMs <= 0) {
+            return this.readAsync(buf, offset, length);
+        }
+        int64 deadline = Reactor.nowMillis() + (int64) timeoutMs;
+        int32 off = (int32) offset;
+        int32 len = (int32) length;
+        if (off == 0) {
+            return (int64) this.readBefore(buf, len, deadline);
+        }
+        int8[] tmp = heap int8[len];
+        int32 r = this.readBefore(tmp, len, deadline);
+        int32 i = 0;
+        while (i < r) {
+            buf[off + i] = tmp[i];
+            i = i + 1;
+        }
+        return (int64) r;
+    }
+
+    // `read`, with every ciphertext read the record layer needs bounded by
+    // what is left of `deadline`. A record can span several socket reads, so
+    // the budget has to be rechecked on each trip, not just applied once.
+    private int32 readBefore(int8[] out, int32 max, int64 deadline) {
+        boolean retry = true;
+        while (retry) {
+            int32 r = this.tls.read(out, max);
+            if (r >= 0) {
+                return r;
+            }
+            if (r == TlsConnection.CLOSED) {
+                return 0;
+            }
+            if (r == TlsConnection.WANT_IO) {
+                int64 remaining = deadline - Reactor.nowMillis();
+                if (remaining <= (int64) 0) {
+                    throw heap TimedOutException(
+                        "readWithin: deadline elapsed before data arrived");
+                }
+                int64 n = this.stream.readWithin(this.buf, (int64) 0,
+                                                 (int64) 16384,
+                                                 (int32) remaining);
+                if (n <= (int64) 0) {
+                    return 0;
+                }
+                this.tls.feed(this.buf, (int32) n);
+            } else {
+                throw heap TlsException("TLS read error");
+            }
+        }
+        return 0;
     }
 
     /**

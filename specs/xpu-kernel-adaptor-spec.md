@@ -173,7 +173,10 @@ declines to answer.
   hand it".
 - **6.4** When a search produces a winner, it is recorded against the
   device AND the kernel set that was measured, so a rebuild invalidates
-  it rather than silently serving a stale answer.
+  it rather than silently serving a stale answer. `Autotune.rememberFor`
+  and `recallFor` already carry the `buildId` this needs, and discard
+  and report a hint written for different code, so the adaptor adopts
+  that store rather than adding one.
 - **6.5** When a search would cost the caller live work, it does not run
   on the critical path uninvited.
 

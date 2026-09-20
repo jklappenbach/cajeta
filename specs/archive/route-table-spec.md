@@ -360,10 +360,16 @@ that the row type is not shaped like a GGUF quantization.
 - **Fleet calibration, and it is the gap for datacenter scale-out.**
   `candidates` plus `Autotune` lets one machine discover the best
   admissible row for its own part and recall it. It does not let a
-  fleet SHARE that: every node rediscovers it, per process, and there
-  is no versioning tying a recorded winner to the kernel set that was
-  measured. A new part arriving across a fleet therefore pays its sweep
-  once per node rather than once. Not this spec's, but it is the first
-  thing that hurts at scale and nothing else currently owns it.
+  fleet SHARE that: every node rediscovers it, per process. A new part
+  arriving across a fleet therefore pays its sweep once per node rather
+  than once. Not this spec's, but it is the first thing that hurts at
+  scale and nothing else currently owns it.
+
+  This item claimed there was no versioning tying a recorded winner to
+  the kernel set measured. That was already wrong when written.
+  `rememberFor` and `recallFor` carry a `buildId`, a hint written for
+  different code is discarded and reported, and the in-memory memo
+  keeps its own copy so it cannot answer ahead of the build check. The
+  sharing is the gap, not the versioning.
 
 Each is its own spec; each assumes this table exists.
