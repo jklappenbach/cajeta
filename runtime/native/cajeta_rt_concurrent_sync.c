@@ -25,12 +25,52 @@ void __cajeta_scope_ensure_at(void* watermark) {
     }
 }
 
+// Drop entries whose task has already finished, so a scope that outlives the
+// work inside it does not hold every task it ever spawned. A server's serving
+// scope exits only when the connection closes, which made a statement-position
+// spawn per request accumulate one task and one entry per request for the life
+// of that connection.
+//
+// Freeing a finished task is safe by __cajeta_task_complete's own contract: it
+// nulls the fiber slot BEFORE publishing `done`, and the runtime never touches
+// Task memory afterwards. The `done` read takes the same mutex that publishes
+// it, so a reader that sees 1 also sees the writes ordered before it.
+//
+// An entry whose task raised is KEPT: scope exit still has to re-raise it, and
+// first-throw wins depends on it still being here. An entry already cleared by
+// __cajeta_scope_deregister_task carries nothing and is compacted away.
+static void __cajeta_scope_reap(struct cajeta_scope_frame* f) {
+    int w = 0;
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    for (int i = 0; i < f->count; i++) {
+        struct cajeta_scope_entry* e = &f->entries[i];
+        int dead = (!e->done_addr && !e->exception_addr && !e->owned_task);
+        int finished = e->owned_task && e->done_addr && *e->done_addr
+                && !(e->exception_addr && *e->exception_addr);
+        if (finished) {
+            __cajeta_free(e->owned_task);
+        }
+        if (finished || dead) {
+            continue;
+        }
+        if (w != i) {
+            f->entries[w] = f->entries[i];
+        }
+        w++;
+    }
+    f->count = w;
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+}
+
 // Append a task's (done, exception) pair to the current frame; no-op outside one.
 void __cajeta_scope_register(int32_t* done_addr, void** exception_addr,
                              void** fiber_slot) {
     struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
     struct cajeta_scope_frame* f = *top;
     if (!f) return;
+    if (f->count == f->cap) {
+        __cajeta_scope_reap(f);
+    }
     if (f->count == f->cap) {
         int newcap = f->cap ? f->cap * 2 : 4;
         struct cajeta_scope_entry* grown =

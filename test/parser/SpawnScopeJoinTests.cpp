@@ -82,6 +82,39 @@ TEST(SpawnScopeJoinTests, discardedSpawnLoopIsConcurrent) {
     ), 6);
 }
 
+// A LONG-LIVED scope must not hold every task it ever spawned. Joining and
+// freeing at the brace is right for a scope that ends, but a server's serving
+// scope ends only when the connection does, so one discarded spawn per request
+// accumulated a task and a frame entry for the life of that connection
+// (cajeta-http measured two live allocations per request, one of them this).
+// Registering now reaps entries whose task has already finished, so the frame's
+// population tracks tasks IN FLIGHT rather than tasks ever spawned.
+TEST(SpawnScopeJoinTests, longLivedScopeReapsFinishedTasks) {
+    EXPECT_EQ(runI32(
+        "    public static async int32 quick(Channel<int32> done) {\n"
+        "        done.send(1);\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Channel<int32> done = heap Channel<int32>(1);\n"
+        "        int64 base = 0;\n"
+        "        int32 result = 0;\n"
+        "        scope {\n"
+        "            int32 i = 0;\n"
+        "            while (i < 400) {\n"
+        "                spawn quick(done);\n"
+        "                Optional<int32> d = done.receive();\n"
+        "                i = i + 1;\n"
+        "                if (i == 100) { base = Cajeta.liveCount(); }\n"
+        "            }\n"
+        "            int64 grew = Cajeta.liveCount() - base;\n"
+        "            if (grew > 100L) { result = -1; } else { result = 1; }\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+    ), 1);
+}
+
 // The scope brace still JOINS: a child that writes its result only
 // after receiving a token must have written it by the time control
 // passes the `}` — the fix moves the join point, it must not remove it.
