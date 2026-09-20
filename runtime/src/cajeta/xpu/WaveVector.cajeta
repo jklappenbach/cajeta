@@ -1,0 +1,25 @@
+package cajeta.xpu;
+
+/**
+ * WaveVector — `N` values held one per lane across a wave, lane `L`
+ * carrying element `L mod N`.
+ *
+ * PROBE (xpu-kernel-adaptor 4A.5.4.C). The question this exists to answer is
+ * whether the kernel lowering can tell two same-name, same-arity overloads
+ * apart. It dispatches on name and arity and never consults the declared
+ * signature, so the discrimination has to come from the ARGUMENT EXPRESSION.
+ */
+public final class WaveVector<T, uint32 N> {
+    // Placeholder field, as CooperativeMatrix carries one: the value lives in
+    // a register but the host front-end still lays the class out.
+    int32 reserved;
+
+    public WaveVector() {
+        this.reserved = 0;
+    }
+
+    /** Device-only intrinsic: this lane's element — element `L mod N`. */
+    public static WaveVector<T, N> ofLane(T value) {
+        return null;
+    }
+}

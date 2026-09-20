@@ -3855,6 +3855,28 @@ private:
     // Resolve an epilogue-verb Shared argument that may be a SLICE: `arr[expr]`
     // gives the address of element `expr`, so per-wave scale vectors can share
     // one array. A bare identifier still resolves to the array base.
+    // PROBE (4A.5.4.C). `WaveVector.ofLane(x)` in argument position: the
+    // wave-distributed spelling of a column vector. The kernel lowering
+    // dispatches intrinsics on NAME and ARITY and never reads the declared
+    // signature, so two same-name same-arity overloads can only be told
+    // apart by the argument expression — this is that test.
+    bool resolveWaveVectorLane(const ExpressionPtr& e, llvm::Value*& lane) {
+        auto mc = std::dynamic_pointer_cast<MethodCallExpression>(e);
+        if (!mc || mc->getMethodCallName() != "ofLane") return false;
+        std::string recv;
+        if (!mc->getChildren().empty())
+            if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(
+                    mc->getChildren()[0]))
+                recv = id->getTextValue();
+        if (recv != "WaveVector") return false;
+        const auto& ps = mc->getParameters();
+        if (ps.size() != 1)
+            unsupported("WaveVector.ofLane expects one value — this lane's "
+                        "element");
+        lane = lowerExpr(ps[0].expression);
+        return true;
+    }
+
     bool resolveBufferBaseOrSlice(const ExpressionPtr& e,
                                   llvm::Value*& base, llvm::Type*& elemTy) {
         if (resolveBufferBase(e, base, elemTy)) return true;
@@ -4300,9 +4322,15 @@ private:
             const bool scaled = (name != "rank1Accum" && name != "rank1AccumS");
             const bool dual = (name == "scaledAccumInto2" ||
                                name == "scaledAccumInto2S");
-            const bool scalarCol = (name == "scaledAccumIntoS" ||
-                                    name == "scaledAccumInto2S" ||
-                                    name == "rank1AccumS");
+            const size_t colAt = scaled ? 2 : 1;
+            llvm::Value* probeLane = nullptr;
+            const bool waveVectorCol =
+                args.size() > colAt
+                && resolveWaveVectorLane(args[colAt].expression, probeLane);
+            const bool scalarCol = waveVectorCol
+                                || name == "scaledAccumIntoS"
+                                || name == "scaledAccumInto2S"
+                                || name == "rank1AccumS";
             const size_t want = dual ? 5 : (scaled ? 3 : 2);
             if (args.size() != want)
                 unsupported(std::string("CooperativeMatrix.") + name +
@@ -4340,7 +4368,8 @@ private:
                             ": rowF must be a Shared<float32> vector "
                             "(or a slice of one)");
             if (scalarCol) {
-                cS = toFloat(lowerExpr(args[ri + 1].expression));
+                cS = probeLane ? toFloat(probeLane)
+                               : toFloat(lowerExpr(args[ri + 1].expression));
                 if (dual) {
                     if (!resolveBufferBaseOrSlice(args[ri + 2].expression,
                                                   gB, gE))

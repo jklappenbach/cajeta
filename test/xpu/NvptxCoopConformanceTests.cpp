@@ -69,6 +69,7 @@ std::string kernelFor(const char* name, const char* decls, const char* call,
         "import cajeta.xpu.KernelBuffer;\n"
         "import cajeta.xpu.KernelThread;\n"
         "import cajeta.xpu.Shared;\n"
+        "import cajeta.xpu.WaveVector;\n"
         "public class M {\n"
         "    @Kernel\n"
         "    public static void ";
@@ -242,6 +243,21 @@ const std::vector<VerbCase>& cases() {
                 "        iacc.store(out, 0, 0, 16);\n", true),
             true,
             [](unsigned, unsigned c) { return 3.0 * (1.0 + c); }});
+
+        // PROBE (4A.5.4.C): the SAME verb name and arity, with the column
+        // vector spelled as WaveVector.ofLane instead of Shared<float32>.
+        // Same contract, so the same expected tile.
+        cs.push_back({"scaledAccumInto", "wvSc",
+            kernelFor("wvSc",
+                "        CooperativeMatrix<float32,16,16,2> acc;\n"
+                "        acc.splat(2.0f);\n"
+                "        CooperativeMatrix<float32,16,16,2> facc;\n"
+                "        facc.splat(0.0f);\n",
+                "        acc.scaledAccumInto(facc, rowF, "
+                "WaveVector.ofLane(cv));\n"
+                "        facc.store(out, 0, 0, 16);\n", false),
+            false,
+            [](unsigned r, unsigned c) { return 2.0 * (1.0 + r) * (1.0 + c); }});
 
         return cs;
     }();

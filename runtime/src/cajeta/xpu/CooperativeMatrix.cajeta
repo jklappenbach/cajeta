@@ -284,6 +284,16 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     }
 
     /**
+     * PROBE (4A.5.4.C): the same verb, with the column factors typed as the
+     * wave-distributed vector they are. Same name, same arity as the
+     * Shared-vector form above it — which is exactly the thing being tested.
+     */
+    public void scaledAccumInto(CooperativeMatrix<float32, Rows, Cols, 2> facc,
+                                Shared<float32> rowF,
+                                WaveVector<float32, Cols> colF) {
+    }
+
+    /**
      * Device-only intrinsic — {@link #scaledAccumInto2} with the column
      * factors in registers (10.12.31): lane L supplies `colF` and
      * `colG` for column `L mod Cols`, the same contract as
