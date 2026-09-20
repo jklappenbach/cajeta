@@ -211,6 +211,84 @@ TEST(TlsLoopbackTest, tlsHandshakeAndEchoOverLoopback) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// NET-9.6 — `TlsStream.readWithin` honours its deadline. It used to ignore
+// `timeoutMs` and delegate to the unbounded read, so a handshaked peer that
+// then went quiet held the reader forever and every HTTPS read was unbudgeted.
+// The lower bound matters as much as the upper: without it an immediate throw,
+// which would be a broken read rather than an honoured deadline, passes.
+TEST(TlsLoopbackTest, readWithinHonoursDeadline) {
+    std::string cert, key;
+    ASSERT_TRUE(makeSelfSigned("localhost", cert, key));
+
+    std::string src =
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.io.net.IpAddress;\n"
+        "import cajeta.io.net.SocketAddress;\n"
+        "import cajeta.io.net.TcpStream;\n"
+        "import cajeta.io.net.TcpListener;\n"
+        "import cajeta.io.net.TimedOutException;\n"
+        "import cajeta.io.net.reactor.Reactor;\n"
+        "import cajeta.io.net.tls.TlsStream;\n"
+        "import cajeta.concurrent.Tasks;\n"
+        "public final class M {\n"
+        // server fiber: handshake, then send NOTHING and park until dropped.
+        "    public static async int32 runServer(#TcpStream sock, int8[] cert, int32 certLen,\n"
+        "                                         int8[] key, int32 keyLen) {\n"
+        "        TlsStream st #= TlsStream.server(#sock, cert, certLen, key, keyLen);\n"
+        "        st.handshake();\n"
+        "        int8[] sink = heap int8[16];\n"
+        "        int32 n = st.read(sink, 16);\n"
+        "        return n;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        () -> int32 body = () -> {\n"
+        + emitBytes("cert", cert)
+        + emitBytes("key", key) +
+        "            int8[] host = heap int8[9];\n"   // "localhost"
+        "            host[0L]=(int8)108; host[1L]=(int8)111; host[2L]=(int8)99;\n"
+        "            host[3L]=(int8)97; host[4L]=(int8)108; host[5L]=(int8)104;\n"
+        "            host[6L]=(int8)111; host[7L]=(int8)115; host[8L]=(int8)116;\n"
+        "            int32 cl = " + std::to_string(cert.size()) + ";\n"
+        "            int32 kl = " + std::to_string(key.size()) + ";\n"
+        "            IpAddress la #= IpAddress.loopbackV4();\n"
+        "            SocketAddress bindAddr #= SocketAddress.of(#la, 0);\n"
+        "            TcpListener listener #= TcpListener.bind(bindAddr);\n"
+        "            int32 port = listener.boundPort();\n"
+        "            if (port <= 0) { return -1; }\n"
+        "            IpAddress ca #= IpAddress.loopbackV4();\n"
+        "            SocketAddress connAddr #= SocketAddress.of(#ca, port);\n"
+        "            TcpStream client #= TcpStream.connect(#connAddr);\n"
+        "            TcpStream server #= listener.accept();\n"
+        "            Task<int32> serverTask = spawn runServer(#server, cert, cl, key, kl);\n"
+        "            TlsStream ct #= TlsStream.client(#client, host, 9, cert, cl);\n"
+        "            ct.handshake();\n"
+        "            int8[] buf = heap int8[64];\n"
+        "            int64 n = -1L;\n"
+        "            int64 t0 = Reactor.nowMillis();\n"
+        "            boolean timedOut = false;\n"
+        "            try {\n"
+        "                n = ct.readWithin(buf, 0L, 64L, 400);\n"
+        "            } catch (TimedOutException e) {\n"
+        "                timedOut = true;\n"
+        "            }\n"
+        "            int64 elapsed = Reactor.nowMillis() - t0;\n"
+        "            ct.close();\n"
+        "            int32 sret = await serverTask;\n"
+        "            listener.close();\n"
+        "            if (!timedOut) { return -2; }\n"
+        "            if (n >= 0L) { return -3; }\n"
+        "            if (elapsed < 300L) { return -4; }\n"
+        "            if (elapsed >= 8000L) { return -5; }\n"
+        "            return 1;\n"
+        "        };\n"
+        "        return Tasks.runBlocking<int32>(body);\n"
+        "    }\n"
+        "}\n";
+
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // NET-5.5 + NET-5.4 acceptance — server-side TLS via TlsListener, with ALPN
 // negotiated end-to-end over the loopback socket. A spawned server fiber
 // TlsListener.accept()s (which terminates TLS — accept + handshake), reads one
