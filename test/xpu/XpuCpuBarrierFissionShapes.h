@@ -35,6 +35,13 @@
 //                  cajeta-llm's `qkNormRowsF32` shape. ACCEPTED, same
 //                  machinery: the guard is the bypass and the mask is what
 //                  keeps the returned work-items out of the tail.
+//   UNIFORM_GUARD_JOIN         a barrier behind a KERNEL-PARAMETER guard with
+//                  real work after the join (qkPrepKernel's shape). ACCEPTED:
+//                  the condition is not tid-tainted, so the whole workgroup
+//                  takes the branch together and it is scaffold.
+//   UNIFORM_GUARD_BOTH_RETURN  the same guard with both arms ending the
+//                  kernel (iq3xxsQ8WaveGateUpGluKernel's shape) — no join
+//                  block exists, so the split must terminate cleanly.
 //   DIVERGENT_JOIN a barrier in ONE arm of an if/else with real work after
 //                  the join — still DECLINED by name. The mask handles a
 //                  work-item that LEAVES; it does not handle one that skips
@@ -270,6 +277,117 @@ inline const char* DIVERGENT_JOIN =
     "            v = in[i] * 2.0f;\n"
     "        }\n"
     "        out[i] = v;\n"
+    "    }\n";
+
+
+// A barrier behind a guard the WHOLE WORKGROUP takes together, with real work
+// after the join — cajeta-llm's `qkPrepKernel`, whose `if (norm != 0) { …two
+// barriers… }` is followed by the RoPE loop. `flag` is a kernel PARAMETER, so
+// it is not in the taint set and the branch is provably uniform: it can be
+// lifted out of the work-item loops and run once, like a barrier loop's
+// header. The activity mask cannot help here — nobody leaves.
+inline const char* UNIFORM_GUARD_JOIN =
+    "    @Kernel\n"
+    "    public static void treeUniform(KernelBuffer<float32> out,\n"
+    "                                   KernelBuffer<float32> in,\n"
+    "                                   uint32 n, uint32 flag) {\n"
+    "        Shared<float32> lds = shared float32[256];\n"
+    "        uint32 t = KernelThread.x();\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        uint32 wg = Workgroup.x();\n"
+    "        float32 v = 0.0f;\n"
+    "        if (flag != 0) {\n"
+    "            float32 s = 0.0f;\n"
+    "            if (i < n) { s = in[i]; }\n"
+    "            lds[t] = s;\n"
+    "            uint32 stride = 128;\n"
+    "            while (stride > 0) {\n"
+    "                Barrier.workgroup();\n"
+    "                if (t < stride) { lds[t] = lds[t] + lds[t + stride]; }\n"
+    "                Barrier.workgroup();\n"
+    "                stride = stride / 2;\n"
+    "            }\n"
+    "            v = lds[0];\n"
+    "        }\n"
+    "        // Real work after the join, on every work-item either way.\n"
+    "        if (t == 0) { out[wg] = v + 1.0f; }\n"
+    "    }\n";
+
+// The same uniform guard, but BOTH arms end the kernel — cajeta-llm's
+// `iq3xxsQ8WaveGateUpGluKernel`, where the guarded arm runs a barrier reduce
+// and returns and the other arm goes on to its own chain. There is no join
+// block at all, so the split has to terminate cleanly rather than look for
+// one.
+inline const char* UNIFORM_GUARD_BOTH_RETURN =
+    "    @Kernel\n"
+    "    public static void treeSplit(KernelBuffer<float32> out,\n"
+    "                                 KernelBuffer<float32> in,\n"
+    "                                 uint32 n, uint32 flag) {\n"
+    "        Shared<float32> lds = shared float32[256];\n"
+    "        uint32 t = KernelThread.x();\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        uint32 wg = Workgroup.x();\n"
+    "        if (flag != 0) {\n"
+    "            float32 s = 0.0f;\n"
+    "            if (i < n) { s = in[i]; }\n"
+    "            lds[t] = s;\n"
+    "            uint32 stride = 128;\n"
+    "            while (stride > 0) {\n"
+    "                Barrier.workgroup();\n"
+    "                if (t < stride) { lds[t] = lds[t] + lds[t + stride]; }\n"
+    "                Barrier.workgroup();\n"
+    "                stride = stride / 2;\n"
+    "            }\n"
+    "            if (t == 0) { out[wg] = lds[0]; }\n"
+    "            return;\n"
+    "        }\n"
+    "        if (t == 0) { out[wg] = -2.0f; }\n"
+    "    }\n";
+
+
+// `iq3xxsQ8WaveGateUpGluKernel`'s full shape, which the two simpler uniform
+// guards above do not reach: an outer uniform guard whose taken arm holds a
+// SHORT-CIRCUIT `&&` guard over the barrier chain and then returns, with a
+// second uniform guard and a second barrier chain on the other side. The `&&`
+// is two branches, so the arm contains a nested split whose join is inside
+// another split's arm.
+inline const char* UNIFORM_GUARD_NESTED =
+    "    @Kernel\n"
+    "    public static void treeNested(KernelBuffer<float32> out,\n"
+    "                                  KernelBuffer<float32> in,\n"
+    "                                  uint32 n, uint32 flagA, uint32 flagB) {\n"
+    "        Shared<float32> lds = shared float32[256];\n"
+    "        uint32 t = KernelThread.x();\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        uint32 wg = Workgroup.x();\n"
+    "        if (wg >= 1) {\n"
+    "            if (flagA != 0 && wg == 1) {\n"
+    "                float32 s = 0.0f;\n"
+    "                if (i < n) { s = in[i]; }\n"
+    "                lds[t] = s;\n"
+    "                uint32 sa = 128;\n"
+    "                while (sa > 0) {\n"
+    "                    Barrier.workgroup();\n"
+    "                    if (t < sa) { lds[t] = lds[t] + lds[t + sa]; }\n"
+    "                    Barrier.workgroup();\n"
+    "                    sa = sa / 2;\n"
+    "                }\n"
+    "                if (t == 0) { out[wg] = lds[0]; }\n"
+    "            }\n"
+    "            return;\n"
+    "        }\n"
+    "        if (flagB == 0) { return; }\n"
+    "        float32 v = 0.0f;\n"
+    "        if (i < n) { v = in[i]; }\n"
+    "        lds[t] = v;\n"
+    "        uint32 sb = 128;\n"
+    "        while (sb > 0) {\n"
+    "            Barrier.workgroup();\n"
+    "            if (t < sb) { lds[t] = lds[t] + lds[t + sb]; }\n"
+    "            Barrier.workgroup();\n"
+    "            sb = sb / 2;\n"
+    "        }\n"
+    "        if (t == 0) { out[wg] = lds[0]; }\n"
     "    }\n";
 
 } // namespace cajeta_fission_shapes

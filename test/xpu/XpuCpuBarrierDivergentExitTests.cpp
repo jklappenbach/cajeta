@@ -167,3 +167,157 @@ TEST(XpuCpuBarrierDivergentExit, aBarrierInOneArmOfAJoinIsStillDeclined) {
         << "one declined launch moves Device.launchFailures() by one:\n"
         << runErr;
 }
+
+// --- the uniform guard -----------------------------------------------------
+//
+// The mask handles a work-item that LEAVES. It cannot handle `qkPrepKernel`'s
+// `if (norm != 0) { …barriers… }` with the RoPE loop after the join, because
+// nobody leaves — every work-item takes the same side and then carries on.
+//
+// What makes that shape safe is not the mask but the CONDITION: `norm` is a
+// kernel parameter, so it is not in the taint set, so the whole workgroup
+// agrees. A branch the workgroup agrees on can be lifted out of the work-item
+// loops and run once, exactly as a barrier loop's header and latch already
+// are. That is the only thing being claimed here — uniformity by provenance,
+// not by a block size the pass cannot see.
+
+namespace {
+
+// flag = 1 runs the reduce, flag = 0 skips it; the tail runs either way, so
+// out[0] is the block sum + 1 or just 1. A scaffolded branch that got hoisted
+// wrongly shows up as the wrong arm's answer, not as noise.
+std::string runUniform(const char* kernelName, int flag, int wantScaled) {
+    std::string s =
+        "    public static int32 run() {\n"
+        "        int32 n = 256;\n"
+        "        float32[] hin = heap float32[n];\n"
+        "        int32 i = 0;\n"
+        "        while (i < n) { hin[i] = (float32) (i - (i / 13) * 13); i = i + 1; }\n"
+        "        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);\n"
+        "        KernelBuffer<float32> out = heap KernelBuffer<float32>(1);\n"
+        "        in.upload(hin);\n"
+        "        float32[] hout = heap float32[1];\n"
+        "        hout[0] = -1.0f;\n"
+        "        out.upload(hout);\n"
+        "        KernelStream s #= KernelStream.current();\n"
+        "        uint32 un = (uint32) n;\n";
+    s += "        uint32 fl = " + std::to_string(flag) + ";\n";
+    s += std::string("        ") + kernelName
+       + ".launch(s, grid: [1], block: [256])(out, in, un, fl);\n"
+         "        s.sync();\n"
+         "        out.download(hout);\n"
+         "        float32 want = 0.0f;\n"
+         "        int32 k = 0;\n"
+         "        while (k < 256) { want = want + (float32) (k - (k / 13) * 13); k = k + 1; }\n";
+    s += std::string("        if (") + (wantScaled ? "1" : "0") + " == 0) { want = 0.0f; }\n";
+    s += "        return hout[0] == want + 1.0f ? 0 : 1;\n"
+         "    }\n";
+    return s;
+}
+
+const char* RUN_SPLIT =
+    "    public static int32 run() {\n"
+    "        int32 n = 256;\n"
+    "        float32[] hin = heap float32[n];\n"
+    "        int32 i = 0;\n"
+    "        while (i < n) { hin[i] = (float32) (i - (i / 13) * 13); i = i + 1; }\n"
+    "        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);\n"
+    "        KernelBuffer<float32> out = heap KernelBuffer<float32>(1);\n"
+    "        in.upload(hin);\n"
+    "        float32[] hout = heap float32[1];\n"
+    "        KernelStream s #= KernelStream.current();\n"
+    "        uint32 un = (uint32) n;\n"
+    "        float32 want = 0.0f;\n"
+    "        int32 k = 0;\n"
+    "        while (k < 256) { want = want + (float32) (k - (k / 13) * 13); k = k + 1; }\n"
+    "        int32 code = 0;\n"
+    "        hout[0] = -1.0f; out.upload(hout);\n"
+    "        treeSplit.launch(s, grid: [1], block: [256])(out, in, un, 1);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        if (hout[0] != want) { code = code + 1; }\n"
+    "        hout[0] = -1.0f; out.upload(hout);\n"
+    "        treeSplit.launch(s, grid: [1], block: [256])(out, in, un, 0);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        if (hout[0] != -2.0f) { code = code + 2; }\n"
+    "        return code;\n"
+    "    }\n";
+
+} // namespace
+
+TEST(XpuCpuBarrierDivergentExit, aUniformGuardOverABarrierIsScaffoldNotADecline) {
+    for (int flag = 0; flag <= 1; ++flag) {
+        std::string err;
+        auto jit = compileCpu(std::string(PRE) + UNIFORM_GUARD_JOIN
+                              + runUniform("treeUniform", flag, flag) + END,
+                              &err);
+        ASSERT_NE(jit, nullptr) << err;
+        EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+            << "flag=" << flag
+            << ": a kernel-parameter guard is workgroup-uniform by "
+               "provenance:\n" << err;
+        auto fn = jit->lookup<int32_t (*)()>("run");
+        ASSERT_NE(fn, nullptr);
+        EXPECT_EQ(fn(), 0) << "flag=" << flag << ": wrong arm's answer";
+    }
+}
+
+// No join block exists: both arms end the kernel. The split has to stop
+// cleanly rather than hunt for a post-dominator that is the function exit.
+TEST(XpuCpuBarrierDivergentExit, aUniformGuardWhoseArmsBothEndTheKernelLowers) {
+    std::string err;
+    auto jit = compileCpu(std::string(PRE) + UNIFORM_GUARD_BOTH_RETURN
+                          + RUN_SPLIT + END, &err);
+    ASSERT_NE(jit, nullptr) << err;
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos) << err;
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 0)
+        << "bit 0 = the reduce arm's sum is wrong, bit 1 = the other arm did "
+           "not run";
+}
+
+// The full iq3xxsQ8WaveGateUpGluKernel shape: an outer uniform guard, a
+// short-circuit `&&` inside its taken arm (two branches, so a split whose
+// join lives inside another split's arm), a barrier chain under each, and
+// both sides ending the kernel. Two workgroups, one per side.
+TEST(XpuCpuBarrierDivergentExit, nestedUniformGuardsOverTwoBarrierChainsLower) {
+    const char* runSrc =
+        "    public static int32 run() {\n"
+        "        int32 n = 512;\n"
+        "        float32[] hin = heap float32[n];\n"
+        "        int32 i = 0;\n"
+        "        while (i < n) { hin[i] = (float32) (i - (i / 13) * 13); i = i + 1; }\n"
+        "        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);\n"
+        "        KernelBuffer<float32> out = heap KernelBuffer<float32>(2);\n"
+        "        in.upload(hin);\n"
+        "        float32[] hout = heap float32[2];\n"
+        "        hout[0] = -1.0f; hout[1] = -1.0f;\n"
+        "        out.upload(hout);\n"
+        "        KernelStream s #= KernelStream.current();\n"
+        "        uint32 un = (uint32) n;\n"
+        "        treeNested.launch(s, grid: [2], block: [256])(out, in, un, 1, 1);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        float32 w0 = 0.0f;\n"
+        "        int32 k = 0;\n"
+        "        while (k < 256) { w0 = w0 + (float32) (k - (k / 13) * 13); k = k + 1; }\n"
+        "        float32 w1 = 0.0f;\n"
+        "        while (k < 512) { w1 = w1 + (float32) (k - (k / 13) * 13); k = k + 1; }\n"
+        "        int32 code = 0;\n"
+        "        if (hout[0] != w0) { code = code + 1; }\n"
+        "        if (hout[1] != w1) { code = code + 2; }\n"
+        "        return code;\n"
+        "    }\n";
+    std::string err;
+    auto jit = compileCpu(std::string(PRE) + UNIFORM_GUARD_NESTED + runSrc + END,
+                          &err);
+    ASSERT_NE(jit, nullptr) << err;
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos) << err;
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 0)
+        << "bit 0 = workgroup 0's chain (the flagB side), bit 1 = workgroup 1's"
+           " chain (the && side)";
+}
