@@ -581,6 +581,160 @@ public:
         return agg;
     }
 
+    // --- the fused GEMM epilogue (plan 4A.2.8) ----------------------------
+    //
+    // Why this is the last thing holding the spill gate. When this returns
+    // false the tier scan demotes EVERY tile in a kernel that touches
+    // scaledAccumInto/rank1Accum to the portable software tile, and that tile
+    // IS the scratch: measured on the two probe kernels, 1024 bytes of frame
+    // for a lone rank1Accum and 2048 for a scaledAccumInto. Seven of the
+    // eleven kernels still on the sm_89 spill list are demoted this way.
+    //
+    // What it costs to say true. The contract is
+    //     facc[r][c] += rowF[r] * colF[c] * acc[r][c]
+    // per fragment element OF THIS LANE, so the backend has to map element ->
+    // (row, column). AMD hardcodes its own wave32 layout; this is the NVIDIA
+    // equivalent, and it is the one piece of per-vendor knowledge the verb
+    // genuinely needs.
+    //
+    // ESTABLISHED BY MEASUREMENT, NOT FROM A TABLE. wmma's fragment layout is
+    // documented for the PTX instruction but the earlier note in this plan
+    // (and llama.cpp's own header) treats the CUDA C++ wmma fragment as
+    // opaque, and I have misdiagnosed this blocker once already. So the
+    // mapping below is checked on the device by
+    // NvptxCoopEpilogueTests.theFragmentLayoutPlacesEveryElementAtItsOwnRowAndColumn,
+    // which drives two probes (rowF = ramp with colF = 1, then the reverse)
+    // and PRINTS the true (row, column) of any position that disagrees. A
+    // wrong formula there is not noise, it is a readable permutation.
+    bool coopMatrixEpilogueSupported() const override { return true; }
+
+    // Element e of an accumulator fragment, for either shape. NVPTX fragments
+    // are STRUCTS (extractvalue), where AMD's are vectors (extractelement),
+    // so the generic epilogue cannot be shared as written.
+    static llvm::Value* fragGet(llvm::IRBuilderBase& b, llvm::Value* agg,
+                                unsigned e) {
+        if (llvm::isa<llvm::StructType>(agg->getType()))
+            return b.CreateExtractValue(agg, e);
+        return b.CreateExtractElement(agg, e);
+    }
+    static llvm::Value* fragSet(llvm::IRBuilderBase& b, llvm::Value* agg,
+                                llvm::Value* v, unsigned e) {
+        if (llvm::isa<llvm::StructType>(agg->getType()))
+            return b.CreateInsertValue(agg, v, e);
+        return b.CreateInsertElement(agg, v, e);
+    }
+    static unsigned fragCount(llvm::Type* t) {
+        if (auto* st = llvm::dyn_cast<llvm::StructType>(t))
+            return st->getNumElements();
+        if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(t))
+            return vt->getNumElements();
+        return 0;
+    }
+
+    llvm::Value* coopMatrixEpilogueAccum(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
+            llvm::Value* faccVal, llvm::Value* rowFPtr, llvm::Type* rowETy,
+            llvm::Value* colFPtr, llvm::Type* colETy,
+            llvm::Value* rowGPtr = nullptr,
+            llvm::Value* colGPtr = nullptr,
+            llvm::Value* colFScalar = nullptr,
+            llvm::Value* colGScalar = nullptr) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+
+        const unsigned n = fragCount(faccVal->getType());
+        // Only the m16n16k16 f32/s32 accumulator has a mapping established
+        // here. Refuse anything else BY NAME rather than compute a wrong
+        // (row, column) silently, which is the failure this whole unit is
+        // about.
+        if (n != 8)
+            throw cajeta::Exception(
+                std::string("XPU NVPTX cooperative matrix: the fused GEMM "
+                "epilogue (scaledAccumInto/rank1Accum) has an established "
+                "fragment layout only for the 8-element m16n16k16 "
+                "accumulator, and this one has ") + std::to_string(n) +
+                " elements. Its element-to-(row,column) mapping has not been "
+                "measured, and guessing it would place every term in the "
+                "wrong cell. Add the shape to "
+                "NvptxCoopEpilogueTests.theFragmentLayoutPlacesEveryElement"
+                "AtItsOwnRowAndColumn and read the mapping off the failure, "
+                "or force the portable tier with "
+                "CAJETA_GPU_COOPMATRIX_IMPL=software.", "XPU-N04");
+
+        llvm::Value* lane = waveLaneId(b, m);
+        // wmma m16n16k16 is two m16n8k16 halves side by side. Within a half,
+        // the quad (lane>>2) selects the row pair and (lane&3) the column
+        // pair, which is the documented mma.sync C/D layout.
+        llvm::Value* grp = b.CreateLShr(lane, llvm::ConstantInt::get(i32, 2),
+                                        "epi.grp");
+        llvm::Value* tig = b.CreateAnd(lane, llvm::ConstantInt::get(i32, 3),
+                                       "epi.tig");
+        llvm::Value* col2 = b.CreateShl(tig, llvm::ConstantInt::get(i32, 1),
+                                        "epi.col2");
+
+        llvm::Value* out = faccVal;
+        for (unsigned e = 0; e < n; ++e) {
+            const unsigned h = e >> 2;    // which 8-wide column half
+            const unsigned j = e & 3;     // position within the half
+            llvm::Value* row = b.CreateAdd(
+                grp, llvm::ConstantInt::get(i32, 8u * (j >> 1)), "epi.row");
+            llvm::Value* col = b.CreateAdd(
+                col2, llvm::ConstantInt::get(i32, 8u * h + (j & 1u)),
+                "epi.col");
+
+            llvm::Value* rv = b.CreateLoad(
+                rowETy, b.CreateGEP(rowETy, rowFPtr, row, "epi.rf.ptr"),
+                "epi.rf");
+            llvm::Value* cv = colFScalar
+                ? colFScalar
+                : b.CreateLoad(
+                      colETy, b.CreateGEP(colETy, colFPtr, col, "epi.cf.ptr"),
+                      "epi.cf");
+            llvm::Value* term = b.CreateFMul(rv, cv);
+            if (accVal) {
+                llvm::Value* av = fragGet(b, accVal, e);
+                if (av->getType()->isIntegerTy())
+                    av = b.CreateSIToFP(av, f32);
+                term = b.CreateFMul(term, av);
+            }
+            if (rowGPtr) {
+                llvm::Value* cgv = colGScalar;
+                if (!cgv && colGPtr)
+                    cgv = b.CreateLoad(
+                        colETy,
+                        b.CreateGEP(colETy, colGPtr, col, "epi.cg.ptr"),
+                        "epi.cg");
+                llvm::Value* rg = b.CreateLoad(
+                    rowETy, b.CreateGEP(rowETy, rowGPtr, row, "epi.rg.ptr"),
+                    "epi.rg");
+                term = b.CreateFAdd(term, b.CreateFMul(rg, cgv));
+            }
+            llvm::Value* cur = fragGet(b, out, e);
+            out = fragSet(b, out, b.CreateFAdd(cur, term), e);
+        }
+        return out;
+    }
+
+    // iacc[e] += colS * acc[e]. Elementwise over the fragment, so unlike the
+    // float epilogue above this needs NO layout at all -- element e of one
+    // accumulator is element e of the other. NVIDIA has no 24-bit multiply
+    // intrinsic to reach for the way AMD does with llvm.amdgcn.mul.i24, and a
+    // plain i32 multiply is already full rate here, so this is CreateMul.
+    llvm::Value* coopMatrixScaledAccumI32(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
+            llvm::Value* iaccVal, llvm::Value* colS) override {
+        (void) m;
+        const unsigned n = fragCount(iaccVal->getType());
+        llvm::Value* out = iaccVal;
+        for (unsigned e = 0; e < n; ++e) {
+            llvm::Value* av = fragGet(b, accVal, e);
+            llvm::Value* cur = fragGet(b, out, e);
+            out = fragSet(b, out, b.CreateAdd(cur, b.CreateMul(av, colS)), e);
+        }
+        return out;
+    }
+
     // tex.sample → llvm.nvvm.tex.unified.2d.v4f32.f32; the i64 handle bundles
     // image AND sampler state, so the Sampler argument is unused here.
     llvm::Value* sampleTexture(llvm::IRBuilderBase& b, llvm::Module& m,
