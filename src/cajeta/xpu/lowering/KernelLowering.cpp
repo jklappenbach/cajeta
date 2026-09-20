@@ -32,6 +32,7 @@
 #include "../../asn/expression/MethodCallExpression.h"
 #include "../../asn/expression/BinaryOpExpression.h"
 #include "../../asn/expression/OperatorDispatch.h"
+#include "../../ownership/TitleClassifier.h"
 #include "../../asn/expression/LiteralExpression.h"
 #include "../../asn/expression/NewExpression.h"
 #include "../../asn/expression/CreatorRest.h"
@@ -1461,7 +1462,36 @@ private:
             unsupported("postfix call in kernel body (only a device dispatch "
                         "table `ops[i](...)` is callable here)");
         }
-        unsupported("expression form in kernel body");
+        // `#x` and the `#=` desugar. A device kernel has no heap, no drop
+        // chain and no live-allocation set, so there is no title for the
+        // transfer to carry: `int64 c #= 0` denotes exactly what
+        // `int64 c = 0` denotes. Forward to the operand.
+        //
+        // NOT a silent acceptance of something sharp. The rejection this
+        // replaces was reached by `ExpandProbe.f32MatVecKernel`, whose only
+        // sharp spelling was a loop counter's initializer, and it cost the
+        // kernel its device code on every backend.
+        if (auto mv = std::dynamic_pointer_cast<MoveExpression>(expr)) {
+            return lowerExpr(exprChild(mv, 0));
+        }
+        // Name the form and the line. A note that says only "expression form"
+        // leaves bisecting the kernel by hand as the only way to find out
+        // which statement lost the build its kernel.
+        unsupported(describeExpr(expr, "expression form in kernel body"));
+    }
+
+    // "<what>: <Kind> at line L, column C, near `<text>`" — every piece the
+    // reader needs to go straight to the statement.
+    std::string describeExpr(const ExpressionPtr& expr, const char* what) {
+        std::string out = what;
+        if (!expr) return out + ": <null node>";
+        out += ": ";
+        out += cajeta::ownership::toString(expr->kind());
+        out += " at line " + std::to_string(expr->getSourceLine())
+             + ", column " + std::to_string(expr->getSourceColumn());
+        const std::string& text = expr->getSourceText();
+        if (!text.empty()) out += ", near `" + text + "`";
+        return out;
     }
 
     llvm::Value* lowerPrefix(const std::shared_ptr<PrefixExpression>& pre) {
