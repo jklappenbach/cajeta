@@ -116,7 +116,8 @@ TEST(NativeLinkTests, unresolvedLiveLibFailsLoud) {
 // link zlib on any machine that had not staged it by hand.
 TEST(NativeLinkTests, stagesNativeArtifactsOutOfAClasspathArchive) {
     auto tmp = std::filesystem::temp_directory_path() / "nd-stage";
-    std::filesystem::remove_all(tmp);
+    std::error_code rmEc;
+    std::filesystem::remove_all(tmp, rmEc);
     std::filesystem::create_directories(tmp);
     const std::string cja = (tmp / "dep.cja").string();
     const std::vector<uint8_t> bytes = {'!', '<', 'a', 'r', 'c', 'h', '>', 10};
@@ -133,10 +134,14 @@ TEST(NativeLinkTests, stagesNativeArtifactsOutOfAClasspathArchive) {
     const auto landed = std::filesystem::path(*staged) / "linux-x64"
                       / "libcajeta_zlib.a";
     ASSERT_TRUE(std::filesystem::exists(landed));
-    std::ifstream in(landed, std::ios::binary);
-    std::vector<uint8_t> got((std::istreambuf_iterator<char>(in)),
-                             std::istreambuf_iterator<char>());
-    EXPECT_EQ(got, bytes);
+    {
+        // Scoped: Windows will not delete a file that still has an open
+        // handle, so the teardown below fails if this reader is still alive.
+        std::ifstream in(landed, std::ios::binary);
+        std::vector<uint8_t> got((std::istreambuf_iterator<char>(in)),
+                                 std::istreambuf_iterator<char>());
+        EXPECT_EQ(got, bytes);
+    }
 
     // And the resolver finds it there, which is the whole point.
     auto r = resolveNativeArchivesForLink({"cajeta_zlib"}, "linux-x64",
@@ -158,7 +163,8 @@ TEST(NativeLinkTests, stagesNativeArtifactsOutOfAClasspathArchive) {
     // So does an empty classpath.
     EXPECT_FALSE((bool) stageClasspathNativeArtifacts({}, "linux-x64",
                                                       stageRoot));
-    std::filesystem::remove_all(tmp);
+    // Cleanup never decides the verdict.
+    std::filesystem::remove_all(tmp, rmEc);
 }
 
 // hostNativePlatform produces an os-arch triple.
