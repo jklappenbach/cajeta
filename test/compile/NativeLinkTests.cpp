@@ -167,6 +167,40 @@ TEST(NativeLinkTests, stagesNativeArtifactsOutOfAClasspathArchive) {
     std::filesystem::remove_all(tmp, rmEc);
 }
 
+// A `.cja` must carry every platform its publisher provisioned, not just the
+// machine that built it. Baking keyed on hostNativePlatform() meant a package
+// cross-built for six targets on a Linux box published Linux and nothing else.
+TEST(NativeLinkTests, findsArchivesForEveryProvisionedPlatform) {
+    auto root = std::filesystem::temp_directory_path() / "nd-allplat";
+    std::error_code rmEc;
+    std::filesystem::remove_all(root, rmEc);
+    for (const char* p : {"linux-x64", "linux-arm64", "macos-arm64"}) {
+        std::filesystem::create_directories(root / p);
+        std::ofstream(root / p / "libcajeta_zlib.a", std::ios::binary) << "x";
+    }
+    // Headers are not a platform, and a platform without THIS lib is not one
+    // either.
+    std::filesystem::create_directories(root / "include");
+    std::ofstream(root / "include" / "zlib.h") << "h";
+    std::filesystem::create_directories(root / "windows-x64");
+    std::ofstream(root / "windows-x64" / "libsomethingelse.a") << "y";
+
+    auto found = findNativeArchivesByPlatform("cajeta_zlib", {root.string()});
+    ASSERT_EQ(found.size(), 3u);
+    EXPECT_TRUE(found.count("linux-x64"));
+    EXPECT_TRUE(found.count("linux-arm64"));
+    EXPECT_TRUE(found.count("macos-arm64"));
+    EXPECT_FALSE(found.count("include"));
+    EXPECT_FALSE(found.count("windows-x64"));
+    EXPECT_EQ(found["linux-arm64"],
+              (root / "linux-arm64" / "libcajeta_zlib.a").string());
+
+    // A lib nobody provisioned finds nothing, rather than guessing.
+    EXPECT_TRUE(findNativeArchivesByPlatform("nosuchlib", {root.string()})
+                    .empty());
+    std::filesystem::remove_all(root, rmEc);
+}
+
 // hostNativePlatform produces an os-arch triple.
 TEST(NativeLinkTests, hostPlatformShape) {
     std::string p = hostNativePlatform();

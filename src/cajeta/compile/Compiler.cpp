@@ -3977,8 +3977,16 @@ namespace cajeta {
         buildtool::skill::addSkillMembersToArchiveOrThrow(arc, skillSourceRoot);
 
         // Bundle the resolved native artifacts for the live @Native libs into the
-        // archive's native/ tree. No-op when none is live; bundles the host platform's
-        // artifact, and a missing one is reported rather than fatal.
+        // archive's native/ tree. No-op when none is live, and a missing one is
+        // reported rather than fatal.
+        //
+        // EVERY provisioned platform is baked, not just the build host's. A
+        // publisher cross-builds its native archives for all its targets and
+        // assembles them under one `native/` tree, and the point of baking is
+        // that a consumer links OFFLINE on any of them. Baking only the host
+        // meant a package built on Linux carried Linux and nothing else, so
+        // every other platform failed to link it and had to provision the
+        // library by hand. cajeta-codec ships six platforms and published one.
         {
             std::set<std::string> liveLibs;
             for (auto& m : modules)
@@ -3987,7 +3995,7 @@ namespace cajeta {
                     liveLibs.insert(l.begin(), l.end());
                 }
             if (!liveLibs.empty()) {
-                const std::string platform = hostNativePlatform();
+                const std::string hostPlatform = hostNativePlatform();
                 const auto dirs = nativeLinkSearchDirs();
                 std::string reqsJson = "{\"requires\":[";
                 bool first = true;
@@ -3995,20 +4003,40 @@ namespace cajeta {
                     if (!first) reqsJson += ",";
                     reqsJson += "\"" + lib + "\"";
                     first = false;
-                    auto art = findNativeJitArtifact(lib, platform, dirs);
-                    if (!art) {
+
+                    auto bake = [&](const std::string& platform,
+                                    const std::string& path) {
+                        std::ifstream in(path, std::ios::binary);
+                        std::vector<uint8_t> bytes(
+                            (std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+                        std::string fname =
+                            std::filesystem::path(path).filename().string();
+                        arc.addNativeArtifact(platform, fname, std::move(bytes));
+                    };
+
+                    auto byPlatform = findNativeArchivesByPlatform(lib, dirs);
+                    for (const auto& kv : byPlatform) {
+                        bake(kv.first, kv.second);
+                    }
+                    // The host may be provisioned as a SHARED library, which the
+                    // static scan above does not see. Keep bundling it the way
+                    // this always has, so a host-only setup is unaffected.
+                    if (!byPlatform.count(hostPlatform)) {
+                        if (auto art =
+                                findNativeJitArtifact(lib, hostPlatform, dirs)) {
+                            bake(hostPlatform, art->path);
+                        }
+                    }
+                    if (byPlatform.empty()) {
                         cerr << "cajeta: note: native lib '" << lib
                              << "' not bundled (not provisioned for "
-                             << platform << ")" << std::endl;
-                        continue;
+                             << hostPlatform << ")" << std::endl;
+                    } else {
+                        cerr << "cajeta: bundled native lib '" << lib
+                             << "' for " << byPlatform.size()
+                             << " platform(s)" << std::endl;
                     }
-                    std::ifstream in(art->path, std::ios::binary);
-                    std::vector<uint8_t> bytes(
-                        (std::istreambuf_iterator<char>(in)),
-                        std::istreambuf_iterator<char>());
-                    std::string fname =
-                        std::filesystem::path(art->path).filename().string();
-                    arc.addNativeArtifact(platform, fname, std::move(bytes));
                 }
                 reqsJson += "],\"libraries\":{}}";
                 arc.setNativeLibrariesMeta(

@@ -176,6 +176,34 @@ namespace cajeta {
         return out;
     }
 
+    std::map<std::string, std::string> findNativeArchivesByPlatform(
+            const std::string& lib,
+            const std::vector<std::string>& searchDirs) {
+        std::map<std::string, std::string> out;
+        for (const auto& dir : searchDirs) {
+            std::error_code ec;
+            std::filesystem::directory_iterator it(dir, ec), end;
+            if (ec) continue;
+            for (; it != end; it.increment(ec)) {
+                if (ec) break;
+                if (!it->is_directory(ec) || ec) continue;
+                const std::string platform = it->path().filename().string();
+                if (platform == "include") continue;
+                if (out.count(platform)) continue;
+                const std::string cands[] = {"lib" + lib + ".a", lib + ".a"};
+                for (const auto& c : cands) {
+                    const auto p = it->path() / c;
+                    std::error_code e2;
+                    if (std::filesystem::exists(p, e2) && !e2) {
+                        out[platform] = p.string();
+                        break;
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
     std::optional<NativeJitArtifact> findNativeJitArtifact(
             const std::string& lib, const std::string& platform,
             const std::vector<std::string>& searchDirs) {
