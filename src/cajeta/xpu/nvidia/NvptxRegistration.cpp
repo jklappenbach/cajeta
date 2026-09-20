@@ -73,6 +73,16 @@ namespace nvidia {
         llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
             "__cajeta_xpu_register_kernel_params", kpTy);
 
+        // (i8* name, i32 bytes): a kernel whose static Shared<T> went over the
+        // PTX static cap had its tiles relocated into one `extern .shared`
+        // block, which carries no size in the PTX. The launch sizes it from
+        // this and takes the driver's per-function opt-in. Emitted only for
+        // the kernels that needed relocating.
+        llvm::FunctionType* dsTy =
+            llvm::FunctionType::get(voidTy, {ptrTy, i32Ty}, false);
+        llvm::FunctionCallee dsFn = hostModule.getOrInsertFunction(
+            "__cajeta_xpu_register_dynamic_shared", dsTy);
+
         // (i8* name, i8* ptx, i64 len, i32 shape, i8* raygen, i8* prog1..3): the
         // OptiX program PTX, for an AS whose launch is an optixLaunch pipeline.
         llvm::FunctionType* rqTy = llvm::FunctionType::get(
@@ -90,8 +100,9 @@ namespace nvidia {
             llvm::Module devMod("xpu.dev." + entryName, devCtx);
             configureDeviceModule(devMod, *tm);
             llvm::Function* kfn = nullptr;
+            uint64_t dynSharedBytes = 0;
             try {
-                kfn = lowerKernel(method, devMod);
+                kfn = lowerKernel(method, devMod, &dynSharedBytes);
             } catch (cajeta::Exception& ex) {
                 // A contradicted @Access declaration is a compile error, not a skip.
                 if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
@@ -186,6 +197,14 @@ namespace nvidia {
                                                            (uint32_t) info.size()),
                                     kindGV, szGV});
             }
+
+            // Only when the lowering actually relocated something: an absent
+            // registration reads as zero, which is what every kernel that
+            // fits under the static cap should record.
+            if (dynSharedBytes > 0)
+                b.CreateCall(dsFn, {nameStr,
+                                    llvm::ConstantInt::get(
+                                        i32Ty, (uint32_t) dynSharedBytes)});
 
             // The program PTX goes in a SEPARATE module: ptxas rejects `_optix_*` asm.
             // Only the count and nearest-hit shapes register, the rest stay software.

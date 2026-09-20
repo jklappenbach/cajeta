@@ -39,6 +39,10 @@ struct cajeta_cuda_api {
     int (*cuModuleLoadData)(void**, const void*);
     int (*cuModuleGetFunction)(void**, void*, const char*);
     int (*cuFuncGetAttribute)(int*, int, void*);
+    // Opt a kernel into more than the 48 KB static shared cap. Optional:
+    // a driver without it simply cannot run an over-cap kernel, and the
+    // launch says so by name rather than failing in ptxas terms.
+    int (*cuFuncSetAttribute)(void*, int, int);
     int (*cuModuleGetGlobal)(cajeta_cudeviceptr*, size_t*, void*, const char*);
     int (*cuMemAlloc)(cajeta_cudeviceptr*, size_t);
     int (*cuMemcpyHtoD)(cajeta_cudeviceptr, const void*, size_t);
@@ -351,6 +355,8 @@ static int cajeta_xpu_cuda_init_locked(void) {
     CAJ_BIND(cuModuleGetFunction, "cuModuleGetFunction");
     *(void**) (&g_xpu_cuda.cuFuncGetAttribute) =                // optional (non-fatal)
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuFuncGetAttribute");
+    *(void**) (&g_xpu_cuda.cuFuncSetAttribute) =               // optional (non-fatal)
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuFuncSetAttribute");
     CAJ_BIND(cuMemAlloc, "cuMemAlloc_v2");
     CAJ_BIND(cuMemcpyHtoD, "cuMemcpyHtoD_v2");
     CAJ_BIND(cuMemcpyDtoH, "cuMemcpyDtoH_v2");
@@ -1153,6 +1159,58 @@ void __cajeta_xpu_register_kernel_params(const char* name, int32_t count,
     // Publish a new slot only after its fields are written (lock-free readers).
     if (isNew) g_xpu_kparam_count++;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
+}
+
+// --- over-cap shared memory ------------------------------------------------
+// A kernel whose static Shared<T> tiles total more than the PTX ABI's 48 KB
+// static cap has had them relocated into one `extern .shared` block by the
+// NVPTX lowering (relocateOversizedStaticShared). The block has no size in
+// the PTX, so the launch has to supply it — and above 48 KB the driver also
+// wants an explicit opt-in per function. Both need a number the launch site
+// does not have and the compiler does, so the compiler registers it here.
+//
+// Zero for every kernel that fits, which is nearly all of them: this table
+// stays empty unless something actually needed relocating.
+struct cajeta_dynshared { char name[256]; uint32_t bytes; };
+#define CAJETA_XPU_MAX_DYNSHARED 256
+static struct cajeta_dynshared g_xpu_dynshared[CAJETA_XPU_MAX_DYNSHARED];
+static int g_xpu_dynshared_count;
+
+void __cajeta_xpu_register_dynamic_shared(const char* name, uint32_t bytes) {
+    if (!name) return;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    int idx = -1;
+    for (int i = 0; i < g_xpu_dynshared_count; ++i)
+        if (strncmp(g_xpu_dynshared[i].name, name,
+                    sizeof(g_xpu_dynshared[i].name)) == 0) { idx = i; break; }
+    int isNew = 0;
+    if (idx < 0) {
+        if (g_xpu_dynshared_count >= CAJETA_XPU_MAX_DYNSHARED) {
+            fprintf(stderr,
+                    "cajeta.xpu: dynamic-shared registry FULL (%d) — dropping "
+                    "'%s'; its launch will fail for want of shared memory\n",
+                    CAJETA_XPU_MAX_DYNSHARED, name);
+            pthread_mutex_unlock(&g_xpu_cuda_lock);
+            return;
+        }
+        idx = g_xpu_dynshared_count;
+        isNew = 1;
+    }
+    strncpy(g_xpu_dynshared[idx].name, name,
+            sizeof(g_xpu_dynshared[idx].name) - 1);
+    g_xpu_dynshared[idx].name[sizeof(g_xpu_dynshared[idx].name) - 1] = '\0';
+    g_xpu_dynshared[idx].bytes = bytes;
+    if (isNew) g_xpu_dynshared_count++;
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+}
+
+static uint32_t cajeta_xpu_dynamic_shared_bytes(const char* name) {
+    if (!name) return 0;
+    for (int i = 0; i < g_xpu_dynshared_count; ++i)
+        if (strncmp(g_xpu_dynshared[i].name, name,
+                    sizeof(g_xpu_dynshared[i].name)) == 0)
+            return g_xpu_dynshared[i].bytes;
+    return 0;
 }
 
 static struct cajeta_kparams* cajeta_xpu_find_kparams(const char* name) {

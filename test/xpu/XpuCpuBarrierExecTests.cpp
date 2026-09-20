@@ -726,13 +726,23 @@ public class M {
 
 // Many blocks across pthread workers: per-block shared buffers must not alias.
 
-// Guardrail: a barrier under work-item-divergent control flow is GPU-undefined.
-// Fission rejects it (XPU-N02) and the kernel falls back to the host stub —
-// compilation succeeds (no crash) and emits no fission wrapper.
-TEST(XpuCpuBarrierExecTests, divergentBarrierFallsBackCleanly) {
+// SUPERSEDED, and the reason matters. This asserted that a barrier under
+// work-item-divergent control flow fell back to the host stub, on the ground
+// that the shape is GPU-undefined. It is not — not this shape. The work-items
+// this guard turns away run straight off the end of the kernel, and PTX's
+// `bar.sync` counts only threads that have NOT exited, so an early exit before
+// a barrier is defined on the hardware too. The CPU backend now gives the same
+// answer the device does, through the work-item activity mask, instead of
+// refusing to compile the kernel.
+//
+// What is still refused has moved to XpuCpuBarrierDivergentExitTests: a
+// work-item that skips a barrier and REJOINS. That one has no point at which
+// the group is together, on any backend.
+TEST(XpuCpuBarrierExecTests, aBarrierBehindAnEarlyExitFissionsAndRuns) {
     const char* src =
         "package test;\n"
         "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
         "import cajeta.xpu.KernelThread;\n"
         "import cajeta.xpu.Barrier;\n"
         "public class M {\n"
@@ -741,11 +751,40 @@ TEST(XpuCpuBarrierExecTests, divergentBarrierFallsBackCleanly) {
         "        uint32 t = KernelThread.globalIdX();\n"
         "        if (t < 4) { Barrier.workgroup(); a[t] = t; }\n"
         "    }\n"
+        "    public static int32 run() {\n"
+        "        KernelBuffer<uint32> a = heap KernelBuffer<uint32>(8);\n"
+        "        uint32[] h = heap uint32[8];\n"
+        "        uint32 i = 0;\n"
+        "        while (i < 8) { h[i] = 99; i = i + 1; }\n"
+        "        a.upload(h);\n"
+        "        KernelStream s #= KernelStream.current();\n"
+        "        divergent.launch(s, grid: [1], block: [8])(a);\n"
+        "        s.sync();\n"
+        "        a.download(h);\n"
+        "        uint32 j = 0;\n"
+        "        while (j < 4) {\n"
+        "            if (h[j] != j) { return (int32) (10 + j); }\n"
+        "            j = j + 1;\n"
+        "        }\n"
+        "        while (j < 8) {\n"
+        "            if (h[j] != 99) { return (int32) (20 + j); }\n"
+        "            j = j + 1;\n"
+        "        }\n"
+        "        return 0;\n"
+        "    }\n"
         "}\n";
     std::string ir = compileToIr(src, "test.M.divergent");
     ASSERT_FALSE(ir.empty());
-    EXPECT_EQ(ir.find(".divergent("), std::string::npos)
-        << "divergent barrier should fall back, not fission\n";
+    EXPECT_NE(ir.find(".divergent("), std::string::npos)
+        << "the guarded barrier must fission now, not fall back\n";
+
+    auto jit = CajetaJit::compile(src, "test.M", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    // 10+j: work-item j inside the guard did not write. 20+j: work-item j
+    // outside it wrote anyway, which is the mask failing open.
+    EXPECT_EQ(fn(), 0);
 }
 
 // Guardrail (Increment 8): nesting is supported, but a barrier in a loop whose

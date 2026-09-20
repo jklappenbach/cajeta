@@ -313,6 +313,38 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
     }
     // Bound to its creating thread: a launch elsewhere finds no context and no-ops.
     if (g_xpu_cuda.cuCtxSetCurrent) g_xpu_cuda.cuCtxSetCurrent(g_xpu_cuda.ctx);
+
+    // A kernel whose static Shared<T> went over the 48 KB PTX static cap had
+    // its tiles relocated into one `extern .shared` block, which carries no
+    // size in the PTX. The compiler registered the size; supply it here, and
+    // above the cap also take the per-function opt-in the driver requires.
+    // `max` rather than assignment: a kernel may ALSO have a runtime-sized
+    // Shared<T> whose bytes came from the launch site.
+    {
+        uint32_t relocated = cajeta_xpu_dynamic_shared_bytes(kernelName);
+        if (relocated > sharedBytes) sharedBytes = relocated;
+        if (relocated > CAJETA_XPU_CUDA_STATIC_SHARED_CAP) {
+            if (!g_xpu_cuda.cuFuncSetAttribute) {
+                fprintf(stderr,
+                        "cajeta.xpu: '%s' needs %u bytes of shared memory, over "
+                        "the %u-byte static cap, but this CUDA driver exports no "
+                        "cuFuncSetAttribute to opt in with; not launching\n",
+                        kernelName, relocated,
+                        (unsigned) CAJETA_XPU_CUDA_STATIC_SHARED_CAP);
+                return;
+            }
+            // 8 = CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES.
+            int setRc = g_xpu_cuda.cuFuncSetAttribute(fn, 8, (int) relocated);
+            if (setRc != 0) {
+                fprintf(stderr,
+                        "cajeta.xpu: '%s' asked for %u bytes of shared memory and "
+                        "the driver refused the opt-in (%d). This device's "
+                        "per-block maximum is below that; not launching\n",
+                        kernelName, relocated, setRc);
+                return;
+            }
+        }
+    }
     // The kernel reads `(slot < count) ? values[slot] : default`, so count 0 clears.
     if (mod && g_xpu_cuda.cuModuleGetGlobal && g_xpu_cuda.cuMemcpyHtoD) {
         cajeta_cudeviceptr g; size_t gbytes;

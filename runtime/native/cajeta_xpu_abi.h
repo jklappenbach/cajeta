@@ -15,6 +15,16 @@ extern "C" {
  * repurposing an argument. */
 #define CAJETA_XPU_ABI_VERSION 3
 
+/* The PTX ABI's cap on STATIC `.shared` for a CUDA entry point, on every sm_*.
+ * Not a tuning number and not per-device: it is the total a `.shared .b8 x[N]`
+ * definition may reach before ptxas refuses the entry point outright ("uses too
+ * much shared data (0x… bytes, 0xc000 max)"). The same block can hold far more
+ * through the DYNAMIC path — 99 KB on sm_89, 227 KB on sm_90 — so over-cap
+ * tiles are relocated into one `extern .shared` block at lowering and the
+ * launch opts in with cuFuncSetAttribute. Shared here because the compiler
+ * decides the relocation and the runtime performs the opt-in. */
+#define CAJETA_XPU_CUDA_STATIC_SHARED_CAP 49152u
+
 /* Per-kernel-parameter kind: one argv slot per parameter, in declaration order.
  * The values are frozen ABI — append at the end, never renumber. */
 typedef enum CajetaXpuParamKind {

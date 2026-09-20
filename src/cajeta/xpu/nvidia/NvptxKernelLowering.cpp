@@ -1125,9 +1125,98 @@ private:
 
 } // namespace
 
-llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule) {
+// The PTX ABI's cap on STATIC `.shared`. The number itself lives in
+// cajeta_xpu_abi.h, because the compiler decides the relocation and the C
+// runtime performs the matching cuFuncSetAttribute opt-in, and a cap the two
+// sides disagreed about would produce a kernel that assembles and will not
+// launch.
+static constexpr uint64_t kNvptxStaticSharedCap =
+    CAJETA_XPU_CUDA_STATIC_SHARED_CAP;
+
+// The one extern block an over-cap kernel's tiles are packed into. PTX gives
+// a module a single dynamic shared region; every relocated tile is an offset
+// inside it.
+static const char* kNvptxDynSharedSym = "__cajeta_nvptx_dynshared";
+
+uint64_t relocateOversizedStaticShared(llvm::Function* kfn,
+                                       llvm::Module& m) {
+    if (!kfn) return 0;
+    const llvm::DataLayout& dl = m.getDataLayout();
+    llvm::LLVMContext& ctx = m.getContext();
+
+    llvm::SmallVector<llvm::GlobalVariable*, 8> statics;
+    bool hasExtern = false;
+    uint64_t total = 0;
+    for (llvm::GlobalVariable& g : m.globals()) {
+        if (g.getAddressSpace() != 3) continue;
+        if (!g.hasInitializer()) { hasExtern = true; continue; }
+        statics.push_back(&g);
+    }
+    // Align each tile the way it asked to be aligned; the block itself is
+    // 16-aligned, so honouring the members keeps every one of them aligned.
+    for (llvm::GlobalVariable* g : statics) {
+        uint64_t a = g->getAlign() ? g->getAlign()->value() : 16;
+        if (a < 1) a = 1;
+        total = (total + a - 1) / a * a;
+        total += dl.getTypeAllocSize(g->getValueType());
+    }
+    if (total <= kNvptxStaticSharedCap) return 0;
+
+    // A kernel that ALREADY has a dynamic block cannot also have its static
+    // tiles relocated: both would start at offset 0 of the same region and
+    // silently alias. Refuse by name rather than miscompile.
+    if (hasExtern)
+        throw cajeta::Exception(
+            std::string("XPU NVPTX shared memory: kernel '")
+            + kfn->getName().str() + "' declares " + std::to_string(total)
+            + " bytes of static Shared<T>, over the " +
+            std::to_string(kNvptxStaticSharedCap) + "-byte PTX static cap, "
+            "AND a runtime-sized Shared<T>. Both would have to live at the "
+            "start of the one dynamic shared block. Give the runtime-sized "
+            "tile a static size, or bring the static tiles under the cap.",
+            "XPU-N05");
+
+    auto* i8 = llvm::Type::getInt8Ty(ctx);
+    auto* blockTy = llvm::ArrayType::get(i8, 0);
+    auto* block = llvm::cast<llvm::GlobalVariable>(
+        m.getOrInsertGlobal(kNvptxDynSharedSym, blockTy, [&] {
+            return new llvm::GlobalVariable(
+                m, blockTy, /*isConstant=*/false,
+                llvm::GlobalValue::ExternalLinkage, /*Initializer=*/nullptr,
+                kNvptxDynSharedSym, /*InsertBefore=*/nullptr,
+                llvm::GlobalValue::NotThreadLocal, /*AddressSpace=*/3);
+        }));
+    block->setAlignment(llvm::Align(16));
+
+    auto* i64 = llvm::Type::getInt64Ty(ctx);
+    uint64_t at = 0;
+    for (llvm::GlobalVariable* g : statics) {
+        uint64_t a = g->getAlign() ? g->getAlign()->value() : 16;
+        if (a < 1) a = 1;
+        at = (at + a - 1) / a * a;
+        llvm::Constant* idx[] = {llvm::ConstantInt::get(i64, 0),
+                                 llvm::ConstantInt::get(i64, at)};
+        llvm::Constant* slot = llvm::ConstantExpr::getInBoundsGetElementPtr(
+            blockTy, block, idx);
+        g->replaceAllUsesWith(slot);
+        at += dl.getTypeAllocSize(g->getValueType());
+    }
+    for (llvm::GlobalVariable* g : statics) g->eraseFromParent();
+    return total;
+}
+
+llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
+                            uint64_t* dynSharedBytes) {
     NvptxTarget target;
-    return cajeta::xpu::lowerKernel(method, deviceModule, target);
+    llvm::Function* f =
+        cajeta::xpu::lowerKernel(method, deviceModule, target);
+    uint64_t n = relocateOversizedStaticShared(f, deviceModule);
+    if (dynSharedBytes) *dynSharedBytes = n;
+    return f;
+}
+
+llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule) {
+    return lowerKernel(method, deviceModule, /*dynSharedBytes=*/nullptr);
 }
 
 } // namespace nvidia
