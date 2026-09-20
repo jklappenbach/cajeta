@@ -4180,18 +4180,24 @@ private:
             if (slot.use == 2)
                 unsupported("CooperativeMatrix.fromWords: an A or B "
                             "operand tile, not an accumulator");
-            auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(slot.matrixType);
-            if (!vt || vt->getNumElements() != 4 ||
-                !vt->getElementType()->isIntegerTy(32))
-                unsupported("CooperativeMatrix.fromWords: only the 16x16 "
-                            "int8 operand fragment (<4 x i32> per lane)");
-            llvm::Value* frag = llvm::UndefValue::get(vt);
-            for (unsigned w = 0; w < 4; ++w) {
-                llvm::Value* wv = coerceTo(lowerExpr(args[w].expression), i32);
-                frag = builder.CreateInsertElement(
-                    frag, wv, llvm::ConstantInt::get(i32, w),
-                    recv + ".fw" + std::to_string(w));
+            // The shape check belongs to the backends that build the
+            // fragment straight from these words; one that redistributes
+            // them has a fragment of its own shape and must not be held to
+            // AMD's <4 x i32>.
+            if (target.coopMatrixFromWordsIsLaneFragment()) {
+                auto* vt =
+                    llvm::dyn_cast<llvm::FixedVectorType>(slot.matrixType);
+                if (!vt || vt->getNumElements() != 4 ||
+                    !vt->getElementType()->isIntegerTy(32))
+                    unsupported("CooperativeMatrix.fromWords: only the 16x16 "
+                                "int8 operand fragment (<4 x i32> per lane)");
             }
+            llvm::Value* w[4];
+            for (unsigned k = 0; k < 4; ++k)
+                w[k] = coerceTo(lowerExpr(args[k].expression), i32);
+            llvm::Value* frag = target.coopMatrixFromWords(
+                builder, mod, w, slot.matrixType, slot.rows, slot.cols,
+                slot.use);
             builder.CreateStore(frag, slot.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
@@ -6329,6 +6335,23 @@ llvm::Value* LoweringTarget::coopMatrixSplat(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*value*/,
     llvm::Type* /*matrixType*/) {
     throw coopMatrixUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::coopMatrixFromWords(
+    llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* const w[4],
+    llvm::Type* matrixType, uint32_t /*rows*/, uint32_t /*cols*/,
+    uint32_t /*use*/) {
+    // The default is the AMD WMMA case the verb was written for: the four
+    // words ARE this lane's fragment, so building it is four inserts. The
+    // generic caller has already checked the <4 x i32> shape for any backend
+    // that reports coopMatrixFromWordsIsLaneFragment().
+    llvm::Type* i32 = llvm::Type::getInt32Ty(b.getContext());
+    llvm::Value* frag = llvm::UndefValue::get(matrixType);
+    for (unsigned k = 0; k < 4; ++k)
+        frag = b.CreateInsertElement(frag, w[k],
+                                     llvm::ConstantInt::get(i32, k),
+                                     "cm.fw" + std::to_string(k));
+    return frag;
 }
 
 llvm::Value* LoweringTarget::coopMatrixEpilogueAccum(

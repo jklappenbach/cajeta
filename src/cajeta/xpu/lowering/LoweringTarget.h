@@ -544,10 +544,28 @@ namespace xpu {
         // coopMatrixEpilogueAccum is only ever called where this returned true.
         virtual bool coopMatrixEpilogueSupported() const { return false; }
 
-        // Whether this backend's int8 operand fragment is an EXPLICIT per-lane
-        // encoding the generic lowering may build from four i32 words (AMD WMMA).
-        // False = opaque (SPIR-V), and the verb is rejected on the native tier.
+        // Whether this backend can serve `fromWords` AT ALL on the native tier,
+        // by either route below. False = the verb is rejected.
         virtual bool coopMatrixFromWordsSupported() const { return false; }
+
+        // Whether the four i32 words ARE this lane's fragment, so the generic
+        // lowering may build the value by inserting them (AMD WMMA wave32:
+        // 4 x i32 = 16 bytes per lane, lane L owning column L%16). False means
+        // the backend must redistribute them itself in `coopMatrixFromWords`,
+        // which is the NVIDIA case: its s8 operand fragment is {i32 x 2}, eight
+        // bytes per lane with a different partition and no half-wave
+        // duplication, so a lane does not hold what its own slots need and the
+        // data has to cross lanes.
+        virtual bool coopMatrixFromWordsIsLaneFragment() const { return true; }
+
+        // m.fromWords(w0..w3): the words are the LOGICAL 16 bytes of the column
+        // this lane owns. The default builds the fragment directly, which is
+        // correct only where coopMatrixFromWordsIsLaneFragment() holds; a
+        // backend whose fragment is shaped differently overrides this and
+        // redistributes (NVPTX stages through shared memory and re-loads).
+        virtual llvm::Value* coopMatrixFromWords(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* const w[4],
+            llvm::Type* matrixType, uint32_t rows, uint32_t cols, uint32_t use);
 
         // facc[r][c] += (rowF[r]*colF[c])*acc[r][c] per fragment element of the
         // CURRENT lane; that association is the cross-tier CONTRACT.

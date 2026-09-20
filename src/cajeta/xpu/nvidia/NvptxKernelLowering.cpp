@@ -581,6 +581,143 @@ public:
         return agg;
     }
 
+    // --- fromWords, staged rather than refused (plan 4A.2.4) --------------
+    //
+    // The verb hands over four i32 words that on AMD WMMA ARE this lane's
+    // fragment: 16 bytes per lane, lane L owning column L%16, the same 256
+    // bytes held twice across the two half-waves of a wave32. NVIDIA's
+    // m16n16k16 s8 operand fragment is {i32 x 2} -- eight bytes per lane,
+    // 32 lanes, 256 bytes with NO duplication and a different partition. A
+    // lane therefore does not hold the bytes its own slots need, and no
+    // amount of register shuffling within the lane will produce them: the
+    // data has to cross lanes.
+    //
+    // So the words are treated as what they logically are -- column L%16 of
+    // the operand -- staged into shared memory in that layout, and re-loaded
+    // through the ordinary wmma load, which performs the redistribution in
+    // hardware. Column-major with stride 16 is exactly "element (k,n) at
+    // n*16 + k", which is the placement below.
+    //
+    // This is deliberately done HERE rather than in the kernels. The four
+    // kernels that call `fromWords` are hot, their stated design point is
+    // that the weight side never touches LDS, and rewriting their 11 call
+    // sites to stage by hand would put that cost on AMD as well -- on
+    // hardware this machine does not have and cannot measure. Staging in the
+    // lowering confines it to the backend with no alternative and leaves
+    // AMD's single-instruction path untouched.
+    bool coopMatrixFromWordsSupported() const override { return true; }
+    bool coopMatrixFromWordsIsLaneFragment() const override { return false; }
+
+    llvm::Value* coopMatrixFromWords(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* const w[4],
+            llvm::Type* matrixType, uint32_t rows, uint32_t cols,
+            uint32_t use) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+
+        if (rows != 16 || cols != 16)
+            throw cajeta::Exception(
+                std::string("XPU NVPTX cooperative matrix: "
+                "CooperativeMatrix.fromWords stages through shared memory "
+                "and the staging layout is established only for the 16x16 "
+                "operand, not ") + std::to_string(rows) + "x" +
+                std::to_string(cols) + ".", "XPU-N04");
+
+        // The staging buffer is PER WAVE, because every wave in the block
+        // builds a different column set at the same moment. Sizing it needs
+        // the block bound, and guessing it is exactly the kind of invented
+        // constant this project treats as a defect: too small silently
+        // corrupts a neighbouring wave's columns, too large eats the LDS the
+        // kernel needs for its own tiles. So the bound is REQUIRED, and it
+        // is a structural fact the author already knows.
+        llvm::Function* fn = b.GetInsertBlock()->getParent();
+        unsigned maxThreads = 0;
+        if (auto* na = m.getNamedMetadata("nvvm.annotations")) {
+            for (auto* nd : na->operands()) {
+                if (!nd || nd->getNumOperands() != 3) continue;
+                auto* vam =
+                    llvm::dyn_cast<llvm::ValueAsMetadata>(nd->getOperand(0));
+                if (!vam || vam->getValue() != fn) continue;
+                auto* key = llvm::dyn_cast<llvm::MDString>(nd->getOperand(1));
+                if (!key || key->getString() != "maxntidx") continue;
+                if (auto* cv = llvm::mdconst::dyn_extract_or_null<
+                        llvm::ConstantInt>(nd->getOperand(2)))
+                    maxThreads = (unsigned) cv->getZExtValue();
+            }
+        }
+        if (maxThreads == 0)
+            throw cajeta::Exception(
+                std::string("XPU NVPTX cooperative matrix: "
+                "CooperativeMatrix.fromWords needs the block's thread bound "
+                "to size its per-wave staging buffer, and kernel '") +
+                fn->getName().str() + "' does not declare one. NVIDIA cannot "
+                "build this fragment from the calling lane's own words (its "
+                "operand fragment is {i32 x 2} against AMD's <4 x i32>), so "
+                "the words are staged in shared memory and re-loaded, and "
+                "one wave's columns must not land on another's. Declare the "
+                "structural bound the launch already obeys: "
+                "@Occupancy(maxThreads = N).", "XPU-N04");
+
+        const unsigned waves = (maxThreads + 31u) / 32u;
+        const unsigned tileBytes = rows * cols;          // 16x16 int8 = 256
+        const unsigned totalBytes = waves * tileBytes;
+
+        // One buffer per (kernel, shape), reused by every fromWords in it:
+        // each use stages, syncs and loads before the next can run.
+        const std::string gname =
+            "__cajeta.fromwords." + fn->getName().str() + "." +
+            std::to_string(rows) + "x" + std::to_string(cols);
+        llvm::GlobalVariable* stage =
+            m.getNamedGlobal(gname);
+        if (!stage) {
+            llvm::ArrayType* at = llvm::ArrayType::get(i8, totalBytes);
+            stage = new llvm::GlobalVariable(
+                m, at, /*isConstant=*/false,
+                llvm::GlobalValue::InternalLinkage,
+                llvm::UndefValue::get(at), gname, nullptr,
+                llvm::GlobalValue::NotThreadLocal, /*addrspace=*/3);
+            stage->setAlignment(llvm::Align(16));
+        }
+
+        llvm::Value* lane = waveLaneId(b, m);
+        llvm::Value* tid = readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_tid_x);
+        llvm::Value* wid = b.CreateLShr(tid, llvm::ConstantInt::get(i32, 5),
+                                        "fw.wid");
+        llvm::Value* col = b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15),
+                                       "fw.col");
+
+        // (k, n) at n*16 + k, which is column-major with stride 16.
+        llvm::Value* waveOff =
+            b.CreateMul(wid, llvm::ConstantInt::get(i32, tileBytes),
+                        "fw.waveoff");
+        llvm::Value* myOff = b.CreateAdd(
+            waveOff, b.CreateMul(col, llvm::ConstantInt::get(i32, cols)),
+            "fw.myoff");
+        llvm::Value* myPtr =
+            b.CreateGEP(i8, stage, {myOff}, "fw.myptr");
+        for (unsigned k = 0; k < 4; ++k) {
+            llvm::Value* p = b.CreateGEP(
+                i32, myPtr, {llvm::ConstantInt::get(i32, k)}, "fw.wptr");
+            b.CreateAlignedStore(w[k], p, llvm::Align(4));
+        }
+
+        // A WARP sync, not a block one. These kernels run eight waves and the
+        // call sites sit inside loops the waves need not enter together, so a
+        // block-wide barrier here would be a deadlock waiting to happen. The
+        // staging is wave-private, so warp scope is also all that is needed.
+        b.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
+                         &m, llvm::Intrinsic::nvvm_bar_warp_sync),
+                     {llvm::ConstantInt::get(i32, 0xffffffffu)});
+
+        llvm::Value* wavePtr =
+            b.CreateGEP(i8, stage, {waveOff}, "fw.waveptr");
+        return coopMatrixLoad(b, m, wavePtr,
+                              llvm::ConstantInt::get(i32, 1),   // col-major
+                              llvm::ConstantInt::get(i32, cols),
+                              matrixType, rows, cols, use);
+    }
+
     // --- the fused GEMM epilogue (plan 4A.2.8) ----------------------------
     //
     // Why this is the last thing holding the spill gate. When this returns
