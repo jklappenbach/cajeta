@@ -2909,7 +2909,14 @@ namespace cajeta {
             if (!resolved) {
                 cerr << "cajeta: --emit=exe: "
                      << llvm::toString(resolved.takeError()) << std::endl;
-                return;
+                // Same rule as a failed link below: returning here left no
+                // executable and still exited 0, so the caller saw a success
+                // and only noticed when a later step asked for the artifact
+                // that was never produced. A cvm release build surfaced this
+                // as "references undefined property 'art.sha256'", twenty
+                // lines after the message that actually explained it.
+                throw std::runtime_error(
+                    "--emit=exe: native library resolution failed");
             }
             nativeArchives = std::move(*resolved);
         }
@@ -3002,7 +3009,7 @@ namespace cajeta {
             cerr << "cajeta: --emit=exe could not find a C compiler to link "
                  << "with (tried $CC, cc, clang, gcc). Set $CC to your "
                  << "toolchain's driver." << std::endl;
-            return;
+            throw std::runtime_error("--emit=exe: no C compiler to link with");
         }
         if (res.code() != 0) {
             cerr << "cajeta: link failed — '" << usedDriver << "' exited "
