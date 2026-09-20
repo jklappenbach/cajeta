@@ -221,22 +221,27 @@ TEST(XpuCpuBarrierFissionLoop, perWorkItemLatchIsDeclinedByName) {
     EXPECT_EQ(delta, 1) << "one declined launch moves Device.launchFailures() by one:\n" << runErr;
 }
 
-// 1.1.6 — spec 2.5: a barrier loop under an `if` (the WMMA GEMM kernels'
-// guard) is declined by name, never fissioned. Before the check the walk
-// regioned the `if`'s join block twice and the block function failed the IR
-// verifier — this compile crashed in RAGreedy.
-TEST(XpuCpuBarrierFissionLoop, guardedBarrierLoopIsDeclinedNotMiscompiled) {
+// 1.1.6 — spec 2.5, SUPERSEDED. A barrier loop under an `if` (the WMMA GEMM
+// kernels' guard) was declined by name here, and the decline was right while
+// it stood: accepting the shape regioned the `if`'s join block twice and the
+// block function failed the IR verifier, crashing this compile in RAGreedy.
+//
+// It is now ACCEPTED, by the work-item activity mask — the bypass edge gets
+// its own `ret` so the join is regioned once, and a work-item that took it is
+// masked out of every later region. The numerics live in
+// XpuCpuBarrierDivergentExitTests; what stays here is the pair of facts this
+// test was protecting: the shape lowers with no note, and the launch does NOT
+// count as a failure.
+TEST(XpuCpuBarrierFissionLoop, guardedBarrierLoopIsAcceptedNotMiscompiled) {
     std::string err;
     auto jit = compileCpu(std::string(PRE) + GUARDED_LOOP + RUN_GUARDED_LAUNCH + END, &err);
     ASSERT_NE(jit, nullptr) << err;
-    EXPECT_NE(err.find("[xpu-kernel-skipped] treeGuarded"), std::string::npos)
-        << "the note must name the kernel:\n" << err;
-    EXPECT_NE(err.find("a barrier loop under work-item-divergent control flow"), std::string::npos)
-        << "the reason must name the loop, not the barrier or the generic message:\n" << err;
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+        << "the guarded barrier loop must lower, with no note:\n" << err;
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
     testing::internal::CaptureStderr();
     int32_t delta = fn();
     std::string runErr = testing::internal::GetCapturedStderr();
-    EXPECT_EQ(delta, 1) << "one declined launch moves Device.launchFailures() by one:\n" << runErr;
+    EXPECT_EQ(delta, 0) << "an accepted launch moves Device.launchFailures() by nothing:\n" << runErr;
 }

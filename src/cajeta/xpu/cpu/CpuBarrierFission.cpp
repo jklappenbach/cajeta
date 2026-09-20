@@ -7,6 +7,7 @@
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/PostDominators.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
@@ -154,6 +155,47 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         boundarySet.insert(bbBar);
     }
 
+    // --- 3b. One `ret` per bypass edge --------------------------------------
+    // A guard at the top of a kernel — `if (row >= nH + nKv) { return; }` in
+    // qkNormRowsF32, or the `if (t0 < rows && i0 < outDim)` that wraps the
+    // whole body of the WMMA GEMMs — sends the work-items it turns away to the
+    // SAME exit block the normal path ends at. The region walk then reaches
+    // that block twice, once from the guard and once from the end of the
+    // barrier chain, and declines the kernel as unstructured. That is how the
+    // guarded barrier loop came to be declined by name, and accepting it
+    // without this split is what regioned the join twice and crashed RAGreedy
+    // on 2026-09-06.
+    //
+    // An exit block holding no work is not a join in any useful sense, only a
+    // shared `ret`. Give each incoming edge its own and the walk sees a
+    // straight chain with an early exit hanging off it. An exit block that
+    // DOES hold work is left alone: duplicating it would duplicate the work,
+    // and the relaxed reachability check below refuses that shape anyway.
+    {
+        std::vector<llvm::BasicBlock*> exits;
+        for (auto& bb : *wrapper)
+            if (llvm::isa<llvm::ReturnInst>(bb.getTerminator()))
+                exits.push_back(&bb);
+        for (llvm::BasicBlock* ex : exits) {
+            bool trivial = true;
+            for (auto& in : *ex)
+                if (!in.isTerminator()) { trivial = false; break; }
+            if (!trivial) continue;
+            llvm::SmallVector<llvm::BasicBlock*, 4> preds;
+            llvm::SmallPtrSet<llvm::BasicBlock*, 4> seenPred;
+            for (llvm::BasicBlock* pb : llvm::predecessors(ex))
+                if (seenPred.insert(pb).second) preds.push_back(pb);
+            if (preds.size() < 2) continue;
+            for (size_t i = 1; i < preds.size(); ++i) {
+                auto* nb = llvm::BasicBlock::Create(ctx, "wi.exit", wrapper);
+                llvm::ReturnInst::Create(ctx, nb);
+                auto* t = preds[i]->getTerminator();
+                for (unsigned sx = 0; sx < t->getNumSuccessors(); ++sx)
+                    if (t->getSuccessor(sx) == ex) t->setSuccessor(sx, nb);
+            }
+        }
+    }
+
     // --- 4. Analyses + uniformity guardrails --------------------------------
     llvm::DominatorTree DT(*wrapper);
     llvm::LoopInfo LI(DT);
@@ -191,12 +233,65 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     }
     // Post-dominating the level entry IS the block-uniformity a barrier needs.
     llvm::PostDominatorTree PDT(*wrapper);
+
+    // ...and when it does NOT hold, the second question: is the only way to
+    // miss `to` to LEAVE the kernel without doing anything on the way out?
+    //
+    // That is the shape of every guard at the top of a cajeta-llm kernel —
+    // `if (row >= nH + nKv) { return; }`, or an `if` around the whole body.
+    // The guard is workgroup-uniform in fact (`globalIdX() / 256` with a
+    // 256-wide block IS the workgroup id) but nothing here can prove it: the
+    // block bound is a launch parameter, and `globalIdX()` is seeded from the
+    // tid placeholder, so the condition is tainted and the barrier stops
+    // post-dominating. Proving uniformity instead would take either an
+    // annotation on every such kernel or a block size baked into this pass —
+    // per-kernel maintenance, or a hard-coded per-device number.
+    //
+    // A work-item that leaves needs no barrier: step 9's activity mask keeps
+    // it out of every later region, and a barrier is a point in the program
+    // rather than a rendezvous of a particular set of work-items. So the
+    // bypass is admitted, on one condition — it must do NO work. A path that
+    // computes something, skips the barrier and rejoins is real divergence,
+    // has no point at which the group is together, and is still declined.
+    auto blockHasWork = [](llvm::BasicBlock* b) {
+        for (auto& in : *b)
+            if (!in.isTerminator() && !llvm::isa<llvm::PHINode>(in)
+                && !llvm::isa<llvm::AllocaInst>(in))
+                return true;
+        return false;
+    };
+    auto everyMissIsACleanExit = [&](llvm::BasicBlock* to,
+                                     llvm::BasicBlock* levelEntry) {
+        // Backward from `to`: everything that can still arrive.
+        llvm::SmallPtrSet<llvm::BasicBlock*, 32> arrives;
+        llvm::SmallVector<llvm::BasicBlock*, 16> bw{to};
+        while (!bw.empty()) {
+            llvm::BasicBlock* b = bw.pop_back_val();
+            if (!arrives.insert(b).second) continue;
+            for (llvm::BasicBlock* p : llvm::predecessors(b)) bw.push_back(p);
+        }
+        // Forward from the level entry, stopping AT `to`: the span in which a
+        // work-item can still be turned away.
+        llvm::SmallPtrSet<llvm::BasicBlock*, 32> span;
+        llvm::SmallVector<llvm::BasicBlock*, 16> fw{levelEntry};
+        while (!fw.empty()) {
+            llvm::BasicBlock* b = fw.pop_back_val();
+            if (b == to || !span.insert(b).second) continue;
+            for (llvm::BasicBlock* sb : llvm::successors(b)) fw.push_back(sb);
+        }
+        for (llvm::BasicBlock* b : span)
+            if (!arrives.count(b) && blockHasWork(b)) return false;
+        return true;
+    };
+
     for (llvm::BasicBlock* bar : boundarySet) {
         llvm::Loop* bl = LI.getLoopFor(bar);
         llvm::BasicBlock* levelEntry = bl ? inLoopSuccOf(bl) : bodyEntry;
-        if (!PDT.dominates(bar, levelEntry))
+        if (!PDT.dominates(bar, levelEntry)
+            && !everyMissIsACleanExit(bar, levelEntry))
             unsupported("a barrier under work-item-divergent control flow "
-                        "(all work-items must reach every barrier)");
+                        "(all work-items must reach every barrier, or leave "
+                        "without doing anything on the way out)");
     }
     // The same rule one level out; the check above looks only INSIDE the loop.
     for (llvm::Loop* top : LI)
@@ -204,10 +299,12 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             if (!loopHasBarrier(L)) continue;
             llvm::Loop* P = L->getParentLoop();
             llvm::BasicBlock* levelEntry = P ? inLoopSuccOf(P) : bodyEntry;
-            if (!PDT.dominates(L->getHeader(), levelEntry))
+            if (!PDT.dominates(L->getHeader(), levelEntry)
+                && !everyMissIsACleanExit(L->getHeader(), levelEntry))
                 unsupported("a barrier loop under work-item-divergent control "
                             "flow (every work-item must enter a loop that holds "
-                            "a barrier)");
+                            "a barrier, or leave without doing anything on the "
+                            "way out)");
         }
     // --- 5. Per-block shared memory -----------------------------------------
     // One module-level addrspace(3) global would race across blocks, so each
@@ -411,6 +508,37 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         a->moveBefore(phX->getIterator());
     }
 
+    // --- 8b. The work-item activity mask ------------------------------------
+    // One byte per work-item, live for the whole kernel. A region already
+    // turns a `ret` into "end this work-item's iteration" (step 9 below), but
+    // before this mask the SAME work-item then ran every LATER region too, on
+    // state it had never initialized — reading a row index it had just been
+    // told was out of range, and writing the output row at it.
+    //
+    // Only materialized when a region can be left early: a kernel whose only
+    // `ret` is the last region's natural end pays nothing, which is every
+    // kernel that lowered before this change.
+    llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+    llvm::Constant* alive1 = llvm::ConstantInt::get(i8, 1);
+    llvm::Constant* alive0 = llvm::ConstantInt::get(i8, 0);
+    bool canLeaveEarly = false;
+    for (RegionJob& J : jobs) {
+        if (J.doneTarget == wrapEnd) continue;
+        for (llvm::BasicBlock* b : J.blocks)
+            if (llvm::isa<llvm::ReturnInst>(b->getTerminator())) {
+                canLeaveEarly = true; break;
+            }
+        if (canLeaveEarly) break;
+    }
+    llvm::AllocaInst* aliveArr = nullptr;
+    if (canLeaveEarly) {
+        aliveArr = eb.CreateAlloca(i8, 0, ntidAll, "wi.alive");
+        aliveArr->setAlignment(llvm::Align(1));
+        eb.CreateMemSet(aliveArr, alive1,
+                        eb.CreateZExt(ntidAll, llvm::Type::getInt64Ty(ctx)),
+                        llvm::Align(1));
+    }
+
     // --- 9. Wrap each region in a 3-D work-item loop nest -------------------
     // The inner tid.x loop is the vectorizable one; a 1-D block is one SIMD
     // loop with two single-trip loops around it.
@@ -445,10 +573,16 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         ty->addIncoming(z0, zHd);
         yb.CreateCondBr(yb.CreateICmpSLT(ty, ntidY, "wi.y.cond"), head, zLat);
 
+        // The linear index and the mask test live in their own block between
+        // the loop head and the region: the index has to dominate every
+        // context-array access in the region, and a work-item that left has
+        // to skip the region entirely rather than enter and branch out of it.
+        auto* pre  = llvm::BasicBlock::Create(ctx, "wi.pre", wrapper, J.entry);
+
         llvm::IRBuilder<> hb(head);                             // tid.x loop (inner)
         auto* tx = hb.CreatePHI(i32, 2, "wi.tx");
         tx->addIncoming(z0, yHd);
-        hb.CreateCondBr(hb.CreateICmpSLT(tx, ntidX, "wi.cond"), J.entry, yLat);
+        hb.CreateCondBr(hb.CreateICmpSLT(tx, ntidX, "wi.cond"), pre, yLat);
         J.ivX = tx; J.ivY = ty; J.ivZ = tz;
 
         llvm::IRBuilder<> xlb(xLat);                            // inner back-edge
@@ -464,10 +598,36 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         tz->addIncoming(zlb.CreateAdd(tz, one, "wi.z.next"), zLat);
         zlb.CreateBr(zHd);
 
-        // Region exit edges, a `ret` included, become the inner (x) latch.
+        // Linearized work-item index, and the mask test, in `pre`.
+        llvm::IRBuilder<> rb(pre);
+        J.linear = rb.CreateAdd(
+            rb.CreateAdd(rb.CreateMul(tz, ntidYX, "wi.zbase"),
+                         rb.CreateMul(ty, ntidX, "wi.ybase")),
+            tx, "wi.linear");
+        if (aliveArr) {
+            llvm::Value* ap = rb.CreateInBoundsGEP(i8, aliveArr, J.linear,
+                                                   "wi.alive.p");
+            rb.CreateCondBr(
+                rb.CreateICmpNE(rb.CreateLoad(i8, ap, "wi.alive.v"), alive0,
+                                "wi.alive.c"),
+                J.entry, xLat);
+        } else {
+            rb.CreateBr(J.entry);
+        }
+        J.entry->replacePhiUsesWith(head, pre);
+
+        // Region exit edges, a `ret` included, become the inner (x) latch. A
+        // `ret` also clears the mask: this work-item is done for the kernel,
+        // not only for this region.
         for (llvm::BasicBlock* bb : J.blocks) {
             auto* term = bb->getTerminator();
             if (llvm::isa<llvm::ReturnInst>(term)) {
+                if (aliveArr) {
+                    llvm::IRBuilder<> tb(term);
+                    tb.CreateStore(alive0,
+                                   tb.CreateInBoundsGEP(i8, aliveArr, J.linear,
+                                                        "wi.alive.off"));
+                }
                 term->eraseFromParent();
                 llvm::UncondBrInst::Create(xLat, bb);
             } else {
@@ -477,12 +637,6 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             }
         }
 
-        // Linearized work-item index; its base hoists out of the x loop.
-        llvm::IRBuilder<> rb(&*J.entry->getFirstInsertionPt());
-        J.linear = rb.CreateAdd(
-            rb.CreateAdd(rb.CreateMul(tz, ntidYX, "wi.zbase"),
-                         rb.CreateMul(ty, ntidX, "wi.ybase")),
-            tx, "wi.linear");
     }
 
     // --- 10. Rewrite per region: tid placeholders + context-array indexing --

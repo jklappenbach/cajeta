@@ -24,9 +24,22 @@
 //                  name; running it once per iteration would be wrong.
 //   GUARDED_LOOP   the tree loop under `if (wg < groups) { … }` with every
 //                  barrier inside the loop (the WMMA GEMM kernels' shape) —
-//                  DECLINED by name: the loop must be entered by every
-//                  work-item. Accepting it regioned the `if`'s join block
+//                  ACCEPTED since the work-item activity mask landed. It was
+//                  declined for a year of commits, and the decline was right
+//                  at the time: accepting it regioned the `if`'s join block
 //                  twice and miscompiled (RAGreedy SIGSEGV, 2026-09-06).
+//                  What changed is that the bypass edge now gets its own
+//                  `ret` (so the join is regioned once) and a work-item that
+//                  took it is masked out of every later region.
+//   EARLY_RETURN   the same reduce behind `if (wg >= groups) { return; }` —
+//                  cajeta-llm's `qkNormRowsF32` shape. ACCEPTED, same
+//                  machinery: the guard is the bypass and the mask is what
+//                  keeps the returned work-items out of the tail.
+//   DIVERGENT_JOIN a barrier in ONE arm of an if/else with real work after
+//                  the join — still DECLINED by name. The mask handles a
+//                  work-item that LEAVES; it does not handle one that skips
+//                  a barrier and comes back, and accepting that would be a
+//                  miscompile rather than a slow path.
 #pragma once
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
@@ -208,6 +221,55 @@ inline const char* GUARDED_LOOP =
     "            }\n"
     "            if (t == 0) { out[wg] = lds[0]; }\n"
     "        }\n"
+    "    }\n";
+
+
+// The same reduce behind an early `return` instead of an `if` — cajeta-llm's
+// `qkNormRowsF32` shape, where `row = globalIdX() / 256` is uniform in
+// practice but tid-tainted as far as the fission can prove. Accepted: the
+// returning work-items go inactive and the barriers stay scaffold.
+inline const char* EARLY_RETURN =
+    "    @Kernel\n"
+    "    public static void treeEarly(KernelBuffer<float32> out, KernelBuffer<float32> in,\n"
+    "                                 uint32 n, uint32 groups) {\n"
+    "        Shared<float32> lds = shared float32[256];\n"
+    "        uint32 t = KernelThread.x();\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        uint32 wg = i / 256;\n"
+    "        if (wg >= groups) { return; }\n"
+    "        float32 v = 0.0f;\n"
+    "        if (i < n) { v = in[i]; }\n"
+    "        lds[t] = v;\n"
+    "        uint32 stride = 128;\n"
+    "        while (stride > 0) {\n"
+    "            Barrier.workgroup();\n"
+    "            if (t < stride) { lds[t] = lds[t] + lds[t + stride]; }\n"
+    "            Barrier.workgroup();\n"
+    "            stride = stride / 2;\n"
+    "        }\n"
+    "        if (t == 0) { out[wg] = lds[0]; }\n"
+    "    }\n";
+
+// A barrier in ONE arm of a work-item-divergent if/else, with real work after
+// the join. This is the shape the relaxation must NOT swallow: the lanes that
+// take the else arm skip the barrier and then rejoin, so there is no single
+// point at which the workgroup is together. Declined by name.
+inline const char* DIVERGENT_JOIN =
+    "    @Kernel\n"
+    "    public static void divergentJoin(KernelBuffer<float32> out,\n"
+    "                                     KernelBuffer<float32> in, uint32 n) {\n"
+    "        Shared<float32> lds = shared float32[256];\n"
+    "        uint32 t = KernelThread.x();\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        float32 v = 0.0f;\n"
+    "        if (t < 128) {\n"
+    "            lds[t] = in[i];\n"
+    "            Barrier.workgroup();\n"
+    "            v = lds[t] + lds[t + 128];\n"
+    "        } else {\n"
+    "            v = in[i] * 2.0f;\n"
+    "        }\n"
+    "        out[i] = v;\n"
     "    }\n";
 
 } // namespace cajeta_fission_shapes
