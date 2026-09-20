@@ -41,11 +41,17 @@ void __cajeta_scope_ensure_at(void* watermark) {
 // __cajeta_scope_deregister_task carries nothing and is compacted away.
 static void __cajeta_scope_reap(struct cajeta_scope_frame* f) {
     int w = 0;
-    pthread_mutex_lock(&__cajeta_task_mutex);
     for (int i = 0; i < f->count; i++) {
         struct cajeta_scope_entry* e = &f->entries[i];
         int dead = (!e->done_addr && !e->exception_addr && !e->owned_task);
-        int finished = e->owned_task && e->done_addr && *e->done_addr
+        // ACQUIRE, and no mutex. The frame belongs to one fiber, which is the
+        // one running this, so entries and count need no lock. `done` is the
+        // only field another fiber writes, and __cajeta_task_complete releases
+        // the task mutex after setting it, so an acquire load that sees 1 also
+        // sees the fiber-slot null published before it. Taking the task mutex
+        // here instead would put a contended global lock on the spawn path.
+        int finished = e->owned_task && e->done_addr
+                && __atomic_load_n(e->done_addr, __ATOMIC_ACQUIRE)
                 && !(e->exception_addr && *e->exception_addr);
         if (finished) {
             __cajeta_free(e->owned_task);
@@ -59,7 +65,6 @@ static void __cajeta_scope_reap(struct cajeta_scope_frame* f) {
         w++;
     }
     f->count = w;
-    pthread_mutex_unlock(&__cajeta_task_mutex);
 }
 
 // Append a task's (done, exception) pair to the current frame; no-op outside one.
