@@ -1,0 +1,190 @@
+# Device-test gate for cajeta on AMD, on a self-hosted gfx1151 runner.
+#
+# WHY THIS IS A NEW LEG AND NOT A FILTER. device-tests.yml runs on PHOENIX,
+# which is NVIDIA in both its legs (Windows + WSL). As of 2026-09-20 this
+# repository has exactly two registered runners:
+#
+#     PHOENIX      self-hosted,Windows,X64,gpu
+#     phoenix-wsl  self-hosted,X64,Linux,wsl
+#
+# There is no AMD runner. Every AMD device test in the suite therefore SKIPS
+# on every machine that runs CI, and has done since the suite was written —
+# `hipAvailable()` returns false and gtest reports green. That is the same
+# invisible-absence failure device-tests.yml was built to catch for NVIDIA,
+# one vendor over.
+#
+# TO BRING THIS ONLINE, on the AMD box (`proton`, Strix Halo / gfx1151):
+#
+#     ./config.sh --url https://github.com/jklappenbach/cajeta \
+#                 --token <from Settings > Actions > Runners > New> \
+#                 --labels self-hosted,Linux,X64,amd,gfx1151
+#     sudo ./svc.sh install && sudo ./svc.sh start
+#
+# The label set matters: `amd` is what this workflow selects on. Until a
+# runner carries it, a dispatch of this workflow queues rather than failing,
+# which is the honest behaviour — nothing claims to have tested AMD.
+#
+# DEPENDENCIES THE BOX MUST HAVE PREINSTALLED. The WSL runner has no
+# passwordless sudo and this one is assumed the same, so build deps are the
+# box's responsibility, not this file's — see device-tests.yml's Configure
+# step for the same rule and the same reason. Beyond the usual cajeta set:
+#
+#     ROCm (for libamdhip64 — hipAvailable() dlopens it)
+#     proton, for the throughput gate in agents/xpu-kernel-adaptor-plan.md
+#
+# WHAT IT RUNS, and why this filter rather than device-tests.yml's. The AMD
+# device suites, plus the coop-matrix conformance harness, which is the part
+# that has never executed against real WMMA: XpuCoopConformanceTests compiles
+# its program for amdgpu on any box but only LAUNCHES where hipAvailable(),
+# so its amdgpu leg has been compile-only everywhere so far.
+name: amd-device-tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'gtest filter'
+        required: false
+        default: ''
+      llm:
+        description: 'Also run the cajeta-llm suite on --xpu-backend=amdgpu'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: amd-device-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  amd:
+    name: amd-gfx1151
+    runs-on: [self-hosted, Linux, amd]
+    timeout-minutes: 360
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      # Before building, so an all-skipped run is diagnosable from the log
+      # rather than looking like a pass. Non-fatal by design; the summary step
+      # is what turns "everything skipped" into a red run.
+      - name: GPU inventory
+        continue-on-error: true
+        run: |
+          echo "== rocm ==";   rocminfo 2>/dev/null | grep -E 'Name:.*gfx|Marketing' | head || echo "(no rocminfo)"
+          echo "== hip ==";    ls -1 /opt/rocm*/lib/libamdhip64.so* 2>/dev/null || echo "(no libamdhip64)"
+          echo "== vulkan ==";  vulkaninfo --summary 2>/dev/null | grep -i deviceName || echo "(no vulkaninfo)"
+          echo "== proton ==";  command -v proton || echo "(no proton — the throughput gate cannot run)"
+
+      # Stock LLVM cannot build cajeta (it references fork-only intrinsic
+      # enums), so there is no fallback path here by design. Keep the tag in
+      # lockstep with release.yml and device-tests.yml.
+      - name: Fetch prebuilt LLVM toolchain (cajeta-llvm fork)
+        env:
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r10
+        run: |
+          set -euo pipefail
+          ASSET="${LLVM_RELEASE_TAG}-linux-x64.tar.zst"
+          URL="https://github.com/jklappenbach/cajeta-llvm/releases/download/${LLVM_RELEASE_TAG}/${ASSET}"
+          DEST="$HOME/cajeta-llvm"
+          mkdir -p "$DEST"
+          curl -fsSL "$URL" -o llvm.tar.zst
+          tar --zstd -xf llvm.tar.zst -C "$DEST" --strip-components=1
+          echo "LLVM_DIR=$DEST/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "$DEST/bin" >> "$GITHUB_PATH"
+          rm -f llvm.tar.zst
+
+      # NEVER point LLVM_DIR at /opt/rocm*/llvm. ROCm's fork is built
+      # LLVM_ENABLE_RTTI=OFF and the JIT test helper fails to link against
+      # llvm::ErrorInfoBase — cpp/cajeta/CLAUDE.md records this trap, and an
+      # AMD box is exactly where someone would fall into it.
+      - name: Refuse a ROCm LLVM
+        run: |
+          set -euo pipefail
+          case "$LLVM_DIR" in
+            /opt/rocm*) echo "::error::LLVM_DIR points at ROCm's LLVM (RTTI=OFF); the JIT helper cannot link"; exit 1 ;;
+          esac
+          echo "LLVM_DIR=$LLVM_DIR"
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          export CAJETA_SKIP_DEPS=1
+          # Workspace reuse + CMake's caching of negative find_package results
+          # means a configure that failed for a genuinely missing package keeps
+          # failing after the package is installed. Same trap, same remedy, as
+          # device-tests.yml.
+          if [ -f build/CMakeCache.txt ] && grep -q 'NOTFOUND' build/CMakeCache.txt; then
+            echo "stale CMakeCache holds NOTFOUND entries — removing it:"
+            grep 'NOTFOUND' build/CMakeCache.txt | head -10
+            rm -f build/CMakeCache.txt
+          fi
+          ./setup.sh
+
+      - name: Build
+        run: cmake --build build --config Release -- -j 4
+
+      - name: Smoke test
+        run: ./build/src/cajeta --version
+
+      # --gtest_brief is NOT used: it hides skips, and a skip is precisely the
+      # outcome this workflow exists to make visible.
+      - name: Run AMD device tests
+        env:
+          CAJETA_SOURCE_ROOT: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          FILTER='${{ inputs.filter }}'
+          # The AMD device suites, the AMD coop lowering pins, and the
+          # conformance harness — whose amdgpu leg has been compile-only on
+          # every box that has ever run it.
+          [ -z "$FILTER" ] && FILTER='*AmdDeviceTests*:Amdgpu*:XpuCoopConformanceTests.*:XpuCoopFromWordsTests.*:XpuCooperativeMatrix*:XpuHipDispatch*'
+          echo "filter: $FILTER"
+          ./build/test/cajeta_test --gtest_filter="$FILTER" 2>&1 | tee amd-device-tests.log
+
+      - name: Fail if nothing actually ran on hardware
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -f amd-device-tests.log ] || { echo "::error::no test log produced"; exit 1; }
+          RAN=$(grep -c '^\[       OK \]' amd-device-tests.log || true)
+          SKIPPED=$(grep -c 'SKIPPED' amd-device-tests.log || true)
+          {
+            echo "### amd-gfx1151"
+            echo ""
+            echo "| outcome | count |"
+            echo "|---|---|"
+            echo "| ran on hardware | $RAN |"
+            echo "| skipped (no such device) | $SKIPPED |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$RAN" -eq 0 ]; then
+            echo "::error::every AMD test skipped — this runner exercised no GPU at all"
+            exit 1
+          fi
+
+      # Opt-in: the engine suite on real WMMA. This is what would have caught
+      # the scalar-column epilogue defect on the vendor whose layout the
+      # contract was accidentally written in.
+      - name: cajeta-llm on amdgpu
+        if: ${{ inputs.llm }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if [ ! -d ../cajeta-llm ]; then
+            echo "::warning::../cajeta-llm not checked out on this box; skipping"
+            exit 0
+          fi
+          cd ../cajeta-llm
+          CAJETA="$GITHUB_WORKSPACE/build/src/cajeta" XPU_BACKEND=amdgpu,cpu \
+            ./run-tests.sh 2>&1 | tee "$GITHUB_WORKSPACE/amd-llm.log"
+
+      - name: Upload logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: amd-device-tests
+          path: |
+            amd-device-tests.log
+            amd-llm.log
+          if-no-files-found: ignore
