@@ -29,7 +29,7 @@ public class HttpTransport {
 
     /** Bind 127.0.0.1:PORT and serve `POST /mcp` until the process is killed. */
     public static void serve(int32 port) {
-        String addrStr = Server.concat(Server.dup("127.0.0.1:"), Server.intToStr((int64) port));
+        String addrStr #= Server.concat(Server.dup("127.0.0.1:"), Server.intToStr((int64) port));
         SocketAddress addr #= SocketAddress.parse(addrStr);
         TcpListener listener #= TcpListener.bind(addr);
         boolean running = true;
@@ -83,7 +83,7 @@ public class HttpTransport {
         if (acclen == 0) {
             return;
         }
-        int8[] resp = HttpServer.handleRequestBytes(
+        int8[] resp #= HttpServer.handleRequestBytes(
             (HttpRequest req) -> HttpTransport.handle(req), acc, acclen);
         int32 rlen = (int32) resp.count();
         conn.write(resp, (int64) 0, (int64) rlen);
@@ -219,7 +219,7 @@ public class HttpTransport {
         // Inbound gzip (mcp-compression U4): a `Content-Encoding: gzip` request
         // body is gunzipped before dispatch; a body that claims gzip but isn't
         // fails loud (HTTP 400) rather than feeding garbage to the parser.
-        String ce = req.getHeaders().get("Content-Encoding");
+        String ce #= req.getHeaders().get("Content-Encoding");
         boolean inGzip = HttpTransport.hasGzipToken(ce);
         int8[] decoded = null;
         int32 decodedLen = 0;
@@ -228,13 +228,6 @@ public class HttpTransport {
                 return HttpTransport.jsonRpcError(400, -32700,
                     "invalid gzip request body");
             }
-            // '#=' move-bind: Gzip.decompress returns an OWNED buffer and a
-            // plain '=' into a pre-declared local is a borrow under the 0.9
-            // rules (latent use-after-free). NOTE this does NOT fix the known
-            // inbound-gzip crash: that is an upstream dev.cajeta.codec bug —
-            // Deflate.inflate mishandles real-world DEFLATE (stock gzip's
-            // fixed-Huffman + LZ77 back-references; standalone repro returns
-            // an empty buffer for a valid 64-byte member whose ISIZE is 46).
             decoded #= Gzip.decompress(body, (int64) blen);
             decodedLen = (int32) decoded.count();
         }
@@ -247,9 +240,9 @@ public class HttpTransport {
             Server.handleLine(body, blen, sink);
         }
         if (sink.haveMessage) {
-            int8[] rb = sink.body();
+            int8[] rb #= sink.body();
             int32 rl = sink.bodyLen();
-            HttpResponse resp = HttpResponse.of(200);
+            HttpResponse resp #= HttpResponse.of(200);
             resp.setHeader("Content-Type", "application/json");
             // Negotiate gzip on the response body (mcp-compression U3). The
             // request's Accept-Encoding gates it; the body is DEFLATE-backed
@@ -257,7 +250,7 @@ public class HttpTransport {
             Headers h = req.getHeaders();
             String ae #= h.get("Accept-Encoding");
             if (HttpTransport.hasGzipToken(ae)) {
-                int8[] gz = Gzip.compress(rb, (int64) rl);
+                int8[] gz #= Gzip.compress(rb, (int64) rl);
                 int32 gzlen = (int32) gz.count();
                 resp.setHeader("Content-Encoding", "gzip");
                 resp.body(gz, gzlen);
@@ -274,9 +267,9 @@ public class HttpTransport {
     public static #HttpResponse jsonRpcError(int32 httpStatus, int32 code, String message) {
         ResponseSink sink = heap ResponseSink(false, null);
         Server.writeError(sink, null, code, message);
-        int8[] rb = sink.body();
+        int8[] rb #= sink.body();
         int32 rl = sink.bodyLen();
-        HttpResponse resp = HttpResponse.of(httpStatus);
+        HttpResponse resp #= HttpResponse.of(httpStatus);
         resp.setHeader("Content-Type", "application/json");
         resp.body(rb, rl);
         return #resp;
