@@ -332,11 +332,29 @@ public final class Device {
      *   blocks = (multiprocessors x SIMDs per MP x waves per SIMD target)
      *            / wavesPerBlock
      *
-     * This is a SATURATION target and deliberately NOT an occupancy
-     * maximum. Measured on gfx1151: past this point the extra waves shared
-     * L1/L2 and each one's stride evicted the others, so throughput fell
-     * on both sides of it. What bounds the number is the cache footprint,
-     * which is why {@link #l2CacheBytes} sits beside it.
+     * A FLOOR, not a maximum, and a caller is right to tune above it.
+     *
+     * This used to say it was a saturation point past which extra waves
+     * evict each other from L1/L2 and throughput falls on both sides. That
+     * was measured on gfx1151 and it does NOT hold generally. Measured on
+     * sm_89, 2026-09-19, sweeping the interleaved Q4_K mat-vec over a
+     * 288 MB weight (past both parts' last-level cache):
+     *
+     *    80 workgroups (gfx1151's answer)     84.8 GB/s
+     *   256 workgroups (what this returns)   260.4
+     *  2048 workgroups (the whole problem)   654.7   -- still climbing
+     *
+     * The two parts do not merely want different numbers, their curves
+     * have different SHAPES: gfx1151 has a genuine interior peak, because
+     * extra waves thrash a 32 MB MALL on LPDDR5X; Ada is monotonic to the
+     * whole problem, because 72 MB of L2 on ~1 TB/s GDDR6X needs many
+     * waves in flight to cover latency. No formula over reported
+     * attributes covers both.
+     *
+     * So treat this as the starting point of a sweep, not its result. The
+     * measured answer belongs in {@link cajeta.xpu.Autotune}, keyed per
+     * machine -- which is what the spec's third tier is for, and what
+     * {@link #l2CacheBytes} sitting beside it was always hinting at.
      *
      * Returns 0 when the device is unknown or `wavesPerBlock` is 0 -- a
      * caller keeps its own measured constant in that case rather than

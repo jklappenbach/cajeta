@@ -271,6 +271,128 @@ public:
         return readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_laneid);
     }
 
+    // `v[i]` with a runtime `i`: a select chain, not the backend's stack frame.
+    //
+    // NVPTX legalizes a dynamic extractelement by writing the whole vector to
+    // the local frame and loading one lane back. On a GPU that is scratch, and
+    // the spill gate reports it as untuned register pressure — which it is not:
+    // `q4kMatVecKernelIL` paid 64 bytes for it at vgpr=48, with 207 registers
+    // of headroom. Worse, the vector is usually rebuilt inside the loop that
+    // indexes it, so the stores re-execute every iteration.
+    //
+    // The lanes are already live SSA values, so choosing among them costs N-1
+    // `selp` and no memory. Two further properties worth stating: an
+    // out-of-range index selects `i mod N` instead of yielding poison, which is
+    // strictly safer than the extractelement this replaces; and the chain is
+    // uniform across the warp whether or not `i` is, where the frame round trip
+    // is not.
+    //
+    // Capped at 16 lanes. Every depot measured in the llm library was 16, 32 or
+    // 64 bytes — 4, 8 or 16 lanes — and past that the chain stops being
+    // obviously cheaper than the round trip, so a wider vector keeps the
+    // default rather than being guessed at.
+    llvm::Value* extractLaneDynamic(llvm::IRBuilderBase& b, llvm::Module& m,
+                                    llvm::Value* vec,
+                                    llvm::Value* idx) override {
+        auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(vec->getType());
+        const unsigned n = vt ? vt->getNumElements() : 0;
+        if (vt == nullptr || llvm::isa<llvm::ConstantInt>(idx)
+                || n < 2 || n > 16 || (n & (n - 1)) != 0
+                || !vt->getElementType()->isSingleValueType())
+            return LoweringTarget::extractLaneDynamic(b, m, vec, idx);
+
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Value* k = b.CreateZExtOrTrunc(idx, i32, "lane.i");
+        llvm::Value* zero = llvm::ConstantInt::get(i32, 0);
+        std::vector<llvm::Value*> cur;
+        cur.reserve(n);
+        for (unsigned i = 0; i < n; ++i)
+            cur.push_back(b.CreateExtractElement(vec, i, "lane.v"));
+        for (unsigned bit = 0; (1u << bit) < n; ++bit) {
+            llvm::Value* set = b.CreateICmpNE(
+                b.CreateAnd(k, llvm::ConstantInt::get(i32, 1u << bit),
+                            "lane.m"),
+                zero, "lane.b");
+            std::vector<llvm::Value*> next;
+            next.reserve(cur.size() / 2);
+            for (std::size_t j = 0; j + 1 < cur.size(); j += 2)
+                next.push_back(
+                    b.CreateSelect(set, cur[j + 1], cur[j], "lane.sel"));
+            cur.swap(next);
+        }
+        return cur.front();
+    }
+
+    // 16-entry int8 LUT by 4-bit index via prmt.b32, the NVPTX byte permute.
+    //
+    // Without this the shared default allocas the table and gathers it a lane at
+    // a time. An alloca is `.local` here, so each lut4 cost 16 BYTES OF SCRATCH
+    // per work-item and 16 `ld.local.b8` — measured on sm_89 as a clean
+    // dose-response, 0 / 16 / 32 bytes for 0 / 1 / 2 calls, and it is the whole
+    // of the 32 bytes the spill gate reports for the Q4_K/MXFP4/IQ4_NL mat-vecs
+    // (they call lut4 twice, for the low and high nibble).
+    //
+    // prmt is NOT v_perm_b32 with a different name, and transliterating the
+    // AMDGPU override would be wrong in two ways:
+    //
+    //   * the selector is four NIBBLES (16 bits), not four BYTES (32 bits), so
+    //     the four byte indices must be compacted first;
+    //   * a selector nibble whose bit 3 is set means "replicate the sign bit of
+    //     the selected byte", not "byte 8". Every selector built below is masked
+    //     so bit 3 is clear, which keeps the permute in plain byte-select mode.
+    //
+    // The compaction is pure ALU: with the index bytes at bits 0/8/16/24,
+    // `x = m | (m >> 4)` lands b0,b1 in bits 0-7 and b2,b3 in bits 16-23, and
+    // `x | (x >> 8)` then lands all four nibbles in the low 16 bits. Doing it on
+    // the full 4-bit index (rather than per half) means the same compaction
+    // serves both the table selector and the half-select.
+    llvm::Value* byteLut16(llvm::IRBuilderBase& b, llvm::Module& m,
+                           llvm::Value* indices, llvm::Value* table) override {
+        auto* ivt = llvm::dyn_cast<llvm::FixedVectorType>(indices->getType());
+        if (ivt == nullptr || (ivt->getNumElements() % 4) != 0)
+            return LoweringTarget::byteLut16(b, m, indices, table);
+        const bool loHalfOnly = masksOffHighHalf(indices);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        const unsigned groups = ivt->getNumElements() / 4;
+        auto* t4 = llvm::FixedVectorType::get(i32, 4);
+        llvm::Value* tw = b.CreateBitCast(table, t4, "lut.tw");
+        llvm::Value* t0 = b.CreateExtractElement(tw, (uint64_t) 0, "lut.t0");
+        llvm::Value* t1 = b.CreateExtractElement(tw, (uint64_t) 1, "lut.t1");
+        llvm::Value* t2 = b.CreateExtractElement(tw, (uint64_t) 2, "lut.t2");
+        llvm::Value* t3 = b.CreateExtractElement(tw, (uint64_t) 3, "lut.t3");
+        auto* iw = llvm::FixedVectorType::get(i32, groups);
+        llvm::Value* idxW = b.CreateBitCast(indices, iw, "lut.iw");
+        llvm::Function* prmt = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::nvvm_prmt);
+        llvm::Value* nibMask  = llvm::ConstantInt::get(i32, 0x0F0F0F0Fu);
+        llvm::Value* pairMask = llvm::ConstantInt::get(i32, 0x00FF00FFu);
+        llvm::Value* selMask  = llvm::ConstantInt::get(i32, 0x00007777u);
+        llvm::Value* hiMask   = llvm::ConstantInt::get(i32, 0x00008888u);
+        llvm::Value* base     = llvm::ConstantInt::get(i32, 0x00003210u);
+        llvm::Value* out = llvm::UndefValue::get(iw);
+        for (unsigned g = 0; g < groups; ++g) {
+            llvm::Value* idx = b.CreateExtractElement(idxW, g, "lut.g");
+            // four byte indices -> four nibbles, in the low 16 bits
+            llvm::Value* n = b.CreateAnd(idx, nibMask, "lut.n");
+            n = b.CreateAnd(b.CreateOr(n, b.CreateLShr(n, 4), "lut.p"),
+                            pairMask, "lut.pm");
+            n = b.CreateOr(n, b.CreateLShr(n, 8), "lut.nib");
+            llvm::Value* sel = b.CreateAnd(n, selMask, "lut.sel");
+            llvm::Value* lo = b.CreateCall(prmt, {t0, t1, sel}, "lut.lo");
+            if (loHalfOnly) {
+                out = b.CreateInsertElement(out, lo, g, "lut.out");
+                continue;
+            }
+            llvm::Value* hi = b.CreateCall(prmt, {t2, t3, sel}, "lut.hi");
+            // nibble i picks byte i of `lo` or byte i+4 of `hi`, off index bit 3
+            llvm::Value* mb = b.CreateOr(base,
+                b.CreateLShr(b.CreateAnd(n, hiMask, "lut.h"), 1), "lut.mb");
+            llvm::Value* res = b.CreateCall(prmt, {lo, hi, mb}, "lut.res");
+            out = b.CreateInsertElement(out, res, g, "lut.out");
+        }
+        return b.CreateBitCast(out, ivt, "lut.bytes");
+    }
+
     // ---- Cooperative matrix: NVIDIA tensor cores (wmma) ----------------------
     // m16n16k16 D[f32] = A[f16/bf16]·B[f16/bf16] + C[f32], row-major, warp-collective.
     // The fragment↔lane layout is implementation-defined: load/store MUST use NVVM wmma.
@@ -278,13 +400,21 @@ public:
     ImplTier coopMatrixTier(llvm::Type* elem, uint32_t rows, uint32_t cols,
                             uint32_t use) override {
         if (rows == 16 && cols == 16) {
-            if (use == 2) {                              // accumulator (v1: f32)
-                if (elem->isFloatTy()) return ImplTier::Native;
-            } else if (elem->isHalfTy() || elem->isBFloatTy()) {  // A/B operand
+            if (use == 2) {                        // accumulator: f32 or s32
+                if (elem->isFloatTy() || elem->isIntegerTy(32))
+                    return ImplTier::Native;
+            } else if (elem->isHalfTy() || elem->isBFloatTy()   // A/B operand
+                       || elem->isIntegerTy(8)) {
                 return ImplTier::Native;
             }
         }
-        return ImplTier::Portable;     // int8/u8, f64, other shapes → portable tile
+        // f64 and every other shape keep the portable tile. 8-bit operands go
+        // native from here (4A.2.7): they were 58 of the 66 tier fallbacks the
+        // llm library emitted on sm_89, and the tile IS their scratch. The
+        // signedness question they raise cannot be answered HERE — this hook
+        // sees one operand at a time and LLVM integers are signless — so it is
+        // settled in coopMatrixMulAdd, which has both operands' signFlags.
+        return ImplTier::Portable;
     }
 
     // sm_89 already has tensor cores, so no kernel ABI attribute is needed.
@@ -309,9 +439,9 @@ public:
                          "Swizzled<T,S> tile uses the IDENTITY layout on NVPTX "
                          "(no per-element WMMA swizzle); correct, unaccelerated.\n";
         }
-        requireRowMajor(layout, "load");
-        llvm::Function* f =
-            nvWmmaLoadDecl(m, use, nvFragScalar(matrixType), ptr->getType());
+        uint32_t lay = constLayout(layout, "load");
+        llvm::Function* f = nvWmmaLoadDecl(m, use, nvFragScalar(matrixType),
+                                           ptr->getType(), lay);
         return b.CreateCall(f, {ptr, stride}, "wmma.ld");
     }
 
@@ -326,10 +456,22 @@ public:
                          "Swizzled<T,S> tile uses the IDENTITY layout on NVPTX "
                          "(no per-element WMMA swizzle); correct, unaccelerated.\n";
         }
-        requireRowMajor(layout, "store");
-        llvm::Function* f = nvDecl(
-            m, llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_row_stride,
-            ptr->getType());
+        uint32_t lay = constLayout(layout, "store");
+        // An s32 accumulator is {i32 x 8}; f32's is {float x 8}. The element
+        // type picks the store, and getting it wrong is an IR verifier error
+        // rather than a silent miscompile, which is the one mercy here.
+        auto* dFrag = llvm::cast<llvm::StructType>(matrixVal->getType());
+        const bool i32Acc = dFrag->getElementType(0)->isIntegerTy(32);
+        llvm::Intrinsic::ID sid;
+        if (i32Acc)
+            sid = lay == 1
+                ? llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_s32_col_stride
+                : llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_s32_row_stride;
+        else
+            sid = lay == 1
+                ? llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_col_stride
+                : llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_row_stride;
+        llvm::Function* f = nvDecl(m, sid, ptr->getType());
         std::vector<llvm::Value*> args;
         args.push_back(ptr);
         appendStructElems(b, matrixVal, args);
@@ -340,15 +482,72 @@ public:
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* a, llvm::Value* bMat,
                                   llvm::Value* c, llvm::Type* /*matrixType*/,
-                                  uint32_t /*signFlags*/) override {
+                                  uint32_t signFlags, uint32_t aLayout = 0,
+                                  uint32_t bLayout = 0) override {
         // Pick mma by the A fragment's SHAPE, never a scalar probe: f16 A/B is
         // {<2 x half> x 8} and bf16 is {i32 x 4}, so casting element 0 to
         // FixedVectorType asserts inside LLVM, uncatchably.
         auto* aFrag = llvm::cast<llvm::StructType>(a->getType());
         bool bf = !llvm::isa<llvm::FixedVectorType>(aFrag->getElementType(0));
-        llvm::Intrinsic::ID id = bf
-            ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_bf16
-            : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_f32_f32;
+        // wmma.mma encodes BOTH operand layouts. Pairing them wrongly lowers
+        // cleanly and computes the wrong product, which is why the layouts
+        // are threaded here from the loads rather than assumed row/row.
+        bool aCol = aLayout == 1, bCol = bLayout == 1;
+        llvm::Intrinsic::ID id;
+
+        // 8-bit operands: {i32 x 2}, which the shape distinguishes from
+        // bf16's {i32 x 4} (4A.2.7).
+        if (bf && aFrag->getNumElements() == 2) {
+            // PTX has .s8 and .u8 and NO MIXED FORM, so A and B must agree.
+            // Picking one silently would read a signed -1 as 255. Refuse and
+            // name the escape hatch instead — this combination is expressible
+            // (dotAccum takes unsigned weights against signed activations) and
+            // simply has no instruction.
+            const bool aSigned = (signFlags & 0x1u) != 0;
+            const bool bSigned = (signFlags & 0x2u) != 0;
+            if (aSigned != bSigned)
+                throw cajeta::Exception(
+                    std::string("XPU NVPTX cooperative matrix: "
+                    "CooperativeMatrix.mma got mismatched operand SIGNEDNESS (")
+                    + (aSigned ? "signed" : "unsigned") + " A against "
+                    + (bSigned ? "signed" : "unsigned") + " B). wmma has .s8 "
+                    "and .u8 8-bit forms and no mixed one, and executing one "
+                    "as the other reads -1 as 255. Give both operands the same "
+                    "dtype, or force the portable tier with "
+                    "CAJETA_GPU_COOPMATRIX_IMPL=software.", "XPU-N04");
+            // The NON-saturating form, deliberately: the portable software
+            // tile accumulates with plain mul/add carrying no nsw/nuw, so it
+            // WRAPS. `.satfinite` clamps, which would agree on every input
+            // that does not overflow and disagree on the ones that do — and
+            // this backend is checked against that tile bit for bit.
+            if (aSigned)
+                id = aCol ? (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_col_s8
+                                  : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_row_s8)
+                          : (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_col_s8
+                                  : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_s8);
+            else
+                id = aCol ? (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_col_u8
+                                  : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_row_u8)
+                          : (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_col_u8
+                                  : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_u8);
+            std::vector<llvm::Value*> iargs;
+            appendStructElems(b, a, iargs);
+            appendStructElems(b, bMat, iargs);
+            appendStructElems(b, c, iargs);
+            return b.CreateCall(nvDecl(m, id), iargs, "wmma.mma");
+        }
+
+        if (bf) {
+            id = aCol ? (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_col_bf16
+                              : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_row_bf16)
+                      : (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_col_bf16
+                              : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_bf16);
+        } else {
+            id = aCol ? (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_col_f32_f32
+                              : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_col_row_f32_f32)
+                      : (bCol ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_col_f32_f32
+                              : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_f32_f32);
+        }
         std::vector<llvm::Value*> args;
         appendStructElems(b, a, args);
         appendStructElems(b, bMat, args);
@@ -512,44 +711,104 @@ private:
         return llvm::Intrinsic::getOrInsertDeclaration(&m, id);
     }
 
-    // The row-major-stride wmma.load intrinsic for (use, element type).
-    static llvm::Intrinsic::ID nvWmmaLoadId(uint32_t use, llvm::Type* elem) {
+    // The wmma.load intrinsic for (use, element type, layout). Layout 1 is
+    // col-major: NVIDIA WMMA takes it natively and the fork ships every
+    // `_col_stride` form, so this is a selection and not a capability.
+    static llvm::Intrinsic::ID nvWmmaLoadId(uint32_t use, llvm::Type* elem,
+                                            uint32_t layout = 0) {
         bool bf = elem->isBFloatTy();
-        if (use == 0)
+        bool col = layout == 1;
+        // 8-bit operands and their 32-bit accumulator. The LOAD does not care
+        // about signedness — s8 and u8 fragments are the same {i32 x 2} register
+        // image and the load only moves bytes — so `s8` is used for both and the
+        // interpretation is chosen at the mma, which is where it means anything.
+        if (elem->isIntegerTy(8)) {
+            if (use == 0)
+                return col ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_s8_col_stride
+                           : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_s8_row_stride;
+            return col ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_b_s8_col_stride
+                       : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_b_s8_row_stride;
+        }
+        if (use == 2 && elem->isIntegerTy(32))
+            return col ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_c_s32_col_stride
+                       : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_c_s32_row_stride;
+        if (use == 0) {
+            if (col)
+                return bf ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_bf16_col_stride
+                          : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_f16_col_stride;
             return bf ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_bf16_row_stride
                       : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_a_f16_row_stride;
-        if (use == 1)
+        }
+        if (use == 1) {
+            if (col)
+                return bf ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_b_bf16_col_stride
+                          : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_b_f16_col_stride;
             return bf ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_b_bf16_row_stride
                       : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_b_f16_row_stride;
-        return llvm::Intrinsic::nvvm_wmma_m16n16k16_load_c_f32_row_stride;  // use 2
+        }
+        return col ? llvm::Intrinsic::nvvm_wmma_m16n16k16_load_c_f32_col_stride
+                   : llvm::Intrinsic::nvvm_wmma_m16n16k16_load_c_f32_row_stride;
     }
     static llvm::Function* nvWmmaLoadDecl(llvm::Module& m, uint32_t use,
                                           llvm::Type* elem,
-                                          llvm::Type* ptrTy = nullptr) {
-        return nvDecl(m, nvWmmaLoadId(use, elem), ptrTy);
+                                          llvm::Type* ptrTy = nullptr,
+                                          uint32_t layout = 0) {
+        return nvDecl(m, nvWmmaLoadId(use, elem, layout), ptrTy);
     }
 
-    // The fragment's scalar element: the vector element for f16 A/B, bfloat for
-    // bf16 A/B ({i32 x 4} is a register image), the struct element for f32.
+    // The fragment's scalar element, recovered from the fragment's SHAPE.
+    //
+    // Three of the five register images are `{i32 x n}` and a scalar probe
+    // cannot tell them apart, so the COUNT carries the answer. Verified
+    // against the IR verifier, 2026-09-19:
+    //
+    //     f16  A/B   {<2 x half> x 8}   vector members
+    //     bf16 A/B   {i32 x 4}
+    //     s8   A/B   {i32 x 2}
+    //     s32  C/D   {i32 x 8}
+    //     f32  C/D   {float x 8}        float members
+    //
+    // Adding a shape that collides with one of these must extend this, not
+    // reuse it — reading an s8 fragment as bf16 lowers cleanly and computes
+    // nonsense.
     static llvm::Type* nvFragScalar(llvm::Type* matrixType) {
-        llvm::Type* e0 =
-            llvm::cast<llvm::StructType>(matrixType)->getElementType(0);
+        auto* st = llvm::cast<llvm::StructType>(matrixType);
+        llvm::Type* e0 = st->getElementType(0);
         if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(e0))
-            return vt->getElementType();
-        if (e0->isIntegerTy(32))
-            return llvm::Type::getBFloatTy(matrixType->getContext());
-        return e0;
+            return vt->getElementType();                      // f16
+        if (e0->isIntegerTy(32)) {
+            llvm::LLVMContext& ctx = matrixType->getContext();
+            switch (st->getNumElements()) {
+                case 2: return llvm::Type::getInt8Ty(ctx);    // s8/u8 A/B
+                case 8: return llvm::Type::getInt32Ty(ctx);   // s32 C/D
+                default: return llvm::Type::getBFloatTy(ctx); // bf16 A/B ({i32 x 4})
+            }
+        }
+        return e0;                                            // f32
     }
 
-    void requireRowMajor(llvm::Value* layout, const char* op) {
+    // Row-major (0) and col-major (1) are both native. A NON-CONSTANT layout
+    // still refuses: wmma encodes the layout in the instruction, so it has to
+    // be known when the instruction is selected. Measured 2026-09-19 across
+    // cajeta-llm: 739 of 1121 coop sites pass layout 1 and none passes a
+    // non-constant, so this arm is the one that mattered.
+    uint32_t constLayout(llvm::Value* layout, const char* op) {
         auto* ci = llvm::dyn_cast<llvm::ConstantInt>(layout);
-        if (!ci || !ci->isZero())
+        if (!ci)
             throw cajeta::Exception(
-                std::string("XPU NVPTX native cooperative matrix (v1) supports "
-                "only row-major operands (layout 0); CooperativeMatrix.") + op +
-                " got a non-row-major or non-constant layout. Use row-major tiles, "
-                "or force the portable tier with CAJETA_GPU_COOPMATRIX_IMPL="
-                "software.", "XPU-N04");
+                std::string("XPU NVPTX cooperative matrix: CooperativeMatrix.") +
+                op + " got a NON-CONSTANT layout. wmma encodes the operand "
+                "layout in the instruction, so it must be known at lowering. "
+                "Pass a constant 0 (row-major) or 1 (col-major), or force the "
+                "portable tier with CAJETA_GPU_COOPMATRIX_IMPL=software.",
+                "XPU-N04");
+        uint64_t v = ci->getZExtValue();
+        if (v > 1)
+            throw cajeta::Exception(
+                std::string("XPU NVPTX cooperative matrix: CooperativeMatrix.") +
+                op + " got layout " + std::to_string(v) +
+                "; only 0 (row-major) and 1 (col-major) exist.", "XPU-N04");
+        return (uint32_t) v;
     }
 };
 

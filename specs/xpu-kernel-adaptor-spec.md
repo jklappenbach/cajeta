@@ -1,6 +1,8 @@
 # XPU kernel adaptor — spec
 
-Status: **draft** 2026-09-18. Registered in [INDEX.md](INDEX.md).
+Status: **draft** 2026-09-18, amended 2026-09-19 with §1.4, §3.5-3.7
+and §7 after the first run on a second vendor. Registered in
+[INDEX.md](INDEX.md).
 Layer: `cajeta.xpu`. **Supersedes `device-geometry-parameterization`**
 (draft 2026-09-03, never registered, no plan). That draft made the
 device half queryable, which is one of the three parts below. Its §2
@@ -26,14 +28,23 @@ draft:
 
 Measured, each with its source.
 
-- **The reconciler exists and nothing calls it.** `DeviceProfile.h`
-  ships `occupancy`, `occupancyLimiterName` (which budget binds),
-  `candidateBlocks` (wave-multiple, best occupancy first),
-  `classifyBound`, and `LaunchPick{block, occupancyWaves, bound,
-  geometryWontHelp, advisoryOnly, needsSweep}`. `DeviceProfile` and
-  `queryLiveDeviceModel` appear in FOUR files. Those are `main.cpp`, the
-  profile's own `.h` and `.cpp`, and the CLI command. It is a thing you
-  can print, not a thing that decides (hardware-profile findings §7.2).
+- **The reconciler is called, and it is wired to the wrong model.**
+  Corrected 2026-09-19. The original claim here was that nothing called
+  it, and that is false. `DeviceProfile.h` ships `occupancy`,
+  `occupancyLimiterName` (which budget binds), `candidateBlocks`
+  (wave-multiple, best occupancy first), `classifyBound`, and
+  `LaunchPick{block, occupancyWaves, bound, geometryWontHelp,
+  advisoryOnly, needsSweep}`. `KernelManifest.cpp:223` calls them and
+  writes `feasibleBlocks` and `occupancyLimiter` into each kernel's
+  manifest, which `KernelManifest.of(name)` already exposes to cajeta
+  source. What it cannot do is answer for a device the arch table has
+  never seen. `fillOccupancy` opens with
+  `if (!lookupArch(archName, model)) return;` and `kArchTable` holds two
+  rows, `gfx1151` and `gfx1100`. Measured on an RTX 4090,
+  `lookupArch("sm_89")` is NOT FOUND, so every NVIDIA kernel manifest
+  carries `occupancyLimiter` ABSENT and `hasFeasibleBlocks` false. It is
+  still a thing you can print rather than a thing that decides, but the
+  cause is the compile-time model, not a missing caller.
 - **A kernel can declare almost nothing.** The whole vocabulary is
   `@Kernel`, `@Occupancy(maxThreads)` and `@FastMath`. There is no way
   to say "any wave width", "I need dp4a", "my tile is 64x64", or "this
@@ -81,6 +92,65 @@ Measured, each with its source.
 - **Writing kernels.** The adaptor configures a kernel. It does not
   author one.
 
+### 1.4 The maintenance constraint
+
+The north star has a corollary that governs every choice below. Julian,
+2026-09-19, and load-bearing rather than aspirational:
+
+> Supporting a device we have never seen must cost no per-device source.
+
+A design that answers "what block size" from a table keyed by
+architecture satisfies the north star on the parts already in the table
+and fails it on every part that ships afterwards.
+
+llama.cpp is the worked example of the alternative and the reason to
+refuse it. Its decode path picks `nwarps` from a seven-way
+`mmvq_parameter_table_id`, and its prefill path carries NINE
+per-architecture config headers holding 2027 `CASE` rows over 22 quant
+types, measured 2026-09-19. Ada and gfx1151 disagree in every cell that
+exists for both. Each of those rows was fitted by hand and has to be
+refitted per part. That is the price of baking configuration at compile
+time with no runtime model to consult, and it is the artifact this
+layer exists to make unnecessary. If cajeta needs its own copy of that
+table, the language has no portability answer worth the name.
+
+cajeta has the runtime model, and it already clears the bar. The same
+measurement that found `lookupArch("sm_89")` NOT FOUND also found
+`cajeta gpu-profile` answering `estimated:false` with every value live
+on that part. `buildDeviceModel` says why:
+
+    liveOccupancy = props.regsPerMP && props.threadsPerMP;
+    m.estimated = !(props.valid && (archKnown || liveOccupancy));
+
+A device the table has never seen is fully modelled when the driver
+reports registers per MP and threads per MP. The table is therefore not
+an enumeration of supported hardware. It is a fallback for a query that
+does not answer, which is why both its rows are AMD.
+
+- **1.4.1** When a device the tree has never seen is attached, it is
+  modelled from the driver and no source changes.
+- **1.4.2** When a quantity is derivable from a driver attribute, it is
+  derived rather than tabled.
+- **1.4.3** When a quantity is not derivable, it is keyed by FAMILY
+  rather than by part, and the family test is a reported value or a
+  prefix rather than an enumeration. `cajeta_xpu_simds_per_mp` is the
+  shape to copy. It prefers what the device reported, then matches
+  `sm_` or `gfx`, then answers 0.
+- **1.4.4** When a quantity is neither derivable nor a family constant,
+  it is MEASURED per machine and recorded by `Autotune`, never typed
+  into a source file. `wavesPerSimdTarget` is the only such value in
+  the tree today, and its own comment already concedes the point.
+- **1.4.5** When a family constant has no answer for the attached part,
+  the profile says unknown and the dependent derivation refuses, rather
+  than substituting a default that is right elsewhere. `simdsPerMP`
+  silently defaults to 4 today, which is correct on Ada and on RDNA3.5
+  by coincidence and unchecked on anything else.
+
+The four sections that follow are that constraint decomposed. The
+device describes itself (§3). The kernel declares only what no compiler
+can infer from its body (§2). The adaptor reconciles the two at bind
+(§4). Measurement fills the residue and nothing else (§6).
+
 ## 2. The kernel declares what only its author knows
 
 An author declares what only an author knows. Everything else is
@@ -117,6 +187,19 @@ burns 84 VGPRs. It cannot reveal that the body assumes 32 lanes.
   already computes, rather than 0.
 - **3.4** When a device capability is queried, it is a fact in the
   profile, not the shape of a C++ vtable.
+- **3.5** When the arch table has no row for the attached device, the
+  live model still answers and the occupancy surface is computed from
+  it. A compile-time fill may stand as an AOT hint, and it is not the
+  authority at bind.
+- **3.6** When a driver attribute and a table constant disagree, the
+  driver wins. `buildDeviceModel` already states that rule for the
+  runtime model, and the compile-time path does not inherit it.
+- **3.7** When a predicate answers whether the device can run a named
+  kernel, it consults the registry the LAUNCH consults. A predicate
+  that answers from a different table is worse than no predicate,
+  because a caller routes on it. Measured 2026-09-19:
+  `Device.kernelAvailable("q4kF16CoopN256Kernel")` answered true in the
+  same process whose launch then failed with `no registered kernel`.
 
 ## 4. The adaptor reconciles, at bind
 
@@ -180,7 +263,53 @@ declines to answer.
 - **6.5** When a search would cost the caller live work, it does not run
   on the critical path uninvited.
 
-## 7. What follows
+## 7. Measured on a second vendor
+
+Recorded 2026-09-19 on PHOENIX, RTX 4090, sm_89, driver 610.62, CUDA
+13.3, against cajeta main 44a3daa3 and cajeta-llm main 20d8d86. The
+tables are in `nvidia-kernel-geometry-findings.html` beside this file.
+Everything above is answerable to these.
+
+- **The runtime half already satisfies 1.4.1.** `sm_89` is absent from
+  the arch table and is modelled anyway. 128 SMs, wave 32, 48 waves per
+  MP, 24 resident blocks per MP, 49152 bytes of shared memory per block
+  with a 101376 opt-in, roofline measured at 859.2 GB/s against a
+  theoretical 1008.1, `estimated:false`.
+- **The frozen half is 161 of 162.** `QuantKernel.cajeta` carries 162
+  launch sites. 86 pass `block: [256]`, 43 pass `block: [32]`, 20 pass
+  a named constant of 64, 7 pass 128, 5 pass 64, and exactly ONE
+  derives the block from the device. The file reads `Device` twice in
+  18912 lines and `Wave.width()` zero times.
+- **The same block size is optimal on one part and half rate on the
+  other.** Through the shipped `occupancy()`, a 32-thread block reaches
+  24 of 48 waves per MP on Ada and 64 of 64 on gfx1151. The binding
+  limit is Ada's reported cap of 24 resident blocks per MP, which
+  gfx1151 does not report at all. A 64-thread block reaches 48 of 48.
+  This is §5.1 with a number on it, and no benchmark was needed to see
+  it because the driver already reports the cap.
+- **The grid is sized for the smaller part.** The same Q4_K wave
+  mat-vec moving the same 31.5 MB achieves 348.8 GB/s at 14336 output
+  rows and 48.4 GB/s at 4096, because the launcher issues 3584
+  workgroups in the first case and 1024 in the second against 3072 warp
+  slots reachable with one-warp blocks. On gfx1151 both counts fill the
+  part, which is why the geometry was never wrong there.
+- **A failed launch is silent.** Five of six Q4_K coop variants do not
+  launch on nvptx, including both that the Auto router selects, and the
+  output buffer is left zeroed rather than refused. 54 of the 58 coop
+  kernels have no manifest at all, which also makes `tuneBuildId`
+  answer `none` for them and any `Autotune` hint unrecallable. This is
+  a §4.3 problem before it is a tuning problem, and §3.7 is the
+  predicate half of it.
+- **There is no trustworthy per-kernel device timer on this part.** The
+  profiler's GPU tier produced no device queue track, CUPTI is
+  unavailable, and `KernelIsa` is AMD-only. A harness timing the one
+  coop variant that does run implied 252 TFLOPS against the part's
+  roughly 165 TFLOPS dense f16 peak, so it is measuring something other
+  than execution. §6 cannot be falsified until that is fixed, which
+  makes the timer a prerequisite for the search tier rather than a
+  convenience.
+
+## 8. What follows
 
 - Ranking survivors by measured cost. This is the tile family's, and it
   is what finally retires `Route.priority()`, a declared integer
@@ -191,3 +320,12 @@ declines to answer.
 - Fleet calibration, meaning a recorded winner shared across nodes
   rather than rediscovered per process. It is named as the gap in the
   route-table spec's §7 and owned by nothing.
+- A per-kernel device timer on NVIDIA. §7 records that there is none,
+  and §6's search tier cannot be accepted or rejected without one. It
+  is the NVIDIA half of `kernel-artifact-inspection`, which already
+  filed the symmetric AMD instrument, and it gates this spec's last
+  tier rather than following from it.
+- Why 54 of 58 coop kernels produce no device code on nvptx. The
+  adaptor reconciles kernels that exist. A kernel that silently fails
+  to lower is upstream of everything here, and the compiler reporting
+  it is a diagnostic-engine concern rather than an adaptor one.

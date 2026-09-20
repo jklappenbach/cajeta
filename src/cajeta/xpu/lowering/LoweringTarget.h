@@ -11,6 +11,7 @@
 
 namespace llvm {
     class Value;
+    class Constant;
     class Type;
     class Module;
     class Function;
@@ -346,10 +347,40 @@ namespace xpu {
             bool /*wUnsigned*/) { return nullptr; }
 
         // `Vector<int8,N>.lut4(table)` -> out[i] = table[indices[i] & 15]. DEFAULT:
-        // spill + per-lane gather; AMDGPU emits v_perm_b32 as a byte-permute LUT.
+        // spill + per-lane gather; AMDGPU emits v_perm_b32 and NVPTX prmt.b32 as a
+        // byte-permute LUT. The default's alloca is `.local` on a GPU, so a backend
+        // that has a byte permute and does not override this PAYS 16 BYTES OF
+        // SCRATCH PER CALL (measured on sm_89, xpu-kernel-adaptor plan 1.5.5.3).
         virtual llvm::Value* byteLut16(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* indices,
             llvm::Value* table);
+
+        // `v[i]` with a NON-CONSTANT `i`. DEFAULT: a plain extractelement, left for
+        // the backend to legalize. NVPTX overrides it because ITS legalization is a
+        // stack round trip: the vector is written to the frame and one lane read
+        // back, which on a GPU is scratch, not a spare register. Measured across the
+        // llm library on sm_89, this was the whole cause of 20 spilling kernels
+        // (xpu-kernel-adaptor plan 1.5.5.7).
+        virtual llvm::Value* extractLaneDynamic(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* vec,
+            llvm::Value* idx);
+
+        // Shared index analysis for the byteLut16 overrides. The question "can this
+        // index reach the table's high half" is the same on every backend; only the
+        // instruction it feeds differs, so it is answered once here rather than per
+        // backend (xpu-kernel-adaptor spec §7: tier-neutral analysis, native fusion).
+
+        // Look through the casts and the single-store alloca round trip that a
+        // freshly built vector arrives behind, to the value that computed it.
+        static llvm::Value* peelVectorValue(llvm::Value* v);
+
+        // Bit 3 clear in every byte of a constant vector, whatever lane width it is
+        // spelled in.
+        static bool allBytesBelowEight(llvm::Constant* c);
+
+        // An index the caller has visibly masked so no byte reaches 8 cannot read the
+        // table's high half, which makes the high permute and the half-select dead.
+        static bool masksOffHighHalf(llvm::Value* indices);
 
         // --- float atomics -----------------------------------------------------
         // `Buffer<float32>.atomic{Add,Min,Max}(i, v)` — an atomic RMW returning the
@@ -491,10 +522,16 @@ namespace xpu {
 
         // c.mma(a, b) → a*b+c. `signFlags` (A 0x1, B 0x2, C 0x4, Result 0x8) carries
         // the multiply's signedness as DATA — int types are signless in LLVM/SPIR-V.
+        // `aLayout`/`bLayout` are the layouts the A and B fragments were
+        // LOADED with (0 row-major, 1 col-major). NVPTX needs them because
+        // wmma.mma encodes the pair in the instruction — row.row, row.col,
+        // col.row, col.col — so a col-loaded operand fed to a row.row
+        // multiply lowers cleanly and computes the wrong product. Targets
+        // that reorient at load time can ignore both.
         virtual llvm::Value* coopMatrixMulAdd(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
             llvm::Value* bMat, llvm::Value* c, llvm::Type* matrixType,
-            uint32_t signFlags);
+            uint32_t signFlags, uint32_t aLayout = 0, uint32_t bLayout = 0);
 
         // m.splat(value) → a tile with every element = `value` (the zero/initial
         // accumulator), result type `matrixType` (→ OpCompositeConstruct).

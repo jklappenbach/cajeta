@@ -43,6 +43,13 @@ namespace xpu {
         std::optional<unsigned> vgpr;
         std::optional<unsigned> sgpr;
         std::optional<unsigned> spillBytes;      // scratch / private segment bytes
+        // ptxas reports "bytes stack frame" and "bytes spill stores" separately,
+        // and the difference is the whole diagnosis: a frame with ZERO spill
+        // stores is a construct the backend legalized through memory, not
+        // register pressure, and the two have opposite remedies. ABSENT where a
+        // backend reports only one number (amdgpu's private segment) — absent is
+        // not zero, and nothing may read it as a claim.
+        std::optional<unsigned> spillStoreBytes;
         std::optional<unsigned> ldsStaticBytes;  // static group segment bytes
         std::optional<std::string> ldsDynamicParam;   // the sizing parameter
         // A pinned block records its residency, an argument block feasibleBlocks.
@@ -60,7 +67,8 @@ namespace xpu {
         bool captureSafe = false;
 
         bool hasFootprint() const {
-            return waveWidth || vgpr || sgpr || spillBytes || ldsStaticBytes
+            return waveWidth || vgpr || sgpr || spillBytes || spillStoreBytes
+                || ldsStaticBytes
                 || ldsDynamicParam || threadsPerGroup || residentGroupsPerCu
                 || !feasibleBlocks.empty() || occupancyLimiter;
         }
