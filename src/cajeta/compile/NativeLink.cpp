@@ -2,6 +2,8 @@
 
 #include "NativeLink.h"
 
+#include "CajetaArchive.h"
+
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Metadata.h>
 #include <llvm/IR/Module.h>
@@ -10,6 +12,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <system_error>
 
 namespace cajeta {
@@ -69,6 +72,69 @@ namespace cajeta {
         if (const char* home = std::getenv("HOME"))
             dirs.push_back(std::string(home) + "/.cajeta/native");
         return dirs;
+    }
+
+    namespace {
+        // Whether `p` already holds exactly `want`.
+        bool sameBytes(const std::filesystem::path& p,
+                       const std::vector<uint8_t>& want) {
+            std::error_code ec;
+            if (!std::filesystem::exists(p, ec)) return false;
+            if (std::filesystem::file_size(p, ec) != want.size() || ec)
+                return false;
+            std::ifstream in(p, std::ios::binary);
+            if (!in) return false;
+            std::vector<uint8_t> have(want.size());
+            if (!want.empty())
+                in.read(reinterpret_cast<char*>(have.data()),
+                        (std::streamsize) have.size());
+            return in.gcount() == (std::streamsize) want.size() && have == want;
+        }
+    }
+
+    std::optional<std::string> stageClasspathNativeArtifacts(
+            const std::vector<std::string>& classpath,
+            const std::string& platform,
+            const std::string& stageRoot) {
+        if (classpath.empty() || stageRoot.empty()) return std::nullopt;
+        const std::filesystem::path root =
+            std::filesystem::path(stageRoot) / "native";
+        const std::filesystem::path dir = root / platform;
+        bool staged = false;
+        for (const auto& cp : classpath) {
+            std::vector<uint8_t> payload;
+            std::vector<std::string> names;
+            try {
+                auto arc = CajetaArchive::readFrom(cp);
+                for (const auto* e : arc.nativeArtifactsFor(platform)) {
+                    // Entry names are `native/<platform>/<file>`; keep the leaf.
+                    auto slash = e->name.rfind('/');
+                    std::string leaf = slash == std::string::npos
+                        ? e->name : e->name.substr(slash + 1);
+                    if (leaf.empty()) continue;
+                    std::error_code ec;
+                    std::filesystem::create_directories(dir, ec);
+                    if (ec) return std::nullopt;
+                    const std::filesystem::path out = dir / leaf;
+                    // Rewriting a byte-identical archive on every build would
+                    // churn the linker's inputs for nothing.
+                    if (sameBytes(out, e->data)) { staged = true; continue; }
+                    std::ofstream os(out, std::ios::binary | std::ios::trunc);
+                    if (!os) continue;
+                    if (!e->data.empty())
+                        os.write(reinterpret_cast<const char*>(e->data.data()),
+                                 (std::streamsize) e->data.size());
+                    os.close();
+                    staged = staged || (bool) os;
+                }
+            } catch (...) {
+                // An unreadable archive is the ingest path's diagnostic to make,
+                // with the name and the reason. Staging stays silent about it.
+                continue;
+            }
+        }
+        return staged ? std::optional<std::string>(root.string())
+                      : std::nullopt;
     }
 
     llvm::Expected<std::vector<std::string>> resolveNativeArchivesForLink(

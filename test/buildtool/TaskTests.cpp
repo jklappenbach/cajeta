@@ -25,6 +25,19 @@ namespace {
         return out;
     }
 
+    // JSON has no raw backslash. A Windows path embedded verbatim reads as an
+    // escape sequence (`C:\Users\...` -> \U, \A) and the manifest fails to
+    // parse, which is invisible on POSIX and fails only the mingw leg.
+    std::string jsonEscape(const std::string& s) {
+        std::string out;
+        out.reserve(s.size() + 8);
+        for (char c : s) {
+            if (c == '\\' || c == '"') out.push_back('\\');
+            out.push_back(c);
+        }
+        return out;
+    }
+
     cajeta::buildtool::Manifest mustLoad(const std::string& src) {
         auto m = loadManifestString(src);
         if (!m) {
@@ -199,7 +212,7 @@ TEST(TaskTests, execCommandNamingAnExistingFileWithSpacesIsAccepted) {
         "details": { "name": "a.b", "version": "0.1" },
         "tasks": {
             "t": { "actions": [ { "action": "exec", "command": ")") +
-        tool.string() + R"(" } ] }
+        jsonEscape(tool.string()) + R"(" } ] }
         }
     })");
     EXPECT_TRUE((bool)parseTasks(m));

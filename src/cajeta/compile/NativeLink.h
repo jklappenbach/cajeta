@@ -23,6 +23,17 @@ namespace cajeta {
     // The colon-separated `CAJETA_NATIVE_PATH`, then `~/.cajeta/native`.
     std::vector<std::string> nativeLinkSearchDirs();
 
+    // Explode `native/<platform>/…` out of each classpath archive under
+    // `<stageRoot>/native/<platform>/`, returning `<stageRoot>/native` when
+    // anything landed. A dependency ships its static library INSIDE its `.cja`,
+    // the linker takes files rather than archive members, and nothing else
+    // unpacks them, so without this a dependency that carries native code is
+    // unlinkable unless the caller has already staged it by hand.
+    std::optional<std::string> stageClasspathNativeArtifacts(
+        const std::vector<std::string>& classpath,
+        const std::string& platform,
+        const std::string& stageRoot);
+
     // Resolve each live lib to a static archive under one of `searchDirs`,
     // failing loud (naming the lib and the dirs searched) when one resolves nowhere.
     llvm::Expected<std::vector<std::string>> resolveNativeArchivesForLink(
