@@ -390,4 +390,99 @@ inline const char* UNIFORM_GUARD_NESTED =
     "        if (t == 0) { out[wg] = lds[0]; }\n"
     "    }\n";
 
+
+// THE STAGED-EPILOGUE PROBE (xpu-kernel-adaptor 4A.5.4.C).
+//
+// If `WaveVector` lowered on a backend with no usable wave by having the
+// COMPILER emit the LDS staging and barrier the kernel would otherwise write
+// by hand, could the CPU fission accept the result? The fission sees the
+// same IR either way — a `__cajeta_xpu_cpu_barrier` call in a basic block —
+// so the question is entirely about WHICH CONTROL FLOW the real kernels put
+// that call under, and it can be asked with hand-written cajeta.
+//
+// This is `q80WmmaDeqMw8Kernel`'s shape, kept faithful in the parts that
+// decide the answer:
+//
+//   - the whole body under `if (t0 < rows && i0 < outDim)`, where
+//     `i0 = ... + wid * 16` GENUINELY VARIES BY WAVE — it is not merely
+//     unprovable, the eight waves of the block compute eight different
+//     values, and the guard is uniform only because outDim happens to be a
+//     multiple of 128 at every launch site;
+//   - the epilogue inside `while (j < 8)`, a uniform trip count;
+//   - a barrier where a staging lowering would put one, per call, per
+//     iteration;
+//   - and nothing after the guard's join, which is what lets the activity
+//     mask carry it.
+//
+// The staged value is a per-wave slice indexed by `lane16` and summed across
+// all sixteen, which is the "the wave collectively supplies a vector" access
+// pattern the verb exists for — so if the staging is mis-sliced the sum is
+// wrong rather than merely slow.
+inline const char* STAGED_EPILOGUE =
+    "    @Kernel\n"
+    "    public static void stagedEpi(KernelBuffer<float32> out,\n"
+    "                                 KernelBuffer<float32> in,\n"
+    "                                 uint32 rows, uint32 outDim) {\n"
+    "        Shared<float32> lds = shared float32[256];\n"
+    "        Shared<float32> stage = shared float32[128];\n"
+    "        uint32 tid = KernelThread.x();\n"
+    "        uint32 lane = tid % 32;\n"
+    "        uint32 wid = tid / 32;\n"
+    "        uint32 lane16 = lane % 16;\n"
+    "        uint32 wg = Workgroup.x();\n"
+    "        uint32 t0 = wg * 128;\n"
+    "        uint32 i0 = wg * 128 + wid * 16;\n"
+    "        if (t0 < rows && i0 < outDim) {\n"
+    "            float32 accum = 0.0f;\n"
+    "            uint32 j = 0;\n"
+    "            while (j < 8) {\n"
+    "                stage[wid * 16 + lane16] =\n"
+    "                    in[(int64) ((wg * 8 + j) * 16 + lane16)];\n"
+    "                Barrier.workgroup();\n"
+    "                uint32 c = 0;\n"
+    "                while (c < 16) {\n"
+    "                    accum = accum + stage[wid * 16 + c];\n"
+    "                    c = c + 1;\n"
+    "                }\n"
+    "                j = j + 1;\n"
+    "            }\n"
+    "            lds[tid] = accum;\n"
+    "            Barrier.workgroup();\n"
+    "            if (tid == 0) {\n"
+    "                float32 s = 0.0f;\n"
+    "                uint32 k = 0;\n"
+    "                while (k < 256) { s = s + lds[k]; k = k + 1; }\n"
+    "                out[wg] = s;\n"
+    "            }\n"
+    "        }\n"
+    "    }\n";
+
+// The same staging under a WORK-ITEM-DIVERGENT guard that REJOINS — the
+// shape a lowering would produce if the kernel called the verb inside
+// `if (someTidThing) { ... }` with more work after it. This one must stay
+// declined; if it did not, the probe above would prove nothing, because
+// "the fission accepts everything" is not the same answer as "the fission
+// accepts this".
+inline const char* STAGED_EPILOGUE_DIVERGENT =
+    "    @Kernel\n"
+    "    public static void stagedDiv(KernelBuffer<float32> out,\n"
+    "                                 KernelBuffer<float32> in,\n"
+    "                                 uint32 rows, uint32 outDim) {\n"
+    "        Shared<float32> lds = shared float32[256];\n"
+    "        Shared<float32> stage = shared float32[128];\n"
+    "        uint32 tid = KernelThread.x();\n"
+    "        uint32 lane = tid % 32;\n"
+    "        uint32 wid = tid / 32;\n"
+    "        uint32 lane16 = lane % 16;\n"
+    "        uint32 wg = Workgroup.x();\n"
+    "        float32 accum = 0.0f;\n"
+    "        if (lane16 < 8) {\n"
+    "            stage[wid * 16 + lane16] = in[(int64) lane16];\n"
+    "            Barrier.workgroup();\n"
+    "            accum = stage[wid * 16];\n"
+    "        }\n"
+    "        lds[tid] = accum;\n"
+    "        if (tid == 0) { out[wg] = lds[0]; }\n"
+    "    }\n";
+
 } // namespace cajeta_fission_shapes

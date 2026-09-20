@@ -321,3 +321,86 @@ TEST(XpuCpuBarrierDivergentExit, nestedUniformGuardsOverTwoBarrierChainsLower) {
         << "bit 0 = workgroup 0's chain (the flagB side), bit 1 = workgroup 1's"
            " chain (the && side)";
 }
+
+// --- the staged-epilogue probe (4A.5.4.C) ----------------------------------
+//
+// Asks whether a compiler-emitted LDS staging + barrier, at the position a
+// `WaveVector` lowering would put one, survives fission in the control flow
+// cajeta-llm's S-verb kernels actually use. See STAGED_EPILOGUE's comment
+// for why hand-written cajeta answers this: the fission sees the same call
+// whoever emitted it.
+
+namespace {
+
+// in[i] = (i mod 7) + 1. Every wave stages the same sixteen values per
+// iteration and sums them, so all 256 work-items reach the same accumulator
+// and out[0] is 256x the sum of the first 128 inputs. A mis-sliced staging
+// gives a different number rather than a slower one.
+const char* RUN_STAGED =
+    "    public static int32 run() {\n"
+    "        int32 n = 2048;\n"
+    "        float32[] hin = heap float32[n];\n"
+    "        int32 i = 0;\n"
+    "        while (i < n) { hin[i] = (float32) (i - (i / 7) * 7) + 1.0f;"
+    " i = i + 1; }\n"
+    "        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);\n"
+    "        KernelBuffer<float32> out = heap KernelBuffer<float32>(1);\n"
+    "        in.upload(hin);\n"
+    "        float32[] hout = heap float32[1];\n"
+    "        hout[0] = -1.0f;\n"
+    "        out.upload(hout);\n"
+    "        KernelStream s #= KernelStream.current();\n"
+    "        stagedEpi.launch(s, grid: [1], block: [256])(out, in, 1024, 1024);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        float32 acc = 0.0f;\n"
+    "        int32 k = 0;\n"
+    "        while (k < 128) { acc = acc + hin[k]; k = k + 1; }\n"
+    "        return hout[0] == acc * 256.0f ? 0 : 1;\n"
+    "    }\n";
+
+const char* RUN_STAGED_DIV =
+    "    public static int32 run() {\n"
+    "        KernelBuffer<float32> in = heap KernelBuffer<float32>(64);\n"
+    "        KernelBuffer<float32> out = heap KernelBuffer<float32>(1);\n"
+    "        KernelStream s #= KernelStream.current();\n"
+    "        int64 f0 = Device.launchFailures();\n"
+    "        stagedDiv.launch(s, grid: [1], block: [256])(out, in, 1024, 1024);\n"
+    "        s.sync();\n"
+    "        return (int32) (Device.launchFailures() - f0);\n"
+    "    }\n";
+
+} // namespace
+
+// THE ANSWER. If this lowers and computes, a WaveVector lowering may stage
+// through LDS on a backend with no usable wave, and option C dominates
+// option A. If it declines, it does not and the 14 CPU skips need A or a
+// distributed CPU tile.
+TEST(XpuCpuBarrierDivergentExit, aStagedEpilogueBarrierSurvivesTheRealShape) {
+    std::string err;
+    auto jit = compileCpu(std::string(PRE) + STAGED_EPILOGUE + RUN_STAGED + END,
+                          &err);
+    ASSERT_NE(jit, nullptr) << err;
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+        << "a barrier where a staging lowering would emit one, in the control "
+           "flow q80WmmaDeqMw8Kernel actually uses:\n" << err;
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 0) << "lowered, but the staged sum is wrong";
+}
+
+// The line the answer depends on: staging under a divergent guard that
+// REJOINS is still declined, so the result above is about this shape and not
+// about the fission having stopped checking.
+TEST(XpuCpuBarrierDivergentExit, aStagedBarrierUnderADivergentJoinIsDeclined) {
+    std::string err;
+    auto jit = compileCpu(std::string(PRE) + STAGED_EPILOGUE_DIVERGENT
+                          + RUN_STAGED_DIV + END, &err);
+    ASSERT_NE(jit, nullptr) << err;
+    EXPECT_NE(err.find("[xpu-kernel-skipped] stagedDiv"), std::string::npos)
+        << "a work-item that skips a barrier and rejoins has no point at "
+           "which the group is together:\n" << err;
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 1) << "the declined launch must count as a failure";
+}
