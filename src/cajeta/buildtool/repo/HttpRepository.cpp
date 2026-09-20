@@ -104,6 +104,29 @@ namespace cajeta::buildtool {
 
     namespace {
 
+        /// Point libcurl at a CA trust store that exists on THIS platform.
+        ///
+        /// A mingw build carries curl's compiled-in default CA path, which is a
+        /// Unix path that does not exist on Windows. Every https:// request
+        /// then dies with "Problem with the SSL CA cert (path? access rights?)"
+        /// before a byte is read, so on Windows NO Olla dependency could be
+        /// fetched at all -- `cajeta build` could not resolve anything.
+        ///
+        /// CURLSSLOPT_NATIVE_CA points curl at the platform's own store. Only
+        /// Windows needs it: the macOS and Linux legs resolve dependencies
+        /// today, so their defaults are already right and are left alone.
+        ///
+        /// An explicit CURL_CA_BUNDLE or CURL_CA_PATH still wins, since curl
+        /// reads both itself and a caller that set one meant it.
+        void applyTlsTrust(CURL* curl) {
+#if defined(_WIN32) && defined(CURLSSLOPT_NATIVE_CA)
+            ::curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS,
+                               (long) CURLSSLOPT_NATIVE_CA);
+#else
+            (void) curl;
+#endif
+        }
+
         /// Configures auth on a handle; the CALLER owns and frees the slist.
         curl_slist* applyAuth(CURL* curl, const RepositoryAuth& auth) {
             curl_slist* headers = nullptr;
@@ -132,6 +155,7 @@ namespace cajeta::buildtool {
                                          const RepositoryAuth& auth,
                                          std::string& bodyOut) {
             ::curl_easy_reset(curl);
+            applyTlsTrust(curl);
             ::curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             ::curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToString);
             ::curl_easy_setopt(curl, CURLOPT_WRITEDATA, &bodyOut);
@@ -162,6 +186,7 @@ namespace cajeta::buildtool {
                                           const std::string& contentType,
                                           std::string& bodyOut) {
             ::curl_easy_reset(curl);
+            applyTlsTrust(curl);
             ::curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             ::curl_easy_setopt(curl, CURLOPT_POST, 1L);
             ::curl_easy_setopt(curl, CURLOPT_POSTFIELDS,
@@ -195,6 +220,7 @@ namespace cajeta::buildtool {
                                        const RepositoryAuth& auth,
                                        const std::string& destPath) {
             ::curl_easy_reset(curl);
+            applyTlsTrust(curl);
             std::ofstream out(destPath,
                               std::ios::binary | std::ios::trunc);
             if (!out) {
