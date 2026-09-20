@@ -154,19 +154,28 @@ TEST(AmdgpuCoopIntAccumTests, intAccumVerbsLowerNativelyOnAmdgpu) {
            "means it demoted:\n" << err;
 }
 
-// Both verbs are NATIVE-ONLY: a backend without native epilogue support
-// (SPIR-V) demotes the tiles and the software tile then REJECTS the
-// kernel with the named NATIVE-ONLY diagnostic — never a silent
-// wrong-answer demote (the scalar is one lane's column factor, and the
-// 24-bit multiply is a native-tier instruction).
+// A backend without native epilogue support (SPIR-V) demotes the tiles, and
+// the replicated software tile then REJECTS the kernel by name rather than
+// taking the calling work-item's factor for all sixteen columns, which would
+// be a plausible wrong answer.
+//
+// The anchor moved off the literal "NATIVE-ONLY" when the contract was
+// restated in tile coordinates: that word named a TIER, when the real line
+// is whether a backend has a wave to distribute the per-lane slices across.
+// NVPTX has one and supports these verbs, which "native-only" could not
+// express. What the refusal must still do is state the contract and name the
+// spelling that works.
 TEST(AmdgpuCoopIntAccumTests, intAccumVerbsRejectLoudlyOffNative) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Spirv, kIntAccumSrc, &err), 1);
     EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
         << "off-native the integer verbs must SKIP the kernel loudly:\n"
         << err;
-    EXPECT_NE(err.find("NATIVE-ONLY"), std::string::npos)
-        << "the skip must carry the NATIVE-ONLY explanation:\n" << err;
+    EXPECT_NE(err.find("lane L supplies the factor for column"),
+              std::string::npos)
+        << "the skip must state the contract it could not meet:\n" << err;
+    EXPECT_NE(err.find("Shared-vector"), std::string::npos)
+        << "the skip must name the spelling that works here:\n" << err;
 }
 
 // The whole point of the verb: the fold must be the FULL-rate 24-bit

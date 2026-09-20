@@ -291,6 +291,13 @@ std::set<std::string> declaredVerbs(std::string* why) {
 
 // THE HARNESS. Adding a verb to CooperativeMatrix.cajeta without a numeric
 // case here fails this test by name.
+//
+// It reads the stdlib rather than the lowering, so it is backend-independent
+// despite living in an Nvptx-named file; it is here because this is where
+// the cell-by-cell cases are. The BREADTH axis — every backend either
+// honours a verb's contract or refuses it by name — is
+// XpuCoopConformanceTests, which runs the same seven shapes through the JIT
+// on cpu, nvptx, amdgpu and spirv.
 TEST(NvptxCoopConformance, everyVerbHasAConformanceCase) {
     std::string why;
     std::set<std::string> declared = declaredVerbs(&why);

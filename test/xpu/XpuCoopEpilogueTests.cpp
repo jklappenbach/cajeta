@@ -169,10 +169,15 @@ TEST(XpuCoopEpilogueTests, verbsMatchScalarReferenceExactlyOnCpu) {
         << err;
 }
 
-// 10.12.31 — the scalar-column variants on the CPU tier: NATIVE-ONLY,
-// so the software tile must reject the kernel with the named
-// diagnostic — a silent demote would apply one lane's column factor
-// to all sixteen columns and produce a plausible wrong answer.
+// 10.12.31 — the scalar-column variants on the CPU tier. The tile there is
+// REPLICATED per work-item, so the other columns' factors are in no lane it
+// can reach; it must reject by name. A silent demote would apply one
+// work-item's factor to all sixteen columns and produce a plausible wrong
+// answer, which is the exact defect this family shipped on NVIDIA.
+//
+// Anchored on the contract rather than on the word "NATIVE-ONLY", which
+// named a tier when the real line is whether there is a wave to distribute
+// across.
 TEST(XpuCoopEpilogueTests, scalarColumnVerbsAreNamedNativeOnlyOnCpu) {
     std::string bad = std::string(KERNEL);
     std::string from =
@@ -186,9 +191,12 @@ TEST(XpuCoopEpilogueTests, scalarColumnVerbsAreNamedNativeOnlyOnCpu) {
         "    public static int32 run() { return 1; }\n}\n";
     std::string err;
     EXPECT_EQ(runI32Cpu(src, &err), 1);
-    EXPECT_NE(err.find("NATIVE-ONLY"), std::string::npos)
+    EXPECT_NE(err.find("lane L supplies the factor for column"),
+              std::string::npos)
         << "the rejection must say WHY the software tile cannot lower "
            "the scalar variant:\n" << err;
+    EXPECT_NE(err.find("Shared-vector"), std::string::npos)
+        << "the rejection must name the spelling that works here:\n" << err;
     EXPECT_NE(err.find("scaledAccumInto2S"), std::string::npos)
         << "the diagnostic must NAME the verb:\n" << err;
 }
