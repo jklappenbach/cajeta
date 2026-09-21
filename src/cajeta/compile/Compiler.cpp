@@ -2987,6 +2987,14 @@ namespace cajeta {
 #else
             opt.argv.push_back("-Wl,--gc-sections");
 #endif
+            // Point the driver at the OpenSSL this compiler was configured
+            // against. Without it `-lssl` falls back to the driver's default
+            // search path, which on macOS does not include Homebrew's keg-only
+            // openssl, and the link dies on X509_STORE_add_cert with the flags
+            // looking perfectly correct.
+#ifdef CAJETA_OPENSSL_LIBDIR
+            opt.argv.push_back(std::string("-L") + CAJETA_OPENSSL_LIBDIR);
+#endif
 #if defined(_WIN32)
             // An `--emit=exe` is a deliverable, so it STATICALLY links the mingw
             // runtime and OpenSSL: the binary then depends only on Windows system DLLs.
