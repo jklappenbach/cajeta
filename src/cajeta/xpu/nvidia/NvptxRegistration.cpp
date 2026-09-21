@@ -118,11 +118,30 @@ namespace nvidia {
             // Access modes come off the lowered IR, BEFORE codegen transforms it.
             KernelAccessSummary access = classifyKernelAccess(*kfn, method);
 
+            // Same defect as AmdgpuRegistration's, same fix: a kernel that
+            // lowered but produced no cubin fell off this loop silently. The
+            // three shared-memory overflows of 2026-09-20 were found only
+            // because ptxas itself prints "too much shared data" — a missing
+            // ptxas prints one unnamed line and drops every kernel. The note
+            // names the kernel and carries "no assembler" for consumers.
             std::string ptx = emitPtx(devMod, *tm);
-            if (ptx.empty()) continue;
+            if (ptx.empty()) {
+                fprintf(stderr,
+                        "cajeta: note: [xpu-kernel-skipped] %s: no nvptx device "
+                        "code — no assembler input: PTX emission failed (see the "
+                        "cajeta.xpu.nvidia line above)\n", entryName.c_str());
+                continue;
+            }
             std::string ptxasLog;
             std::vector<uint8_t> cubin = assembleCubin(ptx, arch, &ptxasLog);
-            if (cubin.empty()) continue;  // ptxas missing or errored
+            if (cubin.empty()) {
+                fprintf(stderr,
+                        "cajeta: note: [xpu-kernel-skipped] %s: no nvptx device "
+                        "code — no assembler produced a cubin on this box (ptxas "
+                        "missing, too old, or it rejected the PTX; see the ptxas "
+                        "lines above)\n", entryName.c_str());
+                continue;
+            }
 
             // Hash over the cubin that registers; occupancy needs an arch row sm_* lacks.
             KernelManifest manifest;

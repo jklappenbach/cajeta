@@ -110,10 +110,36 @@ namespace amd {
                 setKernelWorkgroupSize(kfn, it->second);
             }
 
+            // A kernel that LOWERED but could not be ASSEMBLED used to fall
+            // off the end of this loop with a bare `continue`: no code object,
+            // no manifest, no registration, and no note naming the kernel —
+            // only an unnamed "cajeta.xpu.amd: ld.lld not found" line from the
+            // backend, which nothing counts. Measured 2026-09-21 on a box with
+            // no ROCm: a cajeta-xgboost build with amdgpu enabled produced 31
+            // manifests each for cpu/nvptx/spirv and ZERO for amdgpu, with no
+            // [xpu-kernel-skipped] anywhere. That is the invisible-absence
+            // failure this whole plan forbids, on a third backend. The note
+            // below is the same countable shape the lowering-refusal path
+            // emits; its phrase "no assembler" is what a consumer keys on to
+            // tell "this box cannot build it" from "the lowering refused it".
             std::vector<ArchHsaco> perArch = assembleHsacoPerArch(devMod, archList);
-            if (perArch.empty()) continue;  // lld missing or a per-arch codegen error
+            if (perArch.empty()) {
+                fprintf(stderr,
+                        "cajeta: note: [xpu-kernel-skipped] %s: no amdgpu device "
+                        "code — no assembler produced a code object on this box "
+                        "(ld.lld or amdgcn codegen; see the cajeta.xpu.amd line "
+                        "above)\n", entryName.c_str());
+                continue;
+            }
             std::vector<uint8_t> hsaco = bundleHsacos(perArch);
-            if (hsaco.empty()) continue;    // bundler missing or errored
+            if (hsaco.empty()) {
+                fprintf(stderr,
+                        "cajeta: note: [xpu-kernel-skipped] %s: no amdgpu device "
+                        "code — no assembler bundled the code object on this box "
+                        "(clang-offload-bundler; see the cajeta.xpu.amd line "
+                        "above)\n", entryName.c_str());
+                continue;
+            }
 
             // One manifest per (kernel, arch), hashed over the very code object that
             // registers below; an unpinned block records the picker's feasible sizes.

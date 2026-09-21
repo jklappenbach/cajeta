@@ -245,9 +245,26 @@ std::vector<BackendCase> backends() {
     };
 }
 
+// The skip note for THIS kernel, or empty. Two different things print it:
+// the lowering refusing a verb by contract, and — since 2026-09-21 — the
+// registration failing to ASSEMBLE what did lower (no ld.lld, no ptxas). The
+// second says "no assembler" and means "this box cannot build it", which is
+// neither of the two outcomes this test judges; before that note existed the
+// kernel simply vanished and the leg read as "lowered, no device", i.e. the
+// silent absence.
+std::string skipNoteFor(const std::string& err, const char* kernel) {
+    const std::string tag = std::string("[xpu-kernel-skipped] ") + kernel;
+    size_t at = err.find(tag);
+    if (at == std::string::npos) return "";
+    size_t nl = err.find('\n', at);
+    return err.substr(at, nl == std::string::npos ? std::string::npos : nl - at);
+}
 bool refused(const std::string& err, const char* kernel) {
-    return err.find(std::string("[xpu-kernel-skipped] ") + kernel)
-           != std::string::npos;
+    const std::string note = skipNoteFor(err, kernel);
+    return !note.empty() && note.find("no assembler") == std::string::npos;
+}
+bool unassembled(const std::string& err, const char* kernel) {
+    return skipNoteFor(err, kernel).find("no assembler") != std::string::npos;
 }
 
 } // namespace
@@ -263,6 +280,12 @@ TEST(XpuCoopConformance, everyBackendHonoursOrRefusesEveryVerb) {
             const int32_t myBit = 1 << bit++;
             SCOPED_TRACE(std::string("CooperativeMatrix.") + v.name);
 
+            if (unassembled(o.err, v.kernel)) {
+                // Lowered, but this box has no assembler for the backend.
+                // Not a verdict on the verb — and now VISIBLE, where it used
+                // to look exactly like a backend with no device attached.
+                continue;
+            }
             if (refused(o.err, v.kernel)) {
                 // A refusal must say what the caller failed to provide and
                 // what to write instead — B's contract wording. A bare
