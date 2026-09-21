@@ -142,3 +142,26 @@ TEST(XpuDeviceOnlyCallTests, ordinaryHostCallsAreUntouched) {
         "    }\n"
         "}\n");
 }
+
+// FIRES on a SECOND intrinsic type, to prove the check keys on the resolved
+// method's @Intrinsic and not on anything specific to CooperativeMatrix.
+// Schedule.barrier is a static scheduling-hint intrinsic (lowered to
+// llvm.amdgcn.sched.barrier and friends inside a kernel); from host code it
+// has nothing to run. Same mechanism, different type — the whole point of
+// annotating the family rather than special-casing one class.
+TEST(XpuDeviceOnlyCallTests, aScheduleIntrinsicFromHostCodeIsRefused) {
+    std::string msg = compileExpectError(
+        "package test;\n"
+        "import cajeta.xpu.Schedule;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Schedule.barrier(0);\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n",
+        "CAJETA_ERROR_INTRINSIC_CALLED_ON_HOST");
+    EXPECT_NE(msg.find("barrier"), std::string::npos)
+        << "the refusal must NAME the verb:\n" << msg;
+    EXPECT_NE(msg.find("@Kernel"), std::string::npos)
+        << "and say where it belongs:\n" << msg;
+}

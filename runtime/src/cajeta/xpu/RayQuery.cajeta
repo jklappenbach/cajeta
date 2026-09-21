@@ -60,12 +60,12 @@ public final class RayQuery {
      * mask (255 = all). The ray is (origin, direction) with parametric extent
      * [tMin, tMax]; origin/direction are given component-wise.
      */
-    public void initialize(AccelerationStructure as, uint32 rayFlags, uint32 cullMask,
+    @Intrinsic
+    public final void initialize(AccelerationStructure as, uint32 rayFlags, uint32 cullMask,
                            float32 originX, float32 originY, float32 originZ,
                            float32 tMin,
                            float32 dirX, float32 dirY, float32 dirZ,
-                           float32 tMax) {
-    }
+                           float32 tMax);
 
     /**
      * Device-only intrinsic: advance the traversal to the next candidate
@@ -147,8 +147,8 @@ public final class RayQuery {
      * via committedType()/committedDistance()/committed barycentrics. Maps to
      * OpRayQueryConfirmIntersectionKHR. Software (CPU) only in v1.
      */
-    public void confirmIntersection() {
-    }
+    @Intrinsic
+    public final void confirmIntersection();
 
     /**
      * Device-only intrinsic: commit an AABB (procedural) candidate as a generated
@@ -156,8 +156,8 @@ public final class RayQuery {
      * within the current ray extent). Shrinks tMax to `t` like confirmIntersection.
      * Maps to OpRayQueryGenerateIntersectionKHR. Software (CPU) only in v1.
      */
-    public void generateIntersection(float32 t) {
-    }
+    @Intrinsic
+    public final void generateIntersection(float32 t);
 
     /**
      * Device-only intrinsic: the parametric distance of the COMMITTED (nearest)

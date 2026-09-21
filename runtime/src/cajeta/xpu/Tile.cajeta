@@ -67,8 +67,8 @@ public final class Tile<T, uint32 Rows, uint32 Cols> {
      * (in elements) — see {@link CooperativeMatrix#load} for the sub-tile
      * addressing a tiled GEMM walks over.
      */
-    public void load(KernelBuffer<T> src, uint32 offset, uint32 layout, uint32 stride) {
-    }
+    @Intrinsic
+    public final void load(KernelBuffer<T> src, uint32 offset, uint32 layout, uint32 stride);
 
     /**
      * Device-only intrinsic: load this tile from a workgroup-shared (`Shared<T>`,
@@ -76,28 +76,28 @@ public final class Tile<T, uint32 Rows, uint32 Cols> {
      * LDS-staged GEMM. Same fragment layout and tier rules as the global load;
      * only the source storage class differs.
      */
-    public void load(Shared<T> src, uint32 offset, uint32 layout, uint32 stride) {
-    }
+    @Intrinsic
+    public final void load(Shared<T> src, uint32 offset, uint32 layout, uint32 stride);
 
     /**
      * Device-only intrinsic: broadcast `value` across every element of this tile
      * — the zero/initial accumulator.
      */
-    public void splat(T value) {
-    }
+    @Intrinsic
+    public final void splat(T value);
 
     /**
      * Device-only intrinsic: store this tile to `dst` (a global KernelBuffer<T>),
      * starting at element `offset`, with the given `layout` and `stride` — the
      * write-side counterpart of `load`'s sub-tile addressing.
      */
-    public void store(KernelBuffer<T> dst, uint32 offset, uint32 layout, uint32 stride) {
-    }
+    @Intrinsic
+    public final void store(KernelBuffer<T> dst, uint32 offset, uint32 layout, uint32 stride);
 
     /**
      * Device-only intrinsic: store this tile to a workgroup-shared (`Shared<T>`,
      * i.e. LDS) tile — the write-side counterpart of the `Shared<T>` load.
      */
-    public void store(Shared<T> dst, uint32 offset, uint32 layout, uint32 stride) {
-    }
+    @Intrinsic
+    public final void store(Shared<T> dst, uint32 offset, uint32 layout, uint32 stride);
 }

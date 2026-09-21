@@ -56,18 +56,18 @@ public final class AsyncCopy {
      * cooperates (the copy is striped across its threads). Not visible to other
      * waves until a `wait` + `Barrier.workgroup()`.
      */
+    @Intrinsic
     public static void copy<T>(Shared<T> dst, uint32 dstOffset,
-                               KernelBuffer<T> src, uint32 srcOffset, uint32 count) {
-    }
+                               KernelBuffer<T> src, uint32 srcOffset, uint32 count);
 
     /** Device-only intrinsic: close the current async-copy group (the unit `wait`
      *  counts). One `commit` per prefetch stage. */
-    public static void commit() {
-    }
+    @Intrinsic
+    public static void commit();
 
     /** Device-only intrinsic: block until at most `groupsInFlight` committed groups
      *  remain outstanding (the oldest groups have landed in LDS). `wait(0)` drains
      *  all. Pair with `Barrier.workgroup()` to publish the landed data to all waves. */
-    public static void wait(uint32 groupsInFlight) {
-    }
+    @Intrinsic
+    public static void wait(uint32 groupsInFlight);
 }

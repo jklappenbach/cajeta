@@ -77,8 +77,8 @@ public final class Image2D {
      * is never emitted as a real call. Storing on the host (outside a kernel) is
      * unsupported.
      */
-    public void store(uint32 x, uint32 y, float32 value) {
-    }
+    @Intrinsic
+    public final void store(uint32 x, uint32 y, float32 value);
 
     /**
      * Device-only intrinsic: read the texel at INTEGER coordinate (x, y),
