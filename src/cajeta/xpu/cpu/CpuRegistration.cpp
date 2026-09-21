@@ -55,6 +55,15 @@ bool cpuVectorizeDisabled() {
 
 // The host's native i32 vector width, 0 without a TM. This is the wave width.
 unsigned cpuVectorWidthI32(llvm::TargetMachine* tm, llvm::Function& f) {
+    // Spike seam (4A.7): force a cooperative wave WIDER than the host SIMD
+    // width, to prove LoopVectorize takes VF=N at 2x the register width with
+    // width-N wave-op variants. The distributed coop tile needs waveW == Cols
+    // (16), which is 2x avx2's native 8. The real unit keys this per kernel
+    // (the distributed-coop marker), not by env.
+    if (const char* e = std::getenv("CAJETA_XPU_CPU_WAVE_WIDTH")) {
+        unsigned w = (unsigned) std::strtoul(e, nullptr, 10);
+        if (w >= 2) return w;
+    }
     if (!tm) return 0;
     llvm::TargetTransformInfo tti = tm->getTargetTransformInfo(f);
     llvm::TypeSize bits =
