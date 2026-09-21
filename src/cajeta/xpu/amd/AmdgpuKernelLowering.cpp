@@ -1034,10 +1034,29 @@ public:
     // backend folds the mul24 + add into a single v_mad_i32_i24.
     llvm::Value* coopMatrixScaledAccumI32(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
-            llvm::Value* iaccVal, llvm::Value* colS) override {
+            llvm::Value* iaccVal, llvm::Value* colS,
+            llvm::Value* colSPtr = nullptr, llvm::Type* colSETy = nullptr,
+            llvm::Value* colSStride = nullptr) override {
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Function* mul24 = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::amdgcn_mul_i24, {i32});
+        // On AMD every element this lane owns is in column lane16, so the
+        // column factor is a single value per lane: the register `colS`, or
+        // colSPtr[lane16*stride] for the WaveVector.ofSlice form.
+        if (colSPtr) {
+            llvm::Value* lane16 = b.CreateAnd(waveLaneId(b, m),
+                                              llvm::ConstantInt::get(i32, 15));
+            llvm::Value* idx = lane16;
+            if (colSStride) {
+                bool one = false;
+                if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(colSStride))
+                    one = ci->isOne();
+                if (!one) idx = b.CreateMul(lane16, colSStride, "i32epi.cstride");
+            }
+            colS = b.CreateLoad(
+                colSETy, b.CreateGEP(colSETy, colSPtr, idx, "i32epi.cs.ptr"),
+                "i32epi.cs");
+        }
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(iaccVal->getType());
         unsigned n = vecTy->getNumElements();
         llvm::Value* out = iaccVal;

@@ -246,6 +246,17 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     public final void rank1Accum(Shared<float32> rowF, Shared<float32> colF);
 
     /**
+     * Device-only intrinsic — {@link #rank1Accum} with the column vector
+     * supplied as a {@link WaveVector} (4A.5.4.C): `ofSlice` reads it from a
+     * Shared panel, `broadcast` uses one factor for every column, `ofLane`
+     * takes a per-lane register value (native-only). The neutral spelling of
+     * `rank1AccumS`.
+     */
+    @Intrinsic
+    public final void rank1Accum(Shared<float32> rowG,
+                           WaveVector<float32, Cols> colG);
+
+    /**
      * Device-only intrinsic — the DUAL fused epilogue
      * (xpu-coopmatrix-epilogue follow-on, threaded-forward-path
      * 10.12.21): one per-element pass computing
@@ -261,6 +272,17 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     public final void scaledAccumInto2(CooperativeMatrix<float32, Rows, Cols, 2> facc,
                                  Shared<float32> rowF, Shared<float32> colF,
                                  Shared<float32> rowG, Shared<float32> colG);
+
+    /**
+     * Device-only intrinsic — {@link #scaledAccumInto2} with the two column
+     * vectors supplied as {@link WaveVector}s (4A.5.4.C). The neutral spelling
+     * of `scaledAccumInto2S`; each column may be built by `ofSlice`,
+     * `broadcast`, or `ofLane` independently.
+     */
+    @Intrinsic
+    public final void scaledAccumInto2(CooperativeMatrix<float32, Rows, Cols, 2> facc,
+                                 Shared<float32> rowF, WaveVector<float32, Cols> colF,
+                                 Shared<float32> rowG, WaveVector<float32, Cols> colG);
 
     /**
      * Device-only intrinsic — {@link #scaledAccumInto} with the column
@@ -355,6 +377,18 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     @Intrinsic
     public final void scaledAccumI32(CooperativeMatrix<int32, Rows, Cols, 2> iacc,
                                int32 colS);
+
+    /**
+     * Device-only intrinsic — {@link #scaledAccumI32} with the column vector
+     * supplied as a {@link WaveVector} (4A.5.4.C). `ofSlice` sources the
+     * per-column int scales from a Shared panel, which — unlike the raw
+     * per-lane `int32 colS` — lets the PORTABLE software tile run this too
+     * (the replicated tile reads column c's factor directly), so the integer
+     * drain is no longer native-only when its factors live in Shared.
+     */
+    @Intrinsic
+    public final void scaledAccumI32(CooperativeMatrix<int32, Rows, Cols, 2> iacc,
+                               WaveVector<int32, Cols> colS);
 
     /**
      * Device-only intrinsic — {@link #rank1Accum} with the column

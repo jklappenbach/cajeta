@@ -51,6 +51,7 @@ struct Case {
     const char* name;     // human label / the @Kernel name / skip-note key
     const char* body;     // the kernel body (writes `out` at 0,0 stride 16)
     const char* want;     // contract as a cajeta expression in r and c
+    bool intOut;          // int32 accumulator/output (scaledAccumI32)
 };
 
 const std::vector<Case>& cases() {
@@ -73,7 +74,7 @@ const std::vector<Case>& cases() {
          "        facc.splat(0.0f);\n"
          "        acc.scaledAccumInto(facc, rowF, WaveVector.ofSlice(cfSh, 0, 2));\n"
          "        facc.store(out, 0, 0, 16);\n",
-         "2.0f * (1.0f + (float32) r) * (1.0f + (float32) c)"},
+         "2.0f * (1.0f + (float32) r) * (1.0f + (float32) c)", false},
 
         // ofSlice, stride 4, base 3 — a non-zero base as well as a stride, so
         // the base is not silently dropped either. Column c is at cfSh[3+4*c].
@@ -92,7 +93,7 @@ const std::vector<Case>& cases() {
          "        facc.splat(0.0f);\n"
          "        acc.scaledAccumInto(facc, rowF, WaveVector.ofSlice(cfSh, 3, 4));\n"
          "        facc.store(out, 0, 0, 16);\n",
-         "2.0f * (1.0f + (float32) r) * (1.0f + (float32) c)"},
+         "2.0f * (1.0f + (float32) r) * (1.0f + (float32) c)", false},
 
         // broadcast: colF[c] = 0.5 for every column, so facc[r][c] =
         // (rowF[r]*0.5)*2 = (1+r), independent of c.
@@ -107,7 +108,65 @@ const std::vector<Case>& cases() {
          "        facc.splat(0.0f);\n"
          "        acc.scaledAccumInto(facc, rowF, WaveVector.broadcast(0.5f));\n"
          "        facc.store(out, 0, 0, 16);\n",
-         "1.0f + (float32) r"},
+         "1.0f + (float32) r", false},
+
+        // rank1Accum via ofSlice: facc[r][c] = rowF[r]*colF[c] = (1+r)(1+c).
+        {"kRank1",
+         "        Shared<float32> rowF = shared float32[16];\n"
+         "        Shared<float32> cfSh = shared float32[64];\n"
+         "        uint32 lane = KernelThread.x();\n"
+         "        if (lane < 16) {\n"
+         "            rowF[lane] = rowIn[lane];\n"
+         "            cfSh[lane * 2] = cfIn[lane];\n"
+         "            cfSh[lane * 2 + 1] = -999.0f;\n"
+         "        }\n"
+         "        Barrier.workgroup();\n"
+         "        CooperativeMatrix<float32,16,16,2> facc;\n"
+         "        facc.splat(0.0f);\n"
+         "        facc.rank1Accum(rowF, WaveVector.ofSlice(cfSh, 0, 2));\n"
+         "        facc.store(out, 0, 0, 16);\n",
+         "(1.0f + (float32) r) * (1.0f + (float32) c)", false},
+
+        // scaledAccumInto2 via ofSlice on both columns: facc[r][c] =
+        // (rowF*colF)*acc + rowF*colF = (1+r)(1+c)*2 + (1+r)(1+c).
+        {"kDual",
+         "        Shared<float32> rowF = shared float32[16];\n"
+         "        Shared<float32> cfSh = shared float32[64];\n"
+         "        uint32 lane = KernelThread.x();\n"
+         "        if (lane < 16) {\n"
+         "            rowF[lane] = rowIn[lane];\n"
+         "            cfSh[lane * 2] = cfIn[lane];\n"
+         "            cfSh[lane * 2 + 1] = -999.0f;\n"
+         "        }\n"
+         "        Barrier.workgroup();\n"
+         "        CooperativeMatrix<float32,16,16,2> acc;\n"
+         "        acc.splat(2.0f);\n"
+         "        CooperativeMatrix<float32,16,16,2> facc;\n"
+         "        facc.splat(0.0f);\n"
+         "        acc.scaledAccumInto2(facc, rowF, WaveVector.ofSlice(cfSh, 0, 2),\n"
+         "                             rowF, WaveVector.ofSlice(cfSh, 0, 2));\n"
+         "        facc.store(out, 0, 0, 16);\n",
+         "3.0f * (1.0f + (float32) r) * (1.0f + (float32) c)", false},
+
+        // scaledAccumI32 via ofSlice: an int accumulator, an int column panel.
+        // iacc[r][c] += colS[c]*acc[r][c] = (1+c)*3, independent of r. This is
+        // the case that was native-only until the software tile learned to read
+        // the per-column int scales from Shared.
+        {"kI32",
+         "        Shared<int32> csSh = shared int32[64];\n"
+         "        uint32 lane = KernelThread.x();\n"
+         "        if (lane < 16) {\n"
+         "            csSh[lane * 2] = (int32) (lane + 1);\n"
+         "            csSh[lane * 2 + 1] = -999;\n"
+         "        }\n"
+         "        Barrier.workgroup();\n"
+         "        CooperativeMatrix<int32,16,16,2> mc;\n"
+         "        mc.splat(3);\n"
+         "        CooperativeMatrix<int32,16,16,2> iacc;\n"
+         "        iacc.splat(0);\n"
+         "        mc.scaledAccumI32(iacc, WaveVector.ofSlice(csSh, 0, 2));\n"
+         "        iacc.store(out, 0, 0, 16);\n",
+         "3.0f * (1.0f + (float32) c)", true},
 
         // The killer shape: the ofSlice epilogue under a wave-divergent guard
         // with a panel-staging barrier. Only workgroup 0 does anything; the
@@ -130,7 +189,7 @@ const std::vector<Case>& cases() {
          "            acc.scaledAccumInto(facc, rowF, WaveVector.ofSlice(cfSh, 0, 2));\n"
          "            facc.store(out, 0, 0, 16);\n"
          "        }\n",
-         "2.0f * (1.0f + (float32) r) * (1.0f + (float32) c)"},
+         "2.0f * (1.0f + (float32) r) * (1.0f + (float32) c)", false},
     };
     return c;
 }
@@ -152,7 +211,9 @@ std::string program() {
         s += c.name;
         s += "(KernelBuffer<float32> rowIn,\n"
              "            KernelBuffer<float32> cfIn,\n"
-             "            KernelBuffer<float32> out) {\n";
+             "            KernelBuffer<";
+        s += c.intOut ? "int32" : "float32";
+        s += "> out) {\n";
         s += c.body;
         s += "    }\n";
     }
@@ -172,24 +233,32 @@ std::string program() {
          "        cfIn.upload(hc);\n"
          "        KernelBuffer<float32> out = heap KernelBuffer<float32>(256);\n"
          "        float32[] ho = heap float32[256];\n"
+         // An int32 accumulator stores int32 words; a separate buffer, as the
+         // coop conformance harness learned to keep.
+         "        KernelBuffer<int32> outi = heap KernelBuffer<int32>(256);\n"
+         "        int32[] hoi = heap int32[256];\n"
          "        KernelStream s #= KernelStream.current();\n"
          "        int32 mask = 0;\n";
     int bit = 0;
     for (const Case& c : cases()) {
-        s += "        {\n            int32 z = 0;\n"
-             "            while (z < 256) { ho[z] = -777.0f; z = z + 1; }\n"
-             "            out.upload(ho);\n";
+        const char* buf  = c.intOut ? "outi" : "out";
+        const char* host = c.intOut ? "hoi"  : "ho";
+        s += "        {\n            int32 z = 0;\n";
+        s += std::string("            while (z < 256) { ") + host + "[z] = "
+           + (c.intOut ? "-777" : "-777.0f") + "; z = z + 1; }\n";
+        s += std::string("            ") + buf + ".upload(" + host + ");\n";
         s += std::string("            ") + c.name
-           + ".launch(s, grid: [2], block: [32])(rowIn, cfIn, out);\n"
-             "            s.sync();\n"
-             "            out.download(ho);\n"
+           + ".launch(s, grid: [2], block: [32])(rowIn, cfIn, " + buf + ");\n"
+             "            s.sync();\n";
+        s += std::string("            ") + buf + ".download(" + host + ");\n"
              "            int32 r = 0;\n"
              "            int32 bad = 0;\n"
              "            while (r < 16) {\n"
              "                int32 c = 0;\n"
              "                while (c < 16) {\n";
         s += std::string("                    float32 want = ") + c.want + ";\n";
-        s += "                    if (ho[r * 16 + c] != want) { bad = bad + 1; }\n"
+        s += std::string("                    if ((float32) ") + host
+           + "[r * 16 + c] != want) { bad = bad + 1; }\n"
              "                    c = c + 1;\n"
              "                }\n"
              "                r = r + 1;\n"

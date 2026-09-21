@@ -4357,15 +4357,33 @@ private:
                 !iacc.elemType->isIntegerTy(32))
                 unsupported("CooperativeMatrix.scaledAccumI32: both the "
                             "receiver and iacc must be int32 accumulators");
-            llvm::Value* colS =
-                coerceTo(lowerExpr(args[1].expression), i32,
-                         exprSigned(args[1].expression));
+            // The column factor is a raw per-lane int32, or a WaveVector:
+            // ofSlice reads it from a Shared int32 panel at colSPtr[c*stride];
+            // broadcast/ofLane are per-lane scalars the backend distributes.
+            llvm::Value* colS = nullptr;
+            llvm::Value* colSPtr = nullptr; llvm::Type* colSETy = nullptr;
+            llvm::Value* colSStride = nullptr;
+            {
+                llvm::Value* lane = nullptr; llvm::Value* bcast = nullptr;
+                if (resolveWaveVectorSlice(args[1].expression, colSPtr, colSETy,
+                                           colSStride)) {
+                    // pointer form
+                } else if (resolveWaveVectorBroadcast(args[1].expression, bcast)) {
+                    colS = coerceTo(bcast, i32, true);
+                } else if (resolveWaveVectorLane(args[1].expression, lane)) {
+                    colS = coerceTo(lane, i32, true);
+                } else {
+                    colS = coerceTo(lowerExpr(args[1].expression), i32,
+                                    exprSigned(args[1].expression));
+                }
+            }
             llvm::Value* accVal =
                 builder.CreateLoad(slot.matrixType, slot.alloca, recv + ".val");
             llvm::Value* iaccVal =
                 builder.CreateLoad(iacc.matrixType, iacc.alloca, "epi.iacc");
             llvm::Value* v = target.coopMatrixScaledAccumI32(
-                builder, mod, accVal, iaccVal, colS);
+                builder, mod, accVal, iaccVal, colS, colSPtr, colSETy,
+                colSStride);
             builder.CreateStore(v, iacc.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
@@ -4835,12 +4853,73 @@ private:
                         "which is indexed by the element's own column");
         }
         if (name == "scaledAccumI32") {
-            unsupported("CooperativeMatrix.scaledAccumI32: lane L supplies "
-                        "the factor for column L mod Cols (and the 24-bit "
-                        "multiply is a native-tier instruction), and this "
-                        "tier's tile is replicated per work-item rather than "
-                        "distributed across a wave. Drain each sub-block "
-                        "through the Shared-vector scaledAccumInto here");
+            if (args.size() != 2)
+                unsupported("CooperativeMatrix.scaledAccumI32 expects "
+                            "(iacc, colS)");
+            CoopMatrixSlot iacc = resolveCoopMatrixArg(args[0].expression);
+            if (!iacc.software)
+                unsupported("CooperativeMatrix.scaledAccumI32: iacc must "
+                            "share the receiver's tier");
+            if (iacc.rows != R || iacc.cols != C)
+                unsupported("CooperativeMatrix.scaledAccumI32: receiver and "
+                            "iacc must share Rows/Cols");
+            if (slot.use != 2 || iacc.use != 2)
+                unsupported("CooperativeMatrix.scaledAccumI32: accumulator "
+                            "tiles (Use=2) only");
+            if (!slot.elemType->isIntegerTy(32) ||
+                !iacc.elemType->isIntegerTy(32))
+                unsupported("CooperativeMatrix.scaledAccumI32: both the "
+                            "receiver and iacc must be int32 accumulators");
+            // The per-column int factor: ofSlice reads it from a Shared panel,
+            // broadcast is one value. A raw per-lane int32 or ofLane needs a
+            // wave the replicated tile does not have, so refuse it by name —
+            // the source column factors must live in Shared here.
+            llvm::Value* cB = nullptr; llvm::Type* cE = nullptr;
+            llvm::Value* cStride = nullptr; llvm::Value* cS = nullptr;
+            {
+                llvm::Value* lane = nullptr; llvm::Value* bcast = nullptr;
+                if (resolveWaveVectorSlice(args[1].expression, cB, cE,
+                                           cStride)) {
+                    // pointer form
+                } else if (resolveWaveVectorBroadcast(args[1].expression,
+                                                      bcast)) {
+                    cS = coerceTo(bcast, i32, true);
+                } else {
+                    (void) resolveWaveVectorLane(args[1].expression, lane);
+                    unsupported("CooperativeMatrix.scaledAccumI32: a per-lane "
+                                "column factor (WaveVector.ofLane or a raw "
+                                "int32) is native-only — the replicated "
+                                "software tile has no wave to distribute it "
+                                "across; source the per-column int scales from "
+                                "Shared with WaveVector.ofSlice, or use "
+                                "broadcast");
+                }
+            }
+            emitCountedLoop(R, [&](llvm::Value* r) {
+                emitCountedLoop(C, [&](llvm::Value* c) {
+                    llvm::Value* cs = cS;
+                    if (!cs) {
+                        llvm::Value* idx = c;
+                        if (cStride) idx = builder.CreateMul(c, cStride);
+                        cs = builder.CreateLoad(
+                            cE, target.bufferElementPtr(
+                                    builder, mod, cB, cE,
+                                    builder.CreateZExt(idx, i64)),
+                            "i32epi.cs");
+                    }
+                    llvm::Value* lin = builder.CreateAdd(
+                        builder.CreateMul(r, llvm::ConstantInt::get(i32, C)),
+                        c);
+                    llvm::Value* av = builder.CreateLoad(
+                        elem, coopElemPtr(slot, lin), "i32epi.av");
+                    llvm::Value* prod = builder.CreateMul(av, cs);
+                    llvm::Value* fptr = coopElemPtr(iacc, lin);
+                    llvm::Value* cur = builder.CreateLoad(
+                        iacc.elemType, fptr, "i32epi.cur");
+                    builder.CreateStore(builder.CreateAdd(cur, prod), fptr);
+                });
+            });
+            return llvm::ConstantInt::get(i32, 0);
         }
         // Element order and association are the CONTRACT every tier shares: one
         // fma chain per element, `(rowF[r] * colF[c]) * this[r][c]` then add.
@@ -6538,7 +6617,9 @@ llvm::Value* LoweringTarget::coopMatrixEpilogueAccum(
 
 llvm::Value* LoweringTarget::coopMatrixScaledAccumI32(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*accVal*/,
-    llvm::Value* /*iaccVal*/, llvm::Value* /*colS*/) {
+    llvm::Value* /*iaccVal*/, llvm::Value* /*colS*/,
+    llvm::Value* /*colSPtr*/, llvm::Type* /*colSETy*/,
+    llvm::Value* /*colSStride*/) {
     // A backend that claims coopMatrixEpilogueSupported() owes this override:
     // the 24-bit multiply is per-ISA and there is no portable stand-in that
     // keeps the full-rate contract.

@@ -935,7 +935,9 @@ public:
     // here, so the product itself is CreateMul.
     llvm::Value* coopMatrixScaledAccumI32(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
-            llvm::Value* iaccVal, llvm::Value* colS) override {
+            llvm::Value* iaccVal, llvm::Value* colS,
+            llvm::Value* colSPtr = nullptr, llvm::Type* colSETy = nullptr,
+            llvm::Value* colSStride = nullptr) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         const unsigned n = fragCount(iaccVal->getType());
@@ -961,7 +963,24 @@ public:
             llvm::Value* col = b.CreateAdd(
                 col2, llvm::ConstantInt::get(i32, 8u * h + (j & 1u)),
                 "i32epi.col");
-            llvm::Value* cs = scalarColFactor(b, m, colS, col);
+            // colSPtr: read column c's int factor from the Shared panel at
+            // colSPtr[c*stride] (WaveVector.ofSlice); else recover the per-lane
+            // scalar for column c by shuffle.
+            llvm::Value* cs;
+            if (colSPtr) {
+                llvm::Value* idx = col;
+                if (colSStride) {
+                    bool one = false;
+                    if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(colSStride))
+                        one = ci->isOne();
+                    if (!one) idx = b.CreateMul(col, colSStride, "i32epi.cstride");
+                }
+                cs = b.CreateLoad(
+                    colSETy, b.CreateGEP(colSETy, colSPtr, idx, "i32epi.cs.ptr"),
+                    "i32epi.cs");
+            } else {
+                cs = scalarColFactor(b, m, colS, col);
+            }
             llvm::Value* av = fragGet(b, accVal, e);
             llvm::Value* cur = fragGet(b, out, e);
             out = fragSet(b, out, b.CreateAdd(cur, b.CreateMul(av, cs)), e);

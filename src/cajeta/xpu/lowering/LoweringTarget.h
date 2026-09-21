@@ -584,14 +584,18 @@ namespace xpu {
             llvm::Value* colFStride = nullptr,
             llvm::Value* colGStride = nullptr);
 
-        // iacc[e] += colS * acc[e] per fragment element of the CURRENT lane, on
-        // two int32 accumulators sharing the element layout (no row/column math).
-        // The multiply is the backend's FULL-RATE 24-bit form, so both operands
-        // are contracted to [-2^23, 2^23) and a wider one truncates silently.
-        // Gated by coopMatrixEpilogueSupported() exactly as the float accumulate.
+        // iacc[e] += colS(c) * acc[e], where colS(c) is column c's integer
+        // factor: the scalar `colS` is a per-lane value the backend distributes
+        // by column, and colSPtr (null == use the scalar) is a Shared vector
+        // read at colSPtr[c*stride] instead — the WaveVector.ofSlice form. The
+        // multiply is the backend's FULL-RATE 24-bit form, so both operands are
+        // contracted to [-2^23, 2^23) and a wider one truncates silently. Gated
+        // by coopMatrixEpilogueSupported() exactly as the float accumulate.
         virtual llvm::Value* coopMatrixScaledAccumI32(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
-            llvm::Value* iaccVal, llvm::Value* colS);
+            llvm::Value* iaccVal, llvm::Value* colS,
+            llvm::Value* colSPtr = nullptr, llvm::Type* colSETy = nullptr,
+            llvm::Value* colSStride = nullptr);
 
         // Called once on the kernel the first time a NATIVE coop-matrix tile is
         // allocated: a backend with ABI requirements (AMD WMMA is wave32) sets them.
