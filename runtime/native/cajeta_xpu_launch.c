@@ -1167,25 +1167,27 @@ int32_t __cajeta_xpu_kernel_available(void* nameArr, int64_t len) {
     memcpy(name, (const char*) nameArr + 8, (size_t) len);
     name[len] = 0;
     int backend = cajeta_xpu_active_backend();
-    // Registry semantics differ: Vulkan registers one SPIR-V module PER KERNEL and the
-    // CPU backend one THUNK per kernel, while HIP/CUDA register per-unit fatbins,
-    // resolve at launch, and compile every kernel — so availability is unconditional
-    // on those two and a real question on the other two.
+    // Answer for the registry the LAUNCH consults, so a router that picks a
+    // route on this and a launch that then runs it cannot disagree.
     //
-    // CPU used to fall into the unconditional arm, and that was a silent-wrong-answer
-    // bug, not a cosmetic one: the CPU backend SKIPS kernels it cannot lower (a
-    // barrier under divergent control flow, a cooperative-matrix tile), so
-    // `kernelAvailable` answered yes for a kernel whose launch then printed
-    // "no registered CPU kernel" and returned without writing the output buffer. A
-    // caller that uses this to pick a route — which is the entire point of the
-    // function — selected the missing kernel and read back whatever was in the
-    // buffer. Measured 2026-09-14 on cajeta-llm: the Q8_0 Mw8 prefill route was
-    // chosen on cpu, both its kernels no-opped, and the engine returned zeros as an
-    // answer with nothing failing.
+    //   CPU     — one THUNK per kernel (__cajeta_xpu_lookup_cpu_kernel).
+    //   Vulkan  — one SPIR-V module per kernel (cajeta_xpu_find_module).
+    //   CUDA/HIP— one device MODULE per kernel too, keyed by (name, backend):
+    //             cajeta_xpu_launch_{cuda,hip} does exactly this find_module
+    //             lookup and prints "no registered kernel" and no-ops when it
+    //             misses (launch.c). So availability IS whether that module is
+    //             registered with a usable image and known params.
+    //
+    // The CUDA/HIP arm used to `return 1` unconditionally, on the assumption
+    // "we compile every kernel". A skipped or never-declared kernel registers
+    // NO module, so its launch no-opped while this said yes, and a caller read
+    // back whatever was in the output buffer as an answer — a route latched on
+    // a lie. Same silent-wrong-answer class the CPU arm was fixed for on
+    // 2026-09-14 (a route chosen on cpu whose kernels no-opped, the engine
+    // returning zeros with nothing failing).
     if (backend == CAJ_XPU_CPU) {
         return __cajeta_xpu_lookup_cpu_kernel(name) ? 1 : 0;
     }
-    if (backend != CAJ_XPU_VULKAN) return 1;
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(name, backend);
     int ok = (e && e->image && e->len >= 4) ? 1 : 0;
