@@ -148,6 +148,30 @@ const std::vector<Case>& cases() {
          "        facc.store(out, 0, 0, 16);\n",
          "3.0f * (1.0f + (float32) r) * (1.0f + (float32) c)", false},
 
+        // A NAMED WaveVector local, then used by the verb — the shape every
+        // migrated kernel actually writes (`WaveVector<..> v = ofSlice(..); ..
+        // verb(.., v)`), distinct from the inline-argument cases above. The
+        // local is captured, never lowered as a value; the verb resolves the
+        // name back to its slice. Same contract as kSlice.
+        {"kNamed",
+         "        Shared<float32> rowF = shared float32[16];\n"
+         "        Shared<float32> cfSh = shared float32[64];\n"
+         "        uint32 lane = KernelThread.x();\n"
+         "        if (lane < 16) {\n"
+         "            rowF[lane] = rowIn[lane];\n"
+         "            cfSh[lane * 2] = cfIn[lane];\n"
+         "            cfSh[lane * 2 + 1] = -999.0f;\n"
+         "        }\n"
+         "        Barrier.workgroup();\n"
+         "        CooperativeMatrix<float32,16,16,2> acc;\n"
+         "        acc.splat(2.0f);\n"
+         "        CooperativeMatrix<float32,16,16,2> facc;\n"
+         "        facc.splat(0.0f);\n"
+         "        WaveVector<float32,16> cw = WaveVector.ofSlice(cfSh, 0, 2);\n"
+         "        acc.scaledAccumInto(facc, rowF, cw);\n"
+         "        facc.store(out, 0, 0, 16);\n",
+         "2.0f * (1.0f + (float32) r) * (1.0f + (float32) c)", false},
+
         // scaledAccumI32 via ofSlice: an int accumulator, an int column panel.
         // iacc[r][c] += colS[c]*acc[r][c] = (1+c)*3, independent of r. This is
         // the case that was native-only until the software tile learned to read

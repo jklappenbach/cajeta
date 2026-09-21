@@ -416,6 +416,19 @@ private:
         uint32_t layout = 0;
     };
     std::map<std::string, CoopMatrixSlot> coopMatrixSlots;
+    // A WaveVector<T,N> local: the wave-distributed column vector, recorded by
+    // how it was built (ofSlice -> a Shared slice + stride; broadcast/ofLane ->
+    // a scalar) so an epilogue verb that names it resolves to the same path an
+    // inline factory call would. The initializer is captured here, NOT lowered
+    // as a value — the object never occupies a register.
+    struct WaveVectorLocal {
+        enum Kind { Slice, Broadcast, Lane } kind = Slice;
+        llvm::Value* base = nullptr;    // Slice: pointer to element `base`
+        llvm::Type* elemTy = nullptr;   // Slice
+        llvm::Value* stride = nullptr;  // Slice
+        llvm::Value* scalar = nullptr;  // Broadcast / Lane
+    };
+    std::map<std::string, WaveVectorLocal> waveVectorLocals;
     // Tile<T,Rows,Cols>: the SPIR-V "Use" (A=0 / B=1 / accumulator=2) is hidden
     // from the author and inferred by inferTileUses() before slot construction.
     std::map<std::string, uint32_t> tileInferredUse;
@@ -649,6 +662,7 @@ private:
         if (accelHandles.count(nm))
             return {"an acceleration structure", nullptr};
         if (callables.count(nm)) return {"a device callable", nullptr};
+        if (waveVectorLocals.count(nm)) return {"a WaveVector", nullptr};
         if (values.count(nm)) return {"a scalar/vector local", nullptr};
         return {};
     }
@@ -702,6 +716,35 @@ private:
                 checkKernelRedeclare(nm, "a cooperative-matrix tile",
                                      cms.matrixType);
                 coopMatrixSlots[nm] = cms;
+                continue;
+            }
+            if (isWaveVectorType(declType)) {
+                // Captured, not lowered: the WaveVector never occupies a
+                // register. Its initializer must be a WaveVector factory; the
+                // epilogue resolves the name back to this descriptor.
+                auto init = vd->getInitializer();
+                auto initExpr = (init && !init->getChildren().empty())
+                    ? std::dynamic_pointer_cast<Expression>(
+                          init->getChildren()[0])
+                    : nullptr;
+                WaveVectorLocal wv;
+                llvm::Value* lane = nullptr;
+                if (initExpr &&
+                    resolveWaveVectorSlice(initExpr, wv.base, wv.elemTy,
+                                           wv.stride))
+                    wv.kind = WaveVectorLocal::Slice;
+                else if (initExpr &&
+                         resolveWaveVectorBroadcast(initExpr, wv.scalar))
+                    wv.kind = WaveVectorLocal::Broadcast;
+                else if (initExpr && resolveWaveVectorLane(initExpr, lane)) {
+                    wv.kind = WaveVectorLocal::Lane;
+                    wv.scalar = lane;
+                } else
+                    unsupported("WaveVector local '" + nm + "' must be "
+                                "initialized by WaveVector.ofSlice, "
+                                "WaveVector.broadcast, or WaveVector.ofLane");
+                checkKernelRedeclare(nm, "a WaveVector", nullptr);
+                waveVectorLocals[nm] = wv;
                 continue;
             }
             if (declType && declType->isValueType()) {
@@ -3861,6 +3904,14 @@ private:
     // signature, so two same-name same-arity overloads can only be told
     // apart by the argument expression — this is that test.
     bool resolveWaveVectorLane(const ExpressionPtr& e, llvm::Value*& lane) {
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
+            auto it = waveVectorLocals.find(id->getTextValue());
+            if (it != waveVectorLocals.end() &&
+                it->second.kind == WaveVectorLocal::Lane) {
+                lane = it->second.scalar;
+                return true;
+            }
+        }
         auto mc = std::dynamic_pointer_cast<MethodCallExpression>(e);
         if (!mc || mc->getMethodCallName() != "ofLane") return false;
         std::string recv;
@@ -3916,6 +3967,15 @@ private:
     // lets one panel hold several tiles' factors interleaved.
     bool resolveWaveVectorSlice(const ExpressionPtr& e, llvm::Value*& base,
                                 llvm::Type*& elemTy, llvm::Value*& stride) {
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
+            auto it = waveVectorLocals.find(id->getTextValue());
+            if (it != waveVectorLocals.end() &&
+                it->second.kind == WaveVectorLocal::Slice) {
+                base = it->second.base; elemTy = it->second.elemTy;
+                stride = it->second.stride;
+                return true;
+            }
+        }
         auto mc = waveVectorFactory(e, "ofSlice");
         if (!mc) return false;
         const auto& ps = mc->getParameters();
@@ -3938,6 +3998,14 @@ private:
     // on every tier (a uniform scalar, no wave op).
     bool resolveWaveVectorBroadcast(const ExpressionPtr& e,
                                     llvm::Value*& scalar) {
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
+            auto it = waveVectorLocals.find(id->getTextValue());
+            if (it != waveVectorLocals.end() &&
+                it->second.kind == WaveVectorLocal::Broadcast) {
+                scalar = it->second.scalar;
+                return true;
+            }
+        }
         auto mc = waveVectorFactory(e, "broadcast");
         if (!mc) return false;
         const auto& ps = mc->getParameters();

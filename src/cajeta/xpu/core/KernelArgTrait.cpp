@@ -80,6 +80,12 @@ bool isCooperativeMatrixCanonical(const std::string& canonical) {
     static const std::string kPrefix = "cajeta.xpu.CooperativeMatrix";
     return canonical.compare(0, kPrefix.size(), kPrefix) == 0;
 }
+/// A wave-distributed column vector; a device-only kernel-local built by a
+/// WaveVector factory, never an argument. Parameterized, so prefix-matched.
+bool isWaveVectorCanonical(const std::string& canonical) {
+    static const std::string kPrefix = "cajeta.xpu.WaveVector";
+    return canonical.compare(0, kPrefix.size(), kPrefix) == 0;
+}
 /// The author-facing cooperative fragment; also a device-only kernel-local.
 bool isTileCanonical(const std::string& canonical) {
     static const std::string kPrefix = "cajeta.xpu.Tile";
@@ -211,6 +217,10 @@ bool isCooperativeMatrixType(const CajetaTypePtr& type) {
 
 bool isTileType(const CajetaTypePtr& type) {
     return type && isTileCanonical(type->toCanonical());
+}
+
+bool isWaveVectorType(const CajetaTypePtr& type) {
+    return type && isWaveVectorCanonical(type->toCanonical());
 }
 
 void validateKernelParams(const MethodPtr& method) {

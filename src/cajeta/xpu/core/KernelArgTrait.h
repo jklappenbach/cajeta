@@ -50,6 +50,9 @@ namespace xpu {
     bool isRayQueryType(const CajetaTypePtr& type);
     bool isCooperativeMatrixType(const CajetaTypePtr& type);
     bool isTileType(const CajetaTypePtr& type);
+    /// cajeta.xpu.WaveVector<T,N>: a wave-distributed column vector, a
+    /// device-only kernel-local built by WaveVector.ofSlice/broadcast/ofLane.
+    bool isWaveVectorType(const CajetaTypePtr& type);
 
     /// Validates every parameter of `method`, throwing cajeta::Exception
     /// "XPU-K01" on the first inadmissible one. A no-op for a non-@Kernel
