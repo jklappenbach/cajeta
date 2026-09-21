@@ -136,6 +136,24 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     // lowerer ignores this host class and allocates an OpTypeCooperativeMatrixKHR
     // slot), but the host front-end still lays the class out — a zero-field class
     // has no LLVM type. One reserved word gives it a valid (never-used) layout.
+    //
+    // EVERY VERB BELOW IS `@Intrinsic` AND HAS NO BODY — a declaration with a
+    // semicolon. There is nothing to write in one: the kernel lowering
+    // intercepts each call by receiver type and method name and emits the
+    // instruction at the call site. The empty `{ }` bodies that used to sit
+    // here were the hole — from host code they compiled, ran, and did nothing.
+    // Now a host call is refused by name (MethodCallExpression), and a kernel's
+    // `CooperativeMatrix<…> acc;` is a bare declaration the lowering handles,
+    // untouched. Julian, 2026-09-21: "I'd rather have a form where we're not
+    // using an empty method body. Just a semicolon terminator."
+    //
+    // `final` on each verb as well as on the class — belt and braces against
+    // anyone supplying a body by overriding, which would silently shadow the
+    // lowering's instruction with host code. Not `abstract`: an intrinsic is
+    // not an unfilled slot waiting for a subclass, so the class must not read
+    // as abstract; CajetaClass::hasAbstractMethod skips intrinsics. Julian,
+    // 2026-09-21: "keep it as an annotation and use final to keep the
+    // developer from trying to extend it".
     int32 reserved;
 
     public CooperativeMatrix() {
@@ -150,8 +168,8 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * row-major M×K matrix, tile (ti,tj) starts at `(ti*Rows)*K + tj*Cols` with
      * stride `K` — the addressing a tiled GEMM walks over.
      */
-    public void load(KernelBuffer<T> src, uint32 offset, uint32 layout, uint32 stride) {
-    }
+    @Intrinsic
+    public final void load(KernelBuffer<T> src, uint32 offset, uint32 layout, uint32 stride);
 
     /**
      * Device-only intrinsic: load this tile from a workgroup-shared (`Shared<T>`,
@@ -162,24 +180,24 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * the LDS tile exactly as the `KernelBuffer<T>` overload does for global memory.
      * Same fragment layout and tier rules — only the source storage class differs.
      */
-    public void load(Shared<T> src, uint32 offset, uint32 layout, uint32 stride) {
-    }
+    @Intrinsic
+    public final void load(Shared<T> src, uint32 offset, uint32 layout, uint32 stride);
 
     /**
      * Device-only intrinsic: broadcast `value` across every element of this tile
      * — the zero/initial accumulator (`OpCompositeConstruct` of a single scalar).
      */
-    public void splat(T value) {
-    }
+    @Intrinsic
+    public final void splat(T value);
 
     /**
      * Device-only intrinsic: fused multiply-add this accumulator tile in place —
      * `this = a * b + this` — one matrix-core MMA. `a` is the MatrixA operand
      * (Use 0), `b` the MatrixB operand (Use 1); `this` is the accumulator (Use 2).
      */
-    public void mma(CooperativeMatrix<T, Rows, Cols, 0> a,
-                    CooperativeMatrix<T, Rows, Cols, 1> b) {
-    }
+    @Intrinsic
+    public final void mma(CooperativeMatrix<T, Rows, Cols, 0> a,
+                    CooperativeMatrix<T, Rows, Cols, 1> b);
 
     /**
      * Device-only intrinsic — the fused GEMM-epilogue verb
@@ -209,9 +227,9 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * live in one Shared array selected by offset instead of one
      * array per wave behind a wave-uniform branch.
      */
-    public void scaledAccumInto(CooperativeMatrix<float32, Rows, Cols, 2> facc,
-                                Shared<float32> rowF, Shared<float32> colF) {
-    }
+    @Intrinsic
+    public final void scaledAccumInto(CooperativeMatrix<float32, Rows, Cols, 2> facc,
+                                Shared<float32> rowF, Shared<float32> colF);
 
     /**
      * Device-only intrinsic — the rank-1 epilogue accumulate
@@ -224,8 +242,8 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * `-dmin·m` sub-block term, folded per K-slice the way llama.cpp
      * folds it). Same tier and grouping rules as {@link #scaledAccumInto}.
      */
-    public void rank1Accum(Shared<float32> rowF, Shared<float32> colF) {
-    }
+    @Intrinsic
+    public final void rank1Accum(Shared<float32> rowF, Shared<float32> colF);
 
     /**
      * Device-only intrinsic — the DUAL fused epilogue
@@ -239,10 +257,10 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * single accumulator visit. Same tier, shape and grouping rules as
      * {@link #scaledAccumInto}.
      */
-    public void scaledAccumInto2(CooperativeMatrix<float32, Rows, Cols, 2> facc,
+    @Intrinsic
+    public final void scaledAccumInto2(CooperativeMatrix<float32, Rows, Cols, 2> facc,
                                  Shared<float32> rowF, Shared<float32> colF,
-                                 Shared<float32> rowG, Shared<float32> colG) {
-    }
+                                 Shared<float32> rowG, Shared<float32> colG);
 
     /**
      * Device-only intrinsic — {@link #scaledAccumInto} with the column
@@ -279,19 +297,19 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * silently using one lane's factor for every column. Use the
      * Shared-vector {@link #scaledAccumInto} there.
      */
-    public void scaledAccumIntoS(CooperativeMatrix<float32, Rows, Cols, 2> facc,
-                                 Shared<float32> rowF, float32 colF) {
-    }
+    @Intrinsic
+    public final void scaledAccumIntoS(CooperativeMatrix<float32, Rows, Cols, 2> facc,
+                                 Shared<float32> rowF, float32 colF);
 
     /**
      * PROBE (4A.5.4.C): the same verb, with the column factors typed as the
      * wave-distributed vector they are. Same name, same arity as the
      * Shared-vector form above it — which is exactly the thing being tested.
      */
-    public void scaledAccumInto(CooperativeMatrix<float32, Rows, Cols, 2> facc,
+    @Intrinsic
+    public final void scaledAccumInto(CooperativeMatrix<float32, Rows, Cols, 2> facc,
                                 Shared<float32> rowF,
-                                WaveVector<float32, Cols> colF) {
-    }
+                                WaveVector<float32, Cols> colF);
 
     /**
      * Device-only intrinsic — {@link #scaledAccumInto2} with the column
@@ -299,10 +317,10 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * `colG` for column `L mod Cols`, the same contract as
      * {@link #scaledAccumIntoS}. NATIVE-ONLY, same rejection rule.
      */
-    public void scaledAccumInto2S(CooperativeMatrix<float32, Rows, Cols, 2> facc,
+    @Intrinsic
+    public final void scaledAccumInto2S(CooperativeMatrix<float32, Rows, Cols, 2> facc,
                                   Shared<float32> rowF, float32 colF,
-                                  Shared<float32> rowG, float32 colG) {
-    }
+                                  Shared<float32> rowG, float32 colG);
 
     /**
      * Device-only intrinsic — the INTEGER accumulate: on an `int32`
@@ -334,9 +352,9 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * tier that cannot lower this natively REJECTS the kernel with a
      * named diagnostic — never a silent demote.
      */
-    public void scaledAccumI32(CooperativeMatrix<int32, Rows, Cols, 2> iacc,
-                               int32 colS) {
-    }
+    @Intrinsic
+    public final void scaledAccumI32(CooperativeMatrix<int32, Rows, Cols, 2> iacc,
+                               int32 colS);
 
     /**
      * Device-only intrinsic — {@link #rank1Accum} with the column
@@ -350,8 +368,8 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * a Shared vector (and accepts a slice) because rows are genuinely
      * cross-lane. NATIVE-ONLY, same rejection rule.
      */
-    public void rank1AccumS(Shared<float32> rowG, float32 colG) {
-    }
+    @Intrinsic
+    public final void rank1AccumS(Shared<float32> rowG, float32 colG);
 
     /**
      * Device-only intrinsic: feed an int8 A or B operand tile straight
@@ -386,16 +404,16 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * quietly taking one lane's words for the whole tile. Only the
      * 16x16 int8 operand shapes (`Use` 0 or 1) are accepted.
      */
-    public void fromWords(int32 w0, int32 w1, int32 w2, int32 w3) {
-    }
+    @Intrinsic
+    public final void fromWords(int32 w0, int32 w1, int32 w2, int32 w3);
 
     /**
      * Device-only intrinsic: store this tile to `dst` (a global KernelBuffer<T>),
      * starting at element `offset`, with the given `layout` and `stride` — the
      * write-side counterpart of `load`'s sub-tile addressing.
      */
-    public void store(KernelBuffer<T> dst, uint32 offset, uint32 layout, uint32 stride) {
-    }
+    @Intrinsic
+    public final void store(KernelBuffer<T> dst, uint32 offset, uint32 layout, uint32 stride);
 
     /**
      * Device-only intrinsic: store this tile to a workgroup-shared (`Shared<T>`,
@@ -403,6 +421,6 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * for a coalesced epilogue (stage the accumulator tile to LDS, then have the
      * workgroup flush it to global in a coalesced pattern).
      */
-    public void store(Shared<T> dst, uint32 offset, uint32 layout, uint32 stride) {
-    }
+    @Intrinsic
+    public final void store(Shared<T> dst, uint32 offset, uint32 layout, uint32 stride);
 }

@@ -6797,6 +6797,27 @@ namespace cajeta {
         MethodPtr targetMethod = targetClass->resolveMethod(
             methodCallName, entriesCopy, /*isConstructor=*/false,
             floatingParamsLint, explicitMethodTypeArgs, module);
+        // An @Intrinsic has no implementation anywhere: its body is empty
+        // because the kernel lowering intercepts the call by receiver type
+        // and method name and emits the instruction itself. Inside an
+        // @Kernel that is right. From host code the empty body is what
+        // runs, and it does nothing, silently — so refuse the call site.
+        //
+        // THE MARKER IS @Intrinsic, NOT @Device, and the first version of
+        // this check got that wrong. @Device marks a method as ALSO usable
+        // on the device; it does not mean device-only. GgufFile
+        // .halfBitsToF32 is @Device, has a real body, and is called from
+        // host code — a device-only rule rejects cajeta-llm, and nothing in
+        // the cajeta suite would have caught it.
+        if (targetMethod && cajeta::xpu::isIntrinsic(*targetMethod)) {
+            throw Exception(
+                "'" + methodCallName + "' is a compiler intrinsic "
+                "(@Intrinsic): it has no implementation, because the kernel "
+                "lowering supplies the instruction at the call site. Called "
+                "from host code its empty body would run and do nothing. "
+                "Move the call inside an @Kernel.",
+                "CAJETA_ERROR_INTRINSIC_CALLED_ON_HOST");
+        }
         if (targetMethod) {
             auto& throwsList = targetMethod->getThrowsList();
             if (!throwsList.empty()) {

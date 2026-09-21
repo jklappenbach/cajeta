@@ -28,6 +28,34 @@ namespace xpu {
         static constexpr const char* Access       = "Access";
         static constexpr const char* Streaming    = "Streaming";
 
+        // @Intrinsic — the method has NO implementation anywhere, and none is
+        // written: `@Intrinsic public void mma(...);`, a declaration with a
+        // semicolon. The kernel lowering intercepts the call by receiver type
+        // and method name and emits the instruction itself, so inside an
+        // @Kernel the missing body is never missed. From host code there is
+        // nothing to run, and MethodCallExpression refuses the call by name.
+        //
+        // Internally the front end already has a path for "signature only,
+        // no LLVM function" — the one abstract methods take — and a bodiless
+        // @Intrinsic rides it. What it must NOT do is make the class read as
+        // abstract: an intrinsic is not an unfilled vtable slot waiting for a
+        // subclass, it is compiler-supplied, so CajetaClass::hasAbstractMethod
+        // skips it and the allocation diagnostic cannot misfire on
+        // CooperativeMatrix.
+        //
+        // AN ANNOTATION, NOT A KEYWORD, by decision. `intrinsic` as a
+        // modifier was weighed (it collides with no identifier in the
+        // ecosystem and would imply `final`), and rejected — Julian,
+        // 2026-09-21: a keyword removes vocabulary from the developer, gains
+        // nothing over the annotation, and every other kernel construction
+        // (@Kernel, @Device, @Occupancy, @Access) is an annotation. Conform.
+        //
+        // NOT @Device, which this was first written as and which is WRONG:
+        // @Device marks a method as ALSO usable on the device, not device-
+        // only. GgufFile.halfBitsToF32 is @Device, has a real body, and is
+        // called from host code at GgufFile.cajeta:417.
+        static constexpr const char* Intrinsic    = "Intrinsic";
+
         // KernelArg trait marker; the structural trait check lands later.
         static constexpr const char* KernelArg    = "KernelArg";
 
@@ -48,6 +76,10 @@ namespace xpu {
     }
     inline bool isDevice(const Annotatable& a) {
         return a.findAnnotation(XpuAttr::Device) != nullptr;
+    }
+    /// A compiler intrinsic: no implementation, the lowering IS the body.
+    inline bool isIntrinsic(const Annotatable& a) {
+        return a.findAnnotation(XpuAttr::Intrinsic) != nullptr;
     }
     inline bool isFastMath(const Annotatable& a) {
         return a.findAnnotation(XpuAttr::FastMath) != nullptr;

@@ -45,6 +45,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -287,19 +288,21 @@ std::set<std::string> declaredVerbs(std::string* why) {
                      + "/runtime/src/cajeta/xpu/CooperativeMatrix.cajeta";
     std::ifstream in(path);
     if (!in) { *why = "cannot read " + path; return out; }
+    // `public [static|final|abstract ...] void name(` — the declaration
+    // shape, with whatever modifiers sit between `public` and `void`. This
+    // matched the literal "public void " until 2026-09-21, when the verbs
+    // became `public final void ...;` and the extractor found NOTHING — the
+    // completeness test failed on its own precondition, and a grep pattern
+    // with one space where gtest prints two hid the failure for a round.
+    static const std::regex decl(
+        R"(^\s*public\s+(?:(?:static|final|abstract)\s+)*void\s+(\w+)\s*\()");
     std::string line;
     while (std::getline(in, line)) {
-        // `    public void name(` — the intrinsic declaration shape.
-        const std::string tag = "public void ";
-        size_t at = line.find(tag);
-        if (at == std::string::npos) continue;
-        size_t b = at + tag.size();
-        size_t e = line.find('(', b);
-        if (e == std::string::npos) continue;
-        std::string name = line.substr(b, e - b);
-        if (!name.empty()) out.insert(name);
+        std::smatch m;
+        if (std::regex_search(line, m, decl)) out.insert(m[1].str());
     }
-    if (out.empty()) *why = "no `public void` declarations found in " + path;
+    if (out.empty()) *why = "no `public ... void name(` declarations found in "
+                          + path;
     return out;
 }
 

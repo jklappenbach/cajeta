@@ -5278,7 +5278,15 @@ namespace cajeta {
     // into a compile error at the allocation site instead.
     bool CajetaClass::hasAbstractMethod() const {
         for (const auto& m : methodList) {
-            if (m && m->isAbstract()) return true;
+            if (!m || !m->isAbstract()) continue;
+            // A bodiless @Intrinsic rides the abstract emission path
+            // (signature only, no LLVM function) but is NOT an unfilled slot
+            // — the kernel lowering supplies it. It must not make the class
+            // read as abstract, or `heap CooperativeMatrix<…>()` would be
+            // refused with advice to "allocate a concrete subclass" of a
+            // final class. The host misuse is refused at the CALL instead.
+            if (m->findAnnotation("Intrinsic") != nullptr) continue;
+            return true;
         }
         return false;
     }

@@ -18,8 +18,10 @@ public final class WaveVector<T, uint32 N> {
         this.reserved = 0;
     }
 
-    /** Device-only intrinsic: this lane's element — element `L mod N`. */
-    public static WaveVector<T, N> ofLane(T value) {
-        return null;
-    }
+    /** Device-only intrinsic: this lane's element — element `L mod N`.
+     *  Bodiless, like every CooperativeMatrix verb: the kernel lowering
+     *  recognizes the call in argument position (resolveWaveVectorLane) and
+     *  there is nothing to run on the host. */
+    @Intrinsic
+    public static WaveVector<T, N> ofLane(T value);
 }
