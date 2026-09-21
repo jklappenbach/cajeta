@@ -973,7 +973,45 @@ jobs:
 
           # `cajeta <task>` runs the named cajeta.json task. `release` is the
           # optimized flavor; the default `build` task is debug.
-          ( cd tools/cvm && "$CAJETA" release )
+          #
+          # cvm links a native dependency (zlib, through dev.cajeta.http ->
+          # dev.cajeta.codec), and a dependency ships that library inside its
+          # own `.cja` per platform. A package that was cut on a host without
+          # the cross toolchain for THIS target simply has no artifact for it,
+          # and no amount of building here invents one. That is a packaging gap
+          # downstream, not a broken compiler, so it must not take the whole
+          # compiler release down with it: skip cvm for this target, loudly,
+          # and let the release publish without a cvm asset for it. The release
+          # job already folds whatever `.cvmmeta` files exist and warns when a
+          # triple is missing.
+          #
+          # The same applies when cvm's dependency cannot be FETCHED here at all.
+          # The mingw runner cannot verify Olla's TLS certificate ("Problem with
+          # the SSL CA cert"), so resolution dies before a compiler is even
+          # asked to do anything. That is an environment defect, tracked
+          # separately, and it says nothing about this compiler.
+          #
+          # ONLY those two are tolerated, and both are failures to OBTAIN cvm's
+          # inputs, never to build cvm. A cvm that fails to compile or link
+          # still fails the job, and every skip is printed with its reason.
+          BUILD_LOG="${RUNNER_TEMP:-/tmp}/cvm-build.log"
+          rc=0
+          ( cd tools/cvm && "$CAJETA" release ) >"$BUILD_LOG" 2>&1 || rc=$?
+          cat "$BUILD_LOG"
+          if [ "$rc" -ne 0 ]; then
+            WHY=""
+            if grep -qE "native library '[^']+' \([^)]+\) not found" "$BUILD_LOG"; then
+              WHY="the dependency ships no $(grep -oE "native library '[^']+' \([^)]+\)" "$BUILD_LOG" | head -1) for this platform"
+            elif grep -qE 'HTTP [A-Z]+ .* failed:' "$BUILD_LOG"; then
+              WHY="cvm's dependencies could not be fetched here: $(grep -oE 'HTTP [A-Z]+ [^ ]+ failed: .*' "$BUILD_LOG" | head -1)"
+            fi
+            if [ -n "$WHY" ]; then
+              echo "::warning::cvm skipped for ${T}: ${WHY}. No cvm asset is published for this target."
+              exit 0
+            fi
+            echo "::error::cvm build failed for ${T} (exit ${rc})"
+            exit "$rc"
+          fi
 
           # output-path is build/cvm. Whether a .exe suffix lands on it is the
           # host toolchain's call, so accept either.

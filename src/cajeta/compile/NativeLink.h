@@ -6,6 +6,7 @@
 
 #include <llvm/Support/Error.h>
 
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -40,6 +41,16 @@ namespace cajeta {
         const std::set<std::string>& liveLibs,
         const std::string& platform,
         const std::vector<std::string>& searchDirs);
+
+    // Every platform under `searchDirs` carrying a STATIC archive for `lib`,
+    // as platform -> path. A `native/` tree names each platform with a
+    // subdirectory, so the directory name IS the platform id; `include` holds
+    // headers and is not one. Earlier dirs win, matching the resolver.
+    //
+    // This is what lets a `.cja` be built once and carry every platform its
+    // publisher provisioned, rather than only the machine that ran the build.
+    std::map<std::string, std::string> findNativeArchivesByPlatform(
+        const std::string& lib, const std::vector<std::string>& searchDirs);
 
     struct NativeJitArtifact {
         std::string path;

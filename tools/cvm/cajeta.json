@@ -49,7 +49,23 @@
         // contract is about CAJETA versions (a 1.0 cvm installs an 8.0
         // cajeta), not about what libraries cvm itself links.
         "dependencies": {
-            "dev.cajeta.http": "0.2.0"
+            // 0.3.0 is the release that made HTTP/2 return receive-window
+            // credit. Against 0.2.0 a download stalled after one 65535-octet
+            // window, which is what made `cvm install` take 3m49s on an asset
+            // curl fetched in 6.85s. It also caps request bodies on h2 and
+            // honours a read deadline on HTTPS.
+            //
+            // 0.3.1 is what lets cvm LINK anywhere but linux-x64, and that was
+            // measured rather than assumed. http pegs dev.cajeta.codec, which
+            // supplies zlib as a baked native archive. Listing the published
+            // .cja files: codec 0.8.2 carries exactly one,
+            // native/linux-x64/libcajeta_zlib.a, and codec 0.8.3 carries six,
+            // adding linux-arm64, linux-riscv64, macos-arm64, macos-x64 and
+            // windows-x64. http 0.3.0 resolves codec 0.8.2 and http 0.3.1
+            // resolves codec 0.8.3, per Olla's own dependency records. So on
+            // 0.3.0 every non-linux-x64 leg of the release matrix had no zlib
+            // to link against, which is why those legs shipped no cvm.
+            "dev.cajeta.http": "0.3.1"
         },
 
         "build": {

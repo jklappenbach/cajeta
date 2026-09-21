@@ -23,7 +23,7 @@ public class ResponseSink {
 
     public ResponseSink(boolean stdio, FileWriter out) {
         this.stdio = stdio;
-        this.out = out;
+        this.out #= out;
         this.cap = 4096;
         this.buf = heap int8[4096];
         this.buflen = 0;
@@ -36,7 +36,7 @@ public class ResponseSink {
             FileWriter o = this.out;
             w.writeLineTo(o);
         } else {
-            int8[] b = w.toBytes();
+            int8[] b #= w.toBytes();
             int32 n = (int32) b.count();   // capture before any further use
             this.append(b, n);
             this.haveMessage = true;

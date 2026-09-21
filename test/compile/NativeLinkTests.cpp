@@ -116,7 +116,8 @@ TEST(NativeLinkTests, unresolvedLiveLibFailsLoud) {
 // link zlib on any machine that had not staged it by hand.
 TEST(NativeLinkTests, stagesNativeArtifactsOutOfAClasspathArchive) {
     auto tmp = std::filesystem::temp_directory_path() / "nd-stage";
-    std::filesystem::remove_all(tmp);
+    std::error_code rmEc;
+    std::filesystem::remove_all(tmp, rmEc);
     std::filesystem::create_directories(tmp);
     const std::string cja = (tmp / "dep.cja").string();
     const std::vector<uint8_t> bytes = {'!', '<', 'a', 'r', 'c', 'h', '>', 10};
@@ -133,10 +134,14 @@ TEST(NativeLinkTests, stagesNativeArtifactsOutOfAClasspathArchive) {
     const auto landed = std::filesystem::path(*staged) / "linux-x64"
                       / "libcajeta_zlib.a";
     ASSERT_TRUE(std::filesystem::exists(landed));
-    std::ifstream in(landed, std::ios::binary);
-    std::vector<uint8_t> got((std::istreambuf_iterator<char>(in)),
-                             std::istreambuf_iterator<char>());
-    EXPECT_EQ(got, bytes);
+    {
+        // Scoped: Windows will not delete a file that still has an open
+        // handle, so the teardown below fails if this reader is still alive.
+        std::ifstream in(landed, std::ios::binary);
+        std::vector<uint8_t> got((std::istreambuf_iterator<char>(in)),
+                                 std::istreambuf_iterator<char>());
+        EXPECT_EQ(got, bytes);
+    }
 
     // And the resolver finds it there, which is the whole point.
     auto r = resolveNativeArchivesForLink({"cajeta_zlib"}, "linux-x64",
@@ -158,7 +163,42 @@ TEST(NativeLinkTests, stagesNativeArtifactsOutOfAClasspathArchive) {
     // So does an empty classpath.
     EXPECT_FALSE((bool) stageClasspathNativeArtifacts({}, "linux-x64",
                                                       stageRoot));
-    std::filesystem::remove_all(tmp);
+    // Cleanup never decides the verdict.
+    std::filesystem::remove_all(tmp, rmEc);
+}
+
+// A `.cja` must carry every platform its publisher provisioned, not just the
+// machine that built it. Baking keyed on hostNativePlatform() meant a package
+// cross-built for six targets on a Linux box published Linux and nothing else.
+TEST(NativeLinkTests, findsArchivesForEveryProvisionedPlatform) {
+    auto root = std::filesystem::temp_directory_path() / "nd-allplat";
+    std::error_code rmEc;
+    std::filesystem::remove_all(root, rmEc);
+    for (const char* p : {"linux-x64", "linux-arm64", "macos-arm64"}) {
+        std::filesystem::create_directories(root / p);
+        std::ofstream(root / p / "libcajeta_zlib.a", std::ios::binary) << "x";
+    }
+    // Headers are not a platform, and a platform without THIS lib is not one
+    // either.
+    std::filesystem::create_directories(root / "include");
+    std::ofstream(root / "include" / "zlib.h") << "h";
+    std::filesystem::create_directories(root / "windows-x64");
+    std::ofstream(root / "windows-x64" / "libsomethingelse.a") << "y";
+
+    auto found = findNativeArchivesByPlatform("cajeta_zlib", {root.string()});
+    ASSERT_EQ(found.size(), 3u);
+    EXPECT_TRUE(found.count("linux-x64"));
+    EXPECT_TRUE(found.count("linux-arm64"));
+    EXPECT_TRUE(found.count("macos-arm64"));
+    EXPECT_FALSE(found.count("include"));
+    EXPECT_FALSE(found.count("windows-x64"));
+    EXPECT_EQ(found["linux-arm64"],
+              (root / "linux-arm64" / "libcajeta_zlib.a").string());
+
+    // A lib nobody provisioned finds nothing, rather than guessing.
+    EXPECT_TRUE(findNativeArchivesByPlatform("nosuchlib", {root.string()})
+                    .empty());
+    std::filesystem::remove_all(root, rmEc);
 }
 
 // hostNativePlatform produces an os-arch triple.

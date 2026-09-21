@@ -49,13 +49,13 @@ public class Server {
     public static boolean fileEnabledSet;
 
     public static int32 main(String[] args) {
-        Server.cajetaBin = Server.resolveCajetaBin(args);
+        Server.cajetaBin #= Server.resolveCajetaBin(args);
         Server.resolveConfig(args);
         if (Server.cacheEnabled) {
             Server.mkdirp(Server.cacheDir);
         }
         // --http=PORT selects the Streamable-HTTP transport; stdio is default.
-        String httpPort = Server.flagValue(args, "--http=");
+        String httpPort #= Server.flagValue(args, "--http=");
         if (httpPort != null) {
             int32 port = (int32) Server.parseInt(httpPort);
             HttpTransport.serve(port);
@@ -69,7 +69,7 @@ public class Server {
         ResponseSink out = heap ResponseSink(true, fw);
         boolean running = true;
         while (running) {
-            int8[] msg = t.readMessage();
+            int8[] msg #= t.readMessage();
             if (msg == null) {
                 running = false;
             } else {
@@ -257,7 +257,7 @@ public class Server {
             }
             i = i + 1;
         }
-        String env = Server.getEnv("CAJETA_BIN");
+        String env #= Server.getEnv("CAJETA_BIN");
         if (env != null) {
             return env;
         }
@@ -294,9 +294,9 @@ public class Server {
     /** Read env var `name` via `printenv` (cajeta exposes no getenv); null if unset. */
     public static #String getEnv(String name) {
         String[] argv = heap String[2];
-        argv[0] = Server.dup("printenv");
-        argv[1] = Server.dup(name);
-        ProcessResult r = Server.runArgv(#argv);
+        argv[0] #= Server.dup("printenv");
+        argv[1] #= Server.dup(name);
+        ProcessResult r #= Server.runArgv(#argv);
         if (r.launched() == false || r.exitCode() != 0) {
             return null;
         }
@@ -383,7 +383,7 @@ public class Server {
 
     /** Parse the `--config` JSON `cache` object into the file* statics. */
     public static void loadConfigFile(String[] args) {
-        String cfgPath = Server.flagValue(args, "--config=");
+        String cfgPath #= Server.flagValue(args, "--config=");
         if (cfgPath == null) {
             return;
         }
@@ -391,7 +391,7 @@ public class Server {
         if (bytes == null) {
             return;
         }
-        JsonValue root = Server.parseJsonCopy(bytes, (int32) bytes.count());
+        JsonValue root #= Server.parseJsonCopy(bytes, (int32) bytes.count());
         if (root == null || root.kind() != JsonValue.OBJECT) {
             return;
         }
@@ -402,7 +402,7 @@ public class Server {
         JsonObject c = co.get();
         Optional<String> d = c.getString("dir");
         if (d.isPresent()) {
-            Server.fileDir = Server.dup(d.get());
+            Server.fileDir #= Server.dup(d.get());
         }
         Optional<int64> t = c.getLong("ttl");
         if (t.isPresent()) {
@@ -429,11 +429,11 @@ public class Server {
     /** Resolve an int setting: CLI flag > env var > file key > default. */
     public static int64 resolveInt(String[] args, String cliPrefix, String envName,
                                    boolean fileSet, int64 fileVal, int64 dflt) {
-        String cli = Server.flagValue(args, cliPrefix);
+        String cli #= Server.flagValue(args, cliPrefix);
         if (cli != null) {
             return Server.parseInt(cli);
         }
-        String env = Server.getEnv(envName);
+        String env #= Server.getEnv(envName);
         if (env != null) {
             return Server.parseInt(env);
         }
@@ -445,11 +445,11 @@ public class Server {
 
     /** Resolve the cache directory: CLI > env > file > default. */
     public static #String resolveCacheDir(String[] args) {
-        String cli = Server.flagValue(args, "--cache-dir=");
+        String cli #= Server.flagValue(args, "--cache-dir=");
         if (cli != null) {
             return cli;
         }
-        String env = Server.getEnv("CAJETA_MCP_CACHE_DIR");
+        String env #= Server.getEnv("CAJETA_MCP_CACHE_DIR");
         if (env != null) {
             return env;
         }
@@ -461,14 +461,14 @@ public class Server {
 
     /** Resolve cache enablement: CLI (--cache=/--no-cache) > env > file > default(on). */
     public static boolean resolveCacheEnabled(String[] args) {
-        String cli = Server.flagValue(args, "--cache=");
+        String cli #= Server.flagValue(args, "--cache=");
         if (cli != null) {
             return cli.equals("on") || cli.equals("true") || cli.equals("1");
         }
         if (Server.hasFlag(args, "--no-cache")) {
             return false;
         }
-        String env = Server.getEnv("CAJETA_MCP_CACHE_ENABLED");
+        String env #= Server.getEnv("CAJETA_MCP_CACHE_ENABLED");
         if (env != null) {
             return env.equals("1") || env.equals("true") || env.equals("on");
         }
@@ -481,7 +481,7 @@ public class Server {
     /** Populate the resolved cache config statics from all sources. */
     public static void resolveConfig(String[] args) {
         Server.loadConfigFile(args);
-        Server.cacheDir = Server.resolveCacheDir(args);
+        Server.cacheDir #= Server.resolveCacheDir(args);
         Server.cacheTtl = (int32) Server.resolveInt(args, "--cache-ttl=",
             "CAJETA_MCP_CACHE_TTL", Server.fileTtlSet, Server.fileTtl, (int64) 3600);
         Server.cacheMaxBytes = Server.resolveInt(args, "--cache-max-bytes=",
@@ -496,7 +496,7 @@ public class Server {
     // ---- C5: on-disk execution cache (Sha256 key; TTL + LRU via shell) ----
 
     public static void hashStr(Sha256 h, String s) {
-        int8[] b = s.toBytes();
+        int8[] b #= s.toBytes();
         int32 n = s.byteLength();
         h.update(b, (int64) n);
     }
@@ -543,15 +543,15 @@ public class Server {
      * result-object bytes (owned copy) or null on miss/expiry.
      */
     public static #int8[] cacheGet(String key) {
-        String path = Server.joinPath(Server.cacheDir, key);
-        String ttlStr = Server.intToStr((int64) Server.cacheTtl);
+        String path #= Server.joinPath(Server.cacheDir, key);
+        String ttlStr #= Server.intToStr((int64) Server.cacheTtl);
         String[] argv = heap String[5];
-        argv[0] = Server.dup("sh");
-        argv[1] = Server.dup("-c");
-        argv[2] = Server.dup("f=\"$0\"; t=\"$1\"; if [ -f \"$f\" ] && [ $(( $(date +%s) - $(stat -c %Y \"$f\") )) -le \"$t\" ]; then touch \"$f\"; cat \"$f\"; exit 0; fi; rm -f \"$f\"; exit 1");
-        argv[3] = Server.dup(path);
-        argv[4] = Server.dup(ttlStr);
-        ProcessResult r = Server.runArgv(#argv);
+        argv[0] #= Server.dup("sh");
+        argv[1] #= Server.dup("-c");
+        argv[2] #= Server.dup("f=\"$0\"; t=\"$1\"; if [ -f \"$f\" ] && [ $(( $(date +%s) - $(stat -c %Y \"$f\") )) -le \"$t\" ]; then touch \"$f\"; cat \"$f\"; exit 0; fi; rm -f \"$f\"; exit 1");
+        argv[3] #= Server.dup(path);
+        argv[4] #= Server.dup(ttlStr);
+        ProcessResult r #= Server.runArgv(#argv);
         if (r.launched() == false || r.exitCode() != 0) {
             return null;
         }
@@ -574,18 +574,18 @@ public class Server {
 
     /** Write `objBytes[0..len)` under `key`, then enforce entry/byte LRU caps. */
     public static void cachePut(String key, int8[] objBytes, int32 len) {
-        String path = Server.joinPath(Server.cacheDir, key);
+        String path #= Server.joinPath(Server.cacheDir, key);
         File.writeAllBytes(path, objBytes, len);
-        String me = Server.intToStr((int64) Server.cacheMaxEntries);
-        String mb = Server.intToStr(Server.cacheMaxBytes);
+        String me #= Server.intToStr((int64) Server.cacheMaxEntries);
+        String mb #= Server.intToStr(Server.cacheMaxBytes);
         String[] argv = heap String[6];
-        argv[0] = Server.dup("sh");
-        argv[1] = Server.dup("-c");
-        argv[2] = Server.dup("cd \"$0\" 2>/dev/null || exit 0; ls -1t 2>/dev/null | tail -n +$(( $1 + 1 )) | while IFS= read -r f; do rm -f -- \"$f\"; done; tot=0; ls -1t 2>/dev/null | while IFS= read -r f; do sz=$(stat -c %s -- \"$f\" 2>/dev/null || echo 0); tot=$((tot+sz)); [ \"$tot\" -gt \"$2\" ] && rm -f -- \"$f\"; done");
-        argv[3] = Server.dup(Server.cacheDir);
-        argv[4] = Server.dup(me);
-        argv[5] = Server.dup(mb);
-        ProcessResult r = Server.runArgv(#argv);
+        argv[0] #= Server.dup("sh");
+        argv[1] #= Server.dup("-c");
+        argv[2] #= Server.dup("cd \"$0\" 2>/dev/null || exit 0; ls -1t 2>/dev/null | tail -n +$(( $1 + 1 )) | while IFS= read -r f; do rm -f -- \"$f\"; done; tot=0; ls -1t 2>/dev/null | while IFS= read -r f; do sz=$(stat -c %s -- \"$f\" 2>/dev/null || echo 0); tot=$((tot+sz)); [ \"$tot\" -gt \"$2\" ] && rm -f -- \"$f\"; done");
+        argv[3] #= Server.dup(Server.cacheDir);
+        argv[4] #= Server.dup(me);
+        argv[5] #= Server.dup(mb);
+        ProcessResult r #= Server.runArgv(#argv);
     }
 
     /**
@@ -628,11 +628,11 @@ public class Server {
     public static #ProcessResult runCajeta(String[] args, int32 argc) {
         String[] argv = heap String[argc + 1];
         String bin = Server.cajetaBin;
-        argv[0] = bin.substring(0, (int32) bin.count());
+        argv[0] #= bin.substring(0, (int32) bin.count());
         int32 i = 0;
         while (i < argc) {
             String a = args[i];
-            argv[i + 1] = a.substring(0, (int32) a.count());
+            argv[i + 1] #= a.substring(0, (int32) a.count());
             i = i + 1;
         }
         Command cmd = heap Command(#argv);
@@ -660,7 +660,7 @@ public class Server {
     /** Run a skill subcommand and wrap its parsed JSON array under `field`. */
     public static void runSkill(ResponseSink out, JsonValue id, String[] args,
                                 int32 argc, String field) {
-        ProcessResult r = Server.runCajeta(args, argc);
+        ProcessResult r #= Server.runCajeta(args, argc);
         if (r.launched() == false) {
             Server.writeError(out, id, -32603, "failed to launch cajeta");
             return;
@@ -668,7 +668,7 @@ public class Server {
         int8[] outBytes = r.stdout();
         JsonValue arr = null;
         if (outBytes != null && outBytes.count() > 0) {
-            arr = Server.parseJsonCopy(outBytes, (int32) outBytes.count());
+            arr #= Server.parseJsonCopy(outBytes, (int32) outBytes.count());
         }
         JsonWriter w = heap JsonWriter();
         Server.writeHead(w, id);
@@ -717,7 +717,7 @@ public class Server {
             }
             String[] a = heap String[3];
             a[0] = "search-skill";
-            a[1] = nv.asString();
+            a[1] #= nv.asString();
             a[2] = "--json";
             Server.runSkill(out, id, a, 3, "results");
         } else if (name.equals("listSkills")) {
@@ -737,7 +737,7 @@ public class Server {
             }
             String[] a = heap String[3];
             a[0] = "get-skills";
-            a[1] = Server.joinUris(uv.array());
+            a[1] #= Server.joinUris(uv.array());
             a[2] = "--json";
             Server.runSkill(out, id, a, 3, "skills");
         } else if (name.equals("compile")) {
@@ -944,9 +944,9 @@ public class Server {
     /** `mktemp -d` -> the new dir path, or null on failure. */
     public static #String makeTempDir() {
         String[] argv = heap String[2];
-        argv[0] = Server.dup("mktemp");
-        argv[1] = Server.dup("-d");
-        ProcessResult r = Server.runArgv(#argv);
+        argv[0] #= Server.dup("mktemp");
+        argv[1] #= Server.dup("-d");
+        ProcessResult r #= Server.runArgv(#argv);
         if (r.launched() == false || r.exitCode() != 0) {
             return null;
         }
@@ -964,19 +964,19 @@ public class Server {
     /** `mkdir -p <dir>` (best-effort). */
     public static void mkdirp(String dir) {
         String[] argv = heap String[3];
-        argv[0] = Server.dup("mkdir");
-        argv[1] = Server.dup("-p");
-        argv[2] = Server.dup(dir);
-        ProcessResult r = Server.runArgv(#argv);
+        argv[0] #= Server.dup("mkdir");
+        argv[1] #= Server.dup("-p");
+        argv[2] #= Server.dup(dir);
+        ProcessResult r #= Server.runArgv(#argv);
     }
 
     /** `rm -rf <dir>` (best-effort cleanup). */
     public static void rmrf(String dir) {
         String[] argv = heap String[3];
-        argv[0] = Server.dup("rm");
-        argv[1] = Server.dup("-rf");
-        argv[2] = Server.dup(dir);
-        ProcessResult r = Server.runArgv(#argv);
+        argv[0] #= Server.dup("rm");
+        argv[1] #= Server.dup("-rf");
+        argv[2] #= Server.dup(dir);
+        ProcessResult r #= Server.runArgv(#argv);
     }
 
     /** Directory component of `path` (before the last '/'), or "." if none. */
@@ -1001,7 +1001,7 @@ public class Server {
         // Own `entry` up front so the raw `.byteAt(i)` scan and the substring
         // below both operate on owned (mode-0) storage — the caller may hand us
         // a view.
-        String e = Server.dup(entry);
+        String e #= Server.dup(entry);
         int32 n = e.byteLength();
         int32 d1 = -1;
         int32 d2 = -1;
@@ -1021,7 +1021,7 @@ public class Server {
             begin = d2 + 1;
             end = d1;
         }
-        String simple = Server.dup(e.substring(begin, end));
+        String simple #= Server.dup(e.substring(begin, end));
         return Server.concat(simple, ".cja");
     }
 
@@ -1036,7 +1036,7 @@ public class Server {
         while (i < n) {
             if (((int32) bytes[i]) == 10) {
                 if (i > start) {
-                    String line = Server.rangeToString(bytes, start, i);
+                    String line #= Server.rangeToString(bytes, start, i);
                     w.writeString(line);
                 }
                 start = i + 1;
@@ -1044,7 +1044,7 @@ public class Server {
             i = i + 1;
         }
         if (n > start) {
-            String line = Server.rangeToString(bytes, start, n);
+            String line #= Server.rangeToString(bytes, start, n);
             w.writeString(line);
         }
     }
@@ -1056,18 +1056,18 @@ public class Server {
      * `<tmp>/src` and cleans up with `rmrf`), or null if the temp dir failed.
      */
     public static #String materializeToTemp(JsonObject files) {
-        String tmpRoot = Server.makeTempDir();
+        String tmpRoot #= Server.makeTempDir();
         if (tmpRoot == null) {
             return null;
         }
-        String srcRoot = Server.joinPath(tmpRoot, "src");
+        String srcRoot #= Server.joinPath(tmpRoot, "src");
         Server.mkdirp(srcRoot);
         int32 fn = files.count();
         int32 fi = 0;
         while (fi < fn) {
-            String rel = Server.decodeJsonString(files.keyAt(fi), files.keyLenAt(fi));
-            String full = Server.joinPath(srcRoot, rel);
-            String parent = Server.parentDir(full);
+            String rel #= Server.decodeJsonString(files.keyAt(fi), files.keyLenAt(fi));
+            String full #= Server.joinPath(srcRoot, rel);
+            String parent #= Server.parentDir(full);
             Server.mkdirp(parent);
             JsonValue cv = files.valueAt(fi);
             int8[] raw = cv.asBytes();
@@ -1075,7 +1075,7 @@ public class Server {
                 int8[] empty = heap int8[0];
                 File.writeAllBytes(full, empty, 0);
             } else {
-                String decoded = Server.decodeJsonString(raw, cv.asBytesLength());
+                String decoded #= Server.decodeJsonString(raw, cv.asBytesLength());
                 // File.writeAllBytes' intrinsic lowering only loads alloca
                 // (local) args — a struct field passed directly (decoded.bytes
                 // / decoded.byteLength()) reaches the runtime as a raw pointer,
@@ -1149,7 +1149,7 @@ public class Server {
         if (bytes != null) {
             n = (int32) bytes.count();
         }
-        String tok = Server.jsonEscape(bytes, n);
+        String tok #= Server.jsonEscape(bytes, n);
         int8[] tb #= tok.toBytes();
         int32 tl = tok.byteLength();
         w.writeRaw(tb, tl);
@@ -1182,22 +1182,22 @@ public class Server {
         }
         String entry #= entryV.asString();
 
-        String key = Server.computeKey("compile", entry, files);
+        String key #= Server.computeKey("compile", entry, files);
         if (Server.cacheEnabled) {
-            int8[] cached = Server.cacheGet(key);
+            int8[] cached #= Server.cacheGet(key);
             if (cached != null) {
                 Server.emitResultLine(out, id, cached, true);
                 return;
             }
         }
 
-        String tmpRoot = Server.materializeToTemp(files);
+        String tmpRoot #= Server.materializeToTemp(files);
         if (tmpRoot == null) {
             Server.writeError(out, id, -32603, "failed to create temp dir");
             return;
         }
-        String srcRoot = Server.joinPath(tmpRoot, "src");
-        String outDir = Server.joinPath(tmpRoot, "out");
+        String srcRoot #= Server.joinPath(tmpRoot, "src");
+        String outDir #= Server.joinPath(tmpRoot, "out");
         Server.mkdirp(outDir);
 
         String[] cargs = heap String[4];
@@ -1205,7 +1205,7 @@ public class Server {
         cargs[1] = entry;
         cargs[2] = srcRoot;
         cargs[3] = outDir;
-        ProcessResult r = Server.runCajeta(cargs, 4);
+        ProcessResult r #= Server.runCajeta(cargs, 4);
         if (r.launched() == false) {
             Server.rmrf(tmpRoot);
             Server.writeError(out, id, -32603, "failed to launch cajeta");
@@ -1223,8 +1223,8 @@ public class Server {
         Server.writeLines(bw, r.stderr());
         bw.endArray();
         if (code == 0) {
-            String aname = Server.artifactName(entry);
-            String apath = Server.joinPath(outDir, aname);
+            String aname #= Server.artifactName(entry);
+            String apath #= Server.joinPath(outDir, aname);
             int8[] cja #= File.readAllBytes(apath);
             if (cja != null) {
                 String b64 #= Base64.encode(cja, cja.count());
@@ -1272,27 +1272,27 @@ public class Server {
         }
         String entry #= entryV.asString();
 
-        String key = Server.computeKey("jit_execute", entry, files);
+        String key #= Server.computeKey("jit_execute", entry, files);
         if (Server.cacheEnabled) {
-            int8[] cached = Server.cacheGet(key);
+            int8[] cached #= Server.cacheGet(key);
             if (cached != null) {
                 Server.emitResultLine(out, id, cached, true);
                 return;
             }
         }
 
-        String tmpRoot = Server.materializeToTemp(files);
+        String tmpRoot #= Server.materializeToTemp(files);
         if (tmpRoot == null) {
             Server.writeError(out, id, -32603, "failed to create temp dir");
             return;
         }
-        String srcRoot = Server.joinPath(tmpRoot, "src");
+        String srcRoot #= Server.joinPath(tmpRoot, "src");
 
         String[] jargs = heap String[3];
         jargs[0] = "jit-run";
         jargs[1] = srcRoot;
         jargs[2] = entry;
-        ProcessResult r = Server.runCajeta(jargs, 3);
+        ProcessResult r #= Server.runCajeta(jargs, 3);
         if (r.launched() == false) {
             Server.rmrf(tmpRoot);
             Server.writeError(out, id, -32603, "failed to launch cajeta");
