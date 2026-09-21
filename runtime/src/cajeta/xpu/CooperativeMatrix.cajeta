@@ -249,8 +249,7 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * Device-only intrinsic — {@link #rank1Accum} with the column vector
      * supplied as a {@link WaveVector} (4A.5.4.C): `ofSlice` reads it from a
      * Shared panel, `broadcast` uses one factor for every column, `ofLane`
-     * takes a per-lane register value (native-only). The neutral spelling of
-     * `rank1AccumS`.
+     * takes a per-lane register value (native-only).
      */
     @Intrinsic
     public final void rank1Accum(Shared<float32> rowG,
@@ -275,8 +274,7 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
 
     /**
      * Device-only intrinsic — {@link #scaledAccumInto2} with the two column
-     * vectors supplied as {@link WaveVector}s (4A.5.4.C). The neutral spelling
-     * of `scaledAccumInto2S`; each column may be built by `ofSlice`,
+     * vectors supplied as {@link WaveVector}s (4A.5.4.C); each column may be built by `ofSlice`,
      * `broadcast`, or `ofLane` independently.
      */
     @Intrinsic
@@ -286,47 +284,21 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
 
     /**
      * Device-only intrinsic — {@link #scaledAccumInto} with the column
-     * factors held in REGISTERS across the wave instead of staged in a
-     * Shared vector (threaded-forward-path 10.12.31). It deletes the
-     * LDS round trip and its wave-uniform branch at the call site.
+     * factors supplied as a {@link WaveVector} rather than a whole Shared
+     * vector (4A.5.4.C). Build it with `ofSlice` (reads the factors from a
+     * Shared panel, per column, on EVERY tier), `broadcast` (one factor for
+     * all columns), or `ofLane` (a per-lane register value — native-only).
      *
-     * CONTRACT — read this as tile algebra, not as a fragment layout.
-     * The wave collectively supplies the whole column vector, and
-     *
-     *     lane L supplies the factor for column `L mod Cols`.
-     *
-     * Every lane with the same `L mod Cols` passes the same value.
-     * That is the WHOLE contract: it says which column each lane is
-     * responsible for and nothing about which elements that lane's
-     * fragment happens to hold. Each backend redistributes as its own
-     * fragment requires — on AMD the two coincide and the value is used
-     * as-is; on NVIDIA a lane's eight accumulator elements span four
-     * columns, so the lowering shuffles column `c`'s factor out of lane
-     * `c`, at most four times per fragment. `rowF` stays a Shared
-     * vector because rows are genuinely cross-lane.
-     *
-     * THE CONTRACT USED TO READ "the column of every element a lane
-     * holds is `lane & 15`", which is AMD's fragment layout written
-     * into a portable API. The NVIDIA lowering believed it and applied
-     * one scalar to all eight elements; eleven cajeta-llm kernels
-     * returned column 0 correctly and everything else wrong. If you add
-     * a verb here, say which SLICE OF THE TILE a lane supplies, never
-     * which registers it owns.
-     *
-     * NATIVE-ONLY. A tier with no wave to distribute across — the
-     * replicated software tile, whose every work-item holds the whole
-     * matrix — REJECTS the kernel with a named diagnostic rather than
-     * silently using one lane's factor for every column. Use the
-     * Shared-vector {@link #scaledAccumInto} there.
-     */
-    @Intrinsic
-    public final void scaledAccumIntoS(CooperativeMatrix<float32, Rows, Cols, 2> facc,
-                                 Shared<float32> rowF, float32 colF);
-
-    /**
-     * PROBE (4A.5.4.C): the same verb, with the column factors typed as the
-     * wave-distributed vector they are. Same name, same arity as the
-     * Shared-vector form above it — which is exactly the thing being tested.
+     * CONTRACT — read this as tile algebra, not as a fragment layout. The
+     * wave collectively supplies the whole column vector: lane L supplies the
+     * factor for column `L mod Cols`, and each backend redistributes as its
+     * fragment requires (on AMD the lane owns its column; on NVIDIA a lane's
+     * eight accumulator elements span four columns, so the lowering recovers
+     * column `c`'s factor for each). `rowF` stays a Shared vector because rows
+     * are genuinely cross-lane. Say which SLICE OF THE TILE a lane supplies,
+     * never which registers it owns — the old `lane & 15` wording was AMD's
+     * fragment layout leaking into a portable API, and it shipped eleven
+     * kernels that were right in column 0 and wrong everywhere else.
      */
     @Intrinsic
     public final void scaledAccumInto(CooperativeMatrix<float32, Rows, Cols, 2> facc,
@@ -334,82 +306,38 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
                                 WaveVector<float32, Cols> colF);
 
     /**
-     * Device-only intrinsic — {@link #scaledAccumInto2} with the column
-     * factors in registers (10.12.31): lane L supplies `colF` and
-     * `colG` for column `L mod Cols`, the same contract as
-     * {@link #scaledAccumIntoS}. NATIVE-ONLY, same rejection rule.
-     */
-    @Intrinsic
-    public final void scaledAccumInto2S(CooperativeMatrix<float32, Rows, Cols, 2> facc,
-                                  Shared<float32> rowF, float32 colF,
-                                  Shared<float32> rowG, float32 colG);
-
-    /**
      * Device-only intrinsic — the INTEGER accumulate: on an `int32`
      * accumulator tile (`Use = 2`), for every element of the tile,
      *
-     *     iacc[r][c] += colS(c) * this[r][c]
+     *     iacc[r][c] += colS[c] * this[r][c]
      *
-     * where `colS(c)` is the value lane `c mod Cols` passed. Which
-     * elements a given lane's registers hold is the backend's business,
-     * not the caller's.
+     * `iacc` is a same-shape `CooperativeMatrix<int32, Rows, Cols, 2>` and
+     * `colS` a {@link WaveVector}: lane L supplies the factor for column
+     * `L mod Cols`. Build it with `ofSlice` — sourcing the per-column int
+     * scales from a Shared panel lets the PORTABLE software tile run this too
+     * (the replicated tile reads column c's factor directly) — or `broadcast`;
+     * `ofLane` is native-only. This folds a small integer per-K-slice scale
+     * into an int32 accumulator so the float drain runs ONCE per outer block
+     * instead of once per sub-block: no convert, no fma, no rank-1 term per
+     * slice.
      *
-     * `iacc` is a same-shape `CooperativeMatrix<int32, Rows, Cols, 2>`
-     * and `colS` a register value under the same contract as
-     * {@link #scaledAccumIntoS}: lane L supplies the factor for column
-     * `L mod Cols`, and the backend redistributes. This folds a small integer per-K-slice
-     * scale into an int32 accumulator so the float drain (the
-     * `scaledAccumIntoS` epilogue) runs ONCE per outer block instead of
-     * once per sub-block: no convert, no fma, no rank-1 term per slice.
-     *
-     * CONTRACT — 24 BITS: `colS` and every element of the receiver must
-     * lie in [-2^23, 2^23). The lowering is the full-rate 24-bit
-     * multiply (a 32-bit multiply is quarter-rate and gives the epilogue
-     * back), so a wider operand is silently truncated. Q4_K is the
-     * motivating case and fits by construction: a 32-K int8 dot is at
-     * most 32*127*127 in magnitude and the 6-bit sub-block scale is at
-     * most 63, so the product stays well inside 24 bits.
-     *
-     * NATIVE-ONLY, same rejection rule as {@link #scaledAccumIntoS}: a
-     * tier that cannot lower this natively REJECTS the kernel with a
-     * named diagnostic — never a silent demote.
-     */
-    @Intrinsic
-    public final void scaledAccumI32(CooperativeMatrix<int32, Rows, Cols, 2> iacc,
-                               int32 colS);
-
-    /**
-     * Device-only intrinsic — {@link #scaledAccumI32} with the column vector
-     * supplied as a {@link WaveVector} (4A.5.4.C). `ofSlice` sources the
-     * per-column int scales from a Shared panel, which — unlike the raw
-     * per-lane `int32 colS` — lets the PORTABLE software tile run this too
-     * (the replicated tile reads column c's factor directly), so the integer
-     * drain is no longer native-only when its factors live in Shared.
+     * CONTRACT — 24 BITS: `colS` and every element of the receiver must lie
+     * in [-2^23, 2^23). The lowering is the full-rate 24-bit multiply (a
+     * 32-bit multiply is quarter-rate and gives the epilogue back), so a wider
+     * operand is silently truncated. Q4_K is the motivating case and fits by
+     * construction: a 32-K int8 dot is at most 32*127*127 in magnitude and the
+     * 6-bit sub-block scale is at most 63, so the product stays well inside
+     * 24 bits.
      */
     @Intrinsic
     public final void scaledAccumI32(CooperativeMatrix<int32, Rows, Cols, 2> iacc,
                                WaveVector<int32, Cols> colS);
 
     /**
-     * Device-only intrinsic — {@link #rank1Accum} with the column
-     * factor in a register: on a `float32` accumulator tile
-     * (`Use = 2`),
-     *
-     *     this[r][c] += rowG[r] * colG
-     *
-     * `colG` is under the same contract as {@link #scaledAccumIntoS}:
-     * lane L supplies the factor for column `L mod Cols`. `rowG` stays
-     * a Shared vector (and accepts a slice) because rows are genuinely
-     * cross-lane. NATIVE-ONLY, same rejection rule.
-     */
-    @Intrinsic
-    public final void rank1AccumS(Shared<float32> rowG, float32 colG);
-
-    /**
      * Device-only intrinsic: feed an int8 A or B operand tile straight
      * from packed registers (xpu-coopmatrix-fromwords).
      *
-     * CONTRACT — tile algebra, like {@link #scaledAccumIntoS}, and for
+     * CONTRACT — tile algebra, like {@link #scaledAccumInto}, and for
      * the same reason. The wave collectively supplies the whole tile:
      *
      *     lane L supplies row (`Use` 0) or column (`Use` 1)

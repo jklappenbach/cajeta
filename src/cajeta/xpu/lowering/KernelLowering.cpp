@@ -4456,17 +4456,9 @@ private:
             return llvm::ConstantInt::get(i32, 0);
         }
         if (name == "scaledAccumInto" || name == "rank1Accum" ||
-            name == "scaledAccumInto2" || name == "scaledAccumIntoS" ||
-            name == "scaledAccumInto2S" || name == "rank1AccumS") {
-            const bool scaled = (name != "rank1Accum" && name != "rank1AccumS");
-            const bool dual = (name == "scaledAccumInto2" ||
-                               name == "scaledAccumInto2S");
-            // The legacy S-forms carry a raw per-lane scalar in the column
-            // slot; the neutral forms carry a WaveVector (ofSlice/broadcast/
-            // ofLane) or a plain Shared vector. Both resolve through oneCol.
-            const bool sform = (name == "scaledAccumIntoS" ||
-                                name == "scaledAccumInto2S" ||
-                                name == "rank1AccumS");
+            name == "scaledAccumInto2") {
+            const bool scaled = (name != "rank1Accum");
+            const bool dual = (name == "scaledAccumInto2");
             const size_t want = dual ? 5 : (scaled ? 3 : 2);
             if (args.size() != want)
                 unsupported(std::string("CooperativeMatrix.") + name +
@@ -4521,10 +4513,6 @@ private:
                 }
                 if (resolveWaveVectorLane(args[at].expression, lane)) {
                     vScalar = toFloat(lane);
-                    return;
-                }
-                if (sform) {
-                    vScalar = toFloat(lowerExpr(args[at].expression));
                     return;
                 }
                 if (!resolveBufferBaseOrSlice(args[at].expression, vB, vE))
@@ -4905,20 +4893,6 @@ private:
                         "across a wave, so there is no lane to take the other "
                         "fifteen slices from. Stage the widened bytes in "
                         "Shared<T> and `load` them here");
-        }
-        if (name == "scaledAccumIntoS" || name == "scaledAccumInto2S" ||
-            name == "rank1AccumS") {
-            const char* vectorForm = name == "scaledAccumIntoS"
-                ? "scaledAccumInto"
-                : (name == "scaledAccumInto2S" ? "scaledAccumInto2"
-                                               : "rank1Accum");
-            unsupported(std::string("CooperativeMatrix.") + name +
-                        ": lane L supplies the factor for column L mod Cols, "
-                        "and this tier's tile is replicated per work-item "
-                        "rather than distributed across a wave, so the other "
-                        "columns' factors are in no lane it can reach. Use "
-                        "the Shared-vector form " + vectorForm + " here, "
-                        "which is indexed by the element's own column");
         }
         if (name == "scaledAccumI32") {
             if (args.size() != 2)

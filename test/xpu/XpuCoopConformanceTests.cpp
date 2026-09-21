@@ -65,10 +65,10 @@ const std::vector<Verb>& verbs() {
          "        facc.store(out, 0, 0, 16);\n",
          "(1.0f + (float32) r) * (1.0f + (float32) c)", false},
 
-        {"rank1AccumS", "kv1",
+        {"rank1Accum", "kv1",
          "        CooperativeMatrix<float32,16,16,2> facc;\n"
          "        facc.splat(0.0f);\n",
-         "        facc.rank1AccumS(rowF, cv);\n"
+         "        facc.rank1Accum(rowF, WaveVector.ofLane(cv));\n"
          "        facc.store(out, 0, 0, 16);\n",
          "(1.0f + (float32) r) * (1.0f + (float32) c)", false},
 
@@ -81,12 +81,12 @@ const std::vector<Verb>& verbs() {
          "        facc.store(out, 0, 0, 16);\n",
          "2.0f * (1.0f + (float32) r) * (1.0f + (float32) c)", false},
 
-        {"scaledAccumIntoS", "kv3",
+        {"scaledAccumInto", "kv3",
          "        CooperativeMatrix<float32,16,16,2> acc;\n"
          "        acc.splat(2.0f);\n"
          "        CooperativeMatrix<float32,16,16,2> facc;\n"
          "        facc.splat(0.0f);\n",
-         "        acc.scaledAccumIntoS(facc, rowF, cv);\n"
+         "        acc.scaledAccumInto(facc, rowF, WaveVector.ofLane(cv));\n"
          "        facc.store(out, 0, 0, 16);\n",
          "2.0f * (1.0f + (float32) r) * (1.0f + (float32) c)", false},
 
@@ -99,12 +99,12 @@ const std::vector<Verb>& verbs() {
          "        facc.store(out, 0, 0, 16);\n",
          "3.0f * (1.0f + (float32) r) * (1.0f + (float32) c)", false},
 
-        {"scaledAccumInto2S", "kv5",
+        {"scaledAccumInto2", "kv5",
          "        CooperativeMatrix<float32,16,16,2> acc;\n"
          "        acc.splat(2.0f);\n"
          "        CooperativeMatrix<float32,16,16,2> facc;\n"
          "        facc.splat(0.0f);\n",
-         "        acc.scaledAccumInto2S(facc, rowF, cv, rowF, cv);\n"
+         "        acc.scaledAccumInto2(facc, rowF, WaveVector.ofLane(cv), rowF, WaveVector.ofLane(cv));\n"
          "        facc.store(out, 0, 0, 16);\n",
          "3.0f * (1.0f + (float32) r) * (1.0f + (float32) c)", false},
 
@@ -114,7 +114,7 @@ const std::vector<Verb>& verbs() {
          "        mc.splat(3);\n"
          "        CooperativeMatrix<int32,16,16,2> iacc;\n"
          "        iacc.splat(0);\n",
-         "        mc.scaledAccumI32(iacc, cs);\n"
+         "        mc.scaledAccumI32(iacc, WaveVector.ofLane(cs));\n"
          "        iacc.store(out, 0, 0, 16);\n",
          "3.0f * (1.0f + (float32) c)", true},
     };
@@ -130,6 +130,7 @@ std::string program() {
         "import cajeta.xpu.KernelStream;\n"
         "import cajeta.xpu.KernelThread;\n"
         "import cajeta.xpu.Shared;\n"
+        "import cajeta.xpu.WaveVector;\n"
         "public final class D {\n";
 
     for (const Verb& v : verbs()) {

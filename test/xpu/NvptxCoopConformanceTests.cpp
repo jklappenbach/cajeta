@@ -172,13 +172,13 @@ const std::vector<VerbCase>& cases() {
             false,
             [](unsigned r, unsigned c) { return (1.0 + r) * (1.0 + c); }});
 
-        // Same contract, column factor in a register: lane L supplies
-        // column L mod 16.
-        cs.push_back({"rank1AccumS", "sR1",
+        // Same contract, column factor a per-lane register value: lane L
+        // supplies column L mod 16 (WaveVector.ofLane, the scalar path).
+        cs.push_back({"rank1Accum", "sR1",
             kernelFor("sR1",
                 "        CooperativeMatrix<float32,16,16,2> facc;\n"
                 "        facc.splat(0.0f);\n",
-                "        facc.rank1AccumS(rowF, cv);\n"
+                "        facc.rank1Accum(rowF, WaveVector.ofLane(cv));\n"
                 "        facc.store(out, 0, 0, 16);\n", false),
             false,
             [](unsigned r, unsigned c) { return (1.0 + r) * (1.0 + c); }});
@@ -195,16 +195,8 @@ const std::vector<VerbCase>& cases() {
             false,
             [](unsigned r, unsigned c) { return 2.0 * (1.0 + r) * (1.0 + c); }});
 
-        cs.push_back({"scaledAccumIntoS", "sSc",
-            kernelFor("sSc",
-                "        CooperativeMatrix<float32,16,16,2> acc;\n"
-                "        acc.splat(2.0f);\n"
-                "        CooperativeMatrix<float32,16,16,2> facc;\n"
-                "        facc.splat(0.0f);\n",
-                "        acc.scaledAccumIntoS(facc, rowF, cv);\n"
-                "        facc.store(out, 0, 0, 16);\n", false),
-            false,
-            [](unsigned r, unsigned c) { return 2.0 * (1.0 + r) * (1.0 + c); }});
+        // (scaledAccumInto's scalar path is the wvSc case below —
+        // WaveVector.ofLane(cv) — so it is not repeated here.)
 
         // + rowG[r] * colG[c], with G aliased onto F: 2rc + rc = 3rc.
         cs.push_back({"scaledAccumInto2", "vSc2",
@@ -218,13 +210,14 @@ const std::vector<VerbCase>& cases() {
             false,
             [](unsigned r, unsigned c) { return 3.0 * (1.0 + r) * (1.0 + c); }});
 
-        cs.push_back({"scaledAccumInto2S", "sSc2",
+        cs.push_back({"scaledAccumInto2", "sSc2",
             kernelFor("sSc2",
                 "        CooperativeMatrix<float32,16,16,2> acc;\n"
                 "        acc.splat(2.0f);\n"
                 "        CooperativeMatrix<float32,16,16,2> facc;\n"
                 "        facc.splat(0.0f);\n",
-                "        acc.scaledAccumInto2S(facc, rowF, cv, rowF, cv);\n"
+                "        acc.scaledAccumInto2(facc, rowF, WaveVector.ofLane(cv), "
+                "rowF, WaveVector.ofLane(cv));\n"
                 "        facc.store(out, 0, 0, 16);\n", false),
             false,
             [](unsigned r, unsigned c) { return 3.0 * (1.0 + r) * (1.0 + c); }});
@@ -240,7 +233,7 @@ const std::vector<VerbCase>& cases() {
                 "        mc.splat(3);\n"
                 "        CooperativeMatrix<int32,16,16,2> iacc;\n"
                 "        iacc.splat(0);\n",
-                "        mc.scaledAccumI32(iacc, cs);\n"
+                "        mc.scaledAccumI32(iacc, WaveVector.ofLane(cs));\n"
                 "        iacc.store(out, 0, 0, 16);\n", true),
             true,
             [](unsigned, unsigned c) { return 3.0 * (1.0 + c); }});

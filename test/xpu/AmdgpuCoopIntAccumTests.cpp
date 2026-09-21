@@ -62,6 +62,7 @@ const char* kIntAccumSrc =
     "package test;\n"
     "import cajeta.xpu.Barrier;\n"
     "import cajeta.xpu.CooperativeMatrix;\n"
+    "import cajeta.xpu.WaveVector;\n"
     "import cajeta.xpu.KernelBuffer;\n"
     "import cajeta.xpu.KernelThread;\n"
     "import cajeta.xpu.Shared;\n"
@@ -89,14 +90,14 @@ const char* kIntAccumSrc =
     "        ma.load(a, 0, 0, 16);\n"
     "        mb.load(b, 0, 0, 16);\n"
     "        mc.mma(ma, mb);\n"
-    "        mc.scaledAccumI32(iacc, colS);\n"
+    "        mc.scaledAccumI32(iacc, WaveVector.ofLane(colS));\n"
     "        mc.splat(0);\n"
     "        ma.load(a, 256, 0, 16);\n"
     "        mb.load(b, 256, 0, 16);\n"
     "        mc.mma(ma, mb);\n"
-    "        mc.scaledAccumI32(iacc, colS);\n"
-    "        iacc.scaledAccumIntoS(facc, rowF, xs);\n"
-    "        facc.rank1AccumS(rowG, g);\n"
+    "        mc.scaledAccumI32(iacc, WaveVector.ofLane(colS));\n"
+    "        iacc.scaledAccumInto(facc, rowF, WaveVector.ofLane(xs));\n"
+    "        facc.rank1Accum(rowG, WaveVector.ofLane(g));\n"
     "        facc.store(y, 0, 0, 16);\n"
     "    }\n"
     "    public static int32 run() { return 1; }\n"
@@ -171,10 +172,10 @@ TEST(AmdgpuCoopIntAccumTests, intAccumVerbsRejectLoudlyOffNative) {
     EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
         << "off-native the integer verbs must SKIP the kernel loudly:\n"
         << err;
-    EXPECT_NE(err.find("lane L supplies the factor for column"),
-              std::string::npos)
-        << "the skip must state the contract it could not meet:\n" << err;
-    EXPECT_NE(err.find("Shared-vector"), std::string::npos)
+    EXPECT_NE(err.find("native-only"), std::string::npos)
+        << "the skip must state the contract it could not meet — a per-lane "
+           "column factor needs a wave:\n" << err;
+    EXPECT_NE(err.find("WaveVector.ofSlice"), std::string::npos)
         << "the skip must name the spelling that works here:\n" << err;
 }
 

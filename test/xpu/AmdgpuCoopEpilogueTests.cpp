@@ -37,6 +37,7 @@ const char* PRE =
     "package test;\n"
     "import cajeta.xpu.Barrier;\n"
     "import cajeta.xpu.CooperativeMatrix;\n"
+    "import cajeta.xpu.WaveVector;\n"
     "import cajeta.xpu.KernelBuffer;\n"
     "import cajeta.xpu.KernelThread;\n"
     "import cajeta.xpu.Shared;\n";
@@ -101,8 +102,8 @@ std::string scalarEpiKernel() {
         "        ma.load(a, 0, 0, 16);\n"
         "        mb.load(b, 0, 0, 16);\n"
         "        mc.mma(ma, mb);\n"
-        "        mc.scaledAccumIntoS(facc, rowF, cfs);\n"
-        "        mc.scaledAccumInto2S(facc, rowF, cfs, rowG[16], cgs);\n"
+        "        mc.scaledAccumInto(facc, rowF, WaveVector.ofLane(cfs));\n"
+        "        mc.scaledAccumInto2(facc, rowF, WaveVector.ofLane(cfs), rowG[16], WaveVector.ofLane(cgs));\n"
         "        facc.store(y, 0, 0, 16);\n"
         "    }\n"
         "    public static int32 run() { return 1; }\n"

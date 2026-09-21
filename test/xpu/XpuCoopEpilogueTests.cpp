@@ -42,6 +42,7 @@ const char* PRE =
     "package test;\n"
     "import cajeta.xpu.Barrier;\n"
     "import cajeta.xpu.CooperativeMatrix;\n"
+    "import cajeta.xpu.WaveVector;\n"
     "import cajeta.xpu.KernelBuffer;\n"
     "import cajeta.xpu.KernelStream;\n"
     "import cajeta.xpu.KernelThread;\n"
@@ -169,35 +170,33 @@ TEST(XpuCoopEpilogueTests, verbsMatchScalarReferenceExactlyOnCpu) {
         << err;
 }
 
-// 10.12.31 — the scalar-column variants on the CPU tier. The tile there is
-// REPLICATED per work-item, so the other columns' factors are in no lane it
-// can reach; it must reject by name. A silent demote would apply one
+// A WaveVector.ofLane column on the CPU tier. The tile there is REPLICATED
+// per work-item, so a per-lane register value's other columns are in no lane
+// it can reach; it must reject by name. A silent demote would apply one
 // work-item's factor to all sixteen columns and produce a plausible wrong
-// answer, which is the exact defect this family shipped on NVIDIA.
-//
-// Anchored on the contract rather than on the word "NATIVE-ONLY", which
-// named a tier when the real line is whether there is a wave to distribute
-// across.
-TEST(XpuCoopEpilogueTests, scalarColumnVerbsAreNamedNativeOnlyOnCpu) {
+// answer, which is the exact defect this family shipped on NVIDIA. ofSlice
+// and broadcast, whose factors are reachable per column, lower here — this is
+// only about ofLane.
+TEST(XpuCoopEpilogueTests, waveVectorOfLaneIsNamedNativeOnlyOnCpu) {
     std::string bad = std::string(KERNEL);
     std::string from =
         "mc.scaledAccumInto2(facc, rowF, colF, rowG[16], colG);";
     std::string to = "float32 cfs = 1.0f;\n"
-                     "        mc.scaledAccumInto2S(facc, rowF, cfs, "
-                     "rowG[16], cfs);";
+                     "        mc.scaledAccumInto2(facc, rowF, "
+                     "WaveVector.ofLane(cfs), rowG[16], WaveVector.ofLane(cfs));";
     bad.replace(bad.find(from), from.size(), to);
     std::string src = std::string(PRE) +
         "public final class D {\n" + bad +
         "    public static int32 run() { return 1; }\n}\n";
     std::string err;
     EXPECT_EQ(runI32Cpu(src, &err), 1);
-    EXPECT_NE(err.find("lane L supplies the factor for column"),
+    EXPECT_NE(err.find("no wave to distribute a per-lane value"),
               std::string::npos)
         << "the rejection must say WHY the software tile cannot lower "
-           "the scalar variant:\n" << err;
-    EXPECT_NE(err.find("Shared-vector"), std::string::npos)
+           "ofLane:\n" << err;
+    EXPECT_NE(err.find("WaveVector.ofSlice"), std::string::npos)
         << "the rejection must name the spelling that works here:\n" << err;
-    EXPECT_NE(err.find("scaledAccumInto2S"), std::string::npos)
+    EXPECT_NE(err.find("scaledAccumInto2"), std::string::npos)
         << "the diagnostic must NAME the verb:\n" << err;
 }
 
