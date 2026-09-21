@@ -826,9 +826,19 @@ public:
             llvm::Value* rowGPtr = nullptr,
             llvm::Value* colGPtr = nullptr,
             llvm::Value* colFScalar = nullptr,
-            llvm::Value* colGScalar = nullptr) override {
+            llvm::Value* colGScalar = nullptr,
+            llvm::Value* colFStride = nullptr,
+            llvm::Value* colGStride = nullptr) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        // colF[c] lives at colFPtr[c*stride]; stride null means the contiguous
+        // vector (stride 1). `col` is already this element's logical column.
+        auto colIdx = [&](llvm::Value* col, llvm::Value* stride) -> llvm::Value* {
+            if (!stride) return col;
+            if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(stride))
+                if (ci->isOne()) return col;
+            return b.CreateMul(col, stride, "epi.cstride");
+        };
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
 
         const unsigned n = fragCount(faccVal->getType());
@@ -877,7 +887,9 @@ public:
             llvm::Value* cv = colFScalar
                 ? scalarColFactor(b, m, colFScalar, col)
                 : b.CreateLoad(
-                      colETy, b.CreateGEP(colETy, colFPtr, col, "epi.cf.ptr"),
+                      colETy,
+                      b.CreateGEP(colETy, colFPtr, colIdx(col, colFStride),
+                                  "epi.cf.ptr"),
                       "epi.cf");
             llvm::Value* term = b.CreateFMul(rv, cv);
             if (accVal) {
@@ -892,7 +904,8 @@ public:
                 if (!cgv && colGPtr)
                     cgv = b.CreateLoad(
                         colETy,
-                        b.CreateGEP(colETy, colGPtr, col, "epi.cg.ptr"),
+                        b.CreateGEP(colETy, colGPtr, colIdx(col, colGStride),
+                                    "epi.cg.ptr"),
                         "epi.cg");
                 llvm::Value* rg = b.CreateLoad(
                     rowETy, b.CreateGEP(rowETy, rowGPtr, row, "epi.rg.ptr"),

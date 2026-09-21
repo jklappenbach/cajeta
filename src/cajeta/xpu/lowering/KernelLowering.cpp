@@ -3894,6 +3894,59 @@ private:
         return false;
     }
 
+    // A `WaveVector.<factory>(...)` static call in argument position, or null.
+    // The lowering dispatches on the factory NAME (ofSlice/broadcast/ofLane) to
+    // pick how the wave supplies the column vector, exactly as it dispatches the
+    // verbs themselves.
+    std::shared_ptr<MethodCallExpression> waveVectorFactory(
+            const ExpressionPtr& e, const char* factory) {
+        auto mc = std::dynamic_pointer_cast<MethodCallExpression>(e);
+        if (!mc || mc->getMethodCallName() != factory) return nullptr;
+        if (mc->getChildren().empty()) return nullptr;
+        auto id = std::dynamic_pointer_cast<IdentifierExpression>(
+                mc->getChildren()[0]);
+        if (!id || id->getTextValue() != "WaveVector") return nullptr;
+        return mc;
+    }
+
+    // WaveVector.ofSlice(src, base[, stride]) in argument position: the column
+    // factors live in a Shared array, column `c` at `src[base + c*stride]`.
+    // Returns the pointer to element `base` and the stride (default 1) so the
+    // epilogue reads colF[c] = base[c*stride] on every tier — the stride is what
+    // lets one panel hold several tiles' factors interleaved.
+    bool resolveWaveVectorSlice(const ExpressionPtr& e, llvm::Value*& base,
+                                llvm::Type*& elemTy, llvm::Value*& stride) {
+        auto mc = waveVectorFactory(e, "ofSlice");
+        if (!mc) return false;
+        const auto& ps = mc->getParameters();
+        if (ps.size() != 2 && ps.size() != 3)
+            unsupported("WaveVector.ofSlice expects (Shared src, base[, stride])");
+        llvm::Value* b = nullptr; llvm::Type* et = nullptr;
+        if (!resolveBufferBase(ps[0].expression, b, et) || !et)
+            unsupported("WaveVector.ofSlice: src must be a Shared<T> vector");
+        llvm::Value* idx = coerceTo(lowerExpr(ps[1].expression),
+                                    llvm::Type::getInt64Ty(ctx));
+        base = target.bufferElementPtr(builder, mod, b, et, idx);
+        elemTy = et;
+        stride = (ps.size() == 3)
+            ? coerceTo(lowerExpr(ps[2].expression), llvm::Type::getInt32Ty(ctx))
+            : llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 1);
+        return true;
+    }
+
+    // WaveVector.broadcast(v): the same column factor for every column. Lowers
+    // on every tier (a uniform scalar, no wave op).
+    bool resolveWaveVectorBroadcast(const ExpressionPtr& e,
+                                    llvm::Value*& scalar) {
+        auto mc = waveVectorFactory(e, "broadcast");
+        if (!mc) return false;
+        const auto& ps = mc->getParameters();
+        if (ps.size() != 1)
+            unsupported("WaveVector.broadcast expects one value");
+        scalar = lowerExpr(ps[0].expression);
+        return true;
+    }
+
     // CoopStage.panel(dst, src, rowBase, colBase, rows, cols, ld): the
     // workgroup-cooperative global-to-LDS staging copy, every thread striding
     // over the panel. The caller owns the surrounding Barrier.workgroup() calls.
@@ -4322,15 +4375,12 @@ private:
             const bool scaled = (name != "rank1Accum" && name != "rank1AccumS");
             const bool dual = (name == "scaledAccumInto2" ||
                                name == "scaledAccumInto2S");
-            const size_t colAt = scaled ? 2 : 1;
-            llvm::Value* probeLane = nullptr;
-            const bool waveVectorCol =
-                args.size() > colAt
-                && resolveWaveVectorLane(args[colAt].expression, probeLane);
-            const bool scalarCol = waveVectorCol
-                                || name == "scaledAccumIntoS"
-                                || name == "scaledAccumInto2S"
-                                || name == "rank1AccumS";
+            // The legacy S-forms carry a raw per-lane scalar in the column
+            // slot; the neutral forms carry a WaveVector (ofSlice/broadcast/
+            // ofLane) or a plain Shared vector. Both resolve through oneCol.
+            const bool sform = (name == "scaledAccumIntoS" ||
+                                name == "scaledAccumInto2S" ||
+                                name == "rank1AccumS");
             const size_t want = dual ? 5 : (scaled ? 3 : 2);
             if (args.size() != want)
                 unsupported(std::string("CooperativeMatrix.") + name +
@@ -4362,34 +4412,47 @@ private:
             llvm::Value* gB = nullptr; llvm::Type* gE = nullptr;
             llvm::Value* hB = nullptr; llvm::Type* hE = nullptr;
             llvm::Value* cS = nullptr; llvm::Value* gS = nullptr;
+            llvm::Value* cStride = nullptr; llvm::Value* hStride = nullptr;
             const size_t ri = scaled ? 1 : 0;
             if (!resolveBufferBaseOrSlice(args[ri].expression, rB, rE))
                 unsupported(std::string("CooperativeMatrix.") + name +
                             ": rowF must be a Shared<float32> vector "
                             "(or a slice of one)");
-            if (scalarCol) {
-                cS = probeLane ? toFloat(probeLane)
-                               : toFloat(lowerExpr(args[ri + 1].expression));
-                if (dual) {
-                    if (!resolveBufferBaseOrSlice(args[ri + 2].expression,
-                                                  gB, gE))
-                        unsupported("CooperativeMatrix.scaledAccumInto2S: "
-                                    "rowG must be a Shared<float32> vector "
-                                    "(or a slice of one)");
-                    gS = toFloat(lowerExpr(args[ri + 3].expression));
+            // Resolve one column argument into EITHER a vector view (vB, vE,
+            // vStride — WaveVector.ofSlice or a plain Shared vector/slice) OR a
+            // per-column scalar (vScalar — WaveVector.broadcast, ofLane, or a
+            // legacy S-form's raw value). The scalar rides colFScalar, which
+            // each backend distributes by column; the vector rides colFPtr with
+            // its stride.
+            auto oneCol = [&](size_t at, llvm::Value*& vB, llvm::Type*& vE,
+                              llvm::Value*& vStride, llvm::Value*& vScalar) {
+                llvm::Value* lane = nullptr;
+                if (resolveWaveVectorSlice(args[at].expression, vB, vE, vStride))
+                    return;
+                if (resolveWaveVectorBroadcast(args[at].expression, vScalar)) {
+                    vScalar = toFloat(vScalar);
+                    return;
                 }
-            } else {
-                if (!resolveBufferBaseOrSlice(args[ri + 1].expression,
-                                              cB, cE))
+                if (resolveWaveVectorLane(args[at].expression, lane)) {
+                    vScalar = toFloat(lane);
+                    return;
+                }
+                if (sform) {
+                    vScalar = toFloat(lowerExpr(args[at].expression));
+                    return;
+                }
+                if (!resolveBufferBaseOrSlice(args[at].expression, vB, vE))
                     unsupported(std::string("CooperativeMatrix.") + name +
-                                ": colF must be a Shared<float32> vector");
-                if (dual &&
-                    (!resolveBufferBaseOrSlice(args[ri + 2].expression,
-                                               gB, gE) ||
-                     !resolveBufferBaseOrSlice(args[ri + 3].expression,
-                                               hB, hE)))
-                    unsupported("CooperativeMatrix.scaledAccumInto2: "
-                                "rowG/colG must be Shared<float32> vectors");
+                                ": colF must be a Shared<float32> vector, a "
+                                "WaveVector, or a slice of one");
+            };
+            oneCol(ri + 1, cB, cE, cStride, cS);
+            if (dual) {
+                if (!resolveBufferBaseOrSlice(args[ri + 2].expression, gB, gE))
+                    unsupported(std::string("CooperativeMatrix.") + name +
+                                ": rowG must be a Shared<float32> vector "
+                                "(or a slice of one)");
+                oneCol(ri + 3, hB, hE, hStride, gS);
             }
             llvm::Value* accVal = nullptr;
             if (scaled)
@@ -4399,7 +4462,7 @@ private:
                 builder.CreateLoad(facc.matrixType, facc.alloca, "epi.facc");
             llvm::Value* v = target.coopMatrixEpilogueAccum(
                 builder, mod, accVal, faccVal, rB, rE, cB,
-                cE ? cE : rE, gB, hB, cS, gS);
+                cE ? cE : rE, gB, hB, cS, gS, cStride, hStride);
             builder.CreateStore(v, facc.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
@@ -4813,26 +4876,63 @@ private:
             llvm::Value* cB = nullptr; llvm::Type* cE = nullptr;
             llvm::Value* gB = nullptr; llvm::Type* gE = nullptr;
             llvm::Value* hB = nullptr; llvm::Type* hE = nullptr;
+            llvm::Value* cS = nullptr; llvm::Value* gS = nullptr;
+            llvm::Value* cStride = nullptr; llvm::Value* hStride = nullptr;
             const size_t ri = scaled ? 1 : 0;
-            if (!resolveBufferBaseOrSlice(args[ri].expression, rB, rE) ||
-                !resolveBufferBaseOrSlice(args[ri + 1].expression, cB, cE))
+            if (!resolveBufferBaseOrSlice(args[ri].expression, rB, rE))
                 unsupported(std::string("CooperativeMatrix.") + name +
-                            ": rowF/colF must be Shared<float32> vectors");
-            if (dual &&
-                (!resolveBufferBaseOrSlice(args[ri + 2].expression, gB, gE) ||
-                 !resolveBufferBaseOrSlice(args[ri + 3].expression, hB, hE)))
-                unsupported("CooperativeMatrix.scaledAccumInto2: "
-                            "rowG/colG must be Shared<float32> vectors");
+                            ": rowF must be a Shared<float32> vector");
+            // The replicated tile walks the whole R x C, so column `c` is the
+            // real column and colF[c] is a plain read (ofSlice, with stride) or
+            // a uniform scalar (broadcast). ofLane is native-only here: there is
+            // no wave to hold the other columns' factors, so refuse it by name.
+            auto oneColSw = [&](size_t at, llvm::Value*& vB, llvm::Type*& vE,
+                                llvm::Value*& vStride, llvm::Value*& vScalar) {
+                llvm::Value* lane = nullptr;
+                if (resolveWaveVectorSlice(args[at].expression, vB, vE, vStride))
+                    return;
+                if (resolveWaveVectorBroadcast(args[at].expression, vScalar)) {
+                    vScalar = toFloat(vScalar);
+                    return;
+                }
+                if (resolveWaveVectorLane(args[at].expression, lane))
+                    unsupported(std::string("CooperativeMatrix.") + name +
+                                ": WaveVector.ofLane is native-only — the "
+                                "replicated software tile has no wave to "
+                                "distribute a per-lane value across; source the "
+                                "column factors from Shared with "
+                                "WaveVector.ofSlice, or use broadcast");
+                if (!resolveBufferBaseOrSlice(args[at].expression, vB, vE))
+                    unsupported(std::string("CooperativeMatrix.") + name +
+                                ": colF must be a Shared<float32> vector, a "
+                                "WaveVector, or a slice of one");
+            };
+            oneColSw(ri + 1, cB, cE, cStride, cS);
+            if (dual) {
+                if (!resolveBufferBaseOrSlice(args[ri + 2].expression, gB, gE))
+                    unsupported("CooperativeMatrix.scaledAccumInto2: "
+                                "rowG must be a Shared<float32> vector");
+                oneColSw(ri + 3, hB, hE, hStride, gS);
+            }
+            // colF[c] at c*stride, as an i64 index. stride null / scalar: no mul.
+            auto colElem = [&](llvm::Value* c, llvm::Value* vB, llvm::Type* vE,
+                               llvm::Value* vStride,
+                               llvm::Value* vScalar) -> llvm::Value* {
+                if (vScalar) return vScalar;
+                llvm::Value* idx = c;
+                if (vStride) idx = builder.CreateMul(c, vStride);
+                return builder.CreateLoad(
+                    vE, target.bufferElementPtr(builder, mod, vB, vE,
+                                                builder.CreateZExt(idx, i64)),
+                    "epi.cf");
+            };
             emitCountedLoop(R, [&](llvm::Value* r) {
                 llvm::Value* rv = builder.CreateLoad(
                     rE, target.bufferElementPtr(
                             builder, mod, rB, rE,
                             builder.CreateZExt(r, i64)), "epi.rf");
                 emitCountedLoop(C, [&](llvm::Value* c) {
-                    llvm::Value* cv = builder.CreateLoad(
-                        cE, target.bufferElementPtr(
-                                builder, mod, cB, cE,
-                                builder.CreateZExt(c, i64)), "epi.cf");
+                    llvm::Value* cv = colElem(c, cB, cE, cStride, cS);
                     llvm::Value* lin = builder.CreateAdd(
                         builder.CreateMul(r, llvm::ConstantInt::get(i32, C)),
                         c);
@@ -4850,11 +4950,7 @@ private:
                                     builder, mod, gB, gE,
                                     builder.CreateZExt(r, i64)),
                             "epi.rg");
-                        llvm::Value* cg = builder.CreateLoad(
-                            hE, target.bufferElementPtr(
-                                    builder, mod, hB, hE,
-                                    builder.CreateZExt(c, i64)),
-                            "epi.cg");
+                        llvm::Value* cg = colElem(c, hB, hE, hStride, gS);
                         term = builder.CreateFAdd(
                             term, builder.CreateFMul(rg, cg));
                     }
@@ -6433,7 +6529,8 @@ llvm::Value* LoweringTarget::coopMatrixEpilogueAccum(
     llvm::Value* /*faccVal*/, llvm::Value* /*rowFPtr*/, llvm::Type* /*rowETy*/,
     llvm::Value* /*colFPtr*/, llvm::Type* /*colETy*/,
     llvm::Value* /*rowGPtr*/, llvm::Value* /*colGPtr*/,
-    llvm::Value* /*colFScalar*/, llvm::Value* /*colGScalar*/) {
+    llvm::Value* /*colFScalar*/, llvm::Value* /*colGScalar*/,
+    llvm::Value* /*colFStride*/, llvm::Value* /*colGStride*/) {
     // Unreachable by construction: the tier scan demotes verb-using kernels on
     // any backend where coopMatrixEpilogueSupported() is false.
     throw coopMatrixUnsupported(name());

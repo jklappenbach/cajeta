@@ -569,13 +569,20 @@ namespace xpu {
 
         // facc[r][c] += (rowF[r]*colF[c])*acc[r][c] per fragment element of the
         // CURRENT lane; that association is the cross-tier CONTRACT.
+        // colFStride/colGStride (null == 1) scale the column index into colFPtr/
+        // colGPtr, so a WaveVector.ofSlice(arr, base, stride) reads column `c`'s
+        // factor at colFPtr[c*stride] — one panel holding several tiles'
+        // factors interleaved. They apply only to the vector (Ptr) forms; the
+        // scalar forms carry no stride.
         virtual llvm::Value* coopMatrixEpilogueAccum(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
             llvm::Value* faccVal, llvm::Value* rowFPtr, llvm::Type* rowETy,
             llvm::Value* colFPtr, llvm::Type* colETy,
             llvm::Value* rowGPtr = nullptr, llvm::Value* colGPtr = nullptr,
             llvm::Value* colFScalar = nullptr,
-            llvm::Value* colGScalar = nullptr);
+            llvm::Value* colGScalar = nullptr,
+            llvm::Value* colFStride = nullptr,
+            llvm::Value* colGStride = nullptr);
 
         // iacc[e] += colS * acc[e] per fragment element of the CURRENT lane, on
         // two int32 accumulators sharing the element layout (no row/column math).

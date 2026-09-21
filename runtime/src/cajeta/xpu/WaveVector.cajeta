@@ -2,12 +2,31 @@ package cajeta.xpu;
 
 /**
  * WaveVector — `N` values held one per lane across a wave, lane `L`
- * carrying element `L mod N`.
+ * carrying element `L mod N`. It is the vendor-neutral column vector of the
+ * CooperativeMatrix epilogue: the verbs take a `WaveVector<T,N>` and each
+ * backend distributes it as its fragment requires, so the API never names a
+ * fragment layout (xpu-kernel-adaptor 4A.5.4.C).
  *
- * PROBE (xpu-kernel-adaptor 4A.5.4.C). The question this exists to answer is
- * whether the kernel lowering can tell two same-name, same-arity overloads
- * apart. It dispatches on name and arity and never consults the declared
- * signature, so the discrimination has to come from the ARGUMENT EXPRESSION.
+ * A WaveVector is not stored; it is a VIEW named by how the wave supplies its
+ * `N` column factors, and there are three ways:
+ *
+ *   - `ofSlice(arr, base[, stride])` — the factors already live in a
+ *     workgroup-shared array; column `c`'s factor is `arr[base + c*stride]`.
+ *     The common case: the kernel staged a scale panel into LDS once, and each
+ *     epilogue reads its own strided window of it. Lowers on EVERY tier — the
+ *     portable software tile reads the same elements — because it adds no
+ *     wave op and no barrier.
+ *   - `broadcast(value)` — the same factor for every column (a uniform scale).
+ *     Lowers on every tier.
+ *   - `ofLane(value)` — the factor is a per-lane REGISTER value the wave holds
+ *     collectively (lane `L` carries column `L mod N`), computed rather than
+ *     staged. NATIVE-ONLY: a tier with no wave to distribute across — the
+ *     replicated software tile, whose every work-item holds the whole matrix —
+ *     has no other lane to read the other columns' factors from, so it refuses
+ *     the kernel BY NAME rather than use one lane's value for every column.
+ *
+ * Bodiless, like every CooperativeMatrix verb: the kernel lowering recognizes
+ * each factory in argument position and there is nothing to run on the host.
  */
 public final class WaveVector<T, uint32 N> {
     // Placeholder field, as CooperativeMatrix carries one: the value lives in
@@ -18,10 +37,24 @@ public final class WaveVector<T, uint32 N> {
         this.reserved = 0;
     }
 
-    /** Device-only intrinsic: this lane's element — element `L mod N`.
-     *  Bodiless, like every CooperativeMatrix verb: the kernel lowering
-     *  recognizes the call in argument position (resolveWaveVectorLane) and
-     *  there is nothing to run on the host. */
+    /** Device-only intrinsic: this lane's element — element `L mod N`, a
+     *  per-lane register value. NATIVE-ONLY (see the class doc). */
     @Intrinsic
     public static WaveVector<T, N> ofLane(T value);
+
+    /** Device-only intrinsic: a view of the workgroup-shared array `src` where
+     *  column `c`'s factor is `src[base + c]`. Lowers on every tier. */
+    @Intrinsic
+    public static WaveVector<T, N> ofSlice(Shared<T> src, uint32 base);
+
+    /** Device-only intrinsic: a view of `src` where column `c`'s factor is
+     *  `src[base + c*stride]` — the stride lets one shared panel hold the
+     *  factors for several tiles interleaved. Lowers on every tier. */
+    @Intrinsic
+    public static WaveVector<T, N> ofSlice(Shared<T> src, uint32 base, uint32 stride);
+
+    /** Device-only intrinsic: the same factor `value` for every column — a
+     *  uniform scale. Lowers on every tier. */
+    @Intrinsic
+    public static WaveVector<T, N> broadcast(T value);
 }

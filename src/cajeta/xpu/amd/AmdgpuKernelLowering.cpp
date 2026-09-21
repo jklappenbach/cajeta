@@ -964,7 +964,9 @@ public:
             llvm::Value* rowGPtr = nullptr,
             llvm::Value* colGPtr = nullptr,
             llvm::Value* colFScalar = nullptr,
-            llvm::Value* colGScalar = nullptr) override {
+            llvm::Value* colGScalar = nullptr,
+            llvm::Value* colFStride = nullptr,
+            llvm::Value* colGStride = nullptr) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
@@ -973,17 +975,27 @@ public:
             b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15));
         llvm::Value* half =
             b.CreateLShr(lane, llvm::ConstantInt::get(i32, 4));
+        // On AMD the lane owns column lane16, so colF[c]==colFPtr[c*stride]
+        // reads at colFPtr[lane16*stride]; stride null means the contiguous
+        // vector.
+        auto colIdx = [&](llvm::Value* col, llvm::Value* stride) -> llvm::Value* {
+            if (!stride) return col;
+            if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(stride))
+                if (ci->isOne()) return col;
+            return b.CreateMul(col, stride, "epi.cstride");
+        };
         // colF[c] is a per-lane constant either way; the S variants pass it in a register.
         llvm::Value* cv = colFScalar
             ? colFScalar
             : b.CreateLoad(
-                  colETy, b.CreateGEP(colETy, colFPtr, lane16,
-                                      "epi.cf.ptr"),
+                  colETy, b.CreateGEP(colETy, colFPtr,
+                                      colIdx(lane16, colFStride), "epi.cf.ptr"),
                   "epi.cf");
         llvm::Value* cgv = colGScalar;
         if (!cgv && colGPtr)
             cgv = b.CreateLoad(
-                colETy, b.CreateGEP(colETy, colGPtr, lane16, "epi.cg.ptr"),
+                colETy, b.CreateGEP(colETy, colGPtr,
+                                    colIdx(lane16, colGStride), "epi.cg.ptr"),
                 "epi.cg");
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(faccVal->getType());
         unsigned n = vecTy->getNumElements();
