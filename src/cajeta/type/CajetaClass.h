@@ -874,6 +874,21 @@ namespace cajeta {
             vector<StructurePropertyPtr> fields,
             Modifier access);
 
+        /** Does this class still declare an abstract method of its own?
+         *
+         *  A class in that state has an EMPTY VTABLE SLOT. Allocating it
+         *  compiles today and the first call through that slot takes
+         *  SIGSEGV at a null fault address (measured 2026-09-09 on 0.27.0
+         *  with `heap Shape()` where Shape declares `abstract int32
+         *  area()`: exit 139, "fault addr (nil)"). NewExpression asks this
+         *  so the allocation is refused where it is written instead.
+         *
+         *  Declared-here only. A concrete subclass that fails to override
+         *  is a different error with its own check and its own code
+         *  (CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED), and conflating the two
+         *  would report the wrong one at the wrong place. */
+        bool hasAbstractMethod() const;
+
         // @With on the class or a field: synthesizes `withX(T v)`, which memcpys the source
         // body into a fresh instance, overwrites the named slot, and returns it.
         void synthesizeWith();

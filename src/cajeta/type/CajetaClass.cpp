@@ -5274,4 +5274,13 @@ namespace cajeta {
     /** Placeholder for class metadata emission; not implemented. */
     void CajetaClass::generateMetadata() {
     }
+    // See the header: an empty vtable slot that faults on first call, made
+    // into a compile error at the allocation site instead.
+    bool CajetaClass::hasAbstractMethod() const {
+        for (const auto& m : methodList) {
+            if (m && m->isAbstract()) return true;
+        }
+        return false;
+    }
+
 }

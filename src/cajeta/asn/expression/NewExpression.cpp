@@ -375,6 +375,39 @@ namespace cajeta {
         else {
             type = defaultedInstantiation(type, typeName);
         }
+        // An abstract class has an EMPTY VTABLE SLOT, and allocating it has
+        // compiled cleanly until now: the first call through that slot takes
+        // SIGSEGV at a null fault address (measured 2026-09-09 on 0.27.0,
+        // `heap Shape()` against `abstract int32 area()` — exit 139, "fault
+        // addr (nil)"). The allocation site is where it can still be named.
+        //
+        // HERE, not in resolveTypes, and the difference is not cosmetic:
+        // `resolvedType` is NULL at this point for exactly this case — the
+        // first attempt read it and the check silently never fired, which a
+        // must-fire test caught and five must-not-fire tests would not have.
+        // generateCode does its own resolution into `type` above, and that is
+        // the one that is real.
+        //
+        // Only a CLASS allocation, and only when the class declares the
+        // abstract method ITSELF. A concrete subclass that fails to override
+        // is a different error with its own check and code
+        // (CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED); reporting this one there
+        // would name the wrong place. An array of an abstract type
+        // (`heap Shape[4]`) allocates SLOTS, not instances, and stays legal —
+        // it arrives through ArrayCreatorRest, and a test pins that.
+        if (dynamic_pointer_cast<ClassCreatorRest>(creatorRest)) {
+            if (auto k = dynamic_pointer_cast<CajetaClass>(type)) {
+                if (!k->isInterface() && k->hasAbstractMethod()) {
+                    throw Exception(
+                        "cannot allocate '" + k->getQName()->toCanonical()
+                        + "': it declares an abstract method, so its vtable "
+                          "has an empty slot and the first call through that "
+                          "slot would fault. Allocate a concrete subclass, or "
+                          "give the method a body.",
+                        "CAJETA_ERROR_ABSTRACT_INSTANTIATION");
+                }
+            }
+        }
         creatorRest->setTargetType(type);
         // Stack placement goes to ClassCreatorRest (alloca over malloc). Array
         // creators ignore it: arrays are always heap-allocated in v1.
