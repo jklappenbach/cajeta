@@ -208,8 +208,10 @@ XpuAtomicDeviceTests.*
 XpuBitsDeviceTests.*
 XpuConstFoldLdsProbeTests.*
 XpuCpuBarrierEmitTests.*
+XpuCpuDispatchTests.*
 XpuCpuDriverTests.*
 XpuCpuWaveSimdTests.*
+XpuDeviceOnlyCallTests.*
 XpuDeviceProfileAmdDeviceTests.*
 XpuDeviceProfileTests.*
 XpuLaunchCodegenTests.*

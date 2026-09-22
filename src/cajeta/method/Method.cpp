@@ -2119,20 +2119,24 @@ namespace cajeta {
             }
         }
 
-        // A @Kernel or @Device method taking Buffer<T> works on device memory and is
-        // never called on the host — its real lowering is the device function. Emit a
-        // trivial host stub so host codegen never lowers device-only constructs.
+        // A @Kernel is dispatched through .launch, and every backend including cpu
+        // lowers it into its own module, so its host body is never what runs. Keying
+        // the stub on a KernelBuffer parameter missed kernels taking other device-only
+        // types (Image2D), whose bodies then lowered as host code. @Device keeps that
+        // gate: it means ALSO usable on the device, so those bodies are host-callable.
         if (cajeta::xpu::isKernel(*this) || cajeta::xpu::isDevice(*this)) {
-            bool hasDeviceBuffer = false;
-            for (auto& p : parameterList) {
-                if (p && p->getType()
-                        && p->getType()->toCanonical().rfind(
-                               "cajeta.xpu.KernelBuffer", 0) == 0) {
-                    hasDeviceBuffer = true;
-                    break;
+            bool stubHostBody = cajeta::xpu::isKernel(*this);
+            if (!stubHostBody) {
+                for (auto& p : parameterList) {
+                    if (p && p->getType()
+                            && p->getType()->toCanonical().rfind(
+                                   "cajeta.xpu.KernelBuffer", 0) == 0) {
+                        stubHostBody = true;
+                        break;
+                    }
                 }
             }
-            if (hasDeviceBuffer) {
+            if (stubHostBody) {
                 llvm::BasicBlock* bb = llvm::BasicBlock::Create(
                     *module->getLlvmContext(), "entry", llvmFunction);
                 llvm::IRBuilder<> b(bb);
@@ -2142,6 +2146,7 @@ namespace cajeta {
                     b.CreateRet(llvm::Constant::getNullValue(
                         llvmFunction->getReturnType()));
                 }
+                llvmBasicBlock = bb;   // mark emitted (idempotency guard above)
                 return;
             }
         }
