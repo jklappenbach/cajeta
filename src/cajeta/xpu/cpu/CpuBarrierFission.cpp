@@ -57,6 +57,28 @@ struct RegionJob {
     llvm::Value* linear = nullptr;              // tz*ntidY*ntidX + ty*ntidX + tx
 };
 
+// The loads and stores that ultimately address `base`, whether directly or
+// through a GEP / bitcast chain. A distributed cooperative-matrix tile reaches
+// its per-lane slot alloca ONLY through a GEP (distElemPtr), so its stores and
+// loads never name the alloca directly -- the taint and the context-array steps
+// below must follow the GEP or they take the tile's per-work-item accumulator
+// for a uniform local and never materialize it across a barrier.
+void collectMemUsers(llvm::Value* base,
+                     llvm::SmallVectorImpl<llvm::LoadInst*>& loads,
+                     llvm::SmallVectorImpl<llvm::StoreInst*>& stores) {
+    for (llvm::User* u : base->users()) {
+        if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(u)) {
+            if (ld->getPointerOperand() == base) loads.push_back(ld);
+        } else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+            if (st->getPointerOperand() == base) stores.push_back(st);
+        } else if (auto* g = llvm::dyn_cast<llvm::GetElementPtrInst>(u)) {
+            if (g->getPointerOperand() == base) collectMemUsers(g, loads, stores);
+        } else if (llvm::isa<llvm::BitCastInst>(u)) {
+            collectMemUsers(u, loads, stores);
+        }
+    }
+}
+
 // Least fixpoint of the per-work-item value set over SSA def-use AND memory
 // round-trips: pre-mem2reg a store/load through an alloca slot breaks the SSA
 // chain, so loads from any tainted slot are tainted too. Widening is safe.
@@ -74,16 +96,17 @@ void computeTaint(llvm::ArrayRef<llvm::Value*> seeds,
         }
         bool added = false;                           // memory propagation
         for (llvm::AllocaInst* a : slots) {
+            llvm::SmallVector<llvm::LoadInst*, 8> loads;
+            llvm::SmallVector<llvm::StoreInst*, 8> stores;
+            collectMemUsers(a, loads, stores);        // direct AND via GEP
             bool perWorkItem = false;
-            for (llvm::User* u : a->users())
-                if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u))
-                    if (tainted.count(st->getValueOperand())) {
-                        perWorkItem = true; break;
-                    }
+            for (llvm::StoreInst* st : stores)
+                if (tainted.count(st->getValueOperand())) {
+                    perWorkItem = true; break;
+                }
             if (!perWorkItem) continue;
-            for (llvm::User* u : a->users())
-                if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(u))
-                    if (!tainted.count(ld)) { work.push_back(ld); added = true; }
+            for (llvm::LoadInst* ld : loads)
+                if (!tainted.count(ld)) { work.push_back(ld); added = true; }
         }
         if (!added) break;
     }
@@ -621,20 +644,28 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // --- 7. Context arrays for tid-tainted locals live across a barrier -----
     llvm::DenseMap<llvm::AllocaInst*, llvm::AllocaInst*> ctxArray;
     for (llvm::AllocaInst* a : allocas) {
+        // Follow GEPs: a distributed coop tile's per-lane slot is reached only
+        // through distElemPtr's GEP, so its stores/loads -- and the regions they
+        // sit in -- are invisible to a direct-user scan, and the accumulator
+        // that MUST cross the barrier looks like a uniform single-region local.
+        llvm::SmallVector<llvm::LoadInst*, 8> loads;
+        llvm::SmallVector<llvm::StoreInst*, 8> stores;
+        collectMemUsers(a, loads, stores);
         bool perWorkItem = false;
         int only = -2;
         bool multi = false;
-        for (llvm::User* u : a->users()) {
-            auto* i = llvm::dyn_cast<llvm::Instruction>(u);
-            if (!i) continue;
-            if (auto* st = llvm::dyn_cast<llvm::StoreInst>(i))
-                if (tainted.count(st->getValueOperand())) perWorkItem = true;
+        auto noteRegion = [&](llvm::Instruction* i) {
             int rg = regionOf(i->getParent());
             if (rg >= 0) {
                 if (only == -2) only = rg;
                 else if (only != rg) multi = true;
             }
+        };
+        for (llvm::StoreInst* st : stores) {
+            if (tainted.count(st->getValueOperand())) perWorkItem = true;
+            noteRegion(st);
         }
+        for (llvm::LoadInst* ld : loads) noteRegion(ld);
         if (perWorkItem && multi) {
             auto* arr = eb.CreateAlloca(a->getAllocatedType(), 0, ntidAll,
                                         a->getName() + ".ctx");
@@ -817,6 +848,12 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 } else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&in)) {
                     ptr = st->getPointerOperand();
                     ptrIdx = st->getPointerOperandIndex();
+                } else if (auto* g = llvm::dyn_cast<llvm::GetElementPtrInst>(&in)) {
+                    // A coop tile's per-lane access is a GEP off the slot alloca;
+                    // redirect the GEP's base to this work-item's context slice,
+                    // and the load/store hanging off the GEP follows for free.
+                    ptr = g->getPointerOperand();
+                    ptrIdx = g->getPointerOperandIndex();
                 }
                 if (!ptr) continue;
                 auto f = ctxArray.find(llvm::dyn_cast<llvm::AllocaInst>(ptr));

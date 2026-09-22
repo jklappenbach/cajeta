@@ -426,4 +426,359 @@ TEST(XpuCpuDistCoopVerb, ofLaneAutoDistributesWithoutEnv) {
         << " (-1 = skipped == not distributed, 1000+cell = wrong)";
 }
 
+// ---- PROBE: a column-major B load on the distributed tile (G=2) --------- //
+//
+// The real q6kWmmaDeqMw4 loads its B operand COLUMN-MAJOR (mb.load(deq, off, 1,
+// 16)); every other test here loads row-major (layout 0), so the distributed
+// load's column-major path at wave=32 / G=2 was never exercised. This isolates
+// it: A[r][k]=r+1 (row-major), B[k][c]=c+1 stored column-major so element (k,c)
+// lives at b[c*16+k]. C[r][c] = sum_k (r+1)(c+1) = 16(r+1)(c+1), distinctive per
+// cell. A wrong cell means the distributed column-major load (distBufIdx's cm
+// branch) is the deqMw4 bug; a pass rules it out and points at the tiling.
+const char* kColMajorBSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+public class M {
+    @Kernel
+    public static void mm(KernelBuffer<float32> y,
+                          KernelBuffer<float32> a, KernelBuffer<float32> b) {
+        CooperativeMatrix<float32,16,16,0> ma;
+        CooperativeMatrix<float32,16,16,1> mb;
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        ma.load(a, 0, 0, 16);   // A row-major
+        mb.load(b, 0, 1, 16);   // B COLUMN-MAJOR (layout 1) -- the probe
+        mc.mma(ma, mb);
+        mc.store(y, 0, 0, 16);
+    }
+    public static int32 run() {
+        float32[] ha = heap float32[256];
+        float32[] hb = heap float32[256];
+        float32[] hy = heap float32[256];
+        int32 r = 0;
+        while (r < 16) {
+            int32 c = 0;
+            while (c < 16) {
+                ha[r * 16 + c] = (float32) (r + 1);   // A[r][k]=r+1 (row-major)
+                hb[c * 16 + r] = (float32) (c + 1);   // B[k=r][c]=c+1 (col-major)
+                hy[r * 16 + c] = -1.0f;
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+        KernelBuffer<float32> a = heap KernelBuffer<float32>(256);
+        KernelBuffer<float32> b = heap KernelBuffer<float32>(256);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(256);
+        a.upload(ha);
+        b.upload(hb);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        mm.launch(s, grid: [1], block: [32])(y, a, b);
+        s.sync();
+        y.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        int32 rr = 0;
+        while (rr < 16) {
+            int32 cc = 0;
+            while (cc < 16) {
+                float32 want = (float32) (16 * (rr + 1) * (cc + 1));
+                if (hy[rr * 16 + cc] != want) { return 1000 + rr * 16 + cc; }
+                cc = cc + 1;
+            }
+            rr = rr + 1;
+        }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuDistCoopVerb, columnMajorBLoadIsCorrectAtG2) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kColMajorBSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, 0)
+        << "distributed column-major B load wrong; r=" << r
+        << " (-1 = refused, 1000+cell = first wrong cell, -2 = no compile)";
+}
+
+// ---- PROBE: two coop waves in one block, distinct tiles (multi-wave) ---- //
+//
+// The real deqMw4 is block:[256] = 8 waves, each wave (wid=tid/32) computing a
+// DIFFERENT output row-block from its own weights. Every test above is a single
+// 32-lane wave. This isolates the multi-wave case: block:[64] = 2 waves, each
+// loading its own B (offset wid*256) and storing to its own output (offset
+// wid*256), against a shared A. C_wid[r][c] = 16*(r+1)*((c+1)+wid*100), distinct
+// per wave. A wrong wave-1 cell (or wave 1 clobbering wave 0) means multiple
+// coop waves in one CPU block do not coexist; both correct rules multi-wave out.
+const char* kTwoWaveSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+public class M {
+    @Kernel
+    public static void mm(KernelBuffer<float32> y,
+                          KernelBuffer<float32> a, KernelBuffer<float32> b) {
+        uint32 wid = KernelThread.x() / 32;
+        CooperativeMatrix<float32,16,16,0> ma;
+        CooperativeMatrix<float32,16,16,1> mb;
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        ma.load(a, 0, 0, 16);              // A shared across waves
+        mb.load(b, wid * 256, 0, 16);      // B per wave
+        mc.mma(ma, mb);
+        mc.store(y, wid * 256, 0, 16);     // output per wave
+    }
+    public static int32 run() {
+        float32[] ha = heap float32[256];
+        float32[] hb = heap float32[512];
+        float32[] hy = heap float32[512];
+        int32 r = 0;
+        while (r < 16) {
+            int32 c = 0;
+            while (c < 16) {
+                ha[r * 16 + c] = (float32) (r + 1);              // A[r][k]=r+1
+                hb[r * 16 + c] = (float32) (c + 1);              // wave0 B
+                hb[256 + r * 16 + c] = (float32) ((c + 1) + 100);// wave1 B
+                hy[r * 16 + c] = -1.0f;
+                hy[256 + r * 16 + c] = -1.0f;
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+        KernelBuffer<float32> a = heap KernelBuffer<float32>(256);
+        KernelBuffer<float32> b = heap KernelBuffer<float32>(512);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(512);
+        a.upload(ha);
+        b.upload(hb);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        mm.launch(s, grid: [1], block: [64])(y, a, b);
+        s.sync();
+        y.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        int32 w = 0;
+        while (w < 2) {
+            int32 rr = 0;
+            while (rr < 16) {
+                int32 cc = 0;
+                while (cc < 16) {
+                    float32 want = (float32) (16 * (rr + 1) * ((cc + 1) + w * 100));
+                    if (hy[w * 256 + rr * 16 + cc] != want) {
+                        return 10000 * (w + 1) + rr * 16 + cc;
+                    }
+                    cc = cc + 1;
+                }
+                rr = rr + 1;
+            }
+            w = w + 1;
+        }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuDistCoopVerb, twoCoopWavesInOneBlockAreDistinct) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kTwoWaveSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, 0)
+        << "two coop waves in one block wrong; r=" << r
+        << " (-1 = refused, 10000*(wave+1)+cell = first wrong cell)";
+}
+
+// ---- PROBE: facc accumulated across a loop of epilogue calls ----------- //
+//
+// deqMw4 splats facc ONCE, then loops { mc.splat; mc.mma; scaledAccumInto(facc,
+// rowF, ofLane(cf)) }, so facc accumulates the epilogue term every iteration.
+// Every epilogue test above makes exactly one call. This isolates the loop:
+// same inputs each of 3 iterations, so facc must be 3x the single-call result.
+// A[r][k]=1,B[k][c]=1 -> mc=16; rowF[r]=r+1, cf(c)=c+1 -> one term =
+// 16*(r+1)*(c+1); three -> 48*(r+1)*(c+1). A wrong cell means facc does not
+// persist/accumulate across calls (a re-splat, stale read, or double-add).
+const char* kLoopAccumSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.WaveVector;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+public class M {
+    @Kernel
+    public static void mm(KernelBuffer<float32> y, KernelBuffer<int8> a,
+                          KernelBuffer<int8> b, KernelBuffer<float32> rowF) {
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> mc;
+        CooperativeMatrix<float32,16,16,2> facc;
+        facc.splat(0.0f);
+        int32 col = (int32) (KernelThread.x() % 16);
+        float32 cf = (float32) (col + 1);
+        int32 it = 0;
+        while (it < 3) {
+            mc.splat(0);
+            ma.load(a, 0, 0, 16);
+            mb.load(b, 0, 0, 16);
+            mc.mma(ma, mb);
+            mc.scaledAccumInto(facc, rowF, WaveVector.ofLane(cf));
+            it = it + 1;
+        }
+        facc.store(y, 0, 0, 16);
+    }
+    public static int32 run() {
+        int8[] ha = heap int8[256];
+        int8[] hb = heap int8[256];
+        float32[] hrf = heap float32[16];
+        float32[] hy = heap float32[256];
+        int32 r = 0;
+        while (r < 16) {
+            hrf[r] = (float32) (r + 1);
+            int32 k = 0;
+            while (k < 16) {
+                ha[r * 16 + k] = (int8) 1;
+                hb[r * 16 + k] = (int8) 1;
+                hy[r * 16 + k] = -1.0f;
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(256);
+        KernelBuffer<int8> b = heap KernelBuffer<int8>(256);
+        KernelBuffer<float32> rowF = heap KernelBuffer<float32>(16);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(256);
+        a.upload(ha);
+        b.upload(hb);
+        rowF.upload(hrf);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        mm.launch(s, grid: [1], block: [32])(y, a, b, rowF);
+        s.sync();
+        y.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        int32 rr = 0;
+        while (rr < 16) {
+            int32 cc = 0;
+            while (cc < 16) {
+                float32 want = (float32) (48 * (rr + 1) * (cc + 1));
+                if (hy[rr * 16 + cc] != want) { return 1000 + rr * 16 + cc; }
+                cc = cc + 1;
+            }
+            rr = rr + 1;
+        }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuDistCoopVerb, faccAccumulatesAcrossEpilogueLoop) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kLoopAccumSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, 0)
+        << "facc loop accumulation wrong; r=" << r
+        << " (-1 = refused, 1000+cell = first wrong cell; expected 3x term)";
+}
+
+// ---- PROBE: a barrier INSIDE the accumulation loop (fission x loop) ----- //
+//
+// deqMw4's barrier lives inside its b-loop: { stage Shared; barrier; mma +
+// scaledAccumInto(facc,...); barrier } repeated, facc accumulating. The
+// straight-line barrier test and the no-barrier loop test both pass; this is
+// their untested product -- barrier fission of a LOOP body wrapped around the
+// coop tile. Same math as the loop probe (3 iterations -> 48*(r+1)*(c+1)), but
+// the row factor is staged into Shared behind a barrier each iteration. A wrong
+// cell means the fissioned loop corrupts the coop tile's carried state.
+const char* kBarrierLoopSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.WaveVector;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Barrier;
+public class M {
+    @Kernel
+    public static void mm(KernelBuffer<float32> y,
+                          KernelBuffer<int8> a, KernelBuffer<int8> b) {
+        Shared<float32> rowF = shared float32[16];
+        uint32 tid = KernelThread.x();
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> mc;
+        CooperativeMatrix<float32,16,16,2> facc;
+        facc.splat(0.0f);
+        int32 col = (int32) (tid % 16);
+        float32 cf = (float32) (col + 1);
+        int32 bb = 0;
+        while (bb < 3) {
+            if (tid < 16) { rowF[tid] = (float32) (tid + 1); }
+            Barrier.workgroup();
+            mc.splat(0);
+            ma.load(a, 0, 0, 16);
+            mb.load(b, 0, 0, 16);
+            mc.mma(ma, mb);
+            mc.scaledAccumInto(facc, rowF, WaveVector.ofLane(cf));
+            Barrier.workgroup();
+            bb = bb + 1;
+        }
+        facc.store(y, 0, 0, 16);
+    }
+    public static int32 run() {
+        int8[] ha = heap int8[256];
+        int8[] hb = heap int8[256];
+        float32[] hy = heap float32[256];
+        int32 r = 0;
+        while (r < 16) {
+            int32 k = 0;
+            while (k < 16) {
+                ha[r * 16 + k] = (int8) 1;
+                hb[r * 16 + k] = (int8) 1;
+                hy[r * 16 + k] = -1.0f;
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(256);
+        KernelBuffer<int8> b = heap KernelBuffer<int8>(256);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(256);
+        a.upload(ha);
+        b.upload(hb);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        mm.launch(s, grid: [1], block: [32])(y, a, b);
+        s.sync();
+        y.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        int32 rr = 0;
+        while (rr < 16) {
+            int32 cc = 0;
+            while (cc < 16) {
+                float32 want = (float32) (48 * (rr + 1) * (cc + 1));
+                if (hy[rr * 16 + cc] != want) { return 1000 + rr * 16 + cc; }
+                cc = cc + 1;
+            }
+            rr = rr + 1;
+        }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuDistCoopVerb, coopSurvivesBarrierInsideLoop) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kBarrierLoopSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, 0)
+        << "coop through barrier-in-loop wrong; r=" << r
+        << " (-1 = refused, 1000+cell = first wrong cell; expected 3x term)";
+}
+
 }  // namespace
