@@ -781,4 +781,143 @@ TEST(XpuCpuDistCoopVerb, coopSurvivesBarrierInsideLoop) {
         << " (-1 = refused, 1000+cell = first wrong cell; expected 3x term)";
 }
 
+
+// Multi-accumulator distributed coop: the shape a native Q6-style deq-matmul
+// kernel drives (four int32 accumulators mc0-3 feeding four f32 accumulators
+// facc0-3, `ma` reloaded once per accumulator, ONE `mb` reused across all four
+// mma's) run through the distributed CPU tile inside a barrier-loop. The single-
+// accumulator tests above (coopSurvivesBarrierInsideLoop) never exercise more
+// than one per-lane accumulator alloca at a time; this pins that several
+// distinct accumulators keep their own per-lane slots and row->slot mapping.
+// Block n is filled with (n+1) so mc_n = 16*(n+1), distinct per accumulator;
+// after 3 loop iters facc_n[r][c] = 3 * 16*(n+1) * rowF(r) * cf(c)
+//   = 48*(n+1)*(r+1)*(c+1). Each facc_n stores to its OWN 256-element region
+// (offset n*256, a flat element offset -- NOT a row-block index), so any
+// cross-accumulator overlap shows as a wrong cell: run() returns
+// 1000 + n*256 + r*16 + c at the first mismatch.
+const char* kMultiAccumSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.WaveVector;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Barrier;
+public class M {
+    @Kernel
+    public static void mm(KernelBuffer<float32> y,
+                          KernelBuffer<int8> a, KernelBuffer<int8> b) {
+        Shared<float32> rowF = shared float32[16];
+        uint32 tid = KernelThread.x();
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> mc0;
+        CooperativeMatrix<int32,16,16,2> mc1;
+        CooperativeMatrix<int32,16,16,2> mc2;
+        CooperativeMatrix<int32,16,16,2> mc3;
+        CooperativeMatrix<float32,16,16,2> facc0;
+        CooperativeMatrix<float32,16,16,2> facc1;
+        CooperativeMatrix<float32,16,16,2> facc2;
+        CooperativeMatrix<float32,16,16,2> facc3;
+        facc0.splat(0.0f);
+        facc1.splat(0.0f);
+        facc2.splat(0.0f);
+        facc3.splat(0.0f);
+        int32 col = (int32) (tid % 16);
+        float32 cf = (float32) (col + 1);
+        int32 bb = 0;
+        while (bb < 3) {
+            if (tid < 16) { rowF[tid] = (float32) (tid + 1); }
+            Barrier.workgroup();
+            mb.load(b, 0, 0, 16);
+            mc0.splat(0);
+            ma.load(a, 0, 0, 16);
+            mc0.mma(ma, mb);
+            mc0.scaledAccumInto(facc0, rowF, WaveVector.ofLane(cf));
+            mc1.splat(0);
+            ma.load(a, 256, 0, 16);
+            mc1.mma(ma, mb);
+            mc1.scaledAccumInto(facc1, rowF, WaveVector.ofLane(cf));
+            mc2.splat(0);
+            ma.load(a, 512, 0, 16);
+            mc2.mma(ma, mb);
+            mc2.scaledAccumInto(facc2, rowF, WaveVector.ofLane(cf));
+            mc3.splat(0);
+            ma.load(a, 768, 0, 16);
+            mc3.mma(ma, mb);
+            mc3.scaledAccumInto(facc3, rowF, WaveVector.ofLane(cf));
+            Barrier.workgroup();
+            bb = bb + 1;
+        }
+        facc0.store(y, 0, 0, 16);
+        facc1.store(y, 256, 0, 16);
+        facc2.store(y, 512, 0, 16);
+        facc3.store(y, 768, 0, 16);
+    }
+    public static int32 run() {
+        int8[] ha = heap int8[1024];
+        int8[] hb = heap int8[256];
+        float32[] hy = heap float32[1024];
+        int32 n = 0;
+        while (n < 4) {
+            int32 r = 0;
+            while (r < 16) {
+                int32 k = 0;
+                while (k < 16) {
+                    ha[(n * 16 + r) * 16 + k] = (int8) (n + 1);
+                    k = k + 1;
+                }
+                r = r + 1;
+            }
+            n = n + 1;
+        }
+        int32 i = 0;
+        while (i < 256) { hb[i] = (int8) 1; i = i + 1; }
+        int32 j = 0;
+        while (j < 1024) { hy[j] = -1.0f; j = j + 1; }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(1024);
+        KernelBuffer<int8> b = heap KernelBuffer<int8>(256);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(1024);
+        a.upload(ha);
+        b.upload(hb);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        mm.launch(s, grid: [1], block: [32])(y, a, b);
+        s.sync();
+        y.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        int32 nn = 0;
+        while (nn < 4) {
+            int32 rr = 0;
+            while (rr < 16) {
+                int32 cc = 0;
+                while (cc < 16) {
+                    float32 want = (float32) (48 * (nn + 1) * (rr + 1) * (cc + 1));
+                    if (hy[nn * 256 + rr * 16 + cc] != want) {
+                        return 1000 + nn * 256 + rr * 16 + cc;
+                    }
+                    cc = cc + 1;
+                }
+                rr = rr + 1;
+            }
+            nn = nn + 1;
+        }
+        return 0;
+    }
+}
+)CJ";
+
+// Four accumulators, `ma` reloaded per accumulator, one shared `mb` reused
+// across all four mma's, inside a barrier-loop. A wrong facc_n names its block
+// in the return value; r==0 means every accumulator kept its own per-lane slots.
+TEST(XpuCpuDistCoopVerb, multiAccumReuseMbAcrossBarrierLoop) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kMultiAccumSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, 0)
+        << "multi-accumulator coop wrong; r=" << r
+        << " (-1 refused, 1000+n*256+r*16+c = first wrong cell; block n = (r-1000)/256)";
+}
 }  // namespace
