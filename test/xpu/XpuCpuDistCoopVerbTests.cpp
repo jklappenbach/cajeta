@@ -397,4 +397,30 @@ TEST(XpuCpuDistCoopVerb, distributedTileForcedWidthSurvivesBarrierFission) {
         << " (-1 = refused, 1000+cell = first wrong cell, -2 = no compile)";
 }
 
+// ---- 4A.7.2.4: distribution is the DEFAULT for kernels that need it ---- //
+//
+// A kernel using fromWords or a WaveVector.ofLane epilogue factor has NO
+// replicated lowering, so on cpu it MUST take the distributed tile or be
+// skipped. After 4A.7.2.4 that happens automatically, with NO env: if the gate
+// did NOT fire, fromWords/ofLane would hit the replicated tile, be unsupported,
+// and the kernel would be skipped -- the sentinel would survive and run() would
+// return -1. run()==0 with no env is therefore proof the kernel auto-distributed.
+TEST(XpuCpuDistCoopVerb, fromWordsAutoDistributesWithoutEnv) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");     // no opt-in: needed => distributed
+    int r = runOnCpu(kFromWordsSrc);
+    EXPECT_EQ(r, 0)
+        << "fromWords kernel did not auto-distribute; r=" << r
+        << " (-1 = skipped == not distributed, 1000+cell = wrong)";
+}
+
+TEST(XpuCpuDistCoopVerb, ofLaneAutoDistributesWithoutEnv) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    int r = runOnCpu(kEpiOfLaneSrc);
+    EXPECT_EQ(r, 0)
+        << "ofLane epilogue kernel did not auto-distribute; r=" << r
+        << " (-1 = skipped == not distributed, 1000+cell = wrong)";
+}
+
 }  // namespace

@@ -3605,11 +3605,19 @@ private:
      */
     void decideCoopDistribution(
             const std::set<std::pair<uint32_t, uint32_t>>& shapes,
-            bool verbsOk, bool anyPortable) {
+            bool verbsOk, bool needsDistribution, bool anyPortable) {
         coopDistributeW = 0;
         if (!anyPortable || !verbsOk || shapes.size() != 1) return;
+        // Distribute when the kernel NEEDS it -- it uses a verb with no
+        // replicated lowering (fromWords, or a WaveVector.ofLane epilogue
+        // factor), so replication would skip it -- or when explicitly forced on
+        // through the opt-in seam. A kernel that CAN replicate stays replicated:
+        // the result is identical and it costs no wave shuffles. The env is now a
+        // force-on override (tests, and distributing a replicable tile to shed
+        // its per-lane scratch), not the gate.
         const char* env = std::getenv("CAJETA_GPU_COOPMATRIX_DIST");
-        if (!env || std::string(env) != "on") return;   // opt-in while it settles
+        bool forceOn = env && std::string(env) == "on";
+        if (!needsDistribution && !forceOn) return;
         uint32_t R = shapes.begin()->first, C = shapes.begin()->second;
         if (R == 0 || C == 0 || R != C) return;         // K == C is the identity
         unsigned W = target.distributedCoopMatrixWaveWidth(C);
@@ -3629,10 +3637,13 @@ private:
         bool anyNative = false;
         bool anyPortable = false;
         bool anyEpilogueVerb = false;
-        // For the distribute decision: every portable tile's shape, and whether
-        // the body uses only the four verbs the distributed layout implements.
+        // For the distribute decision: every portable tile's shape, whether the
+        // body uses only verbs the distributed layout implements, and whether it
+        // uses a verb that has NO replicated lowering (so a portable-tier kernel
+        // must distribute or be skipped).
         std::set<std::pair<uint32_t, uint32_t>> portableShapes;
         bool distributableVerbsOnly = true;
+        bool needsDistribution = false;
         std::function<void(const AbstractSyntaxNodePtr&)> walk =
             [&](const AbstractSyntaxNodePtr& node) {
                 if (!node) return;
@@ -3654,6 +3665,19 @@ private:
                     if (mn == "scaledAccumIntoS" ||
                         mn == "scaledAccumInto2S" || mn == "rank1AccumS")
                         distributableVerbsOnly = false;
+                    // Verbs with no replicated lowering: `fromWords` and a
+                    // `WaveVector.ofLane` epilogue factor both need a wave to
+                    // distribute a per-lane slice across, so a portable-tier
+                    // kernel that uses either MUST take the distributed tile
+                    // (else it is skipped). This is what makes distribution the
+                    // default on cpu for the k-quant kernels, no env required.
+                    if (mn == "fromWords") needsDistribution = true;
+                    if (mn == "ofLane" && !vmc->getChildren().empty())
+                        if (auto rid =
+                                std::dynamic_pointer_cast<IdentifierExpression>(
+                                    vmc->getChildren()[0]))
+                            if (rid->getTextValue() == "WaveVector")
+                                needsDistribution = true;
                 }
                 if (auto lvd =
                         std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
@@ -3703,6 +3727,7 @@ private:
         walk(root);
         coopStraddleDemote = anyNative && anyPortable;
         decideCoopDistribution(portableShapes, distributableVerbsOnly,
+                               needsDistribution,
                                anyPortable || coopStraddleDemote);
         if (anyEpilogueVerb && anyNative &&
             !target.coopMatrixEpilogueSupported()) {
