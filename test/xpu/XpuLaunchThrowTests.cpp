@@ -9,13 +9,14 @@
 // naming both. A routing layer catches it and falls through; a direct launch
 // lets it abort rather than compute on garbage.
 //
-// This is the FOUNDATION test: it calls `Device.checkLaunch()` explicitly,
-// before the compiler emits that call after every `.launch()`. It pins the two
-// halves a check needs (CLAUDE.md §5) on the CPU backend, which refuses a
-// native-only construct deterministically with no device:
+// The compiler emits `Device.checkLaunch()` after every `.launch()`, so a
+// refused launch RAISES at the launch site itself. This pins the two halves a
+// check needs (CLAUDE.md §5) on the CPU backend, which refuses a native-only
+// construct deterministically with no device:
 //   FIRES         — a WaveVector.ofLane kernel (native-only) is refused on cpu;
-//                   checkLaunch throws, and the message names the kernel + "cpu".
-//   does NOT fire — a plain kernel registers and runs; checkLaunch is silent.
+//                   its `.launch()` throws XpuLaunchException naming the kernel
+//                   and "cpu", caught at the launch site.
+//   does NOT fire — a plain kernel registers and runs; its `.launch()` is silent.
 //
 
 #include "gtest/gtest.h"
@@ -34,7 +35,6 @@ const char* kSrc = R"CJ(
 package test;
 import cajeta.xpu.Barrier;
 import cajeta.xpu.CooperativeMatrix;
-import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
@@ -65,29 +65,31 @@ public final class M {
         uint32 t = KernelThread.globalIdX();
         out[t] = 7;
     }
-    // 0 = both halves right; 1..3 identify which failed.
+    // 0 = both halves right; 1..4 identify which failed.
     public static int32 run() {
         KernelStream s #= KernelStream.current();
         KernelBuffer<float32> rin = heap KernelBuffer<float32>(16);
         KernelBuffer<float32> cin = heap KernelBuffer<float32>(16);
         KernelBuffer<float32> fout = heap KernelBuffer<float32>(256);
-        // FIRES: the refused launch makes checkLaunch raise, catchable + named.
-        refusedK.launch(s, grid: [1], block: [32])(rin, cin, fout);
-        s.sync();
+        // FIRES: the refused launch raises at the launch site (compiler-emitted
+        // checkLaunch), catchable and naming the kernel + backend.
         boolean threw = false;
         try {
-            Device.checkLaunch();
+            refusedK.launch(s, grid: [1], block: [32])(rin, cin, fout);
         } catch (XpuLaunchException e) {
             threw = true;
             if (!e.message.contains("refusedK")) { return 2; }
             if (!e.message.contains("cpu")) { return 3; }
         }
         if (!threw) { return 1; }
-        // does NOT fire: a registered launch leaves checkLaunch silent.
+        // does NOT fire: a registered launch does not raise.
         KernelBuffer<int32> pout = heap KernelBuffer<int32>(16);
-        plainK.launch(s, grid: [1], block: [16])(pout);
-        s.sync();
-        Device.checkLaunch();   // must not throw
+        try {
+            plainK.launch(s, grid: [1], block: [16])(pout);
+            s.sync();
+        } catch (XpuLaunchException e) {
+            return 4;
+        }
         return 0;
     }
 }
@@ -112,5 +114,6 @@ TEST(XpuLaunchThrow, cpuRefusedLaunchRaisesCatchableNamed) {
     EXPECT_EQ(runOn(cajeta::xpu::Backend::Cpu), 0)
         << "1 = a refused launch did NOT raise; "
            "2 = the exception did not name the kernel; "
-           "3 = the exception did not name the backend";
+           "3 = the exception did not name the backend; "
+           "4 = a registered launch wrongly raised";
 }

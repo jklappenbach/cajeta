@@ -848,6 +848,18 @@ namespace cajeta {
         llvm::Function* getRuntimeFunction(const std::string& name,
                                            llvm::Module* explicitTarget = nullptr);
 
+        // Emit a call to a stdlib STATIC no-arg void method, named by its
+        // fully-qualified class and method name, at the builder's current
+        // insertion point. The general primitive behind a compiler-INJECTED
+        // stdlib call (the launch-refusal guard is the first user; drop-chain
+        // and other guards can reuse it). The named class's package is always
+        // parsed by codegen time -- any reference to it drained its lazy stdlib
+        // package -- so it resolves; the mangled symbol is declared here and
+        // bound on demand through the symbol index. Throws if the method cannot
+        // be found, so a missing injected call is loud, never a silent skip.
+        llvm::CallInst* callStdlibStaticVoid(const std::string& fqClassName,
+                                             const std::string& methodName);
+
         // The llvm::Module that IR created right now should land in: the module of
         // the function the builder is inserting into, falling back to this module's
         // own when there is no insert point.

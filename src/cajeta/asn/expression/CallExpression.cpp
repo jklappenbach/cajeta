@@ -368,6 +368,19 @@ namespace cajeta {
             }
         }
 
+        // After a launch, check the runtime's thread-local refusal record and
+        // RAISE if the kernel had no registered device code on the active
+        // backend: XpuLaunchException naming kernel + backend, so a route table
+        // can fall through rather than compute on a stale buffer (spec 2.1.2 /
+        // 2.1.3). A refused launch nobody checks reads as success -- the false
+        // confidence this exists to end. Emitted through the reusable
+        // compiler-injected-call primitive; Device is always parsed at a launch
+        // site (the program imports KernelStream), and the mangled symbol binds
+        // on demand through the symbol index.
+        auto emitLaunchRefusalCheck = [&]() {
+            module->callStdlibStaticVoid("cajeta.xpu.Device", "checkLaunch");
+        };
+
         if (!specVals.empty()) {
             llvm::Type* specArrTy =
                 llvm::ArrayType::get(i32Ty, specVals.size());
@@ -408,6 +421,7 @@ namespace cajeta {
                  llvm::ConstantInt::get(i32Ty, (uint64_t) -1),
                  llvm::ConstantInt::get(i32Ty, specVals.size()),
                  specBase});
+            emitLaunchRefusalCheck();
             return nullptr;
         }
 
@@ -431,6 +445,7 @@ namespace cajeta {
                             {nameStr, grid[0], grid[1], grid[2],
                              block[0], block[1], block[2], sharedBytes,
                              argvBase, streamHandle});
+        emitLaunchRefusalCheck();
         return nullptr;
     }
 

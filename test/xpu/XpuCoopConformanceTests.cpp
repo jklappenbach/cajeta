@@ -36,6 +36,7 @@
 
 #include "../jit/JitTestHelper.h"
 #include "XpuDeviceTestUtil.h"
+#include "XpuRefusalProbe.h"
 #include "cajeta/xpu/XpuTarget.h"
 
 #include <cstdint>
@@ -43,6 +44,7 @@
 #include <vector>
 
 using cajeta_test::CajetaJit;
+using cajeta_test::catchRefusal;
 
 namespace {
 
@@ -131,6 +133,7 @@ std::string program() {
         "import cajeta.xpu.KernelThread;\n"
         "import cajeta.xpu.Shared;\n"
         "import cajeta.xpu.WaveVector;\n"
+        "import cajeta.xpu.XpuLaunchException;\n"
         "public final class D {\n";
 
     for (const Verb& v : verbs()) {
@@ -190,9 +193,15 @@ std::string program() {
         s += std::string("            while (z < 256) { ") + host + "[z] = "
            + (v.intOut ? "-777" : "-777.0f") + "; z = z + 1; }\n";
         s += std::string("            ") + buf + ".upload(" + host + ");\n";
-        s += std::string("            ") + v.kernel
-           + ".launch(s, grid: [1], block: [32])(rowIn, colIn, " + buf + ");\n"
-             "            s.sync();\n";
+        // A backend that REFUSES this verb registers no device code, so the
+        // launch now RAISES XpuLaunchException (naming kernel + backend) rather
+        // than silently no-opping. That is the refusal signal; catchRefusal
+        // swallows it so the sentinel survives and the C++ side still reads the
+        // compile-time skip note to tell refusal from wrongness -- same contract.
+        s += catchRefusal(
+            std::string("            ") + v.kernel
+            + ".launch(s, grid: [1], block: [32])(rowIn, colIn, " + buf + ");\n"
+              "            s.sync();\n");
         s += std::string("            ") + buf + ".download(" + host + ");\n"
              "            int32 r = 0;\n"
              "            int32 bad = 0;\n"

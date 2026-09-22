@@ -74,6 +74,10 @@ inline const char* PRE =
     "import cajeta.xpu.KernelThread;\n"
     "import cajeta.xpu.Shared;\n"
     "import cajeta.xpu.Workgroup;\n"
+    // A declined kernel's launch now RAISES XpuLaunchException (the compiler
+    // emits Device.checkLaunch after every launch); the refusal-probe run
+    // strings catch it. See XpuRefusalProbe.h.
+    "import cajeta.xpu.XpuLaunchException;\n"
     "public final class D {\n";
 
 inline const char* END = "}\n";

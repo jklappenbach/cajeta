@@ -145,8 +145,12 @@ const char* RUN_LATCH_LAUNCH =
     "        KernelStream s #= KernelStream.current();\n"
     "        int64 f0 = Device.launchFailures();\n"
     "        uint32 n = 256;\n"
+    // Declined: the launch RAISES; catch it so run() returns the delta. The
+    // failure counter is bumped before the throw, so the delta stays 1.
+    "        try {\n"
     "        treeLatch.launch(s, grid: [1], block: [256])(out, in, n);\n"
     "        s.sync();\n"
+    "        } catch (XpuLaunchException e) { }\n"
     "        return (int32) (Device.launchFailures() - f0);\n"
     "    }\n";
 

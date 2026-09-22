@@ -43,6 +43,7 @@ const char* PRE =
     "import cajeta.xpu.Barrier;\n"
     "import cajeta.xpu.CooperativeMatrix;\n"
     "import cajeta.xpu.WaveVector;\n"
+    "import cajeta.xpu.XpuLaunchException;\n"
     "import cajeta.xpu.KernelBuffer;\n"
     "import cajeta.xpu.KernelStream;\n"
     "import cajeta.xpu.KernelThread;\n"
@@ -122,8 +123,14 @@ const char* RUN =
     "        rf.upload(hrf); cf.upload(hcf);\n"
     "        rg.upload(hrg); cg.upload(hcg);\n"
     "        KernelStream s #= KernelStream.current();\n"
+    // A refused verb (ofLane on the cpu tile) makes epi's launch RAISE; catch
+    // it so the sentinel in y survives and run() reports the refusal via its
+    // return code, as it did when the launch silently no-opped. See
+    // XpuRefusalProbe.h.
+    "        try {\n"
     "        epi.launch(s, grid: [1], block: [32])(y, a, b, rf, cf, rg, cg);\n"
     "        s.sync();\n"
+    "        } catch (XpuLaunchException e) { }\n"
     "        y.download(hy);\n"
     "        boolean live = false;\n"
     "        int32 r = 0;\n"

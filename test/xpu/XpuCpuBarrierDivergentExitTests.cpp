@@ -110,8 +110,12 @@ const char* RUN_DIVERGENT_LAUNCH =
     "        KernelStream s #= KernelStream.current();\n"
     "        int64 f0 = Device.launchFailures();\n"
     "        uint32 n = 256;\n"
+    // Declined: the launch RAISES; catch it so run() returns the delta (the
+    // failure counter is bumped before the throw, so the delta stays 1).
+    "        try {\n"
     "        divergentJoin.launch(s, grid: [1], block: [256])(out, in, n);\n"
     "        s.sync();\n"
+    "        } catch (XpuLaunchException e) { }\n"
     "        return (int32) (Device.launchFailures() - f0);\n"
     "    }\n";
 
@@ -365,8 +369,12 @@ const char* RUN_STAGED_DIV =
     "        KernelBuffer<float32> out = heap KernelBuffer<float32>(1);\n"
     "        KernelStream s #= KernelStream.current();\n"
     "        int64 f0 = Device.launchFailures();\n"
+    // If stagedDiv is declined on a tier, its launch RAISES; catch it so run()
+    // returns the delta. Harmless when it is accepted (no throw, delta 0).
+    "        try {\n"
     "        stagedDiv.launch(s, grid: [1], block: [256])(out, in, 1024, 1024);\n"
     "        s.sync();\n"
+    "        } catch (XpuLaunchException e) { }\n"
     "        return (int32) (Device.launchFailures() - f0);\n"
     "    }\n";
 

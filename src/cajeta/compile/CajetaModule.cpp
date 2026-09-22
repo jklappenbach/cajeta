@@ -1229,6 +1229,34 @@ namespace cajeta {
         return ensureFunctionInModule(target, defFn);
     }
 
+    llvm::CallInst* CajetaModule::callStdlibStaticVoid(
+            const std::string& fqClassName, const std::string& methodName) {
+        CajetaTypePtr ty = CajetaType::of(fqClassName);
+        auto klass = std::dynamic_pointer_cast<CajetaClass>(ty);
+        MethodPtr found;
+        if (klass) {
+            for (auto& m : klass->getMethodList()) {
+                if (m && m->getName() == methodName) { found = m; break; }
+            }
+        }
+        if (!found) {
+            throw Exception(
+                fqClassName + "." + methodName + "() not found for a "
+                "compiler-injected call; its stdlib package is not loaded",
+                "CAJETA-STDLIB-CALL-MISSING");
+        }
+        // Declared into the module the builder is inserting into, and bound on
+        // demand through the symbol index (the same path Device.kernelAvailable
+        // and friends resolve by). No args, void return: extend when a caller
+        // needs otherwise.
+        llvm::Module* target = emitTargetLlvmModule();
+        llvm::FunctionType* ft =
+            llvm::FunctionType::get(llvm::Type::getVoidTy(*llvmContext), false);
+        llvm::FunctionCallee fn =
+            target->getOrInsertFunction(found->getLlvmSymbolName(), ft);
+        return getBuilder()->CreateCall(fn);
+    }
+
     // Interns `rawPath` as a private constant string and returns a ptr to it. The
     // path is remapped before the cache lookup, so the constant and its dedup key
     // are both the machine-independent form.
