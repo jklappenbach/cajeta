@@ -956,8 +956,11 @@ jobs:
       # Published as a BARE executable like the compiler asset: cvm bootstraps
       # a machine that has nothing, so the download has to run after chmod +x
       # with no extractor in the picture.
+      # NO `shell:` here, so this inherits the job default (matrix.shell). An
+      # explicit `bash` resolved to Git Bash on Windows, whose PATH carries no
+      # mingw64/bin, so the link found no cc and no gcc and cvm never built
+      # there. Every other build step in this job already inherits.
       - name: Build cvm
-        shell: bash
         run: |
           set -euo pipefail
           V="${{ steps.version.outputs.ref_version }}"
