@@ -440,6 +440,14 @@ private:
     // the layout is derived for. Set by scanCoopMatrixTiers, which is the only
     // place that sees all the tiles and all the verbs at once.
     uint32_t coopDistributeW = 0;
+    // Spike (4A.7): while emitting a DISTRIBUTED tile on a vectorizing backend,
+    // emit the tile's constant-trip inner loops (perLane, K) fully UNROLLED
+    // instead of as counted loops. LoopVectorize only widens the INNERMOST loop;
+    // with the inner loops gone, the work-item loop is innermost and takes the
+    // forced wave width, and per-lane state indexed by the (now constant) loop
+    // var is SROA-promotable rather than a shared alloca. Set only for the
+    // duration of lowerCoopMatrixDistributed (see DistUnrollGuard).
+    bool distUnrollLoops = false;
     // (dtype,shape) keys already announced, so the mma-tiering note fires once.
     std::set<std::string> notedCoopTiers;
 
@@ -3851,6 +3859,16 @@ private:
     void emitCountedLoop(uint32_t count,
                          const std::function<void(llvm::Value*)>& body) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        // Spike (4A.7): fully unroll the distributed tile's inner loops so the
+        // work-item loop is the innermost one LoopVectorize widens. The count is
+        // a compile-time constant here (perLane, K), so this is a straight-line
+        // expansion; the loop variable becomes a constant, making per-lane
+        // state constant-indexed.
+        if (distUnrollLoops) {
+            for (uint32_t j = 0; j < count; ++j)
+                body(llvm::ConstantInt::get(i32, j));
+            return;
+        }
         llvm::Value* iv = entryAlloca(i32, "cm.iv");
         builder.CreateStore(llvm::ConstantInt::get(i32, 0), iv);
         auto* head = llvm::BasicBlock::Create(ctx, "cm.head", fn);
@@ -4595,6 +4613,14 @@ private:
                                     const std::string& name,
                                     const std::shared_ptr<MethodCallExpression>& mc,
                                     llvm::Value*& result) {
+        // Spike (4A.7): on the vectorizing CPU backend, emit the distributed
+        // tile's inner loops unrolled so the work-item loop is innermost for
+        // LoopVectorize. Restored on every exit, an unsupported() throw included.
+        struct UnrollScope {
+            bool& flag; bool prev;
+            UnrollScope(bool& f, bool v) : flag(f), prev(f) { flag = v; }
+            ~UnrollScope() { flag = prev; }
+        } unrollScope(distUnrollLoops, std::string(target.name()) == "cpu");
         const auto& args = mc->getParameters();
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);

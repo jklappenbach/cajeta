@@ -35,6 +35,20 @@ class CpuTarget : public LoweringTarget {
 public:
     const char* name() const override { return "cpu"; }
 
+    // Spike (4A.7): a CPU cooperative wave is a SIMD vector of `width` i32 lanes.
+    // Gated on the same seam that forces the wave width (cpuVectorWidthI32), so
+    // decideCoopDistribution enables the distributed tile on cpu at that width
+    // (16 == Cols) instead of the replicated one. Returns 0 (distribution off)
+    // when the seam is unset, so ordinary cpu coop kernels are untouched. The
+    // real unit keys this per kernel, not by env.
+    unsigned distributedCoopMatrixWaveWidth() override {
+        if (const char* e = std::getenv("CAJETA_XPU_CPU_WAVE_WIDTH")) {
+            unsigned w = (unsigned) std::strtoul(e, nullptr, 10);
+            if (w >= 2) return w;
+        }
+        return 0;
+    }
+
     // Wide `dotAccum` for the host ISA, so a @Kernel reaches the tier an ordinary
     // method does. Null (leaving the portable reduce) off x86, without VNNI, or on
     // any shape but 4·n int8 lanes into n i32 accumulators.
