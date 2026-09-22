@@ -207,6 +207,15 @@ bool isAccelStructType(const CajetaTypePtr& type) {
     return type && isAccelStructCanonical(type->toCanonical());
 }
 
+bool isDeviceResourceType(const CajetaTypePtr& type) {
+    if (!type) return false;
+    const std::string c = type->toCanonical();
+    return isBufferInstantiation(c) || isImageCanonical(c) || isSamplerCanonical(c)
+        || isAccelStructCanonical(c) || isTextureCanonical(c)
+        || isTexture3DCanonical(c) || isTexture1DCanonical(c)
+        || isTexture2DArrayCanonical(c) || isTextureCubeCanonical(c);
+}
+
 bool isRayQueryType(const CajetaTypePtr& type) {
     return type && isRayQueryCanonical(type->toCanonical());
 }

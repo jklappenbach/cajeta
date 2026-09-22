@@ -44,6 +44,11 @@ namespace xpu {
 
     /// cajeta.xpu.AccelerationStructure: a descriptor-bound BVH, admissible.
     bool isAccelStructType(const CajetaTypePtr& type);
+
+    /// Any descriptor-bound resource handle: buffer, image, texture, sampler or
+    /// acceleration structure. These have no host meaning, so a method taking
+    /// one cannot be called on the host. Scalars, arrays and POD structs can.
+    bool isDeviceResourceType(const CajetaTypePtr& type);
     /// RayQuery, CooperativeMatrix<T,Rows,Cols,Use> and Tile<T,Rows,Cols> are
     /// device-only kernel-body LOCALS, never kernel args. Tile is the same
     /// fragment as CooperativeMatrix with its Use inferred from Group.mac.

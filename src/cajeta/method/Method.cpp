@@ -2119,21 +2119,18 @@ namespace cajeta {
             }
         }
 
-        // A @Kernel is dispatched through .launch, and every backend including cpu
-        // lowers it into its own module, so its host body is never what runs. Keying
-        // the stub on a KernelBuffer parameter missed kernels taking other device-only
-        // types (Image2D), whose bodies then lowered as host code. @Device keeps that
-        // gate: it means ALSO usable on the device, so those bodies are host-callable.
+        // A @Kernel or @Device method taking a descriptor-bound resource works on
+        // device memory and is never called on the host, so emit a trivial host stub
+        // instead of lowering device-only constructs. The test was KernelBuffer alone,
+        // which missed Image2D and the texture types. It stays a PARAMETER test and
+        // not a blanket one on @Kernel: a kernel over plain scalars and arrays is
+        // host-callable, and the CPU-emulation path calls one directly.
         if (cajeta::xpu::isKernel(*this) || cajeta::xpu::isDevice(*this)) {
-            bool stubHostBody = cajeta::xpu::isKernel(*this);
-            if (!stubHostBody) {
-                for (auto& p : parameterList) {
-                    if (p && p->getType()
-                            && p->getType()->toCanonical().rfind(
-                                   "cajeta.xpu.KernelBuffer", 0) == 0) {
-                        stubHostBody = true;
-                        break;
-                    }
+            bool stubHostBody = false;
+            for (auto& p : parameterList) {
+                if (p && cajeta::xpu::isDeviceResourceType(p->getType())) {
+                    stubHostBody = true;
+                    break;
                 }
             }
             if (stubHostBody) {
