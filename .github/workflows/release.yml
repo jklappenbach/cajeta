@@ -448,23 +448,30 @@ jobs:
         if: runner.os == 'Windows'
         continue-on-error: true
         run: |
-          set -uo pipefail
+          # The msys2 shell wrapper turns -e on, so disable it explicitly: a
+          # probe whose whole job is to run things that fail must not abort on
+          # the first one.
+          set +e
+          echo "objdump: $(command -v objdump || echo '<absent>')"
           for t in clang ld.lld lld-link; do
-            p="$(command -v "$t" 2>/dev/null || true)"
-            [ -n "$p" ] || { echo "$t: not on PATH"; continue; }
-            if out="$("$t" --version 2>&1 | head -1)"; then rc=0; else rc=$?; fi
+            p="$(command -v "$t" 2>/dev/null)"
+            if [ -z "$p" ]; then echo "=== $t: not on PATH"; continue; fi
+            out="$("$t" --version 2>&1 | head -1)"; rc=$?
             echo "=== $t (rc=$rc) $p"
-            [ "$rc" -eq 0 ] && { echo "    $out"; continue; }
+            if [ "$rc" -eq 0 ]; then echo "    $out"; continue; fi
             f="$p"; [ -f "$f" ] || f="$p.exe"
-            objdump -p "$f" 2>/dev/null | awk '/DLL Name:/ {print $3}' \
-              | sort -fu | while read -r dll; do
+            dlls="$(objdump -p "$f" | awk '/DLL Name:/ {print $3}' | sort -fu)"
+            if [ -z "$dlls" ]; then echo "    (no imports listed for $f)"; fi
+            for dll in $dlls; do
               hit=""
               for d in "$(dirname "$f")" /mingw64/bin /c/Windows/System32; do
-                [ -f "$d/$dll" ] && { hit="$d/$dll"; break; }
+                if [ -f "$d/$dll" ]; then hit="$d/$dll"; break; fi
               done
-              [ -n "$hit" ] && echo "    ok      $dll" || echo "    MISSING $dll"
+              if [ -n "$hit" ]; then echo "    ok      $dll"
+              else echo "    MISSING $dll"; fi
             done
           done
+          exit 0
 
       # ---- macOS dependency install (brew) ------------------------------
       - name: Install dependencies (macOS)
