@@ -3646,11 +3646,13 @@ private:
                         mn == "rank1AccumS" ||
                         mn == "scaledAccumI32")
                         anyEpilogueVerb = true;
-                    if (mn == "fromWords" || mn == "scaledAccumInto" ||
-                        mn == "scaledAccumInto2" || mn == "rank1Accum" ||
-                        mn == "scaledAccumIntoS" ||
-                        mn == "scaledAccumInto2S" || mn == "rank1AccumS" ||
-                        mn == "scaledAccumI32")
+                    // `fromWords` and the primary epilogue verbs
+                    // (scaledAccumInto / rank1Accum / scaledAccumInto2 /
+                    // scaledAccumI32) now have distributed lowerings, so they no
+                    // longer disqualify distribution. Only the S-variants, which
+                    // the distributed path does not yet emit, still do.
+                    if (mn == "scaledAccumIntoS" ||
+                        mn == "scaledAccumInto2S" || mn == "rank1AccumS")
                         distributableVerbsOnly = false;
                 }
                 if (auto lvd =
@@ -4590,6 +4592,44 @@ private:
                                  {llvm::ConstantInt::get(i32, 0), i}, "cm.dist");
     }
 
+    // One epilogue column factor for a distributed tile, at THIS lane's column
+    // `c`. The lane owns the column, so the three WaveVector forms all resolve
+    // locally: ofSlice reads the Shared panel at c*stride, broadcast is a uniform
+    // scalar, and ofLane -- native-only in the replicated tile because it had no
+    // wave to distribute a per-lane value across -- is simply this lane's own
+    // value, since here the lane IS the column. A plain Shared vector/slice reads
+    // colF[c]. `toFp` sitofp's an integer factor for the float epilogue; the int
+    // epilogue (scaledAccumI32) keeps it i32.
+    llvm::Value* distColFactor(const ExpressionPtr& e, llvm::Value* c,
+                               bool toFp) {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        llvm::Value* vB = nullptr; llvm::Type* vE = nullptr;
+        llvm::Value* vStride = nullptr; llvm::Value* scalar = nullptr;
+        llvm::Value* lane = nullptr;
+        auto asWanted = [&](llvm::Value* v) {
+            return toFp ? toFloat(v) : coerceTo(v, i32, true);
+        };
+        if (resolveWaveVectorSlice(e, vB, vE, vStride)) {
+            llvm::Value* idx = vStride ? builder.CreateMul(c, vStride) : c;
+            return asWanted(builder.CreateLoad(
+                vE, target.bufferElementPtr(builder, mod, vB, vE,
+                                            builder.CreateZExt(idx, i64)),
+                "epi.cf"));
+        }
+        if (resolveWaveVectorBroadcast(e, scalar)) return asWanted(scalar);
+        if (resolveWaveVectorLane(e, lane)) return asWanted(lane);
+        if (resolveBufferBaseOrSlice(e, vB, vE))
+            return asWanted(builder.CreateLoad(
+                vE, target.bufferElementPtr(builder, mod, vB, vE,
+                                            builder.CreateZExt(c, i64)),
+                "epi.cf"));
+        unsupported("CooperativeMatrix epilogue: the column factor must be a "
+                    "WaveVector (ofSlice / broadcast / ofLane) or a Shared<T> "
+                    "vector");
+        return nullptr;
+    }
+
     // One element's buffer index under `layout` (0 row-major, 1 column-major).
     llvm::Value* distBufIdx(llvm::Value* r, llvm::Value* c, llvm::Value* layout,
                             llvm::Value* stride, llvm::Value* offset) {
@@ -4714,10 +4754,11 @@ private:
                     llvm::Value* src = builder.CreateAdd(
                         builder.CreateMul(id.g, llvm::ConstantInt::get(i32, K)), k);
                     llvm::Value* av = coerceTo(
-                        waveShuffleValue(aLocal, src, a.elemType), compTy);
+                        waveShuffleValue(aLocal, src, a.elemType), compTy,
+                        a.elemSigned);
                     llvm::Value* bv = coerceTo(
                         builder.CreateLoad(b.elemType, distElemPtr(b, k), "cm.b"),
-                        compTy);
+                        compTy, b.elemSigned);
                     llvm::Value* prod =
                         fp ? builder.CreateFMul(av, bv) : builder.CreateMul(av, bv);
                     llvm::Value* cur = builder.CreateLoad(compTy, sumPtr);
@@ -4729,6 +4770,167 @@ private:
                 builder.CreateStore(
                     coerceTo(builder.CreateLoad(compTy, sumPtr), acc),
                     distElemPtr(slot, i));
+            });
+            return true;
+        }
+
+        if (name == "fromWords") {
+            if (args.size() != 4)
+                unsupported("CooperativeMatrix.fromWords expects "
+                            "(w0, w1, w2, w3)");
+            if (slot.use == 2)
+                unsupported("CooperativeMatrix.fromWords: an A or B operand "
+                            "tile, not an accumulator");
+            if (!elem->isIntegerTy(8) || slot.rows != 16 || slot.cols != 16)
+                unsupported("CooperativeMatrix.fromWords: only the 16x16 int8 "
+                            "operand tile (four i32 words == sixteen K-values)");
+            // Use 1 (B): lane l owns column c = l % cols, and by the fromWords
+            // contract its four words ARE that column's sixteen K-values in
+            // little-endian bytes (w0 -> k 0..3, w1 -> k 4..7, ... w3 -> k
+            // 12..15). The distributed B stores element i as (k = i, col = c),
+            // so the words drop straight into this lane's slice -- no wave, no
+            // barrier, no transpose. This is the only fill k-quant kernels use.
+            //
+            // Use 0 (A) stores column-per-lane too, but fromWords hands each
+            // lane a ROW of the tile, so filling A from words is a wave
+            // transpose. No shipped kernel feeds the A operand from words (every
+            // one loads A and feeds the B operand from words), so refuse it by
+            // name rather than emit a transposed-wrong tile.
+            if (slot.use == 0)
+                unsupported("CooperativeMatrix.fromWords: the distributed tile "
+                            "feeds words to the B operand (Use 1); a Use-0 "
+                            "MatrixA fill from words is a wave transpose that no "
+                            "kernel exercises. Load the A operand, or feed the "
+                            "words to the Use-1 tile");
+            llvm::Value* w[4];
+            for (unsigned k = 0; k < 4; ++k)
+                w[k] = coerceTo(lowerExpr(args[k].expression), i32);
+            // Sixteen K-values == sixteen little-endian bytes across the four
+            // words; element i is byte (i & 3) of word (i >> 2). perLane == rows
+            // == 16 here, and the fill is a fixed 16-store sequence regardless of
+            // backend, so it is emitted unrolled directly (the four words are
+            // separate SSA values a runtime index could not select among).
+            for (uint32_t i = 0; i < slot.perLane; ++i) {
+                llvm::Value* byte = builder.CreateTrunc(
+                    builder.CreateLShr(
+                        w[i >> 2],
+                        llvm::ConstantInt::get(i32, 8u * (i & 3u))),
+                    elem, "cm.fw");
+                builder.CreateStore(
+                    byte, distElemPtr(slot, llvm::ConstantInt::get(i32, i)));
+            }
+            return true;
+        }
+
+        // ---- distributed epilogue verbs (4A.7.2.3) ---------------------- //
+        // In the distributed layout each lane OWNS one column (c = lane % cols),
+        // so the replicated tile's `for c` loop collapses to "c = this lane's
+        // column" and the per-lane column factor falls straight out:
+        //   ofSlice     -> the panel read colB[c*stride] at this lane's c
+        //   broadcast   -> one uniform scalar
+        //   ofLane(v)   -> this lane's own v (native-only in the replicated tile
+        //                  because it had no wave; here the lane IS the column)
+        // Every column factor is loop-invariant across the lane's rows, so it is
+        // resolved once. The row factor and the receiver/target accumulators are
+        // read per element, exactly as the replicated tile reads this[r][c].
+        // Operation order and association mirror lowerCoopMatrixMethodSoftware's
+        // epilogue byte for byte -- the contract is bit-exact across tiers.
+        if (name == "scaledAccumI32") {
+            if (args.size() != 2)
+                unsupported("CooperativeMatrix.scaledAccumI32 expects "
+                            "(iacc, colS)");
+            CoopMatrixSlot iacc = resolveCoopMatrixArg(args[0].expression);
+            if (!iacc.distributed || iacc.rows != slot.rows ||
+                iacc.cols != slot.cols)
+                unsupported("CooperativeMatrix.scaledAccumI32: iacc must share "
+                            "the receiver's distributed layout");
+            if (slot.use != 2 || iacc.use != 2)
+                unsupported("CooperativeMatrix.scaledAccumI32: accumulator "
+                            "tiles (Use=2) only");
+            if (!slot.elemType->isIntegerTy(32) ||
+                !iacc.elemType->isIntegerTy(32))
+                unsupported("CooperativeMatrix.scaledAccumI32: both the receiver "
+                            "and iacc must be int32 accumulators");
+            LaneId id = distLane(slot);
+            llvm::Value* cs = distColFactor(args[1].expression, id.c,
+                                            /*toFp=*/false);
+            emitCountedLoop(slot.perLane, [&](llvm::Value* i) {
+                llvm::Value* av =
+                    builder.CreateLoad(elem, distElemPtr(slot, i), "i32epi.av");
+                llvm::Value* prod = builder.CreateMul(av, cs);
+                llvm::Value* fptr = distElemPtr(iacc, i);
+                llvm::Value* cur =
+                    builder.CreateLoad(iacc.elemType, fptr, "i32epi.cur");
+                builder.CreateStore(builder.CreateAdd(cur, prod), fptr);
+            });
+            return true;
+        }
+        if (name == "scaledAccumInto" || name == "rank1Accum" ||
+            name == "scaledAccumInto2") {
+            const bool scaled = (name != "rank1Accum");
+            const bool dual = (name == "scaledAccumInto2");
+            const size_t want = dual ? 5 : (scaled ? 3 : 2);
+            if (args.size() != want)
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            (dual ? " expects (facc, rowF, colF, rowG, colG)"
+                                  : (scaled ? " expects (facc, rowF, colF)"
+                                            : " expects (rowF, colF)")));
+            CoopMatrixSlot facc = slot;
+            if (scaled) {
+                facc = resolveCoopMatrixArg(args[0].expression);
+                if (!facc.distributed || facc.rows != slot.rows ||
+                    facc.cols != slot.cols)
+                    unsupported("CooperativeMatrix.scaledAccumInto: the float "
+                                "accumulator must share the receiver's "
+                                "distributed layout");
+            }
+            if (slot.use != 2 || facc.use != 2)
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            ": accumulator tiles (Use=2) only");
+            if (!facc.elemType->isFloatTy())
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            ": the target accumulator must be float32");
+            const size_t ri = scaled ? 1 : 0;
+            llvm::Value* rB = nullptr; llvm::Type* rE = nullptr;
+            if (!resolveBufferBaseOrSlice(args[ri].expression, rB, rE))
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            ": rowF must be a Shared<float32> vector");
+            llvm::Value* gB = nullptr; llvm::Type* gE = nullptr;
+            if (dual &&
+                !resolveBufferBaseOrSlice(args[ri + 2].expression, gB, gE))
+                unsupported("CooperativeMatrix.scaledAccumInto2: rowG must be a "
+                            "Shared<float32> vector");
+            LaneId id = distLane(slot);
+            // Column factors, loop-invariant across this lane's rows.
+            llvm::Value* cv = distColFactor(args[ri + 1].expression, id.c,
+                                            /*toFp=*/true);
+            llvm::Value* gv = dual
+                ? distColFactor(args[ri + 3].expression, id.c, /*toFp=*/true)
+                : nullptr;
+            emitCountedLoop(slot.perLane, [&](llvm::Value* i) {
+                llvm::Value* r = nullptr; llvm::Value* cc = nullptr;
+                distRowCol(slot, id, i, r, cc);
+                llvm::Value* rv = builder.CreateLoad(
+                    rE, target.bufferElementPtr(
+                            builder, mod, rB, rE,
+                            builder.CreateZExt(r, i64)), "epi.rf");
+                llvm::Value* term = builder.CreateFMul(rv, cv);
+                if (scaled) {
+                    llvm::Value* mcv =
+                        toFloat(builder.CreateLoad(elem, distElemPtr(slot, i)));
+                    term = builder.CreateFMul(term, mcv);
+                }
+                if (dual) {
+                    llvm::Value* rg = builder.CreateLoad(
+                        gE, target.bufferElementPtr(
+                                builder, mod, gB, gE,
+                                builder.CreateZExt(r, i64)), "epi.rg");
+                    term = builder.CreateFAdd(term, builder.CreateFMul(rg, gv));
+                }
+                llvm::Value* fptr = distElemPtr(facc, i);
+                llvm::Value* cur =
+                    builder.CreateLoad(facc.elemType, fptr, "epi.cur");
+                builder.CreateStore(builder.CreateFAdd(cur, term), fptr);
             });
             return true;
         }
