@@ -459,7 +459,13 @@ jobs:
             out="$("$t" --version 2>&1 | head -1)"; rc=$?
             echo "=== $t (rc=$rc) $p"
             if [ "$rc" -eq 0 ]; then echo "    $out"; continue; fi
-            f="$p"; [ -f "$f" ] || f="$p.exe"
+            # `[ -f ]` under msys2 resolves a bare name to its .exe, so a test
+            # for the bare path succeeds and then hands objdump, a native
+            # binary, a Windows path that does not exist. Name the .exe.
+            f="$p"
+            case "$f" in *.exe) ;; *) f="$f.exe" ;; esac
+            ls -l "$f" 2>&1 | sed 's/^/    /'
+            ldd "$f" 2>&1 | grep -i "not found" | sed 's/^/    ldd: /'
             dlls="$(objdump -p "$f" | awk '/DLL Name:/ {print $3}' | sort -fu)"
             if [ -z "$dlls" ]; then echo "    (no imports listed for $f)"; fi
             for dll in $dlls; do
