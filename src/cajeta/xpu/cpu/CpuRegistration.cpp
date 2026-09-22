@@ -64,20 +64,24 @@ unsigned cpuVectorWidthI32(llvm::TargetMachine* tm, llvm::Function& f) {
     }
     // Per-kernel width: a DISTRIBUTED cooperative-matrix kernel pins the wave
     // width it was laid out for (prepareDistributedCoopMatrix, waveW == Cols) as
-    // a `cajeta.xpu.coop-wavew` attribute on the kernel. `f` is the wrapper; the
-    // kernel it calls carries the attribute, so the work-item loop is forced to
-    // the exact width the distributed layout assumed rather than the host's.
+    // a `cajeta.xpu.coop-wavew` attribute on the kernel. Force the work-item loop
+    // to that exact width rather than the host's. The marker is found in one of
+    // two places: on `f` itself (the barrier-fission path clones the body into
+    // the wrapper and copies the marker across before erasing the kernel), or on
+    // the kernel `f` still calls (the plain single-loop path). Check both.
+    auto readMarker = [](llvm::Function& g) -> unsigned {
+        if (!g.hasFnAttribute("cajeta.xpu.coop-wavew")) return 0;
+        return (unsigned) std::strtoul(
+            g.getFnAttribute("cajeta.xpu.coop-wavew")
+                .getValueAsString().str().c_str(),
+            nullptr, 10);
+    };
+    if (unsigned w = readMarker(f); w >= 2) return w;
     for (auto& bb : f)
         for (auto& in : bb)
             if (auto* call = llvm::dyn_cast<llvm::CallInst>(&in))
                 if (auto* cf = call->getCalledFunction())
-                    if (cf->hasFnAttribute("cajeta.xpu.coop-wavew")) {
-                        unsigned w = (unsigned) std::strtoul(
-                            cf->getFnAttribute("cajeta.xpu.coop-wavew")
-                                .getValueAsString().str().c_str(),
-                            nullptr, 10);
-                        if (w >= 2) return w;
-                    }
+                    if (unsigned w = readMarker(*cf); w >= 2) return w;
     if (!tm) return 0;
     llvm::TargetTransformInfo tti = tm->getTargetTransformInfo(f);
     llvm::TypeSize bits =
@@ -833,6 +837,14 @@ void foldWaveVariants(llvm::Function& f) {
                     linked->eraseFromParent();    // has barrier markers; unusable
                     continue;                     // host-stub fallback
                 }
+                // The distributed-coop wave-width marker rides the kernel; the
+                // body has been cloned into the wrapper and the kernel is about
+                // to be erased, so carry the marker onto the wrapper (cloning
+                // does not copy the callee's fn-attrs) or cpuVectorWidthI32 would
+                // lose it and force the fission regions to the host width.
+                if (linked->hasFnAttribute("cajeta.xpu.coop-wavew"))
+                    wrapper->addFnAttr(
+                        linked->getFnAttribute("cajeta.xpu.coop-wavew"));
                 linked->eraseFromParent();        // body cloned into the wrapper
 
                 // Wave + barrier composition: each fission region is a clean

@@ -305,4 +305,96 @@ TEST(XpuCpuDistCoopVerb, scaledAccumInto2ResolvesOfSlicePerColumn) {
         << " (-1 = refused, 1000+cell = first wrong cell, -2 = no compile)";
 }
 
+// ---- barrier + distributed coop: the forced width survives fission ----- //
+//
+// The six real kernels stage a Shared panel behind Barrier.workgroup() and then
+// run the coop mma + epilogue, so they take the CPU BARRIER-FISSION path -- and
+// there the kernel body is cloned into the wrapper and the kernel erased before
+// the wave width is read. The coop-wavew marker must be carried onto the wrapper
+// or the fission regions fall back to the host width and the distributed tile
+// (which assumed the cooperative width) computes a WRONG product. This is that
+// path in miniature: rowF filled cooperatively through a barrier, then a
+// distributed int8 GEMM + ofLane epilogue. facc[r][c] = (r+1)(c+1)*16.
+const char* kBarrierDistSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.WaveVector;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Barrier;
+public class M {
+    @Kernel
+    public static void mm(KernelBuffer<float32> y,
+                          KernelBuffer<int8> a, KernelBuffer<int8> b) {
+        Shared<float32> rowF = shared float32[16];
+        uint32 tid = KernelThread.x();
+        rowF[tid] = (float32) (tid + 1);
+        Barrier.workgroup();
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> mc;
+        CooperativeMatrix<float32,16,16,2> facc;
+        mc.splat(0);
+        facc.splat(0.0f);
+        ma.load(a, 0, 0, 16);
+        mb.load(b, 0, 0, 16);
+        mc.mma(ma, mb);
+        int32 col = (int32) (tid % 16);
+        float32 cf = (float32) (col + 1);
+        mc.scaledAccumInto(facc, rowF, WaveVector.ofLane(cf));
+        facc.store(y, 0, 0, 16);
+    }
+    public static int32 run() {
+        int8[] ha = heap int8[256];
+        int8[] hb = heap int8[256];
+        float32[] hy = heap float32[256];
+        int32 r = 0;
+        while (r < 16) {
+            int32 k = 0;
+            while (k < 16) {
+                ha[r * 16 + k] = (int8) 1;
+                hb[r * 16 + k] = (int8) 1;
+                hy[r * 16 + k] = -1.0f;
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(256);
+        KernelBuffer<int8> b = heap KernelBuffer<int8>(256);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(256);
+        a.upload(ha);
+        b.upload(hb);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        mm.launch(s, grid: [1], block: [16])(y, a, b);
+        s.sync();
+        y.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        int32 rr = 0;
+        while (rr < 16) {
+            int32 cc = 0;
+            while (cc < 16) {
+                float32 want = (float32) (16 * (rr + 1) * (cc + 1));
+                if (hy[rr * 16 + cc] != want) { return 1000 + rr * 16 + cc; }
+                cc = cc + 1;
+            }
+            rr = rr + 1;
+        }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuDistCoopVerb, distributedTileForcedWidthSurvivesBarrierFission) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kBarrierDistSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, 0)
+        << "distributed coop through barrier fission wrong; r=" << r
+        << " (-1 = refused, 1000+cell = first wrong cell, -2 = no compile)";
+}
+
 }  // namespace
