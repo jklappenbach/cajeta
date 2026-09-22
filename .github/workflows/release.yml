@@ -1152,10 +1152,17 @@ jobs:
           fi
           # ref_version mirrors the build job: the version without a leading
           # 'v', used in the cvm asset filenames + the manifest `version`.
+          # The dry-run arm has to mirror it too. It did not, so the build job
+          # named assets `...-$V-dryrun-<run>-<triple>` while this job looked
+          # for `...-$V-<triple>`, and the README preview failed with "held no
+          # asset named for v$V" on EVERY dry-run. Production matched all along,
+          # which is why only dry-runs carried the false red.
           if [ "${{ github.event_name }}" = "push" ]; then
             REF="${GITHUB_REF_NAME#v}"
-          else
+          elif [ "$MODE" = "production" ]; then
             REF="$V"
+          else
+            REF="$V-dryrun-${{ github.run_number }}"
           fi
           # Pre-release detection: a semver pre-release suffix (the `-` in
           # `v0.7.0-rc1`, `-beta1`, etc.) means this must NOT be marked the
