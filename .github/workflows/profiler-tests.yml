@@ -110,6 +110,7 @@ jobs:
             mingw-w64-x86_64-antlr4-runtime-cpp
             mingw-w64-x86_64-zstd
             mingw-w64-x86_64-xxhash
+            mingw-w64-x86_64-libxml2
             mingw-w64-x86_64-glog
             mingw-w64-x86_64-gtest
             mingw-w64-x86_64-vulkan-headers

@@ -357,6 +357,11 @@ jobs:
           # vulkan-headers: <vulkan/vulkan.h> for the runtime's Vulkan compute
           # path (the loader vulkan-1.dll is dlopen'd at run time, no link dep).
           # tar: used (with zstd) to unpack the fork toolchain in the fetch step.
+          # libxml2: nothing in THIS build links it, but the fork's ld.lld.exe
+          # and lld-link.exe import libxml2-16.dll for WindowsManifest support
+          # and exit 127 without it. clang does not, so clang ran while both
+          # linkers did not, and cvm linked with no lld and lost ThinLTO. Do not
+          # drop it as unused; the probe step names it if it goes missing again.
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
@@ -365,6 +370,7 @@ jobs:
             mingw-w64-x86_64-antlr4-runtime-cpp
             mingw-w64-x86_64-zstd
             mingw-w64-x86_64-xxhash
+            mingw-w64-x86_64-libxml2
             mingw-w64-x86_64-glog
             mingw-w64-x86_64-gtest
             mingw-w64-x86_64-openssl
