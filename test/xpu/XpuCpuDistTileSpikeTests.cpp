@@ -14,12 +14,14 @@
 // wave width AND computes correctly.
 //
 // Correctness is the make-or-break, exactly as in the reversal spike: a work-item
-// loop vectorized at 8 with a shared per-lane alloca produces a WRONG matmul, so
-// a correct 16x16 product means the loop-exposure worked. The seams:
-//   CAJETA_XPU_CPU_WAVE_WIDTH=16   forces the cooperative wave (2x avx2's 8) and
-//                                  gates CpuTarget::distributedCoopMatrixWaveWidth
-//   CAJETA_GPU_COOPMATRIX_DIST=on  opts the kernel into the distributed tile
-// The control runs the SAME kernel with neither set (the replicated tile), so a
+// loop vectorized below the cooperative width with a shared per-lane alloca
+// produces a WRONG matmul, so a correct 16x16 product means the loop-exposure
+// worked. The CPU cooperative wave is now the universal WMMA warp of 32
+// (CpuTarget::distributedCoopMatrixWaveWidth), emulated in one 32-wide SIMD
+// vector and forced onto the work-item loop through the per-kernel coop-wavew
+// marker; block:[32] fills it (G=2 over the 16x16 tile). The only seam here is
+// CAJETA_GPU_COOPMATRIX_DIST=on, which opts the kernel into the distributed
+// tile; the control runs the SAME kernel without it (the replicated tile), so a
 // pass there proves the distributed path is additive, not a regression.
 //
 
@@ -80,7 +82,7 @@ public class M {
         b.upload(hb);
         y.upload(hy);
         KernelStream s #= KernelStream.current();
-        mm.launch(s, grid: [1], block: [16])(y, a, b);
+        mm.launch(s, grid: [1], block: [32])(y, a, b);
         s.sync();
         y.download(hy);
         // If the kernel was refused, the sentinel survives.
@@ -118,16 +120,17 @@ int runOnCpu() {
 
 }  // namespace
 
-// THE SPIKE: the distributed tile at a forced 16-lane wave, inner loops
-// unrolled in the lowering. A correct 16x16 product means the work-item loop
-// was exposed to LoopVectorize at the cooperative width and the per-lane state
-// promoted. If it walls, the value tells how: -1 refused, 1000+cell wrong.
-TEST(XpuCpuDistTileSpike, distributedMatmulIsCorrectAtForcedWave16) {
-    setenv("CAJETA_XPU_CPU_WAVE_WIDTH", "16", 1);
+// THE SPIKE (now at the wave=32 base): the distributed tile with its inner
+// loops unrolled in the lowering, the work-item loop forced to the cooperative
+// 32 (the universal WMMA warp the CPU emulates in one 32-wide SIMD vector, G=2
+// over the 16x16 tile). A correct 16x16 product means LoopVectorize took VF=32
+// and the per-lane state promoted. If it walls, the value tells how: -1 refused,
+// 1000+cell wrong.
+TEST(XpuCpuDistTileSpike, distributedMatmulIsCorrectAtWave32) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");            // wave is the per-kernel 32
     setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
     int r = runOnCpu();
     unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
-    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
     EXPECT_EQ(r, 0)
         << "distributed cpu matmul wrong; r=" << r
         << " (-1 = refused/skipped, 1000+cell = first wrong cell, -2 = no compile)";

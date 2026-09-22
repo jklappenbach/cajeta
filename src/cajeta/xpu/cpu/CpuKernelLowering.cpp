@@ -35,16 +35,21 @@ class CpuTarget : public LoweringTarget {
 public:
     const char* name() const override { return "cpu"; }
 
-    // A CPU cooperative wave is a SIMD vector of i32 lanes. The distributed tile
-    // needs waveW to be a multiple of `cols` (lane l owns column l % cols); the
-    // canonical CPU layout takes waveW == cols (one column per lane, G = 1), a
-    // property of the tile shape rather than an env var or a device constant.
-    // For the 16-wide WMMA tile this is 16 — one full avx512 register, or the
-    // two-register VF=16 the loop-exposure spike proved LoopVectorize reaches on
-    // avx2. The width is pinned per kernel in prepareDistributedCoopMatrix so
-    // cpuVectorWidthI32 forces the same width on the work-item loop.
-    unsigned distributedCoopMatrixWaveWidth(uint32_t cols) override {
-        return cols;
+    // A CPU cooperative wave is a SIMD vector of i32 lanes: the per-block
+    // work-item loop, vectorized to waveW lanes. The cooperative-matrix kernels
+    // are written against the universal WMMA cooperative wave of 32 (the CUDA
+    // warp and the RDNA3 wave32 AMD pins), staging their tiles as `lane = tid %
+    // 32`, `wid = tid / 32`. Emulating that same 32-lane wave on cpu — one
+    // 32-wide SIMD vector per wave, forced through LoopVectorize exactly as the
+    // loop-exposure spike forced 16 — lets that one source run here unchanged, no
+    // per-device fork, and distributes the 16x16 tile over 32 lanes (8 elements
+    // each, G = 2) rather than 16, halving the per-lane software-tile scratch.
+    // Not derived from `cols`: it is the cooperative-group width the algorithm
+    // and the other backends share, so a kernel's `% 32` staging is correct on
+    // every backend. decideCoopDistribution still declines shapes 32 does not
+    // divide. The block must be a multiple of 32 (the shipped kernels use 256).
+    unsigned distributedCoopMatrixWaveWidth(uint32_t /*cols*/) override {
+        return 32;
     }
     void prepareDistributedCoopMatrix(llvm::Function* fn,
                                       unsigned waveW) override {

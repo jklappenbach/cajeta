@@ -85,7 +85,7 @@ public class M {
         a.upload(ha);
         y.upload(hy);
         KernelStream s #= KernelStream.current();
-        mm.launch(s, grid: [1], block: [16])(y, a);
+        mm.launch(s, grid: [1], block: [32])(y, a);
         s.sync();
         y.download(hy);
         if (hy[0] == -1) { return -1; }            // refused/skipped
@@ -182,7 +182,7 @@ public class M {
         rowF.upload(hrf);
         y.upload(hy);
         KernelStream s #= KernelStream.current();
-        mm.launch(s, grid: [1], block: [16])(y, a, b, rowF);
+        mm.launch(s, grid: [1], block: [32])(y, a, b, rowF);
         s.sync();
         y.download(hy);
         if (hy[0] == -1.0f) { return -1; }
@@ -266,7 +266,7 @@ public class M {
         cgp.upload(hcg);
         y.upload(hy);
         KernelStream s #= KernelStream.current();
-        mm.launch(s, grid: [1], block: [16])(y, a, b, rowF, rowG, cfp, cgp);
+        mm.launch(s, grid: [1], block: [32])(y, a, b, rowF, rowG, cfp, cgp);
         s.sync();
         y.download(hy);
         if (hy[0] == -1.0f) { return -1; }
@@ -330,7 +330,10 @@ public class M {
                           KernelBuffer<int8> a, KernelBuffer<int8> b) {
         Shared<float32> rowF = shared float32[16];
         uint32 tid = KernelThread.x();
-        rowF[tid] = (float32) (tid + 1);
+        // 32-lane wave, one 16-row tile: lanes 0-15 stage the 16 row factors
+        // (the second half of the wave, lanes 16-31, are group 1 of the G=2
+        // tile and must not write past rowF[15]).
+        if (tid < 16) { rowF[tid] = (float32) (tid + 1); }
         Barrier.workgroup();
         CooperativeMatrix<int8,16,16,0> ma;
         CooperativeMatrix<int8,16,16,1> mb;
@@ -368,7 +371,7 @@ public class M {
         b.upload(hb);
         y.upload(hy);
         KernelStream s #= KernelStream.current();
-        mm.launch(s, grid: [1], block: [16])(y, a, b);
+        mm.launch(s, grid: [1], block: [32])(y, a, b);
         s.sync();
         y.download(hy);
         if (hy[0] == -1.0f) { return -1; }
