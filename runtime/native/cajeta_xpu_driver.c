@@ -12,6 +12,59 @@ int64_t __cajeta_xpu_launch_failures(void) {
     return __atomic_load_n(&g_xpu_launch_failures, __ATOMIC_RELAXED);
 }
 
+// Per-thread record of the most recent launch REFUSAL, so a launch-site check
+// (Device.checkLaunch) can RAISE a catchable exception naming the kernel and
+// backend, rather than leaving the caller to read a stale output buffer as a
+// plausible answer. The global counter above is the process-wide tally; this is
+// the nameable "what just refused on THIS thread". Set at every "no registered
+// kernel" no-op; cleared at __cajeta_xpu_launch_v3 entry so a refusal caught on
+// one launch cannot re-fire on the next, unrelated launch.
+static __thread int32_t g_xpu_refusal_pending;
+static __thread int32_t g_xpu_refusal_backend;   // 0=cuda 1=hip 2=vulkan 3=cpu, -1 none
+static __thread char    g_xpu_refusal_name[256];
+
+// One call at every no-op site: it bumps the process-wide counter AND records
+// the nameable detail, so launchFailures() and checkLaunch() can never disagree
+// about whether the last dispatch ran.
+static void cajeta_xpu_note_launch_refusal(const char* name, int32_t backend) {
+    cajeta_xpu_note_launch_failure();
+    g_xpu_refusal_pending = 1;
+    g_xpu_refusal_backend = backend;
+    if (name) {
+        size_t n = strlen(name);
+        if (n >= sizeof(g_xpu_refusal_name)) n = sizeof(g_xpu_refusal_name) - 1;
+        memcpy(g_xpu_refusal_name, name, n);
+        g_xpu_refusal_name[n] = '\0';
+    } else {
+        g_xpu_refusal_name[0] = '\0';
+    }
+}
+
+// Cleared at the top of every launch, so a pending record only ever describes
+// the launch the caller is about to check — never a prior thread-local ghost.
+static void cajeta_xpu_clear_launch_refusal(void) {
+    g_xpu_refusal_pending = 0;
+}
+
+// --- accessors for the stdlib launch-site check (Device.checkLaunch) -------- //
+int32_t __cajeta_xpu_last_launch_failed(void) { return g_xpu_refusal_pending; }
+int32_t __cajeta_xpu_last_launch_backend(void) { return g_xpu_refusal_backend; }
+
+// Copy the pending refusal's kernel name into a cajeta int8[] (payload at +8),
+// returning the byte count written — the reverse of the array ABI
+// __cajeta_xpu_kernel_available reads.
+int64_t __cajeta_xpu_last_launch_name(void* nameArr, int64_t cap) {
+    if (!nameArr || cap <= 0) return 0;
+    size_t n = strlen(g_xpu_refusal_name);
+    if (n > (size_t) cap) n = (size_t) cap;
+    memcpy((char*) nameArr + 8, g_xpu_refusal_name, n);
+    return (int64_t) n;
+}
+
+// Consumed by checkLaunch once it has read the record, so a second check on the
+// same thread without an intervening launch does not re-raise a stale refusal.
+void __cajeta_xpu_consume_launch_refusal(void) { g_xpu_refusal_pending = 0; }
+
 // CUDA Driver API binding (dlopen'd), backing the NVPTX device path. Mirrors
 // src/cajeta/xpu/nvidia/CudaDriver.cpp but lives in the runtime bitcode so LLJIT
 // resolves the symbols; an absent driver leaves every entry a graceful no-op.

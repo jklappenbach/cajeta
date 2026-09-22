@@ -291,6 +291,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
     void* mod = e ? e->module : NULL;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
     if (!fn) {
+        cajeta_xpu_note_launch_refusal(kernelName, CAJ_XPU_CUDA);
         fprintf(stderr, "cajeta.xpu: no registered kernel '%s' to launch\n",
                 kernelName);
         return;
@@ -561,6 +562,7 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
         }
     }
     if (!fn) {
+        cajeta_xpu_note_launch_refusal(kernelName, CAJ_XPU_HIP);
         fprintf(stderr, "cajeta.xpu: no registered kernel '%s' to launch\n",
                 kernelName);
         return;
@@ -741,6 +743,7 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
     uint64_t len = e ? e->len : 0;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
     if (!spirv || len < 4) {
+        cajeta_xpu_note_launch_refusal(launchName, CAJ_XPU_VULKAN);
         fprintf(stderr,
                 "cajeta.xpu: no registered SPIR-V kernel '%s' to launch\n",
                 launchName);
@@ -807,7 +810,7 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
         if (!built) break;
     }
     if (!built)
-        cajeta_xpu_note_launch_failure();
+        cajeta_xpu_note_launch_refusal(launchName, CAJ_XPU_VULKAN);
     if (built)
         cajeta_xpu_vk_launch(spirv, len, launchName, bindings, bkinds, n,
                              (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ,
@@ -943,6 +946,9 @@ void __cajeta_xpu_launch_v3(const char* kernelName,
                             int32_t specCount, const int32_t* specValues) {
     if (!kernelName) return;
     if (specCount < 0 || !specValues) specCount = 0;
+    // Every launch starts with a clean refusal record, so Device.checkLaunch()
+    // after this call reports only THIS launch, never a prior thread-local one.
+    cajeta_xpu_clear_launch_refusal();
 
     if (deviceId >= 0) {
         int backend = cajeta_xpu_active_backend();

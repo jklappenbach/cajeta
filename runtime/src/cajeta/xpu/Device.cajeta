@@ -243,6 +243,53 @@ public final class Device {
     @Native("__cajeta_xpu_launch_failures")
     private static int64 nativeLaunchFailures();
 
+    /**
+     * Raise {@link XpuLaunchException} if the most recent launch on this thread
+     * was REFUSED — no device code registered for the kernel on the active
+     * backend, or a binding that would not marshal. The compiler emits a call
+     * to this immediately after every `.launch()`, so a launch that would
+     * otherwise silently no-op and leave the caller reading a stale output
+     * buffer instead throws, naming the kernel and backend.
+     *
+     * A routing layer catches it and falls through to a route that exists; a
+     * direct launch with no fallback lets it propagate and abort, rather than
+     * computing on garbage. A launch that RAN clears the record (every launch
+     * resets it on entry), so this is a no-op after a successful launch, and it
+     * consumes the record it reads so a second call without an intervening
+     * launch does not re-raise.
+     *
+     * @EntryPoint
+     */
+    public static void checkLaunch() {
+        if (Device.nativeLastLaunchFailed() == 0) { return; }
+        int32 be = Device.nativeLastLaunchBackend();
+        Device.nativeConsumeLaunchRefusal();
+        int8[] buf = heap int8[256];
+        int64 n = Device.nativeLastLaunchName(buf, (int64) 256);
+        String kernel #= heap String(#buf, (int32) n);
+        String backend = "none";
+        if (be == 0) { backend = "cuda"; }
+        if (be == 1) { backend = "hip"; }
+        if (be == 2) { backend = "vulkan"; }
+        if (be == 3) { backend = "cpu"; }
+        String msg #= "cajeta.xpu: launch refused for kernel '" + kernel
+                    + "' on backend '" + backend
+                    + "' (no device code registered)";
+        throw heap XpuLaunchException(#msg);
+    }
+
+    @Native("__cajeta_xpu_last_launch_failed")
+    private static int32 nativeLastLaunchFailed();
+
+    @Native("__cajeta_xpu_last_launch_backend")
+    private static int32 nativeLastLaunchBackend();
+
+    @Native("__cajeta_xpu_last_launch_name")
+    private static int64 nativeLastLaunchName(int8[] buf, int64 cap);
+
+    @Native("__cajeta_xpu_consume_launch_refusal")
+    private static void nativeConsumeLaunchRefusal();
+
     // ---- device geometry -------------------------------------------- //
     //
     // The queried machine shape, so a kernel can SIZE ITSELF instead of

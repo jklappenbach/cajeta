@@ -848,8 +848,9 @@ static void cajeta_xpu_launch_cpu(const char* name,
                                   int32_t specCount, const int32_t* specValues) {
     void* p = __cajeta_xpu_lookup_cpu_kernel(name);
     if (!p) {
-        // Counted like every dispatch that did not run (Device.launchFailures()).
-        cajeta_xpu_note_launch_failure();
+        // Counted like every dispatch that did not run (Device.launchFailures()),
+        // and recorded by name so Device.checkLaunch() can raise on it.
+        cajeta_xpu_note_launch_refusal(name, CAJ_XPU_CPU);
         fprintf(stderr, "cajeta.xpu: no registered CPU kernel '%s' to launch\n",
                 name);
         return;

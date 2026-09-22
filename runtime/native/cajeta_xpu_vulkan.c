@@ -3435,6 +3435,11 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
         }
     }
     if (!ok) {
+        // Counter only here: the CAJ_XPU_* enum is defined in dispatch.c, which
+        // this TU precedes in the single-TU include order. The nameable refusal
+        // record is set at the "no registered SPIR-V kernel" site in launch.c
+        // (which does see the enum) — the common not-registered case. This is
+        // the rarer pipeline/binding failure; it still increments the count.
         cajeta_xpu_note_launch_failure();
         fprintf(stderr, "cajeta.xpu.vulkan: launch FAILED for kernel '%s' "
                 "(n=%d grid=%u,%u,%u)\n", entry ? entry : "?", n, gx, gy, gz);
