@@ -819,9 +819,13 @@ public:
 
     // A distributed software tile derives its lane mapping from the wave width at
     // COMPILE time, so the width has to be pinned exactly as the WMMA encoding
-    // pins it. wave32 is the one RDNA3+ guarantees.
-    unsigned distributedCoopMatrixWaveWidth() override { return 32; }
-    void prepareDistributedCoopMatrix(llvm::Function* fn) override {
+    // pins it. wave32 is the one RDNA3+ guarantees, regardless of the tile's
+    // column count.
+    unsigned distributedCoopMatrixWaveWidth(uint32_t /*cols*/) override {
+        return 32;
+    }
+    void prepareDistributedCoopMatrix(llvm::Function* fn,
+                                      unsigned /*waveW*/) override {
         fn->addFnAttr("target-features", "+wavefrontsize32");
     }
 

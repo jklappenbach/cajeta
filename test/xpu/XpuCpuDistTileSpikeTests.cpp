@@ -140,3 +140,21 @@ TEST(XpuCpuDistTileSpike, replicatedMatmulStillCorrect) {
     unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
     EXPECT_EQ(runOnCpu(), 0);
 }
+
+// 4A.7.2.1: the cooperative wave width is now a per-kernel property, NOT the
+// CAJETA_XPU_CPU_WAVE_WIDTH env. With only the distribution opt-in set and the
+// width env UNSET, decideCoopDistribution derives waveW == Cols (16) from the
+// tile shape, pins it on the kernel (prepareDistributedCoopMatrix), and
+// cpuVectorWidthI32 reads the marker off the kernel to force the work-item loop
+// to 16. A correct 16x16 product with no width env proves the width came from
+// the kernel. (If the marker path were broken the loop would take the host
+// width 8 and the shared-lane matmul would be wrong, exactly as at 4A.7.1.)
+TEST(XpuCpuDistTileSpike, distributedMatmulWidthComesFromKernelNotEnv) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");            // width is per-kernel now
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);   // opt-in only
+    int r = runOnCpu();
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, 0)
+        << "per-kernel wave width failed; r=" << r
+        << " (-1 = refused/skipped, 1000+cell = first wrong cell)";
+}

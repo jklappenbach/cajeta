@@ -647,13 +647,20 @@ namespace xpu {
         virtual llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m,
                                         llvm::Value* pred) = 0;
 
-        // The wave width a DISTRIBUTED portable software CooperativeMatrix may
-        // assume on this target, or 0 for "cannot guarantee one" (the tile is
-        // then replicated per work-item). A target returning non-zero must also
-        // pin that width on the kernel in prepareDistributedCoopMatrix, because
-        // the layout is derived from it at compile time.
-        virtual unsigned distributedCoopMatrixWaveWidth() { return 0; }
-        virtual void prepareDistributedCoopMatrix(llvm::Function*) {}
+        // The wave width a DISTRIBUTED portable software CooperativeMatrix of
+        // `cols` columns may assume on this target, or 0 for "cannot guarantee
+        // one" (the tile is then replicated per work-item). The width must be a
+        // multiple of `cols` (decideCoopDistribution rejects it otherwise); a
+        // hardware-wave target returns its physical wave regardless of `cols`,
+        // a vectorizing target derives one from `cols` and its register width.
+        // A target returning non-zero must also pin that width on the kernel in
+        // prepareDistributedCoopMatrix, because the per-lane layout is derived
+        // from it at compile time and the vectorizer must be forced to it.
+        virtual unsigned distributedCoopMatrixWaveWidth(uint32_t /*cols*/) {
+            return 0;
+        }
+        virtual void prepareDistributedCoopMatrix(llvm::Function*,
+                                                  unsigned /*waveW*/) {}
 
         // Like waveShuffle, but `srcLane` may be DIVERGENT. waveShuffle is
         // uniform-index on some backends (AMDGPU readlane needs an SGPR), so a

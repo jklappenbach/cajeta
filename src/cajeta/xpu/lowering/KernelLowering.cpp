@@ -3610,16 +3610,16 @@ private:
         if (!anyPortable || !verbsOk || shapes.size() != 1) return;
         const char* env = std::getenv("CAJETA_GPU_COOPMATRIX_DIST");
         if (!env || std::string(env) != "on") return;   // opt-in while it settles
-        unsigned W = target.distributedCoopMatrixWaveWidth();
-        if (W == 0) return;
         uint32_t R = shapes.begin()->first, C = shapes.begin()->second;
         if (R == 0 || C == 0 || R != C) return;         // K == C is the identity
+        unsigned W = target.distributedCoopMatrixWaveWidth(C);
+        if (W == 0) return;
         if (W % C != 0) return;
         uint32_t G = W / C;
         if (G == 0 || R % G != 0) return;
         if ((R * C) % W != 0) return;
         coopDistributeW = W;
-        target.prepareDistributedCoopMatrix(fn);
+        target.prepareDistributedCoopMatrix(fn, W);
     }
 
     // Decide the cooperative-matrix tier for the KERNEL rather than per tile:

@@ -35,18 +35,22 @@ class CpuTarget : public LoweringTarget {
 public:
     const char* name() const override { return "cpu"; }
 
-    // Spike (4A.7): a CPU cooperative wave is a SIMD vector of `width` i32 lanes.
-    // Gated on the same seam that forces the wave width (cpuVectorWidthI32), so
-    // decideCoopDistribution enables the distributed tile on cpu at that width
-    // (16 == Cols) instead of the replicated one. Returns 0 (distribution off)
-    // when the seam is unset, so ordinary cpu coop kernels are untouched. The
-    // real unit keys this per kernel, not by env.
-    unsigned distributedCoopMatrixWaveWidth() override {
-        if (const char* e = std::getenv("CAJETA_XPU_CPU_WAVE_WIDTH")) {
-            unsigned w = (unsigned) std::strtoul(e, nullptr, 10);
-            if (w >= 2) return w;
-        }
-        return 0;
+    // A CPU cooperative wave is a SIMD vector of i32 lanes. The distributed tile
+    // needs waveW to be a multiple of `cols` (lane l owns column l % cols); the
+    // canonical CPU layout takes waveW == cols (one column per lane, G = 1), a
+    // property of the tile shape rather than an env var or a device constant.
+    // For the 16-wide WMMA tile this is 16 — one full avx512 register, or the
+    // two-register VF=16 the loop-exposure spike proved LoopVectorize reaches on
+    // avx2. The width is pinned per kernel in prepareDistributedCoopMatrix so
+    // cpuVectorWidthI32 forces the same width on the work-item loop.
+    unsigned distributedCoopMatrixWaveWidth(uint32_t cols) override {
+        return cols;
+    }
+    void prepareDistributedCoopMatrix(llvm::Function* fn,
+                                      unsigned waveW) override {
+        // The per-kernel wave width the work-item LoopVectorize must be forced
+        // to; cpuVectorWidthI32 reads it off the kernel at registration time.
+        fn->addFnAttr("cajeta.xpu.coop-wavew", std::to_string(waveW));
     }
 
     // Wide `dotAccum` for the host ISA, so a @Kernel reaches the tier an ordinary
