@@ -2937,8 +2937,11 @@ namespace cajeta {
         std::vector<std::string> thinLtoLinkArgs;  // empty unless lto=thin
         if (flags.lto == LtoMode::Thin) {
 #ifdef CAJETA_LLVM_TOOLS_BIN
+            // The fork ships ld.lld.exe on Windows, so a bare-name probe never
+            // matched there and every mingw link silently took the PATH fallback.
             std::string forkBin = CAJETA_LLVM_TOOLS_BIN;
-            if (std::filesystem::exists(forkBin + "/ld.lld")) {
+            if (std::filesystem::exists(forkBin + "/ld.lld")
+                    || std::filesystem::exists(forkBin + "/ld.lld.exe")) {
                 thinLtoLinkArgs.push_back("-B" + forkBin);
                 thinLtoLinkArgs.push_back("-fuse-ld=lld");
             }
@@ -3020,6 +3023,21 @@ namespace cajeta {
             opt.argv.push_back("-ldl");
 #endif
             res = buildtool::runSubprocess(opt);
+#if defined(_WIN32)
+            // A driver whose DLLs fail to resolve never reaches main, but
+            // CreateProcess still succeeded, so it counted as the chosen driver
+            // and the chain stopped before a working one. These two NTSTATUS
+            // codes mean the image could not start, so keep looking.
+            if (res.launched && res.exited
+                    && (res.exitCode == (int) 0xC0000139      // ENTRYPOINT_NOT_FOUND
+                        || res.exitCode == (int) 0xC0000135)) {  // DLL_NOT_FOUND
+                cerr << "cajeta: --emit=exe: '" << drv << "' could not start ("
+                     << (res.exitCode == (int) 0xC0000139 ? "a DLL is missing an entry point"
+                                                          : "a dependent DLL was not found")
+                     << "); trying the next driver." << std::endl;
+                continue;
+            }
+#endif
             if (res.launched) { launched = true; usedDriver = drv; break; }
         }
 
