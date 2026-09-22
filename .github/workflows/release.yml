@@ -974,6 +974,21 @@ jobs:
           fi
           [ -x "$CAJETA" ] || { echo "::error::no compiler at $CAJETA to build cvm with"; exit 1; }
 
+          # A link failure here reports only collect2's "ld returned N" with no
+          # linker output, which says nothing about WHICH driver and linker ran
+          # or whether they can start at all. Record that before building. The
+          # fork ships dynamically-linked Windows binaries, so "found on PATH"
+          # and "can execute" are different questions. Never fatal.
+          echo "--- link toolchain ---"
+          for t in cc gcc clang ld ld.lld lld-link; do
+            p="$(command -v "$t" 2>/dev/null || true)"
+            if [ -z "$p" ]; then echo "  $t: not on PATH"; continue; fi
+            # `if` so a tool that cannot start does not trip set -e.
+            if v="$("$t" --version 2>&1 | head -1)"; then rc=0; else rc=$?; fi
+            echo "  $t -> $p (--version rc=$rc): $v"
+          done
+          echo "----------------------"
+
           # `cajeta <task>` runs the named cajeta.json task. `release` is the
           # optimized flavor; the default `build` task is debug.
           #
