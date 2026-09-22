@@ -438,6 +438,34 @@ jobs:
             echo "$DEST/bin" >> "$GITHUB_PATH"
           fi
 
+      # The fork's Windows binaries are dynamically linked, so shipping them is
+      # not the same as being able to run them: ld.lld and lld-link exit 127
+      # when one of their DLLs is absent, and the only downstream symptom is an
+      # opaque "ld returned 53" from collect2 much later. Name the missing DLL
+      # here, early and cheaply, so provisioning is a fact rather than a guess.
+      # Never fatal — this reports, it does not gate.
+      - name: Probe the fork toolchain (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          for t in clang ld.lld lld-link; do
+            p="$(command -v "$t" 2>/dev/null || true)"
+            [ -n "$p" ] || { echo "$t: not on PATH"; continue; }
+            if out="$("$t" --version 2>&1 | head -1)"; then rc=0; else rc=$?; fi
+            echo "=== $t (rc=$rc) $p"
+            [ "$rc" -eq 0 ] && { echo "    $out"; continue; }
+            f="$p"; [ -f "$f" ] || f="$p.exe"
+            objdump -p "$f" 2>/dev/null | awk '/DLL Name:/ {print $3}' \
+              | sort -fu | while read -r dll; do
+              hit=""
+              for d in "$(dirname "$f")" /mingw64/bin /c/Windows/System32; do
+                [ -f "$d/$dll" ] && { hit="$d/$dll"; break; }
+              done
+              [ -n "$hit" ] && echo "    ok      $dll" || echo "    MISSING $dll"
+            done
+          done
+
       # ---- macOS dependency install (brew) ------------------------------
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
