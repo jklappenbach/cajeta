@@ -36,28 +36,44 @@ that regenerates both. One generated manifest feeds both surfaces.
   block already IS the template: the prose around it is hand-written and
   permanent, and only the block between the markers is generated. A whole-file
   template would put hand-written prose under generation and lose it.
-- **1.3.2** A second catalog. `cvm-distribution` Unit 2A already specifies a
-  committed release catalog produced by the release job. This surface RENDERS
-  that catalog. Two generated lists of the same assets will disagree.
+- **1.3.2** Anything to do with enumerating releases. `cvm-distribution` Unit
+  2A compiles a catalog of EVERY release, appended to by the release job, so
+  `cvm list` does not query GitHub each time it is asked. That is a different
+  artifact with a different consumer and a different lifetime. This surface
+  shows the LATEST release only, for a human to click, and it neither produces
+  nor extends that catalog.
 - **1.3.3** Changing what the release builds. If an installer is not produced,
   this surface says so rather than inventing a link.
 
-## 2. One manifest, two renderings
+## 2. The latest release, rendered twice
 
-The release job already knows every asset it published. The failure mode to
-avoid is each surface deriving asset names independently, which is what
-`update-release-docs.sh` does today by reconstructing names from a tag and a
-triple.
+The release job already holds the list of what it just published. The failure
+mode to avoid is each surface deriving asset names independently, which is
+what `update-release-docs.sh` does today by rebuilding names from a tag and a
+triple, and which is why the installers it never names are invisible.
 
-- **2.1** When the release job completes, one machine-readable manifest
-  describes the release: version, and per triple the archive, compiler binary,
-  cvm binary and each native installer, each with its URL and digest.
-- **2.2** When a surface needs a download link, it reads that manifest rather
-  than rebuilding the name from a tag and a triple.
-- **2.3** When `cvm-distribution` Unit 2A's catalog exists, this manifest is
-  that catalog and not a second file.
-- **2.4** When an asset is absent for a triple, the manifest omits it, and the
-  rendering shows the absence rather than a link that 404s.
+This is one release's asset list, not a history. Nothing here needs a previous
+release, so nothing here needs a catalog.
+
+- **2.1** When the release job completes, the assets it published are
+  described once: version, and per triple the archive, compiler binary, cvm
+  binary and each native installer, each with its URL and digest.
+- **2.2** When a surface needs a download link, it reads that description
+  rather than rebuilding the name from a tag and a triple.
+- **2.3** When an asset is absent for a triple, it is omitted rather than
+  recorded with a dead URL, and the rendering shows the absence.
+
+### 2.4 Relationship to cvm's catalog
+
+`cvm-distribution` 2A compiles a catalog of every release so `cvm list` can
+answer without a GitHub query. The two touch the same asset names and serve
+different readers, so they stay separate artifacts.
+
+- **2.4.1** When this surface is regenerated, it does not read, write or
+  extend that catalog.
+- **2.4.2** When the two would share anything, it is the code that spells an
+  asset name for a triple, never the file. A schema change made to serve
+  `cvm list` must not be able to break the home page.
 
 ## 3. The README block
 
@@ -106,5 +122,5 @@ triple.
   asset URL is honest about the version. Recommendation: show the version and
   link the asset directly, matching the README.
 - **6.2** Should `sh.cajeta.dev` (the install script the README already cites)
-  be generated from the same manifest? It resolves assets by its own logic
-  today and is a third place the naming can drift.
+  spell asset names from the same helper as 2.4.2? It resolves them by its own
+  logic today and is a third place the naming can drift.
