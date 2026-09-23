@@ -2119,9 +2119,20 @@ namespace cajeta {
             }
         }
 
-        // A @Kernel or @Device method taking Buffer<T> works on device memory and is
-        // never called on the host — its real lowering is the device function. Emit a
-        // trivial host stub so host codegen never lowers device-only constructs.
+        // A @Kernel body is never called on the host: it runs only through its
+        // launch, and its real lowering is the device function (on the cpu
+        // backend too, via KernelLowering and the per-block wrapper). Emit a
+        // trivial host stub so host codegen never lowers device-only
+        // constructs -- and that holds whatever the kernel's parameters are.
+        // Keying it on "takes a KernelBuffer" was a proxy that failed the first
+        // kernel taking only an Image2D: its body was host-compiled and, once
+        // Image2D.store became a bodiless @Intrinsic (4d6e0b5a), refused as a
+        // host call (XpuCpuDispatchTests.imageLoadStoreRmwOnCpu, 2026-09-23).
+        //
+        // A @Device method is different: it marks a method as ALSO usable on the
+        // device, not device-only (GgufFile.halfBitsToF32 has a real body and
+        // is called from host code), so it keeps its host body -- unless it
+        // takes a KernelBuffer, which only device code can hand it.
         if (cajeta::xpu::isKernel(*this) || cajeta::xpu::isDevice(*this)) {
             bool hasDeviceBuffer = false;
             for (auto& p : parameterList) {
@@ -2132,7 +2143,7 @@ namespace cajeta {
                     break;
                 }
             }
-            if (hasDeviceBuffer) {
+            if (cajeta::xpu::isKernel(*this) || hasDeviceBuffer) {
                 llvm::BasicBlock* bb = llvm::BasicBlock::Create(
                     *module->getLlvmContext(), "entry", llvmFunction);
                 llvm::IRBuilder<> b(bb);
