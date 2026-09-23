@@ -1024,6 +1024,103 @@ TEST(XpuCpuDistCoopVerb, varyingOfLaneCfAcrossEpilogueLoop) {
            " 48*... means ofLane bound to the first iteration's cf)";
 }
 
+// ---- PROBE: ofLane column factor from a PER-LANE MEMORY LOAD ---------- //
+//
+// The one thing deqMw4's cfv has that varyingOfLaneCfAcrossEpilogueLoop's cf
+// does NOT: it is not pure arithmetic on the lane index, it is a value LOADED
+// from memory at a per-lane offset (scaleAtDev(packed, myRo/2+b) and
+// packed[ro+192+j], both keyed on lane16). The pure-arithmetic ofLane cf
+// distributes per-column correctly (that probe passes); this asks whether a
+// per-lane MEMORY-LOADED ofLane cf still distributes, or collapses to one
+// lane's value across the 16-wide tile (period-16 — deqMw4's CPU fingerprint).
+// One wave, one accumulator, so a failure isolates the memory-load path alone.
+const char* kMemLoadOfLaneSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.WaveVector;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+public class M {
+    @Kernel
+    public static void mm(KernelBuffer<float32> y, KernelBuffer<int8> a,
+                          KernelBuffer<int8> b, KernelBuffer<float32> rowF,
+                          KernelBuffer<float32> cfBuf) {
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> mc;
+        CooperativeMatrix<float32,16,16,2> facc;
+        facc.splat(0.0f);
+        int32 col = (int32) (KernelThread.x() % 16);
+        float32 cf = cfBuf[col];        // PER-LANE MEMORY LOAD, not arithmetic
+        mc.splat(0);
+        ma.load(a, 0, 0, 16);
+        mb.load(b, 0, 0, 16);
+        mc.mma(ma, mb);
+        mc.scaledAccumInto(facc, rowF, WaveVector.ofLane(cf));
+        facc.store(y, 0, 0, 16);
+    }
+    public static int32 run() {
+        int8[] ha = heap int8[256];
+        int8[] hb = heap int8[256];
+        float32[] hrf = heap float32[16];
+        float32[] hcf = heap float32[16];
+        float32[] hy = heap float32[256];
+        int32 r = 0;
+        while (r < 16) {
+            hrf[r] = (float32) (r + 1);
+            hcf[r] = (float32) (r + 1);
+            int32 k = 0;
+            while (k < 16) {
+                ha[r * 16 + k] = (int8) 1;
+                hb[r * 16 + k] = (int8) 1;
+                hy[r * 16 + k] = -1.0f;
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(256);
+        KernelBuffer<int8> b = heap KernelBuffer<int8>(256);
+        KernelBuffer<float32> rowF = heap KernelBuffer<float32>(16);
+        KernelBuffer<float32> cfBuf = heap KernelBuffer<float32>(16);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(256);
+        a.upload(ha);
+        b.upload(hb);
+        rowF.upload(hrf);
+        cfBuf.upload(hcf);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        mm.launch(s, grid: [1], block: [32])(y, a, b, rowF, cfBuf);
+        s.sync();
+        y.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        int32 rr = 0;
+        while (rr < 16) {
+            int32 cc = 0;
+            while (cc < 16) {
+                float32 want = (float32) (16 * (rr + 1) * (cc + 1));
+                if (hy[rr * 16 + cc] != want) { return 1000 + rr * 16 + cc; }
+                cc = cc + 1;
+            }
+            rr = rr + 1;
+        }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuDistCoopVerb, memLoadedOfLaneCfDistributesPerColumn) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kMemLoadOfLaneSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, 0)
+        << "memory-loaded ofLane cf wrong; r=" << r
+        << " (-1 refused, 1000+cell = first wrong cell; want 16*(r+1)*(c+1)."
+           " A whole 16-wide tile sharing one column's factor is the period-16"
+           " deqMw4 CPU fingerprint — the memory-load path does not distribute.)";
+}
+
 // ---- PROBE: one COLUMN-MAJOR mb reused across FOUR mmas ---------------- //
 //
 // deqMw4's inner pattern that no test covers: mb.load(deq, off, 1, 16) ONCE
