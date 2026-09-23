@@ -87,9 +87,17 @@ EOF
 
 README="$TMP/README.md"; new_readme "$README"
 GUIDE="$TMP/guide.md";   new_guide   "$GUIDE"
+MANIFEST="$TMP/latest-release.json"
+
+# A stand-in for cvm's catalog, which this surface must never touch (spec
+# 2.4.1). Its bytes are the assertion.
+CATALOG="$TMP/cvm-catalog.json"
+printf '{"releases":["v0.0.1"]}\n' > "$CATALOG"
+CATALOG_BEFORE="$(cat "$CATALOG")"
 
 run() {
     ( cd "$TMP" && RELEASE_DOCS_README="$README" RELEASE_DOCS_GUIDE="$GUIDE" \
+        RELEASE_DOCS_MANIFEST="$MANIFEST" \
         GITHUB_REPOSITORY="jklappenbach/cajeta" \
         "$SCRIPT_DIR/update-release-docs.sh" "$TAG" release-assets artifacts \
         >"$TMP/out.log" 2>&1 )
@@ -129,11 +137,57 @@ assert_has "1.1.5 text above the markers survives" "$README" "$SENTINEL_TOP"
 assert_has "1.1.5 text below the markers survives" "$README" "$SENTINEL_BOT"
 assert_lacks "1.1.5 stale block content is gone" "$README" "stale content that must be replaced"
 
-# 1.1.4 rendering twice over the same tree is byte-identical.
+# ---- Unit 2: the release manifest the site imports ------------------------
+jqq() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))$1)" "$MANIFEST"; }
+
+assert "2.1.1 manifest names the version" "9.9.9" "$(jqq '["version"]')"
+assert "2.1.1 manifest carries every platform that shipped" "4" \
+    "$(jqq '["platforms"].__len__()')"
+assert "2.1.1 an asset carries its URL" "yes" \
+    "$(jqq '["platforms"][0]["compiler"]["url"].startswith("https://github.com/") and "yes" or "no"')"
+assert "2.1.1 installers are listed with their format" "deb" \
+    "$(python3 -c "
+import json,sys
+d=json.load(open('$MANIFEST'))
+p=[x for x in d['platforms'] if x['triple']=='x86_64-linux-gnu'][0]
+print(sorted(i['format'] for i in p['installers'])[0])")"
+
+# 2.1.2 the installer-less triple has no installers key at all, rather than an
+# entry pointing at a file that was never published.
+assert "2.1.2 absent assets are omitted, not recorded dead" "absent" \
+    "$(python3 -c "
+import json
+d=json.load(open('$MANIFEST'))
+p=[x for x in d['platforms'] if x['triple']=='aarch64-linux-gnu'][0]
+print('absent' if 'installers' not in p else 'present')")"
+
+# 2.1.5 cvm's catalog is a different artifact and must be untouched.
+assert "2.1.5 cvm's catalog is not touched" "unchanged" \
+    "$([ "$CATALOG_BEFORE" = "$(cat "$CATALOG")" ] && echo unchanged || echo changed)"
+
+# 1.1.4 / 2.1.3 rendering twice over the same tree is byte-identical, for the
+# README and for the manifest. A release commit must carry no churn.
 cp "$README" "$TMP/first.md"
+cp "$MANIFEST" "$TMP/first.json"
 run
 assert "1.1.4 second render is byte-identical" "same" \
     "$(cmp -s "$TMP/first.md" "$README" && echo same || echo differs)"
+assert "2.1.3 manifest re-render is byte-identical" "same" \
+    "$(cmp -s "$TMP/first.json" "$MANIFEST" && echo same || echo differs)"
+
+# 2.1.4 the guard fires when the surface does not name what just shipped.
+run_other_tag() {
+    ( cd "$TMP" && RELEASE_DOCS_README="$README" RELEASE_DOCS_GUIDE="$GUIDE" \
+        RELEASE_DOCS_MANIFEST="$TMP/mismatch.json" \
+        GITHUB_REPOSITORY="jklappenbach/cajeta" \
+        "$SCRIPT_DIR/update-release-docs.sh" "$1" release-assets artifacts \
+        >"$TMP/out2.log" 2>&1 )
+}
+new_readme "$README"
+run_other_tag "v0.0.0"; rc=$?
+assert "2.1.4 a tag with no matching assets fails rather than renders" "nonzero" \
+    "$([ "$rc" -ne 0 ] && echo nonzero || echo 0)"
+new_readme "$README"; run >/dev/null 2>&1
 
 # 1.1.3 a file without the marker pair fails rather than writing nothing.
 printf '# no markers here\n' > "$README"

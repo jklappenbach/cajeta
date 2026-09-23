@@ -1334,7 +1334,7 @@ jobs:
       # Dry-run stops at the diff and prints it. A prerelease is skipped too:
       # `v0.3.0-rc1` is not what a reader landing on the README should be
       # pointed at.
-      - name: Update README + install guide from the release
+      - name: Update README, install guide and site manifest from the release
         if: steps.params.outputs.prerelease != 'true'
         shell: bash
         run: |
@@ -1346,7 +1346,10 @@ jobs:
           # Both trees: release-assets holds the bare binaries, artifacts the
           # per-leg archives.
           scripts/update-release-docs.sh "$TAG" release-assets artifacts
-          git --no-pager diff -- README.md docs/guide/01-installation.md
+          # Show every surface the run rewrote, so a dry run previews all of
+          # them rather than the two that happen to be markdown.
+          git --no-pager diff -- README.md docs/guide/01-installation.md \
+            site/src/data/latest-release.json
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
 
@@ -1355,13 +1358,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- README.md docs/guide/01-installation.md; then
+          # The site's release manifest rides along: it is what the cajeta.dev
+          # home page imports, and it cannot be derived from the tree, so a
+          # release that leaves it behind ships a home page advertising the
+          # previous version.
+          DOCS=(README.md docs/guide/01-installation.md site/src/data/latest-release.json)
+          if git diff --quiet -- "${DOCS[@]}"; then
             echo "::notice::docs already match ${{ steps.params.outputs.tag }} — nothing to commit"
             exit 0
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md docs/guide/01-installation.md
+          git add "${DOCS[@]}"
           git commit -m "docs: release links for ${{ steps.params.outputs.tag }} [skip ci]"
           # The tag was built from a commit on main, but main may have moved
           # while the matrix ran. Rebase onto it rather than force-pushing
