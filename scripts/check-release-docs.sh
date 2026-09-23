@@ -11,11 +11,27 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-# Repo-local scratch. /tmp is off limits here.
-TMP="$(mktemp -d "${TMPDIR:-${ROOT}/tmp}/release-docs-selftest.XXXXXX")"
+# Repo-local scratch. /tmp is off limits here, and tmp/ is gitignored so it
+# does NOT exist in a fresh clone: mktemp into a missing parent fails, $TMP
+# comes back empty, and every later `cd "$TMP"` lands in the repo root.
+# The renderer replaces marker blocks with python3, and so do this test's
+# manifest assertions. The release job runs on a host that has it; a C++
+# build leg need not, and making a docs renderer a hard dependency of one
+# would be the wrong trade. Skip loudly instead.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo ">> check-release-docs: python3 absent — skipped"
+    exit 0
+fi
+SCRATCH="${TMPDIR:-${ROOT}/tmp}"
+mkdir -p "$SCRATCH"
+TMP="$(mktemp -d "${SCRATCH}/release-docs-selftest.XXXXXX")" || exit 1
+[ -n "$TMP" ] && [ -d "$TMP" ] || { echo "FAIL: no scratch dir"; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 fails=0
+# `cmp` is not on the mingw runner. Compare contents with the shell, which
+# is everywhere these render text files.
+same_file() { [ "$(cat "$1")" = "$(cat "$2")" ] && echo same || echo differs; }
 assert() { # <desc> <expected> <actual>
     if [ "$2" != "$3" ]; then
         echo "FAIL: $1 (expected '$2', got '$3')"
@@ -171,9 +187,9 @@ cp "$README" "$TMP/first.md"
 cp "$MANIFEST" "$TMP/first.json"
 run
 assert "1.1.4 second render is byte-identical" "same" \
-    "$(cmp -s "$TMP/first.md" "$README" && echo same || echo differs)"
+    "$(same_file "$TMP/first.md" "$README")"
 assert "2.1.3 manifest re-render is byte-identical" "same" \
-    "$(cmp -s "$TMP/first.json" "$MANIFEST" && echo same || echo differs)"
+    "$(same_file "$TMP/first.json" "$MANIFEST")"
 
 # 2.1.4 the guard fires when the surface does not name what just shipped.
 run_other_tag() {

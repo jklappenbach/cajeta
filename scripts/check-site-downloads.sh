@@ -23,6 +23,11 @@ if ! command -v npm >/dev/null 2>&1 || [ ! -d "${SITE}/node_modules" ]; then
 fi
 
 fails=0
+# tmp/ is gitignored and absent in a fresh clone, so create it before any
+# mktemp into it. `cmp` is not on the mingw runner either.
+SCRATCH="${TMPDIR:-${ROOT}/tmp}"
+mkdir -p "$SCRATCH"
+same_file() { [ "$(cat "$1")" = "$(cat "$2")" ] && echo same || echo differs; }
 assert() { # <desc> <expected> <actual>
     if [ "$2" != "$3" ]; then
         echo "FAIL: $1 (expected '$2', got '$3')"
@@ -32,7 +37,7 @@ assert() { # <desc> <expected> <actual>
 
 BACKUP=""
 if [ -f "$DATA" ]; then
-    BACKUP="$(mktemp "${TMPDIR:-${ROOT}/tmp}/latest-release.XXXXXX.json")"
+    BACKUP="$(mktemp "${SCRATCH}/latest-release.XXXXXX.json")"
     cp "$DATA" "$BACKUP"
 fi
 restore() {
@@ -69,11 +74,11 @@ cat > "$DATA" <<'JSON'
 }
 JSON
 
-build() { ( cd "$SITE" && npm run build >"${ROOT}/tmp/site-build.log" 2>&1 ); }
+build() { ( cd "$SITE" && npm run build >"${SCRATCH}/site-build.log" 2>&1 ); }
 
 if ! build; then
     echo "FAIL: site build failed"
-    tail -20 "${ROOT}/tmp/site-build.log" | sed 's/^/    /'
+    tail -20 "${SCRATCH}/site-build.log" | sed 's/^/    /'
     exit 1
 fi
 PAGE="${SITE}/dist/index.html"
@@ -121,15 +126,15 @@ PY
 )"
 
 # 3.1.3 the same manifest builds the same page.
-cp "$PAGE" "${ROOT}/tmp/site-first.html"
+cp "$PAGE" "${SCRATCH}/site-first.html"
 if ! build; then
     echo "FAIL: second site build failed"
     fails=$((fails + 1))
 else
     assert "3.1.3 rebuild is byte-identical" "same" \
-        "$(cmp -s "${ROOT}/tmp/site-first.html" "$PAGE" && echo same || echo differs)"
+        "$(same_file "${SCRATCH}/site-first.html" "$PAGE")"
 fi
-rm -f "${ROOT}/tmp/site-first.html" "${ROOT}/tmp/site-build.log"
+rm -f "${SCRATCH}/site-first.html" "${SCRATCH}/site-build.log"
 
 if [ "$fails" -eq 0 ]; then
     echo "check-site-downloads: OK"

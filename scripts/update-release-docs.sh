@@ -78,9 +78,11 @@ installers_for() {
   local triple="$1" d
   for d in "${ASSET_DIRS[@]}"; do
     [ -d "$d" ] || continue
+    # `-exec basename` rather than `-printf '%f'`: the latter is GNU-only and
+    # the macOS leg runs BSD find, where it is a usage error.
     find "$d" -type f -path "*/cajeta-${triple}/*" \
       \( -name '*.deb' -o -name '*.rpm' -o -name '*.msi' \
-         -o -name '*.pkg' -o -name '*.pkg.tar.zst' \) -printf '%f\n'
+         -o -name '*.pkg' -o -name '*.pkg.tar.zst' \) -exec basename {} \;
   done | sort -u
 }
 
