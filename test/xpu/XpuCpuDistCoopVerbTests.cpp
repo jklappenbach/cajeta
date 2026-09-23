@@ -920,4 +920,213 @@ TEST(XpuCpuDistCoopVerb, multiAccumReuseMbAcrossBarrierLoop) {
         << "multi-accumulator coop wrong; r=" << r
         << " (-1 refused, 1000+n*256+r*16+c = first wrong cell; block n = (r-1000)/256)";
 }
+
+// ---- PROBE: an ofLane column factor that VARIES per epilogue iteration ---- //
+//
+// Every ofLane epilogue test above feeds a LOOP-INVARIANT cf (cf = col+1,
+// computed once). deqMw4 is the one kernel that feeds ofLane a value that
+// changes every call: cfv = dv * scj, a different scale for each of the 16
+// sub-blocks j, accumulated into facc each time. deqMw8 (which is CORRECT on
+// the CPU distributed tile) never uses ofLane -- its column factors come from
+// ofSlice. So "ofLane with a per-call-varying factor" is the untested seam
+// that distinguishes deqMw4 (wrong on CPU distributed) from everything green.
+//
+// Single accumulator, so the store offset is a plain 0 -- no multi-accumulator
+// overlap. Same mc/rowF as faccAccumulatesAcrossEpilogueLoop (its CONTROL: cf
+// constant -> 48*(r+1)*(c+1), passes), but here cf = (col+1)*(it+1), so:
+//   facc[r][c] = sum_{it=0,1,2} 16*(r+1) * ((c+1)*(it+1))
+//              = 16*(r+1)*(c+1) * (1+2+3) = 96*(r+1)*(c+1).
+// If ofLane is bound to the FIRST iteration's cf (a hoist/stale-read bug that a
+// constant-cf test cannot see), each cell is 3*16*(r+1)*(c+1)*1 = 48*(r+1)*(c+1)
+// instead -- exactly half, and the return value names the first wrong cell.
+const char* kVaryingOfLaneSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.WaveVector;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+public class M {
+    @Kernel
+    public static void mm(KernelBuffer<float32> y, KernelBuffer<int8> a,
+                          KernelBuffer<int8> b, KernelBuffer<float32> rowF) {
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> mc;
+        CooperativeMatrix<float32,16,16,2> facc;
+        facc.splat(0.0f);
+        int32 col = (int32) (KernelThread.x() % 16);
+        int32 it = 0;
+        while (it < 3) {
+            float32 cf = (float32) ((col + 1) * (it + 1));   // VARIES per call
+            mc.splat(0);
+            ma.load(a, 0, 0, 16);
+            mb.load(b, 0, 0, 16);
+            mc.mma(ma, mb);
+            mc.scaledAccumInto(facc, rowF, WaveVector.ofLane(cf));
+            it = it + 1;
+        }
+        facc.store(y, 0, 0, 16);
+    }
+    public static int32 run() {
+        int8[] ha = heap int8[256];
+        int8[] hb = heap int8[256];
+        float32[] hrf = heap float32[16];
+        float32[] hy = heap float32[256];
+        int32 r = 0;
+        while (r < 16) {
+            hrf[r] = (float32) (r + 1);
+            int32 k = 0;
+            while (k < 16) {
+                ha[r * 16 + k] = (int8) 1;
+                hb[r * 16 + k] = (int8) 1;
+                hy[r * 16 + k] = -1.0f;
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(256);
+        KernelBuffer<int8> b = heap KernelBuffer<int8>(256);
+        KernelBuffer<float32> rowF = heap KernelBuffer<float32>(16);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(256);
+        a.upload(ha);
+        b.upload(hb);
+        rowF.upload(hrf);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        mm.launch(s, grid: [1], block: [32])(y, a, b, rowF);
+        s.sync();
+        y.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        int32 rr = 0;
+        while (rr < 16) {
+            int32 cc = 0;
+            while (cc < 16) {
+                float32 want = (float32) (96 * (rr + 1) * (cc + 1));
+                if (hy[rr * 16 + cc] != want) { return 1000 + rr * 16 + cc; }
+                cc = cc + 1;
+            }
+            rr = rr + 1;
+        }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuDistCoopVerb, varyingOfLaneCfAcrossEpilogueLoop) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kVaryingOfLaneSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, 0)
+        << "varying ofLane cf wrong; r=" << r
+        << " (-1 refused, 1000+cell = first wrong cell; want 96*(r+1)*(c+1),"
+           " 48*... means ofLane bound to the first iteration's cf)";
+}
+
+// ---- PROBE: one COLUMN-MAJOR mb reused across FOUR mmas ---------------- //
+//
+// deqMw4's inner pattern that no test covers: mb.load(deq, off, 1, 16) ONCE
+// (column-major, layout 1), then four mc_n.mma(ma_n, mb) reusing that single
+// mb with ma reloaded between. columnMajorBLoadIsCorrectAtG2 is column-major
+// but ONE mma; multiAccumReuseMbAcrossBarrierLoop reuses across four but
+// ROW-major. This is the intersection. B is asymmetric (B[k][c]=2k+c, so
+// column-major differs from row-major) and A_n[r][k]=n+1 (distinct per mma).
+//   mc_n[r][c] = (n+1) * sum_k (2k+c) = (n+1) * (240 + 16c),  distinct per (n,c).
+// A wrong mc_n (n>=1) means reusing a column-major mb across mmas corrupts it
+// (a stale/re-read/aliasing bug the row-major reuse test cannot see).
+const char* kCmReuseSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+public class M {
+    @Kernel
+    public static void mm(KernelBuffer<int32> y, KernelBuffer<int8> a,
+                          KernelBuffer<int8> b) {
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> mc0;
+        CooperativeMatrix<int32,16,16,2> mc1;
+        CooperativeMatrix<int32,16,16,2> mc2;
+        CooperativeMatrix<int32,16,16,2> mc3;
+        mc0.splat(0);
+        mc1.splat(0);
+        mc2.splat(0);
+        mc3.splat(0);
+        mb.load(b, 0, 1, 16);              // ONE column-major B, reused
+        ma.load(a, 0, 0, 16);   mc0.mma(ma, mb);
+        ma.load(a, 256, 0, 16); mc1.mma(ma, mb);
+        ma.load(a, 512, 0, 16); mc2.mma(ma, mb);
+        ma.load(a, 768, 0, 16); mc3.mma(ma, mb);
+        mc0.store(y, 0, 0, 16);
+        mc1.store(y, 256, 0, 16);
+        mc2.store(y, 512, 0, 16);
+        mc3.store(y, 768, 0, 16);
+    }
+    public static int32 run() {
+        int8[] ha = heap int8[1024];
+        int8[] hb = heap int8[256];
+        int32[] hy = heap int32[1024];
+        int32 n = 0;
+        while (n < 4) {
+            int32 r = 0;
+            while (r < 16) {
+                int32 k = 0;
+                while (k < 16) { ha[(n * 16 + r) * 16 + k] = (int8) (n + 1); k = k + 1; }
+                r = r + 1;
+            }
+            n = n + 1;
+        }
+        // column-major storage: b[c*16 + k] = 2k + c  ->  load(layout 1) gives B[k][c]=2k+c
+        int32 c = 0;
+        while (c < 16) {
+            int32 k = 0;
+            while (k < 16) { hb[c * 16 + k] = (int8) (2 * k + c); k = k + 1; }
+            c = c + 1;
+        }
+        int32 j = 0;
+        while (j < 1024) { hy[j] = -1; j = j + 1; }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(1024);
+        KernelBuffer<int8> b = heap KernelBuffer<int8>(256);
+        KernelBuffer<int32> y = heap KernelBuffer<int32>(1024);
+        a.upload(ha);
+        b.upload(hb);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        mm.launch(s, grid: [1], block: [32])(y, a, b);
+        s.sync();
+        y.download(hy);
+        if (hy[0] == -1) { return -1; }
+        int32 nn = 0;
+        while (nn < 4) {
+            int32 rr = 0;
+            while (rr < 16) {
+                int32 cc = 0;
+                while (cc < 16) {
+                    int32 want = (nn + 1) * (240 + 16 * cc);
+                    if (hy[nn * 256 + rr * 16 + cc] != want) {
+                        return 1000 + nn * 256 + rr * 16 + cc;
+                    }
+                    cc = cc + 1;
+                }
+                rr = rr + 1;
+            }
+            nn = nn + 1;
+        }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuDistCoopVerb, columnMajorMbReusedAcrossFourMmas) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kCmReuseSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, 0)
+        << "column-major mb reused across 4 mmas wrong; r=" << r
+        << " (-1 refused, 1000+n*256+r*16+c = first wrong cell; block n=(r-1000)/256)";
+}
 }  // namespace
