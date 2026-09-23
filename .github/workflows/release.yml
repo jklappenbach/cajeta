@@ -1378,6 +1378,49 @@ jobs:
           git rebase origin/main
           git push origin HEAD:main
 
+      # ---- publish the site, so cajeta.dev shows what just shipped ------
+      #
+      # Without this the release commits site/src/data/latest-release.json and
+      # cajeta.dev goes on serving the previous build, which is the exact drift
+      # the download surface exists to remove. Runs AFTER the docs commit so it
+      # builds from the manifest this release just wrote.
+      #
+      # wrangler.jsonc already pins the account, so the only credential is an
+      # API token. It is NOT optional: a missing token means the site is stale,
+      # and a run that goes green while advertising the previous release is the
+      # failure this is meant to prevent. Fail loudly instead. The Release
+      # itself is already published by this point, so a red run here means
+      # "shipped, but the site did not follow", which is what happened.
+      - name: Set up Node for the site build
+        if: steps.params.outputs.mode != 'dry-run' && steps.params.outputs.prerelease != 'true'
+        uses: actions/setup-node@v4
+        with:
+          # site/package.json requires >=22. Pin it rather than inherit
+          # whatever the runner image ships this month.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Deploy the site to cajeta.dev
+        if: steps.params.outputs.mode != 'dry-run' && steps.params.outputs.prerelease != 'true'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not set, so cajeta.dev still serves the previous release. Add the secret (Workers Scripts:Edit on the account that owns cajeta.dev) and re-run this job."
+            exit 1
+          fi
+          cd site
+          npm ci --no-audit --no-fund
+          # `npm run deploy` is regen + wrangler deploy. Call them separately so
+          # a build failure and a publish failure are distinguishable in the log.
+          npm run manifest
+          npx astro build
+          npx wrangler deploy
+          echo "::notice::cajeta.dev deployed for ${{ steps.params.outputs.tag }}"
+
       - name: Dry-run summary
         if: steps.params.outputs.mode == 'dry-run'
         run: |
