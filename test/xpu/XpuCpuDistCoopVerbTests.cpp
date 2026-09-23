@@ -1219,6 +1219,104 @@ TEST(XpuCpuDistCoopVerb, multiWaveOfLaneCfPerWaveColumn) {
            " collapsed to wave-0's factors — the period-16 deqMw4 fingerprint.)";
 }
 
+// ---- PROBE: ofLane cf from a per-lane VECTOR LOAD (vload<4>) ---------- //
+//
+// deqMw4's cfv = dv*scj, and dv = QuantKernel.scaleAtDev(packed, myRo/2+b),
+// whose core is `packed.vload<4>(off)` at a PER-LANE offset — a SIMD vector
+// load, not the scalar indexed load memLoadedOfLaneCfDistributesPerColumn
+// already cleared. On the CPU the wave lanes are themselves host-SIMD, so a
+// vector load nested inside the vectorized lane loop is the construct most
+// likely to collapse to one lane's value. If it does, cf reads scal[0] for
+// every column -> uniform factor across the tile -> deqMw4's period-16.
+// One wave, one accumulator: a failure isolates the per-lane vload path.
+const char* kVloadOfLaneSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.WaveVector;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+public class M {
+    @Kernel
+    public static void mm(KernelBuffer<float32> y, KernelBuffer<int8> a,
+                          KernelBuffer<int8> b, KernelBuffer<float32> rowF,
+                          KernelBuffer<int8> scal) {
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> mc;
+        CooperativeMatrix<float32,16,16,2> facc;
+        facc.splat(0.0f);
+        int32 col = (int32) (KernelThread.x() % 16);
+        Vector<int8,4> dh = scal.vload<4>((int64) (col * 4));  // PER-LANE vector load
+        float32 cf = (float32) ((int32) dh[0] & 255);
+        mc.splat(0);
+        ma.load(a, 0, 0, 16);
+        mb.load(b, 0, 0, 16);
+        mc.mma(ma, mb);
+        mc.scaledAccumInto(facc, rowF, WaveVector.ofLane(cf));
+        facc.store(y, 0, 0, 16);
+    }
+    public static int32 run() {
+        int8[] ha = heap int8[256];
+        int8[] hb = heap int8[256];
+        float32[] hrf = heap float32[16];
+        int8[] hsc = heap int8[64];
+        float32[] hy = heap float32[256];
+        int32 r = 0;
+        while (r < 16) {
+            hrf[r] = (float32) (r + 1);
+            hsc[r * 4] = (int8) (r + 1);
+            int32 k = 0;
+            while (k < 16) {
+                ha[r * 16 + k] = (int8) 1;
+                hb[r * 16 + k] = (int8) 1;
+                hy[r * 16 + k] = -1.0f;
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(256);
+        KernelBuffer<int8> b = heap KernelBuffer<int8>(256);
+        KernelBuffer<float32> rowF = heap KernelBuffer<float32>(16);
+        KernelBuffer<int8> scal = heap KernelBuffer<int8>(64);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(256);
+        a.upload(ha);
+        b.upload(hb);
+        rowF.upload(hrf);
+        scal.upload(hsc);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        mm.launch(s, grid: [1], block: [32])(y, a, b, rowF, scal);
+        s.sync();
+        y.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        int32 rr = 0;
+        while (rr < 16) {
+            int32 cc = 0;
+            while (cc < 16) {
+                float32 want = (float32) (16 * (rr + 1) * (cc + 1));
+                if (hy[rr * 16 + cc] != want) { return 1000 + rr * 16 + cc; }
+                cc = cc + 1;
+            }
+            rr = rr + 1;
+        }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuDistCoopVerb, vloadSourcedOfLaneCfDistributesPerColumn) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kVloadOfLaneSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, 0)
+        << "vload-sourced ofLane cf wrong; r=" << r
+        << " (-1 refused, 1000+cell = first wrong cell; want 16*(r+1)*(c+1)."
+           " Every column reading 16*(r+1) (i.e. scal[0]=1) means the per-lane"
+           " vload<4> collapsed to one lane — deqMw4's period-16 root.)";
+}
+
 // ---- PROBE: one COLUMN-MAJOR mb reused across FOUR mmas ---------------- //
 //
 // deqMw4's inner pattern that no test covers: mb.load(deq, off, 1, 16) ONCE
