@@ -1106,4 +1106,11 @@ fi
 if ! "$SCRIPT_DIR/scripts/check-release-docs.sh"; then
     exit 1
 fi
+
+# The cajeta.dev downloads section, same reasoning: it is built from a file
+# only a release writes, so nothing else exercises it. Skips itself where
+# the site toolchain is absent, which is every C++-only host.
+if ! "$SCRIPT_DIR/scripts/check-site-downloads.sh"; then
+    exit 1
+fi
 exit 0

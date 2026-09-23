@@ -1,0 +1,150 @@
+---
+// The latest release's downloads, from site/src/data/latest-release.json.
+//
+// That file is written by scripts/update-release-docs.sh at release time and
+// committed, so this build needs no network and renders the same bytes for the
+// same release. It is imported as data on purpose: the alternative, rewriting
+// this markup from the release job, breaks the first time anyone reformats it.
+import release from '../data/latest-release.json';
+
+type Asset = { name: string; url: string; sha256?: string; format?: string };
+type Platform = {
+  triple: string;
+  label: string;
+  archive?: Asset;
+  compiler?: Asset;
+  cvm?: Asset;
+  installers?: Asset[];
+};
+
+const platforms = (release.platforms ?? []) as Platform[];
+// Matched against navigator.platform + userAgent in the browser. A miss just
+// leaves every platform on screen, which is the state this renders in.
+const HINTS: Record<string, string> = {
+  'x86_64-linux-gnu': 'linux-x86',
+  'aarch64-linux-gnu': 'linux-arm',
+  'aarch64-apple-darwin': 'mac',
+  'x86_64-w64-mingw32': 'win',
+};
+---
+
+{
+  platforms.length > 0 && (
+    <section class="downloads" id="downloads" data-downloads>
+      <h2 class="section-title">Download {release.version}</h2>
+      <p class="section-sub">
+        Every asset from the{' '}
+        <a href={release.releaseUrl}>
+          <code>{release.tag}</code> release
+        </a>
+        . <strong>Installer</strong> is the native package for the platform,{' '}
+        <strong>Archive</strong> the same toolchain as a plain tarball or zip, and{' '}
+        <code>cvm</code> the toolchain manager — take it once and{' '}
+        <code>cvm install latest</code> handles every upgrade after that.
+      </p>
+
+      <div class="dl-grid">
+        {platforms.map((p) => (
+          <div class="dl-card" data-platform={HINTS[p.triple] ?? p.triple}>
+            <h3>{p.label}</h3>
+            <code class="dl-triple">{p.triple}</code>
+            <ul class="dl-links">
+              {p.installers?.map((i) => (
+                <li>
+                  <a href={i.url}>
+                    Installer <code>.{i.format}</code>
+                  </a>
+                </li>
+              ))}
+              {p.archive && (
+                <li>
+                  <a href={p.archive.url}>
+                    Archive <code>.{p.archive.name.endsWith('.zip') ? 'zip' : 'tar.gz'}</code>
+                  </a>
+                </li>
+              )}
+              {p.compiler && (
+                <li>
+                  <a href={p.compiler.url}>Compiler binary</a>
+                </li>
+              )}
+              {p.cvm && (
+                <li>
+                  <a href={p.cvm.url}>
+                    <code>cvm</code>
+                  </a>
+                </li>
+              )}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+<script>
+  // Pull the reader's own platform to the front. Progressive enhancement:
+  // without JS every platform is already present and in matrix order, which
+  // is why this reorders rather than filters.
+  const grid = document.querySelector<HTMLElement>('[data-downloads] .dl-grid');
+  if (grid) {
+    const ua = `${navigator.userAgent} ${navigator.platform}`.toLowerCase();
+    const want = /win/.test(ua)
+      ? 'win'
+      : /mac|iphone|ipad/.test(ua)
+        ? 'mac'
+        : /aarch64|arm64/.test(ua)
+          ? 'linux-arm'
+          : /linux|x86_64/.test(ua)
+            ? 'linux-x86'
+            : null;
+    if (want) {
+      const mine = grid.querySelector<HTMLElement>(`[data-platform="${want}"]`);
+      if (mine) {
+        mine.classList.add('is-yours');
+        grid.prepend(mine);
+      }
+    }
+  }
+</script>
+
+<style>
+  .downloads {
+    margin-top: 3rem;
+  }
+  .dl-grid {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  }
+  .dl-card {
+    border: 1px solid var(--border, #d8d8e0);
+    border-radius: 0.5rem;
+    padding: 1rem 1.15rem;
+  }
+  .dl-card.is-yours {
+    border-color: var(--accent, #6b4bd8);
+  }
+  .dl-card h3 {
+    margin: 0 0 0.15rem;
+    font-size: 1rem;
+  }
+  .dl-triple {
+    font-size: 0.8rem;
+    opacity: 0.7;
+  }
+  .dl-links {
+    list-style: none;
+    margin: 0.75rem 0 0;
+    padding: 0;
+    display: grid;
+    gap: 0.35rem;
+  }
+  .dl-links a {
+    text-decoration: none;
+  }
+  .dl-links a:hover {
+    text-decoration: underline;
+  }
+</style>
