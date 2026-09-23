@@ -1121,6 +1121,104 @@ TEST(XpuCpuDistCoopVerb, memLoadedOfLaneCfDistributesPerColumn) {
            " deqMw4 CPU fingerprint — the memory-load path does not distribute.)";
 }
 
+// ---- PROBE: MULTI-WAVE ofLane column factor (8 waves) ---------------- //
+//
+// deqMw4's one remaining untested structure: block[256] = 8 waves, each wave
+// wid owning a distinct 16-column output tile (i0 = ... + wid*16), each with
+// its own per-lane ofLane cf that DEPENDS ON wid. Single-wave ofLane (both
+// arithmetic and memory-loaded) distributes correctly; this asks whether the
+// per-wave cf stays with its wave across 8 waves, or every wave collapses to
+// wave-0's factors. If it collapses, cf reads (colGlobal%16)+1 repeating every
+// 16 columns instead of colGlobal+1 — precisely deqMw4's period-16 CPU
+// fingerprint. One accumulator per wave, no shared/barrier, so a failure
+// isolates the multi-wave ofLane distribution alone.
+const char* kMultiWaveOfLaneSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.WaveVector;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+public class M {
+    @Kernel
+    public static void mm(KernelBuffer<float32> y, KernelBuffer<int8> a,
+                          KernelBuffer<int8> b, KernelBuffer<float32> rowF) {
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> mc;
+        CooperativeMatrix<float32,16,16,2> facc;
+        facc.splat(0.0f);
+        uint32 tid = KernelThread.x();
+        uint32 wid = tid / 32;
+        uint32 lane16 = (tid % 32) % 16;
+        int32 colGlobal = (int32) (wid * 16 + lane16);   // per-lane, DEPENDS ON wid
+        float32 cf = (float32) (colGlobal + 1);
+        mc.splat(0);
+        ma.load(a, 0, 0, 16);
+        mb.load(b, 0, 0, 16);
+        mc.mma(ma, mb);
+        mc.scaledAccumInto(facc, rowF, WaveVector.ofLane(cf));
+        // Each wave writes its own 16-col tile of a 16x128 output.
+        facc.store(y, wid * 16, 0, 128);
+    }
+    public static int32 run() {
+        int8[] ha = heap int8[256];
+        int8[] hb = heap int8[256];
+        float32[] hrf = heap float32[16];
+        float32[] hy = heap float32[2048];
+        int32 r = 0;
+        while (r < 16) {
+            hrf[r] = (float32) (r + 1);
+            int32 k = 0;
+            while (k < 16) {
+                ha[r * 16 + k] = (int8) 1;
+                hb[r * 16 + k] = (int8) 1;
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        int32 q = 0;
+        while (q < 2048) { hy[q] = -1.0f; q = q + 1; }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(256);
+        KernelBuffer<int8> b = heap KernelBuffer<int8>(256);
+        KernelBuffer<float32> rowF = heap KernelBuffer<float32>(16);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(2048);
+        a.upload(ha);
+        b.upload(hb);
+        rowF.upload(hrf);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        mm.launch(s, grid: [1], block: [256])(y, a, b, rowF);
+        s.sync();
+        y.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        int32 rr = 0;
+        while (rr < 16) {
+            int32 cc = 0;
+            while (cc < 128) {
+                float32 want = (float32) (16 * (rr + 1) * (cc + 1));
+                if (hy[rr * 128 + cc] != want) { return 100000 + rr * 128 + cc; }
+                cc = cc + 1;
+            }
+            rr = rr + 1;
+        }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuDistCoopVerb, multiWaveOfLaneCfPerWaveColumn) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kMultiWaveOfLaneSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, 0)
+        << "multi-wave ofLane cf wrong; r=" << r
+        << " (-1 refused, 100000+cell = first wrong cell; want 16*(r+1)*(c+1)"
+           " over 16x128. A cell reading 16*(r+1)*((c%16)+1) means every wave"
+           " collapsed to wave-0's factors — the period-16 deqMw4 fingerprint.)";
+}
+
 // ---- PROBE: one COLUMN-MAJOR mb reused across FOUR mmas ---------------- //
 //
 // deqMw4's inner pattern that no test covers: mb.load(deq, off, 1, 16) ONCE
