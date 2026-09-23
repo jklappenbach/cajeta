@@ -28,8 +28,10 @@ REPO="${GITHUB_REPOSITORY:-jklappenbach/cajeta}"
 BASE="https://github.com/${REPO}/releases/download/${TAG}"
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-README="${ROOT}/README.md"
-GUIDE="${ROOT}/docs/guide/01-installation.md"
+# Overridable so the self-test can render into a fixture instead of the real
+# files. Unset in CI and by hand, which is the path that matters.
+README="${RELEASE_DOCS_README:-${ROOT}/README.md}"
+GUIDE="${RELEASE_DOCS_GUIDE:-${ROOT}/docs/guide/01-installation.md}"
 
 # triple|label|archive extension — mirrors the build matrix in release.yml.
 TARGETS=(
@@ -58,6 +60,39 @@ asset_for() {
     has_asset "$name" && { printf '%s' "$name"; return 0; }
   done
   printf ''
+}
+
+# The native installers for a triple, one basename per line, or nothing.
+#
+# cpack names them its own way — `cajeta_0.29.1_amd64.deb`, `cajeta-0.29.1-1
+# .x86_64.rpm`, `cajeta-0.29.1-Darwin.pkg` — and NONE of those records a
+# triple, so they cannot be matched the way the bare binaries are. The
+# uploading directory does record it: the release job uploads each leg as
+# `cajeta-<triple>`, so that is what identifies the platform.
+installers_for() {
+  local triple="$1" d
+  for d in "${ASSET_DIRS[@]}"; do
+    [ -d "$d" ] || continue
+    find "$d" -type f -path "*/cajeta-${triple}/*" \
+      \( -name '*.deb' -o -name '*.rpm' -o -name '*.msi' \
+         -o -name '*.pkg' -o -name '*.pkg.tar.zst' \) -printf '%f\n'
+  done | sort -u
+}
+
+# The cell for those installers: one link per format, labelled by extension so
+# a reader picks the one their system takes. Sorted, so a re-render of an
+# unchanged release is byte-identical.
+installer_cell() {
+  local triple="$1" cell="" base ext
+  while IFS= read -r base; do
+    [ -n "$base" ] || continue
+    case "$base" in
+      *.pkg.tar.zst) ext="pkg.tar.zst" ;;
+      *)             ext="${base##*.}" ;;
+    esac
+    cell+="[\`.${ext}\`](${BASE}/${base}) "
+  done < <(installers_for "$triple")
+  [ -n "$cell" ] && printf '%s' "${cell% }" || printf '—'
 }
 
 # Replace the text between BEGIN:<marker> and END:<marker> in a file. The
@@ -90,7 +125,10 @@ for entry in "${TARGETS[@]}"; do
   IFS='|' read -r triple label ext <<<"$entry"
   cajeta_bin="$(asset_for cajeta "$triple")"
   cvm_bin="$(asset_for cvm "$triple")"
-  [ -n "$cajeta_bin" ] || [ -n "$cvm_bin" ] || continue
+  inst_cell="$(installer_cell "$triple")"
+  # A triple earns a row if it shipped ANYTHING. An installer alone counts:
+  # the row is what tells a reader the platform exists.
+  [ -n "$cajeta_bin" ] || [ -n "$cvm_bin" ] || [ "$inst_cell" != "—" ] || continue
 
   archive="cajeta-${TAG}-${triple}.${ext}"
   if has_asset "$archive"; then
@@ -101,7 +139,7 @@ for entry in "${TARGETS[@]}"; do
   [ -n "$cajeta_bin" ] && cajeta_cell="[binary](${BASE}/${cajeta_bin})" || cajeta_cell="—"
   [ -n "$cvm_bin" ]    && cvm_cell="[\`cvm\`](${BASE}/${cvm_bin})"     || cvm_cell="—"
 
-  rows+="| ${label} | \`${triple}\` | ${archive_cell} | ${cajeta_cell} | ${cvm_cell} |"$'\n'
+  rows+="| ${label} | \`${triple}\` | ${archive_cell} | ${cajeta_cell} | ${inst_cell} | ${cvm_cell} |"$'\n'
 done
 
 [ -n "$rows" ] || {
@@ -114,12 +152,14 @@ readme_body=$(cat <<EOF
 
 **[Release notes and every asset →](https://github.com/${REPO}/releases/tag/${TAG})**
 
-| Platform | Triple | Archive | Compiler | Installer |
-|---|---|---|---|---|
+| Platform | Triple | Archive | Compiler | Installer | cvm |
+|---|---|---|---|---|---|
 ${rows}
-Each binary is published with a matching \`.sha256\`. \`cvm\` is the toolchain
-manager — download it once, then \`cvm install latest\` handles every upgrade
-after that. See [Installation](docs/guide/01-installation.md).
+Each binary is published with a matching \`.sha256\`. **Installer** is the
+native package for the platform, and **Archive** is the same toolchain as a
+plain tarball or zip. \`cvm\` is the toolchain manager — download it once,
+then \`cvm install latest\` handles every upgrade after that.
+See [Installation](docs/guide/01-installation.md).
 
 EOF
 )

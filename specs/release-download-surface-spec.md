@@ -28,7 +28,7 @@ Measured 2026-09-23 against `README.md` at v0.29.0 and `release.yml`.
 ### 1.2 Scope
 
 The README release block, the cajeta.dev home page, and the release job step
-that regenerates both. One generated manifest feeds both surfaces.
+that regenerates both. One generated release manifest feeds both surfaces.
 
 ### 1.3 Non-goals
 
@@ -56,8 +56,9 @@ This is one release's asset list, not a history. Nothing here needs a previous
 release, so nothing here needs a catalog.
 
 - **2.1** When the release job completes, the assets it published are
-  described once: version, and per triple the archive, compiler binary, cvm
-  binary and each native installer, each with its URL and digest.
+  described once, in the release manifest: version, and per triple the
+  archive, compiler binary, cvm binary and each native installer, each with
+  its URL and digest.
 - **2.2** When a surface needs a download link, it reads that description
   rather than rebuilding the name from a tag and a triple.
 - **2.3** When an asset is absent for a triple, it is omitted rather than
@@ -91,14 +92,14 @@ different readers, so they stay separate artifacts.
 ## 4. The cajeta.dev home page
 
 - **4.1** When a release publishes, the home page shows the same latest
-  downloads as the README, from the same manifest.
+  downloads as the README, from the same release manifest.
 - **4.2** When the site is built, the download data is imported as data rather
   than pattern-matched out of page markup. The page is Astro, and rewriting
   markup with a regex breaks the first time the markup is reformatted.
 - **4.3** When a reader arrives on a known platform, the page offers that
   platform's download first. Every platform stays reachable.
-- **4.4** When the manifest has not changed, a site rebuild produces the same
-  output.
+- **4.4** When the release manifest has not changed, a site rebuild produces
+  the same output.
 
 ## 5. Running on every release
 
@@ -115,12 +116,16 @@ different readers, so they stay separate artifacts.
   the surfaces show that installer as absent. The installer steps are
   non-fatal today and this must not make them fatal by proxy.
 
-## 6. Open questions
+## 6. Decisions and what stays open
 
-- **6.1** Does the home page link the GitHub release asset directly, or a
-  stable `latest` redirect? A stable URL survives in a blog post. A direct
-  asset URL is honest about the version. Recommendation: show the version and
-  link the asset directly, matching the README.
-- **6.2** Should `sh.cajeta.dev` (the install script the README already cites)
-  spell asset names from the same helper as 2.4.2? It resolves them by its own
-  logic today and is a third place the naming can drift.
+Approved by Julian 2026-09-23.
+
+- **6.1 DECIDED.** The home page links the GitHub release asset directly and
+  shows the version, matching the README. A stable `latest` redirect survives
+  longer in a blog post, and it also hides which version a reader took, which
+  is the thing a bug report needs.
+- **6.2 OPEN, and it does not gate this work.** Whether `sh.cajeta.dev` should
+  spell asset names from the helper of 2.4.2. It resolves them by its own
+  logic today and is a third place the naming can drift. Plan item 2.2.3
+  shares the helper where it is already used, which leaves adopting it there a
+  later and separate change.
