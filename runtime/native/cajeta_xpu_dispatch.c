@@ -649,9 +649,15 @@ static struct {
     pthread_cond_t  go;                      // workers wait for a new generation
     pthread_cond_t  done;                    // caller waits for active==0
     uint64_t        generation;              // bumped per dispatch
-    int             active;                  // pool workers still running this job
+    int             active;                  // workers yet to acknowledge this gen
     int             njobs;                   // pool slices dispatched this gen
     int             shutdown;
+    // Per-worker generation baseline. A worker added mid-life must not treat the
+    // generation already in flight as new work — it would run and decrement a
+    // dispatch it was never counted in. ensure() seeds this to the live
+    // generation (under mu) before the thread starts, so the newcomer waits for
+    // the NEXT dispatch, which counts it.
+    uint64_t        worker_seen[CAJETA_XPU_CPU_MAX_WORKERS];
     const struct cajeta_cpu_grid_slice* slices;  // slices[0..njobs-1] for workers
 } g_caj_kpool = {
     // These pthread primitives MUST carry their static initializers explicitly:
@@ -737,22 +743,33 @@ static void* caj_kpool_worker_main(void* arg) {
 
 static void* caj_kpool_worker_body(void* arg) {
     long myid = (long) (intptr_t) arg;
-    // Baseline below the first dispatchable generation: a dispatch that races
-    // ahead of the first wait must still register (g != seen), or join hangs.
-    uint64_t seen = 0;
+    // Start level with the generation live when this worker was spawned (set by
+    // ensure() under mu), so a worker added mid-life waits for the NEXT dispatch
+    // — which counts it in active — instead of racing the one in flight. A
+    // dispatch that races ahead of the first wait still registers (g != seen).
+    uint64_t seen = g_caj_kpool.worker_seen[myid];
     for (;;) {
         uint64_t g = caj_kpool_wait_gen(seen);
         if (g == 0) break;                       // shutdown
         seen = g;
+        // Run this dispatch's slice only if one was handed to this worker...
         if (myid < g_caj_kpool.njobs) {
             cajeta_xpu_cpu_run_slice(&g_caj_kpool.slices[myid]);
-            // ACQ_REL so the joiner that reads active==0 sees our slice's stores.
-            if (__atomic_sub_fetch(&g_caj_kpool.active, 1, __ATOMIC_ACQ_REL) == 0) {
-                // Take mu so the signal cannot slip past the joiner's check.
-                pthread_mutex_lock(&g_caj_kpool.mu);
-                pthread_cond_signal(&g_caj_kpool.done);
-                pthread_mutex_unlock(&g_caj_kpool.mu);
-            }
+        }
+        // ...but EVERY worker acknowledges EVERY generation. The join waits for
+        // all of them (active = nthreads), so no worker is still inside this
+        // generation — running its slice, or merely mid-decision reading
+        // njobs/slices — when the caller reclaims the stack those point into.
+        // Counting only the njobs runners left a small launch's idle workers
+        // unwaited-for: one that woke slow could read a LATER big launch's njobs,
+        // run its slice, and decrement its active a second time, so that launch's
+        // join returned early and its stragglers faulted on a freed argv.
+        // ACQ_REL so the joiner that reads active==0 sees our slice's stores.
+        if (__atomic_sub_fetch(&g_caj_kpool.active, 1, __ATOMIC_ACQ_REL) == 0) {
+            // Take mu so the signal cannot slip past the joiner's check.
+            pthread_mutex_lock(&g_caj_kpool.mu);
+            pthread_cond_signal(&g_caj_kpool.done);
+            pthread_mutex_unlock(&g_caj_kpool.mu);
         }
     }
     return NULL;
@@ -777,6 +794,14 @@ static void caj_kpool_ensure(int cap) {
     __cajeta_live_set_go_multithreaded();     // second-thread barrier (see live-set)
     while (g_caj_kpool.nthreads < want) {
         long id = g_caj_kpool.nthreads;
+        // Seed the newcomer level with the live generation (we hold mu, and
+        // dispatch bumps generation under mu, so this is the value the next
+        // dispatch advances PAST). The write precedes pthread_create, so the
+        // thread is guaranteed to see it. The newcomer then waits for that next
+        // dispatch — which counts it in active — rather than racing the one in
+        // flight and decrementing a job it was never part of.
+        g_caj_kpool.worker_seen[id] =
+            __atomic_load_n(&g_caj_kpool.generation, __ATOMIC_RELAXED);
         if (pthread_create(&g_caj_kpool.threads[id], NULL,
                            caj_kpool_worker_main, (void*) (intptr_t) id) != 0)
             break;                            // spawn failed: cap the pool here
@@ -792,7 +817,13 @@ static void caj_kpool_dispatch(const struct cajeta_cpu_grid_slice* slices,
     // ACQUIRE-sees the new generation is guaranteed to see slices/njobs/active.
     g_caj_kpool.slices = slices;
     g_caj_kpool.njobs  = njobs;
-    __atomic_store_n(&g_caj_kpool.active, njobs, __ATOMIC_RELAXED);
+    // active counts EVERY worker, not just the njobs runners: each decrements
+    // once per generation, making the join a full barrier over the pool. njobs
+    // only decides which workers have a slice to run this dispatch. (Every
+    // worker woke here has seen == this dispatch's predecessor — the prior
+    // join, itself a full barrier, guaranteed it — so exactly nthreads
+    // acknowledgements arrive.)
+    __atomic_store_n(&g_caj_kpool.active, g_caj_kpool.nthreads, __ATOMIC_RELAXED);
     // Hold mu across the bump + broadcast so a sleeping worker cannot miss it.
     pthread_mutex_lock(&g_caj_kpool.mu);
     __atomic_store_n(&g_caj_kpool.generation, g_caj_kpool.generation + 1,
