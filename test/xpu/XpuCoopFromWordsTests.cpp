@@ -249,16 +249,19 @@ TEST(XpuCoopFromWordsTests, rejectsLoudlyOnSpirv) {
         << "the skip must name the spelling that works here:\n" << err;
 }
 
-// The portable tile is replicated per work-item, so there is no lane to take
-// the other fifteen slices from: same loud rejection on the cpu backend.
-TEST(XpuCoopFromWordsTests, rejectsLoudlyOnCpu) {
+// The cpu backend distributes the tile across its 32-lane software wave since
+// 4A.7.2 (bb98f79e), and a Use-1 fromWords drops each lane's words straight
+// into its own B slice, so the old replicated-tile refusal ("lane L supplies
+// ...") is retired. Its mma sits inside `while (t < 8)`: that loop is
+// workgroup-uniform, so fission makes it scaffold, the work-item loop inside
+// is innermost and marked parallel, and LoopVectorize widens it -- the kernel
+// LOWERS. (SPIR-V above keeps its own loud refusal; a kernel whose wave op
+// is left scalar is refused by the gate, pinned in XpuCpuDistCoopVerb.)
+TEST(XpuCoopFromWordsTests, lowersOnTheCpuDistributedTile) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Cpu, kFromWordsSource,
                        &err), 1);
-    EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
-        << "the software tile must SKIP the kernel loudly:\n" << err;
-    EXPECT_NE(err.find("lane L supplies"), std::string::npos)
-        << "the skip must state the contract it could not meet:\n" << err;
-    EXPECT_NE(err.find("Shared<T>"), std::string::npos)
-        << "the skip must name the spelling that works here:\n" << err;
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+        << "fromWords must lower on the cpu distributed tile, not skip:\n"
+        << err;
 }

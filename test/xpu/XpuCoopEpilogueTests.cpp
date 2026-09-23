@@ -177,14 +177,17 @@ TEST(XpuCoopEpilogueTests, verbsMatchScalarReferenceExactlyOnCpu) {
         << err;
 }
 
-// A WaveVector.ofLane column on the CPU tier. The tile there is REPLICATED
-// per work-item, so a per-lane register value's other columns are in no lane
-// it can reach; it must reject by name. A silent demote would apply one
-// work-item's factor to all sixteen columns and produce a plausible wrong
-// answer, which is the exact defect this family shipped on NVIDIA. ofSlice
-// and broadcast, whose factors are reachable per column, lower here — this is
-// only about ofLane.
-TEST(XpuCoopEpilogueTests, waveVectorOfLaneIsNamedNativeOnlyOnCpu) {
+// A WaveVector.ofLane column on the CPU tier. Until 4A.7.2 the replicated
+// tile refused the verb by name ("no wave to distribute a per-lane value").
+// Since 4A.7.2 a kernel that needs a wave is DISTRIBUTED across the 32-lane
+// software wave, where the lane IS the column and ofLane is this lane's own
+// value -- and since 2026-09-23 the work-item loop is marked parallel (the
+// kernel model: work-items in a region are independent) with the tile's
+// per-lane slots scalar-replaced first, so LoopVectorize widens it and the
+// kernel LOWERS. A kernel whose wave op is still left scalar is refused by
+// name instead of registered wrong; XpuCpuDistCoopVerb.waveOpLeftScalarIs
+// Refused pins that gate. This pins the other side: no refusal, no skip.
+TEST(XpuCoopEpilogueTests, waveVectorOfLaneLowersOnTheCpuDistributedTile) {
     std::string bad = std::string(KERNEL);
     std::string from =
         "mc.scaledAccumInto2(facc, rowF, colF, rowG[16], colG);";
@@ -197,14 +200,13 @@ TEST(XpuCoopEpilogueTests, waveVectorOfLaneIsNamedNativeOnlyOnCpu) {
         "    public static int32 run() { return 1; }\n}\n";
     std::string err;
     EXPECT_EQ(runI32Cpu(src, &err), 1);
-    EXPECT_NE(err.find("no wave to distribute a per-lane value"),
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+        << "the ofLane epilogue kernel must LOWER on the cpu distributed "
+           "tile, not be refused:\n" << err;
+    EXPECT_EQ(err.find("no wave to distribute a per-lane value"),
               std::string::npos)
-        << "the rejection must say WHY the software tile cannot lower "
-           "ofLane:\n" << err;
-    EXPECT_NE(err.find("WaveVector.ofSlice"), std::string::npos)
-        << "the rejection must name the spelling that works here:\n" << err;
-    EXPECT_NE(err.find("scaledAccumInto2"), std::string::npos)
-        << "the diagnostic must NAME the verb:\n" << err;
+        << "the replicated-tile refusal is retired; ofLane distributes now:\n"
+        << err;
 }
 
 // 1.1.2 — a malformed call names its defect instead of skipping

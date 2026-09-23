@@ -1286,8 +1286,12 @@ public class M {
         scal.upload(hsc);
         y.upload(hy);
         KernelStream s #= KernelStream.current();
-        mm.launch(s, grid: [1], block: [32])(y, a, b, rowF, scal);
-        s.sync();
+        try {
+            mm.launch(s, grid: [1], block: [32])(y, a, b, rowF, scal);
+            s.sync();
+        } catch (Exception e) {
+            return -1;                  // refused: no cpu device code
+        }
         y.download(hy);
         if (hy[0] == -1.0f) { return -1; }
         int32 rr = 0;
@@ -1305,16 +1309,114 @@ public class M {
 }
 )CJ";
 
-TEST(XpuCpuDistCoopVerb, vloadSourcedOfLaneCfDistributesPerColumn) {
+// KNOWN LIMITATION, pinned: a cf sourced through `vload<4>` does not widen
+// on the cpu software wave -- the vector load lowers to an opaque call the
+// work-item loop cannot vectorize across, so the shuffle would be left
+// scalar and the gate REFUSES the kernel (measured 2026-09-23, cycle 9, the
+// one probe of 20 still refused once the work-item loop is parallel). The
+// refusal is the contract until the vload path lowers to an intrinsic; the
+// same kernel with a scalar memory-loaded cf widens
+// (memLoadedOfLaneCfDistributesPerColumn).
+TEST(XpuCpuDistCoopVerb, vloadSourcedOfLaneCfIsRefusedUntilItWidens) {
     unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
     setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
     int r = runOnCpu(kVloadOfLaneSrc);
     unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
-    EXPECT_EQ(r, 0)
-        << "vload-sourced ofLane cf wrong; r=" << r
-        << " (-1 refused, 1000+cell = first wrong cell; want 16*(r+1)*(c+1)."
-           " Every column reading 16*(r+1) (i.e. scal[0]=1) means the per-lane"
-           " vload<4> collapsed to one lane — deqMw4's period-16 root.)";
+    EXPECT_EQ(r, -1)
+        << "vload-sourced ofLane kernel was REGISTERED with r=" << r
+        << "; if it now widens, flip this test to want 16*(r+1)*(c+1)";
+}
+
+// ---- GATE: a wave op left scalar is REFUSED, never registered ----------- //
+//
+// The trip count is PER-LANE, so this loop is not workgroup-uniform, cannot be
+// fission scaffold, stays inside the work-item region, and its work-item loop
+// is an OUTER loop -- LoopVectorize widens innermost loops only, so the shuffle
+// inside would be left as the width-1 identity stub. That is the class of
+// silent miscompile that ran deqMw4 (and 36 shipped wave mat-vecs) as an
+// identity reduce on the cpu. Registration must REFUSE it rather than register
+// a wrong kernel: the launch then RAISES (Device.checkLaunch), which run()
+// catches and reports as the refusal (-1). The gate needs a test that it FIRES
+// as much as the suite's other probes prove it does not.
+const char* kPerLaneLoopRefusedSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.WaveVector;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+public class M {
+    @Kernel
+    public static void mm(KernelBuffer<float32> y, KernelBuffer<int8> a,
+                          KernelBuffer<int8> b, KernelBuffer<float32> rowF,
+                          int32 n) {
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> mc;
+        CooperativeMatrix<float32,16,16,2> facc;
+        facc.splat(0.0f);
+        int32 lane = (int32) (KernelThread.x() % 32);
+        int32 it = 0;
+        while (it < n + (lane & 1)) {   // PER-LANE trip count: not scaffold
+            mc.splat(0);
+            ma.load(a, 0, 0, 16);
+            mb.load(b, 0, 0, 16);
+            mc.mma(ma, mb);
+            mc.scaledAccumInto(facc, rowF, WaveVector.ofLane(1.0f));
+            it = it + 1;
+        }
+        facc.store(y, 0, 0, 16);
+    }
+    public static int32 run() {
+        int8[] ha = heap int8[256];
+        int8[] hb = heap int8[256];
+        float32[] hrf = heap float32[16];
+        float32[] hy = heap float32[256];
+        int32 r = 0;
+        while (r < 16) {
+            hrf[r] = 1.0f;
+            int32 k = 0;
+            while (k < 16) {
+                ha[r * 16 + k] = (int8) 1;
+                hb[r * 16 + k] = (int8) 1;
+                hy[r * 16 + k] = -1000.0f;
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(256);
+        KernelBuffer<int8> b = heap KernelBuffer<int8>(256);
+        KernelBuffer<float32> rowF = heap KernelBuffer<float32>(16);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(256);
+        a.upload(ha);
+        b.upload(hb);
+        rowF.upload(hrf);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        // A refused kernel has no cpu device code and the launch RAISES
+        // (Device.checkLaunch, 4ac64167): that raise IS the refusal.
+        try {
+            mm.launch(s, grid: [1], block: [32])(y, a, b, rowF, 1);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        y.download(hy);
+        if (hy[0] == -1000.0f) { return -1; }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuDistCoopVerb, waveOpLeftScalarIsRefused) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kPerLaneLoopRefusedSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, -1)
+        << "a kernel whose wave shuffle cannot be widened was REGISTERED; r="
+        << r << " (0 = it ran and wrote y; the width-1 identity shuffle would"
+           " have made that silently wrong for any k-varying operand)";
 }
 
 // ---- PROBE: one COLUMN-MAJOR mb reused across FOUR mmas ---------------- //

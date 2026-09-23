@@ -12,6 +12,7 @@
 #include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Transforms/Scalar/LoopRotation.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
+#include "llvm/Transforms/Scalar/SROA.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
 #include "llvm/Transforms/Vectorize/LoopVectorize.h"
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
@@ -123,6 +124,16 @@ void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm) {
     PassEnv env(tm);
 
     llvm::FunctionPassManager fpm;
+    // SROA before mem2reg, and it is a SOUNDNESS prerequisite for the
+    // parallel work-item loop, not a tuning: a distributed cooperative-matrix
+    // tile keeps its per-lane slots in small constant-indexed array allocas
+    // at loop-INVARIANT addresses. Under llvm.loop.parallel_accesses
+    // LoopVectorize widens a store to such an address as a uniform store
+    // (last lane wins) and the load as a broadcast, so 32 lanes share one
+    // slot and q6kWmmaDeqMw4Kernel computed garbage (measured 2026-09-23,
+    // cycle 8: registered and wrong; with SROA, cycle 6: 0.23 of the 3% host
+    // bar). Scalar replacement puts each lane's slot in its own SSA value.
+    fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
     fpm.addPass(llvm::PromotePass());                 // mem2reg → SSA
     fpm.addPass(llvm::createFunctionToLoopPassAdaptor(
         llvm::LoopRotatePass()));                     // rotate for LV

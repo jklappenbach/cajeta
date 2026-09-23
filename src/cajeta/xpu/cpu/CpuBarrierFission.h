@@ -31,7 +31,13 @@ namespace cpu {
                               llvm::Module& hostModule,
                               std::vector<llvm::UncondBrInst*>* workItemLatches
                                   = nullptr,
-                              llvm::Value* dynSharedBytes = nullptr);
+                              llvm::Value* dynSharedBytes = nullptr,
+                              bool scaffoldUniformLoops = false);
+    // `scaffoldUniformLoops`: also treat every workgroup-uniform loop (no
+    // barrier inside, uniform exit conditions, entered by every work-item) as
+    // scaffold, its body regioned like a barrier loop's. A wave kernel needs
+    // this: its cross-lane ops only widen when the work-item loop is the
+    // INNERMOST loop, and a loop left inside a region makes it an outer one.
 
 } // namespace cpu
 } // namespace xpu

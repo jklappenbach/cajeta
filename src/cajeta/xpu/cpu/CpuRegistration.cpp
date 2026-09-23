@@ -18,7 +18,10 @@
 #include <cctype>
 #include <map>
 
+#include "llvm/ADT/DepthFirstIterator.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -429,9 +432,64 @@ void forceLoopVectorWidth(llvm::UncondBrInst* latch, unsigned W) {
     ops.push_back(nullptr);  // self-reference, patched below
     ops.push_back(md("llvm.loop.vectorize.width", llvm::ConstantInt::get(i32, W)));
     ops.push_back(md("llvm.loop.vectorize.enable", llvm::ConstantInt::getTrue(ctx)));
+    // Names this loop as a WORK-ITEM loop. LoopVectorize keeps a hint it does
+    // not own on both the vector loop and the scalar remainder, so after the
+    // pass the left-scalar gate can find the work-item loop a wave call sits
+    // in and ask whether THAT loop was widened -- an inner per-lane loop the
+    // vectorizer happened to take instead also reads as `isvectorized`, and
+    // would otherwise pass a shuffle that still runs as the identity.
+    ops.push_back(llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, "cajeta.xpu.wi")}));
     llvm::MDNode* loopId = llvm::MDNode::getDistinct(ctx, ops);
     loopId->replaceOperandWith(0, loopId);
     latch->setMetadata("llvm.loop", loopId);
+}
+
+// A work-item loop is PARALLEL by the kernel model: its iterations are the
+// block's work-items, and within one barrier region they are independent (a
+// cross-work-item race there is undefined on every backend). LoopVectorize
+// does not know that: it runs LoopAccessInfo, which must prove or runtime-
+// check every buffer store against every buffer load, and a distributed tile
+// stores through addresses like `g + 2*i` with g = lane/16, which is not
+// affine in the work-item induction variable -- "cannot identify array
+// bounds" -- so the loop stays scalar and the wave op inside runs as the
+// width-1 identity stub (measured 2026-09-23 on every distributed probe and
+// on q6kWmmaDeqMw4Kernel). Tagging every memory access in the loop with one
+// access group and listing that group in llvm.loop.parallel_accesses is the
+// `omp simd` contract: independence across THIS loop's iterations only. An
+// access inside a nested loop is tagged too -- it is still independent across
+// work-items -- but the nested loop's own ID does not list the group, so its
+// loop-carried dependences (a k reduction, a scan) are untouched.
+static bool loopHasHint(llvm::Loop* L, llvm::StringRef hint);
+static void markWorkItemLoopsParallel(llvm::Function& f) {
+    llvm::LLVMContext& ctx = f.getContext();
+    llvm::DominatorTree dt(f);
+    llvm::LoopInfo li(dt);
+    llvm::SmallVector<llvm::Loop*, 8> loops;
+    for (llvm::Loop* top : li)
+        for (llvm::Loop* L : llvm::depth_first(top))
+            if (loopHasHint(L, "cajeta.xpu.wi")) loops.push_back(L);
+    for (llvm::Loop* L : loops) {
+        llvm::MDNode* group = llvm::MDNode::getDistinct(ctx, {});
+        for (llvm::BasicBlock* bb : L->blocks())
+            for (llvm::Instruction& in : *bb) {
+                if (!in.mayReadOrWriteMemory()) continue;
+                if (auto* c = llvm::dyn_cast<llvm::CallBase>(&in))
+                    if (!c->getCalledFunction() || !c->getCalledFunction()->isIntrinsic())
+                        continue;               // an opaque call keeps its own effects
+                in.setMetadata(llvm::LLVMContext::MD_access_group, group);
+            }
+        llvm::MDNode* id = L->getLoopID();
+        llvm::SmallVector<llvm::Metadata*, 6> ops;
+        ops.push_back(nullptr);
+        if (id)
+            for (unsigned i = 1; i < id->getNumOperands(); ++i)
+                ops.push_back(id->getOperand(i));
+        ops.push_back(llvm::MDNode::get(
+            ctx, {llvm::MDString::get(ctx, "llvm.loop.parallel_accesses"), group}));
+        llvm::MDNode* newId = llvm::MDNode::getDistinct(ctx, ops);
+        newId->replaceOperandWith(0, newId);
+        L->setLoopID(newId);
+    }
 }
 
 // The wave stubs that carry a VFABI variant; width() and lane_id are elsewhere.
@@ -647,11 +705,120 @@ bool setupWaveVariants(llvm::Function& f, llvm::Module& m, unsigned waveW) {
     bool waveKernel = false;
     for (const char* op : kWaveOps)
         if (callsRuntimeFn(f, op)) {
+            // In a JIT build the runtime bitcode is linked in BEFORE this
+            // runs, so the width-1 stub arrives as a DEFINITION whose value
+            // parameter clang marked `returned` (`return value;`). LLVM then
+            // folds every call to its argument -- the identity shuffle --
+            // and deletes the dead call before LoopVectorize can widen it or
+            // the gate can see it (measured 2026-09-23: every JIT probe was
+            // silently identity while the same kernel was right in an exe
+            // build, where the stub is a declaration until LTO). Strip the
+            // attribute from the stub and its call sites so both builds see
+            // an opaque scalar call.
+            if (llvm::Function* stub = m.getFunction(op)) {
+                for (unsigned i = 0; i < stub->arg_size(); ++i)
+                    stub->removeParamAttr(i, llvm::Attribute::Returned);
+                for (llvm::User* u : stub->users())
+                    if (auto* c = llvm::dyn_cast<llvm::CallBase>(u))
+                        for (unsigned i = 0; i < c->arg_size(); ++i)
+                            c->removeParamAttr(i, llvm::Attribute::Returned);
+            }
             attachWaveVariants(m, op, waveW);
             waveKernel = true;
         }
     if (callsRuntimeFn(f, "__cajeta_xpu_wave_width")) waveKernel = true;
     return waveKernel;
+}
+
+// LoopVectorize refuses any loop holding a callsite it cannot widen: a call to
+// a cajeta method the kernel body still names (QuantKernel.scaleAtDev,
+// GgufFile.halfBitsToF32) has no vector variant and is not an intrinsic, so the
+// work-item loop stays scalar and every wave op in it runs its width-1 stub.
+// That is how the whole wave mat-vec family came to register on the CPU with
+// no vector body at all (measured 2026-09-23: f16F32WaveMatVecKernel, eight
+// halfBitsToF32 calls, one scalar wave_reduce_sum_f32). Inline every device
+// callee with a body into the wrapper, to a fixpoint, before vectorizing.
+static unsigned inlineDeviceCallees(llvm::Function& wrapper) {
+    unsigned inlined = 0;
+    for (unsigned round = 0; round < 32; ++round) {
+        llvm::SmallVector<llvm::CallInst*, 16> calls;
+        for (auto& bb : wrapper)
+            for (auto& in : bb)
+                if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                    if (auto* cf = c->getCalledFunction())
+                        if (!cf->isDeclaration() && !cf->isIntrinsic()
+                            && cf->getName().starts_with("__cajeta_xpu_dev."))
+                            calls.push_back(c);
+        if (calls.empty()) break;
+        for (llvm::CallInst* c : calls) {
+            llvm::InlineFunctionInfo ifi;
+            if (llvm::InlineFunction(*c, ifi).isSuccess()) ++inlined;
+        }
+    }
+    return inlined;
+}
+
+// A wave op LoopVectorize left as its scalar stub runs with width-1 semantics:
+// a shuffle is the identity, a reduce is its own input. That is silently wrong
+// for a wave of W and is how q6kWmmaDeqMw4Kernel's mma came to read each
+// lane's own A element for every k on the CPU (2026-09-23). Every work-item
+// loop is forced to width W; the ones LoopVectorize widened carry
+// llvm.loop.isvectorized, their scalar remainder loops too. A scalar wave call
+// under no such loop is a region that did not vectorize, and the kernel must
+// be refused rather than registered.
+static bool loopHasHint(llvm::Loop* L, llvm::StringRef hint) {
+    llvm::MDNode* id = L->getLoopID();
+    if (!id) return false;
+    for (unsigned i = 1; i < id->getNumOperands(); ++i)
+        if (auto* md = llvm::dyn_cast<llvm::MDNode>(id->getOperand(i)))
+            if (md->getNumOperands() > 0)
+                if (auto* str = llvm::dyn_cast<llvm::MDString>(md->getOperand(0)))
+                    if (str->getString() == hint) return true;
+    return false;
+}
+// The WORK-ITEM loop this call sits in (the nearest enclosing loop tagged
+// cajeta.xpu.wi) must itself carry llvm.loop.isvectorized. An inner loop the
+// vectorizer widened instead does not count, and a wave call under no
+// work-item loop at all is scaffold code that never had a wave.
+static bool loopChainVectorized(llvm::Loop* L) {
+    for (; L; L = L->getParentLoop())
+        if (loopHasHint(L, "cajeta.xpu.wi"))
+            return loopHasHint(L, "llvm.loop.isvectorized");
+    return false;
+}
+static bool waveOpLeftScalar(llvm::Function& f, std::string* which) {
+    llvm::DominatorTree dt(f);
+    llvm::LoopInfo li(dt);
+    const bool dbg = getenv("CAJETA_XPU_DEBUG_WAVE") != nullptr;
+    unsigned scalarCalls = 0;
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                if (auto* cf = c->getCalledFunction())
+                    for (const char* op : kWaveOps)
+                        if (cf->getName() == op) {
+                            ++scalarCalls;
+                            llvm::Loop* L = li.getLoopFor(&bb);
+                            bool ok = loopChainVectorized(L);
+                            if (dbg && scalarCalls <= 4) {
+                                std::string chain;
+                                for (llvm::Loop* P = L; P; P = P->getParentLoop())
+                                    chain += (P->getHeader()->hasName()
+                                                  ? P->getHeader()->getName().str()
+                                                  : std::string("<hdr>"))
+                                           + (loopHasHint(P, "cajeta.xpu.wi") ? "[wi" : "[")
+                                           + (loopHasHint(P, "llvm.loop.isvectorized")
+                                                  ? ",vec] " : "] ");
+                                fprintf(stderr, "[wave-gate] %s: scalar %s in %s -> loops %s=> %s\n",
+                                        f.getName().str().c_str(), op,
+                                        bb.hasName() ? bb.getName().str().c_str() : "<bb>",
+                                        chain.c_str(), ok ? "widened wi loop" : "LEFT SCALAR");
+                            }
+                            if (!ok) { if (which) *which = op; return true; }
+                        }
+    if (dbg) fprintf(stderr, "[wave-gate] %s: %u scalar wave calls, all under widened work-item loops\n",
+                     f.getName().str().c_str(), scalarCalls);
+    return false;
 }
 
 // Fold the substituted variant calls into the loop; no inliner runs at -O0.
@@ -816,27 +983,80 @@ void foldWaveVariants(llvm::Function& f) {
             // A kernel calling Barrier.workgroup() cannot be one work-item loop:
             // it is split at each barrier into regions, each looped over the block
             // as a 3-D nest. XPU-N02 discards and falls back to the host stub.
-            if (usesBarrier(*linked)) {
+            // A wave kernel with a loop in its body takes the fission path as
+            // well, barrier or not: its cross-lane ops widen only when the
+            // work-item loop is innermost, and fission makes each workgroup-
+            // uniform loop scaffold so that it is (CpuBarrierFission.cpp 4b).
+            bool waveOpsUsed = false;
+            for (const char* op : kWaveOps)
+                if (callsRuntimeFn(*linked, op)) { waveOpsUsed = true; break; }
+            bool bodyHasLoop = false;
+            {
+                llvm::DominatorTree ldt(*linked);
+                llvm::LoopInfo lli(ldt);
+                bodyHasLoop = !lli.empty();
+            }
+            if (usesBarrier(*linked) || (waveOpsUsed && bodyHasLoop)) {
                 std::vector<llvm::UncondBrInst*> wiLatches;
-                try {
-                    std::vector<llvm::Value*> ctaidV = {ctaidX, ctaidY, ctaidZ};
-                    std::vector<llvm::Value*> ntidV  = {ntidX,  ntidY,  ntidZ};
-                    std::vector<llvm::Value*> nctaidV = {nctaidX, nctaidY, nctaidZ};
-                    fissionBarrierKernel(linked, wrapper, nReal, ctaidV, ntidV,
-                                         nctaidV, hostModule, &wiLatches,
-                                         dynSharedBytes);
-                } catch (cajeta::Exception& e) {
-                    // Say so at build time: a swallowed fission failure leaves a
-                    // kernel with no CPU code, in silence.
-                    fprintf(stderr,
-                            "cajeta: note: [xpu-kernel-skipped] %s: no cpu device "
-                            "code — barrier fission: %s (%s)\n",
-                            entryName.c_str(), e.getMessage().c_str(),
-                            e.getErrorId().c_str());
-                    wrapper->eraseFromParent();
-                    linked->eraseFromParent();    // has barrier markers; unusable
-                    continue;                     // host-stub fallback
+                std::vector<llvm::Value*> ctaidV = {ctaidX, ctaidY, ctaidZ};
+                std::vector<llvm::Value*> ntidV  = {ntidX,  ntidY,  ntidZ};
+                std::vector<llvm::Value*> nctaidV = {nctaidX, nctaidY, nctaidZ};
+                // Uniform-loop scaffolding is what lets a wave kernel's loops
+                // vectorize; a shape it cannot region is retried the plain
+                // way, on a fresh wrapper, and the left-scalar gate below then
+                // decides whether that plain lowering may register.
+                bool scaffold = waveOpsUsed;
+                bool fissioned = false;
+                while (!fissioned) {
+                    try {
+                        fissionBarrierKernel(linked, wrapper, nReal, ctaidV, ntidV,
+                                             nctaidV, hostModule, &wiLatches,
+                                             dynSharedBytes,
+                                             /*scaffoldUniformLoops=*/scaffold);
+                        fissioned = true;
+                    } catch (cajeta::Exception& e) {
+                        if (scaffold) {
+                            fprintf(stderr,
+                                    "cajeta: note: [xpu-kernel-fission] %s: uniform-"
+                                    "loop scaffolding declined (%s); retrying the "
+                                    "plain fission\n",
+                                    entryName.c_str(), e.getMessage().c_str());
+                            scaffold = false;
+                            wiLatches.clear();
+                            wrapper->eraseFromParent();
+                            wrapper = llvm::Function::Create(
+                                llvm::FunctionType::get(voidTy, wtys, false),
+                                llvm::GlobalValue::ExternalLinkage,
+                                "__cajeta_xpu_cpu_block." + symSuffix(method),
+                                hostModule);
+                            dynSharedBytes = wrapper->getArg(nReal + kNumBlockCoordParams);
+                            ctaidX = wrapper->getArg(nReal + 0);
+                            ctaidY = wrapper->getArg(nReal + 1);
+                            ctaidZ = wrapper->getArg(nReal + 2);
+                            ntidX  = wrapper->getArg(nReal + 3);
+                            ntidY  = wrapper->getArg(nReal + 4);
+                            ntidZ  = wrapper->getArg(nReal + 5);
+                            nctaidX = wrapper->getArg(nReal + 6);
+                            nctaidY = wrapper->getArg(nReal + 7);
+                            nctaidZ = wrapper->getArg(nReal + 8);
+                            ctaidV = {ctaidX, ctaidY, ctaidZ};
+                            ntidV  = {ntidX,  ntidY,  ntidZ};
+                            nctaidV = {nctaidX, nctaidY, nctaidZ};
+                            continue;
+                        }
+                        // Say so at build time: a swallowed fission failure
+                        // leaves a kernel with no CPU code, in silence.
+                        fprintf(stderr,
+                                "cajeta: note: [xpu-kernel-skipped] %s: no cpu device "
+                                "code — barrier fission: %s (%s)\n",
+                                entryName.c_str(), e.getMessage().c_str(),
+                                e.getErrorId().c_str());
+                        wrapper->eraseFromParent();
+                        linked->eraseFromParent();    // has barrier markers; unusable
+                        break;
+                    }
                 }
+                if (!fissioned) continue;             // host-stub fallback
                 // The distributed-coop wave-width marker rides the kernel; the
                 // body has been cloned into the wrapper and the kernel is about
                 // to be erased, so carry the marker onto the wrapper (cloning
@@ -846,10 +1066,18 @@ void foldWaveVariants(llvm::Function& f) {
                     wrapper->addFnAttr(
                         linked->getFnAttribute("cajeta.xpu.coop-wavew"));
                 linked->eraseFromParent();        // body cloned into the wrapper
+                // Fission redirected only the wrapper's uses of the kernel's
+                // `shared` globals (so a declined attempt could be retried);
+                // with the kernel gone, a global nothing names comes out.
+                for (llvm::GlobalVariable& gv :
+                     llvm::make_early_inc_range(hostModule.globals()))
+                    if (gv.getAddressSpace() == 3 && gv.use_empty())
+                        gv.eraseFromParent();
 
                 // Wave + barrier composition: each fission region is a clean
                 // counted work-item loop, so each vectorizes at width W exactly as
                 // the 5C path does, with the barriers delimiting the regions.
+                inlineDeviceCallees(*wrapper);
                 const unsigned waveW = cpuVectorWidthI32(hostTm.get(), *wrapper);
                 bool waveKernel = false;
                 if (waveW >= 2) {
@@ -871,9 +1099,39 @@ void foldWaveVariants(llvm::Function& f) {
                         ec);
                     if (!ec) hostModule.print(os, nullptr);
                 }
-                if (!cpuVectorizeDisabled())
+                if (!cpuVectorizeDisabled()) {
+                    // CAJETA_XPU_DEBUG_WAVE: LoopVectorize's own remarks say
+                    // WHY a region stayed scalar (a callsite with no vector
+                    // variant, an inner loop, a dependence), which the dump
+                    // after the fact cannot.
+                    std::unique_ptr<llvm::DiagnosticHandler> saved;
+                    const bool dbg = getenv("CAJETA_XPU_DEBUG_WAVE") && waveKernel;
+                    if (dbg) {
+                        saved = ctx.getDiagnosticHandler();
+                        ctx.setDiagnosticHandler(std::make_unique<WaveRemarkHandler>());
+                        fprintf(stderr, "[wave-remarks] %s\n", entryName.c_str());
+                    }
+                    if (waveKernel) markWorkItemLoopsParallel(*wrapper);
                     vectorizeFunction(*wrapper, hostTm.get());
+                    if (dbg) ctx.setDiagnosticHandler(std::move(saved));
+                }
                 if (waveKernel) {
+                    // The gate runs BEFORE the variants are folded: in a JIT
+                    // build the scalar stubs arrive with bodies (the runtime
+                    // bitcode is linked in first) and folding would inline a
+                    // never-widened stub -- an identity shuffle -- and erase
+                    // the very call the gate looks for (measured 2026-09-23).
+                    std::string op;
+                    if (!cpuVectorizeDisabled() && waveOpLeftScalar(*wrapper, &op)) {
+                        fprintf(stderr,
+                                "cajeta: note: [xpu-kernel-skipped] %s: no cpu device "
+                                "code: %s was left scalar (a work-item loop did not "
+                                "vectorize at the wave width %u), which would run the "
+                                "wave op with width-1 semantics\n",
+                                entryName.c_str(), op.c_str(), waveW);
+                        wrapper->eraseFromParent();
+                        continue;                     // host-stub fallback
+                    }
                     foldWaveVariants(*wrapper);
                     maybeDumpWaveWrapper(*wrapper, waveW);
                 }
@@ -955,6 +1213,16 @@ void foldWaveVariants(llvm::Function& f) {
             // Inline the kernel into the loop body, then mem2reg + LoopVectorize.
             llvm::InlineFunctionInfo ifi;
             llvm::InlineFunction(*kcall, ifi);
+            inlineDeviceCallees(*wrapper);
+            // A wave op that arrived from an inlined helper needs its variants
+            // and the forced width as much as one the kernel named directly.
+            if (waveW >= 2) {
+                bool more = setupWaveVariants(*wrapper, hostModule, waveW);
+                if (more && !waveKernel) {
+                    waveKernel = true;
+                    forceLoopVectorWidth(latchBr, waveW);
+                }
+            }
 
             // The width IS W in a vectorized wave kernel, so width() is rewritten
             // to the constant before vectorizing and folds cleanly.
@@ -966,19 +1234,42 @@ void foldWaveVariants(llvm::Function& f) {
                 maybeDumpWaveWrapper(*wrapper, waveW);
             }
 
+            // CAJETA_XPU_CPU_DUMP_PREOPT=<dir>: the module before vectorize,
+            // on this path too (the fission path had it first).
+            if (const char* dumpDir = std::getenv("CAJETA_XPU_CPU_DUMP_PREOPT")) {
+                std::error_code ec;
+                llvm::raw_fd_ostream os(
+                    std::string(dumpDir) + "/" + wrapper->getName().str()
+                        + ".preopt.ll", ec);
+                if (!ec) hostModule.print(os, nullptr);
+            }
             {
                 std::unique_ptr<llvm::DiagnosticHandler> saved;
                 const bool dbg = getenv("CAJETA_XPU_DEBUG_WAVE") && waveKernel;
                 if (dbg) {
                     saved = ctx.getDiagnosticHandler();
                     ctx.setDiagnosticHandler(std::make_unique<WaveRemarkHandler>());
+                    fprintf(stderr, "[wave-remarks] %s\n", entryName.c_str());
                 }
+                if (waveKernel) markWorkItemLoopsParallel(*wrapper);
                 vectorizeFunction(*wrapper, hostTm.get());
                 if (dbg) ctx.setDiagnosticHandler(std::move(saved));
             }
 
             // Fold the substituted variant calls in; no inliner runs at -O0.
             if (waveKernel) {
+                std::string op;
+                if (!cpuVectorizeDisabled() && waveOpLeftScalar(*wrapper, &op)) {
+                    fprintf(stderr,
+                            "cajeta: note: [xpu-kernel-skipped] %s: no cpu device "
+                            "code: %s was left scalar (the work-item loop did not "
+                            "vectorize at the wave width %u), which would run the "
+                            "wave op with width-1 semantics\n",
+                            entryName.c_str(), op.c_str(), waveW);
+                    wrapper->eraseFromParent();
+                    if (linked->use_empty()) linked->eraseFromParent();
+                    continue;                         // host-stub fallback
+                }
                 foldWaveVariants(*wrapper);
                 maybeDumpWaveWrapper(*wrapper, waveW);
             }
