@@ -320,6 +320,9 @@ public final class Device {
     static final int32 GEO_MAX_GRID_DIM_X        = 13;
     static final int32 GEO_MAX_BLOCK_DIM_X       = 14;
     static final int32 GEO_WAVES_PER_SIMD_TARGET = 15;
+    static final int32 GEO_CLOCK_KHZ             = 16;
+    static final int32 GEO_MEMORY_CLOCK_KHZ      = 17;
+    static final int32 GEO_MEMORY_BUS_WIDTH_BITS = 18;
 
     /**
      * Multiprocessors the driver reports: SMs on NVIDIA, WGPs on RDNA
@@ -566,6 +569,54 @@ public final class Device {
      */
     public static int32 maxBlockDimX() {
         return (int32) Device.nativeGeometry(Device.GEO_MAX_BLOCK_DIM_X);
+    }
+
+    /**
+     * Core clock the driver reports, kHz. It is the MAXIMUM (boost) clock,
+     * so a cycle count divided by it is the SHORTEST a kernel can take: the
+     * calibration KernelTimer is checked against. 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int32 clockKHz() {
+        return (int32) Device.nativeGeometry(Device.GEO_CLOCK_KHZ);
+    }
+
+    /**
+     * Memory clock the driver reports, kHz. 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int32 memoryClockKHz() {
+        return (int32) Device.nativeGeometry(Device.GEO_MEMORY_CLOCK_KHZ);
+    }
+
+    /**
+     * Width of the memory bus, bits. 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int32 memoryBusWidthBits() {
+        return (int32) Device.nativeGeometry(Device.GEO_MEMORY_BUS_WIDTH_BITS);
+    }
+
+    /**
+     * THEORETICAL peak memory bandwidth, GB/s: two transfers per memory
+     * clock across the bus (double data rate). The RTX 4090 reports
+     * 10501000 kHz over 384 bits, which is 1008 GB/s; its MEASURED roofline
+     * is lower (859 GB/s, spec xpu-kernel-adaptor §7). This is the ceiling
+     * {@link KernelTimer#withinPeak} rejects a bandwidth claim above, never
+     * a rate to expect. 0.0 when the driver reports no clock or no bus.
+     *
+     * @EntryPoint
+     */
+    public static float64 peakBandwidthGBps() {
+        int64 khz  = Device.nativeGeometry(Device.GEO_MEMORY_CLOCK_KHZ);
+        int64 bits = Device.nativeGeometry(Device.GEO_MEMORY_BUS_WIDTH_BITS);
+        if (khz <= 0L || bits <= 0L) {
+            return 0.0;
+        }
+        return 2.0 * (float64) khz * 1000.0 * ((float64) bits / 8.0) / 1.0e9;
     }
 
     // One native symbol, keyed. The key enum in cajeta_xpu_abi.h is

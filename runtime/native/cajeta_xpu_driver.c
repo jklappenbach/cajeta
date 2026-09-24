@@ -625,6 +625,7 @@ struct cajeta_hip_api {
     int (*hipEventRecord)(void*, void*);
     int (*hipEventSynchronize)(void*);
     int (*hipEventQuery)(void*);
+    int (*hipEventElapsedTime)(float*, void*, void*);   /* ms; the device timer */
     int (*hipStreamWaitEvent)(void*, void*, unsigned);
     int (*hipEventDestroy)(void*);
     // Device properties (R0600 ABI), read for gcnArchName only; optional.
@@ -859,6 +860,7 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipEventRecord, "hipEventRecord");
     CAJ_HBIND_OPT(hipEventSynchronize, "hipEventSynchronize");
     CAJ_HBIND_OPT(hipEventQuery, "hipEventQuery");
+    CAJ_HBIND_OPT(hipEventElapsedTime, "hipEventElapsedTime");
     CAJ_HBIND_OPT(hipStreamWaitEvent, "hipStreamWaitEvent");
     CAJ_HBIND_OPT(hipEventDestroy, "hipEventDestroy");
     CAJ_HBIND_OPT(hipGetDevicePropertiesR0600, "hipGetDevicePropertiesR0600");
@@ -1081,6 +1083,19 @@ int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
         v = 0;   // MaxSharedMemoryPerMultiprocessor (AMD-specific ordinal)
         if (g_xpu_hip.hipDeviceGetAttribute(&v, 10002, dev) == 0 && v >= 1024 && v <= (1 << 20))
             out->ldsBytesPerMP = (uint32_t) v;
+        // Clocks and the bus, for KernelTimer's ceilings. Ordinals are the
+        // hipDeviceAttribute_t enum of hip_runtime_api.h (ROCm 6): ClockRate 5,
+        // MemoryBusWidth 59, MemoryClockRate 60. NOT yet validated live on an
+        // AMD part; the range clamps leave a wrong one at 0 = unknown.
+        v = 0;   // ClockRate (kHz)
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 5, dev) == 0 && v >= 1000 && v <= 10000000)
+            out->clockRateKHz = (uint32_t) v;
+        v = 0;   // MemoryBusWidth (bits)
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 59, dev) == 0 && v >= 8 && v <= 8192)
+            out->memoryBusWidthBits = (uint32_t) v;
+        v = 0;   // MemoryClockRate (kHz)
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 60, dev) == 0 && v >= 1000 && v <= 100000000)
+            out->memoryClockKHz = (uint32_t) v;
     }
     out->valid = 1;
     return 1;

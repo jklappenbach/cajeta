@@ -146,7 +146,14 @@ typedef enum CajetaXpuGeometryKey {
      * fact. 2 on AMD, 1 on NVIDIA. Until 2026-09-13 the AMD factor hid
      * inside a doubled SIMDS_PER_MP, which made a wrong SIMD count look
      * like physics; splitting them keeps both honest. */
-    CAJETA_XPU_GEO_WAVES_PER_SIMD_TARGET  = 15
+    CAJETA_XPU_GEO_WAVES_PER_SIMD_TARGET  = 15,
+    /* Clocks and the memory bus, for a timer's ceilings (xpu-kernel-adaptor
+     * Unit 5): the core clock is the MAXIMUM the driver reports, so cycles
+     * divided by it is the shortest a kernel can take; memory clock x bus
+     * width x 2 is the theoretical bandwidth a measurement may not exceed. */
+    CAJETA_XPU_GEO_CLOCK_KHZ              = 16,   /* CUDA attr 13 */
+    CAJETA_XPU_GEO_MEMORY_CLOCK_KHZ       = 17,   /* CUDA attr 36 */
+    CAJETA_XPU_GEO_MEMORY_BUS_WIDTH_BITS  = 18    /* CUDA attr 37 */
 } CajetaXpuGeometryKey;
 
 /* Returns 0 for an unknown key, an unqueryable device or an unreported fact. */

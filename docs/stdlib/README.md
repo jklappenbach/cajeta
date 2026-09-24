@@ -224,6 +224,7 @@ tutorial; it links here for API detail. Docs link the
 | [Device](xpu/Device.md) | The active XPU device and host-side queries |
 | [KernelBuffer](xpu/KernelBuffer.md) | Unified handle to device memory |
 | [KernelStream](xpu/KernelStream.md) | Ordered queue of XPU work |
+| [KernelTimer](xpu/KernelTimer.md) | Per-kernel device timer with a stated tier and a peak gate |
 | [MeshSimplifier](xpu/mesh/MeshSimplifier.md) | Garland–Heckbert edge-collapse mesh simplifier |
 
 ## cajeta.nucleo

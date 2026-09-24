@@ -1,0 +1,202 @@
+package cajeta.xpu;
+
+import cajeta.lang.String;
+
+/**
+ * KernelTimer — a per-kernel timer whose number can be stood behind.
+ *
+ * WHY IT EXISTS. A bench harness on an RTX 4090 once implied 252 TFLOPS for a
+ * cooperative kernel against the part's roughly 165 TFLOPS dense f16 peak.
+ * That is not a fast kernel; it is a timer measuring something other than
+ * execution. A host clock around a launch measures submission, and a host
+ * clock around a sync measures the sync as well; neither is the kernel. This
+ * class brackets a {@link KernelStream} with two {@link Event}s and reads the
+ * DEVICE's own elapsed time between them, which on CUDA and HIP ships with the
+ * driver and needs no profiler, no CUPTI and no toolkit.
+ *
+ * WHAT THE NUMBER MEANS is stated, not assumed, by {@link #tier}:
+ * <ul>
+ *   <li>{@link #TIER_DEVICE}: the device measured it between two of its own
+ *       events (cuEventElapsedTime / hipEventElapsedTime, ~0.5 us resolution).
+ *       The bracket still contains whatever the stream did between the two
+ *       records, including the launch's own latency, so time several
+ *       back-to-back launches per bracket when that matters, and read the
+ *       calibration in XpuKernelTimerTests before quoting a figure.</li>
+ *   <li>{@link #TIER_HOST}: the backend's stream is synchronous (CPU), so a
+ *       host timestamp at each record IS the stream's tail. Exact, but it is
+ *       the host's clock and the label says so.</li>
+ *   <li>{@link #TIER_UNAVAILABLE}: no clock the timer can read (Vulkan today).
+ *       {@link #elapsedNanos} answers -1 and never a number.</li>
+ * </ul>
+ *
+ * THE EVENT CLOCK'S SCALE. The driver converts device ticks to milliseconds,
+ * and that conversion has been measured WRONG: on a WSL2 RTX 4090 (driver
+ * 610.62) two events around a 2 s host sleep with no kernel between them
+ * read 2.091 s, 4.56% fast, steady from 0.2 s to 2 s. The first use of the
+ * timer on CUDA or HIP therefore spends about 160 ms measuring that scale
+ * against the host clock (the slope between two sleep-bracketed pairs, which
+ * cancels the fixed record latency); every elapsed time is divided by it and
+ * {@link #clockScale} reports it. A scale within 0.5% of 1 is treated as 1.
+ * A scale outside [0.5, 2] is refused: {@link #tier} answers UNAVAILABLE and
+ * {@link #elapsedNanos} answers -1.
+ *
+ * PROTOCOL. {@code begin(s)}, launch on {@code s}, {@code end(s)}, then
+ * {@code elapsedNanos()}, which WAITS for the end event. A timer whose begin
+ * or end was not recorded answers -1: a refusal is always preferred to a
+ * number nobody can defend.
+ *
+ * THE PEAK GATE. {@link #withinPeak} is the standing assertion that a
+ * measurement does not imply more than the hardware can do: bytes against a
+ * bandwidth ceiling ({@link Device#peakBandwidthGBps} is the theoretical one
+ * the driver's bus attributes give), operations against a compute ceiling the
+ * caller states. Work declared with NO ceiling is refused rather than waved
+ * through, because a gate that skips is not a gate.
+ */
+public final class KernelTimer {
+    /** No number will be given: the backend has no clock the timer can read. */
+    public static final int32 TIER_UNAVAILABLE = 0;
+    /** The host clock across a SYNCHRONOUS stream: exact, but the host's. */
+    public static final int32 TIER_HOST = 1;
+    /** The device measured it between two of its own events. */
+    public static final int32 TIER_DEVICE = 2;
+
+    Event startEvent;
+    Event endEvent;
+    boolean begun;
+    boolean ended;
+
+    KernelTimer() {
+        this.startEvent #= Event.create();
+        this.endEvent #= Event.create();
+        this.begun = false;
+        this.ended = false;
+    }
+
+    /**
+     * A timer with two fresh events. The caller owns it and calls
+     * {@link #destroy} when done, as with {@link Event}.
+     */
+    public static #KernelTimer create() {
+        KernelTimer t = heap KernelTimer();
+        return #t;
+    }
+
+    /** Record the start at {@code stream}'s current tail. Re-arms the timer. */
+    public void begin(KernelStream stream) {
+        this.startEvent.recordOn(stream);
+        this.begun = true;
+        this.ended = false;
+    }
+
+    /** Record the end at {@code stream}'s current tail. */
+    public void end(KernelStream stream) {
+        this.endEvent.recordOn(stream);
+        this.ended = true;
+    }
+
+    /**
+     * Nanoseconds between the two records as the active backend's clock saw
+     * them, waiting for the end event first. -1 when there is no number to
+     * stand behind: begin or end not recorded, a backend at
+     * {@link #TIER_UNAVAILABLE}, or a driver that refused the query.
+     */
+    public int64 elapsedNanos() {
+        if (!this.begun || !this.ended) {
+            return -1L;
+        }
+        return this.nativeElapsed(this.startEvent.handle, this.endEvent.handle);
+    }
+
+    /** Release both events. */
+    public void destroy() {
+        this.startEvent.destroy();
+        this.endEvent.destroy();
+    }
+
+    /** What {@link #elapsedNanos} means on the active backend: one of the TIER_ constants. */
+    public static int32 tier() {
+        return KernelTimer.nativeTier();
+    }
+
+    /**
+     * The factor the backend's event clock runs fast by against the host
+     * clock, already divided out of every {@link #elapsedNanos}: 1.0 for a
+     * correct driver and for the CPU, 0.0 when there is no usable clock. Print
+     * it beside any figure that will be compared across machines.
+     */
+    public static float64 clockScale() {
+        return KernelTimer.nativeClockScale();
+    }
+
+    /** {@link #tier} as the word a report should print beside the number. */
+    public static String tierName() {
+        int32 t = KernelTimer.nativeTier();
+        if (t == KernelTimer.TIER_DEVICE) {
+            return "device";
+        }
+        if (t == KernelTimer.TIER_HOST) {
+            return "host";
+        }
+        return "unavailable";
+    }
+
+    /** Bytes per nanosecond is gigabytes per second; 0.0 for a non-positive duration. */
+    public static float64 impliedGBps(int64 ns, int64 bytes) {
+        if (ns <= 0L) {
+            return 0.0;
+        }
+        return (float64) bytes / (float64) ns;
+    }
+
+    /** Operations per second implied by {@code ops} in {@code ns}; 0.0 for a non-positive duration. */
+    public static float64 impliedOpsPerSecond(int64 ns, float64 ops) {
+        if (ns <= 0L) {
+            return 0.0;
+        }
+        return ops / ((float64) ns * 1.0e-9);
+    }
+
+    /**
+     * The standing assertion: true only when {@code ns} is positive and every
+     * work amount given sits at or under its ceiling.
+     *
+     * {@code bytes} moved are checked against {@code peakGBps}; {@code ops}
+     * against {@code peakOpsPerSecond}. A work amount of zero declares that
+     * axis absent and it is not checked. A work amount with a ceiling of zero
+     * is REFUSED: the caller asked for a judgment and supplied nothing to
+     * judge against.
+     */
+    public static boolean withinPeak(int64 ns, int64 bytes, float64 peakGBps,
+                                     float64 ops, float64 peakOpsPerSecond) {
+        if (ns <= 0L) {
+            return false;
+        }
+        if (bytes > 0L) {
+            if (peakGBps <= 0.0) {
+                return false;
+            }
+            if (KernelTimer.impliedGBps(ns, bytes) > peakGBps) {
+                return false;
+            }
+        }
+        if (ops > 0.0) {
+            if (peakOpsPerSecond <= 0.0) {
+                return false;
+            }
+            if (KernelTimer.impliedOpsPerSecond(ns, ops) > peakOpsPerSecond) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // The device's elapsed time between two recorded event handles; -1 = refused.
+    @Native("__cajeta_xpu_event_elapsed_nanos")
+    private int64 nativeElapsed(int64 startHandle, int64 endHandle);
+
+    @Native("__cajeta_xpu_timer_tier")
+    private static int32 nativeTier();
+
+    @Native("__cajeta_xpu_timer_clock_scale")
+    private static float64 nativeClockScale();
+}

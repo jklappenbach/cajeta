@@ -337,6 +337,9 @@ int64_t __cajeta_xpu_device_geometry(int32_t key) {
         case CAJETA_XPU_GEO_THREADS_PER_MP:        return g_xpu_geo.threadsPerMP;
         case CAJETA_XPU_GEO_MAX_GRID_DIM_X:        return g_xpu_geo.maxGridDimX;
         case CAJETA_XPU_GEO_MAX_BLOCK_DIM_X:       return g_xpu_geo.maxBlockDimX;
+        case CAJETA_XPU_GEO_CLOCK_KHZ:             return g_xpu_geo.clockRateKHz;
+        case CAJETA_XPU_GEO_MEMORY_CLOCK_KHZ:      return g_xpu_geo.memoryClockKHz;
+        case CAJETA_XPU_GEO_MEMORY_BUS_WIDTH_BITS: return g_xpu_geo.memoryBusWidthBits;
         case CAJETA_XPU_GEO_WAVES_PER_SIMD_TARGET: {
             const char* a = g_xpu_geo.archName;
             if (a[0] == 'g' && a[1] == 'f' && a[2] == 'x') return 2;
@@ -1261,7 +1264,18 @@ void __cajeta_xpu_stream_destroy(void* self, int64_t handle) {
 
 // --- Event -----------------------------------------------------------------
 // Cross-stream + host synchronisation: the handle IS the backend event object
-// (0 = unavailable); CPU/Vulkan use the always-signaled sentinel 1.
+// (0 = unavailable). Vulkan uses the always-signaled sentinel 1. The CPU
+// backend's stream is synchronous, so its event is a HOST TIMESTAMP taken at
+// record time: every launch before the record has completed, so the stamp is
+// the stream's tail exactly, and two of them are an honest host-tier elapsed
+// time (see __cajeta_xpu_event_elapsed_nanos and cajeta.xpu.KernelTimer).
+typedef struct CajXpuCpuEvent {
+    int64_t host_ns;
+    int32_t recorded;
+} CajXpuCpuEvent;
+
+int64_t __cajeta_currentTimeNanos(void);
+
 int64_t __cajeta_xpu_event_create(void) {
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA: {
@@ -1278,7 +1292,11 @@ int64_t __cajeta_xpu_event_create(void) {
                 return (int64_t) (intptr_t) e;
             return 0;
         }
-        default: return 1;   // CPU/Vulkan: synchronous, always-signaled sentinel
+        case CAJ_XPU_CPU: {
+            CajXpuCpuEvent* e = (CajXpuCpuEvent*) calloc(1, sizeof *e);
+            return e ? (int64_t) (intptr_t) e : 0;
+        }
+        default: return 1;   // Vulkan: synchronous, always-signaled sentinel
     }
 }
 void __cajeta_xpu_event_record(void* self, int64_t handle, int64_t streamHandle) {
@@ -1296,7 +1314,15 @@ void __cajeta_xpu_event_record(void* self, int64_t handle, int64_t streamHandle)
             // The sentinel promises "already signaled": land the open batch.
             cajeta_xpu_vk_flush();
             return;
-        default: return;   // CPU: nothing to record (synchronous)
+        case CAJ_XPU_CPU:
+            // Synchronous stream: the tail is now.
+            if (e && handle != 1) {
+                CajXpuCpuEvent* ce = (CajXpuCpuEvent*) e;
+                ce->host_ns  = __cajeta_currentTimeNanos();
+                ce->recorded = 1;
+            }
+            return;
+        default: return;
     }
 }
 void __cajeta_xpu_event_wait(void* self, int64_t handle) {
@@ -1340,7 +1366,178 @@ void __cajeta_xpu_event_destroy(void* self, int64_t handle) {
         case CAJ_XPU_HIP:
             if (g_xpu_hip.hipEventDestroy) g_xpu_hip.hipEventDestroy(e);
             return;
+        case CAJ_XPU_CPU:
+            if (handle != 1) free(e);
+            return;
         default: return;
+    }
+}
+
+// --- The event clock's scale -------------------------------------------------
+// cuEventElapsedTime is the DEVICE's clock as the DRIVER converts it to
+// milliseconds, and that conversion is not always right: on PHOENIX (WSL2,
+// RTX 4090, driver 610.62) two events bracketing a 2.000 s host sleep with no
+// kernel between them answer 2.091 s, a 4.56% scale error, steady across
+// 0.2-2 s gaps (measured 2026-09-23 with libcuda directly, no cajeta in the
+// path). A timer that reported that raw would put every kernel 4.56% slower
+// than it ran, so the scale is measured ONCE against the host clock, from the
+// slope between two sleep-bracketed pairs (which cancels the constant
+// record-to-timestamp latency), and every elapsed time is divided by it. A
+// scale within 0.5% of 1 is treated as exactly 1, so a correct driver is not
+// perturbed by noise; a scale outside [0.5, 2] is not a clock anybody can
+// correct, and the timer REFUSES rather than guess.
+#include <math.h>
+#include <time.h>
+
+static pthread_mutex_t g_xpu_timer_lock = PTHREAD_MUTEX_INITIALIZER;
+static double          g_xpu_timer_scale = 1.0;
+static int             g_xpu_timer_scale_state = 0;   /* 0 untried, 1 ok, -1 refused */
+
+static void cajeta_xpu_timer_sleep_ns(int64_t ns) {
+    struct timespec ts;
+    ts.tv_sec  = (time_t) (ns / 1000000000LL);
+    ts.tv_nsec = (long)   (ns % 1000000000LL);
+    while (nanosleep(&ts, &ts) != 0) { /* resume after a signal */ }
+}
+
+/* One sleep-bracketed pair on backend `be`: device ms and host ns for the
+ * same interval, or 0 when the backend could not answer. */
+static int cajeta_xpu_timer_pair(int be, int64_t gapNs, double* devMs, int64_t* hostNs) {
+    int64_t sh = __cajeta_xpu_event_create();
+    int64_t eh = __cajeta_xpu_event_create();
+    void* s = (void*) (intptr_t) sh;
+    void* e = (void*) (intptr_t) eh;
+    int ok = 0;
+    float ms = 0.0f;
+    if (!s || !e) goto out;
+    if (be == CAJ_XPU_CUDA) {
+        if (g_xpu_cuda.cuEventRecord(s, NULL) != 0 || g_xpu_cuda.cuEventSynchronize(s) != 0) goto out;
+        int64_t h0 = __cajeta_currentTimeNanos();
+        cajeta_xpu_timer_sleep_ns(gapNs);
+        int64_t h1 = __cajeta_currentTimeNanos();
+        if (g_xpu_cuda.cuEventRecord(e, NULL) != 0 || g_xpu_cuda.cuEventSynchronize(e) != 0) goto out;
+        if (g_xpu_cuda.cuEventElapsedTime(&ms, s, e) != 0) goto out;
+        *hostNs = h1 - h0;
+    } else if (be == CAJ_XPU_HIP) {
+        if (g_xpu_hip.hipEventRecord(s, NULL) != 0 || g_xpu_hip.hipEventSynchronize(s) != 0) goto out;
+        int64_t h0 = __cajeta_currentTimeNanos();
+        cajeta_xpu_timer_sleep_ns(gapNs);
+        int64_t h1 = __cajeta_currentTimeNanos();
+        if (g_xpu_hip.hipEventRecord(e, NULL) != 0 || g_xpu_hip.hipEventSynchronize(e) != 0) goto out;
+        if (g_xpu_hip.hipEventElapsedTime(&ms, s, e) != 0) goto out;
+        *hostNs = h1 - h0;
+    } else {
+        goto out;
+    }
+    *devMs = (double) ms;
+    ok = *hostNs > 0 && ms > 0.0f;
+out:
+    __cajeta_xpu_event_destroy(NULL, sh);
+    __cajeta_xpu_event_destroy(NULL, eh);
+    return ok;
+}
+
+/* Measures the scale once; ~160 ms of host sleep on first use. */
+static void cajeta_xpu_timer_calibrate_locked(int be) {
+    double d1 = 0.0, d2 = 0.0;
+    int64_t h1 = 0, h2 = 0;
+    if (!cajeta_xpu_timer_pair(be, 30000000LL, &d1, &h1) ||
+        !cajeta_xpu_timer_pair(be, 130000000LL, &d2, &h2) || h2 <= h1) {
+        g_xpu_timer_scale_state = -1;
+        return;
+    }
+    double slope = ((d2 - d1) * 1.0e6) / (double) (h2 - h1);
+    if (!(slope >= 0.5 && slope <= 2.0)) {
+        g_xpu_timer_scale_state = -1;
+        return;
+    }
+    g_xpu_timer_scale = fabs(slope - 1.0) < 0.005 ? 1.0 : slope;
+    g_xpu_timer_scale_state = 1;
+}
+
+/* 1 when the backend's event clock is usable (and its scale known), 0 when
+ * the calibration refused it. CPU needs none. */
+static int cajeta_xpu_timer_ready(int be) {
+    if (be != CAJ_XPU_CUDA && be != CAJ_XPU_HIP) return be == CAJ_XPU_CPU;
+    pthread_mutex_lock(&g_xpu_timer_lock);
+    if (g_xpu_timer_scale_state == 0) cajeta_xpu_timer_calibrate_locked(be);
+    int ok = g_xpu_timer_scale_state == 1;
+    pthread_mutex_unlock(&g_xpu_timer_lock);
+    return ok;
+}
+
+// The factor the backend's event clock runs fast by against the host clock
+// (device ms x 1e6 / host ns): 1.0 for a correct driver and for the CPU's
+// host-stamped events, 1.0456 on PHOENIX's WSL2, 0.0 when there is no usable
+// clock (Vulkan, or a calibration that refused). Every elapsed time below has
+// already been divided by it; this is for the report that prints beside it.
+double __cajeta_xpu_timer_clock_scale(void) {
+    int be = cajeta_xpu_active_backend();
+    if (be == CAJ_XPU_CPU) return 1.0;
+    if (!cajeta_xpu_timer_ready(be)) return 0.0;
+    return g_xpu_timer_scale;
+}
+
+// The backend's own elapsed time between two RECORDED events, in nanoseconds,
+// waiting for `end` first, corrected by the event clock's measured scale. -1 whenever there is no number to stand behind: a
+// null or never-recorded event (the drivers answer NOT_READY / INVALID_HANDLE
+// and so do we), a backend with no clock behind its events (Vulkan's
+// sentinel), or a driver error. cuEventElapsedTime / hipEventElapsedTime
+// answer FLOAT MILLISECONDS at ~0.5 us resolution; the conversion is here so
+// no caller can forget it.
+int64_t __cajeta_xpu_event_elapsed_nanos(void* self, int64_t startHandle, int64_t endHandle) {
+    (void) self;
+    void* s = (void*) (intptr_t) startHandle;
+    void* e = (void*) (intptr_t) endHandle;
+    if (!s || !e) return -1;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA: {
+            float ms = 0.0f;
+            if (!g_xpu_cuda.cuEventSynchronize || !g_xpu_cuda.cuEventElapsedTime) return -1;
+            if (!cajeta_xpu_timer_ready(CAJ_XPU_CUDA)) return -1;
+            if (g_xpu_cuda.cuEventSynchronize(e) != 0) return -1;
+            if (g_xpu_cuda.cuEventElapsedTime(&ms, s, e) != 0) return -1;
+            if (!(ms >= 0.0f)) return -1;
+            return (int64_t) ((double) ms * 1.0e6 / g_xpu_timer_scale + 0.5);
+        }
+        case CAJ_XPU_HIP: {
+            float ms = 0.0f;
+            if (!g_xpu_hip.hipEventSynchronize || !g_xpu_hip.hipEventElapsedTime) return -1;
+            if (!cajeta_xpu_timer_ready(CAJ_XPU_HIP)) return -1;
+            if (g_xpu_hip.hipEventSynchronize(e) != 0) return -1;
+            if (g_xpu_hip.hipEventElapsedTime(&ms, s, e) != 0) return -1;
+            if (!(ms >= 0.0f)) return -1;
+            return (int64_t) ((double) ms * 1.0e6 / g_xpu_timer_scale + 0.5);
+        }
+        case CAJ_XPU_CPU: {
+            if (startHandle == 1 || endHandle == 1) return -1;
+            const CajXpuCpuEvent* a = (const CajXpuCpuEvent*) s;
+            const CajXpuCpuEvent* b = (const CajXpuCpuEvent*) e;
+            if (!a->recorded || !b->recorded) return -1;
+            int64_t d = b->host_ns - a->host_ns;
+            return d >= 0 ? d : -1;
+        }
+        default: return -1;   // Vulkan: an always-signaled sentinel has no clock
+    }
+}
+
+// What a number from __cajeta_xpu_event_elapsed_nanos MEANS on the active
+// backend (cajeta.xpu.KernelTimer's TIER_ constants): 2 = the device measured
+// it between its own events, 1 = the host clock across a synchronous stream,
+// 0 = no number will be given. Asked before any timing so a harness can print
+// the label beside the figure, or decline to print a figure at all.
+int32_t __cajeta_xpu_timer_tier(void) {
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            return (g_xpu_cuda.cuEventCreate && g_xpu_cuda.cuEventRecord &&
+                    g_xpu_cuda.cuEventSynchronize && g_xpu_cuda.cuEventElapsedTime &&
+                    cajeta_xpu_timer_ready(CAJ_XPU_CUDA)) ? 2 : 0;
+        case CAJ_XPU_HIP:
+            return (g_xpu_hip.hipEventCreate && g_xpu_hip.hipEventRecord &&
+                    g_xpu_hip.hipEventSynchronize && g_xpu_hip.hipEventElapsedTime &&
+                    cajeta_xpu_timer_ready(CAJ_XPU_HIP)) ? 2 : 0;
+        case CAJ_XPU_CPU:  return 1;
+        default:           return 0;
     }
 }
 
