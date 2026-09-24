@@ -305,3 +305,89 @@ jobs:
           name: device-tests-${{ matrix.name }}
           path: device-tests.log
           if-no-files-found: warn
+
+      # ── The cajeta-llm kernel census on nvptx (xpu-kernel-adaptor Unit 6) ──
+      #
+      # The llm suite closes with a census of every kernel the binary
+      # registers: each one RAN under a test, or names the plan item that will
+      # make it run, or is a probe or a stdlib kernel listed by name. A kernel
+      # nobody launched is UNCOVERED and fails the suite, and a census where
+      # NOTHING ran fails it too, so an all-skipped run cannot read as clean.
+      # This leg is where the census means something: the WSL runner has the
+      # RTX 4090. Windows is left alone (the llm toolchain is not staged there).
+      #
+      # run-tests.sh resolves dev.cajeta.{unit,codec,jinja,logging} from the
+      # sibling checkouts when present and from olla.cajeta.dev otherwise; the
+      # runner's home has neither, so it fetches. The census check below is
+      # what this step is FOR and it hard-fails; the suite's own pass/fail is
+      # reported beside it as a warning, because the 3 EngineTest failures of
+      # 2026-09-22 are a known baseline and the census must stay readable
+      # through them. Flip `SUITE_FAILS_JOB` when that baseline is clean.
+      - name: Check out cajeta-llm
+        if: runner.os != 'Windows'
+        uses: actions/checkout@v4
+        with:
+          repository: jklappenbach/cajeta-llm
+          path: llm
+
+      - name: Run the cajeta-llm suite and its kernel census on nvptx
+        if: runner.os != 'Windows'
+        continue-on-error: true
+        working-directory: llm
+        env:
+          CAJETA: ${{ github.workspace }}/build/src/cajeta
+          XPU_BACKEND: nvptx
+        run: |
+          set -uo pipefail
+          if [ -x /usr/local/cuda/bin/ptxas ]; then export CUDA_PATH=/usr/local/cuda; fi
+          ./run-tests.sh 2>&1 | tee ../llm-census.log
+          echo "SUITE_RC=${PIPESTATUS[0]}" >> ../llm-census.log
+
+      - name: Fail unless the kernel census ran and holds
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          SUITE_FAILS_JOB=0
+          [ -f llm-census.log ] || { echo "::error::the llm suite produced no log"; exit 1; }
+          LINE=$(grep -E '^kernel census \(cuda\):' llm-census.log | tail -1 || true)
+          [ -n "$LINE" ] || { echo "::error::no kernel census line on nvptx — the gate never ran"; exit 1; }
+          RAN=$(sed -n 's/.*, ran \([0-9]*\),.*/\1/p' <<<"$LINE")
+          UNCOVERED=$(sed -n 's/.*, uncovered \([0-9]*\),.*/\1/p' <<<"$LINE")
+          STALE=$(sed -n 's/.*, stale skips \([0-9]*\).*/\1/p' <<<"$LINE")
+          SUITE=$(sed -n 's/^SUITE_RC=//p' llm-census.log | tail -1)
+          TESTS=$(grep -E '^Tests: ' llm-census.log | tail -1 || true)
+          echo "$LINE"
+          {
+            echo "### cajeta-llm on nvptx (${{ matrix.name }})"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| kernels that ran under a test | $RAN |"
+            echo "| uncovered | $UNCOVERED |"
+            echo "| stale skips | $STALE |"
+            echo "| suite | $TESTS (rc $SUITE) |"
+            echo ""
+            grep -E '^  (SKIP|UNCOVERED|STALE-SKIP) ' llm-census.log | sed 's/^/    /' || true
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${RAN:-0}" -eq 0 ]; then
+            echo "::error::the kernel census says nothing ran on nvptx — an empty census is not a clean one"
+            exit 1
+          fi
+          if [ "${UNCOVERED:-1}" -ne 0 ] || [ "${STALE:-1}" -ne 0 ]; then
+            echo "::error::kernel census on nvptx: $UNCOVERED uncovered, $STALE stale skips"
+            exit 1
+          fi
+          if [ "$SUITE" != "0" ]; then
+            echo "::warning::the cajeta-llm suite itself returned rc $SUITE ($TESTS); the census holds"
+            [ "$SUITE_FAILS_JOB" = "1" ] && exit 1
+          fi
+          exit 0
+
+      - name: Upload the llm census log
+        if: always() && runner.os != 'Windows'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-census-${{ matrix.name }}
+          path: llm-census.log
+          if-no-files-found: warn
