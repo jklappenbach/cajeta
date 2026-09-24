@@ -97,6 +97,30 @@ using namespace std;
 
 namespace cajeta {
 
+    /// Can this tool actually run? Being on PATH is a weaker claim: the Windows
+    /// fork ships dynamically-linked lld binaries that exit 127 when one of
+    /// their DLLs is missing, and the driver then reports only an opaque
+    /// "ld returned 53" from collect2. Memoized, since a link asks repeatedly.
+    static bool linkToolRuns(const std::string& name) {
+        static std::map<std::string, bool> cache;
+        auto hit = cache.find(name);
+        if (hit != cache.end()) return hit->second;
+        bool ok = false;
+        if (auto exe = llvm::sys::findProgramByName(name)) {
+            llvm::StringRef argv[] = {*exe, "--version"};
+            // An empty redirect is the null device, so --version stays silent.
+            std::optional<llvm::StringRef> quiet[3] = {
+                llvm::StringRef(""), llvm::StringRef(""), llvm::StringRef("")};
+            bool failed = false;
+            int rc = llvm::sys::ExecuteAndWait(*exe, argv, std::nullopt, quiet,
+                                               /*SecondsToWait=*/20, 0,
+                                               nullptr, &failed);
+            ok = !failed && rc == 0;
+        }
+        cache[name] = ok;
+        return ok;
+    }
+
     // --diag-format=json: re-emits ANTLR lexer/parser syntax errors as NDJSON
     // (emitJsonDiagnostic) instead of the console listener's free text.
     // Installed only for the user-source parse.
@@ -1950,6 +1974,25 @@ namespace cajeta {
     void Compiler::compile(string entryMethod, string sourceRootPath, string archiveRootPath) {
         this->entryMethod = entryMethod;
 
+        // ThinLTO changes what codegen WRITES: bitcode plus a summary instead of
+        // native objects, for a link-time backend only lld can run. Decide here,
+        // before emit, because GNU ld cannot read that bitcode at all — with no
+        // usable lld the link dies on an unreadable input rather than falling
+        // back. Loud, since it changes how the shipped binary is optimized.
+        if (flags.lto == LtoMode::Thin && emitMode == EmitMode::Exe
+                && !linkToolRuns("ld.lld") && !linkToolRuns("lld")
+#if defined(_WIN32)
+                && !linkToolRuns("lld-link")
+#endif
+        ) {
+            cerr << "cajeta: --lto=thin needs lld, and no lld on this host can "
+                    "run (present but failing to start counts as absent). "
+                    "Building without LTO so the link can use the system "
+                    "linker; the binary is correct but less optimized."
+                 << std::endl;
+            flags.lto = LtoMode::Off;
+        }
+
         xref::resetCapture();
         xref::setCaptureEnabled(!flags.emitXref.empty());
 
@@ -2867,10 +2910,10 @@ namespace cajeta {
         // Prefer LLD when it is locatable: GNU ld's section GC keeps unreferenced
         // external COMDAT on COFF and dead-strips less everywhere. Passed as
         // `-fuse-ld=lld` to the driver so it still supplies CRT/libc.
-        bool haveLld = (bool) llvm::sys::findProgramByName("ld.lld")
-                    || (bool) llvm::sys::findProgramByName("lld");
+        // Executability, not presence: see linkToolRuns.
+        bool haveLld = linkToolRuns("ld.lld") || linkToolRuns("lld");
 #if defined(_WIN32)
-        if (!haveLld) haveLld = (bool) llvm::sys::findProgramByName("lld-link");
+        if (!haveLld) haveLld = linkToolRuns("lld-link");
 #endif
 
         // Materialize the embedded TLS native object beside the output: the exe
@@ -2937,8 +2980,13 @@ namespace cajeta {
         std::vector<std::string> thinLtoLinkArgs;  // empty unless lto=thin
         if (flags.lto == LtoMode::Thin) {
 #ifdef CAJETA_LLVM_TOOLS_BIN
+            // The fork ships ld.lld.exe on Windows, so a bare-name probe never
+            // matched there. It must also RUN: handing the driver a -B at an
+            // lld that cannot start turns a good link into "ld returned 53".
             std::string forkBin = CAJETA_LLVM_TOOLS_BIN;
-            if (std::filesystem::exists(forkBin + "/ld.lld")) {
+            if ((std::filesystem::exists(forkBin + "/ld.lld")
+                        || std::filesystem::exists(forkBin + "/ld.lld.exe"))
+                    && linkToolRuns(forkBin + "/ld.lld")) {
                 thinLtoLinkArgs.push_back("-B" + forkBin);
                 thinLtoLinkArgs.push_back("-fuse-ld=lld");
             }
@@ -2987,6 +3035,14 @@ namespace cajeta {
 #else
             opt.argv.push_back("-Wl,--gc-sections");
 #endif
+            // Point the driver at the OpenSSL this compiler was configured
+            // against. Without it `-lssl` falls back to the driver's default
+            // search path, which on macOS does not include Homebrew's keg-only
+            // openssl, and the link dies on X509_STORE_add_cert with the flags
+            // looking perfectly correct.
+#ifdef CAJETA_OPENSSL_LIBDIR
+            opt.argv.push_back(std::string("-L") + CAJETA_OPENSSL_LIBDIR);
+#endif
 #if defined(_WIN32)
             // An `--emit=exe` is a deliverable, so it STATICALLY links the mingw
             // runtime and OpenSSL: the binary then depends only on Windows system DLLs.
@@ -3012,6 +3068,21 @@ namespace cajeta {
             opt.argv.push_back("-ldl");
 #endif
             res = buildtool::runSubprocess(opt);
+#if defined(_WIN32)
+            // A driver whose DLLs fail to resolve never reaches main, but
+            // CreateProcess still succeeded, so it counted as the chosen driver
+            // and the chain stopped before a working one. These two NTSTATUS
+            // codes mean the image could not start, so keep looking.
+            if (res.launched && res.exited
+                    && (res.exitCode == (int) 0xC0000139      // ENTRYPOINT_NOT_FOUND
+                        || res.exitCode == (int) 0xC0000135)) {  // DLL_NOT_FOUND
+                cerr << "cajeta: --emit=exe: '" << drv << "' could not start ("
+                     << (res.exitCode == (int) 0xC0000139 ? "a DLL is missing an entry point"
+                                                          : "a dependent DLL was not found")
+                     << "); trying the next driver." << std::endl;
+                continue;
+            }
+#endif
             if (res.launched) { launched = true; usedDriver = drv; break; }
         }
 

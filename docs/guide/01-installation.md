@@ -17,15 +17,18 @@ alongside it.
 
 | Platform | Triple | Download |
 |---|---|---|
-| Linux x86_64 | `x86_64-linux-gnu` | [`cvm-v0.29.0-x86_64-linux-gnu`](https://github.com/jklappenbach/cajeta/releases/download/v0.29.0/cvm-v0.29.0-x86_64-linux-gnu) |
+| Linux x86_64 | `x86_64-linux-gnu` | [`cvm-v0.29.1-x86_64-linux-gnu`](https://github.com/jklappenbach/cajeta/releases/download/v0.29.1/cvm-v0.29.1-x86_64-linux-gnu) |
+| Linux ARM64 | `aarch64-linux-gnu` | [`cvm-v0.29.1-aarch64-linux-gnu`](https://github.com/jklappenbach/cajeta/releases/download/v0.29.1/cvm-v0.29.1-aarch64-linux-gnu) |
+| macOS Apple Silicon | `aarch64-apple-darwin` | [`cvm-v0.29.1-aarch64-apple-darwin`](https://github.com/jklappenbach/cajeta/releases/download/v0.29.1/cvm-v0.29.1-aarch64-apple-darwin) |
+| Windows x86_64 | `x86_64-w64-mingw32` | [`cvm-v0.29.1-x86_64-w64-mingw32.exe`](https://github.com/jklappenbach/cajeta/releases/download/v0.29.1/cvm-v0.29.1-x86_64-w64-mingw32.exe) |
 
 ```bash
-curl -fsSL -o cvm https://github.com/jklappenbach/cajeta/releases/download/v0.29.0/cvm-v0.29.0-x86_64-linux-gnu
+curl -fsSL -o cvm https://github.com/jklappenbach/cajeta/releases/download/v0.29.1/cvm-v0.29.1-x86_64-linux-gnu
 chmod +x cvm && sudo mv cvm /usr/local/bin/
 ```
 
 Verify the download against the matching `.sha256` published beside it.
-These links point at `v0.29.0`; the
+These links point at `v0.29.1`; the
 [latest release](https://github.com/jklappenbach/cajeta/releases/latest) always carries
 the current build.
 <!-- END:CVM_DOWNLOAD -->

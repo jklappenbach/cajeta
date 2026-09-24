@@ -2119,31 +2119,21 @@ namespace cajeta {
             }
         }
 
-        // A @Kernel body is never called on the host: it runs only through its
-        // launch, and its real lowering is the device function (on the cpu
-        // backend too, via KernelLowering and the per-block wrapper). Emit a
-        // trivial host stub so host codegen never lowers device-only
-        // constructs -- and that holds whatever the kernel's parameters are.
-        // Keying it on "takes a KernelBuffer" was a proxy that failed the first
-        // kernel taking only an Image2D: its body was host-compiled and, once
-        // Image2D.store became a bodiless @Intrinsic (4d6e0b5a), refused as a
-        // host call (XpuCpuDispatchTests.imageLoadStoreRmwOnCpu, 2026-09-23).
-        //
-        // A @Device method is different: it marks a method as ALSO usable on the
-        // device, not device-only (GgufFile.halfBitsToF32 has a real body and
-        // is called from host code), so it keeps its host body -- unless it
-        // takes a KernelBuffer, which only device code can hand it.
+        // A @Kernel or @Device method taking a descriptor-bound resource works on
+        // device memory and is never called on the host, so emit a trivial host stub
+        // instead of lowering device-only constructs. The test was KernelBuffer alone,
+        // which missed Image2D and the texture types. It stays a PARAMETER test and
+        // not a blanket one on @Kernel: a kernel over plain scalars and arrays is
+        // host-callable, and the CPU-emulation path calls one directly.
         if (cajeta::xpu::isKernel(*this) || cajeta::xpu::isDevice(*this)) {
-            bool hasDeviceBuffer = false;
+            bool stubHostBody = false;
             for (auto& p : parameterList) {
-                if (p && p->getType()
-                        && p->getType()->toCanonical().rfind(
-                               "cajeta.xpu.KernelBuffer", 0) == 0) {
-                    hasDeviceBuffer = true;
+                if (p && cajeta::xpu::isDeviceResourceType(p->getType())) {
+                    stubHostBody = true;
                     break;
                 }
             }
-            if (cajeta::xpu::isKernel(*this) || hasDeviceBuffer) {
+            if (stubHostBody) {
                 llvm::BasicBlock* bb = llvm::BasicBlock::Create(
                     *module->getLlvmContext(), "entry", llvmFunction);
                 llvm::IRBuilder<> b(bb);
@@ -2153,6 +2143,7 @@ namespace cajeta {
                     b.CreateRet(llvm::Constant::getNullValue(
                         llvmFunction->getReturnType()));
                 }
+                llvmBasicBlock = bb;   // mark emitted (idempotency guard above)
                 return;
             }
         }

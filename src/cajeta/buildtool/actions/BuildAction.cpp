@@ -59,6 +59,23 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
+        /// Where the driver actually wrote the artifact. mingw's gcc appends
+        /// .exe to an extensionless -o, so `build/cvm` lands as `build/cvm.exe`
+        /// and a lookup by the requested name finds nothing. That left the
+        /// outputs without a sha256 and surfaced far away as "references
+        /// undefined property 'art.sha256'", long after a link that succeeded.
+        std::filesystem::path builtArtifactPath(
+                const std::filesystem::path& requested) {
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            if (fs::exists(requested, ec)) return requested;
+            if (requested.has_extension()) return requested;
+            fs::path withExe = requested;
+            withExe += ".exe";
+            if (fs::exists(withExe, ec)) return withExe;
+            return requested;
+        }
+
         /// The cajeta binary to exec: the running executable when its path is
         /// known, else "cajeta" resolved on PATH.
         std::string findCajetaBinary() {
@@ -412,12 +429,13 @@ namespace cajeta::buildtool {
                             if (!profile.empty())
                                 hit.outputs["profile"] = profile;
                             hit.outputs["cache"] = "hit";
-                            hit.outputs["path"] = outputPath.string();
+                            fs::path hitPath = builtArtifactPath(outputPath);
+                            hit.outputs["path"] = hitPath.string();
                             hit.outputs["sha256"] =
-                                sha256OfFile(outputPath.string());
+                                sha256OfFile(hitPath.string());
                             std::error_code szEc;
                             hit.outputs["size"] = std::to_string(
-                                fs::file_size(outputPath, szEc));
+                                fs::file_size(hitPath, szEc));
                             return hit;
                         }
                     }
@@ -514,12 +532,13 @@ namespace cajeta::buildtool {
             }
             if (!profile.empty()) r.outputs["profile"] = profile;
             if (!outputPath.empty()) {
-                r.outputs["path"] = outputPath.string();
+                fs::path built = builtArtifactPath(outputPath);
+                r.outputs["path"] = built.string();
                 std::error_code ec2;
-                if (fs::exists(outputPath, ec2)) {
-                    r.outputs["sha256"] = sha256OfFile(outputPath.string());
+                if (fs::exists(built, ec2)) {
+                    r.outputs["sha256"] = sha256OfFile(built.string());
                     r.outputs["size"]   = std::to_string(
-                        fs::file_size(outputPath, ec2));
+                        fs::file_size(built, ec2));
                 }
             } else {
                 r.outputs["path"] = archiveRoot.string();

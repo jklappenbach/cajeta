@@ -1097,4 +1097,20 @@ fi
 if ! "$SCRIPT_DIR/scripts/check-docstring-examples.sh"; then
     exit 1
 fi
+
+# Release download surface (release-download-surface 1.1.x): the README table
+# is generated at release time from what the run actually published, so no
+# ordinary build exercises it. Render a fixture release instead. Fast and
+# tree-clean, and it is the only thing between an asset-naming change and a
+# table of links that 404 on the day of a release.
+if ! "$SCRIPT_DIR/scripts/check-release-docs.sh"; then
+    exit 1
+fi
+
+# The cajeta.dev downloads section, same reasoning: it is built from a file
+# only a release writes, so nothing else exercises it. Skips itself where
+# the site toolchain is absent, which is every C++-only host.
+if ! "$SCRIPT_DIR/scripts/check-site-downloads.sh"; then
+    exit 1
+fi
 exit 0

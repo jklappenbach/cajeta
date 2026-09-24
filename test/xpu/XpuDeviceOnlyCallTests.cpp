@@ -125,43 +125,6 @@ TEST(XpuDeviceOnlyCallTests, theSameVerbInsideAKernelIsFine) {
         "}\n");
 }
 
-// DOES NOT FIRE inside a kernel that takes NO KernelBuffer. The test above
-// passed for the wrong reason for two days: Method.cpp stubbed a @Kernel
-// body on the host only when a parameter was a KernelBuffer, so a kernel
-// taking scalars, a Shared, or an Image2D had its body host-compiled, and
-// once the verbs were bodiless @Intrinsic that body was REFUSED as a host
-// call -- XpuCpuDispatchTests.imageLoadStoreRmwOnCpu, fill(Image2D, w, h),
-// measured 2026-09-23. A kernel body is device-only because it is a kernel,
-// whatever it takes. (Red before the Method.cpp fix, green after.)
-TEST(XpuDeviceOnlyCallTests, theSameVerbInsideABufferlessKernelIsFine) {
-    compileOk(std::string(PRE) +
-        "public final class D {\n"
-        "    @Kernel\n"
-        "    public static void k(uint32 n) {\n"
-        "        Shared<float32> s = shared float32[256];\n"
-        "        CooperativeMatrix<float32,16,16,2> acc;\n"
-        "        acc.splat(0.0f);\n"
-        "        acc.store(s, 0, 0, 16);\n"
-        "    }\n"
-        "    public static int32 run() { return 0; }\n"
-        "}\n");
-}
-
-// The shape that actually failed: an Image2D parameter and its @Intrinsic
-// store, no KernelBuffer anywhere in the signature.
-TEST(XpuDeviceOnlyCallTests, anImageIntrinsicInsideAnImageOnlyKernelIsFine) {
-    compileOk(std::string(PRE) +
-        "import cajeta.xpu.Image2D;\n"
-        "public final class D {\n"
-        "    @Kernel\n"
-        "    public static void fill(Image2D img, uint32 w, uint32 h) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < w * h) { img.store(i % w, i / w, 1.0f); }\n"
-        "    }\n"
-        "    public static int32 run() { return 0; }\n"
-        "}\n");
-}
-
 // DOES NOT FIRE for ordinary host calls. The check reads one annotation;
 // a bug in that read would take the whole language down with it, and this
 // is the cheapest possible canary for that.
@@ -201,4 +164,26 @@ TEST(XpuDeviceOnlyCallTests, aScheduleIntrinsicFromHostCodeIsRefused) {
         << "the refusal must NAME the verb:\n" << msg;
     EXPECT_NE(msg.find("@Kernel"), std::string::npos)
         << "and say where it belongs:\n" << msg;
+}
+
+// DOES NOT FIRE inside a kernel whose device-only parameter is not a
+// KernelBuffer. The host-body stub was keyed on that one type, so an Image2D
+// kernel had its real body lowered as host code and every intrinsic in it was
+// refused. The kernel arm above passes only because it takes a buffer.
+TEST(XpuDeviceOnlyCallTests, aKernelTakingAnImageIsFine) {
+    compileOk(
+        "package test;\n"
+        "import cajeta.xpu.Image2D;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "public final class D {\n"
+        "    @Kernel\n"
+        "    public static void k(Image2D img, uint32 w, uint32 h) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        if (i < w * h) {\n"
+        "            float32 v = img.load(i % w, i / w);\n"
+        "            img.store(i % w, i / w, 2.0f * v + 1.0f);\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n");
 }

@@ -357,6 +357,11 @@ jobs:
           # vulkan-headers: <vulkan/vulkan.h> for the runtime's Vulkan compute
           # path (the loader vulkan-1.dll is dlopen'd at run time, no link dep).
           # tar: used (with zstd) to unpack the fork toolchain in the fetch step.
+          # libxml2: nothing in THIS build links it, but the fork's ld.lld.exe
+          # and lld-link.exe import libxml2-16.dll for WindowsManifest support
+          # and exit 127 without it. clang does not, so clang ran while both
+          # linkers did not, and cvm linked with no lld and lost ThinLTO. Do not
+          # drop it as unused; the probe step names it if it goes missing again.
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
@@ -365,6 +370,7 @@ jobs:
             mingw-w64-x86_64-antlr4-runtime-cpp
             mingw-w64-x86_64-zstd
             mingw-w64-x86_64-xxhash
+            mingw-w64-x86_64-libxml2
             mingw-w64-x86_64-glog
             mingw-w64-x86_64-gtest
             mingw-w64-x86_64-openssl
@@ -437,6 +443,47 @@ jobs:
             echo "LLVM_DIR=$DEST/lib/cmake/llvm" >> "$GITHUB_ENV"
             echo "$DEST/bin" >> "$GITHUB_PATH"
           fi
+
+      # The fork's Windows binaries are dynamically linked, so shipping them is
+      # not the same as being able to run them: ld.lld and lld-link exit 127
+      # when one of their DLLs is absent, and the only downstream symptom is an
+      # opaque "ld returned 53" from collect2 much later. Name the missing DLL
+      # here, early and cheaply, so provisioning is a fact rather than a guess.
+      # Never fatal — this reports, it does not gate.
+      - name: Probe the fork toolchain (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: |
+          # The msys2 shell wrapper turns -e on, so disable it explicitly: a
+          # probe whose whole job is to run things that fail must not abort on
+          # the first one.
+          set +e
+          echo "objdump: $(command -v objdump || echo '<absent>')"
+          for t in clang ld.lld lld-link; do
+            p="$(command -v "$t" 2>/dev/null)"
+            if [ -z "$p" ]; then echo "=== $t: not on PATH"; continue; fi
+            out="$("$t" --version 2>&1 | head -1)"; rc=$?
+            echo "=== $t (rc=$rc) $p"
+            if [ "$rc" -eq 0 ]; then echo "    $out"; continue; fi
+            # `[ -f ]` under msys2 resolves a bare name to its .exe, so a test
+            # for the bare path succeeds and then hands objdump, a native
+            # binary, a Windows path that does not exist. Name the .exe.
+            f="$p"
+            case "$f" in *.exe) ;; *) f="$f.exe" ;; esac
+            ls -l "$f" 2>&1 | sed 's/^/    /'
+            ldd "$f" 2>&1 | grep -i "not found" | sed 's/^/    ldd: /'
+            dlls="$(objdump -p "$f" | awk '/DLL Name:/ {print $3}' | sort -fu)"
+            if [ -z "$dlls" ]; then echo "    (no imports listed for $f)"; fi
+            for dll in $dlls; do
+              hit=""
+              for d in "$(dirname "$f")" /mingw64/bin /c/Windows/System32; do
+                if [ -f "$d/$dll" ]; then hit="$d/$dll"; break; fi
+              done
+              if [ -n "$hit" ]; then echo "    ok      $dll"
+              else echo "    MISSING $dll"; fi
+            done
+          done
+          exit 0
 
       # ---- macOS dependency install (brew) ------------------------------
       - name: Install dependencies (macOS)
@@ -956,8 +1003,11 @@ jobs:
       # Published as a BARE executable like the compiler asset: cvm bootstraps
       # a machine that has nothing, so the download has to run after chmod +x
       # with no extractor in the picture.
+      # NO `shell:` here, so this inherits the job default (matrix.shell). An
+      # explicit `bash` resolved to Git Bash on Windows, whose PATH carries no
+      # mingw64/bin, so the link found no cc and no gcc and cvm never built
+      # there. Every other build step in this job already inherits.
       - name: Build cvm
-        shell: bash
         run: |
           set -euo pipefail
           V="${{ steps.version.outputs.ref_version }}"
@@ -970,6 +1020,21 @@ jobs:
             ASSET="cvm-v${V}-${T}"
           fi
           [ -x "$CAJETA" ] || { echo "::error::no compiler at $CAJETA to build cvm with"; exit 1; }
+
+          # A link failure here reports only collect2's "ld returned N" with no
+          # linker output, which says nothing about WHICH driver and linker ran
+          # or whether they can start at all. Record that before building. The
+          # fork ships dynamically-linked Windows binaries, so "found on PATH"
+          # and "can execute" are different questions. Never fatal.
+          echo "--- link toolchain ---"
+          for t in cc gcc clang ld ld.lld lld-link; do
+            p="$(command -v "$t" 2>/dev/null || true)"
+            if [ -z "$p" ]; then echo "  $t: not on PATH"; continue; fi
+            # `if` so a tool that cannot start does not trip set -e.
+            if v="$("$t" --version 2>&1 | head -1)"; then rc=0; else rc=$?; fi
+            echo "  $t -> $p (--version rc=$rc): $v"
+          done
+          echo "----------------------"
 
           # `cajeta <task>` runs the named cajeta.json task. `release` is the
           # optimized flavor; the default `build` task is debug.
@@ -1134,10 +1199,17 @@ jobs:
           fi
           # ref_version mirrors the build job: the version without a leading
           # 'v', used in the cvm asset filenames + the manifest `version`.
+          # The dry-run arm has to mirror it too. It did not, so the build job
+          # named assets `...-$V-dryrun-<run>-<triple>` while this job looked
+          # for `...-$V-<triple>`, and the README preview failed with "held no
+          # asset named for v$V" on EVERY dry-run. Production matched all along,
+          # which is why only dry-runs carried the false red.
           if [ "${{ github.event_name }}" = "push" ]; then
             REF="${GITHUB_REF_NAME#v}"
-          else
+          elif [ "$MODE" = "production" ]; then
             REF="$V"
+          else
+            REF="$V-dryrun-${{ github.run_number }}"
           fi
           # Pre-release detection: a semver pre-release suffix (the `-` in
           # `v0.7.0-rc1`, `-beta1`, etc.) means this must NOT be marked the
@@ -1262,7 +1334,7 @@ jobs:
       # Dry-run stops at the diff and prints it. A prerelease is skipped too:
       # `v0.3.0-rc1` is not what a reader landing on the README should be
       # pointed at.
-      - name: Update README + install guide from the release
+      - name: Update README, install guide and site manifest from the release
         if: steps.params.outputs.prerelease != 'true'
         shell: bash
         run: |
@@ -1274,7 +1346,10 @@ jobs:
           # Both trees: release-assets holds the bare binaries, artifacts the
           # per-leg archives.
           scripts/update-release-docs.sh "$TAG" release-assets artifacts
-          git --no-pager diff -- README.md docs/guide/01-installation.md
+          # Show every surface the run rewrote, so a dry run previews all of
+          # them rather than the two that happen to be markdown.
+          git --no-pager diff -- README.md docs/guide/01-installation.md \
+            site/src/data/latest-release.json
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
 
@@ -1283,13 +1358,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- README.md docs/guide/01-installation.md; then
+          # The site's release manifest rides along: it is what the cajeta.dev
+          # home page imports, and it cannot be derived from the tree, so a
+          # release that leaves it behind ships a home page advertising the
+          # previous version.
+          DOCS=(README.md docs/guide/01-installation.md site/src/data/latest-release.json)
+          if git diff --quiet -- "${DOCS[@]}"; then
             echo "::notice::docs already match ${{ steps.params.outputs.tag }} — nothing to commit"
             exit 0
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md docs/guide/01-installation.md
+          git add "${DOCS[@]}"
           git commit -m "docs: release links for ${{ steps.params.outputs.tag }} [skip ci]"
           # The tag was built from a commit on main, but main may have moved
           # while the matrix ran. Rebase onto it rather than force-pushing
@@ -1297,6 +1377,49 @@ jobs:
           git fetch origin main
           git rebase origin/main
           git push origin HEAD:main
+
+      # ---- publish the site, so cajeta.dev shows what just shipped ------
+      #
+      # Without this the release commits site/src/data/latest-release.json and
+      # cajeta.dev goes on serving the previous build, which is the exact drift
+      # the download surface exists to remove. Runs AFTER the docs commit so it
+      # builds from the manifest this release just wrote.
+      #
+      # wrangler.jsonc already pins the account, so the only credential is an
+      # API token. It is NOT optional: a missing token means the site is stale,
+      # and a run that goes green while advertising the previous release is the
+      # failure this is meant to prevent. Fail loudly instead. The Release
+      # itself is already published by this point, so a red run here means
+      # "shipped, but the site did not follow", which is what happened.
+      - name: Set up Node for the site build
+        if: steps.params.outputs.mode != 'dry-run' && steps.params.outputs.prerelease != 'true'
+        uses: actions/setup-node@v4
+        with:
+          # site/package.json requires >=22. Pin it rather than inherit
+          # whatever the runner image ships this month.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Deploy the site to cajeta.dev
+        if: steps.params.outputs.mode != 'dry-run' && steps.params.outputs.prerelease != 'true'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not set, so cajeta.dev still serves the previous release. Add the secret (Workers Scripts:Edit on the account that owns cajeta.dev) and re-run this job."
+            exit 1
+          fi
+          cd site
+          npm ci --no-audit --no-fund
+          # `npm run deploy` is regen + wrangler deploy. Call them separately so
+          # a build failure and a publish failure are distinguishable in the log.
+          npm run manifest
+          npx astro build
+          npx wrangler deploy
+          echo "::notice::cajeta.dev deployed for ${{ steps.params.outputs.tag }}"
 
       - name: Dry-run summary
         if: steps.params.outputs.mode == 'dry-run'

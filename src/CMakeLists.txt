@@ -1306,6 +1306,19 @@ if(CAJETA_ZMQ_TARGET)
             ${CAJETA_ZMQ_TARGET} ${CAJETA_WIN_ZMQ_STATIC_LIBS})
     target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAVE_ZMQ=1)
 endif()
+
+# The linker this compiler SPAWNS for `--emit=exe` needs the same OpenSSL this
+# build was configured against. `-lssl` alone relies on the driver's default
+# search path, and on macOS Homebrew keeps openssl keg-only (under
+# `$(brew --prefix)/opt/openssl@3/lib`), which is not on it. The result is a
+# link that fails on X509_STORE_add_cert and SSL_CTX_get_cert_store while the
+# flags look correct. Bake the directory find_package already resolved.
+get_filename_component(CAJETA_OPENSSL_LIBDIR "${OPENSSL_SSL_LIBRARY}" DIRECTORY)
+if(CAJETA_OPENSSL_LIBDIR)
+    message(STATUS "OpenSSL link dir for --emit=exe -> ${CAJETA_OPENSSL_LIBDIR}")
+    target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC
+            CAJETA_OPENSSL_LIBDIR="${CAJETA_OPENSSL_LIBDIR}")
+endif()
 # The native runtime (cajeta_runtime.c, embedded in this lib) uses
 # BCryptGenRandom for its RNG on Windows — link the bcrypt system lib.
 # Only the test binary actually pulls the native runtime object; on

@@ -28,8 +28,15 @@ REPO="${GITHUB_REPOSITORY:-jklappenbach/cajeta}"
 BASE="https://github.com/${REPO}/releases/download/${TAG}"
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-README="${ROOT}/README.md"
-GUIDE="${ROOT}/docs/guide/01-installation.md"
+# Overridable so the self-test can render into a fixture instead of the real
+# files. Unset in CI and by hand, which is the path that matters.
+README="${RELEASE_DOCS_README:-${ROOT}/README.md}"
+GUIDE="${RELEASE_DOCS_GUIDE:-${ROOT}/docs/guide/01-installation.md}"
+# The release manifest the site imports. Committed, unlike the site's own
+# manifest.json, which is gitignored because it is DERIVED from ../docs and any
+# build can regenerate it. This one describes a release, so nothing in the tree
+# can reproduce it and the site build would otherwise need the network.
+MANIFEST="${RELEASE_DOCS_MANIFEST:-${ROOT}/site/src/data/latest-release.json}"
 
 # triple|label|archive extension — mirrors the build matrix in release.yml.
 TARGETS=(
@@ -60,6 +67,54 @@ asset_for() {
   printf ''
 }
 
+# The native installers for a triple, one basename per line, or nothing.
+#
+# cpack names them its own way — `cajeta_0.29.1_amd64.deb`, `cajeta-0.29.1-1
+# .x86_64.rpm`, `cajeta-0.29.1-Darwin.pkg` — and NONE of those records a
+# triple, so they cannot be matched the way the bare binaries are. The
+# uploading directory does record it: the release job uploads each leg as
+# `cajeta-<triple>`, so that is what identifies the platform.
+installers_for() {
+  local triple="$1" d
+  for d in "${ASSET_DIRS[@]}"; do
+    [ -d "$d" ] || continue
+    # `-exec basename` rather than `-printf '%f'`: the latter is GNU-only and
+    # the macOS leg runs BSD find, where it is a usage error.
+    find "$d" -type f -path "*/cajeta-${triple}/*" \
+      \( -name '*.deb' -o -name '*.rpm' -o -name '*.msi' \
+         -o -name '*.pkg' -o -name '*.pkg.tar.zst' \) -exec basename {} \;
+  done | sort -u
+}
+
+# The published digest for an asset, from the `.sha256` sidecar beside it, or
+# "" when the release carries none. First field, because the sidecar is
+# `sha256sum` output: digest, two spaces, filename.
+digest_of() {
+  local base="$1" d f
+  for d in "${ASSET_DIRS[@]}"; do
+    [ -d "$d" ] || continue
+    f="$(find "$d" -type f -name "${base}.sha256" -print -quit)"
+    [ -n "$f" ] && { awk 'NR==1 {print $1}' "$f"; return 0; }
+  done
+  printf ''
+}
+
+# The cell for those installers: one link per format, labelled by extension so
+# a reader picks the one their system takes. Sorted, so a re-render of an
+# unchanged release is byte-identical.
+installer_cell() {
+  local triple="$1" cell="" base ext
+  while IFS= read -r base; do
+    [ -n "$base" ] || continue
+    case "$base" in
+      *.pkg.tar.zst) ext="pkg.tar.zst" ;;
+      *)             ext="${base##*.}" ;;
+    esac
+    cell+="[\`.${ext}\`](${BASE}/${base}) "
+  done < <(installers_for "$triple")
+  [ -n "$cell" ] && printf '%s' "${cell% }" || printf '—'
+}
+
 # Replace the text between BEGIN:<marker> and END:<marker> in a file. The
 # markers stay; only what sits between them is rewritten. Absent markers are
 # a hard error — a silent no-op here would ship stale versions forever.
@@ -86,13 +141,19 @@ PY
 # ---- README: version line + the download table -----------------------------
 
 rows=""
+records=""
 for entry in "${TARGETS[@]}"; do
   IFS='|' read -r triple label ext <<<"$entry"
   cajeta_bin="$(asset_for cajeta "$triple")"
   cvm_bin="$(asset_for cvm "$triple")"
-  [ -n "$cajeta_bin" ] || [ -n "$cvm_bin" ] || continue
-
+  inst_cell="$(installer_cell "$triple")"
   archive="cajeta-${TAG}-${triple}.${ext}"
+  # A triple earns a row only on an asset that NAMES the tag. Installers are
+  # found by their artifact directory, which carries no version, so they cannot
+  # corroborate that this release covers this platform. Counting one on its own
+  # rendered rows for a tag with no assets at all, every link a 404.
+  [ -n "$cajeta_bin" ] || [ -n "$cvm_bin" ] || has_asset "$archive" || continue
+
   if has_asset "$archive"; then
     archive_cell="[\`.${ext}\`](${BASE}/${archive})"
   else
@@ -101,7 +162,19 @@ for entry in "${TARGETS[@]}"; do
   [ -n "$cajeta_bin" ] && cajeta_cell="[binary](${BASE}/${cajeta_bin})" || cajeta_cell="—"
   [ -n "$cvm_bin" ]    && cvm_cell="[\`cvm\`](${BASE}/${cvm_bin})"     || cvm_cell="—"
 
-  rows+="| ${label} | \`${triple}\` | ${archive_cell} | ${cajeta_cell} | ${cvm_cell} |"$'\n'
+  rows+="| ${label} | \`${triple}\` | ${archive_cell} | ${cajeta_cell} | ${inst_cell} | ${cvm_cell} |"$'\n'
+
+  # The same pass feeds the manifest. One enumeration, two surfaces, so the
+  # README and the home page cannot come to different conclusions about what
+  # this release shipped.
+  emit() { # <kind> <basename>
+    [ -n "$2" ] || return 0
+    records+="${triple}"$'\t'"${label}"$'\t'"$1"$'\t'"$2"$'\t'"$(digest_of "$2")"$'\n'
+  }
+  has_asset "$archive" && emit archive "$archive"
+  emit compiler "$cajeta_bin"
+  emit cvm "$cvm_bin"
+  while IFS= read -r inst; do emit installer "$inst"; done < <(installers_for "$triple")
 done
 
 [ -n "$rows" ] || {
@@ -109,17 +182,72 @@ done
   exit 1
 }
 
+# ---- the release manifest the site imports ---------------------------------
+# Keys sorted and platforms in matrix order, so re-rendering an unchanged
+# release rewrites the same bytes and a release commit carries no churn.
+mkdir -p "$(dirname "$MANIFEST")"
+printf '%s' "$records" | TAG="$TAG" VERSION="$VERSION" BASE="$BASE" REPO="$REPO" \
+  python3 -c '
+import json, os, sys
+
+tag, version = os.environ["TAG"], os.environ["VERSION"]
+base, repo = os.environ["BASE"], os.environ["REPO"]
+
+order, plats = [], {}
+for line in sys.stdin.read().splitlines():
+    if not line.strip():
+        continue
+    triple, label, kind, name, digest = line.split("\t")
+    p = plats.get(triple)
+    if p is None:
+        order.append(triple)
+        p = plats[triple] = {"triple": triple, "label": label, "installers": []}
+    entry = {"name": name, "url": f"{base}/{name}"}
+    if digest:
+        entry["sha256"] = digest
+    if kind == "installer":
+        # Labelled by what a reader has to know to pick one.
+        ext = "pkg.tar.zst" if name.endswith(".pkg.tar.zst") else name.rsplit(".", 1)[-1]
+        entry["format"] = ext
+        p["installers"].append(entry)
+    else:
+        p[kind] = entry
+
+for p in plats.values():
+    p["installers"].sort(key=lambda e: e["name"])
+    if not p["installers"]:
+        del p["installers"]
+
+doc = {
+    "schemaVersion": 1,
+    "tag": tag,
+    "version": version,
+    "releaseUrl": f"https://github.com/{repo}/releases/tag/{tag}",
+    "platforms": [plats[t] for t in order],
+}
+sys.stdout.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+' > "$MANIFEST"
+
+# The guard of spec 5.4: a surface that does not name what just shipped is
+# worse than no surface, because it keeps advertising the previous release.
+if ! grep -qF "\"version\": \"${VERSION}\"" "$MANIFEST"; then
+  echo "error: ${MANIFEST} does not name ${VERSION}" >&2
+  exit 1
+fi
+
 readme_body=$(cat <<EOF
 **Current:** \`${VERSION}\` &nbsp;·&nbsp; baked into the binary at configure time — \`cajeta --version\` reports it.
 
 **[Release notes and every asset →](https://github.com/${REPO}/releases/tag/${TAG})**
 
-| Platform | Triple | Archive | Compiler | Installer |
-|---|---|---|---|---|
+| Platform | Triple | Archive | Compiler | Installer | cvm |
+|---|---|---|---|---|---|
 ${rows}
-Each binary is published with a matching \`.sha256\`. \`cvm\` is the toolchain
-manager — download it once, then \`cvm install latest\` handles every upgrade
-after that. See [Installation](docs/guide/01-installation.md).
+Each binary is published with a matching \`.sha256\`. **Installer** is the
+native package for the platform, and **Archive** is the same toolchain as a
+plain tarball or zip. \`cvm\` is the toolchain manager — download it once,
+then \`cvm install latest\` handles every upgrade after that.
+See [Installation](docs/guide/01-installation.md).
 
 EOF
 )
