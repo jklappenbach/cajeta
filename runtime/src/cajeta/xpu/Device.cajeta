@@ -224,6 +224,57 @@ public final class Device {
     private static int32 nativeKernelAvailable(int8[] name, int64 len);
 
     /**
+     * How many distinct kernels have device code registered for the active
+     * backend: the registry the launch consults, counted. A device touch.
+     *
+     * @EntryPoint
+     */
+    public static int32 registeredKernelCount() {
+        return Device.nativeRegistryCount();
+    }
+
+    /**
+     * The name of registered kernel `i`, in registration order; an empty
+     * string when `i` is out of range. With {@link #registeredKernelCount}
+     * and {@link #kernelLaunchCount} this is the kernel census a test suite
+     * closes with: every registered kernel either ran or is named.
+     *
+     * @EntryPoint
+     */
+    public static #String registeredKernel(int32 i) {
+        int8[] buf #= heap int8[256];
+        int64 n = Device.nativeRegistryName(i, buf, 256L);
+        if (n <= 0L) {
+            return "";
+        }
+        int8[] exact #= heap int8[n];
+        int64 k = 0;
+        while (k < n) { exact[k] = buf[k]; k = k + 1; }
+        return heap String(#exact, n);
+    }
+
+    /**
+     * Launches of `name` in this process that were NOT refused, on the
+     * active backend. Zero for a kernel no test reached, however many
+     * tests passed around it. Monotonic; it never resets.
+     *
+     * @EntryPoint
+     */
+    public static int64 kernelLaunchCount(String name) {
+        int8[] b #= name.toBytes();
+        return Device.nativeLaunchCount(b, (int64) b.count());
+    }
+
+    @Native("__cajeta_xpu_kernel_registry_count")
+    private static int32 nativeRegistryCount();
+
+    @Native("__cajeta_xpu_kernel_registry_name")
+    private static int64 nativeRegistryName(int32 index, int8[] out, int64 cap);
+
+    @Native("__cajeta_xpu_kernel_launch_count")
+    private static int64 nativeLaunchCount(int8[] name, int64 len);
+
+    /**
      * Process-wide count of kernel dispatches that FAILED to run —
      * refused by the driver, or skipped because a binding would not
      * marshal. Monotonic; it never resets.

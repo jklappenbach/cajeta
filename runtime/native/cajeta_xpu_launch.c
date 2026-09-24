@@ -824,7 +824,32 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
 }
 
 // Dispatch a launch to whatever backend is active, on its current device.
+void cajeta_xpu_census_note_launch(const char* name);
+
+static void caj_xpu_dispatch_raw_backend(const char* kernelName,
+                             int32_t gridX, int32_t gridY, int32_t gridZ,
+                             int32_t blockX, int32_t blockY, int32_t blockZ,
+                             uint32_t sharedBytes, void* argv,
+                             int64_t streamHandle,
+                             int32_t specCount, const int32_t* specValues);
+
+// The census counts here, the one seam every launch passes through: a launch
+// the failure counter did not mark is a launch that ran.
 static void caj_xpu_dispatch_raw(const char* kernelName,
+                             int32_t gridX, int32_t gridY, int32_t gridZ,
+                             int32_t blockX, int32_t blockY, int32_t blockZ,
+                             uint32_t sharedBytes, void* argv,
+                             int64_t streamHandle,
+                             int32_t specCount, const int32_t* specValues) {
+    const int64_t failuresBefore = __cajeta_xpu_launch_failures();
+    caj_xpu_dispatch_raw_backend(kernelName, gridX, gridY, gridZ, blockX, blockY,
+                                 blockZ, sharedBytes, argv, streamHandle,
+                                 specCount, specValues);
+    if (__cajeta_xpu_launch_failures() == failuresBefore)
+        cajeta_xpu_census_note_launch(kernelName);
+}
+
+static void caj_xpu_dispatch_raw_backend(const char* kernelName,
                              int32_t gridX, int32_t gridY, int32_t gridZ,
                              int32_t blockX, int32_t blockY, int32_t blockZ,
                              uint32_t sharedBytes, void* argv,

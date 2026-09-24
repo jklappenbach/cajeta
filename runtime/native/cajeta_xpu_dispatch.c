@@ -195,6 +195,81 @@ void* __cajeta_xpu_lookup_cpu_kernel(const char* name) {
     return 0;
 }
 
+// --- Kernel census: what is registered, and what has actually run ------------
+// A test suite that launches kernels cannot tell from its own pass count which
+// kernels it reached: a route that quietly picked another variant, or a kernel
+// whose launch was refused, leaves the count untouched. So the runtime keeps
+// one number per kernel NAME: launches that were not refused, on whatever
+// backend is active in this process. Together with the registry enumeration
+// below it is the correctness gate's instrument (xpu-kernel-adaptor Unit 6):
+// every registered kernel either ran under a test or names the item that will
+// make it run.
+#ifndef CAJETA_XPU_CENSUS_MAX
+#define CAJETA_XPU_CENSUS_MAX 2048
+#endif
+static struct { char name[256]; int64_t launches; } g_xpu_census[CAJETA_XPU_CENSUS_MAX];
+static int g_xpu_census_count = 0;
+static pthread_mutex_t g_xpu_census_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// Called by the dispatch seam after a launch the failure counter did not mark.
+void cajeta_xpu_census_note_launch(const char* name) {
+    if (!name || !name[0]) return;
+    pthread_mutex_lock(&g_xpu_census_lock);
+    for (int i = 0; i < g_xpu_census_count; ++i) {
+        if (strncmp(g_xpu_census[i].name, name, sizeof(g_xpu_census[i].name)) == 0) {
+            g_xpu_census[i].launches++;
+            pthread_mutex_unlock(&g_xpu_census_lock);
+            return;
+        }
+    }
+    if (g_xpu_census_count < CAJETA_XPU_CENSUS_MAX) {
+        snprintf(g_xpu_census[g_xpu_census_count].name,
+                 sizeof(g_xpu_census[g_xpu_census_count].name), "%s", name);
+        g_xpu_census[g_xpu_census_count].launches = 1;
+        g_xpu_census_count++;
+    }
+    pthread_mutex_unlock(&g_xpu_census_lock);
+}
+
+// Launches of `name` that were not refused, in this process, on the active
+// backend. STATIC native; `nameArr` is an int8[] whose payload starts at +8.
+int64_t __cajeta_xpu_kernel_launch_count(void* nameArr, int64_t len) {
+    if (!nameArr || len <= 0 || len > 255) return 0;
+    char name[256];
+    memcpy(name, (const char*) nameArr + 8, (size_t) len);
+    name[len] = 0;
+    int64_t n = 0;
+    pthread_mutex_lock(&g_xpu_census_lock);
+    for (int i = 0; i < g_xpu_census_count; ++i) {
+        if (strcmp(g_xpu_census[i].name, name) == 0) { n = g_xpu_census[i].launches; break; }
+    }
+    pthread_mutex_unlock(&g_xpu_census_lock);
+    return n;
+}
+
+// The registry the LAUNCH consults, enumerated: distinct kernel names that
+// have device code for the active backend. CPU keeps thunks, the others keep
+// one module per (name, backend), with backend -1 serving anyone. Defined
+// after the module table and the CPU registry it reads.
+static int cajeta_xpu_registry_names(const char* (*out)[CAJETA_XPU_MAX_MODULES]);
+
+int32_t __cajeta_xpu_kernel_registry_count(void) {
+    const char* names[CAJETA_XPU_MAX_MODULES];
+    return cajeta_xpu_registry_names(&names);
+}
+
+// Copies name `index` (in registry order) into `outArr` (an int8[] with
+// capacity `cap`, payload at +8); returns its length, 0 when out of range.
+int64_t __cajeta_xpu_kernel_registry_name(int32_t index, void* outArr, int64_t cap) {
+    const char* names[CAJETA_XPU_MAX_MODULES];
+    int n = cajeta_xpu_registry_names(&names);
+    if (index < 0 || index >= n || !outArr || cap <= 0) return 0;
+    size_t len = strlen(names[index]);
+    if ((int64_t) len > cap) len = (size_t) cap;
+    memcpy((char*) outArr + 8, names[index], len);
+    return (int64_t) len;
+}
+
 // --- Backend dispatcher (cajeta-cpu.md Increment 4) -------------------------
 // A binary can bundle several backends; the first device touch selects and
 // caches the highest-priority BUNDLED and AVAILABLE one (the ids are that order).
@@ -302,6 +377,30 @@ static int cajeta_xpu_active_backend(void) {
 // available. NOTE this SELECTS if selection has not happened (a device touch).
 int32_t __cajeta_xpu_active_backend_id(void) {
     return (int32_t) cajeta_xpu_active_backend();
+}
+
+// Distinct registered kernel names for the active backend, in registration
+// order. Returns the count; `out` receives borrowed pointers into the tables.
+static int cajeta_xpu_registry_names(const char* (*out)[CAJETA_XPU_MAX_MODULES]) {
+    int backend = cajeta_xpu_active_backend();
+    int n = 0;
+    if (backend == CAJ_XPU_CPU) {
+        for (int i = 0; i < g_cpu_kernel_count && n < CAJETA_XPU_MAX_MODULES; ++i)
+            if (g_cpu_kernels[i].name && g_cpu_kernels[i].fn) (*out)[n++] = g_cpu_kernels[i].name;
+        return n;
+    }
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    for (int i = 0; i < g_xpu_module_count && n < CAJETA_XPU_MAX_MODULES; ++i) {
+        struct cajeta_xpu_module* m = &g_xpu_modules[i];
+        if (!(m->backend == backend || m->backend == -1)) continue;
+        if (!m->image || m->len < 4) continue;
+        int dup = 0;
+        for (int j = 0; j < n; ++j)
+            if (strncmp((*out)[j], m->name, sizeof(m->name)) == 0) { dup = 1; break; }
+        if (!dup) (*out)[n++] = m->name;
+    }
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    return n;
 }
 
 // Device geometry: the machine shape a kernel needs to size itself, from the
