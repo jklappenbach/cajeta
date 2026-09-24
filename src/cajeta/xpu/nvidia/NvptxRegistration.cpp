@@ -165,6 +165,7 @@ namespace nvidia {
                 fillOccupancy(manifest, arch, pinned);
             }
             applyAccess(manifest, access);
+            applyNativeOps(manifest, kfn);
             warnIfSpilling(manifest, softwareCoopTileBytesOf(kfn));
 
             llvm::Constant* dataInit = llvm::ConstantDataArray::get(

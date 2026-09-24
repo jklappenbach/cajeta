@@ -58,6 +58,9 @@ public final class KernelManifest {
     private ArrayList<String> accessParamList;
     private ArrayList<String> accessModeList;
     private ArrayList<int32> accessStreamingList;
+    private ArrayList<String> nativeOpList;
+    private ArrayList<String> nativeOpInstructionList;
+    private ArrayList<String> nativeOpTierList;
 
     // ---- footprint (§3): -1 / null = absent ---------------------------- //
     private int32 waveWidthValue;
@@ -88,6 +91,9 @@ public final class KernelManifest {
         this.accessParamList #= heap ArrayList<String>();
         this.accessModeList #= heap ArrayList<String>();
         this.accessStreamingList #= heap ArrayList<int32>();
+        this.nativeOpList #= heap ArrayList<String>();
+        this.nativeOpInstructionList #= heap ArrayList<String>();
+        this.nativeOpTierList #= heap ArrayList<String>();
     }
 
     /**
@@ -137,6 +143,23 @@ public final class KernelManifest {
                     m.accessStreamingList.add(flag);
                 }
                 ai = ai + 1;
+            }
+        }
+
+        Optional<JsonArray> opsOpt = o.getArray("nativeOps");
+        if (opsOpt.isPresent()) {
+            JsonArray ops = opsOpt.get();
+            int32 no = ops.count();
+            int32 oi = 0;
+            while (oi < no) {
+                JsonValue ov = ops.get(oi);
+                if (ov != null && ov.kind() == JsonValue.OBJECT) {
+                    JsonObject e = ov.object();
+                    m.nativeOpList.add(KernelManifest.str(e, "op"));
+                    m.nativeOpInstructionList.add(KernelManifest.str(e, "instruction"));
+                    m.nativeOpTierList.add(KernelManifest.str(e, "tier"));
+                }
+                oi = oi + 1;
             }
         }
 
@@ -250,6 +273,18 @@ public final class KernelManifest {
     public String accessMode(int32 i) { return this.accessModeList.get(i); }
     /** True when entry `i`'s loads and stores were lowered non-temporal (§6.3). */
     public boolean accessStreaming(int32 i) { return this.accessStreamingList.get(i) != 0; }
+
+    // ---- native ops (xpu-kernel-adaptor 4A.2.6): what each cooperative verb lowered to ---- //
+
+    /** Number of cooperative-matrix verbs the lowering recorded an instruction for. */
+    public int32 nativeOpCount() { return this.nativeOpList.count(); }
+    /** The verb of entry `i`: `mma`, `load.a`, `load.b`, `load.c` or `store` (VIEW). */
+    public String nativeOp(int32 i) { return this.nativeOpList.get(i); }
+    /** What entry `i` lowered to: a native intrinsic name, or
+     *  `software-tile.replicated` or `software-tile.distributed` (VIEW). */
+    public String nativeOpInstruction(int32 i) { return this.nativeOpInstructionList.get(i); }
+    /** `native` or `software` for entry `i` (VIEW). */
+    public String nativeOpTier(int32 i) { return this.nativeOpTierList.get(i); }
 
     // ---- helpers -------------------------------------------------------- //
 

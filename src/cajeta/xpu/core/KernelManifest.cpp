@@ -10,7 +10,11 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/JSON.h"
@@ -116,6 +120,17 @@ namespace xpu {
             access.push_back(std::move(o));
         }
         root["access"] = std::move(access);
+        // Always present, so a kernel that should carry an mma and shows an
+        // empty list is a visible absence rather than an omitted key.
+        llvm::json::Array nativeOps;
+        for (const KernelNativeOp& e : m.nativeOps) {
+            llvm::json::Object o;
+            o["op"] = e.op;
+            o["instruction"] = e.instruction;
+            o["tier"] = e.native() ? "native" : "software";
+            nativeOps.push_back(std::move(o));
+        }
+        root["nativeOps"] = std::move(nativeOps);
         root["restartable"] = m.restartable;
         root["drainsDevice"] = m.drainsDevice;
         root["captureSafe"] = m.captureSafe;
@@ -182,6 +197,17 @@ namespace xpu {
                 m.access.push_back(std::move(e));
             }
         }
+        if (const llvm::json::Array* ops = root->getArray("nativeOps")) {
+            for (const auto& v : *ops) {
+                const llvm::json::Object* o = v.getAsObject();
+                if (!o) continue;
+                KernelNativeOp e;
+                e.op = o->getString("op").value_or("").str();
+                e.instruction = o->getString("instruction").value_or("").str();
+                if (e.op.empty() || e.instruction.empty()) continue;
+                m.nativeOps.push_back(std::move(e));
+            }
+        }
         m.restartable = root->getBoolean("restartable").value_or(false);
         m.drainsDevice = root->getBoolean("drainsDevice").value_or(false);
         m.captureSafe = root->getBoolean("captureSafe").value_or(false);
@@ -233,6 +259,52 @@ namespace xpu {
         if (!m.feasibleBlocks.empty())
             m.occupancyLimiter =
                 occupancyLimiterName(model, m.feasibleBlocks.front(), *m.vgpr, lds);
+    }
+
+    std::string nativeInstructionName(unsigned llvmIntrinsicId) {
+        std::string n = llvm::Intrinsic::getBaseName(
+                            (llvm::Intrinsic::ID) llvmIntrinsicId).str();
+        if (n.rfind("llvm.", 0) == 0) n.erase(0, 5);
+        return n;
+    }
+
+    // The function attribute the lowering stamps and the emitter reads back:
+    // `op=instruction;op=instruction`, one entry per distinct selection.
+    static constexpr const char* kNativeOpsAttr = "cajeta-native-ops";
+
+    void recordNativeOp(llvm::Function* fn, const std::string& op,
+                        const std::string& instruction) {
+        if (!fn || op.empty() || instruction.empty()) return;
+        const std::string entry = op + "=" + instruction;
+        std::string cur;
+        if (fn->hasFnAttribute(kNativeOpsAttr))
+            cur = fn->getFnAttribute(kNativeOpsAttr).getValueAsString().str();
+        // The same verb selecting the same instruction again (a k-loop, an
+        // unrolled tile) is one fact, not two.
+        llvm::SmallVector<llvm::StringRef, 8> parts;
+        llvm::StringRef(cur).split(parts, ';', -1, /*KeepEmpty=*/false);
+        for (llvm::StringRef p : parts)
+            if (p == entry) return;
+        fn->addFnAttr(kNativeOpsAttr, cur.empty() ? entry : cur + ";" + entry);
+    }
+
+    void recordNativeOp(llvm::IRBuilderBase& b, const std::string& op,
+                        const std::string& instruction) {
+        llvm::BasicBlock* bb = b.GetInsertBlock();
+        recordNativeOp(bb ? bb->getParent() : nullptr, op, instruction);
+    }
+
+    void applyNativeOps(KernelManifest& m, const llvm::Function* kfn) {
+        m.nativeOps.clear();
+        if (!kfn || !kfn->hasFnAttribute(kNativeOpsAttr)) return;
+        llvm::SmallVector<llvm::StringRef, 8> parts;
+        kfn->getFnAttribute(kNativeOpsAttr).getValueAsString()
+            .split(parts, ';', -1, /*KeepEmpty=*/false);
+        for (llvm::StringRef p : parts) {
+            auto eq = p.split('=');
+            if (eq.first.empty() || eq.second.empty()) continue;
+            m.nativeOps.push_back({eq.first.str(), eq.second.str()});
+        }
     }
 
     bool warnIfSpilling(const KernelManifest& m, uint64_t softwareCoopTileBytes) {

@@ -1,6 +1,7 @@
 // NVPTX kernel lowering — see header. The AST walk is the shared
 // xpu/lowering/KernelLowering.cpp; this file is the NVPTX LoweringTarget.
 
+#include "../core/KernelManifest.h"
 #include "NvptxKernelLowering.h"
 
 #include "../lowering/KernelLowering.h"
@@ -442,6 +443,11 @@ public:
         uint32_t lay = constLayout(layout, "load");
         llvm::Function* f = nvWmmaLoadDecl(m, use, nvFragScalar(matrixType),
                                            ptr->getType(), lay);
+        // 4A.2.2 chose the layout variant; the manifest records which (4A.2.6).
+        cajeta::xpu::recordNativeOp(
+            b, use == 0 ? "load.a" : use == 1 ? "load.b" : "load.c",
+            cajeta::xpu::nativeInstructionName(
+                nvWmmaLoadId(use, nvFragScalar(matrixType), lay)));
         return b.CreateCall(f, {ptr, stride}, "wmma.ld");
     }
 
@@ -471,6 +477,7 @@ public:
             sid = lay == 1
                 ? llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_col_stride
                 : llvm::Intrinsic::nvvm_wmma_m16n16k16_store_d_f32_row_stride;
+        cajeta::xpu::recordNativeOp(b, "store", cajeta::xpu::nativeInstructionName(sid));
         llvm::Function* f = nvDecl(m, sid, ptr->getType());
         std::vector<llvm::Value*> args;
         args.push_back(ptr);
@@ -534,6 +541,7 @@ public:
             appendStructElems(b, a, iargs);
             appendStructElems(b, bMat, iargs);
             appendStructElems(b, c, iargs);
+            cajeta::xpu::recordNativeOp(b, "mma", cajeta::xpu::nativeInstructionName(id));
             return b.CreateCall(nvDecl(m, id), iargs, "wmma.mma");
         }
 
@@ -552,6 +560,7 @@ public:
         appendStructElems(b, a, args);
         appendStructElems(b, bMat, args);
         appendStructElems(b, c, args);
+        cajeta::xpu::recordNativeOp(b, "mma", cajeta::xpu::nativeInstructionName(id));
         return b.CreateCall(nvDecl(m, id), args, "wmma.mma");
     }
 

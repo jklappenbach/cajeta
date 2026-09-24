@@ -2,6 +2,7 @@
 // AMDGPU kernel lowering — see header.
 //
 
+#include "../core/KernelManifest.h"
 #include "AmdgpuKernelLowering.h"
 
 #include "../lowering/KernelLowering.h"
@@ -944,6 +945,8 @@ public:
             llvm::Value* aSg = llvm::ConstantInt::getBool(ctx, (signFlags & 1u) != 0);
             llvm::Value* bSg = llvm::ConstantInt::getBool(ctx, (signFlags & 2u) != 0);
             llvm::Value* fls = llvm::ConstantInt::getFalse(ctx);  // no clamp
+            cajeta::xpu::recordNativeOp(b, "mma", cajeta::xpu::nativeInstructionName(
+                                               llvm::Intrinsic::amdgcn_wmma_i32_16x16x16_iu8));
             return b.CreateCall(f, {aSg, a, bSg, bMat, c, fls}, "wmma.iu8");
         }
         llvm::Intrinsic::ID id = ae->isHalfTy()
@@ -952,6 +955,7 @@ public:
         // Overloaded on (D/C type, A/B type), in first-appearance order.
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, id, {c->getType(), a->getType()});
+        cajeta::xpu::recordNativeOp(b, "mma", cajeta::xpu::nativeInstructionName(id));
         return b.CreateCall(f, {a, bMat, c}, "wmma");
     }
 

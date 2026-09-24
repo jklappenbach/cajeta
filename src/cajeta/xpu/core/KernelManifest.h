@@ -25,8 +25,26 @@ namespace cajeta {
     using MethodPtr = std::shared_ptr<Method>;
 }
 
+namespace llvm {
+    class Function;
+    class IRBuilderBase;
+}
+
 namespace cajeta {
 namespace xpu {
+
+    // One cooperative-matrix verb and the instruction the lowering SELECTED for it
+    // on this target: a native intrinsic (`nvvm.wmma.m16n16k16.mma.row.col.bf16`,
+    // `amdgcn.wmma.f32.16x16x16.bf16`, `spirv.OpCooperativeMatrixMulAddKHR`) or
+    // the portable tile (`software-tile.replicated`, `software-tile.distributed`).
+    // Idiom recognition is fragile, and a kernel that quietly drops off the fast
+    // path is the same invisible-absence failure as a vacuous pass. Recording the
+    // choice makes it a fact the manifest states, not a note that scrolled past.
+    struct KernelNativeOp {
+        std::string op;           // mma | load.a | load.b | load.c | store
+        std::string instruction;  // as above, never empty
+        bool native() const { return instruction.rfind("software-tile", 0) != 0; }
+    };
 
     struct KernelManifest {
         // tile-manifest-v1 — the runtime refuses a schema it does not know.
@@ -65,6 +83,10 @@ namespace xpu {
         bool drainsDevice = false;
         // False until derived — the conservative reading, never a claim.
         bool captureSafe = false;
+        // What each cooperative-matrix verb lowered to (xpu-kernel-adaptor
+        // 4A.2.6). Always emitted: an EMPTY list on a kernel that should carry
+        // an mma is itself the visible absence. Deduplicated, first-selection order.
+        std::vector<KernelNativeOp> nativeOps;
 
         bool hasFootprint() const {
             return waveWidth || vgpr || sgpr || spillBytes || spillStoreBytes
@@ -118,6 +140,21 @@ namespace xpu {
     // Embeds `m` as JSON in `host` and emits, at the builder's insert point in a
     // registration ctor, the __cajeta_xpu_register_kernel_manifest call that lets
     // the runtime serve `k.manifest()`. `arch` is the token, "gfx1151" or "".
+    /** Stamp on the function that cooperative verb `op` lowered to `instruction`,
+     *  as a `cajeta-native-ops` attribute (`op=instruction;...`, deduplicated).
+     *  The registration emitter reads it back with applyNativeOps. The builder
+     *  form names the function `b` is inserting into. */
+    void recordNativeOp(llvm::Function* fn, const std::string& op,
+                        const std::string& instruction);
+    void recordNativeOp(llvm::IRBuilderBase& b, const std::string& op,
+                        const std::string& instruction);
+    /** Fill `m.nativeOps` from `kfn`'s cajeta-native-ops attribute. Empty when
+     *  the function carries none, and never a claim beyond what was stamped. */
+    void applyNativeOps(KernelManifest& m, const llvm::Function* kfn);
+    /** The manifest's name for an LLVM intrinsic: its base name without the
+     *  `llvm.` prefix, e.g. `nvvm.wmma.m16n16k16.mma.row.col.bf16`. */
+    std::string nativeInstructionName(unsigned llvmIntrinsicId);
+
     void emitManifestRegistration(
         llvm::Module& host,
         llvm::IRBuilder<llvm::ConstantFolder, llvm::IRBuilderDefaultInserter>& b,

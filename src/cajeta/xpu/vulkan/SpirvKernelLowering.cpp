@@ -1,5 +1,6 @@
 // SPIR-V (Vulkan) kernel lowering — see header.
 
+#include "../core/KernelManifest.h"
 #include "SpirvKernelLowering.h"
 #include "SpirvBackend.h"
 #include "SpirvInterface.h"
@@ -818,6 +819,7 @@ public:
             {matrixType, a->getType(), bMat->getType(), c->getType()});
         llvm::Value* flags = llvm::ConstantInt::get(
             llvm::Type::getInt32Ty(m.getContext()), signFlags);
+        cajeta::xpu::recordNativeOp(b, "mma", "spirv.OpCooperativeMatrixMulAddKHR");
         return b.CreateCall(f, {a, bMat, c, flags}, "cm.mma");
     }
     // result = OpCompositeConstruct value (single-scalar splat).

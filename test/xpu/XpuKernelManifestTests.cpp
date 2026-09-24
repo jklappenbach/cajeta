@@ -21,6 +21,7 @@
 #include "cajeta/xpu/amd/AmdgpuRegistration.h"
 #include "cajeta/xpu/cpu/CpuRegistration.h"
 #include "cajeta/xpu/nvidia/NvptxBackend.h"
+#include "cajeta/xpu/nvidia/NvptxRegistration.h"
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -1109,4 +1110,176 @@ TEST(XpuKernelManifest, spillStoreBytesRoundTrips) {
     std::string err;
     ASSERT_TRUE(cajeta::xpu::fromJson(json, back, &err)) << err;
     EXPECT_EQ(back.spillStoreBytes, m.spillStoreBytes);
+}
+
+// ---- xpu-kernel-adaptor 4A.2.6: the SELECTED native instruction ---------- //
+// Idiom recognition is fragile, and a kernel that quietly falls off the fast
+// path is the same invisible absence as a vacuous pass. The manifest now states
+// what each cooperative verb lowered to, so the drop is a fact you can read.
+
+namespace {
+
+// A bf16 GEMM tile: sm_89 exposes a native wmma config for it, so on nvptx the
+// mma, the loads and the store each select a real instruction.
+std::string coopBf16Source() {
+    return
+        "    @Kernel\n"
+        "    public static void coopbf16(KernelBuffer<float32> c, KernelBuffer<bfloat16> a,\n"
+        "                                KernelBuffer<bfloat16> b, uint32 cols, uint32 depth) {\n"
+        "        uint32 ktiles = depth / 16;\n"
+        "        CooperativeMatrix<float32,16,16,2> mc;\n"
+        "        mc.splat(0.0f);\n"
+        "        CooperativeMatrix<bfloat16,16,16,0> ma;\n"
+        "        CooperativeMatrix<bfloat16,16,16,1> mb;\n"
+        "        uint32 kk = 0;\n"
+        "        while (kk < ktiles) {\n"
+        "            ma.load(a, kk * 16, 0, depth);\n"
+        "            mb.load(b, kk * 16 * cols, 0, cols);\n"
+        "            mc.mma(ma, mb);\n"
+        "            kk = kk + 1;\n"
+        "        }\n"
+        "        mc.store(c, 0, 0, cols);\n"
+        "    }\n";
+}
+
+const cajeta::xpu::KernelNativeOp* nativeOpNamed(const KernelManifest& m,
+                                                 const std::string& op) {
+    for (const auto& e : m.nativeOps)
+        if (e.op == op) return &e;
+    return nullptr;
+}
+
+} // namespace
+
+// The record round-trips through JSON, validates against the schema, and names
+// the software tile as a TIER rather than dressing it up as an instruction.
+TEST(XpuKernelManifest, nativeOpsRoundTripThroughJsonAndTheSchema) {
+    KernelManifest m;
+    m.kernel = "dev.example.K.k";
+    m.target = "nvptx/sm_89";
+    m.codeHash = "sha256:" + std::string(64, 'b');
+    m.compilerVersion = "0.0.0-test";
+    m.nativeOps.push_back({"load.a", "nvvm.wmma.m16n16k16.load.a.bf16.col.stride"});
+    m.nativeOps.push_back({"mma", "nvvm.wmma.m16n16k16.mma.row.col.bf16"});
+    m.nativeOps.push_back({"store", "nvvm.wmma.m16n16k16.store.d.f32.row.stride"});
+    std::string json = cajeta::xpu::toJson(m);
+    EXPECT_TRUE(validateAgainstSchema(json).empty()) << json;
+    EXPECT_NE(json.find("\"nativeOps\""), std::string::npos) << json;
+    EXPECT_NE(json.find("\"tier\": \"native\""), std::string::npos) << json;
+
+    KernelManifest back;
+    std::string err;
+    ASSERT_TRUE(cajeta::xpu::fromJson(json, back, &err)) << err;
+    ASSERT_EQ(back.nativeOps.size(), 3u);
+    EXPECT_EQ(back.nativeOps[1].op, "mma");
+    EXPECT_EQ(back.nativeOps[1].instruction, "nvvm.wmma.m16n16k16.mma.row.col.bf16");
+    EXPECT_TRUE(back.nativeOps[1].native());
+    EXPECT_EQ(cajeta::xpu::toJson(back), json) << "second serialization differs";
+
+    KernelManifest sw = m;
+    sw.nativeOps = {{"mma", "software-tile.replicated"}};
+    std::string sj = cajeta::xpu::toJson(sw);
+    EXPECT_TRUE(validateAgainstSchema(sj).empty()) << sj;
+    EXPECT_NE(sj.find("\"tier\": \"software\""), std::string::npos) << sj;
+    EXPECT_FALSE(sw.nativeOps[0].native());
+}
+
+// GPU-free. On the cpu backend a float32 CooperativeMatrix has no native config,
+// so the mma lowers to the portable tile, and the manifest SAYS so instead of
+// leaving the reader to infer it from a note. A kernel with no cooperative verbs
+// carries the key with an EMPTY list and never omits it.
+TEST(XpuKernelManifest, nativeOpsNameTheSoftwareTileOnCpu) {
+    auto ms = cpuManifests(std::string(kImports) + coopF32Source() + kSaxpy + kEnd,
+                           {"coopf32", "saxpy"});
+    ASSERT_EQ(ms.size(), 2u);
+    const KernelManifest* coop = byName(ms, ".coopf32");
+    const KernelManifest* saxpy = byName(ms, ".saxpy");
+    ASSERT_NE(coop, nullptr);
+    ASSERT_NE(saxpy, nullptr);
+
+    const auto* mma = nativeOpNamed(*coop, "mma");
+    ASSERT_NE(mma, nullptr) << cajeta::xpu::toJson(*coop);
+    EXPECT_EQ(mma->instruction.rfind("software-tile", 0), 0u) << mma->instruction;
+    EXPECT_FALSE(mma->native());
+    EXPECT_TRUE(validateAgainstSchema(cajeta::xpu::toJson(*coop)).empty())
+        << cajeta::xpu::toJson(*coop);
+
+    EXPECT_TRUE(saxpy->nativeOps.empty());
+    auto doc = llvm::json::parse(cajeta::xpu::toJson(*saxpy));
+    ASSERT_TRUE(!!doc);
+    const llvm::json::Array* ops = doc->getAsObject()->getArray("nativeOps");
+    ASSERT_NE(ops, nullptr) << "nativeOps key omitted for a kernel without cooperative verbs";
+    EXPECT_TRUE(ops->empty());
+}
+
+// On nvptx the same verbs select real wmma instructions, layout variants
+// included (4A.2.1 to 4A.2.3 chose them), and the manifest records which.
+TEST(XpuKernelManifest, nativeOpsRecordTheSelectedWmmaInstructionOnNvptx) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    Compiler compiler;
+    auto module = compileForInspection(compiler,
+                                       std::string(kImports) + coopBf16Source() + kEnd);
+    auto k = findMethod(module->getStructures()["test.M"], "coopbf16");
+    ASSERT_NE(k, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module host("xpu_manifest_host_nvptx", ctx);
+    std::vector<KernelManifest> out;
+    testing::internal::CaptureStderr();
+    cajeta::xpu::nvidia::emitKernelRegistration({k}, host, "sm_89", &out);
+    std::string err = testing::internal::GetCapturedStderr();
+    if (out.empty()) {
+        GTEST_SKIP() << "no cubin assembled on this box (ptxas absent or too old), "
+                        "so there is no manifest to inspect: " << err;
+    }
+    const KernelManifest& m = out[0];
+    std::string json = cajeta::xpu::toJson(m);
+    EXPECT_TRUE(validateAgainstSchema(json).empty()) << json;
+
+    const auto* mma = nativeOpNamed(m, "mma");
+    ASSERT_NE(mma, nullptr) << json;
+    EXPECT_TRUE(mma->native()) << mma->instruction;
+    EXPECT_TRUE(std::regex_search(
+        mma->instruction,
+        std::regex("^nvvm\\.wmma\\.m16n16k16\\.mma\\.(row|col)\\.(row|col)\\.bf16$")))
+        << mma->instruction;
+    EXPECT_NE(nativeOpNamed(m, "load.a"), nullptr) << json;
+    EXPECT_NE(nativeOpNamed(m, "load.b"), nullptr) << json;
+    EXPECT_NE(nativeOpNamed(m, "store"), nullptr) << json;
+}
+
+// The same fact is readable from cajeta source through KernelManifest, so a
+// router or a test can refuse a kernel that fell off the fast path.
+TEST(XpuKernelManifest, nativeOpsAreReadableFromCajetaSource) {
+    std::string program =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.CooperativeMatrix;\n"
+        "import cajeta.xpu.KernelManifest;\n"
+        "public final class P {\n"
+        + coopF32Source() +
+        "    public static int32 run() {\n"
+        "        KernelManifest m = coopf32.manifest();\n"
+        "        if (m == null) { return 1; }\n"
+        "        if (m.nativeOpCount() < 1) { return 2; }\n"
+        "        int32 i = 0;\n"
+        "        boolean found = false;\n"
+        "        while (i < m.nativeOpCount()) {\n"
+        "            if (m.nativeOp(i).equals(\"mma\")) {\n"
+        "                found = true;\n"
+        "                if (!m.nativeOpTier(i).equals(\"software\")) { return 3; }\n"
+        "                if (!m.nativeOpInstruction(i).startsWith(\"software-tile\")) { return 4; }\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (!found) { return 5; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(program, "test.P", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 0);
 }

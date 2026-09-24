@@ -168,6 +168,7 @@ namespace amd {
                     }
                     fillOccupancy(m, ah.arch, pinned);
                     applyAccess(m, access);
+                    applyNativeOps(m, kfn);
                     warnIfSpilling(m, softwareCoopTileBytesOf(kfn));
                     kernelManifests.push_back(std::move(m));
                 }

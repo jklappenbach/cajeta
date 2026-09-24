@@ -1,5 +1,6 @@
 // Shared @Kernel AST -> device llvm::Function lowering; see KernelLowering.h.
 
+#include "../core/KernelManifest.h"
 #include "KernelLowering.h"
 #include "LoweringTarget.h"
 
@@ -4761,6 +4762,9 @@ private:
             if (!a.distributed || !b.distributed)
                 unsupported("CooperativeMatrix.mma: distributed accumulator with "
                             "a non-distributed operand");
+            // The manifest states the tier the mma took (4A.2.6): this one is
+            // the portable tile spread across the wave, not a native instruction.
+            cajeta::xpu::recordNativeOp(builder, "mma", "software-tile.distributed");
             llvm::Type* acc = slot.elemType;
             bool fp = acc->isFloatingPointTy();
             llvm::Type* compTy = fp ? llvm::Type::getFloatTy(ctx) : acc;
@@ -5089,6 +5093,9 @@ private:
             if (b.rows != K || slot.rows != M || slot.cols != N)
                 unsupported("CooperativeMatrix.mma: shape mismatch (A is MxK, "
                             "B is KxN, accumulator is MxN)");
+            // The manifest states the tier the mma took (4A.2.6): the whole tile
+            // replicated in every work-item, not a native instruction.
+            cajeta::xpu::recordNativeOp(builder, "mma", "software-tile.replicated");
             llvm::Type* acc = slot.elemType;
             bool fp = acc->isFloatingPointTy();
             // FP: accumulate in f32 then narrow to the accumulator dtype.

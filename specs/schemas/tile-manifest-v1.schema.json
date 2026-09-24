@@ -61,6 +61,22 @@
         "splitAxis": { "type": "string", "description": "Name of the reduction axis the kernel exposes for split-K / KV-chunk parallelism, if any" }
       }
     },
+    "nativeOps": {
+      "type": "array",
+      "description": "The instruction each cooperative-matrix verb lowered to on this target (xpu-kernel-adaptor 4A.2.6). Always present, and empty when the kernel has no cooperative-matrix verbs.",
+      "items": {
+        "type": "object",
+        "required": ["op", "instruction", "tier"],
+        "properties": {
+          "op": { "enum": ["mma", "load.a", "load.b", "load.c", "store"] },
+          "instruction": {
+            "type": "string",
+            "description": "A native intrinsic (nvvm.wmma..., amdgcn.wmma..., spirv.OpCooperativeMatrixMulAddKHR) or the portable tile: software-tile.replicated or software-tile.distributed"
+          },
+          "tier": { "enum": ["native", "software"] }
+        }
+      }
+    },
     "access": {
       "type": "array",
       "description": "One entry per buffer-like parameter (spec §6).",

@@ -99,6 +99,7 @@ namespace vulkan {
                 m.compilerVersion = compilerVersionString();
                 m.xpuAbiVersion = CAJETA_XPU_ABI_VERSION;
                 applyAccess(m, access);
+                applyNativeOps(m, kfn);
                 manifest = std::move(m);
             }
 

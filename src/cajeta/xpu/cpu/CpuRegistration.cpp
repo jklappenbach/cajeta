@@ -938,6 +938,7 @@ void foldWaveVariants(llvm::Function& f) {
                 manifest.xpuAbiVersion = CAJETA_XPU_ABI_VERSION;
                 // Access modes off the lowered body, before fission rewrites it.
                 applyAccess(manifest, classifyKernelAccess(*kfn, method));
+                applyNativeOps(manifest, kfn);
             }
 
             if (llvm::Linker::linkModules(hostModule, std::move(mod))) {
