@@ -662,6 +662,27 @@ namespace xpu {
         virtual void prepareDistributedCoopMatrix(llvm::Function*,
                                                   unsigned /*waveW*/) {}
 
+        // Whether a portable tile that COULD be replicated per work-item is
+        // distributed anyway. Replication is the simpler lowering and costs no
+        // wave shuffles, but its tile is a per-lane scratch array: on a GPU
+        // that array is the kernel's local frame, i.e. a spill of the tile's
+        // whole size (a 16x16 f32 GEMM is 3072 bytes per lane), while on a host
+        // it is an ordinary stack slot with store forwarding. A target answers
+        // true when the scratch is the greater cost. Kernels that NEED
+        // distribution (fromWords, WaveVector.ofLane) distribute regardless.
+        virtual bool distributeReplicablePortableTiles() const { return false; }
+
+        // Whether the distributed tile's constant-trip inner loops (per-lane
+        // slice, K) are emitted fully unrolled. Unrolled, every per-lane slice
+        // is indexed by a constant and SROA promotes it to registers; as
+        // loops, the slices are dynamically indexed arrays that stay in memory
+        // (a 64 / 128 / 32-byte local frame per lane on sm_89 for the f32 /
+        // f64 / bf16 16x16 tiles, measured 2026-09-24). The CPU backend needs
+        // it for LoopVectorize to see the work-item loop as innermost; NVPTX
+        // needs it to have no frame at all. AMDGPU keeps its loops until the
+        // change is measured on a part.
+        virtual bool distributedCoopMatrixUnrollsLoops() const { return false; }
+
         // Like waveShuffle, but `srcLane` may be DIVERGENT. waveShuffle is
         // uniform-index on some backends (AMDGPU readlane needs an SGPR), so a
         // computed per-lane source uses this. Default = waveShuffle.

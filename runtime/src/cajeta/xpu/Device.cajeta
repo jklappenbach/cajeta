@@ -13,6 +13,14 @@ import cajeta.xpu.Capability;
  * v1 surfaces the capability heuristic's entry point, {@link #supports}. It is a
  * HOST query (you call it before launching, to choose which kernel / which build
  * to dispatch) — not a device-side op.
+ *
+ * Every geometry query below ({@link #multiprocessorCount} onward) describes
+ * the backend that will RUN the kernel, which is what {@link #activeBackend}
+ * names. On the cpu backend that is the host: online cores as
+ * multiprocessors (one block per worker thread), one scheduler each, a wave
+ * of the host's SIMD lanes, physical RAM, integrated. A card that happens to
+ * be installed is not consulted, so a cpu-backend {@link Autotune#deviceKey}
+ * varies with the CPU and not with the GPU beside it.
  */
 public final class Device {
 
@@ -378,7 +386,8 @@ public final class Device {
     /**
      * Multiprocessors the driver reports: SMs on NVIDIA, WGPs on RDNA
      * (which is half the physical CU count -- the driver's unit, not the
-     * marketing one). 0 = unknown.
+     * marketing one). On the cpu backend, the online cores the launch path
+     * spreads blocks over, capped by the worker cap. 0 = unknown.
      *
      * @EntryPoint
      */
@@ -586,7 +595,10 @@ public final class Device {
 
     /**
      * Threads per wave/warp: 32 on RDNA wave32 and on every NVIDIA part,
-     * 64 on GCN and on RDNA in wave64. 0 = unknown.
+     * 64 on GCN and on RDNA in wave64. On the cpu backend, the host's SIMD
+     * lanes in 32-bit words (4 SSE2/NEON, 8 AVX2, 16 AVX-512): the width a
+     * kernel that calls a wave op vectorizes at when compiled for this
+     * host. 0 = unknown.
      *
      * @EntryPoint
      */

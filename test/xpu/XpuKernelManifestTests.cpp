@@ -1247,6 +1247,113 @@ TEST(XpuKernelManifest, nativeOpsRecordTheSelectedWmmaInstructionOnNvptx) {
     EXPECT_NE(nativeOpNamed(m, "store"), nullptr) << json;
 }
 
+// A 16x16 GEMM tile in the shape of the stdlib's Ewise.matmul kernels, with
+// the accumulator and operand dtypes as parameters.
+std::string coopTileSource(const char* name, const char* acc, const char* ab,
+                           const char* zero) {
+    std::string n = name, a = acc, o = ab, z = zero;
+    return
+        "    @Kernel\n"
+        "    public static void " + n + "(KernelBuffer<" + a + "> c, KernelBuffer<" + o + "> a,\n"
+        "                               KernelBuffer<" + o + "> b, uint32 cols, uint32 depth) {\n"
+        "        uint32 ktiles = depth / 16;\n"
+        "        CooperativeMatrix<" + a + ",16,16,2> mc;\n"
+        "        mc.splat(" + z + ");\n"
+        "        CooperativeMatrix<" + o + ",16,16,0> ma;\n"
+        "        CooperativeMatrix<" + o + ",16,16,1> mb;\n"
+        "        uint32 kk = 0;\n"
+        "        while (kk < ktiles) {\n"
+        "            ma.load(a, kk * 16, 0, depth);\n"
+        "            mb.load(b, kk * 16 * cols, 0, cols);\n"
+        "            mc.mma(ma, mb);\n"
+        "            kk = kk + 1;\n"
+        "        }\n"
+        "        mc.store(c, 0, 0, cols);\n"
+        "    }\n";
+}
+
+// The stdlib Ewise.matmul tiles that spilled on sm_89 (plan 1.5.4.1): f32, f64
+// and a bf16 ACCUMULATOR have no wmma config, so they take the portable
+// software tile. Replicated per work-item that tile IS the kernel's local
+// frame (3072 / 6144 / 1536 bytes); spread across the warp it is eight
+// elements per lane and there is no frame at all. NVPTX distributes a
+// replicable portable tile by default: a warp is physically 32 wide, so the
+// lane layout derived at compile time is always what the hardware runs, and on
+// a GPU a per-lane scratch array is a spill, never a stack slot. The i8 tile
+// is the does-not-fire control: 4A.2.7 made it native, and it stays native.
+TEST(XpuKernelManifest, nvptxDistributesTheReplicablePortableTileByDefault) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    struct Shape { const char* name; const char* acc; const char* ab;
+                   const char* zero; bool native; };
+    const Shape shapes[] = {
+        {"tf32",  "float32",  "float32",  "0.0f",           false},
+        {"tf64",  "float64",  "float64",  "0.0",            false},
+        {"tbf16", "bfloat16", "bfloat16", "(bfloat16) 0.0", false},
+        {"ti8",   "int32",    "int8",     "0",              true},
+    };
+    for (const Shape& s : shapes) {
+        SCOPED_TRACE(s.name);
+        Compiler compiler;
+        auto module = compileForInspection(
+            compiler, std::string(kImports) +
+                          coopTileSource(s.name, s.acc, s.ab, s.zero) + kEnd);
+        auto k = findMethod(module->getStructures()["test.M"], s.name);
+        ASSERT_NE(k, nullptr);
+        llvm::LLVMContext ctx;
+        llvm::Module host("xpu_manifest_host_nvptx_dist", ctx);
+        std::vector<KernelManifest> out;
+        testing::internal::CaptureStderr();
+        cajeta::xpu::nvidia::emitKernelRegistration({k}, host, "sm_89", &out);
+        std::string err = testing::internal::GetCapturedStderr();
+        if (out.empty()) {
+            GTEST_SKIP() << "no cubin assembled on this box (ptxas absent or too "
+                            "old): " << err;
+        }
+        const KernelManifest& m = out[0];
+        std::string json = cajeta::xpu::toJson(m);
+        ASSERT_TRUE(m.spillBytes.has_value()) << json;
+        EXPECT_EQ(*m.spillBytes, 0u) << json << "\n" << err;
+        EXPECT_EQ(err.find("[xpu-kernel-spill]"), std::string::npos) << err;
+        const auto* mma = nativeOpNamed(m, "mma");
+        ASSERT_NE(mma, nullptr) << json;
+        if (s.native)
+            EXPECT_TRUE(mma->native()) << mma->instruction;
+        else
+            EXPECT_EQ(mma->instruction, "software-tile.distributed") << json;
+    }
+}
+
+// The control: with distribution forced OFF the same f32 tile is replicated
+// and carries its 3072-byte frame, so the zero above is the distribution
+// working rather than a tile that never had scratch to begin with.
+TEST(XpuKernelManifest, nvptxReplicatesThePortableTileWhenDistributionIsForcedOff) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "off", 1);
+    Compiler compiler;
+    auto module = compileForInspection(compiler,
+                                       std::string(kImports) + coopF32Source() + kEnd);
+    auto k = findMethod(module->getStructures()["test.M"], "coopf32");
+    ASSERT_NE(k, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module host("xpu_manifest_host_nvptx_repl", ctx);
+    std::vector<KernelManifest> out;
+    testing::internal::CaptureStderr();
+    cajeta::xpu::nvidia::emitKernelRegistration({k}, host, "sm_89", &out);
+    std::string err = testing::internal::GetCapturedStderr();
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    if (out.empty()) {
+        GTEST_SKIP() << "no cubin assembled on this box (ptxas absent or too "
+                        "old): " << err;
+    }
+    const KernelManifest& m = out[0];
+    ASSERT_TRUE(m.spillBytes.has_value()) << cajeta::xpu::toJson(m);
+    EXPECT_GE(*m.spillBytes, 3072u) << cajeta::xpu::toJson(m);
+    const auto* mma = nativeOpNamed(m, "mma");
+    ASSERT_NE(mma, nullptr);
+    EXPECT_EQ(mma->instruction, "software-tile.replicated");
+    EXPECT_NE(err.find("[xpu-kernel-spill]"), std::string::npos) << err;
+}
+
 // The same fact is readable from cajeta source through KernelManifest, so a
 // router or a test can refuse a kernel that fell off the fast path.
 TEST(XpuKernelManifest, nativeOpsAreReadableFromCajetaSource) {

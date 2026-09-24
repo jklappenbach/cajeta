@@ -274,7 +274,12 @@ TEST(XpuCooperativeMatrixDeviceTests, portableMatmulOnNvptxDevice) {
     ASSERT_TRUE(cuda.memcpyHtoD(dC, seed.data(), TILE * sizeof(float)));
 
     void* params[] = { &dA, &dB, &dC };
-    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, /*block=*/1, params));  // per-invocation tile
+    // The portable tile on NVPTX is DISTRIBUTED across the warp by default
+    // (plan 1.5.4.1), so like the native wmma tier below it is warp-collective
+    // and the launch must be a full warp. It was a per-invocation tile that a
+    // one-thread block computed alone; that replicated form is now the
+    // CAJETA_GPU_COOPMATRIX_DIST=off control, not the shipping lowering.
+    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, /*block=*/32, params));
     ASSERT_TRUE(cuda.synchronize());
 
     std::vector<float> out(TILE, -2.0f);

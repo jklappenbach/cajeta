@@ -15,6 +15,20 @@ if (Device.supports(Capability.RayQueryNative)) {
 }
 ```
 
+## Geometry follows the active backend
+
+The geometry queries (`multiprocessorCount`, `simdsPerMultiprocessor`,
+`waveSize`, `registersPerMultiprocessor`, `sharedBytesPerBlock`, ... and the
+dispatch law built on them) describe the backend that will run the kernel,
+which is what `activeBackend()` names. On the cpu backend that is the host:
+online cores as multiprocessors (one block per worker thread), one scheduler
+each, a wave of the host's SIMD lanes in 32-bit words, physical RAM,
+integrated. Quantities a host has no counterpart for (register file, shared
+memory, blocks per multiprocessor, clocks) answer 0 = unknown, never an
+invented figure. A card that happens to be installed is not consulted, so a
+cpu-backend `Autotune.deviceKey()` varies with the CPU and not with the GPU
+beside it.
+
 ## Methods
 
 | Signature | |

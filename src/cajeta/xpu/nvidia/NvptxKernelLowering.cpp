@@ -394,6 +394,28 @@ public:
         return b.CreateBitCast(out, ivt, "lut.bytes");
     }
 
+    // A DISTRIBUTED portable software tile: a warp is physically 32 lanes on
+    // every NVIDIA part, so the lane layout the tile derives at compile time is
+    // always the one the hardware runs, and nothing needs pinning on the
+    // function (AMD pins wave32 because RDNA can run either width).
+    unsigned distributedCoopMatrixWaveWidth(uint32_t /*cols*/) override {
+        return 32;
+    }
+    // Distribute a replicable portable tile too (plan 1.5.4.1): replicated,
+    // the tile is a per-lane local array, and on a GPU that array is the
+    // kernel's local frame -- the three stdlib Ewise.matmul tiles with no wmma
+    // config (f32, f64, a bf16 accumulator) spilled 3072 / 6144 / 1536 bytes
+    // per lane on sm_89 for exactly that reason. Spread across the warp the
+    // same tile is 8 / 8 / 8 elements per lane and there is no frame at all.
+    // The lowering is the one AMD and the CPU backend already run; the result
+    // is bit-identical to the replicated tile (same operation order).
+    bool distributeReplicablePortableTiles() const override { return true; }
+    // With the slice loops as loops, ptxas still kept a 64 / 128 / 32-byte
+    // frame per lane for the dynamically indexed per-lane slices (f32 / f64 /
+    // bf16 tiles, measured 2026-09-24); unrolled, they promote to registers
+    // and the frame is 0.
+    bool distributedCoopMatrixUnrollsLoops() const override { return true; }
+
     // ---- Cooperative matrix: NVIDIA tensor cores (wmma) ----------------------
     // m16n16k16 D[f32] = A[f16/bf16]·B[f16/bf16] + C[f32], row-major, warp-collective.
     // The fragment↔lane layout is implementation-defined: load/store MUST use NVVM wmma.

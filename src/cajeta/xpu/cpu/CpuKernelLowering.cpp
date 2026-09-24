@@ -57,6 +57,9 @@ public:
         // to; cpuVectorWidthI32 reads it off the kernel at registration time.
         fn->addFnAttr("cajeta.xpu.coop-wavew", std::to_string(waveW));
     }
+    // The inner loops must be gone for LoopVectorize to widen the work-item
+    // loop (4A.7.2's loop-exposure spike).
+    bool distributedCoopMatrixUnrollsLoops() const override { return true; }
 
     // Wide `dotAccum` for the host ISA, so a @Kernel reaches the tier an ordinary
     // method does. Null (leaving the portable reduce) off x86, without VNNI, or on
