@@ -325,10 +325,17 @@ counterpart op on the same part, measured
 - at **equal residency**: both DRAM-cold or both cache-hot, and the
   report says which. `test-backend-ops` repeats one tensor that fits the
   4090's 72 MB L2; a decode reads 96 different weights per token and
-  every one of them is cold. The engine's case is cold.
+  every one of them is cold. The engine's case is cold. Cold means a
+  pool of the model's OWN tensors for the shape, cycled: on the same
+  part the llama.cpp q4_K kernel read quantized noise 30x slower than
+  real weights (2026-09-24), so a synthetic weight is not the engine's
+  case on either leg.
 - on the **same timer tier**, stated: `KernelTimer` DEVICE or EVENT for
-  cajeta, llama.cpp's own event timing for its leg; a HOST-tier number
-  is not par evidence on either side.
+  cajeta, llama.cpp's own events on its own stream for its leg (its
+  events are created without timing and re-armed with timing ones); a
+  HOST-tier number is not par evidence on either side. Both legs divide
+  out the event clock's scale, each measured around its own busy
+  bracket, and print it.
 - with the **roofline fraction beside each number**: bytes moved over
   time against the profile's measured achievable bandwidth for a
   bandwidth-bound kernel, operations over time against the declared
