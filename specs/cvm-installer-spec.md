@@ -93,14 +93,22 @@ assets, and its appearance on the README table and the cajeta.dev home page.
 
 ## 6. Open questions
 
-- **6.1** Which version does the package carry? The release tag is monotonic
-  and matches the asset names the README already advertises, and it claims
-  cvm's version is the compiler's, which the cvm-distribution spec explicitly
-  denies. Bumping `tools/cvm/cajeta.json` per change is semantically right and
-  needs discipline no process enforces yet. Recommendation: use the release
-  tag, and make `cvm --version` report it, which satisfies 3.2 and 3.3
-  together and leaves cvm's independence a statement about which COMPILER it
-  installs.
+- **6.1 DECIDED 2026-09-24 by Julian: cvm's own version, bumped.** The package
+  carries `details.version` from `tools/cvm/cajeta.json`, not the release tag,
+  because a 1.0 cvm installs an 8.0 cajeta and the compiler's version cannot
+  speak for it. Bumped 0.1.0 to 0.2.0: native installers are a real increment,
+  and 1.0 would overclaim while `cvm install` has never completed end to end.
+  My recommendation had been the release tag, on the grounds that a tag is
+  monotonic for free. It buys that at the price of 3.3, and the disagreement is
+  worse than the discipline: the container test printed a package version of
+  0.29.1 beside a `cvm --version` of 0.1.0.
+  The discipline this needs is now machine-enforced rather than remembered.
+  `cvm --version` reads a constant in `Cvm.cajeta` and the packages read the
+  manifest, nothing joined them, and `scripts/check-cvm-version.sh` fails the
+  build when they drift, rejects the 0.1.0 placeholder outright, and checks the
+  BUILT binary prints it, since a stale build prints the old number whatever the
+  source says. What is NOT enforced is that a release bumps at all: two releases
+  without a bump declare the same version and offer no upgrade.
 - **6.2** Does the cvm package install to a prefix that is on PATH by default
   on each platform? `/usr/local/bin` is on Linux and macOS. Windows has no
   equivalent, so the MSI must edit PATH or install somewhere already on it.

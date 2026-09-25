@@ -62,6 +62,11 @@ assert "1.1.1 and it is named cvm" "yes" \
 # 1.1.2 a version a package manager can order.
 pkgver="$(dpkg-deb -f "$DEB" Version)"
 assert "1.1.2 the declared version is the one asked for" "$VER" "$pkgver"
+# And the release packages with cvm's OWN declared version, so a package built
+# the way CI builds it carries that rather than the fixture's.
+relver="$("${SCRIPT_DIR}/cvm-version.sh")"
+assert "1.1.2 cvm declares a version that is not the placeholder" "moved" \
+    "$([ "$relver" != "0.1.0" ] && echo moved || echo still-placeholder)"
 assert "1.1.2 and it sorts above the previous release" "above" \
     "$(dpkg --compare-versions "$VER" gt "0.29.0" && echo above || echo not-above)"
 

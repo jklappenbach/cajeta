@@ -1123,8 +1123,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="${{ steps.version.outputs.ref_version }}"
           T="${{ matrix.target }}"
+          # cvm's OWN version, not the release tag. A 1.0 cvm installs an 8.0
+          # cajeta, so the compiler's version cannot speak for it, and a package
+          # manager decides upgrades by the number the package declares.
+          # check-cvm-version.sh holds this and `cvm --version` together.
+          V="$(scripts/cvm-version.sh)"
+          echo "cvm declares version ${V}"
 
           CVM=""
           for c in tools/cvm/build/cvm tools/cvm/build/cvm.exe; do

@@ -25,8 +25,10 @@ import cajeta.lang.System;
 public final class Cvm {
 
     // cvm's own version (its build version — distinct from any cajeta
-    // toolchain version it manages). Tracks repo VERSION at release time.
-    private static String VERSION = "0.1.0";
+    // toolchain version it manages). MUST equal details.version in
+    // tools/cvm/cajeta.json, which is what the native packages declare;
+    // scripts/check-cvm-version.sh fails the build when the two drift.
+    private static String VERSION = "0.2.0";
 
     // Program entry. `args` holds the USER arguments only — `cvm which`
     // arrives as args[0] == "which". The --emit=exe main shim does not
