@@ -1309,22 +1309,28 @@ public class M {
 }
 )CJ";
 
-// KNOWN LIMITATION, pinned: a cf sourced through `vload<4>` does not widen
-// on the cpu software wave -- the vector load lowers to an opaque call the
-// work-item loop cannot vectorize across, so the shuffle would be left
-// scalar and the gate REFUSES the kernel (measured 2026-09-23, cycle 9, the
-// one probe of 20 still refused once the work-item loop is parallel). The
-// refusal is the contract until the vload path lowers to an intrinsic; the
-// same kernel with a scalar memory-loaded cf widens
-// (memLoadedOfLaneCfDistributesPerColumn).
-TEST(XpuCpuDistCoopVerb, vloadSourcedOfLaneCfIsRefusedUntilItWidens) {
+// FLIPPED 2026-09-25, as its own text said to: a cf sourced through
+// `vload<4>` now WIDENS. It was refused for two years of commits because
+// LoopVectorize rejects a loop holding an instruction whose result type is
+// not a valid vector ELEMENT type, and `<4 x i8>` is not one, so the whole
+// work-item loop was refused and the shuffle was left scalar. The wave
+// kernel wrapper is now taken through a Scalarizer prefix
+// (Optimizer.cpp:vectorizeFunction, xpu-kernel-adaptor 4.2.1), which breaks
+// that vector value into lanes the loop can widen over.
+//
+// The assertion is the VALUE, not the registration. A kernel that registered
+// with the shuffle still at width 1 would read its own lane's cf for every
+// column and every cell would be wrong, so 16*(r+1)*(c+1) in every cell is
+// what says the per-lane vload path actually distributes.
+TEST(XpuCpuDistCoopVerb, vloadSourcedOfLaneCfDistributesPerColumn) {
     unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
     setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
     int r = runOnCpu(kVloadOfLaneSrc);
     unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
-    EXPECT_EQ(r, -1)
-        << "vload-sourced ofLane kernel was REGISTERED with r=" << r
-        << "; if it now widens, flip this test to want 16*(r+1)*(c+1)";
+    EXPECT_EQ(r, 0)
+        << "vload-sourced ofLane kernel r=" << r
+        << " (-1 = the gate refused it again, 1000+i = cell i disagreed with"
+           " 16*(r+1)*(c+1), which is the width-1 identity shuffle)";
 }
 
 // ---- GATE: a wave op left scalar is REFUSED, never registered ----------- //
