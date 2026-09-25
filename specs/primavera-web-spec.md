@@ -329,27 +329,27 @@ locale-independent comparison) are requirements here, not restated.
 
 ## 10. Open questions (resolve at plan time)
 
-- **10.1** Split repos now, per the 2026-06 decision, or packages now and
+- **10.1** *(resolved 2026-09-25, Julian: packages now.)* Split repos now, per the 2026-06 decision, or packages now and
   repos on first demand (§9)? Recommendation: packages now. Three repos with
   three release trains before the first sample runs is process ahead of code,
   and the package names make the later move mechanical.
-- **10.2** Input buffer size and the fits-or-streams threshold (§2.4).
+- **10.2** *(resolved 2026-09-25: 64 KiB default, configurable.)* Input buffer size and the fits-or-streams threshold (§2.4).
   Recommendation: 64 KiB default, configurable, and the sample's bodies are
   under 1 KiB so the streaming path needs its own test, not the sample.
-- **10.3** Should the typed endpoint surface (§5.2) be the documented public
+- **10.3** *(resolved 2026-09-25: public and documented.)* Should the typed endpoint surface (§5.2) be the documented public
   API, or an implementation detail the annotation form hides? Recommendation:
   public and documented. It is what tests and generated code both call.
-- **10.4** Does `cajeta-http`'s buffer seam (§1.3) land as a `cajeta-http`
+- **10.4** *(resolved 2026-09-25: cajeta-http 0.4.0.)* Does `cajeta-http`'s buffer seam (§1.3) land as a `cajeta-http`
   0.4.0 with a `cajeta` release in between, or ride a primavera-owned fork of
   the read loop? Recommendation: `cajeta-http` 0.4.0, because the WebSocket
   decoder is already there and two read loops would drift.
-- **10.5** WebSocket overflow default (§6.5): drop-oldest or close?
+- **10.5** *(resolved 2026-09-25: close.)* WebSocket overflow default (§6.5): drop-oldest or close?
   Recommendation: close, with the code saying why. A silently thinned event
   stream is harder to debug than a closed one.
-- **10.6** Bearer tokens or cookie sessions as the default posture
+- **10.6** *(resolved 2026-09-25: bearer first.)* Bearer tokens or cookie sessions as the default posture
   (`primavera-spec.md` §16 open item)? This spec builds bearer first (§8.2).
   Cookie sessions over `SessionScope` come after, and CSRF with them.
-- **10.7** Where the primavera repo's remaining roadmap items go. Phase 3's
+- **10.7** *(resolved 2026-09-25, Julian: the roadmap moves onto the agents convention. The plan for this spec carries the open Phase 3 item and the cleanups as a unit of its own, and the repo's `plan/` directory retires to a pointer.)* Where the primavera repo's remaining roadmap items go. Phase 3's
   open item (wire `@Component` allocation modes to the scoped accessor pair)
   and the cross-cutting cleanups are compiler and core work outside this
   spec. Recommendation: move them into the plan for this spec as a Unit 0

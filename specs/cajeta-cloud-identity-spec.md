@@ -309,19 +309,19 @@ is no runtime scan for adapters.
 
 ## 12. Open questions (resolve at plan time)
 
-- **12.1** Does the minimal cut (§1.6) include §3.3 confirmation, or is
+- **12.1** *(resolved 2026-09-25, Julian: yes.)* Does the minimal cut (§1.6) include §3.3 confirmation, or is
   confirmation part of the full cut? Recommendation: include it, since the
   registration sample should show the unconfirmed state rather than have it
   appear later as a surprise.
-- **12.2** Which provider is the first real adapter? Cognito, since primavera
+- **12.2** *(resolved 2026-09-25: Cognito.)* Which provider is the first real adapter? Cognito, since primavera
   names it and `cajeta-cloud-aws` already carries S3 as its first vertical.
   The adapter is its own spec.
-- **12.3** Does the stdlib crypto work (§5.6) precede the full cut, or does
+- **12.3** *(resolved 2026-09-25: HMAC-SHA256 and the CSPRNG first, asymmetric verify with the Cognito adapter.)* Does the stdlib crypto work (§5.6) precede the full cut, or does
   the full cut ship against the memory driver only with RS256 verification
   deferred? Recommendation: HMAC-SHA256 and the CSPRNG land first, since the
   memory driver and session ids need them, and asymmetric verification lands
   with the Cognito adapter.
-- **12.4** Password hashing in the memory driver: PBKDF2 over the SHA-256 the
+- **12.4** *(resolved 2026-09-25, Julian: PBKDF2-SHA256.)* Password hashing in the memory driver: PBKDF2 over the SHA-256 the
   stdlib has, or wait for Argon2? Recommendation: PBKDF2-SHA256 now, with the
   parameters recorded in the stored hash so a later change does not strand
   existing users.
