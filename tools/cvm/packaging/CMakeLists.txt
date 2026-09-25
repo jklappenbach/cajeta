@@ -40,9 +40,14 @@ endif()
 # PROGRAMS rather than FILES: it installs mode 0755. That is the entire point
 # of this channel, since the bare asset arrives at 664 and a reader has to be
 # told to chmod it.
+# The COMPONENT is named rather than left Unspecified because CPack derives the
+# WiX component id from it plus the install path, and wix/path-patch.xml has to
+# name that id to attach the PATH entry to it.
 install(PROGRAMS "${CVM_BINARY}"
         DESTINATION bin
-        RENAME "cvm${CMAKE_EXECUTABLE_SUFFIX}")
+        RENAME "cvm${CMAKE_EXECUTABLE_SUFFIX}"
+        COMPONENT cvm)
+set(CPACK_COMPONENTS_ALL cvm)
 
 # ---- CPack --------------------------------------------------------------
 # Name distinct from the compiler's `cajeta`, so a package manager can hold
@@ -73,6 +78,26 @@ elseif(APPLE)
 elseif(WIN32)
     set(CPACK_GENERATOR "WIX")
 endif()
+
+# ---- WiX -----------------------------------------------------------------
+# Mirrors cmake/CPackOptions.cmake's WIX branch. The upgrade GUID is its OWN,
+# generated once for this package: sharing the compiler's would make each
+# installer try to upgrade the other out of existence.
+set(CPACK_WIX_VERSION 4)
+set(CPACK_WIX_UPGRADE_GUID "06783F91-9B76-4370-8F23-E3229F3E672F")
+set(CPACK_WIX_INSTALL_SCOPE "perMachine")
+# Program Files is not on PATH, so the patch puts bin/ there. Without it the
+# MSI installs a cvm the shell cannot find.
+set(CPACK_WIX_PATCH_FILE "${CMAKE_CURRENT_SOURCE_DIR}/wix/path-patch.xml")
+# WiX and productbuild both refuse a license without a .txt/.rtf extension, and
+# the repo's LICENSE has none. Stage a copy that does.
+set(CVM_LICENSE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../LICENSE")
+if(EXISTS "${CVM_LICENSE_SRC}")
+    configure_file("${CVM_LICENSE_SRC}" "${CMAKE_BINARY_DIR}/LICENSE.txt" COPYONLY)
+    set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_BINARY_DIR}/LICENSE.txt")
+endif()
+
+set(CPACK_PRODUCTBUILD_IDENTIFIER "dev.cajeta.cvm")
 
 # Idiomatic per-format names: cajeta-cvm_<ver>_<arch>.deb and
 # cajeta-cvm-<ver>-<arch>.rpm, which is what a reader expects to see.

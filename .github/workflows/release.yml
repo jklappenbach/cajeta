@@ -839,14 +839,12 @@ jobs:
           echo "Windows MSI(s) produced:"
           ls -la "${msis[@]}"
 
-      # ---- Verify the Linux + macOS installers actually built -------------
-      # The same gate the MSI got, now that v0.25.0 has shipped all four
-      # formats: the build step stays continue-on-error (so a future format
-      # can be added without reddening the leg), and these decide whether the
-      # leg is allowed to pass. Without them a cpack failure is invisible —
-      # the step swallows it and `fail_on_unmatched_files: false` on the
-      # upload swallows the absence, so the release goes green missing a
-      # package nobody notices until an install fails.
+          # An MSI under Program Files puts nothing on PATH, and until now nothing
+          # checked that the WiX <Environment> patch actually landed: it binds to
+          # a component id CPack derives, so a rename upstream would drop the
+          # PATH entry silently and "a .msi exists" would still pass.
+          scripts/verify-msi-path.sh "${msis[@]}"
+
       - name: Verify Linux installers (deb + rpm)
         if: runner.os == 'Linux'
         run: |
@@ -1182,6 +1180,14 @@ jobs:
             echo "::error::cpack reported success for ${gens// /, } but produced no package for ${T}"
             ls -la build/cvm-pkg || true
             exit 1
+          fi
+
+          # cvm's MSI carries its own PATH patch, and cvm exists to be the first
+          # command a user runs, so an installer that leaves it off PATH is worse
+          # here than for the compiler.
+          cvm_msis=(cvm-dist/*.msi)
+          if [ ${#cvm_msis[@]} -gt 0 ]; then
+            scripts/verify-msi-path.sh "${cvm_msis[@]}"
           fi
 
       - name: Archive (tar.gz)

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CPack WiX patch for the cvm package (specs/cvm-installer-spec.md 6.2).
+
+  WiX installs under Program Files, which is NOT on PATH. An installer whose
+  payload the shell cannot find has not installed anything as far as the reader
+  is concerned, and cvm's whole purpose is to be the first command you run.
+
+  The fragment id is derived by CPack from the COMPONENT name ("cvm") plus the
+  relative install path (bin/cvm.exe), so the install() rule in ../CMakeLists.txt
+  names that component explicitly rather than leaving it Unspecified. Same
+  mechanism the compiler's cmake/wix/path-patch.xml uses, where the id is
+  CM_CP_cajeta.bin.cajeta.exe. [CM_DP_cvm.bin] is the WiX directory token for
+  the installed bin/ folder, resolved at install time.
+
+  Part="last" so an existing PATH is appended to rather than replaced, and
+  Permanent="no" so an uninstall takes the entry back out.
+-->
+<CPackWiXPatch>
+  <CPackWiXFragment Id="CM_CP_cvm.bin.cvm.exe">
+    <Environment Id="CajetaCvmSystemPath"
+                 Name="PATH"
+                 Value="[CM_DP_cvm.bin]"
+                 Permanent="no"
+                 Part="last"
+                 Action="set"
+                 System="yes" />
+  </CPackWiXFragment>
+</CPackWiXPatch>
