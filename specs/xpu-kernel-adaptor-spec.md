@@ -309,6 +309,49 @@ Everything above is answerable to these.
   makes the timer a prerequisite for the search tier rather than a
   convenience.
 
+### 7.1 Par, defined (PROPOSED 2026-09-24, awaiting Julian's approval)
+
+Every kernel in Units 9 to 13 of the plan is judged "at par or a recorded
+reason", and 1.8.2 records what happens when par is left implicit: a 49x
+that was three artifacts stacked. So par is written down here before any
+kernel is judged against it, and a number that lacks any field below is
+not a comparison.
+
+**Par.** At the shapes the engine actually dispatches (the launch counts
+and shapes the Unit 6 census records, not a shape chosen for the probe),
+the cajeta kernel's time is at or under the time of its llama.cpp
+counterpart op on the same part, measured
+
+- at **equal residency**: both DRAM-cold or both cache-hot, and the
+  report says which. `test-backend-ops` repeats one tensor that fits the
+  4090's 72 MB L2; a decode reads 96 different weights per token and
+  every one of them is cold. The engine's case is cold.
+- on the **same timer tier**, stated: `KernelTimer` DEVICE or EVENT for
+  cajeta, llama.cpp's own event timing for its leg; a HOST-tier number
+  is not par evidence on either side.
+- with the **roofline fraction beside each number**: bytes moved over
+  time against the profile's measured achievable bandwidth for a
+  bandwidth-bound kernel, operations over time against the declared
+  peak for a compute-bound one. Two kernels can tie at 40% of roofline;
+  the fraction says whether par is a ceiling or a floor.
+- with the llama.cpp leg **labelled by its backend** (CUDA, HIP, Vulkan,
+  CPU) and build, never bare "cuda"; the same op has different
+  counterparts per backend and they do not perform alike.
+- only after a **calibration row** reproduces a previously recorded
+  number on the same part, the control `CodebookBandwidth` insists on.
+
+**No counterpart.** A cajeta kernel with no llama.cpp op (the packed
+MoE id kernels, the fused epilogues, the census probes) is named in the
+oracle map as having none and is judged by roofline fraction alone: at
+or above the fraction the counterpart-bearing kernels of its family
+reach at par, else a recorded reason. The set judged this way is
+explicit, never inferred from a missing row.
+
+**Not par.** A faster kernel that is not bit-exact against the host
+oracle where the format is integer-exact, or outside the format's
+recorded tolerance where it is not, is not at par; correctness is
+gated first (Unit 6) and speed second.
+
 ## 8. What follows
 
 - Ranking survivors by measured cost. This is the tile family's, and it
