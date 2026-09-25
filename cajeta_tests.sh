@@ -1113,4 +1113,16 @@ fi
 if ! "$SCRIPT_DIR/scripts/check-site-downloads.sh"; then
     exit 1
 fi
+
+# cvm's native package (cvm-installer 1.1.x): builds the .deb from an
+# already-built cvm and inspects it without installing. Skips itself where
+# dpkg-deb or a built cvm is absent.
+# cvm declares its version twice and nothing joins them (cvm-installer 0.1.2).
+if ! "$SCRIPT_DIR/scripts/check-cvm-version.sh"; then
+    exit 1
+fi
+
+if ! "$SCRIPT_DIR/scripts/check-cvm-package.sh"; then
+    exit 1
+fi
 exit 0

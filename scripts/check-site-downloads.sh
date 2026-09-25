@@ -63,6 +63,10 @@ cat > "$DATA" <<'JSON'
       "cvm": { "name": "v", "url": "https://example.invalid/v" },
       "installers": [
         { "name": "p.deb", "url": "https://example.invalid/p.deb", "format": "deb" }
+      ],
+      "cvm-installers": [
+        { "name": "cvm.deb", "url": "https://example.invalid/cvm.deb", "format": "deb" },
+        { "name": "cvm.rpm", "url": "https://example.invalid/cvm.rpm", "format": "rpm" }
       ]
     },
     {
@@ -105,7 +109,8 @@ allowed = set()
 for p in d["platforms"]:
     for k in ("archive", "compiler", "cvm"):
         if k in p: allowed.add(p[k]["url"])
-    for i in p.get("installers", []): allowed.add(i["url"])
+    for k in ("installers", "cvm-installers"):
+        for i in p.get(k, []): allowed.add(i["url"])
 html = open(sys.argv[2], encoding="utf-8").read()
 found = set(re.findall(r'https://example\.invalid/[^"\'<> ]+', html))
 print(len(found - allowed))
@@ -119,11 +124,19 @@ want = set()
 for p in d["platforms"]:
     for k in ("archive", "compiler", "cvm"):
         if k in p: want.add(p[k]["url"])
-    for i in p.get("installers", []): want.add(i["url"])
+    for k in ("installers", "cvm-installers"):
+        for i in p.get(k, []): want.add(i["url"])
 html = open(sys.argv[2], encoding="utf-8").read()
 print(len([u for u in want if u not in html]))
 PY
 )"
+
+# cvm-installer 3.1.3 / 3.1.5: the cvm packages render, and the page says the
+# bare binary needs chmod while the package does not.
+assert "cvm installer links render" "2" \
+    "$(grep -o 'cvm</code> installer' "$PAGE" | wc -l | tr -d ' ')"
+assert "the page says the bare cvm needs chmod" "yes" \
+    "$(grep -qF 'chmod +x' "$PAGE" && echo yes || echo no)"
 
 # 3.1.3 the same manifest builds the same page.
 cp "$PAGE" "${SCRATCH}/site-first.html"

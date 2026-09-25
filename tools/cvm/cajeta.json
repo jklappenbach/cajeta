@@ -20,7 +20,7 @@
 
     "details": {
         "name":                "cvm",
-        "version":             "0.1.0",
+        "version":             "0.2.0",
         "description":         "Cajeta Version Manager — toolchain installer/switcher",
         "license":             "Apache-2.0",
         "authors":             ["Julian Klappenbach <jklappenbach@gmail.com>"],

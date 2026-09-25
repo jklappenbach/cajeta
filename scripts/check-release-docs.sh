@@ -65,6 +65,10 @@ mk "$A/cajeta-aarch64-apple-darwin/cajeta-${TAG}-aarch64-apple-darwin.tar.gz"
 mk "$A/cajeta-aarch64-apple-darwin/cajeta-9.9.9-Darwin.pkg"
 mk "$A/cajeta-x86_64-w64-mingw32/cajeta-${TAG}-x86_64-w64-mingw32.zip"
 mk "$A/cajeta-x86_64-w64-mingw32/cajeta-9.9.9-win64.msi"
+# cvm's OWN packages, staged where the release stages them. Same extensions
+# as the compiler's, so only the directory tells them apart.
+mk "$A/cajeta-x86_64-linux-gnu/cvm-dist/cajeta-cvm_9.9.9_amd64.deb"
+mk "$A/cajeta-aarch64-apple-darwin/cvm-dist/cajeta-cvm-9.9.9-Darwin.pkg"
 
 R="$TMP/release-assets"
 mk "$R/cajeta-${TAG}-x86_64-linux-gnu"
@@ -134,6 +138,38 @@ assert_has "1.1.1 rpm linked" "$README" "cajeta-9.9.9-1.x86_64.rpm"
 assert_has "1.1.1 pkg linked" "$README" "cajeta-9.9.9-Darwin.pkg"
 assert_has "1.1.1 msi linked" "$README" "cajeta-9.9.9-win64.msi"
 
+# cvm-installer 3.1.2 / 3.1.4: cvm packages get their OWN cell, and they must
+# not leak into the compiler's Installer cell. They share every extension, so
+# a classifier keyed on the name would put them in both.
+assert_has "cvm-installer header has its own column" "$README" "| cvm installer |"
+assert_has "cvm deb linked" "$README" "cajeta-cvm_9.9.9_amd64.deb"
+assert_has "cvm pkg linked" "$README" "cajeta-cvm-9.9.9-Darwin.pkg"
+lxrow="$(grep -F '`x86_64-linux-gnu`' "$README" | head -1)"
+assert "cvm deb is NOT in the compiler installer cell" "clean" \
+    "$(python3 -c "
+import sys
+row = sys.argv[1]
+cells = [c.strip() for c in row.strip().strip(chr(124)).split(chr(124))]
+# Platform, Triple, Archive, Compiler, Installer, cvm, cvm installer
+print('leaked' if 'cajeta-cvm_' in cells[4] else 'clean')" "$lxrow")"
+assert "the cvm installer cell HAS it" "present" \
+    "$(python3 -c "
+import sys
+row = sys.argv[1]
+cells = [c.strip() for c in row.strip().strip(chr(124)).split(chr(124))]
+print('present' if 'cajeta-cvm_' in cells[6] else 'missing')" "$lxrow")"
+# spec 5.4: the bare binary needs chmod and the package does not. A reader
+# who is not told that downloads a file that answers permission denied.
+assert_has "the block says the bare cvm needs chmod" "$README" "chmod +x"
+# A triple with no cvm package renders absent rather than borrowing another's.
+arow="$(grep -F '`aarch64-linux-gnu`' "$README" | head -1)"
+assert "a triple with no cvm package reads absent" "absent" \
+    "$(python3 -c "
+import sys
+row = sys.argv[1]
+cells = [c.strip() for c in row.strip().strip(chr(124)).split(chr(124))]
+print('absent' if cells[6] == chr(8212) else 'got:' + cells[6][:20])" "$arow")"
+
 # 1.1.1 the cvm link must NOT be what sits under the Installer header. The
 # shipped table had exactly that, so assert the ordering, not just presence.
 hdr="$(grep -F '| Platform |' "$README" | head -1)"
@@ -167,6 +203,22 @@ import json,sys
 d=json.load(open('$MANIFEST'))
 p=[x for x in d['platforms'] if x['triple']=='x86_64-linux-gnu'][0]
 print(sorted(i['format'] for i in p['installers'])[0])")"
+
+# cvm-installer 3.1.1: the manifest carries the cvm packages as a LIST, since a
+# platform ships more than one format and a scalar keeps only the last.
+assert "3.1.1 manifest lists both cvm package formats" "deb" \
+    "$(python3 -c "
+import json
+d=json.load(open('$MANIFEST'))
+p=[x for x in d['platforms'] if x['triple']=='x86_64-linux-gnu'][0]
+c=p.get('cvm-installers',[])
+print(sorted(i['format'] for i in c)[0] if c else 'MISSING')")"
+assert "3.1.1 the cvm package is not filed as a compiler installer" "clean" \
+    "$(python3 -c "
+import json
+d=json.load(open('$MANIFEST'))
+p=[x for x in d['platforms'] if x['triple']=='x86_64-linux-gnu'][0]
+print('leaked' if any('cajeta-cvm' in i['name'] for i in p.get('installers',[])) else 'clean')")"
 
 # 2.1.2 the installer-less triple has no installers key at all, rather than an
 # entry pointing at a file that was never published.
