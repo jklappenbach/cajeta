@@ -3,6 +3,7 @@
 
 #include "VulkanRegistration.h"
 #include "cajeta/xpu/core/KernelManifest.h"
+#include "cajeta/xpu/core/XpuKernelGate.h"
 #include <optional>
 #include "SpirvBackend.h"
 #include "SpirvKernelLowering.h"
@@ -76,10 +77,7 @@ namespace vulkan {
                 if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
                         || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
                 // XPU-N01: no device code, so a launch would find no kernel.
-                fprintf(stderr,
-                        "cajeta: note: [xpu-kernel-skipped] %s: no vulkan device "
-                        "code — %s\n",
-                        regName.c_str(), ex.getMessage().c_str());
+                reportUnloweredKernel(*method, regName, "vulkan", ex.getMessage());
                 return false;
             }
             if (!kfn) return false;
@@ -179,6 +177,7 @@ namespace vulkan {
             if (!emitVariant(method, entryName, /*software=*/false,
                              /*registerKparams=*/true))
                 continue;
+            noteKernelLowered(*method, entryName, "vulkan");
             ++emitted;
             // A ray-query kernel also gets a "<name>$sw" software-BVH variant.
             if (usesRayQuery(method))

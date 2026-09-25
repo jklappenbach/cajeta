@@ -48,7 +48,9 @@ Two facts about the set, both measured on 2026-09-06:
   snapshots `Device.launchFailures()` around every workload and emits
   **pending** rows, with the reason, instead of numbers when it moves. The
   build prints `[xpu-kernel-skipped] … barrier fission: …` for the declined
-  shape and the runtime counts the failed launch
+  shape (an error since 2026-09-25 unless the kernel carries
+  `@Unlowered(backend = "cpu", tracked = …)`; the bench harness sweeps
+  with `CAJETA_XPU_KERNEL_GATE=warn`) and the runtime counts the failed launch
   (`XpuCpuBarrierFissionNoteTests`). The first CPU leg (2026-09-06) had
   `dot`, `reduceSum`, `matmulTiled`, `cg` and `degenerate` pending because
   the fission declined a uniform loop whose code after its last barrier was

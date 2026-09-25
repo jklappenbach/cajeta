@@ -36,6 +36,9 @@
 #include "llvm/Target/TargetMachine.h"
 
 #include <cstdlib>
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#endif
 #include <filesystem>
 #include <functional>
 #include <cstdio>
@@ -1351,15 +1354,20 @@ TEST(XpuKernelManifest, nvptxReplicatesThePortableTileWhenDistributionIsForcedOf
 // GPU-free. Three kernels: `unb` fires; `ceil` (same launch, ceiling declared)
 // and `fixed` (constant block) do not, so the warning is scoped to the kernel
 // that earns it and not to the file.
-TEST(XpuKernelManifest, unboundedKernelWithoutACeilingIsNamedAtBuild) {
+// Drives the compiler binary on three kernels -- `unb` launched with a
+// non-constant block at two sites, `ceil` the same with a declared ceiling,
+// `fixed` with a constant block -- with `unbAnn` on the first and `fixedAnn`
+// on the last. Returns the build log; `rc` takes the exit status.
+static std::string buildUnboundedProbe(const std::string& unbAnn,
+                                       const std::string& fixedAnn, int* rc) {
     std::string bin = sourceRoot() + "/build/src/cajeta";
-    if (!fs::exists(bin)) GTEST_SKIP() << "compiler binary not at " << bin;
+    if (!fs::exists(bin)) { *rc = -1; return ""; }
     static std::mt19937_64 rng(std::random_device{}());
     fs::path root = fs::temp_directory_path()
                   / ("cajeta_xpu_unbounded_" + std::to_string(rng()));
     fs::create_directories(root / "src" / "test");
     fs::create_directories(root / "out");
-    auto body = [](const char* name, const char* ann) {
+    auto body = [](const char* name, const std::string& ann) {
         return std::string("    @Kernel\n") + ann +
             "    public static void " + name + "(KernelBuffer<float32> x, KernelBuffer<float32> y,\n"
             "                             float32 a, uint32 n) {\n"
@@ -1373,9 +1381,9 @@ TEST(XpuKernelManifest, unboundedKernelWithoutACeilingIsNamedAtBuild) {
            "import cajeta.xpu.KernelStream;\n"
            "import cajeta.xpu.KernelThread;\n"
            "public class M {\n"
-        << body("unb", "")
+        << body("unb", unbAnn)
         << body("ceil", "    @Occupancy(maxThreads = 256)\n")
-        << body("fixed", "")
+        << body("fixed", fixedAnn)
         << "    public static void go(KernelBuffer<float32> x, KernelBuffer<float32> y,\n"
            "                          uint32 n, int32 b) {\n"
            "        KernelStream s #= KernelStream.current();\n"
@@ -1390,18 +1398,67 @@ TEST(XpuKernelManifest, unboundedKernelWithoutACeilingIsNamedAtBuild) {
     std::string cmd = "\"" + bin + "\" --emit=obj --xpu-backend=cpu test.M.main \""
         + (root / "src").string() + "\" \"" + (root / "out").string() + "\" > \""
         + (root / "build.log").string() + "\" 2>&1";
-    int rc = std::system(cmd.c_str());
+    int raw = std::system(cmd.c_str());
+#if defined(_WIN32)
+    *rc = raw;
+#else
+    *rc = WIFEXITED(raw) ? WEXITSTATUS(raw) : raw;
+#endif
     std::string log = readFile(root / "build.log");
-    ASSERT_EQ(rc, 0) << log;
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    return log;
+}
+
+// 7.0.1, and since 2026-09-25 an ERROR ("Unit 4: make it an error", the
+// 4.2.3 decision 7.0.1 deferred to): a kernel launched with a non-constant
+// block and no @Occupancy(maxThreads) fails the build, named once with its
+// site count; the one with the ceiling and the one with a constant block
+// are not named.
+TEST(XpuKernelManifest, unboundedKernelWithoutACeilingIsNamedAtBuild) {
+    int rc = -1;
+    std::string log = buildUnboundedProbe("", "", &rc);
+    if (rc == -1 && log.empty()) GTEST_SKIP() << "compiler binary not built";
+    EXPECT_NE(rc, 0) << "an unbounded kernel with no ceiling fails the build:\n" << log;
     // Exactly one line, and it names the unbounded kernel with its site count.
     size_t first = log.find("[xpu-kernel-unbounded]");
     ASSERT_NE(first, std::string::npos) << log;
     EXPECT_EQ(log.find("[xpu-kernel-unbounded]", first + 1), std::string::npos) << log;
-    EXPECT_NE(log.find("[xpu-kernel-unbounded] unb: launched with a non-constant block "
-                       "at 2 site(s)"), std::string::npos) << log;
+    EXPECT_NE(log.find("cajeta: error: [xpu-kernel-unbounded] unb: launched with a "
+                       "non-constant block at 2 site(s)"), std::string::npos) << log;
     EXPECT_EQ(log.find("[xpu-kernel-unbounded] ceil"), std::string::npos) << log;
     EXPECT_EQ(log.find("[xpu-kernel-unbounded] fixed"), std::string::npos) << log;
     EXPECT_NE(log.find("@Occupancy(maxThreads = N)"), std::string::npos) << log;
+    EXPECT_NE(log.find("CAJETA_ERROR_XPU_KERNEL_GATE"), std::string::npos) << log;
+}
+
+// The tracked escape (7.0.5 holds the 24 pre-unit kernels until each
+// family derives its geometry): `@Unbounded(tracked = "<item>")` makes the
+// line a note carrying the item, and the build passes.
+TEST(XpuKernelManifest, aTrackedUnboundedKernelIsANoteNamingTheItem) {
+    int rc = -1;
+    std::string log = buildUnboundedProbe(
+        "    @Unbounded(tracked = \"xpu-kernel-adaptor 7.0.5\")\n", "", &rc);
+    if (rc == -1 && log.empty()) GTEST_SKIP() << "compiler binary not built";
+    EXPECT_EQ(rc, 0) << log;
+    EXPECT_NE(log.find("cajeta: note: [xpu-kernel-unbounded] unb: launched with a "
+                       "non-constant block at 2 site(s)"), std::string::npos) << log;
+    EXPECT_NE(log.find("[tracked: xpu-kernel-adaptor 7.0.5]"), std::string::npos) << log;
+    EXPECT_EQ(log.find("cajeta: error:"), std::string::npos) << log;
+}
+
+// STALE: `@Unbounded` on a kernel whose every launch site is a constant
+// block (or that declares its ceiling) fails until the declaration goes.
+TEST(XpuKernelManifest, aStaleUnboundedDeclarationFailsTheBuild) {
+    int rc = -1;
+    std::string log = buildUnboundedProbe(
+        "    @Unbounded(tracked = \"xpu-kernel-adaptor 7.0.5\")\n",
+        "    @Unbounded(tracked = \"xpu-kernel-adaptor 7.0.5\")\n", &rc);
+    if (rc == -1 && log.empty()) GTEST_SKIP() << "compiler binary not built";
+    EXPECT_NE(rc, 0) << log;
+    EXPECT_NE(log.find("cajeta: error: [xpu-kernel-unbounded] fixed: STALE"),
+              std::string::npos) << "`fixed` is launched with a constant block only:\n" << log;
+    EXPECT_NE(log.find("cajeta: note: [xpu-kernel-unbounded] unb"), std::string::npos) << log;
 }
 
 // 7.0.2, the property 7.0.1 protects, MEASURED on sm_89: declaring the ceiling

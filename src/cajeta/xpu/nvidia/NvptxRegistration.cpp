@@ -4,6 +4,7 @@
 #include "NvptxBackend.h"
 #include "cajeta/xpu/core/KernelManifest.h"
 #include "cajeta/xpu/core/XpuKernelAttr.h"
+#include "cajeta/xpu/core/XpuKernelGate.h"
 #include <optional>
 #include "NvptxKernelLowering.h"
 #include "NvptxOptixRayQuery.h"
@@ -108,10 +109,7 @@ namespace nvidia {
                 if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
                         || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
                 // No device code for this backend; say so, or a launch fails at run time.
-                fprintf(stderr,
-                        "cajeta: note: [xpu-kernel-skipped] %s: no nvptx device "
-                        "code — %s\n",
-                        entryName.c_str(), ex.getMessage().c_str());
+                reportUnloweredKernel(*method, entryName, "nvptx", ex.getMessage());
                 continue;
             }
             if (!kfn) continue;
@@ -286,6 +284,7 @@ namespace nvidia {
 
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
             if (manifests) manifests->push_back(manifest);
+            noteKernelLowered(*method, entryName, "nvptx");
             ++emitted;
         }
         return emitted;

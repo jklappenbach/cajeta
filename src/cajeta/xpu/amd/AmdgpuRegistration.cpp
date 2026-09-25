@@ -6,6 +6,7 @@
 #include "AmdgpuKernelLowering.h"
 
 #include "../lowering/KernelLowering.h"
+#include "../core/XpuKernelGate.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
 #include "cajeta/xpu/core/XpuKernelAttr.h"
@@ -97,10 +98,7 @@ namespace amd {
                         || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
                 // Unsupported construct: this kernel gets NO device code here, and a
                 // launch would fail with "no registered kernel", so say so at build time.
-                fprintf(stderr,
-                        "cajeta: note: [xpu-kernel-skipped] %s: no %s device "
-                        "code — %s\n",
-                        entryName.c_str(), "amdgpu", ex.getMessage().c_str());
+                reportUnloweredKernel(*method, entryName, "amdgpu", ex.getMessage());
                 continue;
             }
             if (!kfn) continue;
@@ -256,6 +254,7 @@ namespace amd {
             if (manifests)
                 manifests->insert(manifests->end(), kernelManifests.begin(),
                                   kernelManifests.end());
+            noteKernelLowered(*method, entryName, "amdgpu");
             ++emitted;
         }
         return emitted;

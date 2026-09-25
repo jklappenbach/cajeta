@@ -23,6 +23,10 @@ set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "${HERE}/../../.." && pwd)"
 CAJETA="${CAJETA:-${ROOT}/build/src/cajeta}"
+# The bench deliberately builds shapes the cpu backend declines (a barrier in a
+# work-item-dependent loop) and reports them as pending rows; the kernel gate
+# (xpu-kernel-adaptor 4.2.2) would fail that build, so the harness sweeps.
+export CAJETA_XPU_KERNEL_GATE="${CAJETA_XPU_KERNEL_GATE:-warn}"
 OUT="${ROOT}/tmp/bench"
 LLM_DIR="${LLM_DIR:-${ROOT}/../cajeta-llm}"
 MODEL="${MODEL:-${HOME}/models/Meta-Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf}"

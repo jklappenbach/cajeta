@@ -80,9 +80,12 @@ ceiling, and everything that matters is how the wave touches memory.
   for a week. Read `spillBytes` first, always.
 - **An unpinned launch block caps VGPRs at 192.** A non-literal `block`
   is budgeted for 1024 threads. `@Occupancy(maxThreads)` on the kernel
-  is the fix, not a despill. The build names such a kernel
-  (`[xpu-kernel-unbounded]`), so a launcher moved to a derived block
-  without its ceiling does not pass in silence.
+  is the fix, not a despill. The build fails on such a kernel, by name
+  (`[xpu-kernel-unbounded]`, held only by `@Unbounded(tracked = ...)`),
+  so a launcher moved to a derived block without its ceiling does not
+  pass in silence. A kernel with no device code for a declared backend
+  fails the same way (`[xpu-kernel-skipped]`, held by
+  `@Unlowered(backend = ..., tracked = ...)`).
 - **Integer multiply is quarter-rate on RDNA.** `vector * scalar`
   inside a kernel costs eight `v_mul_lo`. Reduce first, then scale once.
   That is integer-exact, and the scale is one multiply.

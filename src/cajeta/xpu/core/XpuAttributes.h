@@ -24,6 +24,12 @@ namespace xpu {
         static constexpr const char* FastMath     = "FastMath";
         // @Occupancy overrides the automatic workgroup budgeting; no-op where unsupported.
         static constexpr const char* Occupancy    = "Occupancy";
+        // The kernel gate's tracked escapes (XpuKernelGate.h): a kernel with no
+        // device code for a backend names the plan item holding it,
+        // @Unlowered(backend = "cpu", tracked = "<item>"); a kernel launched with
+        // a non-constant block and no ceiling, @Unbounded(tracked = "<item>").
+        static constexpr const char* Unlowered    = "Unlowered";
+        static constexpr const char* Unbounded    = "Unbounded";
         // @Access narrows a buffer parameter's mode; @Streaming makes its access non-temporal.
         static constexpr const char* Access       = "Access";
         static constexpr const char* Streaming    = "Streaming";

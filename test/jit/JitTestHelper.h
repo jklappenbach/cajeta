@@ -98,6 +98,13 @@ public:
         // host-launch path). The CPU dispatcher tests set {Cpu} to exercise
         // the GPU-free fall-to-CPU launch through __cajeta_xpu_launch.
         std::vector<cajeta::xpu::Backend> xpuBackends;
+        // The xpu kernel gate (XpuKernelGate.h). The harness SWEEPS by default:
+        // a kernel a backend refuses is a warning and the compile proceeds, since
+        // a dozen suites deliberately compile one and probe the refused launch.
+        // The compiler binary gates (an error that fails the build); set this to
+        // make the in-process compile gate too and throw
+        // CAJETA_ERROR_XPU_KERNEL_GATE.
+        bool xpuKernelGateErrors = false;
         // Override the per-backend default device arch. May be a comma-separated
         // list ("gfx1100,gfx1151") to build a multi-arch bundle. Empty = default.
         std::string xpuArch;

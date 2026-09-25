@@ -175,6 +175,19 @@ burns 84 VGPRs. It cannot reveal that the body assumes 32 lanes.
   "no constraint stated", not "no constraint".
 - **2.6** When a declaration names a capability, it names a fact about
   the device, not a backend.
+- **2.7** When a kernel produces no device code for a backend the build
+  declares, the build fails and names the kernel, the backend and the
+  lowering's reason, after every such kernel has been named. A kernel may
+  instead name the plan item holding it,
+  `@Unlowered(backend = "cpu", tracked = "<item>")`, and is then a
+  countable note; a held kernel that lowers is stale and fails until the
+  declaration is removed. A box that lacks the assembler is not the
+  kernel's failure and stays a note. (Decided by Julian 2026-09-25: "make
+  it an error"; plan 4.2.2, 4.2.3.)
+- **2.8** When a kernel is launched with a block the compiler cannot bound
+  and declares no ceiling (§14), the same rule applies with
+  `@Unbounded(tracked = "<item>")`, stale once every launch site passes a
+  constant block or the ceiling is declared.
 
 ## 3. The profile decides, rather than prints
 
