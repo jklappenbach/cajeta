@@ -654,6 +654,9 @@ namespace cajeta {
         // own first, then parents by BFS. synthesizeInterfaceVTables and invokeMethod agree.
         std::vector<MethodPtr> getFlattenedInterfaceMethods();
 
+        // This class's interfaces and every base's, each once.
+        std::vector<CajetaClassPtr> allAssignableInterfaces() const;
+
         bool hasPendingIfaceVTables() const { return pendingIfaceVTables; }
 
         // The synthesized vtable global for `interfaceCanonical`, or null when not implemented.

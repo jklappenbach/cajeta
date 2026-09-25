@@ -1557,8 +1557,26 @@ namespace cajeta {
     // Emits one flat `[N x ptr]` vtable global per (this class, interface) pair over
     // the transitive implements closure. Slot 0 holds this class's drop function and
     // the method slots follow in getFlattenedInterfaceMethods order.
+    // Every interface this class is assignable to, its own and every base's.
+    // A class that inherits an interface through a parent still converts to it,
+    // and the conversion reads THIS class's table, so it needs one.
+    std::vector<CajetaClassPtr> CajetaClass::allAssignableInterfaces() const {
+        std::vector<CajetaClassPtr> out;
+        std::set<const CajetaClass*> seen;
+        std::function<void(const CajetaClass*)> walk = [&](const CajetaClass* c) {
+            if (!c || !seen.insert(c).second) return;
+            for (auto& iface : c->implementedInterfaces) {
+                if (iface && seen.insert(iface.get()).second) out.push_back(iface);
+            }
+            for (auto& sup : c->superClasses) walk(sup.get());
+        };
+        walk(this);
+        return out;
+    }
+
     void CajetaClass::synthesizeInterfaceVTables() {
-        if (implementedInterfaces.empty()) return;
+        auto directAndInherited = allAssignableInterfaces();
+        if (directAndInherited.empty()) return;
 
         auto& interfaceVTables = interfaceVTablesRef();
         auto& ctx = *module->getLlvmContext();
@@ -1585,7 +1603,7 @@ namespace cajeta {
                 if (parent && parent->isInterface()) collect(parent);
             }
         };
-        for (auto& direct : implementedInterfaces) collect(direct);
+        for (auto& direct : directAndInherited) collect(direct);
 
         pendingIfaceVTables = false;
         for (auto& iface : allIfaces) {
@@ -1595,20 +1613,22 @@ namespace cajeta {
             }
             std::string ifaceCanonical = iface->getQName()->toCanonical();
 
-            auto findByName = [&](const std::string& name) -> MethodPtr {
-                for (auto& [canon, m] : methods) {
-                    if (!m || m->isConstructor()) continue;
-                    if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
-                    if (m->getName() == name) return m;
-                }
-                for (auto& parent : superClasses) {
-                    for (auto& [canon, m] : parent->getMethods()) {
+            // Most-derived first, then each base in declaration order, to any depth.
+            std::function<MethodPtr(const CajetaClass*, const std::string&)> findInChain =
+                [&](const CajetaClass* c, const std::string& name) -> MethodPtr {
+                    if (!c) return nullptr;
+                    for (auto& [canon, m] : c->methods) {
                         if (!m || m->isConstructor()) continue;
                         if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
                         if (m->getName() == name) return m;
                     }
-                }
-                return nullptr;
+                    for (auto& parent : c->superClasses) {
+                        if (auto m = findInChain(parent.get(), name)) return m;
+                    }
+                    return nullptr;
+                };
+            auto findByName = [&](const std::string& name) -> MethodPtr {
+                return findInChain(this, name);
             };
 
             std::vector<llvm::Constant*> entries;
@@ -1624,14 +1644,18 @@ namespace cajeta {
                         != ifaceMethod->getModifiers().end()) continue;
                 MethodPtr concrete = findByName(ifaceMethod->getName());
                 if (!concrete || !concrete->getLlvmFunction()) {
-                    std::ostringstream w;
-                    w << "warning: [iface-vtable-null-slot] "
-                      << classCanonical << " has no built implementation for "
-                      << ifaceCanonical << "::" << ifaceMethod->getName()
-                      << (concrete ? " (found, LLVM function unbuilt)"
-                                   : " (no same-name concrete method)")
-                      << " — dispatch through this interface slot will crash\n";
-                    logLine("warn", w.str());
+                    // An abstract class may leave an interface method to its
+                    // descendants, so its empty slot is expected and not a warning.
+                    if (!isAbstract()) {
+                        std::ostringstream w;
+                        w << "warning: [iface-vtable-null-slot] "
+                          << classCanonical << " has no built implementation for "
+                          << ifaceCanonical << "::" << ifaceMethod->getName()
+                          << (concrete ? " (found, LLVM function unbuilt)"
+                                       : " (no same-name concrete method)")
+                          << " — dispatch through this interface slot will crash\n";
+                        logLine("warn", w.str());
+                    }
                     entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
                     continue;
                 }
@@ -3805,10 +3829,20 @@ namespace cajeta {
             for (auto& m : c->getMethodList()) {
                 if (m->isConstructor()) continue;
                 if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
-                if (m->isAbstract()) continue;
                 if (m->isMethodTemplate()) continue;
                 string canon = m->toCanonical(/*labeled=*/false);
                 string suffix = suffixOf(canon);
+                // A declared-abstract method takes a slot, filled by its stub, so
+                // the table has no hole. It never displaces a concrete entry.
+                if (m->isAbstract()) {
+                    if (!m->isDeclaredAbstract()) continue;
+                    bool covered = false;
+                    for (auto& [k, v] : uniqueByCanonical) {
+                        if (suffixOf(k) == suffix) { covered = true; break; }
+                    }
+                    if (!covered) uniqueByCanonical[canon] = m;
+                    continue;
+                }
                 for (auto it = uniqueByCanonical.begin();
                         it != uniqueByCanonical.end(); ) {
                     if (suffixOf(it->first) == suffix) {
@@ -3999,6 +4033,7 @@ namespace cajeta {
                     uniqueByCanonical[m->toCanonical(/*labeled=*/false)] = concrete;
                     continue;
                 }
+                if (isAbstract()) continue;
                 std::string msg = "class '" + qName->toCanonical()
                     + "' implements interface '" + iface->getQName()->toCanonical()
                     + "' but does not provide '" + m->toCanonical(/*labeled=*/false)
@@ -4009,7 +4044,7 @@ namespace cajeta {
                 if (parent && parent->isInterface()) walkIface(parent);
             }
         };
-        for (auto& iface : implementedInterfaces) {
+        for (auto& iface : allAssignableInterfaces()) {
             walkIface(iface);
         }
 
@@ -4024,11 +4059,7 @@ namespace cajeta {
                     "to the class, or give the method a body.",
                     "CAJETA_ERROR_ABSTRACT_METHOD_IN_CONCRETE_CLASS");
             }
-            bool selfIsAbstract = false;
-            for (auto& m : methodList) {
-                if (m && m->isAbstract()) { selfIsAbstract = true; break; }
-            }
-            if (!selfIsAbstract) {
+            if (!isAbstract()) {
                 auto suffixOf = [](const std::string& canon) -> std::string {
                     auto pos = canon.rfind("::");
                     return (pos == std::string::npos) ? canon : canon.substr(pos + 2);
@@ -4036,12 +4067,12 @@ namespace cajeta {
                 std::function<void(CajetaClassPtr)> checkAbstracts =
                     [&](CajetaClassPtr c) {
                         for (auto& m : c->getMethodList()) {
-                            if (!m || !m->isAbstract()) continue;
+                            if (!m || !m->isDeclaredAbstract()) continue;
                             std::string targetSuffix = suffixOf(
                                 m->toCanonical(/*labeled=*/false));
                             bool covered = false;
                             for (auto& [canon, mm] : uniqueByCanonical) {
-                                if (!mm || mm->isAbstract()) continue;
+                                if (!mm || mm->isDeclaredAbstract()) continue;
                                 if (suffixOf(canon) == targetSuffix) {
                                     covered = true;
                                     break;
@@ -5288,15 +5319,7 @@ namespace cajeta {
     // into a compile error at the allocation site instead.
     bool CajetaClass::hasAbstractMethod() const {
         for (const auto& m : methodList) {
-            if (!m || !m->isAbstract()) continue;
-            // A bodiless @Intrinsic rides the abstract emission path
-            // (signature only, no LLVM function) but is NOT an unfilled slot
-            // — the kernel lowering supplies it. It must not make the class
-            // read as abstract, or `heap CooperativeMatrix<…>()` would be
-            // refused with advice to "allocate a concrete subclass" of a
-            // final class. The host misuse is refused at the CALL instead.
-            if (m->findAnnotation("Intrinsic") != nullptr) continue;
-            return true;
+            if (m && m->isDeclaredAbstract()) return true;
         }
         return false;
     }

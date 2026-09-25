@@ -89,7 +89,7 @@ accepts every one of them as an ordinary identifier today, so methods named
 | `public` `protected` `private` | visibility |
 | `static` | type-level member |
 | `final` | no override / no reassignment |
-| `abstract` | deferred implementation |
+| `abstract` | a method with no body that descendants must implement, or a class that cannot be allocated |
 | `native` | implemented by the runtime |
 | `const` | reserved; the grammar accepts it as a modifier |
 | `strictfp` `transient` `volatile` | grammar-level modifiers, Java-familiar |

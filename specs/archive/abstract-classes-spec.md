@@ -109,6 +109,8 @@ tour, and the cajeta.dev site, which renders `docs/`.
   holds for its consumers.
 - **3.11** When a `@GenerateMock` target is abstract, the mock supplies a body
   for every abstract method and is instantiable.
+- **3.12** When an abstract class is named to `Class.heapInstance<T>`, the
+  result is empty. Reflection does not allocate what source cannot.
 
 ## 4. Dispatch
 

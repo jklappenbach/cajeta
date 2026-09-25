@@ -306,6 +306,23 @@ void __cajeta_throw(void* value) {
     longjmp((*excTop)->buf, 1);
 }
 
+// The vtable slot of an abstract method. Source cannot reach it: the compiler
+// refuses to allocate an abstract class and bounded reflection answers empty.
+// A raw reflective allocation or a foreign caller can, and lands here instead
+// of on a null pointer. CAJETA_PANIC_ABSTRACT_CALL = 4, integer-throw shape.
+__attribute__((noreturn))
+void __cajeta_abstract_call(const char* what) {
+    char buf[512];
+    int n = snprintf(buf, sizeof(buf),
+                     "cajeta: abstract method %s called on an instance that never "
+                     "implemented it\n", what ? what : "?");
+    if (n > 0) {
+        if (n > (int) sizeof(buf)) n = (int) sizeof(buf);
+        (void) write(2, buf, (size_t) n);
+    }
+    __cajeta_throw((void*) (uintptr_t) 4);
+}
+
 void* __cajeta_get_thrown(void) {
     struct cajeta_exception_frame** top = __cajeta_exc_top_ptr();
     return *top ? (*top)->thrown_value : NULL;

@@ -215,8 +215,9 @@ public final class Class<T> {
      * no unchecked downcast. Empty when the name is unknown OR resolves to a
      * non-`Shape` (a normal not-found, not a throw). The bound (`Shape.class`) is
      * injected by the compiler from the `<Shape>` token. The subtype check makes
-     * the `(T)` cast sound. Primary bounded-reflection entry point + DCE keep
-     * token; overloads the by-index `heapInstance(int32)` primitive below.
+     * the `(T)` cast sound. An abstract class answers empty: it is not
+     * instantiable by any path. Primary bounded-reflection entry point + DCE
+     * keep token; overloads the by-index `heapInstance(int32)` primitive below.
      *
      * ```cajeta
      * Optional<Shape> s #= Class.heapInstance<Shape>(name);
@@ -232,6 +233,9 @@ public final class Class<T> {
             return stack Optional<T>(false);
         }
         if (isSubtype(c.rtti, bound.rtti) == 0) {
+            return stack Optional<T>(false);
+        }
+        if (c.isAbstract()) {
             return stack Optional<T>(false);
         }
         return stack Optional<T>(true, #(T) c.heapInstance(0));

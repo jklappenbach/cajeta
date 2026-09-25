@@ -57,6 +57,7 @@ public final class Tour {
         demos.add(heap ClassesDemo());
         demos.add(heap NamedArgsDemo());
         demos.add(heap InheritanceDemo());
+        demos.add(heap AbstractClassesDemo());
         demos.add(heap MultiInheritanceDemo());
         demos.add(heap TemplatesDemo());
         demos.add(heap NumericTemplatesDemo());

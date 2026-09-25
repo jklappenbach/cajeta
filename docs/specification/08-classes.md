@@ -74,9 +74,13 @@ System.stdout.println(e.age(150) + " " + e.describe());    // 50 <ev>
 
 ## 8.5 Abstract Classes and Methods
 
-An **abstract method** is declared with the `abstract` modifier and no body. It contributes a signature and a dispatch slot, and it obligates every concrete descendant to supply an implementation. An **abstract class** is a class declared `abstract`. It is a type that bindings and parameters may name, and it is not instantiable.
+An **abstract method** is declared with the `abstract` modifier and no body. It contributes a signature and a dispatch slot, and it obligates every concrete descendant to supply an implementation. An **abstract class** is a class declared `abstract`. It is a type that bindings, parameters, fields, returns and array elements may name, and it is not instantiable. The two modifiers say different things, and neither is inferred from the other.
 
-A class that inherits an abstract method and does not override it is a compile-time error, `CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED`. The obligation is inherited through every parent, so a class must satisfy the abstract methods of each of its bases (§8.4).
+**The method modifier.** An abstract method has no body. It is a compile-time error to declare an abstract method with a body (`CAJETA_ERROR_ABSTRACT_METHOD_HAS_BODY`), to declare one `static` (`CAJETA_ERROR_ABSTRACT_STATIC_METHOD`, there is nothing to dispatch), or to declare one `private` (`CAJETA_ERROR_ABSTRACT_PRIVATE_METHOD`, a descendant could never override it). A missing body is not a way to spell `abstract`: a method with no body that is not declared `abstract`, and carries no annotation that supplies its body (`@Native`, `@Intrinsic`, a synthesizer), is a compile-time error, `CAJETA_ERROR_METHOD_MISSING_BODY`. On an interface method the modifier is accepted and redundant (Interfaces §9). A record cannot declare one (`CAJETA_ERROR_RECORD_ABSTRACT_METHOD`).
+
+**The class modifier.** A class that declares an abstract method must be declared `abstract`, or compilation fails with `CAJETA_ERROR_ABSTRACT_METHOD_IN_CONCRETE_CLASS`. The class modifier is two further assertions that the method modifier cannot make. First, the class is not allocatable with `heap` or `stack`, whether or not it has an abstract method (`CAJETA_ERROR_ABSTRACT_INSTANTIATION`). Second, the class may inherit an abstract method, or implement an interface, without discharging the obligation itself. The obligation passes to its descendants. A class that is not `abstract` must satisfy every obligation from every base and interface, or compilation fails with `CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED` or `CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED`. An `abstract final` class is a contradiction and is rejected (`CAJETA_ERROR_ABSTRACT_FINAL_CLASS`). A record cannot be abstract (`CAJETA_ERROR_RECORD_ABSTRACT`).
+
+Reflection reports both: `Class.isAbstract()`, and `isAbstract()` on the `Modifiers` of a class or a method ([cajeta.reflect](reflect/Reflection.md)).
 
 **Example 8.5-1.** An abstract base, a concrete subclass, and dispatch through a base-typed binding.
 
@@ -112,9 +116,77 @@ public class Blob extends Shape {
 }
 ```
 
+**Example 8.5-3.** An intermediate abstract class. `Polygon` adds state and behavior, leaves `area()` to its descendants, and does not restate it.
+
+```cajeta
+public abstract class Shape {
+    public Shape() { return; }
+    public abstract int32 area();
+}
+public abstract class Polygon extends Shape {
+    int32 sides;
+    public Polygon(int32 n) { this.sides = n; }
+    public int32 sideCount() { return this.sides; }
+}
+public class Square extends Polygon {
+    int32 side;
+    public Square(int32 s) { super(4); this.side = s; }
+    public int32 area() { return this.side * this.side; }
+}
+public final class C {
+    public static int32 run() {
+        Polygon p = heap Square(3);
+        return p.area() + p.sideCount();    // 13
+    }
+}
+```
+
+**Example 8.5-4.** A complete abstract class. Every method has a body, and the class is still not allocatable. Only its descendants are.
+
+<!-- snippet: skip -->
+```cajeta
+public abstract class Base {
+    public Base() { return; }
+    public int32 id() { return 7; }
+}
+public class Leaf extends Base {
+    public Leaf() { return; }
+}
+public final class C {
+    public static int32 run() {
+        Base b = heap Base();    // CAJETA_ERROR_ABSTRACT_INSTANTIATION
+        Base l = heap Leaf();    // fine
+        return l.id();
+    }
+}
+```
+
+**Example 8.5-5.** An abstract class implements an interface and leaves part of the contract to its leaf. A call through the interface reaches the leaf.
+
+```cajeta
+public interface Drawable {
+    int32 draw();
+    int32 id();
+}
+public abstract class Widget implements Drawable {
+    public Widget() { return; }
+    public int32 id() { return 1; }
+}
+public class Button extends Widget {
+    public Button() { return; }
+    public int32 draw() { return 41; }
+}
+public final class C {
+    public static int32 run() {
+        Drawable d = heap Button();
+        return d.draw() + d.id();    // 42
+    }
+}
+```
+
 **Satisfaction across parents.** Under multiple inheritance, an abstract method inherited from one parent is satisfied by a concrete method of the same signature inherited from another. The obligation belongs to the class, not to the branch that declared it, and dispatch through the abstract declaration lands on the concrete implementation.
 
-**Example 8.5-3.** The obligation from `A` is discharged by the implementation in `B`, and a call through the `A`-typed binding reaches it.
+**Example 8.5-6.** The obligation from `A` is discharged by the implementation in `B`, and a call through the `A`-typed binding reaches it.
 
 ```cajeta
 public abstract class A {
@@ -136,7 +208,7 @@ public final class C {
 }
 ```
 
-> *Discussion.* Three checks around `abstract` are unenforced as of 0.27.0, recorded as disabled pinning tests in `test/type/AbstractClassTests.cpp`. Allocating a class that has an unimplemented abstract method compiles and faults at run time when the empty slot is called, rather than being rejected at the allocation site. An abstract method declared with a body is accepted, and the body is ignored. A class that declares an abstract method is not required to carry the `abstract` modifier. The rules above are the intended behavior and bind when the diagnostics land.
+**The vtable slot.** A class with an abstract method has a dispatch slot for it that holds a stub rather than null. The compile-time rules above make that slot unreachable from cajeta source. A reflective or foreign caller that reaches it gets a panic naming the class and the method, not a null dereference.
 
 ## 8.6 Method Dispatch
 

@@ -28,6 +28,7 @@
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 
+#include <map>
 #include <string>
 
 #include "cajeta/error/Exception.h"
@@ -354,4 +355,316 @@ TEST(AbstractClassTests, abstractMethodReflectsIsAbstract) {
         "        return r;\n"
         "    }\n"
         "}\n"), 1);
+}
+
+// --- Unit 2: the class modifier ---------------------------------------------
+
+// A complete abstract class is still not allocatable, by either allocator.
+TEST(AbstractClassTests, completeAbstractClassRefusedAtHeap) {
+    compileExpectError(
+        "package test;\n"
+        "public abstract class Base {\n"
+        "    public Base() { return; }\n"
+        "    public int32 id() { return 7; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { Base b = heap Base(); return b.id(); }\n"
+        "}\n",
+        "CAJETA_ERROR_ABSTRACT_INSTANTIATION");
+}
+
+TEST(AbstractClassTests, completeAbstractClassRefusedAtStack) {
+    compileExpectError(
+        "package test;\n"
+        "public abstract class Base {\n"
+        "    public Base() { return; }\n"
+        "    public int32 id() { return 7; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { Base b = stack Base(); return b.id(); }\n"
+        "}\n",
+        "CAJETA_ERROR_ABSTRACT_INSTANTIATION");
+}
+
+// An intermediate abstract class leaves area() to its leaf without restating
+// it, and the leaf dispatches through the intermediate binding.
+TEST(AbstractClassTests, intermediateAbstractClassNeedNotRestate) {
+    EXPECT_EQ(runAbstractI32(
+        "package test;\n"
+        "public abstract class Shape {\n"
+        "    public Shape() { return; }\n"
+        "    public abstract int32 area();\n"
+        "}\n"
+        "public abstract class Polygon extends Shape {\n"
+        "    int32 sides;\n"
+        "    public Polygon(int32 n) { this.sides = n; }\n"
+        "    public int32 sideCount() { return this.sides; }\n"
+        "}\n"
+        "public class Square extends Polygon {\n"
+        "    int32 side;\n"
+        "    public Square(int32 s) { super(4); this.side = s; }\n"
+        "    public int32 area() { return this.side * this.side; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Polygon p = heap Square(3);\n"
+        "        return p.area() + p.sideCount();\n"
+        "    }\n"
+        "}\n"), 13);
+}
+
+// An abstract class implements an interface and leaves draw() to its leaf.
+// The call through the interface binding reaches the leaf.
+TEST(AbstractClassTests, abstractClassLeavesInterfaceMethodToLeaf) {
+    EXPECT_EQ(runAbstractI32(
+        "package test;\n"
+        "public interface Drawable { int32 draw(); int32 id(); }\n"
+        "public abstract class Widget implements Drawable {\n"
+        "    public Widget() { return; }\n"
+        "    public int32 id() { return 1; }\n"
+        "}\n"
+        "public class Button extends Widget {\n"
+        "    public Button() { return; }\n"
+        "    public int32 draw() { return 41; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Drawable d = heap Button();\n"
+        "        return d.draw() + d.id();\n"
+        "    }\n"
+        "}\n"), 42);
+}
+
+// The exemption is the abstract class's alone: a concrete leaf under it
+// still owes every obligation, from the base and from the interface.
+TEST(AbstractClassTests, concreteLeafStillOwesInheritedAbstract) {
+    compileExpectError(
+        "package test;\n"
+        "public abstract class Shape {\n"
+        "    public Shape() { return; }\n"
+        "    public abstract int32 area();\n"
+        "}\n"
+        "public abstract class Polygon extends Shape {\n"
+        "    public Polygon() { return; }\n"
+        "}\n"
+        "public class Blob extends Polygon {\n"
+        "    public Blob() { return; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n",
+        "CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED");
+}
+
+TEST(AbstractClassTests, concreteLeafStillOwesInterfaceMethod) {
+    compileExpectError(
+        "package test;\n"
+        "public interface Drawable { int32 draw(); }\n"
+        "public abstract class Widget implements Drawable {\n"
+        "    public Widget() { return; }\n"
+        "}\n"
+        "public class Button extends Widget {\n"
+        "    public Button() { return; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n",
+        "CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED");
+}
+
+TEST(AbstractClassTests, abstractFinalClassRejected) {
+    compileExpectError(
+        "package test;\n"
+        "public abstract final class Base {\n"
+        "    public Base() { return; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n",
+        "CAJETA_ERROR_ABSTRACT_FINAL_CLASS");
+}
+
+// An abstract class template instantiates abstract.
+TEST(AbstractClassTests, abstractTemplateInstantiationRefused) {
+    compileExpectError(
+        "package test;\n"
+        "public abstract class Box<T> {\n"
+        "    public Box() { return; }\n"
+        "    public abstract T get();\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { Box<int32> b = heap Box<int32>(); return 0; }\n"
+        "}\n",
+        "CAJETA_ERROR_ABSTRACT_INSTANTIATION");
+}
+
+// The abstract base lives in another source module.
+TEST(AbstractClassTests, abstractBaseFromAnotherSource) {
+    std::map<std::string, std::string> sources = {
+        {"lib.Shape",
+         "package lib;\n"
+         "public abstract class Shape {\n"
+         "    public Shape() { return; }\n"
+         "    public abstract int32 area();\n"
+         "    public int32 twice() { return this.area() * 2; }\n"
+         "}\n"},
+        {"test.D",
+         "package test;\n"
+         "import lib.Shape;\n"
+         "public class Square extends Shape {\n"
+         "    public Square() { return; }\n"
+         "    public int32 area() { return 9; }\n"
+         "}\n"
+         "public final class D {\n"
+         "    public static int32 run() { Shape s = heap Square(); return s.twice(); }\n"
+         "}\n"},
+    };
+    auto jit = CajetaJit::compile(sources, "test.D");
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 18);
+}
+
+// A mock of an abstract class supplies the abstract method and allocates.
+TEST(AbstractClassTests, generateMockOfAbstractClassAllocates) {
+    std::map<std::string, std::string> sources = {
+        {"dev.cajeta.unit.MockEngine",
+         "package dev.cajeta.unit;\n"
+         "import cajeta.lang.Int32;\n"
+         "public class MockEngine {\n"
+         "    public int32 calls;\n"
+         "    public MockEngine() { this.calls = 0; }\n"
+         "    public Object handle(String name, #Object[] a) {\n"
+         "        this.calls = this.calls + 1;\n"
+         "        return Int32.of(42);\n"
+         "    }\n"
+         "}\n"},
+        {"test.Gateway",
+         "package test;\n"
+         "@GenerateMock\n"
+         "public abstract class Gateway {\n"
+         "    public Gateway() { }\n"
+         "    public abstract int32 fetch(int32 k);\n"
+         "}\n"},
+        {"test.D",
+         "package test;\n"
+         "public final class D {\n"
+         "    public static int32 run() {\n"
+         "        MockGateway m = heap MockGateway();\n"
+         "        Gateway g = m;\n"
+         "        return g.fetch(5);\n"
+         "    }\n"
+         "}\n"},
+    };
+    auto jit = CajetaJit::compile(sources, "test.D");
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 42);
+}
+
+// The interface table follows the class hierarchy without an abstract class
+// in it: a leaf under a concrete implementor converts and dispatches.
+TEST(AbstractClassTests, leafUnderConcreteImplementorDispatchesThroughInterface) {
+    EXPECT_EQ(runAbstractI32(
+        "package test;\n"
+        "public interface Drawable { int32 draw(); }\n"
+        "public class Widget implements Drawable {\n"
+        "    public Widget() { return; }\n"
+        "    public int32 draw() { return 5; }\n"
+        "}\n"
+        "public class Button extends Widget {\n"
+        "    public Button() { return; }\n"
+        "    public int32 draw() { return 6; }\n"
+        "}\n"
+        "public class Plain extends Widget {\n"
+        "    public Plain() { return; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Drawable a = heap Button();\n"
+        "        Drawable b = heap Plain();\n"
+        "        return a.draw() * 10 + b.draw();\n"
+        "    }\n"
+        "}\n"), 65);
+}
+
+// Three levels: the implementation sits two bases up.
+TEST(AbstractClassTests, grandchildFindsImplementationTwoBasesUp) {
+    EXPECT_EQ(runAbstractI32(
+        "package test;\n"
+        "public interface Drawable { int32 draw(); int32 id(); }\n"
+        "public abstract class Widget implements Drawable {\n"
+        "    public Widget() { return; }\n"
+        "    public int32 id() { return 3; }\n"
+        "}\n"
+        "public abstract class Control extends Widget {\n"
+        "    public Control() { return; }\n"
+        "}\n"
+        "public class Button extends Control {\n"
+        "    public Button() { return; }\n"
+        "    public int32 draw() { return 40; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Drawable d = heap Button();\n"
+        "        return d.draw() + d.id();\n"
+        "    }\n"
+        "}\n"), 43);
+}
+
+// --- Unit 3: nothing reaches a null slot ------------------------------------
+
+// Bounded reflection refuses the abstract class and admits the concrete one.
+TEST(AbstractClassTests, reflectiveAllocationRefusesAbstractClass) {
+    EXPECT_EQ(runAbstractI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.lang.Optional;\n"
+        "public abstract class Shape {\n"
+        "    public Shape() { return; }\n"
+        "    public abstract int32 area();\n"
+        "}\n"
+        "public class Square extends Shape {\n"
+        "    public Square() { return; }\n"
+        "    public int32 area() { return 4; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 r = 0;\n"
+        "        Optional<Shape> a #= Class.heapInstance<Shape>(\"test.Shape\");\n"
+        "        if (!a.isPresent()) { r = r + 1; }\n"
+        "        Optional<Shape> b #= Class.heapInstance<Shape>(\"test.Square\");\n"
+        "        if (b.isPresent()) { r = r + 2 + b.get().area(); }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n"), 7);
+}
+
+// The raw allocation primitive bypasses the bound check. A call on the result
+// lands on the abstract slot's stub, which raises, so the process neither
+// faults nor returns a value from nothing.
+TEST(AbstractClassTests, abstractSlotStubRaisesInsteadOfFaulting) {
+    EXPECT_EQ(runAbstractI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.lang.Optional;\n"
+        "public abstract class Shape {\n"
+        "    public Shape() { return; }\n"
+        "    public abstract int32 area();\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Optional<Class<?>> oc #= Class.forName(\"test.Shape\");\n"
+        "        if (!oc.isPresent()) { return -1; }\n"
+        "        Class<?> c = oc.get();\n"
+        "        Shape s #= (Shape) c.heapInstance(0);\n"
+        "        try {\n"
+        "            return s.area();\n"
+        "        } catch (Throwable t) {\n"
+        "            return 42;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"), 42);
 }

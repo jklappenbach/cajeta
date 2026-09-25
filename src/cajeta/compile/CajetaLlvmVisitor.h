@@ -909,6 +909,13 @@ namespace cajeta {
                     }
                 }
             }
+            if (structure->isAbstract() && structure->getModifiers().count(FINAL)) {
+                throw Exception(
+                    "class '" + qName->toCanonical() + "' is declared both abstract "
+                    "and final. An abstract class exists to be extended and a final "
+                    "class cannot be; choose one.",
+                    "CAJETA_ERROR_ABSTRACT_FINAL_CLASS");
+            }
 
             // `@Sealed` bars reflective access to private members; recorded as a class
             // modifier so it rides into the RTTI header's modifiers word.

@@ -27,6 +27,50 @@ Shape s = stack Square(5);
 int32 a = s.area();
 ```
 
+## Abstract classes and methods
+
+`abstract` on a method declares a signature with no body. Every concrete
+descendant must implement it, or compilation fails with
+`CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED`. A class that declares an abstract
+method must itself be declared `abstract`, and an abstract class cannot be
+allocated, only its descendants can. The class keyword also lets a class stay
+incomplete on purpose: an intermediate abstract class can add fields and
+behavior and leave its parent's abstract methods to the leaves, without
+restating them. Tour demo:
+[AbstractClassesDemo](../../samples/tour/src/main/cajeta/tour/lang/AbstractClassesDemo.cajeta).
+
+```cajeta
+public abstract class Shape {
+    public abstract int32 area();
+    public int32 twice() { return this.area() * 2; }
+}
+public abstract class Polygon extends Shape {
+    int32 sides;
+    public Polygon(int32 n) { this.sides = n; }
+    public int32 sideCount() { return this.sides; }
+}
+public class Square extends Polygon {
+    int32 side;
+    public Square(int32 s) { super(4); this.side = s; }
+    public int32 area() { return this.side * this.side; }
+}
+```
+
+```cajeta
+Shape s = heap Square(3);
+int32 eighteen = s.twice();
+Polygon p = heap Square(3);
+int32 four = p.sideCount();
+```
+
+A missing body is not a way to spell `abstract`. A method with no body must
+say `abstract`, or carry an annotation that supplies one such as `@Native`.
+An abstract method with a body, a `static` or `private` abstract method, and
+an `abstract final` class are each rejected by name. A class declared
+`abstract` with every method implemented is legal and still not allocatable,
+which is the way to say "extend me, do not construct me". The specification
+has the full rule set: [Classes §8.5](../specification/08-classes.md).
+
 ## Multiple inheritance
 
 A class may extend several bases and inherit concrete behavior from all of

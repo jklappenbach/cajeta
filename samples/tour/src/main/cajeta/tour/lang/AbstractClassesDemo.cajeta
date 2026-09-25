@@ -1,0 +1,76 @@
+package tour.lang;
+
+import tour.DemoClass;
+
+// `abstract` on a method: a signature with no body that every concrete
+// descendant must implement. `abstract` on a class: not allocatable, and
+// free to leave inherited obligations to its descendants. The two say
+// different things, and a class that declares an abstract method must
+// say `abstract` itself.
+
+// Complete or not, an abstract class is never allocated: `heap Figure()`
+// is CAJETA_ERROR_ABSTRACT_INSTANTIATION.
+public abstract class Figure {
+    public Figure() { return; }
+    public abstract int32 area();
+    public int32 twice() { return this.area() * 2; }
+}
+
+// An intermediate abstract class adds state and behavior, and leaves
+// area() to the leaves without restating it.
+public abstract class Sided extends Figure {
+    int32 sides;
+    public Sided(int32 n) { this.sides = n; }
+    public int32 sideCount() { return this.sides; }
+}
+
+public class Quad extends Sided {
+    int32 side;
+    public Quad(int32 s) { super(4); this.side = s; }
+    public int32 area() { return this.side * this.side; }
+}
+
+public class Tri extends Sided {
+    int32 base;
+    int32 height;
+    public Tri(int32 b, int32 h) { super(3); this.base = b; this.height = h; }
+    public int32 area() { return this.base * this.height / 2; }
+}
+
+// An abstract class may implement an interface and leave part of the
+// contract to its leaf. A call through the interface reaches the leaf.
+public interface Labeled {
+    String label();
+    int32 rank();
+}
+
+public abstract class Ranked implements Labeled {
+    public Ranked() { return; }
+    public int32 rank() { return 1; }
+}
+
+public class Named extends Ranked {
+    public Named() { return; }
+    public String label() { return "named"; }
+}
+
+public class AbstractClassesDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Abstract classes --");
+
+        Figure q = heap Quad(3);
+        Sided t = heap Tri(4, 5);
+        System.stdout.println("  Quad(3).twice()      = " + q.twice());
+        System.stdout.println("  Tri(4,5).area()      = " + t.area());
+        System.stdout.println("  Tri(4,5).sideCount() = " + t.sideCount());
+        this.check(q.twice() == 18, "base-typed call reaches the leaf's area()");
+        this.check(t.area() == 10 && t.sideCount() == 3,
+            "the intermediate abstract class carries its own state");
+
+        Labeled n = heap Named();
+        System.stdout.println("  Named.label()/rank() = " + n.label() + "/" + n.rank());
+        this.check(n.label().equals("named") && n.rank() == 1,
+            "an interface call reaches the leaf and the abstract base");
+    }
+}
