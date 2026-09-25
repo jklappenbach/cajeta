@@ -37,6 +37,7 @@
 #include <fstream>
 #include <random>
 #include <vector>
+#include "KernelLoweringProbe.h"
 
 using namespace cajeta::xpu::nvidia;
 using cajeta::Compiler;
@@ -44,32 +45,8 @@ using cajeta::CajetaModulePtr;
 
 namespace {
 
-CajetaModulePtr compileForInspection(Compiler& compiler,
-                                     const std::string& source,
-                                     const std::string& fqClassName) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = std::filesystem::temp_directory_path()
-              / ("cajeta_xpu_dev_" + std::to_string(rng()));
-    std::filesystem::create_directories(base);
-    std::filesystem::path rel;
-    size_t start = 0;
-    for (size_t i = 0; i <= fqClassName.size(); ++i) {
-        if (i == fqClassName.size() || fqClassName[i] == '.') {
-            rel /= fqClassName.substr(start, i - start);
-            start = i + 1;
-        }
-    }
-    rel += ".cajeta";
-    auto full = base / rel;
-    std::filesystem::create_directories(full.parent_path());
-    std::ofstream out(full); out << source; out.close();
-    auto archive = std::filesystem::temp_directory_path()
-                 / ("cajeta_xpu_dev_arch_" + std::to_string(rng()));
-    std::filesystem::create_directories(archive);
-    auto m = compiler.createModule(full.string(), base.string(), archive.string());
-    compiler.compile(m);
-    return m;
-}
+using cajeta::xpu::probe::compileForInspection;
+
 
 cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
                              const std::string& name) {

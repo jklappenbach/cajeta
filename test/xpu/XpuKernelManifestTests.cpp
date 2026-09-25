@@ -58,6 +58,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "KernelLoweringProbe.h"
 
 using cajeta::Compiler;
 using cajeta::CajetaModulePtr;
@@ -71,20 +72,8 @@ namespace {
 
 // ---- fixtures ------------------------------------------------------------ //
 
-CajetaModulePtr compileForInspection(Compiler& compiler, const std::string& source) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = fs::temp_directory_path()
-              / ("cajeta_xpu_manifest_" + std::to_string(rng()));
-    fs::create_directories(base / "test");
-    std::ofstream(base / "test" / "M.cajeta") << source;
-    auto archive = fs::temp_directory_path()
-                 / ("cajeta_xpu_manifest_arch_" + std::to_string(rng()));
-    fs::create_directories(archive);
-    auto m = compiler.createModule((base / "test" / "M.cajeta").string(),
-                                   base.string(), archive.string());
-    compiler.compile(m);
-    return m;
-}
+using cajeta::xpu::probe::compileForInspection;
+
 
 MethodPtr findMethod(const cajeta::CajetaClassPtr& klass, const std::string& name) {
     for (auto& [k, m] : klass->getMethods())

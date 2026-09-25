@@ -45,6 +45,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include "KernelLoweringProbe.h"
 
 using cajeta::Compiler;
 using cajeta::CajetaModulePtr;
@@ -161,22 +162,13 @@ float expectedAt(uint32_t i) {
          + std::fma(x, 2.0f, 1.0f);
 }
 
-CajetaModulePtr compileForInspection(Compiler& compiler,
-                                     const std::string& source,
-                                     const std::string& cls) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = std::filesystem::temp_directory_path()
-              / ("cajeta_xpu_mathdev_" + std::to_string(rng()));
-    std::filesystem::create_directories(base / "test");
-    std::ofstream(base / "test" / (cls + ".cajeta")) << source;
-    auto archive = std::filesystem::temp_directory_path()
-                 / ("cajeta_xpu_mathdev_arch_" + std::to_string(rng()));
-    std::filesystem::create_directories(archive);
-    auto full = base / "test" / (cls + ".cajeta");
-    auto m = compiler.createModule(full.string(), base.string(), archive.string());
-    compiler.compile(m);
-    return m;
+// A simple class name under package `test`, forwarded to the shared helper.
+inline cajeta::CajetaModulePtr compileForInspection(cajeta::Compiler& compiler,
+                                                    const std::string& source,
+                                                    const std::string& cls) {
+    return cajeta::xpu::probe::compileForInspection(compiler, source, "test." + cls);
 }
+
 
 cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
                              const std::string& name) {

@@ -38,6 +38,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include "KernelLoweringProbe.h"
 
 using cajeta::Compiler;
 using cajeta::CajetaModulePtr;
@@ -59,22 +60,8 @@ const char* kVaddSource =
     "    }\n"
     "}\n";
 
-CajetaModulePtr compileForInspection(Compiler& compiler,
-                                     const std::string& source) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = std::filesystem::temp_directory_path()
-              / ("cajeta_xpu_vlsgpu_" + std::to_string(rng()));
-    std::filesystem::create_directories(base / "test");
-    std::ofstream(base / "test" / "M.cajeta") << source;
-    auto archive = std::filesystem::temp_directory_path()
-                 / ("cajeta_xpu_vlsgpu_arch_" + std::to_string(rng()));
-    std::filesystem::create_directories(archive);
-    auto full = base / "test" / "M.cajeta";
-    auto m = compiler.createModule(full.string(), base.string(),
-                                   archive.string());
-    compiler.compile(m);
-    return m;
-}
+using cajeta::xpu::probe::compileForInspection;
+
 
 cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
                              const std::string& name) {
