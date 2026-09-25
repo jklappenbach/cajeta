@@ -453,6 +453,42 @@ namespace cajeta {
             return Modifiable::toModifier(ctx->getText());
         }
 
+        // abstract-classes spec §2: the keyword and a missing body are two facts.
+        // Runs after the modifier walk and after a synthesizer has had its
+        // chance to splice a body, so a claimed declaration arrives with one.
+        static void checkAbstractModifier(const MethodPtr& m) {
+            if (!m || m->isConstructor()) return;
+            const bool declared = m->isDeclaredAbstract();
+            const string where = "'" + m->getName() + "'";
+            if (declared && m->getBlock() != nullptr) {
+                throw Exception(
+                    "abstract method " + where + " has a body. An abstract method "
+                    "declares a signature only; remove the body or the modifier.",
+                    "CAJETA_ERROR_ABSTRACT_METHOD_HAS_BODY");
+            }
+            if (declared && m->getModifiers().count(STATIC)) {
+                throw Exception(
+                    "abstract method " + where + " is static. There is nothing to "
+                    "dispatch on a static method, so it cannot be abstract.",
+                    "CAJETA_ERROR_ABSTRACT_STATIC_METHOD");
+            }
+            if (declared && m->getModifiers().count(PRIVATE)) {
+                throw Exception(
+                    "abstract method " + where + " is private. A subclass cannot "
+                    "override a private method, so the obligation could never be met.",
+                    "CAJETA_ERROR_ABSTRACT_PRIVATE_METHOD");
+            }
+            const bool bodySupplied = m->findAnnotation("Native") != nullptr
+                || m->findAnnotation("Intrinsic") != nullptr;
+            if (!declared && m->getBlock() == nullptr && !m->isMethodTemplate()
+                    && !bodySupplied) {
+                throw Exception(
+                    "method " + where + " has no body. Declare it `abstract`, or give "
+                    "it a body, or an annotation that supplies one (, ).",
+                    "CAJETA_ERROR_METHOD_MISSING_BODY");
+            }
+        }
+
         virtual std::any
         visitClassOrInterfaceModifier(CajetaParser::ClassOrInterfaceModifierContext* ctx) override {
             return visitChildren(ctx);
@@ -848,16 +884,14 @@ namespace cajeta {
                     // A classOrInterfaceModifier is EITHER an annotation OR a
                     // keyword: annotation() is null for the keyword form.
                     if (!mod->annotation()) {
-                        // `abstract` maps to Modifier::NONE, so gate on the raw
-                        // keyword text.
-                        if (isRecord && mod->getText() == "abstract") {
+                        Modifier m = Modifiable::toModifier(mod->getText());
+                        if (isRecord && m == ABSTRACT) {
                             throw Exception(
                                 "record '" + qName->toCanonical()
                                     + "' cannot be abstract — records are "
                                       "concrete no-vtable value types",
                                 "CAJETA_ERROR_RECORD_ABSTRACT");
                         }
-                        Modifier m = Modifiable::toModifier(mod->getText());
                         if (m != NONE) structure->addModifier(m);
                         continue;
                     }
@@ -1734,6 +1768,7 @@ namespace cajeta {
             // below), and the final-or-static rule on method-level templates.
             if (auto methodDecl = std::dynamic_pointer_cast<MethodDeclaration>(memberDeclaration)) {
                 if (auto m = methodDecl->getMethod()) {
+                    checkAbstractModifier(m);
                     const std::string& name = m->getName();
                     bool isStatic = m->getModifiers().find(STATIC)
                                   != m->getModifiers().end();

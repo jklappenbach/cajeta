@@ -211,6 +211,7 @@ namespace cajeta {
         bool isParentOrKind(CajetaClassPtr source);
 
         bool isInterface() const { return interfaceFlag; }
+        bool isAbstract() const { return modifiers.count(ABSTRACT) != 0; }
         void setIsInterface(bool v) { interfaceFlag = v; }
         // Annotation type (`annotation Foo {}`): a resolvable type token, never prototyped.
         bool isAnnotation() const { return annotationFlag; }

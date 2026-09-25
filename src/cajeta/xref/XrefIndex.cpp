@@ -348,6 +348,7 @@ namespace cajeta::xref {
                 {Modifier::PROTECTED, "protected"},
                 {Modifier::STATIC,    "static"},
                 {Modifier::FINAL,     "final"},
+                {Modifier::ABSTRACT,  "abstract"},
             };
             for (auto& [mod, name] : kNamed) {
                 if (m->getModifiers().count(mod)) out.emplace_back(name);

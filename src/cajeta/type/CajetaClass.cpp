@@ -4014,6 +4014,16 @@ namespace cajeta {
         }
 
         {
+            for (auto& m : methodList) {
+                if (!m || !m->isDeclaredAbstract() || isAbstract()) continue;
+                throw Exception(
+                    "class '" + qName->toCanonical() + "' declares abstract method '"
+                    + m->toCanonical(/*labeled=*/false)
+                    + "' but is not declared abstract. A class with an abstract "
+                    "method cannot be allocated, and it must say so: add `abstract` "
+                    "to the class, or give the method a body.",
+                    "CAJETA_ERROR_ABSTRACT_METHOD_IN_CONCRETE_CLASS");
+            }
             bool selfIsAbstract = false;
             for (auto& m : methodList) {
                 if (m && m->isAbstract()) { selfIsAbstract = true; break; }

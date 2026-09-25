@@ -28,7 +28,9 @@ namespace cajeta {
         // Class.forName registry even when nothing references it.
         REFLECT_RETAINED = 0x200,
         // A `mut` field accepts in-place writes; a record is otherwise immutable.
-        MUT = 0x400
+        MUT = 0x400,
+        // `abstract` on a class or a method.
+        ABSTRACT = 0x800
     };
 
     class Modifiable {
@@ -81,6 +83,8 @@ namespace cajeta {
                 return ASYNC;
             } else if (value == "mut") {
                 return MUT;
+            } else if (value == "abstract") {
+                return ABSTRACT;
             }
 
             return NONE;
@@ -104,6 +108,8 @@ namespace cajeta {
                     return "package";
                 case ASYNC:
                     return "async";
+                case ABSTRACT:
+                    return "abstract";
                 default:
                     return "";
             }

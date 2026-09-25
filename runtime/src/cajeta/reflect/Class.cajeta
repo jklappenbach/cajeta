@@ -255,7 +255,7 @@ public final class Class<T> {
     /**
      * Raw modifier bit field for the class. Bits follow `cajeta.type.Modifier`:
      * PACKAGE=0x01, PUBLIC=0x02, PRIVATE=0x04, PROTECTED=0x08, STATIC=0x10,
-     * FINAL=0x20, SYNCHRONIZED=0x40, ASYNC=0x80. A typed `Modifiers` wrapper
+     * FINAL=0x20, SYNCHRONIZED=0x40, ASYNC=0x80, ABSTRACT=0x800. A typed `Modifiers` wrapper
      * lands later; this is the underlying data.
      */
     public int32 getModifierFlags() {
@@ -264,6 +264,7 @@ public final class Class<T> {
 
     public boolean isPublic() { return (modifiersOf(this.rtti) & 0x02) != 0; }
     public boolean isFinal()  { return (modifiersOf(this.rtti) & 0x20) != 0; }
+    public boolean isAbstract() { return (modifiersOf(this.rtti) & 0x800) != 0; }
 
     /** This class's modifiers as a typed {@link Modifiers} value (REFL-1.7). */
     public #Modifiers getModifiers() {

@@ -72,7 +72,7 @@ TEST(AbstractClassTests, abstractClassIsNotInstantiable) {
 }
 
 // An abstract method declares a signature and no body.
-TEST(AbstractClassTests, DISABLED_abstractMethodWithBodyRejected) {
+TEST(AbstractClassTests, abstractMethodWithBodyRejected) {
     const char* src =
         "package test;\n"
         "public abstract class Shape {\n"
@@ -87,7 +87,7 @@ TEST(AbstractClassTests, DISABLED_abstractMethodWithBodyRejected) {
 
 // A class that declares an abstract method is itself abstract, and must
 // say so.
-TEST(AbstractClassTests, DISABLED_abstractMethodRequiresAbstractClass) {
+TEST(AbstractClassTests, abstractMethodRequiresAbstractClass) {
     const char* src =
         "package test;\n"
         "public class Shape {\n"
@@ -202,4 +202,156 @@ TEST(AbstractClassTests, anArrayOfAnAbstractTypeIsLegal) {
         "        return all[0].area();\n"
         "    }\n"
         "}\n");
+}
+
+// --- abstract-classes plan Unit 0: the modifier is stored --------------------
+
+namespace {
+
+int32_t runAbstractI32(const std::string& src) {
+    auto jit = CajetaJit::compile(src, "test.D");
+    if (!jit) { ADD_FAILURE() << "compile returned null"; return -1; }
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    return fn();
+}
+
+}  // namespace
+
+// The class modifier reaches reflection: Shape says abstract, Square does not.
+TEST(AbstractClassTests, abstractClassReflectsIsAbstract) {
+    EXPECT_EQ(runAbstractI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Modifiers;\n"
+        "import cajeta.lang.Optional;\n"
+        "public abstract class Shape {\n"
+        "    public Shape() { return; }\n"
+        "    public abstract int32 area();\n"
+        "}\n"
+        "public class Square extends Shape {\n"
+        "    public Square() { return; }\n"
+        "    public int32 area() { return 4; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 r = 0;\n"
+        "        Optional<Class<?>> os #= Class.forName(\"test.Shape\");\n"
+        "        if (os.isPresent()) {\n"
+        "            Class<?> s = os.get();\n"
+        "            if (s.isAbstract()) { r = r + 1; }\n"
+        "            Modifiers m #= s.getModifiers();\n"
+        "            if (m.isAbstract()) { r = r + 2; }\n"
+        "        }\n"
+        "        Square q = heap Square();\n"
+        "        if (Class.of(q).isAbstract()) { r = r + 100; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n"), 3);
+}
+
+// Records stay concrete no-vtable value types.
+TEST(AbstractClassTests, abstractRecordRejected) {
+    compileExpectError(
+        "package test;\n"
+        "public abstract record R { int32 x; }\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n",
+        "CAJETA_ERROR_RECORD_ABSTRACT");
+}
+
+// --- Unit 1: the method modifier -------------------------------------------
+
+// A missing body is not a way to spell abstract. The must-not-fire side is
+// the embedded stdlib, whose @Native and @Intrinsic methods are bodiless and
+// compile in every test here.
+TEST(AbstractClassTests, bodilessMethodWithoutKeywordRejected) {
+    compileExpectError(
+        "package test;\n"
+        "public abstract class Shape {\n"
+        "    public Shape() { return; }\n"
+        "    public int32 area();\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n",
+        "CAJETA_ERROR_METHOD_MISSING_BODY");
+}
+
+TEST(AbstractClassTests, abstractStaticRejected) {
+    compileExpectError(
+        "package test;\n"
+        "public abstract class Shape {\n"
+        "    public Shape() { return; }\n"
+        "    public static abstract int32 count();\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n",
+        "CAJETA_ERROR_ABSTRACT_STATIC_METHOD");
+}
+
+TEST(AbstractClassTests, abstractPrivateRejected) {
+    compileExpectError(
+        "package test;\n"
+        "public abstract class Shape {\n"
+        "    public Shape() { return; }\n"
+        "    private abstract int32 area();\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n",
+        "CAJETA_ERROR_ABSTRACT_PRIVATE_METHOD");
+}
+
+// On an interface method the keyword is redundant and accepted.
+TEST(AbstractClassTests, abstractOnInterfaceMethodAccepted) {
+    EXPECT_EQ(runAbstractI32(
+        "package test;\n"
+        "public interface Drawable {\n"
+        "    abstract int32 draw();\n"
+        "}\n"
+        "public class Sprite implements Drawable {\n"
+        "    public Sprite() { return; }\n"
+        "    public int32 draw() { return 42; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Drawable d = heap Sprite();\n"
+        "        return d.draw();\n"
+        "    }\n"
+        "}\n"), 42);
+}
+
+// The method modifier reaches reflection too.
+TEST(AbstractClassTests, abstractMethodReflectsIsAbstract) {
+    EXPECT_EQ(runAbstractI32(
+        "package test;\n"
+        "import cajeta.reflect.Class;\n"
+        "import cajeta.reflect.Method;\n"
+        "import cajeta.reflect.Modifiers;\n"
+        "import cajeta.lang.Optional;\n"
+        "public abstract class Shape {\n"
+        "    public Shape() { return; }\n"
+        "    public abstract int32 area();\n"
+        "    public int32 twice() { return 2; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 r = 0;\n"
+        "        Optional<Class<?>> os #= Class.forName(\"test.Shape\");\n"
+        "        if (!os.isPresent()) { return -1; }\n"
+        "        Class<?> s = os.get();\n"
+        "        int32 n = s.getMethodCount();\n"
+        "        int32 i = 0;\n"
+        "        while (i < n) {\n"
+        "            Method m #= s.getMethod(i);\n"
+        "            Modifiers md #= m.getModifiers();\n"
+        "            if (m.getName().equals(\"test.Shape::area(pointer)\") && md.isAbstract()) { r = r + 1; }\n"
+        "            if (m.getName().equals(\"test.Shape::twice(pointer)\") && md.isAbstract()) { r = r + 100; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n"), 1);
 }
