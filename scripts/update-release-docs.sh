@@ -80,7 +80,24 @@ installers_for() {
     [ -d "$d" ] || continue
     # `-exec basename` rather than `-printf '%f'`: the latter is GNU-only and
     # the macOS leg runs BSD find, where it is a usage error.
-    find "$d" -type f -path "*/cajeta-${triple}/*" \
+    #
+    # NOT under cvm-dist/. cvm's own packages are staged there, inside this
+    # same artifact, and they are a different download for a different tool.
+    # Without the prune the compiler's Installer cell would advertise them.
+    find "$d" -type f -path "*/cajeta-${triple}/*" -not -path '*/cvm-dist/*' \
+      \( -name '*.deb' -o -name '*.rpm' -o -name '*.msi' \
+         -o -name '*.pkg' -o -name '*.pkg.tar.zst' \) -exec basename {} \;
+  done | sort -u
+}
+
+# cvm's own native packages for a triple, which the release stages under
+# cvm-dist/ beside the bare binary. Same formats, different tool, so they are
+# found by the directory that scopes them rather than by extension.
+cvm_packages_for() {
+  local triple="$1" d
+  for d in "${ASSET_DIRS[@]}"; do
+    [ -d "$d" ] || continue
+    find "$d" -type f -path "*/cajeta-${triple}/cvm-dist/*" \
       \( -name '*.deb' -o -name '*.rpm' -o -name '*.msi' \
          -o -name '*.pkg' -o -name '*.pkg.tar.zst' \) -exec basename {} \;
   done | sort -u
@@ -99,9 +116,22 @@ digest_of() {
   printf ''
 }
 
-# The cell for those installers: one link per format, labelled by extension so
-# a reader picks the one their system takes. Sorted, so a re-render of an
-# unchanged release is byte-identical.
+# One link per format, labelled by extension so a reader picks what their
+# system takes. Sorted, so a re-render of an unchanged release is byte-identical.
+cvm_package_cell() {
+  local triple="$1" cell="" base ext
+  while IFS= read -r base; do
+    [ -n "$base" ] || continue
+    case "$base" in
+      *.pkg.tar.zst) ext="pkg.tar.zst" ;;
+      *)             ext="${base##*.}" ;;
+    esac
+    cell+="[\`.${ext}\`](${BASE}/${base}) "
+  done < <(cvm_packages_for "$triple")
+  [ -n "$cell" ] && printf '%s' "${cell% }" || printf '—'
+}
+
+# Same shape for the compiler's installers.
 installer_cell() {
   local triple="$1" cell="" base ext
   while IFS= read -r base; do
@@ -147,6 +177,7 @@ for entry in "${TARGETS[@]}"; do
   cajeta_bin="$(asset_for cajeta "$triple")"
   cvm_bin="$(asset_for cvm "$triple")"
   inst_cell="$(installer_cell "$triple")"
+  cvmpkg_cell="$(cvm_package_cell "$triple")"
   archive="cajeta-${TAG}-${triple}.${ext}"
   # A triple earns a row only on an asset that NAMES the tag. Installers are
   # found by their artifact directory, which carries no version, so they cannot
@@ -162,7 +193,7 @@ for entry in "${TARGETS[@]}"; do
   [ -n "$cajeta_bin" ] && cajeta_cell="[binary](${BASE}/${cajeta_bin})" || cajeta_cell="—"
   [ -n "$cvm_bin" ]    && cvm_cell="[\`cvm\`](${BASE}/${cvm_bin})"     || cvm_cell="—"
 
-  rows+="| ${label} | \`${triple}\` | ${archive_cell} | ${cajeta_cell} | ${inst_cell} | ${cvm_cell} |"$'\n'
+  rows+="| ${label} | \`${triple}\` | ${archive_cell} | ${cajeta_cell} | ${inst_cell} | ${cvm_cell} | ${cvmpkg_cell} |"$'\n'
 
   # The same pass feeds the manifest. One enumeration, two surfaces, so the
   # README and the home page cannot come to different conclusions about what
@@ -175,6 +206,7 @@ for entry in "${TARGETS[@]}"; do
   emit compiler "$cajeta_bin"
   emit cvm "$cvm_bin"
   while IFS= read -r inst; do emit installer "$inst"; done < <(installers_for "$triple")
+  while IFS= read -r cp; do emit cvm-installer "$cp"; done < <(cvm_packages_for "$triple")
 done
 
 [ -n "$rows" ] || {
@@ -201,22 +233,26 @@ for line in sys.stdin.read().splitlines():
     p = plats.get(triple)
     if p is None:
         order.append(triple)
-        p = plats[triple] = {"triple": triple, "label": label, "installers": []}
+        p = plats[triple] = {"triple": triple, "label": label,
+                             "installers": [], "cvm-installers": []}
     entry = {"name": name, "url": f"{base}/{name}"}
     if digest:
         entry["sha256"] = digest
-    if kind == "installer":
+    # Both installer kinds are LISTS: a platform can ship more than one format
+    # (Linux ships deb and rpm), and a scalar silently keeps only the last.
+    if kind in ("installer", "cvm-installer"):
         # Labelled by what a reader has to know to pick one.
         ext = "pkg.tar.zst" if name.endswith(".pkg.tar.zst") else name.rsplit(".", 1)[-1]
         entry["format"] = ext
-        p["installers"].append(entry)
+        p[kind + "s"].append(entry)
     else:
         p[kind] = entry
 
 for p in plats.values():
-    p["installers"].sort(key=lambda e: e["name"])
-    if not p["installers"]:
-        del p["installers"]
+    for key in ("installers", "cvm-installers"):
+        p[key].sort(key=lambda e: e["name"])
+        if not p[key]:
+            del p[key]
 
 doc = {
     "schemaVersion": 1,
@@ -240,13 +276,17 @@ readme_body=$(cat <<EOF
 
 **[Release notes and every asset →](https://github.com/${REPO}/releases/tag/${TAG})**
 
-| Platform | Triple | Archive | Compiler | Installer | cvm |
-|---|---|---|---|---|---|
+| Platform | Triple | Archive | Compiler | Installer | cvm | cvm installer |
+|---|---|---|---|---|---|---|
 ${rows}
-Each binary is published with a matching \`.sha256\`. **Installer** is the
-native package for the platform, and **Archive** is the same toolchain as a
-plain tarball or zip. \`cvm\` is the toolchain manager — download it once,
-then \`cvm install latest\` handles every upgrade after that.
+Each download is published with a matching \`.sha256\`. **Installer** is the
+native package for the platform and **Archive** is the same toolchain as a
+plain tarball or zip.
+
+\`cvm\` is the toolchain manager: get it once and \`cvm install latest\` handles
+every upgrade after that. Prefer **cvm installer**, which puts \`cvm\` on your
+PATH ready to run. The bare \`cvm\` download is the no-package-manager path and
+arrives **without its executable bit**, so it needs \`chmod +x\` first.
 See [Installation](docs/guide/01-installation.md).
 
 EOF

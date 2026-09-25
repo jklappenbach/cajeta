@@ -15,6 +15,10 @@ type Platform = {
   compiler?: Asset;
   cvm?: Asset;
   installers?: Asset[];
+  // cvm's own native packages. Separate from `installers`, which are the
+  // compiler's: they share every extension and only differ by which tool they
+  // install, so one list would make them indistinguishable to a reader.
+  'cvm-installers'?: Asset[];
 };
 
 const platforms = (release.platforms ?? []) as Platform[];
@@ -42,6 +46,13 @@ const HINTS: Record<string, string> = {
         <code>cvm</code> the toolchain manager — take it once and{' '}
         <code>cvm install latest</code> handles every upgrade after that.
       </p>
+      <p class="section-sub">
+        For <code>cvm</code>, prefer the <strong>installer</strong>: it puts{' '}
+        <code>cvm</code> on your PATH ready to run. The plain <code>cvm</code>{' '}
+        download is the no-package-manager path and arrives{' '}
+        <strong>without its executable bit</strong>, so it needs{' '}
+        <code>chmod +x</code> first.
+      </p>
 
       <div class="dl-grid">
         {platforms.map((p) => (
@@ -68,10 +79,17 @@ const HINTS: Record<string, string> = {
                   <a href={p.compiler.url}>Compiler binary</a>
                 </li>
               )}
+              {p['cvm-installers']?.map((i) => (
+                <li>
+                  <a href={i.url}>
+                    <code>cvm</code> installer <code>.{i.format}</code>
+                  </a>
+                </li>
+              ))}
               {p.cvm && (
                 <li>
                   <a href={p.cvm.url}>
-                    <code>cvm</code>
+                    <code>cvm</code> binary <span class="dl-note">(chmod +x)</span>
                   </a>
                 </li>
               )}
@@ -146,5 +164,9 @@ const HINTS: Record<string, string> = {
   }
   .dl-links a:hover {
     text-decoration: underline;
+  }
+  .dl-note {
+    font-size: 0.78rem;
+    opacity: 0.65;
   }
 </style>

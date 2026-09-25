@@ -1104,6 +1104,86 @@ jobs:
           printf '%s\t%s\t%s\n' "$T" "$ASSET" "$SHA" > "cvm-dist/${T}.cvmselfmeta"
           echo "cvm binary: ${ASSET}  sha256=${SHA}"
 
+      # ---- cvm's native installer ---------------------------------------
+      #
+      # cvm is the one channel that arrives NOT executable: a bare release
+      # asset downloads at mode 664, so `./cvm --version` answers permission
+      # denied until the reader chmods it. A native package installs mode 0755
+      # and removes the step rather than documenting it.
+      #
+      # tools/cvm/packaging is a standalone CMake project because cvm is built
+      # by the cajeta build tool and is not a target in the compiler's project,
+      # so no CPack generator there can see it. It compiles nothing: it hands
+      # CPack the binary this leg just built, so the package carries the same
+      # bytes as the bare asset.
+      #
+      # Missing packaging TOOLING is tolerated and a packaging FAILURE is not.
+      # The two are distinguishable only by checking for the tool first, which
+      # is why each generator is gated on its own binary rather than on cpack's
+      # exit code.
+      - name: Package cvm (native installer)
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.ref_version }}"
+          T="${{ matrix.target }}"
+
+          CVM=""
+          for c in tools/cvm/build/cvm tools/cvm/build/cvm.exe; do
+            [ -f "$c" ] && { CVM="$PWD/$c"; break; }
+          done
+          if [ -z "$CVM" ]; then
+            echo "::warning::cvm was not built for ${T}, so no cvm installer is published for it."
+            exit 0
+          fi
+
+          case "${{ runner.os }}" in
+            Linux)   want="DEB:dpkg-deb RPM:rpmbuild" ;;
+            macOS)   want="productbuild:pkgbuild" ;;
+            Windows) want="WIX:candle" ;;
+            *)       want="" ;;
+          esac
+
+          gens=""
+          for pair in $want; do
+            g="${pair%%:*}"; tool="${pair##*:}"
+            if command -v "$tool" >/dev/null 2>&1; then
+              gens="${gens} ${g}"
+            else
+              echo "::warning::${tool} absent on ${T}, so no ${g} cvm package is published for it."
+            fi
+          done
+          if [ -z "${gens// /}" ]; then exit 0; fi
+
+          cmake -S tools/cvm/packaging -B build/cvm-pkg \
+                -DCVM_BINARY="$CVM" -DCVM_PACKAGE_VERSION="$V"
+          for g in $gens; do
+            ( cd build/cvm-pkg && cpack -G "$g" )
+          done
+
+          # Stage beside the bare binary so the packages ride the same artifact
+          # and the release job publishes them from one place.
+          mkdir -p cvm-dist
+          shopt -s nullglob
+          found=0
+          for f in build/cvm-pkg/*.deb build/cvm-pkg/*.rpm build/cvm-pkg/*.pkg build/cvm-pkg/*.msi; do
+            cp "$f" cvm-dist/
+            b="$(basename "$f")"
+            if command -v sha256sum >/dev/null 2>&1; then
+              PSHA=$(sha256sum "cvm-dist/${b}" | cut -d' ' -f1)
+            else
+              PSHA=$(shasum -a 256 "cvm-dist/${b}" | cut -d' ' -f1)
+            fi
+            printf '%s  %s\n' "$PSHA" "$b" > "cvm-dist/${b}.sha256"
+            echo "cvm package: ${b}  sha256=${PSHA}"
+            found=$((found + 1))
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::cpack reported success for ${gens// /, } but produced no package for ${T}"
+            ls -la build/cvm-pkg || true
+            exit 1
+          fi
+
       - name: Archive (tar.gz)
         if: matrix.archive_ext == 'tar.gz'
         run: tar -czf "${STAGE_DIR}.tar.gz" "$STAGE_DIR"
