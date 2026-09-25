@@ -49,6 +49,7 @@ row are handled by capability negotiation (§3), not by truncating the API.
 | **secrets** | credentials and config, versioned and rotatable | Secrets Manager, Parameter Store | Key Vault | Secret Manager |
 | **notification** | delivery to people and devices — email, SMS, push | SES, SNS mobile push | Communication Services, Notification Hubs | Firebase Cloud Messaging |
 | **managed compute** | invoke a function or container, no host to manage | Lambda, Fargate | Functions, Container Apps | Cloud Functions, Cloud Run |
+| **identity** | end-user accounts: register, sign in, MFA, tokens, attributes, groups | Cognito | Entra External ID | Identity Platform |
 
 **Queue, topic, and stream are three families, not one.** Providers blur them —
 Pub/Sub serves as both topic and queue, SNS fans out to SQS — but their
@@ -58,9 +59,11 @@ subscriber and typically does not replay. A stream is an ordered log a consumer
 walks by position and can re-read. Collapsing them would force each to lie about
 at least one of ordering, replay, or delivery fan-out.
 
-**Identity is cross-cutting, not a row.** Every adapter needs credentials,
-request signing, and role assumption. That is §9.5's concern in each adapter
-rather than a port of its own.
+**An adapter's own identity is cross-cutting, not a row.** Every adapter needs
+credentials, request signing, and role assumption. That is §9.5's concern in
+each adapter rather than a port of its own. **End-user identity is a row**: the
+accounts an application registers and signs in are a service family, specified
+in `cajeta-cloud-identity-spec.md`.
 
 Status of each family, and what would trigger specifying it:
 
@@ -72,6 +75,7 @@ Status of each family, and what would trigger specifying it:
 | key-value, SQL, cache | named | an external-source connector for `cajeta-dqe` |
 | secrets | named | first adapter deployed outside a dev environment |
 | managed compute | named — invocation only, see §1.3 | none today |
+| identity | **specified** (`cajeta-cloud-identity-spec.md`) | the primavera user-registration sample |
 
 ### 1.3 Data plane, not control plane
 
