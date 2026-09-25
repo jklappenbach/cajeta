@@ -464,6 +464,26 @@ static int64_t cajeta_xpu_host_physical_bytes(void) {
 #endif
 }
 
+// Host memory still available to this process, 0 when the platform cannot
+// say: the CPU backend's Device.freeMemoryBytes(), the LEVEL under the
+// capacity cajeta_xpu_host_physical_bytes reports. Read from the OS each
+// call, since it moves.
+static int64_t cajeta_xpu_host_available_bytes(void) {
+#if defined(_WIN32)
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms)) return 0;
+    return (int64_t) ms.ullAvailPhys;
+#elif defined(_SC_AVPHYS_PAGES)
+    long pages = sysconf(_SC_AVPHYS_PAGES);
+    long psize = sysconf(_SC_PAGE_SIZE);
+    if (pages <= 0 || psize <= 0) return 0;
+    return (int64_t) pages * (int64_t) psize;
+#else
+    return 0;
+#endif
+}
+
 static int64_t cajeta_xpu_host_online_cores(void) {
 #if defined(_WIN32)
     SYSTEM_INFO si;
@@ -664,6 +684,12 @@ int64_t __cajeta_xpu_device_free_memory_bytes(void) {
             if (g_xpu_hip.hipMemGetInfo(&memfree, &total) != 0) return 0;
             return (int64_t) memfree;
         }
+        case CAJ_XPU_CPU:
+            // The device is the host: what the OS says is still available,
+            // the level under the capacity the total arm reports. Answered
+            // 0 until 2026-09-25, which left a consumer budgeting against a
+            // capacity with no level under it.
+            return cajeta_xpu_host_available_bytes();
         default:
             return 0;
     }

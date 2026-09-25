@@ -172,7 +172,10 @@ public final class Device {
      * the whole GTT pool, which is shared with the host page cache, so an
      * allocator that budgets against it finds the ceiling by failing.
      * This is the driver's own free-space accounting, from the same single
-     * call (`hipMemGetInfo` / `cuMemGetInfo`) that answers the total.
+     * call (`hipMemGetInfo` / `cuMemGetInfo`) that answers the total. On
+     * the CPU backend the device is the host and the answer is the RAM the
+     * OS reports available, the level under the capacity `memoryBytes`
+     * reports there.
      *
      * A LEVEL, NOT AN EVENT. Neither runtime offers a pressure
      * notification, so a policy built on this polls a watermark; there is

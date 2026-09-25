@@ -16,6 +16,7 @@
 //
 
 #include <gtest/gtest.h>
+#include "XpuRefusalProbe.h"
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
@@ -104,7 +105,7 @@ TEST(XpuKernelShadowDeclTests, differentTypeRedeclarationIsRejected) {
 TEST(XpuKernelShadowDeclTests, sameTypeSiblingRedeclarationStillCompiles) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Amdgpu, siblingKernel(), &err), 1);
-    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+    EXPECT_FALSE(cajeta_test::loweringRefused(err))
         << "a same-type sibling-block redeclaration must still lower:\n"
         << err;
     EXPECT_EQ(err.find("redeclares"), std::string::npos)

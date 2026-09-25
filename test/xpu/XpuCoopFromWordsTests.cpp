@@ -17,6 +17,7 @@
 //
 
 #include <gtest/gtest.h>
+#include "XpuRefusalProbe.h"
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
@@ -206,7 +207,7 @@ TEST(XpuCoopFromWordsTests, lowersNativelyOnAmdgpu) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Amdgpu, kFromWordsSource,
                        &err), 1);
-    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+    EXPECT_FALSE(cajeta_test::loweringRefused(err))
         << "fromWords must lower on amdgpu, not skip:\n" << err;
     EXPECT_EQ(err.find("[mma-tiering]"), std::string::npos)
         << "int8 + fromWords is native on amdgpu:\n" << err;

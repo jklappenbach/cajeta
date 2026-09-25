@@ -10,6 +10,7 @@
 //
 
 #include <gtest/gtest.h>
+#include "XpuRefusalProbe.h"
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
@@ -118,7 +119,7 @@ std::string scalarEpiKernel() {
 TEST(AmdgpuCoopEpilogueTests, verbsLowerNativelyOnAmdgpu) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Amdgpu, epiKernel(true), &err), 1);
-    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+    EXPECT_FALSE(cajeta_test::loweringRefused(err))
         << "the epilogue kernel must lower, not skip:\n" << err;
     EXPECT_EQ(err.find("[mma-tiering]"), std::string::npos)
         << "int8+epilogue is native on amdgpu - a tier note means it "
@@ -146,7 +147,7 @@ TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsLowerNativelyOnAmdgpu) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Amdgpu, scalarEpiKernel(),
                        &err), 1);
-    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+    EXPECT_FALSE(cajeta_test::loweringRefused(err))
         << "the scalar epilogue kernel must lower, not skip:\n" << err;
     EXPECT_EQ(err.find("[mma-tiering]"), std::string::npos)
         << "int8+scalar epilogue is native on amdgpu:\n" << err;
@@ -169,10 +170,12 @@ TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsRejectLoudlyOffNative) {
     EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
         << "off-native the scalar verbs must SKIP the kernel loudly:\n"
         << err;
-    EXPECT_NE(err.find("lane L supplies the factor for column"),
+    // The wording since ed535ae2 (the S-forms retired, 2026-09-21): the
+    // contract is that a per-lane value needs a wave to distribute it.
+    EXPECT_NE(err.find("has no wave to distribute a per-lane value across"),
               std::string::npos)
         << "the skip must state the contract it could not meet:\n" << err;
-    EXPECT_NE(err.find("Shared-vector"), std::string::npos)
+    EXPECT_NE(err.find("WaveVector.ofSlice"), std::string::npos)
         << "the skip must name the spelling that works here:\n" << err;
 }
 

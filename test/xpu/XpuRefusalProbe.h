@@ -35,6 +35,27 @@ inline std::string catchRefusal(const std::string& launchStmts) {
            "        } catch (XpuLaunchException e) { }\n";
 }
 
+// Did the LOWERING refuse a kernel? The registration prints one
+// `[xpu-kernel-skipped]` line per kernel with no device code, and two things
+// print it: the lowering refusing a construct, and -- since 2026-09-21 -- the
+// registration failing to ASSEMBLE what did lower (no ld.lld, no ptxas), which
+// says "no assembler" and means "this box cannot build it". A test asserting
+// that a kernel LOWERS must ignore the second, or it fails on every box
+// without the vendor toolchain: six amdgpu suites did exactly that on
+// Phoenix until 2026-09-25.
+inline bool loweringRefused(const std::string& err) {
+    size_t at = 0;
+    while ((at = err.find("[xpu-kernel-skipped]", at)) != std::string::npos) {
+        size_t nl = err.find('\n', at);
+        std::string line = err.substr(
+            at, nl == std::string::npos ? std::string::npos : nl - at);
+        if (line.find("no assembler") == std::string::npos) return true;
+        if (nl == std::string::npos) break;
+        at = nl;
+    }
+    return false;
+}
+
 }  // namespace cajeta_test
 
 #endif  // CAJETA_TEST_XPU_REFUSAL_PROBE_H
