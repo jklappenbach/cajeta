@@ -1210,6 +1210,29 @@ public static void gemm(KernelBuffer<float32> c, KernelBuffer<float32> a,
 The choice is just *who owns the logistics*: omit `@Occupancy` and Cajeta
 configures the kernel from the live device; add it and you do, portably.
 
+**A derived block needs a declared ceiling.** The compiler scans every launch
+site for a constant block and budgets the kernel's registers for the largest
+one it finds. A block that is not a constant at every site (`block: [n]`, the
+profile-driven geometry of spec §1.4) leaves the compiler with no bound: amdgpu
+then budgets the kernel for the part's full ceiling (1024 threads, the smallest
+register allowance a thread can get) and nvptx applies no bound at all. Such a
+kernel is named at build:
+
+```
+cajeta: warning: [xpu-kernel-unbounded] q2kQ8WaveMatVecKernel: launched with a
+non-constant block at 1 site(s) and no @Occupancy(maxThreads): ...
+```
+
+The remedy is `@Occupancy(maxThreads = N)`, the kernel's *structural* ceiling:
+what only the author knows, stated at compile time, never derived from the
+device (a device fact in a compile-time artifact would break AOT). The adaptor
+then picks the actual block at bind anywhere at or under it. Moving a launcher
+from `block: [32]` to a derived block without declaring the ceiling trades an
+occupancy win for a register-allocation loss, which is why the two land in the
+same change. Where no ceiling is declared, the fallback amdgpu applies is the
+profile's per-block ceiling for the target part, stated explicitly rather than
+left to the backend's default.
+
 > **Status.** The compile-time workgroup-size budgeting and `@Occupancy` override
 > are active today; the DeviceProfile, analytic picker, and bounded sweep are the
 > config-decision layer (`cajeta gpu-profile` is live). Applying a *runtime-chosen*

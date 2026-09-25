@@ -10,8 +10,10 @@
 #include "cajeta/xpu/core/XpuAttributes.h"
 #include "cajeta/xpu/core/XpuKernelAttr.h"
 #include "cajeta/xpu/core/KernelManifest.h"
+#include "cajeta/xpu/core/DeviceProfile.h"
 #include "cajeta/error/Exception.h"
 
+#include <algorithm>
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
@@ -108,6 +110,26 @@ namespace amd {
             // Pin the real launch workgroup size so registers are budgeted for it.
             if (auto it = maxThreads.find(entryName); it != maxThreads.end()) {
                 setKernelWorkgroupSize(kfn, it->second);
+            } else {
+                // xpu-kernel-adaptor 7.0.4: an UNBOUNDED kernel (a non-constant
+                // block at some launch site, no @Occupancy) used to fall through
+                // to LLVM's invisible default. Say the fallback out loud and read
+                // it off the profile: the part's per-block ceiling, which is 1024
+                // on every part we own, so this changes no number today and is
+                // right on a part that caps lower. The manifest still reports
+                // feasibleBlocks for it (a ceiling is not a pin); only the
+                // register budget is stated. setKernelWorkgroupSize yields to an
+                // @Occupancy range the lowering already set.
+                // One lowered body serves every arch of the bundle; the ceiling
+                // is the smallest across them, so no arch is over-budgeted.
+                unsigned ceiling = 0;
+                for (const std::string& a : archList) {
+                    DeviceModel model;
+                    if (!lookupArch(a, model)) model = defaultDeviceModel();
+                    ceiling = ceiling ? std::min(ceiling, model.maxThreadsPerBlock)
+                                      : model.maxThreadsPerBlock;
+                }
+                setKernelWorkgroupSize(kfn, ceiling);
             }
 
             // A kernel that LOWERED but could not be ASSEMBLED used to fall

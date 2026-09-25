@@ -241,13 +241,18 @@ namespace xpu {
 
     void fillOccupancy(KernelManifest& m, const std::string& archName,
                        std::optional<unsigned> pinnedThreads, unsigned clamp) {
+        // The pin is the author's declaration (@Occupancy, or a constant launch
+        // block), true on any part: record it before the table is consulted, so
+        // an arch with no row (every NVIDIA part; the table models AMD residency)
+        // still reports the block the artifact was budgeted for. What the table
+        // supplies is residency, and THAT stays absent rather than guessed.
+        if (pinnedThreads) m.threadsPerGroup = *pinnedThreads;
         DeviceModel model;
         if (!lookupArch(archName, model)) return;   // unknown arch: absent, not guessed
         if (!m.vgpr) return;                          // no footprint: nothing to pack
         const unsigned lds = m.ldsStaticBytes.value_or(0);
         if (pinnedThreads) {
             const unsigned block = *pinnedThreads;
-            m.threadsPerGroup = block;
             unsigned waves = occupancy(model, block, *m.vgpr, lds);
             unsigned wavesPerBlock = model.waveSize
                 ? (block + model.waveSize - 1) / model.waveSize : 0;
