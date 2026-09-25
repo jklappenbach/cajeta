@@ -52,6 +52,24 @@ namespace {
     setUInt("funcspec-max-clones", 8);
 }
 
+// Does `f` hold a fixed-vector value anywhere? The scalarize prefix has
+// nothing to do when it does not, and running it anyway is not free: the
+// InstCombine it used to carry after mem2reg made LoopVectorize PREDICATE and
+// scalarize the wave call in a barrier kernel that had no vector value at all
+// (XpuCpuBarrierExecTests.waveReduceWithBarrierBlockSum answered 3968 instead
+// of 32640 -- one lane per wave, the width-1 identity, measured 2026-09-25).
+// Scope is the cheapest correctness margin available here: a kernel with
+// nothing to scalarize sees the pipeline it saw before.
+bool holdsVectorValue(llvm::Function& f) {
+    for (auto& bb : f)
+        for (auto& in : bb) {
+            if (in.getType()->isVectorTy()) return true;
+            for (llvm::Value* op : in.operands())
+                if (op->getType()->isVectorTy()) return true;
+        }
+    return false;
+}
+
 // Lower the two scalar<->vector bitcast idioms cajeta's kernel lowering emits
 // for `Vector.asWords` / `Vector.asBytes` and for `dotAccum`'s per-lane seam.
 //
@@ -240,6 +258,10 @@ void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
     if (f.isDeclaration()) return;
     PassEnv env(tm);
 
+    // Nothing to scalarize, nothing to do: a wave kernel with no vector value
+    // keeps exactly the pipeline it had before this parameter existed.
+    if (scalarizeVectorValues && !holdsVectorValue(f)) scalarizeVectorValues = false;
+
     llvm::FunctionPassManager fpm;
     // A cajeta Vector value refuses the whole work-item loop: LoopVectorize's
     // canVectorizeInstrs rejects any instruction whose result type is not a
@@ -280,16 +302,18 @@ void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
     fpm.addPass(llvm::PromotePass());                 // mem2reg → SSA
     // After scalarizing, mem2reg promotes a per-work-item local slot into a
     // loop-carried PHI that LoopVectorize reports as "value that could not be
-    // identified as reduction is used outside the loop" -- the third layer the
-    // quant shape surfaces. EarlyCSE + InstCombine clears it. SimplifyCFG in
-    // this slot does NOT: it was measured to cost the nested-loop control
-    // shape a whole vectorized region (4 vectorized / 0 missed became 3 / 1),
-    // which is what XpuCpuVectorScalarize.uniformLoopWaveKernelsStillWiden
-    // pins. Any future reordering here must be re-measured, not argued.
-    if (scalarizeVectorValues) {
-        fpm.addPass(llvm::EarlyCSEPass());
-        fpm.addPass(llvm::InstCombinePass());
-    }
+    // identified as reduction is used outside the loop". EarlyCSE clears it.
+    //
+    // ONLY EarlyCSE. Two neighbours were measured here and both are wrong:
+    // InstCombine in this slot makes LoopVectorize predicate and scalarize the
+    // wave call (pred.call.if, one scalar call per lane -- the width-1
+    // identity) on the block-reduce barrier kernel, and SimplifyCFG costs the
+    // nested-loop shape a whole vectorized region. Both were found by running
+    // the pipeline under opt -mcpu=native over the compiler's own
+    // CAJETA_XPU_CPU_DUMP_PREOPT dump, and the cost model is why the host CPU
+    // has to be named: without -mcpu the predication does not reproduce. Any
+    // future reordering here must be re-measured, not argued.
+    if (scalarizeVectorValues) fpm.addPass(llvm::EarlyCSEPass());
     fpm.addPass(llvm::createFunctionToLoopPassAdaptor(
         llvm::LoopRotatePass()));                     // rotate for LV
     fpm.addPass(llvm::LoopVectorizePass());           // the work-item loop → SIMD
