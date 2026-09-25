@@ -156,6 +156,13 @@ Drawable d = stack Sprite();
 int32 n = d.draw();
 ```
 
+An interface is inherited down the class hierarchy. A subclass of `Sprite`
+is a `Drawable` too, whether it overrides `draw()`, inherits it, or sits two
+bases below the `implements`, and a call through the interface reaches the
+most-derived implementation. The tour's
+[InterfacesDemo](../../samples/tour/src/main/cajeta/tour/lang/InterfacesDemo.cajeta)
+walks all three.
+
 Interfaces can be templated, and `extends` and `implements` combine — the
 stdlib's `ArrayStream<T> extends Stream<T> implements Splittable<T>` is the
 canonical shape. Since Cajeta has multiple inheritance of concrete behavior,

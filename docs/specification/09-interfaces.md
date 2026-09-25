@@ -18,6 +18,8 @@ An interface may extend one or more interfaces. The extending interface's contra
 
 ## 9.2 Implementing Classes
 
+An interface is inherited: every descendant of `C` is assignable to `I` and `J`, and a call through the interface reaches the descendant's most-derived implementation, whether it overrides the method, inherits it, or sits several bases below the `implements`.
+
 `class C implements I, J` obligates `C` to a concrete, accessible implementation of every method in each listed interface's contract, including inherited ones. Leaving any method unimplemented in a non-`abstract` class is a compile-time error, `CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED`. An `abstract` class may leave part of a contract unimplemented and pass the obligation to its descendants, and a call through the interface reaches the descendant's implementation (Classes §8.5, Example 8.5-5).
 
 **Example 9.2-1.** A rejected program: an unimplemented contract.
