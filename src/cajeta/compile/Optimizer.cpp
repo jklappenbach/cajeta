@@ -304,16 +304,26 @@ void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
     // loop-carried PHI that LoopVectorize reports as "value that could not be
     // identified as reduction is used outside the loop". EarlyCSE clears it.
     //
-    // ONLY EarlyCSE. Two neighbours were measured here and both are wrong:
-    // InstCombine in this slot makes LoopVectorize predicate and scalarize the
-    // wave call (pred.call.if, one scalar call per lane -- the width-1
-    // identity) on the block-reduce barrier kernel, and SimplifyCFG costs the
-    // nested-loop shape a whole vectorized region. Both were found by running
-    // the pipeline under opt -mcpu=native over the compiler's own
-    // CAJETA_XPU_CPU_DUMP_PREOPT dump, and the cost model is why the host CPU
-    // has to be named: without -mcpu the predication does not reproduce. Any
-    // future reordering here must be re-measured, not argued.
-    if (scalarizeVectorValues) fpm.addPass(llvm::EarlyCSEPass());
+    // EarlyCSE then InstCombine, and the SCOPE above is what makes the
+    // InstCombine safe. In this slot InstCombine makes LoopVectorize predicate
+    // and scalarize the wave call -- pred.call.if, one scalar call per lane,
+    // the width-1 identity -- on the block-reduce barrier kernel, which holds
+    // no vector value and therefore never reaches this branch now. It is also
+    // load bearing: q4kWmmaIdMwKernel is the one cajeta-llm kernel this whole
+    // change lifts, and with EarlyCSE alone it goes back to being declined
+    // (measured 2026-09-25, a full cpu sweep each way). SimplifyCFG here is
+    // wrong under any scope: it costs the nested-loop shape a whole vectorized
+    // region.
+    //
+    // The pass bisection was run under opt -mcpu=native over the compiler's
+    // own CAJETA_XPU_CPU_DUMP_PREOPT dump. Naming the host CPU is load
+    // bearing: without -mcpu the predication does not reproduce at all,
+    // because the choice is the vectorizer's cost model. Any future
+    // reordering here must be re-measured, not argued.
+    if (scalarizeVectorValues) {
+        fpm.addPass(llvm::EarlyCSEPass());
+        fpm.addPass(llvm::InstCombinePass());
+    }
     fpm.addPass(llvm::createFunctionToLoopPassAdaptor(
         llvm::LoopRotatePass()));                     // rotate for LV
     fpm.addPass(llvm::LoopVectorizePass());           // the work-item loop → SIMD
