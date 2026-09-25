@@ -24,6 +24,9 @@
 
 #include "llvm/Support/CommandLine.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 namespace cajeta {
 
 namespace {
@@ -260,7 +263,18 @@ void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
 
     // Nothing to scalarize, nothing to do: a wave kernel with no vector value
     // keeps exactly the pipeline it had before this parameter existed.
+    const bool askedToScalarize = scalarizeVectorValues;
     if (scalarizeVectorValues && !holdsVectorValue(f)) scalarizeVectorValues = false;
+    // CAJETA_XPU_CPU_OPT_NOTE=1: one line per wrapper saying whether the
+    // scalarize prefix was asked for and whether it ran. Which side of that
+    // scope a kernel falls on is the whole question when a kernel stops or
+    // starts lowering, and reading it off a 60 MB wave dump is not a way to
+    // answer it.
+    if (askedToScalarize && std::getenv("CAJETA_XPU_CPU_OPT_NOTE"))
+        fprintf(stderr, "[wave-opt] %s: wave kernel, vector values %s\n",
+                f.getName().str().c_str(),
+                scalarizeVectorValues ? "PRESENT (scalarize prefix runs)"
+                                      : "none (prefix skipped)");
 
     llvm::FunctionPassManager fpm;
     // A cajeta Vector value refuses the whole work-item loop: LoopVectorize's
