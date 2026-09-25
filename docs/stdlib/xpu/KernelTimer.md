@@ -46,13 +46,17 @@ t.destroy();
 | `static boolean withinPeak(int64 ns, int64 bytes, float64 peakGBps, float64 ops, float64 peakOpsPerSecond)` | The standing assertion: `ns` positive and each declared work amount at or under its ceiling. A work amount with a zero ceiling is REFUSED, never waved through |
 
 ## The event clock's scale
-
 The driver's conversion of device ticks to milliseconds has been measured
 wrong: on a WSL2 RTX 4090 (driver 610.62) two events around a 2 s host sleep
 with no kernel between them read 2.091 s, 4.56% fast. The timer's first use on
-CUDA or HIP spends about 160 ms measuring that scale against the host clock
-and divides it out of every figure; `clockScale()` reports it. A scale outside
-[0.5, 2] is refused and the tier reads `unavailable`.
+CUDA or HIP spends about 300 ms measuring that scale against the host clock
+around a BUSY bracket (device-to-device copies between the two records, the
+host clock spanning the same submissions to the synchronize) and divides it
+out of every figure; `clockScale()` reports it. Busy, because the earlier idle
+sleep-slope measurement read 1.046 in one process and 1.086 in the next on the
+same box and day (2026-09-24), a spread larger than the effect it corrects,
+and the timer is used around busy brackets; the busy bracket reads 1.045. A
+scale outside [0.5, 2] is refused and the tier reads `unavailable`.
 
 ## Calibration
 

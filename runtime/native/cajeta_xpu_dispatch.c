@@ -1623,16 +1623,101 @@ out:
     return ok;
 }
 
-/* Measures the scale once; ~160 ms of host sleep on first use. */
-static void cajeta_xpu_timer_calibrate_locked(int be) {
-    double d1 = 0.0, d2 = 0.0;
-    int64_t h1 = 0, h2 = 0;
-    if (!cajeta_xpu_timer_pair(be, 30000000LL, &d1, &h1) ||
-        !cajeta_xpu_timer_pair(be, 130000000LL, &d2, &h2) || h2 <= h1) {
-        g_xpu_timer_scale_state = -1;
-        return;
+/* One BUSY bracket on backend `be`: about 300 ms of device-to-device copies
+ * between the two records, the host clock spanning the same submissions to
+ * the synchronize. The host interval carries one record latency and one
+ * wake-up, tens of microseconds over hundreds of milliseconds. Measured
+ * 2026-09-24 (WSL2, 610.62): the idle sleep-slope method read 1.046 in one
+ * process and 1.086 in the next, a 4% spread, larger than the effect it
+ * corrects; busy brackets read 1.068 to 1.079 across runs, and the timer
+ * is used around busy brackets. 0 when the backend could not answer. */
+static int cajeta_xpu_timer_busy_pair(int be, double* devMs, int64_t* hostNs) {
+    const size_t bytes = 32u << 20;
+    int64_t sh = __cajeta_xpu_event_create();
+    int64_t eh = __cajeta_xpu_event_create();
+    void* s = (void*) (intptr_t) sh;
+    void* e = (void*) (intptr_t) eh;
+    int ok = 0;
+    float ms = 0.0f;
+    if (!s || !e) goto out;
+    if (be == CAJ_XPU_CUDA) {
+        cajeta_cudeviceptr a = 0, b = 0;
+        if (!g_xpu_cuda.cuMemAlloc || !g_xpu_cuda.cuMemcpyDtoD || !g_xpu_cuda.cuMemFree) goto out;
+        if (g_xpu_cuda.cuMemAlloc(&a, bytes) != 0) goto out;
+        if (g_xpu_cuda.cuMemAlloc(&b, bytes) != 0) { g_xpu_cuda.cuMemFree(a); goto out; }
+        // Size the loop from one timed copy, then run it.
+        int64_t t0 = __cajeta_currentTimeNanos();
+        g_xpu_cuda.cuMemcpyDtoD(b, a, bytes);
+        g_xpu_cuda.cuCtxSynchronize();
+        int64_t one = __cajeta_currentTimeNanos() - t0;
+        if (one < 20000) one = 20000;
+        int64_t reps = 300000000LL / one + 1;
+        if (reps > 100000) reps = 100000;
+        g_xpu_cuda.cuCtxSynchronize();
+        int64_t h0 = __cajeta_currentTimeNanos();
+        if (g_xpu_cuda.cuEventRecord(s, NULL) != 0) { g_xpu_cuda.cuMemFree(a); g_xpu_cuda.cuMemFree(b); goto out; }
+        for (int64_t i = 0; i < reps; i++) g_xpu_cuda.cuMemcpyDtoD(b, a, bytes);
+        if (g_xpu_cuda.cuEventRecord(e, NULL) != 0 || g_xpu_cuda.cuEventSynchronize(e) != 0) {
+            g_xpu_cuda.cuMemFree(a); g_xpu_cuda.cuMemFree(b); goto out;
+        }
+        int64_t h1 = __cajeta_currentTimeNanos();
+        g_xpu_cuda.cuMemFree(a);
+        g_xpu_cuda.cuMemFree(b);
+        if (g_xpu_cuda.cuEventElapsedTime(&ms, s, e) != 0) goto out;
+        *hostNs = h1 - h0;
+    } else if (be == CAJ_XPU_HIP) {
+        void* a = NULL; void* b = NULL;
+        if (!g_xpu_hip.hipMalloc || !g_xpu_hip.hipMemcpyDtoD || !g_xpu_hip.hipFree) goto out;
+        if (g_xpu_hip.hipMalloc(&a, bytes) != 0) goto out;
+        if (g_xpu_hip.hipMalloc(&b, bytes) != 0) { g_xpu_hip.hipFree(a); goto out; }
+        int64_t t0 = __cajeta_currentTimeNanos();
+        g_xpu_hip.hipMemcpyDtoD(b, a, bytes);
+        g_xpu_hip.hipDeviceSynchronize();
+        int64_t one = __cajeta_currentTimeNanos() - t0;
+        if (one < 20000) one = 20000;
+        int64_t reps = 300000000LL / one + 1;
+        if (reps > 100000) reps = 100000;
+        g_xpu_hip.hipDeviceSynchronize();
+        int64_t h0 = __cajeta_currentTimeNanos();
+        if (g_xpu_hip.hipEventRecord(s, NULL) != 0) { g_xpu_hip.hipFree(a); g_xpu_hip.hipFree(b); goto out; }
+        for (int64_t i = 0; i < reps; i++) g_xpu_hip.hipMemcpyDtoD(b, a, bytes);
+        if (g_xpu_hip.hipEventRecord(e, NULL) != 0 || g_xpu_hip.hipEventSynchronize(e) != 0) {
+            g_xpu_hip.hipFree(a); g_xpu_hip.hipFree(b); goto out;
+        }
+        int64_t h1 = __cajeta_currentTimeNanos();
+        g_xpu_hip.hipFree(a);
+        g_xpu_hip.hipFree(b);
+        if (g_xpu_hip.hipEventElapsedTime(&ms, s, e) != 0) goto out;
+        *hostNs = h1 - h0;
+    } else {
+        goto out;
     }
-    double slope = ((d2 - d1) * 1.0e6) / (double) (h2 - h1);
+    *devMs = (double) ms;
+    ok = *hostNs > 0 && ms > 0.0f;
+out:
+    __cajeta_xpu_event_destroy(NULL, sh);
+    __cajeta_xpu_event_destroy(NULL, eh);
+    return ok;
+}
+
+/* Measures the scale once, on first use: a busy bracket of about 300 ms,
+ * else (a backend that cannot copy) the older ~160 ms idle sleep slope. */
+static void cajeta_xpu_timer_calibrate_locked(int be) {
+    double slope = 0.0;
+    double db = 0.0;
+    int64_t hb = 0;
+    if (cajeta_xpu_timer_busy_pair(be, &db, &hb)) {
+        slope = (db * 1.0e6) / (double) hb;
+    } else {
+        double d1 = 0.0, d2 = 0.0;
+        int64_t h1 = 0, h2 = 0;
+        if (!cajeta_xpu_timer_pair(be, 30000000LL, &d1, &h1) ||
+            !cajeta_xpu_timer_pair(be, 130000000LL, &d2, &h2) || h2 <= h1) {
+            g_xpu_timer_scale_state = -1;
+            return;
+        }
+        slope = ((d2 - d1) * 1.0e6) / (double) (h2 - h1);
+    }
     if (!(slope >= 0.5 && slope <= 2.0)) {
         g_xpu_timer_scale_state = -1;
         return;
@@ -1654,7 +1739,7 @@ static int cajeta_xpu_timer_ready(int be) {
 
 // The factor the backend's event clock runs fast by against the host clock
 // (device ms x 1e6 / host ns): 1.0 for a correct driver and for the CPU's
-// host-stamped events, 1.0456 on PHOENIX's WSL2, 0.0 when there is no usable
+// host-stamped events, 1.045 on PHOENIX's WSL2, 0.0 when there is no usable
 // clock (Vulkan, or a calibration that refused). Every elapsed time below has
 // already been divided by it; this is for the report that prints beside it.
 double __cajeta_xpu_timer_clock_scale(void) {
