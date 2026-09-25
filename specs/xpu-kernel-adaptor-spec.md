@@ -309,7 +309,7 @@ Everything above is answerable to these.
   makes the timer a prerequisite for the search tier rather than a
   convenience.
 
-### 7.1 Par, defined (PROPOSED 2026-09-24, awaiting Julian's approval)
+### 7.1 Par, defined (APPROVED by Julian 2026-09-25; proposed 2026-09-24)
 
 Every kernel in Units 9 to 13 of the plan is judged "at par or a recorded
 reason", and 1.8.2 records what happens when par is left implicit: a 49x
