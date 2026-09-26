@@ -346,3 +346,269 @@ is no runtime scan for adapters.
   error message, asserted by a test that greps the captured output (§11.3).
 - **13.7** A pooled request buffer handed to `register` can be overwritten
   immediately after the call returns and the stored user is unaffected (§2.3).
+
+---
+
+## 14. Cognito analysis and the interface it implies
+
+*Written 2026-09-25 at Julian's request, against the Amazon Cognito user
+pools API reference read the same day (InitiateAuth, RespondToAuthChallenge,
+SignUp, ConfirmSignUp, ListUsers, AdminAddUserToGroup, GlobalSignOut,
+RevokeToken, the token and verification guides). Everything in §14 is
+measured from the documents. §15 turns it into proposed amendments to §3
+to §8 and §11, which are approved text and change only on approval.*
+
+### 14.1 Three authorization planes, not one
+
+Cognito splits its API by who is calling, and the split is the first thing
+the port has to honour.
+
+| Plane | Authorized by | Operations |
+|---|---|---|
+| **Public** | app client id, plus `SECRET_HASH` when the client has a secret | SignUp, ConfirmSignUp, ResendConfirmationCode, InitiateAuth, RespondToAuthChallenge, RevokeToken, ForgotPassword, ConfirmForgotPassword |
+| **Self-service** | the user's own access token, scope `aws.cognito.signin.user.admin` | GetUser, UpdateUserAttributes, DeleteUser, ChangePassword, GlobalSignOut, AssociateSoftwareToken, VerifySoftwareToken, SetUserMFAPreference |
+| **Administrative** | the adapter's own AWS credentials, SigV4 | AdminGetUser, ListUsers, AdminUpdateUserAttributes, AdminDeleteUser, AdminConfirmSignUp, AdminAddUserToGroup, AdminRemoveUserFromGroup, AdminListGroupsForUser, AdminCreateUser |
+
+The minimal port shipped in Unit 1 (`UserPool`: lookup by id or name,
+set and remove attributes, groups, delete, all keyed by user id and none by
+token) is the **administrative plane**. On Cognito every one of those calls
+needs the adapter's IAM credentials (parent §9.5), which a server has and a
+browser must never have. The public plane is keyed by **username**, not by
+id: SignUp, ConfirmSignUp and InitiateAuth all take `Username`. The
+self-service plane is keyed by **access token** and has no user id at all.
+
+`SECRET_HASH` is `Base64(HMAC-SHA256(clientSecret, username + clientId))`.
+`cajeta.hash.HmacSha256` (Unit 0) is exactly what it needs.
+
+### 14.2 Identity and registration
+
+- The stable id is `sub`, returned by SignUp as `UserSub`. It is opaque and
+  not to be validated as an RFC UUID. Matches §3.1.
+- SignUp returns `UserConfirmed` and `CodeDeliveryDetails`: the delivery
+  medium (`EMAIL`, `SMS`) and a **masked** destination (`m***@e***`). A
+  registration result that cannot say where the code went makes the sample
+  say nothing. `Password` is optional only for passwordless pools.
+- Custom attributes are named `custom:<name>` on the wire and appear in the
+  ID token under that name as strings. Standard attributes (`email`,
+  `phone_number`, `given_name`, …) are bare. The port's attribute names are
+  bare; the adapter adds and strips the prefix at its boundary.
+- ConfirmSignUp is keyed by username and answers `CodeMismatchException`,
+  `ExpiredCodeException`, `TooManyFailedAttemptsException`,
+  `AliasExistsException` (an email or phone alias already belongs to another
+  user) and `NotAuthorizedException` for an already-confirmed user. It also
+  returns a `Session` that lets InitiateAuth sign the user in without a
+  second code. ResendConfirmationCode exists and the port has no verb for it.
+- Lookup by id on the administrative plane is `AdminGetUser` with the `sub`
+  as `Username`, which the reference permits when username is not an alias
+  attribute, or `ListUsers` with `Filter: sub = "<id>"`, which is
+  **eventually consistent** and capped at 60 per page. Lookup by username is
+  `AdminGetUser` directly. `ListUsers` filters only ten standard attributes
+  and never custom ones.
+- `UserStatus` values seen: `UNCONFIRMED`, `CONFIRMED`,
+  `FORCE_CHANGE_PASSWORD`, `RESET_REQUIRED` and others. The port's boolean
+  confirmed state is a projection of that.
+
+### 14.3 Sign-in: flows and challenges
+
+InitiateAuth takes an `AuthFlow` and answers either `AuthenticationResult`
+or a `ChallengeName` with an opaque `Session` (20 to 2048 characters, echoed
+unmodified) and `ChallengeParameters`.
+
+| Flow | Port meaning | Note |
+|---|---|---|
+| `USER_PASSWORD_AUTH` | sign in with username and password | needs `ALLOW_USER_PASSWORD_AUTH` on the app client |
+| `USER_SRP_AUTH` | password never leaves the client | needs SRP, which needs big-integer modular arithmetic the stdlib lacks (`uint128` is the widest type). Out of scope until a bignum lands. |
+| `USER_AUTH` | choice-based: `PREFERRED_CHALLENGE` of `PASSWORD`, `PASSWORD_SRP`, `EMAIL_OTP`, `SMS_OTP`, `WEB_AUTHN`, or none to receive `AvailableChallenges` and a `SELECT_CHALLENGE` | Essentials tier or higher; the only route to passwordless and passkeys |
+| `REFRESH_TOKEN_AUTH` | refresh | returns access and id tokens; **no refresh token** unless rotation is enabled |
+| `CUSTOM_AUTH` | Lambda-defined challenges | surfaces as an opaque custom challenge |
+
+Challenge names the port must map. The port's §6.1 set (TOTP, SMS-OTP,
+EMAIL-OTP, NEW-PASSWORD-REQUIRED, MFA-SETUP) is short by three.
+
+| Cognito | Port kind | Answer field |
+|---|---|---|
+| `SOFTWARE_TOKEN_MFA` | `TOTP` | `SOFTWARE_TOKEN_MFA_CODE` |
+| `SMS_MFA`, `SMS_OTP` | `SMS_OTP` | `SMS_MFA_CODE`, `SMS_OTP_CODE` |
+| `EMAIL_MFA`, `EMAIL_OTP` | `EMAIL_OTP` | `EMAIL_MFA_CODE`, `EMAIL_OTP_CODE` |
+| `NEW_PASSWORD_REQUIRED` | `NEW_PASSWORD_REQUIRED` | `NEW_PASSWORD` plus `userAttributes.<name>` for each `requiredAttributes` entry |
+| `MFA_SETUP` | `MFA_SETUP` | a session from VerifySoftwareToken; parameters carry `MFAS_CAN_SETUP` |
+| `SELECT_MFA_TYPE` | **`SELECT_FACTOR`** (new) | `ANSWER` = one of `SMS_MFA`, `EMAIL_MFA`, `SOFTWARE_TOKEN_MFA` |
+| `SELECT_CHALLENGE` | **`SELECT_FACTOR`** (new) | `ANSWER` = one of `AvailableChallenges`, plus that factor's own parameters |
+| `CUSTOM_CHALLENGE` | **`CUSTOM`** (new) | `ANSWER`; parameters are the Lambda's |
+| `WEB_AUTHN` | `PASSKEY` | `CREDENTIAL`, a WebAuthn `AuthenticationResponseJSON` |
+| `PASSWORD`, `PASSWORD_SRP`, `PASSWORD_VERIFIER`, `DEVICE_SRP_AUTH`, `DEVICE_PASSWORD_VERIFIER` | never surfaced | the adapter answers these itself |
+
+Every challenge response also carries `USERNAME` and, with a client
+secret, `SECRET_HASH`. `PASSWORD_VERIFIER` must be answered within seconds
+or it fails as `NotAuthorizedException`.
+
+TOTP enrollment during `MFA_SETUP` is a three-call dance: AssociateSoftwareToken
+with the challenge `Session` returns the secret, VerifySoftwareToken with the
+first code returns a new `Session`, and RespondToAuthChallenge `MFA_SETUP`
+with that session completes sign-in. After sign-in the same two calls take
+the access token instead. §6.3 covers the second case only.
+
+### 14.4 Tokens, claims and verification
+
+- `AuthenticationResult`: `AccessToken`, `IdToken`, `RefreshToken`,
+  `ExpiresIn` (seconds, one value for access and id), `TokenType: Bearer`,
+  `NewDeviceMetadata`. Matches §5.1.
+- Access and id tokens are signed by **different RSA keys** with different
+  `kid` values. Both are `RS256`. The JWKS is at
+  `https://cognito-idp.<region>.amazonaws.com/<poolId>/.well-known/jwks.json`,
+  keys carry `kid`, `kty: RSA`, `n`, `e`, `use: sig`. Keys rotate: cache by
+  `kid`, refresh on an unknown `kid` from the right issuer.
+- Issuer: `https://cognito-idp.<region>.amazonaws.com/<poolId>`.
+- Access token claims: `sub`, `cognito:groups`, `iss`, `client_id`,
+  `token_use: access`, `scope`, `username`, `jti`, `origin_jti`, `auth_time`,
+  `exp`, `iat`, and `aud` only with resource binding. Verification checks
+  `client_id`, not `aud`.
+- ID token claims: `sub`, `cognito:groups`, `cognito:username`, `aud` (the
+  client id), `token_use: id`, `email`, `email_verified`, standard OIDC
+  claims, `custom:<name>` as strings, `identities` for federated users.
+- The verification recipe is: structure, `kid` against the JWKS, signature,
+  `exp`, `iss`, `aud` or `client_id` by token use, `token_use`. Revocation is
+  invisible to an offline check: `origin_jti` ties access and id tokens to
+  their refresh token, and only Cognito's own APIs honour a revocation.
+- Groups appear in **both** tokens. §5.2 holds.
+- RS256 verification is an RSA PKCS#1 v1.5 SHA-256 check over `n` and `e`
+  from the JWKS. The stdlib ask in §5.6 is precisely that primitive. Nothing
+  else blocks a Cognito adapter.
+
+### 14.5 Sign-out and revocation
+
+- `RevokeToken(ClientId, ClientSecret?, Token)` revokes **one refresh token**
+  and the access and id tokens issued with it. The app client must have
+  token revocation enabled, else `UnsupportedOperationException`.
+- `GlobalSignOut(AccessToken)` invalidates every refresh token of the user
+  and stops Cognito's own token-authorized APIs accepting their access
+  tokens. Tokens presented to a resource server verifying offline remain
+  valid until `exp`. §4.6 already says so; the port needs both verbs.
+
+### 14.6 Lockout, throttling, and what the message may say
+
+- Five wrong passwords lock sign-in with exponential backoff up to about
+  fifteen minutes; the error is `NotAuthorizedException` with a message
+  saying attempts were exceeded. There is **no retry-after value**. §4.4's
+  "if the provider reports one" is right and Cognito does not.
+- `TooManyRequestsException` and `LimitExceededException` are throttles,
+  and SignUp can succeed with `LimitExceededException` when the code could
+  not be sent: the user exists, unconfirmed, and needs ResendConfirmationCode.
+- With "prevent user existence errors" on, an unknown user signing in gets
+  `NotAuthorizedException`, the same as a wrong password. §4.2 holds and the
+  memory driver must behave the same way.
+
+### 14.7 Error mapping
+
+| Cognito exception | Port kind |
+|---|---|
+| `UsernameExistsException`, `AliasExistsException` | `USER_EXISTS` |
+| `UserNotFoundException` | `USER_NOT_FOUND` (never surfaced from sign-in, §14.6) |
+| `NotAuthorizedException` on sign-in or a challenge | `INVALID_CREDENTIALS`, or `LOCKED` when the message says attempts exceeded |
+| `NotAuthorizedException` on ConfirmSignUp of a confirmed user | success, idempotent |
+| `UserNotConfirmedException` | `NOT_CONFIRMED` |
+| `PasswordResetRequiredException` | **`PASSWORD_RESET_REQUIRED`** (new) |
+| `CodeMismatchException` | `INVALID_CODE` |
+| `ExpiredCodeException` | `CODE_EXPIRED` |
+| `TooManyFailedAttemptsException` | `LOCKED` |
+| `TooManyRequestsException`, `LimitExceededException`, `InternalErrorException` | `TRANSIENT` |
+| `InvalidPasswordException`, `PasswordHistoryPolicyViolationException`, `InvalidParameterException` on a user-supplied value | `POLICY_VIOLATION` |
+| `UnauthorizedException`, `UnsupportedTokenTypeException` | `INVALID_TOKEN` |
+| `MFAMethodNotFoundException`, `SoftwareTokenMFANotFoundException`, `UnsupportedOperationException`, `OperationNotEnabledException` | `UNSUPPORTED_CAPABILITY` |
+| `ResourceNotFoundException` (pool or client), `InvalidUserPoolConfigurationException`, `ForbiddenException`, Lambda exceptions | `PROVIDER_ERROR` |
+
+Cognito returns every one of these as HTTP 400 except `InternalErrorException`
+(500); the exception name travels in `__type`. Status codes carry nothing.
+
+### 14.8 Wire protocol
+
+JSON over HTTPS, `POST` to `cognito-idp.<region>.amazonaws.com/`, header
+`X-Amz-Target: AWSCognitoIdentityProviderService.<Operation>`, content
+type `application/x-amz-json-1.1`. Public and self-service calls are
+unsigned. Administrative calls are SigV4, HMAC-SHA256 over a canonical
+request, which the S3 adapter in `cajeta-cloud-aws` needs anyway, so the
+signer is shared. `cajeta-http`'s client, `cajeta.codec.json` and
+`cajeta.hash.HmacSha256` cover the whole adapter. No SDK.
+
+### 14.9 What the adapter declares
+
+`CONFIRMATION`, `CUSTOM_ATTRIBUTES`, `TOTP`, `SMS_OTP`, `EMAIL_OTP`,
+`REFRESH`, `JWKS` always. `GROUPS` and the administrative plane only when
+AWS credentials are configured. `REVOCATION` only when the app client enables
+it. `PASSKEYS` only on the Essentials tier with `USER_AUTH` allowed.
+`INTROSPECTION` never: Cognito has no RFC 7662 endpoint, and its `userInfo`
+endpoint serves hosted-UI tokens only.
+
+---
+
+## 15. Proposed amendments (pending approval)
+
+Each item names the section it changes. Nothing here is in force until
+Julian approves it.
+
+- **15.1 (§2.2) Four concerns, not three.** `UserPool` is the
+  administrative plane and stays as shipped. `Authenticator` is the public
+  plane (sign in, challenges, refresh, sign out, forgot password).
+  **`Account`** (new) is the self-service plane, every call keyed by the
+  caller's access token: `me`, `updateAttributes`, `changePassword`,
+  `deleteMe`, `enrollTotp`, `signOutEverywhere`. `TokenVerifier` is
+  unchanged. primavera's `GET /users/me` is `Account.me`, not a `UserPool`
+  lookup, so a request never needs server credentials to read its own user.
+- **15.2 (§3.3, §3.7) Confirmation is keyed by username**, as the public
+  plane is: `confirm(username, code)` and a new `resendConfirmationCode(username)`.
+  `RegistrationResult` gains `codeDelivery()`: medium (`EMAIL`, `SMS`,
+  `NONE`) and a masked destination. The memory driver masks like Cognito.
+  Unit 1's `confirm(userId, code)` changes with this item.
+- **15.3 (§4.1) Sign-in names a factor.** `signIn(username, password)` stays
+  and `signInWith(username, factor)` is added, `factor` one of `PASSWORD`,
+  `EMAIL_OTP`, `SMS_OTP`, `PASSKEY`. On Cognito the first maps to
+  `USER_PASSWORD_AUTH` or to `USER_AUTH` with `PREFERRED_CHALLENGE: PASSWORD`
+  by configuration, the second to `USER_AUTH`. A driver without a factor
+  fails with `UNSUPPORTED_CAPABILITY`.
+- **15.4 (§6.1) Challenge kinds** become `TOTP`, `SMS_OTP`, `EMAIL_OTP`,
+  `NEW_PASSWORD_REQUIRED`, `MFA_SETUP`, `SELECT_FACTOR`, `CUSTOM`, `PASSKEY`.
+  A `Challenge` carries its kind, the opaque session, a string-to-string
+  parameter map (masked destination, the factors that can be set up, the
+  required attributes) and, for `SELECT_FACTOR`, the options.
+- **15.5 (§6.2) One answer shape.** `respond(session, kind, ChallengeAnswer)`
+  where the answer holds a value (a code, a new password, a chosen factor, a
+  custom answer, a passkey assertion) and an optional `Attributes` for the
+  required attributes of `NEW_PASSWORD_REQUIRED`.
+- **15.6 (§6.3) TOTP enrollment in both places**: `Account.enrollTotp()`
+  after sign-in, and `Authenticator.enrollTotpForChallenge(session)` inside
+  `MFA_SETUP`. Both return the secret once and are completed with a first
+  code, the second returning the session that answers the challenge.
+- **15.7 (§4.5) Refresh may return no refresh token.** `Tokens.refreshToken()`
+  is empty then and the caller keeps the one it has. With rotation the new
+  one is returned and the old one is dead.
+- **15.8 (§4.6) Two sign-outs.** `Authenticator.signOut(refreshToken)`
+  revokes one session, needs `REVOCATION`. `Account.signOutEverywhere()`
+  invalidates every session of the caller.
+- **15.9 (§4, new) Password reset.** `forgotPassword(username)` delivers a
+  code and `confirmForgotPassword(username, code, newPassword)` completes it.
+  `Account.changePassword(old, new)` for a signed-in user. A new error kind
+  `PASSWORD_RESET_REQUIRED` for a sign-in the provider refuses until the
+  flow runs.
+- **15.10 (§5.2, §5.3) Claims and verification.** `Claims` exposes
+  `subject`, `issuer`, `audience`, `tokenUse` (`ACCESS`, `ID`), `username`,
+  `groups`, `scope`, `expiresAt`, `issuedAt`, `attributes()` for an id token
+  with provider prefixes stripped, and `claim(name)` for anything else.
+  `TokenVerifier.verify(token, expectedUse)` checks signature, issuer,
+  audience or client id by use, expiry and use, and names the failing check.
+  It caches keys by `kid` and refetches the JWKS once on an unknown `kid`.
+- **15.11 (§7.1, new §7.5) Attribute names are bare in the port.** A
+  provider prefix such as `custom:` is the adapter's, added on the way out
+  and stripped on the way in, in tokens too.
+- **15.12 (§8.1) Capabilities** gain `ADMIN` (the administrative plane is
+  available) and `PASSWORD_RESET`. The memory driver declares both.
+- **15.13 (§11.1) Kinds** gain `PASSWORD_RESET_REQUIRED`.
+- **15.14 (§4.2, §13.1) The memory driver hides user existence at sign-in**
+  by default, like Cognito with the option on: unknown user and wrong
+  password answer the same `INVALID_CREDENTIALS` with the same message.
+- **15.15 (§5.6) The stdlib ask narrows** to RSA PKCS#1 v1.5 SHA-256
+  verification over `n` and `e`, since that is all Cognito signs with. ES256
+  and SRP move to "when a provider needs them".
+- **15.16 (primavera-web §8.1)** The sample's confirm route becomes
+  `POST /users/{username}/confirm`, `GET /users/me` reads through `Account`,
+  and `POST /login` answers 200 with tokens or 202 with the challenge kind,
+  session and parameters.
