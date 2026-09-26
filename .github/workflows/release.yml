@@ -1143,7 +1143,7 @@ jobs:
           case "${{ runner.os }}" in
             Linux)   want="DEB:dpkg-deb RPM:rpmbuild" ;;
             macOS)   want="productbuild:pkgbuild" ;;
-            Windows) want="WIX:candle" ;;
+            Windows) want="WIX:wix" ;;
             *)       want="" ;;
           esac
 
