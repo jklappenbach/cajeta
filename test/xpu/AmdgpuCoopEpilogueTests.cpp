@@ -169,10 +169,9 @@ TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsRejectLoudlyOffNative) {
     EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
         << "off-native the scalar verbs must SKIP the kernel loudly:\n"
         << err;
-    EXPECT_NE(err.find("lane L supplies the factor for column"),
-              std::string::npos)
+    EXPECT_NE(err.find("WaveVector.ofLane is native-only"), std::string::npos)
         << "the skip must state the contract it could not meet:\n" << err;
-    EXPECT_NE(err.find("Shared-vector"), std::string::npos)
+    EXPECT_NE(err.find("WaveVector.ofSlice"), std::string::npos)
         << "the skip must name the spelling that works here:\n" << err;
 }
 

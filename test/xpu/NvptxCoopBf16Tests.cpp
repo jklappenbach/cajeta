@@ -26,6 +26,7 @@
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
+#include "cajeta/xpu/nvidia/NvptxBackend.h"
 
 #include <cstdint>
 #include <string>
@@ -122,9 +123,21 @@ TEST(NvptxCoopBf16Tests, allBf16MixedTierDemotesToPortable) {
     int32_t rc = runI32Nvptx(src);
     std::string err = testing::internal::GetCapturedStderr();
     EXPECT_EQ(rc, 1);
-    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
-        << "a straddling kernel must DEMOTE to the portable tier and lower, "
-           "not be skipped; stderr was:\n" << err;
+    if (cajeta::xpu::nvidia::findPtxas().empty()) {
+        // No assembler here: the ONLY skip allowed is the assembler's, and the
+        // tiering note must still show the kernel demoted rather than refused.
+        EXPECT_NE(err.find("no assembler"), std::string::npos)
+            << "without ptxas the skip must name the assembler as the cause; "
+               "stderr was:\n" << err;
+        EXPECT_EQ(err.find("[xpu-kernel-skipped] gemmAllBf16: no nvptx device code — XPU"),
+                  std::string::npos)
+            << "a straddling kernel must DEMOTE, not be refused by the lowering; "
+               "stderr was:\n" << err;
+    } else {
+        EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+            << "a straddling kernel must DEMOTE to the portable tier and lower, "
+               "not be skipped; stderr was:\n" << err;
+    }
     EXPECT_NE(err.find("[mma-tiering]"), std::string::npos)
         << "expected the portable-tier note for the demoted kernel; stderr was:\n"
         << err;

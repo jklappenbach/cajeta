@@ -31,6 +31,7 @@
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
 #include "cajeta/xpu/amd/AmdgpuBackend.h"
+#include "cajeta/xpu/nvidia/NvptxBackend.h"
 
 #include <string>
 
@@ -81,6 +82,14 @@ TEST(XpuUnassembledKernelNoteTests, aKernelWithNoAssemblerIsSkippedByName) {
 // prints no such note. nvptx has ptxas here, so this is the positive twin.
 TEST(XpuUnassembledKernelNoteTests, aKernelThatAssemblesPrintsNoAssemblerNote) {
     std::string err = compileOn(cajeta::xpu::Backend::Nvptx);
+    if (cajeta::xpu::nvidia::findPtxas().empty()) {
+        EXPECT_NE(err.find("[xpu-kernel-skipped] plain"), std::string::npos)
+            << "no ptxas here, so the drop must be a countable note naming the "
+               "kernel:\n" << err;
+        EXPECT_NE(err.find("no assembler"), std::string::npos)
+            << "and must say the cause is the assembler:\n" << err;
+        return;
+    }
     EXPECT_EQ(err.find("no assembler"), std::string::npos)
         << "ptxas is on this box, so nothing may claim otherwise:\n" << err;
     EXPECT_EQ(err.find("[xpu-kernel-skipped] plain"), std::string::npos)

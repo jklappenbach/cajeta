@@ -178,12 +178,11 @@ TEST(XpuNvptxBigShared, aTileOverTheStaticCapMovesToTheExternBlock) {
     EXPECT_LE(staticSharedBytes(ptx), 49152u)
         << "nothing over the static cap may be left as a static definition";
 
+    if (findPtxas().empty())
+        GTEST_SKIP() << "the PTX half above passed; assembling it needs ptxas, "
+                        "which is not on this box (CUDA_PATH or PATH)";
     std::string log;
     auto cubin = assembleCubin(ptx, "sm_89", &log);
-    if (log.find("ptxas: not found") != std::string::npos ||
-        log.find("no ptxas") != std::string::npos) {
-        GTEST_SKIP() << "ptxas unavailable: " << log;
-    }
     EXPECT_FALSE(cubin.empty())
         << "ptxas must accept the relocated module:\n" << log;
     EXPECT_EQ(log.find("too much shared data"), std::string::npos) << log;

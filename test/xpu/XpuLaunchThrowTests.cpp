@@ -11,9 +11,9 @@
 //
 // The compiler emits `Device.checkLaunch()` after every `.launch()`, so a
 // refused launch RAISES at the launch site itself. This pins the two halves a
-// check needs (CLAUDE.md §5) on the CPU backend, which refuses a native-only
-// construct deterministically with no device:
-//   FIRES         — a WaveVector.ofLane kernel (native-only) is refused on cpu;
+// check needs (CLAUDE.md §5) on the CPU backend, which refuses a barrier under
+// work-item-divergent control flow deterministically with no device:
+//   FIRES         — a divergent-barrier kernel (XPU-N02) is refused on cpu;
 //                   its `.launch()` throws XpuLaunchException naming the kernel
 //                   and "cpu", caught at the launch site.
 //   does NOT fire — a plain kernel registers and runs; its `.launch()` is silent.
@@ -42,22 +42,20 @@ import cajeta.xpu.Shared;
 import cajeta.xpu.WaveVector;
 import cajeta.xpu.XpuLaunchException;
 public final class M {
-    // Refused on cpu: WaveVector.ofLane is native-only, so this registers no cpu
-    // code and its launch is a no-op that records a refusal.
+    // Refused on cpu: a barrier under work-item-divergent control flow has no
+    // fission (XPU-N02), so this registers no cpu code and its launch is a
+    // no-op that records a refusal.
     @Kernel
     public static void refusedK(KernelBuffer<float32> rowIn,
                                 KernelBuffer<float32> colIn,
                                 KernelBuffer<float32> out) {
         Shared<float32> rowF = shared float32[16];
-        Shared<float32> colF = shared float32[16];
         uint32 lane = KernelThread.x();
-        if (lane < 16) { rowF[lane] = rowIn[lane]; colF[lane] = colIn[lane]; }
-        Barrier.workgroup();
-        float32 cv = colIn[(int64) (lane & 15)];
-        CooperativeMatrix<float32,16,16,2> facc;
-        facc.splat(0.0f);
-        facc.rank1Accum(rowF, WaveVector.ofLane(cv));
-        facc.store(out, 0, 0, 16);
+        if (lane < 8) {
+            rowF[lane] = rowIn[lane] + colIn[lane];
+            Barrier.workgroup();
+        }
+        out[(int64) lane] = rowF[(int64) (lane & 15)];
     }
     // Registers on cpu: a plain elementwise kernel, no native-only construct.
     @Kernel
@@ -108,8 +106,8 @@ int runOn(cajeta::xpu::Backend be) {
 
 }  // namespace
 
-// The CPU arm is deterministic and needs no device: it refuses the native-only
-// ofLane kernel by name, so both halves run here.
+// The CPU arm is deterministic and needs no device: it refuses the
+// divergent-barrier kernel by name, so both halves run here.
 TEST(XpuLaunchThrow, cpuRefusedLaunchRaisesCatchableNamed) {
     EXPECT_EQ(runOn(cajeta::xpu::Backend::Cpu), 0)
         << "1 = a refused launch did NOT raise; "
