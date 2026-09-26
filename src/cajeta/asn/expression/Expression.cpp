@@ -1349,6 +1349,10 @@ bool cajetaRhsCarriesRedundantSharp(
         } else if (lhsExpr && dynamic_pointer_cast<ArrayIndexExpression>(lhsExpr)) {
             arrayVal = builder->CreateLoad(
                 llvm::PointerType::get(ctx, 0), arrayVal);
+        } else if (lhsExpr && llvm::isa<llvm::GlobalVariable>(arrayVal)
+                && dynamic_pointer_cast<IdentifierExpression>(lhsExpr)) {
+            arrayVal = builder->CreateLoad(
+                llvm::PointerType::get(ctx, 0), arrayVal);
         } else if (lhsExpr && dynamic_pointer_cast<DotExpression>(lhsExpr)) {
             if (dynamic_pointer_cast<CajetaArray>(lhsExpr->getResolvedType())) {
                 arrayVal = builder->CreateLoad(
