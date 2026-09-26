@@ -569,13 +569,14 @@ Julian approves it.
   is renamed `subject` throughout the port, `lookupById` becomes
   `lookupBySubject`, and the application's own user id lives in primavera's
   user directory (`primavera-web-spec.md` §5.7, §5.8), never in this port.
-- **15.3 (§4.1) Sign-in names a factor.** `signIn(username, password)` stays
-  and `signInWith(username, factor)` is added, `factor` one of `PASSWORD`,
-  `EMAIL_OTP`, `SMS_OTP`, `PASSKEY`. On Cognito the first maps to
+- **15.3 (§4.1) Sign-in names a factor** *(approved 2026-09-25 with 15.18)*.
+  `signIn(username, password)` stays and `signInWith(username, factor)` is
+  added, `factor` one of `PASSWORD`, `EMAIL_OTP`, `SMS_OTP`, `PASSKEY`,
+  `TOTP`. On Cognito the first maps to
   `USER_PASSWORD_AUTH` or to `USER_AUTH` with `PREFERRED_CHALLENGE: PASSWORD`
   by configuration, the second to `USER_AUTH`. A driver without a factor
   fails with `UNSUPPORTED_CAPABILITY`.
-- **15.4 (§6.1) Challenge kinds** become `TOTP`, `SMS_OTP`, `EMAIL_OTP`,
+- **15.4 (§6.1) Challenge kinds** *(approved 2026-09-25 with 15.18)* become `TOTP`, `SMS_OTP`, `EMAIL_OTP`,
   `NEW_PASSWORD_REQUIRED`, `MFA_SETUP`, `SELECT_FACTOR`, `CUSTOM`, `PASSKEY`.
   A `Challenge` carries its kind, the opaque session, a string-to-string
   parameter map (masked destination, the factors that can be set up, the
@@ -622,3 +623,55 @@ Julian approves it.
   `POST /users/{username}/confirm`, `GET /users/me` reads through `Account`,
   and `POST /login` answers 200 with tokens or 202 with the challenge kind,
   session and parameters.
+- **15.18 (§1.6, §4, §6, §8) Password-free access** *(Julian 2026-09-25: "I
+  want to support password-free access, with OTP and Authenticator (MS,
+  Google, etc)")*. This is a requirement of the full cut, not an option.
+  - **15.18.1 Registration without a password.** `registerPasswordless(username,
+    attributes)` creates an account that has no password and can only sign in
+    with a factor that is not `PASSWORD`. Capability `PASSWORDLESS`. On
+    Cognito this is SignUp with `Password` omitted, allowed only on a pool
+    whose sign-in policy lists OTP or passkey first factors (Essentials tier,
+    `ALLOW_USER_AUTH` on the app client). The memory driver declares it.
+  - **15.18.2 OTP as the first factor.** `signInWith(username, EMAIL_OTP)`
+    or `SMS_OTP` delivers a code and answers `challenge-required` of that
+    kind with the masked destination in the parameters; the code completes
+    sign-in and returns tokens. On Cognito this is `USER_AUTH` with
+    `PREFERRED_CHALLENGE`, and Cognito applies no MFA after a passwordless
+    first factor (its "MFA after sign-in" is listed under password sign-in
+    only). A driver that does chain a second challenge is still conformant,
+    since the client loop of §6.2 handles any sequence.
+  - **15.18.3 Authenticator apps.** Microsoft Authenticator, Google
+    Authenticator and the rest implement RFC 6238 TOTP with HMAC-SHA1, six
+    digits and a thirty-second step, and the widely installed ones ignore
+    the algorithm, digits and period parameters of the `otpauth://` URI, so
+    SHA-1 is the compatibility floor and the port fixes those three values.
+    Enrollment (`Account.enrollTotp()` after any sign-in, or
+    `enrollTotpForChallenge(session)` inside `MFA_SETUP`) returns the
+    secret once, Base32-encoded, and the `otpauth://totp/<issuer>:<label>?secret=…&issuer=…`
+    URI the application renders as a QR code. A first code activates it.
+  - **15.18.4 Authenticator as the only factor.** On Cognito a TOTP code is
+    a **second factor only**: the first factor is a password, an OTP or a
+    passkey, and `SOFTWARE_TOKEN_MFA` follows. So "sign in with the
+    authenticator alone" is not a Cognito flow. The port allows it through
+    `signInWith(username, TOTP)` under a separate capability,
+    **`TOTP_SIGN_IN`**, which the memory driver declares and the Cognito
+    adapter does not. An application that wants password-free access on
+    Cognito uses OTP or passkeys as the first factor, and an authenticator
+    as the second where it wants one. primavera asserts the capabilities its
+    configuration needs at startup (§8.3), so this difference is a launch
+    error and never a surprise.
+  - **15.18.5 The memory driver's TOTP** verifies against the current step
+    and one step either side, accepts each code once (replay within the
+    window fails with `invalid-code`), and takes its clock from the
+    `TimeSource` so tests are deterministic. RFC 6238 appendix B vectors pin
+    the code function.
+  - **15.18.6 Stdlib asks added to §5.6:** HMAC-SHA1 (an `Hmac` over the
+    `Sha1` the stdlib already has, or `HmacSha1` beside `HmacSha256`) and a
+    Base32 codec (RFC 4648, with and without padding) beside `Base64`.
+    Neither exists today. They are small and precede Unit 3.
+  - **15.18.7 (primavera-web §8.1)** The sample's security phase is
+    password-free end to end: register with an email attribute and no
+    password, confirm, sign in with `EMAIL_OTP` reading the code from the
+    memory driver's hook, enroll an authenticator, and sign in again with a
+    code computed from the secret at the manual clock. The password login
+    stays as a second path, since Cognito deployments will have both.
