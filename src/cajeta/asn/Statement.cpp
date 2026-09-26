@@ -415,7 +415,7 @@ namespace cajeta {
                 // Only a callee that actually STORES the flag: one that never
                 // touches the TLS leaves a STALE bit from a prior call, and
                 // reading it drops a value the callee never surrendered.
-                if (rm && rm->returnsClassPointer() && rm->emitsReturnFlag()) {
+                if (rm && rm->returnsTitledPointer() && rm->emitsReturnFlag()) {
                     auto* b = module->getBuilder();
                     llvm::Function* getFlag = module->getRuntimeFunction(
                         "__cajeta_return_flag_get");
@@ -423,7 +423,9 @@ namespace cajeta {
                     // header would read its first word as a vtable.
                     CajetaTypePtr drt = rm->getReturnType();
                     const char* dropName = "__cajeta_class_virtual_drop";
-                    if (dynamic_pointer_cast<CajetaArray>(drt)) {
+                    if (rm->returnsClosure()) {
+                        dropName = "__cajeta_closure_drop";
+                    } else if (dynamic_pointer_cast<CajetaArray>(drt)) {
                         dropName = "__cajeta_free_array";
                     } else if (auto drc =
                                    dynamic_pointer_cast<CajetaClass>(drt)) {
@@ -1316,7 +1318,7 @@ namespace cajeta {
                                llvm::Value* flagOverride = nullptr) {
         auto m = module->getCurrentMethod();
         bool lambdaMode = !m && module->isLambdaClassPtrReturn();
-        if (!lambdaMode && (!m || !m->returnsClassPointer())) {
+        if (!lambdaMode && (!m || !m->returnsTitledPointer())) {
             return;
         }
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_return_flag_set");
@@ -2025,6 +2027,14 @@ namespace cajeta {
             if (f) {
                 if (dynamic_pointer_cast<CajetaFunctionType>(f->getType())) {
                     if (f->getDropEntry()) {
+                        auto m = module->getCurrentMethod();
+                        if (m && m->returnsClosure() && !m->isReturnsOwnership()
+                                && !modeCarrying) {
+                            own::TitleShape held = nameShape;
+                            held.answer = own::TitleAnswer::Runtime;
+                            held.source = own::TitleSource::DropEntry;
+                            returnTitleFlag = own::titleFlag(held, module);
+                        }
                         ownership::deactivateLocalEntry(module, f);
                     }
                 }
@@ -2183,7 +2193,7 @@ namespace cajeta {
                     }
                     own::TitleVerdict v = own::policy(rs, role);
                     if (v.error) throwOwnedReturn(m, rs, v);
-                    if (m->returnsClassPointer()) {
+                    if (m->returnsTitledPointer()) {
                         if (llvm::Value* tf = own::verdictFlag(rs, v, module)) {
                             returnTitleFlag = tf;
                             via = own::TitleVia::CallRide;
@@ -2197,7 +2207,7 @@ namespace cajeta {
                 case own::TitleFamily::FieldRead:
                 case own::TitleFamily::ElementRead:
                 case own::TitleFamily::Closure: {
-                    if (m->returnsClassPointer() && !modeCarrying) {
+                    if (m->returnsTitledPointer() && !modeCarrying) {
                         own::TitleVerdict v = own::policy(rs, role);
                         if (!v.error) {
                             if (llvm::Value* tf = own::verdictFlag(rs, v, module)) {

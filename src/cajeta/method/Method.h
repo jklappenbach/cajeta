@@ -386,9 +386,12 @@ namespace cajeta {
         // passes by pointer). returnsClassPointer(): a plain `ret ptr` return.
         bool needsTransferWord();
         bool returnsClassPointer();
+        // A closure-record return: titled like a class pointer through the return flag.
+        bool returnsClosure();
+        bool returnsTitledPointer() { return returnsClassPointer() || returnsClosure(); }
         // May a caller trust the return-flag TLS right after this call? Raw-IR
         // synthesized bodies never store the flag and override this to false.
-        virtual bool emitsReturnFlag() { return returnsClassPointer(); }
+        virtual bool emitsReturnFlag() { return returnsTitledPointer(); }
         llvm::Value* getTransferWordArg() const { return transferWordArg; }
         void setTransferWordArg(llvm::Value* v) { transferWordArg = v; }
         // Seed a drop entry per droppable class-typed formal, armed from its
