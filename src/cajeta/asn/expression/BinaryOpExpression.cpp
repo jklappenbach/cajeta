@@ -2676,6 +2676,18 @@ namespace cajeta {
                         if (rc0->isZero()) rhsTitle = nullptr;
                         else rhsTitle = rOne;
                     }
+                    // A string literal is static: nothing owns it and its drop is a no-op,
+                    // so a reassignment from one re-arms the entry like an owner, as the
+                    // declaration form does. Left as a borrow, the binding turned
+                    // runtime-conditional and `return #s` on the literal path panicked.
+                    if (!rhsTitle) {
+                        if (auto lit = dynamic_pointer_cast<TextLiteralExpression>(rhsAst)) {
+                            LiteralType lt = lit->getLiteralType();
+                            if (lt == LITERAL_TYPE_STRING || lt == LITERAL_TYPE_TEXT_BLOCK) {
+                                rhsTitle = rOne;
+                            }
+                        }
+                    }
                     if (!rhsTitle || !llvm::isa<llvm::ConstantInt>(rhsTitle)) {
                         if (auto rcId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
                             if (auto rcSc = module->getScopeStack().peek()) {
