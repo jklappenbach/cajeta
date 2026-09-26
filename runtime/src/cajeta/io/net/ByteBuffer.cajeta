@@ -134,7 +134,10 @@ public final class ByteBuffer {
         return (int32) n;
     }
 
-    /** [[fillAsync]] under a deadline; 0 when it elapses with nothing read. */
+    /**
+     * [[fillAsync]] under a deadline. Raises `TimedOutException` when it
+     * elapses, and returns 0 on end of stream or when nothing is writable.
+     */
     public int32 fillWithin(ByteChannel ch, int32 timeoutMs) {
         int32 room = this.cap - this.writePos;
         if (room <= 0) {
