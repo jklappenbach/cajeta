@@ -289,6 +289,7 @@ body is not the lesson. The grid is.
 
 `cajeta-llm/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta:4971-4986`
 
+<!-- snippet: skip -->
 ```cajeta
 public static void iq4nlF16CoopAutoLaunchNoSync(KernelBuffer<float32> y,
         KernelBuffer<int32> packed, KernelBuffer<float16> xh,
@@ -399,6 +400,7 @@ public static void splitPayloadKernel(KernelBuffer<int32> outW,
 
 `cajeta-llm/src/main/cajeta/dev/cajeta/llm/io/QuantKernel.cajeta:6491-6539`
 
+<!-- snippet: skip -->
 ```cajeta
 public static void splitLaunch(KernelBuffer<int8> out,
         KernelBuffer<int8> src, int64 nBlocks, int64 blockBase,
@@ -531,6 +533,7 @@ audit checks that an admitted format has an arm.
 
 `cajeta-llm/src/main/cajeta/dev/cajeta/llm/model/Linear.cajeta:3118-3126`
 
+<!-- snippet: skip -->
 ```cajeta
 boolean packedWaveReady() {
     if (this.packedTy < 0 || !QuantKernel.routingEnabled()) {
@@ -545,6 +548,7 @@ boolean packedWaveReady() {
 
 `cajeta-llm/src/main/cajeta/dev/cajeta/llm/model/Linear.cajeta:3135-3156`
 
+<!-- snippet: skip -->
 ```cajeta
 boolean matvecPackedKeep(KernelBuffer<int8> xp) {
     if (!this.packedWaveReady()) { return false; }
@@ -836,6 +840,7 @@ per-expert wave launches it replaces, using `==` and never a tolerance.
 
 `cajeta-llm/src/test/cajeta/dev/cajeta/llm/selftest/MoeCodebookIdMatVecTest.cajeta:84-167`
 
+<!-- snippet: skip -->
 ```cajeta
 static void check(int32 ty, String fixture) {
     String be #= Device.activeBackend();
@@ -939,6 +944,7 @@ counter on the branch and a pair of tests against it.
 
 `cajeta-llm/src/test/cajeta/dev/cajeta/llm/selftest/ResidentLayoutTest.cajeta:190-205`
 
+<!-- snippet: skip -->
 ```cajeta
 @Test
 public void theScaleSplitTakesTheDwordKernelOnARowAlignedChunk() {

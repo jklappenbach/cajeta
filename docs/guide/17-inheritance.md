@@ -40,26 +40,26 @@ restating them. Tour demo:
 [AbstractClassesDemo](../../samples/tour/src/main/cajeta/tour/lang/AbstractClassesDemo.cajeta).
 
 ```cajeta
-public abstract class Shape {
+public abstract class Figure {
     public abstract int32 area();
     public int32 twice() { return this.area() * 2; }
 }
-public abstract class Polygon extends Shape {
+public abstract class Polygon extends Figure {
     int32 sides;
     public Polygon(int32 n) { this.sides = n; }
     public int32 sideCount() { return this.sides; }
 }
-public class Square extends Polygon {
+public class Quad extends Polygon {
     int32 side;
-    public Square(int32 s) { super(4); this.side = s; }
+    public Quad(int32 s) { super(4); this.side = s; }
     public int32 area() { return this.side * this.side; }
 }
 ```
 
 ```cajeta
-Shape s = heap Square(3);
+Figure s = heap Quad(3);
 int32 eighteen = s.twice();
-Polygon p = heap Square(3);
+Polygon p = heap Quad(3);
 int32 four = p.sideCount();
 ```
 

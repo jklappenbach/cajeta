@@ -9,7 +9,7 @@ a time as `Optional` values — present while elements remain, empty once the
 cursor reaches `limit`.
 
 ```cajeta
-int32[] data = { 10, 20, 30, 40 };
+int32[] data = [ 10, 20, 30, 40 ];
 ArrayStream<int32> s = heap ArrayStream<int32>(data, 4);
 
 Optional<int32> o = s.next();

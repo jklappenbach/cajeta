@@ -11,7 +11,7 @@ comparator, and the natural-order entry points are thin wrappers that pass a
 `T[]` with the same seam.
 
 ```cajeta
-int32[] a = { 5, 3, 8, 1, 9, 2, 7 };
+int32[] a = [ 5, 3, 8, 1, 9, 2, 7 ];
 Sort.sort<int32>(a, 7);                        // [1, 2, 3, 5, 7, 8, 9]
 int32 at = Sort.binarySearch<int32>(a, 7, 8);  // 5
 int32 lo = Sort.lowerBound<int32>(a, 7, 4);    // 3 — first index not before 4

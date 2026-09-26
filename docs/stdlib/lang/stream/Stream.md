@@ -11,7 +11,7 @@ consult the flag to decide whether to fork, merging per-worker partials
 through a combiner.
 
 ```cajeta
-int32[] xs = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+int32[] xs = [ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 ];
 int32 evens = xs.stream()
     .filter((x) -> x % 2 == 0)
     .count();                                // 5

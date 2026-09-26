@@ -13,7 +13,8 @@ ArrayList<Pair<int32, int32>> src = heap ArrayList<Pair<int32, int32>>();
 src.add(heap Pair<int32, int32>(1, 100));
 src.add(heap Pair<int32, int32>(2, 200));
 
-ImmutableMap<int32, int32> m = heap ImmutableMap<int32, int32>(src);
+// The `#` surrenders `src`, whose pairs move into the map.
+ImmutableMap<int32, int32> m = heap ImmutableMap<int32, int32>(#src);
 int32 v = m.get(2);              // 200
 boolean has = m.containsKey(3);  // false
 int32 k0 = m.keyAt(0);           // 1 — dense, insertion order
@@ -23,7 +24,7 @@ int32 k0 = m.keyAt(0);           // 1 — dense, insertion order
 
 | Signature | |
 |---|---|
-| `ImmutableMap(ArrayList<Pair<K, V>> src)` ⚑ | Build a frozen map from `src` (last-wins on duplicate keys); the source is untouched |
+| `ImmutableMap(#ArrayList<Pair<K, V>> src)` ⚑ | Build a frozen map from `src` (last-wins on duplicate keys), which is consumed, so the call must write `#src` |
 | `V get(K key)` | Value bound to `key`, or the type's zero value if absent |
 | `boolean containsKey(K key)` | True iff `key` is present |
 | `V operator[] (K key)` | Subscript sugar over `get` |

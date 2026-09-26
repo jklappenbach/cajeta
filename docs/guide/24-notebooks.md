@@ -36,6 +36,7 @@ import cajeta.session.Packages;
 Packages.install("dev.cajeta.ml", "0.10.*");
 ```
 
+<!-- snippet: skip -->
 ```cajeta
 // cell 2 — the import resolves now
 import dev.cajeta.ml.Frame;

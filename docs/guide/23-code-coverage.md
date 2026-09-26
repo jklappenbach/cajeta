@@ -177,8 +177,10 @@ suite that calls `exit()` writes no profile, and coco says so rather than
 reporting zero coverage.
 
 With `dev.cajeta.unit`, the entry is usually a one-liner over reflective
-discovery:
+discovery. `Runner` is `dev.cajeta.unit`'s, so the example below needs that
+library on the classpath:
 
+<!-- snippet: skip -->
 ```cajeta
 public static int32 main(String[] args) { return Runner.runAll(); }
 ```

@@ -15,7 +15,7 @@ The package is lazy: programs that never touch columns don't parse it (or
 ```cajeta
 import cajeta.nucleo.column.Column;
 
-float32[] fa = { 1.5f, 2.5f, 3.5f };
+float32[] fa = [ 1.5f, 2.5f, 3.5f ];
 Column<float32> c #= Column.of<float32>(fa);
 Tensor<float32> t #= c.asTensor();     // ZERO-COPY view — shared bytes
 Column<float32> back #= Column.fromTensor<float32>(t);   // zero-copy inverse
@@ -32,7 +32,8 @@ named refusals (`ColumnTypeException`).
 Nullability is a **type distinction** (`Column<T?>` in the spec's notation):
 
 ```cajeta
-boolean[] ok = { true, false, true };
+float32[] vals = [ 1.5f, 0.0f, 3.5f ];
+boolean[] ok = [ true, false, true ];
 NullableColumn<float32> n #= NullableColumn.of<float32>(vals, ok);
 n.isValid(1);              // false — a real absence, never NaN-as-missing
 Column<float32> d1 #= n.fillNulls(0.0f);   // dense, nulls replaced
@@ -47,7 +48,7 @@ is reached only through the explicit materializations above.
 Offsets (`int32`, length+1) over one contiguous utf8 data buffer:
 
 ```cajeta
-String[] vs = { "hola", "x", "columnas" };
+String[] vs = [ "hola", "x", "columnas" ];
 StringColumn s #= StringColumn.of(vs);
 String v #= s.get(2);       // fresh owned copy of the element's bytes
 ```
@@ -63,10 +64,12 @@ consumer's reads (round-trip promptly, the `TensorProtocol` discipline).
 Import wraps a producer's structs zero-copy as a **foreign-backed** column:
 
 ```cajeta
-Column<?> w #= Column.importArrow(schemaAddr, arrayAddr);
-if (w instanceof Column<float32>) {
-    Column<float32> c = (Column<float32>) w;   // reified capture
-    Column<float32> mine #= c.materialize();    // the explicit compute crossing
+import cajeta.nucleo.column.Column;
+
+#Column<float32> capture(int64 schemaAddr, int64 arrayAddr) {
+    Column<float32> w #= (Column<float32>) Column.importArrow(schemaAddr,
+        arrayAddr);                    // reified capture at the airlock
+    return w.materialize();            // the explicit compute crossing
 }
 ```
 

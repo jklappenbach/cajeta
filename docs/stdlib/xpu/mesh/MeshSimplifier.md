@@ -13,16 +13,25 @@ vertex) because a `Matrix[]` cannot be allocated; `vertexQuadric` reconstructs
 one on demand.
 
 ```cajeta
-// Two triangles sharing an edge: 4 vertices (x, y, z each), 6 indices.
-float32[] positions = heap float32[12];
-positions[3] = 1.0f;                      // v1 = (1, 0, 0)
-positions[7] = 1.0f;                      // v2 = (0, 1, 0)
-positions[9] = 1.0f;  positions[10] = 1.0f;   // v3 = (1, 1, 0)
-int32[] indices = heap int32[6];
-indices[1] = 1;  indices[2] = 2;          // (0, 1, 2)
-indices[3] = 1;  indices[4] = 3;  indices[5] = 2;   // (1, 3, 2)
-float32[] quadrics #= MeshSimplifier.accumulateQuadrics(positions, indices, 4);
-int32[] survivors #= MeshSimplifier.simplify(positions, indices, 4, 1);
+package snip.mesh;
+
+import cajeta.xpu.mesh.MeshSimplifier;
+
+public final class Demo {
+    public static void run() {
+        // Two triangles sharing an edge: 4 vertices (x, y, z each), 6 indices.
+        float32[] positions = heap float32[12];
+        positions[3] = 1.0f;                      // v1 = (1, 0, 0)
+        positions[7] = 1.0f;                      // v2 = (0, 1, 0)
+        positions[9] = 1.0f;  positions[10] = 1.0f;   // v3 = (1, 1, 0)
+        int32[] indices = heap int32[6];
+        indices[1] = 1;  indices[2] = 2;          // (0, 1, 2)
+        indices[3] = 1;  indices[4] = 3;  indices[5] = 2;   // (1, 3, 2)
+        float32[] quadrics #= MeshSimplifier.accumulateQuadrics(positions, indices, 4);
+        int32[] survivors #= MeshSimplifier.simplify(positions, indices, 4, 1);
+        return;
+    }
+}
 ```
 
 ## Methods

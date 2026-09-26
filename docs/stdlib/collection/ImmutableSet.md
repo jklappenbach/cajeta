@@ -14,7 +14,8 @@ src.add(1);
 src.add(2);
 src.add(2);
 
-ImmutableSet<int32> set = heap ImmutableSet<int32>(src);
+// The `#` surrenders `src`, whose members move into the set.
+ImmutableSet<int32> set = heap ImmutableSet<int32>(#src);
 int64 n = set.count();          // 2 — duplicate dropped
 boolean has = set.contains(2);  // true
 int32 first = set.get(0);       // 1 — first-seen order preserved
@@ -24,7 +25,7 @@ int32 first = set.get(0);       // 1 — first-seen order preserved
 
 | Signature | |
 |---|---|
-| `ImmutableSet(ArrayList<T> src)` ⚑ | Build a frozen, de-duplicated set from `src` (first occurrence wins); the source is untouched |
+| `ImmutableSet(#ArrayList<T> src)` ⚑ | Build a frozen, de-duplicated set from `src` (first occurrence wins), which is consumed, so the call must write `#src` |
 | `int64 count()` | Number of unique members |
 | `boolean isEmpty()` | `count() == 0` |
 | `boolean contains(T v)` | True iff `v` is a member; O(1) average |
