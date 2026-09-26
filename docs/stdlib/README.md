@@ -145,6 +145,8 @@ tutorial; it links here for API detail. Docs link the
 | [Sha1](hash/Sha1.md) | SHA-1 digest |
 | [HmacSha256](hash/HmacSha256.md) | HMAC-SHA256 keyed authentication |
 | [Pbkdf2](hash/Pbkdf2.md) | PBKDF2-HMAC-SHA256 password hashing and key derivation |
+| [HmacSha1](hash/HmacSha1.md) | HMAC-SHA1, for HOTP and TOTP only |
+| [Totp](hash/Totp.md) | HOTP and TOTP one-time passwords as authenticator apps compute them |
 | [SecureRandom](hash/SecureRandom.md) | OS entropy for salts, keys and ids |
 | [MD5](hash/MD5.md) | MD5 checksum / identifier |
 
@@ -176,6 +178,7 @@ tutorial; it links here for API detail. Docs link the
 | Class | |
 |---|---|
 | [Base64](codec/Base64.md) | Base64 (RFC 4648) byte ⇄ text codec |
+| [Base32](codec/Base32.md) | Base32 (RFC 4648) codec, for OTP secrets |
 | [Csv](codec/csv/Csv.md) | Typed CSV: bind rows to a declared type |
 | [Json](codec/json/Json.md) | Top-level JSON parse/serialize entry points |
 

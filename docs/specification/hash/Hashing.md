@@ -36,6 +36,7 @@ XXH3-128) + `DefaultHasher` shipped. Cryptographic digests shipped:
 
 ## `Hash` utility namespace — shipped
 
+<!-- snippet: skip -->
 ```cajeta
 public final class Hash {
     public static int64 identity(Object obj);   // identity hash
@@ -51,6 +52,7 @@ bridged to `__cajeta_hash_identity` / `__cajeta_hash_combine` /
 
 ### Examples
 
+<!-- snippet: skip -->
 ```cajeta
 import cajeta.hash.Hash;
 
@@ -119,6 +121,7 @@ no-arg `hash()` always wins (the synthesizer skips). Driven by
 `CajetaClass::synthesizeAutoHash` (`CajetaClass.cpp:1204`); the body is
 emitted by `SynthesizedHashMethod`.
 
+<!-- snippet: skip -->
 ```cajeta
 @AutoHash
 public class Position {
@@ -143,6 +146,7 @@ write methods (no fluent chaining) — the spec's earlier `Hasher`-
 returning shape collided with interface-return covariance edge cases
 that aren't worth working around for v1.
 
+<!-- snippet: skip -->
 ```cajeta
 public interface Hasher {
     public void writeBoolean(boolean v);
@@ -170,6 +174,7 @@ public interface Hasher {
 
 Default for non-attacker-controlled hashing. Multi-GB/s throughput.
 
+<!-- snippet: skip -->
 ```cajeta
 public final class XXHash3 implements Hasher {
     public XXHash3();                              // process-seed
@@ -203,6 +208,7 @@ SHA-256 (FIPS 180-4). The native bridge uses x86 **SHA-NI** behind a CPUID
 probe (scalar fallback), making it the fastest SHA-256 in the comparison suite.
 Use for content-addressing and interop; not a keyed/authenticated primitive.
 
+<!-- snippet: skip -->
 ```cajeta
 public final class Sha256 implements Hasher {
     public static #int8[] hash(int8[] data, int64 len);          // 32-byte digest
@@ -224,6 +230,7 @@ key is padded or hashed to one block at construction, so `reset()` restarts a
 MAC under the same key. This is the HS256 in a JWT, the signature on a cookie,
 and the PRF inside `Pbkdf2`.
 
+<!-- snippet: skip -->
 ```cajeta
 public final class HmacSha256 {
     public HmacSha256(int8[] key, int64 keyLen);
@@ -236,11 +243,33 @@ public final class HmacSha256 {
 }
 ```
 
+### `HmacSha1` and `Totp` (one-time passwords) — shipped
+
+Authenticator apps compute RFC 6238 TOTP over HMAC-SHA1 with six digits and a
+thirty-second step, and the installed ones ignore the algorithm in the
+enrollment URI, so SHA-1 is the compatibility floor. `HmacSha1` mirrors
+`HmacSha256` over the native `Sha1`. `Totp` is HOTP (RFC 4226) plus the time
+step, a zero-padded formatter, and the `otpauth://` URI whose secret is
+Base32 (`cajeta.codec.Base32`). Windowing, single use and lockout are the
+caller's policy.
+
+<!-- snippet: skip -->
+```cajeta
+public final class Totp {
+    public static int32 hotp(int8[] secret, int64 secretLen, int64 counter, int32 digits);
+    public static int32 code(int8[] secret, int64 secretLen, int64 unixSeconds,
+                             int32 stepSeconds, int32 digits);
+    public static #String format(int32 code, int32 digits);
+    public static #String uri(String issuer, String account, int8[] secret, int64 secretLen);
+}
+```
+
 ### `Pbkdf2` (password hashing and key derivation) — shipped
 
 PBKDF2-HMAC-SHA256 (RFC 8018). The iteration count is the cost knob. Store it
 beside the hash, so raising it later does not strand existing users.
 
+<!-- snippet: skip -->
 ```cajeta
 public final class Pbkdf2 {
     public static #int8[] sha256(int8[] password, int64 passwordLen,
@@ -257,6 +286,7 @@ handles, salts and keys come from here. It throws when the source cannot be
 read rather than falling back to a weaker generator. `cajeta.math`'s random is
 a seeded generator for simulation and is not a substitute.
 
+<!-- snippet: skip -->
 ```cajeta
 public final class SecureRandom {
     public static void fill(int8[] out, int64 len);
@@ -272,6 +302,7 @@ content-addressing hash for new code. 256-bit default digest plus an
 standard digest). The bulk path is an AVX-512 `hash16` (16 chunks in
 parallel, CPUID-gated, scalar fallback).
 
+<!-- snippet: skip -->
 ```cajeta
 public final class Blake3 implements Hasher {
     public static #int8[] hash(int8[] data, int64 len);          // 32-byte digest
@@ -299,6 +330,7 @@ Same surface shape as `XXHash3`.
 
 SipHash-2-4 with 128-bit key, supplied as two int64 halves.
 
+<!-- snippet: skip -->
 ```cajeta
 public final class SipHash implements Hasher {
     public SipHash(int64 keyLow, int64 keyHigh);
@@ -317,6 +349,7 @@ Kept only for protocols that fix MD5 (S3 `Content-MD5`, existing ETags). It's
 broken *and* the slowest hash here. New code: `XXHash3.hash128` (non-crypto
 128-bit) or `Sha256` / `Blake3` (crypto).
 
+<!-- snippet: skip -->
 ```cajeta
 public final class MD5 implements Hasher {
     public static #int8[] hash(int8[] data, int64 len);          // 16-byte digest
@@ -337,6 +370,7 @@ What the compiler-synthesized `Object.hash()` uses: process-seeded
 XXH3 underneath. Delegates the Hasher surface to a backing
 `XXHash3` instance.
 
+<!-- snippet: skip -->
 ```cajeta
 public final class DefaultHasher implements Hasher {
     public DefaultHasher();              // pulls process seed
@@ -381,6 +415,8 @@ Worked end-to-end in the tour: `samples/tour/.../tour/hash/HashDemo.cajeta`.
 | `HmacSha256` (RFC 4231 vectors) | `test/parser/CryptoPrimitivesTests.cpp` | shipped |
 | `Pbkdf2` (RFC 7914 §11 vectors) | `test/parser/CryptoPrimitivesTests.cpp` | shipped |
 | `SecureRandom` + `Hash.constantTimeEquals` | `test/parser/CryptoPrimitivesTests.cpp` | shipped |
+| `HmacSha1` (RFC 2202), `Totp` (RFC 4226 appendix D, RFC 6238 appendix B) | `test/parser/OtpPrimitivesTests.cpp` | shipped |
+| `Base32` (RFC 4648 §10) | `test/parser/OtpPrimitivesTests.cpp` | shipped |
 | `RapidHash` | — | designed |
 
 ## v1 implementation notes

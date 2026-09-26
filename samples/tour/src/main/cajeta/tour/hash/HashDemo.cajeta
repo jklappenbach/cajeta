@@ -9,6 +9,9 @@ import cajeta.hash.Blake3;
 import cajeta.hash.MD5;
 import cajeta.hash.HmacSha256;
 import cajeta.hash.Pbkdf2;
+import cajeta.hash.HmacSha1;
+import cajeta.hash.Totp;
+import cajeta.codec.Base32;
 import cajeta.hash.SecureRandom;
 import cajeta.hash.Hash;
 import cajeta.lang.String;
@@ -179,5 +182,20 @@ public class HashDemo extends DemoClass {
         presented[31] = (int8) (presented[31] ^ (int8) 1);
         this.check(Hash.constantTimeEquals(expected, 32L, presented, 32L) == false,
             "constant-time compare rejects a MAC that differs in its last byte");
+
+        // 9) One-time passwords. Authenticator apps compute TOTP over HMAC-SHA1
+        //    with six digits and a thirty-second step; the secret travels Base32
+        //    inside an otpauth:// URI rendered as a QR code.
+        String mac1 #= HmacSha1.macHex(key, 4L, claimBytes, 28L);
+        this.check(mac1.equals("effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"),
+            "HMAC-SHA1 matches the RFC 2202 vector");
+        String seedText = "12345678901234567890";
+        int8[] seed #= seedText.toBytes();
+        String otp #= Totp.format(Totp.code(seed, 20L, 59L, 30, 8), 8);
+        this.check(otp.equals("94287082"), "TOTP-SHA1 matches the RFC 6238 vector at t=59");
+        String b32 #= Base32.encode(seed, 20L);
+        int8[] back #= Base32.decode(b32);
+        this.check(b32.equals("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ") && back[19] == seed[19],
+            "Base32 round-trips the OTP secret");
     }
 }

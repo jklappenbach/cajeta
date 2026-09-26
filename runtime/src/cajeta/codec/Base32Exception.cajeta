@@ -1,0 +1,20 @@
+package cajeta.codec;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Thrown by [[Base32]]`.decode` on malformed input: a character outside the
+ * alphabet that is not `=` padding, or a length no byte sequence produces.
+ * `position` is the 0-based offset into the encoded input where the decoder
+ * noticed.
+ */
+public class Base32Exception extends RecoverableException {
+    public int64 position;
+
+    public Base32Exception(#String message, int64 position) {
+        this.message = message;
+        this.cause = 0;
+        this.position = position;
+    }
+}

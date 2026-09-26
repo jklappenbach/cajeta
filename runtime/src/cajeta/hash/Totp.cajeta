@@ -1,0 +1,107 @@
+package cajeta.hash;
+
+import cajeta.codec.Base32;
+import cajeta.lang.String;
+
+/**
+ * One-time passwords: HOTP (RFC 4226) and TOTP (RFC 6238) over [[HmacSha1]],
+ * as Google Authenticator, Microsoft Authenticator and the rest compute them.
+ * Those apps use six digits and a thirty-second step whatever the enrollment
+ * URI says, so [[uri]] writes exactly that. Verification policy, the window
+ * either side of now, single use per step and attempt lockout, is the
+ * caller's.
+ *
+ * ```cajeta
+ * int32 now = Totp.code(secret, 20L, unixSeconds, 30, 6);
+ * String shown #= Totp.format(now, 6);
+ * String enroll #= Totp.uri("Example", "ada@example.test", secret, 20L);
+ * ```
+ *
+ * Pinned by RFC 4226 appendix D and RFC 6238 appendix B in `OtpPrimitivesTests`.
+ */
+public final class Totp {
+
+    /** The RFC 4226 code for `counter`, as an integer below 10^digits. */
+    public static int32 hotp(int8[] secret, int64 secretLen, int64 counter,
+                             int32 digits) {
+        int8[] msg = heap int8[8];
+        int64 i = 0;
+        while (i < 8L) {
+            int64 shift = (7L - i) * 8L;
+            msg[i] = (int8) ((counter >> shift) & 255L);
+            i = i + 1;
+        }
+        int8[] mac #= HmacSha1.mac(secret, secretLen, msg, 8L);
+        int32 offset = ((int32) mac[19]) & 0xf;
+        int32 bin = ((((int32) mac[offset]) & 0x7f) << 24)
+            | ((((int32) mac[offset + 1]) & 0xff) << 16)
+            | ((((int32) mac[offset + 2]) & 0xff) << 8)
+            | (((int32) mac[offset + 3]) & 0xff);
+        int32 modulus = 1;
+        int32 d = 0;
+        while (d < digits) { modulus = modulus * 10; d = d + 1; }
+        return bin % modulus;
+    }
+
+    /** The RFC 6238 code for the step of `stepSeconds` containing `unixSeconds`. */
+    public static int32 code(int8[] secret, int64 secretLen, int64 unixSeconds,
+                             int32 stepSeconds, int32 digits) {
+        return Totp.hotp(secret, secretLen, unixSeconds / (int64) stepSeconds,
+            digits);
+    }
+
+    /** The code as exactly `digits` characters, zero padded. */
+    public static #String format(int32 code, int32 digits) {
+        int8[] out = heap int8[(int64) digits];
+        int32 v = code;
+        int32 i = digits - 1;
+        while (i >= 0) {
+            out[i] = (int8) (48 + v % 10);
+            v = v / 10;
+            i = i - 1;
+        }
+        return heap String(#out, digits);
+    }
+
+    /** The `otpauth://totp/` enrollment URI with the secret in Base32. */
+    public static #String uri(String issuer, String account, int8[] secret,
+                              int64 secretLen) {
+        String iss #= Totp.escape(issuer);
+        String acct #= Totp.escape(account);
+        String sec #= Base32.encode(secret, secretLen, false);
+        String out #= "otpauth://totp/" + iss + ":" + acct + "?secret=" + sec
+            + "&issuer=" + iss + "&algorithm=SHA1&digits=6&period=30";
+        return #out;
+    }
+
+    static boolean unreserved(int32 c) {
+        if (c >= 48 && c <= 57) { return true; }
+        if (c >= 65 && c <= 90) { return true; }
+        if (c >= 97 && c <= 122) { return true; }
+        return c == 45 || c == 46 || c == 95 || c == 126;
+    }
+
+    static #String escape(String s) {
+        int32 n = s.byteLength();
+        int8[] out = heap int8[(int64) n * 3L];
+        int32 o = 0;
+        int32 i = 0;
+        while (i < n) {
+            int32 c = ((int32) s.byteAt(i)) & 0xff;
+            if (Totp.unreserved(c)) {
+                out[o] = (int8) c;
+                o = o + 1;
+            } else {
+                out[o] = (int8) 37;
+                out[o + 1] = HmacSha256.nibbleUpper(c >> 4);
+                out[o + 2] = HmacSha256.nibbleUpper(c & 0xf);
+                o = o + 3;
+            }
+            i = i + 1;
+        }
+        int8[] exact = heap int8[(int64) o];
+        int32 k = 0;
+        while (k < o) { exact[k] = out[k]; k = k + 1; }
+        return heap String(#exact, o);
+    }
+}
