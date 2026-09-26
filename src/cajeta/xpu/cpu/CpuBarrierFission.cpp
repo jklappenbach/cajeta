@@ -1425,6 +1425,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // gets no snapshot, so its uniform local accumulates across the block.
     {
         llvm::DominatorTree rDT(*wrapper);
+        llvm::PostDominatorTree rPDT(*wrapper);
         for (RegionJob& J : jobs) {
             if (!J.phBlock) continue;
             llvm::SmallPtrSet<llvm::BasicBlock*, 16> inRegion(J.blocks.begin(),
@@ -1445,6 +1446,19 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 for (llvm::LoadInst* ld : allLoads)
                     if (inRegion.count(ld->getParent())) loads.push_back(ld);
                 if (stores.empty() || loads.empty()) continue;
+                // The update must be UNCONDITIONAL within the region. A
+                // conditional one -- `if (t == 0) { total = total + p[i]; }`,
+                // the lane-0 tail -- must keep reading the slot: the
+                // work-items that skip it would otherwise hand the next one a
+                // region-entry value that erases what the updating work-item
+                // computed. Measured 2026-09-26 as three coop and wave-vector
+                // suites on cpu.
+                bool always = false;
+                for (llvm::StoreInst* st : stores)
+                    if (rPDT.dominates(st->getParent(), J.entry)) {
+                        always = true; break;
+                    }
+                if (!always) continue;
                 // A local holding a WAVE RESULT is per work-item in fact (each
                 // wave computes its own), so the region-entry value is not what
                 // its reads want.
