@@ -67,6 +67,10 @@ The seam this spec asks of `cajeta-http`, kept small:
 - **1.3.4** Content coding is looked up through a registry rather than the
   static four-token list in `ContentCoding`, so a coding can be added by a
   dependency.
+- **1.3.5** The server hands each complete message, in the connection's
+  input buffer, to a handler the application supplies, and writes the
+  buffer that comes back. Framing stays in `cajeta-http`; what happens
+  between is primavera's pipeline (§7.8 to §7.19).
 
 Existing entry points keep working with a default pool, so no current
 consumer of `cajeta-http` changes.
@@ -257,7 +261,14 @@ Four phases, in order. Each phase ends with the sample running end to end.
 
 ---
 
-## 7. Feature: pluggable codecs and compression
+## 7. Feature: the processing pipeline, codecs and codings
+
+Decided with Julian 2026-09-26. Processing is a pipeline of stages added in
+execution order, driven by the pipeline, dealing in buffers in and out. No
+stage calls another and no stage writes to the socket. The registries in
+§7.1 to §7.6 are the lookup tables a fixed stage consults. They hold no
+order. The pipeline holds nothing but order.
+
 
 - **7.1** When a body is decoded or encoded, the codec is chosen by media
   type from a registry, and the media type comes from `Content-Type` on input
@@ -283,6 +294,61 @@ Four phases, in order. Each phase ends with the sample running end to end.
   registration as a protobuf message selected by `Content-Type`, accepts a
   gzip-coded JSON body, and answers in the negotiated type and coding, and
   the self-test covers each pairing.
+
+- **7.8** When a connection is accepted, `cajeta-http` frames the stream and
+  hands each complete message, in the connection's pooled input buffer, to
+  the application's pipeline. A stage never sees a partial frame; framing
+  and streaming bodies are the transport's.
+- **7.9** When a pipeline is built, stages are added in the order they will
+  run, and each declares the kind it consumes and the kind it produces: raw,
+  decoded with a media type, routed, authenticated, bound. `build` walks the
+  list once and refuses a chain whose kinds do not meet. A misordered
+  pipeline fails on launch, never per request.
+- **7.10** When a message is processed, the pipeline calls each stage's
+  inbound side in order with the current buffer. A stage returns a buffer,
+  either the one it received or one it took from the pool through the
+  request context. When it returns a different one, the pipeline releases
+  the one it handed in. Authentication returns the buffer it received.
+- **7.11** When a stage needs state about the request, it resolves typed
+  request-scoped or session-scoped components through the DI scopes of §3
+  (`primavera-spec.md`): `Principal`, `ContentMeta`, the JSON or protobuf
+  index. Nothing travels stage to stage but the buffer. A stage is a
+  singleton and resolves scoped components at execution, not construction.
+- **7.12** When a stage fails, it throws. The exception catalogue in
+  `cajeta-http` names every HTTP status and every WebSocket close code, so a
+  stage throws the condition and the pipeline writes the matching response,
+  releasing any buffer the stage took and did not return. The response body
+  carries no distinguishing detail (§8.7).
+- **7.13** When a stage completes the request itself, a CORS preflight or a
+  304, it sets the response on the request context and returns, and the
+  pipeline ends the inbound walk there. Success is never thrown.
+- **7.14** When the handler has produced a response, the pipeline walks the
+  same stages backwards from the handler, calling each stage's outbound
+  side. A coding encodes on the way out, a codec serializes, and most stages
+  pass the buffer through. Then the transport writes once (§4).
+- **7.15** When a buffer is needed anywhere in the pipeline, it comes from
+  the pool. The pipeline's buffer type is constructible only by the pool, so
+  a stage cannot allocate one. Stages borrow, the pipeline owns, and the
+  pipeline releases the final buffer after the write. §11's allocation and
+  live-count invariants are the proof.
+- **7.16** When a protobuf or other binary body is bound, the default is an
+  index over the wire bytes in the same buffer, field number to offset and
+  length, with accessors decoding on demand, exactly as the JSON index (§3).
+  A new buffer is taken only for the owned binding mode. Replacing the
+  buffer is possible and rare.
+- **7.17** When a connection upgrades, HTTP and WebSocket are two pipelines
+  and the connection switches from the first to the second at the
+  handshake. No stage is ever added to or removed from a live pipeline.
+- **7.18** When primavera ships, it ships both standard pipelines composed
+  from its standard stages. HTTP: content decoding, routing, preflight,
+  authentication, authorization, binding, handler, encoding, content
+  coding. WebSocket: permessage-deflate, message codec, handler, codec,
+  deflate, with authentication done once at the handshake and the principal
+  on the session. An application composes its own from the same stages plus
+  its own, a decrypt stage or a protobuf expansion, wherever the kinds meet.
+- **7.19** When the sample runs, the HTTP and WebSocket phases run on the
+  standard pipelines, and the codec phase adds a protobuf index stage to the
+  HTTP pipeline without touching any other stage.
 
 ---
 
