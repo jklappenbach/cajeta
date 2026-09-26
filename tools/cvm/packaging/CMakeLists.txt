@@ -43,9 +43,12 @@ endif()
 # The COMPONENT is named rather than left Unspecified because CPack derives the
 # WiX component id from it plus the install path, and wix/path-patch.xml has to
 # name that id to attach the PATH entry to it.
+# LANGUAGES NONE leaves CMAKE_EXECUTABLE_SUFFIX empty, so the suffix comes from
+# the binary itself: .exe on Windows, none elsewhere.
+get_filename_component(CVM_EXE_SUFFIX "${CVM_BINARY}" LAST_EXT)
 install(PROGRAMS "${CVM_BINARY}"
         DESTINATION bin
-        RENAME "cvm${CMAKE_EXECUTABLE_SUFFIX}"
+        RENAME "cvm${CVM_EXE_SUFFIX}"
         COMPONENT cvm)
 set(CPACK_COMPONENTS_ALL cvm)
 
@@ -63,13 +66,11 @@ set(CPACK_PACKAGE_INSTALL_DIRECTORY "Cajeta")
 set(CPACK_PACKAGE_CHECKSUM SHA256)
 set(CPACK_STRIP_FILES OFF)   # already built as the release wants it
 
-# /usr, so bin lands on the default PATH. The default CPack prefix for an
-# archive-ish generator is not on PATH, and an installer whose payload is not
-# reachable has not installed anything as far as the reader is concerned.
-set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
-
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CPACK_GENERATOR "DEB;RPM")
+    # /usr, so bin lands on the default PATH. WiX takes no prefix: it installs
+    # under Program Files, and a prefix there would enter the component ids.
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
 elseif(APPLE)
     set(CPACK_GENERATOR "productbuild")
     # /usr is not writable on a sealed system volume, and /usr/local/bin is on
@@ -77,6 +78,10 @@ elseif(APPLE)
     set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
 elseif(WIN32)
     set(CPACK_GENERATOR "WIX")
+    # LANGUAGES NONE leaves the pointer size unknown, and WiX then defaults to an
+    # x86 package that installs a 64-bit cvm.exe under Program Files (x86).
+    set(CPACK_WIX_ARCHITECTURE "x64")
+    set(CPACK_SYSTEM_NAME "win64")
 endif()
 
 # ---- WiX -----------------------------------------------------------------
