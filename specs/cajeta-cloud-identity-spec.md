@@ -675,3 +675,18 @@ Julian approves it.
     memory driver's hook, enroll an authenticator, and sign in again with a
     code computed from the secret at the manual clock. The password login
     stays as a second path, since Cognito deployments will have both.
+  - **15.18.8 Code attempts are limited.** A wrong OTP or TOTP code counts
+    against the same lockout as a wrong password (§4.4, §6.4). Six digits
+    with a three-step window is three chances in a million per guess, so an
+    unlimited online guess is hours, not years. The memory driver locks after
+    five wrong codes with backoff, and the contract proves the lock.
+  - **15.18.9 TOTP seeds are a critical asset.** A seed cannot be stored
+    one-way, so a breach of a user store yields every user's codes. A durable
+    driver stores seeds encrypted under a key the store does not hold. The
+    memory driver holds them in process only and says so in its capability
+    caveat. Enrollment is accepted only from a session proven by a confirmed
+    channel. Decided 2026-09-25 after Julian asked about TOTP-only.
+- **15.14 status:** approved 2026-09-25 (no objection after the passwordless
+  discussion, where username enumeration matters more).
+- **15.11 status:** working assumption from 2026-09-25, pending an explicit
+  yes. It changes only how adapters spell attribute names.
