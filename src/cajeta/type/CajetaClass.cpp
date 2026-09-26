@@ -73,6 +73,22 @@ namespace cajeta {
     // Defined below; used by generateStaticInitializers, which precedes it.
     static llvm::Constant* foldStaticInitializer(
         AbstractSyntaxNodePtr init, llvm::Type* storedType);
+
+    // The global's value type for a static field: scalars and interface fat values
+    // by value, every reference (class, array, closure) as a `ptr`.
+    static llvm::Type* staticFieldStoredType(const StructurePropertyPtr& prop,
+                                             llvm::LLVMContext& ctx) {
+        CajetaTypePtr ty = prop->getType();
+        llvm::Type* storedType = ty->getLlvmType();
+        bool isArray = std::dynamic_pointer_cast<CajetaArray>(ty) != nullptr;
+        if (isArray || !(ty->getTypeFlags() & PRIMITIVE_FLAG)) {
+            auto ifaceCls = std::dynamic_pointer_cast<CajetaClass>(ty);
+            bool isInterfaceValue = ifaceCls && ifaceCls->isInterface()
+                && storedType && storedType->isStructTy();
+            if (!isInterfaceValue) storedType = llvm::PointerType::get(ctx, 0);
+        }
+        return storedType;
+    }
     void CajetaClass::captureDeclaringFile() {
         if (module) declaringFile = module->currentSourceFile();
     }
@@ -2342,19 +2358,8 @@ namespace cajeta {
             if (!prop || !prop->isStatic()) continue;
             if (!prop->getInitializer()) continue;
             if (!prop->getType() || !prop->getType()->getLlvmType()) continue;
-            llvm::Type* storedType = prop->getType()->getLlvmType();
-            if (!(prop->getType()->getTypeFlags() & PRIMITIVE_FLAG)) {
-                // An INTERFACE value IS the 24-byte fat struct, stored by value, so
-                // a `ptr` global under-allocates it. Both derivation sites must agree.
-                auto ifaceCls = std::dynamic_pointer_cast<CajetaClass>(
-                    prop->getType());
-                bool isInterfaceValue = ifaceCls && ifaceCls->isInterface()
-                    && storedType && storedType->isStructTy();
-                if (!isInterfaceValue) {
-                    storedType = llvm::PointerType::get(
-                        *module->getLlvmContext(), 0);
-                }
-            }
+            llvm::Type* storedType =
+                staticFieldStoredType(prop, *module->getLlvmContext());
             if (foldStaticInitializer(prop->getInitializer(), storedType)) {
                 continue;
             }
@@ -2437,19 +2442,38 @@ namespace cajeta {
                     val = builder->CreateFPToSI(val, storedType);
                 }
             }
-            if (val->getType() != storedType) {
+            auto declArr = std::dynamic_pointer_cast<CajetaArray>(prop->getType());
+            auto initArr = std::dynamic_pointer_cast<CajetaArray>(expr->getResolvedType());
+            bool arrayElementMismatch = declArr && initArr
+                && declArr->getElementType() && initArr->getElementType()
+                && declArr->getElementType()->toCanonical()
+                    != initArr->getElementType()->toCanonical();
+            if (val->getType() != storedType || arrayElementMismatch) {
                 auto declTy = prop->getType();
                 auto initTy = expr->getResolvedType();
                 std::string declName = (declTy && declTy->getQName())
                     ? declTy->getQName()->toCanonical() : "<unknown>";
                 std::string initName = (initTy && initTy->getQName())
                     ? initTy->getQName()->toCanonical() : "<unresolved>";
-                throw locatedException(
-                    expr->getSourceLine(), expr->getSourceColumn() + 1,
+                if (initName == declName) {
+                    std::string valRepr, slotRepr;
+                    llvm::raw_string_ostream vs(valRepr), ss(slotRepr);
+                    val->getType()->print(vs);
+                    storedType->print(ss);
+                    initName += "' (lowered as '" + vs.str() + "')";
+                    declName += "' (stored as '" + ss.str() + "')";
+                } else {
+                    initName += "'";
+                    declName += "'";
+                }
+                std::string file = !declaringFile.empty()
+                    ? declaringFile : module->getSourcePath();
+                throw Exception(
                     "initializer for static field '" + prop->getName()
                         + "' has type '" + initName
-                        + "', which is not assignable to '" + declName + "'",
-                    "CAJETA_ERROR_INITIALIZER_TYPE_MISMATCH");
+                        + ", which is not assignable to '" + declName,
+                    "CAJETA_ERROR_INITIALIZER_TYPE_MISMATCH", file,
+                    (int) expr->getSourceLine(), (int) expr->getSourceColumn() + 1);
             }
             builder->CreateStore(val, g);
         }
@@ -2546,19 +2570,8 @@ namespace cajeta {
         } else if (auto* existing = lmod->getNamedGlobal(globalName)) {
             g = existing;
         } else {
-            llvm::Type* storedType = prop->getType()->getLlvmType();
-            if (!(prop->getType()->getTypeFlags() & PRIMITIVE_FLAG)) {
-                // An INTERFACE value IS the 24-byte fat struct, stored by value, so
-                // a `ptr` global under-allocates it. Both derivation sites must agree.
-                auto ifaceCls = std::dynamic_pointer_cast<CajetaClass>(
-                    prop->getType());
-                bool isInterfaceValue = ifaceCls && ifaceCls->isInterface()
-                    && storedType && storedType->isStructTy();
-                if (!isInterfaceValue) {
-                    storedType = llvm::PointerType::get(
-                        *module->getLlvmContext(), 0);
-                }
-            }
+            llvm::Type* storedType =
+                staticFieldStoredType(prop, *module->getLlvmContext());
             llvm::Constant* init = foldStaticInitializer(
                 prop->getInitializer(), storedType);
             if (!init) init = llvm::Constant::getNullValue(storedType);
