@@ -1,6 +1,7 @@
 # Spike: package cvm on the Windows runner in minutes instead of a full
-# release build. A stand-in executable plays cvm.exe, and every WiX source
-# CPack generates is printed whether or not cpack succeeds.
+# release build. A stand-in executable plays cvm.exe. Variant A is the
+# packaging as committed. Variant B adds back the /usr prefix to show what
+# it does to the component ids. Every WiX source CPack generates is printed.
 name: cvm-pkg-spike
 
 on:
@@ -43,26 +44,39 @@ jobs:
           mkdir -p stub
           cp "$(command -v ninja)" stub/cvm.exe
           CVM="$PWD/stub/cvm.exe"
-          echo "== tools"; command -v cmake cpack wix; cmake --version | head -1; wix --version
-          rm -rf build/cvm-pkg
-          cmake -S tools/cvm/packaging -B build/cvm-pkg -DCVM_BINARY="$CVM" -DCVM_PACKAGE_VERSION=0.2.0 \
-                --log-level=VERBOSE 2>&1 | tail -20
-          echo "== cache"
-          grep -E "CMAKE_SYSTEM_NAME|CVM_|CPACK" build/cvm-pkg/CMakeCache.txt | head -20
-          echo "== CPackConfig"
-          grep -E "PACKAGING_INSTALL_PREFIX|INSTALL_DIRECTORY|WIX_PATCH|COMPONENTS_ALL|CPACK_GENERATOR|SET_DESTDIR" build/cvm-pkg/CPackConfig.cmake
-          rc=0
-          ( cd build/cvm-pkg && cpack -G WIX --verbose ) || rc=$?
-          echo "== cpack exit $rc"
-          echo "== staged payload"
-          find build/cvm-pkg/_CPack_Packages -path '*WIX*' -type f ! -name '*.wixobj' ! -name '*.wxs' 2>/dev/null | head -40
-          for f in $(find build/cvm-pkg/_CPack_Packages -name '*.wxs' 2>/dev/null); do
-            echo "==== $f"
-            cat "$f"
-          done
-          echo "== msi"
-          ls -la build/cvm-pkg/*.msi 2>/dev/null
-          for m in build/cvm-pkg/*.msi; do
-            [ -f "$m" ] && scripts/verify-msi-path.sh "$m"
-          done
-          exit $rc
+          msi_facts() {
+            local win; win="$(cygpath -w "$1")"
+            MSYS2_ARG_CONV_EXCL='*' powershell -NoProfile -Command "
+              \$i  = New-Object -ComObject WindowsInstaller.Installer
+              \$db = \$i.GetType().InvokeMember('OpenDatabase','InvokeMethod',\$null,\$i,@('${win}',0))
+              \$si = \$db.GetType().InvokeMember('SummaryInformation','GetProperty',\$null,\$db,\$null)
+              Write-Output ('platform=' + \$si.GetType().InvokeMember('Property','GetProperty',\$null,\$si,7))
+              \$v  = \$db.GetType().InvokeMember('OpenView','InvokeMethod',\$null,\$db,@('SELECT \`Directory\`,\`Directory_Parent\`,\`DefaultDir\` FROM Directory'))
+              \$v.GetType().InvokeMember('Execute','InvokeMethod',\$null,\$v,\$null)
+              while (\$r = \$v.GetType().InvokeMember('Fetch','InvokeMethod',\$null,\$v,\$null)) {
+                Write-Output ('dir ' + \$r.GetType().InvokeMember('StringData','GetProperty',\$null,\$r,1) + ' <- ' + \$r.GetType().InvokeMember('StringData','GetProperty',\$null,\$r,2) + ' : ' + \$r.GetType().InvokeMember('StringData','GetProperty',\$null,\$r,3))
+              }" 2>&1 | tr -d '\r'
+          }
+          variant() {
+            local name="$1"; shift
+            echo "######## variant $name: $*"
+            rm -rf build/cvm-pkg
+            cmake -S tools/cvm/packaging -B build/cvm-pkg -DCVM_BINARY="$CVM" -DCVM_PACKAGE_VERSION=0.2.0 "$@" >/dev/null
+            grep -E "PACKAGING_INSTALL_PREFIX|WIX_ARCHITECTURE|CPACK_SYSTEM_NAME" build/cvm-pkg/CPackConfig.cmake
+            local rc=0
+            ( cd build/cvm-pkg && cpack -G WIX ) || rc=$?
+            echo "== cpack exit $rc"
+            grep -rhoE 'Id="CM_[A-Z]{2}_[^"]*"' build/cvm-pkg/_CPack_Packages 2>/dev/null | sort -u
+            for m in build/cvm-pkg/*.msi; do
+              [ -f "$m" ] || continue
+              echo "== $(basename "$m")"
+              msi_facts "$m"
+              scripts/verify-msi-path.sh "$m"
+            done
+            return $rc
+          }
+          variant A
+          a=$?
+          variant B -DCPACK_PACKAGING_INSTALL_PREFIX=/usr
+          echo "== variant A exit $a"
+          exit $a
