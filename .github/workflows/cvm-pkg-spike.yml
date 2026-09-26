@@ -1,0 +1,68 @@
+# Spike: package cvm on the Windows runner in minutes instead of a full
+# release build. A stand-in executable plays cvm.exe, and every WiX source
+# CPack generates is printed whether or not cpack succeeds.
+name: cvm-pkg-spike
+
+on:
+  workflow_dispatch:
+
+env:
+  GIT_LFS_SKIP_SMUDGE: 1
+
+jobs:
+  spike:
+    runs-on: [self-hosted, Windows, X64, gpu]
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          path-type: inherit
+          install: >-
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+
+      - name: Provision WiX
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet tool update --global wix --version 5.0.2
+          $toolsDir = "$env:USERPROFILE\.dotnet\tools"
+          $env:PATH = "$toolsDir;$env:PATH"
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+          Add-Content -Path $env:GITHUB_PATH -Value $toolsDir
+
+      - name: Package a stand-in cvm.exe
+        run: |
+          set -uo pipefail
+          mkdir -p stub
+          cp "$(command -v ninja)" stub/cvm.exe
+          CVM="$PWD/stub/cvm.exe"
+          echo "== tools"; command -v cmake cpack wix; cmake --version | head -1; wix --version
+          rm -rf build/cvm-pkg
+          cmake -S tools/cvm/packaging -B build/cvm-pkg -DCVM_BINARY="$CVM" -DCVM_PACKAGE_VERSION=0.2.0 \
+                --log-level=VERBOSE 2>&1 | tail -20
+          echo "== cache"
+          grep -E "CMAKE_SYSTEM_NAME|CVM_|CPACK" build/cvm-pkg/CMakeCache.txt | head -20
+          echo "== CPackConfig"
+          grep -E "PACKAGING_INSTALL_PREFIX|INSTALL_DIRECTORY|WIX_PATCH|COMPONENTS_ALL|CPACK_GENERATOR|SET_DESTDIR" build/cvm-pkg/CPackConfig.cmake
+          rc=0
+          ( cd build/cvm-pkg && cpack -G WIX --verbose ) || rc=$?
+          echo "== cpack exit $rc"
+          echo "== staged payload"
+          find build/cvm-pkg/_CPack_Packages -path '*WIX*' -type f ! -name '*.wixobj' ! -name '*.wxs' 2>/dev/null | head -40
+          for f in $(find build/cvm-pkg/_CPack_Packages -name '*.wxs' 2>/dev/null); do
+            echo "==== $f"
+            cat "$f"
+          done
+          echo "== msi"
+          ls -la build/cvm-pkg/*.msi 2>/dev/null
+          for m in build/cvm-pkg/*.msi; do
+            [ -f "$m" ] && scripts/verify-msi-path.sh "$m"
+          done
+          exit $rc
