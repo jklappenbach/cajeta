@@ -38,7 +38,7 @@ b.writeToAsync(conn);                   // the readable region, one write
 | `int32 write(int8[] src, int32 srcOff, int32 len)` | Copy into the writable region; returns the count that fit |
 | `int32 read(int8[] dst, int32 dstOff, int32 len)` | Copy out of the readable region and consume it |
 | `int32 fillAsync(ByteChannel ch)` | One channel read straight into the writable tail, parking the fiber; returns the count, 0 at EOF or when nothing is writable, in which case the channel is not touched |
-| `int32 fillWithin(ByteChannel ch, int32 timeoutMs)` | The same under a deadline |
+| `int32 fillWithin(ByteChannel ch, int32 timeoutMs)` | The same under a deadline. Raises `TimedOutException` when it elapses |
 | `void writeToAsync(ByteChannel ch)` | Send the readable region in one write and consume it; nothing readable means no write |
 | `void advanceWrite(int32 n)` / `void advanceRead(int32 n)` | Move a cursor after filling or scanning in place, clamped to the region |
 | `void compact()` | Slide the readable bytes to the front so the writable region reopens |

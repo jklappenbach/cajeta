@@ -71,9 +71,24 @@ The seam this spec asks of `cajeta-http`, kept small:
   input buffer, to a handler the application supplies, and writes the
   buffer that comes back. Framing stays in `cajeta-http`; what happens
   between is primavera's pipeline (§7.8 to §7.19).
+- **1.3.6** *(Julian 2026-09-26: convert entirely.)* The request and the
+  response are views over the connection's buffers, not copies. Method and
+  version are enums. The target, each header name and value, the query and
+  each path parameter are windows into the input buffer. A `String` is made
+  only when the application asks for one, and that call is the copy-out of
+  §3.5. Nothing in the parsed head is a heap object per request.
+- **1.3.7** The handler fills a response the server supplies instead of
+  returning a new one. The request and the response are per-connection
+  objects, reset between requests, so a keep-alive connection reuses both.
+  Middleware takes the same pair.
+- **1.3.8** HTTP/2, the client, server-sent events and the WebSocket
+  handshake use the same view model. HPACK decodes into a per-stream buffer
+  from the pool, and the stream's request is a view over that buffer.
 
-Existing entry points keep working with a default pool, so no current
-consumer of `cajeta-http` changes.
+This changes the public model of `cajeta-http`, so the buffer seam ships as
+0.4.0 with no compatibility layer. Every consumer pins an exact 0.3.x or
+older version today, so none breaks. Each moves when it next takes a
+`cajeta-http` upgrade, guided by a migration table in the 0.4.0 docs (§11.10).
 
 ### 1.4 Non-goals
 
@@ -167,6 +182,18 @@ Four phases, in order. Each phase ends with the sample running end to end.
   returns, every value the handler stored is unaffected. This is the
   acceptance for §3.4 and §3.5, and it must fail against a handler that keeps
   a view.
+- **3.7** When a handler reads a header, it gets a window into the input
+  buffer and nothing is allocated. Name lookup is case-insensitive over the
+  bytes. Typed readers parse integers, dates and tokens in place.
+- **3.8** When a handler needs the target, a header or a path parameter as
+  a `String`, it asks for one by name, and that call copies. The copying
+  accessors are named so the copy is visible at the call site.
+- **3.9** When the request method is not one the enum names, the enum says
+  so and the method's bytes are still available as a window.
+- **3.10** When a route matches, its path parameters are windows into the
+  target, and the typed parameter readers parse them in place.
+- **3.11** When the head exceeds the header count or size limits, the
+  request is refused with 431 before any header is recorded, as today.
 
 ---
 
@@ -186,6 +213,15 @@ Four phases, in order. Each phase ends with the sample running end to end.
   back to identity coding rather than to an unbounded buffer.
 - **4.5** When the response is written, the output buffer is reset and reused
   for the next response on the connection.
+- **4.6** When a handler sets a header, the name and value bytes are copied
+  into the connection's output side. A literal, a window and a `String` are
+  all accepted, and none is retained past the call.
+- **4.7** When a handler writes a body, the bytes land in the output buffer
+  directly. The head is written in front of the body once the handler
+  returns, so a response that fits is still one write.
+- **4.8** When a handler returns without setting a status, the response is
+  200. When it throws an `HttpException`, the response carries that status
+  and no body, and anything the handler had written is discarded.
 
 ---
 
@@ -447,7 +483,10 @@ locale-independent comparison) are requirements here, not restated.
 
 - **11.1** After warm-up, N requests on one keep-alive connection perform
   zero fresh buffer allocations, and N connections stay within `maxIdle` plus
-  peak concurrency, asserted by the sample's self-test (§2.2, §5.4).
+  peak concurrency, asserted by the sample's self-test (§2.2, §5.4). The same
+  N requests perform zero heap allocations of any kind on the HTTP/1.1 server
+  path, measured as a `Cajeta.allocatedBytes()` delta of zero, in a test whose
+  control handler copies one header and is shown to move the counter (§1.3.6).
 - **11.2** Overwriting the input buffer after a handler returns leaves every
   stored value intact, asserted by a test that fails against a handler that
   keeps a view (§3.6).
@@ -466,5 +505,7 @@ locale-independent comparison) are requirements here, not restated.
   production profile until a provider is named (identity spec §9.4).
 - **11.9** No password, code or raw token appears in the sample's captured
   output (§8.7, identity spec §13.6).
-- **11.10** No existing consumer of `cajeta-http` changes to keep working
-  after the buffer seam lands (§1.3).
+- **11.10** *(Amended 2026-09-26 by §1.3.6.)* No consumer breaks, because
+  each pins a 0.3.x or older version. The 0.4.0 docs carry a migration table
+  from every removed member of the request, response, handler and middleware
+  types to its replacement. cabra is not moved by this work.
