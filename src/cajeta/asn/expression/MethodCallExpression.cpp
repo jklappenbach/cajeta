@@ -5890,8 +5890,6 @@ namespace cajeta {
                     auto fnType = dynamic_pointer_cast<CajetaFunctionType>(
                         fnField->getType());
                     llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
-                    llvm::StructType* closureTy = llvm::StructType::get(
-                        llvmCtx, {ptrTy, ptrTy, ptrTy});
                     unsigned fieldIdx =
                         (unsigned) fieldOwner->getFieldLlvmIndex(fnField);
                     llvm::Value* slot = builder->CreateStructGEP(
@@ -5899,61 +5897,11 @@ namespace cajeta {
                         methodCallName + "_slot");
                     llvm::Value* closurePtr = builder->CreateLoad(
                         ptrTy, slot, "closure_ptr");
-                    llvm::Value* fnSlot = builder->CreateStructGEP(
-                        closureTy, closurePtr, 0, "closure.fn");
-                    llvm::Value* callee = builder->CreateLoad(
-                        ptrTy, fnSlot, "fn_ptr");
-                    llvm::Value* capSlot = builder->CreateStructGEP(
-                        closureTy, closurePtr, 1, "closure.captures");
-                    llvm::Value* captures = builder->CreateLoad(
-                        ptrTy, capSlot, "captures_ptr");
-                    llvm::Value* sretSlot = nullptr;
-                    auto retClass = dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
-                    if (fnType->usesSret() && retClass) {
-                        llvm::Function* curFn = builder->GetInsertBlock()->getParent();
-                        llvm::IRBuilder<> entryBuilder(
-                            &curFn->getEntryBlock(),
-                            curFn->getEntryBlock().begin());
-                        sretSlot = entryBuilder.CreateAlloca(
-                            retClass->getLlvmType(), nullptr, "fn_sret");
-                    }
-                    vector<llvm::Value*> args;
-                    if (sretSlot) args.push_back(sretSlot);
-                    args.push_back(captures);
-                    size_t baseIdx = sretSlot ? 2 : 1;
-                    llvm::FunctionType* sig = fnType->getLlvmFunctionType();
-                    for (size_t i = 0; i < parameters.size(); ++i) {
-                        llvm::Value* v = parameters[i].expression->generateCode(module);
-                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
-                            v = builder->CreateLoad(a->getAllocatedType(), a);
-                        }
-                        size_t sigIdx = baseIdx + i;
-                        if (sig && sigIdx < sig->getNumParams() && v
-                                && v->getType() != sig->getParamType(sigIdx)) {
-                            llvm::Type* expected = sig->getParamType(sigIdx);
-                            if (expected->isIntegerTy() && v->getType()->isIntegerTy()) {
-                                v = builder->CreateIntCast(v, expected, /*isSigned=*/true);
-                            } else if (expected->isFloatingPointTy()
-                                    && v->getType()->isFloatingPointTy()) {
-                                v = builder->CreateFPCast(v, expected);
-                            } else if (expected->isPointerTy()
-                                    && !v->getType()->isPointerTy()) {
-                                v = spillAggregateForByPointerArg(module, v);
-                            }
-                        }
-                        args.push_back(v);
-                    }
                     if (fnType->getReturnType()) {
                         resolvedType = fnType->getReturnType();
                     }
-                    llvm::CallInst* call = builder->CreateCall(sig, callee, args);
-                    if (sretSlot && retClass) {
-                        call->addParamAttr(0, llvm::Attribute::get(
-                            llvmCtx, llvm::Attribute::StructRet,
-                            retClass->getLlvmType()));
-                        return sretSlot;
-                    }
-                    return call;
+                    return emitClosureCall(module, closurePtr, fnType,
+                                           parameters, resolvedType);
                 }
             }
         }
