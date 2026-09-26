@@ -1131,7 +1131,7 @@ jobs:
           echo "cvm declares version ${V}"
 
           CVM=""
-          for c in tools/cvm/build/cvm tools/cvm/build/cvm.exe; do
+          for c in tools/cvm/build/cvm.exe tools/cvm/build/cvm; do
             [ -f "$c" ] && { CVM="$PWD/$c"; break; }
           done
           if [ -z "$CVM" ]; then
