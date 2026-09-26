@@ -212,6 +212,22 @@ Four phases, in order. Each phase ends with the sample running end to end.
   `samples/register-user`, has its own `cajeta.json`, depends on the
   published primavera and `cajeta-cloud` archives, and is run by the repo's
   self-test script so it cannot rot.
+- **5.7** When a user registers, the application mints its own user id
+  before calling the identity port, and stores the provider and the subject
+  the port returns against that id, unique per provider. The application's
+  id is the primary key of the user record and the one its routes carry.
+  The provider's subject is a link, so a provider change re-links subjects
+  instead of rekeying the system (identity spec §3.1, §15.17). Decided
+  2026-09-25.
+- **5.8** When the application needs the user record, it goes through a
+  `UserDirectory` seam in primavera: create, resolve by application id, and
+  resolve by provider and subject. The memory implementation serves tests
+  and the sample's HTTP phase. A durable implementation is application
+  configuration over a store, the filesystem driver in `cajeta-cloud-local`
+  first, never a store carried by the sample and never cajeta-cloud's.
+- **5.9** When a request needs the username behind an application id, for
+  the confirm route, the directory answers it and the port is called with
+  the username. The sample keeps `POST /users/{id}/confirm`.
 
 ---
 
@@ -285,7 +301,9 @@ locale-independent comparison) are requirements here, not restated.
 - **8.2** When a request carries a bearer token, primavera verifies it
   through the port's token verifier, builds a `SecurityContext` (principal,
   claims, roles) on a `FiberLocal` for the request, and binds the principal
-  scope to it.
+  scope to it. The principal is the application's user id, resolved
+  from the token's subject through the user directory (§5.8), never the
+  subject itself.
 - **8.3** When a user's groups are read from claims, they map to primavera
   roles through configuration, and roles feed the default-closed policy
   algebra. The port never sees roles (identity spec §7.4).

@@ -117,20 +117,24 @@ the provider's wire protocol.
 ## 3. Feature: registration and lookup
 
 - **3.1** When a user registers with a username, a password and optional
-  attributes, the pool creates the account and returns a user id that is
-  stable for the account's life.
+  attributes, the pool creates the account and returns the provider's
+  **subject**, stable for the account's life. The subject is the provider's
+  key, the value a token's `sub` claim carries. It is not the application's
+  primary key: the application mints its own user id and stores the subject
+  against it (`primavera-web-spec.md` §5.7), so a provider change re-links
+  subjects instead of rekeying the system.
 - **3.2** When the username is already taken, registration fails with
   **user-exists** and creates nothing.
 - **3.3** When the provider requires confirmation (a code sent by email or
-  SMS), the account is created in an **unconfirmed** state, and `confirm(user,
-  code)` completes it. A provider without confirmation reports the account
+  SMS), the account is created in an **unconfirmed** state, and `confirm(username, code)` completes it, keyed by username
+  like every public-plane call (§14.1). A provider without confirmation reports the account
   confirmed on creation. Whether confirmation is required is a capability
   (§8).
 - **3.4** When a password does not meet the provider's policy, registration
   fails with **policy-violation** and the message names the rule, never the
   password.
-- **3.5** When a user is looked up by id or by username, the result is the
-  user's id, username, confirmation state, attributes and groups, or
+- **3.5** When a user is looked up by subject or by username, the result is
+  the user's subject, username, confirmation state, attributes and groups, or
   **user-not-found**.
 - **3.6** When a user is deleted, later lookups report **user-not-found** and
   later sign-ins fail with **invalid-credentials**.
@@ -171,7 +175,7 @@ the provider's wire protocol.
   **id token** and, where the provider issues one, a **refresh token**, each
   with its expiry.
 - **5.2** When an access or id token is issued, it is a JWT whose claims
-  include the subject (the user id from §3.1), the issuer, the audience, the
+  include the subject (§3.1), the issuer, the audience, the
   expiry, the username, and the user's groups. Custom attributes appear as
   claims under the provider's naming, and the port documents the mapping.
 - **5.3** When a token is verified, the verifier checks signature, issuer,
@@ -555,10 +559,16 @@ Julian approves it.
   unchanged. primavera's `GET /users/me` is `Account.me`, not a `UserPool`
   lookup, so a request never needs server credentials to read its own user.
 - **15.2 (§3.3, §3.7) Confirmation is keyed by username**, as the public
-  plane is: `confirm(username, code)` and a new `resendConfirmationCode(username)`.
+  plane is: `confirm(username, code)` *(approved 2026-09-25, landed in cloud
+  with 15.17)* and a new `resendConfirmationCode(username)` *(pending)*.
   `RegistrationResult` gains `codeDelivery()`: medium (`EMAIL`, `SMS`,
   `NONE`) and a masked destination. The memory driver masks like Cognito.
-  Unit 1's `confirm(userId, code)` changes with this item.
+  Unit 1's `confirm(userId, code)` changed with this item.
+- **15.17 (§3.1, §3.5) The port's id is the provider's subject** *(approved
+  2026-09-25, Julian: the application keeps primary-key ownership)*. `userId`
+  is renamed `subject` throughout the port, `lookupById` becomes
+  `lookupBySubject`, and the application's own user id lives in primavera's
+  user directory (`primavera-web-spec.md` §5.7, §5.8), never in this port.
 - **15.3 (§4.1) Sign-in names a factor.** `signIn(username, password)` stays
   and `signInWith(username, factor)` is added, `factor` one of `PASSWORD`,
   `EMAIL_OTP`, `SMS_OTP`, `PASSKEY`. On Cognito the first maps to
