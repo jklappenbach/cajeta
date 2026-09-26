@@ -2712,7 +2712,9 @@ namespace cajeta {
                             && !lhsClass->isValueType()
                             && !lhsClass->isSharedCapableValue()
                             && !lhsClass->isInterface();
-                        if (lhsIsString || lhsIsClassRef || lhsIsArray) {
+                        bool lhsIsClosure = (bool) dynamic_pointer_cast<CajetaFunctionType>(
+                            lhsAst->getResolvedType());
+                        if (lhsIsString || lhsIsClassRef || lhsIsArray || lhsIsClosure) {
                             if (auto sc = module->getScopeStack().peek()) {
                                 FieldPtr dstField = sc->getField(lhsId->getTextValue());
                                 if (dstField && dstField->getDropEntry()

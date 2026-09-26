@@ -808,6 +808,14 @@ namespace cajeta {
             && !isValueTypeR && !returnsStackValue();
     }
 
+    bool Method::returnsClosure() {
+        if (findAnnotation("Kernel") || findAnnotation("Device")
+                || findAnnotation("Native")) {
+            return false;
+        }
+        return dynamic_pointer_cast<CajetaFunctionType>(returnType) != nullptr;
+    }
+
     CajetaModulePtr Method::getEmitModule() {
         if (emitModule) return emitModule;
         if (parent) {

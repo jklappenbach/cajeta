@@ -251,7 +251,7 @@ namespace cajeta::ownership {
             }
             // A `@Native` forwarding body and a body-less intrinsic return without
             // storing the flag, so the declared stance is the answer, not a stale TLS.
-            bool storesFlag = rm->emitsReturnFlag() && rm->returnsClassPointer()
+            bool storesFlag = rm->emitsReturnFlag() && rm->returnsTitledPointer()
                 && !rm->findAnnotation("Native")
                 && (rm->getBlock() != nullptr || rm->isAbstract());
             if (storesFlag) {
