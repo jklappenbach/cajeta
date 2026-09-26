@@ -486,6 +486,24 @@ bool cajetaRhsCarriesRedundantSharp(
         : Expression(token) { exprKind = ExprKind::ArraySlice;
     }
 
+    // The window type over a base of type `bt`: Slice<E> for an array, the Slice
+    // itself for a Slice, null for anything else.
+    static CajetaTypePtr sliceTypeOver(const CajetaTypePtr& bt) {
+        if (auto arr = dynamic_pointer_cast<CajetaArray>(bt)) {
+            auto sliceTmpl = dynamic_pointer_cast<CajetaClass>(
+                CajetaType::of("Slice", "cajeta.lang"));
+            return sliceTmpl ? sliceTmpl->instantiate({arr->getElementType()}) : nullptr;
+        }
+        if (auto cls = dynamic_pointer_cast<CajetaClass>(bt)) {
+            if (cls->getQName()
+                    && cls->getQName()->getPackageName() == "cajeta.lang"
+                    && cls->getQName()->getTypeName().rfind("Slice", 0) == 0) {
+                return bt;
+            }
+        }
+        return nullptr;
+    }
+
     // Types `base[a:b]` as `Slice<E>`; sub-slicing a Slice keeps its type. Leaves
     // resolvedType null when the base is not resolvable yet — generateCode re-resolves
     // against the live scope and hard-errors there.
@@ -495,20 +513,7 @@ bool cajetaRhsCarriesRedundantSharp(
         auto base = dynamic_pointer_cast<Expression>(children[0]);
         if (!base) return;
         if (!base->getResolvedType()) base->resolveTypes(module);
-        CajetaTypePtr bt = base->getResolvedType();
-        if (auto arr = dynamic_pointer_cast<CajetaArray>(bt)) {
-            auto sliceTmpl = dynamic_pointer_cast<CajetaClass>(
-                CajetaType::of("Slice", "cajeta.lang"));
-            if (sliceTmpl) {
-                resolvedType = sliceTmpl->instantiate({arr->getElementType()});
-            }
-        } else if (auto cls = dynamic_pointer_cast<CajetaClass>(bt)) {
-            if (cls->getQName()
-                    && cls->getQName()->getPackageName() == "cajeta.lang"
-                    && cls->getQName()->getTypeName().rfind("Slice", 0) == 0) {
-                resolvedType = bt;
-            }
-        }
+        resolvedType = sliceTypeOver(base->getResolvedType());
     }
 
     // Emits the window value: clamps `from`/`to` against the base's length and builds a
@@ -516,11 +521,19 @@ bool cajetaRhsCarriesRedundantSharp(
     // Throws CAJETA_ERROR_SLICE_BASE when the base is neither an array nor a Slice.
     llvm::Value* ArraySliceExpression::generateCode(CajetaModulePtr module) {
         if (!resolvedType) resolveTypes(module);
+        llvm::Value* preBase = nullptr;
+        if (!resolvedType && !children.empty()) {
+            if (auto base0 = dynamic_pointer_cast<Expression>(children[0])) {
+                preBase = base0->generateCode(module);
+                resolvedType = sliceTypeOver(base0->getResolvedType());
+            }
+        }
         if (!resolvedType) {
             throw Exception(
                 "the window form `base[a:b]` requires an array or Slice<T> "
                 "base",
-                "CAJETA_ERROR_SLICE_BASE");
+                "CAJETA_ERROR_SLICE_BASE", module->getSourcePath(),
+                (int) getSourceLine(), (int) getSourceColumn() + 1);
         }
         auto* builder = module->getBuilder();
         auto& ctx = *module->getLlvmContext();
@@ -564,7 +577,8 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::Value* limit;   // window length of the base (masked root count / base.len)
         CajetaTypePtr bt = base->getResolvedType();
         if (dynamic_pointer_cast<CajetaArray>(bt)) {
-            llvm::Value* arrPtr = loadIfLValue(module, base->generateCode(module), base);
+            llvm::Value* arrPtr = loadIfLValue(module,
+                preBase ? preBase : base->generateCode(module), base);
             storeV = arrPtr;
             baseOff = zero;
             // Root count word, masked of the shared sign bit (slice-spec §3.3).
@@ -573,13 +587,33 @@ bool cajetaRhsCarriesRedundantSharp(
                 llvm::ConstantInt::get(i64Ty, 0x7FFFFFFFFFFFFFFFULL));
         } else {
             // Slice base: its VALUE address (a value-type lvalue IS the storage).
-            llvm::Value* baseAddr = base->generateCode(module);
+            llvm::Value* baseAddr = preBase ? preBase : base->generateCode(module);
+            if (!baseAddr->getType()->isPointerTy()) {
+                llvm::Value* spill = module->createEntryAlloca(baseAddr->getType(), "slice_base");
+                builder->CreateStore(baseAddr, spill);
+                baseAddr = spill;
+            }
             storeV = builder->CreateLoad(ptrTy,
                 builder->CreateStructGEP(bodyTy, baseAddr, storeIdx), "sub_store");
             baseOff = builder->CreateLoad(i64Ty,
                 builder->CreateStructGEP(bodyTy, baseAddr, offIdx), "sub_off");
             limit = builder->CreateLoad(i64Ty,
                 builder->CreateStructGEP(bodyTy, baseAddr, lenIdx), "sub_len");
+        }
+        if (dynamic_pointer_cast<CajetaArray>(bt) && base->kind() == ExprKind::MethodCall) {
+            auto mce = std::static_pointer_cast<MethodCallExpression>(base);
+            MethodPtr rm = mce->getResolvedMethod();
+            cajeta::ownership::TitleShape bs = cajeta::ownership::classify(base, module);
+            bool owned = (rm && rm->isReturnsOwnership())
+                || bs.answer == cajeta::ownership::TitleAnswer::Owned;
+            if (owned) {
+                throw Exception(
+                    "the window form `base[a:b]` over a call that returns an owned "
+                    "array leaves nothing to free the array; bind the call to a "
+                    "local first and slice the local",
+                    "CAJETA_ERROR_SLICE_OF_OWNED_TEMP", module->getSourcePath(),
+                    (int) getSourceLine(), (int) getSourceColumn() + 1);
+            }
         }
 
         from = builder->CreateSelect(
