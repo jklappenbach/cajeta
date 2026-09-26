@@ -78,6 +78,10 @@ elseif(APPLE)
     set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
 elseif(WIN32)
     set(CPACK_GENERATOR "WIX")
+    # LANGUAGES NONE leaves the pointer size unknown, and WiX then defaults to an
+    # x86 package that installs a 64-bit cvm.exe under Program Files (x86).
+    set(CPACK_WIX_ARCHITECTURE "x64")
+    set(CPACK_SYSTEM_NAME "win64")
 endif()
 
 # ---- WiX -----------------------------------------------------------------
