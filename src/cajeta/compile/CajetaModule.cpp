@@ -910,6 +910,83 @@ namespace cajeta {
                         "CAJETA_ERROR_NOT_IMPLEMENTED");
                 }
 
+                // A container-typed site is a multibinding: every active component
+                // assignable to the element type, and an empty container when none.
+                {
+                    auto fc = std::dynamic_pointer_cast<CajetaClass>(fieldType);
+                    CajetaClassPtr origin = (fc && fc->isInstantiation())
+                        ? fc->getTemplateOrigin() : nullptr;
+                    string originName;
+                    if (origin && origin->getQName()) {
+                        originName = origin->getQName()->toCanonical();
+                    } else if (fc && fc->isInstantiation()) {
+                        originName = targetCanonical.substr(0, targetCanonical.find('<'));
+                    }
+                    const vector<CajetaTypePtr> noArgs;
+                    const auto& targs = fc ? fc->getTypeArguments() : noArgs;
+                    auto kind = ResolvedDependency::MultiKind::None;
+                    CajetaTypePtr elemType;
+                    if (originName == "cajeta.collection.ArrayList" && targs.size() == 1) {
+                        kind = ResolvedDependency::MultiKind::List;
+                        elemType = targs[0];
+                    } else if (originName == "cajeta.collection.HashMap" && targs.size() == 2
+                               && targs[0] && targs[0]->getQName()
+                               && (targs[0]->getQName()->toCanonical() == "cajeta.lang.String"
+                                   || targs[0]->getQName()->toCanonical() == "String")) {
+                        kind = ResolvedDependency::MultiKind::Map;
+                        elemType = targs[1];
+                    }
+                    if (kind != ResolvedDependency::MultiKind::None) {
+                        auto elemClass = std::dynamic_pointer_cast<CajetaClass>(elemType);
+                        if (!elemClass || !elemClass->getQName()) {
+                            throw Exception(
+                                "@Inject on field '" + prop->getName()
+                                    + "' of " + c->klass->getQName()->toCanonical()
+                                    + " is a multibinding over an element type that is not a class or interface",
+                                "CAJETA_ERROR_MISSING_COMPONENT");
+                        }
+                        const string elemCanonical = elemClass->getQName()->toCanonical();
+                        auto assignable = [&](const CajetaClassPtr& k) -> bool {
+                            if (!k || !k->getQName()) return false;
+                            if (k->getQName()->toCanonical() == elemCanonical) return true;
+                            for (auto& iface : k->getImplementedInterfaces()) {
+                                if (iface && iface->getQName()
+                                        && iface->getQName()->toCanonical() == elemCanonical) {
+                                    return true;
+                                }
+                            }
+                            vector<CajetaClassPtr> frontier{ k };
+                            size_t cursor = 0;
+                            while (cursor < frontier.size()) {
+                                auto cur = frontier[cursor++];
+                                for (auto& sup : cur->getSuperClasses()) {
+                                    if (!sup || !sup->getQName()) continue;
+                                    if (sup->getQName()->toCanonical() == elemCanonical) return true;
+                                    frontier.push_back(sup);
+                                }
+                            }
+                            return false;
+                        };
+                        ResolvedDependency rd;
+                        rd.field = prop;
+                        rd.allocate = allocate;
+                        rd.optional = isOptional;
+                        rd.multi = kind;
+                        rd.container = fc;
+                        for (auto& cand : active) {
+                            if (cand.get() == c.get()) continue;
+                            if (assignable(cand->klass)) rd.members.push_back(cand);
+                        }
+                        std::sort(rd.members.begin(), rd.members.end(),
+                            [](const ComponentDescriptorPtr& a, const ComponentDescriptorPtr& b) {
+                                return a->klass->getQName()->toCanonical()
+                                    < b->klass->getQName()->toCanonical();
+                            });
+                        for (auto& m : rd.members) edges[c].push_back(m);
+                        c->resolvedFields.push_back(rd);
+                        continue;
+                    }
+                }
                 Resolution res =
                     resolveCombined(targetCanonical, targetShort, nameQualifier);
                 if (!res.component && !res.factory) {

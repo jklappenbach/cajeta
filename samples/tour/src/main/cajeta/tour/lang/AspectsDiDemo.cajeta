@@ -1,6 +1,8 @@
 package tour.lang;
 
 import tour.DemoClass;
+import cajeta.collection.ArrayList;
+import cajeta.collection.HashMap;
 
 // Aspects + Dependency Injection — compile-time AOP/DI. The
 // compiler resolves the entire DI graph and weaves all advice into
@@ -133,6 +135,28 @@ public class AspectTarget {
     }
 }
 
+// Multibinding: every @Component assignable to Codec lands in the list, in
+// canonical order, and in the map under its component name.
+public interface Codec {
+    public int32 level();
+}
+
+@Component(name = "gzip") public class Gzip implements Codec {
+    public Gzip() { return; }
+    public int32 level() { return 6; }
+}
+
+@Component public class Brotli implements Codec {
+    public Brotli() { return; }
+    public int32 level() { return 11; }
+}
+
+@Component public class Codecs {
+    @Inject ArrayList<Codec> all;
+    @Inject HashMap<String, Codec> byName;
+    public Codecs() { return; }
+}
+
 public class AspectsDiDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
@@ -142,6 +166,22 @@ public class AspectsDiDemo extends DemoClass {
         this.aspectsAround();
         this.diBootstrap();
         this.diTransitive();
+        this.diMultibinding();
+    }
+
+    public void diMultibinding() {
+        Codecs c = Codecs.__cajeta_inject();
+        System.stdout.println("  DI multibinding:");
+        System.stdout.println("    codecs present = " + c.all.count());
+        this.check(c.all.count() == 2, "every Codec component is in the list");
+        this.check(c.all.get(0).level() == 11 && c.all.get(1).level() == 6,
+            "the list is in canonical order, Brotli before Gzip");
+        this.check(c.byName.get("gzip").level() == 6
+            && c.byName.get("Brotli").level() == 11,
+            "the map is keyed by component name, or the class name when unnamed");
+        c.all.clear();
+        this.check(Brotli.__cajeta_inject().level() == 11,
+            "clearing the list frees no singleton");
     }
 
     // 1. @Before + @After on the same target method. The aspect's

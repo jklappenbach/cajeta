@@ -6,6 +6,8 @@
 #include "../type/CajetaClass.h"
 #include "../type/StructureProperty.h"
 #include "../util/MemoryManager.h"
+#include "../asn/expression/LiteralExpression.h"
+#include "../type/CajetaType.h"
 
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
@@ -104,6 +106,10 @@ namespace cajeta {
             llvm::Value* slot = builder->CreateStructGEP(
                 structTy, instance, fieldIdx,
                 rd.field->getName() + "_slot");
+            if (rd.multi != CajetaModule::ResolvedDependency::MultiKind::None) {
+                builder->CreateStore(emitMultibinding(rd), slot);
+                continue;
+            }
 
             // An interface-typed field is a 24-byte fat-pointer body inline in the
             // instance, not an 8-byte cell: compute depPtr, then write three words
@@ -295,5 +301,85 @@ namespace cajeta {
 
         builder->CreateStore(instance, singletonGV);
         builder->CreateRet(instance);
+    }
+}
+
+namespace cajeta {
+    // The target's singleton through its own __cajeta_inject, or null when the
+    // descriptor has no helper yet.
+    llvm::Value* ComponentInjectMethod::singletonOf(
+            const CajetaModule::ComponentDescriptorPtr& target) {
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        MethodPtr targetInject;
+        if (target && target->klass) {
+            for (auto& [mkey, m] : target->klass->getMethods()) {
+                if (m && m->getName() == "__cajeta_inject") {
+                    targetInject = m;
+                    break;
+                }
+            }
+        }
+        if (!targetInject) {
+            return llvm::ConstantPointerNull::get(
+                llvm::cast<llvm::PointerType>(ptrTy));
+        }
+        llvm::FunctionType* targetTy = targetInject->getLlvmFunctionType();
+        llvm::Function* targetFn = CajetaModule::ensureFunctionVisible(
+            builder, targetInject->getLlvmFunction(), targetTy);
+        return builder->CreateCall(targetTy, targetFn, {}, "member");
+    }
+
+    // Build the site's container and fill it with every member's singleton. The
+    // calls carry no transfer word, so the container records borrows and its
+    // drop frees no member: the graph owns them.
+    llvm::Value* ComponentInjectMethod::emitMultibinding(
+            const CajetaModule::ResolvedDependency& rd) {
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        const llvm::DataLayout& dl = lmod->getDataLayout();
+        CajetaClassPtr cont = rd.container;
+        llvm::Type* contTy = cont->getLlvmType();
+        llvm::Constant* size = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(ctx), dl.getTypeAllocSize(contTy));
+        llvm::CallInst* container = MemoryManager::createMallocInstruction(
+            module, size, builder->GetInsertBlock());
+        if (auto vt = cont->getVirtualTableGlobal()) {
+            llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(lmod, vt);
+            llvm::Value* vts = builder->CreateStructGEP(
+                contTy, container, 0, "vtable_slot");
+            builder->CreateStore(vtRef, vts);
+        }
+        std::string ctorName = cont->getTemplateOrigin()
+            ? cont->getTemplateOrigin()->getQName()->getTypeName()
+            : cont->getQName()->getTypeName();
+        std::vector<ParameterEntry> noArgs;
+        cont->invokeMethod(ctorName, noArgs, /*isConstructor=*/true, container,
+                           /*callerModule=*/module);
+        CajetaTypePtr stringTy = CajetaType::of("String");
+        for (auto& member : rd.members) {
+            if (!member || !member->klass) continue;
+            llvm::Value* ptr = singletonOf(member);
+            if (rd.multi == CajetaModule::ResolvedDependency::MultiKind::List) {
+                std::string addName = "add";
+                std::vector<ParameterEntry> args;
+                args.emplace_back(member->klass, "", ptr);
+                cont->invokeMethod(addName, args, /*isConstructor=*/false,
+                                   container, /*callerModule=*/module);
+            } else {
+                std::string key = member->name.empty()
+                    ? member->klass->getQName()->getTypeName() : member->name;
+                TextLiteralExpression lit("\"" + key + "\"", LITERAL_TYPE_STRING);
+                lit.resolveTypes(module);
+                llvm::Value* keyVal = lit.generateCode(module);
+                std::string putName = "put";
+                std::vector<ParameterEntry> args;
+                args.emplace_back(stringTy, "", keyVal);
+                args.emplace_back(member->klass, "", ptr);
+                cont->invokeMethod(putName, args, /*isConstructor=*/false,
+                                   container, /*callerModule=*/module);
+            }
+        }
+        return container;
     }
 }
