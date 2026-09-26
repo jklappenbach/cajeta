@@ -107,6 +107,8 @@ tutorial; it links here for API detail. Docs link the
 | [UdpSocket](io/net/UdpSocket.md) | UDP datagram socket |
 | [Server](io/net/Server.md) | TCP server core: bind, listen, accept loop |
 | [ServerBuilder](io/net/ServerBuilder.md) | Model-selection builder for `Server` |
+| [ByteBuffer](io/net/ByteBuffer.md) | Pooled byte buffer with read and write cursors, filled from and written to a channel in place |
+| [BufferPool](io/net/BufferPool.md) | Bounded free list of same-sized buffers, one pair per connection |
 
 ## cajeta.io.net.dns
 

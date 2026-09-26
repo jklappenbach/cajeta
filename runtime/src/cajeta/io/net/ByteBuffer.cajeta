@@ -108,6 +108,61 @@ public final class ByteBuffer {
     }
 
     /**
+     * The backing store, a borrow. Index it with the cursors. `reserve`
+     * may replace it, so take it again after any growth.
+     */
+    @Inline
+    public int8[] array() {
+        return this.data;
+    }
+
+    /**
+     * One channel read straight into the writable tail, parking the fiber.
+     * Returns the count, 0 at EOF or when nothing is writable, and the
+     * channel is not touched in the second case.
+     */
+    public int32 fillAsync(ByteChannel ch) {
+        int32 room = this.cap - this.writePos;
+        if (room <= 0) {
+            return 0;
+        }
+        int64 n = ch.readAsync(this.data, (int64) this.writePos, (int64) room);
+        if (n <= 0L) {
+            return 0;
+        }
+        this.writePos = this.writePos + (int32) n;
+        return (int32) n;
+    }
+
+    /** [[fillAsync]] under a deadline; 0 when it elapses with nothing read. */
+    public int32 fillWithin(ByteChannel ch, int32 timeoutMs) {
+        int32 room = this.cap - this.writePos;
+        if (room <= 0) {
+            return 0;
+        }
+        int64 n = ch.readWithin(this.data, (int64) this.writePos, (int64) room,
+            timeoutMs);
+        if (n <= 0L) {
+            return 0;
+        }
+        this.writePos = this.writePos + (int32) n;
+        return (int32) n;
+    }
+
+    /**
+     * Send the readable region in one write and consume it. Nothing
+     * readable means the channel is not touched.
+     */
+    public void writeToAsync(ByteChannel ch) {
+        int32 avail = this.writePos - this.readPos;
+        if (avail <= 0) {
+            return;
+        }
+        ch.writeAllAsync(this.data, (int64) this.readPos, (int64) avail);
+        this.readPos = this.writePos;
+    }
+
+    /**
      * Append `b` at the write cursor and advance it by one. Returns
      * `true` if there was room, `false` if the writable region was
      * full (the byte is **not** written in that case — the caller

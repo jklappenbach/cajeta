@@ -433,3 +433,165 @@ TEST(BufferPoolTests, releaseBeyondMaxIdleDropsExtras) {
         "}\n";
     EXPECT_EQ(runI32(src), 2);
 }
+
+// ---------------------------------------------------------------------------
+// ByteBuffer over a ByteChannel (primavera-web plan 1.0): fill the writable
+// tail straight from a channel, send the readable region in one write, and
+// borrow the backing store for windows. A memory channel stands in for the
+// socket; the counters prove the channel was called exactly when it should.
+// ---------------------------------------------------------------------------
+
+namespace {
+const char* kMemChannel =
+    "final class MemChannel implements ByteChannel {\n"
+    "    int8[] src;\n"
+    "    int32 srcLen;\n"
+    "    int32 cursor;\n"
+    "    int8[] sink;\n"
+    "    int32 sinkLen;\n"
+    "    int32 reads;\n"
+    "    int32 writes;\n"
+    "    MemChannel(int8[] src, int32 srcLen) {\n"
+    "        this.src = heap int8[64];\n"
+    "        int32 i = 0;\n"
+    "        while (i < srcLen) { this.src[i] = src[i]; i = i + 1; }\n"
+    "        this.srcLen = srcLen;\n"
+    "        this.cursor = 0;\n"
+    "        this.sink = heap int8[64];\n"
+    "        this.sinkLen = 0;\n"
+    "        this.reads = 0;\n"
+    "        this.writes = 0;\n"
+    "    }\n"
+    "    public int64 readAsync(int8[] buf, int64 offset, int64 length) {\n"
+    "        this.reads = this.reads + 1;\n"
+    "        int64 n = (int64) (this.srcLen - this.cursor);\n"
+    "        if (n > length) { n = length; }\n"
+    "        int64 i = 0;\n"
+    "        while (i < n) { buf[offset + i] = this.src[this.cursor + (int32) i]; i = i + 1; }\n"
+    "        this.cursor = this.cursor + (int32) n;\n"
+    "        return n;\n"
+    "    }\n"
+    "    public void writeAllAsync(int8[] data, int64 offset, int64 length) {\n"
+    "        this.writes = this.writes + 1;\n"
+    "        int64 i = 0;\n"
+    "        while (i < length) { this.sink[this.sinkLen + (int32) i] = data[offset + i]; i = i + 1; }\n"
+    "        this.sinkLen = this.sinkLen + (int32) length;\n"
+    "    }\n"
+    "    public int64 readWithin(int8[] buf, int64 offset, int64 length, int32 timeoutMs) {\n"
+    "        return this.readAsync(buf, offset, length);\n"
+    "    }\n"
+    "    public void close() { return; }\n"
+    "}\n";
+
+std::string channelProgram(const std::string& body) {
+    return
+        "package test;\n"
+        "import cajeta.io.net.ByteBuffer;\n"
+        "import cajeta.io.net.ByteChannel;\n"
+        + std::string(kMemChannel) +
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        + body +
+        "    }\n"
+        "}\n";
+}
+} // namespace
+
+TEST(ByteBufferChannelTests, fillAsyncLandsInTheWritableTailAndAdvances) {
+    // 3 bytes already readable, then a fill of 5 from the channel: the fill
+    // must start at writePos 3, leave the first 3 alone, and advance to 8.
+    auto src = channelProgram(
+        "        int8[] seed = heap int8[5];\n"
+        "        seed[0] = (int8) 1; seed[1] = (int8) 2; seed[2] = (int8) 3; seed[3] = (int8) 4; seed[4] = (int8) 5;\n"
+        "        MemChannel ch = heap MemChannel(seed, 5);\n"
+        "        ByteBuffer b = heap ByteBuffer(16);\n"
+        "        int8[] pre = heap int8[3];\n"
+        "        pre[0] = (int8) 7; pre[1] = (int8) 8; pre[2] = (int8) 9;\n"
+        "        int32 w = b.write(pre, 0, 3);\n"
+        "        int32 n = b.fillAsync(ch);\n"
+        "        int32 ok = 0;\n"
+        "        if (n == 5) { ok = ok + 1; }\n"
+        "        if (b.writePosition() == 8 && b.readPosition() == 0) { ok = ok + 10; }\n"
+        "        if (b.at(2) == (int8) 9 && b.at(3) == (int8) 1 && b.at(7) == (int8) 5) { ok = ok + 100; }\n"
+        "        if (ch.reads == 1) { ok = ok + 1000; }\n"
+        "        return ok;\n");
+    EXPECT_EQ(runI32(src), 1111);
+}
+
+TEST(ByteBufferChannelTests, fillAsyncIsBoundedByWritableAndSkipsTheChannelWhenFull) {
+    auto src = channelProgram(
+        "        int8[] seed = heap int8[10];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 10) { seed[i] = (int8) (i + 1); i = i + 1; }\n"
+        "        MemChannel ch = heap MemChannel(seed, 10);\n"
+        "        ByteBuffer b = heap ByteBuffer(4);\n"
+        "        int32 first = b.fillAsync(ch);\n"
+        "        int32 second = b.fillAsync(ch);\n"
+        "        int32 ok = 0;\n"
+        "        if (first == 4 && b.writable() == 0) { ok = ok + 1; }\n"
+        "        if (second == 0 && ch.reads == 1) { ok = ok + 10; }\n"
+        "        return ok;\n");
+    EXPECT_EQ(runI32(src), 11);
+}
+
+TEST(ByteBufferChannelTests, fillAsyncAtEofReturnsZeroAndMovesNothing) {
+    auto src = channelProgram(
+        "        int8[] none = heap int8[1];\n"
+        "        MemChannel ch = heap MemChannel(none, 0);\n"
+        "        ByteBuffer b = heap ByteBuffer(8);\n"
+        "        int32 n = b.fillAsync(ch);\n"
+        "        int32 ok = 0;\n"
+        "        if (n == 0 && b.writePosition() == 0 && b.readable() == 0) { ok = 1; }\n"
+        "        return ok;\n");
+    EXPECT_EQ(runI32(src), 1);
+}
+
+TEST(ByteBufferChannelTests, writeToAsyncSendsOnlyTheReadableRegionInOneWrite) {
+    // Six bytes written, two consumed: the send must carry bytes 2..5 in a
+    // single writeAllAsync and leave the buffer drained.
+    auto src = channelProgram(
+        "        int8[] none = heap int8[1];\n"
+        "        MemChannel ch = heap MemChannel(none, 0);\n"
+        "        ByteBuffer b = heap ByteBuffer(16);\n"
+        "        int8[] six = heap int8[6];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 6) { six[i] = (int8) (10 + i); i = i + 1; }\n"
+        "        int32 w = b.write(six, 0, 6);\n"
+        "        b.advanceRead(2);\n"
+        "        b.writeToAsync(ch);\n"
+        "        int32 ok = 0;\n"
+        "        if (ch.writes == 1 && ch.sinkLen == 4) { ok = ok + 1; }\n"
+        "        if (ch.sink[0] == (int8) 12 && ch.sink[3] == (int8) 15) { ok = ok + 10; }\n"
+        "        if (b.readable() == 0) { ok = ok + 100; }\n"
+        "        return ok;\n");
+    EXPECT_EQ(runI32(src), 111);
+}
+
+TEST(ByteBufferChannelTests, writeToAsyncWithNothingReadableTouchesNoChannel) {
+    auto src = channelProgram(
+        "        int8[] none = heap int8[1];\n"
+        "        MemChannel ch = heap MemChannel(none, 0);\n"
+        "        ByteBuffer b = heap ByteBuffer(8);\n"
+        "        b.writeToAsync(ch);\n"
+        "        return ch.writes;\n");
+    EXPECT_EQ(runI32(src), 0);
+}
+
+TEST(ByteBufferChannelTests, arrayIsTheBackingStoreNotACopy) {
+    // A window built on array() at readPosition sees the same bytes at() sees,
+    // and a write through it is visible to the buffer: shared storage, no copy.
+    auto src = channelProgram(
+        "        int8[] none = heap int8[1];\n"
+        "        MemChannel ch = heap MemChannel(none, 0);\n"
+        "        ByteBuffer b = heap ByteBuffer(8);\n"
+        "        int8[] two = heap int8[2];\n"
+        "        two[0] = (int8) 5; two[1] = (int8) 6;\n"
+        "        int32 w = b.write(two, 0, 2);\n"
+        "        int8[] store = b.array();\n"
+        "        int32 ok = 0;\n"
+        "        if (store[1] == (int8) 6 && (int64) store.count() == 8L) { ok = ok + 1; }\n"
+        "        store[0] = (int8) 42;\n"
+        "        if (b.at(0) == (int8) 42) { ok = ok + 10; }\n"
+        "        return ok;\n");
+    EXPECT_EQ(runI32(src), 11);
+}
