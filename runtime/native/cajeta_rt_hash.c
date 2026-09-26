@@ -164,6 +164,29 @@ static void cajeta_fill_entropy(unsigned char* b, int n) {
     for (int i = 0; i < n; i++) b[i] = (unsigned char) (rand() & 0xFF);
 }
 
+// cajeta.hash.SecureRandom.fill — `n` entropy bytes at `out_hdr` + 8, from the
+// OS source only. Returns 0 on success and -1 when the source cannot be read;
+// there is no weaker fallback here, unlike the hash seed above.
+int32_t __cajeta_secure_random_fill(void* out_hdr, int64_t n) {
+    if (!out_hdr || n <= 0) return 0;
+    unsigned char* b = ((unsigned char*) out_hdr) + 8;
+#if defined(_WIN32)
+    return BCryptGenRandom(NULL, (PUCHAR) b, (ULONG) n,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0 ? 0 : -1;
+#else
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    int64_t got = 0;
+    while (got < n) {
+        ssize_t r = read(fd, b + got, (size_t) (n - got));
+        if (r <= 0) break;
+        got += r;
+    }
+    close(fd);
+    return got == n ? 0 : -1;
+#endif
+}
+
 // cajeta.lang.Guid.random() — an RFC 4122 version-4 UUID into a cajeta int64[2]
 // ({ i64 count; i64 hi; i64 lo }), version nibble and variant bits forced.
 void __cajeta_guid_random_fill(void* out) {

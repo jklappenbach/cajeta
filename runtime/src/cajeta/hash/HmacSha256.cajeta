@@ -1,0 +1,110 @@
+package cajeta.hash;
+
+import cajeta.lang.String;
+
+/**
+ * HMAC-SHA256 (RFC 2104 over [[Sha256]]): a keyed message authentication
+ * code. Signing JWTs (HS256), authenticating cookies, and the PRF inside
+ * [[Pbkdf2]] all use it. The key is padded or hashed to one 64-byte block at
+ * construction, so `reset()` restarts a MAC under the same key without
+ * touching the key again.
+ *
+ * ```cajeta
+ * int8[] mac #= HmacSha256.mac(key, keyLen, data, dataLen);   // 32 bytes
+ * String hex #= HmacSha256.macHex(key, keyLen, data, dataLen); // 64 hex chars
+ * HmacSha256 h = heap HmacSha256(key, keyLen);
+ * h.update(part1, len1);
+ * h.update(part2, len2);
+ * int8[] streamed #= h.digest();
+ * ```
+ *
+ * Verified against the seven RFC 4231 test cases in `HmacSha256Tests`.
+ */
+public final class HmacSha256 {
+    int8[] ipad;
+    int8[] opad;
+    Sha256 inner;
+    Sha256 outer;
+
+    public HmacSha256(int8[] key, int64 keyLen) {
+        int8[] block = heap int8[64];
+        if (keyLen > 64L) {
+            int8[] hashed #= Sha256.hash(key, keyLen);
+            int64 k = 0;
+            while (k < 32L) { block[k] = hashed[k]; k = k + 1; }
+        } else {
+            int64 k = 0;
+            while (k < keyLen) { block[k] = key[k]; k = k + 1; }
+        }
+        int8[] ip = heap int8[64];
+        int8[] op = heap int8[64];
+        int64 i = 0;
+        while (i < 64L) {
+            ip[i] = (int8) (block[i] ^ (int8) 0x36);
+            op[i] = (int8) (block[i] ^ (int8) 0x5c);
+            i = i + 1;
+        }
+        this.ipad #= ip;
+        this.opad #= op;
+        Sha256 in = heap Sha256();
+        this.inner #= in;
+        Sha256 out = heap Sha256();
+        this.outer #= out;
+        this.inner.update(this.ipad, 64L);
+    }
+
+    /** Feed `len` bytes of message. */
+    public void update(int8[] data, int64 len) {
+        this.inner.update(data, len);
+    }
+
+    /** The 32-byte MAC of everything fed since construction or `reset()`. */
+    public #int8[] digest() {
+        int8[] ih #= this.inner.digest();
+        this.outer.reset();
+        this.outer.update(this.opad, 64L);
+        this.outer.update(ih, 32L);
+        return this.outer.digest();
+    }
+
+    /** The MAC as 64 lowercase hex characters. */
+    public #String hex() {
+        int8[] d #= this.digest();
+        return HmacSha256.toHex(d, 32L);
+    }
+
+    /** Restart under the same key. */
+    public void reset() {
+        this.inner.reset();
+        this.inner.update(this.ipad, 64L);
+    }
+
+    public static #int8[] mac(int8[] key, int64 keyLen, int8[] data, int64 len) {
+        HmacSha256 h = heap HmacSha256(key, keyLen);
+        h.update(data, len);
+        return h.digest();
+    }
+
+    public static #String macHex(int8[] key, int64 keyLen, int8[] data, int64 len) {
+        HmacSha256 h = heap HmacSha256(key, keyLen);
+        h.update(data, len);
+        return h.hex();
+    }
+
+    public static #String toHex(int8[] d, int64 n) {
+        int8[] hex = heap int8[n * 2L];
+        int64 i = 0;
+        while (i < n) {
+            int32 v = ((int32) d[i]) & 0xff;
+            hex[i * 2L] = HmacSha256.nibble(v >> 4);
+            hex[i * 2L + 1L] = HmacSha256.nibble(v & 0xf);
+            i = i + 1;
+        }
+        return heap String(#hex, n * 2L);
+    }
+
+    static int8 nibble(int32 v) {
+        if (v < 10) { return (int8) (48 + v); }
+        return (int8) (87 + v);
+    }
+}

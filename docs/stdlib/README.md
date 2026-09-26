@@ -143,6 +143,9 @@ tutorial; it links here for API detail. Docs link the
 | [Blake3](hash/Blake3.md) | Fast modern cryptographic hash (and XOF) |
 | [Sha256](hash/Sha256.md) | SHA-256 digest |
 | [Sha1](hash/Sha1.md) | SHA-1 digest |
+| [HmacSha256](hash/HmacSha256.md) | HMAC-SHA256 keyed authentication |
+| [Pbkdf2](hash/Pbkdf2.md) | PBKDF2-HMAC-SHA256 password hashing and key derivation |
+| [SecureRandom](hash/SecureRandom.md) | OS entropy for salts, keys and ids |
 | [MD5](hash/MD5.md) | MD5 checksum / identifier |
 
 ## cajeta.math

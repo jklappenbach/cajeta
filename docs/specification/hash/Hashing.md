@@ -41,6 +41,7 @@ public final class Hash {
     public static int64 identity(Object obj);   // identity hash
     public static int64 combine(int64 a, int64 b); // hash-combine
     public static int64 processSeed();          // per-process random seed
+    public static boolean constantTimeEquals(int8[] a, int64 aLen, int8[] b, int64 bLen); // timing-safe
 }
 ```
 
@@ -216,6 +217,53 @@ public final class Sha256 implements Hasher {
 }
 ```
 
+### `HmacSha256` (keyed authentication) — shipped
+
+HMAC (RFC 2104) over SHA-256, pure cajeta over the native `Sha256` bridge. The
+key is padded or hashed to one block at construction, so `reset()` restarts a
+MAC under the same key. This is the HS256 in a JWT, the signature on a cookie,
+and the PRF inside `Pbkdf2`.
+
+```cajeta
+public final class HmacSha256 {
+    public HmacSha256(int8[] key, int64 keyLen);
+    public void update(int8[] data, int64 len);
+    public #int8[] digest();                                   // 32 bytes
+    public #String hex();                                      // 64 hex chars
+    public void reset();
+    public static #int8[] mac(int8[] key, int64 keyLen, int8[] data, int64 len);
+    public static #String macHex(int8[] key, int64 keyLen, int8[] data, int64 len);
+}
+```
+
+### `Pbkdf2` (password hashing and key derivation) — shipped
+
+PBKDF2-HMAC-SHA256 (RFC 8018). The iteration count is the cost knob. Store it
+beside the hash, so raising it later does not strand existing users.
+
+```cajeta
+public final class Pbkdf2 {
+    public static #int8[] sha256(int8[] password, int64 passwordLen,
+                                 int8[] salt, int64 saltLen,
+                                 int32 iterations, int32 length);
+}
+```
+
+### `SecureRandom` (OS entropy) — shipped
+
+Random bytes from `BCryptGenRandom` on Windows and `/dev/urandom` elsewhere,
+through the native `__cajeta_secure_random_fill`. Session ids, challenge
+handles, salts and keys come from here. It throws when the source cannot be
+read rather than falling back to a weaker generator. `cajeta.math`'s random is
+a seeded generator for simulation and is not a substitute.
+
+```cajeta
+public final class SecureRandom {
+    public static void fill(int8[] out, int64 len);
+    public static #int8[] bytes(int64 n);
+}
+```
+
 ### `Blake3` (fast cryptographic hash + XOF) — shipped
 
 BLAKE3 — the modern fast cryptographic fingerprint and the recommended
@@ -330,6 +378,9 @@ Worked end-to-end in the tour: `samples/tour/.../tour/hash/HashDemo.cajeta`.
 | `SHA-1` | `test/parser/Sha1Tests.cpp` | shipped |
 | `SHA-256` | `test/parser/Sha256Tests.cpp` | shipped |
 | `BLAKE3` (+ XOF) | `test/parser/Blake3Tests.cpp` | shipped |
+| `HmacSha256` (RFC 4231 vectors) | `test/parser/CryptoPrimitivesTests.cpp` | shipped |
+| `Pbkdf2` (RFC 7914 §11 vectors) | `test/parser/CryptoPrimitivesTests.cpp` | shipped |
+| `SecureRandom` + `Hash.constantTimeEquals` | `test/parser/CryptoPrimitivesTests.cpp` | shipped |
 | `RapidHash` | — | designed |
 
 ## v1 implementation notes

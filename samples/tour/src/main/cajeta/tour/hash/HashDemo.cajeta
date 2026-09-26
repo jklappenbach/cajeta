@@ -7,6 +7,10 @@ import cajeta.hash.Sha1;
 import cajeta.hash.SipHash;
 import cajeta.hash.Blake3;
 import cajeta.hash.MD5;
+import cajeta.hash.HmacSha256;
+import cajeta.hash.Pbkdf2;
+import cajeta.hash.SecureRandom;
+import cajeta.hash.Hash;
 import cajeta.lang.String;
 
 // cajeta.hash — picking the right hash for the job. This demo walks the
@@ -135,5 +139,45 @@ public class HashDemo extends DemoClass {
         System.stdout.println("  MD5      (legacy interop only)  = " + md5);
         this.check(md5.equals("30f3c93e46436deb58ba70816a8ec124"),
             "MD5 digest matches the reference value (md5sum agrees)");
+
+        // 8) Keyed and password primitives. HMAC-SHA256 signs a message under a
+        //    key (HS256 JWTs, cookies); PBKDF2 stretches a password into a key;
+        //    SecureRandom draws OS entropy for salts and session ids; and the
+        //    constant-time compare checks a MAC without leaking where it differs.
+        String keyText = "Jefe";
+        int8[] key #= keyText.toBytes();
+        String claim = "what do ya want for nothing?";
+        int8[] claimBytes #= claim.toBytes();
+        String mac #= HmacSha256.macHex(key, 4L, claimBytes, 28L);
+        System.stdout.println("  HMAC-SHA256 (RFC 4231 case 2)  = " + mac);
+        this.check(mac.equals("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"),
+            "HMAC-SHA256 matches the RFC 4231 vector");
+
+        String pw = "passwd";
+        int8[] pwBytes #= pw.toBytes();
+        String saltText = "salt";
+        int8[] salt #= saltText.toBytes();
+        int8[] derived #= Pbkdf2.sha256(pwBytes, 6L, salt, 4L, 1, 32);
+        String derivedHex #= HmacSha256.toHex(derived, 32L);
+        this.check(derivedHex.equals("55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc"),
+            "PBKDF2-HMAC-SHA256 matches the RFC 7914 vector");
+
+        int8[] r1 #= SecureRandom.bytes(16L);
+        int8[] r2 #= SecureRandom.bytes(16L);
+        boolean differ = false;
+        int64 q = 0;
+        while (q < 16L) {
+            if (r1[q] != r2[q]) { differ = true; }
+            q = q + 1;
+        }
+        this.check(differ, "two SecureRandom draws differ");
+
+        int8[] expected #= HmacSha256.mac(key, 4L, claimBytes, 28L);
+        int8[] presented #= HmacSha256.mac(key, 4L, claimBytes, 28L);
+        this.check(Hash.constantTimeEquals(expected, 32L, presented, 32L),
+            "constant-time compare accepts the matching MAC");
+        presented[31] = (int8) (presented[31] ^ (int8) 1);
+        this.check(Hash.constantTimeEquals(expected, 32L, presented, 32L) == false,
+            "constant-time compare rejects a MAC that differs in its last byte");
     }
 }

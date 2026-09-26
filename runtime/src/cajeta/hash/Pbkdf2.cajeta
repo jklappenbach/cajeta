@@ -1,0 +1,60 @@
+package cajeta.hash;
+
+/**
+ * PBKDF2 (RFC 8018 §5.2) with [[HmacSha256]] as the PRF: the password
+ * hashing the identity port's memory driver stores, and the key derivation
+ * behind password-based encryption. The iteration count is the cost knob and
+ * belongs beside the stored hash, so it can rise without stranding users.
+ *
+ * ```cajeta
+ * int8[] key #= Pbkdf2.sha256(password, pLen, salt, sLen, 600000, 32);
+ * ```
+ *
+ * Verified against the RFC 7914 §11 SHA-256 vectors in `Pbkdf2Tests`.
+ */
+public final class Pbkdf2 {
+    public static #int8[] sha256(int8[] password, int64 passwordLen,
+                                 int8[] salt, int64 saltLen,
+                                 int32 iterations, int32 length) {
+        int8[] out = heap int8[length];
+        HmacSha256 prf = heap HmacSha256(password, passwordLen);
+        int8[] counter = heap int8[4];
+        int8[] u = heap int8[32];
+        int8[] t = heap int8[32];
+        int32 block = 1;
+        int64 written = 0;
+        while (written < (int64) length) {
+            counter[0] = (int8) (block >> 24);
+            counter[1] = (int8) (block >> 16);
+            counter[2] = (int8) (block >> 8);
+            counter[3] = (int8) block;
+            prf.reset();
+            prf.update(salt, saltLen);
+            prf.update(counter, 4L);
+            int8[] first #= prf.digest();
+            int64 k = 0;
+            while (k < 32L) { u[k] = first[k]; t[k] = first[k]; k = k + 1; }
+            int32 c = 1;
+            while (c < iterations) {
+                prf.reset();
+                prf.update(u, 32L);
+                int8[] next #= prf.digest();
+                int64 j = 0;
+                while (j < 32L) {
+                    u[j] = next[j];
+                    t[j] = (int8) (t[j] ^ next[j]);
+                    j = j + 1;
+                }
+                c = c + 1;
+            }
+            int64 m = 0;
+            while (m < 32L && written < (int64) length) {
+                out[written] = t[m];
+                written = written + 1;
+                m = m + 1;
+            }
+            block = block + 1;
+        }
+        return #out;
+    }
+}

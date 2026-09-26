@@ -22,6 +22,7 @@ int64 mixed = Hash.combine(id, seed);
 | `static int64 identity(Object obj)` ⚑ | Pointer-based identity hash |
 | `static int64 combine(int64 a, int64 b)` ⚑ | Combine two 64-bit hash values into one with good distribution |
 | `static int64 processSeed()` ⚑ | The process-wide random seed |
+| `static boolean constantTimeEquals(int8[] a, int64 aLen, int8[] b, int64 bLen)` | Equal iff the lengths match and every byte matches, touching every byte whatever the answer, so timing does not reveal where two MACs or tokens differ |
 
 ⚑ = `@EntryPoint`
 
