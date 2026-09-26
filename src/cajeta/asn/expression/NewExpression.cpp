@@ -397,13 +397,15 @@ namespace cajeta {
         // it arrives through ArrayCreatorRest, and a test pins that.
         if (dynamic_pointer_cast<ClassCreatorRest>(creatorRest)) {
             if (auto k = dynamic_pointer_cast<CajetaClass>(type)) {
-                if (!k->isInterface() && k->hasAbstractMethod()) {
+                if (!k->isInterface() && (k->isAbstract() || k->hasAbstractMethod())) {
+                    std::string why = k->hasAbstractMethod()
+                        ? "it declares an abstract method, so its vtable has a slot "
+                          "nothing fills. Allocate a concrete subclass, or give the "
+                          "method a body."
+                        : "it is declared abstract. Allocate a concrete subclass, or "
+                          "remove the modifier.";
                     throw Exception(
-                        "cannot allocate '" + k->getQName()->toCanonical()
-                        + "': it declares an abstract method, so its vtable "
-                          "has an empty slot and the first call through that "
-                          "slot would fault. Allocate a concrete subclass, or "
-                          "give the method a body.",
+                        "cannot allocate '" + k->getQName()->toCanonical() + "': " + why,
                         "CAJETA_ERROR_ABSTRACT_INSTANTIATION");
                 }
             }

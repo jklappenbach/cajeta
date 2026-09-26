@@ -66,7 +66,7 @@ public class Tally {
 ```
 
 ```cajeta
-int32[] xs = {1, 2, 3, 4};
+int32[] xs = [1, 2, 3, 4];
 Tally t = stack Tally();
 xs.stream().forEach((x) -> t.bumpBy(x));
 int32 sum = t.value();

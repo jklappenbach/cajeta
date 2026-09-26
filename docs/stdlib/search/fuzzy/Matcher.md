@@ -14,7 +14,7 @@ key, so identical inputs always produce identical output — exact matches
 Matcher<int32> m = heap Matcher<int32>();
 m.add("File", 10);
 m.add("Edit", 20);
-ArrayList<Match<int32>> hits = m.match("Fiel");   // [File, distance 1]
+ArrayList<Match<int32>> hits #= m.match("Fiel");  // [File, distance 1]
 int32 top = hits.get(0).value();                  // 10
 ```
 

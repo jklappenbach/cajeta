@@ -35,6 +35,10 @@ Tensor arguments differentiate the same way — reduce to a scalar with
 `Tensor.sum` or `Tensor.mean`:
 
 ```cajeta
+import cajeta.math.Tensor;
+import cajeta.nucleo.transform.GradResult;
+
+Tensor<float32> x #= Tensor.ones<float32>([2L, 2L]);
 (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =
     Grad((Tensor<float32> t) -> Tensor.sum<float32,float32>(Tensor.mul<float32>(t, t)));
 GradResult<float32, Tensor<float32>> r = g(x);   // r.grads == 2*x
@@ -57,6 +61,12 @@ parameters first, data arguments after. One call returns all the grads; this
 is the form a training step uses (grads for each weight in one invocation).
 
 ```cajeta
+import cajeta.math.Tensor;
+import cajeta.nucleo.transform.GradResult;
+
+Tensor<float32> w #= Tensor.ones<float32>([2L, 2L]);
+Tensor<float32> b #= Tensor.zeros<float32>([2L]);
+Tensor<float32> x #= Tensor.ones<float32>([1L, 2L]);
 (Tensor<float32>, Tensor<float32>, Tensor<float32>)
         -> GradResult<float32, Tensor<float32>[]> step =
     GradAll<2>((Tensor<float32> w, Tensor<float32> b, Tensor<float32> x) ->
@@ -86,7 +96,7 @@ example runs over a leading batch axis, no hand-written loop. Composed with
 `Grad`, it gives per-example gradients:
 
 ```cajeta
-float32[] xs = {1.0f, 2.0f, 3.0f};
+float32[] xs = [1.0f, 2.0f, 3.0f];
 (float32[]) -> #GradResult<float32,float32>[] g =
     Vmap(Grad((float32 x) -> x * x));
 GradResult<float32,float32>[] rs = g(xs);        // grads {2, 4, 6}
@@ -115,10 +125,19 @@ the nested combinator form. The annotation nearest the declaration applies
 first, so the stack reads like the nesting:
 
 ```cajeta
-@Jit @Vmap @Grad
-public static float32 sq(float32 x) { return x * x; }
-// calls to sq are now Jit(Vmap(Grad(sq))):
-GradResult<float32,float32>[] rs = T.sq(xs);     // per-example grads, fused
+package snip.sugar;
+
+import cajeta.nucleo.transform.GradResult;
+
+public final class T {
+    @Jit @Vmap @Grad
+    public static float32 sq(float32 x) { return x * x; }
+
+    // calls to sq are now Jit(Vmap(Grad(sq))):
+    public static #GradResult<float32,float32>[] batch(float32[] xs) {
+        return T.sq(xs);                  // per-example grads, fused
+    }
+}
 ```
 
 The sugar is only sugar — it runs the same driver as the explicit form, so

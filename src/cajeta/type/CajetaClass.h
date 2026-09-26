@@ -211,6 +211,7 @@ namespace cajeta {
         bool isParentOrKind(CajetaClassPtr source);
 
         bool isInterface() const { return interfaceFlag; }
+        bool isAbstract() const { return modifiers.count(ABSTRACT) != 0; }
         void setIsInterface(bool v) { interfaceFlag = v; }
         // Annotation type (`annotation Foo {}`): a resolvable type token, never prototyped.
         bool isAnnotation() const { return annotationFlag; }
@@ -652,6 +653,9 @@ namespace cajeta {
         // The methods an interface's per-(impl, iface) vtable lays out, in vtable order:
         // own first, then parents by BFS. synthesizeInterfaceVTables and invokeMethod agree.
         std::vector<MethodPtr> getFlattenedInterfaceMethods();
+
+        // This class's interfaces and every base's, each once.
+        std::vector<CajetaClassPtr> allAssignableInterfaces() const;
 
         bool hasPendingIfaceVTables() const { return pendingIfaceVTables; }
 

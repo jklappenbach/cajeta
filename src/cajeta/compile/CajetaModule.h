@@ -81,6 +81,13 @@ namespace cajeta {
             int providerIdx = -1;
             AllocateMode allocate = AllocateMode::Singleton;
             bool optional = false;
+            // Multibinding (primavera-spec §16 R2): an `ArrayList<T>` or
+            // `HashMap<String, T>` site receives every active component assignable
+            // to T, in canonical-name order. `container` is the instantiated type.
+            enum class MultiKind { None, List, Map };
+            MultiKind multi = MultiKind::None;
+            CajetaClassPtr container;
+            vector<ComponentDescriptorPtr> members;
         };
 
         struct ComponentDescriptor {

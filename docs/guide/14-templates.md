@@ -11,11 +11,17 @@ compiled class. Tour demo:
 ```cajeta
 public class Box<T> {
     public T value;
-    public Box(T v) { this.value = v; }
+    public Box(T v) { this.value #= v; }
     public T get() { return this.value; }
-    public void set(T v) { this.value = v; }
+    public void set(T v) { this.value #= v; }
 }
 ```
+
+A `Box` holds whatever it is handed, so it takes a plain `T` and stores it with
+`#=`, the container shape from [chapter 11](11-ownership.md). `set(v)` lends
+and `set(#v)` transfers. Storing a plain parameter with a plain `=` is rejected
+as `CAJETA_ERROR_CAPTURED_BORROW_PARAM`, because the caller keeps the title and
+frees the value once the call returns.
 
 ## Method templates
 

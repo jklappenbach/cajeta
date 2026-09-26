@@ -7,6 +7,7 @@ DEVICE's own elapsed time between them (`cuEventElapsedTime` /
 no toolkit. Every number comes with a tier that says what it means, and a
 timer that cannot measure answers `-1` rather than guessing.
 
+<!-- snippet: skip -->
 ```cajeta
 KernelStream s #= KernelStream.current();
 KernelTimer t #= KernelTimer.create();

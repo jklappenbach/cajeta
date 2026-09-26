@@ -1,0 +1,86 @@
+package cajeta.hash;
+
+import cajeta.lang.String;
+
+/**
+ * HMAC-SHA1 (RFC 2104 over [[Sha1]]). It exists for the one-time password
+ * algorithms in [[Totp]], whose installed base of authenticator apps computes
+ * SHA-1 and ignores any other algorithm. New keyed MACs use [[HmacSha256]].
+ *
+ * ```cajeta
+ * int8[] mac #= HmacSha1.mac(key, keyLen, data, dataLen);    // 20 bytes
+ * ```
+ *
+ * Verified against the seven RFC 2202 test cases in `HmacSha1Tests`.
+ */
+public final class HmacSha1 {
+    int8[] ipad;
+    int8[] opad;
+    Sha1 inner;
+    Sha1 outer;
+
+    public HmacSha1(int8[] key, int64 keyLen) {
+        int8[] block = heap int8[64];
+        if (keyLen > 64L) {
+            int8[] hashed #= Sha1.hash(key, keyLen);
+            int64 k = 0;
+            while (k < 20L) { block[k] = hashed[k]; k = k + 1; }
+        } else {
+            int64 k = 0;
+            while (k < keyLen) { block[k] = key[k]; k = k + 1; }
+        }
+        int8[] ip = heap int8[64];
+        int8[] op = heap int8[64];
+        int64 i = 0;
+        while (i < 64L) {
+            ip[i] = (int8) (block[i] ^ (int8) 0x36);
+            op[i] = (int8) (block[i] ^ (int8) 0x5c);
+            i = i + 1;
+        }
+        this.ipad #= ip;
+        this.opad #= op;
+        Sha1 in = heap Sha1();
+        this.inner #= in;
+        Sha1 out = heap Sha1();
+        this.outer #= out;
+        this.inner.update(this.ipad, 64L);
+    }
+
+    /** Feed `len` bytes of message. */
+    public void update(int8[] data, int64 len) {
+        this.inner.update(data, len);
+    }
+
+    /** The 20-byte MAC of everything fed since construction or `reset()`. */
+    public #int8[] digest() {
+        int8[] ih #= this.inner.digest();
+        this.outer.reset();
+        this.outer.update(this.opad, 64L);
+        this.outer.update(ih, 20L);
+        return this.outer.digest();
+    }
+
+    /** The MAC as 40 lowercase hex characters. */
+    public #String hex() {
+        int8[] d #= this.digest();
+        return HmacSha256.toHex(d, 20L);
+    }
+
+    /** Restart under the same key. */
+    public void reset() {
+        this.inner.reset();
+        this.inner.update(this.ipad, 64L);
+    }
+
+    public static #int8[] mac(int8[] key, int64 keyLen, int8[] data, int64 len) {
+        HmacSha1 h = heap HmacSha1(key, keyLen);
+        h.update(data, len);
+        return h.digest();
+    }
+
+    public static #String macHex(int8[] key, int64 keyLen, int8[] data, int64 len) {
+        HmacSha1 h = heap HmacSha1(key, keyLen);
+        h.update(data, len);
+        return h.hex();
+    }
+}

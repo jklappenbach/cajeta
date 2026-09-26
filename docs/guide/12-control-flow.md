@@ -35,7 +35,7 @@ for (int32 k = 1; k <= 5; k = k + 1) {
     fact = fact * k;
 }
 
-int32[] xs = {1, 2, 3, 4};
+int32[] xs = [1, 2, 3, 4];
 int32 sqSum = 0;
 for (int32 x : xs) {          // x is a per-iteration borrow
     sqSum = sqSum + x * x;

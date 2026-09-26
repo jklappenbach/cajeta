@@ -19,5 +19,7 @@ namespace cajeta {
 
     private:
         CajetaModule::ComponentDescriptorPtr descriptor;
+        llvm::Value* singletonOf(const CajetaModule::ComponentDescriptorPtr& target);
+        llvm::Value* emitMultibinding(const CajetaModule::ResolvedDependency& rd);
     };
 }

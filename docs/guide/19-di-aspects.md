@@ -43,6 +43,53 @@ ambiguous unqualified match is a compile error. The lifetime is chosen per
 injection site (`allocate = ...`): singleton (the default), per-owner, or
 transient. `@PostConstruct` / `@PreDestroy` hook the lifecycle.
 
+## Multibinding
+
+A site typed `ArrayList<T>` receives every active component assignable to
+`T`, in canonical-name order. A site typed `HashMap<String, T>` receives the
+same set keyed by component name, with an unnamed component keyed by its
+simple class name. Nothing assignable means an empty container, not an
+error. The elements are the graph's singletons and the container holds
+them as borrows, so clearing or dropping it frees nothing.
+
+```cajeta
+import cajeta.collection.ArrayList;
+import cajeta.collection.HashMap;
+
+public interface Codec {
+    public int32 level();
+}
+
+@Component(name = "gzip")
+public class Gzip implements Codec {
+    public Gzip() { return; }
+    public int32 level() { return 6; }
+}
+
+@Component
+public class Brotli implements Codec {
+    public Brotli() { return; }
+    public int32 level() { return 11; }
+}
+
+@Component
+public class Codecs {
+    @Inject ArrayList<Codec> all;
+    @Inject HashMap<String, Codec> byName;
+    public Codecs() { return; }
+}
+```
+
+Which implementations exist is decided at build, by profiles. Which one a
+program uses is ordinary selection over the set, by index, by name or by
+any predicate, and that is how configuration picks a provider:
+
+```cajeta
+Codecs c = Codecs.__cajeta_inject();
+int32 present = c.all.count();                 // 2, Brotli before Gzip
+int32 chosen = c.byName.get("gzip").level();  // 6
+```
+
 ## Factories
 
 `@Factory` covers what constructor injection can't: unowned third-party

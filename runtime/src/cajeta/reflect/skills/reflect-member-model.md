@@ -21,7 +21,7 @@ There is **no `getField(String)`**, no `#Field[] getFields()`, and the navigatio
 - **`Class<T>`** — the root and the only **entry point** here. Hands out everything else. Obtain via `Class.of(obj)` or `Class.forName(name)`. See `cajeta/reflect/Class`.
 - **`Field` / `Method` / `Constructor`** — one declared member each. Lightweight handles: each holds just `{ pointer rtti, int32 index }` (a borrow of the owning class's RTTI plus its declared-member index). They carry **no back-reference to the `Class`**. The actual reflective work — `Field` get/set, `Method.invoke*`, `Constructor.heapInstance` — lives on these and is documented in their own class skills, not here.
 - **`Parameter`** — one user-visible parameter of a `Method` or `Constructor`. Holds `{ rtti, ownerIsCtor, ownerIndex, index }`. The implicit `this` is excluded, so `index` is the user-visible position.
-- **`Modifiers`** — a value object over the packed modifier `int32` (`isPublic()`, `isStatic()`, `isFinal()`, plus class-only `isSealed()`/`isRetained()`). See `cajeta/reflect/Modifiers`.
+- **`Modifiers`** — a value object over the packed modifier `int32` (`isPublic()`, `isStatic()`, `isFinal()`, `isAbstract()`, plus class-only `isSealed()`/`isRetained()`). See `cajeta/reflect/Modifiers`.
 
 ## Object graph & ownership — the load-bearing part
 

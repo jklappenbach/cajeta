@@ -101,7 +101,7 @@ Everything is count-then-index, no name lookup at this level:
   `getAnnotationCount`, `getAnnotationName(i)`, `getAnnotation(i)`,
   `hasAnnotation(name)`.
 - Identity/modifiers: `getName()`, `getInstanceSize()`, `getModifierFlags()`,
-  `getModifiers()`, `isPublic()`, `isFinal()`, `getParentCount()`.
+  `getModifiers()`, `isPublic()`, `isFinal()`, `isAbstract()`, `getParentCount()`.
 
 ## Registry queries (REFL-10/12)
 

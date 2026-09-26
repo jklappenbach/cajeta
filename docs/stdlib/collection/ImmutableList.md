@@ -13,8 +13,8 @@ src.add(10);
 src.add(20);
 src.add(30);
 
-// Freeze it — `src` stays owned by the caller and is untouched.
-ImmutableList<int32> frozen = heap ImmutableList<int32>(src);
+// Freeze it. The `#` surrenders `src`, whose elements move into the snapshot.
+ImmutableList<int32> frozen = heap ImmutableList<int32>(#src);
 int64 n = frozen.count();          // 3
 int32 second = frozen.get(1);      // 20
 int32 at = frozen.indexOf(30);     // 2
@@ -25,7 +25,7 @@ boolean has = frozen.contains(40); // false
 
 | Signature | |
 |---|---|
-| `ImmutableList(ArrayList<T> src)` ⚑ | Build an immutable copy of `src`; the source is left untouched |
+| `ImmutableList(#ArrayList<T> src)` ⚑ | Build an immutable copy of `src`, which is consumed, so the call must write `#src` |
 | `int64 count()` | Number of elements |
 | `boolean isEmpty()` | `count() == 0` |
 | `T get(int32 i)` | Element at `i` (0-based), or the type's zero value if out of range |

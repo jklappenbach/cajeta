@@ -166,6 +166,11 @@ namespace cajeta {
             llvm::Value* v = args[i].expression->generateCode(module);
             auto exprAst = dynamic_pointer_cast<Expression>(args[i].expression);
             v = loadIfLValue(module, v, exprAst);
+            if (!v) {
+                throw Exception("argument " + std::to_string(i + 1)
+                    + " to a closure call did not lower to a value; it names an "
+                    "unknown or non-addressable property", "CAJETA_ERROR_ARG_INVALID");
+            }
             size_t sigIdx = baseIdx + i;
             if (sig && sigIdx < sig->getNumParams() && v
                     && v->getType() != sig->getParamType(sigIdx)) {

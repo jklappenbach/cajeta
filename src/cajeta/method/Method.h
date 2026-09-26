@@ -271,6 +271,8 @@ namespace cajeta {
 
         bool isAbstract() const { return abstractFlag; }
         void setAbstract(bool v) { abstractFlag = v; }
+        // The `abstract` keyword, as distinct from a missing body.
+        bool isDeclaredAbstract() const { return modifiers.count(ABSTRACT) != 0; }
 
         bool isVarargs() const { return varargsFlag; }
         void setVarargs(bool v) { varargsFlag = v; }

@@ -11,6 +11,9 @@ and allocates only the result.
 ## Fuse — one kernel, no temporaries
 
 ```cajeta
+import cajeta.math.Tensor;
+
+Tensor<float32> x #= Tensor.ones<float32>([2L, 2L]);
 (Tensor<float32>) -> #Tensor<float32> g =
     Fuse((Tensor<float32> t) ->
         Tensor.sub<float32>(Tensor.add<float32>(Tensor.mul<float32>(t, t), t), t));
@@ -32,6 +35,8 @@ runs as its own pass, and the elementwise tail fuses against its scalar
 result. The standardize shape is the headline:
 
 ```cajeta
+import cajeta.math.Tensor;
+
 (Tensor<float32>) -> #Tensor<float32> g =
     Fuse((Tensor<float32> t) ->
         Tensor.divScalar<float32>(
@@ -47,6 +52,8 @@ scalar-valued and allocates no tensor at all.
 ## @Fuse — the everyday shape
 
 ```cajeta
+import cajeta.math.Tensor;
+
 @Fuse
 public static Tensor<float32> activate(Tensor<float32> t) {
     return Tensor.add<float32>(Tensor.mul<float32>(t, t), t);
@@ -62,6 +69,9 @@ explicit form, identical values, identical allocation counts.
 compose without a translation layer:
 
 ```cajeta
+import cajeta.math.Tensor;
+import cajeta.nucleo.transform.GradResult;
+
 (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =
     Grad(Fuse((Tensor<float32> t) ->
         Tensor.sum<float32,float32>(Tensor.mul<float32>(t, t))));

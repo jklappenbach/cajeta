@@ -1,0 +1,116 @@
+package cajeta.codec;
+
+import cajeta.lang.String;
+
+/**
+ * Base32 (RFC 4648 §6) byte ⇄ text codec, alphabet `A`–`Z` `2`–`7`. Its
+ * everyday use is the shared secret in an `otpauth://` URI, which apps read
+ * and people sometimes type, so decoding accepts lowercase and tolerates
+ * missing `=` padding. Pure index arithmetic over bytes, like [[Base64]].
+ *
+ * ```cajeta
+ * String text #= Base32.encode(secret, 20L);          // padded to a multiple of 8
+ * int8[] raw #= Base32.decode("mzxw6ytboi");          // "foobar"
+ * ```
+ *
+ * Pinned by the RFC 4648 §10 vectors in `Base32Tests`.
+ */
+public final class Base32 {
+
+    static int32 quintetToChar(int32 v) {
+        if (v < 26) { return 65 + v; }
+        return 50 + (v - 26);
+    }
+
+    /** The value of an alphabet character, either case, or -1. */
+    static int32 charToQuintet(int32 c) {
+        if (c >= 65 && c <= 90) { return c - 65; }
+        if (c >= 97 && c <= 122) { return c - 97; }
+        if (c >= 50 && c <= 55) { return 26 + (c - 50); }
+        return -1;
+    }
+
+    /** Encode `data[0..len)` with `=` padding to a multiple of 8 characters. */
+    public static #String encode(int8[] data, int64 len) {
+        return Base32.encode(data, len, true);
+    }
+
+    /** Encode `data[0..len)`, padded or not. */
+    public static #String encode(int8[] data, int64 len, boolean pad) {
+        int32 n = (int32) len;
+        if (n < 0) { n = 0; }
+        int32 chars = (n * 8 + 4) / 5;
+        int32 outLen = chars;
+        if (pad) { outLen = ((chars + 7) / 8) * 8; }
+        int8[] out = heap int8[(int64) outLen];
+        int32 acc = 0;
+        int32 bits = 0;
+        int32 o = 0;
+        int32 i = 0;
+        while (i < n) {
+            acc = (acc << 8) | (((int32) data[i]) & 0xff);
+            bits = bits + 8;
+            while (bits >= 5) {
+                bits = bits - 5;
+                out[o] = (int8) Base32.quintetToChar((acc >> bits) & 0x1f);
+                o = o + 1;
+            }
+            acc = acc & ((1 << bits) - 1);
+            i = i + 1;
+        }
+        if (bits > 0) {
+            out[o] = (int8) Base32.quintetToChar((acc << (5 - bits)) & 0x1f);
+            o = o + 1;
+        }
+        while (o < outLen) {
+            out[o] = (int8) 61;
+            o = o + 1;
+        }
+        return heap String(#out, outLen);
+    }
+
+    /** Decode either case, padded or not; throws [[Base32Exception]] on garbage. */
+    public static #int8[] decode(String s) {
+        int8[] w #= s.toBytes();
+        return Base32.decodeBytes(w, (int64) s.byteLength());
+    }
+
+    /** Decode `data[0..len)` held as bytes. */
+    public static #int8[] decodeBytes(int8[] data, int64 len) {
+        int32 n = (int32) len;
+        if (n < 0) { n = 0; }
+        int32 stripped = n;
+        while (stripped > 0 && (((int32) data[stripped - 1]) & 0xff) == 61) {
+            stripped = stripped - 1;
+        }
+        int32 tail = stripped & 0x7;
+        if (tail == 1 || tail == 3 || tail == 6) {
+            throw heap Base32Exception("base32: truncated final quantum",
+                (int64) stripped);
+        }
+        int32 outLen = (stripped * 5) / 8;
+        int8[] out = heap int8[(int64) outLen];
+        int32 acc = 0;
+        int32 bits = 0;
+        int32 o = 0;
+        int32 i = 0;
+        while (i < stripped) {
+            int32 c = ((int32) data[i]) & 0xff;
+            int32 q = Base32.charToQuintet(c);
+            if (q < 0) {
+                throw heap Base32Exception("base32: character outside the alphabet",
+                    (int64) i);
+            }
+            acc = (acc << 5) | q;
+            bits = bits + 5;
+            if (bits >= 8) {
+                bits = bits - 8;
+                out[o] = (int8) ((acc >> bits) & 0xff);
+                o = o + 1;
+            }
+            acc = acc & ((1 << bits) - 1);
+            i = i + 1;
+        }
+        return #out;
+    }
+}

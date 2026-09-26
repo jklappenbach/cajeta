@@ -41,7 +41,7 @@ zero — the disciplined stop-gradient.
 Transforms compose, innermost first:
 
 ```cajeta
-float32[] xs = {1.0f, 2.0f, 3.0f};
+float32[] xs = [1.0f, 2.0f, 3.0f];
 (float32[]) -> #GradResult<float32,float32>[] g =
     Jit(Vmap(Grad((float32 x) -> x * x)));
 GradResult<float32,float32>[] rs = g(xs);   // per-example grads {2,4,6}, fused
@@ -67,6 +67,8 @@ loop** that allocates only the result — and `@Fuse` on a method is the
 everyday shape:
 
 ```cajeta
+import cajeta.math.Tensor;
+
 @Fuse
 public static Tensor<float32> activate(Tensor<float32> t) {
     return Tensor.add<float32>(Tensor.mul<float32>(t, t), t);
@@ -78,6 +80,9 @@ The explicit form yields a reusable compiled function; building it runs
 nothing — the call is the force point:
 
 ```cajeta
+import cajeta.math.Tensor;
+
+Tensor<float32> x #= Tensor.ones<float32>([2L, 2L]);
 (Tensor<float32>) -> #Tensor<float32> g =
     Fuse((Tensor<float32> t) -> Tensor.add<float32>(Tensor.mul<float32>(t, t), t));
 Tensor<float32> r = g(x);
@@ -103,16 +108,18 @@ When control flow depends on runtime data, record it:
 import cajeta.nucleo.autograd.Tape;
 import cajeta.nucleo.autograd.Var;
 
-Tape t = heap Tape();
-Var x = t.var(2.0f);
-Var y = x;
-int32 i = 1;
-while (i < n) {            // n arrives at runtime
-    y = t.mul(y, x);
-    i = i + 1;
+float32 dPow(int32 n) {        // n arrives at runtime
+    Tape t = heap Tape();
+    Var x = t.var(2.0f);
+    Var y = x;
+    int32 i = 1;
+    while (i < n) {
+        y = t.mul(y, x);
+        i = i + 1;
+    }
+    t.backward(y);
+    return t.grad(x);          // n * x^(n-1)
 }
-t.backward(y);
-float32 d = t.grad(x);     // n * x^(n-1)
 ```
 
 One `backward` per tape (a second call throws); record a fresh tape per

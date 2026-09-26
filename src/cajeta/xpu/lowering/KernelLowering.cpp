@@ -93,7 +93,7 @@ namespace {
 
 [[noreturn]] void unsupported(const std::string& what) {
     throw cajeta::Exception(
-        "XPU kernel lowering: unsupported construct Ã¢ÂÂ " + what,
+        "XPU kernel lowering: unsupported construct — " + what,
         "XPU-N01");
 }
 

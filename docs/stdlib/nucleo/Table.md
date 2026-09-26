@@ -15,14 +15,30 @@ instead), and **no copy/view ambiguity** — each demonstrably absent
 ## The record IS the schema
 
 ```cajeta
+package snip.frame;
+
+import cajeta.lang.Utf8;
+import cajeta.time.Instant;
+import cajeta.nucleo.frame.Table;
+import cajeta.nucleo.column.Column;
+import cajeta.nucleo.column.StringColumn;
+
 public record Tick { Instant ts; float64 price; float64 size; Utf8 venue; }
 
-Table<Tick> t = heap Table<Tick>(
-    Column.of<int64>(tsv), Column.of<float64>(pv),
-    Column.of<float64>(sv), StringColumn.of(vv));
+public record VenueVwap { Utf8 venue; float64 vwap; }
 
-t.price.get(0);      // typed column access — the field's typed column
-t.prce;              // COMPILE error, not a runtime lookup — names no member
+public final class Tape {
+    public static #Table<Tick> of(int64[] tsv, float64[] pv, float64[] sv, String[] vv) {
+        return heap Table<Tick>(
+            Column.of<int64>(tsv), Column.of<float64>(pv),
+            Column.of<float64>(sv), StringColumn.of(vv));
+    }
+
+    public static float64 firstPrice(Table<Tick> t) {
+        return t.price.get((int64) 0);   // typed column access — the field's typed column
+        // t.prce                        // COMPILE error, not a runtime lookup — names no member
+    }
+}
 ```
 
 One typed column per field, in field order. A non-record schema argument
@@ -37,15 +53,28 @@ or materializes until a terminal. The spec's headline, run verbatim
 (`VwapEndToEndTests`):
 
 ```cajeta
-Table<VenueVwap> r = t.lazy()
-    .filter((TickCols c) -> { Pred p = c.price() > 0.0; return #p; })
-    .groupBy((TickCols c, Sels s) -> { s.add(c.venue()); })
-    .agg((TickCols c, Aggs ag) -> {
-        ag.add(((c.price() * c.size()).sum() / c.size().sum()).alias("vwap"));
-    })
-    .as<VenueVwap>()
-    .sort((VenueVwapCols c, Sorts s) -> { s.add(c.vwap().desc()); })
-    .collect();                       // nothing ran until here
+package snip.frame;
+
+import cajeta.nucleo.frame.Table;
+import cajeta.nucleo.frame.Pred;
+import cajeta.nucleo.frame.Sels;
+import cajeta.nucleo.frame.Aggs;
+import cajeta.nucleo.frame.Sorts;
+
+public final class Vwap {
+    public static int64 byVenue(Table<Tick> t) {
+        Table<VenueVwap> plan #= t.lazy()
+            .filter((TickCols c) -> { Pred p = c.price() > 0.0; return #p; })
+            .groupBy((TickCols c, Sels s) -> { s.add(c.venue()); })
+            .agg((TickCols c, Aggs ag) -> {
+                ag.add(((c.price() * c.size()).sum() / c.size().sum()).alias("vwap"));
+            })
+            .as<VenueVwap>()
+            .sort((VenueVwapCols c, Sorts s) -> { s.add(c.vwap().desc()); });
+        Table<VenueVwap> r = plan.collect();   // nothing ran until here
+        return r.rowCount();
+    }
+}
 ```
 
 - **Two column roles, one synthesizer.** `c.price()` in a lambda is the
@@ -110,8 +139,17 @@ A table exports zero-copy to the Arrow C Data Interface (one
 external Arrow array set checked against the record:
 
 ```cajeta
-int64[] bundles = t.exportArrow();                     // zero-copy borrow
-Table<Bar> r = Table.importArrow<Bar>(schemas, arrays, n);   // checked rebind
+package snip.frame;
+
+import cajeta.nucleo.frame.Table;
+
+public final class ArrowSeam {
+    public static void roundTrip(Table<Tick> t, int64[] schemas, int64[] arrays, int32 n) {
+        int64[] bundles #= t.exportArrow();                          // zero-copy borrow
+        Table<Tick> r #= Table.importArrow<Tick>(schemas, arrays, n);   // checked rebind
+        return;
+    }
+}
 ```
 
 Parquet decode lives in **cajeta-codec** (`dev.cajeta.codec.parquet`, full

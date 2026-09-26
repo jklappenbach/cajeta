@@ -47,6 +47,24 @@ public class Guitar implements Instrument, Tunable {
     }
 }
 
+// An interface is inherited down the class hierarchy. A subclass of an
+// implementer converts to the interface whether it overrides the method,
+// inherits it, or sits two bases below the `implements`. Each of these has
+// its own interface table, filled from the most-derived implementation.
+public class GrandPiano extends Piano {
+    public GrandPiano() { return; }
+    public int32 play() { return 97; }
+}
+
+public class UprightPiano extends Piano {
+    public UprightPiano() { return; }
+}
+
+public class ToyPiano extends UprightPiano {
+    public ToyPiano() { return; }
+    public int32 play() { return 25; }
+}
+
 public class InterfacesDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
@@ -82,5 +100,17 @@ public class InterfacesDemo extends DemoClass {
         System.stdout.println("  Guitar as Tunable: tune(432)   = " + tuned);
         this.check(tuned == 432, "Guitar viewed as Tunable");
         this.check(g.play() + g.tune(440) == 446, "one class satisfying two contracts");
+
+        // Inherited interfaces: none of these three name Instrument
+        // themselves, and every one dispatches through it.
+        Instrument grand = heap GrandPiano();
+        Instrument upright = heap UprightPiano();
+        Instrument toy = heap ToyPiano();
+        System.stdout.println("  GrandPiano as Instrument       = " + grand.play());
+        System.stdout.println("  UprightPiano as Instrument     = " + upright.play());
+        System.stdout.println("  ToyPiano as Instrument         = " + toy.play());
+        this.check(grand.play() == 97, "a subclass override reaches through the inherited interface");
+        this.check(upright.play() == 88, "a subclass that inherits play() converts and dispatches");
+        this.check(toy.play() == 25, "a grandchild two bases below the implements dispatches");
     }
 }

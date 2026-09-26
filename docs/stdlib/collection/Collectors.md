@@ -8,7 +8,7 @@ and every collector ships a combiner alongside the (seed, accumulator) pair so
 
 ```cajeta
 // Stream -> collect -> owned list:
-int32[] data = { 3, 1, 2 };
+int32[] data = [ 3, 1, 2 ];
 ArrayList<int32> xs = (heap ArrayStream<int32>(data, 3))
     .collect(Collectors.toList<int32>());
 ```

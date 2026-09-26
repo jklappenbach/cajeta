@@ -157,4 +157,20 @@ public final class Hash {
      */
     @Native("__cajeta_hash_seed")
     public static int64 processSeed();
+
+    /**
+     * Byte-wise equality that touches every byte of both inputs whatever
+     * the answer, so timing reveals nothing about where they differ.
+     * Different lengths answer false without comparing bytes.
+     */
+    public static boolean constantTimeEquals(int8[] a, int64 aLen, int8[] b, int64 bLen) {
+        if (aLen != bLen) { return false; }
+        int32 acc = 0;
+        int64 i = 0;
+        while (i < aLen) {
+            acc = acc | (((int32) a[i]) ^ ((int32) b[i]));
+            i = i + 1;
+        }
+        return acc == 0;
+    }
 }

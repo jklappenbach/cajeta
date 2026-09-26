@@ -107,6 +107,8 @@ tutorial; it links here for API detail. Docs link the
 | [UdpSocket](io/net/UdpSocket.md) | UDP datagram socket |
 | [Server](io/net/Server.md) | TCP server core: bind, listen, accept loop |
 | [ServerBuilder](io/net/ServerBuilder.md) | Model-selection builder for `Server` |
+| [ByteBuffer](io/net/ByteBuffer.md) | Pooled byte buffer with read and write cursors, filled from and written to a channel in place |
+| [BufferPool](io/net/BufferPool.md) | Bounded free list of same-sized buffers, one pair per connection |
 
 ## cajeta.io.net.dns
 
@@ -143,6 +145,11 @@ tutorial; it links here for API detail. Docs link the
 | [Blake3](hash/Blake3.md) | Fast modern cryptographic hash (and XOF) |
 | [Sha256](hash/Sha256.md) | SHA-256 digest |
 | [Sha1](hash/Sha1.md) | SHA-1 digest |
+| [HmacSha256](hash/HmacSha256.md) | HMAC-SHA256 keyed authentication |
+| [Pbkdf2](hash/Pbkdf2.md) | PBKDF2-HMAC-SHA256 password hashing and key derivation |
+| [HmacSha1](hash/HmacSha1.md) | HMAC-SHA1, for HOTP and TOTP only |
+| [Totp](hash/Totp.md) | HOTP and TOTP one-time passwords as authenticator apps compute them |
+| [SecureRandom](hash/SecureRandom.md) | OS entropy for salts, keys and ids |
 | [MD5](hash/MD5.md) | MD5 checksum / identifier |
 
 ## cajeta.math
@@ -173,6 +180,7 @@ tutorial; it links here for API detail. Docs link the
 | Class | |
 |---|---|
 | [Base64](codec/Base64.md) | Base64 (RFC 4648) byte ⇄ text codec |
+| [Base32](codec/Base32.md) | Base32 (RFC 4648) codec, for OTP secrets |
 | [Csv](codec/csv/Csv.md) | Typed CSV: bind rows to a declared type |
 | [Json](codec/json/Json.md) | Top-level JSON parse/serialize entry points |
 

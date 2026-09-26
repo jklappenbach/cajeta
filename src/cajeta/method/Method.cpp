@@ -4,6 +4,7 @@
 
 #include "../error/Diagnostics.h"
 #include "Method.h"
+#include "llvm/IR/IRBuilder.h"
 #include <atomic>
 #include <functional>
 #include <unordered_set>
@@ -1468,6 +1469,29 @@ namespace cajeta {
             llvmFunctionType = llvmTypes.empty()
                 ? llvm::FunctionType::get(llvmRetAbs, false)
                 : llvm::FunctionType::get(llvmRetAbs, llvmTypes, false);
+            // A declared-abstract method on a class gets a stub, so its vtable slot
+            // is never null. The stub raises, naming the method.
+            if (isDeclaredAbstract() && parent && !parent->isInterface()) {
+                const std::string symbol = getLlvmSymbolName();
+                llvm::Module* lmod = module->getLlvmModule();
+                llvm::Function* stub = lmod->getFunction(symbol);
+                if (!stub) {
+                    stub = llvm::Function::Create(llvmFunctionType,
+                        llvm::Function::ExternalLinkage, symbol, lmod);
+                }
+                if (stub->empty()) {
+                    auto& ctx = *module->getLlvmContext();
+                    llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "abstract", stub));
+                    if (llvm::Function* raise = module->getRuntimeFunction(
+                            "__cajeta_abstract_call", lmod)) {
+                        b.CreateCall(raise, {
+                            b.CreateGlobalString(toCanonical(/*labeled=*/false),
+                                                    "abstract.name")});
+                    }
+                    b.CreateUnreachable();
+                }
+                llvmFunction = stub;
+            }
             return;
         }
 

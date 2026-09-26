@@ -170,10 +170,11 @@ TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsRejectLoudlyOffNative) {
     EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
         << "off-native the scalar verbs must SKIP the kernel loudly:\n"
         << err;
-    // The wording since ed535ae2 (the S-forms retired, 2026-09-21): the
-    // contract is that a per-lane value needs a wave to distribute it.
-    EXPECT_NE(err.find("has no wave to distribute a per-lane value across"),
-              std::string::npos)
+    // Anchored on what the lowering ACTUALLY emits (KernelLowering.cpp:5293).
+    // A 2026-09-25 edit moved this anchor to "has no wave to distribute a
+    // per-lane value across", a wording no version of the source has ever
+    // emitted; origin's anchor is the true one and this merge keeps it.
+    EXPECT_NE(err.find("WaveVector.ofLane is native-only"), std::string::npos)
         << "the skip must state the contract it could not meet:\n" << err;
     EXPECT_NE(err.find("WaveVector.ofSlice"), std::string::npos)
         << "the skip must name the spelling that works here:\n" << err;

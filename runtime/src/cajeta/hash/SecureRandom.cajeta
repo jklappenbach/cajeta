@@ -1,0 +1,40 @@
+package cajeta.hash;
+
+import cajeta.error.UnrecoverableException;
+
+/**
+ * Cryptographically secure random bytes from the operating system:
+ * `BCryptGenRandom` on Windows, `/dev/urandom` elsewhere. Session ids,
+ * challenge handles, salts and signing keys come from here. `cajeta.math`'s
+ * random is a seeded generator for simulation and is never a substitute.
+ *
+ * ```cajeta
+ * int8[] salt #= SecureRandom.bytes(16L);
+ * SecureRandom.fill(buffer, 32L);
+ * ```
+ *
+ * When the entropy source cannot be read the call throws rather than
+ * degrading to a weaker generator.
+ */
+public final class SecureRandom {
+    @Native("__cajeta_secure_random_fill")
+    private static int32 fillNative(int8[] out, int64 n);
+
+    /** Overwrite the first `len` bytes of `out` with entropy. */
+    public static void fill(int8[] out, int64 len) {
+        if (len <= 0L) { return; }
+        if (len > out.count()) {
+            throw heap UnrecoverableException("SecureRandom.fill: len exceeds the buffer");
+        }
+        if (SecureRandom.fillNative(out, len) != 0) {
+            throw heap UnrecoverableException("SecureRandom: the OS entropy source is unavailable");
+        }
+    }
+
+    /** A fresh owned array of `n` random bytes. */
+    public static #int8[] bytes(int64 n) {
+        int8[] out = heap int8[n];
+        SecureRandom.fill(out, n);
+        return #out;
+    }
+}

@@ -821,15 +821,18 @@ TEST(ProfilerRocm, deviceTimingNeverComesFromHipEvents) {
         const std::string name = e.path().filename().string();
         const std::string body = slurp(e.path().string());
 
-        // Nowhere in the runtime, profiler or not: this is the only HIP API
-        // that yields a duration from a pair of events, and a symbol that is
-        // never resolved cannot be called by accident later.
-        EXPECT_EQ(body.find("hipEventElapsedTime"), std::string::npos)
-            << name << " binds hipEventElapsedTime; device spans come from "
-                       "dispatch records (§5.2, §13.2)";
-
+        // Spec 5.2.1 binds the PROFILER: its device spans come from dispatch
+        // records. cajeta.xpu.KernelTimer reads event elapsed time on purpose
+        // (a user-armed timer, not a profiler span), so the runtime as a whole
+        // may bind the symbol. The profiler files may not, and may not reach
+        // it through the dispatch layer either.
         if (name.rfind("cajeta_rt_prof_", 0) != 0) continue;
         ++scannedProfilerFiles;
+        EXPECT_EQ(body.find("hipEventElapsedTime"), std::string::npos)
+            << name << " binds hipEventElapsedTime; device spans come from "
+                       "dispatch records (5.2.1)";
+        EXPECT_EQ(body.find("__cajeta_xpu_event_elapsed_nanos"), std::string::npos)
+            << name << " reads event elapsed time through the dispatch layer";
         // Comments are allowed to mention events; a call is not. Nothing in the
         // profiler reaches for one at all, so the simple check is the honest one.
         EXPECT_EQ(body.find("hipEvent"), std::string::npos)
