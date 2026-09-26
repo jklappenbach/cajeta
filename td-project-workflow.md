@@ -92,3 +92,38 @@ writes only its own file. The **implement** skill governs this.
 2. **Once the spec and plan are complete and approved** → load the **implement**
    skill. It drives the focus stack so the documents accurately store state, and
    state stays visible to the developer.
+
+## Releasing — `main` is the conduit, `release` is the train
+
+Two long-lived branches, and which one a commit is on decides whether it can
+ship.
+
+- **`main`** is the conduit. Every session and every machine pushes and pulls
+  here, so it carries work in progress by design. **Nothing ships from it.**
+- **`release`** is the train. Its head is the last thing released.
+
+**A proper release is a MERGE (or a cherry-pick) of `main` into `release`,
+followed by a TAG on `release`.** Never a tag on `main`. A git tag points at a
+commit rather than at a branch, so tagging `main` would ship whatever tree
+happened to be under it — including another session's work in progress.
+
+```sh
+git checkout release
+git merge --ff-only main      # or: git cherry-pick <sha>… for a subset
+git push origin release
+git tag "v$(cat VERSION)"     # the tag goes on release
+git push origin "v$(cat VERSION)"
+git checkout main
+```
+
+Prefer `--ff-only`: `release` must never hold a commit that is not on `main`,
+or "what shipped" stops being a prefix of "what we have". Cherry-pick is the
+escape hatch when only part of `main` should ship; the two then diverge on
+purpose and the next merge has to reconcile them.
+
+This is enforced, not merely documented. The `guard` job in
+`.github/workflows/release.yml` runs before anything is built and refuses a
+`v*` tag whose commit is not contained in `release`, and refuses a production
+run launched from any other branch. A dry-run is allowed from anywhere because
+it publishes nothing. The full runbook, including re-cutting a failed version,
+is `RELEASING.md`.
