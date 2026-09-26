@@ -545,10 +545,11 @@ endpoint serves hosted-UI tokens only.
 
 ---
 
-## 15. Proposed amendments (pending approval)
+## 15. Amendments (approved)
 
-Each item names the section it changes. Nothing here is in force until
-Julian approves it.
+Each item names the section it changes. Approved in full by Julian on
+2026-09-26 ("We're agreed on everything"), after 15.2, 15.3, 15.4, 15.14,
+15.17 and 15.18 were approved individually on 2026-09-25.
 
 - **15.1 (§2.2) Four concerns, not three.** `UserPool` is the
   administrative plane and stays as shipped. `Authenticator` is the public
@@ -688,5 +689,4 @@ Julian approves it.
     channel. Decided 2026-09-25 after Julian asked about TOTP-only.
 - **15.14 status:** approved 2026-09-25 (no objection after the passwordless
   discussion, where username enumeration matters more).
-- **15.11 status:** working assumption from 2026-09-25, pending an explicit
-  yes. It changes only how adapters spell attribute names.
+- **15.11 status:** approved 2026-09-26.
