@@ -474,13 +474,33 @@ static int64_t cajeta_xpu_host_available_bytes(void) {
     ms.dwLength = sizeof(ms);
     if (!GlobalMemoryStatusEx(&ms)) return 0;
     return (int64_t) ms.ullAvailPhys;
-#elif defined(_SC_AVPHYS_PAGES)
+#else
+    /* AVAILABLE, not FREE. Linux reports free pages net of the page cache,
+     * and on a box whose cache holds 30 GB the free figure sits far under
+     * what an allocation would actually get; MemAvailable is the kernel's
+     * own estimate of what can be handed out without swapping, cache
+     * included. A residency budget read against the free figure refused a
+     * 1 MiB widen with 55 GB available (2026-09-25). sysconf is the
+     * fallback where procfs is absent. */
+    FILE* mi = fopen("/proc/meminfo", "r");
+    if (mi) {
+        char line[256];
+        long long kb = -1;
+        while (fgets(line, sizeof line, mi)) {
+            if (sscanf(line, "MemAvailable: %lld kB", &kb) == 1) break;
+            kb = -1;
+        }
+        fclose(mi);
+        if (kb > 0) return (int64_t) kb * 1024;
+    }
+#if defined(_SC_AVPHYS_PAGES)
     long pages = sysconf(_SC_AVPHYS_PAGES);
     long psize = sysconf(_SC_PAGE_SIZE);
     if (pages <= 0 || psize <= 0) return 0;
     return (int64_t) pages * (int64_t) psize;
 #else
     return 0;
+#endif
 #endif
 }
 

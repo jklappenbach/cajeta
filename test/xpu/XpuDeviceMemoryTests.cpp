@@ -165,13 +165,24 @@ int64_t hostAvailableRam() {
     ms.dwLength = sizeof(ms);
     if (!GlobalMemoryStatusEx(&ms)) return 0;
     return (int64_t) ms.ullAvailPhys;
-#elif defined(_SC_AVPHYS_PAGES)
+#else
+    // MemAvailable, the figure the runtime's CPU arm reads: what the kernel
+    // can hand out without swapping, page cache included.
+    std::ifstream mi("/proc/meminfo");
+    std::string line;
+    while (std::getline(mi, line)) {
+        long long kb = 0;
+        if (std::sscanf(line.c_str(), "MemAvailable: %lld kB", &kb) == 1 && kb > 0)
+            return (int64_t) kb * 1024;
+    }
+#if defined(_SC_AVPHYS_PAGES)
     long pages = sysconf(_SC_AVPHYS_PAGES);
     long psize = sysconf(_SC_PAGE_SIZE);
     if (pages <= 0 || psize <= 0) return 0;
     return (int64_t) pages * (int64_t) psize;
 #else
     return 0;
+#endif
 #endif
 }
 
