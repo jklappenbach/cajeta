@@ -819,6 +819,8 @@ namespace cajeta {
                         && !flagCls->isValueType()
                         && !flagCls->isSharedCapableValue()) {
                     initTitleFlag = ownership::titleFlag(initShape, module);
+                } else if (dynamic_pointer_cast<CajetaFunctionType>(type)) {
+                    initTitleFlag = ownership::titleFlag(initShape, module);
                 }
             }
 
@@ -1367,7 +1369,19 @@ namespace cajeta {
                 llvm::Value* clFlag = nullptr;
                 if (initShape.leaf) {
                     ExprKind ck = initShape.leaf->kind();
-                    closureIsBorrow = ck == ExprKind::Identifier || ck == ExprKind::Dot;
+                    closureIsBorrow = ck == ExprKind::Identifier || ck == ExprKind::Dot
+                        || initShape.family == ownership::TitleFamily::ElementRead;
+                    if (initShape.family == ownership::TitleFamily::CallResult) {
+                        if (initVerdict.answer == ownership::TitleAnswer::Borrow) {
+                            closureIsBorrow = true;
+                        } else if (initIsFlaggedCall && initTitleFlag) {
+                            clFlag = initTitleFlag;
+                            if (auto* c0 = llvm::dyn_cast<llvm::ConstantInt>(clFlag)) {
+                                if (c0->isZero()) closureIsBorrow = true;
+                                clFlag = nullptr;
+                            }
+                        }
+                    }
                     if (initShape.family == ownership::TitleFamily::Move
                             && initShape.answer != ownership::TitleAnswer::Owned) {
                         clFlag = ownership::titleFlag(initShape, module);
