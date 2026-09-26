@@ -88,10 +88,36 @@ namespace cajeta {
         if (kernelName.empty()) {
             throw Exception("launch receiver is not a kernel name", "XPU-N02");
         }
+        {
+            // The receiver must be a @Kernel of the launching class (XPU-N02): a
+            // name nothing declares used to lower to a runtime refusal with no
+            // diagnostic at compile time.
+            bool declared = false;
+            auto& sstack = module->getStructureStack();
+            CajetaClassPtr launcher = sstack.empty() ? nullptr : sstack.back();
+            if (launcher) {
+                for (auto& [mkey, m] : launcher->getMethods()) {
+                    if (m && m->getName() == kernelName && m->findAnnotation("Kernel")) {
+                        declared = true;
+                        break;
+                    }
+                }
+            }
+            if (!declared) {
+                throw Exception("launch receiver '" + kernelName
+                    + "' is not a @Kernel method of "
+                    + (launcher && launcher->getQName() ? launcher->getQName()->toCanonical() : std::string("the launching class")),
+                    "XPU-N02");
+            }
+        }
 
         auto lowerOne = [&](const ExpressionPtr& e) -> llvm::Value* {
             llvm::Value* v = e->generateCode(module);
             v = loadIfLValue(module, v, e);
+            if (!v) {
+                throw Exception("launch dimension did not lower to a value; it names "
+                    "an unknown or non-addressable property", "CAJETA_ERROR_ARG_INVALID");
+            }
             if (v->getType() != i32Ty) {
                 v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/false);
             }
@@ -171,6 +197,11 @@ namespace cajeta {
             ExpressionPtr argExpr = args[i].expression;
             llvm::Value* v = argExpr->generateCode(module);
             v = loadIfLValue(module, v, argExpr);
+            if (!v) {
+                throw Exception("launch argument " + std::to_string(i + 1)
+                    + " did not lower to a value; it names an unknown or "
+                    "non-addressable property", "CAJETA_ERROR_ARG_INVALID");
+            }
 
             if (!argExpr->getResolvedType()) argExpr->resolveTypes(module);
             auto klass = std::dynamic_pointer_cast<CajetaClass>(
