@@ -4,13 +4,39 @@ Cajeta versions are bumped manually. Releases are produced by
 `.github/workflows/release.yml`, which cross-builds the compiler binary
 for every supported target and uploads the artifacts.
 
+## Two branches, one purpose each
+
+Since 2026-09-26 the repository carries two long-lived branches, and which
+one you are on decides whether anything can ship.
+
+| Branch | What it is | Ships? |
+|---|---|---|
+| `main` | The conduit. Every session and every machine pushes and pulls here, so it carries work in progress by design. | Never |
+| `release` | The train. Fast-forwarded from `main` when a release is cut, and tagged there. Its head is the last thing released. | Yes, and only from here |
+
+A git tag points at a commit, not at a branch, so `git push origin v0.31.0`
+would otherwise ship whatever tree happened to be under it. The `guard` job
+in `release.yml` closes that: it runs before anything is built and refuses a
+tag whose commit is not contained in `release`, naming the commit and
+printing the three commands that fix it. A production run from the Actions
+UI is refused unless it was launched from `release`. One ubuntu minute, not
+a full cross-platform matrix.
+
+Reading "what is in production" is therefore a branch you can check out
+rather than a tag you have to go find:
+
+```sh
+git log --oneline -1 origin/release     # exactly what shipped last
+git log --oneline origin/release..origin/main   # everything waiting to ship
+```
+
 The workflow has two triggers and two operating modes:
 
 | Trigger | Mode | Tag created? | Release published? | Use for |
 |---|---|---|---|---|
-| Push `v*` tag | (always production) | yes (the pushed tag) | yes, "latest" | Normal release cuts driven from a local `git tag` |
-| Actions UI → Run workflow → `dry-run` | dry-run | **no** | **no** | Verify the matrix without burning a version |
-| Actions UI → Run workflow → `production` | production | `v<version>` | yes, "latest" | Cut a real release from the UI instead of `git tag` |
+| Push `v*` tag **on `release`** | (always production) | yes (the pushed tag) | yes, "latest" | Normal release cuts driven from a local `git tag` |
+| Actions UI → Run workflow → `dry-run` | dry-run | **no** | **no** | Verify the matrix without burning a version. Allowed from ANY branch — it publishes nothing |
+| Actions UI → Run workflow → `production`, from `release` | production | `v<version>` | yes, "latest" | Cut a real release from the UI instead of `git tag` |
 
 **Pre-releases** are handled via semver: push a tag with a `-` suffix
 (`v0.2.0-rc1`, `v0.2.0-beta1`) and `softprops/action-gh-release` auto-
@@ -41,7 +67,7 @@ it back.
 The "don't burn version numbers on broken builds" flow:
 
 ```sh
-# 1. Bump VERSION. Be specific about which level moved.
+# 1. Bump VERSION on main. Be specific about which level moved.
 $EDITOR VERSION
 git add VERSION
 git commit -m "release: prepare v$(cat VERSION)"
@@ -56,10 +82,20 @@ git push origin main
 ```
 
 ```sh
-# 3. Once dry-run is green on every target, cut the real tag.
-git tag "v$(cat VERSION)"
+# 3. Once dry-run is green on every target, move the train, THEN tag it.
+#    The fast-forward is what makes the tag releasable: a tag on a
+#    main-only commit is refused by the guard before anything builds.
+git checkout release
+git merge --ff-only main          # refuses if main rewrote history
+git push origin release
+git tag "v$(cat VERSION)"         # tagging release, not main
 git push origin "v$(cat VERSION)"
+git checkout main
 ```
+
+`--ff-only` is deliberate. `release` must never carry a commit that is not
+on `main`, or the two diverge and "what shipped" stops being a prefix of
+"what we have". If it refuses, the fix is on `main`, not here.
 
 Once the tag lands, watch the workflow at
 `https://github.com/jklappenbach/cajeta/actions`. The build jobs run in
@@ -73,9 +109,10 @@ partial one. A failed cut therefore costs no version number: fix forward
 and re-cut the same tag. See "When a tagged build fails for one target".
 
 If you'd rather cut releases entirely from the UI (no local `git tag`):
-bump VERSION + push to main, then Actions → release → Run workflow →
-mode = production → Run. The workflow creates the tag itself at the
-end.
+bump VERSION on `main`, fast-forward and push `release` as in step 3, then
+Actions → release → Run workflow → **Use workflow from: `release`** →
+mode = production → Run. The workflow creates the tag itself at the end.
+Launching it from `main` is refused by the guard.
 
 For early-access / pre-release binaries that shouldn't show as "latest"
 on the repo page: tag with a semver pre-release suffix like
@@ -128,11 +165,14 @@ Safe because there is no Release, no assets, and nothing to have been
 downloaded. Push the fixes to main first, then move the tag:
 
 ```sh
-git push origin main                        # fixes must be on main first
+git push origin main                        # fixes land on main first
+git checkout release && git merge --ff-only main
+git push origin release                     # then the train moves
 git tag -d "v$(cat VERSION)"
 git push origin ":refs/tags/v$(cat VERSION)"
-git tag "v$(cat VERSION)"                   # from the fixed HEAD
+git tag "v$(cat VERSION)"                   # from the fixed release HEAD
 git push origin "v$(cat VERSION)"
+git checkout main
 ```
 
 Before re-pushing, prefer a **dry-run scoped to the targets that failed**
@@ -161,7 +201,10 @@ Release stays as the record.
 Only the tag-triggered workflows build macOS and Windows; there is no CI
 on pushes to `main`. Everything merged between two releases is therefore
 Linux-only in practice, and a release cut is the first time those targets
-see the accumulated diff. Symptoms cluster in a few families:
+see the accumulated diff. The dry-run is the cheap answer and the branch
+split makes it cheaper: a dry-run is allowed from ANY branch because it
+publishes nothing, so the accumulated diff can be built on every target
+from `main` before `release` is ever moved. Symptoms cluster in a few families:
 
 - **libstdc++-only headers/extensions** on macOS (libc++), e.g.
   `<ext/stdio_filebuf.h>` / `__gnu_cxx::*`. A bare `#ifndef _WIN32` guard

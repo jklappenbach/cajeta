@@ -1,7 +1,23 @@
-# Release workflow. Triggered when a tag matching v* lands on origin.
-# Cross-builds the cajeta compiler for every supported target, then
-# attaches the artifacts to the matching GitHub Release. The full flow
-# and supported targets are documented in RELEASING.md.
+# Release workflow. Triggered when a tag matching v* lands on origin AND
+# that tag is on the `release` branch. Cross-builds the cajeta compiler for
+# every supported target, then attaches the artifacts to the matching GitHub
+# Release. The full flow and supported targets are documented in RELEASING.md.
+#
+# TWO BRANCHES, ONE PURPOSE EACH (2026-09-26):
+#
+#   main     the conduit. Every session and every machine pushes and pulls
+#            here, so it carries work in progress by design. NOTHING ships
+#            from it: a `v*` tag placed on a main-only commit is REFUSED by
+#            the guard job below, by name, before a single target builds.
+#
+#   release  the train. Fast-forwarded from `main` when a release is cut, and
+#            tagged there. Its head is therefore the last thing released, so
+#            "what is in production" is a branch you can read rather than a
+#            tag you have to find.
+#
+# The guard is what makes the split real. Tags in git point at commits, not
+# at branches, so without it `git push origin v0.31.0` from any machine with
+# any tree would have shipped whatever that tree happened to contain.
 #
 # Non-trivial parts called out in inline comments:
 #   - macOS jobs install LLVM via Homebrew and pass LLVM_DIR explicitly
@@ -77,6 +93,72 @@ env:
   GIT_LFS_SKIP_SMUDGE: 1
 
 jobs:
+  # The release-branch guard. Runs before anything is built and every other
+  # entry job waits on it, so a tag on the wrong branch costs one ubuntu
+  # minute rather than a full cross-platform matrix.
+  #
+  # A tag push must name a commit CONTAINED IN `release`. A production
+  # dispatch must be launched from `release` itself. A dry-run dispatch is
+  # allowed from anywhere on purpose: verifying the matrix on a work branch
+  # is the whole point of dry-run, and it publishes nothing.
+  guard:
+    name: release branch guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: The tag must be on the release branch
+        env:
+          EVENT: ${{ github.event_name }}
+          MODE: ${{ github.event.inputs.mode }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          BRANCH=release
+
+          if [ "$EVENT" = "workflow_dispatch" ] && [ "$MODE" != "production" ]; then
+            echo "::notice::dry-run dispatch from '$REF_NAME' — publishes nothing, guard not applied"
+            exit 0
+          fi
+
+          if ! git fetch --no-tags origin \
+                 "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null; then
+            echo "::error::there is no '$BRANCH' branch on origin. Releases are cut" \
+                 "from it and only from it: create it with" \
+                 "'git branch $BRANCH <released-commit> && git push origin $BRANCH'." \
+                 "See RELEASING.md."
+            exit 1
+          fi
+
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            # Production dispatch: the ref it was launched from IS the release.
+            if [ "$REF_NAME" != "$BRANCH" ]; then
+              echo "::error::a production release must be launched from the" \
+                   "'$BRANCH' branch, not '$REF_NAME'. Re-run it with" \
+                   "'Use workflow from' set to '$BRANCH'. See RELEASING.md."
+              exit 1
+            fi
+            echo "::notice::production dispatch from '$BRANCH' — guard satisfied"
+            exit 0
+          fi
+
+          # Tag push: the tagged commit must be on the release branch.
+          if ! git merge-base --is-ancestor "$SHA" "origin/$BRANCH"; then
+            echo "::error::tag '$REF_NAME' points at $SHA, which is NOT on" \
+                 "'$BRANCH'. Nothing ships from a tag that is only on main:" \
+                 "main is the conduit, '$BRANCH' is the train. Fast-forward" \
+                 "'$BRANCH' to the commit you mean to release, push it, then" \
+                 "move the tag. See RELEASING.md."
+            echo "::error::  git checkout $BRANCH && git merge --ff-only main"
+            echo "::error::  git push origin $BRANCH"
+            echo "::error::  git tag -f $REF_NAME && git push -f origin $REF_NAME"
+            exit 1
+          fi
+          echo "::notice::tag '$REF_NAME' is on '$BRANCH' — guard satisfied"
+
   # Resolve the build matrix. The canonical full target list lives here as
   # JSON; on a tag push or a production dispatch it is used whole, so a real
   # release always builds every target. On a DRY-RUN dispatch the `targets`
@@ -88,6 +170,7 @@ jobs:
   # defaults.run.shell below).
   setup:
     name: resolve matrix
+    needs: guard
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.f.outputs.matrix }}
@@ -125,6 +208,7 @@ jobs:
   # distribution form. Built before the matrix via `needs: plugin`.
   plugin:
     name: build IDE plugin
+    needs: guard
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
