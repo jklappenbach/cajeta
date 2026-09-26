@@ -1244,7 +1244,12 @@ jobs:
           cmake -S tools/cvm/packaging -B build/cvm-pkg \
                 -DCVM_BINARY="$CVM" -DCVM_PACKAGE_VERSION="$V"
           for g in $gens; do
-            ( cd build/cvm-pkg && cpack -G "$g" )
+            if ! ( cd build/cvm-pkg && cpack -G "$g" ); then
+              echo "::group::ids CPack generated for $g"
+              grep -rhoE 'Id="CM_[A-Z]{2}_[^"]*"' build/cvm-pkg/_CPack_Packages 2>/dev/null | sort -u | head -40 || true
+              echo "::endgroup::"
+              exit 1
+            fi
           done
 
           # Stage beside the bare binary so the packages ride the same artifact

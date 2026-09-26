@@ -66,13 +66,11 @@ set(CPACK_PACKAGE_INSTALL_DIRECTORY "Cajeta")
 set(CPACK_PACKAGE_CHECKSUM SHA256)
 set(CPACK_STRIP_FILES OFF)   # already built as the release wants it
 
-# /usr, so bin lands on the default PATH. The default CPack prefix for an
-# archive-ish generator is not on PATH, and an installer whose payload is not
-# reachable has not installed anything as far as the reader is concerned.
-set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
-
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CPACK_GENERATOR "DEB;RPM")
+    # /usr, so bin lands on the default PATH. WiX takes no prefix: it installs
+    # under Program Files, and a prefix there would enter the component ids.
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
 elseif(APPLE)
     set(CPACK_GENERATOR "productbuild")
     # /usr is not writable on a sealed system volume, and /usr/local/bin is on
