@@ -23,11 +23,12 @@
 // uniformLoopWaveKernelsStillWiden is here to catch.
 //
 // SCOPE. Only the cpu VECTOR-TYPE cause is addressed here. The other, larger
-// cause is a loop whose exit condition depends on the work-item id (the
-// lane-strided `for (e = lane; e < N; e += waveWidth)` idiom), which keeps
-// the work-item loop from being innermost at all. That one needs a fission
-// transform, is tracked under xpu-kernel-adaptor 4.2.1, and
-// aLaneStridedLoopWaveKernelIsStillRefused pins that it is still refused.
+// cause was a loop whose exit condition depends on the work-item id (the
+// lane-strided `for (e = lane; e < N; e += waveWidth)` idiom), which kept
+// the work-item loop from being innermost at all. Fission step 4b now
+// scaffolds such a loop with the work-item predicated (xpu-kernel-adaptor
+// 4.2.1.1, XpuCpuFissionUniformizeTests); aLaneStridedLoopWaveKernelWidens
+// pins that the two fixes compose.
 //
 // Every assertion checks the VALUE as well as the registration: a kernel that
 // registered but ran the wave op at width 1 returns the single work-item's own
@@ -432,26 +433,29 @@ TEST(XpuCpuVectorScalarize, uniformLoopWaveKernelsStillWiden) {
            "6 hInt64Iv)";
 }
 
-// ---- (d) the gate must still FIRE -------------------------------------- //
+// ---- (d) the OTHER cause, now lowered ---------------------------------- //
 //
-// A check with no firing test reads clean when it is disabled. This kernel
-// carries the OTHER cause: a loop whose exit condition depends on the work-item
-// id (`e = lane; while (e < n) { ... e = e + 32; }`). Fission cannot make that
-// loop workgroup-uniform scaffold, so it stays inside the work-item region and
-// the work-item loop is not innermost, which LoopVectorize will not widen.
-// Scalarizing the vector values does not change that, and must not: the wave
-// reduce would run at width 1 and answer this work-item's own number.
-//
-// TRACKED: xpu-kernel-adaptor 4.2.1 — when fission learns to uniformize a
-// per-work-item trip count this kernel starts registering and this test flips
-// to an equality on 32*W.
-const char* kLaneStridedRefusedSrc = R"CJ(
+// This kernel carries cause A: a loop whose exit condition depends on the
+// work-item id (`e = lane; while (e < n) { ... e = e + 32; }`). Until
+// 2026-09-26 fission could not make that loop workgroup-uniform scaffold, so
+// it stayed inside the work-item region, the work-item loop was not
+// innermost, LoopVectorize would not widen it, and this test pinned the
+// REFUSAL. Fission step 4b now scaffolds such a loop with the work-item
+// predicated (xpu-kernel-adaptor 4.2.1.1, XpuCpuFissionUniformizeTests), so
+// the kernel registers and this test pins the VALUE: n = 32 rows of four
+// ones, one trip per lane, 4.0 per lane, the wave sums W of them.
+const char* kLaneStridedSrc = R"CJ(
 package test;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
 import cajeta.xpu.Wave;
 public class M {
+    @Kernel
+    public static void widthk(KernelBuffer<uint32> out) {
+        uint32 t = KernelThread.globalIdX();
+        out[t] = Wave.width();
+    }
     @Kernel
     public static void lk(KernelBuffer<float32> out, KernelBuffer<float32> in,
                           uint32 n) {
@@ -487,19 +491,28 @@ public class M {
         }
         bout.download(hout);
         if (hout[0] == -1.0f) { return -1; }
+        uint32[] hw = heap uint32[n];
+        KernelBuffer<uint32> bw = heap KernelBuffer<uint32>(n);
+        widthk.launch(s, grid: [1], block: [64])(bw);
+        s.sync();
+        bw.download(hw);
+        float32 want = 4.0f * (float32) hw[0];
+        i = 0;
+        while (i < n) {
+            if (hout[i] != want) { return 100 + (int32) i; }
+            i = i + 1;
+        }
         return 0;
     }
 }
 )CJ";
 
-TEST(XpuCpuVectorScalarize, aLaneStridedLoopWaveKernelIsStillRefused) {
+TEST(XpuCpuVectorScalarize, aLaneStridedLoopWaveKernelWidens) {
     unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
-    const int r = runOnCpu(kLaneStridedRefusedSrc);
-    EXPECT_EQ(r, -1)
-        << "a wave kernel whose loop trip count depends on the work-item id was "
-           "REGISTERED (r=" << r
-        << "); scalarizing vector values must not fool the left-scalar gate, "
-           "because that loop still leaves the work-item loop non-innermost";
+    const int r = runOnCpu(kLaneStridedSrc);
+    EXPECT_EQ(r, 0)
+        << "a wave kernel whose loop trip count depends on the work-item id "
+           "(r=" << r << "; -1 refused, 100+i wrong at lane i)";
 }
 
 }  // namespace
