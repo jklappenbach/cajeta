@@ -43,9 +43,12 @@ endif()
 # The COMPONENT is named rather than left Unspecified because CPack derives the
 # WiX component id from it plus the install path, and wix/path-patch.xml has to
 # name that id to attach the PATH entry to it.
+# LANGUAGES NONE leaves CMAKE_EXECUTABLE_SUFFIX empty, so the suffix comes from
+# the binary itself: .exe on Windows, none elsewhere.
+get_filename_component(CVM_EXE_SUFFIX "${CVM_BINARY}" LAST_EXT)
 install(PROGRAMS "${CVM_BINARY}"
         DESTINATION bin
-        RENAME "cvm${CMAKE_EXECUTABLE_SUFFIX}"
+        RENAME "cvm${CVM_EXE_SUFFIX}"
         COMPONENT cvm)
 set(CPACK_COMPONENTS_ALL cvm)
 
