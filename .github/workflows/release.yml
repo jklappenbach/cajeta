@@ -1120,7 +1120,6 @@ jobs:
       # is why each generator is gated on its own binary rather than on cpack's
       # exit code.
       - name: Package cvm (native installer)
-        shell: bash
         run: |
           set -euo pipefail
           T="${{ matrix.target }}"
