@@ -2333,6 +2333,36 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // The inline {data, vtable, kind} body type of an interface-typed slot, or null
+    // when `t` is not an interface.
+    static llvm::StructType* interfaceBodyType(const CajetaTypePtr& t) {
+        auto ifCls = dynamic_pointer_cast<CajetaClass>(t);
+        if (!ifCls || !ifCls->isInterface() || dynamic_pointer_cast<CajetaView>(t)) {
+            return nullptr;
+        }
+        auto* fatTy = llvm::dyn_cast_or_null<llvm::StructType>(ifCls->getLlvmType());
+        if (!fatTy || fatTy->isOpaque() || fatTy->getNumElements() != 3) return nullptr;
+        return fatTy;
+    }
+
+    // Takes an interface value out of the body at `slot`: copies it to a fresh temporary,
+    // decays the slot's kind tag to borrowed, and reports the moved title in `flagOut`.
+    static llvm::Value* takeInterfaceSlot(const CajetaModulePtr& module, llvm::Value* slot,
+                                          llvm::StructType* fatTy, llvm::Value*& flagOut) {
+        auto* b = module->getBuilder();
+        llvm::Type* i64Ty = b->getInt64Ty();
+        llvm::Value* fat = b->CreateLoad(fatTy, slot, "iface_take_val");
+        llvm::Value* kind = b->CreateExtractValue(fat, {2}, "iface_take_kind");
+        b->CreateStore(llvm::ConstantInt::get(i64Ty, IFACE_KIND_BORROWED_CLASS),
+                       b->CreateStructGEP(fatTy, slot, 2, "iface_take_kind_addr"));
+        llvm::AllocaInst* tmp = module->createEntryAlloca(fatTy, "iface_take");
+        b->CreateStore(fat, tmp);
+        flagOut = b->CreateZExt(
+            b->CreateICmpEQ(kind, llvm::ConstantInt::get(i64Ty, IFACE_KIND_OWNED_CLASS)),
+            i64Ty, "iface_take_title");
+        return tmp;
+    }
+
     // Emits `#expr`: a take protocol chosen by the source's kind (element, member,
     // static, identifier, call result), then ONE classification taken after codegen,
     // leaving runtimeTitleFlag holding the mode the consuming store or return records.
@@ -2571,6 +2601,14 @@ bool cajetaRhsCarriesRedundantSharp(
                     }
                 }
             }
+            if (xProp && xDecl) {
+                if (llvm::StructType* fatTy = interfaceBodyType(xProp->getType())) {
+                    llvm::Value* slot = dotInner->generateCode(module);
+                    resolvedType = xProp->getType();
+                    if (!slot || !slot->getType()->isPointerTy()) return slot;
+                    return takeInterfaceSlot(module, slot, fatTy, runtimeTitleFlag);
+                }
+            }
         }
         llvm::Value* value = inner ? inner->generateCode(module) : nullptr;
         ownership::TitleShape mvShape = inner
@@ -2624,6 +2662,13 @@ bool cajetaRhsCarriesRedundantSharp(
         bool slotTaken = false;
         if (inner && inner->kind() == ExprKind::ArrayIndex) {
             auto aixInner = std::static_pointer_cast<ArrayIndexExpression>(inner);
+            if (!aixInner->getResolvedType()) aixInner->resolveTypes(module);
+            if (llvm::StructType* fatTy = interfaceBodyType(aixInner->getResolvedType())) {
+                if (value && value->getType()->isPointerTy()) {
+                    resolvedType = aixInner->getResolvedType();
+                    return takeInterfaceSlot(module, value, fatTy, runtimeTitleFlag);
+                }
+            }
             if (value && value->getType()->isPointerTy()
                     && !aixInner->getChildren().empty()) {
                 if (auto idBase = dynamic_pointer_cast<IdentifierExpression>(
