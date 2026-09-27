@@ -217,7 +217,12 @@ namespace cajeta {
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::Type* bodyTy = ifaceClass->getLlvmType();
 
-        CajetaTypePtr rhsType = rhsAst ? rhsAst->getResolvedType() : nullptr;
+        ExpressionPtr typeAst = rhsAst;
+        while (typeAst && typeAst->kind() == ExprKind::Move && !typeAst->getChildren().empty()) {
+            typeAst = std::dynamic_pointer_cast<Expression>(typeAst->getChildren()[0]);
+        }
+        if (typeAst && !typeAst->getResolvedType()) typeAst->resolveTypes(module);
+        CajetaTypePtr rhsType = typeAst ? typeAst->getResolvedType() : nullptr;
         auto rhsClass = std::dynamic_pointer_cast<CajetaClass>(rhsType);
         bool rhsIsInterface = rhsClass && rhsClass->isInterface();
 
