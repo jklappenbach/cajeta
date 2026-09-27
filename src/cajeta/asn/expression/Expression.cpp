@@ -1163,8 +1163,8 @@ bool cajetaRhsCarriesRedundantSharp(
                         i8Ty, dataBase, absOff, "earr_elem");
                     if (elemView) {
                         resolvedType = elemView;
-                        llvm::AllocaInst* slot2 = builder->CreateAlloca(
-                            llvm::PointerType::get(ctx, 0), nullptr,
+                        llvm::AllocaInst* slot2 = module->createEntryAlloca(
+                            llvm::PointerType::get(ctx, 0),
                             "earr.slot");
                         builder->CreateStore(tblElemPtr, slot2);
                         return slot2;
@@ -1184,8 +1184,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     llvm::Value* str2 = wrapCStringIntoClassString(module,
                         builder->CreateCall(toOwned2, {sData2, sLen2}),
                         "earr_str");
-                    llvm::AllocaInst* sSlot2 = builder->CreateAlloca(
-                        llvm::PointerType::get(ctx, 0), nullptr,
+                    llvm::AllocaInst* sSlot2 = module->createEntryAlloca(
+                        llvm::PointerType::get(ctx, 0),
                         "earr.str.slot");
                     builder->CreateStore(str2, sSlot2);
                     return sSlot2;
@@ -1244,8 +1244,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     i8Ty, prefixPtr, elemOff, "earr_elem");
                 if (elemView) {
                     resolvedType = elemView;
-                    llvm::AllocaInst* slot = builder->CreateAlloca(
-                        llvm::PointerType::get(ctx, 0), nullptr, "earr.slot");
+                    llvm::AllocaInst* slot = module->createEntryAlloca(
+                        llvm::PointerType::get(ctx, 0), "earr.slot");
                     builder->CreateStore(elemPtr, slot);
                     return slot;
                 }
@@ -1263,8 +1263,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 llvm::Value* cstr = builder->CreateCall(toOwned, {sData, sLen});
                 llvm::Value* str = wrapCStringIntoClassString(
                     module, cstr, "earr_str");
-                llvm::AllocaInst* sSlot = builder->CreateAlloca(
-                    llvm::PointerType::get(ctx, 0), nullptr, "earr.str.slot");
+                llvm::AllocaInst* sSlot = module->createEntryAlloca(
+                    llvm::PointerType::get(ctx, 0), "earr.str.slot");
                 builder->CreateStore(str, sSlot);
                 return sSlot;
             }
@@ -1336,8 +1336,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     if (!callResult) return nullptr;
                     // Wrap the call result in an alloca: consumers expect the native path's `load
                     // from this address` shape, and a load off a raw value is rejected by verify.
-                    llvm::AllocaInst* slot = builder->CreateAlloca(
-                        callResult->getType(), nullptr, "opidx.slot");
+                    llvm::AllocaInst* slot = module->createEntryAlloca(
+                        callResult->getType(), "opidx.slot");
                     builder->CreateStore(callResult, slot);
                     return slot;
                 }
@@ -1939,14 +1939,14 @@ bool cajetaRhsCarriesRedundantSharp(
                 llvm::Type* dstBody = dstClass->getLlvmType();
                 llvm::Value* srcAddr = raw;
                 if (!srcAddr->getType()->isPointerTy()) {
-                    llvm::Value* tmp = builder->CreateAlloca(srcAddr->getType());
+                    llvm::Value* tmp = module->createEntryAlloca(srcAddr->getType());
                     builder->CreateStore(srcAddr, tmp);
                     srcAddr = tmp;
                 }
                 const llvm::DataLayout& dl =
                     module->getLlvmModule()->getDataLayout();
-                llvm::Value* slice = builder->CreateAlloca(
-                    dstBody, nullptr, "slice");
+                llvm::Value* slice = module->createEntryAlloca(
+                    dstBody, "slice");
                 llvm::Align align(dl.getABITypeAlign(dstBody));
                 builder->CreateMemCpy(slice, align, srcAddr, align,
                     llvm::ConstantInt::get(
