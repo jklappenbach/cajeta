@@ -974,6 +974,10 @@ namespace cajeta {
         // Read the thrown value BEFORE popping: the helper reads the topmost
         // frame, and the pop unwinds it.
         llvm::Value* thrownValPtr = builder->CreateCall(getThrown, {});
+        llvm::Function* getThrownTitle = module->getRuntimeFunction("__cajeta_get_thrown_title");
+        llvm::Value* thrownTitle = getThrownTitle
+            ? (llvm::Value*) builder->CreateCall(getThrownTitle, {})
+            : (llvm::Value*) llvm::ConstantInt::get(i64Ty, 0);
         builder->CreateCall(pop, {});
         // This frame is popped first, so unwinding the body's open scopes here
         // joins their children, and a re-raise targets the OUTER frame.
@@ -986,6 +990,15 @@ namespace cajeta {
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::Function* excMatches = module->getRuntimeFunction("__cajeta_exc_matches");
         llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
+        llvm::Function* throwTitled = module->getRuntimeFunction("__cajeta_throw_titled");
+        auto rethrow = [&](llvm::Value* v, llvm::Value* t) {
+            if (throwTitled) {
+                builder->CreateCall(throwTitled, {v, t});
+            } else {
+                builder->CreateCall(throwFn, {v});
+            }
+        };
+        Method* clauseMethod = module->getCurrentMethod().get();
 
         // Binds the thrown value to a clause's catch variable in the current scope.
         auto bindCatchVar = [&](const CatchClause& c) {
@@ -1011,6 +1024,28 @@ namespace cajeta {
                 auto field = make_shared<HeapField>(module, c.variableName, type);
                 field->setAllocation(llvm::cast<llvm::AllocaInst>(slot));
                 scope.peek()->putField(field);
+                auto catchCls = dynamic_pointer_cast<CajetaClass>(type);
+                bool debug = module->getFlags().sourceTags;
+                llvm::Function* pushFn = module->getRuntimeFunction(
+                    debug ? "__cajeta_drop_push_flag_debug" : "__cajeta_drop_push_flag");
+                llvm::Function* dropFn = module->getRuntimeFunction("__cajeta_class_virtual_drop");
+                if (clauseMethod && catchCls && !catchCls->isInterface() && !catchCls->isValueType()
+                        && catchCls->hasVtablePointerAtSlotZero() && pushFn && dropFn) {
+                    catchCls->patchVirtualTableDropFn();
+                    llvm::Value* entryPtr = entryBuilder.CreateAlloca(
+                        llvm::ArrayType::get(i8Ty, debug ? 40 : 32));
+                    if (debug) {
+                        llvm::Constant* fileConst =
+                            module->getOrCreateSourceFileConstant(module->getSourcePath());
+                        builder->CreateCall(pushFn, {entryPtr, thrownValPtr, dropFn, fileConst,
+                            llvm::ConstantInt::get(i32Ty, (uint64_t) getSourceLine()), thrownTitle});
+                    } else {
+                        builder->CreateCall(pushFn, {entryPtr, thrownValPtr, dropFn, thrownTitle});
+                    }
+                    field->setDropEntry(entryPtr);
+                    field->setRuntimeConditionalOwner(true);
+                    clauseMethod->registerDropEntry(entryPtr);
+                }
             }
         };
 
@@ -1020,6 +1055,9 @@ namespace cajeta {
         auto emitClauseBody = [&](const CatchClause& c) -> std::set<std::string> {
             if (!finallyBlock) {
                 if (c.body) c.body->generateCode(module);
+                if (clauseMethod && !builder->GetInsertBlock()->hasTerminator()) {
+                    clauseMethod->emitTopFrameDrops(module);
+                }
                 return daScope ? daScope->snapshotNotYetAssigned()
                                : std::set<std::string>();
             }
@@ -1043,16 +1081,20 @@ namespace cajeta {
             std::set<std::string> afterBodyNYA;
             if (daScope) afterBodyNYA = daScope->snapshotNotYetAssigned();
             if (!builder->GetInsertBlock()->hasTerminator()) {
+                if (clauseMethod) clauseMethod->emitTopFrameDrops(module);
                 builder->CreateCall(pop, {});
                 builder->CreateBr(afterBB);
             }
 
             builder->SetInsertPoint(catchLandBB);
             llvm::Value* thrown2 = builder->CreateCall(getThrown, {});
+            llvm::Value* title2 = getThrownTitle
+                ? (llvm::Value*) builder->CreateCall(getThrownTitle, {})
+                : (llvm::Value*) llvm::ConstantInt::get(i64Ty, 0);
             builder->CreateCall(pop, {});
             finallyBlock->generateCode(module);
             if (throwFn && !builder->GetInsertBlock()->hasTerminator()) {
-                builder->CreateCall(throwFn, {thrown2});
+                rethrow(thrown2, title2);
                 builder->CreateUnreachable();
             }
             if (daScope) daScope->restoreNotYetAssigned(afterBodyNYA);
@@ -1105,8 +1147,10 @@ namespace cajeta {
 
                 builder->SetInsertPoint(bindBB);
                 if (daScope) daScope->restoreNotYetAssigned(preTryNYA);
+                if (clauseMethod) clauseMethod->pushDropFrame();
                 bindCatchVar(c);
                 std::set<std::string> armNYA = emitClauseBody(c);
+                if (clauseMethod) clauseMethod->popDropFrame();
                 if (daScope) armNYAs.push_back(armNYA);
                 if (!builder->GetInsertBlock()->hasTerminator()) {
                     builder->CreateBr(afterBB);
@@ -1115,7 +1159,7 @@ namespace cajeta {
                 builder->SetInsertPoint(nextBB);
             }
             if (throwFn) {
-                builder->CreateCall(throwFn, {thrownValPtr});
+                rethrow(thrownValPtr, thrownTitle);
             }
             builder->CreateUnreachable();
         } else {
@@ -1123,7 +1167,7 @@ namespace cajeta {
             // this unwinding edge (the grammar guarantees one here) and re-raise.
             if (finallyBlock) finallyBlock->generateCode(module);
             if (throwFn && !builder->GetInsertBlock()->hasTerminator()) {
-                builder->CreateCall(throwFn, {thrownValPtr});
+                rethrow(thrownValPtr, thrownTitle);
                 builder->CreateUnreachable();
             } else if (!builder->GetInsertBlock()->hasTerminator()) {
                 builder->CreateBr(afterBB);
@@ -2639,10 +2683,28 @@ namespace cajeta {
             return nullptr;
         }
 
+        namespace own = cajeta::ownership;
+        llvm::Value* title = llvm::ConstantInt::get(i64Ty, 0);
+        bool titleDecided = false;
+        if (expression) {
+            if (!expression->getResolvedType()) expression->resolveTypes(module);
+            if (dynamic_pointer_cast<CajetaClass>(expression->getResolvedType())) {
+                own::TitleShape named = own::classify(expression, module);
+                if (named.family == own::TitleFamily::LocalRead && named.field
+                        && named.field->getDropEntry()) {
+                    own::TitleVerdict v = own::policy(named, own::ConsumerRole::ReturnOwned);
+                    if (llvm::Value* tf = own::verdictFlag(named, v, module)) title = tf;
+                    own::deactivateLocalEntry(module, named.field);
+                    titleDecided = true;
+                }
+            }
+        }
         llvm::Value* val = expression ? expression->generateCode(module)
                                        : llvm::ConstantPointerNull::get(ptrTy);
         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(val)) {
             val = builder->CreateLoad(a->getAllocatedType(), a);
+        } else if (val && expression) {
+            val = loadIfLValue(module, val, expression);
         }
         if (val && val->getType()->isIntegerTy()) {
             if (val->getType() != i64Ty) {
@@ -2655,7 +2717,27 @@ namespace cajeta {
             val = llvm::ConstantPointerNull::get(ptrTy);
         }
 
-        builder->CreateCall(throwFn, {val});
+        auto thrownCls = expression
+            ? dynamic_pointer_cast<CajetaClass>(expression->getResolvedType()) : nullptr;
+        if (thrownCls && expression && !titleDecided) {
+            own::TitleShape s = own::classify(expression, module);
+            if (s.answer == own::TitleAnswer::Owned) {
+                title = llvm::ConstantInt::get(i64Ty, 1);
+            } else if (s.answer == own::TitleAnswer::Runtime) {
+                if (llvm::Value* f = own::titleFlag(s, module)) {
+                    title = f->getType() == i64Ty ? f
+                        : builder->CreateZExtOrTrunc(f, i64Ty, "throw_title");
+                }
+            }
+        }
+        if (title->getType() != i64Ty) {
+            title = builder->CreateZExtOrTrunc(title, i64Ty, "throw_title");
+        }
+        if (llvm::Function* titled = module->getRuntimeFunction("__cajeta_throw_titled")) {
+            builder->CreateCall(titled, {val, title});
+        } else {
+            builder->CreateCall(throwFn, {val});
+        }
         builder->CreateUnreachable();
         llvm::BasicBlock* dead = llvm::BasicBlock::Create(ctx, "after_throw",
             builder->GetInsertBlock()->getParent());
