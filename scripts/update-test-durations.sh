@@ -27,8 +27,9 @@
 # that shard balance drifts. Check the result in.
 #
 # Rows are pruned to the tests the binary has, and MERGED rather than overwritten:
-# the seed sometimes holds a timing the local file lacks. Local wins where both
-# exist (in-process gtest ms is what the packer models).
+# the seed sometimes holds a timing the local file lacks. Where both exist the
+# larger wins, the same rule cajeta_tests.sh applies, so a refresh never shrinks
+# a budget a cold CI runner depends on.
 
 set -euo pipefail
 
@@ -77,7 +78,10 @@ if [ -x "$TEST_BIN" ]; then
                 n = split(l, f, "\t"); if (n >= 2) seedms[f[1]] = f[2]
             }
         }
-        $1 in alive { print $1 "\t" $2; have[$1] = 1 }
+        $1 in alive {
+            v = $2; if (($1 in seedms) && seedms[$1] + 0 > v + 0) v = seedms[$1]
+            print $1 "\t" v; have[$1] = 1
+        }
         END {
             for (t in seedms)
                 if ((t in alive) && !(t in have)) print t "\t" seedms[t]
