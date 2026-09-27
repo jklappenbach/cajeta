@@ -1109,6 +1109,15 @@ void foldWaveVariants(llvm::Function& f) {
                     llvm::raw_string_ostream vos(vmsg);
                     if (llvm::verifyFunction(*wrapper, &vos)) {
                         vos.flush();
+                        if (const char* dumpDir =
+                                std::getenv("CAJETA_XPU_CPU_DUMP_PREOPT")) {
+                            std::error_code ec;
+                            llvm::raw_fd_ostream os(
+                                std::string(dumpDir) + "/" +
+                                    wrapper->getName().str() + ".invalid.ll",
+                                ec);
+                            if (!ec) wrapper->print(os);
+                        }
                         reportUnloweredKernel(*method, entryName, "cpu",
                                               "barrier fission produced invalid IR: "
                                               + vmsg.substr(0, 300));

@@ -4,6 +4,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicsX86.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -174,6 +175,48 @@ bool lowerSmallVectorCasts(llvm::Function& f) {
     return changed;
 }
 
+// Rewrite x86 `vpdpbusd` (u8 x s8, four adjacent products into each i32 lane,
+// wrapping) as generic IR the Scalarizer can split. A target intrinsic with a
+// vector result survives scalarizing and refuses the work-item loop on a VNNI host.
+bool expandTargetIntDots(llvm::Function& f) {
+    llvm::SmallVector<llvm::CallInst*, 8> work;
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                switch (c->getIntrinsicID()) {
+                    case llvm::Intrinsic::x86_avx512_vpdpbusd_128:
+                    case llvm::Intrinsic::x86_avx512_vpdpbusd_256:
+                    case llvm::Intrinsic::x86_avx512_vpdpbusd_512:
+                        work.push_back(c);
+                        break;
+                    default:
+                        break;
+                }
+    for (llvm::CallInst* c : work) {
+        llvm::IRBuilder<> b(c);
+        llvm::Value* acc = c->getArgOperand(0);
+        auto* accTy = llvm::cast<llvm::FixedVectorType>(acc->getType());
+        const unsigned n = accTy->getNumElements();
+        auto* bytesTy = llvm::FixedVectorType::get(b.getInt8Ty(), n * 4);
+        auto* wideTy = llvm::FixedVectorType::get(b.getInt32Ty(), n * 4);
+        llvm::Value* u = b.CreateZExt(
+            b.CreateBitCast(c->getArgOperand(1), bytesTy), wideTy, "dot.u");
+        llvm::Value* s = b.CreateSExt(
+            b.CreateBitCast(c->getArgOperand(2), bytesTy), wideTy, "dot.s");
+        llvm::Value* prod = b.CreateMul(u, s, "dot.p");
+        llvm::Value* sum = acc;
+        for (unsigned k = 0; k < 4; ++k) {
+            llvm::SmallVector<int, 16> mask(n);
+            for (unsigned j = 0; j < n; ++j) mask[j] = static_cast<int>(4 * j + k);
+            sum = b.CreateAdd(sum, b.CreateShuffleVector(prod, mask, "dot.k"),
+                              "dot.acc");
+        }
+        c->replaceAllUsesWith(sum);
+        c->eraseFromParent();
+    }
+    return !work.empty();
+}
+
 // The helper above as a function pass, so it can sit between the Scalarizer
 // rounds in vectorizeFunction's pipeline.
 struct SmallVectorCastLoweringPass
@@ -296,6 +339,7 @@ void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
         return o;
     }();
     if (scalarizeVectorValues) {
+        expandTargetIntDots(f);
         fpm.addPass(llvm::ScalarizerPass(scalarOpts));
         fpm.addPass(llvm::InstCombinePass());
         fpm.addPass(SmallVectorCastLoweringPass());
