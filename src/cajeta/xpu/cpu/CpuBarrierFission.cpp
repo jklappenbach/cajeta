@@ -252,6 +252,9 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // what broke waveReduceWithBarrierBlockSum, XpuCoopFromWords,
     // XpuCoopEpilogue and the lane-strided-across-a-barrier probe
     // (measured 2026-09-26).
+    // Allocas that must get a per-work-item context array whatever the taint
+    // rule says: the scaffold flags below, and a wave-fed accumulator.
+    llvm::SmallPtrSet<llvm::AllocaInst*, 8> forceCtx;
     llvm::SmallPtrSet<llvm::Value*, 32> waveDerived;
     {
         llvm::SmallVector<llvm::Value*, 8> wseeds;
@@ -265,6 +268,45 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                             wseeds.push_back(c);
                     }
         if (!wseeds.empty()) computeTaint(wseeds, allocas, waveDerived);
+    }
+    // A local that is READ-MODIFY-WRITTEN with a wave result is per
+    // work-item, and it must get a CONTEXT ARRAY rather than share one slot.
+    //
+    // `while (j < n) { acc = acc + Wave.reduceSumF32(1.0f); }`: each
+    // work-item's own accumulator should end at trips * W. Sharing the slot
+    // made it accumulate across the whole block — 2048 where 32 is right,
+    // measured 2026-09-26 — and the per-region snapshot cannot fix that,
+    // because a local carrying a wave result must NOT be re-read from the
+    // region's entry value: each wave computed its own.
+    //
+    // Read-modify-written is the narrow condition, and it is what keeps this
+    // from becoming the broad wave taint that was measured to break four
+    // working shapes. `wsum = Wave.reduceSumF32(ss)` followed by
+    // `part[lane / w] = wsum` is a wave result STORED ONCE, not accumulated:
+    // it stays a plain local, and blockReduce, XpuCoopFromWords,
+    // XpuCoopEpilogue and the lane-strided-across-a-barrier probe stay
+    // green. (xpu-kernel-adaptor 4.2.1.3)
+    for (llvm::AllocaInst* a : allocas) {
+        llvm::SmallVector<llvm::LoadInst*, 8> loads;
+        llvm::SmallVector<llvm::StoreInst*, 8> stores;
+        collectMemUsers(a, loads, stores);
+        llvm::SmallPtrSet<llvm::Value*, 8> selfLoads(loads.begin(), loads.end());
+        for (llvm::StoreInst* st : stores) {
+            llvm::Value* v = st->getValueOperand();
+            if (!waveDerived.count(v)) continue;
+            // Does the stored value depend on a load of THIS slot?
+            llvm::SmallPtrSet<llvm::Value*, 16> seenV;
+            llvm::SmallVector<llvm::Value*, 16> work{v};
+            bool rmw = false;
+            while (!work.empty() && !rmw) {
+                llvm::Value* x = work.pop_back_val();
+                if (!seenV.insert(x).second) continue;
+                if (selfLoads.count(x)) { rmw = true; break; }
+                if (auto* xi = llvm::dyn_cast<llvm::Instruction>(x))
+                    for (llvm::Value* op : xi->operands()) work.push_back(op);
+            }
+            if (rmw) { forceCtx.insert(a); break; }
+        }
     }
 
     // --- 4a/4b/4c. Scaffold ---------------------------------------------------
@@ -298,7 +340,6 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     llvm::Type* i8b = llvm::Type::getInt8Ty(ctx);
     llvm::Constant* flag1 = llvm::ConstantInt::get(i8b, 1);
     llvm::Constant* flag0 = llvm::ConstantInt::get(i8b, 0);
-    llvm::SmallPtrSet<llvm::AllocaInst*, 8> forceCtx;
     struct ArmPred { llvm::AllocaInst* mask; bool polarity; };
     llvm::DenseMap<llvm::BasicBlock*, llvm::SmallVector<ArmPred, 2>> blockPreds;
     llvm::SmallPtrSet<llvm::BasicBlock*, 8> cutSet;
@@ -400,29 +441,63 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         bool predicated;
         std::vector<llvm::BasicBlock*> blocks;
     };
+    // CAJETA_XPU_DEBUG_WAVE names the loop and, when it is rejected, WHICH
+    // test rejected it. "the reduce sat in a loop that was not scaffolded" is
+    // the whole story behind several declines and the reason is never visible
+    // from the emitted IR.
+    const bool qdbg = std::getenv("CAJETA_XPU_DEBUG_WAVE") != nullptr;
+    auto qname = [](llvm::BasicBlock* b) {
+        return b->hasName() ? b->getName().str() : std::string("<bb>");
+    };
     auto qualifyLoop = [&](llvm::Loop* L, LoopCand& out) -> bool {
+        auto no = [&](const char* why) {
+            if (qdbg)
+                fprintf(stderr, "[wave-qual] %s: NOT scaffold — %s\n",
+                        qname(L->getHeader()).c_str(), why);
+            return false;
+        };
         if (!scaffoldUniformLoops) return false;
-        if (loopContainsBoundary(L)) return false;
+        if (loopContainsBoundary(L)) return no("it holds a barrier or a region cut");
         llvm::BasicBlock* latch = L->getLoopLatch();
-        if (!latch || latch == L->getHeader()) return false;
+        if (!latch) return no("no single latch");
+        if (latch == L->getHeader()) return no("one-block loop (latch is the header)");
+        // A bare `return` reached from inside the loop is a WORK-ITEM
+        // leaving the kernel, not the loop's exit, so it is skipped —
+        // UNLESS it is the only exit there is, in which case the loop's
+        // normal exit simply is the function's return. Skipping it
+        // unconditionally rejected every loop that ENDS a kernel, and the
+        // shared-memory reduction tail of the Id family is exactly that
+        // shape: `while (r < rpw) { …reduce…; r = r + 1; }` as the last
+        // statement. Four kernels lost their reduce to a work-item loop
+        // that could not be innermost because of it (measured 2026-09-26
+        // through [wave-qual], xpu-kernel-adaptor 4.2.1.7).
         llvm::SmallVector<llvm::BasicBlock*, 4> exits;
         L->getUniqueExitBlocks(exits);
         llvm::BasicBlock* exitBB = nullptr;
         for (llvm::BasicBlock* x : exits) {
             if (isTrivialRet(x)) continue;
-            if (exitBB && exitBB != x) return false;
+            if (exitBB && exitBB != x)
+                return no("more than one non-return exit block");
             exitBB = x;
         }
-        if (!exitBB) return false;
+        if (!exitBB) {
+            if (exits.size() != 1)
+                return no("no exit but several bare returns");
+            exitBB = exits[0];          // the loop ends the kernel
+        }
         bool uniform = true;
         llvm::SmallVector<llvm::BasicBlock*, 4> exiting;
         L->getExitingBlocks(exiting);
         for (llvm::BasicBlock* xb : exiting) {
             auto* br = llvm::dyn_cast<llvm::CondBrInst>(xb->getTerminator());
-            if (!br) return false;
+            if (!br) return no("an exiting block does not end in a conditional branch");
             if (tainted.count(br->getCondition())) uniform = false;
             if (xb != L->getHeader() && xb != latch) uniform = false;
         }
+        if (qdbg)
+            fprintf(stderr, "[wave-qual] %s: candidate, %s\n",
+                    qname(L->getHeader()).c_str(),
+                    uniform ? "uniform" : "PREDICATED");
         out = {L->getHeader(), latch, exitBB, !uniform,
                std::vector<llvm::BasicBlock*>(L->block_begin(), L->block_end())};
         return true;
@@ -752,8 +827,13 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 llvm::BasicBlock* levelEntry =
                     levelEntryOf(c.header, L->getParentLoop(), uDT);
                 if (!uPDT.dominates(c.header, levelEntry)
-                    && !everyMissIsACleanExit(c.header, levelEntry))
+                    && !everyMissIsACleanExit(c.header, levelEntry)) {
+                    if (qdbg)
+                        fprintf(stderr, "[wave-qual] %s: NOT scaffold — not every "
+                                "work-item reaches it from level '%s'\n",
+                                qname(c.header).c_str(), qname(levelEntry).c_str());
                     continue;
+                }
                 Qualified Q{c, nullptr, {}};
                 if (!c.predicated) {
                     // The uniform tail of the latch, scanned back from its branch.
@@ -762,6 +842,57 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                          in = in->getPrevNode()) {
                         if (!scaffoldSafe(*in)) break;
                         Q.splitAt = in;
+                    }
+                    // …and every operand of the peeled run must be defined
+                    // OUTSIDE the loop body, or inside the run itself. What is
+                    // peeled becomes the scaffold LATCH, which runs once per
+                    // trip outside the work-item loops, while the body runs
+                    // inside them: an operand left in the body does not
+                    // dominate its use in the latch any more.
+                    //
+                    // `ws = ws + w[k]; k = k + 1;` is the shape. The buffer
+                    // load `w[k]` is not scaffold-safe so the backward scan
+                    // stops there, but the `fadd` that consumes it IS
+                    // (untainted operands, no memory effects), so the run
+                    // began at the fadd and carried it into the latch, away
+                    // from both of its operands. The verifier's words:
+                    // "Instruction does not dominate all uses!" twice over,
+                    // once per operand. Measured 2026-09-26 on
+                    // moeTopK / routerTopK / rmsnormRouterTopK and two
+                    // siblings — a latent defect in this peel that cause A
+                    // exposed by making these loops scaffold at all, since
+                    // they had declined earlier for another reason and never
+                    // reached it.
+                    //
+                    // The run shrinks from the front until it holds. Advancing
+                    // the start only removes constraints, so this terminates.
+                    {
+                        llvm::SmallPtrSet<llvm::BasicBlock*, 16> inLoop(
+                            c.blocks.begin(), c.blocks.end());
+                        bool moved = true;
+                        while (moved && Q.splitAt != c.latch->getTerminator()) {
+                            moved = false;
+                            for (llvm::Instruction* in = Q.splitAt; in;
+                                 in = in->getNextNode()) {
+                                bool bad = false;
+                                for (llvm::Value* op : in->operands()) {
+                                    auto* oi = llvm::dyn_cast<llvm::Instruction>(op);
+                                    if (!oi || !inLoop.count(oi->getParent())) continue;
+                                    // Inside the peeled run is fine; anywhere
+                                    // else in the loop body is not.
+                                    if (oi->getParent() == c.latch
+                                        && !oi->comesBefore(Q.splitAt)) continue;
+                                    bad = true;
+                                    break;
+                                }
+                                if (bad) {
+                                    Q.splitAt = in->getNextNode();
+                                    moved = true;
+                                    break;
+                                }
+                                if (in->isTerminator()) break;
+                            }
+                        }
                     }
                 } else {
                     if (llvm::isa<llvm::PHINode>(c.header->front()))

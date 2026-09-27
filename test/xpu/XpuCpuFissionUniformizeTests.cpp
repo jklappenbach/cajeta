@@ -357,7 +357,13 @@ const char* kBarrierSrc = R"CJ(
 // a silent 4096 for 64, because that refusal came from the same bad tail: the
 // wave-fed read-modify-write of `acc` then stays in one shared slot. Land the
 // tail check together with per-work-item storage for a wave-fed RMW local.
-TEST(XpuCpuFissionUniformize, DISABLED_laneStridedLoopsEitherSideOfABarrierLowerAndAgree) {
+// RE-ENABLED 2026-09-27. The disable note below called the fix exactly right,
+// and both halves of it are now in CpuBarrierFission: the peel stops at any
+// operand defined outside the peeled run, and a wave-fed read-modify-written
+// local gets a per-work-item context array so the tail fix does not turn this
+// into a silent wrong answer. Two sessions reached the same diagnosis
+// independently (xpu-kernel-adaptor 4.2.1.9).
+TEST(XpuCpuFissionUniformize, laneStridedLoopsEitherSideOfABarrierLowerAndAgree) {
     const int r = runOnCpu(std::string(kPreamble) + kBarrierSrc);
     EXPECT_EQ(r, 0) << "r=" << r;
 }
@@ -494,6 +500,29 @@ const char* kReturnSrc = R"CJ(
 // and reads back across a trip, or reads after the loop, makes this pass, and
 // it also makes XpuCpuDistCoopVerb.waveOpLeftScalarIsRefused register a
 // cooperative mma under a per-lane trip count. That kernel must stay refused.
+// RE-ENABLED 2026-09-27. The disable note below called the fix exactly right,
+// and both halves of it are now in CpuBarrierFission: the peel stops at any
+// operand defined outside the peeled run, and a wave-fed read-modify-written
+// local gets a per-work-item context array so the tail fix does not turn this
+// into a silent wrong answer. Two sessions reached the same diagnosis
+// independently (xpu-kernel-adaptor 4.2.1.9).
+// STILL DISABLED, and now with a measured cause (xpu-kernel-adaptor 4.2.1.9).
+// The sibling probe beside it passes since the peel and wave-fed-RMW fixes, so
+// those were not what this one needed.
+//
+// MEASURED 2026-09-27 at width 16: "lane 0 got 80 want 75", and 80 is 16 * 5 —
+// EVERY lane of the wave contributed a full five, work-item 3 included. So the
+// early `return` did not end that work-item at all: it ran every trip and
+// reached the reduce. Expected is 15 * 5, the wave minus the one that left.
+//
+// The shape is a `return` from inside a PREDICATED scaffold loop. The return
+// block is not the loop's exit block, so 4b's exit-edge redirect leaves that
+// edge alone, and whether the work-item stops depends on the region walk
+// claiming the return block and step 9 turning its `ret` into "clear the
+// activity mask, then take the work-item latch". One of those is not
+// happening here. Diagnose with [wave-qual] plus the region dump before
+// changing anything: the activity mask is only materialized when a region can
+// be left early, which is itself a condition worth checking first.
 TEST(XpuCpuFissionUniformize, DISABLED_aReturnInsideAScaffoldLoopEndsThatWorkItem) {
     const int r = runOnCpu(std::string(kPreamble) + kReturnSrc);
     EXPECT_EQ(r, 0) << "r=" << r;
@@ -594,20 +623,21 @@ const char* kUniformReduceSrc = R"CJ(
 }
 )CJ";
 
-// TRACKED: xpu-kernel-adaptor 4.2.1.3, and the reason the gate grew its
-// vanished-wave-op check. The accumulator is workgroup-uniform, so the
-// region's work-item loop has every work-item re-reading the same start
-// value, every iteration's result but the last is dead, and LLVM deletes the
-// region's whole vector body -- measured 2026-09-26 off the emitted IR. The
-// kernel used to REGISTER and answer 0 where W is right, a silent wrong
-// answer. It is now refused by name. The fix that flips this to a value check
-// is per-work-item accumulation for a local carrying a wave result.
-TEST(XpuCpuFissionUniformize, aWaveReduceOfAUniformConstantIsRefusedNotWrong) {
+// xpu-kernel-adaptor 4.2.1.3, and it took three answers to get right. The
+// accumulator reads as workgroup-uniform -- nothing tid-derived reaches it --
+// but it is fed by a WAVE RESULT, so each wave's copy differs and it is per
+// work-item in fact. Sharing one slot across the block gave, in order: 0,
+// because every work-item re-read the same start value, every iteration but
+// the last was dead and LLVM deleted the region's vector body (caught as a
+// refusal by the gate's vanished-wave-op check); then 2048 for 32, once the
+// loop began to scaffold and the slot accumulated across all 64 work-items.
+// A local read-modify-written with a wave result now gets a CONTEXT ARRAY, so
+// each work-item accumulates its own and the answer is trips * W.
+TEST(XpuCpuFissionUniformize, aWaveFedAccumulatorIsPerWorkItem) {
     const int r = runOnCpu(std::string(kPreamble) + kUniformReduceSrc);
-    EXPECT_EQ(r, -1)
-        << "a uniform accumulator fed by a wave reduce answered " << r
-        << " instead of being refused; 0 (the width-1 identity) silently "
-           "replacing " << "n*W is the outcome the gate exists to prevent";
+    EXPECT_EQ(r, 0)
+        << "r=" << r << " (-1 refused, 100+i wrong at lane i; the wave sums W "
+           "ones per trip and each work-item keeps its own total)";
 }
 
 // (i) A workgroup-UNIFORM accumulator updated inside NESTED scaffold loops.
