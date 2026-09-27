@@ -1315,6 +1315,11 @@ bool cajetaRhsCarriesRedundantSharp(
                             lhsForOp = builder->CreateLoad(
                                 a->getAllocatedType(), a);
                         }
+                    } else if (lhsForOp && lhsForOp->getType()->isStructTy()) {
+                        llvm::AllocaInst* spill = module->createEntryAlloca(
+                            lhsForOp->getType(), "opidx.recv");
+                        builder->CreateStore(lhsForOp, spill);
+                        lhsForOp = spill;
                     }
                 } else {
                     lhsForOp = loadIfLValue(module, lhsForOp, lhsExprForOp);
