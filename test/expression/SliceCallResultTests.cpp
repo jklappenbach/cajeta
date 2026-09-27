@@ -50,3 +50,27 @@ TEST(SliceCallResultTests, countACallResultDirectly) {
         "}\n";
     EXPECT_EQ(runI32(src), 4);
 }
+
+// An owned String produced from an anonymous owned receiver frees the receiver.
+TEST(SliceCallResultTests, ownedStringFromATemporaryReceiverFreesIt) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "public final class Tag {\n"
+        "    int32 n;\n"
+        "    public Tag(int32 n) { this.n = n; }\n"
+        "    public static #Tag make(int32 n) { return heap Tag(n); }\n"
+        "    public #String render() { String s = \"tag \" + this.n; return #s; }\n"
+        "}\n"
+        "public final class U {\n"
+        "    public static int32 run() {\n"
+        "        String first #= Tag.make(0).render();\n"
+        "        int64 live = Cajeta.liveCount();\n"
+        "        int32 i = 0;\n"
+        "        int32 len = 0;\n"
+        "        while (i < 200) { String s #= Tag.make(i).render(); len = s.byteLength(); i = i + 1; }\n"
+        "        return Cajeta.liveCount() == live ? len : -1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}

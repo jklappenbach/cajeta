@@ -8907,13 +8907,17 @@ namespace cajeta {
                                 && !(rrtClass && rrtClass->isInterface())
                                 && !dynamic_pointer_cast<CajetaFunctionType>(rrt)
                                 && !dynamic_pointer_cast<CajetaView>(rrt));
+                        bool retIsOwnedString = tempTarget->isReturnsOwnership() && rrtClass
+                            && rrtClass->getQName()
+                            && rrtClass->getQName()->getTypeName() == "String"
+                            && rrtClass->getQName()->getPackageName() == "cajeta.lang";
                         llvm::Function* vdropFn = module->getRuntimeFunction(
                             "__cajeta_class_virtual_drop");
                         llvm::Function* fgFn = module->getRuntimeFunction(
                             "__cajeta_return_flag_get");
                         llvm::Function* fsFn = module->getRuntimeFunction(
                             "__cajeta_return_flag_set");
-                        if (vdropFn && fgFn && fsFn && retIsSafeScalar) {
+                        if (vdropFn && fgFn && fsFn && (retIsSafeScalar || retIsOwnedString)) {
                             llvm::Value* savedFl = builder->CreateCall(
                                 fgFn, {}, "recv_reclaim_savefl");
                             llvm::Value* ownedRecv = recvTempStatic
