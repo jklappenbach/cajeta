@@ -531,6 +531,10 @@ namespace cajeta {
             for (auto& pm : cr->getParameters())
                 if (pm.expression) out.push_back(pm.expression);
         }
+        if (auto lvd = dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
+            for (auto& d : lvd->getVariableDeclarators())
+                if (d && d->getInitializer()) out.push_back(d->getInitializer());
+        }
     }
 
     // True when `name` appears anywhere under `node`. Name-based and
