@@ -291,7 +291,9 @@ std::string writeMetaOnlyTrace(int64_t kept, int64_t dropped) {
         p += __cajeta_pb_bytes(pkt + p, 11, te, t);
         n += __cajeta_pb_bytes(buf + n, 1, pkt, p);
     }
-    std::string path = "tmp/profile-summary-ring-" + std::to_string(kept) + ".pftrace";
+    const char* dir = std::getenv("TMPDIR");
+    std::string path = std::string(dir ? dir : "tmp") + "/profile-summary-ring-"
+        + std::to_string(kept) + ".pftrace";
     std::FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) return "";
     std::fwrite(buf, 1, (size_t) n, f);
@@ -304,7 +306,7 @@ std::string writeMetaOnlyTrace(int64_t kept, int64_t dropped) {
 // 0.2.4 — the ring's kept / dropped counts are read from the run annotation.
 TEST(ProfileSummary, deviceRingAccountingIsSurfaced) {
     std::string path = writeMetaOnlyTrace(8000, 35874);
-    ASSERT_FALSE(path.empty()) << "could not write the fixture under tmp/";
+    ASSERT_FALSE(path.empty()) << "could not write the fixture under $TMPDIR";
     Summary s;
     std::string err;
     ASSERT_TRUE(cajeta::prof::summarize(path, SummaryOptions{}, &s, &err)) << err;
