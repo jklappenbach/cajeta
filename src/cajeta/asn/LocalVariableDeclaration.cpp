@@ -1065,6 +1065,12 @@ namespace cajeta {
                                 || isMoveKind(argExpr);
                             field->setIsOwningView(isOwning);
                             if (!isOwning) {
+                                if (auto win = dynamic_pointer_cast<ArraySliceExpression>(argExpr)) {
+                                    while (win && !win->getChildren().empty()) {
+                                        argExpr = dynamic_pointer_cast<Expression>(win->getChildren()[0]);
+                                        win = dynamic_pointer_cast<ArraySliceExpression>(argExpr);
+                                    }
+                                }
                                 if (auto idArg = dynamic_pointer_cast<IdentifierExpression>(argExpr)) {
                                     auto scope = module->getScopeStack().peek();
                                     FieldPtr src = scope

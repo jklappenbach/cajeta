@@ -2474,6 +2474,12 @@ bool cajetaRhsCarriesRedundantSharp(
             auto xRecvClass = xRecv
                 ? dynamic_pointer_cast<CajetaClass>(xRecv->getResolvedType())
                 : nullptr;
+            if (dynamic_pointer_cast<CajetaView>(xRecvClass)) {
+                llvm::Value* read = loadIfLValue(module,
+                    dotInner->generateCode(module), dotInner);
+                resolvedType = dotInner->getResolvedType();
+                return read;
+            }
             StructurePropertyPtr xProp;
             CajetaClassPtr xDecl;
             if (xRecvClass) {

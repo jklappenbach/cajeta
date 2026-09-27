@@ -330,8 +330,15 @@ namespace cajeta::ownership {
                 return scalar(e);
             case ExprKind::Identifier:
                 return localRead(e, module);
-            case ExprKind::Dot:
+            case ExprKind::Dot: {
+                if (DotExpression::materializesViewField(e)) {
+                    TitleShape s = make(TitleFamily::Fresh, TitleAnswer::Owned, TitleSource::None, e,
+                                        typeFlags(e->getResolvedType()));
+                    s.label = "a view field read";
+                    return s;
+                }
                 return read(TitleFamily::FieldRead, e);
+            }
             case ExprKind::ArrayIndex:
                 return read(TitleFamily::ElementRead, e);
             case ExprKind::ArraySlice: {

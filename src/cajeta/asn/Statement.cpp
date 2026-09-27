@@ -2372,7 +2372,9 @@ namespace cajeta {
                                 }
                                 return false;
                             };
-                        if (findProp(klass) && found) {
+                        if (findProp(klass) && found
+                                && !(dynamic_pointer_cast<CajetaView>(klass)
+                                     && CajetaView::isVariableSize(found))) {
                             // Class- and array-typed fields are stored as `ptr`
                             // in the layout; views, interfaces and value types
                             // stay INLINE and load their body by copy.
