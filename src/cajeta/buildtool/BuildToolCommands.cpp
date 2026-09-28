@@ -3085,9 +3085,13 @@ namespace cajeta::buildtool {
                 cmd == "sandbox-info" ||
                 cmd == "install" ||
                 cmd == "toolchain" ||
-                cmd == "kernel" ||  // jupyter-kernel §3 — first-class verb
-                cmd == "run") {   // script-units §7 — first-class verb
+                cmd == "kernel") {  // jupyter-kernel §3 — first-class verb
                 return false;
+            }
+            if (cmd == "run") {
+                for (int i = 2; i < argc; ++i) {
+                    if (std::string_view(argv[i]).rfind("--", 0) != 0) return false;
+                }
             }
             if (!cmd.empty() && cmd[0] == '-') return false;
             llvm::Expected<llvm::json::Value> probe =
