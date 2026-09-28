@@ -16,9 +16,11 @@
 #include "Compiler.h"
 #include "../method/Method.h"
 #include "../method/ComponentInjectMethod.h"
+#include "../method/ComponentProvideMethod.h"
 #include "../method/FactoryProviderMethod.h"
 #include "../type/StructureMetadata.h"
 #include "../type/CajetaClass.h"
+#include "../type/StructureProperty.h"
 #include "../runtime/EmbeddedRuntime.h"
 
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -749,6 +751,12 @@ namespace cajeta {
             scopePublications.push_back(p);
         };
         if (auto ann = structure->findAnnotation("Scope")) {
+            if (structure->isRecordType()) {
+                throw Exception(
+                    "@Scope on record " + owner
+                        + ": a record has no drop to end an instance scope with",
+                    "CAJETA_ERROR_SCOPE_PLACEMENT");
+            }
             if (structure->isInterface()) {
                 throw Exception(
                     "@Scope on interface " + owner
@@ -757,6 +765,14 @@ namespace cajeta {
                     "CAJETA_ERROR_SCOPE_PLACEMENT");
             }
             publish(ann, ScopePublication::Kind::Instance, nullptr, "class " + owner);
+            // The instance's component table, ended by the class's drop.
+            if (!structure->getProperties().count(kScopeTableField)) {
+                auto table = make_shared<StructureProperty>(
+                    kScopeTableField, CajetaType::of("pointer"),
+                    (int) structure->getProperties().size());
+                table->addModifier(PRIVATE);
+                structure->addProperty(table);
+            }
         }
         for (auto& [mkey, m] : structure->getMethods()) {
             if (!m || m->getParent() != structure) continue;
@@ -835,6 +851,28 @@ namespace cajeta {
                 if (!m || m->getName() != method->getName() || !sameParameters(m, method)) continue;
                 if (auto p = publicationOn(m)) return p;
             }
+        }
+        return nullptr;
+    }
+
+    CajetaModule::ScopePublicationPtr CajetaModule::instanceScopeOf(const MethodPtr& method) {
+        if (!method || method->isConstructor() || !method->getParent()) return nullptr;
+        if (method->getModifiers().count(STATIC) || method->getModifiers().count(PRIVATE)) {
+            return nullptr;
+        }
+        vector<CajetaClassPtr> frontier{ method->getParent() };
+        set<CajetaClass*> seen;
+        for (size_t i = 0; i < frontier.size(); ++i) {
+            auto k = frontier[i];
+            if (!k || !seen.insert(k.get()).second) continue;
+            for (auto& p : scopePublications) {
+                if (p->kind == ScopePublication::Kind::Instance && p->klass
+                        && p->klass->getQName() && k->getQName()
+                        && p->klass->getQName()->toCanonical() == k->getQName()->toCanonical()) {
+                    return p;
+                }
+            }
+            for (auto& sup : k->getSuperClasses()) frontier.push_back(sup);
         }
         return nullptr;
     }
@@ -1087,6 +1125,55 @@ namespace cajeta {
                 return r;
             };
 
+        // Whether every anchor of `inner` is provably entered inside `outer`: by a
+        // declared `within` chain, or as a method on a class publishing `outer`.
+        std::function<bool(const ScopePublicationPtr&, const ScopePublicationPtr&, int)> within =
+            [&](const ScopePublicationPtr& inner, const ScopePublicationPtr& outer, int depth) {
+                if (!inner || !outer || depth > 32) return false;
+                if (inner->qualified() == outer->qualified()) return true;
+                bool any = false;
+                for (auto& a : scopePublications) {
+                    if (a->name != inner->name || a->package != inner->package) continue;
+                    any = true;
+                    if (a->withinScope && within(a->withinScope, outer, depth + 1)) continue;
+                    bool onAnchorClass = false;
+                    if (a->kind == ScopePublication::Kind::Method && a->method
+                            && outer->kind == ScopePublication::Kind::Instance) {
+                        for (auto& o : scopePublications) {
+                            if (o->qualified() != outer->qualified() || !o->klass) continue;
+                            vector<CajetaClassPtr> chain{ a->method->getParent() };
+                            for (size_t k = 0; k < chain.size() && !onAnchorClass; ++k) {
+                                if (!chain[k]) continue;
+                                if (chain[k]->getQName()->toCanonical()
+                                        == o->klass->getQName()->toCanonical()) {
+                                    onAnchorClass = true;
+                                }
+                                for (auto& s : chain[k]->getSuperClasses()) chain.push_back(s);
+                            }
+                        }
+                    }
+                    if (!onAnchorClass) return false;
+                }
+                return any;
+            };
+        // A field is filled once, so it may hold only what outlives its holder.
+        auto refuseWidening = [&](const string& site, const ComponentDescriptorPtr& holder,
+                                  const ComponentDescriptorPtr& target) {
+            const auto& ts = target->scope;
+            if (!ts || ts->kind == ScopePublication::Kind::Builtin) return;
+            const auto& hs = holder->scope;
+            const bool hPublished = hs && hs->kind != ScopePublication::Kind::Builtin;
+            if (hPublished && within(hs, ts, 0)) return;
+            const string holderName = holder->klass->getQName()->toCanonical();
+            throw Exception(
+                site + " holds " + target->klass->getQName()->toCanonical() + " (scope \""
+                    + ts->qualified() + "\"), but " + holderName
+                    + (hPublished ? " has scope \"" + hs->qualified() + "\", which is not within it"
+                                  : string(" can outlive that scope"))
+                    + ". Inject Scoped<" + target->klass->getQName()->getTypeName()
+                    + "> and call get() where it is needed",
+                "CAJETA_ERROR_SCOPE_WIDENING");
+        };
         // Resolved (field -> target) pairs are written back to resolvedFields, so
         // codegen needs no second lookup.
         map<ComponentDescriptorPtr, vector<ComponentDescriptorPtr>> edges;
@@ -1195,6 +1282,30 @@ namespace cajeta {
                         kind = ResolvedDependency::MultiKind::Map;
                         elemType = targs[1];
                     }
+                    if (originName == "cajeta.aot.Scoped" && targs.size() == 1) {
+                        auto elem = std::dynamic_pointer_cast<CajetaClass>(targs[0]);
+                        ComponentDescriptorPtr handled;
+                        if (elem && elem->getQName()) {
+                            vector<ComponentDescriptorPtr> cands;
+                            handled = resolveDependency(elem->getQName()->toCanonical(),
+                                                        nameQualifier, cands);
+                        }
+                        if (!handled) {
+                            throw Exception(
+                                site + " is a Scoped handle, but no @Component provides "
+                                    + (elem && elem->getQName() ? elem->getQName()->toCanonical()
+                                                                : string("its type")),
+                                "CAJETA_ERROR_MISSING_COMPONENT");
+                        }
+                        ResolvedDependency rd;
+                        rd.field = prop;
+                        rd.handle = true;
+                        rd.container = fc;
+                        rd.target = handled;
+                        rd.optional = isOptional;
+                        c->resolvedFields.push_back(rd);
+                        continue;
+                    }
                     if (kind != ResolvedDependency::MultiKind::None) {
                         auto elemClass = std::dynamic_pointer_cast<CajetaClass>(elemType);
                         if (!elemClass || !elemClass->getQName()) {
@@ -1241,7 +1352,10 @@ namespace cajeta {
                                 return a->klass->getQName()->toCanonical()
                                     < b->klass->getQName()->toCanonical();
                             });
-                        for (auto& m : rd.members) edges[c].push_back(m);
+                        for (auto& m : rd.members) {
+                            refuseWidening(site, c, m);
+                            edges[c].push_back(m);
+                        }
                         c->resolvedFields.push_back(rd);
                         continue;
                     }
@@ -1286,6 +1400,7 @@ namespace cajeta {
                     edges[c].push_back(res.component);
                 }
                 settleScope(rd, rd.target);
+                if (rd.target && rd.allocate == AllocateMode::Scoped) refuseWidening(site, c, rd.target);
                 c->resolvedFields.push_back(rd);
             }
         }
@@ -1390,6 +1505,25 @@ namespace cajeta {
             auto inject = std::make_shared<ComponentInjectMethod>(
                 c->klass->getModule(), c->klass, c);
             c->klass->addMethod(inject);
+        }
+        // A scoped component can also be provided at run time (Components.provide).
+        for (auto& c : active) {
+            if (!c->klass || !c->scope
+                    || c->scope->kind == ScopePublication::Kind::Builtin) {
+                continue;
+            }
+            bool already = false;
+            for (auto& [k, m] : c->klass->getMethods()) {
+                if (m && m->getName() == "__cajeta_provide") {
+                    already = true;
+                    break;
+                }
+            }
+            if (already) continue;
+            auto provide = std::make_shared<ComponentProvideMethod>(
+                c->klass->getModule(), c->klass, c);
+            provide->initParameters();
+            c->klass->addMethod(provide);
         }
 
         // One accessor per all-injected provider, synthesized after every

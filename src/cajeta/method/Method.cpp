@@ -908,8 +908,10 @@ namespace cajeta {
         if (findAnnotation("Kernel") || findAnnotation("Device") || findAnnotation("Native")) {
             return;
         }
-        auto pub = CajetaModule::methodScopeOf(shared_from_this());
-        if (!pub) return;
+        auto self = shared_from_this();
+        auto instancePub = CajetaModule::instanceScopeOf(self);
+        auto methodPub = CajetaModule::methodScopeOf(self);
+        if (!instancePub && !methodPub) return;
         auto* builder = module->getBuilder();
         auto& ctx = *module->getLlvmContext();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
@@ -918,15 +920,69 @@ namespace cajeta {
             throw Exception("the runtime has no __cajeta_anchor_enter", "CAJETA_ERROR_INTERNAL");
         }
         llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
-        llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
-            parentFn->getEntryBlock().begin());
-        llvm::AllocaInst* frame = entryBuilder.CreateAlloca(
-            llvm::ArrayType::get(llvm::Type::getInt8Ty(ctx), 72), nullptr, "anchor_frame");
-        frame->setAlignment(llvm::Align(8));
-        llvm::Constant* key = CajetaModule::scopeKeyGlobal(parentFn->getParent(), pub->qualified());
-        llvm::Constant* none = llvm::ConstantPointerNull::get(ptrTy);
-        builder->CreateCall(enterFn, {frame, key, none, none});
-        registerDropEntry(frame);
+        auto enter = [&](const CajetaModule::ScopePublicationPtr& pub,
+                         llvm::Value* instance, llvm::Value* tableSlot) {
+            llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+                parentFn->getEntryBlock().begin());
+            llvm::AllocaInst* frame = entryBuilder.CreateAlloca(
+                llvm::ArrayType::get(llvm::Type::getInt8Ty(ctx), 72), nullptr, "anchor_frame");
+            frame->setAlignment(llvm::Align(8));
+            // A scope declared `within` another may be entered only inside it.
+            if (pub->withinScope) {
+                llvm::Function* findFn = module->getRuntimeFunction("__cajeta_anchor_find");
+                llvm::Value* outer = builder->CreateCall(findFn,
+                    {CajetaModule::scopeKeyGlobal(parentFn->getParent(),
+                                                  pub->withinScope->qualified())}, "outer");
+                llvm::BasicBlock* missing = llvm::BasicBlock::Create(ctx, "outer_missing", parentFn);
+                llvm::BasicBlock* present = llvm::BasicBlock::Create(ctx, "outer_present", parentFn);
+                builder->CreateCondBr(builder->CreateICmpEQ(outer,
+                    llvm::ConstantPointerNull::get(ptrTy)), missing, present);
+                builder->SetInsertPoint(missing);
+                emitThrowStdlibException(module, "cajeta.error.ScopeNotActiveException",
+                    "scope \"" + pub->qualified() + "\" is entered only within \""
+                        + pub->withinScope->qualified() + "\", which is not active");
+                builder->SetInsertPoint(present);
+            }
+            llvm::Constant* key = CajetaModule::scopeKeyGlobal(parentFn->getParent(),
+                                                               pub->qualified());
+            builder->CreateCall(enterFn, {frame, key, instance, tableSlot});
+            registerDropEntry(frame);
+        };
+        // The receiver is current for the whole call, so its frame is entered first
+        // and a method scope published on the same class nests inside it.
+        if (instancePub) {
+            CajetaClassPtr publisher = instancePub->klass;
+            CajetaClassPtr k = parent;
+            while (k && k.get() != publisher.get()) {
+                k = k->getSuperClasses().empty() ? nullptr : k->getSuperClasses().front();
+            }
+            if (!k) {
+                throw Exception(
+                    getName() + " on " + parent->getQName()->toCanonical()
+                        + " reaches instance scope " + instancePub->qualified()
+                        + " through a secondary superclass, which is not supported",
+                    "CAJETA_ERROR_NOT_IMPLEMENTED");
+            }
+            StructurePropertyPtr tableField;
+            auto it = publisher->getProperties().find(CajetaModule::kScopeTableField);
+            if (it != publisher->getProperties().end()) tableField = it->second;
+            FieldPtr thisField = module->getScopeStack().peek()->getField("this");
+            if (!tableField || !thisField) {
+                throw Exception("instance scope " + instancePub->qualified()
+                                    + " has no table field or receiver",
+                                "CAJETA_ERROR_INTERNAL");
+            }
+            llvm::Value* self = builder->CreateLoad(ptrTy, thisField->getOrCreateAllocation(),
+                                                    "anchor_this");
+            llvm::Value* slot = builder->CreateStructGEP(
+                publisher->rawLlvmType(), self,
+                (unsigned) publisher->getFieldLlvmIndex(tableField), "scope_table_slot");
+            enter(instancePub, self, slot);
+        }
+        if (methodPub) {
+            llvm::Constant* none = llvm::ConstantPointerNull::get(ptrTy);
+            enter(methodPub, none, none);
+        }
     }
 
     bool Method::returnsStackValue() {
@@ -2160,17 +2216,32 @@ namespace cajeta {
             CajetaModulePtr mod; bool pushed = false;
             ~SubstFrameGuard() { if (pushed) mod->popTypeSubstitution(); }
         } substGuard{module};
-        if (parent && parent->isInstantiation()) {
-            const auto& tparams = parent->getTypeParameters();
-            const auto& targs = parent->getTypeArguments();
-            if (!tparams.empty() && tparams.size() == targs.size()) {
-                std::map<std::string, CajetaTypePtr> frame;
-                if (auto inherited = module->getCurrentTypeSubstitution()) {
-                    frame = *inherited;
+        // The class's and the method's own type parameters, bound for this body.
+        {
+            std::map<std::string, CajetaTypePtr> frame;
+            bool bound = false;
+            if (auto inherited = module->getCurrentTypeSubstitution()) {
+                frame = *inherited;
+            }
+            if (parent && parent->isInstantiation()) {
+                const auto& tparams = parent->getTypeParameters();
+                const auto& targs = parent->getTypeArguments();
+                if (!tparams.empty() && tparams.size() == targs.size()) {
+                    for (size_t i = 0; i < tparams.size(); ++i) {
+                        frame[tparams[i].name] = targs[i];
+                    }
+                    bound = true;
                 }
-                for (size_t i = 0; i < tparams.size(); ++i) {
-                    frame[tparams[i].name] = targs[i];
+            }
+            const auto& mparams = getMethodTypeParameters();
+            const auto& margs = getMethodTypeArguments();
+            if (!mparams.empty() && mparams.size() == margs.size()) {
+                for (size_t i = 0; i < mparams.size(); ++i) {
+                    frame[mparams[i].name] = margs[i];
                 }
+                bound = true;
+            }
+            if (bound) {
                 module->pushTypeSubstitution(std::move(frame));
                 substGuard.pushed = true;
             }

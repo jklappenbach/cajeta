@@ -855,7 +855,7 @@ Connection c #= Connection.builder()
 
 ### Aspects, DI, advice
 
-Spring-style dependency injection plus AspectJ-style advice, woven at compile time through the LLVM IR. `@Aspect`, `@Component`, `@Inject` for DI; `@Pointcut`, `@Around`, `@Before`, `@AfterReturning`, `@AfterThrowing` for advice. See [`AspectModel.md`](docs/specification/lang/AspectModel.md) and a runnable walk through `@Before` / `@After` / `@Around` plus DI singleton identity and transitive resolution in [`samples/tour/src/main/cajeta/tour/lang/AspectsDiDemo.cajeta`](samples/tour/src/main/cajeta/tour/lang/AspectsDiDemo.cajeta).
+Spring-style dependency injection plus AspectJ-style advice, woven at compile time through the LLVM IR. `@Aspect`, `@Component`, `@Inject` for DI; `@Pointcut`, `@Around`, `@Before`, `@AfterReturning`, `@AfterThrowing` for advice. See [`AspectModel.md`](docs/specification/lang/AspectModel.md) and a runnable walk through `@Before` / `@After` / `@Around` plus DI singleton identity and transitive resolution in [`samples/tour/src/main/cajeta/tour/lang/AspectsDiDemo.cajeta`](samples/tour/src/main/cajeta/tour/lang/AspectsDiDemo.cajeta). A component's lifetime is a named scope: code publishes one with `@Scope("Request")` on the method or class that bounds it, a component consumes it with `@Component(scope = "Request")`, and the compiler ends it on every return, throw or drop. See [`19-di-aspects.md` § Scopes](docs/guide/19-di-aspects.md) and [`ScopesDemo.cajeta`](samples/tour/src/main/cajeta/tour/lang/ScopesDemo.cajeta).
 
 <!-- snippet: skip -->
 ```cajeta

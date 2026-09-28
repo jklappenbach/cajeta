@@ -88,6 +88,7 @@ public final class Tour {
         demos.add(heap NetDemo());
         demos.add(heap JsonDemo());
         demos.add(heap AspectsDiDemo());
+        demos.add(heap ScopesDemo());
         demos.add(heap FactoryDemo());
         demos.add(heap WildcardsDemo());
         demos.add(heap SwitchTernaryDemo());

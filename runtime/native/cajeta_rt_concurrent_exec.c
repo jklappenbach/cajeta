@@ -287,6 +287,9 @@ static pthread_cond_t  __cajeta_task_done_cond  = PTHREAD_COND_INITIALIZER;
 // FiberLocal helpers, defined in the § FiberLocal section further down.
 static struct cajeta_fiber_local* __cajeta_fiber_local_snapshot_current(void);
 static void __cajeta_fiber_local_free_chain(struct cajeta_fiber_local* head);
+// Component-scope helpers, defined in the anchors section of the sync file.
+static struct cajeta_anchor_frame* __cajeta_anchor_snapshot(void);
+static void __cajeta_anchor_release_chain(struct cajeta_anchor_frame* head);
 
 // Per-carrier Chase-Lev work-stealing deque: single-producer at `bottom` (the
 // owning carrier pushes/pops LIFO), multi-consumer at `top` (peers steal FIFO).
@@ -716,6 +719,8 @@ static void* __cajeta_carrier_loop_body(void* arg) {
 #endif
             __cajeta_fiber_local_free_chain(f->fl_top);
             f->fl_top = NULL;
+            __cajeta_anchor_release_chain(f->anchor_top);
+            f->anchor_top = NULL;
             __cajeta_arena_release_mapping(&f->arena);
             __cajeta_fiber_stack_free(f->stack);
             free(f);
@@ -811,9 +816,10 @@ void __cajeta_task_shutdown(void) {
 }
 
 // Enqueues a trampoline/arg pair as a fresh fiber; stack + ucontext init waits
-// for the carrier's first dispatch. `fiber_slot` is the Task's fiber field.
-void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
-                       void** fiber_slot) {
+// for the carrier's first dispatch. `fiber_slot` is the Task's fiber field. A
+// structured task inherits the spawner's component scopes; a detached one does not.
+static void __cajeta_task_run_impl(void* arg, cajeta_task_trampoline_fn trampoline,
+                                   void** fiber_slot, int inherit_scopes) {
     struct cajeta_fiber* f = malloc(sizeof(*f));
     if (!f) {
         fprintf(stderr, "cajeta: __cajeta_task_run fiber malloc failed\n");
@@ -835,7 +841,7 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     // Inherit-on-spawn: a DEEP copy of the spawner's FiberLocal chain, so the
     // child's lifetime does not depend on the spawner's pop order.
     f->fl_top = __cajeta_fiber_local_snapshot_current();
-    f->anchor_top = NULL;
+    f->anchor_top = inherit_scopes ? __cajeta_anchor_snapshot() : NULL;
     f->arena = (cajeta_arena) { NULL, 0, 0, 0, 0 };  // lazily mapped on first use
     f->home_carrier = -1;   // assigned on first dispatch (see carrier_loop)
     if (fiber_slot) *fiber_slot = f;
@@ -884,6 +890,15 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     // publish_ready takes the target carrier's deque_mutex itself; calling it
     // outside __cajeta_task_mutex keeps the pool → deque lock order.
     __cajeta_publish_ready(f);
+}
+
+void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline, void** fiber_slot) {
+    __cajeta_task_run_impl(arg, trampoline, fiber_slot, 1);
+}
+
+void __cajeta_task_run_detached(void* arg, cajeta_task_trampoline_fn trampoline,
+                                void** fiber_slot) {
+    __cajeta_task_run_impl(arg, trampoline, fiber_slot, 0);
 }
 
 // Blocks until the task at `done_addr` flips nonzero: a fiber parks and

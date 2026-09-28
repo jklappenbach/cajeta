@@ -5842,8 +5842,11 @@ namespace cajeta {
             }
             if (!receiver && !receiverType) {
                 if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(exprChild)) {
-                    auto scoped = CajetaType::ofScoped(
-                        idExpr->getTextValue(), module);
+                    // A type parameter names its bound type in a monomorphized body.
+                    auto scoped = module->lookupTypeParameter(idExpr->getTextValue());
+                    if (!scoped) {
+                        scoped = CajetaType::ofScoped(idExpr->getTextValue(), module);
+                    }
                     if (scoped) {
                         if (scoped->getTypeFlags() & ENUM_FLAG) {
                             receiverType = scoped;

@@ -72,8 +72,10 @@ The advice kinds:
 
 The DI *substrate* is core language, and only policy above it is framework. The compiler owns a compile-time graph:
 
-- `@Component` declares an injectable node (optional `name=` qualifier).
-- `@Inject` marks an injection site — a field, resolved at construction, or a parameter, resolved at invocation. `allocate=` selects the identity scope of the injected instance (`ALLOCATE_SINGLETON`, `OWNER_SCOPE`, `TRANSIENT`). `@Inject(name = "…")` disambiguates among named providers.
+- `@Component` declares an injectable node, with an optional `name=` qualifier and a `scope=` naming its lifetime: `"Singleton"` (the default), `"Transient"`, or a scope published with `@Scope`.
+- `@Scope("Name")` publishes a lifetime at the code that bounds it. On a method, the scope is one activation, ended on return or throw. On a class, it is one instance, current while a non-private instance method runs and ended when the instance is dropped. The compiler emits both ends. A consumer names the scope and never the anchor.
+- `@Inject` marks an injection site: a field, resolved at construction, or a parameter, resolved at invocation. The site takes the component's scope. For a component that declares none, `scope = "Owner"` or `"Transient"` asks for a fresh instance the holder owns. `@Inject(name = "…")` disambiguates among named providers.
+- A field may hold only a component that outlives its holder. Otherwise the site injects `Scoped<T>`, whose `get()` resolves in the scope active at the call. `Components.provide(#v)` places a value made at run time into its type's active scope.
 - `@Factory` declares producer methods for types the graph cannot construct directly — third-party types, assisted arguments, initialization beyond a constructor. A producer returns a fresh owned `#T`.
 - `@PostConstruct` and `@PreDestroy` are lifecycle hooks: after injection, and on drop.
 - A site typed `ArrayList<T>` receives every active component assignable to `T`, in canonical-name order, and a site typed `HashMap<String, T>` the same set keyed by component name, with an unnamed component keyed by its simple class name. This is multibinding: an empty container when nothing is assignable, never an error, and the elements are the graph's singletons, held by the container as borrows. Which implementations exist is decided at build by profiles; which one a program uses is selection over the set, by index, by name or by any predicate.

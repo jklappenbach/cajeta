@@ -73,7 +73,7 @@ reserved words.
 |---|---|
 | `async` | method modifier |
 | `await` `spawn` `detach` | task expressions |
-| `scope` | block that joins all child tasks before exiting |
+| `scope` | block that joins all child tasks before exiting. Also accepted as an annotation attribute name, as in `@Component(scope = "Request")` |
 
 ## Modules (reserved)
 

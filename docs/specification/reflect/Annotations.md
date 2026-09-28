@@ -64,17 +64,19 @@ design doc is the prose spec.
 
 ### Dependency injection — the DI substrate (`cajeta.aot`)
 
-`@Component`, `@Inject`, and `@Factory` are the **core** DI substrate — one
+`@Component`, `@Inject`, `@Factory` and `@Scope` are the **core** DI substrate, one
 indivisible mechanism the compiler owns (a core `@Inject` is incoherent without
-core producers to resolve against). Only the opinion layer on top —
-request/session scope, the web model, stereotypes, and deployment profiles — is
-framework policy, and lives in **primavera**.
+core producers to resolve against). Scopes are core too, as a mechanism with no
+names of its own: primavera publishes `Request` and `Session` on its own types.
+The opinion layer on top (those scope names, the web model, stereotypes, and
+deployment profiles) is framework policy, and lives in **primavera**.
 
 | Annotation        | Target               | Effect                                          | Handler                                            | Spec                                 |
 |-------------------|----------------------|-------------------------------------------------|----------------------------------------------------|--------------------------------------|
 | `@Component`      | class                | Declares an injectable node in the compile-time DI graph. Optional `name=` qualifier. | `CajetaLlvmVisitor.h:352`, `CajetaModule.cpp`      | [`AspectModel.md`](../lang/AspectModel.md) § DI substrate |
-| `@Inject`         | field, parameter     | Marks an injection site. The compiler resolves it to a provider at construction (field) or invocation (parameter); `allocate=` picks the identity scope. | `CajetaModule.cpp:718`                             | [`AspectModel.md`](../lang/AspectModel.md) § `@Inject` |
+| `@Inject`         | field, parameter     | Marks an injection site. The compiler resolves it to a provider at construction (field) or invocation (parameter). It takes the component's scope, and `scope = "Owner"` or `"Transient"` asks for a fresh instance of a component that declares none. | `CajetaModule.cpp`                             | [`AspectModel.md`](../lang/AspectModel.md) § `@Inject` |
 | `@Inject(name="primary")` | same        | Disambiguates when multiple named providers of the same type exist (the unqualified provider is the implicit default). | same                                               | same                                |
+| `@Scope("Name")` | method, class | Publishes a component lifetime: one activation of the method, or one instance of the class. A component consumes it with `@Component(scope = "Name")`. The compiler emits both ends, so a throw ends a method scope too. | `CajetaModule.cpp`, `Method.cpp` | [`AspectModel.md`](../lang/AspectModel.md) § `@Inject` and `@Scope` |
 | `@Factory`        | class (+ methods)    | One method per produced type — third-party/unowned types, assisted (non-`@Inject`) args, init beyond the ctor. Resolves on method signature; returns a fresh owned `#T`. | `CajetaModule.cpp`, `FactoryProviderMethod.cpp`    | [`AspectModel.md`](../lang/AspectModel.md) § `@Factory` |
 | `@PostConstruct` / `@PreDestroy` | method | Lifecycle hooks — run after injection / on drop. | `ComponentInjectMethod.cpp:294`/`:320`             | [`AspectModel.md`](../lang/AspectModel.md) § Lifecycle |
 
@@ -560,7 +562,6 @@ Aspect weaving). These advanced extensions:
 | `@Transactional`        | method          | Aspect marker for transactional methods (user-defined, but reserved name).                       | `AspectModel.md`    |
 | `@DisplayAs("name")`    | method, field   | Override the display name in IDE / debugger views.                                               | `Debugging.md`      |
 | `@Parameter`            | parameter       | Reflection hint — retains the parameter name in the symbol table for introspection.              | `Reflection.md`  |
-| `@Scope("singleton"|"prototype"|"request")` | component class | DI scope. Identity scopes are controllable per **injection site** via `@Inject(allocate=ALLOCATE_SINGLETON\|OWNER_SCOPE\|TRANSIENT)` (three modes shipped; `CALL_SCOPE` stubbed) — core. Request scope ships in **primavera** over `FiberLocal` (`org.cajeta.primavera.context.RequestScope`). A class-level `@Scope` default is on the primavera roadmap. See [`AspectModel.md`](../lang/AspectModel.md) (core substrate) and primavera `docs/RequestScope.md`. | [`AspectModel.md`](../lang/AspectModel.md) |
 
 ### Rejected
 
@@ -635,7 +636,7 @@ integers, booleans, class literals (`Foo.class` → a `ClassRef`), arrays
 (`StringList` / `Int64List` / `BoolList`), and nested annotations. Typed
 lookups (`getString`, `getInt`, `getBool`, `getClassRef`) read them back.
 This is what powers `@Order(2)`, `@Component(name = "primary")`,
-`@Inject(name = "primary", allocate = ALLOCATE_OWNER_SCOPE)`, the
+`@Inject(name = "primary", scope = "Owner")`, the
 Lombok-mirror configuration, and `@Encoding(MsgPackEncoder.class)`'s
 class-literal argument. (Earlier drafts of this doc claimed only
 `@SuppressLint` / `@Native` parsed their args — no longer true.)

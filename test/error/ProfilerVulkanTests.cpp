@@ -266,8 +266,9 @@ TEST(ProfilerVulkan, anUnarmedWaitPublishesNothing) {
 TEST(ProfilerVulkan, backendNameReflectsTimingConfiguration) {
     auto& v = vk();
     ASSERT_NE(v.backendName, nullptr);
-    // With the module configured (the test above leaves it so), backend 2
-    // resolves to the vulkan lane; without Vulkan timing it is the host lane.
+    // With Vulkan timing configured, backend 2 resolves to the vulkan lane; without
+    // it, the host lane. The test configures it itself, so shard order cannot matter.
+    ASSERT_EQ(v.configure(64, 10.019, 1), 1);
     EXPECT_STREQ(v.backendName(CAJ_GPU_BACKEND_VULKAN), "vulkan");
     ASSERT_EQ(v.configure(0, 10.019, 1), 0);   // refuse timing
     EXPECT_STREQ(v.backendName(CAJ_GPU_BACKEND_VULKAN), "cpu");

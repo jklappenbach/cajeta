@@ -100,6 +100,9 @@ namespace cajeta {
             // `HashMap<String, T>` site receives every active component assignable
             // to T, in canonical-name order. `container` is the instantiated type.
             enum class MultiKind { None, List, Map };
+            // A `Scoped<T>` field: `container` is the handle class, `target` is T, and the
+            // holder owns the handle. No construction edge, since get() resolves late.
+            bool handle = false;
             MultiKind multi = MultiKind::None;
             CajetaClassPtr container;
             vector<ComponentDescriptorPtr> members;
@@ -602,6 +605,11 @@ namespace cajeta {
         // The published method scope that `method` enters: its own @Scope, or one on a
         // method it overrides or implements. Null when it anchors nothing.
         static ScopePublicationPtr methodScopeOf(const MethodPtr& method);
+        // The instance scope `method` makes its receiver current: one published on its
+        // class or an ancestor, for a non-private instance method. Null otherwise.
+        static ScopePublicationPtr instanceScopeOf(const MethodPtr& method);
+        // The hidden field an instance-scope class keeps its component table in.
+        static constexpr const char* kScopeTableField = "__cajeta_scope_table";
 
         // The publication `name` resolves to, a builtin for Singleton and Transient.
         // Throws on an unknown or unqualified clashing name; `use` names the user.

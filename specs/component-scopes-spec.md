@@ -199,7 +199,8 @@ annotation Inject {
   `Principal` from a token), it calls `Components.provide(#value)`. The value
   lands in the active scope its type declares.
 - **7.2** When a provided type is injected before it was provided, the
-  injection throws a typed exception naming the type and the scope.
+  injection throws `NotProvidedException` naming the type and the scope. A
+  provided type is a scoped component with no no-argument constructor.
 - **7.3** When a value is provided twice in one scope, the second call throws.
 
 ## 8. Built-in scopes and migration

@@ -67,26 +67,54 @@ namespace cajeta {
         module->setCurrentMethod(shared_from_this());
 
         // A scoped component lives in the innermost active frame of its scope; the
-        // lookup fails with ScopeNotActiveException when no frame is active.
-        llvm::Value* frame = nullptr;
-        llvm::Value* componentKey = nullptr;
-        llvm::Value* current = nullptr;
+        // lookup fails with ScopeNotActiveException when no frame is active. A first
+        // build claims its slot, so a concurrent injection parks until it is done.
+        llvm::Value* claim = nullptr;
+        auto claimSlot = [&]() {
+            llvm::IRBuilder<> eb(entry, entry->begin());
+            llvm::AllocaInst* a = eb.CreateAlloca(
+                llvm::ArrayType::get(llvm::Type::getInt8Ty(ctx), 48), nullptr, "claim");
+            a->setAlignment(llvm::Align(8));
+            return a;
+        };
+        // Routes an acquire result: 0 builds, 1 and 2 fail, anything else is built.
+        auto dispatch = [&](llvm::Value* cur) {
+            llvm::BasicBlock* waitFailed =
+                llvm::BasicBlock::Create(ctx, "build_failed", llvmFunction);
+            llvm::BasicBlock* reentered =
+                llvm::BasicBlock::Create(ctx, "reentered", llvmFunction);
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+            llvm::SwitchInst* sw = builder->CreateSwitch(
+                builder->CreatePtrToInt(cur, i64Ty), cached, 3);
+            sw->addCase(llvm::ConstantInt::get(llvm::cast<llvm::IntegerType>(i64Ty), 0), fresh);
+            sw->addCase(llvm::ConstantInt::get(llvm::cast<llvm::IntegerType>(i64Ty), 1), waitFailed);
+            sw->addCase(llvm::ConstantInt::get(llvm::cast<llvm::IntegerType>(i64Ty), 2), reentered);
+            builder->SetInsertPoint(waitFailed);
+            emitThrowStdlibException(module, "cajeta.error.ScopedBuildFailedException",
+                "the build of component " + canonical + " that this injection waited on failed");
+            builder->SetInsertPoint(reentered);
+            emitThrowStdlibException(module, "cajeta.error.ScopedBuildFailedException",
+                "component " + canonical + " was injected again while it was being built, "
+                "a cycle through Scoped.get()");
+            builder->SetInsertPoint(cached);
+            builder->CreateRet(cur);
+        };
         if (publishedScope) {
             llvm::Function* findFn = module->getRuntimeFunction("__cajeta_anchor_find");
-            llvm::Function* getFn = module->getRuntimeFunction("__cajeta_anchor_get");
-            if (!findFn || !getFn) {
+            llvm::Function* acquireFn = module->getRuntimeFunction("__cajeta_anchor_acquire");
+            if (!findFn || !acquireFn) {
                 throw Exception("the runtime has no component-scope anchors",
                                 "CAJETA_ERROR_INTERNAL");
             }
             llvm::Constant* scopeKey = CajetaModule::scopeKeyGlobal(
                 llvmFunction->getParent(), descriptor->scope->qualified());
-            componentKey = CajetaModule::componentKeyGlobal(
+            llvm::Constant* componentKey = CajetaModule::componentKeyGlobal(
                 llvmFunction->getParent(), canonical);
             llvm::BasicBlock* inactive =
                 llvm::BasicBlock::Create(ctx, "inactive", llvmFunction);
             llvm::BasicBlock* active =
                 llvm::BasicBlock::Create(ctx, "active", llvmFunction);
-            frame = builder->CreateCall(findFn, {scopeKey}, "frame");
+            llvm::Value* frame = builder->CreateCall(findFn, {scopeKey}, "frame");
             builder->CreateCondBr(builder->CreateICmpEQ(frame, nullPtr, "noframe"),
                                   inactive, active);
             builder->SetInsertPoint(inactive);
@@ -94,21 +122,51 @@ namespace cajeta {
                 "component " + canonical + " has scope \"" + descriptor->scope->qualified()
                     + "\", and no activation of it is active");
             builder->SetInsertPoint(active);
-            current = builder->CreateCall(getFn, {frame, componentKey}, "cur");
+            claim = claimSlot();
+            dispatch(builder->CreateCall(acquireFn, {frame, componentKey, claim}, "cur"));
         } else if (!transient) {
-            current = builder->CreateLoad(ptrTy, singletonGV, "cur");
-        }
-        if (transient) {
+            llvm::Function* acquireFn = module->getRuntimeFunction("__cajeta_singleton_acquire");
+            if (!acquireFn) {
+                throw Exception("the runtime has no singleton claim", "CAJETA_ERROR_INTERNAL");
+            }
+            llvm::LoadInst* fast = builder->CreateLoad(ptrTy, singletonGV, "cur");
+            fast->setAtomic(llvm::AtomicOrdering::Acquire);
+            fast->setAlignment(llvm::Align(8));
+            llvm::BasicBlock* hit = llvm::BasicBlock::Create(ctx, "hit", llvmFunction);
+            llvm::BasicBlock* slow = llvm::BasicBlock::Create(ctx, "slow", llvmFunction);
+            builder->CreateCondBr(builder->CreateICmpEQ(fast, nullPtr, "isnull"), slow, hit);
+            builder->SetInsertPoint(hit);
+            builder->CreateRet(fast);
+            builder->SetInsertPoint(slow);
+            claim = claimSlot();
+            dispatch(builder->CreateCall(acquireFn, {singletonGV, claim}, "cur"));
+        } else {
             builder->CreateBr(fresh);
             cached->eraseFromParent();
-        } else {
-            builder->CreateCondBr(builder->CreateICmpEQ(current, nullPtr, "isnull"),
-                                  fresh, cached);
-            builder->SetInsertPoint(cached);
-            builder->CreateRet(current);
         }
 
         builder->SetInsertPoint(fresh);
+
+        // A scoped component with no no-argument constructor is only ever provided.
+        bool buildable = false;
+        for (auto& [mkey, m] : parent->getMethods()) {
+            if (!m || !m->isConstructor()) continue;
+            size_t formals = 0;
+            for (auto& p : m->getParameterList()) {
+                if (p && p->getName() != "this") formals++;
+            }
+            if (formals == 0) {
+                buildable = true;
+                break;
+            }
+        }
+        if (publishedScope && !buildable) {
+            emitThrowStdlibException(module, "cajeta.error.NotProvidedException",
+                "component " + canonical + " in scope \"" + descriptor->scope->qualified()
+                    + "\" has no no-argument constructor, so Components.provide must place it "
+                      "before it is injected, and it has not");
+            return;
+        }
 
         llvm::Type* structTy = parent->getLlvmType();
         const llvm::DataLayout& dl = lmod->getDataLayout();
@@ -126,6 +184,18 @@ namespace cajeta {
                              /*isConstructor=*/true, instance,
                              /*callerModule=*/module);
 
+        // Sets `field`'s bit in the ownership word, so the holder's drop frees it.
+        auto markOwned = [&](const StructurePropertyPtr& field) {
+            int bit = parent->ownershipBitIndexOf(field);
+            int wordIdx = parent->getOwnershipWordLlvmIndex();
+            if (bit < 0 || wordIdx < 0) return;
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+            llvm::Value* wordSlot = builder->CreateStructGEP(
+                structTy, instance, (unsigned) wordIdx, "own_bits_slot");
+            llvm::Value* word = builder->CreateLoad(i64Ty, wordSlot);
+            builder->CreateStore(
+                builder->CreateOr(word, llvm::ConstantInt::get(i64Ty, 1ULL << bit)), wordSlot);
+        };
         // Field injection, by the resolved dependency's allocate mode: Singleton
         // calls the target's __cajeta_inject and stores the shared pointer;
         // OwnerScope/Transient allocate inline; an optional non-match stores null.
@@ -139,6 +209,12 @@ namespace cajeta {
                 rd.field->getName() + "_slot");
             if (rd.multi != CajetaModule::ResolvedDependency::MultiKind::None) {
                 builder->CreateStore(emitMultibinding(rd), slot);
+                continue;
+            }
+            if (rd.handle) {
+                std::vector<ParameterEntry> none;
+                builder->CreateStore(rd.container->heapConstruct(module, none), slot);
+                markOwned(rd.field);
                 continue;
             }
 
@@ -309,17 +385,7 @@ namespace cajeta {
                     kindSlot);
             } else {
                 builder->CreateStore(depPtr, slot);
-                int bit = parent->ownershipBitIndexOf(rd.field);
-                int wordIdx = parent->getOwnershipWordLlvmIndex();
-                if (freshOwned && bit >= 0 && wordIdx >= 0) {
-                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
-                    llvm::Value* wordSlot = builder->CreateStructGEP(
-                        structTy, instance, (unsigned) wordIdx, "own_bits_slot");
-                    llvm::Value* word = builder->CreateLoad(i64Ty, wordSlot);
-                    builder->CreateStore(
-                        builder->CreateOr(word, llvm::ConstantInt::get(i64Ty, 1ULL << bit)),
-                        wordSlot);
-                }
+                if (freshOwned) markOwned(rd.field);
             }
         }
 
@@ -365,7 +431,7 @@ namespace cajeta {
                 throw Exception("the runtime has no component-scope anchors",
                                 "CAJETA_ERROR_INTERNAL");
             }
-            builder->CreateCall(publishFn, {frame, componentKey, instance, dropFn,
+            builder->CreateCall(publishFn, {claim, instance, dropFn,
                                             preDestroy ? preDestroy : nullPtr});
             builder->CreateRet(instance);
             return;
@@ -384,7 +450,12 @@ namespace cajeta {
             }
         }
 
-        builder->CreateStore(instance, singletonGV);
+        llvm::StoreInst* store = builder->CreateStore(instance, singletonGV);
+        store->setAtomic(llvm::AtomicOrdering::Release);
+        store->setAlignment(llvm::Align(8));
+        if (llvm::Function* publishFn = module->getRuntimeFunction("__cajeta_singleton_publish")) {
+            builder->CreateCall(publishFn, {claim, instance});
+        }
         builder->CreateRet(instance);
     }
 }

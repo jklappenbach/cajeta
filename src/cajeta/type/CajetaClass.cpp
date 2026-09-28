@@ -2806,6 +2806,17 @@ namespace cajeta {
 
         for (auto& property : reversed) {
             if (property->isStatic()) continue;
+            // An instance-scope anchor ends its component table with itself.
+            if (property->getName() == CajetaModule::kScopeTableField) {
+                if (llvm::Function* endFn = cajModule->getRuntimeFunction(
+                        "__cajeta_anchor_table_end", bodyModule)) {
+                    llvm::Value* slot = b.CreateStructGEP(
+                        rawLlvmType(), instance, (unsigned) getFieldLlvmIndex(property),
+                        "scope_table_slot");
+                    b.CreateCall(endFn, {b.CreateLoad(ptrTy, slot, "scope_table")});
+                }
+                continue;
+            }
             auto fieldType = property->getType();
             if (!fieldType) continue;
             // A `T`-origin scalar field may have been LENT, which no type can

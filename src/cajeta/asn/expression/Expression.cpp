@@ -1812,22 +1812,24 @@ bool cajetaRhsCarriesRedundantSharp(
         auto it = CajetaType::getCanonicalMap().find(canonical);
         auto exClass = it == CajetaType::getCanonicalMap().end()
             ? nullptr : std::dynamic_pointer_cast<CajetaClass>(it->second);
-        llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
+        llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw_titled");
         if (!exClass || !throwFn) {
-            throw Exception("cannot throw " + canonical + ": the class or __cajeta_throw is missing",
+            throw Exception("cannot throw " + canonical + ": the class or __cajeta_throw_titled is missing",
                             "CAJETA_ERROR_INTERNAL");
         }
         std::vector<ParameterEntry> entries;
         entries.push_back(ParameterEntry(CajetaType::of("String"), "",
                                          materializeStringConstant(module, message)));
         llvm::Value* exc = exClass->heapConstruct(module, entries);
-        builder->CreateCall(throwFn, {exc});
+        // The exception is fresh, so its title goes with it to the catch that frees it.
+        builder->CreateCall(throwFn, {exc, llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(*module->getLlvmContext()), 1)});
         return builder->CreateUnreachable();
     }
 
     // Branches on `matchBit` and throws ClassCastException("... <msgDetail>") on the
     // false edge, leaving the builder in the match-true block for the caller. Throws
-    // through __cajeta_throw, so owned-local unwinding matches a user `throw`.
+    // through __cajeta_throw_titled with its title, so the catch that takes it frees it.
     static void emitCaptureCastThrowBranch(CajetaModulePtr module,
                                            llvm::Value* matchBit,
                                            const std::string& msgDetail) {
@@ -1853,8 +1855,9 @@ bool cajetaRhsCarriesRedundantSharp(
                     ParameterEntry(CajetaType::of("String"), "", msg));
                 llvm::Value* exc = cce->heapConstruct(module, entries);
                 if (llvm::Function* throwFn =
-                        module->getRuntimeFunction("__cajeta_throw")) {
-                    builder->CreateCall(throwFn, {exc});
+                        module->getRuntimeFunction("__cajeta_throw_titled")) {
+                    builder->CreateCall(throwFn, {exc, llvm::ConstantInt::get(
+                        llvm::Type::getInt64Ty(ctx), 1)});
                     builder->CreateUnreachable();
                     threw = true;
                 }
@@ -5561,8 +5564,9 @@ bool cajetaRhsCarriesRedundantSharp(
                     {doneRegSlot, excRegSlot, fiberRegSlot});
             }
         }
+        // A detached task inherits none of the spawner's component scopes.
         if (llvm::Function* runFn = module->getRuntimeFunction(
-                "__cajeta_task_run")) {
+                detachMode ? "__cajeta_task_run_detached" : "__cajeta_task_run")) {
             outerBuilder->CreateCall(runFn,
                 {ctxInstance, trampFn, fiberRegSlot});
         }

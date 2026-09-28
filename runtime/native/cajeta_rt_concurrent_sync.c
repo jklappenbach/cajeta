@@ -843,22 +843,32 @@ void __cajeta_fiber_context_free(void* snapshot) {
 
 // --- Component-scope anchors ------------------------------------------------
 // An anchored method or instance pushes a frame for its dynamic extent. Its first
-// member is a drop entry, so a return pops it and a throw unwinds it.
+// member is a drop entry, so a return pops it and a throw unwinds it. A structured
+// child fiber inherits heap copies of the chain; a detached one starts empty.
 
 struct cajeta_anchor_slot {
     const void* component;
     void* instance;
     void (*drop_fn)(void*);
     void (*pre_destroy)(void*);
-    struct cajeta_anchor_slot* next;   // older slot
+    int32_t ready;                      // 0 while its builder runs
+    struct cajeta_fiber* builder;
+    struct cajeta_anchor_slot* next;    // older slot
 };
 
+// A method table is shared by its frame and every inherited copy, and ends when
+// the last of them releases it. An instance table ends with its object.
 struct cajeta_anchor_table {
-    struct cajeta_anchor_slot* head;   // newest slot
+    pthread_mutex_t lock;
+    pthread_cond_t changed;             // wakes a waiter on a plain thread
+    struct cajeta_fiber* wait_head;     // parked fibers, woken together
+    int64_t refs;
+    int64_t epoch;                      // bumped when a build is abandoned
+    struct cajeta_anchor_slot* head;    // newest slot
 };
 
 struct cajeta_anchor_frame {
-    struct cajeta_drop_entry drop;
+    struct cajeta_drop_entry drop;      // drop_fn NULL marks an inherited copy
     const void* key;
     void* instance;                     // anchor instance, NULL for a method scope
     struct cajeta_anchor_table** table_slot;
@@ -866,11 +876,21 @@ struct cajeta_anchor_frame {
     struct cajeta_anchor_frame* prev;
 };
 
-// The compiler reserves this many bytes for a frame in the anchored function.
+// A build in progress, on the drop chain so a throw abandons it.
+struct cajeta_anchor_claim {
+    struct cajeta_drop_entry drop;
+    struct cajeta_anchor_table* table;
+    struct cajeta_anchor_slot* slot;
+};
+
+// The compiler reserves these sizes in the functions that use them.
 _Static_assert(sizeof(struct cajeta_anchor_frame) == 72,
                "cajeta_anchor_frame size is baked into the compiler");
+_Static_assert(sizeof(struct cajeta_anchor_claim) == 48,
+               "cajeta_anchor_claim size is baked into the compiler");
 
 void __cajeta_drop_push(struct cajeta_drop_entry* e, void* obj, void (*drop_fn)(void*));
+void __cajeta_drop_pop_run(struct cajeta_drop_entry* e);
 
 static __thread struct cajeta_anchor_frame* __cajeta_main_anchor_top = NULL;
 static int64_t __cajeta_anchor_tables = 0;
@@ -882,6 +902,37 @@ static struct cajeta_anchor_frame** __cajeta_anchor_top_ptr(void) {
     return &__cajeta_main_anchor_top;
 }
 
+static struct cajeta_anchor_table* __cajeta_anchor_table_new(void) {
+    struct cajeta_anchor_table* t =
+        (struct cajeta_anchor_table*) calloc(1, sizeof(struct cajeta_anchor_table));
+    if (!t || pthread_mutex_init(&t->lock, NULL) != 0
+            || pthread_cond_init(&t->changed, NULL) != 0) {
+        fprintf(stderr, "cajeta: component-scope table init failed\n");
+        abort();
+    }
+    t->refs = 1;
+    __atomic_fetch_add(&__cajeta_anchor_tables, 1, __ATOMIC_SEQ_CST);
+    return t;
+}
+
+// The table behind `slot`, created on first use. Two fibers may race to create
+// it, so the loser frees its copy.
+static struct cajeta_anchor_table* __cajeta_anchor_table_at(struct cajeta_anchor_table** slot) {
+    struct cajeta_anchor_table* t = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+    if (t) return t;
+    struct cajeta_anchor_table* fresh = __cajeta_anchor_table_new();
+    struct cajeta_anchor_table* expected = NULL;
+    if (__atomic_compare_exchange_n(slot, &expected, fresh, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        return fresh;
+    }
+    pthread_cond_destroy(&fresh->changed);
+    pthread_mutex_destroy(&fresh->lock);
+    free(fresh);
+    __atomic_fetch_sub(&__cajeta_anchor_tables, 1, __ATOMIC_SEQ_CST);
+    return expected;
+}
+
 // Drops a table's components newest first, running @PreDestroy before each drop.
 void __cajeta_anchor_table_end(void* table) {
     struct cajeta_anchor_table* t = (struct cajeta_anchor_table*) table;
@@ -889,13 +940,23 @@ void __cajeta_anchor_table_end(void* table) {
     struct cajeta_anchor_slot* s = t->head;
     while (s) {
         struct cajeta_anchor_slot* older = s->next;
-        if (s->pre_destroy) s->pre_destroy(s->instance);
-        if (s->drop_fn) s->drop_fn(s->instance);
+        if (s->ready) {
+            if (s->pre_destroy) s->pre_destroy(s->instance);
+            if (s->drop_fn) s->drop_fn(s->instance);
+        }
         free(s);
         s = older;
     }
+    pthread_cond_destroy(&t->changed);
+    pthread_mutex_destroy(&t->lock);
     free(t);
     __atomic_fetch_sub(&__cajeta_anchor_tables, 1, __ATOMIC_SEQ_CST);
+}
+
+static void __cajeta_anchor_table_release(struct cajeta_anchor_table* t) {
+    if (t && __atomic_sub_fetch(&t->refs, 1, __ATOMIC_ACQ_REL) == 0) {
+        __cajeta_anchor_table_end(t);
+    }
 }
 
 static void __cajeta_anchor_end(void* p) {
@@ -907,7 +968,7 @@ static void __cajeta_anchor_end(void* p) {
     }
     *top = f->prev;
     if (!f->instance) {
-        __cajeta_anchor_table_end(f->own_table);
+        __cajeta_anchor_table_release(f->own_table);
         f->own_table = NULL;
     }
 }
@@ -934,47 +995,170 @@ void* __cajeta_anchor_find(const void* key) {
     return NULL;
 }
 
-// The frame's instance of `component`, or NULL when none is built yet.
-void* __cajeta_anchor_get(void* frame, const void* component) {
-    struct cajeta_anchor_frame* f = (struct cajeta_anchor_frame*) frame;
-    struct cajeta_anchor_table* t = *f->table_slot;
-    if (!t) return NULL;
-    for (struct cajeta_anchor_slot* s = t->head; s; s = s->next) {
-        if (s->component == component) return s->instance;
-    }
-    return NULL;
-}
-
-// Records a built component in the frame's table, creating the table on first use.
-void __cajeta_anchor_publish(void* frame, const void* component, void* instance,
-                             void (*drop_fn)(void*), void (*pre_destroy)(void*)) {
-    struct cajeta_anchor_frame* f = (struct cajeta_anchor_frame*) frame;
-    struct cajeta_anchor_table** ts = f->table_slot;
-    if (!*ts) {
-        *ts = (struct cajeta_anchor_table*) calloc(1, sizeof(struct cajeta_anchor_table));
-        if (!*ts) {
-            fprintf(stderr, "cajeta: component-scope table malloc failed\n");
+// Heap copies of the running chain for a structured child. A method table is
+// created now and shared, so the child never reaches into the parent's stack.
+static struct cajeta_anchor_frame* __cajeta_anchor_snapshot(void) {
+    struct cajeta_anchor_frame* head = NULL;
+    struct cajeta_anchor_frame** tail = &head;
+    for (struct cajeta_anchor_frame* f = *__cajeta_anchor_top_ptr(); f; f = f->prev) {
+        struct cajeta_anchor_frame* c =
+            (struct cajeta_anchor_frame*) calloc(1, sizeof(struct cajeta_anchor_frame));
+        if (!c) {
+            fprintf(stderr, "cajeta: component-scope snapshot malloc failed\n");
             abort();
         }
-        __atomic_fetch_add(&__cajeta_anchor_tables, 1, __ATOMIC_SEQ_CST);
+        c->key = f->key;
+        c->instance = f->instance;
+        if (f->instance) {
+            c->table_slot = f->table_slot;
+        } else {
+            struct cajeta_anchor_table* t = __cajeta_anchor_table_at(f->table_slot);
+            __atomic_fetch_add(&t->refs, 1, __ATOMIC_ACQ_REL);
+            c->own_table = t;
+            c->table_slot = &c->own_table;
+        }
+        *tail = c;
+        tail = &c->prev;
     }
-    struct cajeta_anchor_slot* s =
-        (struct cajeta_anchor_slot*) malloc(sizeof(struct cajeta_anchor_slot));
-    if (!s) {
-        fprintf(stderr, "cajeta: component-scope slot malloc failed\n");
-        abort();
-    }
-    s->component = component;
-    s->instance = instance;
-    s->drop_fn = drop_fn;
-    s->pre_destroy = pre_destroy;
-    s->next = (*ts)->head;
-    (*ts)->head = s;
+    return head;
 }
 
-// Live component-scope tables, for tests.
+// Releases a finished child's inherited copies.
+static void __cajeta_anchor_release_chain(struct cajeta_anchor_frame* head) {
+    while (head) {
+        struct cajeta_anchor_frame* prev = head->prev;
+        if (head->drop.drop_fn == NULL) {
+            if (!head->instance) __cajeta_anchor_table_release(head->own_table);
+            free(head);
+        }
+        head = prev;
+    }
+}
+
+// Wakes every parked waiter. The table lock is held on entry and released here.
+static void __cajeta_anchor_wake_unlock(struct cajeta_anchor_table* t) {
+    struct cajeta_fiber* w = t->wait_head;
+    t->wait_head = NULL;
+    pthread_cond_broadcast(&t->changed);
+    pthread_mutex_unlock(&t->lock);
+    while (w) {
+        struct cajeta_fiber* next = w->next;
+        w->next = NULL;
+        __cajeta_publish_ready(w);
+        w = next;
+    }
+}
+
+static void __cajeta_anchor_abandon(void* p) {
+    struct cajeta_anchor_claim* c = (struct cajeta_anchor_claim*) p;
+    struct cajeta_anchor_table* t = c->table;
+    pthread_mutex_lock(&t->lock);
+    struct cajeta_anchor_slot** link = &t->head;
+    while (*link && *link != c->slot) link = &(*link)->next;
+    if (*link) *link = c->slot->next;
+    free(c->slot);
+    t->epoch++;
+    __cajeta_anchor_wake_unlock(t);
+}
+
+// The built instance of `component` in `t`. NULL means the caller builds it, with
+// `claim` pushed on the drop chain; 1 means a build this caller waited on failed;
+// 2 means the calling fiber is already building it.
+static void* __cajeta_anchor_acquire_in(struct cajeta_anchor_table* t,
+                                        const void* component,
+                                        struct cajeta_anchor_claim* claim) {
+    struct cajeta_fiber* self = __cajeta_current_fiber;
+    pthread_mutex_lock(&t->lock);
+    int64_t waitedEpoch = -1;
+    for (;;) {
+        struct cajeta_anchor_slot* s = t->head;
+        while (s && s->component != component) s = s->next;
+        if (s && s->ready) {
+            void* inst = s->instance;
+            pthread_mutex_unlock(&t->lock);
+            return inst;
+        }
+        if (!s) {
+            if (waitedEpoch >= 0 && t->epoch != waitedEpoch) {
+                pthread_mutex_unlock(&t->lock);
+                return (void*) 1;
+            }
+            s = (struct cajeta_anchor_slot*) calloc(1, sizeof(struct cajeta_anchor_slot));
+            if (!s) {
+                fprintf(stderr, "cajeta: component-scope slot malloc failed\n");
+                abort();
+            }
+            s->component = component;
+            s->builder = self;
+            s->next = t->head;
+            t->head = s;
+            pthread_mutex_unlock(&t->lock);
+            claim->table = t;
+            claim->slot = s;
+            __cajeta_drop_push(&claim->drop, claim, __cajeta_anchor_abandon);
+            return NULL;
+        }
+        if (s->builder == self) {
+            pthread_mutex_unlock(&t->lock);
+            return (void*) 2;
+        }
+        waitedEpoch = t->epoch;
+        if (!self) {
+            pthread_cond_wait(&t->changed, &t->lock);
+            continue;
+        }
+        self->next = t->wait_head;
+        t->wait_head = self;
+        self->state = CAJETA_FIBER_PARKED;
+        pthread_mutex_unlock(&t->lock);
+        __cajeta_swapcontext(&self->ctx, &__cajeta_carrier_ctx);
+        pthread_mutex_lock(&t->lock);
+    }
+}
+
+static void __cajeta_anchor_publish_in(struct cajeta_anchor_claim* claim, void* instance,
+                                       void (*drop_fn)(void*), void (*pre_destroy)(void*)) {
+    struct cajeta_anchor_table* t = claim->table;
+    pthread_mutex_lock(&t->lock);
+    claim->slot->instance = instance;
+    claim->slot->drop_fn = drop_fn;
+    claim->slot->pre_destroy = pre_destroy;
+    claim->slot->ready = 1;
+    claim->slot->builder = NULL;
+    __cajeta_anchor_wake_unlock(t);
+    claim->drop.active = 0;
+    __cajeta_drop_pop_run(&claim->drop);
+}
+
+void* __cajeta_anchor_acquire(void* frame, const void* component, void* claim) {
+    struct cajeta_anchor_frame* f = (struct cajeta_anchor_frame*) frame;
+    return __cajeta_anchor_acquire_in(__cajeta_anchor_table_at(f->table_slot), component,
+                                      (struct cajeta_anchor_claim*) claim);
+}
+
+void __cajeta_anchor_publish(void* claim, void* instance,
+                             void (*drop_fn)(void*), void (*pre_destroy)(void*)) {
+    __cajeta_anchor_publish_in((struct cajeta_anchor_claim*) claim, instance, drop_fn,
+                               pre_destroy);
+}
+
+// Singletons build under the same protocol, in a table that never ends.
+static struct cajeta_anchor_table* __cajeta_singleton_table = NULL;
+
+void* __cajeta_singleton_acquire(const void* component, void* claim) {
+    return __cajeta_anchor_acquire_in(__cajeta_anchor_table_at(&__cajeta_singleton_table),
+                                      component, (struct cajeta_anchor_claim*) claim);
+}
+
+void __cajeta_singleton_publish(void* claim, void* instance) {
+    __cajeta_anchor_publish_in((struct cajeta_anchor_claim*) claim, instance, NULL, NULL);
+}
+
+// Live component-scope tables, for tests. The singleton table is never counted.
 int32_t __cajeta_anchor_table_population(void) {
-    return (int32_t) __atomic_load_n(&__cajeta_anchor_tables, __ATOMIC_SEQ_CST);
+    int64_t n = __atomic_load_n(&__cajeta_anchor_tables, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&__cajeta_singleton_table, __ATOMIC_ACQUIRE)) n--;
+    return (int32_t) n;
 }
 
 // Observability for tests: bumped whenever a drop function actually fires.
