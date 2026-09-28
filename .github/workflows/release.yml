@@ -585,19 +585,14 @@ jobs:
           # the test harness needs for its per-test wall-clock cap. Without it
           # the harness falls back to running tests untimed (a hang could stall
           # a worker), so install it to keep the timeout protection on macOS.
-          brew install \
-            cmake \
-            ninja \
-            antlr4-cpp-runtime \
-            openjdk@21 \
-            googletest \
-            glog \
-            zstd \
-            zeromq \
-            xxhash \
-            coreutils \
-            vulkan-headers \
-            vulkan-loader
+          # A runner image can already hold an `openssl` symlink, so linking the
+          # openssl@3 dependency fails the install. Force that one link and retry.
+          pkgs="cmake ninja antlr4-cpp-runtime openjdk@21 googletest glog zstd zeromq \
+            xxhash coreutils vulkan-headers vulkan-loader"
+          if ! brew install $pkgs; then
+            brew link --overwrite openssl@3
+            brew install $pkgs
+          fi
           # Apple's system clang doesn't know about the brew llvm headers/libs
           # unless we point CMake at the brew prefix explicitly.
           echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm)" >> "$GITHUB_ENV"
@@ -786,7 +781,6 @@ jobs:
             TENV="${{ github.event_name == 'workflow_dispatch' && inputs.test_env || '' }}"
             if [ -n "$TENV" ]; then
               echo ">> targeted env: $TENV"
-              # shellcheck disable=SC2086
               export $TENV
             fi
             echo ">> targeted test run: $TESTS"
@@ -795,7 +789,6 @@ jobs:
             # a hard native death (the COFF exit-127 class) then names the
             # dying test in the summary instead of swallowing the whole
             # suite's buffered stdout.
-            # shellcheck disable=SC2086
             NO_BUILD=1 KEEP_LOGS=run-logs PARALLEL=1 ./cajeta_tests.sh $TESTS
           else
             NO_BUILD=1 KEEP_LOGS=run-logs ./release_tests.sh
