@@ -30,8 +30,30 @@ sugar: `MathUtil::abs` (static), `obj::method` (captures `obj`).
    drops when the closure drops.
 
 Choosing wrong is failure class (a): a borrow-capturing closure that escapes
-its captures' scope is exactly the borrow-escape the checker hunts — when the
-closure must escape, transfer (`#`) what it captures.
+its captures' scope reads freed memory. **No diagnostic catches it today**, so
+when the closure must escape, transfer (`#`) what it captures.
+
+## Measured capture lifetimes
+
+Each row is pinned by `test/ownership/ClosureCaptureLifetimeTests.cpp`, in the
+factory shape a middleware or callback registry takes: a factory builds a
+lambda over a value, stores the lambda in a keeper, and returns the keeper.
+
+| Spelling in the factory | The captured value | Test |
+|---|---|---|
+| `(x) -> x + cfg.v`, `cfg` a `#` formal | freed when the factory returns, then read through freed memory | `capturedSharpFormal` |
+| `(x) -> x + cfg.v`, `cfg` a local | the same | `capturedLocal` |
+| `(x) -> x + cfg.v`, `cfg` a plain formal the caller keeps | correct while the caller keeps it, never freed by the keeper | `capturedPlainFormalCallerKeeps` |
+| `(x) -> x + #cfg.v` (member position) | moved into the closure, freed once when the closure goes | `sharpInsideTheBody*` |
+| lambda borrows `cfg`, then `keeper.owned = #cfg` | kept alive by the keeper, freed once with it | `keeperOwnsTheCaptureInAField` |
+| `(x) -> f(#cfg, x)` (argument position) | **not** moved: freed when the factory returns | `DISABLED_sharpArgumentInsideTheBodyMovesIntoTheClosure` |
+
+- A capture is a borrow unless `#` marks it, even when the captured name is a
+  `#` formal. Declaring the factory's parameter `#T` does not keep it alive.
+- `#` moves a capture only in member position (`#cfg.v`, `#c.next()`). The
+  same `#` as a call argument inside the body does not, so the capture dies
+  with the factory. When the lambda passes its capture on, have the keeper own
+  it in a field instead, which is explicit and measured.
 
 ## Worked example (verified: returns 68)
 
