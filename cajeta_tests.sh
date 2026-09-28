@@ -39,6 +39,12 @@
 #                its timeout (default 3). Covers sweep contention vs a quiet
 #                measurement. WEIGHTED=0 disables the duration-aware path and
 #                restores the flat count-based budgets.
+#   PROGRESS=N   (parallel, non-interactive) seconds between progress polls
+#                (default 5; PROGRESS=0 turns it off). Every finished test is
+#                printed as it lands, and a heartbeat names each shard's
+#                running test when nothing has finished for HEARTBEAT seconds
+#                (default 60). The poll runs in this shell and only reads the
+#                shard files, so it does not touch the tests' own timing.
 #   KEEP_LOGS=dir  (parallel mode only) persist each shard's raw output —
 #                the full per-test gtest text including assertion detail and
 #                the synthetic >>> CRASH / >>> TIMEOUT markers — into `dir`
@@ -849,6 +855,69 @@ done
 # shards render regardless of count. Loops until every shard drops its .exit
 # sentinel; the `wait` below then reaps the already-finished jobs instantly. The
 # alternate screen leaves no scrollback — the end-of-run summary prints normally.
+# --- Streaming progress (non-interactive) ------------------------------------
+# A log must never say nothing until the end: on 2026-09-27 a run whose log
+# stayed silent for its whole life was indistinguishable from a hung one, and
+# a three-hour hang elsewhere went unseen behind a frozen count. So when there
+# is no dashboard, this loop prints each finished test the moment gtest writes
+# its result (gtest flushes after every test), numbered against the total, and
+# a heartbeat when nothing has finished for HEARTBEAT seconds naming the test
+# every busy shard is on and how long that shard has been silent. It reads
+# the shard files from this shell only; the test processes never see it.
+progress_loop() {
+    local every="${PROGRESS:-5}" beat="${HEARTBEAT:-60}" seen="$tmpdir/progress.seen"
+    local last_new=$SECONDS s f now new cur age busy
+    : > "$seen"
+    while :; do
+        local all_done=1
+        for ((s=0; s<shards; s++)); do
+            [ -f "$tmpdir/shard_${s}.exit" ] || { all_done=0; break; }
+        done
+        new=$(cat "$tmpdir"/shard_*.out "$tmpdir"/shard_*.out.b "$tmpdir"/shard_*.out.t 2>/dev/null \
+            | awk '
+                /^\[       OK \] [^ ]+ \([0-9]+ ms\)/     { print "OK\t" $4 "\t" $5 " " $6; next }
+                /^\[  FAILED  \] [^ ]+ \([0-9]+ ms\)/     { print "FAIL\t" $4 "\t" $5 " " $6; next }
+                /^\[  SKIPPED \] [^ ]+ \([0-9]+ ms\)/     { print "SKIP\t" $4 "\t" $5 " " $6; next }
+                /^>>> TIMEOUT /                           { print "TIMEOUT\t" $3 "\t" ; next }
+                /^>>> CRASH /                             { print "CRASH\t" $3 "\t" ; next }' \
+            | LC_ALL=C sort -u | LC_ALL=C comm -13 "$seen" -)
+        if [ -n "$new" ]; then
+            local ndone
+            ndone=$(cut -f2 "$seen" | sort -u | wc -l | tr -d ' ')
+            printf '%s\n' "$new" >> "$seen"
+            LC_ALL=C sort -u -o "$seen" "$seen"
+            printf '%s\n' "$new" | while IFS=$'\t' read -r st name dur; do
+                ndone=$((ndone + 1))
+                printf '[%4s/%-4s %4ds] %-7s %s %s\n' "$ndone" "$num_tests" \
+                    "$((SECONDS - start_time))" "$st" "$name" "$dur"
+            done
+            last_new=$SECONDS
+        elif [ "$all_done" = "0" ] && [ $((SECONDS - last_new)) -ge "$beat" ]; then
+            now=$(date +%s)
+            busy=""
+            for ((s=0; s<shards; s++)); do
+                [ -f "$tmpdir/shard_${s}.exit" ] && continue
+                f=""
+                for cur in "$tmpdir/shard_${s}.out.t" "$tmpdir/shard_${s}.out.b"; do
+                    [ -f "$cur" ] && f="$cur"
+                done
+                [ -n "$f" ] || continue
+                name=$(awk '/^\[ RUN      \] /{r=$4} /^\[       OK \] |^\[  FAILED  \] |^\[  SKIPPED \] /{if ($4==r) r=""} END{print r}' "$f")
+                age=$(( now - $(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo "$now") ))
+                busy+=$(printf '\n    shard %2d: %s (silent %ds)' "$s" "${name:-<starting>}" "$age")
+            done
+            printf '[%4ss] heartbeat: nothing finished in %ds%s\n' \
+                "$((SECONDS - start_time))" "$((SECONDS - last_new))" "$busy"
+            last_new=$SECONDS
+        fi
+        [ "$all_done" = "1" ] && break
+        sleep "$every"
+    done
+}
+if [ "$live" = "0" ] && [ "${PROGRESS:-5}" != "0" ] && [ "${VERBOSE:-}" != "1" ]; then
+    progress_loop
+fi
+
 if [ "$live" = "1" ]; then
     draw_bar() {  # draw_bar <done> <total> <width>
         local d=$1 t=$2 w=$3 filled i
