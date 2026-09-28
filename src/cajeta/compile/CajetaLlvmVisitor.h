@@ -2479,6 +2479,10 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
+        virtual std::any visitAnnotationElementName(CajetaParser::AnnotationElementNameContext* ctx) override {
+            return visitChildren(ctx);
+        }
+
         virtual std::any visitElementValue(CajetaParser::ElementValueContext* ctx) override {
             return visitChildren(ctx);
         }
