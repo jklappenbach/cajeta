@@ -451,7 +451,6 @@ jobs:
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-zeromq
             mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-antlr4-runtime-cpp
             mingw-w64-x86_64-zstd
             mingw-w64-x86_64-xxhash
             mingw-w64-x86_64-libxml2
@@ -464,6 +463,14 @@ jobs:
             tar
             vim
             zip
+
+      # MSYS2 dropped antlr4-runtime-cpp from the mingw64 repository on
+      # 2026-09-28 (it ships for clang64, clangarm64 and ucrt64 only). Install the
+      # last mingw64 build from the package archive until this leg moves to ucrt64.
+      - name: Install the antlr4 runtime (Windows, from the MSYS2 archive)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: pacman -U --noconfirm --needed https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-antlr4-runtime-cpp-4.13.2-2-any.pkg.tar.zst
 
       # EVERY target links the cajeta-llvm FORK toolchain (LLVM 23 + clang +
       # lld) carrying the SPIR-V / SPV_KHR_ray_query patches — see plans/c0/.
