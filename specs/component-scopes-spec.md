@@ -146,8 +146,10 @@ annotation Inject {
   injection constructs it. Any other fiber that injects it in the same scope
   meanwhile parks until the constructor completes, then gets that instance.
   A component is visible only after its constructor completes.
-- **4.8** When that constructor throws, every parked fiber receives the same
-  failure, and the slot stays empty, so a later injection constructs again.
+- **4.8** When that constructor throws, the building fiber receives its
+  exception, and every parked fiber receives its own typed exception naming
+  the component. An exception is owned by one catch, so it cannot be shared.
+  The slot stays empty, so a later injection constructs again.
 - **4.9** When construction re-enters itself on the same fiber (A injects B,
   B injects A), it fails with an error naming the cycle instead of parking
   forever.
@@ -203,6 +205,11 @@ annotation Inject {
 - **8.2** When an injection site asks for `"Owner"` or `"Call"`, the scope is
   the injecting object or the injecting method's activation. These are
   site-relative, so only a site can ask for them.
+- **8.2.1** When `"Call"` is asked for on a field, compilation fails. A field
+  is filled once, when its holder is built, so it has no activation of its
+  own. `"Call"` applies to parameter injection, and today only `@Factory`
+  parameters are injected. A method that needs a per-activation component
+  publishes a scope instead.
 - **8.3** When `allocate` appears, compilation fails with a message giving the
   `scope` spelling. Its only users are the compiler's own tests.
 - **8.4** When `@Singleton` or `@Transient` marks a factory method, it means
