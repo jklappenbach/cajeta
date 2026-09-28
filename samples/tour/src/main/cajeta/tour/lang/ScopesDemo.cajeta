@@ -1,0 +1,116 @@
+package tour.lang;
+
+import tour.DemoClass;
+import cajeta.aot.Components;
+import cajeta.aot.Scoped;
+import cajeta.error.ScopeNotActiveException;
+
+// Component scopes: a component's lifetime is a named scope, published with
+// @Scope at the method or class that bounds it and consumed by name. See
+// docs/guide/19-di-aspects.md § Scopes.
+
+// One activation of `serve` is one "Visit".
+public final class VisitDesk {
+    @Scope("Visit")
+    public static int32 serve(int32 items) {
+        VisitTray t = VisitTray.__cajeta_inject();
+        t.count = t.count + items;
+        VisitTray same = VisitTray.__cajeta_inject();
+        return same.count;
+    }
+
+    @Scope("Visit")
+    public static int32 greet(int32 id) {
+        VisitGuest g = heap VisitGuest(id);
+        Components.provide(#g);
+        VisitGuest who = VisitGuest.__cajeta_inject();
+        return who.id;
+    }
+}
+
+@Component(scope = "Visit")
+public class VisitTray {
+    public int32 count;
+    public VisitTray() { this.count = 0; return; }
+}
+
+// A value the program makes, not the graph: provided into the scope.
+@Component(scope = "Visit")
+public class VisitGuest {
+    public int32 id;
+    public VisitGuest(int32 id) { this.id = id; return; }
+}
+
+// Each TabAccount instance is one "Tab", current while its methods run.
+@Scope("Tab")
+public class TabAccount {
+    public TabAccount() { return; }
+    public int32 charge(int32 amount) {
+        TabLedger l = TabLedger.__cajeta_inject();
+        l.total = l.total + amount;
+        return l.total;
+    }
+}
+
+@Component(scope = "Tab")
+public class TabLedger {
+    public int32 total;
+    public TabLedger() { this.total = 0; return; }
+}
+
+// A singleton outlives every Visit, so it holds a handle, not a VisitTray.
+@Component
+public class TrayWatcher {
+    @Inject Scoped<VisitTray> tray;
+    public TrayWatcher() { return; }
+    public int32 peek() {
+        VisitTray t = this.tray.get();
+        return t.count;
+    }
+}
+
+public final class VisitPeek {
+    @Scope("Visit")
+    public static int32 during(int32 items) {
+        VisitTray t = VisitTray.__cajeta_inject();
+        t.count = items;
+        TrayWatcher c = TrayWatcher.__cajeta_inject();
+        return c.peek();
+    }
+}
+
+public class ScopesDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Component scopes --");
+
+        int32 first = VisitDesk.serve(3);
+        int32 second = VisitDesk.serve(4);
+        System.stdout.println("  method scope: visit one = " + first + ", visit two = " + second);
+        this.check(first == 3 && second == 4, "each activation gets its own VisitTray");
+
+        TabAccount a = heap TabAccount();
+        TabAccount b = heap TabAccount();
+        int32 a1 = a.charge(5);
+        int32 a2 = a.charge(7);
+        int32 b1 = b.charge(1);
+        System.stdout.println("  instance scope: a = " + a2 + ", b = " + b1);
+        this.check(a1 == 5 && a2 == 12 && b1 == 1, "each TabAccount keeps its own TabLedger between calls");
+
+        int32 seen = VisitPeek.during(9);
+        System.stdout.println("  Scoped<VisitTray> from a singleton: " + seen);
+        this.check(seen == 9, "the handle resolves in the Visit active at get()");
+
+        int32 guest = VisitDesk.greet(42);
+        System.stdout.println("  provided value: guest " + guest);
+        this.check(guest == 42, "Components.provide places a value the graph cannot build");
+
+        boolean refused = false;
+        try {
+            VisitTray outside = VisitTray.__cajeta_inject();
+        } catch (ScopeNotActiveException e) {
+            refused = true;
+        }
+        this.check(refused, "injecting outside every Visit throws ScopeNotActiveException");
+    }
+}

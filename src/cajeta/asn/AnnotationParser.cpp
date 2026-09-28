@@ -172,8 +172,8 @@ namespace cajeta {
         if (auto* evp = ann->elementValuePairs()) {
             for (auto* pair : evp->elementValuePair()) {
                 AnnotationArg arg;
-                if (pair->identifier()) {
-                    arg.name = pair->identifier()->getText();
+                if (pair->annotationElementName()) {
+                    arg.name = pair->annotationElementName()->getText();
                 }
                 readArg(pair->elementValue(), arg);
                 inst->addArg(std::move(arg));

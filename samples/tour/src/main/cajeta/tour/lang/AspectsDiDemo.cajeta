@@ -26,7 +26,7 @@ import cajeta.collection.HashMap;
 //
 // See docs/specification/lang/AspectModel.md for the full surface
 // (@AfterReturning, @AfterThrowing, @Order, name-qualified
-// injection, allocation lifespans, @Profile, @PostConstruct, ...).
+// injection, @Profile, @PostConstruct, ...). Component scopes are in ScopesDemo.
 
 // User-defined marker annotations. Pointcuts in this demo use
 // marker-based matching: the aspect's @Before / @After / @Around

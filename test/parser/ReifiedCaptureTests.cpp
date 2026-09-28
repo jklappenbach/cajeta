@@ -373,3 +373,35 @@ TEST(ReifiedCaptureTests, capturedCastBoundedWildcardNumericSucceedsOnFloat) {
 
 // checked cast to a numeric-bounded wildcard THROWS for an int element (int32 is
 // not Floating) — never hands back a mis-bounded handle.
+
+// A failed capture cast throws a fresh ClassCastException with its title, so the
+// catch that takes it frees it: a hundred caught failures leave the live count flat.
+TEST(ReifiedCaptureTests, caughtClassCastExceptionIsFreed) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.error.ClassCastException;\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value #= v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    static int32 once(Box<?> w) {\n"
+        "        try {\n"
+        "            Box<float32> bad = (Box<float32>) w;\n"
+        "            return 100;\n"
+        "        } catch (ClassCastException e) {\n"
+        "            return 1;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> bi = heap Box<int32>(7);\n"
+        "        int32 r = D.once(bi);\n"
+        "        int64 live = Cajeta.liveCount();\n"
+        "        int32 i = 0;\n"
+        "        while (i < 100) { r = r + D.once(bi); i = i + 1; }\n"
+        "        if (Cajeta.liveCount() != live) { return -1; }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 101);
+}

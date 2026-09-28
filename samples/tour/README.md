@@ -66,7 +66,7 @@ src/main/cajeta/tour/
 │   ├── SwitchTernaryDemo / ControlFlowDemo / PrimitivesDemo
 │   ├── StringDemo / FormatStringDemo / EncodingDemo (the @Encoding annotation)
 │   ├── GuidDemo               parse/format + GuidFormatException handling
-│   ├── AnnotationsDemo (@Builder/@ToString) / ReflectionDemo / AspectsDiDemo
+│   ├── AnnotationsDemo (@Builder/@ToString) / ReflectionDemo / AspectsDiDemo / ScopesDemo
 │   ├── OperatorOverloadDemo / StaticFieldsDemo / StaticNestedDemo
 │   └── Shape / Square / Circle / Book / Box   (support classes)
 │

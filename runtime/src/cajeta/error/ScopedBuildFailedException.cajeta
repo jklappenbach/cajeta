@@ -1,0 +1,12 @@
+package cajeta.error;
+
+/**
+ * Thrown to an injection that waited on another fiber's build of a scoped component
+ * when that build failed, or that re-entered a component while it was being built.
+ */
+public class ScopedBuildFailedException extends RecoverableException {
+    public ScopedBuildFailedException(#String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

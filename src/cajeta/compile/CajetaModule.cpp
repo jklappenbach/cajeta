@@ -16,9 +16,11 @@
 #include "Compiler.h"
 #include "../method/Method.h"
 #include "../method/ComponentInjectMethod.h"
+#include "../method/ComponentProvideMethod.h"
 #include "../method/FactoryProviderMethod.h"
 #include "../type/StructureMetadata.h"
 #include "../type/CajetaClass.h"
+#include "../type/StructureProperty.h"
 #include "../runtime/EmbeddedRuntime.h"
 
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -46,6 +48,7 @@ namespace cajeta {
     thread_local vector<CajetaClassPtr> CajetaModule::aspectClasses;
     thread_local vector<CajetaModule::ComponentDescriptorPtr> CajetaModule::componentClasses;
     thread_local vector<CajetaModule::FactoryDescriptorPtr> CajetaModule::factoryClasses;
+    thread_local vector<CajetaModule::ScopePublicationPtr> CajetaModule::scopePublications;
     thread_local string CajetaModule::activeProfile = "prod";
 
     // Builds a module for a synthetic unit named by qName: creates the
@@ -433,6 +436,7 @@ namespace cajeta {
         aspectClasses.clear();
         componentClasses.clear();
         factoryClasses.clear();
+        scopePublications.clear();
         activeProfile = "prod";
         Method::getArchive().clear();
         stdlibModule.reset();
@@ -451,6 +455,7 @@ namespace cajeta {
             vector<CajetaClassPtr> aspectClasses;
             vector<CajetaModule::ComponentDescriptorPtr> componentClasses;
             vector<CajetaModule::FactoryDescriptorPtr> factoryClasses;
+            vector<CajetaModule::ScopePublicationPtr> scopePublications;
             string activeProfile;
             map<string, MethodPtr> methodArchive;
             CajetaModulePtr stdlibModule;
@@ -469,6 +474,7 @@ namespace cajeta {
                 const vector<CajetaClassPtr>& aspectClasses,
                 const vector<CajetaModule::ComponentDescriptorPtr>& componentClasses,
                 const vector<CajetaModule::FactoryDescriptorPtr>& factoryClasses,
+                const vector<CajetaModule::ScopePublicationPtr>& scopePublications,
                 const string& activeProfile,
                 const CajetaModulePtr& stdlibModule) {
             b.methods = methods;
@@ -477,6 +483,7 @@ namespace cajeta {
             b.aspectClasses = aspectClasses;
             b.componentClasses = componentClasses;
             b.factoryClasses = factoryClasses;
+            b.scopePublications = scopePublications;
             b.activeProfile = activeProfile;
             b.methodArchive = Method::getArchive();
             b.stdlibModule = stdlibModule;
@@ -488,7 +495,7 @@ namespace cajeta {
     void CajetaModule::captureBaseline() {
         captureModuleBaselineInto(g_moduleBaseline, methods, strutureToModule,
             moduleVariables, aspectClasses, componentClasses, factoryClasses,
-            activeProfile, stdlibModule);
+            scopePublications, activeProfile, stdlibModule);
     }
 
     void CajetaModule::restoreBaseline() {
@@ -499,6 +506,7 @@ namespace cajeta {
         aspectClasses = g_moduleBaseline.aspectClasses;
         componentClasses = g_moduleBaseline.componentClasses;
         factoryClasses = g_moduleBaseline.factoryClasses;
+        scopePublications = g_moduleBaseline.scopePublications;
         activeProfile = g_moduleBaseline.activeProfile;
         Method::getArchive() = g_moduleBaseline.methodArchive;
         stdlibModule = g_moduleBaseline.stdlibModule;
@@ -509,7 +517,7 @@ namespace cajeta {
     void CajetaModule::captureContextBaseline() {
         captureModuleBaselineInto(g_moduleContextBaseline, methods,
             strutureToModule, moduleVariables, aspectClasses, componentClasses,
-            factoryClasses, activeProfile, stdlibModule);
+            factoryClasses, scopePublications, activeProfile, stdlibModule);
     }
 
     void CajetaModule::restoreContextBaseline() {
@@ -520,6 +528,7 @@ namespace cajeta {
         aspectClasses = g_moduleContextBaseline.aspectClasses;
         componentClasses = g_moduleContextBaseline.componentClasses;
         factoryClasses = g_moduleContextBaseline.factoryClasses;
+        scopePublications = g_moduleContextBaseline.scopePublications;
         activeProfile = g_moduleContextBaseline.activeProfile;
         Method::getArchive() = g_moduleContextBaseline.methodArchive;
         stdlibModule = g_moduleContextBaseline.stdlibModule;
@@ -678,10 +687,260 @@ namespace cajeta {
         }
     }
 
+    // Adds one publication per @Scope on `structure` or a method it declares. An
+    // identical anchor seen again (a second parse) replaces its earlier record.
+    void CajetaModule::registerScopePublications(const CajetaClassPtr& structure) {
+        if (!structure || !structure->getQName()) return;
+        const string owner = structure->getQName()->toCanonical();
+        const string pkg = structure->getQName()->getPackageName();
+        for (auto& [pname, prop] : structure->getProperties()) {
+            if (prop && prop->findAnnotation("Scope")) {
+                throw Exception(
+                    "@Scope on field '" + prop->getName() + "' of " + owner
+                        + ": a scope is published on a method (one activation) "
+                          "or a class (one instance)",
+                    "CAJETA_ERROR_SCOPE_PLACEMENT");
+            }
+        }
+        auto publish = [&](const AnnotationInstancePtr& ann,
+                           ScopePublication::Kind kind,
+                           const MethodPtr& method,
+                           const string& where) {
+            auto p = make_shared<ScopePublication>();
+            p->name = ann->getString("value");
+            p->package = pkg;
+            p->kind = kind;
+            p->klass = structure;
+            p->method = method;
+            p->within = ann->getString("within");
+            if (p->name.empty()) {
+                throw Exception("@Scope on " + where + " needs a name, as in @Scope(\"Request\")",
+                                "CAJETA_ERROR_SCOPE_PLACEMENT");
+            }
+            if (p->name == "Singleton" || p->name == "Transient"
+                    || p->name == "Owner" || p->name == "Call"
+                    || p->name.find('.') != string::npos) {
+                throw Exception("@Scope on " + where + " publishes \"" + p->name
+                                    + "\", a name reserved by the compiler or not a plain name",
+                                "CAJETA_ERROR_SCOPE_PLACEMENT");
+            }
+            for (auto it = scopePublications.begin(); it != scopePublications.end(); ++it) {
+                auto& q = *it;
+                if (q->name != p->name || q->package != p->package) continue;
+                bool sameAnchor = q->klass && q->klass->getQName()
+                    && q->klass->getQName()->toCanonical() == owner
+                    && q->kind == p->kind
+                    && ((!q->method && !p->method)
+                        || (q->method && p->method
+                            && q->method->getName() == p->method->getName()));
+                if (sameAnchor) {
+                    scopePublications.erase(it);
+                    break;
+                }
+                // Several anchors may open one scope, if they agree on what it is.
+                if (q->kind == p->kind && q->within == p->within) continue;
+                throw Exception(
+                    "scope " + p->qualified() + " is published on " + where + " and on "
+                        + (q->klass ? q->klass->getQName()->toCanonical() : string("?"))
+                        + (q->method ? "." + q->method->getName() : string())
+                        + (q->kind != p->kind
+                               ? ", once as a method scope and once as an instance scope"
+                               : ", with different `within` scopes"),
+                    "CAJETA_ERROR_DUPLICATE_SCOPE");
+            }
+            scopePublications.push_back(p);
+        };
+        if (auto ann = structure->findAnnotation("Scope")) {
+            if (structure->isRecordType()) {
+                throw Exception(
+                    "@Scope on record " + owner
+                        + ": a record has no drop to end an instance scope with",
+                    "CAJETA_ERROR_SCOPE_PLACEMENT");
+            }
+            if (structure->isInterface()) {
+                throw Exception(
+                    "@Scope on interface " + owner
+                        + ": an instance scope belongs to a class. Publish on an "
+                          "interface method to make each implementation an anchor",
+                    "CAJETA_ERROR_SCOPE_PLACEMENT");
+            }
+            publish(ann, ScopePublication::Kind::Instance, nullptr, "class " + owner);
+            // The instance's component table, ended by the class's drop.
+            if (!structure->getProperties().count(kScopeTableField)) {
+                auto table = make_shared<StructureProperty>(
+                    kScopeTableField, CajetaType::of("pointer"),
+                    (int) structure->getProperties().size());
+                table->addModifier(PRIVATE);
+                structure->addProperty(table);
+            }
+        }
+        for (auto& [mkey, m] : structure->getMethods()) {
+            if (!m || m->getParent() != structure) continue;
+            auto ann = m->findAnnotation("Scope");
+            if (!ann) continue;
+            if (m->isConstructor()) {
+                throw Exception(
+                    "@Scope on a constructor of " + owner
+                        + ": publish on the class for an instance scope, or on a method",
+                    "CAJETA_ERROR_SCOPE_PLACEMENT");
+            }
+            publish(ann, ScopePublication::Kind::Method, m, owner + "." + m->getName());
+        }
+    }
+
+    namespace {
+        llvm::Constant* linkonceKey(llvm::Module* m, const string& name) {
+            if (auto* g = m->getNamedGlobal(name)) return g;
+            auto* i8 = llvm::Type::getInt8Ty(m->getContext());
+            auto* g = new llvm::GlobalVariable(*m, i8, /*isConstant=*/true,
+                llvm::GlobalValue::LinkOnceODRLinkage,
+                llvm::ConstantInt::get(i8, 0), name);
+            if (llvm::Triple(m->getTargetTriple()).isOSBinFormatCOFF()) {
+                g->setComdat(m->getOrInsertComdat(name));
+            }
+            return g;
+        }
+
+        bool sameParameters(const MethodPtr& a, const MethodPtr& b) {
+            vector<string> pa, pb;
+            for (auto& p : a->getParameterList()) {
+                if (p && p->getName() != "this" && p->getType()) pa.push_back(p->getType()->toCanonical());
+            }
+            for (auto& p : b->getParameterList()) {
+                if (p && p->getName() != "this" && p->getType()) pb.push_back(p->getType()->toCanonical());
+            }
+            return pa == pb;
+        }
+    }
+
+    llvm::Constant* CajetaModule::scopeKeyGlobal(llvm::Module* m, const string& qualifiedScope) {
+        return linkonceKey(m, "__cajeta_scope_key." + qualifiedScope);
+    }
+
+    llvm::Constant* CajetaModule::componentKeyGlobal(llvm::Module* m, const string& canonical) {
+        return linkonceKey(m, "__cajeta_component_key." + canonical);
+    }
+
+    CajetaModule::ScopePublicationPtr CajetaModule::methodScopeOf(const MethodPtr& method) {
+        if (!method || method->isConstructor() || !method->getParent()) return nullptr;
+        auto publicationOn = [](const MethodPtr& m) -> ScopePublicationPtr {
+            for (auto& p : scopePublications) {
+                if (p->kind != ScopePublication::Kind::Method || !p->method) continue;
+                if (p->method == m) return p;
+                if (p->method->getName() == m->getName() && p->klass && m->getParent()
+                        && p->klass->getQName() && m->getParent()->getQName()
+                        && p->klass->getQName()->toCanonical()
+                               == m->getParent()->getQName()->toCanonical()
+                        && sameParameters(p->method, m)) {
+                    return p;
+                }
+            }
+            return nullptr;
+        };
+        if (auto own = publicationOn(method)) return own;
+        if (method->getModifiers().count(STATIC)) return nullptr;
+        vector<CajetaClassPtr> frontier{ method->getParent() };
+        set<CajetaClass*> seen;
+        for (size_t i = 0; i < frontier.size(); ++i) {
+            auto k = frontier[i];
+            if (!k || !seen.insert(k.get()).second) continue;
+            for (auto& sup : k->getSuperClasses()) frontier.push_back(sup);
+            for (auto& iface : k->getImplementedInterfaces()) frontier.push_back(iface);
+            if (i == 0) continue;
+            for (auto& [mkey, m] : k->getMethods()) {
+                if (!m || m->getName() != method->getName() || !sameParameters(m, method)) continue;
+                if (auto p = publicationOn(m)) return p;
+            }
+        }
+        return nullptr;
+    }
+
+    CajetaModule::ScopePublicationPtr CajetaModule::instanceScopeOf(const MethodPtr& method) {
+        if (!method || method->isConstructor() || !method->getParent()) return nullptr;
+        if (method->getModifiers().count(STATIC) || method->getModifiers().count(PRIVATE)) {
+            return nullptr;
+        }
+        vector<CajetaClassPtr> frontier{ method->getParent() };
+        set<CajetaClass*> seen;
+        for (size_t i = 0; i < frontier.size(); ++i) {
+            auto k = frontier[i];
+            if (!k || !seen.insert(k.get()).second) continue;
+            for (auto& p : scopePublications) {
+                if (p->kind == ScopePublication::Kind::Instance && p->klass
+                        && p->klass->getQName() && k->getQName()
+                        && p->klass->getQName()->toCanonical() == k->getQName()->toCanonical()) {
+                    return p;
+                }
+            }
+            for (auto& sup : k->getSuperClasses()) frontier.push_back(sup);
+        }
+        return nullptr;
+    }
+
+    CajetaModule::ScopePublicationPtr CajetaModule::resolveScopeName(
+            const string& name, const string& use) {
+        static const ScopePublicationPtr singleton = [] {
+            auto p = make_shared<ScopePublication>();
+            p->name = "Singleton";
+            return p;
+        }();
+        static const ScopePublicationPtr transient = [] {
+            auto p = make_shared<ScopePublication>();
+            p->name = "Transient";
+            return p;
+        }();
+        if (name == "Singleton") return singleton;
+        if (name == "Transient") return transient;
+        string pkg;
+        string shortName = name;
+        auto dot = name.rfind('.');
+        if (dot != string::npos) {
+            pkg = name.substr(0, dot);
+            shortName = name.substr(dot + 1);
+        }
+        vector<ScopePublicationPtr> matches;
+        for (auto& p : scopePublications) {
+            if (p->name == shortName && (pkg.empty() || p->package == pkg)) {
+                matches.push_back(p);
+            }
+        }
+        set<string> packages;
+        for (auto& p : matches) packages.insert(p->package);
+        if (packages.size() == 1) return matches.front();
+        if (matches.empty()) {
+            string published = "Singleton, Transient";
+            for (auto& p : scopePublications) published += ", " + p->qualified();
+            throw Exception(
+                use + " names scope \"" + name + "\", which nothing publishes. "
+                    "Published: " + published,
+                "CAJETA_ERROR_UNKNOWN_SCOPE");
+        }
+        string both;
+        for (auto& pkg : packages) {
+            if (!both.empty()) both += " and ";
+            both += pkg + "." + shortName;
+        }
+        throw Exception(
+            use + " names scope \"" + name + "\", which is published as " + both
+                + ". Qualify it by package",
+            "CAJETA_ERROR_AMBIGUOUS_SCOPE");
+    }
+
     // Filters components by active profile, applies @TestComponent overrides,
     // resolves every @Inject site, rejects cycles, then attaches the synthesized
     // __cajeta_inject and factory accessors. Emits no IR itself.
     void CajetaModule::resolveDependencyGraph() {
+        for (auto& p : scopePublications) {
+            p->withinScope.reset();
+            if (p->within.empty()) continue;
+            auto outer = resolveScopeName(p->within, "@Scope(\"" + p->qualified() + "\") within");
+            if (outer->kind == ScopePublication::Kind::Builtin) {
+                throw Exception("@Scope(\"" + p->qualified() + "\") is within \"" + p->within
+                                    + "\", which is not a published scope",
+                                "CAJETA_ERROR_UNKNOWN_SCOPE");
+            }
+            p->withinScope = outer;
+        }
         if (componentClasses.empty()) return;
 
         auto profileMatches = [](const ComponentDescriptorPtr& c) {
@@ -727,6 +986,18 @@ namespace cajeta {
                 if (masked) continue;
             }
             active.push_back(c);
+        }
+        for (auto& c : active) {
+            c->scope.reset();
+            if (!c->scopeDeclared) continue;
+            const string use = "@Component " + c->klass->getQName()->toCanonical();
+            if (c->scopeName == "Owner" || c->scopeName == "Call") {
+                throw Exception(use + " declares scope \"" + c->scopeName
+                                    + "\", which is relative to an injection site. "
+                                      "Write it on @Inject instead",
+                                "CAJETA_ERROR_SCOPE_SITE_ONLY");
+            }
+            c->scope = resolveScopeName(c->scopeName, use);
         }
 
         // Keyed by canonical AND short name, so a consumer can write
@@ -854,6 +1125,55 @@ namespace cajeta {
                 return r;
             };
 
+        // Whether every anchor of `inner` is provably entered inside `outer`: by a
+        // declared `within` chain, or as a method on a class publishing `outer`.
+        std::function<bool(const ScopePublicationPtr&, const ScopePublicationPtr&, int)> within =
+            [&](const ScopePublicationPtr& inner, const ScopePublicationPtr& outer, int depth) {
+                if (!inner || !outer || depth > 32) return false;
+                if (inner->qualified() == outer->qualified()) return true;
+                bool any = false;
+                for (auto& a : scopePublications) {
+                    if (a->name != inner->name || a->package != inner->package) continue;
+                    any = true;
+                    if (a->withinScope && within(a->withinScope, outer, depth + 1)) continue;
+                    bool onAnchorClass = false;
+                    if (a->kind == ScopePublication::Kind::Method && a->method
+                            && outer->kind == ScopePublication::Kind::Instance) {
+                        for (auto& o : scopePublications) {
+                            if (o->qualified() != outer->qualified() || !o->klass) continue;
+                            vector<CajetaClassPtr> chain{ a->method->getParent() };
+                            for (size_t k = 0; k < chain.size() && !onAnchorClass; ++k) {
+                                if (!chain[k]) continue;
+                                if (chain[k]->getQName()->toCanonical()
+                                        == o->klass->getQName()->toCanonical()) {
+                                    onAnchorClass = true;
+                                }
+                                for (auto& s : chain[k]->getSuperClasses()) chain.push_back(s);
+                            }
+                        }
+                    }
+                    if (!onAnchorClass) return false;
+                }
+                return any;
+            };
+        // A field is filled once, so it may hold only what outlives its holder.
+        auto refuseWidening = [&](const string& site, const ComponentDescriptorPtr& holder,
+                                  const ComponentDescriptorPtr& target) {
+            const auto& ts = target->scope;
+            if (!ts || ts->kind == ScopePublication::Kind::Builtin) return;
+            const auto& hs = holder->scope;
+            const bool hPublished = hs && hs->kind != ScopePublication::Kind::Builtin;
+            if (hPublished && within(hs, ts, 0)) return;
+            const string holderName = holder->klass->getQName()->toCanonical();
+            throw Exception(
+                site + " holds " + target->klass->getQName()->toCanonical() + " (scope \""
+                    + ts->qualified() + "\"), but " + holderName
+                    + (hPublished ? " has scope \"" + hs->qualified() + "\", which is not within it"
+                                  : string(" can outlive that scope"))
+                    + ". Inject Scoped<" + target->klass->getQName()->getTypeName()
+                    + "> and call get() where it is needed",
+                "CAJETA_ERROR_SCOPE_WIDENING");
+        };
         // Resolved (field -> target) pairs are written back to resolvedFields, so
         // codegen needs no second lookup.
         map<ComponentDescriptorPtr, vector<ComponentDescriptorPtr>> edges;
@@ -878,37 +1198,63 @@ namespace cajeta {
                 const string nameQualifier = injectAnn->getString("name");
                 bool isOptional = injectAnn->getBool("optional");
 
-                // `allocate = ALLOCATE_X` is a bare identifier: the visitor has no
-                // enumerator shape, so it arrives as a String holding the raw text.
-                AllocateMode allocate = AllocateMode::Singleton;
-                string allocStr = injectAnn->getString("allocate");
-                if (allocStr.empty()) {
-                    allocStr = injectAnn->getClassRef("allocate");
-                }
-                if (allocStr == "ALLOCATE_SINGLETON") {
-                    allocate = AllocateMode::Singleton;
-                } else if (allocStr == "ALLOCATE_OWNER_SCOPE") {
-                    allocate = AllocateMode::OwnerScope;
-                } else if (allocStr == "ALLOCATE_CALL_SCOPE") {
-                    allocate = AllocateMode::CallScope;
-                } else if (allocStr == "ALLOCATE_TRANSIENT") {
-                    allocate = AllocateMode::Transient;
-                } else if (!allocStr.empty()) {
+                const string site = "@Inject on field '" + prop->getName() + "' of "
+                    + c->klass->getQName()->toCanonical();
+                if (injectAnn->findArg("allocate")) {
+                    string was = injectAnn->getString("allocate");
+                    if (was.empty()) was = injectAnn->getClassRef("allocate");
+                    const string now = was == "ALLOCATE_TRANSIENT" ? "Transient"
+                        : was == "ALLOCATE_OWNER_SCOPE" ? "Owner"
+                        : was == "ALLOCATE_CALL_SCOPE" ? "Call" : "Singleton";
                     throw Exception(
-                        "@Inject on field '" + prop->getName()
-                            + "' of " + c->klass->getQName()->toCanonical()
-                            + " uses unknown allocate mode '" + allocStr + "'",
-                        "CAJETA_ERROR_MISSING_COMPONENT");
+                        site + " uses allocate, which scope replaces: write "
+                            "@Inject(scope = \"" + now + "\")",
+                        "CAJETA_ERROR_ALLOCATE_RETIRED");
                 }
-                if (allocate == AllocateMode::CallScope) {
+                const string siteScope = injectAnn->getString("scope");
+                if (siteScope == "Call") {
                     throw Exception(
-                        "@Inject on field '" + prop->getName()
-                            + "' of " + c->klass->getQName()->toCanonical()
-                            + " requests ALLOCATE_CALL_SCOPE which is "
-                              "not yet supported (v1 ships SINGLETON, "
-                              "OWNER_SCOPE, TRANSIENT)",
-                        "CAJETA_ERROR_NOT_IMPLEMENTED");
+                        site + " asks for scope \"Call\". A field is filled once, when "
+                            "its holder is built, so it has no activation. Publish a scope "
+                            "on the method instead",
+                        "CAJETA_ERROR_CALL_SCOPE_FIELD");
                 }
+                AllocateMode allocate = siteScope == "Owner" ? AllocateMode::OwnerScope
+                    : siteScope == "Transient" ? AllocateMode::Transient
+                    : AllocateMode::Singleton;
+                // A component that declares a scope keeps it: the site may repeat it
+                // but not change it. An undeclared one still lets the site choose.
+                auto settleScope = [&](ResolvedDependency& rd,
+                                       const ComponentDescriptorPtr& target) {
+                    if (!target) return;
+                    const auto& ts = target->scope;
+                    const bool published = ts && ts->kind != ScopePublication::Kind::Builtin;
+                    if (siteScope.empty()) {
+                        rd.allocate = published ? AllocateMode::Scoped
+                            : (ts && ts->name == "Transient") ? AllocateMode::Transient
+                            : AllocateMode::Singleton;
+                        return;
+                    }
+                    bool agrees;
+                    if (siteScope == "Owner") {
+                        agrees = !target->scopeDeclared;
+                    } else if (siteScope == "Singleton" || siteScope == "Transient") {
+                        agrees = !target->scopeDeclared
+                            || (!published && ts && ts->name == siteScope);
+                    } else {
+                        agrees = published && resolveScopeName(siteScope, site) == ts;
+                        if (agrees) rd.allocate = AllocateMode::Scoped;
+                    }
+                    if (!agrees) {
+                        const string tname = target->klass->getQName()->toCanonical();
+                        throw Exception(
+                            site + " asks for scope \"" + siteScope + "\", but " + tname
+                                + (target->scopeDeclared
+                                       ? " declares scope \"" + ts->qualified() + "\""
+                                       : string(" declares no scope, so it is a Singleton")),
+                            "CAJETA_ERROR_SCOPE_CONFLICT");
+                    }
+                };
 
                 // A container-typed site is a multibinding: every active component
                 // assignable to the element type, and an empty container when none.
@@ -935,6 +1281,30 @@ namespace cajeta {
                                    || targs[0]->getQName()->toCanonical() == "String")) {
                         kind = ResolvedDependency::MultiKind::Map;
                         elemType = targs[1];
+                    }
+                    if (originName == "cajeta.aot.Scoped" && targs.size() == 1) {
+                        auto elem = std::dynamic_pointer_cast<CajetaClass>(targs[0]);
+                        ComponentDescriptorPtr handled;
+                        if (elem && elem->getQName()) {
+                            vector<ComponentDescriptorPtr> cands;
+                            handled = resolveDependency(elem->getQName()->toCanonical(),
+                                                        nameQualifier, cands);
+                        }
+                        if (!handled) {
+                            throw Exception(
+                                site + " is a Scoped handle, but no @Component provides "
+                                    + (elem && elem->getQName() ? elem->getQName()->toCanonical()
+                                                                : string("its type")),
+                                "CAJETA_ERROR_MISSING_COMPONENT");
+                        }
+                        ResolvedDependency rd;
+                        rd.field = prop;
+                        rd.handle = true;
+                        rd.container = fc;
+                        rd.target = handled;
+                        rd.optional = isOptional;
+                        c->resolvedFields.push_back(rd);
+                        continue;
                     }
                     if (kind != ResolvedDependency::MultiKind::None) {
                         auto elemClass = std::dynamic_pointer_cast<CajetaClass>(elemType);
@@ -982,7 +1352,10 @@ namespace cajeta {
                                 return a->klass->getQName()->toCanonical()
                                     < b->klass->getQName()->toCanonical();
                             });
-                        for (auto& m : rd.members) edges[c].push_back(m);
+                        for (auto& m : rd.members) {
+                            refuseWidening(site, c, m);
+                            edges[c].push_back(m);
+                        }
                         c->resolvedFields.push_back(rd);
                         continue;
                     }
@@ -1026,6 +1399,8 @@ namespace cajeta {
                     rd.target = res.component;
                     edges[c].push_back(res.component);
                 }
+                settleScope(rd, rd.target);
+                if (rd.target && rd.allocate == AllocateMode::Scoped) refuseWidening(site, c, rd.target);
                 c->resolvedFields.push_back(rd);
             }
         }
@@ -1130,6 +1505,25 @@ namespace cajeta {
             auto inject = std::make_shared<ComponentInjectMethod>(
                 c->klass->getModule(), c->klass, c);
             c->klass->addMethod(inject);
+        }
+        // A scoped component can also be provided at run time (Components.provide).
+        for (auto& c : active) {
+            if (!c->klass || !c->scope
+                    || c->scope->kind == ScopePublication::Kind::Builtin) {
+                continue;
+            }
+            bool already = false;
+            for (auto& [k, m] : c->klass->getMethods()) {
+                if (m && m->getName() == "__cajeta_provide") {
+                    already = true;
+                    break;
+                }
+            }
+            if (already) continue;
+            auto provide = std::make_shared<ComponentProvideMethod>(
+                c->klass->getModule(), c->klass, c);
+            provide->initParameters();
+            c->klass->addMethod(provide);
         }
 
         // One accessor per all-injected provider, synthesized after every

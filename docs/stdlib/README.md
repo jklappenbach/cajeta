@@ -217,7 +217,21 @@ tutorial; it links here for API detail. Docs link the
 | [Exception](error/Exception.md) | Base of the catchable exception hierarchy |
 | [RecoverableException](error/RecoverableException.md) | Errors a caller might handle and proceed past |
 | [NoOptionalValueException](error/NoOptionalValueException.md) | Unwrap of an empty `Optional` — catchable, not panic |
+| [ScopeNotActiveException](error/ScopeNotActiveException.md) | A scoped component used outside its scope |
+| [ScopedBuildFailedException](error/ScopedBuildFailedException.md) | A failed or repeated build of a scoped component |
+| [NotProvidedException](error/NotProvidedException.md) | A provided-only component injected before it was provided |
 | [UnrecoverableException](error/UnrecoverableException.md) | Fatal conditions: invariant violations, OOM |
+
+## cajeta.aot
+
+The compile-time DI graph. `@Component`, `@Inject` and `@Factory` are covered in
+the [guide](../guide/19-di-aspects.md).
+
+| Class | |
+|---|---|
+| [Scope](aot/Scope.md) | Publishes a component lifetime at the method or class that bounds it |
+| [Scoped](aot/Scoped.md) | A handle that resolves a scoped component at each `get()` |
+| [Components](aot/Components.md) | Places values made at run time into their scope |
 
 ## cajeta.reflect
 
