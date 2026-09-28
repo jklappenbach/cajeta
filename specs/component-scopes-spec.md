@@ -41,12 +41,19 @@ of every scope, so no framework code starts or stops one.
   Concurrent first injections of a component park until it is built.
 - 1.3.8 A structured task inherits its parent's scopes. A detached spawn does
   not.
+- 1.3.9 The attribute is spelled `scope`. Annotation element names accept
+  `scope` as a soft keyword, and the `scope { }` block statement is unchanged.
 
 ### 1.4 Constraints
 
-- 1.4.1 Separate compilation: a component in an application can name a scope
-  published by an archive. The consumer's compiler reads every archive's
-  sources (the ownership re-check depends on this).
+- 1.4.1 Separate compilation, measured 2026-09-28 in `Compiler.cpp`: a
+  consumer re-parses every archive's sources to resolve names, but links the
+  archive's own bitcode, which is authoritative. So the compiler that
+  compiles an anchor emits its hooks, and it can, because `@Scope` is in the
+  anchor's own source. An implementation of an archived interface method is
+  compiled by its own package, which sees the interface's `@Scope` through the
+  re-parse. A scope's runtime identity is one symbol per qualified name, so
+  separately compiled modules agree on it.
 - 1.4.2 Ownership: a scope's table owns its components. A lookup returns a
   borrow. No component outlives its scope.
 - 1.4.3 Cost is executed cost. Entry and exit hooks are inline IR, and only
@@ -223,18 +230,3 @@ annotation Inject {
   one per connection, so it is not the `Request` anchor. The docs state the
   rule: anchor on the method that runs once per unit of work.
 
-## 11. Open questions
-
-- **11.1** Measure: does the consumer's compiler generate code for archive
-  sources, or link the archive's prebuilt code? If prebuilt, a publication in
-  an archive already carries its hooks, since the publisher compiled them.
-  Either way 2.1 to 2.3 hold. The answer decides where the hooks are emitted.
-- **11.2** Measure: an annotation value naming a scope is a quoted string, so
-  nothing new is parsed. Confirm `@Scope` on an interface method survives into
-  the archive's metadata for 2.3.
-- **11.3** `scope` is a lexer keyword (the structured-concurrency block), and
-  an annotation element name must be an identifier, so `scope = "Request"` and
-  `String scope()` do not parse today. Either annotation element names accept
-  `scope` as a soft keyword, a narrow grammar change that leaves the block
-  statement alone, or the attribute is spelled `lifetime`. Recommendation:
-  the soft keyword, since `scope` is the word a reader looks for.
