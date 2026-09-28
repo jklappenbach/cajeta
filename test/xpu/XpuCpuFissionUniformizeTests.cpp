@@ -59,6 +59,7 @@ import cajeta.xpu.Barrier;
 import cajeta.xpu.Shared;
 import cajeta.xpu.Wave;
 import cajeta.xpu.Group;
+import cajeta.xpu.GroupOp;
 import cajeta.lang.System;
 public class M {
     @Kernel
@@ -633,35 +634,155 @@ const char* kGroupPlusWaveSrc = R"CJ(
         if (lane == 0 && row < rows) { y[(int64) row] = tot; }
     }
     public static int32 run() {
-        float32[] hin = heap float32[24];
+        uint32 w = probeWidth();
+        if (w < 2) { return -3; }
+        uint32 nb = 12;
+        float32[] hin = heap float32[2 * nb];
         uint32 i = 0;
-        while (i < 24) { hin[i] = 1.0f; i = i + 1; }
+        while (i < 2 * nb) { hin[i] = (float32) (i + 1); i = i + 1; }
+        float32[] want = heap float32[2];
+        uint32 r = 0;
+        while (r < 2) {
+            float32 s = 0.0f;
+            uint32 b = 0;
+            while (b < nb) { s = s + hin[r * nb + b]; b = b + 1; }
+            want[r] = s;
+            r = r + 1;
+        }
         float32[] hy = heap float32[2];
         hy[0] = -1.0f; hy[1] = -1.0f;
-        KernelBuffer<float32> bin = heap KernelBuffer<float32>(24);
+        KernelBuffer<float32> bin = heap KernelBuffer<float32>(2 * nb);
         KernelBuffer<float32> by = heap KernelBuffer<float32>(2);
         bin.upload(hin);
         by.upload(hy);
         KernelStream s #= KernelStream.current();
         try {
-            gw.launch(s, grid: [1], block: [64])(by, bin, 2, 12);
+            gw.launch(s, grid: [1], block: [64])(by, bin, 2, nb);
             s.sync();
         } catch (Exception e) {
             return -1;
         }
         by.download(hy);
         if (hy[0] == -1.0f) { return -1; }
+        return verify(hy, 2, want);
+    }
+}
+)CJ";
+
+// FOLDED 2026-09-28 (Julian: "Fold"). Group.width() is the wave width on cpu
+// now, so this kernel's geometry and its wave reduce agree: it lowers, runs at
+// the host width and answers the row sums. The refusal it used to pin moved
+// to the one mix that still cannot agree, a Group kernel with a forced-32 coop
+// tile, whose host launch geometry cannot follow a per-kernel 32.
+TEST(XpuCpuFissionUniformize, aGroupWidthKernelWithAWaveReduceLowersAndAgreesOnCpu) {
+    const int r = runOnCpu(std::string(kPreamble) + kGroupPlusWaveSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100+i wrong at row i)";
+}
+
+// Group.width() and Wave.width() are ONE width on cpu: what every lane sees.
+const char* kWidthsAgreeSrc = R"CJ(
+    @Kernel
+    public static void wa(KernelBuffer<uint32> out) {
+        uint32 t = KernelThread.globalIdX();
+        out[(int64) (t * 3)] = (uint32) Group.width();
+        out[(int64) (t * 3 + 1)] = Wave.width();
+        out[(int64) (t * 3 + 2)] = (uint32) Group.laneId();
+    }
+    public static int32 run() {
+        uint32 w = probeWidth();
+        if (w < 2) { return -3; }
+        uint32[] h = heap uint32[64 * 3];
+        KernelBuffer<uint32> b = heap KernelBuffer<uint32>(64 * 3);
+        KernelStream s #= KernelStream.current();
+        try {
+            wa.launch(s, grid: [1], block: [64])(b);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        b.download(h);
+        uint32 t = 0;
+        while (t < 64) {
+            if (h[t * 3] != w) {
+                System.stdout.println("work-item " + (int32) t + ": Group.width "
+                    + (int32) h[t * 3] + " but the wave is " + (int32) w);
+                return 100 + (int32) t;
+            }
+            if (h[t * 3 + 1] != w) { return 200 + (int32) t; }
+            if (h[t * 3 + 2] != t % w) {
+                System.stdout.println("work-item " + (int32) t + ": Group.laneId "
+                    + (int32) h[t * 3 + 2] + " want " + (int32) (t % w));
+                return 300 + (int32) t;
+            }
+            t = t + 1;
+        }
         return 0;
     }
 }
 )CJ";
 
-TEST(XpuCpuFissionUniformize, aKernelMixingTheGroupSurfaceAndAWaveOpIsRefusedOnCpu) {
-    const int r = runOnCpu(std::string(kPreamble) + kGroupPlusWaveSrc);
-    EXPECT_EQ(r, -1) << "a kernel taking its geometry from Group.width() and reducing"
-                        " with a wave op REGISTERED on cpu (r=" << r << "); width 1"
-                        " geometry under a wave-8 reduce is wrong, and this shape"
-                        " strides by 0";
+TEST(XpuCpuFissionUniformize, groupWidthAndLaneIdAreTheWaveOnCpu) {
+    const int r = runOnCpu(std::string(kPreamble) + kWidthsAgreeSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (100+t Group.width is not the wave at work-item t,"
+                       " 300+t Group.laneId is not t mod width)";
+}
+
+// Group.stripe + Group.reduce: the width-agnostic mat-vec row, on cpu at the
+// host width. Each lane strides the row, the group reduce combines the lanes.
+const char* kStripeReduceSrc = R"CJ(
+    @Kernel
+    public static void sr(KernelBuffer<float32> y, KernelBuffer<float32> in,
+                          uint32 rows, int32 nb) {
+        uint32 w = (uint32) Group.width();
+        uint32 row = KernelThread.globalIdX() / w;
+        float32 acc = 0.0f;
+        if (row < rows) {
+            for (int32 b : Group.stripe(nb)) {
+                acc = acc + in[(int64) row * (int64) nb + (int64) b];
+            }
+        }
+        float32 tot = Group.reduce(GroupOp.Add, acc);
+        if (Group.laneId() == 0 && row < rows) { y[(int64) row] = tot; }
+    }
+    public static int32 run() {
+        uint32 w = probeWidth();
+        if (w < 2) { return -3; }
+        int32 nb = 13;
+        float32[] hin = heap float32[2 * 13];
+        uint32 i = 0;
+        while (i < 26) { hin[i] = (float32) (i + 1); i = i + 1; }
+        float32[] want = heap float32[2];
+        uint32 r = 0;
+        while (r < 2) {
+            float32 s = 0.0f;
+            uint32 b = 0;
+            while (b < 13) { s = s + hin[r * 13 + b]; b = b + 1; }
+            want[r] = s;
+            r = r + 1;
+        }
+        float32[] hy = heap float32[2];
+        hy[0] = -1.0f; hy[1] = -1.0f;
+        KernelBuffer<float32> bin = heap KernelBuffer<float32>(26);
+        KernelBuffer<float32> by = heap KernelBuffer<float32>(2);
+        bin.upload(hin);
+        by.upload(hy);
+        KernelStream s #= KernelStream.current();
+        try {
+            sr.launch(s, grid: [1], block: [64])(by, bin, 2, nb);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        by.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        return verify(hy, 2, want);
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, groupStripeAndReduceAgreeAtTheWaveWidthOnCpu) {
+    const int r = runOnCpu(std::string(kPreamble) + kStripeReduceSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100+i wrong at row i)";
 }
 
 const char* kGroupOnlySrc = R"CJ(
@@ -679,7 +800,8 @@ const char* kGroupOnlySrc = R"CJ(
                 b = b + w;
             }
         }
-        if (lane == 0 && row < rows) { y[(int64) row] = acc; }
+        float32 tot = Group.reduce(GroupOp.Add, acc);
+        if (lane == 0 && row < rows) { y[(int64) row] = tot; }
     }
     public static int32 run() {
         uint32 nb = 12;
@@ -715,7 +837,7 @@ const char* kGroupOnlySrc = R"CJ(
 }
 )CJ";
 
-TEST(XpuCpuFissionUniformize, aGroupOnlyKernelStillLowersAndAnswersAtWidthOne) {
+TEST(XpuCpuFissionUniformize, aGroupOnlyKernelLowersAndAnswersAtTheWaveWidth) {
     const int r = runOnCpu(std::string(kPreamble) + kGroupOnlySrc);
     EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100+i wrong at row i)";
 }

@@ -7,7 +7,7 @@ import cajeta.xpu.Device;
  * Group — the abstract cooperative unit of the cajeta.xpu cooperative-tile
  * surface (xpu-cooperative-tile §3). A Group is `width` cooperating lanes;
  * `width` folds to a per-target compile-time constant (the wave/subgroup size
- * on a GPU, 1 on the CPU backend). An algorithm expressed on Group takes the
+ * on a GPU, the host SIMD width on the CPU backend). An algorithm expressed on Group takes the
  * optimal shape per architecture with NO change to its source:
  *
  *   float32 acc = 0.0f;
@@ -15,8 +15,9 @@ import cajeta.xpu.Device;
  *   float32 dot = Group.reduce(GroupOp.Add, acc);   // every lane gets the sum
  *
  * On AMD wave32 that is one wave per row: lanes stripe the columns and a DPP /
- * shuffle wave reduce combines them. On the CPU backend it is one work-item per
- * row: a full serial stripe (width 1, lane 0) and an identity reduce, with the
+ * shuffle wave reduce combines them. On the CPU backend the group is the host
+ * SIMD wave (8 lanes on AVX2): the stripe and the reduce vectorize at that
+ * width exactly as the wave ops do, with the
  * work-item loop vectorised ACROSS rows beneath the abstraction (§3.5). Same
  * source, both correct.
  *
@@ -37,15 +38,16 @@ public final class Group {
 
     /**
      * The group's lane count for the target being compiled — folds to a
-     * constant (the wave/subgroup size on a GPU, 1 on the CPU backend). The
-     * same value as {@link TargetDescriptor#waveWidth}.
+     * constant: the wave/subgroup size on a GPU, the host SIMD width on the
+     * CPU backend (the width its wave ops vectorize at). The same value as
+     * {@link TargetDescriptor#waveWidth}.
      */
     @Native("__cajeta_xpu_group_width")
     public static int32 width();
 
     /**
      * This lane's index within its group, in `[0, width())`. 0 on the CPU
-     * backend (the group is one work-item). Pair with {@link #width} for
+     * backend the lane within the host SIMD wave. Pair with {@link #width} for
      * width-agnostic cooperation.
      */
     @Native("__cajeta_xpu_group_lane_id")
@@ -56,7 +58,7 @@ public final class Group {
      * per-row launch (§3.1) — the group's block index. Launch with
      * `grid: [Group.rowGrid(rows)], block: [Group.laneBlock()]` and each group
      * reads its row with `Group.rowId()`: block b handles row b on a GPU (one
-     * wave per block) and on the CPU backend (one work-item per block). The
+     * wave per block) and on the CPU backend (one host SIMD wave per block). The
      * author never computes a row from thread/grid arithmetic.
      */
     @Native("__cajeta_xpu_group_row_id")
@@ -65,9 +67,9 @@ public final class Group {
     /**
      * Reduce `value` across the group's lanes with `op` — a compile-time
      * {@link GroupOp} constant; every lane receives the same result. On the CPU
-     * backend (width 1) this is the identity: the single group lane already
-     * holds the whole result, and the SIMD lanes carry independent rows, so
-     * they are never summed together.
+     * backend it is the wave reduce at the host SIMD width, exactly as on a
+     * GPU. Groups never mix: one group is one wave, and a block holds as many
+     * groups as it holds waves.
      */
     @Native("__cajeta_xpu_group_reduce_f32")
     public static float32 reduce(GroupOp op, float32 value);
@@ -103,8 +105,8 @@ public final class Group {
      * The group-stride iterable for a for-each:
      * `for (int32 i : Group.stripe(n))` visits `i = laneId(), laneId()+width(),
      * … < n`. The group's lanes stride the `n` work items, coalesced by
-     * construction (§3.2); on the CPU backend (laneId 0, width 1) it is a full
-     * serial loop. Valid ONLY as a for-each iterable — the compiler lowers the
+     * construction (§3.2); on the CPU backend it is the same lane-strided loop
+     * at the host SIMD width. Valid ONLY as a for-each iterable — the compiler lowers the
      * loop directly and never materialises a value.
      */
     @Native("__cajeta_xpu_group_stripe")
@@ -123,9 +125,9 @@ public final class Group {
      * Device#force}. Falls back to 1 when the width is unknown — still correct.
      */
     public static int32 laneBlock() {
-        if (Device.activeBackend().equals("cpu")) {
-            return 1;
-        }
+        // The cpu backend's wave is the host SIMD width, and Group.width()
+        // folds to the same number there since 2026-09-28: one surface, one
+        // width, on every backend. No backend is named here.
         int32 w = Device.waveSize();
         if (w <= 0) {
             return 1;

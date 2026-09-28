@@ -1163,6 +1163,18 @@ private:
                 values[idxName] = idxSlot;
                 slotTypes[idxName] = idxTy;
                 signedness[idxName] = idxSigned;
+                // The bound and the step live in SLOTS and are reloaded each
+                // trip, as a source-level `while (b < n) { …; b = b + w; }`
+                // does. The cpu backend's barrier fission carries state
+                // between its work-item regions through memory, and a value
+                // computed once before the loop and used inside it crosses
+                // regions once the loop is scaffolded: "Instruction does not
+                // dominate all uses" on the first Group.stripe kernel that ran
+                // at the wave width (2026-09-28).
+                llvm::Value* countSlot = entryAlloca(idxTy, idxName + ".n");
+                builder.CreateStore(count, countSlot);
+                llvm::Value* stepSlot = entryAlloca(idxTy, idxName + ".step");
+                builder.CreateStore(step, stepSlot);
 
                 auto* head = llvm::BasicBlock::Create(ctx, "stripe.head", fn);
                 auto* body = llvm::BasicBlock::Create(ctx, "stripe.body", fn);
@@ -1171,8 +1183,9 @@ private:
                 builder.CreateBr(head);
                 builder.SetInsertPoint(head);
                 llvm::Value* i = builder.CreateLoad(idxTy, idxSlot, idxName);
+                llvm::Value* n = builder.CreateLoad(idxTy, countSlot, idxName + ".n");
                 builder.CreateCondBr(
-                    builder.CreateICmpULT(i, count, "stripe.cmp"), body, exit);
+                    builder.CreateICmpULT(i, n, "stripe.cmp"), body, exit);
                 builder.SetInsertPoint(body);
                 pushLoop(upd, exit);
                 lowerStatement(efs->getBody());
@@ -1181,7 +1194,8 @@ private:
                     builder.CreateBr(upd);
                 builder.SetInsertPoint(upd);
                 llvm::Value* next = builder.CreateAdd(
-                    builder.CreateLoad(idxTy, idxSlot, idxName), step,
+                    builder.CreateLoad(idxTy, idxSlot, idxName),
+                    builder.CreateLoad(idxTy, stepSlot, idxName + ".step"),
                     "stripe.next");
                 builder.CreateStore(next, idxSlot);
                 builder.CreateBr(head);

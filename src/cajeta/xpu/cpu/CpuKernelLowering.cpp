@@ -439,29 +439,29 @@ public:
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         return pureCall(b, m, "__cajeta_xpu_wave_width", i32, {}, "wave.width");
     }
-    // The cooperative unit is one work-item, and a literal keeps registration from
-    // widening this or flagging a wave kernel.
+    // The Group surface IS the wave on this backend (folded 2026-09-28): one
+    // surface, one width, on every backend. width() is the wave width call
+    // registration rewrites to the host SIMD width W, laneId() the lane within
+    // it, and the reduces are the wave reduces whose VFABI variants widen at
+    // W. A Group kernel therefore vectorizes exactly as a wave kernel does.
+    // It used to be one work-item wide here (width 1, lane 0, identity
+    // reduce), which was true while cpu kernels ran scalar and became a lie
+    // the day wave kernels vectorized: a kernel striding by width / 4 strode
+    // by 0 and spun for 33 minutes on a two-row mat-vec.
     llvm::Value* groupWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
-        (void) b;
-        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()), 1);
+        return waveWidth(b, m);
     }
-    // The single lane of a width-1 group is lane 0.
     llvm::Value* groupLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
-        (void) b;
-        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()), 0);
+        return waveLaneId(b, m);
     }
-    // Identity, not the wave reduce: the SIMD lanes each run a different group, so a
-    // cross-lane sum would merge independent rows the single group lane already has.
     llvm::Value* groupReduceF32(llvm::IRBuilderBase& b, llvm::Module& m,
                                 WaveReduceFOp op, llvm::Value* value) override {
-        (void) b; (void) m; (void) op;
-        return value;
+        return waveReduceF32(b, m, op, value);
     }
     llvm::Value* groupReduceF32Segmented(llvm::IRBuilderBase& b, llvm::Module& m,
                                          WaveReduceFOp op, llvm::Value* value,
                                          llvm::Value* seg) override {
-        (void) b; (void) m; (void) op; (void) seg;
-        return value;
+        return waveReduceF32Segmented(b, m, op, value, seg);
     }
     llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
                              llvm::Value* value, llvm::Value* srcLane) override {

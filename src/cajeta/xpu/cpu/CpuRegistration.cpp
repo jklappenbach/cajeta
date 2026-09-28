@@ -1160,23 +1160,19 @@ void foldWaveVariants(llvm::Function& f) {
                 bool waveKernel = false;
                 if (waveW >= 2) {
                     waveKernel = setupWaveVariants(*wrapper, hostModule, waveW);
-                    // The Group surface on this backend is the runtime's
-                    // one-work-item stubs (width 1, lane 0, identity reduce),
-                    // as the Group doc promises. A kernel that takes its
-                    // geometry from them and ALSO calls a wave op is about to
-                    // vectorize at width W with width-1 geometry: two surfaces,
-                    // two widths, one kernel. q2kQ8WaveMatVecKernel strides
-                    // by Group.width() / 4, which is 0, and its first cpu run
-                    // spun for 33 minutes on a two-row mat-vec (2026-09-28).
-                    // Refused by name; folding the Group surface onto the wave
-                    // for such kernels is xpu-kernel-adaptor Unit 9's call.
+                    // The Group surface is the wave here, and the HOST launches a
+                    // Group kernel with Group.laneBlock() = Device.waveSize() lanes
+                    // per group. A distributed coop tile forces this kernel to its
+                    // own width (cajeta.xpu.coop-wavew, 32) which the host's launch
+                    // geometry cannot follow per kernel, so a kernel that mixes the
+                    // Group surface with such a tile is refused by name.
                     std::string groupOp = groupSurfaceUse(*wrapper);
-                    if (waveKernel && !groupOp.empty()) {
+                    if (!groupOp.empty() && wrapper->hasFnAttribute("cajeta.xpu.coop-wavew")) {
                         reportUnloweredKernel(*method, entryName, "cpu",
-                                              groupOp + " with a wave op in the same kernel: the cpu "
-                                              "Group surface is one work-item wide while the wave is "
-                                              + std::to_string(waveW) + " lanes, so the geometry and "
-                                              "the reduce disagree (xpu-kernel-adaptor Unit 9)");
+                                              groupOp + " in a kernel whose distributed coop tile "
+                                              "forces wave " + std::to_string(waveW) + ": the host "
+                                              "launches Group kernels at Device.waveSize() lanes per "
+                                              "group and cannot follow a per-kernel width");
                         wrapper->eraseFromParent();
                         continue;                     // host-stub fallback
                     }
@@ -1332,17 +1328,19 @@ void foldWaveVariants(llvm::Function& f) {
                 }
             }
 
-            // Two surfaces, two widths, one kernel: refused on this path as on
-            // the fission path above (the note there says why).
+            // A Group kernel with a forced-width coop tile: refused on this path
+            // as on the fission path above (the note there says why).
             {
                 std::string groupOp = groupSurfaceUse(*linked);
                 if (groupOp.empty()) groupOp = groupSurfaceUse(*wrapper);
-                if (waveKernel && !groupOp.empty()) {
+                const bool forced = linked->hasFnAttribute("cajeta.xpu.coop-wavew")
+                    || wrapper->hasFnAttribute("cajeta.xpu.coop-wavew");
+                if (!groupOp.empty() && forced) {
                     reportUnloweredKernel(*method, entryName, "cpu",
-                                          groupOp + " with a wave op in the same kernel: the cpu "
-                                          "Group surface is one work-item wide while the wave is "
-                                          + std::to_string(waveW) + " lanes, so the geometry and "
-                                          "the reduce disagree (xpu-kernel-adaptor Unit 9)");
+                                          groupOp + " in a kernel whose distributed coop tile "
+                                          "forces wave " + std::to_string(waveW) + ": the host "
+                                          "launches Group kernels at Device.waveSize() lanes per "
+                                          "group and cannot follow a per-kernel width");
                     wrapper->eraseFromParent();
                     continue;                     // host-stub fallback
                 }
