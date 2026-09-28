@@ -2784,6 +2784,10 @@ private:
                         "estimates are host-side)");
         } else if (recv == "Group") {
             const auto& args = mc->getParameters();
+            // The Group surface folds per target right here, so this is the
+            // one place a kernel's use of it is visible. The cpu backend
+            // refuses a kernel that mixes it with a wave op (CpuRegistration).
+            fn->addFnAttr("cajeta.xpu.uses-group", "Group." + name);
             if (name == "width") return target.groupWidth(builder, mod);
             if (name == "laneId") return target.groupLaneId(builder, mod);
             if (name == "rowId") return target.workgroupId(builder, mod, 0);

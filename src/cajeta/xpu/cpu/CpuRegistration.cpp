@@ -95,6 +95,13 @@ unsigned cpuVectorWidthI32(llvm::TargetMachine* tm, llvm::Function& f) {
     return (unsigned) (bits.getFixedValue() / 32);
 }
 
+// The verb a kernel used from the Group surface (`Group.width`, …), left on
+// the function by the lowering where that surface folds, or "" when none.
+std::string groupSurfaceUse(llvm::Function& f) {
+    if (!f.hasFnAttribute("cajeta.xpu.uses-group")) return "";
+    return f.getFnAttribute("cajeta.xpu.uses-group").getValueAsString().str();
+}
+
 // True iff `f` calls the named runtime wave stub.
 bool callsRuntimeFn(llvm::Function& f, llvm::StringRef name) {
     for (auto& bb : f)
@@ -1134,6 +1141,8 @@ void foldWaveVariants(llvm::Function& f) {
                 if (linked->hasFnAttribute("cajeta.xpu.coop-wavew"))
                     wrapper->addFnAttr(
                         linked->getFnAttribute("cajeta.xpu.coop-wavew"));
+                if (linked->hasFnAttribute("cajeta.xpu.uses-group"))
+                    wrapper->addFnAttr(linked->getFnAttribute("cajeta.xpu.uses-group"));
                 linked->eraseFromParent();        // body cloned into the wrapper
                 // Fission redirected only the wrapper's uses of the kernel's
                 // `shared` globals (so a declined attempt could be retried);
@@ -1151,6 +1160,26 @@ void foldWaveVariants(llvm::Function& f) {
                 bool waveKernel = false;
                 if (waveW >= 2) {
                     waveKernel = setupWaveVariants(*wrapper, hostModule, waveW);
+                    // The Group surface on this backend is the runtime's
+                    // one-work-item stubs (width 1, lane 0, identity reduce),
+                    // as the Group doc promises. A kernel that takes its
+                    // geometry from them and ALSO calls a wave op is about to
+                    // vectorize at width W with width-1 geometry: two surfaces,
+                    // two widths, one kernel. q2kQ8WaveMatVecKernel strides
+                    // by Group.width() / 4, which is 0, and its first cpu run
+                    // spun for 33 minutes on a two-row mat-vec (2026-09-28).
+                    // Refused by name; folding the Group surface onto the wave
+                    // for such kernels is xpu-kernel-adaptor Unit 9's call.
+                    std::string groupOp = groupSurfaceUse(*wrapper);
+                    if (waveKernel && !groupOp.empty()) {
+                        reportUnloweredKernel(*method, entryName, "cpu",
+                                              groupOp + " with a wave op in the same kernel: the cpu "
+                                              "Group surface is one work-item wide while the wave is "
+                                              + std::to_string(waveW) + " lanes, so the geometry and "
+                                              "the reduce disagree (xpu-kernel-adaptor Unit 9)");
+                        wrapper->eraseFromParent();
+                        continue;                     // host-stub fallback
+                    }
                     if (waveKernel) {
                         rewriteWaveWidth(*wrapper, waveW);
                         waveMaskAsData(*wrapper, hostModule, waveW);
@@ -1303,6 +1332,21 @@ void foldWaveVariants(llvm::Function& f) {
                 }
             }
 
+            // Two surfaces, two widths, one kernel: refused on this path as on
+            // the fission path above (the note there says why).
+            {
+                std::string groupOp = groupSurfaceUse(*linked);
+                if (groupOp.empty()) groupOp = groupSurfaceUse(*wrapper);
+                if (waveKernel && !groupOp.empty()) {
+                    reportUnloweredKernel(*method, entryName, "cpu",
+                                          groupOp + " with a wave op in the same kernel: the cpu "
+                                          "Group surface is one work-item wide while the wave is "
+                                          + std::to_string(waveW) + " lanes, so the geometry and "
+                                          "the reduce disagree (xpu-kernel-adaptor Unit 9)");
+                    wrapper->eraseFromParent();
+                    continue;                     // host-stub fallback
+                }
+            }
             // The width IS W in a vectorized wave kernel, so width() is rewritten
             // to the constant before vectorizing and folds cleanly.
             if (waveKernel) {

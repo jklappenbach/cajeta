@@ -58,6 +58,7 @@ import cajeta.xpu.Workgroup;
 import cajeta.xpu.Barrier;
 import cajeta.xpu.Shared;
 import cajeta.xpu.Wave;
+import cajeta.xpu.Group;
 import cajeta.lang.System;
 public class M {
     @Kernel
@@ -528,6 +529,195 @@ const char* kReturnSrc = R"CJ(
 TEST(XpuCpuFissionUniformize, aReturnInsideAScaffoldLoopEndsThatWorkItem) {
     const int r = runOnCpu(std::string(kPreamble) + kReturnSrc);
     EXPECT_EQ(r, 0) << "r=" << r;
+}
+
+// ---- (f2) the predicated loop under a PER-WAVE guard with dead waves ---- //
+//
+// q2kQ8WaveMatVecKernel's shape, the width-portable wave mat-vec: `row =
+// globalIdX / width; if (row < rows) { lane-strided loop }` then the reduce
+// and the lane-0 store. With two rows and a block of 64 threads, every wave
+// past the second is DEAD: its work-items never pass the guard, never run
+// the loop's preheader, never arm or clear anything. On 2026-09-28 the llm
+// test for this kernel, running on cpu for the first time (its cpu-name
+// guard had come off), spun one thread for 33 minutes on a two-row
+// mat-vec. Whatever the dead waves leave behind must not keep the
+// scaffold loop alive: the kernel must end, and rows 0 and 1 must be right.
+const char* kDeadWaveSrc = R"CJ(
+    @Kernel
+    public static void dw(KernelBuffer<float32> y, KernelBuffer<float32> in,
+                          uint32 rows, uint32 nb) {
+        uint32 w = Wave.width();
+        uint32 lane = KernelThread.x() % w;
+        uint32 row = KernelThread.globalIdX() / w;
+        float32 acc = 0.0f;
+        if (row < rows) {
+            uint32 b = lane;
+            while (b < nb) {
+                acc = acc + in[(int64) (row * nb + b)];
+                b = b + w;
+            }
+        }
+        float32 t0 = Wave.reduceSumF32(acc);
+        if (lane == 0) {
+            if (row < rows) { y[(int64) row] = t0; }
+        }
+    }
+    public static int32 run() {
+        uint32 w = probeWidth();
+        if (w < 2) { return -3; }
+        uint32 nb = 12;
+        float32[] hin = heap float32[2 * nb];
+        uint32 i = 0;
+        while (i < 2 * nb) { hin[i] = (float32) (i + 1); i = i + 1; }
+        float32[] want = heap float32[2];
+        uint32 r = 0;
+        while (r < 2) {
+            float32 s = 0.0f;
+            uint32 b = 0;
+            while (b < nb) { s = s + hin[r * nb + b]; b = b + 1; }
+            want[r] = s;
+            r = r + 1;
+        }
+        float32[] hy = heap float32[2];
+        hy[0] = -1.0f; hy[1] = -1.0f;
+        KernelBuffer<float32> bin = heap KernelBuffer<float32>(2 * nb);
+        KernelBuffer<float32> by = heap KernelBuffer<float32>(2);
+        bin.upload(hin);
+        by.upload(hy);
+        KernelStream s #= KernelStream.current();
+        try {
+            dw.launch(s, grid: [1], block: [64])(by, bin, 2, nb);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        by.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        return verify(hy, 2, want);
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, aPredicatedLoopUnderADeadWaveGuardStillEnds) {
+    const int r = runOnCpu(std::string(kPreamble) + kDeadWaveSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100+i wrong at row i;"
+                       " a TIMEOUT here is the scaffold loop never ending)";
+}
+
+// ---- (g2) the Group surface and a wave op in ONE kernel, on cpu --------- //
+//
+// On cpu every Group native is the runtime's one-work-item stub: width 1,
+// lane 0, identity reduce. A kernel that takes its geometry from
+// Group.width() but reduces with Wave.reduceSumF32 is a WAVE kernel (it
+// vectorizes at the host width) with width-1 geometry. q2kQ8WaveMatVecKernel
+// strides its loop by width / 4, which is 0, and on 2026-09-28 its first cpu
+// run spun one thread for 33 minutes on a two-row mat-vec. Such a kernel is
+// REFUSED on cpu by name (xpu-kernel-adaptor Unit 9 owns the fold), and a
+// Group-only kernel still lowers and answers right at width 1: both arms.
+const char* kGroupPlusWaveSrc = R"CJ(
+    @Kernel
+    public static void gw(KernelBuffer<float32> y, KernelBuffer<float32> in,
+                          uint32 rows, uint32 nb) {
+        uint32 w = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % w;
+        uint32 row = KernelThread.globalIdX() / w;
+        float32 acc = 0.0f;
+        if (row < rows) {
+            uint32 b = lane;
+            while (b < nb) {
+                acc = acc + in[(int64) (row * nb + b)];
+                b = b + w;
+            }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < rows) { y[(int64) row] = tot; }
+    }
+    public static int32 run() {
+        float32[] hin = heap float32[24];
+        uint32 i = 0;
+        while (i < 24) { hin[i] = 1.0f; i = i + 1; }
+        float32[] hy = heap float32[2];
+        hy[0] = -1.0f; hy[1] = -1.0f;
+        KernelBuffer<float32> bin = heap KernelBuffer<float32>(24);
+        KernelBuffer<float32> by = heap KernelBuffer<float32>(2);
+        bin.upload(hin);
+        by.upload(hy);
+        KernelStream s #= KernelStream.current();
+        try {
+            gw.launch(s, grid: [1], block: [64])(by, bin, 2, 12);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        by.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, aKernelMixingTheGroupSurfaceAndAWaveOpIsRefusedOnCpu) {
+    const int r = runOnCpu(std::string(kPreamble) + kGroupPlusWaveSrc);
+    EXPECT_EQ(r, -1) << "a kernel taking its geometry from Group.width() and reducing"
+                        " with a wave op REGISTERED on cpu (r=" << r << "); width 1"
+                        " geometry under a wave-8 reduce is wrong, and this shape"
+                        " strides by 0";
+}
+
+const char* kGroupOnlySrc = R"CJ(
+    @Kernel
+    public static void go(KernelBuffer<float32> y, KernelBuffer<float32> in,
+                          uint32 rows, uint32 nb) {
+        uint32 w = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % w;
+        uint32 row = KernelThread.globalIdX() / w;
+        float32 acc = 0.0f;
+        if (row < rows) {
+            uint32 b = lane;
+            while (b < nb) {
+                acc = acc + in[(int64) (row * nb + b)];
+                b = b + w;
+            }
+        }
+        if (lane == 0 && row < rows) { y[(int64) row] = acc; }
+    }
+    public static int32 run() {
+        uint32 nb = 12;
+        float32[] hin = heap float32[2 * nb];
+        uint32 i = 0;
+        while (i < 2 * nb) { hin[i] = (float32) (i + 1); i = i + 1; }
+        float32[] want = heap float32[2];
+        uint32 r = 0;
+        while (r < 2) {
+            float32 s = 0.0f;
+            uint32 b = 0;
+            while (b < nb) { s = s + hin[r * nb + b]; b = b + 1; }
+            want[r] = s;
+            r = r + 1;
+        }
+        float32[] hy = heap float32[2];
+        hy[0] = -1.0f; hy[1] = -1.0f;
+        KernelBuffer<float32> bin = heap KernelBuffer<float32>(2 * nb);
+        KernelBuffer<float32> by = heap KernelBuffer<float32>(2);
+        bin.upload(hin);
+        by.upload(hy);
+        KernelStream s #= KernelStream.current();
+        try {
+            go.launch(s, grid: [1], block: [64])(by, bin, 2, nb);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        by.download(hy);
+        if (hy[0] == -1.0f) { return -1; }
+        return verify(hy, 2, want);
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, aGroupOnlyKernelStillLowersAndAnswersAtWidthOne) {
+    const int r = runOnCpu(std::string(kPreamble) + kGroupOnlySrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100+i wrong at row i)";
 }
 
 // ======================================================================== //
