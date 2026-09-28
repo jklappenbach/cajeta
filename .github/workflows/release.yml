@@ -1546,16 +1546,23 @@ jobs:
             echo "::notice::docs already match ${{ steps.params.outputs.tag }} — nothing to commit"
             exit 0
           fi
+          # The tag is on the release branch, whose history main does not share,
+          # so regenerate the blocks on main's own tree instead of rebasing onto it.
+          git checkout -- "${DOCS[@]}"
+          git fetch origin main
+          git checkout -q -B release-docs FETCH_HEAD
+          bash scripts/update-release-docs.sh "${{ steps.params.outputs.tag }}" release-assets artifacts
+          if git diff --quiet -- "${DOCS[@]}"; then
+            echo "::notice::main's docs already match ${{ steps.params.outputs.tag }} — nothing to commit"
+            exit 0
+          fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "${DOCS[@]}"
           git commit -m "docs: release links for ${{ steps.params.outputs.tag }} [skip ci]"
-          # The tag was built from a commit on main, but main may have moved
-          # while the matrix ran. Rebase onto it rather than force-pushing
-          # over whatever landed in the meantime.
-          git fetch origin main
-          git rebase origin/main
           git push origin HEAD:main
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
 
       # ---- publish the site, so cajeta.dev shows what just shipped ------
       #
