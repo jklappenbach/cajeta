@@ -1210,6 +1210,61 @@ public static void gemm(KernelBuffer<float32> c, KernelBuffer<float32> a,
 The choice is just *who owns the logistics*: omit `@Occupancy` and Cajeta
 configures the kernel from the live device; add it and you do, portably.
 
+**A derived block needs a declared ceiling.** The compiler scans every launch
+site for a constant block and budgets the kernel's registers for the largest
+one it finds. A block that is not a constant at every site (`block: [n]`, the
+profile-driven geometry of spec §1.4) leaves the compiler with no bound: amdgpu
+then budgets the kernel for the part's full ceiling (1024 threads, the smallest
+register allowance a thread can get) and nvptx applies no bound at all. Such a
+kernel fails the build, by name:
+
+```
+cajeta: error: [xpu-kernel-unbounded] q2kQ8WaveMatVecKernel: launched with a
+non-constant block at 1 site(s) and no @Occupancy(maxThreads): ...
+```
+
+The remedy is `@Occupancy(maxThreads = N)`, the kernel's *structural* ceiling:
+what only the author knows, stated at compile time, never derived from the
+device (a device fact in a compile-time artifact would break AOT). The adaptor
+then picks the actual block at bind anywhere at or under it. Moving a launcher
+from `block: [32]` to a derived block without declaring the ceiling trades an
+occupancy win for a register-allocation loss, which is why the two land in the
+same change. Where no ceiling is declared, the fallback amdgpu applies is the
+profile's per-block ceiling for the target part, stated explicitly rather than
+left to the backend's default.
+
+**The kernel gate.** Two things about a kernel fail the build rather than
+print and pass, each after every offending kernel has been named, under one
+error, `CAJETA_ERROR_XPU_KERNEL_GATE`:
+
+- `[xpu-kernel-skipped]`: a `@Kernel` that produces no device code for a
+  backend the build declares (`--xpu-backend=`), with the backend and the
+  lowering's reason. A launch of such a kernel would find nothing.
+- `[xpu-kernel-unbounded]`: the derived block without its ceiling, above.
+
+Each has one escape, a declaration on the kernel that names the plan item
+holding it, and the line is then a note carrying `[tracked: <item>]`:
+
+```cajeta
+@Kernel
+@Unlowered(backend = "cpu", tracked = "xpu-kernel-adaptor 4.2.1")
+public static void attnFlashDecodeGqa4Kernel(...) { ... }
+
+@Kernel
+@Unbounded(tracked = "xpu-kernel-adaptor 7.0.5")
+public static void q4kMatVecKernel(...) { ... }
+```
+
+`@Unlowered` is per backend (`backend` takes a name or a list: `cpu`,
+`nvptx`, `amdgpu`, `vulkan`); it says nothing about the others. A held
+kernel whose cause has gone is STALE and fails until the declaration is
+removed: an `@Unlowered` kernel that lowers on that backend, an `@Unbounded`
+kernel whose every launch site passes a constant block or that declares
+`@Occupancy(maxThreads)`. A box without the assembler (no `ptxas`, no
+`ld.lld`) is not the kernel's failure: that line stays a note and says
+`no assembler`. `CAJETA_XPU_KERNEL_GATE=warn` demotes both to warnings for
+a sweep.
+
 > **Status.** The compile-time workgroup-size budgeting and `@Occupancy` override
 > are active today; the DeviceProfile, analytic picker, and bounded sweep are the
 > config-decision layer (`cajeta gpu-profile` is live). Applying a *runtime-chosen*

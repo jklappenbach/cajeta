@@ -71,7 +71,11 @@ namespace cajeta {
             // Entry-block alloca: lazy, so a first reference in a loop would otherwise
             // re-allocate stack each iteration.
             alloca = module->createEntryAlloca(llvmType);
-            module->getBuilder()->CreateStore(llvmFunction->getArg(paramIndex), alloca);
+            llvm::Value* arg = llvmFunction->getArg(paramIndex);
+            if (llvmType->isStructTy() && arg->getType()->isPointerTy()) {
+                arg = module->getBuilder()->CreateLoad(llvmType, arg);
+            }
+            module->getBuilder()->CreateStore(arg, alloca);
         }
         return alloca;
     }

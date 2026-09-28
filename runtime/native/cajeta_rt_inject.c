@@ -567,6 +567,8 @@ struct cajeta_exception_frame {
     // A bare pointer here, a Throwable* to codegen; the legacy int-throw idiom
     // round-trips through IntToPtr and PtrToInt.
     void* thrown_value;
+    // 1 when the throw tendered the value's title, so the catch owns it; 0 when borrowed.
+    int64_t thrown_title;
     // Drop-chain watermark snapshotted at try-entry. On throw, the runtime
     // unwinds drops between the current top and this watermark before longjmp.
     struct cajeta_drop_entry* drop_watermark;
@@ -598,6 +600,7 @@ void __cajeta_exc_push(struct cajeta_exception_frame* f) {
     struct cajeta_drop_entry** dropTop = __cajeta_drop_top_ptr();
     f->prev = *top;
     f->thrown_value = NULL;
+    f->thrown_title = 0;
     f->drop_watermark = *dropTop;
     f->shadow_watermark = __cajeta_shadow_get_top();
     f->instr_watermark = __cajeta_prof_instr_depth();

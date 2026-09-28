@@ -366,6 +366,9 @@ namespace cajeta {
                 && !bop->isArenaEligible()
                 && isLangString(bop->getResolvedType());
         }
+        if (DotExpression::materializesViewField(e)) {
+            return isLangString(dynamic_pointer_cast<Expression>(e)->getResolvedType());
+        }
         if (auto amce = dynamic_pointer_cast<MethodCallExpression>(e)) {
             // NOT bindingTakesTitle(). This is the RECLAMATION question - does the
             // enclosing statement free this temporary - and its false-on-unresolved default
@@ -2351,28 +2354,85 @@ namespace cajeta {
                         + methodCallName + "(bytes)`.",
                         "CAJETA_ERROR_VIEW_ELEMENT_ARRAY_OWNING");
                 }
-                llvm::Value* bytesPtr = parameters[0].expression->generateCode(module);
-                if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(bytesPtr)) {
-                    bytesPtr = builder->CreateLoad(a->getAllocatedType(), a);
-                }
-                if (!bytesPtr) return nullptr;
-
                 llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
                 llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
+                llvm::PointerType* slicePtrTy = llvm::PointerType::get(llvmCtx, 0);
+
+                auto viewArg = dynamic_pointer_cast<Expression>(parameters[0].expression);
+                if (viewArg && !viewArg->getResolvedType()) viewArg->resolveTypes(module);
+                auto sliceArg = viewArg
+                    ? dynamic_pointer_cast<CajetaClass>(viewArg->getResolvedType()) : nullptr;
+                bool overSlice = sliceArg && sliceArg->getQName()
+                    && sliceArg->getQName()->getPackageName() == "cajeta.lang"
+                    && sliceArg->getQName()->getTypeName().rfind("Slice", 0) == 0;
+                if (overSlice && (parameters[0].callerTransferred
+                        || isMoveKind(parameters[0].expression))) {
+                    throw Exception(
+                        "owning form `" + methodCallName + "(#window)` is not "
+                        "supported over a Slice: a window does not own its root "
+                        "buffer. Use the borrow form `" + methodCallName
+                        + "(window)`.",
+                        "CAJETA_ERROR_VIEW_SLICE_OWNING");
+                }
 
                 uint64_t structBytes = structType->getMinimumSize();
                 uint64_t elemBytes = 1;
-                if (auto argExpr = dynamic_pointer_cast<Expression>(parameters[0].expression)) {
-                    if (!argExpr->getResolvedType()) argExpr->resolveTypes(module);
-                    if (auto arrType = dynamic_pointer_cast<CajetaArray>(argExpr->getResolvedType())) {
-                        if (auto elemTy = arrType->getElementLlvmType(&llvmCtx)) {
-                            elemBytes = module->getLlvmModule()->getDataLayout().getTypeAllocSize(elemTy);
+                llvm::Value* bytesPtr = nullptr;
+                llvm::Value* count = nullptr;
+                llvm::Value* sliceData = nullptr;
+                if (overSlice) {
+                    auto& targs = sliceArg->getTypeArguments();
+                    if (!targs.empty()) {
+                        if (llvm::Type* et = targs[0]->getLlvmType()) {
+                            if (et->isSized()) {
+                                elemBytes = module->getLlvmModule()->getDataLayout().getTypeAllocSize(et);
+                            }
                             if (elemBytes == 0) elemBytes = 1;
                         }
                     }
+                    llvm::StructType* sliceTy =
+                        llvm::dyn_cast_or_null<llvm::StructType>(sliceArg->getLlvmType());
+                    if (!sliceTy) return nullptr;
+                    auto& sprops = sliceArg->getProperties();
+                    auto slot = [&](const char* name) -> unsigned {
+                        auto it = sprops.find(name);
+                        return it == sprops.end() ? 0u
+                            : (unsigned) sliceArg->getFieldLlvmIndex(it->second);
+                    };
+                    llvm::Value* addr = viewArg->generateCode(module);
+                    if (!addr) return nullptr;
+                    if (!addr->getType()->isPointerTy()) {
+                        llvm::Value* spill = module->createEntryAlloca(addr->getType(), "view_slice");
+                        builder->CreateStore(addr, spill);
+                        addr = spill;
+                    }
+                    bytesPtr = builder->CreateLoad(slicePtrTy,
+                        builder->CreateStructGEP(sliceTy, addr, slot("store")), "view_slice_store");
+                    llvm::Value* off = builder->CreateLoad(i64Ty,
+                        builder->CreateStructGEP(sliceTy, addr, slot("off")), "view_slice_off");
+                    count = builder->CreateLoad(i64Ty,
+                        builder->CreateStructGEP(sliceTy, addr, slot("len")), "view_slice_len");
+                    llvm::Value* skip = builder->CreateAdd(
+                        llvm::ConstantInt::get(i64Ty, 8),
+                        builder->CreateMul(off, llvm::ConstantInt::get(i64Ty, elemBytes)),
+                        "view_slice_skip");
+                    sliceData = builder->CreateInBoundsGEP(i8Ty, bytesPtr, skip, "view_data_ptr");
+                } else {
+                    bytesPtr = parameters[0].expression->generateCode(module);
+                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(bytesPtr)) {
+                        bytesPtr = builder->CreateLoad(a->getAllocatedType(), a);
+                    }
+                    if (!bytesPtr) return nullptr;
+                    if (viewArg) {
+                        if (auto arrType = dynamic_pointer_cast<CajetaArray>(viewArg->getResolvedType())) {
+                            if (auto elemTy = arrType->getElementLlvmType(&llvmCtx)) {
+                                elemBytes = module->getLlvmModule()->getDataLayout().getTypeAllocSize(elemTy);
+                                if (elemBytes == 0) elemBytes = 1;
+                            }
+                        }
+                    }
+                    count = builder->CreateLoad(i64Ty, bytesPtr, "view_buf_count");
                 }
-
-                llvm::Value* count = builder->CreateLoad(i64Ty, bytesPtr, "view_buf_count");
                 llvm::Value* haveBytes = builder->CreateMul(count,
                     llvm::ConstantInt::get(i64Ty, elemBytes), "view_buf_bytes");
                 llvm::Value* ok = builder->CreateICmpUGE(haveBytes,
@@ -2396,7 +2456,7 @@ namespace cajeta {
                 builder->CreateUnreachable();
 
                 builder->SetInsertPoint(okBB);
-                llvm::Value* dataPtr = builder->CreateInBoundsGEP(
+                llvm::Value* dataPtr = sliceData ? sliceData : builder->CreateInBoundsGEP(
                     i8Ty, bytesPtr,
                     llvm::ConstantInt::get(i64Ty, 8), "view_data_ptr");
                 llvm::Value* viewValue = dataPtr;
@@ -4061,6 +4121,11 @@ namespace cajeta {
                 if (ns == "Cajeta" && methodCallName == "allocatedBytes" && parameters.empty()) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_total_allocated_bytes");
                     resolvedType = CajetaType::of("int64");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "scopeTables" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_anchor_table_population");
+                    resolvedType = CajetaType::of("int32");
                     return builder->CreateCall(fn, {});
                 }
                 if (ns == "Cajeta" && methodCallName == "arenaInUse" && parameters.empty()) {
@@ -5777,8 +5842,11 @@ namespace cajeta {
             }
             if (!receiver && !receiverType) {
                 if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(exprChild)) {
-                    auto scoped = CajetaType::ofScoped(
-                        idExpr->getTextValue(), module);
+                    // A type parameter names its bound type in a monomorphized body.
+                    auto scoped = module->lookupTypeParameter(idExpr->getTextValue());
+                    if (!scoped) {
+                        scoped = CajetaType::ofScoped(idExpr->getTextValue(), module);
+                    }
                     if (scoped) {
                         if (scoped->getTypeFlags() & ENUM_FLAG) {
                             receiverType = scoped;
@@ -8847,13 +8915,17 @@ namespace cajeta {
                                 && !(rrtClass && rrtClass->isInterface())
                                 && !dynamic_pointer_cast<CajetaFunctionType>(rrt)
                                 && !dynamic_pointer_cast<CajetaView>(rrt));
+                        bool retIsOwnedString = tempTarget->isReturnsOwnership() && rrtClass
+                            && rrtClass->getQName()
+                            && rrtClass->getQName()->getTypeName() == "String"
+                            && rrtClass->getQName()->getPackageName() == "cajeta.lang";
                         llvm::Function* vdropFn = module->getRuntimeFunction(
                             "__cajeta_class_virtual_drop");
                         llvm::Function* fgFn = module->getRuntimeFunction(
                             "__cajeta_return_flag_get");
                         llvm::Function* fsFn = module->getRuntimeFunction(
                             "__cajeta_return_flag_set");
-                        if (vdropFn && fgFn && fsFn && retIsSafeScalar) {
+                        if (vdropFn && fgFn && fsFn && (retIsSafeScalar || retIsOwnedString)) {
                             llvm::Value* savedFl = builder->CreateCall(
                                 fgFn, {}, "recv_reclaim_savefl");
                             llvm::Value* ownedRecv = recvTempStatic

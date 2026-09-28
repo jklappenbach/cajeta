@@ -32,6 +32,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include "KernelLoweringProbe.h"
 
 using cajeta::Compiler;
 using cajeta::CajetaModulePtr;
@@ -96,21 +97,8 @@ using QFn = void (*)(float*, uint32_t,
                      int32_t, int32_t, int32_t,
                      int32_t, int32_t, int32_t);
 
-CajetaModulePtr compileForInspection(Compiler& compiler,
-                                     const std::string& source) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = std::filesystem::temp_directory_path()
-              / ("cajeta_xpu_quatdev_" + std::to_string(rng()));
-    std::filesystem::create_directories(base / "test");
-    std::ofstream(base / "test" / "Q.cajeta") << source;
-    auto archive = std::filesystem::temp_directory_path()
-                 / ("cajeta_xpu_quatdev_arch_" + std::to_string(rng()));
-    std::filesystem::create_directories(archive);
-    auto full = base / "test" / "Q.cajeta";
-    auto m = compiler.createModule(full.string(), base.string(), archive.string());
-    compiler.compile(m);
-    return m;
-}
+using cajeta::xpu::probe::compileForInspection;
+
 
 cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
                              const std::string& name) {

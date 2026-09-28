@@ -435,6 +435,7 @@ namespace cajeta {
         // When the moved-out source is a runtime owner, its entry flag is captured
         // here BEFORE deactivation; store and return sites seed their bit from it.
         llvm::Value* runtimeTitleFlag = nullptr;
+        bool captureMarker = false;
     public:
         MoveExpression(antlr4::Token* token) : Expression(token) { exprKind = ExprKind::Move; }
 
@@ -444,6 +445,9 @@ namespace cajeta {
         // `#= #x`, the transfer spelled twice: it means what `#= x` means, so it
         // warns rather than rejects, and generateCode reports it.
         void setRedundantSharp(bool v) { redundantSharp = v; }
+        // Inside a lambda body, `#cap` names a capture already moved into the closure: a plain read.
+        void setCaptureMarker(bool v) { captureMarker = v; }
+        bool isCaptureMarker() const { return captureMarker; }
         bool isRedundantSharp() const { return redundantSharp; }
 
         // Fused slot-to-slot forwarding, set by the enclosing `dst[i] #= #src[j]`
@@ -655,4 +659,12 @@ namespace cajeta {
         }
         return nullptr;
     }
+
+    // A compile-time text as a static cajeta.lang.String, for synthesized code.
+    llvm::Value* emitStaticStringConstant(CajetaModulePtr module, const std::string& text);
+
+    // Throws a new instance of the stdlib exception `canonical` built from `message`, and
+    // terminates the block. The class must take a single `#String` constructor argument.
+    llvm::Value* emitThrowStdlibException(CajetaModulePtr module, const std::string& canonical,
+                                          const std::string& message);
 }

@@ -60,6 +60,9 @@ namespace cajeta {
         // endianness: after a field load, before a field store, so wire order stays.
         static llvm::Value* maybeBswap(CajetaModulePtr module, llvm::Value* v,
                                         const ExpressionPtr& receiver);
+
+        // A String or array field read through a view, which copies the bytes into a fresh value.
+        static bool materializesViewField(const AbstractSyntaxNodePtr& e);
     };
 
 } // code

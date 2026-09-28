@@ -1,0 +1,12 @@
+package cajeta.error;
+
+/**
+ * Thrown when a scoped component that is only ever provided, never built, is injected
+ * before `Components.provide` placed it in the active scope. The message names both.
+ */
+public class NotProvidedException extends RecoverableException {
+    public NotProvidedException(#String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

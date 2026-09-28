@@ -2806,6 +2806,17 @@ namespace cajeta {
 
         for (auto& property : reversed) {
             if (property->isStatic()) continue;
+            // An instance-scope anchor ends its component table with itself.
+            if (property->getName() == CajetaModule::kScopeTableField) {
+                if (llvm::Function* endFn = cajModule->getRuntimeFunction(
+                        "__cajeta_anchor_table_end", bodyModule)) {
+                    llvm::Value* slot = b.CreateStructGEP(
+                        rawLlvmType(), instance, (unsigned) getFieldLlvmIndex(property),
+                        "scope_table_slot");
+                    b.CreateCall(endFn, {b.CreateLoad(ptrTy, slot, "scope_table")});
+                }
+                continue;
+            }
             auto fieldType = property->getType();
             if (!fieldType) continue;
             // A `T`-origin scalar field may have been LENT, which no type can
@@ -2888,6 +2899,21 @@ namespace cajeta {
                             llvm::ConstantInt::get(wi64,
                                 CajetaClass::arrayElementInnerDropKind(
                                     arrField->getElementType()))});
+                    }
+                }
+                {
+                    auto ifElem = dynamic_pointer_cast<CajetaClass>(arrField->getElementType());
+                    if (ifElem && ifElem->isInterface()) {
+                        if (llvm::Function* iwFn = cajModule->getRuntimeFunction(
+                                "__cajeta_iface_elem_drop_walk", bodyModule)) {
+                            const llvm::DataLayout& iwDl = bodyModule->getDataLayout();
+                            llvm::Type* iwI64 = llvm::Type::getInt64Ty(ctx);
+                            b.CreateCall(iwFn, {arrPtr,
+                                llvm::ConstantInt::get(iwI64,
+                                    iwDl.getTypeAllocSize(arrField->getLlvmType())),
+                                llvm::ConstantInt::get(iwI64,
+                                    arrField->elementStrideBytes(iwDl, &ctx))});
+                        }
                     }
                 }
                 {

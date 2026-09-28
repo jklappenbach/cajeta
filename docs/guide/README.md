@@ -36,7 +36,7 @@ sequence rather than renumbering everything after 05.)*
 | [16 Operators](16-operators.md) | Overloading, derived forms, @AutoHash |
 | [17 Inheritance](17-inheritance.md) | Single, multiple, interfaces |
 | [18 Annotations](18-annotations.md) | Synthesis family; declaring your own |
-| [19 DI & aspects](19-di-aspects.md) | @Component, @Inject, @Factory, advice |
+| [19 DI & aspects](19-di-aspects.md) | @Component, @Inject, @Scope, @Factory, advice |
 | [20 Error handling](20-error-handling.md) | Exceptions; why there's no try-with-resources |
 | [21 Reflection](21-reflection.md) | cajeta.reflect and the keep-set |
 | [22 Differentiation](22-differentiation.md) | Grad/Vmap/Jit, the annotation stack, and the eager Tape |

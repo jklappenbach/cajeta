@@ -509,7 +509,13 @@ elementValuePairs
     ;
 
 elementValuePair
-    : identifier ('=' | ':') elementValue
+    : annotationElementName ('=' | ':') elementValue
+    ;
+
+// `scope` names the structured-concurrency block, and is also an element name.
+annotationElementName
+    : identifier
+    | SCOPE
     ;
 
 // The array form is listed FIRST, ahead of `expression`. collection-literals 2
@@ -561,7 +567,7 @@ annotationMethodOrConstantRest
     ;
 
 annotationMethodRest
-    : identifier '(' ')' defaultValue?
+    : annotationElementName '(' ')' defaultValue?
     ;
 
 annotationConstantRest

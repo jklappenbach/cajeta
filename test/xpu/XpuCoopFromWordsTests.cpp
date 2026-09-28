@@ -17,6 +17,7 @@
 //
 
 #include <gtest/gtest.h>
+#include "XpuRefusalProbe.h"
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
@@ -39,6 +40,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include "KernelLoweringProbe.h"
 
 using namespace cajeta::xpu::amd;
 using cajeta::Compiler;
@@ -92,21 +94,8 @@ const char* kFromWordsSource =
     "    public static int32 run() { return 1; }\n"
     "}\n";
 
-CajetaModulePtr compileForInspection(Compiler& compiler,
-                                     const std::string& source) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = std::filesystem::temp_directory_path()
-              / ("cajeta_xpu_fromwords_" + std::to_string(rng()));
-    std::filesystem::create_directories(base / "test");
-    std::ofstream(base / "test" / "M.cajeta") << source;
-    auto archive = std::filesystem::temp_directory_path()
-                 / ("cajeta_xpu_fromwords_arch_" + std::to_string(rng()));
-    std::filesystem::create_directories(archive);
-    auto full = base / "test" / "M.cajeta";
-    auto m = compiler.createModule(full.string(), base.string(), archive.string());
-    compiler.compile(m);
-    return m;
-}
+using cajeta::xpu::probe::compileForInspection;
+
 
 cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
                              const std::string& name) {
@@ -218,7 +207,7 @@ TEST(XpuCoopFromWordsTests, lowersNativelyOnAmdgpu) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Amdgpu, kFromWordsSource,
                        &err), 1);
-    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+    EXPECT_FALSE(cajeta_test::loweringRefused(err))
         << "fromWords must lower on amdgpu, not skip:\n" << err;
     EXPECT_EQ(err.find("[mma-tiering]"), std::string::npos)
         << "int8 + fromWords is native on amdgpu:\n" << err;

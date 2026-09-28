@@ -457,7 +457,7 @@ public final class Annotation {
     public Class<?>     getClassValue(String name);
     // ...
 
-    // Annotations can be nested. e.g. @Component(scope=@Scope("singleton"))
+    // Annotations can be nested, e.g. @Retry(backoff = @Backoff(millis = 50))
     public Annotation   getAnnotationValue(String name);
 }
 ```

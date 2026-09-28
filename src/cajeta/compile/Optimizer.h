@@ -27,6 +27,18 @@ namespace cajeta {
 
     // Vectorize a single function, always and independent of `--opt`: the CPU
     // backend turns its per-block kernel wrapper's work-item loop into SIMD.
-    void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm);
+    //
+    // `scalarizeVectorValues` is for a WAVE kernel wrapper and nothing else.
+    // LoopVectorize refuses a loop holding an instruction whose result type is
+    // not a valid vector ELEMENT type, and a fixed vector type is not one, so a
+    // single cajeta `Vector<T,N>` value (vload, asWords, asBytes, dotAccum) in
+    // the region refuses the whole work-item loop with "instruction return type
+    // cannot be vectorized" and the wave op is left scalar. Breaking those
+    // values into scalars first lets the work-item loop widen at the wave
+    // width, and the wave op is what the lanes are FOR. An ordinary
+    // data-parallel cpu kernel keeps its vector values, where a
+    // `Vector<float32,4>` is deliberate host SIMD.
+    void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
+                           bool scalarizeVectorValues = false);
 
 } // namespace cajeta

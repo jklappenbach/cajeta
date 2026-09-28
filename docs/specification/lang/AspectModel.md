@@ -21,7 +21,7 @@ core. (cazo was renamed primavera; the policy layer it owns is unchanged.)
 | Concern | Home |
 |---|---|
 | `@Component` — declare an injectable node | **core** (`cajeta.aot`) |
-| `@Inject` — consume a node; identity scopes (`SINGLETON` / `OWNER_SCOPE` / `CALL_SCOPE` / `TRANSIENT`) | **core** |
+| `@Inject` — consume a node; `@Scope` — publish a component lifetime at the method or class that bounds it | **core** |
 | `@Factory` — produce a node (third-party types, assisted args, init beyond ctor) | **core** |
 | Compile-time graph resolution, generated bootstrap, ownership integration | **core** |
 | `@PostConstruct` / `@PreDestroy` lifecycle | **core** |
@@ -74,23 +74,33 @@ component declares no lifetime of its own — that is a per-`@Inject`-site decis
 Field injection and constructor injection both compose; setter injection is
 rejected (it adds a third, implicitly-mutable surface for no gain).
 
-### `@Inject` — consume a node, with an identity scope
+### `@Inject` and `@Scope` — lifetimes belong to the component
 
-`@Inject` marks an injection site. `allocate = ...` picks the lifetime **at the
-site** (default `ALLOCATE_SINGLETON`); `name = ...` qualifies. The four
-identity-based scopes:
+`@Inject` marks an injection site, and `name = ...` qualifies it. The lifetime
+belongs to the component, not the site (`specs/component-scopes-spec.md`): a
+component names a scope with `@Component(scope = "...")`, default `"Singleton"`,
+and every site that injects it gets that lifetime. A site may repeat the declared
+scope but not change it. For a component that declares none, a site may still ask
+for `"Owner"` (one per injecting object) or `"Transient"` (one per injection),
+and the holder owns the result.
 
-| Mode | One instance per | Status |
+A scope other than the built-in `"Singleton"` and `"Transient"` is **published**
+by the code that bounds it, with `@Scope("Name")`:
+
+| Placed on | The scope is | It ends |
 |---|---|---|
-| `ALLOCATE_SINGLETON` | process (application) | implemented |
-| `ALLOCATE_OWNER_SCOPE` | injecting object | implemented |
-| `ALLOCATE_CALL_SCOPE` | method activation | **stubbed** — inject path throws `CAJETA_ERROR_NOT_IMPLEMENTED` |
-| `ALLOCATE_TRANSIENT` | every read of the site | implemented |
+| a method, or a method it overrides or implements | one activation | on return or throw |
+| a class | one instance, current while a non-private instance method runs | when the instance is dropped |
 
-Because the lifetime is declared at the site, one component can serve different
-roles in different consumers. Non-identity scopes (request/session, keyed on the
-logical request rather than an object identity) are **primavera policy** built
-over `cajeta.concurrent.FiberLocal`, not core.
+The compiler emits both ends: an anchored method pushes a frame onto the drop
+chain on entry, so every return and every throw ends it, and an anchor class
+ends its component table in its drop. No framework code starts or stops a scope.
+A field may hold only a component that outlives its holder, and otherwise the
+site injects a `Scoped<T>` handle that resolves at each `get()`. Values made at
+run time enter a scope through `Components.provide(#v)`.
+
+Request, session and connection lifetimes are therefore not core concepts:
+primavera publishes them on its own pipeline and session types.
 
 ### `@Factory` — produce a node
 
@@ -237,8 +247,9 @@ opts out.
 
 The enterprise opinion built on this substrate lives in `org.cajeta.primavera`:
 
-- **Request / session scope** — non-identity scopes keyed on the logical request,
-  over `cajeta.concurrent.FiberLocal`; the request-scoped `@Component` lifetime.
+- **Request / session scope** — `@Scope("Request")` and `@Scope("Session")`
+  published on primavera's pipeline and session types, over the core scope
+  mechanism.
 - **Web model** — HTTP request/response, a handler API, `@RestServer`, and a
   pluggable executor (fiber-per-request vs threadpool-over-completion-ports).
 - **Stereotypes** — `@Repository`, `@Service` (named roles over `@Component`).

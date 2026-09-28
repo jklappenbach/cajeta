@@ -15,6 +15,7 @@
 //
 
 #include <gtest/gtest.h>
+#include "XpuRefusalProbe.h"
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
@@ -67,7 +68,10 @@ TEST(AmdgpuCoopBf16Tests, allBf16MixedTierDemotesToPortable) {
     int32_t rc = runI32Amdgpu(src);
     std::string err = testing::internal::GetCapturedStderr();
     EXPECT_EQ(rc, 1);
-    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+    // The assembler-absent note (no ld.lld here) is the box's, not the
+    // lowering's; before this distinction the test failed on every box
+    // without ROCm.
+    EXPECT_FALSE(cajeta_test::loweringRefused(err))
         << "a straddling kernel must DEMOTE to the portable tier and lower, "
            "not be skipped; stderr was:\n" << err;
     EXPECT_NE(err.find("[mma-tiering]"), std::string::npos)

@@ -175,6 +175,19 @@ burns 84 VGPRs. It cannot reveal that the body assumes 32 lanes.
   "no constraint stated", not "no constraint".
 - **2.6** When a declaration names a capability, it names a fact about
   the device, not a backend.
+- **2.7** When a kernel produces no device code for a backend the build
+  declares, the build fails and names the kernel, the backend and the
+  lowering's reason, after every such kernel has been named. A kernel may
+  instead name the plan item holding it,
+  `@Unlowered(backend = "cpu", tracked = "<item>")`, and is then a
+  countable note; a held kernel that lowers is stale and fails until the
+  declaration is removed. A box that lacks the assembler is not the
+  kernel's failure and stays a note. (Decided by Julian 2026-09-25: "make
+  it an error"; plan 4.2.2, 4.2.3.)
+- **2.8** When a kernel is launched with a block the compiler cannot bound
+  and declares no ceiling (§14), the same rule applies with
+  `@Unbounded(tracked = "<item>")`, stale once every launch site passes a
+  constant block or the ceiling is declared.
 
 ## 3. The profile decides, rather than prints
 
@@ -308,6 +321,56 @@ Everything above is answerable to these.
   than execution. §6 cannot be falsified until that is fixed, which
   makes the timer a prerequisite for the search tier rather than a
   convenience.
+
+### 7.1 Par, defined (APPROVED by Julian 2026-09-25; proposed 2026-09-24)
+
+Every kernel in Units 9 to 13 of the plan is judged "at par or a recorded
+reason", and 1.8.2 records what happens when par is left implicit: a 49x
+that was three artifacts stacked. So par is written down here before any
+kernel is judged against it, and a number that lacks any field below is
+not a comparison.
+
+**Par.** At the shapes the engine actually dispatches (the launch counts
+and shapes the Unit 6 census records, not a shape chosen for the probe),
+the cajeta kernel's time is at or under the time of its llama.cpp
+counterpart op on the same part, measured
+
+- at **equal residency**: both DRAM-cold or both cache-hot, and the
+  report says which. `test-backend-ops` repeats one tensor that fits the
+  4090's 72 MB L2; a decode reads 96 different weights per token and
+  every one of them is cold. The engine's case is cold. Cold means a
+  pool of the model's OWN tensors for the shape, cycled: on the same
+  part the llama.cpp q4_K kernel read quantized noise 30x slower than
+  real weights (2026-09-24), so a synthetic weight is not the engine's
+  case on either leg.
+- on the **same timer tier**, stated: `KernelTimer` DEVICE or EVENT for
+  cajeta, llama.cpp's own events on its own stream for its leg (its
+  events are created without timing and re-armed with timing ones); a
+  HOST-tier number is not par evidence on either side. Both legs divide
+  out the event clock's scale, each measured around its own busy
+  bracket, and print it.
+- with the **roofline fraction beside each number**: bytes moved over
+  time against the profile's measured achievable bandwidth for a
+  bandwidth-bound kernel, operations over time against the declared
+  peak for a compute-bound one. Two kernels can tie at 40% of roofline;
+  the fraction says whether par is a ceiling or a floor.
+- with the llama.cpp leg **labelled by its backend** (CUDA, HIP, Vulkan,
+  CPU) and build, never bare "cuda"; the same op has different
+  counterparts per backend and they do not perform alike.
+- only after a **calibration row** reproduces a previously recorded
+  number on the same part, the control `CodebookBandwidth` insists on.
+
+**No counterpart.** A cajeta kernel with no llama.cpp op (the packed
+MoE id kernels, the fused epilogues, the census probes) is named in the
+oracle map as having none and is judged by roofline fraction alone: at
+or above the fraction the counterpart-bearing kernels of its family
+reach at par, else a recorded reason. The set judged this way is
+explicit, never inferred from a missing row.
+
+**Not par.** A faster kernel that is not bit-exact against the host
+oracle where the format is integer-exact, or outside the format's
+recorded tolerance where it is not, is not at par; correctness is
+gated first (Unit 6) and speed second.
 
 ## 8. What follows
 

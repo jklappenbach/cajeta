@@ -42,6 +42,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include "KernelLoweringProbe.h"
 
 // The runtime CPU kernel registry — same symbols CpuDriver / the registration
 // ctor speak, linked into the test binary via cajeta_lib.
@@ -61,21 +62,8 @@ using cajeta::xpu::cpu::CpuLaunchFn;
 
 namespace {
 
-CajetaModulePtr compileForInspection(Compiler& compiler,
-                                     const std::string& source) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = std::filesystem::temp_directory_path()
-              / ("cajeta_xpu_cpudrv_" + std::to_string(rng()));
-    std::filesystem::create_directories(base / "test");
-    std::ofstream(base / "test" / "M.cajeta") << source;
-    auto archive = std::filesystem::temp_directory_path()
-                 / ("cajeta_xpu_cpudrv_arch_" + std::to_string(rng()));
-    std::filesystem::create_directories(archive);
-    auto full = base / "test" / "M.cajeta";
-    auto m = compiler.createModule(full.string(), base.string(), archive.string());
-    compiler.compile(m);
-    return m;
-}
+using cajeta::xpu::probe::compileForInspection;
+
 
 cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
                              const std::string& name) {

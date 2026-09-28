@@ -77,8 +77,8 @@ public class ErrorsDemo extends DemoClass {
         try {
             ErrorsDemo.parsePort("http");
         } catch (ConfigException e) {
-            seen = e.message;
-            key = e.key;
+            seen = "" + e.message;
+            key = "" + e.key;
         } catch (Exception e) {
             seen = "wrong clause";
         }
@@ -98,10 +98,10 @@ public class ErrorsDemo extends DemoClass {
                 throw heap Exception("service startup aborted", #e);
             }
         } catch (Exception e) {
-            outer = e.message;
+            outer = "" + e.message;
             Optional<Throwable> cause = e.getCause();
             if (cause.isPresent()) {
-                inner = cause.get().message;
+                inner = "" + cause.get().message;
             }
         }
         System.stdout.println("  wrapped    -> " + outer + " <- caused by: " + inner);

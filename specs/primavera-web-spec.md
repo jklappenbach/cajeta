@@ -238,9 +238,11 @@ Four phases, in order. Each phase ends with the sample running end to end.
   annotation form in `primavera-spec.md` §6 (`@Rest`, `@Post`, `@Body`)
   compiles down to this surface when the codegen seam exists. The sample
   moves to the annotation form then, and the typed surface remains public.
-- **5.3** When a request is dispatched, it runs under a fresh `RequestScope`
-  so request-scoped components resolve per request, and `SessionScope` is
-  available to endpoints that opt in.
+- **5.3** When a request is dispatched, it runs one activation of the method
+  that publishes `@Scope("Request")`, so components declaring
+  `scope = "Request"` resolve per request and end with it, and the `Session`
+  instance scope is available to endpoints that opt in
+  (`specs/component-scopes-spec.md` §10).
 - **5.4** When the sample is exercised by its self-test, the test drives N
   requests on one keep-alive connection after a warm-up and asserts the
   pool's allocation count did not move, and drives N connections and asserts
@@ -346,10 +348,12 @@ order. The pipeline holds nothing but order.
   request context. When it returns a different one, the pipeline releases
   the one it handed in. Authentication returns the buffer it received.
 - **7.11** When a stage needs state about the request, it resolves typed
-  request-scoped or session-scoped components through the DI scopes of §3
-  (`primavera-spec.md`): `Principal`, `ContentMeta`, the JSON or protobuf
-  index. Nothing travels stage to stage but the buffer. A stage is a
-  singleton and resolves scoped components at execution, not construction.
+  components scoped to `Request` or `Session`
+  (`specs/component-scopes-spec.md`): `Principal`, `ContentMeta`, the JSON or
+  protobuf index. Nothing travels stage to stage but the buffer. A stage is a
+  singleton, so it injects `Scoped<T>` and resolves at execution, not
+  construction. A value a stage produces, such as the `Principal`, enters the
+  request through `Components.provide`.
 - **7.12** When a stage fails, it throws. The exception catalogue in
   `cajeta-http` names every HTTP status and every WebSocket close code, so a
   stage throws the condition and the pipeline writes the matching response,

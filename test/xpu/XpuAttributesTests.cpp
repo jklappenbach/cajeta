@@ -28,6 +28,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include "KernelLoweringProbe.h"
 
 using cajeta::Compiler;
 using cajeta::CajetaModulePtr;
@@ -44,38 +45,8 @@ namespace {
 // own rather than expose. Writes the source to a fresh temp directory
 // matching the fqClassName layout, compiles via a fresh Compiler,
 // returns the compiled module so the test can inspect structures.
-CajetaModulePtr compileForInspection(Compiler& compiler,
-                                     const std::string& source,
-                                     const std::string& fqClassName) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = std::filesystem::temp_directory_path()
-              / ("cajeta_xpu_attr_" + std::to_string(rng()));
-    std::filesystem::create_directories(base);
+using cajeta::xpu::probe::compileForInspection;
 
-    std::filesystem::path rel;
-    size_t start = 0;
-    for (size_t i = 0; i <= fqClassName.size(); ++i) {
-        if (i == fqClassName.size() || fqClassName[i] == '.') {
-            rel /= fqClassName.substr(start, i - start);
-            start = i + 1;
-        }
-    }
-    rel += ".cajeta";
-
-    auto full = base / rel;
-    std::filesystem::create_directories(full.parent_path());
-    std::ofstream out(full);
-    out << source;
-    out.close();
-
-    auto archive = std::filesystem::temp_directory_path()
-                 / ("cajeta_xpu_attr_arch_" + std::to_string(rng()));
-    std::filesystem::create_directories(archive);
-
-    auto m = compiler.createModule(full.string(), base.string(), archive.string());
-    compiler.compile(m);
-    return m;
-}
 
 cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
                              const std::string& name) {

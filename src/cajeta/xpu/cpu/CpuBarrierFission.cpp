@@ -18,6 +18,7 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -57,6 +58,7 @@ struct RegionJob {
     llvm::Value* ivY = nullptr;                 // tid.y (mid loop IV)
     llvm::Value* ivZ = nullptr;                 // tid.z (outer loop IV)
     llvm::Value* linear = nullptr;              // tz*ntidY*ntidX + ty*ntidX + tx
+    llvm::BasicBlock* phBlock = nullptr;        // the work-item loop's preheader
 };
 
 // The loads and stores that ultimately address `base`, whether directly or
@@ -228,8 +230,304 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     for (auto& in : *bodyEntry)
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(&in)) allocas.push_back(a);
     llvm::SmallPtrSet<llvm::Value*, 32> tainted;
-    llvm::Value* phSeeds[] = {phX, phY, phZ};
-    computeTaint(phSeeds, allocas, tainted);
+    // A wave op's RESULT is per work-item in principle (two waves receive
+    // different reductions), and seeding the taint set with it was measured
+    // 2026-09-26 to fix the uniform-constant accumulator (4.2.1.3) and to
+    // BREAK four working shapes: XpuCpuBarrierExec.waveReduceWithBarrierBlockSum,
+    // XpuCoopFromWords.lowersOnTheCpuDistributedTile,
+    // XpuCoopEpilogue.waveVectorOfLaneLowersOnTheCpuDistributedTile and the
+    // lane-strided-either-side-of-a-barrier probe, because a reduce result
+    // staged through shared memory then became a context array and the
+    // region shape changed under it. Reverted; the accumulator defect is
+    // caught as a REFUSAL by the gate's vanished-wave-op check instead
+    // (CpuRegistration), and the narrow taint is 4.2.1.3's remaining work.
+    llvm::Value* seeds[] = {phX, phY, phZ};
+    computeTaint(seeds, allocas, tainted);
+    // Separately: values that carry a WAVE RESULT. Not part of the taint set
+    // -- seeding taint with them was measured to change which locals become
+    // context arrays and broke four working shapes -- but the re-arm in step 9
+    // must leave them alone. A uniform local holding `Wave.reduceSumF32(...)`
+    // is genuinely per-work-item (per wave), so re-arming it to the region's
+    // entry value discards the reduce each work-item just computed: that is
+    // what broke waveReduceWithBarrierBlockSum, XpuCoopFromWords,
+    // XpuCoopEpilogue and the lane-strided-across-a-barrier probe
+    // (measured 2026-09-26).
+    // Allocas that must get a per-work-item context array whatever the taint
+    // rule says: the scaffold flags below, and a wave-fed accumulator.
+    llvm::SmallPtrSet<llvm::AllocaInst*, 8> forceCtx;
+    llvm::SmallPtrSet<llvm::Value*, 32> waveDerived;
+    {
+        llvm::SmallVector<llvm::Value*, 8> wseeds;
+        for (auto& bb : *wrapper)
+            for (auto& in : bb)
+                if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                    if (auto* cf = c->getCalledFunction()) {
+                        llvm::StringRef n = cf->getName();
+                        if (n.starts_with("__cajeta_xpu_wave_")
+                            && n != "__cajeta_xpu_wave_width")
+                            wseeds.push_back(c);
+                    }
+        if (!wseeds.empty()) computeTaint(wseeds, allocas, waveDerived);
+    }
+    // A local that is READ-MODIFY-WRITTEN with a wave result is per
+    // work-item, and it must get a CONTEXT ARRAY rather than share one slot.
+    //
+    // `while (j < n) { acc = acc + Wave.reduceSumF32(1.0f); }`: each
+    // work-item's own accumulator should end at trips * W. Sharing the slot
+    // made it accumulate across the whole block — 2048 where 32 is right,
+    // measured 2026-09-26 — and the per-region snapshot cannot fix that,
+    // because a local carrying a wave result must NOT be re-read from the
+    // region's entry value: each wave computed its own.
+    //
+    // Read-modify-written is the narrow condition, and it is what keeps this
+    // from becoming the broad wave taint that was measured to break four
+    // working shapes. `wsum = Wave.reduceSumF32(ss)` followed by
+    // `part[lane / w] = wsum` is a wave result STORED ONCE, not accumulated:
+    // it stays a plain local, and blockReduce, XpuCoopFromWords,
+    // XpuCoopEpilogue and the lane-strided-across-a-barrier probe stay
+    // green. (xpu-kernel-adaptor 4.2.1.3)
+    for (llvm::AllocaInst* a : allocas) {
+        llvm::SmallVector<llvm::LoadInst*, 8> loads;
+        llvm::SmallVector<llvm::StoreInst*, 8> stores;
+        collectMemUsers(a, loads, stores);
+        llvm::SmallPtrSet<llvm::Value*, 8> selfLoads(loads.begin(), loads.end());
+        for (llvm::StoreInst* st : stores) {
+            llvm::Value* v = st->getValueOperand();
+            if (!waveDerived.count(v)) continue;
+            // Does the stored value depend on a load of THIS slot?
+            llvm::SmallPtrSet<llvm::Value*, 16> seenV;
+            llvm::SmallVector<llvm::Value*, 16> work{v};
+            bool rmw = false;
+            while (!work.empty() && !rmw) {
+                llvm::Value* x = work.pop_back_val();
+                if (!seenV.insert(x).second) continue;
+                if (selfLoads.count(x)) { rmw = true; break; }
+                if (auto* xi = llvm::dyn_cast<llvm::Instruction>(x))
+                    for (llvm::Value* op : xi->operands()) work.push_back(op);
+            }
+            if (rmw) { forceCtx.insert(a); break; }
+        }
+    }
+
+    // --- 4a/4b/4c. Scaffold ---------------------------------------------------
+    //
+    // Three things run ONCE for the block, outside the work-item loops, so the
+    // work-item loop each region becomes is INNERMOST (which is the only kind
+    // LoopVectorize widens, and a wave op left scalar is the width-1
+    // identity): a branch the whole workgroup takes together (4a), a loop the
+    // whole workgroup steps through together (4b), and -- since 2026-09-26 --
+    // a loop or a branch that is per work-item, with the work-item PREDICATED
+    // (4b, 4c). The last is what every wave mat-vec in cajeta-llm needs: the
+    // lane-strided `b = lane >> 3; while (b < n) { ...; b += 4 }` under a
+    // `row = globalIdX / 32; if (row < rows)` guard, with the wave reduce
+    // after the loop (xpu-kernel-adaptor 4.2.1.1).
+    //
+    // Flags. A per-work-item flag lives in a context array (`forceCtx`: its
+    // stores are constants, so the taint rule alone would hoist and share it)
+    // and is read at the head of a region: the loop's `active` flag, cleared
+    // by an exiting edge, and the arm's `mask`, the guard's condition. A
+    // region inside a predicated arm runs only for the work-items whose mask
+    // agrees with the arm (`blockPreds`, tested in wi.pre beside the activity
+    // mask). A predicated loop runs while ANY work-item is active: the body
+    // region ORs each work-item's flag into a uniform `any` slot the scaffold
+    // header resets and the scaffold latch tests.
+    //
+    // Cuts. A divergent arm's regions have to start and end at scaffold
+    // boundaries or the region before the guard would flow into them; a cut
+    // is a boundary block that is not a barrier (`cutSet`), placed on the
+    // edge into the arm, between the arms, and on the edge into the join.
+    llvm::Type* i1 = llvm::Type::getInt1Ty(ctx);
+    llvm::Type* i8b = llvm::Type::getInt8Ty(ctx);
+    llvm::Constant* flag1 = llvm::ConstantInt::get(i8b, 1);
+    llvm::Constant* flag0 = llvm::ConstantInt::get(i8b, 0);
+    struct ArmPred { llvm::AllocaInst* mask; bool polarity; };
+    llvm::DenseMap<llvm::BasicBlock*, llvm::SmallVector<ArmPred, 2>> blockPreds;
+    llvm::SmallPtrSet<llvm::BasicBlock*, 8> cutSet;
+    llvm::SmallPtrSet<llvm::BasicBlock*, 4> splitSet;
+    llvm::SmallPtrSet<llvm::BasicBlock*, 8> uniformScaffoldHeaders;
+    // The block a scaffold loop continues at. NOT `Loop::getExitBlock()`,
+    // which answers null as soon as the loop has two exit blocks -- and a
+    // `return` inside the loop is a second exit block (a work-item leaving
+    // the kernel), so the shape that motivated the whole transform has two.
+    // With null the walk stopped, the code after the loop was never given a
+    // region, and step 10 reported the tid-derived local it still used
+    // (measured 2026-09-26 on the return-inside-a-scaffold-loop probe).
+    llvm::DenseMap<llvm::BasicBlock*, llvm::BasicBlock*> scaffoldExit;
+    auto makeFlag = [&](const llvm::Twine& name) {
+        auto* a = eb.CreateAlloca(i8b, nullptr, name);
+        allocas.push_back(a);
+        forceCtx.insert(a);
+        return a;
+    };
+    auto isTrivialRet = [](llvm::BasicBlock* b) {
+        if (!llvm::isa<llvm::ReturnInst>(b->getTerminator())) return false;
+        for (auto& in : *b)
+            if (!in.isTerminator()) return false;
+        return true;
+    };
+    auto blockHasWork = [](llvm::BasicBlock* b) {
+        for (auto& in : *b)
+            if (!in.isTerminator() && !llvm::isa<llvm::PHINode>(in)
+                && !llvm::isa<llvm::AllocaInst>(in))
+                return true;
+        return false;
+    };
+    // When `to` does NOT post-dominate the level entry, the second question:
+    // is the only way to miss `to` to LEAVE the kernel without doing anything
+    // on the way out? That is the shape of every guard at the top of a
+    // cajeta-llm kernel -- `if (row >= nH + nKv) { return; }`, or an `if`
+    // around the whole body. A work-item that leaves needs no barrier and no
+    // scaffold loop: step 9's activity mask keeps it out of every later
+    // region. A path that computes something, skips and rejoins is real
+    // divergence (4c predicates the barrier-free case; a barrier under it is
+    // still declined).
+    auto everyMissIsACleanExit = [&](llvm::BasicBlock* to,
+                                     llvm::BasicBlock* levelEntry) {
+        llvm::SmallPtrSet<llvm::BasicBlock*, 32> arrives;
+        llvm::SmallVector<llvm::BasicBlock*, 16> bw{to};
+        while (!bw.empty()) {
+            llvm::BasicBlock* b = bw.pop_back_val();
+            if (!arrives.insert(b).second) continue;
+            for (llvm::BasicBlock* p : llvm::predecessors(b)) bw.push_back(p);
+        }
+        llvm::SmallPtrSet<llvm::BasicBlock*, 32> span;
+        llvm::SmallVector<llvm::BasicBlock*, 16> fw{levelEntry};
+        while (!fw.empty()) {
+            llvm::BasicBlock* b = fw.pop_back_val();
+            if (b == to || !span.insert(b).second) continue;
+            for (llvm::BasicBlock* sb : llvm::successors(b)) fw.push_back(sb);
+        }
+        for (llvm::BasicBlock* b : span)
+            if (!arrives.count(b) && blockHasWork(b)) return false;
+        return true;
+    };
+    auto loopContainsBoundary = [&](llvm::Loop* L) {
+        for (llvm::BasicBlock* b : boundarySet)
+            if (L->contains(b)) return true;
+        return false;
+    };
+    auto inLoopSuccOfL = [&](llvm::Loop* L) -> llvm::BasicBlock* {
+        for (llvm::BasicBlock* s : llvm::successors(L->getHeader()))
+            if (L->contains(s)) return s;
+        return L->getHeader();
+    };
+    // The level a block belongs to: the deepest scaffold entry that dominates
+    // it -- the kernel body, the enclosing scaffold loop's first body block,
+    // a uniform split's arm, or a divergent arm's cut. "Every work-item
+    // reaches X" is asked of the level, not of the whole kernel.
+    auto levelEntryOf = [&](llvm::BasicBlock* b, llvm::Loop* parent,
+                            llvm::DominatorTree& dt) -> llvm::BasicBlock* {
+        llvm::BasicBlock* best = parent ? inLoopSuccOfL(parent) : bodyEntry;
+        auto consider = [&](llvm::BasicBlock* arm) {
+            if (!arm || !dt.dominates(arm, b)) return;
+            if (dt.dominates(best, arm)) best = arm;
+        };
+        for (llvm::BasicBlock* ctl : splitSet)
+            for (llvm::BasicBlock* arm : llvm::successors(ctl)) consider(arm);
+        for (llvm::BasicBlock* cut : cutSet) consider(cut->getSingleSuccessor());
+        return best;
+    };
+
+    // A loop 4b can scaffold, by shape alone (admission by level is asked
+    // later, once the splits and cuts that define the levels exist): barrier
+    // free, one latch that is not the header, one exit block that is not a
+    // return (a `return` inside the loop is a work-item leaving the kernel,
+    // which the region handles), every exiting branch conditional.
+    // UNIFORM when every exiting condition is untainted and the only exiting
+    // blocks are the header and the latch, the header-and-latch scaffold of
+    // old; PREDICATED otherwise (a per-work-item trip count, or a break).
+    struct LoopCand {
+        llvm::BasicBlock* header; llvm::BasicBlock* latch; llvm::BasicBlock* exit;
+        bool predicated;
+        std::vector<llvm::BasicBlock*> blocks;
+    };
+    // CAJETA_XPU_DEBUG_WAVE names the loop and, when it is rejected, WHICH
+    // test rejected it. "the reduce sat in a loop that was not scaffolded" is
+    // the whole story behind several declines and the reason is never visible
+    // from the emitted IR.
+    const bool qdbg = std::getenv("CAJETA_XPU_DEBUG_WAVE") != nullptr;
+    auto qname = [](llvm::BasicBlock* b) {
+        return b->hasName() ? b->getName().str() : std::string("<bb>");
+    };
+    auto qualifyLoop = [&](llvm::Loop* L, LoopCand& out) -> bool {
+        auto no = [&](const char* why) {
+            if (qdbg)
+                fprintf(stderr, "[wave-qual] %s: NOT scaffold — %s\n",
+                        qname(L->getHeader()).c_str(), why);
+            return false;
+        };
+        if (!scaffoldUniformLoops) return false;
+        if (loopContainsBoundary(L)) return no("it holds a barrier or a region cut");
+        llvm::BasicBlock* latch = L->getLoopLatch();
+        if (!latch) return no("no single latch");
+        if (latch == L->getHeader()) return no("one-block loop (latch is the header)");
+        // A bare `return` reached from inside the loop is a WORK-ITEM
+        // leaving the kernel, not the loop's exit, so it is skipped —
+        // UNLESS it is the only exit there is, in which case the loop's
+        // normal exit simply is the function's return. Skipping it
+        // unconditionally rejected every loop that ENDS a kernel, and the
+        // shared-memory reduction tail of the Id family is exactly that
+        // shape: `while (r < rpw) { …reduce…; r = r + 1; }` as the last
+        // statement. Four kernels lost their reduce to a work-item loop
+        // that could not be innermost because of it (measured 2026-09-26
+        // through [wave-qual], xpu-kernel-adaptor 4.2.1.7).
+        llvm::SmallVector<llvm::BasicBlock*, 4> exits;
+        L->getUniqueExitBlocks(exits);
+        llvm::BasicBlock* exitBB = nullptr;
+        for (llvm::BasicBlock* x : exits) {
+            if (isTrivialRet(x)) continue;
+            if (exitBB && exitBB != x)
+                return no("more than one non-return exit block");
+            exitBB = x;
+        }
+        if (!exitBB) {
+            if (exits.size() != 1)
+                return no("no exit but several bare returns");
+            exitBB = exits[0];          // the loop ends the kernel
+        }
+        bool uniform = true;
+        llvm::SmallVector<llvm::BasicBlock*, 4> exiting;
+        L->getExitingBlocks(exiting);
+        for (llvm::BasicBlock* xb : exiting) {
+            auto* br = llvm::dyn_cast<llvm::CondBrInst>(xb->getTerminator());
+            if (!br) return no("an exiting block does not end in a conditional branch");
+            if (tainted.count(br->getCondition())) uniform = false;
+            if (xb != L->getHeader() && xb != latch) uniform = false;
+        }
+        if (qdbg)
+            fprintf(stderr, "[wave-qual] %s: candidate, %s\n",
+                    qname(L->getHeader()).c_str(),
+                    uniform ? "uniform" : "PREDICATED");
+        out = {L->getHeader(), latch, exitBB, !uniform,
+               std::vector<llvm::BasicBlock*>(L->block_begin(), L->block_end())};
+        return true;
+    };
+    auto candidateHeaders = [&](llvm::LoopInfo& li) {
+        llvm::SmallPtrSet<llvm::BasicBlock*, 8> heads;
+        for (llvm::Loop* top : li)
+            for (llvm::Loop* L : llvm::depth_first(top)) {
+                LoopCand c;
+                if (qualifyLoop(L, c)) heads.insert(c.header);
+            }
+        return heads;
+    };
+    auto isLoopStructuralIn = [&](llvm::LoopInfo& li, llvm::BasicBlock* b) {
+        llvm::Loop* L = li.getLoopFor(b);
+        if (!L) return false;
+        return b == L->getHeader() || b == L->getLoopLatch() || L->isLoopExiting(b);
+    };
+    // Reachable from `from` without first arriving at `via` or `join`.
+    auto scopeOf = [&](llvm::BasicBlock* from, llvm::BasicBlock* via,
+                       llvm::BasicBlock* join) {
+        llvm::SmallPtrSet<llvm::BasicBlock*, 32> seen;
+        llvm::SmallVector<llvm::BasicBlock*, 16> work{from};
+        while (!work.empty()) {
+            llvm::BasicBlock* b = work.pop_back_val();
+            if (b == via || b == join || !seen.insert(b).second) continue;
+            for (llvm::BasicBlock* sb : llvm::successors(b)) work.push_back(sb);
+        }
+        return seen;
+    };
 
     // --- 4a. A branch the whole workgroup takes together is SCAFFOLD --------
     // `qkPrepKernel`'s `if (norm != 0) { …two barriers… }` has real work after
@@ -238,12 +536,14 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // the taint set, so every work-item of the block takes the same side. A
     // branch like that can run ONCE, outside the work-item loops, with each arm
     // regioned on its own — exactly what a barrier loop's header and latch
-    // already do.
+    // already do. The same holds for `if (r0 < rows) { lane-strided loop }`,
+    // the wave mat-vec guard on `Workgroup.x()`: a scaffold loop under a
+    // branch needs the branch to be scaffold too, or the region holding the
+    // guard would collect both the way in and the way around.
     //
     // This is uniformity by PROVENANCE, which is the only kind available here.
     // A guard on `globalIdX() / 256` is uniform too when the block is 256 wide,
-    // but that fact lives in the launch, not in the kernel; the kernels that
-    // wanted it say `Workgroup.x()` instead, which needs no proof.
+    // but that fact lives in the launch, not in the kernel; 4c predicates it.
     //
     // The condition travels through a one-element slot rather than an SSA edge.
     // It is computed inside the region's work-item loop (every work-item
@@ -252,9 +552,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // loop exits to. Every work-item storing the same bit makes the slot
     // trivially correct, which a context array indexed per work-item would also
     // be, only bigger.
-    llvm::SmallPtrSet<llvm::BasicBlock*, 4> splitSet;
     {
-        llvm::Type* i1 = llvm::Type::getInt1Ty(ctx);
         // A loop's OWN control flow is already scaffold, and its exiting
         // branch trivially has a barrier on the in-loop side and none on the
         // way out. Splitting it tears the loop apart: measured 2026-09-20,
@@ -263,31 +561,21 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         llvm::DominatorTree preDT(*wrapper);
         llvm::LoopInfo preLI(preDT);
         llvm::PostDominatorTree prePDT(*wrapper);
+        llvm::SmallPtrSet<llvm::BasicBlock*, 8> heads = candidateHeaders(preLI);
         auto ipdomOf = [&](llvm::BasicBlock* b) -> llvm::BasicBlock* {
             if (auto* nd = prePDT.getNode(b))
                 if (auto* d = nd->getIDom()) return d->getBlock();
             return nullptr;
         };
-        auto isLoopStructural = [&](llvm::BasicBlock* b) {
-            llvm::Loop* L = preLI.getLoopFor(b);
-            if (!L) return false;
-            return b == L->getHeader() || b == L->getLoopLatch()
-                || L->isLoopExiting(b);
-        };
-        // A barrier INSIDE the branch's own scope — reachable from this
-        // successor without first arriving at the join. A barrier after the
-        // join belongs to the level, not to the branch, and scaffolding for
-        // it would cut the work-item loops finer for nothing.
-        auto reachesBarrier = [&](llvm::BasicBlock* from, llvm::BasicBlock* via,
-                                  llvm::BasicBlock* join) {
-            llvm::SmallPtrSet<llvm::BasicBlock*, 32> seen;
-            llvm::SmallVector<llvm::BasicBlock*, 16> work{from};
-            while (!work.empty()) {
-                llvm::BasicBlock* b = work.pop_back_val();
-                if (b == via || b == join || !seen.insert(b).second) continue;
-                if (boundarySet.count(b)) return true;
-                for (llvm::BasicBlock* sb : llvm::successors(b)) work.push_back(sb);
-            }
+        // A barrier, or a loop 4b will scaffold, INSIDE the branch's own
+        // scope -- reachable from this successor without first arriving at
+        // the join. One after the join belongs to the level, not to the
+        // branch, and scaffolding for it would cut the work-item loops finer
+        // for nothing.
+        auto reachesScaffold = [&](llvm::BasicBlock* from, llvm::BasicBlock* via,
+                                   llvm::BasicBlock* join) {
+            for (llvm::BasicBlock* b : scopeOf(from, via, join))
+                if (boundarySet.count(b) || heads.count(b)) return true;
             return false;
         };
         llvm::SmallVector<llvm::BranchInst*, 4> cands;
@@ -295,18 +583,18 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             auto* br = llvm::dyn_cast<llvm::BranchInst>(bb.getTerminator());
             if (!br || !br->isConditional()) continue;
             if (tainted.count(br->getCondition())) continue;
-            if (isLoopStructural(&bb)) continue;
-            // At least one side must hold a barrier of its own. BOTH sides
+            if (isLoopStructuralIn(preLI, &bb)) continue;
+            // At least one side must hold scaffold of its own. BOTH sides
             // holding one is the case that matters most, not one to exclude:
             // `iq3xxsQ8WaveGateUpGluKernel`'s outer guard picks between two
             // separate barrier chains, and requiring "exactly one side"
             // silently left it a decline while every simpler shape passed.
-            // A uniform branch with no barrier in its own scope is ordinary
+            // A uniform branch with nothing scaffold in its scope is ordinary
             // control flow and belongs inside the work-item loop, where it
             // costs nothing.
             llvm::BasicBlock* join = ipdomOf(&bb);
-            if (!reachesBarrier(br->getSuccessor(0), &bb, join)
-                && !reachesBarrier(br->getSuccessor(1), &bb, join))
+            if (!reachesScaffold(br->getSuccessor(0), &bb, join)
+                && !reachesScaffold(br->getSuccessor(1), &bb, join))
                 continue;
             cands.push_back(br);
         }
@@ -319,6 +607,143 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             llvm::IRBuilder<> cb(br);
             br->setCondition(cb.CreateLoad(i1, slot, "uni.cond.v"));
             splitSet.insert(ctl);
+        }
+    }
+
+    // --- 4c. A per-work-item branch around a scaffold loop: a PREDICATED arm
+    // `row = KernelThread.globalIdX() / 32; if (row < rows) { b = lane >> 3;
+    // while (b < n) { ... } }` then the reduce. The guard is per work-item
+    // by provenance, the loop under it has to be scaffold (4b), and a
+    // scaffold loop under a divergent branch has no meaning unless the
+    // branch itself is spread over the block: the guard's condition is
+    // stored per work-item as a MASK, the arm runs as its own chain of
+    // regions between two cuts, and each of those regions runs only for the
+    // work-items whose mask says so. Both arms run (the second under the
+    // mask's negation), one after the other, then the join. A barrier in
+    // either arm is still declined below: a barrier under divergence has no
+    // point at which the block is together, whatever the mask says.
+    //
+    // NOT ENABLED. Measured 2026-09-26 on cajeta-llm's cpu census: this fires
+    // at over a thousand sites in one build, no test requires it (4b's
+    // predicated LOOPS carry every shape the 53 declined kernels use), and
+    // with it on, four Id kernels that HAD lowered stopped lowering -- their
+    // reduce ends up inside an unscaffolded loop. A transform with that blast
+    // radius and no test demanding it does not ship. The arm shapes that
+    // genuinely need it are 4.2.1.3's remaining work, with a test each.
+    if (scaffoldUniformLoops) {
+        llvm::DominatorTree cDT(*wrapper);
+        llvm::LoopInfo cLI(cDT);
+        llvm::SmallPtrSet<llvm::BasicBlock*, 8> heads = candidateHeaders(cLI);
+        struct Cand { llvm::BranchInst* br; unsigned depth; };
+        std::vector<Cand> cands;
+        for (auto& bb : *wrapper) {
+            auto* br = llvm::dyn_cast<llvm::BranchInst>(bb.getTerminator());
+            if (!br || !br->isConditional()) continue;
+            if (!tainted.count(br->getCondition())) continue;
+            if (isLoopStructuralIn(cLI, &bb)) continue;
+            cands.push_back({br, cDT.getNode(&bb)->getLevel()});
+        }
+        // Outer guards first: an inner guard's predicate stacks on the outer's.
+        std::sort(cands.begin(), cands.end(),
+                  [](const Cand& a, const Cand& b) { return a.depth < b.depth; });
+        for (Cand& c : cands) {
+            llvm::BranchInst* br = c.br;
+            llvm::BasicBlock* ctl = br->getParent();
+            llvm::PostDominatorTree pdt(*wrapper);     // fresh: earlier cuts moved edges
+            llvm::BasicBlock* join = nullptr;
+            if (auto* nd = pdt.getNode(ctl))
+                if (auto* d = nd->getIDom()) join = d->getBlock();
+            if (!join || join == ctl) continue;
+            llvm::BasicBlock* T = br->getSuccessor(0);
+            llvm::BasicBlock* F = br->getSuccessor(1);
+            if (T == join) { std::swap(T, F); }        // an `if (!c)` shape
+            if (T == join) continue;
+            llvm::SmallPtrSet<llvm::BasicBlock*, 32> scopeT = scopeOf(T, ctl, join);
+            llvm::SmallPtrSet<llvm::BasicBlock*, 32> scopeF =
+                F == join ? llvm::SmallPtrSet<llvm::BasicBlock*, 32>()
+                          : scopeOf(F, ctl, join);
+            bool holdsLoop = false, holdsBarrier = false;
+            // Only a loop 4b CANNOT admit at its natural level needs the arm
+            // spread over the block. A guard whose miss path does no work --
+            // `row = globalIdX / 32; if (row < rows) { lane-strided loop }`,
+            // the Id family's shape -- is already admitted by
+            // everyMissIsACleanExit, so 4b scaffolds the loop with the guard
+            // left as ordinary control flow inside the region, and the whole
+            // kernel lowers. Predicating it as well moved the guard into the
+            // work-item loop's entry test, which made LoopVectorize scalarize
+            // the reduce after the join: four Id kernels that had lowered
+            // stopped lowering (measured 2026-09-26 on cajeta-llm's cpu
+            // census, q4kQ8IdMatVecKernel and three siblings). So this is the
+            // last resort, not the first.
+            bool needsArm = false;
+            for (auto* sc : {&scopeT, &scopeF})
+                for (llvm::BasicBlock* b : *sc) {
+                    if (boundarySet.count(b)) holdsBarrier = true;
+                    if (!heads.count(b)) continue;
+                    holdsLoop = true;
+                    llvm::Loop* L = cLI.getLoopFor(b);
+                    llvm::BasicBlock* lvl =
+                        levelEntryOf(b, L ? L->getParentLoop() : nullptr, cDT);
+                    if (!pdt.dominates(b, lvl) && !everyMissIsACleanExit(b, lvl))
+                        needsArm = true;
+                }
+            if (!holdsLoop || holdsBarrier || !needsArm) continue;
+            for (llvm::BasicBlock* b : scopeT)
+                if (scopeF.count(b))
+                    unsupported("a per-work-item branch whose arms share a block "
+                                "before their join");
+            if (llvm::isa<llvm::PHINode>(join->front()))
+                unsupported("a per-work-item branch around a loop whose join "
+                            "carries a PHI");
+            const bool tRet = isTrivialRet(T);
+            const bool fArm = F != join;
+            const bool fRet = fArm && isTrivialRet(F);
+            if (tRet && (!fArm || fRet)) continue;      // nothing to predicate
+            llvm::AllocaInst* mask = makeFlag("arm.mask");
+            {
+                llvm::IRBuilder<> mb(br);
+                mb.CreateStore(mb.CreateZExt(br->getCondition(), i8b, "arm.c"), mask);
+            }
+            auto cutTo = [&](llvm::BasicBlock* target) {
+                auto* cut = llvm::BasicBlock::Create(ctx, "wi.cut", wrapper, target);
+                llvm::UncondBrInst::Create(target, cut);
+                boundarySet.insert(cut);
+                cutSet.insert(cut);
+                return cut;
+            };
+            auto redirectExits = [&](llvm::SmallPtrSetImpl<llvm::BasicBlock*>& scope,
+                                     llvm::BasicBlock* to) {
+                for (llvm::BasicBlock* b : scope) {
+                    auto* t = b->getTerminator();
+                    for (unsigned sx = 0; sx < t->getNumSuccessors(); ++sx)
+                        if (t->getSuccessor(sx) == join) t->setSuccessor(sx, to);
+                }
+            };
+            llvm::BasicBlock* cutJ = cutTo(join);
+            if (!tRet && (!fArm || !fRet)) {
+                // Both arms real, or no else: the branch runs into the first
+                // arm for every work-item; the arms select by mask.
+                llvm::BasicBlock* cutT = cutTo(T);
+                llvm::BasicBlock* after = fArm ? cutTo(F) : cutJ;
+                redirectExits(scopeT, after);
+                if (fArm) redirectExits(scopeF, cutJ);
+                br->eraseFromParent();
+                llvm::UncondBrInst::Create(cutT, ctl);
+            } else if (tRet) {
+                // The true arm returns: keep the branch, cut into the else arm.
+                llvm::BasicBlock* cutF = cutTo(F);
+                br->setSuccessor(1, cutF);
+                redirectExits(scopeF, cutJ);
+            } else {
+                // The else arm returns: keep the branch, cut into the true arm.
+                llvm::BasicBlock* cutT = cutTo(T);
+                br->setSuccessor(0, cutT);
+                redirectExits(scopeT, cutJ);
+            }
+            if (!tRet)
+                for (llvm::BasicBlock* b : scopeT) blockPreds[b].push_back({mask, true});
+            if (fArm && !fRet)
+                for (llvm::BasicBlock* b : scopeF) blockPreds[b].push_back({mask, false});
         }
     }
 
@@ -336,15 +761,36 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // once for the block, its body is a region, and per-work-item values that
     // cross it ride the context arrays step 7 already builds.
     //
-    // Qualification is by provenance, as in 4a: every exiting condition is
-    // untainted, the loop has one latch and one exit, and its header
-    // post-dominates the level entry (every work-item enters it). The latch
-    // block usually ends the loop body -- `... j = j + 1; }` -- so its uniform
-    // tail (the counter update, over uniform locals only) is peeled into a
-    // block of its own to be the scaffold latch, and the work before it stays
-    // in the body region. A loop that does not qualify is left as it was; a
-    // wave op left scalar inside it is refused after vectorization instead.
-    llvm::SmallPtrSet<llvm::BasicBlock*, 8> uniformScaffoldHeaders;
+    // UNIFORM loop: qualification by provenance, as in 4a: every exiting
+    // condition is untainted and the exits are the header's and the latch's.
+    // The latch block usually ends the loop body -- `... j = j + 1; }` -- so
+    // its uniform tail (the counter update, over uniform locals only) is
+    // peeled into a block of its own to be the scaffold latch, and the work
+    // before it stays in the body region.
+    //
+    // PREDICATED loop (2026-09-26): an exiting condition is per work-item
+    // (`while (b < n)` with `b = lane >> 3`), or an exit is a `break`. The
+    // loop becomes
+    //
+    //     P:      ...; active[wi] = 1                  (region before the loop)
+    //     HS:     any = 0; br GATE                     (scaffold header)
+    //     GATE:   if (active[wi]) goto H else SKIP     (region: the body)
+    //     H..B:   the original body; an exiting edge → LEAVE, the back-edge → SKIP
+    //     LEAVE:  active[wi] = 0; br SKIP
+    //     SKIP:   any |= active[wi]; br BS
+    //     BS:     if (any) goto HS else X              (scaffold latch)
+    //
+    // so the scaffold loop runs while any work-item is active and each
+    // work-item runs exactly the trips it would have. The OR through the
+    // uniform slot is an or-reduction over the work-item loop after mem2reg,
+    // which LoopVectorize widens. The body is a region like any other.
+    //
+    // Either way, every work-item must enter the loop (admission by LEVEL:
+    // the header post-dominates the level entry, or the only way to miss it
+    // is to leave the kernel having done nothing -- the guard at the top of
+    // a cajeta-llm kernel, `if (blk < blocks) { ... }` around the whole
+    // body). A loop that does not qualify is left as it was; a wave op left
+    // scalar inside it is refused after vectorization instead.
     if (scaffoldUniformLoops && std::getenv("CAJETA_XPU_DEBUG_WAVE"))
         fprintf(stderr, "[wave-fission] %s: scaffolding uniform loops\n",
                 wrapper->getName().str().c_str());
@@ -352,16 +798,6 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         llvm::DominatorTree uDT(*wrapper);
         llvm::LoopInfo uLI(uDT);
         llvm::PostDominatorTree uPDT(*wrapper);
-        auto hasBarrier = [&](llvm::Loop* L) {
-            for (llvm::BasicBlock* b : boundarySet)
-                if (L->contains(b)) return true;
-            return false;
-        };
-        auto inLoopSuccOfU = [&](llvm::Loop* L) -> llvm::BasicBlock* {
-            for (llvm::BasicBlock* s : llvm::successors(L->getHeader()))
-                if (L->contains(s)) return s;
-            return L->getHeader();
-        };
         // May the scaffold latch run this once for the block? Only if it
         // touches no per-work-item value and no memory but uniform locals.
         auto scaffoldSafe = [&](llvm::Instruction& in) -> bool {
@@ -379,83 +815,136 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             return true;
         };
         struct Qualified {
-            llvm::BasicBlock* header; llvm::BasicBlock* latch;
-            llvm::Instruction* splitAt; bool split;
-            std::vector<llvm::BasicBlock*> blocks;
+            LoopCand c;
+            llvm::Instruction* splitAt;     // uniform: the latch's uniform tail
+            llvm::SmallVector<llvm::BasicBlock*, 4> outsidePreds;
         };
         std::vector<Qualified> qual;
         for (llvm::Loop* top : uLI)
             for (llvm::Loop* L : llvm::depth_first(top)) {
-                if (hasBarrier(L)) continue;               // scaffold already
-                llvm::BasicBlock* latch = L->getLoopLatch();
-                if (!latch || !L->getExitBlock()) continue;
-                if (latch == L->getHeader()) continue;     // one-block loop
-                bool uniform = true;
-                llvm::SmallVector<llvm::BasicBlock*, 4> exiting;
-                L->getExitingBlocks(exiting);
-                for (llvm::BasicBlock* xb : exiting) {
-                    auto* br = llvm::dyn_cast<llvm::CondBrInst>(xb->getTerminator());
-                    if (!br || tainted.count(br->getCondition())) {
-                        uniform = false; break;
-                    }
+                LoopCand c;
+                if (!qualifyLoop(L, c)) continue;
+                llvm::BasicBlock* levelEntry =
+                    levelEntryOf(c.header, L->getParentLoop(), uDT);
+                if (!uPDT.dominates(c.header, levelEntry)
+                    && !everyMissIsACleanExit(c.header, levelEntry)) {
+                    if (qdbg)
+                        fprintf(stderr, "[wave-qual] %s: NOT scaffold — not every "
+                                "work-item reaches it from level '%s'\n",
+                                qname(c.header).c_str(), qname(levelEntry).c_str());
+                    continue;
                 }
-                if (!uniform) continue;
-                // Every work-item must enter the loop: its header post-
-                // dominates the level entry, or the only way to miss it is
-                // to leave the kernel having done nothing (the guard at the
-                // top of a cajeta-llm kernel -- `if (blk < blocks) { ... }`
-                // around the whole body -- the same admission the barrier
-                // checks below make, on the same reasoning).
-                llvm::Loop* P = L->getParentLoop();
-                llvm::BasicBlock* levelEntry = P ? inLoopSuccOfU(P) : bodyEntry;
-                if (!uPDT.dominates(L->getHeader(), levelEntry)) {
-                    llvm::BasicBlock* to = L->getHeader();
-                    llvm::SmallPtrSet<llvm::BasicBlock*, 32> arrives;
-                    llvm::SmallVector<llvm::BasicBlock*, 16> bw{to};
-                    while (!bw.empty()) {
-                        llvm::BasicBlock* b = bw.pop_back_val();
-                        if (!arrives.insert(b).second) continue;
-                        for (llvm::BasicBlock* pb : llvm::predecessors(b))
-                            bw.push_back(pb);
+                Qualified Q{c, nullptr, {}};
+                if (!c.predicated) {
+                    // The uniform tail of the latch, scanned back from its branch.
+                    Q.splitAt = c.latch->getTerminator();
+                    for (llvm::Instruction* in = Q.splitAt->getPrevNode(); in;
+                         in = in->getPrevNode()) {
+                        if (!scaffoldSafe(*in)) break;
+                        Q.splitAt = in;
                     }
-                    llvm::SmallPtrSet<llvm::BasicBlock*, 32> span;
-                    llvm::SmallVector<llvm::BasicBlock*, 16> fw{levelEntry};
-                    while (!fw.empty()) {
-                        llvm::BasicBlock* b = fw.pop_back_val();
-                        if (b == to || !span.insert(b).second) continue;
-                        for (llvm::BasicBlock* sb : llvm::successors(b))
-                            fw.push_back(sb);
-                    }
-                    bool clean = true;
-                    for (llvm::BasicBlock* b : span) {
-                        if (arrives.count(b)) continue;
-                        for (auto& in : *b)
-                            if (!in.isTerminator() && !llvm::isa<llvm::PHINode>(in)
-                                && !llvm::isa<llvm::AllocaInst>(in)) {
-                                clean = false; break;
+                    // …and every operand of the peeled run must be defined
+                    // OUTSIDE the loop body, or inside the run itself. What is
+                    // peeled becomes the scaffold LATCH, which runs once per
+                    // trip outside the work-item loops, while the body runs
+                    // inside them: an operand left in the body does not
+                    // dominate its use in the latch any more.
+                    //
+                    // `ws = ws + w[k]; k = k + 1;` is the shape. The buffer
+                    // load `w[k]` is not scaffold-safe so the backward scan
+                    // stops there, but the `fadd` that consumes it IS
+                    // (untainted operands, no memory effects), so the run
+                    // began at the fadd and carried it into the latch, away
+                    // from both of its operands. The verifier's words:
+                    // "Instruction does not dominate all uses!" twice over,
+                    // once per operand. Measured 2026-09-26 on
+                    // moeTopK / routerTopK / rmsnormRouterTopK and two
+                    // siblings — a latent defect in this peel that cause A
+                    // exposed by making these loops scaffold at all, since
+                    // they had declined earlier for another reason and never
+                    // reached it.
+                    //
+                    // The run shrinks from the front until it holds. Advancing
+                    // the start only removes constraints, so this terminates.
+                    {
+                        llvm::SmallPtrSet<llvm::BasicBlock*, 16> inLoop(
+                            c.blocks.begin(), c.blocks.end());
+                        bool moved = true;
+                        while (moved && Q.splitAt != c.latch->getTerminator()) {
+                            moved = false;
+                            for (llvm::Instruction* in = Q.splitAt; in;
+                                 in = in->getNextNode()) {
+                                bool bad = false;
+                                for (llvm::Value* op : in->operands()) {
+                                    auto* oi = llvm::dyn_cast<llvm::Instruction>(op);
+                                    if (!oi || !inLoop.count(oi->getParent())) continue;
+                                    // Inside the peeled run is fine; anywhere
+                                    // else in the loop body is not.
+                                    if (oi->getParent() == c.latch
+                                        && !oi->comesBefore(Q.splitAt)) continue;
+                                    bad = true;
+                                    break;
+                                }
+                                if (bad) {
+                                    Q.splitAt = in->getNextNode();
+                                    moved = true;
+                                    break;
+                                }
+                                if (in->isTerminator()) break;
                             }
-                        if (!clean) break;
+                        }
                     }
-                    if (!clean) continue;
+                } else {
+                    if (llvm::isa<llvm::PHINode>(c.header->front()))
+                        unsupported("a per-work-item loop whose header carries a PHI");
+                    if (llvm::isa<llvm::PHINode>(c.exit->front()))
+                        unsupported("a per-work-item loop whose exit carries a PHI");
+                    // A value defined in the body and used AFTER the loop stops
+                    // dominating its use once the gate can bypass the body:
+                    // the path out becomes `gate -> skip -> BS -> exit`, which
+                    // never passes through the body at all. Emitting that is
+                    // invalid IR, and it does not fail the verifier here -- it
+                    // crashed LLVM's LiveVariables analysis during codegen of
+                    // the cajeta-llm test binary (fault addr 0x18, measured
+                    // 2026-09-26), which is the worst way to learn it. Leave
+                    // such a loop alone: the kernel lowers as it did before, or
+                    // the gate refuses it by name.
+                    // EVERY block of the loop, the header included: on the
+                    // bypass path the header does not run either, so a value
+                    // defined there and used after the loop breaks dominance
+                    // just as a body-defined one does. Excluding the header is
+                    // what let five router and top-k kernels through to emit
+                    // "Instruction does not dominate all uses!" (measured
+                    // 2026-09-26 by the post-fission verifier).
+                    bool liveOut = false;
+                    for (llvm::BasicBlock* b : c.blocks) {
+                        for (llvm::Instruction& in : *b) {
+                            for (llvm::User* u : in.users()) {
+                                auto* ui = llvm::dyn_cast<llvm::Instruction>(u);
+                                if (!ui) continue;
+                                if (!L->contains(ui->getParent())) {
+                                    liveOut = true; break;
+                                }
+                            }
+                            if (liveOut) break;
+                        }
+                        if (liveOut) break;
+                    }
+                    if (liveOut) continue;
+                    for (llvm::BasicBlock* pb : llvm::predecessors(c.header))
+                        if (!L->contains(pb)) Q.outsidePreds.push_back(pb);
                 }
-                // The uniform tail of the latch, scanned back from its branch.
-                llvm::Instruction* splitAt = latch->getTerminator();
-                for (llvm::Instruction* in = splitAt->getPrevNode(); in;
-                     in = in->getPrevNode()) {
-                    if (!scaffoldSafe(*in)) break;
-                    splitAt = in;
-                }
-                bool bodyWork = false;
-                for (llvm::Instruction& in : *latch) {
-                    if (&in == splitAt) break;
-                    if (!llvm::isa<llvm::PHINode>(in)) { bodyWork = true; break; }
-                }
-                (void) bodyWork;
-                qual.push_back({L->getHeader(), latch, splitAt, true,
-                                std::vector<llvm::BasicBlock*>(
-                                    L->block_begin(), L->block_end())});
+                qual.push_back(std::move(Q));
             }
+        // Every loop that became scaffold, outermost first (the qualification
+        // walk is depth-first), for the uniform-local snapshot pass below.
+        struct Scaffolded {
+            llvm::BasicBlock* header;               // the SCAFFOLD header
+            std::vector<llvm::BasicBlock*> body;    // blocks that run per work-item
+        };
+        std::vector<Scaffolded> scaffolded;
         for (Qualified& Q : qual) {
+            if (Q.c.predicated) continue;
             // The latch must hold uniform code only, so it always becomes a
             // block of its own: the uniform tail when there is one, else just
             // the back-edge branch. Nested uniform loops can share one latch
@@ -463,70 +952,85 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             // later split takes the block its split point lives in NOW, and
             // a point already at a block head needs no split at all.
             llvm::BasicBlock* bb = Q.splitAt->getParent();
-            if (Q.splitAt == &bb->front()) continue;
-            llvm::SplitBlock(bb, Q.splitAt);
+            if (Q.splitAt != &bb->front()) llvm::SplitBlock(bb, Q.splitAt);
+            uniformScaffoldHeaders.insert(Q.c.header);
+            scaffoldExit[Q.c.header] = Q.c.exit;
+            scaffolded.push_back({Q.c.header, Q.c.blocks});
         }
-        if (!qual.empty()) {
-            // Uniform locals the body UPDATES. A region runs the body once per
-            // work-item, so `j = j + 1` -- or any uniform read-modify-write --
-            // would advance the slot ntid times per trip. Snapshot every such
-            // slot in the header (scaffold, once per trip) and read the
-            // snapshot in the body: every work-item then stores the same
-            // value, which makes the store idempotent. A load that follows a
-            // store in the same trip needs the updated value and keeps reading
-            // the slot, which every work-item filled identically.
-            llvm::DominatorTree sDT(*wrapper);
-            for (Qualified& Q : qual) {
-                llvm::BasicBlock* latch = nullptr;
-                for (llvm::BasicBlock* pb : llvm::predecessors(Q.header))
-                    if (sDT.dominates(Q.header, pb)) latch = pb;
-                llvm::SmallPtrSet<llvm::BasicBlock*, 32> body(Q.blocks.begin(),
-                                                             Q.blocks.end());
-                body.erase(Q.header);
-                if (latch) body.erase(latch);
-                llvm::SmallVector<llvm::AllocaInst*, 8> updated;
-                llvm::SmallPtrSet<llvm::AllocaInst*, 8> seenA;
-                for (llvm::BasicBlock* b : body)
-                    for (llvm::Instruction& in : *b)
-                        if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&in))
-                            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(
-                                    st->getPointerOperand()))
-                                if (!tainted.count(st->getValueOperand())
-                                    && !tainted.count(a) && seenA.insert(a).second)
-                                    updated.push_back(a);
-                for (llvm::AllocaInst* a : updated) {
-                    llvm::SmallVector<llvm::StoreInst*, 4> stores;
-                    llvm::SmallVector<llvm::LoadInst*, 8> loads;
-                    for (llvm::BasicBlock* b : body)
-                        for (llvm::Instruction& in : *b) {
-                            if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&in))
-                                if (st->getPointerOperand() == a) stores.push_back(st);
-                            if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(&in))
-                                if (ld->getPointerOperand() == a) loads.push_back(ld);
-                        }
-                    // A load a body store DOMINATES sees this trip's value,
-                    // and every work-item stored the same one (`kBase = 16*j`
-                    // then `aOff = ... + kBase`): it keeps reading the slot.
-                    // A load no store dominates is the trip-start read of a
-                    // read-modify-write (`j = j + 1`), and it must not see
-                    // the previous work-item's update: it reads the snapshot.
-                    auto* shadow = eb.CreateAlloca(a->getAllocatedType(), nullptr,
-                                                   a->getName() + ".trip");
-                    shadow->setAlignment(a->getAlign());
-                    llvm::IRBuilder<> hb(Q.header->getTerminator());
-                    hb.CreateStore(hb.CreateLoad(a->getAllocatedType(), a,
-                                                 a->getName() + ".snap"),
-                                   shadow);
-                    for (llvm::LoadInst* ld : loads) {
-                        bool afterStore = false;
-                        for (llvm::StoreInst* st : stores)
-                            if (sDT.dominates(st, ld)) { afterStore = true; break; }
-                        if (!afterStore) ld->setOperand(0, shadow);
-                    }
-                }
-                uniformScaffoldHeaders.insert(Q.header);
+        for (Qualified& Q : qual) {
+            if (!Q.c.predicated) continue;
+            llvm::BasicBlock* H = Q.c.header;
+            llvm::BasicBlock* B = Q.c.latch;
+            llvm::BasicBlock* X = Q.c.exit;
+            llvm::SmallPtrSet<llvm::BasicBlock*, 32> body(Q.c.blocks.begin(),
+                                                         Q.c.blocks.end());
+            // A preheader of its own, in the region before the loop, to arm
+            // the flag per work-item: the edge in may come from scaffold (a
+            // barrier boundary, a split) or from more than one block.
+            llvm::BasicBlock* P = llvm::SplitBlockPredecessors(
+                H, Q.outsidePreds, ".act", static_cast<llvm::DominatorTree*>(nullptr));
+            llvm::AllocaInst* active = makeFlag(H->getName() + ".active");
+            auto* any = eb.CreateAlloca(i8b, nullptr, H->getName() + ".any");
+            new llvm::StoreInst(flag1, active, P->getTerminator()->getIterator());
+            auto* HS    = llvm::BasicBlock::Create(ctx, H->getName() + ".hdr", wrapper, H);
+            auto* gate  = llvm::BasicBlock::Create(ctx, H->getName() + ".gate", wrapper, H);
+            auto* leave = llvm::BasicBlock::Create(ctx, H->getName() + ".leave", wrapper, X);
+            auto* skip  = llvm::BasicBlock::Create(ctx, H->getName() + ".skip", wrapper, X);
+            auto* BS    = llvm::BasicBlock::Create(ctx, H->getName() + ".latch", wrapper, X);
+            {
+                llvm::IRBuilder<> b(HS);
+                b.CreateStore(flag0, any);
+                b.CreateBr(gate);
             }
+            {
+                llvm::IRBuilder<> b(gate);
+                llvm::Value* a = b.CreateLoad(i8b, active, "wi.active");
+                tainted.insert(a);
+                b.CreateCondBr(b.CreateICmpNE(a, flag0, "wi.active.c"), H, skip);
+            }
+            {
+                llvm::IRBuilder<> b(leave);
+                b.CreateStore(flag0, active);
+                b.CreateBr(skip);
+            }
+            {
+                llvm::IRBuilder<> b(skip);
+                llvm::Value* a = b.CreateLoad(i8b, active, "wi.active.end");
+                tainted.insert(a);
+                llvm::Value* v = b.CreateLoad(i8b, any, "wi.any");
+                b.CreateStore(b.CreateOr(v, a, "wi.any.or"), any);
+                b.CreateBr(BS);
+            }
+            {
+                llvm::IRBuilder<> b(BS);
+                llvm::Value* v = b.CreateLoad(i8b, any, "wi.any.v");
+                b.CreateCondBr(b.CreateICmpNE(v, flag0, "wi.any.c"), HS, X);
+            }
+            // P feeds the scaffold header; every exiting edge of the body
+            // leaves, and the back-edge continues.
+            {
+                auto* t = P->getTerminator();
+                for (unsigned sx = 0; sx < t->getNumSuccessors(); ++sx)
+                    if (t->getSuccessor(sx) == H) t->setSuccessor(sx, HS);
+            }
+            for (llvm::BasicBlock* bb : body) {
+                auto* t = bb->getTerminator();
+                for (unsigned sx = 0; sx < t->getNumSuccessors(); ++sx) {
+                    if (t->getSuccessor(sx) == H) t->setSuccessor(sx, skip);
+                    else if (t->getSuccessor(sx) == X) t->setSuccessor(sx, leave);
+                }
+            }
+            (void) B;
+            uniformScaffoldHeaders.insert(HS);
+            scaffoldExit[HS] = X;
+            std::vector<llvm::BasicBlock*> pbody(Q.c.blocks.begin(),
+                                                 Q.c.blocks.end());
+            pbody.push_back(gate);
+            pbody.push_back(leave);
+            pbody.push_back(skip);
+            scaffolded.push_back({HS, std::move(pbody)});
         }
+
     }
 
     llvm::DominatorTree DT(*wrapper);
@@ -563,56 +1067,6 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // Post-dominating the level entry IS the block-uniformity a barrier needs.
     llvm::PostDominatorTree PDT(*wrapper);
 
-    // ...and when it does NOT hold, the second question: is the only way to
-    // miss `to` to LEAVE the kernel without doing anything on the way out?
-    //
-    // That is the shape of every guard at the top of a cajeta-llm kernel —
-    // `if (row >= nH + nKv) { return; }`, or an `if` around the whole body.
-    // The guard is workgroup-uniform in fact (`globalIdX() / 256` with a
-    // 256-wide block IS the workgroup id) but nothing here can prove it: the
-    // block bound is a launch parameter, and `globalIdX()` is seeded from the
-    // tid placeholder, so the condition is tainted and the barrier stops
-    // post-dominating. Proving uniformity instead would take either an
-    // annotation on every such kernel or a block size baked into this pass —
-    // per-kernel maintenance, or a hard-coded per-device number.
-    //
-    // A work-item that leaves needs no barrier: step 9's activity mask keeps
-    // it out of every later region, and a barrier is a point in the program
-    // rather than a rendezvous of a particular set of work-items. So the
-    // bypass is admitted, on one condition — it must do NO work. A path that
-    // computes something, skips the barrier and rejoins is real divergence,
-    // has no point at which the group is together, and is still declined.
-    auto blockHasWork = [](llvm::BasicBlock* b) {
-        for (auto& in : *b)
-            if (!in.isTerminator() && !llvm::isa<llvm::PHINode>(in)
-                && !llvm::isa<llvm::AllocaInst>(in))
-                return true;
-        return false;
-    };
-    auto everyMissIsACleanExit = [&](llvm::BasicBlock* to,
-                                     llvm::BasicBlock* levelEntry) {
-        // Backward from `to`: everything that can still arrive.
-        llvm::SmallPtrSet<llvm::BasicBlock*, 32> arrives;
-        llvm::SmallVector<llvm::BasicBlock*, 16> bw{to};
-        while (!bw.empty()) {
-            llvm::BasicBlock* b = bw.pop_back_val();
-            if (!arrives.insert(b).second) continue;
-            for (llvm::BasicBlock* p : llvm::predecessors(b)) bw.push_back(p);
-        }
-        // Forward from the level entry, stopping AT `to`: the span in which a
-        // work-item can still be turned away.
-        llvm::SmallPtrSet<llvm::BasicBlock*, 32> span;
-        llvm::SmallVector<llvm::BasicBlock*, 16> fw{levelEntry};
-        while (!fw.empty()) {
-            llvm::BasicBlock* b = fw.pop_back_val();
-            if (b == to || !span.insert(b).second) continue;
-            for (llvm::BasicBlock* sb : llvm::successors(b)) fw.push_back(sb);
-        }
-        for (llvm::BasicBlock* b : span)
-            if (!arrives.count(b) && blockHasWork(b)) return false;
-        return true;
-    };
-
     // A uniform split's arm is a level of its own: inside it, "all work-items
     // must reach the barrier" means all of them that took this arm, and they
     // all did, because the branch was uniform.
@@ -627,6 +1081,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     };
 
     for (llvm::BasicBlock* bar : boundarySet) {
+        if (cutSet.count(bar)) continue;          // a region cut, not a barrier
         llvm::Loop* bl = LI.getLoopFor(bar);
         llvm::BasicBlock* levelEntry = bl ? inLoopSuccOf(bl) : bodyEntry;
         if (!bl)
@@ -764,6 +1219,12 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             if (L->contains(s)) return s;
         return nullptr;
     };
+    // Where this level continues after a scaffold loop.
+    auto scaffoldExitOf = [&](llvm::Loop* L) -> llvm::BasicBlock* {
+        auto f = scaffoldExit.find(L->getHeader());
+        if (f != scaffoldExit.end()) return f->second;
+        return L->getExitBlock();
+    };
 
     // Every block starts at most ONE region: a CFG that comes back around to a
     // regioned block is unstructured, and without this guard the walk appends a
@@ -798,7 +1259,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 if (cl != encLoop && cl->getHeader() == cur && isScaffoldLoop(cl)) {
                     walk(inLoopSucc(cl), cl, cur, nullptr);
                     pred = cur;
-                    cur = cl->getExitBlock();
+                    cur = scaffoldExitOf(cl);
                     continue;
                 }
             Collected R = collect(cur, encLoop, stopAt);
@@ -828,7 +1289,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 llvm::Loop* L = LI.getLoopFor(R.subloop);
                 walk(inLoopSucc(L), L, L->getHeader(), nullptr);  // loop body
                 pred = L->getHeader();
-                cur = L->getExitBlock();                      // region after loop
+                cur = scaffoldExitOf(L);                      // region after loop
                 continue;
             }
             if (R.barrier) {
@@ -891,7 +1352,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             noteRegion(st);
         }
         for (llvm::LoadInst* ld : loads) noteRegion(ld);
-        if (perWorkItem && multi) {
+        if ((perWorkItem && multi) || forceCtx.count(a)) {
             auto* arr = eb.CreateAlloca(a->getAllocatedType(), 0, ntidAll,
                                         a->getName() + ".ctx");
             arr->setAlignment(a->getAlign());
@@ -915,9 +1376,9 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // Only materialized when a region can be left early: a kernel whose only
     // `ret` is the last region's natural end pays nothing, which is every
     // kernel that lowered before this change.
-    llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
-    llvm::Constant* alive1 = llvm::ConstantInt::get(i8, 1);
-    llvm::Constant* alive0 = llvm::ConstantInt::get(i8, 0);
+    llvm::Type* i8 = i8b;
+    llvm::Constant* alive1 = flag1;
+    llvm::Constant* alive0 = flag0;
     bool canLeaveEarly = false;
     for (RegionJob& J : jobs) {
         if (J.doneTarget == wrapEnd) continue;
@@ -943,6 +1404,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     llvm::Constant* one = llvm::ConstantInt::get(i32, 1);
     for (RegionJob& J : jobs) {
         auto* ph   = llvm::BasicBlock::Create(ctx, "wi.ph", wrapper, J.entry);
+        J.phBlock = ph;
         auto* zHd  = llvm::BasicBlock::Create(ctx, "wi.z.head", wrapper, J.entry);
         auto* yHd  = llvm::BasicBlock::Create(ctx, "wi.y.head", wrapper, J.entry);
         auto* head = llvm::BasicBlock::Create(ctx, "wi.head", wrapper, J.entry);
@@ -1014,22 +1476,35 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         tz->addIncoming(zlb.CreateAdd(tz, one, "wi.z.next"), zLat);
         zlb.CreateBr(zHd);
 
-        // Linearized work-item index, and the mask test, in `pre`.
+        // Linearized work-item index, and the mask tests, in `pre`: the
+        // activity mask, then each predicated arm this region sits in (4c).
         llvm::IRBuilder<> rb(pre);
         J.linear = rb.CreateAdd(
             rb.CreateAdd(rb.CreateMul(tz, ntidYX, "wi.zbase"),
                          rb.CreateMul(ty, ntidX, "wi.ybase")),
             tx, "wi.linear");
+        llvm::Value* admit = nullptr;
         if (aliveArr) {
             llvm::Value* ap = rb.CreateInBoundsGEP(i8, aliveArr, J.linear,
                                                    "wi.alive.p");
-            rb.CreateCondBr(
-                rb.CreateICmpNE(rb.CreateLoad(i8, ap, "wi.alive.v"), alive0,
-                                "wi.alive.c"),
-                J.entry, xLat);
-        } else {
-            rb.CreateBr(J.entry);
+            admit = rb.CreateICmpNE(rb.CreateLoad(i8, ap, "wi.alive.v"), alive0,
+                                    "wi.alive.c");
         }
+        auto predsIt = blockPreds.find(J.entry);
+        if (predsIt != blockPreds.end())
+            for (const ArmPred& ap : predsIt->second) {
+                auto f = ctxArray.find(ap.mask);
+                if (f == ctxArray.end())
+                    unsupported("a divergent arm's mask has no context array");
+                llvm::Value* mp = rb.CreateInBoundsGEP(i8, f->second, J.linear,
+                                                       "wi.mask.p");
+                llvm::Value* m = rb.CreateICmpNE(rb.CreateLoad(i8, mp, "wi.mask.v"),
+                                                 alive0, "wi.mask.c");
+                if (!ap.polarity) m = rb.CreateNot(m, "wi.mask.n");
+                admit = admit ? rb.CreateAnd(admit, m, "wi.admit") : m;
+            }
+        if (admit) rb.CreateCondBr(admit, J.entry, xLat);
+        else rb.CreateBr(J.entry);
         J.entry->replacePhiUsesWith(ph, pre);
 
         // Region exit edges, a `ret` included, become the inner (x) latch. A
@@ -1053,6 +1528,90 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             }
         }
 
+    }
+
+    // --- 9b. Uniform locals a region UPDATES -------------------------------
+    // A region runs its body once per work-item, so `j = j + 1` -- or any
+    // workgroup-uniform read-modify-write -- would advance the slot ntid times
+    // per region execution. Snapshot the slot ONCE per region execution (in the
+    // work-item loop's preheader, outside the loop) and point the trip-start
+    // READ at the snapshot: every work-item then computes from the value the
+    // region was entered with and stores the same result, which makes the store
+    // idempotent.
+    //
+    // Redirect the READ; never write the slot back. A re-arming store in the
+    // work-item loop looks equivalent and is not: a work-item that SKIPS the
+    // update -- `if (t == 0) { total = total + partials[i]; }`, every kernel
+    // with a lane-0 tail -- would still re-arm the slot, so the last work-item
+    // through the region would overwrite the value work-item 0 computed and the
+    // update would be lost. Measured 2026-09-26: blockReduce answered 3968 for
+    // 32640 that way, and XpuCoopFromWords, XpuCoopEpilogue and the
+    // lane-strided-across-a-barrier probe failed with it.
+    //
+    // Per REGION, not per loop trip. Taken in the header of an enclosing
+    // scaffold loop instead, an outer loop's snapshot rewinds an inner loop's
+    // updates -- a uniform accumulator in nested scaffold loops answered 4
+    // where 16 is right (measured 2026-09-25 at 072d0bed,
+    // xpu-kernel-adaptor 4.2.1.3) -- and a region that sits in no loop at all
+    // gets no snapshot, so its uniform local accumulates across the block.
+    {
+        llvm::DominatorTree rDT(*wrapper);
+        llvm::PostDominatorTree rPDT(*wrapper);
+        for (RegionJob& J : jobs) {
+            if (!J.phBlock) continue;
+            llvm::SmallPtrSet<llvm::BasicBlock*, 16> inRegion(J.blocks.begin(),
+                                                              J.blocks.end());
+            for (llvm::AllocaInst* a : allocas) {
+                if (ctxArray.count(a)) continue;
+                llvm::SmallVector<llvm::LoadInst*, 8> allLoads;
+                llvm::SmallVector<llvm::StoreInst*, 8> allStores;
+                collectMemUsers(a, allLoads, allStores);
+                llvm::SmallVector<llvm::StoreInst*, 4> stores;
+                llvm::SmallVector<llvm::LoadInst*, 8> loads;
+                bool waveFed = false;
+                for (llvm::StoreInst* st : allStores) {
+                    if (!inRegion.count(st->getParent())) continue;
+                    if (waveDerived.count(st->getValueOperand())) waveFed = true;
+                    stores.push_back(st);
+                }
+                for (llvm::LoadInst* ld : allLoads)
+                    if (inRegion.count(ld->getParent())) loads.push_back(ld);
+                if (stores.empty() || loads.empty()) continue;
+                // The update must be UNCONDITIONAL within the region. A
+                // conditional one -- `if (t == 0) { total = total + p[i]; }`,
+                // the lane-0 tail -- must keep reading the slot: the
+                // work-items that skip it would otherwise hand the next one a
+                // region-entry value that erases what the updating work-item
+                // computed. Measured 2026-09-26 as three coop and wave-vector
+                // suites on cpu.
+                bool always = false;
+                for (llvm::StoreInst* st : stores)
+                    if (rPDT.dominates(st->getParent(), J.entry)) {
+                        always = true; break;
+                    }
+                if (!always) continue;
+                // A local holding a WAVE RESULT is per work-item in fact (each
+                // wave computes its own), so the region-entry value is not what
+                // its reads want.
+                if (waveFed || waveDerived.count(a)) continue;
+                auto* shadow = eb.CreateAlloca(a->getAllocatedType(), nullptr,
+                                               a->getName() + ".region");
+                shadow->setAlignment(a->getAlign());
+                llvm::IRBuilder<> pb(J.phBlock->getTerminator());
+                pb.CreateStore(pb.CreateLoad(a->getAllocatedType(), a,
+                                            a->getName() + ".snap"),
+                               shadow);
+                // A load a region store DOMINATES sees this work-item's own
+                // value and keeps reading the slot; a load no store dominates
+                // is the trip-start read and takes the snapshot.
+                for (llvm::LoadInst* ld : loads) {
+                    bool afterStore = false;
+                    for (llvm::StoreInst* st : stores)
+                        if (rDT.dominates(st, ld)) { afterStore = true; break; }
+                    if (!afterStore) ld->setOperand(0, shadow);
+                }
+            }
+        }
     }
 
     // --- 10. Rewrite per region: tid placeholders + context-array indexing --

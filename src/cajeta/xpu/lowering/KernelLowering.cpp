@@ -3618,7 +3618,17 @@ private:
         // its per-lane scratch), not the gate.
         const char* env = std::getenv("CAJETA_GPU_COOPMATRIX_DIST");
         bool forceOn = env && std::string(env) == "on";
-        if (!needsDistribution && !forceOn) return;
+        bool forceOff = env && std::string(env) == "off";
+        // "off" is the replicated CONTROL for a target that distributes by
+        // default (nvptx, where the replicated tile is the spill the
+        // distribution exists to shed): it forces replication so a test can
+        // show the scratch is there without distribution and gone with it. A
+        // kernel that needs distribution still distributes -- forcing it off
+        // would skip the kernel, not replicate it.
+        if (forceOff && !needsDistribution) return;
+        if (!needsDistribution && !forceOn &&
+            !target.distributeReplicablePortableTiles())
+            return;
         uint32_t R = shapes.begin()->first, C = shapes.begin()->second;
         if (R == 0 || C == 0 || R != C) return;         // K == C is the identity
         unsigned W = target.distributedCoopMatrixWaveWidth(C);
@@ -4681,12 +4691,14 @@ private:
                                     llvm::Value*& result) {
         // Spike (4A.7): on the vectorizing CPU backend, emit the distributed
         // tile's inner loops unrolled so the work-item loop is innermost for
-        // LoopVectorize. Restored on every exit, an unsupported() throw included.
+        // LoopVectorize; NVPTX unrolls too, so the per-lane slices promote to
+        // registers instead of a local frame (1.5.4.1). The target decides.
+        // Restored on every exit, an unsupported() throw included.
         struct UnrollScope {
             bool& flag; bool prev;
             UnrollScope(bool& f, bool v) : flag(f), prev(f) { flag = v; }
             ~UnrollScope() { flag = prev; }
-        } unrollScope(distUnrollLoops, std::string(target.name()) == "cpu");
+        } unrollScope(distUnrollLoops, target.distributedCoopMatrixUnrollsLoops());
         const auto& args = mc->getParameters();
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);

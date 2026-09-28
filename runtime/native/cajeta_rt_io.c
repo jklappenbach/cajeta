@@ -253,8 +253,17 @@ static void __cajeta_emit_uncaught(void* value, int is_unrec) {
     __cajeta_print_trace(value, 2);
 }
 
+__attribute__((noreturn)) void __cajeta_throw_titled(void* value, int64_t title);
+
+// A throw that tenders no title: runtime-raised values and legacy integer throws.
 __attribute__((noreturn))
 void __cajeta_throw(void* value) {
+    __cajeta_throw_titled(value, 0);
+}
+
+// Raises `value`; `title` 1 hands its title to the catching clause.
+__attribute__((noreturn))
+void __cajeta_throw_titled(void* value, int64_t title) {
     __cajeta_trace_record(value);
     // Notify the debugger BEFORE unwinding, while the throwing frames are still live.
     {
@@ -303,6 +312,7 @@ void __cajeta_throw(void* value) {
         }
     }
     (*excTop)->thrown_value = value;
+    (*excTop)->thrown_title = title;
     longjmp((*excTop)->buf, 1);
 }
 
@@ -326,6 +336,12 @@ void __cajeta_abstract_call(const char* what) {
 void* __cajeta_get_thrown(void) {
     struct cajeta_exception_frame** top = __cajeta_exc_top_ptr();
     return *top ? (*top)->thrown_value : NULL;
+}
+
+// Whether the caught value's title came with it.
+int64_t __cajeta_get_thrown_title(void) {
+    struct cajeta_exception_frame** top = __cajeta_exc_top_ptr();
+    return *top ? (*top)->thrown_title : 0;
 }
 
 // --- I/O helpers: print / println / log (SLF4J-style {} templating) ----------

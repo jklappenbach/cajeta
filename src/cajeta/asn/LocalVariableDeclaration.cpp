@@ -531,6 +531,10 @@ namespace cajeta {
             for (auto& pm : cr->getParameters())
                 if (pm.expression) out.push_back(pm.expression);
         }
+        if (auto lvd = dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
+            for (auto& d : lvd->getVariableDeclarators())
+                if (d && d->getInitializer()) out.push_back(d->getInitializer());
+        }
     }
 
     // True when `name` appears anywhere under `node`. Name-based and
@@ -1061,6 +1065,12 @@ namespace cajeta {
                                 || isMoveKind(argExpr);
                             field->setIsOwningView(isOwning);
                             if (!isOwning) {
+                                if (auto win = dynamic_pointer_cast<ArraySliceExpression>(argExpr)) {
+                                    while (win && !win->getChildren().empty()) {
+                                        argExpr = dynamic_pointer_cast<Expression>(win->getChildren()[0]);
+                                        win = dynamic_pointer_cast<ArraySliceExpression>(argExpr);
+                                    }
+                                }
                                 if (auto idArg = dynamic_pointer_cast<IdentifierExpression>(argExpr)) {
                                     auto scope = module->getScopeStack().peek();
                                     FieldPtr src = scope

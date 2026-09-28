@@ -6,6 +6,7 @@
 #include "CpuKernelLowering.h"
 #include "../lowering/KernelLowering.h"   // collectKernelParamInfo / KernelParamInfo
 #include "CpuBackend.h"
+#include "../core/XpuKernelGate.h"
 #include "cajeta/xpu/core/KernelManifest.h"
 #include "cajeta_xpu_abi.h"   // CAJETA_XPU_ABI_VERSION for the manifest identity
 #include "CpuBarrierFission.h"
@@ -34,6 +35,7 @@
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Utils/Cloning.h"
@@ -780,13 +782,53 @@ static bool loopHasHint(llvm::Loop* L, llvm::StringRef hint) {
 // cajeta.xpu.wi) must itself carry llvm.loop.isvectorized. An inner loop the
 // vectorizer widened instead does not count, and a wave call under no
 // work-item loop at all is scaffold code that never had a wave.
+//
+// And it must be the SCALAR REMAINDER of that widening, not the vector loop.
+// LoopVectorize marks both loops it leaves `isvectorized`, and a scalar stub
+// call that survives inside the vector loop (header `vector.body`, or the
+// epilogue's `vec.epilog.vector.body`) is a call the vectorizer SCALARIZED:
+// one scalar call per lane under a `pred.call.if` mask, or a "uniform" call
+// replicated once per vector iteration. Either is the width-1 identity.
+// blockReduce ran eight of them past the old test and answered 3968 for
+// 32640 (measured 2026-09-25, xpu-kernel-adaptor 4.2.1.2). The scalar
+// remainder keeps the original call and runs the tail iterations only.
+static bool isVectorLoopOf(llvm::Loop* L) {
+    llvm::BasicBlock* h = L->getHeader();
+    return h->hasName() && h->getName().contains("vector.body");
+}
 static bool loopChainVectorized(llvm::Loop* L) {
     for (; L; L = L->getParentLoop())
         if (loopHasHint(L, "cajeta.xpu.wi"))
-            return loopHasHint(L, "llvm.loop.isvectorized");
+            return loopHasHint(L, "llvm.loop.isvectorized") && !isVectorLoopOf(L);
     return false;
 }
-static bool waveOpLeftScalar(llvm::Function& f, std::string* which) {
+} // namespace
+
+// Any call to a wave stub or to one of its width-W VFABI variants
+// (`__cajeta_xpu_wave_reduce_sum_f32_v8`, `..._Mv8`). Counted before and
+// after vectorization: a wave op that VANISHES has had its cross-lane
+// semantics optimized away, which is exactly as wrong as one left scalar and
+// is not visible to the left-scalar gate, because there is no call left to
+// look at. Measured 2026-09-26 (xpu-kernel-adaptor 4.2.1.3): in
+// `while (j < n) { acc = acc + Wave.reduceSumF32(1.0f); }` the accumulator is
+// workgroup-uniform, so every work-item of the region re-read the same start
+// value, every iteration's result but the last was dead, LLVM deleted the
+// region's whole vector body, and the kernel REGISTERED and answered 0 where
+// W is right. A silent wrong answer is the one outcome this unit exists to
+// remove, so the kernel is refused until the accumulator is per work-item.
+unsigned waveOpCallCount(llvm::Function& f) {
+    unsigned n = 0;
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                if (auto* cf = c->getCalledFunction())
+                    if (cf->getName().starts_with("__cajeta_xpu_wave_")
+                        && cf->getName() != "__cajeta_xpu_wave_width")
+                        ++n;
+    return n;
+}
+
+bool waveOpLeftScalar(llvm::Function& f, std::string* which) {
     llvm::DominatorTree dt(f);
     llvm::LoopInfo li(dt);
     const bool dbg = getenv("CAJETA_XPU_DEBUG_WAVE") != nullptr;
@@ -820,6 +862,8 @@ static bool waveOpLeftScalar(llvm::Function& f, std::string* which) {
                      f.getName().str().c_str(), scalarCalls);
     return false;
 }
+
+namespace {
 
 // Fold the substituted variant calls into the loop; no inliner runs at -O0.
 void foldWaveVariants(llvm::Function& f) {
@@ -911,11 +955,8 @@ void foldWaveVariants(llvm::Function& f) {
                 // XPU-N01: this kernel gets NO CPU code, and a @Kernel has no host
                 // fallback — the launch finds nothing and every output reads ZERO.
                 // Say so at build time, as the other backends already do.
-                fprintf(stderr,
-                        "cajeta: note: [xpu-kernel-skipped] %s: no cpu device "
-                        "code — %s (%s)\n",
-                        entryName.c_str(), e.getMessage().c_str(),
-                        e.getErrorId().c_str());
+                reportUnloweredKernel(*method, entryName, "cpu",
+                                      e.getMessage() + " (" + e.getErrorId() + ")");
                 continue;
             }
             if (!kfn) continue;
@@ -950,6 +991,7 @@ void foldWaveVariants(llvm::Function& f) {
 
             llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
             llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+            unsigned wavePre = 0;        // wave calls before vectorization
             llvm::FunctionType* kfnTy = linked->getFunctionType();
             const unsigned total = kfnTy->getNumParams();
             const unsigned nReal = total - kNumCoordParams;     // buffers + scalars
@@ -1047,17 +1089,43 @@ void foldWaveVariants(llvm::Function& f) {
                         }
                         // Say so at build time: a swallowed fission failure
                         // leaves a kernel with no CPU code, in silence.
-                        fprintf(stderr,
-                                "cajeta: note: [xpu-kernel-skipped] %s: no cpu device "
-                                "code — barrier fission: %s (%s)\n",
-                                entryName.c_str(), e.getMessage().c_str(),
-                                e.getErrorId().c_str());
+                        reportUnloweredKernel(*method, entryName, "cpu",
+                                              "barrier fission: " + e.getMessage()
+                                              + " (" + e.getErrorId() + ")");
                         wrapper->eraseFromParent();
                         linked->eraseFromParent();    // has barrier markers; unusable
                         break;
                     }
                 }
                 if (!fissioned) continue;             // host-stub fallback
+                // A safety net, not a formality: malformed fission output does
+                // NOT reliably fail here and then crashed LLVM's LiveVariables
+                // pass during codegen instead (cajeta-llm test binary,
+                // 2026-09-26). A verify failure is reported as an unlowered
+                // kernel, which is a diagnostic the gate can hold, rather than
+                // a segfault thousands of lines later.
+                {
+                    std::string vmsg;
+                    llvm::raw_string_ostream vos(vmsg);
+                    if (llvm::verifyFunction(*wrapper, &vos)) {
+                        vos.flush();
+                        if (const char* dumpDir =
+                                std::getenv("CAJETA_XPU_CPU_DUMP_PREOPT")) {
+                            std::error_code ec;
+                            llvm::raw_fd_ostream os(
+                                std::string(dumpDir) + "/" +
+                                    wrapper->getName().str() + ".invalid.ll",
+                                ec);
+                            if (!ec) wrapper->print(os);
+                        }
+                        reportUnloweredKernel(*method, entryName, "cpu",
+                                              "barrier fission produced invalid IR: "
+                                              + vmsg.substr(0, 300));
+                        wrapper->eraseFromParent();
+                        linked->eraseFromParent();
+                        continue;
+                    }
+                }
                 // The distributed-coop wave-width marker rides the kernel; the
                 // body has been cloned into the wrapper and the kernel is about
                 // to be erased, so carry the marker onto the wrapper (cloning
@@ -1113,7 +1181,8 @@ void foldWaveVariants(llvm::Function& f) {
                         fprintf(stderr, "[wave-remarks] %s\n", entryName.c_str());
                     }
                     if (waveKernel) markWorkItemLoopsParallel(*wrapper);
-                    vectorizeFunction(*wrapper, hostTm.get());
+                    wavePre = waveOpCallCount(*wrapper);
+                    vectorizeFunction(*wrapper, hostTm.get(), waveKernel);
                     if (dbg) ctx.setDiagnosticHandler(std::move(saved));
                 }
                 if (waveKernel) {
@@ -1124,12 +1193,21 @@ void foldWaveVariants(llvm::Function& f) {
                     // the very call the gate looks for (measured 2026-09-23).
                     std::string op;
                     if (!cpuVectorizeDisabled() && waveOpLeftScalar(*wrapper, &op)) {
-                        fprintf(stderr,
-                                "cajeta: note: [xpu-kernel-skipped] %s: no cpu device "
-                                "code: %s was left scalar (a work-item loop did not "
-                                "vectorize at the wave width %u), which would run the "
-                                "wave op with width-1 semantics\n",
-                                entryName.c_str(), op.c_str(), waveW);
+                        reportUnloweredKernel(*method, entryName, "cpu",
+                                              op + " was left scalar (a work-item loop did not "
+                                              "vectorize at the wave width " + std::to_string(waveW)
+                                              + "), which would run the wave op with width-1 semantics");
+                        wrapper->eraseFromParent();
+                        continue;                     // host-stub fallback
+                    }
+                    if (!cpuVectorizeDisabled() && wavePre > 0
+                            && waveOpCallCount(*wrapper) == 0) {
+                        reportUnloweredKernel(*method, entryName, "cpu",
+                                              "every wave op was optimized away before it was "
+                                              "widened (a workgroup-uniform value carrying a wave "
+                                              "result is re-read by each work-item of the region, "
+                                              "so the region's work is dead), which would answer "
+                                              "the width-1 identity");
                         wrapper->eraseFromParent();
                         continue;                     // host-stub fallback
                     }
@@ -1253,20 +1331,31 @@ void foldWaveVariants(llvm::Function& f) {
                     fprintf(stderr, "[wave-remarks] %s\n", entryName.c_str());
                 }
                 if (waveKernel) markWorkItemLoopsParallel(*wrapper);
-                vectorizeFunction(*wrapper, hostTm.get());
+                wavePre = waveOpCallCount(*wrapper);
+                vectorizeFunction(*wrapper, hostTm.get(), waveKernel);
                 if (dbg) ctx.setDiagnosticHandler(std::move(saved));
             }
 
             // Fold the substituted variant calls in; no inliner runs at -O0.
             if (waveKernel) {
                 std::string op;
+                if (!cpuVectorizeDisabled() && wavePre > 0
+                        && waveOpCallCount(*wrapper) == 0) {
+                    reportUnloweredKernel(*method, entryName, "cpu",
+                                          "every wave op was optimized away before it was "
+                                          "widened (a workgroup-uniform value carrying a wave "
+                                          "result is re-read by each work-item of the region, "
+                                          "so the region's work is dead), which would answer "
+                                          "the width-1 identity");
+                    wrapper->eraseFromParent();
+                    if (linked->use_empty()) linked->eraseFromParent();
+                    continue;                         // host-stub fallback
+                }
                 if (!cpuVectorizeDisabled() && waveOpLeftScalar(*wrapper, &op)) {
-                    fprintf(stderr,
-                            "cajeta: note: [xpu-kernel-skipped] %s: no cpu device "
-                            "code: %s was left scalar (the work-item loop did not "
-                            "vectorize at the wave width %u), which would run the "
-                            "wave op with width-1 semantics\n",
-                            entryName.c_str(), op.c_str(), waveW);
+                    reportUnloweredKernel(*method, entryName, "cpu",
+                                          op + " was left scalar (the work-item loop did not "
+                                          "vectorize at the wave width " + std::to_string(waveW)
+                                          + "), which would run the wave op with width-1 semantics");
                     wrapper->eraseFromParent();
                     if (linked->use_empty()) linked->eraseFromParent();
                     continue;                         // host-stub fallback
@@ -1338,6 +1427,7 @@ void foldWaveVariants(llvm::Function& f) {
 
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
             if (manifests) manifests->push_back(manifest);
+            noteKernelLowered(*method, entryName, "cpu");
             ++emitted;
         }
         return emitted;

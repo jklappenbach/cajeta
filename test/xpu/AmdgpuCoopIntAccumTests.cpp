@@ -15,6 +15,7 @@
 //
 
 #include <gtest/gtest.h>
+#include "XpuRefusalProbe.h"
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
@@ -35,6 +36,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include "KernelLoweringProbe.h"
 
 using cajeta_test::CajetaJit;
 using cajeta::Compiler;
@@ -103,20 +105,8 @@ const char* kIntAccumSrc =
     "    public static int32 run() { return 1; }\n"
     "}\n";
 
-CajetaModulePtr compileForInspection(Compiler& compiler, const char* source) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = std::filesystem::temp_directory_path()
-              / ("cajeta_xpu_iaccum_" + std::to_string(rng()));
-    std::filesystem::create_directories(base / "test");
-    std::ofstream(base / "test" / "D.cajeta") << source;
-    auto archive = std::filesystem::temp_directory_path()
-                 / ("cajeta_xpu_iaccum_arch_" + std::to_string(rng()));
-    std::filesystem::create_directories(archive);
-    auto m = compiler.createModule((base / "test" / "D.cajeta").string(),
-                                   base.string(), archive.string());
-    compiler.compile(m);
-    return m;
-}
+using cajeta::xpu::probe::compileForInspection;
+
 
 cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
                              const std::string& name) {
@@ -148,7 +138,7 @@ std::string isaOf(const char* source, const char* kernelName) {
 TEST(AmdgpuCoopIntAccumTests, intAccumVerbsLowerNativelyOnAmdgpu) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Amdgpu, kIntAccumSrc, &err), 1);
-    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+    EXPECT_FALSE(cajeta_test::loweringRefused(err))
         << "the integer-accumulate kernel must lower, not skip:\n" << err;
     EXPECT_EQ(err.find("[mma-tiering]"), std::string::npos)
         << "int8 + integer epilogue is native on amdgpu - a tier note "

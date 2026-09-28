@@ -36,6 +36,9 @@
 #include "llvm/Target/TargetMachine.h"
 
 #include <cstdlib>
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#endif
 #include <filesystem>
 #include <functional>
 #include <cstdio>
@@ -58,6 +61,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "KernelLoweringProbe.h"
 
 using cajeta::Compiler;
 using cajeta::CajetaModulePtr;
@@ -71,20 +75,8 @@ namespace {
 
 // ---- fixtures ------------------------------------------------------------ //
 
-CajetaModulePtr compileForInspection(Compiler& compiler, const std::string& source) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = fs::temp_directory_path()
-              / ("cajeta_xpu_manifest_" + std::to_string(rng()));
-    fs::create_directories(base / "test");
-    std::ofstream(base / "test" / "M.cajeta") << source;
-    auto archive = fs::temp_directory_path()
-                 / ("cajeta_xpu_manifest_arch_" + std::to_string(rng()));
-    fs::create_directories(archive);
-    auto m = compiler.createModule((base / "test" / "M.cajeta").string(),
-                                   base.string(), archive.string());
-    compiler.compile(m);
-    return m;
-}
+using cajeta::xpu::probe::compileForInspection;
+
 
 MethodPtr findMethod(const cajeta::CajetaClassPtr& klass, const std::string& name) {
     for (auto& [k, m] : klass->getMethods())
@@ -1245,6 +1237,289 @@ TEST(XpuKernelManifest, nativeOpsRecordTheSelectedWmmaInstructionOnNvptx) {
     EXPECT_NE(nativeOpNamed(m, "load.a"), nullptr) << json;
     EXPECT_NE(nativeOpNamed(m, "load.b"), nullptr) << json;
     EXPECT_NE(nativeOpNamed(m, "store"), nullptr) << json;
+}
+
+// A 16x16 GEMM tile in the shape of the stdlib's Ewise.matmul kernels, with
+// the accumulator and operand dtypes as parameters.
+std::string coopTileSource(const char* name, const char* acc, const char* ab,
+                           const char* zero) {
+    std::string n = name, a = acc, o = ab, z = zero;
+    return
+        "    @Kernel\n"
+        "    public static void " + n + "(KernelBuffer<" + a + "> c, KernelBuffer<" + o + "> a,\n"
+        "                               KernelBuffer<" + o + "> b, uint32 cols, uint32 depth) {\n"
+        "        uint32 ktiles = depth / 16;\n"
+        "        CooperativeMatrix<" + a + ",16,16,2> mc;\n"
+        "        mc.splat(" + z + ");\n"
+        "        CooperativeMatrix<" + o + ",16,16,0> ma;\n"
+        "        CooperativeMatrix<" + o + ",16,16,1> mb;\n"
+        "        uint32 kk = 0;\n"
+        "        while (kk < ktiles) {\n"
+        "            ma.load(a, kk * 16, 0, depth);\n"
+        "            mb.load(b, kk * 16 * cols, 0, cols);\n"
+        "            mc.mma(ma, mb);\n"
+        "            kk = kk + 1;\n"
+        "        }\n"
+        "        mc.store(c, 0, 0, cols);\n"
+        "    }\n";
+}
+
+// The stdlib Ewise.matmul tiles that spilled on sm_89 (plan 1.5.4.1): f32, f64
+// and a bf16 ACCUMULATOR have no wmma config, so they take the portable
+// software tile. Replicated per work-item that tile IS the kernel's local
+// frame (3072 / 6144 / 1536 bytes); spread across the warp it is eight
+// elements per lane and there is no frame at all. NVPTX distributes a
+// replicable portable tile by default: a warp is physically 32 wide, so the
+// lane layout derived at compile time is always what the hardware runs, and on
+// a GPU a per-lane scratch array is a spill, never a stack slot. The i8 tile
+// is the does-not-fire control: 4A.2.7 made it native, and it stays native.
+TEST(XpuKernelManifest, nvptxDistributesTheReplicablePortableTileByDefault) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    struct Shape { const char* name; const char* acc; const char* ab;
+                   const char* zero; bool native; };
+    const Shape shapes[] = {
+        {"tf32",  "float32",  "float32",  "0.0f",           false},
+        {"tf64",  "float64",  "float64",  "0.0",            false},
+        {"tbf16", "bfloat16", "bfloat16", "(bfloat16) 0.0", false},
+        {"ti8",   "int32",    "int8",     "0",              true},
+    };
+    for (const Shape& s : shapes) {
+        SCOPED_TRACE(s.name);
+        Compiler compiler;
+        auto module = compileForInspection(
+            compiler, std::string(kImports) +
+                          coopTileSource(s.name, s.acc, s.ab, s.zero) + kEnd);
+        auto k = findMethod(module->getStructures()["test.M"], s.name);
+        ASSERT_NE(k, nullptr);
+        llvm::LLVMContext ctx;
+        llvm::Module host("xpu_manifest_host_nvptx_dist", ctx);
+        std::vector<KernelManifest> out;
+        testing::internal::CaptureStderr();
+        cajeta::xpu::nvidia::emitKernelRegistration({k}, host, "sm_89", &out);
+        std::string err = testing::internal::GetCapturedStderr();
+        if (out.empty()) {
+            GTEST_SKIP() << "no cubin assembled on this box (ptxas absent or too "
+                            "old): " << err;
+        }
+        const KernelManifest& m = out[0];
+        std::string json = cajeta::xpu::toJson(m);
+        ASSERT_TRUE(m.spillBytes.has_value()) << json;
+        EXPECT_EQ(*m.spillBytes, 0u) << json << "\n" << err;
+        EXPECT_EQ(err.find("[xpu-kernel-spill]"), std::string::npos) << err;
+        const auto* mma = nativeOpNamed(m, "mma");
+        ASSERT_NE(mma, nullptr) << json;
+        if (s.native)
+            EXPECT_TRUE(mma->native()) << mma->instruction;
+        else
+            EXPECT_EQ(mma->instruction, "software-tile.distributed") << json;
+    }
+}
+
+// The control: with distribution forced OFF the same f32 tile is replicated
+// and carries its 3072-byte frame, so the zero above is the distribution
+// working rather than a tile that never had scratch to begin with.
+TEST(XpuKernelManifest, nvptxReplicatesThePortableTileWhenDistributionIsForcedOff) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "off", 1);
+    Compiler compiler;
+    auto module = compileForInspection(compiler,
+                                       std::string(kImports) + coopF32Source() + kEnd);
+    auto k = findMethod(module->getStructures()["test.M"], "coopf32");
+    ASSERT_NE(k, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module host("xpu_manifest_host_nvptx_repl", ctx);
+    std::vector<KernelManifest> out;
+    testing::internal::CaptureStderr();
+    cajeta::xpu::nvidia::emitKernelRegistration({k}, host, "sm_89", &out);
+    std::string err = testing::internal::GetCapturedStderr();
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    if (out.empty()) {
+        GTEST_SKIP() << "no cubin assembled on this box (ptxas absent or too "
+                        "old): " << err;
+    }
+    const KernelManifest& m = out[0];
+    ASSERT_TRUE(m.spillBytes.has_value()) << cajeta::xpu::toJson(m);
+    EXPECT_GE(*m.spillBytes, 3072u) << cajeta::xpu::toJson(m);
+    const auto* mma = nativeOpNamed(m, "mma");
+    ASSERT_NE(mma, nullptr);
+    EXPECT_EQ(mma->instruction, "software-tile.replicated");
+    EXPECT_NE(err.find("[xpu-kernel-spill]"), std::string::npos) << err;
+}
+
+// xpu-kernel-adaptor 7.0.1 / 7.0.3: a kernel launched with a NON-CONSTANT block
+// and no @Occupancy(maxThreads) has no bound the compiler can see, so the build
+// names it. The ceiling is the author's structural fact, never the device's
+// answer, which is why the fix is an annotation and not a profile read. Drives
+// the compiler binary (the scan lives in Compiler::emitXpuKernels), cpu backend,
+// GPU-free. Three kernels: `unb` fires; `ceil` (same launch, ceiling declared)
+// and `fixed` (constant block) do not, so the warning is scoped to the kernel
+// that earns it and not to the file.
+// Drives the compiler binary on three kernels -- `unb` launched with a
+// non-constant block at two sites, `ceil` the same with a declared ceiling,
+// `fixed` with a constant block -- with `unbAnn` on the first and `fixedAnn`
+// on the last. Returns the build log; `rc` takes the exit status.
+static std::string buildUnboundedProbe(const std::string& unbAnn,
+                                       const std::string& fixedAnn, int* rc) {
+    std::string bin = sourceRoot() + "/build/src/cajeta";
+    if (!fs::exists(bin)) { *rc = -1; return ""; }
+    static std::mt19937_64 rng(std::random_device{}());
+    fs::path root = fs::temp_directory_path()
+                  / ("cajeta_xpu_unbounded_" + std::to_string(rng()));
+    fs::create_directories(root / "src" / "test");
+    fs::create_directories(root / "out");
+    auto body = [](const char* name, const std::string& ann) {
+        return std::string("    @Kernel\n") + ann +
+            "    public static void " + name + "(KernelBuffer<float32> x, KernelBuffer<float32> y,\n"
+            "                             float32 a, uint32 n) {\n"
+            "        uint32 i = KernelThread.x();\n"
+            "        if (i < n) { y[i] = a * x[i] + y[i]; }\n"
+            "    }\n";
+    };
+    std::ofstream(root / "src" / "test" / "M.cajeta")
+        << "package test;\n"
+           "import cajeta.xpu.KernelBuffer;\n"
+           "import cajeta.xpu.KernelStream;\n"
+           "import cajeta.xpu.KernelThread;\n"
+           "public class M {\n"
+        << body("unb", unbAnn)
+        << body("ceil", "    @Occupancy(maxThreads = 256)\n")
+        << body("fixed", fixedAnn)
+        << "    public static void go(KernelBuffer<float32> x, KernelBuffer<float32> y,\n"
+           "                          uint32 n, int32 b) {\n"
+           "        KernelStream s #= KernelStream.current();\n"
+           "        unb.launch(s, grid: [1], block: [b])(x, y, 1.0f, n);\n"
+           "        unb.launch(s, grid: [1], block: [b * 2])(x, y, 1.0f, n);\n"
+           "        ceil.launch(s, grid: [1], block: [b])(x, y, 1.0f, n);\n"
+           "        fixed.launch(s, grid: [1], block: [64])(x, y, 1.0f, n);\n"
+           "        s.sync();\n"
+           "    }\n"
+           "    public static void main(String[] args) { }\n"
+           "}\n";
+    std::string cmd = "\"" + bin + "\" --emit=obj --xpu-backend=cpu test.M.main \""
+        + (root / "src").string() + "\" \"" + (root / "out").string() + "\" > \""
+        + (root / "build.log").string() + "\" 2>&1";
+    int raw = std::system(cmd.c_str());
+#if defined(_WIN32)
+    *rc = raw;
+#else
+    *rc = WIFEXITED(raw) ? WEXITSTATUS(raw) : raw;
+#endif
+    std::string log = readFile(root / "build.log");
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    return log;
+}
+
+// 7.0.1, and since 2026-09-25 an ERROR ("Unit 4: make it an error", the
+// 4.2.3 decision 7.0.1 deferred to): a kernel launched with a non-constant
+// block and no @Occupancy(maxThreads) fails the build, named once with its
+// site count; the one with the ceiling and the one with a constant block
+// are not named.
+TEST(XpuKernelManifest, unboundedKernelWithoutACeilingIsNamedAtBuild) {
+    int rc = -1;
+    std::string log = buildUnboundedProbe("", "", &rc);
+    if (rc == -1 && log.empty()) GTEST_SKIP() << "compiler binary not built";
+    EXPECT_NE(rc, 0) << "an unbounded kernel with no ceiling fails the build:\n" << log;
+    // Exactly one line, and it names the unbounded kernel with its site count.
+    size_t first = log.find("[xpu-kernel-unbounded]");
+    ASSERT_NE(first, std::string::npos) << log;
+    EXPECT_EQ(log.find("[xpu-kernel-unbounded]", first + 1), std::string::npos) << log;
+    EXPECT_NE(log.find("cajeta: error: [xpu-kernel-unbounded] unb: launched with a "
+                       "non-constant block at 2 site(s)"), std::string::npos) << log;
+    EXPECT_EQ(log.find("[xpu-kernel-unbounded] ceil"), std::string::npos) << log;
+    EXPECT_EQ(log.find("[xpu-kernel-unbounded] fixed"), std::string::npos) << log;
+    EXPECT_NE(log.find("@Occupancy(maxThreads = N)"), std::string::npos) << log;
+    EXPECT_NE(log.find("CAJETA_ERROR_XPU_KERNEL_GATE"), std::string::npos) << log;
+}
+
+// The tracked escape (7.0.5 holds the 24 pre-unit kernels until each
+// family derives its geometry): `@Unbounded(tracked = "<item>")` makes the
+// line a note carrying the item, and the build passes.
+TEST(XpuKernelManifest, aTrackedUnboundedKernelIsANoteNamingTheItem) {
+    int rc = -1;
+    std::string log = buildUnboundedProbe(
+        "    @Unbounded(tracked = \"xpu-kernel-adaptor 7.0.5\")\n", "", &rc);
+    if (rc == -1 && log.empty()) GTEST_SKIP() << "compiler binary not built";
+    EXPECT_EQ(rc, 0) << log;
+    EXPECT_NE(log.find("cajeta: note: [xpu-kernel-unbounded] unb: launched with a "
+                       "non-constant block at 2 site(s)"), std::string::npos) << log;
+    EXPECT_NE(log.find("[tracked: xpu-kernel-adaptor 7.0.5]"), std::string::npos) << log;
+    EXPECT_EQ(log.find("cajeta: error:"), std::string::npos) << log;
+}
+
+// STALE: `@Unbounded` on a kernel whose every launch site is a constant
+// block (or that declares its ceiling) fails until the declaration goes.
+TEST(XpuKernelManifest, aStaleUnboundedDeclarationFailsTheBuild) {
+    int rc = -1;
+    std::string log = buildUnboundedProbe(
+        "    @Unbounded(tracked = \"xpu-kernel-adaptor 7.0.5\")\n",
+        "    @Unbounded(tracked = \"xpu-kernel-adaptor 7.0.5\")\n", &rc);
+    if (rc == -1 && log.empty()) GTEST_SKIP() << "compiler binary not built";
+    EXPECT_NE(rc, 0) << log;
+    EXPECT_NE(log.find("cajeta: error: [xpu-kernel-unbounded] fixed: STALE"),
+              std::string::npos) << "`fixed` is launched with a constant block only:\n" << log;
+    EXPECT_NE(log.find("cajeta: note: [xpu-kernel-unbounded] unb"), std::string::npos) << log;
+}
+
+// 7.0.2, the property 7.0.1 protects, MEASURED on sm_89: declaring the ceiling
+// a converted kernel keeps spills no more than the constant block it replaces.
+// The deliberate spiller at a 64-thread block, once as the plain kernel (what a
+// constant `block: [64]` site gives nvptx, which applies no launch-site bound)
+// and once with `@Occupancy(maxThreads = 64)` (what a derived-block conversion
+// must carry): the ceiling may not cost a byte of spill or a register.
+TEST(XpuKernelManifest, aDeclaredCeilingSpillsNoMoreThanTheConstantBlockOnNvptx) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    auto footprint = [](const std::string& source, const char* name) {
+        Compiler compiler;
+        auto module = compileForInspection(compiler, source);
+        auto k = findMethod(module->getStructures()["test.M"], name);
+        EXPECT_NE(k, nullptr);
+        llvm::LLVMContext ctx;
+        llvm::Module host("xpu_manifest_host_nvptx_ceiling", ctx);
+        std::vector<KernelManifest> out;
+        testing::internal::CaptureStderr();
+        cajeta::xpu::nvidia::emitKernelRegistration({k}, host, "sm_89", &out);
+        testing::internal::GetCapturedStderr();
+        return out;
+    };
+    auto plain = footprint(std::string(kImports) + spillerSource() + kEnd, "spiller");
+    if (plain.empty()) GTEST_SKIP() << "no cubin assembled on this box";
+    std::string ceilSrc = spillerSource();
+    ceilSrc.replace(ceilSrc.find("    @Kernel\n"), std::string("    @Kernel\n").size(),
+                    "    @Kernel\n    @Occupancy(maxThreads = 64)\n");
+    auto ceil = footprint(std::string(kImports) + ceilSrc + kEnd, "spiller");
+    ASSERT_EQ(ceil.size(), 1u);
+    ASSERT_TRUE(plain[0].spillBytes.has_value() && ceil[0].spillBytes.has_value());
+    EXPECT_LE(*ceil[0].spillBytes, *plain[0].spillBytes)
+        << "plain " << cajeta::xpu::toJson(plain[0]) << "\nceiling "
+        << cajeta::xpu::toJson(ceil[0]);
+    ASSERT_TRUE(plain[0].vgpr.has_value() && ceil[0].vgpr.has_value());
+    EXPECT_LE(*ceil[0].vgpr, *plain[0].vgpr) << cajeta::xpu::toJson(ceil[0]);
+    // The ceiling is recorded as the pin the artifact was budgeted for.
+    ASSERT_TRUE(ceil[0].threadsPerGroup.has_value()) << cajeta::xpu::toJson(ceil[0]);
+    EXPECT_EQ(*ceil[0].threadsPerGroup, 64u);
+    std::cerr << "[ceiling] plain spill=" << *plain[0].spillBytes << " vgpr=" << *plain[0].vgpr
+              << "; @Occupancy(64) spill=" << *ceil[0].spillBytes << " vgpr=" << *ceil[0].vgpr
+              << std::endl;
+}
+
+// The amdgpu twin of the test above: there the launch-site constant IS a pin
+// (flat-work-group-size), so the comparison is the pinned constant block against
+// the declared ceiling at the same size. Needs an AMD assembler; skips here.
+TEST(XpuKernelManifest, aDeclaredCeilingSpillsNoMoreThanTheConstantBlockOnAmdgpu) {
+    CAJETA_SKIP_IF_NO_HIP();
+    cajeta::xpu::amd::KernelMaxThreads pins;
+    pins["spiller"] = 64;
+    auto pinned = amdManifests(std::string(kImports) + spillerSource() + kEnd, {"spiller"}, pins);
+    ASSERT_EQ(pinned.size(), 1u);
+    std::string ceilSrc = spillerSource();
+    ceilSrc.replace(ceilSrc.find("    @Kernel\n"), std::string("    @Kernel\n").size(),
+                    "    @Kernel\n    @Occupancy(maxThreads = 64)\n");
+    auto ceil = amdManifests(std::string(kImports) + ceilSrc + kEnd, {"spiller"});
+    ASSERT_EQ(ceil.size(), 1u);
+    ASSERT_TRUE(pinned[0].spillBytes.has_value() && ceil[0].spillBytes.has_value());
+    EXPECT_LE(*ceil[0].spillBytes, *pinned[0].spillBytes)
+        << cajeta::xpu::toJson(pinned[0]) << "\n" << cajeta::xpu::toJson(ceil[0]);
 }
 
 // The same fact is readable from cajeta source through KernelManifest, so a

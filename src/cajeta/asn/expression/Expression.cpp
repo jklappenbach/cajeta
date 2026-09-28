@@ -1163,8 +1163,8 @@ bool cajetaRhsCarriesRedundantSharp(
                         i8Ty, dataBase, absOff, "earr_elem");
                     if (elemView) {
                         resolvedType = elemView;
-                        llvm::AllocaInst* slot2 = builder->CreateAlloca(
-                            llvm::PointerType::get(ctx, 0), nullptr,
+                        llvm::AllocaInst* slot2 = module->createEntryAlloca(
+                            llvm::PointerType::get(ctx, 0),
                             "earr.slot");
                         builder->CreateStore(tblElemPtr, slot2);
                         return slot2;
@@ -1184,8 +1184,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     llvm::Value* str2 = wrapCStringIntoClassString(module,
                         builder->CreateCall(toOwned2, {sData2, sLen2}),
                         "earr_str");
-                    llvm::AllocaInst* sSlot2 = builder->CreateAlloca(
-                        llvm::PointerType::get(ctx, 0), nullptr,
+                    llvm::AllocaInst* sSlot2 = module->createEntryAlloca(
+                        llvm::PointerType::get(ctx, 0),
                         "earr.str.slot");
                     builder->CreateStore(str2, sSlot2);
                     return sSlot2;
@@ -1244,8 +1244,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     i8Ty, prefixPtr, elemOff, "earr_elem");
                 if (elemView) {
                     resolvedType = elemView;
-                    llvm::AllocaInst* slot = builder->CreateAlloca(
-                        llvm::PointerType::get(ctx, 0), nullptr, "earr.slot");
+                    llvm::AllocaInst* slot = module->createEntryAlloca(
+                        llvm::PointerType::get(ctx, 0), "earr.slot");
                     builder->CreateStore(elemPtr, slot);
                     return slot;
                 }
@@ -1263,8 +1263,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 llvm::Value* cstr = builder->CreateCall(toOwned, {sData, sLen});
                 llvm::Value* str = wrapCStringIntoClassString(
                     module, cstr, "earr_str");
-                llvm::AllocaInst* sSlot = builder->CreateAlloca(
-                    llvm::PointerType::get(ctx, 0), nullptr, "earr.str.slot");
+                llvm::AllocaInst* sSlot = module->createEntryAlloca(
+                    llvm::PointerType::get(ctx, 0), "earr.str.slot");
                 builder->CreateStore(str, sSlot);
                 return sSlot;
             }
@@ -1315,6 +1315,11 @@ bool cajetaRhsCarriesRedundantSharp(
                             lhsForOp = builder->CreateLoad(
                                 a->getAllocatedType(), a);
                         }
+                    } else if (lhsForOp && lhsForOp->getType()->isStructTy()) {
+                        llvm::AllocaInst* spill = module->createEntryAlloca(
+                            lhsForOp->getType(), "opidx.recv");
+                        builder->CreateStore(lhsForOp, spill);
+                        lhsForOp = spill;
                     }
                 } else {
                     lhsForOp = loadIfLValue(module, lhsForOp, lhsExprForOp);
@@ -1336,8 +1341,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     if (!callResult) return nullptr;
                     // Wrap the call result in an alloca: consumers expect the native path's `load
                     // from this address` shape, and a load off a raw value is rejected by verify.
-                    llvm::AllocaInst* slot = builder->CreateAlloca(
-                        callResult->getType(), nullptr, "opidx.slot");
+                    llvm::AllocaInst* slot = module->createEntryAlloca(
+                        callResult->getType(), "opidx.slot");
                     builder->CreateStore(callResult, slot);
                     return slot;
                 }
@@ -1797,9 +1802,34 @@ bool cajetaRhsCarriesRedundantSharp(
         return instGv;
     }
 
+    llvm::Value* emitStaticStringConstant(CajetaModulePtr module, const std::string& text) {
+        return materializeStringConstant(module, text);
+    }
+
+    llvm::Value* emitThrowStdlibException(CajetaModulePtr module, const std::string& canonical,
+                                          const std::string& message) {
+        auto* builder = module->getBuilder();
+        auto it = CajetaType::getCanonicalMap().find(canonical);
+        auto exClass = it == CajetaType::getCanonicalMap().end()
+            ? nullptr : std::dynamic_pointer_cast<CajetaClass>(it->second);
+        llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw_titled");
+        if (!exClass || !throwFn) {
+            throw Exception("cannot throw " + canonical + ": the class or __cajeta_throw_titled is missing",
+                            "CAJETA_ERROR_INTERNAL");
+        }
+        std::vector<ParameterEntry> entries;
+        entries.push_back(ParameterEntry(CajetaType::of("String"), "",
+                                         materializeStringConstant(module, message)));
+        llvm::Value* exc = exClass->heapConstruct(module, entries);
+        // The exception is fresh, so its title goes with it to the catch that frees it.
+        builder->CreateCall(throwFn, {exc, llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(*module->getLlvmContext()), 1)});
+        return builder->CreateUnreachable();
+    }
+
     // Branches on `matchBit` and throws ClassCastException("... <msgDetail>") on the
     // false edge, leaving the builder in the match-true block for the caller. Throws
-    // through __cajeta_throw, so owned-local unwinding matches a user `throw`.
+    // through __cajeta_throw_titled with its title, so the catch that takes it frees it.
     static void emitCaptureCastThrowBranch(CajetaModulePtr module,
                                            llvm::Value* matchBit,
                                            const std::string& msgDetail) {
@@ -1825,8 +1855,9 @@ bool cajetaRhsCarriesRedundantSharp(
                     ParameterEntry(CajetaType::of("String"), "", msg));
                 llvm::Value* exc = cce->heapConstruct(module, entries);
                 if (llvm::Function* throwFn =
-                        module->getRuntimeFunction("__cajeta_throw")) {
-                    builder->CreateCall(throwFn, {exc});
+                        module->getRuntimeFunction("__cajeta_throw_titled")) {
+                    builder->CreateCall(throwFn, {exc, llvm::ConstantInt::get(
+                        llvm::Type::getInt64Ty(ctx), 1)});
                     builder->CreateUnreachable();
                     threw = true;
                 }
@@ -1939,14 +1970,14 @@ bool cajetaRhsCarriesRedundantSharp(
                 llvm::Type* dstBody = dstClass->getLlvmType();
                 llvm::Value* srcAddr = raw;
                 if (!srcAddr->getType()->isPointerTy()) {
-                    llvm::Value* tmp = builder->CreateAlloca(srcAddr->getType());
+                    llvm::Value* tmp = module->createEntryAlloca(srcAddr->getType());
                     builder->CreateStore(srcAddr, tmp);
                     srcAddr = tmp;
                 }
                 const llvm::DataLayout& dl =
                     module->getLlvmModule()->getDataLayout();
-                llvm::Value* slice = builder->CreateAlloca(
-                    dstBody, nullptr, "slice");
+                llvm::Value* slice = module->createEntryAlloca(
+                    dstBody, "slice");
                 llvm::Align align(dl.getABITypeAlign(dstBody));
                 builder->CreateMemCpy(slice, align, srcAddr, align,
                     llvm::ConstantInt::get(
@@ -2333,6 +2364,36 @@ bool cajetaRhsCarriesRedundantSharp(
         }
     }
 
+    // The inline {data, vtable, kind} body type of an interface-typed slot, or null
+    // when `t` is not an interface.
+    static llvm::StructType* interfaceBodyType(const CajetaTypePtr& t) {
+        auto ifCls = dynamic_pointer_cast<CajetaClass>(t);
+        if (!ifCls || !ifCls->isInterface() || dynamic_pointer_cast<CajetaView>(t)) {
+            return nullptr;
+        }
+        auto* fatTy = llvm::dyn_cast_or_null<llvm::StructType>(ifCls->getLlvmType());
+        if (!fatTy || fatTy->isOpaque() || fatTy->getNumElements() != 3) return nullptr;
+        return fatTy;
+    }
+
+    // Takes an interface value out of the body at `slot`: copies it to a fresh temporary,
+    // decays the slot's kind tag to borrowed, and reports the moved title in `flagOut`.
+    static llvm::Value* takeInterfaceSlot(const CajetaModulePtr& module, llvm::Value* slot,
+                                          llvm::StructType* fatTy, llvm::Value*& flagOut) {
+        auto* b = module->getBuilder();
+        llvm::Type* i64Ty = b->getInt64Ty();
+        llvm::Value* fat = b->CreateLoad(fatTy, slot, "iface_take_val");
+        llvm::Value* kind = b->CreateExtractValue(fat, {2}, "iface_take_kind");
+        b->CreateStore(llvm::ConstantInt::get(i64Ty, IFACE_KIND_BORROWED_CLASS),
+                       b->CreateStructGEP(fatTy, slot, 2, "iface_take_kind_addr"));
+        llvm::AllocaInst* tmp = module->createEntryAlloca(fatTy, "iface_take");
+        b->CreateStore(fat, tmp);
+        flagOut = b->CreateZExt(
+            b->CreateICmpEQ(kind, llvm::ConstantInt::get(i64Ty, IFACE_KIND_OWNED_CLASS)),
+            i64Ty, "iface_take_title");
+        return tmp;
+    }
+
     // Emits `#expr`: a take protocol chosen by the source's kind (element, member,
     // static, identifier, call result), then ONE classification taken after codegen,
     // leaving runtimeTitleFlag holding the mode the consuming store or return records.
@@ -2341,6 +2402,13 @@ bool cajetaRhsCarriesRedundantSharp(
         // flag captured in a previous function must never leak into this one.
         runtimeTitleFlag = nullptr;
         if (children.empty()) return nullptr;
+        if (captureMarker) {
+            auto inner = dynamic_pointer_cast<Expression>(children[0]);
+            if (!inner) return nullptr;
+            llvm::Value* read = loadIfLValue(module, inner->generateCode(module), inner);
+            resolvedType = inner->getResolvedType();
+            return read;
+        }
         // The legacy `dst = #v` spelling warns and still transfers. Reported here because
         // this is the one node both spellings do not share; call args and returns are
         // deliberately silent.
@@ -2444,6 +2512,12 @@ bool cajetaRhsCarriesRedundantSharp(
             auto xRecvClass = xRecv
                 ? dynamic_pointer_cast<CajetaClass>(xRecv->getResolvedType())
                 : nullptr;
+            if (dynamic_pointer_cast<CajetaView>(xRecvClass)) {
+                llvm::Value* read = loadIfLValue(module,
+                    dotInner->generateCode(module), dotInner);
+                resolvedType = dotInner->getResolvedType();
+                return read;
+            }
             StructurePropertyPtr xProp;
             CajetaClassPtr xDecl;
             if (xRecvClass) {
@@ -2571,6 +2645,14 @@ bool cajetaRhsCarriesRedundantSharp(
                     }
                 }
             }
+            if (xProp && xDecl) {
+                if (llvm::StructType* fatTy = interfaceBodyType(xProp->getType())) {
+                    llvm::Value* slot = dotInner->generateCode(module);
+                    resolvedType = xProp->getType();
+                    if (!slot || !slot->getType()->isPointerTy()) return slot;
+                    return takeInterfaceSlot(module, slot, fatTy, runtimeTitleFlag);
+                }
+            }
         }
         llvm::Value* value = inner ? inner->generateCode(module) : nullptr;
         ownership::TitleShape mvShape = inner
@@ -2624,6 +2706,13 @@ bool cajetaRhsCarriesRedundantSharp(
         bool slotTaken = false;
         if (inner && inner->kind() == ExprKind::ArrayIndex) {
             auto aixInner = std::static_pointer_cast<ArrayIndexExpression>(inner);
+            if (!aixInner->getResolvedType()) aixInner->resolveTypes(module);
+            if (llvm::StructType* fatTy = interfaceBodyType(aixInner->getResolvedType())) {
+                if (value && value->getType()->isPointerTy()) {
+                    resolvedType = aixInner->getResolvedType();
+                    return takeInterfaceSlot(module, value, fatTy, runtimeTitleFlag);
+                }
+            }
             if (value && value->getType()->isPointerTy()
                     && !aixInner->getChildren().empty()) {
                 if (auto idBase = dynamic_pointer_cast<IdentifierExpression>(
@@ -3219,75 +3308,80 @@ bool cajetaRhsCarriesRedundantSharp(
     // name is the move subtree's receiver-side leaf.
     static void collectTransferNames(
             const AbstractSyntaxNodePtr& node,
-            std::set<std::string>& out) {
+            std::set<std::string>& out,
+            const std::set<std::string>* mark = nullptr) {
         if (!node) return;
         if (auto mv = std::dynamic_pointer_cast<MoveExpression>(node)) {
             if (!mv->getChildren().empty()) {
                 std::string name = firstIdentifierIn(mv->getChildren()[0]);
                 if (!name.empty()) out.insert(name);
+                if (mark && mark->count(name)
+                        && std::dynamic_pointer_cast<IdentifierExpression>(mv->getChildren()[0])) {
+                    mv->setCaptureMarker(true);
+                }
             }
             for (auto& c : mv->getChildren()) {
-                collectTransferNames(c, out);
+                collectTransferNames(c, out, mark);
             }
             return;
         }
         if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
-            for (auto& c : mc->getChildren()) collectTransferNames(c, out);
-            for (auto& p : mc->getParameters()) collectTransferNames(p.expression, out);
+            for (auto& c : mc->getChildren()) collectTransferNames(c, out, mark);
+            for (auto& p : mc->getParameters()) collectTransferNames(p.expression, out, mark);
             return;
         }
         if (auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
             for (auto& vd : lvd->getVariableDeclarators()) {
-                if (vd && vd->getInitializer()) collectTransferNames(vd->getInitializer(), out);
+                if (vd && vd->getInitializer()) collectTransferNames(vd->getInitializer(), out, mark);
             }
             return;
         }
         if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) {
-            collectTransferNames(ret->getExpression(), out);
+            collectTransferNames(ret->getExpression(), out, mark);
             return;
         }
         if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
-            collectTransferNames(ifs->getCondition(), out);
-            collectTransferNames(ifs->getThenBranch(), out);
-            collectTransferNames(ifs->getElseBranch(), out);
+            collectTransferNames(ifs->getCondition(), out, mark);
+            collectTransferNames(ifs->getThenBranch(), out, mark);
+            collectTransferNames(ifs->getElseBranch(), out, mark);
             return;
         }
         if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
-            collectTransferNames(es->getExpression(), out);
+            collectTransferNames(es->getExpression(), out, mark);
             return;
         }
         if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
-            collectTransferNames(ls->getBlock(), out);
+            collectTransferNames(ls->getBlock(), out, mark);
             return;
         }
         if (auto ss = std::dynamic_pointer_cast<ScopeStatement>(node)) {
-            collectTransferNames(ss->getBlock(), out);
+            collectTransferNames(ss->getBlock(), out, mark);
             return;
         }
         if (auto ws = std::dynamic_pointer_cast<WhileStatement>(node)) {
-            collectTransferNames(ws->getCondition(), out);
-            collectTransferNames(ws->getBody(), out);
+            collectTransferNames(ws->getCondition(), out, mark);
+            collectTransferNames(ws->getBody(), out, mark);
             return;
         }
         if (auto ds = std::dynamic_pointer_cast<DoStatement>(node)) {
-            collectTransferNames(ds->getBody(), out);
-            collectTransferNames(ds->getCondition(), out);
+            collectTransferNames(ds->getBody(), out, mark);
+            collectTransferNames(ds->getCondition(), out, mark);
             return;
         }
         if (auto fs = std::dynamic_pointer_cast<ForStatement>(node)) {
-            collectTransferNames(fs->getInit(), out);
-            collectTransferNames(fs->getCondition(), out);
-            for (auto& u : fs->getUpdate()) collectTransferNames(u, out);
-            collectTransferNames(fs->getBody(), out);
+            collectTransferNames(fs->getInit(), out, mark);
+            collectTransferNames(fs->getCondition(), out, mark);
+            for (auto& u : fs->getUpdate()) collectTransferNames(u, out, mark);
+            collectTransferNames(fs->getBody(), out, mark);
             return;
         }
         if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
-            collectTransferNames(efs->getIterableExpr(), out);
-            collectTransferNames(efs->getBody(), out);
+            collectTransferNames(efs->getIterableExpr(), out, mark);
+            collectTransferNames(efs->getBody(), out, mark);
             return;
         }
         for (auto& c : node->getChildren()) {
-            collectTransferNames(c, out);
+            collectTransferNames(c, out, mark);
         }
     }
 
@@ -3624,6 +3718,16 @@ bool cajetaRhsCarriesRedundantSharp(
                 if (!byValue && !byTransfer) {
                     hasBorrowCaptures = true;
                 }
+            }
+        }
+        {
+            std::set<std::string> movedIn;
+            for (auto& c : captures) {
+                if (c.byTransfer) movedIn.insert(c.name);
+            }
+            if (!movedIn.empty()) {
+                std::set<std::string> ignored;
+                collectTransferNames(body, ignored, &movedIn);
             }
         }
 
@@ -3992,17 +4096,32 @@ bool cajetaRhsCarriesRedundantSharp(
             llvm::Value* capLoaded = dropBuilder.CreateLoad(
                 ptrTy, capLoadSlot, "captures");
             for (size_t i = 0; i < captures.size(); ++i) {
-                if (!captures[i].byTransfer) continue;
-                // Only CajetaArray transfer captures have a known drop function today; other
-                // transferred types compile but leak.
-                if (!std::dynamic_pointer_cast<CajetaArray>(captures[i].type)) continue;
-                if (!freeArrayFn) continue;
+                if (!captures[i].byTransfer || captures[i].byValue) continue;
+                llvm::Function* capDrop = nullptr;
+                const CajetaTypePtr& ct = captures[i].type;
+                auto capCls = std::dynamic_pointer_cast<CajetaClass>(ct);
+                if (std::dynamic_pointer_cast<CajetaArray>(ct)) {
+                    capDrop = freeArrayFn;
+                } else if (std::dynamic_pointer_cast<CajetaFunctionType>(ct)) {
+                    capDrop = module->getRuntimeFunction("__cajeta_closure_drop");
+                } else if (capCls && capCls->getQName()
+                        && capCls->getQName()->getTypeName() == "String"
+                        && capCls->getQName()->getPackageName() == "cajeta.lang") {
+                    capDrop = module->getRuntimeFunction("__cajeta_string_drop");
+                } else if (capCls && !std::dynamic_pointer_cast<CajetaView>(ct)
+                        && !capCls->isInterface() && !capCls->isValueType()
+                        && !capCls->isSharedCapableValue()
+                        && capCls->hasVtablePointerAtSlotZero()) {
+                    capCls->patchVirtualTableDropFn();
+                    capDrop = module->getRuntimeFunction("__cajeta_class_virtual_drop");
+                }
+                if (!capDrop) continue;
                 llvm::Value* slot = dropBuilder.CreateStructGEP(
                     capturesTy, capLoaded, (unsigned) i,
                     std::string("cap.") + captures[i].name);
                 llvm::Value* heapPtr = dropBuilder.CreateLoad(
                     ptrTy, slot, captures[i].name);
-                dropBuilder.CreateCall(freeArrayFn, {heapPtr});
+                dropBuilder.CreateCall(capDrop, {heapPtr});
             }
             if (freeFn) {
                 dropBuilder.CreateCall(freeFn, {capLoaded});
@@ -5445,8 +5564,9 @@ bool cajetaRhsCarriesRedundantSharp(
                     {doneRegSlot, excRegSlot, fiberRegSlot});
             }
         }
+        // A detached task inherits none of the spawner's component scopes.
         if (llvm::Function* runFn = module->getRuntimeFunction(
-                "__cajeta_task_run")) {
+                detachMode ? "__cajeta_task_run_detached" : "__cajeta_task_run")) {
             outerBuilder->CreateCall(runFn,
                 {ctxInstance, trampFn, fiberRegSlot});
         }

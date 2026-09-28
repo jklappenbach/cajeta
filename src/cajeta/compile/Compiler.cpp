@@ -54,6 +54,8 @@
 #include "cajeta/error/DiagnosticEngine.h"
 #include "CajetaParserBaseVisitor.h"
 #include "../xpu/core/XpuAttributes.h"
+#include "../xpu/core/XpuKernelAttr.h"
+#include "../xpu/core/XpuKernelGate.h"
 #include "../xpu/XpuTarget.h"
 #include "../xpu/core/KernelManifest.h"
 #include "../xpu/mir/XpuMirBuilder.h"
@@ -2567,6 +2569,11 @@ namespace cajeta {
         if (xpuBackends.empty()) {
             return;
         }
+        // The kernel gate (xpu-kernel-adaptor 4.2.2): every kernel that produces no
+        // device code for a declared backend, and every kernel launched with a
+        // non-constant block and no ceiling, is named as it is found and the build
+        // fails at the end of this function unless each names the item holding it.
+        cajeta::xpu::resetKernelGate();
         // Map a compiler-level backend onto the xpu-layer dispatch enum and supply its
         // default arch: with several backends only a lone one can honor --xpu-arch.
         const bool singleBackend = xpuBackends.size() == 1;
@@ -2591,7 +2598,7 @@ namespace cajeta {
         // dispatched with (the largest across sites): the AMDGPU registration sets it
         // as amdgpu-flat-work-group-size, so registers are budgeted for real occupancy.
         std::unordered_map<std::string, unsigned> kernelMaxThreads;
-        std::unordered_set<std::string> kernelUnboundedBlock;
+        std::unordered_map<std::string, unsigned> kernelUnboundedBlock;  // -> site count
         auto constBlockThreads =
             [](const std::vector<ExpressionPtr>& dims) -> unsigned {
             if (dims.empty()) return 0;
@@ -2625,12 +2632,47 @@ namespace cajeta {
                     simple = simple.substr(dot + 1);
                 unsigned threads = constBlockThreads(site->block);
                 // A non-constant block at ANY site leaves the backend default (sound).
-                if (threads == 0) { kernelUnboundedBlock.insert(simple); continue; }
+                if (threads == 0) { ++kernelUnboundedBlock[simple]; continue; }
                 unsigned& cur = kernelMaxThreads[simple];
                 cur = std::max(cur, threads);
             }
         }
-        for (const auto& k : kernelUnboundedBlock) kernelMaxThreads.erase(k);
+        for (const auto& k : kernelUnboundedBlock) kernelMaxThreads.erase(k.first);
+
+        // xpu-kernel-adaptor 7.0.1 / 7.0.3: a kernel whose block is not a
+        // constant at every launch site has NO bound the compiler can see, and
+        // the only honest one is the author's -- the kernel's structural
+        // ceiling, `@Occupancy(maxThreads = N)`, a compile-time fact and never
+        // the device's answer. Without it amdgpu budgets the kernel's registers
+        // for the part's full ceiling (1024 threads on every part we own, the
+        // smallest allowance a thread can get) and nvptx applies no bound at
+        // all, so a launcher moved from `block: [32]` to a derived block trades
+        // an occupancy win for a register-allocation loss in silence. Named at
+        // build, once per kernel, so a conversion without its ceiling is seen.
+        for (auto& module : xpuModules) {
+            for (auto& method : module->getAllMethods()) {
+                if (!method || !cajeta::xpu::isKernel(*method)) continue;
+                auto it = kernelUnboundedBlock.find(method->getName());
+                auto attr = cajeta::xpu::XpuKernelAttr::from(*method);
+                const bool ceiling = attr && attr->maxThreads();
+                if (ceiling) {
+                    cajeta::xpu::noteKernelBounded(*method, method->getName(),
+                                                   "it declares @Occupancy(maxThreads)");
+                    continue;
+                }
+                if (it == kernelUnboundedBlock.end()) {
+                    // Bounded at every site this build can see; a kernel with no
+                    // visible launch site is neither bounded nor unbounded here.
+                    if (kernelMaxThreads.count(method->getName()))
+                        cajeta::xpu::noteKernelBounded(
+                            *method, method->getName(),
+                            "every launch site passes a constant block");
+                    continue;
+                }
+                // 4.2.3 (Julian, 2026-09-25): an error, held only by @Unbounded(tracked).
+                cajeta::xpu::reportUnboundedKernel(*method, method->getName(), it->second);
+            }
+        }
 
         for (auto& module : xpuModules) {
             std::vector<MethodPtr> kernels;
@@ -2846,6 +2888,8 @@ namespace cajeta {
                 }
             }
         }
+        // The gate's verdict, after every backend and module has named its kernels.
+        cajeta::xpu::throwIfKernelGateFailed();
     }
 
     // Write the weak stub translation units every AOT link needs, beside the objects:

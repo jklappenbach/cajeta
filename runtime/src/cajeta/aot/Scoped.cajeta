@@ -1,0 +1,18 @@
+package cajeta.aot;
+
+/**
+ * A handle on a scoped component, injected where the holder outlives the component's scope.
+ * Each `get()` resolves in the scope active at that call.
+ */
+public final class Scoped<T> {
+    int64 marker;
+
+    public Scoped() {
+        this.marker = 0;
+    }
+
+    /** The component in the scope active now, borrowed from its scope. */
+    public T get() {
+        return T.__cajeta_inject();
+    }
+}

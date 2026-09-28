@@ -10,6 +10,7 @@
 //
 
 #include <gtest/gtest.h>
+#include "XpuRefusalProbe.h"
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
@@ -118,7 +119,7 @@ std::string scalarEpiKernel() {
 TEST(AmdgpuCoopEpilogueTests, verbsLowerNativelyOnAmdgpu) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Amdgpu, epiKernel(true), &err), 1);
-    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+    EXPECT_FALSE(cajeta_test::loweringRefused(err))
         << "the epilogue kernel must lower, not skip:\n" << err;
     EXPECT_EQ(err.find("[mma-tiering]"), std::string::npos)
         << "int8+epilogue is native on amdgpu - a tier note means it "
@@ -146,7 +147,7 @@ TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsLowerNativelyOnAmdgpu) {
     std::string err;
     EXPECT_EQ(runI32On(cajeta::xpu::Backend::Amdgpu, scalarEpiKernel(),
                        &err), 1);
-    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+    EXPECT_FALSE(cajeta_test::loweringRefused(err))
         << "the scalar epilogue kernel must lower, not skip:\n" << err;
     EXPECT_EQ(err.find("[mma-tiering]"), std::string::npos)
         << "int8+scalar epilogue is native on amdgpu:\n" << err;
@@ -169,6 +170,10 @@ TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsRejectLoudlyOffNative) {
     EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
         << "off-native the scalar verbs must SKIP the kernel loudly:\n"
         << err;
+    // Anchored on what the lowering ACTUALLY emits (KernelLowering.cpp:5293).
+    // A 2026-09-25 edit moved this anchor to "has no wave to distribute a
+    // per-lane value across", a wording no version of the source has ever
+    // emitted; origin's anchor is the true one and this merge keeps it.
     EXPECT_NE(err.find("WaveVector.ofLane is native-only"), std::string::npos)
         << "the skip must state the contract it could not meet:\n" << err;
     EXPECT_NE(err.find("WaveVector.ofSlice"), std::string::npos)

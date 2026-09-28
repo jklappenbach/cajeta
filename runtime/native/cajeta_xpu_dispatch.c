@@ -408,7 +408,143 @@ static int cajeta_xpu_registry_names(const char* (*out)[CAJETA_XPU_MAX_MODULES])
 static CajetaXpuRawDevice g_xpu_geo;
 static int g_xpu_geo_state = 0;   /* 0 untried, 1 valid, -1 unavailable */
 
+// The host's widest integer SIMD register in 32-bit lanes: what a CPU-backend
+// kernel that calls a wave op vectorizes at when compiled for this host
+// (CpuRegistration derives the same number from the target's register width).
+// 1 when the host has no usable vector unit, which is the scalar wave every
+// other CPU kernel already runs. Inline cpuid, so the runtime bitcode links
+// without a compiler support library.
+#ifndef CAJETA_XPU_CPU_MAX_WORKERS
+#define CAJETA_XPU_CPU_MAX_WORKERS 256
+#endif
+static int caj_resolve_worker_cap(void);
+
+#if defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
+#endif
+static int64_t cajeta_xpu_host_simd_lanes_i32(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    unsigned a, b, c, d;
+    if (!__get_cpuid(1, &a, &b, &c, &d)) return 1;
+    int sse2 = (d >> 26) & 1;
+    int osxsave = (c >> 27) & 1;
+    int avx = (c >> 28) & 1;
+    unsigned xcr0 = 0;
+    if (osxsave) {
+        unsigned lo, hi;
+        __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+        xcr0 = lo;
+    }
+    int ymm = avx && osxsave && (xcr0 & 0x6) == 0x6;
+    int zmm = ymm && (xcr0 & 0xE0) == 0xE0;
+    unsigned a7 = 0, b7 = 0, c7 = 0, d7 = 0;
+    if (__get_cpuid_count(7, 0, &a7, &b7, &c7, &d7)) {
+        if (zmm && ((b7 >> 16) & 1)) return 16;   /* AVX-512F */
+        if (ymm && ((b7 >> 5) & 1)) return 8;     /* AVX2 */
+    }
+    return sse2 ? 4 : 1;
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return 4;                                      /* NEON, 128-bit */
+#else
+    return 1;
+#endif
+}
+
+static int64_t cajeta_xpu_host_physical_bytes(void) {
+#if defined(_WIN32)
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms)) return 0;
+    return (int64_t) ms.ullTotalPhys;
+#else
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long psize = sysconf(_SC_PAGE_SIZE);
+    if (pages <= 0 || psize <= 0) return 0;
+    return (int64_t) pages * (int64_t) psize;
+#endif
+}
+
+// Host memory still available to this process, 0 when the platform cannot
+// say: the CPU backend's Device.freeMemoryBytes(), the LEVEL under the
+// capacity cajeta_xpu_host_physical_bytes reports. Read from the OS each
+// call, since it moves.
+static int64_t cajeta_xpu_host_available_bytes(void) {
+#if defined(_WIN32)
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms)) return 0;
+    return (int64_t) ms.ullAvailPhys;
+#else
+    /* AVAILABLE, not FREE. Linux reports free pages net of the page cache,
+     * and on a box whose cache holds 30 GB the free figure sits far under
+     * what an allocation would actually get; MemAvailable is the kernel's
+     * own estimate of what can be handed out without swapping, cache
+     * included. A residency budget read against the free figure refused a
+     * 1 MiB widen with 55 GB available (2026-09-25). sysconf is the
+     * fallback where procfs is absent. */
+    FILE* mi = fopen("/proc/meminfo", "r");
+    if (mi) {
+        char line[256];
+        long long kb = -1;
+        while (fgets(line, sizeof line, mi)) {
+            if (sscanf(line, "MemAvailable: %lld kB", &kb) == 1) break;
+            kb = -1;
+        }
+        fclose(mi);
+        if (kb > 0) return (int64_t) kb * 1024;
+    }
+#if defined(_SC_AVPHYS_PAGES)
+    long pages = sysconf(_SC_AVPHYS_PAGES);
+    long psize = sysconf(_SC_PAGE_SIZE);
+    if (pages <= 0 || psize <= 0) return 0;
+    return (int64_t) pages * (int64_t) psize;
+#else
+    return 0;
+#endif
+#endif
+}
+
+static int64_t cajeta_xpu_host_online_cores(void) {
+#if defined(_WIN32)
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    long cores = (long) si.dwNumberOfProcessors;
+#else
+    long cores = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+    return cores < 1 ? 1 : (int64_t) cores;
+}
+
+// The CPU backend runs its kernels on the HOST, so its geometry is the
+// host's shape and not the card that happens to be plugged in (plan 1.9: a
+// cpu-backend run used to report 128 x 4 x wave 32 -- an RTX 4090 -- and key
+// its Autotune store on it). The counts are what the CPU launch path actually
+// uses: one block per worker thread, workers = online cores capped by the
+// worker cap, a wave of the host's SIMD lanes. Quantities the host has no
+// counterpart for (register file, LDS, blocks per MP, clocks) answer 0 =
+// unknown, per the contract, rather than a number invented to look like a GPU.
+static int64_t cajeta_xpu_cpu_geometry(CajetaXpuGeometryKey key) {
+    switch (key) {
+        case CAJETA_XPU_GEO_MP_COUNT: {
+            int64_t cores = cajeta_xpu_host_online_cores();
+            int cap = caj_resolve_worker_cap();
+            if (cap > 0 && cores > cap) cores = cap;
+            if (cores > CAJETA_XPU_CPU_MAX_WORKERS) cores = CAJETA_XPU_CPU_MAX_WORKERS;
+            return cores;
+        }
+        case CAJETA_XPU_GEO_SIMDS_PER_MP:          return 1;
+        case CAJETA_XPU_GEO_WAVE_SIZE:             return cajeta_xpu_host_simd_lanes_i32();
+        case CAJETA_XPU_GEO_TOTAL_VRAM_BYTES:      return cajeta_xpu_host_physical_bytes();
+        case CAJETA_XPU_GEO_INTEGRATED:            return 1;
+        case CAJETA_XPU_GEO_MAX_GRID_DIM_X:        return INT32_MAX;
+        case CAJETA_XPU_GEO_WAVES_PER_SIMD_TARGET: return 1;
+        default:                                   return 0;
+    }
+}
+
 int64_t __cajeta_xpu_device_geometry(int32_t key) {
+    if (cajeta_xpu_active_backend() == CAJ_XPU_CPU)
+        return cajeta_xpu_cpu_geometry((CajetaXpuGeometryKey) key);
     if (g_xpu_geo_state == 0) {
         g_xpu_geo_state = cajeta_xpu_query_raw_device(&g_xpu_geo) && g_xpu_geo.valid
                         ? 1 : -1;
@@ -538,19 +674,8 @@ int64_t __cajeta_xpu_device_memory_bytes(void) {
             return 0;
 #endif
         }
-        case CAJ_XPU_CPU: {
-#if defined(_WIN32)
-            MEMORYSTATUSEX ms;
-            ms.dwLength = sizeof(ms);
-            if (!GlobalMemoryStatusEx(&ms)) return 0;
-            return (int64_t) ms.ullTotalPhys;
-#else
-            long pages = sysconf(_SC_PHYS_PAGES);
-            long psize = sysconf(_SC_PAGE_SIZE);
-            if (pages <= 0 || psize <= 0) return 0;
-            return (int64_t) pages * (int64_t) psize;
-#endif
-        }
+        case CAJ_XPU_CPU:
+            return cajeta_xpu_host_physical_bytes();
         default:
             return 0;
     }
@@ -579,6 +704,12 @@ int64_t __cajeta_xpu_device_free_memory_bytes(void) {
             if (g_xpu_hip.hipMemGetInfo(&memfree, &total) != 0) return 0;
             return (int64_t) memfree;
         }
+        case CAJ_XPU_CPU:
+            // The device is the host: what the OS says is still available,
+            // the level under the capacity the total arm reports. Answered
+            // 0 until 2026-09-25, which left a consumer budgeting against a
+            // capacity with no level under it.
+            return cajeta_xpu_host_available_bytes();
         default:
             return 0;
     }
@@ -721,7 +852,9 @@ static void* cajeta_xpu_cpu_worker(void* arg) {
 #ifndef CAJETA_XPU_CPU_PARALLEL_THRESHOLD
 #define CAJETA_XPU_CPU_PARALLEL_THRESHOLD 256   /* work-items */
 #endif
+#ifndef CAJETA_XPU_CPU_MAX_WORKERS
 #define CAJETA_XPU_CPU_MAX_WORKERS 256
+#endif
 
 // Spin budgets before a futex sleep. JOIN spin is caller-side and safe; WORKER
 // spin trips a latent barrier-fission race, so it defaults to 0 (condvar).
@@ -1536,16 +1669,101 @@ out:
     return ok;
 }
 
-/* Measures the scale once; ~160 ms of host sleep on first use. */
-static void cajeta_xpu_timer_calibrate_locked(int be) {
-    double d1 = 0.0, d2 = 0.0;
-    int64_t h1 = 0, h2 = 0;
-    if (!cajeta_xpu_timer_pair(be, 30000000LL, &d1, &h1) ||
-        !cajeta_xpu_timer_pair(be, 130000000LL, &d2, &h2) || h2 <= h1) {
-        g_xpu_timer_scale_state = -1;
-        return;
+/* One BUSY bracket on backend `be`: about 300 ms of device-to-device copies
+ * between the two records, the host clock spanning the same submissions to
+ * the synchronize. The host interval carries one record latency and one
+ * wake-up, tens of microseconds over hundreds of milliseconds. Measured
+ * 2026-09-24 (WSL2, 610.62): the idle sleep-slope method read 1.046 in one
+ * process and 1.086 in the next, a 4% spread, larger than the effect it
+ * corrects; busy brackets read 1.068 to 1.079 across runs, and the timer
+ * is used around busy brackets. 0 when the backend could not answer. */
+static int cajeta_xpu_timer_busy_pair(int be, double* devMs, int64_t* hostNs) {
+    const size_t bytes = 32u << 20;
+    int64_t sh = __cajeta_xpu_event_create();
+    int64_t eh = __cajeta_xpu_event_create();
+    void* s = (void*) (intptr_t) sh;
+    void* e = (void*) (intptr_t) eh;
+    int ok = 0;
+    float ms = 0.0f;
+    if (!s || !e) goto out;
+    if (be == CAJ_XPU_CUDA) {
+        cajeta_cudeviceptr a = 0, b = 0;
+        if (!g_xpu_cuda.cuMemAlloc || !g_xpu_cuda.cuMemcpyDtoD || !g_xpu_cuda.cuMemFree) goto out;
+        if (g_xpu_cuda.cuMemAlloc(&a, bytes) != 0) goto out;
+        if (g_xpu_cuda.cuMemAlloc(&b, bytes) != 0) { g_xpu_cuda.cuMemFree(a); goto out; }
+        // Size the loop from one timed copy, then run it.
+        int64_t t0 = __cajeta_currentTimeNanos();
+        g_xpu_cuda.cuMemcpyDtoD(b, a, bytes);
+        g_xpu_cuda.cuCtxSynchronize();
+        int64_t one = __cajeta_currentTimeNanos() - t0;
+        if (one < 20000) one = 20000;
+        int64_t reps = 300000000LL / one + 1;
+        if (reps > 100000) reps = 100000;
+        g_xpu_cuda.cuCtxSynchronize();
+        int64_t h0 = __cajeta_currentTimeNanos();
+        if (g_xpu_cuda.cuEventRecord(s, NULL) != 0) { g_xpu_cuda.cuMemFree(a); g_xpu_cuda.cuMemFree(b); goto out; }
+        for (int64_t i = 0; i < reps; i++) g_xpu_cuda.cuMemcpyDtoD(b, a, bytes);
+        if (g_xpu_cuda.cuEventRecord(e, NULL) != 0 || g_xpu_cuda.cuEventSynchronize(e) != 0) {
+            g_xpu_cuda.cuMemFree(a); g_xpu_cuda.cuMemFree(b); goto out;
+        }
+        int64_t h1 = __cajeta_currentTimeNanos();
+        g_xpu_cuda.cuMemFree(a);
+        g_xpu_cuda.cuMemFree(b);
+        if (g_xpu_cuda.cuEventElapsedTime(&ms, s, e) != 0) goto out;
+        *hostNs = h1 - h0;
+    } else if (be == CAJ_XPU_HIP) {
+        void* a = NULL; void* b = NULL;
+        if (!g_xpu_hip.hipMalloc || !g_xpu_hip.hipMemcpyDtoD || !g_xpu_hip.hipFree) goto out;
+        if (g_xpu_hip.hipMalloc(&a, bytes) != 0) goto out;
+        if (g_xpu_hip.hipMalloc(&b, bytes) != 0) { g_xpu_hip.hipFree(a); goto out; }
+        int64_t t0 = __cajeta_currentTimeNanos();
+        g_xpu_hip.hipMemcpyDtoD(b, a, bytes);
+        g_xpu_hip.hipDeviceSynchronize();
+        int64_t one = __cajeta_currentTimeNanos() - t0;
+        if (one < 20000) one = 20000;
+        int64_t reps = 300000000LL / one + 1;
+        if (reps > 100000) reps = 100000;
+        g_xpu_hip.hipDeviceSynchronize();
+        int64_t h0 = __cajeta_currentTimeNanos();
+        if (g_xpu_hip.hipEventRecord(s, NULL) != 0) { g_xpu_hip.hipFree(a); g_xpu_hip.hipFree(b); goto out; }
+        for (int64_t i = 0; i < reps; i++) g_xpu_hip.hipMemcpyDtoD(b, a, bytes);
+        if (g_xpu_hip.hipEventRecord(e, NULL) != 0 || g_xpu_hip.hipEventSynchronize(e) != 0) {
+            g_xpu_hip.hipFree(a); g_xpu_hip.hipFree(b); goto out;
+        }
+        int64_t h1 = __cajeta_currentTimeNanos();
+        g_xpu_hip.hipFree(a);
+        g_xpu_hip.hipFree(b);
+        if (g_xpu_hip.hipEventElapsedTime(&ms, s, e) != 0) goto out;
+        *hostNs = h1 - h0;
+    } else {
+        goto out;
     }
-    double slope = ((d2 - d1) * 1.0e6) / (double) (h2 - h1);
+    *devMs = (double) ms;
+    ok = *hostNs > 0 && ms > 0.0f;
+out:
+    __cajeta_xpu_event_destroy(NULL, sh);
+    __cajeta_xpu_event_destroy(NULL, eh);
+    return ok;
+}
+
+/* Measures the scale once, on first use: a busy bracket of about 300 ms,
+ * else (a backend that cannot copy) the older ~160 ms idle sleep slope. */
+static void cajeta_xpu_timer_calibrate_locked(int be) {
+    double slope = 0.0;
+    double db = 0.0;
+    int64_t hb = 0;
+    if (cajeta_xpu_timer_busy_pair(be, &db, &hb)) {
+        slope = (db * 1.0e6) / (double) hb;
+    } else {
+        double d1 = 0.0, d2 = 0.0;
+        int64_t h1 = 0, h2 = 0;
+        if (!cajeta_xpu_timer_pair(be, 30000000LL, &d1, &h1) ||
+            !cajeta_xpu_timer_pair(be, 130000000LL, &d2, &h2) || h2 <= h1) {
+            g_xpu_timer_scale_state = -1;
+            return;
+        }
+        slope = ((d2 - d1) * 1.0e6) / (double) (h2 - h1);
+    }
     if (!(slope >= 0.5 && slope <= 2.0)) {
         g_xpu_timer_scale_state = -1;
         return;
@@ -1567,7 +1785,7 @@ static int cajeta_xpu_timer_ready(int be) {
 
 // The factor the backend's event clock runs fast by against the host clock
 // (device ms x 1e6 / host ns): 1.0 for a correct driver and for the CPU's
-// host-stamped events, 1.0456 on PHOENIX's WSL2, 0.0 when there is no usable
+// host-stamped events, 1.045 on PHOENIX's WSL2, 0.0 when there is no usable
 // clock (Vulkan, or a calibration that refused). Every elapsed time below has
 // already been divided by it; this is for the report that prints beside it.
 double __cajeta_xpu_timer_clock_scale(void) {

@@ -1,0 +1,12 @@
+package cajeta.aot;
+
+/** Places values produced at run time into the DI graph's scopes. */
+public final class Components {
+    /**
+     * Places `value` in the active scope its type declares, where later injections of the
+     * type find it. The scope owns it from here. A second provide in one scope throws.
+     */
+    public static void provide<T>(#T value) {
+        T.__cajeta_provide(#value);
+    }
+}

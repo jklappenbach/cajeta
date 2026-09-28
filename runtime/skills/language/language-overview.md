@@ -54,7 +54,8 @@ memory misuse you shipped (bad).
 ## Reserved words that bite
 
 `spawn`, `scope`, `async`, `await`, `detach` are structured-concurrency
-keywords — you cannot name a method or local `scope`. `annotation` is the
+keywords — you cannot name a method or local `scope`. The one exception is an
+annotation attribute: `@Component(scope = "Request")` and `String scope()` parse. `annotation` is the
 type-kind keyword (there is no `@interface`). `structure` and `goto` are
 reserved with no syntax; `true`/`false`/`null` are literals. Full table:
 `docs/guide/06-keywords.md`.

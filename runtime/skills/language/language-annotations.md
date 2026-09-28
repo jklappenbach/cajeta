@@ -44,9 +44,17 @@ owned locals (`cajeta/language/errors`).
 user code sees the instance; `Type.__cajeta_inject()` returns the lazily
 constructed singleton, resolving transitively. **The graph is checked at
 compile time** — a missing provider, a cycle, or an ambiguous unqualified
-match is a compile *error*. Lifetime is per injection site
-(`allocate = …`: singleton default, per-owner, transient);
-`@PostConstruct` / `@PreDestroy` hook the lifecycle.
+match is a compile *error*. `@PostConstruct` / `@PreDestroy` hook the lifecycle.
+
+A lifetime belongs to the component: `@Component(scope = "Request")` names a
+scope that some method or class publishes with `@Scope("Request")`. On a
+method, the scope is one activation (it ends on return or throw). On a class,
+it is one instance (it ends when the instance is dropped). Built in are
+`"Singleton"` (the default) and `"Transient"`. A field may hold only what
+outlives its holder, so a singleton that needs a request's component injects
+`Scoped<T>` and calls `get()`. `Components.provide(#v)` puts a value made at
+run time into its scope. Injecting outside the scope throws
+`ScopeNotActiveException`. Full guide: `docs/guide/19-di-aspects.md` § Scopes.
 
 `@Factory` covers what constructor injection can't (unowned third-party
 types, caller-supplied arguments, setup beyond the constructor): a provider

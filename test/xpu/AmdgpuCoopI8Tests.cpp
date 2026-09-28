@@ -8,6 +8,7 @@
 //
 
 #include <gtest/gtest.h>
+#include "XpuRefusalProbe.h"
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/xpu/XpuTarget.h"
@@ -56,6 +57,6 @@ TEST(AmdgpuCoopI8Tests, i8OperandsI32AccumulatorLowersNatively) {
         "}\n";
     std::string err;
     EXPECT_EQ(runI32Amdgpu(src, &err), 1);
-    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+    EXPECT_FALSE(cajeta_test::loweringRefused(err))
         << "int8/i32 is native RDNA3 WMMA - it must lower, not skip:\n" << err;
 }

@@ -15,6 +15,7 @@
 #include "cajeta/field/Field.h"
 #include "cajeta/field/ParameterField.h"
 #include "cajeta/method/Method.h"
+#include "cajeta/method/ComponentInjectMethod.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaFunctionType.h"
@@ -200,7 +201,10 @@ namespace cajeta::ownership {
             auto mce = std::static_pointer_cast<MethodCallExpression>(leaf);
             uint32_t flags = typeFlags(leaf->getResolvedType());
             if (mce->getMethodCallName() == "__cajeta_inject") {
-                return make(TitleFamily::CallResult, TitleAnswer::Borrow, TitleSource::None, leaf, flags);
+                auto accessor = std::dynamic_pointer_cast<ComponentInjectMethod>(mce->getResolvedMethod());
+                TitleAnswer answer = accessor && accessor->isTransient()
+                    ? TitleAnswer::Owned : TitleAnswer::Borrow;
+                return make(TitleFamily::CallResult, answer, TitleSource::None, leaf, flags);
             }
             MethodPtr rm = mce->getResolvedMethod();
             if (!rm) {
@@ -330,8 +334,15 @@ namespace cajeta::ownership {
                 return scalar(e);
             case ExprKind::Identifier:
                 return localRead(e, module);
-            case ExprKind::Dot:
+            case ExprKind::Dot: {
+                if (DotExpression::materializesViewField(e)) {
+                    TitleShape s = make(TitleFamily::Fresh, TitleAnswer::Owned, TitleSource::None, e,
+                                        typeFlags(e->getResolvedType()));
+                    s.label = "a view field read";
+                    return s;
+                }
                 return read(TitleFamily::FieldRead, e);
+            }
             case ExprKind::ArrayIndex:
                 return read(TitleFamily::ElementRead, e);
             case ExprKind::ArraySlice: {
@@ -450,6 +461,7 @@ namespace cajeta::ownership {
         TitleShape moveOf(const ExpressionPtr& leaf, const CajetaModulePtr& module) {
             auto mv = std::static_pointer_cast<MoveExpression>(leaf);
             auto inner = childOf(leaf, 0);
+            if (inner && mv->isCaptureMarker()) return classify(inner, module);
             if (!inner) {
                 TitleShape s = make(TitleFamily::Move, TitleAnswer::Owned, TitleSource::None, leaf);
                 if (mv->isSharpStore()) s.flags |= TitleShape::kSharpStore;

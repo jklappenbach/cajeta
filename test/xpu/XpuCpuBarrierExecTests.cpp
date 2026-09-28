@@ -16,6 +16,7 @@
 //
 
 #include "gtest/gtest.h"
+#include "cajeta/error/Exception.h"
 
 #include "../jit/JitTestHelper.h"
 #include "cajeta/compile/Compiler.h"
@@ -815,10 +816,23 @@ TEST(XpuCpuBarrierExecTests, nestedTidDependentTripCountFallsBack) {
         "        out[t] = tile[t];\n"
         "    }\n"
         "}\n";
-    std::string ir = compileToIr(src, "test.M.nesttid");
-    ASSERT_FALSE(ir.empty());
-    EXPECT_EQ(ir.find(".nesttid("), std::string::npos)
-        << "tid-dependent inner trip count must fall back, not fission\n";
+    // The fallback is the XPU-N02 refusal, and since the kernel gate
+    // (xpu-kernel-adaptor 4.2.2, 2026-09-25) a refused kernel with no
+    // @Unlowered holding it FAILS the build by name rather than dropping
+    // out of the IR in silence. The property pinned is unchanged: the
+    // kernel is not fissioned; what changed is how that is reported.
+    bool refused = false;
+    try {
+        std::string ir = compileToIr(src, "test.M.nesttid");
+        EXPECT_EQ(ir.find(".nesttid("), std::string::npos)
+            << "tid-dependent inner trip count must fall back, not fission\n";
+    } catch (cajeta::Exception& e) {
+        refused = true;
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_XPU_KERNEL_GATE");
+        EXPECT_NE(e.getMessage().find("nesttid"), std::string::npos) << e.getMessage();
+    }
+    EXPECT_TRUE(refused)
+        << "the gate must fail the build on the refused kernel, by name";
 }
 
 // Increment 7: two barriers inside one uniform loop (shared-memory ping-pong).

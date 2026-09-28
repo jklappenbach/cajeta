@@ -62,7 +62,10 @@ cajeta-unit's `org.cajeta.unit.TestContext` is the cajeta-level front door:
   slot is a 24-byte fat pointer (data + vtable + kind); a correct override must
   supply the *mock's* interface vtable, which needs a fat-pointer-aware registry.
   Deferred.
-- **OwnerScope / Transient fields** are not overridden in v1 (only Singleton).
+- **Owner and Transient sites, scoped components and `Scoped<T>` handles** are
+  not overridden (only Singleton sites). To substitute a scoped component, a
+  test provides the substitute inside the scope with `Components.provide(#fake)`
+  before the first injection.
 - **Ownership:** the registry borrows. A substituted singleton field is itself
   borrow-semantics (the holder doesn't drop singletons), so no double-free; but
   the test must keep its mock alive for as long as the injected graph uses it.

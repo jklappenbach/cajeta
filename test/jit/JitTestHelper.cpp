@@ -19,6 +19,7 @@
 #include "cajeta/buildtool/IrCache.h"
 #include "cajeta/buildtool/PrimeCache.h"
 #include "cajeta/compile/Compiler.h"
+#include "cajeta/xpu/core/XpuKernelGate.h"
 #include "cajeta/compile/StdlibReuseCore.h"
 #include "cajeta/compile/DropBackfill.h"
 #include "cajeta/dbg/DebugLocTable.h"
@@ -1143,6 +1144,13 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                 backends.push_back(cajeta::xpu::Backend::Nvptx);
             }
             cajeta::xpu::emitBackendManifest(backends, *primary->getLlvmModule());
+            // Sweep unless the test gates (Options::xpuKernelGateErrors); the
+            // override is restored whatever the registration does.
+            struct GateScope {
+                explicit GateScope(bool gate) { cajeta::xpu::setKernelGateWarns(!gate); }
+                ~GateScope() { cajeta::xpu::clearKernelGateWarnsOverride(); }
+            } gateScope(opts.xpuKernelGateErrors);
+            cajeta::xpu::resetKernelGate();
             for (cajeta::xpu::Backend be : backends) {
                 std::string arch =
                     !opts.xpuArch.empty()              ? opts.xpuArch
@@ -1153,6 +1161,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                 cajeta::xpu::emitKernelRegistration(
                     be, kernels, *primary->getLlvmModule(), arch);
             }
+            if (opts.xpuKernelGateErrors) cajeta::xpu::throwIfKernelGateFailed();
         }
     }
 

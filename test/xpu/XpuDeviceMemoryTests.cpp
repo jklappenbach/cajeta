@@ -157,6 +157,60 @@ public class B {
 }
 )CJ";
 
+// Host memory still AVAILABLE, read the way the runtime's CPU arm reads it,
+// so the two agree on the source. 0 when the platform cannot say.
+int64_t hostAvailableRam() {
+#ifdef _WIN32
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms)) return 0;
+    return (int64_t) ms.ullAvailPhys;
+#else
+    // MemAvailable, the figure the runtime's CPU arm reads: what the kernel
+    // can hand out without swapping, page cache included.
+    std::ifstream mi("/proc/meminfo");
+    std::string line;
+    while (std::getline(mi, line)) {
+        long long kb = 0;
+        if (std::sscanf(line.c_str(), "MemAvailable: %lld kB", &kb) == 1 && kb > 0)
+            return (int64_t) kb * 1024;
+    }
+#if defined(_SC_AVPHYS_PAGES)
+    long pages = sysconf(_SC_AVPHYS_PAGES);
+    long psize = sysconf(_SC_PAGE_SIZE);
+    if (pages <= 0 || psize <= 0) return 0;
+    return (int64_t) pages * (int64_t) psize;
+#else
+    return 0;
+#endif
+#endif
+}
+
+const char* FREE_REPORT = R"CJ(
+package probe;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelThread;
+public class B {
+    @Kernel
+    public static void touch(KernelBuffer<int32> out, uint32 n) {
+        uint32 g = KernelThread.globalIdX();
+        if (g < n) { out[g] = (int32) g; }
+    }
+    public static void run() {
+        System.stdout.println("mem=" + Device.memoryBytes());
+        System.stdout.println("free=" + Device.freeMemoryBytes());
+    }
+}
+)CJ";
+
+int64_t freeFrom(const std::string& out) {
+    auto i = out.find("free=");
+    if (i == std::string::npos) return -1;
+    return (int64_t) std::strtoll(out.c_str() + i + 5, nullptr, 10);
+}
+
 int64_t memFrom(const std::string& out) {
     auto i = out.find("mem=");
     if (i == std::string::npos) return -1;
@@ -182,4 +236,26 @@ TEST(XpuDeviceMemoryTests, cpuBackendReportsTotalPhysicalRamExactly) {
 TEST(XpuDeviceMemoryTests, noBundledBackendAnswersZero) {
     const std::string out = buildAndRun(NO_KERNEL, "probe.B.run");
     EXPECT_EQ(memFrom(out), 0) << out;
+}
+
+// Device.freeMemoryBytes() on the CPU backend. The total arm answered the
+// host's physical RAM while the free arm answered 0 ("cannot answer"), so
+// a consumer that budgets against both (cajeta-llm's WidenBudget) read a
+// capacity with no level under it and failed its own range check on every
+// cpu run ("gtt free -1 out of range for total 67379499008", 2026-09-24).
+// The host CAN say what is available; the answer must be a level inside
+// the capacity and agree with the OS query this test makes itself, loosely,
+// since the level moves between the two reads.
+TEST(XpuDeviceMemoryTests, cpuBackendReportsAvailableRamAsFree) {
+    const int64_t independent = hostAvailableRam();
+    if (independent <= 0) GTEST_SKIP() << "this platform has no available-RAM query";
+    const std::string out = buildAndRun(FREE_REPORT, "probe.B.run");
+    const int64_t total = memFrom(out);
+    const int64_t got = freeFrom(out);
+    ASSERT_GT(total, 0) << out;
+    EXPECT_GT(got, 0) << "the cpu backend must answer free memory:\n" << out;
+    EXPECT_LE(got, total) << "free cannot exceed the capacity:\n" << out;
+    // Within a factor of two of an independent read taken moments apart.
+    EXPECT_GT(got * 2, independent) << out;
+    EXPECT_LT(got, independent * 2) << out;
 }

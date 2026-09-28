@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace llvm { class Module; }
+namespace llvm { class Function; class Module; }
 
 namespace cajeta {
     class Method;
@@ -29,6 +29,20 @@ namespace cpu {
                                llvm::Module& hostModule,
                                const std::string& arch = "",
                                std::vector<KernelManifest>* manifests = nullptr);
+
+    // The left-scalar gate. True when a scalar wave stub survives where it
+    // would run with width-1 semantics: under a work-item loop that did not
+    // vectorize, or INSIDE the vector loop LoopVectorize built (a
+    // scalarized call, predicated or replicated, is one scalar call per
+    // lane whatever the loop's metadata says). A scalar call in the scalar
+    // remainder loop is the vectorizer's own epilogue and is accepted.
+    // `which` names the stub. Exposed for the gate's own tests.
+    bool waveOpLeftScalar(llvm::Function& f, std::string* which);
+
+    // Calls to a wave stub or one of its width-W VFABI variants. Compared
+    // before and after vectorization: a wave op that vanished had its
+    // cross-lane semantics optimized away and the kernel is refused.
+    unsigned waveOpCallCount(llvm::Function& f);
 
 } // namespace cpu
 } // namespace xpu
