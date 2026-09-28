@@ -112,6 +112,12 @@ annotation Inject {
 - **3.5** When a name is published twice and used unqualified, compilation
   fails at the use, naming both publishers.
 
+- **3.6** When a scope name appears in `@Component.scope`, `@Inject.scope` or
+  `@Scope.within`, the compiler resolves it against the publications. The
+  tie is the compiler's. Users see no mechanism beyond the name.
+- **3.7** When a scope name is typed in the editor, the IDE plugin completes it
+  from the published names and navigates from it to its `@Scope`.
+
 ## 4. Resolution
 
 - **4.1** When a method scope's anchor is active on the current fiber, the
