@@ -6,13 +6,10 @@
 //     flag and skips the missing-impl error; codegen stores a
 //     null pointer into the field slot.
 //
-//   - @Inject(allocate = ALLOCATE_OWNER_SCOPE | ALLOCATE_TRANSIENT):
-//     fresh allocation per @Inject site instead of the shared
-//     singleton. Two consumers each @Inject the same component
-//     in a non-singleton mode get distinct instances.
-//
-//     ALLOCATE_CALL_SCOPE rejected with CAJETA_ERROR_NOT_IMPLEMENTED
-//     until the implicit-function-body-scope wiring lands.
+//   - @Inject(scope = "Owner" | "Transient"): fresh allocation per
+//     @Inject site instead of the shared singleton, for a component
+//     that declares no scope. "Call" on a field is refused
+//     (component-scopes spec 8.2.1).
 //
 // Drop-chain cleanup of owner-scoped allocations is a v1 known
 // gap (leaks at owner destruction). The user-facing "fresh
@@ -84,11 +81,11 @@ TEST(OptionalAndAllocateTests, optionalInjectWithProviderResolvesNormally) {
     EXPECT_EQ(runI32(src, "test.Service"), 41);
 }
 
-// ALLOCATE_TRANSIENT: two consumers each @Inject Counter →
+// "Transient": two consumers each @Inject Counter →
 // distinct instances. A.counter and B.counter are different
 // allocations. Mutate via A's counter, read via B's counter:
 // B's value reflects ITS ctor-set 0 (not A's mutated 5).
-TEST(OptionalAndAllocateTests, allocateTransientYieldsDistinctInstances) {
+TEST(OptionalAndAllocateTests, siteTransientYieldsDistinctInstances) {
     auto src =
         "package test;\n"
         "@Component public class Counter {\n"
@@ -96,11 +93,11 @@ TEST(OptionalAndAllocateTests, allocateTransientYieldsDistinctInstances) {
         "    public Counter() { v = 0; return; }\n"
         "}\n"
         "@Component public class A {\n"
-        "    @Inject(allocate = ALLOCATE_TRANSIENT) Counter c;\n"
+        "    @Inject(scope = \"Transient\") Counter c;\n"
         "    public A() { return; }\n"
         "}\n"
         "@Component public class B {\n"
-        "    @Inject(allocate = ALLOCATE_TRANSIENT) Counter c;\n"
+        "    @Inject(scope = \"Transient\") Counter c;\n"
         "    public B() { return; }\n"
         "    public static int32 run() {\n"
         "        A a = A.__cajeta_inject();\n"
@@ -112,10 +109,10 @@ TEST(OptionalAndAllocateTests, allocateTransientYieldsDistinctInstances) {
     EXPECT_EQ(runI32(src, "test.B"), 0);
 }
 
-// ALLOCATE_OWNER_SCOPE: same shape as TRANSIENT at field-level
+// "Owner": same shape as TRANSIENT at field-level
 // granularity in v1. Each consumer's @Inject site allocates
 // fresh; mutating one doesn't visit the other.
-TEST(OptionalAndAllocateTests, allocateOwnerScopeYieldsDistinctInstances) {
+TEST(OptionalAndAllocateTests, siteOwnerYieldsDistinctInstances) {
     auto src =
         "package test;\n"
         "@Component public class Counter {\n"
@@ -123,11 +120,11 @@ TEST(OptionalAndAllocateTests, allocateOwnerScopeYieldsDistinctInstances) {
         "    public Counter() { v = 0; return; }\n"
         "}\n"
         "@Component public class A {\n"
-        "    @Inject(allocate = ALLOCATE_OWNER_SCOPE) Counter c;\n"
+        "    @Inject(scope = \"Owner\") Counter c;\n"
         "    public A() { return; }\n"
         "}\n"
         "@Component public class B {\n"
-        "    @Inject(allocate = ALLOCATE_OWNER_SCOPE) Counter c;\n"
+        "    @Inject(scope = \"Owner\") Counter c;\n"
         "    public B() { return; }\n"
         "    public static int32 run() {\n"
         "        A a = A.__cajeta_inject();\n"
@@ -139,13 +136,13 @@ TEST(OptionalAndAllocateTests, allocateOwnerScopeYieldsDistinctInstances) {
     EXPECT_EQ(runI32(src, "test.B"), 0);
 }
 
-// ALLOCATE_SINGLETON explicit (same as default): both consumers
+// "Singleton" explicit (same as default): both consumers
 // share the same Counter singleton. Mutating via A's reference
 // is visible through B's. The contrast with the TRANSIENT/
 // OWNER_SCOPE tests above proves the resolver is honoring the
 // allocate mode, not just always producing distinct allocations
 // or always producing one.
-TEST(OptionalAndAllocateTests, allocateSingletonShares) {
+TEST(OptionalAndAllocateTests, siteSingletonShares) {
     auto src =
         "package test;\n"
         "@Component public class Counter {\n"
@@ -153,11 +150,11 @@ TEST(OptionalAndAllocateTests, allocateSingletonShares) {
         "    public Counter() { v = 0; return; }\n"
         "}\n"
         "@Component public class A {\n"
-        "    @Inject(allocate = ALLOCATE_SINGLETON) Counter c;\n"
+        "    @Inject(scope = \"Singleton\") Counter c;\n"
         "    public A() { return; }\n"
         "}\n"
         "@Component public class B {\n"
-        "    @Inject(allocate = ALLOCATE_SINGLETON) Counter c;\n"
+        "    @Inject(scope = \"Singleton\") Counter c;\n"
         "    public B() { return; }\n"
         "    public static int32 run() {\n"
         "        A a = A.__cajeta_inject();\n"
@@ -169,29 +166,25 @@ TEST(OptionalAndAllocateTests, allocateSingletonShares) {
     EXPECT_EQ(runI32(src, "test.B"), 9);
 }
 
-// ALLOCATE_CALL_SCOPE is reserved by the spec but its runtime
-// integration (per-activation cache via the implicit function-
-// body scope) isn't wired yet. The compiler rejects with
-// CAJETA_ERROR_NOT_IMPLEMENTED so users don't silently get
-// SINGLETON behavior.
-TEST(OptionalAndAllocateTests, allocateCallScopeRejected) {
+// A field is filled once, when its holder is built, so "Call" has no
+// activation to attach to.
+TEST(OptionalAndAllocateTests, siteCallOnAFieldRejected) {
     auto src =
         "package test;\n"
         "@Component public class Dep {\n"
         "    public Dep() { return; }\n"
         "}\n"
         "@Component public class Service {\n"
-        "    @Inject(allocate = ALLOCATE_CALL_SCOPE) Dep d;\n"
+        "    @Inject(scope = \"Call\") Dep d;\n"
         "    public Service() { return; }\n"
         "    public static int32 run() { return 0; }\n"
         "}\n";
     try {
         runI32(src, "test.Service");
-        FAIL() << "expected CAJETA_ERROR_NOT_IMPLEMENTED";
+        FAIL() << "expected CAJETA_ERROR_CALL_SCOPE_FIELD";
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_NOT_IMPLEMENTED");
-    } catch (std::runtime_error&) {
-        // JIT layer wraps some throws — accept that path too.
-        SUCCEED();
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_CALL_SCOPE_FIELD");
+    } catch (std::exception& e) {
+        EXPECT_NE(std::string(e.what()).find("CAJETA_ERROR_CALL_SCOPE_FIELD"), std::string::npos) << e.what();
     }
 }

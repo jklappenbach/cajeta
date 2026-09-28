@@ -8,6 +8,7 @@
 #include "../util/MemoryManager.h"
 #include "../asn/expression/LiteralExpression.h"
 #include "../type/CajetaType.h"
+#include "../error/Exception.h"
 
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
@@ -30,6 +31,14 @@ namespace cajeta {
     // Emit the body: entry loads the singleton and branches, `cached` returns it,
     // `fresh` allocates, constructs, injects the fields, caches and returns.
     void ComponentInjectMethod::generateCode() {
+        const bool publishedScope = descriptor->scope
+            && descriptor->scope->kind != CajetaModule::ScopePublication::Kind::Builtin;
+        if (publishedScope) {
+            throw Exception("component " + parent->getQName()->toCanonical() + " has scope \""
+                                + descriptor->scope->qualified()
+                                + "\", and scoped accessors are not generated yet",
+                            "CAJETA_ERROR_NOT_IMPLEMENTED");
+        }
         auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
@@ -139,6 +148,10 @@ namespace cajeta {
             } else if (!rd.target || !rd.target->klass) {
                 depPtr = llvm::ConstantPointerNull::get(
                     llvm::cast<llvm::PointerType>(ptrTy));
+            } else if (rd.allocate == CajetaModule::AllocateMode::Scoped) {
+                throw Exception("field " + rd.field->getName() + " injects a scoped component, "
+                                    "and scoped accessors are not generated yet",
+                                "CAJETA_ERROR_NOT_IMPLEMENTED");
             } else if (rd.allocate == CajetaModule::AllocateMode::Singleton) {
                 MethodPtr targetInject;
                 for (auto& [mkey, m] : rd.target->klass->getMethods()) {

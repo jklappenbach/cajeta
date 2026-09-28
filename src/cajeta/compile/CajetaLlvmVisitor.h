@@ -956,6 +956,8 @@ namespace cajeta {
                         : (repositoryAnn ? repositoryAnn : testComponentAnn);
                     if (primary) {
                         desc->name = primary->getString("name");
+                        desc->scopeDeclared = primary->findArg("scope") != nullptr;
+                        desc->scopeName = primary->getString("scope", "Singleton");
                     }
                     for (auto& inst : structure->getAnnotationInstances()) {
                         if (inst && inst->getName()
@@ -992,6 +994,7 @@ namespace cajeta {
             }
             if (!structure->isTemplate()) {
                 structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
+                CajetaModule::registerScopePublications(structure);
 
                 // Hash / equals + != / == consistency checks. Templates skip them
                 // here and re-check at instantiation.
@@ -1611,6 +1614,7 @@ namespace cajeta {
                 }
             }
             interface->setClassBody(classBody);
+            CajetaModule::registerScopePublications(interface);
             interface->generatePrototype();
 
             pModule->getStructureStack().pop_back();

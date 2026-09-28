@@ -1,0 +1,12 @@
+package cajeta.aot;
+
+/**
+ * Publishes a named component scope. On a method, the scope is one activation of it.
+ * On a class, it is one instance's lifetime, current while a non-private method on it runs.
+ */
+annotation Scope {
+    /** The published name. A consumer qualifies it by package only on a clash. */
+    String value();
+    /** A published scope this one is always entered inside. */
+    String within() default "";
+}

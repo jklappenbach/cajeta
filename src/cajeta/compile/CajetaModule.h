@@ -64,13 +64,28 @@ namespace cajeta {
         struct FactoryDescriptor;
         typedef shared_ptr<FactoryDescriptor> FactoryDescriptorPtr;
 
-        // One resolved @Inject site: the property and what fills it. AllocateMode
-        // defaults to Singleton; CallScope is rejected as not yet supported.
+        // A scope published with @Scope: on a method (one activation) or a class (one
+        // instance). Builtin covers the compiler's own Singleton and Transient.
+        struct ScopePublication {
+            enum class Kind { Method, Instance, Builtin };
+            string name;
+            string package;
+            Kind kind = Kind::Builtin;
+            CajetaClassPtr klass;
+            MethodPtr method;
+            string within;
+            shared_ptr<ScopePublication> withinScope;
+            string qualified() const { return package.empty() ? name : package + "." + name; }
+        };
+        typedef shared_ptr<ScopePublication> ScopePublicationPtr;
+
+        // One resolved @Inject site: the property and what fills it. Scoped means the
+        // target's own published scope decides, through its accessor.
         enum class AllocateMode {
             Singleton,
             OwnerScope,
-            CallScope,
             Transient,
+            Scoped,
         };
         struct ResolvedDependency {
             StructurePropertyPtr field;
@@ -93,6 +108,11 @@ namespace cajeta {
         struct ComponentDescriptor {
             CajetaClassPtr klass;
             string name;                 // "" if no name = qualifier
+            // The scope as written, whether it was written, and what it resolved to.
+            // A null scope is Singleton.
+            string scopeName;
+            bool scopeDeclared = false;
+            ScopePublicationPtr scope;
             vector<string> profiles;     // empty = profile-neutral
             bool isTestComponent = false;
             // One entry per @Inject field, filled by resolveDependencyGraph.
@@ -141,6 +161,7 @@ namespace cajeta {
     private:
         static thread_local vector<ComponentDescriptorPtr> componentClasses;
         static thread_local vector<FactoryDescriptorPtr> factoryClasses;
+        static thread_local vector<ScopePublicationPtr> scopePublications;
 
         // Profile a component's @Profile must name to participate; "prod" default.
         static thread_local string activeProfile;
@@ -567,6 +588,16 @@ namespace cajeta {
         static const vector<ComponentDescriptorPtr>& getComponentClasses() {
             return componentClasses;
         }
+
+        // Records every @Scope on `structure` and its methods, refusing any other
+        // placement. Called once the class body is parsed.
+        static void registerScopePublications(const CajetaClassPtr& structure);
+        static const vector<ScopePublicationPtr>& getScopePublications() {
+            return scopePublications;
+        }
+        // The publication `name` resolves to, a builtin for Singleton and Transient.
+        // Throws on an unknown or unqualified clashing name; `use` names the user.
+        static ScopePublicationPtr resolveScopeName(const string& name, const string& use);
 
         // @Factory registry. resolveDependencyGraph walks both registries, so an
         // @Inject resolves to a component ctor or a provider (both = ambiguity).
