@@ -80,9 +80,14 @@ jobs:
           # <vulkan/vulkan.h>. Without it the whole backend compiles to a stub
           # whose available() is false forever — which is exactly how every
           # macOS binary shipped with Vulkan missing and nobody noticed.
-          brew install cmake ninja antlr4-cpp-runtime openjdk@21 googletest \
-                       glog zstd zeromq xxhash coreutils vulkan-headers \
-                       ${{ matrix.brew }}
+          # A runner image can already hold an `openssl` symlink, so linking the
+          # openssl@3 dependency fails the install. Force that one link and retry.
+          pkgs="cmake ninja antlr4-cpp-runtime openjdk@21 googletest glog zstd zeromq \
+            xxhash coreutils vulkan-headers ${{ matrix.brew }}"
+          if ! brew install $pkgs; then
+            brew link --overwrite openssl@3
+            brew install $pkgs
+          fi
 
       - name: Fetch prebuilt LLVM toolchain (cajeta-spirv fork)
         env:
