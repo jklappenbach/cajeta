@@ -191,8 +191,10 @@ tutorial; it links here for API detail. Docs link the
 | [Encoder](wire/Encoder.md) | Bidirectional wire codec: `T` ⇄ bytes |
 | [Schema](wire/Schema.md) | The schema a `SchemaEncoder` decodes against |
 | [SchemaEncoder](wire/SchemaEncoder.md) | Schema-carrying wire codec |
-| [Compressor](wire/Compressor.md) | Block-compress stage |
-| [Decompressor](wire/Decompressor.md) | Block-decompress stage |
+| [Compressor](wire/Compressor.md) | Compress stage: block, levelled, or streamed |
+| [Decompressor](wire/Decompressor.md) | Decompress stage: sized by the block header, or capped |
+| [CompressStream](wire/CompressStream.md) | An open compression: write, flush, finish |
+| [DecompressionLimitException](wire/DecompressionLimitException.md) | A decompression over its caller's cap |
 
 ## cajeta.search
 

@@ -1,0 +1,38 @@
+package cajeta.wire;
+
+/**
+ * An open compression, made by `Compressor.stream(level)`. Bytes written are
+ * compressed as they arrive. `flush` hands out everything needed to decode what
+ * was written so far, and `finish` ends the stream with its trailing bytes.
+ *
+ * ```cajeta
+ * CompressStream s #= compressor.stream(1);
+ * s.write(piece, n);
+ * int8[] out #= s.flush();
+ * int8[] tail #= s.finish();
+ * ```
+ */
+public interface CompressStream {
+    /**
+     * Compresses `src[0 .. len)`. Output is held until `flush` or `finish`.
+     *
+     * @EntryPoint
+     */
+    void write(int8[] src, int64 len);
+
+    /**
+     * The compressed bytes produced since the last call, ending on a boundary
+     * that decodes everything written so far. May be empty.
+     *
+     * @EntryPoint
+     */
+    #int8[] flush();
+
+    /**
+     * The remaining compressed bytes and the format's trailer. The stream takes
+     * no more writes after this.
+     *
+     * @EntryPoint
+     */
+    #int8[] finish();
+}

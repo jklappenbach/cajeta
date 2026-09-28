@@ -1,0 +1,17 @@
+package cajeta.wire;
+
+import cajeta.lang.String;
+import cajeta.error.RecoverableException;
+
+/** A decompression that would have produced more than its caller's cap. */
+public class DecompressionLimitException extends RecoverableException {
+    /** The cap the caller set, in bytes. */
+    public int64 limit;
+
+    /** A limit failure for a cap of `limit` bytes. */
+    public DecompressionLimitException(#String message, int64 limit) {
+        this.message = message;
+        this.cause = 0;
+        this.limit = limit;
+    }
+}

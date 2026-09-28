@@ -653,6 +653,8 @@ namespace cajeta {
         // The methods an interface's per-(impl, iface) vtable lays out, in vtable order:
         // own first, then parents by BFS. synthesizeInterfaceVTables and invokeMethod agree.
         std::vector<MethodPtr> getFlattenedInterfaceMethods();
+        // Name and parameter types of `m`, without its class: the key of an interface slot.
+        static std::string interfaceSlotKey(const MethodPtr& m);
 
         // This class's interfaces and every base's, each once.
         std::vector<CajetaClassPtr> allAssignableInterfaces() const;

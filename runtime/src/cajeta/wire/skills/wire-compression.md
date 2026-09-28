@@ -1,106 +1,89 @@
 ---
 id: wire-compression
-applies-to: [cajeta/wire/Compressor, cajeta/wire/Decompressor]
-title: Block compress/decompress — the Compressor + Decompressor inverse pair
-description: The byte-to-byte block codec for Class C containers — Compressor.compress and Decompressor.decompress are inverses; the caller supplies expandedLen to size the output.
+applies-to: [cajeta/wire/Compressor, cajeta/wire/Decompressor, cajeta/wire/CompressStream, cajeta/wire/DecompressionLimitException]
+title: Compressor, Decompressor and CompressStream — byte-to-byte codecs, block, capped and streamed
+description: The byte-to-byte codec pair. Block containers pass the decompressed length; transports that cannot pass a cap and get DecompressionLimitException. CompressStream compresses a body as it is produced.
 ---
 
-# Block compression (Compressor + Decompressor)
+# Compressor, Decompressor and CompressStream
 
-`Compressor` and `Decompressor` are the two halves of one byte-to-byte block
-codec. `Compressor.compress(plain)` shrinks a byte buffer into a compressed
-block; `Decompressor.decompress(block, expandedLen)` restores it. They are exact
-inverses: `decompress(compress(plain), plain.count())` yields bytes equal to
-`plain`. Use this pair when a Class C container format (Parquet, ORC, Avro)
-frames its payload as independently compressed blocks.
+`Compressor` and `Decompressor` are the two halves of one byte-to-byte codec.
+They carry no `T`. For value to bytes, use `Encoder<T>` instead. An `Encoder`
+may hand its output to a `Compressor`, but the interfaces never mix.
 
-Both are **format-agnostic interfaces carrying no `T`** — they move raw bytes,
-not typed values. If you need value⇆bytes for a typed `T`, that is a different
-concern: use `Encoder<T>` (`cajeta/wire/Encoder`) instead. The two are
-deliberately separate; an `Encoder` may compress its output by handing the bytes
-to a `Compressor`, but the interfaces never mix.
+No stdlib type implements them yet. A codec library or a transport supplies
+the implementations, such as cajeta-http's content codings (gzip, deflate,
+identity). One class usually implements both halves.
 
-## Members and roles
+## Members
 
-- **`Compressor`** — one method, `#int8[] compress(int8[] src)`. The
-  block-compress stage.
-- **`Decompressor`** — one method, `#int8[] decompress(int8[] src, int64 expandedLen)`.
-  The block-decompress stage. `expandedLen` is the decompressed byte length.
+`Compressor`:
 
-Concrete implementations are `Snappy`, `Lz4`, `Zstd`, `Gzip`/`zlib`, and
-`Brotli` — **all our own Cajeta, no third-party libraries**. Each implementation
-type typically provides both directions, so you instantiate one object and use it
-as either interface.
+- `#int8[] compress(int8[] src)` compresses all of `src` into a fresh block.
+- `#int8[] compress(int8[] src, int64 len, int32 level)` compresses
+  `src[0 .. len)` at `level`, 1 fastest to 9 smallest for DEFLATE codecs. A
+  codec without levels ignores the level.
+- `#CompressStream stream(int32 level)` opens a stream.
 
-## Collaboration and data flow
+`Decompressor`:
 
-The two halves do **not** share any session or state object — they cooperate
-only through the bytes carried between them, plus one out-of-band number:
-`expandedLen`. The codec block is **not self-describing about its output size**;
-`Decompressor` does not discover the decompressed length from the block. The
-caller must record the original length at compress time and supply it at
-decompress time. In a Class C container that length lives in the **block header**
-the format writes alongside each block, and is read back from that header — see
-the container format's reader/writer, not this codec.
+- `#int8[] decompress(int8[] src, int64 expandedLen)` restores a block whose
+  decompressed length the caller recorded, such as a Parquet or ORC block
+  header. The result is exactly `expandedLen` bytes, sized in one allocation.
+- `#int8[] decompress(int8[] src, int64 len, int64 maxOut)` restores
+  `src[0 .. len)` when the decompressed length is unknown, as an HTTP body's
+  is. It raises `DecompressionLimitException` (field `limit`) rather than
+  produce more than `maxOut` bytes. That cap is the guard against a small
+  input that expands without bound, so every caller must state one.
 
-So the end-to-end choreography across the boundary is:
+`CompressStream`:
 
-1. Writer side: `block = compressor.compress(plain)`; the container records
-   `plain.count()` as the block's `expandedLen` in its header.
-2. Reader side: read the block bytes and its `expandedLen` from the header, then
-   `plain = decompressor.decompress(block, expandedLen)`.
+- `void write(int8[] src, int64 len)` compresses more input.
+- `#int8[] flush()` returns the output since the last call, ending on a
+  boundary where everything written so far decodes. A streamed response sends
+  each flush as one piece.
+- `#int8[] finish()` returns the rest and the format's trailer. No writes
+  after it.
 
-The compressor and decompressor on the two sides **must be the same algorithm**
-(a Snappy block must be read by a Snappy `Decompressor`); the pair has no
-algorithm tag of its own.
+## Ownership
 
-## Ownership and lifecycle (read before crossing the boundary)
+- Inputs are borrowed. No method frees or keeps `src`.
+- Every result is a fresh, caller-owned `#int8[]` that never aliases the input.
+  Bind it with `#=`.
+- `stream(level)` returns an owned stream. Its state lives until you drop it.
+- A `Compressor` or `Decompressor` instance holds no per-call state, so one
+  instance serves many calls.
 
-- **Inputs are borrowed.** Neither `src` parameter is marked `#` — the codec
-  reads the input buffer and neither frees nor retains it. The caller keeps owning
-  `src` and frees it on its own drop chain.
-- **Results are owned (`#`).** Both methods return a **fresh, caller-owned**
-  `#int8[]`; ownership transfers to you and your drop chain reclaims it. Results
-  never alias the input.
-- **`decompress` returns exactly `expandedLen` bytes**, allocated in one shot —
-  that is the whole point of taking the length up front.
-- These are **stateless byte transforms**: an implementation instance holds no
-  per-call state, so it is reusable across many blocks. (Consult the concrete
-  implementation skill for any thread/fiber-safety guarantee.)
-
-## Worked example
+## Example
 
 ```cajeta
 import cajeta.wire.Compressor;
 import cajeta.wire.Decompressor;
-import cajeta.wire.Snappy;
+import cajeta.wire.CompressStream;
+import cajeta.wire.DecompressionLimitException;
 
-Snappy codec = Snappy();
+// codec implements both Compressor and Decompressor.
+Compressor c = codec;
+Decompressor d = codec;
 
-// write side — keep the original length for the block header
-int64 expandedLen = plain.count();
-int8[] block #= ((Compressor) codec).compress(plain);
+int8[] block #= c.compress(plain, plain.count(), 6);
+try {
+    int8[] back #= d.decompress(block, block.count(), (int64) 1048576);
+} catch (DecompressionLimitException e) {
+    // more than 1 MiB would have come out
+}
 
-// read side — header gives back expandedLen
-int8[] restored #= ((Decompressor) codec).decompress(block, expandedLen);
-// restored now equals plain, byte for byte
+CompressStream s #= c.stream(1);
+s.write(piece, n);
+int8[] out #= s.flush();
+int8[] tail #= s.finish();
 ```
 
-(You normally hold the value as the interface type — `Compressor c = Snappy();`
-on the writer and `Decompressor d = Snappy();` on the reader; the casts above
-just show one object satisfying both.)
+## What this does not do
 
-## What this pair does NOT do
-
-- **No size self-description.** `decompress` will not work from the block alone —
-  you must supply `expandedLen`. Lose it and the block is unrecoverable through
-  this interface. Persist it (the container's block header) when you compress.
-- **No block framing, headers, or checksums.** This is the raw byte transform
-  only; per-block length/offset/CRC framing belongs to the Class C container
-  format, not here.
-- **No streaming / no chunking.** It is one-shot, whole-buffer-in-memory per
-  block; both the input and the full result live in memory at once. Size your
-  blocks at the container layer.
-- **Carries no `T` and does no value (de)serialization** — that is `Encoder<T>`.
-- **Does not consume or mutate `src`**, and does not pick the algorithm for you;
-  matching compressor↔decompressor algorithm is the caller's responsibility.
+- It adds no framing, length headers or checksums beyond the codec format's
+  own. Container framing belongs to the container.
+- It does not pick the algorithm. Matching compressor and decompressor is the
+  caller's job, and the pair carries no algorithm tag.
+- `CompressStream` has no decompressing twin yet. Decompression is one call
+  over the whole input.
