@@ -506,7 +506,9 @@ const char* kReturnSrc = R"CJ(
 // local gets a per-work-item context array so the tail fix does not turn this
 // into a silent wrong answer. Two sessions reached the same diagnosis
 // independently (xpu-kernel-adaptor 4.2.1.9).
-// STILL DISABLED, and now with a measured cause (xpu-kernel-adaptor 4.2.1.9).
+// RE-ENABLED 2026-09-27 — the cause measured below was the region walk ranking
+// a `ret` above the loop latch, so no activity mask was ever built. Kept as
+// the record of how it was found (xpu-kernel-adaptor 4.2.1.9).
 // The sibling probe beside it passes since the peel and wave-fed-RMW fixes, so
 // those were not what this one needed.
 //
@@ -523,7 +525,7 @@ const char* kReturnSrc = R"CJ(
 // happening here. Diagnose with [wave-qual] plus the region dump before
 // changing anything: the activity mask is only materialized when a region can
 // be left early, which is itself a condition worth checking first.
-TEST(XpuCpuFissionUniformize, DISABLED_aReturnInsideAScaffoldLoopEndsThatWorkItem) {
+TEST(XpuCpuFissionUniformize, aReturnInsideAScaffoldLoopEndsThatWorkItem) {
     const int r = runOnCpu(std::string(kPreamble) + kReturnSrc);
     EXPECT_EQ(r, 0) << "r=" << r;
 }

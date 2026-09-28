@@ -345,6 +345,9 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     llvm::SmallPtrSet<llvm::BasicBlock*, 8> cutSet;
     llvm::SmallPtrSet<llvm::BasicBlock*, 4> splitSet;
     llvm::SmallPtrSet<llvm::BasicBlock*, 8> uniformScaffoldHeaders;
+    // The PREDICATED scaffold loops' headers, a subset of the above: the
+    // region walk ranks a `ret` below such a loop's latch (step 8).
+    llvm::SmallPtrSet<llvm::BasicBlock*, 8> predicatedScaffoldHeaders;
     // The block a scaffold loop continues at. NOT `Loop::getExitBlock()`,
     // which answers null as soon as the loop has two exit blocks -- and a
     // `return` inside the loop is a second exit block (a work-item leaving
@@ -494,6 +497,26 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             if (tainted.count(br->getCondition())) uniform = false;
             if (xb != L->getHeader() && xb != latch) uniform = false;
         }
+        // A collective inside a PREDICATED loop would run with some lanes
+        // switched off, and the cpu backend gives that no meaning: a
+        // cooperative mma, a shuffle, a reduce all assume the whole wave
+        // converged. Declined here, the loop stays inside a work-item region
+        // and the gate refuses its wave op as left scalar, which is what
+        // XpuCpuDistCoopVerb.waveOpLeftScalarIsRefused pins. That kernel
+        // used to be refused only by accident: before a predicated body's
+        // locals became per work-item, the shared slots kept its shuffle from
+        // widening (measured 2026-09-27, when making them per work-item let
+        // it register).
+        if (!uniform)
+            for (llvm::BasicBlock* bb : L->blocks())
+                for (auto& in : *bb)
+                    if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                        if (auto* cf = c->getCalledFunction()) {
+                            llvm::StringRef n = cf->getName();
+                            if (n.starts_with("__cajeta_xpu_wave_")
+                                && n != "__cajeta_xpu_wave_width")
+                                return no("a wave or cooperative op inside a per-work-item loop");
+                        }
         if (qdbg)
             fprintf(stderr, "[wave-qual] %s: candidate, %s\n",
                     qname(L->getHeader()).c_str(),
@@ -1013,15 +1036,84 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 for (unsigned sx = 0; sx < t->getNumSuccessors(); ++sx)
                     if (t->getSuccessor(sx) == H) t->setSuccessor(sx, HS);
             }
+            // EVERY edge out of the body clears this work-item's `active`
+            // flag, not only the edge to the loop's exit. The scaffold loop
+            // runs while ANY work-item is active, so a work-item that leaves
+            // by some other door with its flag still set keeps the loop alive
+            // forever. An early `return` is that other door: it goes to a bare
+            // return block, which 4b deliberately does not count as the exit.
+            // On 2026-09-27 that spun one cajeta-llm test for THREE HOURS on
+            // all 32 cores. Termination then rested on a second mechanism —
+            // step 9's activity mask taking the returning work-item out of
+            // later trips — and that mask is built only when a region can be
+            // left early, which a mis-ranked region walk had stopped being
+            // true. Clearing the flag on the way out makes the loop terminate
+            // on its own account, whatever the mask does.
+            // A local STORED in a predicated body is per work-item, whatever
+            // its data flow says. Work-items leave the loop at different
+            // trips, so once one has left, the others' updates are not its
+            // updates. The taint rule sees only data flow, and `j = j + 1`
+            // or `acc = acc + 1.0f` carry no work-item id, so they stayed one
+            // shared slot the work-item loop threaded from one work-item to
+            // the next: every work-item after the first read the previous
+            // one's `j`, the returning work-item never saw its trip, and the
+            // return probe answered 40 where 35 is right (measured
+            // 2026-09-27).
+            //
+            // Only CARRIED state, though: a local the body stores and that is
+            // read either before this trip's store reaches it (the previous
+            // trip's value, `j` and `acc`) or after the loop. A temporary
+            // written and read within one trip is private to the work-item
+            // already, and making it a context array too turned every such
+            // temporary into a gather and a scatter: the cajeta-llm test
+            // binary took 47 minutes to compile instead of about ten, and
+            // q4kWmmaDeqMw8Kernel ran for over 20 minutes in one test
+            // (measured 2026-09-27).
+            {
+                llvm::DominatorTree bDT(*wrapper);
+                for (llvm::AllocaInst* a : allocas) {
+                    llvm::SmallVector<llvm::LoadInst*, 8> ls;
+                    llvm::SmallVector<llvm::StoreInst*, 8> ss;
+                    collectMemUsers(a, ls, ss);
+                    llvm::SmallVector<llvm::StoreInst*, 4> inBody;
+                    for (llvm::StoreInst* st : ss)
+                        if (body.count(st->getParent())) inBody.push_back(st);
+                    if (inBody.empty()) continue;
+                    bool carried = false;
+                    for (llvm::LoadInst* ld : ls) {
+                        if (!body.count(ld->getParent())) { carried = true; break; }
+                        bool fresh = false;
+                        for (llvm::StoreInst* st : inBody)
+                            if (bDT.dominates(st, ld)) { fresh = true; break; }
+                        if (!fresh) { carried = true; break; }
+                    }
+                    if (carried) forceCtx.insert(a);
+                }
+            }
+            llvm::DenseMap<llvm::BasicBlock*, llvm::BasicBlock*> retLeave;
+            auto leaveTo = [&](llvm::BasicBlock* dest) -> llvm::BasicBlock* {
+                auto f = retLeave.find(dest);
+                if (f != retLeave.end()) return f->second;
+                auto* nb = llvm::BasicBlock::Create(
+                    ctx, H->getName() + ".leave.ret", wrapper, dest);
+                llvm::IRBuilder<> b(nb);
+                b.CreateStore(flag0, active);
+                b.CreateBr(dest);
+                retLeave[dest] = nb;
+                return nb;
+            };
             for (llvm::BasicBlock* bb : body) {
                 auto* t = bb->getTerminator();
                 for (unsigned sx = 0; sx < t->getNumSuccessors(); ++sx) {
-                    if (t->getSuccessor(sx) == H) t->setSuccessor(sx, skip);
-                    else if (t->getSuccessor(sx) == X) t->setSuccessor(sx, leave);
+                    llvm::BasicBlock* dst = t->getSuccessor(sx);
+                    if (dst == H) t->setSuccessor(sx, skip);
+                    else if (dst == X) t->setSuccessor(sx, leave);
+                    else if (!body.count(dst)) t->setSuccessor(sx, leaveTo(dst));
                 }
             }
             (void) B;
             uniformScaffoldHeaders.insert(HS);
+            predicatedScaffoldHeaders.insert(HS);
             scaffoldExit[HS] = X;
             std::vector<llvm::BasicBlock*> pbody(Q.c.blocks.begin(),
                                                  Q.c.blocks.end());
@@ -1277,7 +1369,24 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             if (R.barrier) done = R.barrier;
             else if (R.split) done = R.split;
             else if (R.subloop) done = R.subloop;
-            else if (R.reachedRet) done = wrapEnd;
+            // A `ret` inside a PREDICATED scaffold loop's body ends one
+            // WORK-ITEM, never the level. When the region also reaches that
+            // loop's latch, the block goes on from the latch, and the
+            // work-item that returned is taken out by step 9's activity mask.
+            // Ranking the `ret` first there pointed the region at the function
+            // exit and, since step 8b builds the mask only for a region whose
+            // continuation is NOT the function exit, left no mask at all:
+            // aReturnInsideAScaffoldLoopEndsThatWorkItem answered 80 for 75 at
+            // width 16 (xpu-kernel-adaptor 4.2.1.9, 2026-09-27).
+            //
+            // ONLY there. Everywhere else the `ret` keeps its rank above the
+            // latch, as it was: no other loop shape asked for the change,
+            // and a `ret` reached from a plain barrier loop's body has always
+            // meant "this work-item is done with the kernel".
+            else if (R.reachedRet
+                     && !(encLoop && R.reachedLatch
+                          && predicatedScaffoldHeaders.count(encLoop->getHeader())))
+                done = wrapEnd;
             else if (encLoop && R.reachedLatch) done = encLoop->getLoopLatch();
             else if (R.reachedStop) done = stopAt;
             else unsupported("unstructured barrier control flow");
