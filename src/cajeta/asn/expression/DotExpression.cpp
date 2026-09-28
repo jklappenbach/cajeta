@@ -120,6 +120,20 @@ namespace cajeta {
         xref::noteFieldReference(ownerFqn + "." + identifier, file, idLine, idColumn);
     }
 
+    bool DotExpression::materializesViewField(const AbstractSyntaxNodePtr& e) {
+        auto dot = dynamic_pointer_cast<DotExpression>(e);
+        if (!dot || dot->getChildren().empty()) return false;
+        auto recv = dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
+        auto view = recv ? dynamic_pointer_cast<CajetaView>(recv->getResolvedType()) : nullptr;
+        if (!view) return false;
+        for (auto& p : view->getPropertyList()) {
+            if (p && p->getName() == dot->getIdentifier()) {
+                return CajetaView::isVariableSize(p) && !CajetaView::isElementArray(p);
+            }
+        }
+        return false;
+    }
+
     llvm::Value* DotExpression::maybeBswap(CajetaModulePtr module, llvm::Value* v,
                                               const ExpressionPtr& receiver) {
         if (!v || !receiver) return v;

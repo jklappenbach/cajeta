@@ -399,6 +399,27 @@ void __cajeta_iface_drop(void* body) {
     }
 }
 
+// Releases an OWNED occupant about to be overwritten by `incoming`; a store of the
+// same object keeps it.
+void __cajeta_iface_displace(void* body, void* incoming) {
+    if (!body) return;
+    void* old = ((void**) body)[0];
+    int64_t kind = *(int64_t*) ((char*) body + 16);
+    if (kind == 1 && old && old != incoming) __cajeta_iface_drop(body);
+}
+
+// Teardown walk for an array of inline interface bodies: each OWNED element drops
+// through its own kind tag, and the kind is cleared so a second walk is a no-op.
+void __cajeta_iface_elem_drop_walk(void* hdr, uint64_t header_size, uint64_t elem_size) {
+    if (!hdr) return;
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    for (int64_t i = 0; i < count; i++) {
+        char* body = (char*) hdr + header_size + (uint64_t) i * elem_size;
+        __cajeta_iface_drop(body);
+        *(int64_t*) (body + 16) = 0;
+    }
+}
+
 // --- VTable: hash-based dispatch ---------------------------------------------
 // A class's vtable is a sorted array of (signature-hash, function-pointer) entries.
 

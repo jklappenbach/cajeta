@@ -72,10 +72,20 @@ public final class JsonIndex {
      * must hold at least `n + 16` entries.
      */
     public static int32 build(int8[] b, int64 n, int32[] idx) {
+        return JsonIndex.buildRange(b, 0, n, idx);
+    }
+
+    /**
+     * Stage 1 over the window `b[from .. to)`. Positions are absolute in `b`,
+     * so every other method reads the window in place; `idx` holds at least
+     * `to - from + 16` entries.
+     */
+    public static int32 buildRange(int8[] b, int64 from, int64 to, int32[] idx) {
         int8[] flags = heap int8[3];
         int32 cnt = 0;
         boolean instr = false; boolean pval = false; boolean pend = false;
-        int64 p = 0;
+        int64 p = from;
+        int64 n = to;
         while (p + 16 <= n) {
             Vector<int8,16> v = Cajeta.vload16(b, p);
             int32 bsM = v.eqMask((int8)92);

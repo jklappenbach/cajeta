@@ -330,8 +330,15 @@ namespace cajeta::ownership {
                 return scalar(e);
             case ExprKind::Identifier:
                 return localRead(e, module);
-            case ExprKind::Dot:
+            case ExprKind::Dot: {
+                if (DotExpression::materializesViewField(e)) {
+                    TitleShape s = make(TitleFamily::Fresh, TitleAnswer::Owned, TitleSource::None, e,
+                                        typeFlags(e->getResolvedType()));
+                    s.label = "a view field read";
+                    return s;
+                }
                 return read(TitleFamily::FieldRead, e);
+            }
             case ExprKind::ArrayIndex:
                 return read(TitleFamily::ElementRead, e);
             case ExprKind::ArraySlice: {
@@ -450,6 +457,7 @@ namespace cajeta::ownership {
         TitleShape moveOf(const ExpressionPtr& leaf, const CajetaModulePtr& module) {
             auto mv = std::static_pointer_cast<MoveExpression>(leaf);
             auto inner = childOf(leaf, 0);
+            if (inner && mv->isCaptureMarker()) return classify(inner, module);
             if (!inner) {
                 TitleShape s = make(TitleFamily::Move, TitleAnswer::Owned, TitleSource::None, leaf);
                 if (mv->isSharpStore()) s.flags |= TitleShape::kSharpStore;

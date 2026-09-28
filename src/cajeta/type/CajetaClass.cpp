@@ -2891,6 +2891,21 @@ namespace cajeta {
                     }
                 }
                 {
+                    auto ifElem = dynamic_pointer_cast<CajetaClass>(arrField->getElementType());
+                    if (ifElem && ifElem->isInterface()) {
+                        if (llvm::Function* iwFn = cajModule->getRuntimeFunction(
+                                "__cajeta_iface_elem_drop_walk", bodyModule)) {
+                            const llvm::DataLayout& iwDl = bodyModule->getDataLayout();
+                            llvm::Type* iwI64 = llvm::Type::getInt64Ty(ctx);
+                            b.CreateCall(iwFn, {arrPtr,
+                                llvm::ConstantInt::get(iwI64,
+                                    iwDl.getTypeAllocSize(arrField->getLlvmType())),
+                                llvm::ConstantInt::get(iwI64,
+                                    arrField->elementStrideBytes(iwDl, &ctx))});
+                        }
+                    }
+                }
+                {
                     auto strElem = dynamic_pointer_cast<CajetaClass>(
                         arrField->getElementType());
                     if (strElem && slotMemberIsString(strElem)) {
