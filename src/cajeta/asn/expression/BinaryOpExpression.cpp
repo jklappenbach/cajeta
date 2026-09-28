@@ -225,8 +225,13 @@ namespace cajeta {
         CajetaTypePtr rhsType = typeAst ? typeAst->getResolvedType() : nullptr;
         auto rhsClass = std::dynamic_pointer_cast<CajetaClass>(rhsType);
         bool rhsIsInterface = rhsClass && rhsClass->isInterface();
+        llvm::Function* displaceFn = module->getRuntimeFunction("__cajeta_iface_displace");
+        auto displace = [&](llvm::Value* incoming) {
+            if (displaceFn) builder->CreateCall(displaceFn, {slot, incoming});
+        };
 
         if (rhsClass && !rhsIsInterface) {
+            displace(rhsVal);
             llvm::Value* dataSlot = builder->CreateStructGEP(bodyTy, slot, 0, "iface_data");
             llvm::Value* vtSlot = builder->CreateStructGEP(bodyTy, slot, 1, "iface_vtable");
             llvm::Value* kindSlot = builder->CreateStructGEP(bodyTy, slot, 2, "iface_kind");
@@ -248,11 +253,13 @@ namespace cajeta {
         } else if (llvm::isa<llvm::ConstantPointerNull>(rhsVal)) {
             // `arr[i] = null` zeroes the 24-byte body; a memcpy from the null source
             // would fault.
+            displace(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy)));
             const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
             uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
             builder->CreateMemSet(slot, builder->getInt8(0), bodyBytes,
                 llvm::MaybeAlign(8));
         } else {
+            displace(builder->CreateLoad(ptrTy, rhsVal, "iface_incoming"));
             const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
             uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
             builder->CreateMemCpy(slot, llvm::MaybeAlign(8),
@@ -1031,6 +1038,33 @@ namespace cajeta {
                             && (fwdIdLhs || fwdBits(fwdL->getResolvedType()))
                             && fwdBits(fwdS->getResolvedType())) {
                         fwdMv->setForwardingSlotMove(true);
+                    }
+                }
+            }
+        }
+        // A lambda or method reference stored into a function-typed place takes that type as
+        // its expected type, or an expression body infers a void return.
+        if (binaryOp == BINARY_OP_ASSIGN && children.size() == 2) {
+            AbstractSyntaxNodePtr fnRhs = children[1];
+            while (auto mv = dynamic_pointer_cast<MoveExpression>(fnRhs)) {
+                if (mv->getChildren().empty()) break;
+                fnRhs = mv->getChildren()[0];
+            }
+            auto lam = dynamic_pointer_cast<LambdaExpression>(fnRhs);
+            auto mref = dynamic_pointer_cast<MethodReferenceExpression>(fnRhs);
+            if (lam || mref) {
+                if (auto lhsE = dynamic_pointer_cast<Expression>(children[0])) {
+                    if (!lhsE->getResolvedType()) lhsE->resolveTypes(module);
+                    CajetaTypePtr lt = lhsE->getResolvedType();
+                    if (dynamic_pointer_cast<CajetaFunctionType>(lt)) {
+                        if (lam) {
+                            lam->setExpectedType(lt);
+                            lam->setResolvedType(nullptr);
+                        }
+                        if (mref) {
+                            mref->setExpectedType(lt);
+                            mref->setResolvedType(nullptr);
+                        }
                     }
                 }
             }
@@ -2209,7 +2243,21 @@ namespace cajeta {
                                         uint64_t fobHs = fobADl
                                             .getTypeAllocSize(
                                                 fobArr->getLlvmType());
-                                        if (CajetaClass::
+                                        auto fobIfElem = dynamic_pointer_cast<CajetaClass>(
+                                            fobArr->getElementType());
+                                        if (fobIfElem && fobIfElem->isInterface()) {
+                                            if (llvm::Function* fobIw =
+                                                    module->getRuntimeFunction(
+                                                        "__cajeta_iface_elem_drop_walk")) {
+                                                builder->CreateCall(fobIw,
+                                                    {oldVal,
+                                                     llvm::ConstantInt::get(i64Ty, fobHs),
+                                                     llvm::ConstantInt::get(i64Ty,
+                                                         fobArr->elementStrideBytes(
+                                                             fobADl,
+                                                             module->getLlvmContext()))});
+                                            }
+                                        } else if (CajetaClass::
                                                 arrayElementCarriesSlotBits(
                                                     fobArr->getElementType())) {
                                             if (llvm::Function* fobWalk =

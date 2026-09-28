@@ -2376,6 +2376,13 @@ bool cajetaRhsCarriesRedundantSharp(
         // flag captured in a previous function must never leak into this one.
         runtimeTitleFlag = nullptr;
         if (children.empty()) return nullptr;
+        if (captureMarker) {
+            auto inner = dynamic_pointer_cast<Expression>(children[0]);
+            if (!inner) return nullptr;
+            llvm::Value* read = loadIfLValue(module, inner->generateCode(module), inner);
+            resolvedType = inner->getResolvedType();
+            return read;
+        }
         // The legacy `dst = #v` spelling warns and still transfers. Reported here because
         // this is the one node both spellings do not share; call args and returns are
         // deliberately silent.
@@ -3275,75 +3282,80 @@ bool cajetaRhsCarriesRedundantSharp(
     // name is the move subtree's receiver-side leaf.
     static void collectTransferNames(
             const AbstractSyntaxNodePtr& node,
-            std::set<std::string>& out) {
+            std::set<std::string>& out,
+            const std::set<std::string>* mark = nullptr) {
         if (!node) return;
         if (auto mv = std::dynamic_pointer_cast<MoveExpression>(node)) {
             if (!mv->getChildren().empty()) {
                 std::string name = firstIdentifierIn(mv->getChildren()[0]);
                 if (!name.empty()) out.insert(name);
+                if (mark && mark->count(name)
+                        && std::dynamic_pointer_cast<IdentifierExpression>(mv->getChildren()[0])) {
+                    mv->setCaptureMarker(true);
+                }
             }
             for (auto& c : mv->getChildren()) {
-                collectTransferNames(c, out);
+                collectTransferNames(c, out, mark);
             }
             return;
         }
         if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
-            for (auto& c : mc->getChildren()) collectTransferNames(c, out);
-            for (auto& p : mc->getParameters()) collectTransferNames(p.expression, out);
+            for (auto& c : mc->getChildren()) collectTransferNames(c, out, mark);
+            for (auto& p : mc->getParameters()) collectTransferNames(p.expression, out, mark);
             return;
         }
         if (auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
             for (auto& vd : lvd->getVariableDeclarators()) {
-                if (vd && vd->getInitializer()) collectTransferNames(vd->getInitializer(), out);
+                if (vd && vd->getInitializer()) collectTransferNames(vd->getInitializer(), out, mark);
             }
             return;
         }
         if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) {
-            collectTransferNames(ret->getExpression(), out);
+            collectTransferNames(ret->getExpression(), out, mark);
             return;
         }
         if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
-            collectTransferNames(ifs->getCondition(), out);
-            collectTransferNames(ifs->getThenBranch(), out);
-            collectTransferNames(ifs->getElseBranch(), out);
+            collectTransferNames(ifs->getCondition(), out, mark);
+            collectTransferNames(ifs->getThenBranch(), out, mark);
+            collectTransferNames(ifs->getElseBranch(), out, mark);
             return;
         }
         if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
-            collectTransferNames(es->getExpression(), out);
+            collectTransferNames(es->getExpression(), out, mark);
             return;
         }
         if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
-            collectTransferNames(ls->getBlock(), out);
+            collectTransferNames(ls->getBlock(), out, mark);
             return;
         }
         if (auto ss = std::dynamic_pointer_cast<ScopeStatement>(node)) {
-            collectTransferNames(ss->getBlock(), out);
+            collectTransferNames(ss->getBlock(), out, mark);
             return;
         }
         if (auto ws = std::dynamic_pointer_cast<WhileStatement>(node)) {
-            collectTransferNames(ws->getCondition(), out);
-            collectTransferNames(ws->getBody(), out);
+            collectTransferNames(ws->getCondition(), out, mark);
+            collectTransferNames(ws->getBody(), out, mark);
             return;
         }
         if (auto ds = std::dynamic_pointer_cast<DoStatement>(node)) {
-            collectTransferNames(ds->getBody(), out);
-            collectTransferNames(ds->getCondition(), out);
+            collectTransferNames(ds->getBody(), out, mark);
+            collectTransferNames(ds->getCondition(), out, mark);
             return;
         }
         if (auto fs = std::dynamic_pointer_cast<ForStatement>(node)) {
-            collectTransferNames(fs->getInit(), out);
-            collectTransferNames(fs->getCondition(), out);
-            for (auto& u : fs->getUpdate()) collectTransferNames(u, out);
-            collectTransferNames(fs->getBody(), out);
+            collectTransferNames(fs->getInit(), out, mark);
+            collectTransferNames(fs->getCondition(), out, mark);
+            for (auto& u : fs->getUpdate()) collectTransferNames(u, out, mark);
+            collectTransferNames(fs->getBody(), out, mark);
             return;
         }
         if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
-            collectTransferNames(efs->getIterableExpr(), out);
-            collectTransferNames(efs->getBody(), out);
+            collectTransferNames(efs->getIterableExpr(), out, mark);
+            collectTransferNames(efs->getBody(), out, mark);
             return;
         }
         for (auto& c : node->getChildren()) {
-            collectTransferNames(c, out);
+            collectTransferNames(c, out, mark);
         }
     }
 
@@ -3680,6 +3692,16 @@ bool cajetaRhsCarriesRedundantSharp(
                 if (!byValue && !byTransfer) {
                     hasBorrowCaptures = true;
                 }
+            }
+        }
+        {
+            std::set<std::string> movedIn;
+            for (auto& c : captures) {
+                if (c.byTransfer) movedIn.insert(c.name);
+            }
+            if (!movedIn.empty()) {
+                std::set<std::string> ignored;
+                collectTransferNames(body, ignored, &movedIn);
             }
         }
 
@@ -4048,17 +4070,32 @@ bool cajetaRhsCarriesRedundantSharp(
             llvm::Value* capLoaded = dropBuilder.CreateLoad(
                 ptrTy, capLoadSlot, "captures");
             for (size_t i = 0; i < captures.size(); ++i) {
-                if (!captures[i].byTransfer) continue;
-                // Only CajetaArray transfer captures have a known drop function today; other
-                // transferred types compile but leak.
-                if (!std::dynamic_pointer_cast<CajetaArray>(captures[i].type)) continue;
-                if (!freeArrayFn) continue;
+                if (!captures[i].byTransfer || captures[i].byValue) continue;
+                llvm::Function* capDrop = nullptr;
+                const CajetaTypePtr& ct = captures[i].type;
+                auto capCls = std::dynamic_pointer_cast<CajetaClass>(ct);
+                if (std::dynamic_pointer_cast<CajetaArray>(ct)) {
+                    capDrop = freeArrayFn;
+                } else if (std::dynamic_pointer_cast<CajetaFunctionType>(ct)) {
+                    capDrop = module->getRuntimeFunction("__cajeta_closure_drop");
+                } else if (capCls && capCls->getQName()
+                        && capCls->getQName()->getTypeName() == "String"
+                        && capCls->getQName()->getPackageName() == "cajeta.lang") {
+                    capDrop = module->getRuntimeFunction("__cajeta_string_drop");
+                } else if (capCls && !std::dynamic_pointer_cast<CajetaView>(ct)
+                        && !capCls->isInterface() && !capCls->isValueType()
+                        && !capCls->isSharedCapableValue()
+                        && capCls->hasVtablePointerAtSlotZero()) {
+                    capCls->patchVirtualTableDropFn();
+                    capDrop = module->getRuntimeFunction("__cajeta_class_virtual_drop");
+                }
+                if (!capDrop) continue;
                 llvm::Value* slot = dropBuilder.CreateStructGEP(
                     capturesTy, capLoaded, (unsigned) i,
                     std::string("cap.") + captures[i].name);
                 llvm::Value* heapPtr = dropBuilder.CreateLoad(
                     ptrTy, slot, captures[i].name);
-                dropBuilder.CreateCall(freeArrayFn, {heapPtr});
+                dropBuilder.CreateCall(capDrop, {heapPtr});
             }
             if (freeFn) {
                 dropBuilder.CreateCall(freeFn, {capLoaded});
