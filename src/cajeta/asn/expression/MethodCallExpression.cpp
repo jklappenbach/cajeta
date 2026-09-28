@@ -4123,6 +4123,11 @@ namespace cajeta {
                     resolvedType = CajetaType::of("int64");
                     return builder->CreateCall(fn, {});
                 }
+                if (ns == "Cajeta" && methodCallName == "scopeTables" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_anchor_table_population");
+                    resolvedType = CajetaType::of("int32");
+                    return builder->CreateCall(fn, {});
+                }
                 if (ns == "Cajeta" && methodCallName == "arenaInUse" && parameters.empty()) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_arena_bytes");
                     resolvedType = CajetaType::of("int64");

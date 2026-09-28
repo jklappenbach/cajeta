@@ -1590,6 +1590,20 @@ namespace cajeta {
                         pModule, methodName, returnType, formals,
                         /*block=*/nullptr, interface);
                     method->setAbstract(true);
+                    // Annotations reach an interface method from either modifier position.
+                    for (auto* mc : bd->modifier()) {
+                        auto* coim = mc->classOrInterfaceModifier();
+                        if (!coim || !coim->annotation()) continue;
+                        if (auto inst = parseAnnotationInstance(coim->annotation())) {
+                            method->addAnnotationInstance(inst);
+                        }
+                    }
+                    for (auto* mm : imd->interfaceMethodModifier()) {
+                        if (!mm->annotation()) continue;
+                        if (auto inst = parseAnnotationInstance(mm->annotation())) {
+                            method->addAnnotationInstance(inst);
+                        }
+                    }
                     // `#T foo();` — an interface method's return transfers ownership.
                     // This path builds its Method by hand, so it must read the `#` off
                     // typeTypeOrVoid itself rather than inheriting the class-body path.

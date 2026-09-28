@@ -9,6 +9,7 @@
 #include "../asn/expression/LiteralExpression.h"
 #include "../type/CajetaType.h"
 #include "../error/Exception.h"
+#include "../asn/expression/Expression.h"
 
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
@@ -31,31 +32,28 @@ namespace cajeta {
     // Emit the body: entry loads the singleton and branches, `cached` returns it,
     // `fresh` allocates, constructs, injects the fields, caches and returns.
     void ComponentInjectMethod::generateCode() {
-        const bool publishedScope = descriptor->scope
-            && descriptor->scope->kind != CajetaModule::ScopePublication::Kind::Builtin;
-        if (publishedScope) {
-            throw Exception("component " + parent->getQName()->toCanonical() + " has scope \""
-                                + descriptor->scope->qualified()
-                                + "\", and scoped accessors are not generated yet",
-                            "CAJETA_ERROR_NOT_IMPLEMENTED");
-        }
         auto& llvmFunction = llvmFunctionRef();  // U6.3b: frozen-aware
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Constant* nullPtr = llvm::ConstantPointerNull::get(
+            llvm::cast<llvm::PointerType>(ptrTy));
+        const std::string canonical = parent->getQName()->toCanonical();
+        const bool publishedScope = descriptor->scope
+            && descriptor->scope->kind != CajetaModule::ScopePublication::Kind::Builtin;
 
-        // Cached on the descriptor, so transitive callers share the one global.
-        if (!descriptor->singletonGlobal) {
-            std::string globalName =
-                "__cajeta_singleton_" + parent->getQName()->toCanonical();
-            descriptor->singletonGlobal = new llvm::GlobalVariable(
-                *lmod, ptrTy, /*isConstant=*/false,
-                llvm::GlobalValue::InternalLinkage,
-                llvm::ConstantPointerNull::get(
-                    llvm::cast<llvm::PointerType>(ptrTy)),
-                globalName);
+        const bool transient = isTransient();
+        llvm::GlobalVariable* singletonGV = nullptr;
+        if (!publishedScope && !transient) {
+            // Cached on the descriptor, so transitive callers share the one global.
+            if (!descriptor->singletonGlobal) {
+                descriptor->singletonGlobal = new llvm::GlobalVariable(
+                    *lmod, ptrTy, /*isConstant=*/false,
+                    llvm::GlobalValue::InternalLinkage, nullPtr,
+                    "__cajeta_singleton_" + canonical);
+            }
+            singletonGV = descriptor->singletonGlobal;
         }
-        llvm::GlobalVariable* singletonGV = descriptor->singletonGlobal;
 
         llvm::BasicBlock* entry =
             llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
@@ -68,16 +66,47 @@ namespace cajeta {
         module->setBuilder(builder);
         module->setCurrentMethod(shared_from_this());
 
-        llvm::Value* current =
-            builder->CreateLoad(ptrTy, singletonGV, "cur");
-        llvm::Value* isNull = builder->CreateICmpEQ(
-            current, llvm::ConstantPointerNull::get(
-                llvm::cast<llvm::PointerType>(ptrTy)),
-            "isnull");
-        builder->CreateCondBr(isNull, fresh, cached);
-
-        builder->SetInsertPoint(cached);
-        builder->CreateRet(current);
+        // A scoped component lives in the innermost active frame of its scope; the
+        // lookup fails with ScopeNotActiveException when no frame is active.
+        llvm::Value* frame = nullptr;
+        llvm::Value* componentKey = nullptr;
+        llvm::Value* current = nullptr;
+        if (publishedScope) {
+            llvm::Function* findFn = module->getRuntimeFunction("__cajeta_anchor_find");
+            llvm::Function* getFn = module->getRuntimeFunction("__cajeta_anchor_get");
+            if (!findFn || !getFn) {
+                throw Exception("the runtime has no component-scope anchors",
+                                "CAJETA_ERROR_INTERNAL");
+            }
+            llvm::Constant* scopeKey = CajetaModule::scopeKeyGlobal(
+                llvmFunction->getParent(), descriptor->scope->qualified());
+            componentKey = CajetaModule::componentKeyGlobal(
+                llvmFunction->getParent(), canonical);
+            llvm::BasicBlock* inactive =
+                llvm::BasicBlock::Create(ctx, "inactive", llvmFunction);
+            llvm::BasicBlock* active =
+                llvm::BasicBlock::Create(ctx, "active", llvmFunction);
+            frame = builder->CreateCall(findFn, {scopeKey}, "frame");
+            builder->CreateCondBr(builder->CreateICmpEQ(frame, nullPtr, "noframe"),
+                                  inactive, active);
+            builder->SetInsertPoint(inactive);
+            emitThrowStdlibException(module, "cajeta.error.ScopeNotActiveException",
+                "component " + canonical + " has scope \"" + descriptor->scope->qualified()
+                    + "\", and no activation of it is active");
+            builder->SetInsertPoint(active);
+            current = builder->CreateCall(getFn, {frame, componentKey}, "cur");
+        } else if (!transient) {
+            current = builder->CreateLoad(ptrTy, singletonGV, "cur");
+        }
+        if (transient) {
+            builder->CreateBr(fresh);
+            cached->eraseFromParent();
+        } else {
+            builder->CreateCondBr(builder->CreateICmpEQ(current, nullPtr, "isnull"),
+                                  fresh, cached);
+            builder->SetInsertPoint(cached);
+            builder->CreateRet(current);
+        }
 
         builder->SetInsertPoint(fresh);
 
@@ -88,16 +117,9 @@ namespace cajeta {
             dl.getTypeAllocSize(structTy));
         llvm::CallInst* instance = MemoryManager::createMallocInstruction(
             module, allocSize, fresh);
-
-        // Vtable init — slot 0 of the new instance.
-        if (auto vtable = parent->getVirtualTableGlobal()) {
-            llvm::Constant* vtableRef = CajetaModule::ensureGlobalInModule(
-                lmod, vtable);
-            llvm::Value* vtableSlot = builder->CreateStructGEP(
-                structTy, instance, /*idx=*/0, "vtable_slot");
-            builder->CreateStore(vtableRef, vtableSlot);
-        }
-
+        // Zeroed, with every vtable slot set: a scoped component is dropped at its
+        // scope's end, and the drop reads the ownership word.
+        parent->initInstanceLayout(module, instance, structTy, /*stackAlloc=*/false);
         std::string ctorName = parent->getQName()->getTypeName();
         std::vector<ParameterEntry> noArgs;
         parent->invokeMethod(ctorName, noArgs,
@@ -148,11 +170,8 @@ namespace cajeta {
             } else if (!rd.target || !rd.target->klass) {
                 depPtr = llvm::ConstantPointerNull::get(
                     llvm::cast<llvm::PointerType>(ptrTy));
-            } else if (rd.allocate == CajetaModule::AllocateMode::Scoped) {
-                throw Exception("field " + rd.field->getName() + " injects a scoped component, "
-                                    "and scoped accessors are not generated yet",
-                                "CAJETA_ERROR_NOT_IMPLEMENTED");
-            } else if (rd.allocate == CajetaModule::AllocateMode::Singleton) {
+            } else if (rd.allocate == CajetaModule::AllocateMode::Singleton
+                    || rd.allocate == CajetaModule::AllocateMode::Scoped) {
                 MethodPtr targetInject;
                 for (auto& [mkey, m] : rd.target->klass->getMethods()) {
                     if (m && m->getName() == "__cajeta_inject") {
@@ -174,30 +193,48 @@ namespace cajeta {
                     {},
                     rd.field->getName() + "_dep");
             } else {
-                // OwnerScope or Transient: mirror the alloc + vtable + ctor pattern
-                // for this one field, with no singleton cache. Single-level in v1 —
-                // the fresh target's own @Inject fields are NOT walked here.
+                // A target that declares Transient builds fully through its own
+                // accessor. Otherwise the site asked for a fresh instance of an
+                // undeclared component: one level, its own @Inject fields unfilled.
                 CajetaClassPtr targetClass = rd.target->klass;
-                llvm::Type* targetStructTy = targetClass->getLlvmType();
-                llvm::Constant* targetSize = llvm::ConstantInt::get(
-                    llvm::Type::getInt64Ty(ctx),
-                    dl.getTypeAllocSize(targetStructTy));
-                llvm::CallInst* freshInst = MemoryManager::createMallocInstruction(
-                    module, targetSize, builder->GetInsertBlock());
-                if (auto vt = targetClass->getVirtualTableGlobal()) {
-                    llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
-                        lmod, vt);
-                    llvm::Value* vts = builder->CreateStructGEP(
-                        targetStructTy, freshInst, /*idx=*/0, "vtable_slot");
-                    builder->CreateStore(vtRef, vts);
+                MethodPtr targetInject;
+                if (rd.target->scope && rd.target->scope->name == "Transient"
+                        && rd.target->scope->kind
+                               == CajetaModule::ScopePublication::Kind::Builtin) {
+                    for (auto& [mkey, m] : targetClass->getMethods()) {
+                        if (m && m->getName() == "__cajeta_inject") {
+                            targetInject = m;
+                            break;
+                        }
+                    }
                 }
-                std::string ctorN = targetClass->getQName()->getTypeName();
-                std::vector<ParameterEntry> noArgs2;
-                targetClass->invokeMethod(ctorN, noArgs2,
-                                          /*isConstructor=*/true, freshInst,
-                                          /*callerModule=*/module);
-                depPtr = freshInst;
+                if (targetInject) {
+                    llvm::FunctionType* targetTy = targetInject->getLlvmFunctionType();
+                    llvm::Function* targetFn = CajetaModule::ensureFunctionVisible(
+                        builder, targetInject->getLlvmFunction(), targetTy);
+                    depPtr = builder->CreateCall(targetTy, targetFn, {},
+                                                 rd.field->getName() + "_dep");
+                } else {
+                    llvm::Type* targetStructTy = targetClass->getLlvmType();
+                    llvm::Constant* targetSize = llvm::ConstantInt::get(
+                        llvm::Type::getInt64Ty(ctx),
+                        dl.getTypeAllocSize(targetStructTy));
+                    llvm::CallInst* freshInst = MemoryManager::createMallocInstruction(
+                        module, targetSize, builder->GetInsertBlock());
+                    targetClass->initInstanceLayout(module, freshInst, targetStructTy,
+                                                    /*stackAlloc=*/false);
+                    std::string ctorN = targetClass->getQName()->getTypeName();
+                    std::vector<ParameterEntry> noArgs2;
+                    targetClass->invokeMethod(ctorN, noArgs2,
+                                              /*isConstructor=*/true, freshInst,
+                                              /*callerModule=*/module);
+                    depPtr = freshInst;
+                }
             }
+            // A fresh instance belongs to the holder, which frees it in its own drop.
+            const bool freshOwned = rd.target && !rd.factory
+                && (rd.allocate == CajetaModule::AllocateMode::OwnerScope
+                    || rd.allocate == CajetaModule::AllocateMode::Transient);
 
             // Test-only @Inject override (DI-override-hook.md): in a test build a
             // TestContext binding, keyed by the field type's reflect.Class object,
@@ -267,10 +304,22 @@ namespace cajeta {
                 builder->CreateStore(vtableRef, vtableSlot);
                 builder->CreateStore(
                     llvm::ConstantInt::get(i64Ty,
-                        (uint64_t) IFACE_KIND_BORROWED_CLASS),
+                        (uint64_t) (freshOwned ? IFACE_KIND_OWNED_CLASS
+                                               : IFACE_KIND_BORROWED_CLASS)),
                     kindSlot);
             } else {
                 builder->CreateStore(depPtr, slot);
+                int bit = parent->ownershipBitIndexOf(rd.field);
+                int wordIdx = parent->getOwnershipWordLlvmIndex();
+                if (freshOwned && bit >= 0 && wordIdx >= 0) {
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+                    llvm::Value* wordSlot = builder->CreateStructGEP(
+                        structTy, instance, (unsigned) wordIdx, "own_bits_slot");
+                    llvm::Value* word = builder->CreateLoad(i64Ty, wordSlot);
+                    builder->CreateStore(
+                        builder->CreateOr(word, llvm::ConstantInt::get(i64Ty, 1ULL << bit)),
+                        wordSlot);
+                }
             }
         }
 
@@ -291,25 +340,48 @@ namespace cajeta {
             break;
         }
 
-        // @PreDestroy registration: the user method's `void (this:pointer)` is
-        // ABI-compatible with the `void (*)(void*)` the atexit registry expects, so
-        // no thunk. Registered on the fresh path only, so a singleton registers once.
+        // The @PreDestroy hook, whose `void (this:pointer)` is ABI-compatible with the
+        // `void (*)(void*)` both the atexit registry and a scope table expect.
+        llvm::Value* preDestroy = nullptr;
         for (auto& [mkey, m] : parent->getMethods()) {
             if (!m || !m->findAnnotation("PreDestroy")) continue;
             if (m->getModifiers().find(STATIC) != m->getModifiers().end()) {
                 continue;
             }
-            llvm::Function* userFn = m->getLlvmFunction();
-            if (!userFn) {
-                // Force prototype generation so the function pointer exists.
-                m->getLlvmFunctionType();
-                userFn = m->getLlvmFunction();
+            llvm::FunctionType* hookTy = m->getLlvmFunctionType();
+            if (m->getLlvmFunction()) {
+                preDestroy = CajetaModule::ensureFunctionVisible(
+                    builder, m->getLlvmFunction(), hookTy);
             }
-            if (!userFn) break;
-            llvm::Function* pushFn = module->getRuntimeFunction("__cajeta_atexit_push");
-            if (!pushFn) break;
-            builder->CreateCall(pushFn, {userFn, instance});
             break;
+        }
+
+        if (publishedScope) {
+            // The scope's table owns the instance from here, and ends it at the
+            // scope's end: @PreDestroy, then the virtual drop.
+            llvm::Function* publishFn = module->getRuntimeFunction("__cajeta_anchor_publish");
+            llvm::Function* dropFn = module->getRuntimeFunction("__cajeta_class_virtual_drop");
+            if (!publishFn || !dropFn) {
+                throw Exception("the runtime has no component-scope anchors",
+                                "CAJETA_ERROR_INTERNAL");
+            }
+            builder->CreateCall(publishFn, {frame, componentKey, instance, dropFn,
+                                            preDestroy ? preDestroy : nullPtr});
+            builder->CreateRet(instance);
+            return;
+        }
+
+        // A transient instance belongs to the caller, which frees it.
+        if (transient) {
+            builder->CreateRet(instance);
+            return;
+        }
+
+        // Registered on the fresh path only, so a singleton registers once.
+        if (preDestroy) {
+            if (llvm::Function* pushFn = module->getRuntimeFunction("__cajeta_atexit_push")) {
+                builder->CreateCall(pushFn, {preDestroy, instance});
+            }
         }
 
         builder->CreateStore(instance, singletonGV);

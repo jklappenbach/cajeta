@@ -92,6 +92,10 @@ annotation Scope {
   consumer qualifies it by package: `"dev.cajeta.primavera.Request"`.
 - **2.7** When an application needs its own boundary (a batch import, a CLI
   command, a game frame), it publishes a scope the same way a framework does.
+- **2.8** When several methods in one package publish the same name, each is
+  an anchor of that one scope, so `Tx.run` and `Tx.runReadOnly` can both open
+  `Transaction`. They must agree: one name is never both a method scope and an
+  instance scope, and its anchors give the same `within`.
 
 ## 3. Consuming a scope
 

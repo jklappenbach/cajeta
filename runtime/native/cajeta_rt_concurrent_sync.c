@@ -841,6 +841,142 @@ void __cajeta_fiber_context_free(void* snapshot) {
     __cajeta_fiber_local_free_chain((struct cajeta_fiber_local*) snapshot);
 }
 
+// --- Component-scope anchors ------------------------------------------------
+// An anchored method or instance pushes a frame for its dynamic extent. Its first
+// member is a drop entry, so a return pops it and a throw unwinds it.
+
+struct cajeta_anchor_slot {
+    const void* component;
+    void* instance;
+    void (*drop_fn)(void*);
+    void (*pre_destroy)(void*);
+    struct cajeta_anchor_slot* next;   // older slot
+};
+
+struct cajeta_anchor_table {
+    struct cajeta_anchor_slot* head;   // newest slot
+};
+
+struct cajeta_anchor_frame {
+    struct cajeta_drop_entry drop;
+    const void* key;
+    void* instance;                     // anchor instance, NULL for a method scope
+    struct cajeta_anchor_table** table_slot;
+    struct cajeta_anchor_table* own_table;
+    struct cajeta_anchor_frame* prev;
+};
+
+// The compiler reserves this many bytes for a frame in the anchored function.
+_Static_assert(sizeof(struct cajeta_anchor_frame) == 72,
+               "cajeta_anchor_frame size is baked into the compiler");
+
+void __cajeta_drop_push(struct cajeta_drop_entry* e, void* obj, void (*drop_fn)(void*));
+
+static __thread struct cajeta_anchor_frame* __cajeta_main_anchor_top = NULL;
+static int64_t __cajeta_anchor_tables = 0;
+
+static struct cajeta_anchor_frame** __cajeta_anchor_top_ptr(void) {
+    if (__cajeta_current_fiber) {
+        return &__cajeta_current_fiber->anchor_top;
+    }
+    return &__cajeta_main_anchor_top;
+}
+
+// Drops a table's components newest first, running @PreDestroy before each drop.
+void __cajeta_anchor_table_end(void* table) {
+    struct cajeta_anchor_table* t = (struct cajeta_anchor_table*) table;
+    if (!t) return;
+    struct cajeta_anchor_slot* s = t->head;
+    while (s) {
+        struct cajeta_anchor_slot* older = s->next;
+        if (s->pre_destroy) s->pre_destroy(s->instance);
+        if (s->drop_fn) s->drop_fn(s->instance);
+        free(s);
+        s = older;
+    }
+    free(t);
+    __atomic_fetch_sub(&__cajeta_anchor_tables, 1, __ATOMIC_SEQ_CST);
+}
+
+static void __cajeta_anchor_end(void* p) {
+    struct cajeta_anchor_frame* f = (struct cajeta_anchor_frame*) p;
+    struct cajeta_anchor_frame** top = __cajeta_anchor_top_ptr();
+    if (*top != f) {
+        fprintf(stderr, "cajeta: component-scope anchor ended out of order\n");
+        abort();
+    }
+    *top = f->prev;
+    if (!f->instance) {
+        __cajeta_anchor_table_end(f->own_table);
+        f->own_table = NULL;
+    }
+}
+
+// Enters an anchor. `table_slot` is where an instance scope keeps its table, and
+// NULL gives a method scope a table of its own that ends with the frame.
+void __cajeta_anchor_enter(struct cajeta_anchor_frame* f, const void* key,
+                           void* instance, struct cajeta_anchor_table** table_slot) {
+    f->key = key;
+    f->instance = instance;
+    f->own_table = NULL;
+    f->table_slot = table_slot ? table_slot : &f->own_table;
+    struct cajeta_anchor_frame** top = __cajeta_anchor_top_ptr();
+    f->prev = *top;
+    *top = f;
+    __cajeta_drop_push(&f->drop, f, __cajeta_anchor_end);
+}
+
+// The innermost active frame for `key`, or NULL.
+void* __cajeta_anchor_find(const void* key) {
+    for (struct cajeta_anchor_frame* f = *__cajeta_anchor_top_ptr(); f; f = f->prev) {
+        if (f->key == key) return f;
+    }
+    return NULL;
+}
+
+// The frame's instance of `component`, or NULL when none is built yet.
+void* __cajeta_anchor_get(void* frame, const void* component) {
+    struct cajeta_anchor_frame* f = (struct cajeta_anchor_frame*) frame;
+    struct cajeta_anchor_table* t = *f->table_slot;
+    if (!t) return NULL;
+    for (struct cajeta_anchor_slot* s = t->head; s; s = s->next) {
+        if (s->component == component) return s->instance;
+    }
+    return NULL;
+}
+
+// Records a built component in the frame's table, creating the table on first use.
+void __cajeta_anchor_publish(void* frame, const void* component, void* instance,
+                             void (*drop_fn)(void*), void (*pre_destroy)(void*)) {
+    struct cajeta_anchor_frame* f = (struct cajeta_anchor_frame*) frame;
+    struct cajeta_anchor_table** ts = f->table_slot;
+    if (!*ts) {
+        *ts = (struct cajeta_anchor_table*) calloc(1, sizeof(struct cajeta_anchor_table));
+        if (!*ts) {
+            fprintf(stderr, "cajeta: component-scope table malloc failed\n");
+            abort();
+        }
+        __atomic_fetch_add(&__cajeta_anchor_tables, 1, __ATOMIC_SEQ_CST);
+    }
+    struct cajeta_anchor_slot* s =
+        (struct cajeta_anchor_slot*) malloc(sizeof(struct cajeta_anchor_slot));
+    if (!s) {
+        fprintf(stderr, "cajeta: component-scope slot malloc failed\n");
+        abort();
+    }
+    s->component = component;
+    s->instance = instance;
+    s->drop_fn = drop_fn;
+    s->pre_destroy = pre_destroy;
+    s->next = (*ts)->head;
+    (*ts)->head = s;
+}
+
+// Live component-scope tables, for tests.
+int32_t __cajeta_anchor_table_population(void) {
+    return (int32_t) __atomic_load_n(&__cajeta_anchor_tables, __ATOMIC_SEQ_CST);
+}
+
 // Observability for tests: bumped whenever a drop function actually fires.
 int64_t __cajeta_drop_count = 0;
 

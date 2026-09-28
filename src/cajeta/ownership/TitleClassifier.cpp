@@ -15,6 +15,7 @@
 #include "cajeta/field/Field.h"
 #include "cajeta/field/ParameterField.h"
 #include "cajeta/method/Method.h"
+#include "cajeta/method/ComponentInjectMethod.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaFunctionType.h"
@@ -200,7 +201,10 @@ namespace cajeta::ownership {
             auto mce = std::static_pointer_cast<MethodCallExpression>(leaf);
             uint32_t flags = typeFlags(leaf->getResolvedType());
             if (mce->getMethodCallName() == "__cajeta_inject") {
-                return make(TitleFamily::CallResult, TitleAnswer::Borrow, TitleSource::None, leaf, flags);
+                auto accessor = std::dynamic_pointer_cast<ComponentInjectMethod>(mce->getResolvedMethod());
+                TitleAnswer answer = accessor && accessor->isTransient()
+                    ? TitleAnswer::Owned : TitleAnswer::Borrow;
+                return make(TitleFamily::CallResult, answer, TitleSource::None, leaf, flags);
             }
             MethodPtr rm = mce->getResolvedMethod();
             if (!rm) {

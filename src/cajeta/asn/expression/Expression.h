@@ -659,4 +659,12 @@ namespace cajeta {
         }
         return nullptr;
     }
+
+    // A compile-time text as a static cajeta.lang.String, for synthesized code.
+    llvm::Value* emitStaticStringConstant(CajetaModulePtr module, const std::string& text);
+
+    // Throws a new instance of the stdlib exception `canonical` built from `message`, and
+    // terminates the block. The class must take a single `#String` constructor argument.
+    llvm::Value* emitThrowStdlibException(CajetaModulePtr module, const std::string& canonical,
+                                          const std::string& message);
 }

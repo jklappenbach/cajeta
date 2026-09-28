@@ -1802,6 +1802,29 @@ bool cajetaRhsCarriesRedundantSharp(
         return instGv;
     }
 
+    llvm::Value* emitStaticStringConstant(CajetaModulePtr module, const std::string& text) {
+        return materializeStringConstant(module, text);
+    }
+
+    llvm::Value* emitThrowStdlibException(CajetaModulePtr module, const std::string& canonical,
+                                          const std::string& message) {
+        auto* builder = module->getBuilder();
+        auto it = CajetaType::getCanonicalMap().find(canonical);
+        auto exClass = it == CajetaType::getCanonicalMap().end()
+            ? nullptr : std::dynamic_pointer_cast<CajetaClass>(it->second);
+        llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
+        if (!exClass || !throwFn) {
+            throw Exception("cannot throw " + canonical + ": the class or __cajeta_throw is missing",
+                            "CAJETA_ERROR_INTERNAL");
+        }
+        std::vector<ParameterEntry> entries;
+        entries.push_back(ParameterEntry(CajetaType::of("String"), "",
+                                         materializeStringConstant(module, message)));
+        llvm::Value* exc = exClass->heapConstruct(module, entries);
+        builder->CreateCall(throwFn, {exc});
+        return builder->CreateUnreachable();
+    }
+
     // Branches on `matchBit` and throws ClassCastException("... <msgDetail>") on the
     // false edge, leaving the builder in the match-true block for the caller. Throws
     // through __cajeta_throw, so owned-local unwinding matches a user `throw`.

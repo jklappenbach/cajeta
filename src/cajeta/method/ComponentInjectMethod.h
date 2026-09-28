@@ -1,6 +1,6 @@
-// Synthesized `__cajeta_inject()` static method on each @Component class: the
-// spec's lazy singleton — allocate, dispatch the constructor, assign every
-// @Inject field from its own __cajeta_inject(), then cache in a static global.
+// Synthesized `__cajeta_inject()` static method on each @Component class. It returns
+// the lazy singleton, the instance in the active scope's table, or for a Transient
+// component a fresh instance the caller owns.
 
 #pragma once
 
@@ -16,6 +16,12 @@ namespace cajeta {
 
         void generateCode() override;
         bool emitsReturnFlag() override { return false; }  // raw-IR body: never stores the return flag
+        // Declared `scope = "Transient"`: every call builds, and the caller owns the result.
+        bool isTransient() const {
+            return descriptor && descriptor->scope
+                && descriptor->scope->kind == CajetaModule::ScopePublication::Kind::Builtin
+                && descriptor->scope->name == "Transient";
+        }
 
     private:
         CajetaModule::ComponentDescriptorPtr descriptor;

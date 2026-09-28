@@ -141,13 +141,29 @@ TEST(ScopeNameTests, qualifiedNameResolves) {
     EXPECT_EQ(d->scope->package, "beta");
 }
 
-// One package publishing a name twice is an error at the publication.
-TEST(ScopeNameTests, duplicateInOnePackageFails) {
-    auto f = parseAndResolve(
+// Several methods in one package may open the same scope.
+TEST(ScopeNameTests, severalAnchorsOpenOneScope) {
+    Compiler compiler;
+    compileForInspection(compiler,
         "package test;\n"
         "public class P {\n"
         "    @Scope(\"Request\") public void a() { return; }\n"
         "    @Scope(\"Request\") public void b() { return; }\n"
+        "}\n"
+        "@Component(scope = \"Request\") public class Cart {\n"
+        "    public Cart() { return; }\n"
+        "}\n", "test.P", "scopename");
+    auto f = resolveFailure();
+    EXPECT_EQ(f.id, "") << f.message;
+}
+
+// A name may not be a method scope and an instance scope at once.
+TEST(ScopeNameTests, mixedKindsFail) {
+    auto f = parseAndResolve(
+        "package test;\n"
+        "@Scope(\"Request\") public class P {\n"
+        "    public P() { return; }\n"
+        "    @Scope(\"Request\") public void a() { return; }\n"
         "}\n", "test.P");
     EXPECT_EQ(f.id, "CAJETA_ERROR_DUPLICATE_SCOPE");
     EXPECT_NE(f.message.find("test.Request"), std::string::npos) << f.message;

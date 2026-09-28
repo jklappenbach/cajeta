@@ -735,11 +735,15 @@ namespace cajeta {
                     scopePublications.erase(it);
                     break;
                 }
+                // Several anchors may open one scope, if they agree on what it is.
+                if (q->kind == p->kind && q->within == p->within) continue;
                 throw Exception(
-                    "scope " + p->qualified() + " is published twice in package "
-                        + pkg + ": on " + where + " and on "
+                    "scope " + p->qualified() + " is published on " + where + " and on "
                         + (q->klass ? q->klass->getQName()->toCanonical() : string("?"))
-                        + (q->method ? "." + q->method->getName() : string()),
+                        + (q->method ? "." + q->method->getName() : string())
+                        + (q->kind != p->kind
+                               ? ", once as a method scope and once as an instance scope"
+                               : ", with different `within` scopes"),
                     "CAJETA_ERROR_DUPLICATE_SCOPE");
             }
             scopePublications.push_back(p);
@@ -766,6 +770,73 @@ namespace cajeta {
             }
             publish(ann, ScopePublication::Kind::Method, m, owner + "." + m->getName());
         }
+    }
+
+    namespace {
+        llvm::Constant* linkonceKey(llvm::Module* m, const string& name) {
+            if (auto* g = m->getNamedGlobal(name)) return g;
+            auto* i8 = llvm::Type::getInt8Ty(m->getContext());
+            auto* g = new llvm::GlobalVariable(*m, i8, /*isConstant=*/true,
+                llvm::GlobalValue::LinkOnceODRLinkage,
+                llvm::ConstantInt::get(i8, 0), name);
+            if (llvm::Triple(m->getTargetTriple()).isOSBinFormatCOFF()) {
+                g->setComdat(m->getOrInsertComdat(name));
+            }
+            return g;
+        }
+
+        bool sameParameters(const MethodPtr& a, const MethodPtr& b) {
+            vector<string> pa, pb;
+            for (auto& p : a->getParameterList()) {
+                if (p && p->getName() != "this" && p->getType()) pa.push_back(p->getType()->toCanonical());
+            }
+            for (auto& p : b->getParameterList()) {
+                if (p && p->getName() != "this" && p->getType()) pb.push_back(p->getType()->toCanonical());
+            }
+            return pa == pb;
+        }
+    }
+
+    llvm::Constant* CajetaModule::scopeKeyGlobal(llvm::Module* m, const string& qualifiedScope) {
+        return linkonceKey(m, "__cajeta_scope_key." + qualifiedScope);
+    }
+
+    llvm::Constant* CajetaModule::componentKeyGlobal(llvm::Module* m, const string& canonical) {
+        return linkonceKey(m, "__cajeta_component_key." + canonical);
+    }
+
+    CajetaModule::ScopePublicationPtr CajetaModule::methodScopeOf(const MethodPtr& method) {
+        if (!method || method->isConstructor() || !method->getParent()) return nullptr;
+        auto publicationOn = [](const MethodPtr& m) -> ScopePublicationPtr {
+            for (auto& p : scopePublications) {
+                if (p->kind != ScopePublication::Kind::Method || !p->method) continue;
+                if (p->method == m) return p;
+                if (p->method->getName() == m->getName() && p->klass && m->getParent()
+                        && p->klass->getQName() && m->getParent()->getQName()
+                        && p->klass->getQName()->toCanonical()
+                               == m->getParent()->getQName()->toCanonical()
+                        && sameParameters(p->method, m)) {
+                    return p;
+                }
+            }
+            return nullptr;
+        };
+        if (auto own = publicationOn(method)) return own;
+        if (method->getModifiers().count(STATIC)) return nullptr;
+        vector<CajetaClassPtr> frontier{ method->getParent() };
+        set<CajetaClass*> seen;
+        for (size_t i = 0; i < frontier.size(); ++i) {
+            auto k = frontier[i];
+            if (!k || !seen.insert(k.get()).second) continue;
+            for (auto& sup : k->getSuperClasses()) frontier.push_back(sup);
+            for (auto& iface : k->getImplementedInterfaces()) frontier.push_back(iface);
+            if (i == 0) continue;
+            for (auto& [mkey, m] : k->getMethods()) {
+                if (!m || m->getName() != method->getName() || !sameParameters(m, method)) continue;
+                if (auto p = publicationOn(m)) return p;
+            }
+        }
+        return nullptr;
     }
 
     CajetaModule::ScopePublicationPtr CajetaModule::resolveScopeName(
@@ -795,7 +866,9 @@ namespace cajeta {
                 matches.push_back(p);
             }
         }
-        if (matches.size() == 1) return matches.front();
+        set<string> packages;
+        for (auto& p : matches) packages.insert(p->package);
+        if (packages.size() == 1) return matches.front();
         if (matches.empty()) {
             string published = "Singleton, Transient";
             for (auto& p : scopePublications) published += ", " + p->qualified();
@@ -805,9 +878,9 @@ namespace cajeta {
                 "CAJETA_ERROR_UNKNOWN_SCOPE");
         }
         string both;
-        for (auto& p : matches) {
+        for (auto& pkg : packages) {
             if (!both.empty()) both += " and ";
-            both += p->qualified();
+            both += pkg + "." + shortName;
         }
         throw Exception(
             use + " names scope \"" + name + "\", which is published as " + both

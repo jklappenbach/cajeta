@@ -595,6 +595,14 @@ namespace cajeta {
         static const vector<ScopePublicationPtr>& getScopePublications() {
             return scopePublications;
         }
+        // Address-identity keys shared by every module: one per published scope and one
+        // per scoped component, emitted linkonce so separate compilations agree.
+        static llvm::Constant* scopeKeyGlobal(llvm::Module* m, const string& qualifiedScope);
+        static llvm::Constant* componentKeyGlobal(llvm::Module* m, const string& canonical);
+        // The published method scope that `method` enters: its own @Scope, or one on a
+        // method it overrides or implements. Null when it anchors nothing.
+        static ScopePublicationPtr methodScopeOf(const MethodPtr& method);
+
         // The publication `name` resolves to, a builtin for Singleton and Transient.
         // Throws on an unknown or unqualified clashing name; `use` names the user.
         static ScopePublicationPtr resolveScopeName(const string& name, const string& use);

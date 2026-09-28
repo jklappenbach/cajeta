@@ -396,6 +396,9 @@ namespace cajeta {
         void setTransferWordArg(llvm::Value* v) { transferWordArg = v; }
         // Seed a drop entry per droppable class-typed formal, armed from its
         // transfer-word bit. Prologue-only; a no-op without the word.
+        // Enters the published method scope this method anchors, if any: a frame pushed
+        // on the drop chain, so every return and every throw ends the scope.
+        void emitScopeAnchorEntry(CajetaModulePtr module);
         void emitFormalDropEntries(CajetaModulePtr module);
 
         // Does the body RETAIN this formal — store it into a field or element?

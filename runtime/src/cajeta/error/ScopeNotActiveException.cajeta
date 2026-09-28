@@ -1,0 +1,12 @@
+package cajeta.error;
+
+/**
+ * Thrown when a scoped component is injected outside every activation of the scope
+ * it declares. The message names the component and the scope.
+ */
+public class ScopeNotActiveException extends RecoverableException {
+    public ScopeNotActiveException(#String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

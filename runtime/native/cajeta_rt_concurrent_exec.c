@@ -238,6 +238,9 @@ struct cajeta_exception_frame;
 // FiberLocal binding frame; full definition in the § FiberLocal section below.
 struct cajeta_fiber_local;
 
+// Component-scope anchor frame; full definition in the § anchors section.
+struct cajeta_anchor_frame;
+
 struct cajeta_fiber {
     ucontext_t ctx;
     void* stack;
@@ -253,6 +256,8 @@ struct cajeta_fiber {
     struct cajeta_exception_frame* exc_top;
     // FiberLocal binding stack; a fresh fiber inherits a deep copy (task_run).
     struct cajeta_fiber_local* fl_top;
+    // Active component-scope anchors, innermost first.
+    struct cajeta_anchor_frame* anchor_top;
     // Cancellation marker: when non-NULL the fiber's next task_wait resume
     // throws this Throwable* instead of returning.
     void* cancel_with;
@@ -830,6 +835,7 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     // Inherit-on-spawn: a DEEP copy of the spawner's FiberLocal chain, so the
     // child's lifetime does not depend on the spawner's pop order.
     f->fl_top = __cajeta_fiber_local_snapshot_current();
+    f->anchor_top = NULL;
     f->arena = (cajeta_arena) { NULL, 0, 0, 0, 0 };  // lazily mapped on first use
     f->home_carrier = -1;   // assigned on first dispatch (see carrier_loop)
     if (fiber_slot) *fiber_slot = f;

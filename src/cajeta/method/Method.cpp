@@ -904,6 +904,31 @@ namespace cajeta {
         }
     }
 
+    void Method::emitScopeAnchorEntry(CajetaModulePtr module) {
+        if (findAnnotation("Kernel") || findAnnotation("Device") || findAnnotation("Native")) {
+            return;
+        }
+        auto pub = CajetaModule::methodScopeOf(shared_from_this());
+        if (!pub) return;
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Function* enterFn = module->getRuntimeFunction("__cajeta_anchor_enter");
+        if (!enterFn) {
+            throw Exception("the runtime has no __cajeta_anchor_enter", "CAJETA_ERROR_INTERNAL");
+        }
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+            parentFn->getEntryBlock().begin());
+        llvm::AllocaInst* frame = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(llvm::Type::getInt8Ty(ctx), 72), nullptr, "anchor_frame");
+        frame->setAlignment(llvm::Align(8));
+        llvm::Constant* key = CajetaModule::scopeKeyGlobal(parentFn->getParent(), pub->qualified());
+        llvm::Constant* none = llvm::ConstantPointerNull::get(ptrTy);
+        builder->CreateCall(enterFn, {frame, key, none, none});
+        registerDropEntry(frame);
+    }
+
     bool Method::returnsStackValue() {
         if (returnsStackValueCache != -1) {
             return returnsStackValueCache == 1;
@@ -2281,6 +2306,7 @@ namespace cajeta {
             setTransferWordArg(nullptr);
         }
         emitFormalDropEntries(module);
+        emitScopeAnchorEntry(module);
 
         // A closure-specialized instance had its function-typed parameters dropped
         // from the signature: bind each name so a call lowers to a DIRECT call.
