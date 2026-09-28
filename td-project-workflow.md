@@ -93,6 +93,31 @@ writes only its own file. The **implement** skill governs this.
    skill. It drives the focus stack so the documents accurately store state, and
    state stays visible to the developer.
 
+## Runs — a test or validation run is announced before it starts
+
+**Do not start a test or validation run without publishing the time of
+start and the estimated time of end.** (Julian, 2026-09-28.) That is any
+suite, sweep, build-and-test leg, or measurement run, foreground or
+background, first run or rerun.
+
+In the same message that starts the run:
+
+- the wall-clock start, `HH:MM`;
+- the estimated end, `HH:MM`, and the basis in a few words: the last
+  measured duration of that suite on this box (`test/test-durations.seed.tsv`
+  for cajeta, the previous leg's timestamps for cajeta-llm), or a count of
+  tests times a known per-test cost;
+- when the basis is weak, say so and give the hard cap (the timeout) too.
+
+When the estimate passes, the next message reports against it, early, on
+time, or late and why, before anything else. A run that goes quietly past
+its estimate is the failure this rule exists to prevent: an unannounced run
+has no deadline, so nobody can tell late from stuck, and nobody can plan
+around it. The runners themselves stream every result and a heartbeat
+(`cajeta_tests.sh` in non-interactive mode, cajeta-llm's `run-tests.sh`
+through its hang watchdog), and this rule is the human half of that: the
+log shows progress, the announcement says what progress to expect.
+
 ## Releasing — `main` is the conduit, `release` is the train
 
 Two long-lived branches, and which one a commit is on decides whether it can
