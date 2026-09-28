@@ -1425,6 +1425,82 @@ TEST(XpuCpuDistCoopVerb, waveOpLeftScalarIsRefused) {
            " have made that silently wrong for any k-varying operand)";
 }
 
+// ---- GATE: a Group kernel with a forced-width coop tile is REFUSED ------ //
+//
+// Since the Group surface folded onto the wave (2026-09-28), a Group kernel
+// is launched by the host at Device.waveSize() lanes per group. A distributed
+// coop tile forces the kernel to its own width (coop-wavew, 32 here), which
+// that launch geometry cannot follow per kernel. Refused by name; the arm
+// that proves the check fires. The does-not-fire arms are the Group probes
+// in XpuCpuFissionUniformizeTests, which lower and answer at the host width.
+const char* kGroupPlusCoopSrc = R"CJ(
+package test;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.WaveVector;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Group;
+public class M {
+    @Kernel
+    public static void gc(KernelBuffer<float32> y, KernelBuffer<int8> a,
+                          KernelBuffer<int8> b, KernelBuffer<float32> rowF) {
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> mc;
+        CooperativeMatrix<float32,16,16,2> facc;
+        facc.splat(0.0f);
+        mc.splat(0);
+        ma.load(a, 0, 0, 16);
+        mb.load(b, 0, 0, 16);
+        mc.mma(ma, mb);
+        mc.scaledAccumInto(facc, rowF, WaveVector.ofLane(1.0f));
+        int32 w = Group.width();
+        facc.store(y, 0, 0, 16);
+        if (Group.laneId() == 0) { y[(int64) 0] = (float32) w; }
+    }
+    public static int32 run() {
+        int8[] ha = heap int8[256];
+        int8[] hb = heap int8[256];
+        float32[] hrf = heap float32[16];
+        float32[] hy = heap float32[256];
+        int32 i = 0;
+        while (i < 256) { ha[i] = (int8) 1; hb[i] = (int8) 1; hy[i] = -1000.0f; i = i + 1; }
+        i = 0;
+        while (i < 16) { hrf[i] = 1.0f; i = i + 1; }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(256);
+        KernelBuffer<int8> b = heap KernelBuffer<int8>(256);
+        KernelBuffer<float32> rowF = heap KernelBuffer<float32>(16);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(256);
+        a.upload(ha);
+        b.upload(hb);
+        rowF.upload(hrf);
+        y.upload(hy);
+        KernelStream s #= KernelStream.current();
+        try {
+            gc.launch(s, grid: [1], block: [32])(y, a, b, rowF);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        y.download(hy);
+        if (hy[0] == -1000.0f) { return -1; }
+        return 0;
+    }
+}
+)CJ";
+
+TEST(XpuCpuDistCoopVerb, aGroupKernelWithAForcedWidthCoopTileIsRefused) {
+    unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
+    int r = runOnCpu(kGroupPlusCoopSrc);
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
+    EXPECT_EQ(r, -1)
+        << "a Group kernel carrying a distributed coop tile REGISTERED on cpu; r="
+        << r << " (the tile forces wave 32, the host launches Group kernels at"
+           " Device.waveSize() lanes per group)";
+}
+
 // ---- PROBE: one COLUMN-MAJOR mb reused across FOUR mmas ---------------- //
 //
 // deqMw4's inner pattern that no test covers: mb.load(deq, off, 1, 16) ONCE
