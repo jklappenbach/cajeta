@@ -43,6 +43,13 @@ namespace cajeta {
     llvm::Value* loadIfLValue(CajetaModulePtr module, llvm::Value* v,
                               ExpressionPtr ast = nullptr);
 
+    class CajetaClass;
+    // Stores an interface value into an inline 24-byte body at `slot`, dropping the
+    // owned value it displaces; the kind word follows `rhsAst`'s title.
+    void storeInterfaceInlineBody(CajetaModulePtr module, llvm::Value* slot,
+        llvm::Value* rhsVal, const std::shared_ptr<CajetaClass>& ifaceClass,
+        ExpressionPtr rhsAst);
+
     // Wraps a null-terminated `i8*` into a heap class String, mode-0 (owned), whose
     // `bytes` holds a COPY. `freeAfterWrap` frees the intermediate (not .rodata).
     llvm::Value* wrapCStringIntoClassString(CajetaModulePtr module,

@@ -221,7 +221,7 @@ namespace cajeta {
     // Stores an interface value into an INLINE 24-byte {data, vtable, kind} body:
     // a concrete class instance assembles the body in place, an interface value
     // memcpys it, and null memsets it. A plain store would write only `data`.
-    static void storeInterfaceInlineBody(CajetaModulePtr module, llvm::Value* slot,
+    void storeInterfaceInlineBody(CajetaModulePtr module, llvm::Value* slot,
             llvm::Value* rhsVal, const std::shared_ptr<CajetaClass>& ifaceClass,
             ExpressionPtr rhsAst) {
         auto* builder = module->getBuilder();
@@ -272,6 +272,7 @@ namespace cajeta {
             builder->CreateMemSet(slot, builder->getInt8(0), bodyBytes,
                 llvm::MaybeAlign(8));
         } else {
+            rhsVal = CajetaClass::interfaceSource(module, builder, rhsVal, bodyTy);
             displace(builder->CreateLoad(ptrTy, rhsVal, "iface_incoming"));
             const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
             uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
@@ -1861,6 +1862,49 @@ namespace cajeta {
                             result = lhs;
                             break;
                         }
+                    }
+                }
+                // An interface local copies into its own body; an inactive entry means its value moved out.
+                if (lhsAst && !lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                if (auto idLhs = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
+                    auto hsc = module->getScopeStack().peek();
+                    FieldPtr hf = hsc ? hsc->getField(idLhs->getTextValue()) : nullptr;
+                    auto lhsCls = hf && hf->getIfaceHome()
+                        && lhs == hf->getOrCreateAllocation()
+                        ? dynamic_pointer_cast<CajetaClass>(lhsAst->getResolvedType()) : nullptr;
+                    if (lhsCls && lhsCls->isInterface()) {
+                        llvm::Value* home = hf->getIfaceHome();
+                        auto selfId = dynamic_pointer_cast<IdentifierExpression>(rhsAst);
+                        if (!(selfId && selfId->getTextValue() == idLhs->getTextValue())) {
+                            auto& hctx = *module->getLlvmContext();
+                            llvm::Type* i8 = llvm::Type::getInt8Ty(hctx);
+                            llvm::Type* i64 = llvm::Type::getInt64Ty(hctx);
+                            llvm::Type* bodyTy = lhsCls->getLlvmType();
+                            llvm::Value* activePtr = nullptr;
+                            if (llvm::Value* entry = hf->getDropEntry()) {
+                                activePtr = builder->CreateInBoundsGEP(i8, entry,
+                                    llvm::ConstantInt::get(i64, 24), "iface.active.ptr");
+                                llvm::Value* kindSlot = builder->CreateStructGEP(
+                                    bodyTy, home, 2, "iface_kind");
+                                llvm::Value* live = builder->CreateICmpNE(
+                                    builder->CreateLoad(i8, activePtr),
+                                    llvm::ConstantInt::get(i8, 0));
+                                builder->CreateStore(builder->CreateSelect(live,
+                                    builder->CreateLoad(i64, kindSlot),
+                                    llvm::ConstantInt::get(i64, 0)), kindSlot);
+                            }
+                            storeInterfaceInlineBody(module, home, loadR(rhs), lhsCls, rhsAst);
+                            if (activePtr) {
+                                llvm::Value* k = builder->CreateLoad(i64,
+                                    builder->CreateStructGEP(bodyTy, home, 2, "iface_kind"));
+                                builder->CreateStore(builder->CreateZExt(
+                                    builder->CreateICmpEQ(k, llvm::ConstantInt::get(i64,
+                                        (uint64_t) IFACE_KIND_OWNED_CLASS)), i8), activePtr);
+                            }
+                        }
+                        hsc->markAssigned(idLhs->getTextValue());
+                        result = home;
+                        break;
                     }
                 }
                 // An interface FIELD holds the 24-byte body inline, while an interface VALUE is

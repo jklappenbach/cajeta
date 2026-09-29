@@ -5469,18 +5469,18 @@ bool cajetaRhsCarriesRedundantSharp(
         outerBuilder->CreateStore(thrownPtr, trampExcSlot);
         outerBuilder->CreateBr(trampFinishBB);
 
-        // --- finish: signal done + free ctx (runs on both paths) ---
+        // --- finish: free ctx, then signal done, so the join sees nothing of the child live ---
         outerBuilder->SetInsertPoint(trampFinishBB);
         llvm::Value* trampDoneSlot = outerBuilder->CreateStructGEP(
             taskTy, taskPtr, CajetaTask::DONE_FIELD_INDEX,
             "task_done_slot");
-        if (llvm::Function* completeFn = module->getRuntimeFunction(
-                "__cajeta_task_complete")) {
-            outerBuilder->CreateCall(completeFn, {trampDoneSlot});
-        }
         if (llvm::Function* freeFn = module->getRuntimeFunction(
                 "__cajeta_free")) {
             outerBuilder->CreateCall(freeFn, {ctxParam});
+        }
+        if (llvm::Function* completeFn = module->getRuntimeFunction(
+                "__cajeta_task_complete")) {
+            outerBuilder->CreateCall(completeFn, {trampDoneSlot});
         }
         outerBuilder->CreateRetVoid();
 

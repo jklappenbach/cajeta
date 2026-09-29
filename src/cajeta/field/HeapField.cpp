@@ -24,6 +24,11 @@ namespace cajeta {
                     initVal = llvm::ConstantPointerNull::get(
                         llvm::PointerType::get(type->getLlvmType()->getContext(), 0));
                 }
+                if (initVal->getType()->isStructTy()) {
+                    llvm::Value* spill = module->createEntryAlloca(initVal->getType(), "init_value");
+                    module->getBuilder()->CreateStore(initVal, spill);
+                    initVal = spill;
+                }
                 module->getBuilder()->CreateStore(initVal, alloca);
             }
         }

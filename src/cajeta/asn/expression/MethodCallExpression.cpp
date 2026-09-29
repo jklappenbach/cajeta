@@ -2949,10 +2949,8 @@ namespace cajeta {
                         llvm::Value* fmt = loadStringArg(module, parameters[0].expression);
                         size_t argCount = parameters.size() - 1;
 
-                        llvm::Value* argv = builder->CreateAlloca(
-                            ptrTy,
-                            llvm::ConstantInt::get(i64Ty, argCount),
-                            "printtmpl.argv");
+                        llvm::Value* argv = module->createEntryAlloca(
+                            llvm::ArrayType::get(ptrTy, argCount), "printtmpl.argv");
 
                         for (size_t ai = 0; ai < argCount; ++ai) {
                             llvm::Value* raw = loadStringArg(module,
@@ -3096,6 +3094,7 @@ namespace cajeta {
                             return builder->CreateCall(fn, {streamArg, fmt, count, dataPtr});
                         }
                         llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+                        llvm::Value* printfSp = builder->CreateStackSave("printf.sp");
                         llvm::Value* cstrArr = builder->CreateAlloca(
                             ptrTy, count, "printf.cstrs");
                         llvm::BasicBlock* condBB = llvm::BasicBlock::Create(
@@ -3104,8 +3103,7 @@ namespace cajeta {
                             llvmCtx, "printf.loop.body", parentFn);
                         llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(
                             llvmCtx, "printf.loop.done", parentFn);
-                        llvm::AllocaInst* iSlot = builder->CreateAlloca(
-                            i64Ty, nullptr, "printf.i");
+                        llvm::AllocaInst* iSlot = module->createEntryAlloca(i64Ty, "printf.i");
                         builder->CreateStore(
                             llvm::ConstantInt::get(i64Ty, 0), iSlot);
                         builder->CreateBr(condBB);
@@ -3161,7 +3159,9 @@ namespace cajeta {
                         builder->CreateStore(iNext, iSlot);
                         builder->CreateBr(condBB);
                         builder->SetInsertPoint(doneBB);
-                        return builder->CreateCall(fn, {streamArg, fmt, count, cstrArr});
+                        llvm::Value* printed = builder->CreateCall(fn, {streamArg, fmt, count, cstrArr});
+                        builder->CreateStackRestore(printfSp);
+                        return printed;
                     }
                     return builder->CreateCall(fn, {streamArg, fmt, count, dataPtr});
                 }
@@ -3503,8 +3503,7 @@ namespace cajeta {
                         llvm::Value* octData = builder->CreateInBoundsGEP(
                             i8Ty, octArr, llvm::ConstantInt::get(i64Ty, 8), "na.octets");
 
-                        llvm::Value* scratch = builder->CreateAlloca(
-                            llvm::ArrayType::get(i8Ty, 128), nullptr, "na.scratch");
+                        llvm::Value* scratch = module->createEntryAlloca(llvm::ArrayType::get(i8Ty, 128), "na.scratch");
                         llvm::Value* addrlen = builder->CreateCall(packFn,
                             {family, octData, port, scratch,
                              llvm::ConstantInt::get(i32Ty, 128)}, "na.addrlen");
@@ -5850,8 +5849,7 @@ namespace cajeta {
                     auto recvVc = dynamic_pointer_cast<CajetaClass>(receiverType);
                     if (recvVc && recvVc->isValueType()) {
                         llvm::Value* spill =
-                            builder->CreateAlloca(receiver->getType(),
-                                nullptr, "fresh.value.recv");
+                            module->createEntryAlloca(receiver->getType(), "fresh.value.recv");
                         builder->CreateStore(receiver, spill);
                         receiver = spill;
                     }
@@ -6296,12 +6294,11 @@ namespace cajeta {
                     dl.getTypeAllocSize(recBodyTy));
                 llvm::Value* src = receiver;
                 if (src->getType() == recBodyTy) {
-                    llvm::Value* tmp = builder->CreateAlloca(recBodyTy);
+                    llvm::Value* tmp = module->createEntryAlloca(recBodyTy, "with.src");
                     builder->CreateStore(src, tmp);
                     src = tmp;
                 }
-                llvm::Value* copy = builder->CreateAlloca(
-                    recBodyTy, nullptr, "with.copy");
+                llvm::Value* copy = module->createEntryAlloca(recBodyTy, "with.copy");
                 builder->CreateMemCpy(copy, align, src, align, sizeV);
                 for (auto& p : parameters) {
                     string fieldName = p.label;
@@ -8006,16 +8003,12 @@ namespace cajeta {
                         llvm::Value* fd = loadNetFd();
                         // sockaddr scratch (128 = the sockaddr_storage upper bound), a len in/out i32,
                         // an octets[16] out and a port i32 out.
-                        llvm::Value* scratch = builder->CreateAlloca(
-                            llvm::ArrayType::get(i8Ty, 128), nullptr, "net.scratch");
-                        llvm::Value* lenSlot = builder->CreateAlloca(
-                            i32Ty, nullptr, "net.addrlen");
+                        llvm::Value* scratch = module->createEntryAlloca(llvm::ArrayType::get(i8Ty, 128), "net.scratch");
+                        llvm::Value* lenSlot = module->createEntryAlloca(i32Ty, "net.addrlen");
                         builder->CreateStore(
                             llvm::ConstantInt::get(i32Ty, 128), lenSlot);
-                        llvm::Value* octets = builder->CreateAlloca(
-                            llvm::ArrayType::get(i8Ty, 16), nullptr, "net.octets");
-                        llvm::Value* portSlot = builder->CreateAlloca(
-                            i32Ty, nullptr, "net.port");
+                        llvm::Value* octets = module->createEntryAlloca(llvm::ArrayType::get(i8Ty, 16), "net.octets");
+                        llvm::Value* portSlot = module->createEntryAlloca(i32Ty, "net.port");
                         builder->CreateStore(
                             llvm::ConstantInt::get(i32Ty, 0), portSlot);
                         builder->CreateCall(nameFn, {fd, scratch, lenSlot});
@@ -8177,12 +8170,10 @@ namespace cajeta {
                         module->getRuntimeFunction("__cajeta_net_get_linger");
                     if (fn) {
                         llvm::Value* fd = loadNetFd();
-                        llvm::Value* onOut = builder->CreateAlloca(
-                            i32Ty, nullptr, "linger.on");
+                        llvm::Value* onOut = module->createEntryAlloca(i32Ty, "linger.on");
                         builder->CreateStore(
                             llvm::ConstantInt::get(i32Ty, 0), onOut);
-                        llvm::Value* secsOut = builder->CreateAlloca(
-                            i32Ty, nullptr, "linger.secs");
+                        llvm::Value* secsOut = module->createEntryAlloca(i32Ty, "linger.secs");
                         builder->CreateStore(
                             llvm::ConstantInt::get(i32Ty, 0), secsOut);
                         builder->CreateCall(fn, {fd, onOut, secsOut});
@@ -8237,8 +8228,7 @@ namespace cajeta {
                         llvm::Value* octData = builder->CreateInBoundsGEP(
                             i8Ty, octArr, llvm::ConstantInt::get(i64Ty, 8),
                             "udp.octets");
-                        scratchOut = builder->CreateAlloca(
-                            llvm::ArrayType::get(i8Ty, 128), nullptr, "udp.sa");
+                        scratchOut = module->createEntryAlloca(llvm::ArrayType::get(i8Ty, 128), "udp.sa");
                         addrlenOut = builder->CreateCall(packFn,
                             {family, octData, port, scratchOut,
                              llvm::ConstantInt::get(i32Ty, 128)}, "udp.addrlen");
@@ -8349,11 +8339,8 @@ namespace cajeta {
                             llvm::Value* off = loadI64Arg(1);
                             llvm::Value* cap = loadI64Arg(2);
                             llvm::Value* buf = bufPtrAtOffset(0, off);
-                            llvm::Value* scratch = builder->CreateAlloca(
-                                llvm::ArrayType::get(i8Ty, 128), nullptr,
-                                "udp.rf.sa");
-                            llvm::Value* lenSlot = builder->CreateAlloca(
-                                i32Ty, nullptr, "udp.rf.len");
+                            llvm::Value* scratch = module->createEntryAlloca(llvm::ArrayType::get(i8Ty, 128), "udp.rf.sa");
+                            llvm::Value* lenSlot = module->createEntryAlloca(i32Ty, "udp.rf.len");
                             builder->CreateStore(
                                 llvm::ConstantInt::get(i32Ty, 128), lenSlot);
                             llvm::Value* n = builder->CreateCall(fn,
@@ -8364,15 +8351,12 @@ namespace cajeta {
                                 builder->CreateIntCast(n, i32Ty, true);
                             llvm::Value* addrlen = builder->CreateLoad(
                                 i32Ty, lenSlot, "udp.rf.len.v");
-                            llvm::Value* octets = builder->CreateAlloca(
-                                llvm::ArrayType::get(i8Ty, 16), nullptr,
-                                "udp.rf.oct");
+                            llvm::Value* octets = module->createEntryAlloca(llvm::ArrayType::get(i8Ty, 16), "udp.rf.oct");
                             builder->CreateMemSet(octets,
                                 llvm::ConstantInt::get(i8Ty, 0),
                                 llvm::ConstantInt::get(i64Ty, 16),
                                 llvm::MaybeAlign(1));
-                            llvm::Value* portSlot = builder->CreateAlloca(
-                                i32Ty, nullptr, "udp.rf.port");
+                            llvm::Value* portSlot = module->createEntryAlloca(i32Ty, "udp.rf.port");
                             builder->CreateStore(
                                 llvm::ConstantInt::get(i32Ty, 0), portSlot);
                             llvm::Value* fam = builder->CreateCall(unpackFn,
@@ -8469,22 +8453,16 @@ namespace cajeta {
                             "__cajeta_net_sockaddr_unpack");
                         if (nameFn && unpackFn) {
                             llvm::Value* fd = loadNetFd();
-                            llvm::Value* scratch = builder->CreateAlloca(
-                                llvm::ArrayType::get(i8Ty, 128), nullptr,
-                                "udp.la.sa");
-                            llvm::Value* lenSlot = builder->CreateAlloca(
-                                i32Ty, nullptr, "udp.la.len");
+                            llvm::Value* scratch = module->createEntryAlloca(llvm::ArrayType::get(i8Ty, 128), "udp.la.sa");
+                            llvm::Value* lenSlot = module->createEntryAlloca(i32Ty, "udp.la.len");
                             builder->CreateStore(
                                 llvm::ConstantInt::get(i32Ty, 128), lenSlot);
-                            llvm::Value* octets = builder->CreateAlloca(
-                                llvm::ArrayType::get(i8Ty, 16), nullptr,
-                                "udp.la.oct");
+                            llvm::Value* octets = module->createEntryAlloca(llvm::ArrayType::get(i8Ty, 16), "udp.la.oct");
                             builder->CreateMemSet(octets,
                                 llvm::ConstantInt::get(i8Ty, 0),
                                 llvm::ConstantInt::get(i64Ty, 16),
                                 llvm::MaybeAlign(1));
-                            llvm::Value* portSlot = builder->CreateAlloca(
-                                i32Ty, nullptr, "udp.la.port");
+                            llvm::Value* portSlot = module->createEntryAlloca(i32Ty, "udp.la.port");
                             builder->CreateStore(
                                 llvm::ConstantInt::get(i32Ty, 0), portSlot);
                             builder->CreateCall(nameFn, {fd, scratch, lenSlot});
@@ -8905,8 +8883,7 @@ namespace cajeta {
                             parameters[ai].expression)) {
                         llvm::Value* slot = tempV;
                         if (!tempV->getType()->isPointerTy()) {
-                            slot = builder->CreateAlloca(tempV->getType(),
-                                nullptr, "temp.value.rel");
+                            slot = module->createEntryAlloca(tempV->getType(), "temp.value.rel");
                             builder->CreateStore(tempV, slot);
                         }
                         llvm::Function* relFn = CajetaModule::ensureFunctionInModule(
@@ -9008,7 +8985,7 @@ namespace cajeta {
                         if (llvm::Type* bodyTy = retClass->getLlvmType()) {
                             if (callResult->getType() == bodyTy) {
                                 llvm::Value* bodyAlloca =
-                                    builder->CreateAlloca(bodyTy);
+                                    module->createEntryAlloca(bodyTy, "iface_ret");
                                 builder->CreateStore(callResult, bodyAlloca);
                                 return bodyAlloca;
                             }

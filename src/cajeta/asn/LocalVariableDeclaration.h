@@ -53,4 +53,8 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
+    // Whether `name` is assigned under `node`; with `ownedShapedOnly`, by an RHS that may carry a title.
+    bool nameAssignedIn(const AbstractSyntaxNodePtr& node, const std::string& name,
+                        bool ownedShapedOnly);
+
 } // code

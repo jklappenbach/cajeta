@@ -369,8 +369,7 @@ namespace cajeta {
                                     parameters[ai].expression)) {
                             llvm::Value* slot = tempV;
                             if (!tempV->getType()->isPointerTy()) {
-                                slot = builder->CreateAlloca(tempV->getType(),
-                                    nullptr, "temp.value.rel");
+                                slot = module->createEntryAlloca(tempV->getType(), "temp.value.rel");
                                 builder->CreateStore(tempV, slot);
                             }
                             llvm::Function* relFn =

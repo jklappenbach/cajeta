@@ -406,6 +406,13 @@ namespace cajeta {
                                     llvm::Value* thisPtr, const StructurePropertyPtr& prop,
                                     const AbstractSyntaxNodePtr& init);
 
+        // A readable body for `src`: a struct value is spilled, a null pointer reads as zero.
+        static llvm::Value* interfaceSource(const CajetaModulePtr& module, llvm::IRBuilder<>* b,
+                                            llvm::Value* src, llvm::Type* bodyTy);
+        // Copies the interface body at `src` into `dst`; a null `src` zeroes `dst`.
+        static void copyInterfaceBody(const CajetaModulePtr& module, llvm::IRBuilder<>* b,
+                                      llvm::Value* dst, llvm::Value* src, llvm::Type* bodyTy);
+
         bool needsOwnershipWord() const {
             for (const auto& q : propertyList) {
                 if (!q->isStatic() && fieldHasOwnershipBit(q)) return true;

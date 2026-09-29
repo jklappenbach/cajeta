@@ -552,11 +552,10 @@ namespace cajeta {
         }
         return false;
     }
-    // Does any assignment to `name` under `node` carry an OWNED-shaped RHS?
-    // Shape-only and conservative: a call result or a conditional MAY carry a
-    // title. A false positive costs one inactive entry; a miss leaks.
-    static bool nameReassignedOwned(const AbstractSyntaxNodePtr& node,
-                                    const std::string& name) {
+    // Does any assignment to `name` under `node` exist (with `ownedShapedOnly`, one whose
+    // RHS MAY carry a title)? Shape-only: a false positive costs an entry, a miss leaks.
+    bool nameAssignedIn(const AbstractSyntaxNodePtr& node, const std::string& name,
+                        bool ownedShapedOnly) {
         if (!node) return false;
         if (auto bop = dynamic_pointer_cast<BinaryOpExpression>(node)) {
             auto& bk = bop->getChildren();
@@ -564,6 +563,7 @@ namespace cajeta {
                 auto lhsId = dynamic_pointer_cast<IdentifierExpression>(bk[0]);
                 auto rhs = bk[1];
                 if (lhsId && lhsId->getTextValue() == name && rhs) {
+                    if (!ownedShapedOnly) return true;
                     if (isMoveKind(rhs)
                             || dynamic_pointer_cast<MethodCallExpression>(rhs)
                             || dynamic_pointer_cast<CallExpression>(rhs)
@@ -588,9 +588,13 @@ namespace cajeta {
         std::vector<AbstractSyntaxNodePtr> subs;
         collectSubNodes(node, subs);
         for (auto& child : subs) {
-            if (nameReassignedOwned(child, name)) return true;
+            if (nameAssignedIn(child, name, ownedShapedOnly)) return true;
         }
         return false;
+    }
+    static bool nameReassignedOwned(const AbstractSyntaxNodePtr& node,
+                                    const std::string& name) {
+        return nameAssignedIn(node, name, true);
     }
     // True when a use of `name` carries the value OUT of this scope: under a
     // return, a `#`-move, a lambda capture, or a `#`-transferred call/ctor
@@ -929,9 +933,9 @@ namespace cajeta {
                 }
             }
 
-            // An interface local's slot points at a 24-byte fat-pointer body:
-            // with no initializer, allocate and zero one; from a class RHS,
-            // build one (data, vtable, kind); from an interface RHS, alias it.
+            // An interface local owns one entry-block body and its slot always points
+            // there: a class RHS is assembled in it, an interface RHS is copied in, and
+            // the kind word carries the initializer's title.
             if (auto ifaceKlass = dynamic_pointer_cast<CajetaClass>(type)) {
                 if (ifaceKlass->isInterface()) {
                     auto* builder = module->getBuilder();
@@ -939,79 +943,65 @@ namespace cajeta {
                     llvm::Type* bodyTy = type->getLlvmType();
                     llvm::Type* ptrTy = llvm::PointerType::get(lctx, 0);
                     llvm::Type* i64Ty = llvm::Type::getInt64Ty(lctx);
+                    llvm::Value* slot = field->getOrCreateAllocation();
+                    llvm::Value* home = module->createEntryAlloca(bodyTy, "iface_local");
+                    llvm::Constant* ownedK = llvm::ConstantInt::get(
+                        i64Ty, (uint64_t) IFACE_KIND_OWNED_CLASS);
+                    llvm::Constant* borrowedK = llvm::ConstantInt::get(
+                        i64Ty, (uint64_t) IFACE_KIND_BORROWED_CLASS);
+                    llvm::Value* kindVal = borrowedK;
+                    if (initVerdict.answer == ownership::TitleAnswer::Owned) {
+                        kindVal = ownedK;
+                    } else if (initTitleFlag) {
+                        kindVal = builder->CreateSelect(
+                            builder->CreateICmpNE(initTitleFlag,
+                                llvm::ConstantInt::get(i64Ty, 0)),
+                            ownedK, borrowedK, "iface_kind");
+                    }
 
-                    if (!initializer) {
-                        llvm::Value* bodyAlloca = builder->CreateAlloca(bodyTy);
-                        builder->CreateStore(
-                            llvm::Constant::getNullValue(bodyTy), bodyAlloca);
-                        builder->CreateStore(bodyAlloca,
-                            field->getOrCreateAllocation());
-                    } else {
-                        auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer);
-                        ExpressionPtr rhsExpr;
-                        if (varInit && !varInit->getChildren().empty()) {
+                    ExpressionPtr rhsExpr;
+                    if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                        if (!varInit->getChildren().empty()) {
                             rhsExpr = dynamic_pointer_cast<Expression>(
                                 varInit->getChildren()[0]);
                             if (rhsExpr && !rhsExpr->getResolvedType()) {
                                 rhsExpr->resolveTypes(module);
                             }
                         }
-                        CajetaTypePtr rhsType = rhsExpr
-                            ? rhsExpr->getResolvedType() : nullptr;
-                        auto rhsClass = dynamic_pointer_cast<CajetaClass>(rhsType);
-                        bool rhsIsInterface = rhsClass && rhsClass->isInterface();
-
-                        if (rhsClass && !rhsIsInterface) {
-                            // HeapField already stored the RHS (a class pointer
-                            // or a struct body ptr); either becomes `data`.
-                            llvm::Value* sourcePtr = builder->CreateLoad(
-                                ptrTy, field->getOrCreateAllocation());
-
-                            llvm::Value* bodyAlloca = builder->CreateAlloca(bodyTy);
-                            llvm::Value* dataSlot = builder->CreateStructGEP(
-                                bodyTy, bodyAlloca, 0, "iface_data");
-                            llvm::Value* vtSlot = builder->CreateStructGEP(
-                                bodyTy, bodyAlloca, 1, "iface_vtable");
-                            llvm::Value* kindSlot = builder->CreateStructGEP(
-                                bodyTy, bodyAlloca, 2, "iface_kind");
-                            builder->CreateStore(sourcePtr, dataSlot);
-
-                            std::string ifaceCanonical =
-                                ifaceKlass->getQName()->toCanonical();
-                            llvm::Constant* vtableRef = nullptr;
-                            if (auto gv = rhsClass->getInterfaceVTable(ifaceCanonical)) {
-                                vtableRef = CajetaModule::ensureGlobalInModule(
-                                    module->emitTargetLlvmModule(), gv);
-                            }
-                            if (!vtableRef) {
-                                vtableRef = llvm::ConstantPointerNull::get(
-                                    llvm::cast<llvm::PointerType>(ptrTy));
-                            }
-                            builder->CreateStore(vtableRef, vtSlot);
-
-                            // The kind word carries the initializer's title,
-                            // selected on the flag when it is runtime-decided.
-                            llvm::Constant* ownedK = llvm::ConstantInt::get(
-                                i64Ty, (uint64_t) IFACE_KIND_OWNED_CLASS);
-                            llvm::Constant* borrowedK = llvm::ConstantInt::get(
-                                i64Ty, (uint64_t) IFACE_KIND_BORROWED_CLASS);
-                            llvm::Value* kindVal = borrowedK;
-                            if (initVerdict.answer
-                                    == ownership::TitleAnswer::Owned) {
-                                kindVal = ownedK;
-                            } else if (initTitleFlag) {
-                                kindVal = builder->CreateSelect(
-                                    builder->CreateICmpNE(initTitleFlag,
-                                        llvm::ConstantInt::get(i64Ty, 0)),
-                                    ownedK, borrowedK, "iface_kind");
-                            }
-                            builder->CreateStore(kindVal, kindSlot);
-                            builder->CreateStore(bodyAlloca,
-                                field->getOrCreateAllocation());
-                        }
-                        // An interface RHS needs no fix-up: the slot already
-                        // holds its body ptr, and the local borrows it.
                     }
+                    auto rhsClass = dynamic_pointer_cast<CajetaClass>(
+                        rhsExpr ? rhsExpr->getResolvedType() : nullptr);
+
+                    if (!initializer) {
+                        builder->CreateStore(llvm::Constant::getNullValue(bodyTy), home);
+                    } else if (rhsClass && !rhsClass->isInterface()) {
+                        // HeapField already stored the RHS (a class pointer or a
+                        // struct body ptr); either becomes `data`.
+                        llvm::Value* sourcePtr = builder->CreateLoad(ptrTy, slot);
+                        builder->CreateStore(sourcePtr,
+                            builder->CreateStructGEP(bodyTy, home, 0, "iface_data"));
+                        llvm::Constant* vtableRef = nullptr;
+                        if (auto gv = rhsClass->getInterfaceVTable(
+                                ifaceKlass->getQName()->toCanonical())) {
+                            vtableRef = CajetaModule::ensureGlobalInModule(
+                                module->emitTargetLlvmModule(), gv);
+                        }
+                        if (!vtableRef) {
+                            vtableRef = llvm::ConstantPointerNull::get(
+                                llvm::cast<llvm::PointerType>(ptrTy));
+                        }
+                        builder->CreateStore(vtableRef,
+                            builder->CreateStructGEP(bodyTy, home, 1, "iface_vtable"));
+                        builder->CreateStore(kindVal,
+                            builder->CreateStructGEP(bodyTy, home, 2, "iface_kind"));
+                    } else {
+                        CajetaClass::copyInterfaceBody(module, builder, home,
+                            builder->CreateLoad(ptrTy, slot, "iface_src"), bodyTy);
+                        builder->CreateStore(kindVal,
+                            builder->CreateStructGEP(bodyTy, home, 2, "iface_kind"));
+                    }
+                    builder->CreateStore(home, slot);
+                    field->setIfaceHome(home);
                 }
             }
 
@@ -1541,12 +1531,24 @@ namespace cajeta {
 
             // The interface entry points at the kind-tag dispatcher, which drops
             // through the per-(class, iface) vtable for OWNED and no-ops for
-            // BORROWED — but a proven borrow gets no entry at all.
+            // BORROWED. A proven borrow gets no entry unless an owned value is assigned later.
+            bool ifaceReassignedOwned = false;
             if (klass && klass->isInterface()
-                    && initVerdict.answer != ownership::TitleAnswer::Borrow) {
-                emitDropEntryFor(module, field, "__cajeta_iface_drop",
-                                 getSourceLine(),
-                                 initIsFlaggedCall ? initTitleFlag : nullptr);
+                    && initVerdict.answer == ownership::TitleAnswer::Borrow) {
+                auto mI = module->getCurrentMethod();
+                BlockPtr bodyI = mI ? mI->getBlock() : nullptr;
+                ifaceReassignedOwned = bodyI
+                    && nameReassignedOwned(bodyI, declarator->getIdentifier());
+            }
+            if (klass && klass->isInterface()
+                    && (initVerdict.answer != ownership::TitleAnswer::Borrow
+                        || ifaceReassignedOwned)) {
+                llvm::Value* ifaceFlag = initIsFlaggedCall ? initTitleFlag : nullptr;
+                if (ifaceReassignedOwned) {
+                    ifaceFlag = llvm::ConstantInt::get(
+                        llvm::Type::getInt64Ty(*module->getLlvmContext()), 0);
+                }
+                emitDropEntryFor(module, field, "__cajeta_iface_drop", getSourceLine(), ifaceFlag);
             }
 
             // Register the local in the debug frame (a no-op without

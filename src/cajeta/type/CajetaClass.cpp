@@ -853,6 +853,39 @@ namespace cajeta {
         return true;
     }
 
+    llvm::Value* CajetaClass::interfaceSource(const CajetaModulePtr& module, llvm::IRBuilder<>* b,
+                                              llvm::Value* src, llvm::Type* bodyTy) {
+        llvm::Module* lm = b->GetInsertBlock()->getModule();
+        uint64_t bytes = lm->getDataLayout().getTypeAllocSize(bodyTy);
+        llvm::Type* zTy = llvm::ArrayType::get(b->getInt8Ty(), bytes);
+        auto zeroBody = [&]() -> llvm::Value* {
+            auto* zero = llvm::dyn_cast<llvm::GlobalVariable>(
+                lm->getOrInsertGlobal("__cajeta_iface_zero_body", zTy));
+            if (zero && !zero->hasInitializer()) {
+                zero->setInitializer(llvm::ConstantAggregateZero::get(zTy));
+                zero->setConstant(true);
+                zero->setLinkage(llvm::GlobalValue::PrivateLinkage);
+                zero->setAlignment(llvm::Align(8));
+            }
+            return zero;
+        };
+        if (!src->getType()->isPointerTy()) {
+            llvm::Value* spill = module->createEntryAlloca(src->getType(), "iface_value");
+            b->CreateStore(src, spill);
+            return spill;
+        }
+        if (llvm::isa<llvm::ConstantPointerNull>(src)) return zeroBody();
+        if (llvm::isa<llvm::AllocaInst>(src) || llvm::isa<llvm::GetElementPtrInst>(src)) return src;
+        return b->CreateSelect(b->CreateIsNull(src), zeroBody(), src, "iface_src_or_zero");
+    }
+
+    void CajetaClass::copyInterfaceBody(const CajetaModulePtr& module, llvm::IRBuilder<>* b,
+                                        llvm::Value* dst, llvm::Value* src, llvm::Type* bodyTy) {
+        uint64_t bytes = b->GetInsertBlock()->getModule()->getDataLayout().getTypeAllocSize(bodyTy);
+        b->CreateMemCpy(dst, llvm::MaybeAlign(8), interfaceSource(module, b, src, bodyTy),
+                        llvm::MaybeAlign(8), bytes);
+    }
+
     void CajetaClass::recordInitializerTitle(const CajetaModulePtr& module, llvm::IRBuilder<>* b,
                                              llvm::Value* thisPtr, const StructurePropertyPtr& prop,
                                              const AbstractSyntaxNodePtr& init) {
@@ -2486,6 +2519,12 @@ namespace cajeta {
             }
             llvm::Value* val = expr->generateCode(module);
             if (!val) continue;
+
+            auto ifaceDecl = std::dynamic_pointer_cast<CajetaClass>(prop->getType());
+            if (ifaceDecl && ifaceDecl->isInterface() && val->getType()->isPointerTy()) {
+                storeInterfaceInlineBody(module, g, val, ifaceDecl, expr);
+                continue;
+            }
 
             // loadIfLValue, not a GlobalVariable test: a String literal (and
             // `T.class`) is an r-value whose ADDRESS is the value.

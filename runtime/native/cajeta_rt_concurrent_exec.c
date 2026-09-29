@@ -949,6 +949,11 @@ void __cajeta_fiber_cancel(struct cajeta_fiber* fiber, void* throwable) {
 // done under the mutex, wakes awaiters, and republishes every parked fiber.
 void __cajeta_task_complete(int32_t* done_addr) {
     if (!done_addr) return;
+    // A structured child lets go of its inherited scopes before its join can return.
+    if (__cajeta_current_fiber && __cajeta_current_fiber->anchor_top) {
+        __cajeta_anchor_release_chain(__cajeta_current_fiber->anchor_top);
+        __cajeta_current_fiber->anchor_top = NULL;
+    }
     pthread_mutex_lock(&__cajeta_task_mutex);
     // Null the Task's fiber slot BEFORE publishing done: the moment *done_addr
     // is visible the awaiter can return and the Task can be freed, so the

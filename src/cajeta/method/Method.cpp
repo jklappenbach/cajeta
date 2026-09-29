@@ -871,7 +871,9 @@ namespace cajeta {
             }
             if (!dropFnName && klass && klass->isInterface()
                     && !dynamic_pointer_cast<CajetaView>(pt)) {
-                dropFnName = "__cajeta_iface_formal_drop";
+                FieldPtr hp = scope->getField(formalParameter->getName());
+                dropFnName = hp && hp->getIfaceHome()
+                    ? "__cajeta_iface_drop" : "__cajeta_iface_formal_drop";
             }
             if (!dropFnName && dynamic_pointer_cast<CajetaFunctionType>(pt)) {
                 dropFnName = "__cajeta_closure_drop";
@@ -905,6 +907,65 @@ namespace cajeta {
             pf->setDropEntry(entryPtr);
             pf->setRuntimeConditionalOwner(true);
             registerDropEntry(entryPtr);
+        }
+    }
+
+    void Method::emitInterfaceParamHomes(CajetaModulePtr module) {
+        BlockPtr body = getBlock();
+        auto scope = module->getScopeStack().peek();
+        if (!body || !scope) return;
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Constant* ownedK = llvm::ConstantInt::get(i64Ty, (uint64_t) IFACE_KIND_OWNED_CLASS);
+        llvm::Constant* borrowedK = llvm::ConstantInt::get(i64Ty, (uint64_t) IFACE_KIND_BORROWED_CLASS);
+        llvm::Value* word = getTransferWordArg();
+        int bit = -1;
+        for (auto& formalParameter : parameterList) {
+            if (!formalParameter || formalParameter->getName() == "this") continue;
+            ++bit;
+            CajetaTypePtr pt = formalParameter->getType();
+            auto klass = dynamic_pointer_cast<CajetaClass>(pt);
+            if (!klass || !klass->isInterface() || dynamic_pointer_cast<CajetaView>(pt)) continue;
+            if (!nameAssignedIn(body, formalParameter->getName(), false)) continue;
+            FieldPtr pf = scope->getField(formalParameter->getName());
+            if (!pf || !pf->getOrCreateAllocation()) continue;
+            llvm::Type* bodyTy = klass->getLlvmType();
+            llvm::Value* slot = pf->getOrCreateAllocation();
+            llvm::Value* home = module->createEntryAlloca(bodyTy, "iface_param");
+            CajetaClass::copyInterfaceBody(module, builder, home,
+                builder->CreateLoad(ptrTy, slot, "iface_arg"), bodyTy);
+            llvm::Value* kind = borrowedK;
+            if (word && bit < 64) {
+                llvm::Value* t = builder->CreateAnd(
+                    builder->CreateLShr(word, llvm::ConstantInt::get(i64Ty, bit)),
+                    llvm::ConstantInt::get(i64Ty, 1));
+                kind = builder->CreateSelect(builder->CreateICmpNE(t,
+                    llvm::ConstantInt::get(i64Ty, 0)), ownedK, borrowedK, "iface_kind");
+            }
+            builder->CreateStore(kind, builder->CreateStructGEP(bodyTy, home, 2, "iface_kind"));
+            builder->CreateStore(home, slot);
+            pf->setIfaceHome(home);
+            if (!word && nameAssignedIn(body, formalParameter->getName(), true)) {
+                bool debug = module->getFlags().sourceTags;
+                llvm::Function* pushFn = module->getRuntimeFunction(
+                    debug ? "__cajeta_drop_push_flag_debug" : "__cajeta_drop_push_flag");
+                llvm::Function* dropFn = module->getRuntimeFunction("__cajeta_iface_drop");
+                if (!pushFn || !dropFn) continue;
+                llvm::Value* entryPtr = module->createEntryAlloca(
+                    llvm::ArrayType::get(llvm::Type::getInt8Ty(ctx), debug ? 40 : 32));
+                llvm::Value* off = llvm::ConstantInt::get(i64Ty, 0);
+                if (debug) {
+                    builder->CreateCall(pushFn, {entryPtr, home, dropFn,
+                        module->getOrCreateSourceFileConstant(module->getSourcePath()),
+                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0), off});
+                } else {
+                    builder->CreateCall(pushFn, {entryPtr, home, dropFn, off});
+                }
+                pf->setDropEntry(entryPtr);
+                registerDropEntry(entryPtr);
+            }
         }
     }
 
@@ -2380,6 +2441,7 @@ namespace cajeta {
         } else {
             setTransferWordArg(nullptr);
         }
+        emitInterfaceParamHomes(module);
         emitFormalDropEntries(module);
         emitScopeAnchorEntry(module);
 

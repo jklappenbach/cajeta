@@ -781,7 +781,7 @@ namespace cajeta {
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::Type* hdrTy = arrType->getLlvmType();
 
-        llvm::AllocaInst* idxSlot = builder->CreateAlloca(i64Ty, nullptr, "fe_idx");
+        llvm::AllocaInst* idxSlot = module->createEntryAlloca(i64Ty, "fe_idx");
         builder->CreateStore(llvm::ConstantInt::get(i64Ty, 0), idxSlot);
 
         bool elemIsPrimitive = (elementType->getTypeFlags() & PRIMITIVE_FLAG) != 0;
@@ -789,11 +789,11 @@ namespace cajeta {
         llvm::Type* elemSlotTy = (elemIsPrimitive && !elemIsArray)
             ? elementType->getLlvmType()
             : llvm::PointerType::get(ctx, 0);
-        llvm::AllocaInst* elemSlot = builder->CreateAlloca(elemSlotTy, nullptr, elementName);
+        llvm::AllocaInst* elemSlot = module->createEntryAlloca(elemSlotTy, elementName);
 
         llvm::AllocaInst* iterSlot = nullptr;
         if (iteratorType && !iteratorName.empty()) {
-            iterSlot = builder->CreateAlloca(iteratorType->getLlvmType(), nullptr, iteratorName);
+            iterSlot = module->createEntryAlloca(iteratorType->getLlvmType(), iteratorName);
         }
 
         auto scope = module->getScopeStack().peek();

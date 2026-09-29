@@ -399,6 +399,8 @@ namespace cajeta {
         // Enters the published method scope this method anchors, if any: a frame pushed
         // on the drop chain, so every return and every throw ends the scope.
         void emitScopeAnchorEntry(CajetaModulePtr module);
+        // Gives each interface formal the body assigns its own entry-block body, titled by its transfer bit.
+        void emitInterfaceParamHomes(CajetaModulePtr module);
         void emitFormalDropEntries(CajetaModulePtr module);
 
         // Does the body RETAIN this formal — store it into a field or element?

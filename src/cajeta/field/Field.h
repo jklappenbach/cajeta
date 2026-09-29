@@ -48,6 +48,7 @@ namespace cajeta {
         bool runtimeConditionalOwner = false;
         // The drop entry may describe a DISPLACED value: compare before trusting.
         bool entryMayBeStale = false;
+        llvm::Value* ifaceHome = nullptr;
         bool stackInstance = false;
         // The borrow-returning call this local came from, if any: `#local` is
         // then a lie, since that call's source still owns and frees the value.
@@ -229,6 +230,9 @@ namespace cajeta {
         void setRuntimeConditionalOwner(bool v) { runtimeConditionalOwner = v; }
         bool isEntryMayBeStale() const { return entryMayBeStale; }
         void setEntryMayBeStale(bool v) { entryMayBeStale = v; }
+        // The entry-block body an interface local owns; its slot always points here.
+        llvm::Value* getIfaceHome() const { return ifaceHome; }
+        void setIfaceHome(llvm::Value* h) { ifaceHome = h; }
         // The body read `Cajeta.owned(<this formal>)`, so its plain stores are
         // the author's own branch-guarded dual-store and stay quiet.
         bool isOwnershipAudited() const { return ownershipAudited; }

@@ -191,7 +191,7 @@ namespace cajeta {
         // argv = [N x ptr]: entry i points to a stack slot holding arg i's value.
         size_t n = args.size();
         llvm::ArrayType* argvTy = llvm::ArrayType::get(ptrTy, n ? n : 1);
-        llvm::Value* argv = builder->CreateAlloca(argvTy, nullptr, "launch.argv");
+        llvm::Value* argv = module->createEntryAlloca(argvTy, "launch.argv");
 
         for (size_t i = 0; i < n; ++i) {
             ExpressionPtr argExpr = args[i].expression;
@@ -244,7 +244,7 @@ namespace cajeta {
                 const unsigned kMaxBindlessBuffers = 16;
                 llvm::Type* arrSlotTy =
                     llvm::ArrayType::get(i64Ty, kMaxBindlessBuffers + 1);
-                slot = builder->CreateAlloca(arrSlotTy, nullptr, "arg.bufarray");
+                slot = module->createEntryAlloca(arrSlotTy, "arg.bufarray");
                 llvm::Type* headerTy = arrTy->getLlvmType();
                 auto& bprops = bufElemKlass->getProperties();
                 auto bit = bprops.find("deviceHandle");
@@ -281,7 +281,7 @@ namespace cajeta {
                 llvm::BasicBlock* endBB =
                     llvm::BasicBlock::Create(ctx, "bufarr.end", curFn);
                 llvm::Value* bVar =
-                    builder->CreateAlloca(i64Ty, nullptr, "bufarr.b");
+                    module->createEntryAlloca(i64Ty, "bufarr.b");
                 builder->CreateStore(zero, bVar);
                 builder->CreateBr(condBB);
                 builder->SetInsertPoint(condBB);
@@ -325,7 +325,7 @@ namespace cajeta {
                     klass->getLlvmType(), v, idx, "buf.handle.ptr");
                 llvm::Value* handle =
                     builder->CreateLoad(i64Ty, hPtr, "buf.handle");
-                slot = builder->CreateAlloca(i64Ty, nullptr, "arg.buf");
+                slot = module->createEntryAlloca(i64Ty, "arg.buf");
                 builder->CreateStore(handle, slot);
             } else if (klass && (xpu::isPodStructType(klass) ||
                                  xpu::isSamplerType(argExpr->getResolvedType()))) {
@@ -340,7 +340,7 @@ namespace cajeta {
                     ftys.push_back(prop->getType()->getLlvmType());
                 }
                 llvm::StructType* podTy = llvm::StructType::get(ctx, ftys);
-                slot = builder->CreateAlloca(podTy, nullptr, "arg.pod");
+                slot = module->createEntryAlloca(podTy, "arg.pod");
                 for (unsigned di = 0; di < fields.size(); ++di) {
                     unsigned hostIdx =
                         (unsigned) klass->getFieldLlvmIndex(fields[di]);
@@ -353,7 +353,7 @@ namespace cajeta {
                     builder->CreateStore(fv, dst);
                 }
             } else {
-                slot = builder->CreateAlloca(v->getType(), nullptr, "arg.scalar");
+                slot = module->createEntryAlloca(v->getType(), "arg.scalar");
                 builder->CreateStore(v, slot);
             }
 
@@ -416,7 +416,7 @@ namespace cajeta {
             llvm::Type* specArrTy =
                 llvm::ArrayType::get(i32Ty, specVals.size());
             llvm::Value* specArr =
-                builder->CreateAlloca(specArrTy, nullptr, "xpu.spec");
+                module->createEntryAlloca(specArrTy, "xpu.spec");
             for (unsigned i = 0; i < specVals.size(); ++i) {
                 llvm::Value* slot = builder->CreateInBoundsGEP(
                     specArrTy, specArr,
