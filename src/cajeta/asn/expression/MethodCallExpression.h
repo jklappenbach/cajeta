@@ -19,6 +19,15 @@ namespace cajeta {
         bool callerTransferred = false;
     };
 
+    namespace ownership { struct ArgTitle; }
+
+    // A fresh String argument to a `#String` formal carries its title in the transfer
+    // word: String is no droppable temp class, so without this the callee never frees it.
+    void ownedFormalStringFlags(const MethodPtr& target,
+                                const vector<MethodCallParameter>& args,
+                                const std::vector<ownership::ArgTitle>& titles,
+                                std::vector<llvm::Value*>& flags);
+
     // Applies the transfer-of-a-borrow rejection to every `#`-marked ARGUMENT, for calls
     // and construction alike: an argument's `#` builds no MoveExpression, where the rest
     // of the borrow checks live.

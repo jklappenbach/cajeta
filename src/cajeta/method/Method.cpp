@@ -858,16 +858,20 @@ namespace cajeta {
                     && !klass->isInterface() && !pt->isValueType()
                     && !klass->isSharedCapableValue()
                     && klass->hasVtablePointerAtSlotZero()) {
-                // String needs its OWN exclusion: isSharedCapableValue is a
-                // value-type predicate and misses String-the-class, whose title moves
-                // by share/resolve — an entry here virtual-drops a live String.
+                // A String formal takes the mode-aware string drop, never the virtual drop.
                 bool isLangString = klass->getQName()
                     && klass->getQName()->getTypeName() == "String"
                     && klass->getQName()->getPackageName() == "cajeta.lang";
-                if (!isLangString) {
+                if (isLangString) {
+                    dropFnName = "__cajeta_string_drop";
+                } else {
                     klass->patchVirtualTableDropFn();
                     dropFnName = "__cajeta_class_virtual_drop";
                 }
+            }
+            if (!dropFnName && klass && klass->isInterface()
+                    && !dynamic_pointer_cast<CajetaView>(pt)) {
+                dropFnName = "__cajeta_iface_formal_drop";
             }
             if (!dropFnName && dynamic_pointer_cast<CajetaFunctionType>(pt)) {
                 dropFnName = "__cajeta_closure_drop";
@@ -2772,6 +2776,7 @@ namespace cajeta {
                         }
                     }
                     builder->CreateStore(initVal, fp);
+                    parent->recordInitializerTitle(module, builder, thisPtr, prop, init);
                 }
                 (void) ictx;
             }

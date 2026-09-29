@@ -79,11 +79,11 @@ public final class BackendRegistry {
     }
 
     /** Register a window-domain backend (called by each backend at load; the null floor too). */
-    public void registerWindow(WindowBackend backend) { this.windows.add(backend); }
+    public void registerWindow(WindowBackend backend) { this.windows.add(#backend); }
     /** Register an input-domain backend. */
-    public void registerInput(InputBackend backend)   { this.inputs.add(backend); }
+    public void registerInput(InputBackend backend)   { this.inputs.add(#backend); }
     /** Register an audio-domain backend. */
-    public void registerAudio(AudioBackend backend)   { this.audios.add(backend); }
+    public void registerAudio(AudioBackend backend)   { this.audios.add(#backend); }
 
     /**
      * Bind the window backend for this launch. Picks the highest-`priority()` viable backend; on a

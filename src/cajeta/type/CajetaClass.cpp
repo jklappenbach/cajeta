@@ -31,6 +31,7 @@
 #include "../error/Exception.h"
 #include "../asn/expression/LiteralExpression.h"
 #include "../asn/VariableDeclarator.h"
+#include "../ownership/TitleClassifier.h"
 #include <llvm/Transforms/Utils/ModuleUtils.h>
 #include <cstdlib>
 
@@ -852,6 +853,37 @@ namespace cajeta {
         return true;
     }
 
+    void CajetaClass::recordInitializerTitle(const CajetaModulePtr& module, llvm::IRBuilder<>* b,
+                                             llvm::Value* thisPtr, const StructurePropertyPtr& prop,
+                                             const AbstractSyntaxNodePtr& init) {
+        if (!b || !thisPtr || !fieldHasOwnershipBit(prop)) return;
+        int wordIdx = getOwnershipWordLlvmIndex();
+        int bit = ownershipBitIndexOf(prop);
+        if (wordIdx < 0 || bit < 0 || bit >= 64) return;
+        auto vi = dynamic_pointer_cast<VariableInitializer>(init);
+        ExpressionPtr e = vi && !vi->getChildren().empty()
+            ? dynamic_pointer_cast<Expression>(vi->getChildren()[0]) : nullptr;
+        if (!e) return;
+        auto fieldCls = dynamic_pointer_cast<CajetaClass>(prop->getType());
+        bool isString = fieldCls && !dynamic_pointer_cast<CajetaArray>(prop->getType())
+            && fieldCls->getQName() && fieldCls->getQName()->getTypeName() == "String"
+            && fieldCls->getQName()->getPackageName() == "cajeta.lang";
+        llvm::Value* flag = ownership::storeTitleFlag(e,
+            isString ? ownership::ConsumerRole::StoreString : ownership::ConsumerRole::StoreSlot,
+            module, "a field initializer");
+        if (!flag) return;
+        if (auto* k = llvm::dyn_cast<llvm::ConstantInt>(flag)) {
+            if (k->isZero()) return;
+        }
+        llvm::Type* i64 = b->getInt64Ty();
+        if (flag->getType() != i64) flag = b->CreateZExtOrTrunc(flag, i64);
+        llvm::Value* wordPtr = b->CreateStructGEP(getLlvmType(), thisPtr, (unsigned) wordIdx,
+                                                  "init.own_bits_addr");
+        llvm::Value* w = b->CreateLoad(i64, wordPtr, "init.own_bits");
+        llvm::Value* set = b->CreateShl(b->CreateAnd(flag, b->getInt64(1)), b->getInt64((uint64_t) bit));
+        b->CreateStore(b->CreateOr(w, set), wordPtr);
+    }
+
     // True when an array element of type `elem` owns a droppable object per slot: a
     // vtable-bearing class that is not a String, a view, or a value type.
     bool CajetaClass::arrayElementCarriesSlotBits(const CajetaTypePtr& elem) {
@@ -892,9 +924,9 @@ namespace cajeta {
 
     // A member's release family inside a value-struct slot: bit-guarded members
     // release under their word bit, String members unconditionally, and shared-
-    // capable value members per Shared stake.
+    // capable value members per Shared stake, interface members by their kind tag.
     namespace {
-        enum class SlotMemberKind { BitGuarded, StringDrop, ValueShared };
+        enum class SlotMemberKind { BitGuarded, StringDrop, ValueShared, IfaceDrop };
         struct SlotMemberRel {
             uint64_t off;
             int bit;
@@ -935,6 +967,8 @@ namespace cajeta {
                 } else if (mc->isValueType() && mc->isSharedCapableValue()) {
                     out.push_back({off, -1, false,
                         SlotMemberKind::ValueShared, mc});
+                } else if (mc->isInterface()) {
+                    out.push_back({off, -1, false, SlotMemberKind::IfaceDrop, nullptr});
                 }
             }
             return out;
@@ -959,7 +993,8 @@ namespace cajeta {
                 continue;
             }
             if (slotMemberIsString(mc)
-                    || (mc->isValueType() && mc->isSharedCapableValue())) {
+                    || (mc->isValueType() && mc->isSharedCapableValue())
+                    || mc->isInterface()) {
                 return true;
             }
         }
@@ -1007,6 +1042,8 @@ namespace cajeta {
             "__cajeta_class_virtual_drop", m);
         llvm::Function* freeFn = module->getRuntimeFunction(
             "__cajeta_free_array", m);
+        llvm::Function* ifaceDropFn = module->getRuntimeFunction(
+            "__cajeta_iface_drop", m);
 
         auto* entry = llvm::BasicBlock::Create(ctx, "entry", f);
         auto* head = llvm::BasicBlock::Create(ctx, "slot_head", f);
@@ -1049,6 +1086,12 @@ namespace cajeta {
             if (mr.kind == SlotMemberKind::ValueShared) {
                 mr.cls->emitValueSharedOp(b, mp, module, m,
                                           /*retain=*/false);
+                continue;
+            }
+            if (mr.kind == SlotMemberKind::IfaceDrop) {
+                if (ifaceDropFn) b.CreateCall(ifaceDropFn, {mp});
+                b.CreateStore(llvm::ConstantInt::get(i64, 0),
+                    b.CreateInBoundsGEP(i8, mp, llvm::ConstantInt::get(i64, 16), "member_iface_kind"));
                 continue;
             }
             if (mr.kind == SlotMemberKind::StringDrop) {
@@ -2841,12 +2884,13 @@ namespace cajeta {
             }
             auto fieldType = property->getType();
             if (!fieldType) continue;
-            // A `T`-origin scalar field may have been LENT, which no type can
-            // declare. Skip it unless it carries a runtime ownership bit, and let
-            // the guarded drop below decide per instance.
+            // A `T`-origin scalar field may have been LENT, which no type can declare. Skip it
+            // unless a runtime ownership bit or an interface body's kind tag decides per instance.
             int scalarOrigin = property->getOriginTypeParamIndex();
             if (scalarOrigin >= 0) {
                 auto fc = dynamic_pointer_cast<CajetaClass>(fieldType);
+                bool kindTagged = fc && fc->isInterface()
+                    && !dynamic_pointer_cast<CajetaView>(fieldType);
                 bool bitGuarded = fc
                     && !dynamic_pointer_cast<CajetaView>(fieldType)
                     && !(fc->isValueType() && fc->isSharedCapableValue())
@@ -2854,7 +2898,7 @@ namespace cajeta {
                     && fc->hasVtablePointerAtSlotZero()
                     && ownershipBitIndexOf(property) >= 0
                     && getOwnershipWordLlvmIndex() >= 0;
-                if (!bitGuarded) continue;
+                if (!bitGuarded && !kindTagged) continue;
             }
             unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
 
@@ -5076,7 +5120,7 @@ namespace cajeta {
                     llvm::Type* bodyTy = dstClass->getLlvmType();
                     llvm::Type* ptrTy = llvm::PointerType::get(lctx, 0);
                     llvm::Type* i64Ty = llvm::Type::getInt64Ty(lctx);
-                    llvm::Value* bodyAlloca = coerceBuilder->CreateAlloca(bodyTy);
+                    llvm::Value* bodyAlloca = emitMod->createEntryAlloca(bodyTy, "iface_arg");
                     llvm::Value* dataSlot = coerceBuilder->CreateStructGEP(
                         bodyTy, bodyAlloca, 0, "iface_arg_data");
                     llvm::Value* vtSlot = coerceBuilder->CreateStructGEP(
@@ -5108,8 +5152,7 @@ namespace cajeta {
                     if (bodyTy && bodyTy->isStructTy()) {
                         auto& lctx = *emitMod->getLlvmContext();
                         llvm::Value* bodyAlloca =
-                            coerceBuilder->CreateAlloca(bodyTy, nullptr,
-                                                        "iface_arg_null");
+                            emitMod->createEntryAlloca(bodyTy, "iface_arg_null");
                         const llvm::DataLayout& dl =
                             emitMod->getLlvmModule()->getDataLayout();
                         coerceBuilder->CreateMemSet(bodyAlloca,

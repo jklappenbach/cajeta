@@ -399,6 +399,19 @@ void __cajeta_iface_drop(void* body) {
     }
 }
 
+// Drop for an interface-typed formal whose caller tendered title: the argument body's
+// kind describes the caller's slot, so the transfer-word bit that armed this is the truth.
+void __cajeta_iface_formal_drop(void* body) {
+    if (!body) return;
+    void** words = (void**) body;
+    void* data_ptr = words[0];
+    void** vtable = (void**) words[1];
+    if (vtable && data_ptr) {
+        void (*drop_fn)(void*) = (void (*)(void*)) vtable[0];
+        if (drop_fn) drop_fn(data_ptr);
+    }
+}
+
 // Releases an OWNED occupant about to be overwritten by `incoming`; a store of the
 // same object keeps it.
 void __cajeta_iface_displace(void* body, void* incoming) {

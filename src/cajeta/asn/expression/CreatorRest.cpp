@@ -279,6 +279,9 @@ namespace cajeta {
                     }
                 }
             }
+            ownedFormalStringFlags(klass->resolveMethod(ctorName, entries,
+                    /*isConstructor=*/true, /*floatingParams=*/false),
+                parameters, ctorArgTitles, plainArgTempFlags);
             // Transfer word: bit i is set when argument i tenders title. A constant
             // title folds into the literal; a runtime flag is shifted and OR'd in.
             auto* twBuilder = module->getBuilder();

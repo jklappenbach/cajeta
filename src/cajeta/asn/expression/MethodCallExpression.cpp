@@ -1432,6 +1432,26 @@ namespace cajeta {
         return match;
     }
 
+    void ownedFormalStringFlags(const MethodPtr& target,
+                                const vector<MethodCallParameter>& args,
+                                const std::vector<ownership::ArgTitle>& titles,
+                                std::vector<llvm::Value*>& flags) {
+        if (!target) return;
+        auto fpl = target->getParameterList();
+        size_t off = !fpl.empty() && fpl.front() && fpl.front()->getName() == "this" ? 1 : 0;
+        for (size_t ai = 0; ai < args.size() && ai < titles.size() && ai < flags.size(); ++ai) {
+            size_t fi = ai + off;
+            if (fi >= fpl.size()) break;
+            if (!fpl[fi] || !fpl[fi]->isTransferred() || args[ai].callerTransferred) continue;
+            const auto& t = titles[ai];
+            if (flags[ai] || !t.flag || !t.shape.has(ownership::TitleShape::kString)
+                    || t.shape.family == ownership::TitleFamily::Literal) {
+                continue;
+            }
+            flags[ai] = t.flag;
+        }
+    }
+
     void rejectTransferOfBorrowArgs(CajetaModulePtr module,
                                     const vector<MethodCallParameter>& args) {
         auto scope = module->getScopeStack().peek();
@@ -8759,6 +8779,15 @@ namespace cajeta {
         // contribute a static 1. The args generated above stashed their flags.
         int64_t moveMask = 0;
         llvm::Value* transferWordVal = nullptr;
+        if (targetClass && entries.size() == parameters.size()) {
+            bool floating = true;
+            for (auto& e : entries) {
+                if (e.label.empty()) { floating = false; break; }
+            }
+            ownedFormalStringFlags(targetClass->resolveMethod(methodCallName, entries,
+                    /*isConstructor=*/false, floating, explicitMethodTypeArgs),
+                parameters, argTitles, argTitleFlags);
+        }
         for (size_t mmi = 0; mmi < parameters.size(); ++mmi) {
             llvm::Value* rf = mmi < argTitleFlags.size() ? argTitleFlags[mmi] : nullptr;
             if (!rf) continue;

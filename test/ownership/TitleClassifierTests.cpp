@@ -197,9 +197,9 @@ TEST(TitleClassifierTests, movesForwardTheInnerSource) {
         "}\n";
     ASSERT_NE(CajetaJit::compile(src.c_str(), "test.A"), nullptr);
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-local")), Move, Runtime, DropEntry);
-    // A class formal has an entry and the move reads THAT; a String formal has none.
+    // A class or String formal has an entry, and the move reads THAT.
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-formal")), Move, Runtime, DropEntry);
-    EXPECT_ROW(recordAt(lineOf(src, "ROW move-string-formal")), Move, Runtime, TransferWord);
+    EXPECT_ROW(recordAt(lineOf(src, "ROW move-string-formal")), Move, Runtime, DropEntry);
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-field")), Move, Runtime, Slot);
     EXPECT_ROW(recordAt(lineOf(src, "ROW move-call")), Move, Runtime, ReturnFlag);
     // A body-less callee stores no return flag: its declared stance is the answer.
