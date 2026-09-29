@@ -1103,4 +1103,73 @@ TEST(XpuCpuFissionUniformize, anArmChosenByTheGlobalWaveIndexLowersLikeOneChosen
                        " -1 the global-id form is refused; 100+i wrong at wave i)";
 }
 
+// ---- the mxfp4 Group-surface shape: stripe + mac + reduce at the host width //
+//
+// cajeta-llm's mxfp4MatVecKernelCoopQ8Surface (Group.stripe over the row's
+// blocks, Group.mac on 16-byte int8 vectors, Group.reduce) answers wrong at
+// wave 8 while the stripe-plus-reduce probe passes; this is the three
+// together on a fixture with a known answer. Row r of 8 blocks: block b holds
+// weights (b + 1) in every byte, activations 1 in every byte, so each block's
+// mac is 16 * (b + 1) and the row sums to 16 * 36 = 576 for every row.
+const char* kStripeMacSrc = R"CJ(
+    @Kernel
+    public static void sm(KernelBuffer<float32> y, KernelBuffer<int8> w,
+                          KernelBuffer<int8> a, uint32 rows, int64 blocksPerRow) {
+        uint32 row = KernelThread.globalIdX() / (uint32) Group.width();
+        if (row < rows) {
+            int64 i = (int64) row;
+            int32 acc = 0;
+            for (int32 bb : Group.stripe((int32) blocksPerRow)) {
+                int64 b = (int64) bb;
+                Vector<int8,16> wv = w.vload<16>(i * blocksPerRow * 16L + b * 16L);
+                Vector<int8,16> av = a.vload<16>(b * 16L);
+                int32 s = 0;
+                s = Group.mac(s, wv, av);
+                acc = acc + s;
+            }
+            float32 tot = Group.reduce(GroupOp.Add, (float32) acc);
+            if (Group.laneId() == 0) { y[i] = tot; }
+        }
+    }
+    public static int32 run() {
+        uint32 wdt = probeWidth();
+        if (wdt < 2) { return -3; }
+        int64 rows = 5;
+        int64 bpr = 8;
+        int8[] hw = heap int8[rows * bpr * 16L];
+        int8[] ha = heap int8[bpr * 16L];
+        int64 k = 0;
+        while (k < rows * bpr * 16L) { hw[k] = (int8) (((k / 16L) % bpr) + 1L); k = k + 1; }
+        k = 0;
+        while (k < bpr * 16L) { ha[k] = (int8) 1; k = k + 1; }
+        float32[] hy = heap float32[rows];
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (rows * bpr * 16L));
+        KernelBuffer<int8> a = heap KernelBuffer<int8>((uint64) (bpr * 16L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) rows);
+        w.upload(hw);
+        a.upload(ha);
+        KernelStream s #= KernelStream.current();
+        try {
+            uint32 threads = (uint32) rows * wdt;
+            sm.launch(s, grid: [(threads + 255) / 256], block: [256])(y, w, a, (uint32) rows, bpr);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        y.download(hy);
+        float32[] want = heap float32[rows];
+        int64 r = 0;
+        while (r < rows) { want[r] = 576.0f; r = r + 1; }
+        return verify(hy, (uint32) rows, want);
+    }
+}
+)CJ";
+
+// DISABLED until xpu-kernel-adaptor 4.2.1.11 lands: it reads 16 at row 0 (block
+// 0 alone) where 576 is right, on this compiler, at width 8.
+TEST(XpuCpuFissionUniformize, DISABLED_groupStripeMacAndReduceAgreeAtTheWaveWidthOnCpu) {
+    const int r = runOnCpu(std::string(kPreamble) + kStripeMacSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100+i wrong at row i)";
+}
+
 }  // namespace
