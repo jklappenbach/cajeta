@@ -5,6 +5,8 @@ import cajeta.io.net.TcpStream;
 import cajeta.io.net.ByteChannel;
 import cajeta.io.net.TimedOutException;
 import cajeta.io.net.reactor.Reactor;
+import cajeta.concurrent.Lock;
+import cajeta.concurrent.LockGuard;
 
 /**
  * A TLS connection over a live [`TcpStream`](../TcpStream.cajeta) (**NET-5.2**).
@@ -21,17 +23,26 @@ import cajeta.io.net.reactor.Reactor;
  *
  * Owns its stream + engine: dropping the `TlsStream` closes the socket and
  * frees the TLS handles.
+ *
+ * One fiber may read while others write. Engine calls are serialized, and a
+ * write holds the send side until its records are on the socket.
  */
 public class TlsStream implements ByteChannel {
 
     TcpStream stream;
     TlsConnection tls;
-    int8[] buf;
+    int8[] inBuf;
+    int8[] outBuf;
+    Lock engine;
+    Lock sending;
 
     private TlsStream(#TcpStream stream, #TlsConnection tls) {
         this.stream #= stream;
         this.tls #= tls;
-        this.buf = heap int8[16384];
+        this.inBuf = heap int8[16384];
+        this.outBuf = heap int8[16384];
+        this.engine = heap Lock();
+        this.sending = heap Lock();
     }
 
     /**
@@ -97,21 +108,42 @@ public class TlsStream implements ByteChannel {
     // --- the socket pump ----------------------------------------------------
 
     /** Drain queued ciphertext to the socket (parks on a non-writable socket). */
+    // Callers hold `sending`, so pulled records reach the socket in order.
     private void flush() {
-        int32 n = this.tls.pull(this.buf, 16384);
+        int32 n = this.pull();
         while (n > 0) {
-            this.stream.writeAllAsync(this.buf, (int64) 0, (int64) n);
-            n = this.tls.pull(this.buf, 16384);
+            this.stream.writeAllAsync(this.outBuf, (int64) 0, (int64) n);
+            n = this.pull();
         }
+    }
+
+    private int32 pull() {
+        LockGuard g #= this.engine.acquire();
+        return this.tls.pull(this.outBuf, 16384);
+    }
+
+    private void feed(int32 n) {
+        LockGuard g #= this.engine.acquire();
+        this.tls.feed(this.inBuf, n);
+    }
+
+    private int32 decrypt(int8[] out, int32 max) {
+        LockGuard g #= this.engine.acquire();
+        return this.tls.read(out, max);
+    }
+
+    private int32 step() {
+        LockGuard g #= this.engine.acquire();
+        return this.tls.handshakeStep();
     }
 
     /** Read ciphertext from the socket and feed the engine; bytes fed (0=EOF). */
     private int32 fill() {
-        int64 n = this.stream.readAsync(this.buf, (int64) 0, (int64) 16384);
+        int64 n = this.stream.readAsync(this.inBuf, (int64) 0, (int64) 16384);
         if (n <= (int64) 0) {
             return 0;
         }
-        this.tls.feed(this.buf, (int32) n);
+        this.feed((int32) n);
         return (int32) n;
     }
 
@@ -123,9 +155,10 @@ public class TlsStream implements ByteChannel {
      * closes mid-handshake.
      */
     public void handshake() {
+        LockGuard s #= this.sending.acquire();
         boolean done = false;
         while (!done) {
-            int32 step = this.tls.handshakeStep();
+            int32 step = this.step();
             this.flush();
             if (step == TlsConnection.OK) {
                 done = true;
@@ -150,7 +183,7 @@ public class TlsStream implements ByteChannel {
     public int32 read(int8[] out, int32 max) {
         boolean retry = true;
         while (retry) {
-            int32 r = this.tls.read(out, max);
+            int32 r = this.decrypt(out, max);
             if (r >= 0) {
                 return r;
             }
@@ -171,14 +204,26 @@ public class TlsStream implements ByteChannel {
 
     /** Encrypt + send `len` plaintext bytes. */
     public void write(int8[] data, int32 len) {
-        this.tls.write(data, len);
+        LockGuard s #= this.sending.acquire();
+        this.seal(data, len);
         this.flush();
+    }
+
+    private void seal(int8[] data, int32 len) {
+        LockGuard g #= this.engine.acquire();
+        this.tls.write(data, len);
     }
 
     /** Queue a clean `close_notify` and flush it. */
     public void closeNotify() {
-        this.tls.shutdown();
+        LockGuard s #= this.sending.acquire();
+        this.shutdownEngine();
         this.flush();
+    }
+
+    private void shutdownEngine() {
+        LockGuard g #= this.engine.acquire();
+        this.tls.shutdown();
     }
 
     // --- ByteChannel adapter (NET-8.1 / NET-9.5) ----------------------------
@@ -264,7 +309,7 @@ public class TlsStream implements ByteChannel {
     private int32 readBefore(int8[] out, int32 max, int64 deadline) {
         boolean retry = true;
         while (retry) {
-            int32 r = this.tls.read(out, max);
+            int32 r = this.decrypt(out, max);
             if (r >= 0) {
                 return r;
             }
@@ -277,13 +322,13 @@ public class TlsStream implements ByteChannel {
                     throw heap TimedOutException(
                         "readWithin: deadline elapsed before data arrived");
                 }
-                int64 n = this.stream.readWithin(this.buf, (int64) 0,
+                int64 n = this.stream.readWithin(this.inBuf, (int64) 0,
                                                  (int64) 16384,
                                                  (int32) remaining);
                 if (n <= (int64) 0) {
                     return 0;
                 }
-                this.tls.feed(this.buf, (int32) n);
+                this.feed((int32) n);
             } else {
                 throw heap TlsException("TLS read error");
             }
@@ -293,12 +338,23 @@ public class TlsStream implements ByteChannel {
 
     /**
      * [`ByteChannel.close`](../ByteChannel.cajeta#close): send a clean
-     * `close_notify`, then close the underlying socket. Idempotent
+     * `close_notify`, then close the underlying socket. A write still in
+     * flight skips the `close_notify`, and closing the socket ends it. Idempotent
      * (`closeNotify` + [`TcpStream.close`](../TcpStream.cajeta#close) are both
      * safe to repeat).
      */
     public void close() {
-        this.closeNotify();
+        if (this.sending.tryAcquire() == 1) {
+            try {
+                this.shutdownEngine();
+                this.flush();
+            } catch (Exception e) {
+                this.sending.releaseLock();
+                this.stream.close();
+                throw e;
+            }
+            this.sending.releaseLock();
+        }
         this.stream.close();
     }
 }
