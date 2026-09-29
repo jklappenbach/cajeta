@@ -46,14 +46,16 @@ lambda over a value, stores the lambda in a keeper, and returns the keeper.
 | `(x) -> x + cfg.v`, `cfg` a plain formal the caller keeps | correct while the caller keeps it, never freed by the keeper | `capturedPlainFormalCallerKeeps` |
 | `(x) -> x + #cfg.v` (member position) | moved into the closure, freed once when the closure goes | `sharpInsideTheBody*` |
 | lambda borrows `cfg`, then `keeper.owned = #cfg` | kept alive by the keeper, freed once with it | `keeperOwnsTheCaptureInAField` |
-| `(x) -> f(#cfg, x)` (argument position) | **not** moved: freed when the factory returns | `DISABLED_sharpArgumentInsideTheBodyMovesIntoTheClosure` |
+| `(x) -> f(#cfg, x)` (argument position) | moved into the closure, freed once when the closure goes | `sharpArgumentInsideTheBodyMovesIntoTheClosure` |
+| `(x) -> g(heap Box(#cfg), x)` (constructor argument) | the same | `sharpCreatorArgumentInsideTheBodyMovesIntoTheClosure` |
 
 - A capture is a borrow unless `#` marks it, even when the captured name is a
   `#` formal. Declaring the factory's parameter `#T` does not keep it alive.
-- `#` moves a capture only in member position (`#cfg.v`, `#c.next()`). The
-  same `#` as a call argument inside the body does not, so the capture dies
-  with the factory. When the lambda passes its capture on, have the keeper own
-  it in a field instead, which is explicit and measured.
+- `#` on a captured name moves it into the closure in member position
+  (`#cfg.v`, `#c.next()`) and as a method or constructor argument
+  (`f(#cfg)`, `heap Box(#cfg)`). Inside the closure each call lends the value
+  on, so repeated calls never free it early. A closure-call argument
+  (`g(#cfg)` with `g` a function value) carries no transfer word.
 
 ## Worked example (verified: returns 68)
 

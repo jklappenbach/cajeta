@@ -164,14 +164,43 @@ TEST(ClosureCaptureLifetimeTests, sharpInsideTheBodyFromALocal) {
     EXPECT_EQ(r, 71) << "#cfg in member position moves the local into the closure";
 }
 
-// DISABLED repro: `#cfg` as an argument inside the body does NOT move the capture
-// into the closure today. It is freed when the factory returns and both calls read
-// freed memory (measured 110001). The member-position spelling above moves it.
-TEST(ClosureCaptureLifetimeTests, DISABLED_sharpArgumentInsideTheBodyMovesIntoTheClosure) {
+// `#cfg` as a call argument inside the body moves the capture into the closure,
+// as the member-position spelling does (was 110001: freed at the factory).
+TEST(ClosureCaptureLifetimeTests, sharpArgumentInsideTheBodyMovesIntoTheClosure) {
     int32_t r = run(
         "    static int32 use(Cfg c, int32 x) { return x + c.v; }\n"
         "    static #K build(#Cfg cfg) {\n"
         "        return heap K((x) -> A.use(#cfg, x));\n"
+        "    }\n"
+        "    static #K make() { return A.build(heap Cfg(7)); }\n",
+        "        int32 after = 0;\n"
+        "        int32 first = 0;\n"
+        "        int32 second = 0;\n"
+        "        int32 between = 0;\n"
+        "        {\n"
+        "            K k #= A.make();\n"
+        "            after = Cfg.gone;\n"
+        "            first = k.call(0);\n"
+        "            between = Cfg.gone;\n"
+        "            A.churn();\n"
+        "            second = k.call(0);\n"
+        "        }\n"
+        "        return after * 100000 + between * 10000 + first * 1000 + second * 10 + Cfg.gone;\n");
+    EXPECT_EQ(r, 7071) << "alive after the factory, read correctly twice, freed once with the keeper";
+}
+
+// `#cfg` as a constructor argument inside the body moves the capture into the
+// closure too. A capture seen only inside `heap X(...)` must be collected at all.
+TEST(ClosureCaptureLifetimeTests, sharpCreatorArgumentInsideTheBodyMovesIntoTheClosure) {
+    int32_t r = run(
+        "    static class Box {\n"
+        "        Cfg c;\n"
+        "        public Box(Cfg c) { this.c #= c; }\n"
+        "        public int32 read(int32 x) { return x + this.c.v; }\n"
+        "    }\n"
+        "    static int32 open(Box b, int32 x) { return b.read(x); }\n"
+        "    static #K build(#Cfg cfg) {\n"
+        "        return heap K((x) -> A.open(heap Box(#cfg), x));\n"
         "    }\n"
         "    static #K make() { return A.build(heap Cfg(7)); }\n",
         "        int32 after = 0;\n"
