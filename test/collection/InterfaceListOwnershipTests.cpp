@@ -119,9 +119,8 @@ TEST(InterfaceListOwnershipTests, setReleasesTheDisplacedElement) {
         "        return xs.get(0).f();\n")), 9);
 }
 
-// DISABLED: an interface-typed formal ignores its transfer bit, so `this.val #= v` in a
-// generic class records a borrow and the map never frees the value.
-TEST(InterfaceListOwnershipTests, DISABLED_mapValuesDropWithTheMap) {
+// A map of interface values frees them with the map.
+TEST(InterfaceListOwnershipTests, mapValuesDropWithTheMap) {
     EXPECT_EQ(runI32(program(
         "        cajeta.collection.HashMap<String, I> m = heap cajeta.collection.HashMap<String, I>();\n"
         "        String k1 = \"one\";\n"

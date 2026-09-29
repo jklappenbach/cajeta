@@ -204,7 +204,7 @@ TEST(ViewOverSliceTests, viewStringFieldReadDropsInEveryPosition) {
 
 // DISABLED: a fresh String passed to a `#String` formal is never freed. The callee arms no
 // drop entry for a String formal, and arming one breaks the stdlib's `#String` forwarding.
-TEST(ViewOverSliceTests, DISABLED_freshStringIntoOwnedFormalIsFreed) {
+TEST(ViewOverSliceTests, freshStringIntoOwnedFormalIsFreed) {
     EXPECT_EQ(runI32(readLoop("        return S.keep(v.name);\n")), 40);
     EXPECT_EQ(runI32(readLoop("        return S.keep(\"<\" + v.name) - 1;\n")), 40);
 }

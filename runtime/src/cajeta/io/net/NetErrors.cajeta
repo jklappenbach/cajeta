@@ -69,38 +69,38 @@ public class NetErrors {
      */
     public static #NetException fromErrno(int32 netErrno, #String detail) {
         if (netErrno == 2) {            // KIND_CONNECTION_REFUSED
-            return heap ConnectionRefusedException(detail);
+            return heap ConnectionRefusedException(#detail);
         }
         if (netErrno == 3) {            // KIND_CONNECTION_RESET
-            return heap ConnectionResetException(detail);
+            return heap ConnectionResetException(#detail);
         }
         if (netErrno == 4) {            // KIND_CONNECTION_ABORTED
-            return heap ConnectionAbortedException(detail);
+            return heap ConnectionAbortedException(#detail);
         }
         if (netErrno == 5) {            // KIND_ADDRESS_IN_USE
-            return heap AddressInUseException(detail);
+            return heap AddressInUseException(#detail);
         }
         if (netErrno == 6) {            // KIND_ADDRESS_NOT_AVAIL
-            return heap AddressNotAvailableException(detail);
+            return heap AddressNotAvailableException(#detail);
         }
         if (netErrno == 7) {            // KIND_HOST_UNREACHABLE
-            return heap HostUnreachableException(detail);
+            return heap HostUnreachableException(#detail);
         }
         if (netErrno == 8) {            // KIND_NETWORK_UNREACHABLE
-            return heap NetworkUnreachableException(detail);
+            return heap NetworkUnreachableException(#detail);
         }
         if (netErrno == 9) {            // KIND_BROKEN_PIPE
-            return heap BrokenPipeException(detail);
+            return heap BrokenPipeException(#detail);
         }
         if (netErrno == 10) {           // KIND_TIMED_OUT
-            return heap TimedOutException(detail);
+            return heap TimedOutException(#detail);
         }
         if (netErrno == 1) {            // KIND_WOULD_BLOCK
-            return heap WouldBlockException(detail);
+            return heap WouldBlockException(#detail);
         }
         // OK (0) and every unmapped ordinal (INTERRUPTED 11, INVALID
         // 12, ACCESS 13, IN_PROGRESS 14, OTHER 99) → base NetException,
         // which records the ordinal in `kind` for later discrimination.
-        return heap NetException(detail, netErrno);
+        return heap NetException(#detail, netErrno);
     }
 }

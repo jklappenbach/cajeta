@@ -159,6 +159,19 @@ namespace cajeta {
         if (!rhsAst) return borrowedK;
         ownership::TitleShape s = ownership::classify(rhsAst, module);
         ownership::TitleVerdict v = ownership::policy(s, ownership::ConsumerRole::StoreSlot);
+        // An armed `#` interface formal hands over what its entry holds, and stops holding it.
+        if (s.family == ownership::TitleFamily::LocalRead && s.field
+                && s.has(ownership::TitleShape::kTransferredParam)
+                && s.has(ownership::TitleShape::kHasEntry)) {
+            ownership::TitleVerdict rv{ownership::TitleAnswer::Runtime,
+                                       ownership::TitleSource::DropEntry, nullptr, s.label};
+            llvm::Value* flag = ownership::verdictFlag(s, rv, module);
+            ownership::deactivateLocalEntry(module, s.field);
+            auto* builder = module->getBuilder();
+            return builder->CreateSelect(
+                builder->CreateICmpNE(flag, llvm::ConstantInt::get(flag->getType(), 0)),
+                ownedK, borrowedK, "iface_kind");
+        }
         if (v.answer == ownership::TitleAnswer::Owned) return ownedK;
         if (v.answer != ownership::TitleAnswer::Runtime) return borrowedK;
         llvm::Value* flag = ownership::titleFlag(s, module);
@@ -1859,6 +1872,16 @@ namespace cajeta {
                     if (lhsCls && lhsCls->isInterface()) {
                         llvm::Type* ifaceTy = lhsAst->getResolvedType()->getLlvmType();
                         if (ifaceTy && ifaceTy->isStructTy()) {
+                            auto& ich = dotLhs->getChildren();
+                            auto capSrc = dynamic_pointer_cast<IdentifierExpression>(rhsAst);
+                            if (capSrc && !ich.empty()
+                                    && dynamic_pointer_cast<ThisExpression>(ich[0])) {
+                                if (auto sc = module->getScopeStack().peek()) {
+                                    sc->rejectCapturedBorrowParam(capSrc->getTextValue(),
+                                        "field `" + dotLhs->getIdentifier() + "`",
+                                        (int) getSourceLine());
+                                }
+                            }
                             storeInterfaceInlineBody(module, lhs, loadR(rhs),
                                 lhsCls, rhsAst);
                             result = lhs;

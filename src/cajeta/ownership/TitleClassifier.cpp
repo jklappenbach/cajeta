@@ -544,6 +544,11 @@ namespace cajeta::ownership {
                 } else if (s.family == TitleFamily::LocalRead
                            && s.has(TitleShape::kIsParam)
                            && s.has(TitleShape::kTransferredParam)) {
+                    if (role == ConsumerRole::StoreString && s.has(TitleShape::kHasEntry)) {
+                        v.answer = TitleAnswer::Runtime;
+                        v.source = TitleSource::DropEntry;
+                        return v;
+                    }
                     v.answer = TitleAnswer::Owned;
                     v.source = TitleSource::None;
                 }
@@ -859,7 +864,8 @@ namespace cajeta::ownership {
             const std::string see = " See docs/specification/lang/OwnershipTransfer.md.";
             const std::string name = sh.field ? sh.field->getName() : std::string();
             std::string msg;
-            if (sh.family == TitleFamily::LocalRead && sh.has(TitleShape::kIsParam)) {
+            if (sh.family == TitleFamily::LocalRead && sh.has(TitleShape::kIsParam)
+                    && !sh.has(TitleShape::kTransferredParam)) {
                 auto m = module->getCurrentMethod();
                 msg = head + ", but `" + name + "` is a BORROWED parameter of `"
                     + (m ? m->getName() : std::string("?")) + "` — this frame holds no "
@@ -902,6 +908,12 @@ namespace cajeta::ownership {
                 return llvm::ConstantInt::get(
                     llvm::Type::getInt64Ty(*module->getLlvmContext()), 1);
             case TitleAnswer::Runtime:
+                if (role == ConsumerRole::StoreString && s.family == TitleFamily::LocalRead
+                        && s.has(TitleShape::kTransferredParam) && s.has(TitleShape::kHasEntry)) {
+                    llvm::Value* f = verdictFlag(s, v, module);
+                    deactivateLocalEntry(module, s.field);
+                    return f;
+                }
                 return titleFlag(s, module);
             case TitleAnswer::Borrow:
             case TitleAnswer::StackBound:

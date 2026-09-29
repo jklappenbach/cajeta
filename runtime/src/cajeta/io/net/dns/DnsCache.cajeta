@@ -111,11 +111,6 @@ public final class DnsCache {
     public DnsCache(int32 maxEntries, Duration ttl, #Resolver resolver) {
         this.store = heap Cache<String, DnsCacheEntry>(maxEntries);
         this.store.setMaxAge(ttl);
-        // NOT `#resolver`: Resolver is an INTERFACE — interface formals get
-        // no drop entry (nothing to consume; the fat-pointer body has its
-        // own lifecycle), and the interface field-store path does not take
-        // a `#` RHS (a `#` here produced a garbage body pointer and the
-        // first dispatch faulted). The injected resolver is process-lived.
         this.resolver = resolver;
         this.cacheFailures = true;
     }
@@ -139,7 +134,7 @@ public final class DnsCache {
      */
     public static #DnsCache withResolver(#Resolver resolver) {
         return heap DnsCache(DnsCache.DEFAULT_MAX_ENTRIES,
-            Duration.ofSeconds(DnsCache.DEFAULT_TTL_SECONDS), resolver);
+            Duration.ofSeconds(DnsCache.DEFAULT_TTL_SECONDS), #resolver);
     }
 
     /**

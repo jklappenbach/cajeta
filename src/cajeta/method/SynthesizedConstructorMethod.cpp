@@ -122,6 +122,7 @@ namespace cajeta {
                     }
                 }
                 b.CreateStore(initVal, fp);
+                parent->recordInitializerTitle(module, &b, thisPtr, prop, init);
             }
             module->setBuilder(prevBuilder);
         }

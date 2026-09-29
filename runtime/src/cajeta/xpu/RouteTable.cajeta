@@ -27,7 +27,7 @@ public final class RouteTable {
 
     /** Add a row. Registration order does not reach the answer. */
     public void register(Route r) {
-        this.rows.add(r);
+        this.rows.add(#r);
         return;
     }
 

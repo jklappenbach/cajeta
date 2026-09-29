@@ -400,6 +400,12 @@ namespace cajeta {
             return -1;
         }
 
+        // Sets `prop`'s ownership bit on `thisPtr` when its field initializer `init`
+        // tendered a title, so the owner's drop frees what the initializer allocated.
+        void recordInitializerTitle(const CajetaModulePtr& module, llvm::IRBuilder<>* b,
+                                    llvm::Value* thisPtr, const StructurePropertyPtr& prop,
+                                    const AbstractSyntaxNodePtr& init);
+
         bool needsOwnershipWord() const {
             for (const auto& q : propertyList) {
                 if (!q->isStatic() && fieldHasOwnershipBit(q)) return true;
