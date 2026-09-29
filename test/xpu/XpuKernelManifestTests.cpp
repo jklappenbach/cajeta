@@ -710,6 +710,35 @@ TEST(XpuKernelManifest, cpuManifestOmitsDeviceOnlyFields) {
     EXPECT_NE(ms[0].codeHash, ms[1].codeHash);
 }
 
+// xpu-kernel-adaptor Unit 9, the launch-side width: the cpu manifest records
+// the width a kernel was BUILT at (1 for a scalar work-item loop, the host
+// SIMD width for a wave kernel, a distributed coop tile's forced width where
+// one is present), which Group.laneBlockOf(kernel) reads on the host so a
+// launcher can follow a kernel whose width is not Device.waveSize().
+TEST(XpuKernelManifest, cpuManifestRecordsTheWidthAKernelWasBuiltAt) {
+    const char* wave =
+        "    @Kernel\n"
+        "    public static void wsum(KernelBuffer<float32> y, uint32 n) {\n"
+        "        float32 v = (float32) (KernelThread.x() % 32);\n"
+        "        float32 t = Wave.reduceSumF32(v);\n"
+        "        if (KernelThread.x() == 0) { y[0] = t; }\n"
+        "    }\n";
+    std::string source = std::string(
+        "package test;\nimport cajeta.xpu.KernelBuffer;\nimport cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Wave;\npublic class M {\n") + kSaxpy + wave + kEnd;
+    auto ms = cpuManifests(source, {"saxpy", "wsum"});
+    ASSERT_EQ(ms.size(), 2u);
+    const KernelManifest* plain = byName(ms, ".saxpy");
+    const KernelManifest* ws = byName(ms, ".wsum");
+    ASSERT_NE(plain, nullptr);
+    ASSERT_NE(ws, nullptr);
+    ASSERT_TRUE(plain->waveWidth.has_value());
+    EXPECT_EQ(*plain->waveWidth, 1u) << "a kernel with no wave op runs its work-item loop scalar";
+    ASSERT_TRUE(ws->waveWidth.has_value());
+    EXPECT_GE(*ws->waveWidth, 2u) << "a wave kernel is built at the host SIMD width";
+    EXPECT_NE(cajeta::xpu::toJson(*ws).find("\"waveWidth\""), std::string::npos);
+}
+
 // 1.1.5a — a pinned block records threadsPerGroup and residentGroupsPerCu equal
 // to DeviceProfile::occupancy's answer for that footprint (§3.3).
 TEST(XpuKernelManifest, pinnedBlockRecordsOccupancy) {

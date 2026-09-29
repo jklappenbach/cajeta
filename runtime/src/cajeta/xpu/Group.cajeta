@@ -2,6 +2,9 @@ package cajeta.xpu;
 
 import cajeta.xpu.GroupOp;
 import cajeta.xpu.Device;
+import cajeta.xpu.KernelManifest;
+import cajeta.lang.Optional;
+import cajeta.lang.String;
 
 /**
  * Group — the abstract cooperative unit of the cajeta.xpu cooperative-tile
@@ -133,6 +136,24 @@ public final class Group {
             return 1;
         }
         return w;
+    }
+
+    /**
+     * The block for a one-group-per-row launch of KERNEL specifically: the
+     * width that kernel was built at, read off its manifest (`waveWidth`).
+     * A distributed cooperative tile forces a kernel to the tile's width,
+     * 32, which on a backend whose wave is not 32 (the cpu backend at its
+     * host SIMD width) differs from {@link #laneBlock}; a launcher that
+     * asked laneBlock() for such a kernel would mis-map every tile. When
+     * the manifest does not say, laneBlock(). A DEVICE TOUCH, like laneBlock.
+     */
+    public static int32 laneBlockOf(String kernel) {
+        KernelManifest m #= KernelManifest.of(kernel);
+        if (m != null) {
+            Optional<int32> w = m.waveWidth();
+            if (w.isPresent() && w.get() > 0) { return w.get(); }
+        }
+        return Group.laneBlock();
     }
 
     /**

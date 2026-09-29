@@ -1160,22 +1160,14 @@ void foldWaveVariants(llvm::Function& f) {
                 bool waveKernel = false;
                 if (waveW >= 2) {
                     waveKernel = setupWaveVariants(*wrapper, hostModule, waveW);
-                    // The Group surface is the wave here, and the HOST launches a
-                    // Group kernel with Group.laneBlock() = Device.waveSize() lanes
-                    // per group. A distributed coop tile forces this kernel to its
-                    // own width (cajeta.xpu.coop-wavew, 32) which the host's launch
-                    // geometry cannot follow per kernel, so a kernel that mixes the
-                    // Group surface with such a tile is refused by name.
-                    std::string groupOp = groupSurfaceUse(*wrapper);
-                    if (!groupOp.empty() && wrapper->hasFnAttribute("cajeta.xpu.coop-wavew")) {
-                        reportUnloweredKernel(*method, entryName, "cpu",
-                                              groupOp + " in a kernel whose distributed coop tile "
-                                              "forces wave " + std::to_string(waveW) + ": the host "
-                                              "launches Group kernels at Device.waveSize() lanes per "
-                                              "group and cannot follow a per-kernel width");
-                        wrapper->eraseFromParent();
-                        continue;                     // host-stub fallback
-                    }
+                    // The width this kernel is built at, for the HOST to read
+                    // (`Group.laneBlockOf(kernel)`): the host SIMD width for a wave
+                    // kernel, the forced width of a distributed coop tile
+                    // (cajeta.xpu.coop-wavew) where one is present. That reading is
+                    // what lets a Group kernel carry such a tile: the refusal that
+                    // stood here (2026-09-28) assumed the host could only launch at
+                    // Device.waveSize() lanes per group.
+                    manifest.waveWidth = waveKernel ? waveW : 1u;
                     if (waveKernel) {
                         rewriteWaveWidth(*wrapper, waveW);
                         waveMaskAsData(*wrapper, hostModule, waveW);
@@ -1313,6 +1305,9 @@ void foldWaveVariants(llvm::Function& f) {
                 waveKernel = setupWaveVariants(*linked, hostModule, waveW);
                 if (waveKernel) forceLoopVectorWidth(latchBr, waveW);
             }
+            // The width the kernel is built at, for Group.laneBlockOf (see the
+            // fission path's note).
+            manifest.waveWidth = waveKernel ? waveW : 1u;
 
             // Inline the kernel into the loop body, then mem2reg + LoopVectorize.
             llvm::InlineFunctionInfo ifi;
@@ -1328,23 +1323,6 @@ void foldWaveVariants(llvm::Function& f) {
                 }
             }
 
-            // A Group kernel with a forced-width coop tile: refused on this path
-            // as on the fission path above (the note there says why).
-            {
-                std::string groupOp = groupSurfaceUse(*linked);
-                if (groupOp.empty()) groupOp = groupSurfaceUse(*wrapper);
-                const bool forced = linked->hasFnAttribute("cajeta.xpu.coop-wavew")
-                    || wrapper->hasFnAttribute("cajeta.xpu.coop-wavew");
-                if (!groupOp.empty() && forced) {
-                    reportUnloweredKernel(*method, entryName, "cpu",
-                                          groupOp + " in a kernel whose distributed coop tile "
-                                          "forces wave " + std::to_string(waveW) + ": the host "
-                                          "launches Group kernels at Device.waveSize() lanes per "
-                                          "group and cannot follow a per-kernel width");
-                    wrapper->eraseFromParent();
-                    continue;                     // host-stub fallback
-                }
-            }
             // The width IS W in a vectorized wave kernel, so width() is rewritten
             // to the constant before vectorizing and folds cleanly.
             if (waveKernel) {

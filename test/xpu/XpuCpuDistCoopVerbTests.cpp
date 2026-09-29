@@ -1428,11 +1428,13 @@ TEST(XpuCpuDistCoopVerb, waveOpLeftScalarIsRefused) {
 // ---- GATE: a Group kernel with a forced-width coop tile is REFUSED ------ //
 //
 // Since the Group surface folded onto the wave (2026-09-28), a Group kernel
-// is launched by the host at Device.waveSize() lanes per group. A distributed
-// coop tile forces the kernel to its own width (coop-wavew, 32 here), which
-// that launch geometry cannot follow per kernel. Refused by name; the arm
-// that proves the check fires. The does-not-fire arms are the Group probes
-// in XpuCpuFissionUniformizeTests, which lower and answer at the host width.
+// is launched by the host at the group width. A distributed coop tile forces
+// the kernel to its own width (coop-wavew, 32 here), which Device.waveSize()
+// does not know; the kernel's manifest does (waveWidth, recorded by the cpu
+// registration since 2026-09-29), and Group.laneBlockOf(kernel) reads it, so
+// the mix LOWERS and the host launches it at 32 (xpu-kernel-adaptor Unit 9,
+// the launch-side width). The probes in XpuCpuFissionUniformizeTests are the
+// plain Group kernels, which answer at the host width.
 const char* kGroupPlusCoopSrc = R"CJ(
 package test;
 import cajeta.xpu.CooperativeMatrix;
@@ -1485,20 +1487,24 @@ public class M {
         }
         y.download(hy);
         if (hy[0] == -1000.0f) { return -1; }
+        // Group.width() inside the kernel is the tile's forced 32, and the
+        // host reads the same 32 for THIS kernel off its manifest.
+        if (hy[0] != 32.0f) { return 100 + (int32) hy[0]; }
+        int32 lb = Group.laneBlockOf("gc");
+        if (lb != 32) { return 200 + lb; }
         return 0;
     }
 }
 )CJ";
 
-TEST(XpuCpuDistCoopVerb, aGroupKernelWithAForcedWidthCoopTileIsRefused) {
+TEST(XpuCpuDistCoopVerb, aGroupKernelWithAForcedWidthCoopTileLowersAtThatWidth) {
     unsetenv("CAJETA_XPU_CPU_WAVE_WIDTH");
     setenv("CAJETA_GPU_COOPMATRIX_DIST", "on", 1);
     int r = runOnCpu(kGroupPlusCoopSrc);
     unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
-    EXPECT_EQ(r, -1)
-        << "a Group kernel carrying a distributed coop tile REGISTERED on cpu; r="
-        << r << " (the tile forces wave 32, the host launches Group kernels at"
-           " Device.waveSize() lanes per group)";
+    EXPECT_EQ(r, 0)
+        << "r=" << r << " (-1 refused; 100+w Group.width() in the kernel was w, not"
+           " the tile's 32; 200+b Group.laneBlockOf reads b for it, not 32)";
 }
 
 // ---- PROBE: one COLUMN-MAJOR mb reused across FOUR mmas ---------------- //
