@@ -2447,7 +2447,7 @@ namespace cajeta {
 
                 builder->SetInsertPoint(failBB);
                 if (llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw")) {
-                    uint64_t tag = (uint64_t) 0xCA1E7A00 | (structBytes & 0xFF);
+                    uint64_t tag = 5;   // CAJETA_PANIC_VIEW_SIZE, integer-throw shape
                     llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
                     llvm::Value* tagPtr = builder->CreateIntToPtr(
                         llvm::ConstantInt::get(i64Ty, tag), ptrTy);
@@ -2471,7 +2471,6 @@ namespace cajeta {
                         i64Ty, fixedPrefixSize);
                     const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
                     llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
-                    int diagIdx = 0;
                     llvm::Value* totalVarElems = llvm::ConstantInt::get(i64Ty, 0);
 
                     auto emitCheck = [&](llvm::Value* okCond, const char* nm) {
@@ -2483,8 +2482,7 @@ namespace cajeta {
                         builder->SetInsertPoint(fBB);
                         if (llvm::Function* throwFn =
                                 module->getRuntimeFunction("__cajeta_throw")) {
-                            uint64_t tag = (uint64_t) 0xCA1E7A00
-                                | (uint64_t)(diagIdx & 0xFF);
+                            uint64_t tag = 5;   // CAJETA_PANIC_VIEW_SIZE, integer-throw shape
                             llvm::PointerType* ptrTy =
                                 llvm::PointerType::get(llvmCtx, 0);
                             llvm::Value* tagPtr = builder->CreateIntToPtr(
@@ -2493,7 +2491,6 @@ namespace cajeta {
                         }
                         builder->CreateUnreachable();
                         builder->SetInsertPoint(oBB);
-                        diagIdx++;
                     };
 
                     auto emitReadPrefix = [&](llvm::Value* off,

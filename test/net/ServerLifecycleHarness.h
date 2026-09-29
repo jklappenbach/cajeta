@@ -92,6 +92,10 @@ namespace cajeta::net::testing {
 
         // CAS RUNNING → DRAINING. True iff this call latched the drain.
         bool requestShutdown() {
+            int32_t fresh = server_state::NEW;
+            if (state_.compare_exchange_strong(fresh, server_state::STOPPED)) {
+                return false;
+            }
             int32_t expected = server_state::RUNNING;
             return state_.compare_exchange_strong(expected, server_state::DRAINING);
         }

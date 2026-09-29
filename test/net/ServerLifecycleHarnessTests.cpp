@@ -71,15 +71,14 @@ TEST(ServerLifecycleHarnessTests, shutdownLatchesDrainOnce) {
     EXPECT_EQ(ss::DRAINING, s.state());
 }
 
-// --- lifecycle: shutdown on a never-served server is a no-op --------------
-// shutdown() before serve() finds the state still NEW, the RUNNING→DRAINING
-// CAS does not fire, and the Cajeta core returns true immediately (nothing to
-// gracefully stop). The state stays NEW — shutdown did not spuriously advance.
-TEST(ServerLifecycleHarnessTests, shutdownBeforeServeIsNoOp) {
+// --- lifecycle: shutdown on a never-served server pre-empts serve --------
+// shutdown() before serve() settles NEW on STOPPED with nothing to drain, so a
+// later serve() finds the state past NEW and returns instead of accepting.
+TEST(ServerLifecycleHarnessTests, shutdownBeforeServePreemptsIt) {
     ServerLifecycle s;
-    EXPECT_FALSE(s.requestShutdown())
-        << "RUNNING→DRAINING cannot fire from NEW — shutdown is a no-op";
-    EXPECT_EQ(ss::NEW, s.state());
+    EXPECT_FALSE(s.requestShutdown()) << "nothing was running, so no drain latches";
+    EXPECT_EQ(ss::STOPPED, s.state());
+    EXPECT_FALSE(s.tryStartServing()) << "a serve() after shutdown() must not start";
 }
 
 // --- lifecycle: full path settles on terminal STOPPED ---------------------

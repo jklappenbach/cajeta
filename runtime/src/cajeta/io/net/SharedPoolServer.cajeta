@@ -395,6 +395,11 @@ public class SharedPoolServer extends Server {
      *         connections still in flight.
      */
     public boolean shutdown(Duration deadline) {
+        if (this.state.compareAndSet(ServerState.NEW, ServerState.STOPPED)) {
+            this.listener.close();
+            this.queue.close();
+            return true;
+        }
         if (!this.state.compareAndSet(ServerState.RUNNING, ServerState.DRAINING)) {
             return true;   // not running — nothing to gracefully stop
         }

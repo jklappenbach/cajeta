@@ -1121,7 +1121,7 @@ bool cajetaRhsCarriesRedundantSharp(
                         module->getRuntimeFunction("__cajeta_throw")) {
                     llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
                     llvm::Value* tagPtr = builder->CreateIntToPtr(
-                        llvm::ConstantInt::get(i64Ty, 0xCA1E7B00), ptrTy);
+                        llvm::ConstantInt::get(i64Ty, 6), ptrTy);   // CAJETA_PANIC_VIEW_BOUNDS
                     builder->CreateCall(throwFn, {tagPtr});
                 }
                 builder->CreateUnreachable();
@@ -3221,6 +3221,22 @@ bool cajetaRhsCarriesRedundantSharp(
             }
             return;
         }
+        if (auto ne = std::dynamic_pointer_cast<NewExpression>(node)) {
+            for (auto& c : ne->getChildren()) {
+                collectFreeIdentifiers(c, bound, seen, out);
+            }
+            collectFreeIdentifiers(ne->getCreatorRest(), bound, seen, out);
+            return;
+        }
+        if (auto cr = std::dynamic_pointer_cast<ClassCreatorRest>(node)) {
+            for (auto& c : cr->getChildren()) {
+                collectFreeIdentifiers(c, bound, seen, out);
+            }
+            for (auto& p : cr->getParameters()) {
+                collectFreeIdentifiers(p.expression, bound, seen, out);
+            }
+            return;
+        }
         if (auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
             for (auto& vd : lvd->getVariableDeclarators()) {
                 if (vd && vd->getInitializer()) {
@@ -3303,6 +3319,20 @@ bool cajetaRhsCarriesRedundantSharp(
         return "";
     }
 
+    static void collectTransferNames(const AbstractSyntaxNodePtr& node, std::set<std::string>& out,
+                                     const std::set<std::string>* mark);
+
+    // An argument's `#` builds no MoveExpression, so a bare `#name` argument is read off the parameter.
+    static void collectArgumentTransfer(const MethodCallParameter& p, std::set<std::string>& out,
+                                        const std::set<std::string>* mark) {
+        if (p.callerTransferred) {
+            if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(p.expression)) {
+                out.insert(id->getTextValue());
+            }
+        }
+        collectTransferNames(p.expression, out, mark);
+    }
+
     // Collects the outer names a lambda body transfers in with `#name` (Lambdas.md rule
     // 3). Same statement-shape recursion as collectFreeIdentifiers; the transferred
     // name is the move subtree's receiver-side leaf.
@@ -3327,7 +3357,17 @@ bool cajetaRhsCarriesRedundantSharp(
         }
         if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
             for (auto& c : mc->getChildren()) collectTransferNames(c, out, mark);
-            for (auto& p : mc->getParameters()) collectTransferNames(p.expression, out, mark);
+            for (auto& p : mc->getParameters()) collectArgumentTransfer(p, out, mark);
+            return;
+        }
+        if (auto ne = std::dynamic_pointer_cast<NewExpression>(node)) {
+            for (auto& c : ne->getChildren()) collectTransferNames(c, out, mark);
+            collectTransferNames(ne->getCreatorRest(), out, mark);
+            return;
+        }
+        if (auto cr = std::dynamic_pointer_cast<ClassCreatorRest>(node)) {
+            for (auto& c : cr->getChildren()) collectTransferNames(c, out, mark);
+            for (auto& p : cr->getParameters()) collectArgumentTransfer(p, out, mark);
             return;
         }
         if (auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {

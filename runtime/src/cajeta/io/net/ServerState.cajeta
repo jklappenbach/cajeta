@@ -9,6 +9,7 @@ package cajeta.io.net;
  *
  * ```
  *   NEW ──serve()──▶ RUNNING ──shutdown()──▶ DRAINING ──drained──▶ STOPPED
+ *    └──────────────────shutdown()──────────────────────────────────▲
  * ```
  *
  * The transition is **one-way and monotonic** (the ordinals only
@@ -23,6 +24,9 @@ package cajeta.io.net;
  *     `DRAINING` (or beyond), the accept loop's `state == RUNNING` test
  *     fails and it stops pulling new connections; a second `shutdown()`
  *     is a no-op because the `RUNNING → DRAINING` CAS no longer fires.
+ *   - **shutdown before serve pre-empts it** — `shutdown()` on a `NEW`
+ *     server closes the listener and settles on `STOPPED`, so a later
+ *     `serve()` returns at once instead of accepting forever.
  *
  * ## Why ordinals, not an enum type
  *
