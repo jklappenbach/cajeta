@@ -220,3 +220,37 @@ TEST(TaskRunnerCliTests, tasksListingShowsAuthoredTasksAndDescriptions) {
     EXPECT_EQ(w.run("task alpha --show"), 0) << w.output();
     EXPECT_NE(w.output().find("alpha"), std::string::npos) << w.output();
 }
+
+// A bare `cajeta run` runs the manifest's `run` task. A script argument still
+// selects the script runner, so a task can never shadow a script run.
+TEST(TaskRunnerCliTests, bareRunRunsTheManifestRunTask) {
+    TaskWorld w;
+    w.writeManifest(
+        "{ \"run\": { \"description\": \"run it\", \"actions\": ["
+        "  { \"action\": \"exec\", \"command\": \"echo\","
+        "    \"args\": [\"ran-the-manifest-task\"], \"id\": \"e\" } ] } }");
+    EXPECT_EQ(w.run("run"), 0) << w.output();
+    EXPECT_NE(w.output().find("ran-the-manifest-task"), std::string::npos) << w.output();
+}
+
+TEST(TaskRunnerCliTests, runWithAScriptIgnoresTheManifestRunTask) {
+    TaskWorld w;
+    w.writeManifest(
+        "{ \"run\": { \"actions\": ["
+        "  { \"action\": \"exec\", \"command\": \"echo\","
+        "    \"args\": [\"ran-the-manifest-task\"], \"id\": \"e\" } ] } }");
+    {
+        std::ofstream s(w.root / "hi.cajeta");
+        s << "System.stdout.println(\"ran-the-script\");\n";
+    }
+    EXPECT_EQ(w.run("run hi.cajeta"), 0) << w.output();
+    EXPECT_NE(w.output().find("ran-the-script"), std::string::npos) << w.output();
+    EXPECT_EQ(w.output().find("ran-the-manifest-task"), std::string::npos) << w.output();
+}
+
+TEST(TaskRunnerCliTests, bareRunWithoutARunTaskIsTheUsageError) {
+    TaskWorld w;
+    w.writeManifest("{ \"greet\": { \"actions\": [] } }");
+    EXPECT_EQ(w.run("run"), 2) << w.output();
+    EXPECT_NE(w.output().find("usage: cajeta run"), std::string::npos) << w.output();
+}

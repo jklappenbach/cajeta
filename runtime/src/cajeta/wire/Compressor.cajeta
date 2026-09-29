@@ -1,12 +1,10 @@
 package cajeta.wire;
 
 /**
- * The block-compress stage — the byte→byte inverse of `Decompressor`, paired
- * with it on every Class C container writer (Parquet, ORC, Avro). Format-
- * agnostic and carries no `T`, so it is deliberately separate from `Encoder<T>`.
- *
- * Implementations (`Snappy`, `Lz4`, `Zstd`, `Gzip`/`zlib`, `Brotli`) are all our
- * own Cajeta — no third-party libraries.
+ * The compress stage of a byte-to-byte codec, the inverse of `Decompressor`.
+ * It carries no `T`, so it stays separate from `Encoder<T>`. Block containers
+ * (Parquet, ORC, Avro) use `compress(src)`. HTTP content coding picks a level
+ * and streams a body through `stream(level)`.
  *
  * ```cajeta
  * Compressor c = Snappy();
@@ -20,4 +18,20 @@ public interface Compressor {
      * @EntryPoint
      */
     #int8[] compress(int8[] src);
+
+    /**
+     * Compresses `src[0 .. len)` at `level` (1 fastest to 9 smallest for DEFLATE
+     * codecs) into a fresh, caller-owned buffer. A codec without levels ignores it.
+     *
+     * @EntryPoint
+     */
+    #int8[] compress(int8[] src, int64 len, int32 level);
+
+    /**
+     * A stream that compresses what is written to it at `level`, handing out
+     * compressed bytes as it goes.
+     *
+     * @EntryPoint
+     */
+    #CompressStream stream(int32 level);
 }

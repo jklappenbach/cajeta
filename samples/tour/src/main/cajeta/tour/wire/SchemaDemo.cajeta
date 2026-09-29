@@ -3,6 +3,8 @@ package tour.wire;
 import tour.DemoClass;
 import cajeta.wire.Compressor;
 import cajeta.wire.Decompressor;
+import cajeta.wire.CompressStream;
+import cajeta.wire.DecompressionLimitException;
 import cajeta.wire.Schema;
 import cajeta.wire.SchemaEncoder;
 import cajeta.lang.String;
@@ -36,10 +38,22 @@ import cajeta.lang.String;
 public class TourRle implements Compressor, Decompressor {
     public TourRle() { return; }
 
+    public #int8[] compress(int8[] src) {
+        return TourRle.encode(src, (int32) src.count());
+    }
+
+    // Run-length has no levels, so `level` is ignored.
+    public #int8[] compress(int8[] src, int64 len, int32 level) {
+        return TourRle.encode(src, (int32) len);
+    }
+
+    public #CompressStream stream(int32 level) {
+        return heap TourRleStream();
+    }
+
     // Run-length encode: each run of equal bytes (max 127) becomes a
     // (count, byte) pair.
-    public #int8[] compress(int8[] src) {
-        int32 n = (int32) src.count();
+    static #int8[] encode(int8[] src, int32 n) {
         // Worst case (no runs) is 2 output bytes per input byte;
         // encode into a scratch buffer, then shrink to the exact size.
         int8[] tmp = heap int8[n * 2];
@@ -84,6 +98,51 @@ public class TourRle implements Compressor, Decompressor {
             i = i + 2;
         }
         return #out;
+    }
+
+    // Unknown output size: sum the runs first, and refuse past the cap.
+    public #int8[] decompress(int8[] src, int64 len, int64 maxOut) {
+        int64 total = 0;
+        int64 i = 0;
+        while (i + 1 < len) {
+            total = total + (int64) (((int32) src[i]) & 0xff);
+            i = i + 2;
+        }
+        if (total > maxOut) {
+            throw heap DecompressionLimitException("run-length output over the cap", maxOut);
+        }
+        return this.decompress(src, total);
+    }
+}
+
+// Each flushed piece is encoded on its own. Pieces concatenate into a valid
+// run-length block, because a block is just a sequence of pairs.
+public class TourRleStream implements CompressStream {
+    int8[] held;
+    int32 n;
+
+    public TourRleStream() {
+        this.held = heap int8[4096];
+        this.n = 0;
+    }
+
+    public void write(int8[] src, int64 len) {
+        int32 i = 0;
+        while (i < (int32) len) {
+            this.held[this.n + i] = src[i];
+            i = i + 1;
+        }
+        this.n = this.n + (int32) len;
+    }
+
+    public #int8[] flush() {
+        int8[] out #= TourRle.encode(this.held, this.n);
+        this.n = 0;
+        return #out;
+    }
+
+    public #int8[] finish() {
+        return this.flush();
     }
 }
 
@@ -161,6 +220,28 @@ public class SchemaDemo extends DemoClass {
             "decompress returns exactly expandedLen bytes");
         this.check(this.sameBytes(restored, plain),
             "decompress(compress(plain)) == plain");
+
+        // A transport that cannot record the length passes a cap instead,
+        // and the codec refuses rather than expand past it.
+        int8[] capped #= d.decompress(block, block.count(), 64L);
+        this.check(this.sameBytes(capped, plain), "a capped decode under its cap restores the bytes");
+        boolean refused = false;
+        try {
+            int8[] tooBig #= d.decompress(block, block.count(), 4L);
+        } catch (DecompressionLimitException e) {
+            refused = e.limit == 4L;
+        }
+        this.check(refused, "a decode past its cap raises DecompressionLimitException");
+
+        // A stream compresses as bytes arrive: each flush is decodable on
+        // its own terms, and the pieces concatenate into one block.
+        CompressStream s #= c.stream(1);
+        s.write(plain, 8L);
+        int8[] first #= s.flush();
+        s.write(plain, 3L);
+        int8[] second #= s.finish();
+        this.check(first.count() == 2L && second.count() == 2L,
+            "the stream flushed eight a's, then three a's, as one pair each");
 
         // 2. Schema — v1 is an opaque carrier: it owns the raw
         //    descriptor bytes (# transfers ownership in) and lends

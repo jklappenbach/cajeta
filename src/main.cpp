@@ -84,7 +84,7 @@ void printUsage(const char* progname) {
               << "  coverage | verify | verify-reproducible | trust   Quality and provenance.\n"
               << "  workspace | members | toolchain | which | sandbox-info   Environment.\n"
               << "  Any other name runs the matching cajeta.json task (e.g. `cajeta run`\n"
-              << "  when the manifest defines a run task).\n"
+              << "  with no script, when the manifest defines a run task).\n"
               << "\n"
               << "Subcommands (tooling):\n"
               << "  archive <cmd>      Create / inspect / sign .cja archives (archive --help).\n"
@@ -322,11 +322,15 @@ int main(int argc, const char* argv[]) {
         return cajeta::irDisasmCommand(argc, argv);
     }
 
-    // `cajeta run <file>.cajeta` — compile the file as a script unit and
-    // execute it as a one-unit session under the JIT host (script-units
-    // spec §7). Dispatched BEFORE the build-tool task probe (and excluded
-    // from it), so a manifest task named "run" can never shadow the verb.
-    if (argc >= 2 && std::string(argv[1]) == "run") {
+    // `cajeta run <file>.cajeta` runs a script unit (script-units spec §7), ahead of
+    // the task probe so a manifest task never shadows a script. A bare `cajeta run`
+    // falls through to the manifest's `run` task, and to the usage error without one.
+    bool runVerb = argc >= 2 && std::string(argv[1]) == "run";
+    bool runHasScript = false;
+    for (int i = 2; runVerb && i < argc; ++i) {
+        if (std::string(argv[i]).rfind("--", 0) != 0) runHasScript = true;
+    }
+    if (runVerb && runHasScript) {
         return cajeta::jit::dispatchRun(argc, argv);
     }
 
@@ -342,6 +346,9 @@ int main(int argc, const char* argv[]) {
         if (cajeta::buildtool::dispatchBuildTool(argc, argv, &btExit)) {
             return btExit;
         }
+    }
+    if (runVerb) {
+        return cajeta::jit::dispatchRun(argc, argv);
     }
 
     // `cajeta jit-run <sourceRoot> <package.Class.method>` — in-process JIT

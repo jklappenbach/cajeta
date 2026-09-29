@@ -1544,9 +1544,17 @@ namespace cajeta {
         }
     }
 
+    // A method's name and parameter types without its class, so an interface slot
+    // and the class method filling it compare equal, and overloads stay apart.
+    std::string CajetaClass::interfaceSlotKey(const MethodPtr& m) {
+        std::string canonical = m->toCanonical(false);
+        size_t at = canonical.find("::");
+        return at == std::string::npos ? canonical : canonical.substr(at + 2);
+    }
+
     // This interface's methods followed by its parents', in BFS order, the first
-    // occurrence of a name winning (the leaf override). Constructors and statics are
-    // filtered. synthesizeInterfaceVTables emits its slots in exactly this order.
+    // occurrence of a signature winning (the leaf override). Constructors and statics
+    // are filtered. synthesizeInterfaceVTables emits its slots in exactly this order.
     std::vector<MethodPtr> CajetaClass::getFlattenedInterfaceMethods() {
         std::vector<MethodPtr> ordered;
         std::set<std::string> seenNames;
@@ -1560,7 +1568,7 @@ namespace cajeta {
             for (auto& m : iface->getMethodList()) {
                 if (!m || m->isConstructor()) continue;
                 if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
-                if (!seenNames.insert(m->getName()).second) continue;
+                if (!seenNames.insert(interfaceSlotKey(m)).second) continue;
                 ordered.push_back(m);
             }
             for (auto& parent : iface->getSuperClasses()) {
@@ -1629,22 +1637,36 @@ namespace cajeta {
             }
             std::string ifaceCanonical = iface->getQName()->toCanonical();
 
-            // Most-derived first, then each base in declaration order, to any depth.
-            std::function<MethodPtr(const CajetaClass*, const std::string&)> findInChain =
-                [&](const CajetaClass* c, const std::string& name) -> MethodPtr {
+            // Most-derived first, then each base in declaration order, to any depth. The
+            // exact signature wins, then the only method of that name, then one of the
+            // same arity, which keeps a generic interface's `T` slot matched.
+            std::function<MethodPtr(const CajetaClass*, const MethodPtr&)> findInChain =
+                [&](const CajetaClass* c, const MethodPtr& want) -> MethodPtr {
                     if (!c) return nullptr;
+                    std::string key = interfaceSlotKey(want);
+                    MethodPtr only;
+                    MethodPtr sameArity;
+                    int named = 0;
                     for (auto& [canon, m] : c->methods) {
                         if (!m || m->isConstructor()) continue;
                         if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
-                        if (m->getName() == name) return m;
+                        if (m->getName() != want->getName()) continue;
+                        if (interfaceSlotKey(m) == key) return m;
+                        ++named;
+                        only = m;
+                        if (!sameArity && m->getParameterList().size() == want->getParameterList().size()) {
+                            sameArity = m;
+                        }
                     }
+                    if (named == 1) return only;
+                    if (sameArity) return sameArity;
                     for (auto& parent : c->superClasses) {
-                        if (auto m = findInChain(parent.get(), name)) return m;
+                        if (auto m = findInChain(parent.get(), want)) return m;
                     }
                     return nullptr;
                 };
-            auto findByName = [&](const std::string& name) -> MethodPtr {
-                return findInChain(this, name);
+            auto findFor = [&](const MethodPtr& want) -> MethodPtr {
+                return findInChain(this, want);
             };
 
             std::vector<llvm::Constant*> entries;
@@ -1658,7 +1680,7 @@ namespace cajeta {
                 if (!ifaceMethod || ifaceMethod->isConstructor()) continue;
                 if (ifaceMethod->getModifiers().find(STATIC)
                         != ifaceMethod->getModifiers().end()) continue;
-                MethodPtr concrete = findByName(ifaceMethod->getName());
+                MethodPtr concrete = findFor(ifaceMethod);
                 if (!concrete || !concrete->getLlvmFunction()) {
                     // An abstract class may leave an interface method to its
                     // descendants, so its empty slot is expected and not a warning.
@@ -5240,13 +5262,13 @@ namespace cajeta {
                 ptrTy, vtableSlot, "iface_vtable");
 
             int methodIdx = -1;
-            int idx = 0;
-            for (auto& im : this->getFlattenedInterfaceMethods()) {
-                if (im->getName() == method->getName()) {
-                    methodIdx = idx;
-                    break;
-                }
-                ++idx;
+            auto flattened = this->getFlattenedInterfaceMethods();
+            std::string wantKey = interfaceSlotKey(method);
+            for (size_t k = 0; k < flattened.size() && methodIdx < 0; ++k) {
+                if (interfaceSlotKey(flattened[k]) == wantKey) methodIdx = (int) k;
+            }
+            for (size_t k = 0; k < flattened.size() && methodIdx < 0; ++k) {
+                if (flattened[k]->getName() == method->getName()) methodIdx = (int) k;
             }
 
             if (methodIdx >= 0) {
