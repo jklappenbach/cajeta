@@ -920,3 +920,88 @@ TEST(ErrorModelTests, constructorThrowsParses) {
         "}\n";
     EXPECT_EQ(runI32(src), 11);
 }
+
+// A runtime panic arrives as a code, not an object: TITLE_MISS and ABSTRACT_CALL
+// as small integers, view bounds and size failures as codes 6 and 5. A typed
+// clause must not bind one, or the first member read through it faults.
+namespace {
+
+const char* kOops =
+    "package test;\n"
+    "import cajeta.error.RecoverableException;\n"
+    "class Oops extends RecoverableException {\n"
+    "    Oops() { this.message = \"oops\"; this.cause = 0; }\n"
+    "}\n";
+
+} // namespace
+
+TEST(ErrorModelTests, typedClauseDoesNotBindAnIntegerThrow) {
+    std::string src = std::string(kOops) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        try {\n"
+        "            throw 3;\n"
+        "        } catch (Oops e) {\n"
+        "            return 1;\n"
+        "        } catch (Exception e) {\n"
+        "            return 77;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 77);
+}
+
+TEST(ErrorModelTests, integerThrowPassesATypedClauseOutward) {
+    std::string src = std::string(kOops) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        try {\n"
+        "            try {\n"
+        "                throw 3;\n"
+        "            } catch (Oops e) {\n"
+        "                return 1;\n"
+        "            }\n"
+        "        } catch (Exception e) {\n"
+        "            return 77;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 77);
+}
+
+TEST(ErrorModelTests, viewBoundsPanicPassesATypedClause) {
+    std::string src = std::string(kOops) +
+        "@HostEndian\n"
+        "public view VD {\n"
+        "    int32  s;\n"
+        "    String name;\n"
+        "}\n"
+        "@HostEndian\n"
+        "public view VM {\n"
+        "    int32 magic;\n"
+        "    VD[]  ds;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] bytes = heap int32[8];\n"
+        "        bytes[0] = 7;\n"
+        "        bytes[1] = 2;\n"
+        "        bytes[2] = 5;\n"
+        "        bytes[3] = 4;\n"
+        "        bytes[4] = 1684234849;\n"
+        "        bytes[5] = 9;\n"
+        "        bytes[6] = 4;\n"
+        "        bytes[7] = 2054781047;\n"
+        "        VM m = VM(bytes);\n"
+        "        int32 i = 5;\n"
+        "        try {\n"
+        "            return m.ds[i].s;\n"
+        "        } catch (Oops e) {\n"
+        "            return 1;\n"
+        "        } catch (Exception e) {\n"
+        "            return 77;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 77);
+}

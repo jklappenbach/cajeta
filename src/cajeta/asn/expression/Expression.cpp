@@ -1121,7 +1121,7 @@ bool cajetaRhsCarriesRedundantSharp(
                         module->getRuntimeFunction("__cajeta_throw")) {
                     llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
                     llvm::Value* tagPtr = builder->CreateIntToPtr(
-                        llvm::ConstantInt::get(i64Ty, 0xCA1E7B00), ptrTy);
+                        llvm::ConstantInt::get(i64Ty, 6), ptrTy);   // CAJETA_PANIC_VIEW_BOUNDS
                     builder->CreateCall(throwFn, {tagPtr});
                 }
                 builder->CreateUnreachable();

@@ -1104,11 +1104,8 @@ namespace cajeta {
         std::vector<std::set<std::string>> armNYAs;
 
         if (!catchClauses.empty()) {
-            // A legacy `throw 42` is an integer IntToPtr'd into the throw slot,
-            // with no vtable to walk: below 4096 it matches the first clause.
-            llvm::Value* thrownInt = builder->CreatePtrToInt(thrownValPtr, i64Ty);
-            llvm::Value* isLegacyInt = builder->CreateICmpULT(thrownInt,
-                llvm::ConstantInt::get(i64Ty, 4096));
+            // A legacy `throw 42` or a runtime panic is a code below 4096 with no
+            // vtable: __cajeta_exc_matches refuses it, so only a catch-all binds it.
             for (size_t ci = 0; ci < catchClauses.size(); ++ci) {
                 auto& c = catchClauses[ci];
                 bool lastClause = (ci + 1 == catchClauses.size());
@@ -1139,8 +1136,7 @@ namespace cajeta {
                         {thrownValPtr, catchVt}, "catch.match");
                     llvm::Value* isM = builder->CreateICmpNE(m,
                         llvm::ConstantInt::get(i32Ty, 0));
-                    llvm::Value* cond = builder->CreateOr(isLegacyInt, isM);
-                    builder->CreateCondBr(cond, bindBB, nextBB);
+                    builder->CreateCondBr(isM, bindBB, nextBB);
                 } else {
                     builder->CreateBr(bindBB);
                 }
@@ -2610,7 +2606,7 @@ namespace cajeta {
                     builder->CreateCondBr(hasTitle, okBB, panicBB);
                     builder->SetInsertPoint(panicBB);
                     // CAJETA_PANIC_TITLE_MISS = 3, integer-throw shape (< 4096, so
-                    // the first catch clause binds it).
+                    // only a catch-all clause binds it).
                     if (llvm::Function* throwFn =
                             module->getRuntimeFunction("__cajeta_throw")) {
                         llvm::Value* code = builder->CreateIntToPtr(
