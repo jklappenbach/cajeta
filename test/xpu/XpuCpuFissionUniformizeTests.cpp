@@ -1043,4 +1043,64 @@ TEST(XpuCpuFissionUniformize, aUniformLocalUpdatedInALaterRegionIsPerWorkItem) {
     EXPECT_EQ(r, 0) << "r=" << r;
 }
 
+// ---- 4.2.1.10: the fused qkv shape -------------------------------------- //
+//
+// The wave index derived from the GLOBAL id (`globalIdX() / Group.width()`,
+// what the Unit 9 conversion made every wave mat-vec kernel do) selects an
+// arm, each arm strides a loop by the width, and one reduce follows. The
+// three fused qkv kernels of cajeta-llm are exactly this and were declined
+// on cpu after the conversion ("wave reduce left scalar"), while the same
+// loop under a guard on `Workgroup.x()` lowers. `which` is uniform across
+// the wave by construction; the question is whether the analysis knows it.
+const char* kArmByGlobalWaveSrc = R"CJ(
+    @Kernel
+    public static void ak(KernelBuffer<float32> out, uint32 n, uint32 fromGlobal) {
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 wave = Workgroup.x();
+        if (fromGlobal != 0) { wave = KernelThread.globalIdX() / wv; }
+        uint32 which = 0;
+        if (wave >= 2) { which = 1; }
+        float32 acc = 0.0f;
+        if (which == 0) {
+            uint32 b = lane;
+            while (b < n) { acc = acc + 1.0f; b = b + wv; }
+        } else {
+            uint32 b = lane;
+            while (b < n) { acc = acc + 2.0f; b = b + wv; }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0) { out[(int64) wave] = tot; }
+    }
+    public static int32 arm(uint32 fromGlobal) {
+        uint32 w = probeWidth();
+        if (w < 2) { return -3; }
+        float32[] h = heap float32[4];
+        KernelBuffer<float32> b = heap KernelBuffer<float32>(4);
+        KernelStream s #= KernelStream.current();
+        try {
+            ak.launch(s, grid: [4], block: [w])(b, 40, fromGlobal);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        b.download(h);
+        float32[] want = heap float32[4];
+        want[0] = 40.0f; want[1] = 40.0f; want[2] = 80.0f; want[3] = 80.0f;
+        return verify(h, 4, want);
+    }
+    public static int32 run() {
+        int32 c = arm(0);
+        if (c != 0) { return 1000 + c; }
+        return arm(1);
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, anArmChosenByTheGlobalWaveIndexLowersLikeOneChosenByTheWorkgroup) {
+    const int r = runOnCpu(std::string(kPreamble) + kArmByGlobalWaveSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (1000+x: the Workgroup.x() control failed with x;"
+                       " -1 the global-id form is refused; 100+i wrong at wave i)";
+}
+
 }  // namespace
