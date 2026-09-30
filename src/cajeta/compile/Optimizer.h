@@ -13,6 +13,12 @@ namespace llvm {
 
 namespace cajeta {
 
+    // CAJETA_TIME_PASSES: set (and not "0"), every pipeline run and every
+    // codegen run prints LLVM's per-pass timing report to stderr, the answer
+    // to "which pass is this hour in" when a debugger cannot attach. Reading
+    // it also turns LLVM's timers on for the legacy codegen pass manager.
+    bool timePassesWanted();
+
     // Run the standard per-module pipeline at `level` over `m`; a no-op at O0.
     // `tm` may be null, but O2/O3 vectorization cannot cost-model without it.
     void optimizeModule(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level);

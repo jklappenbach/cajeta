@@ -37,6 +37,7 @@
 #include "llvm/Analysis/ModuleSummaryAnalysis.h"   // buildModuleSummaryIndex (ThinLTO)
 #include "llvm/Analysis/ProfileSummaryInfo.h"       // ProfileSummaryInfo (summary input)
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/PassTimingInfo.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/TargetParser/Host.h"
@@ -2555,6 +2556,9 @@ namespace cajeta {
                     return;
                 }
                 pm.run(*module->getLlvmModule());
+                // CAJETA_TIME_PASSES: the codegen half of the report (the IR
+                // pipeline printed its own from optimizeModule).
+                if (cajeta::timePassesWanted()) llvm::reportAndResetTimings();
                 dest.flush();
                 objectFiles.push_back(objPath);
                 return;

@@ -7,7 +7,9 @@
 #include "llvm/IR/IntrinsicsX86.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/PassTimingInfo.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Target/TargetMachine.h"
 
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
@@ -27,6 +29,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 
 namespace cajeta {
 
@@ -228,23 +231,47 @@ struct SmallVectorCastLoweringPass
 };
 
 // Build + cross-register the four analysis managers a new-PM run needs.
+// With CAJETA_TIME_PASSES the run is instrumented and its per-pass timing
+// report is printed when the environment is torn down (`ctx` names the
+// context the instrumentation attaches to; the report needs one).
 struct PassEnv {
+    llvm::PassInstrumentationCallbacks pic;
+    std::unique_ptr<llvm::StandardInstrumentations> si;
     llvm::PassBuilder pb;
     llvm::LoopAnalysisManager lam;
     llvm::FunctionAnalysisManager fam;
     llvm::CGSCCAnalysisManager cgam;
     llvm::ModuleAnalysisManager mam;
 
-    explicit PassEnv(llvm::TargetMachine* tm) : pb(tm) {
+    explicit PassEnv(llvm::TargetMachine* tm, llvm::LLVMContext* ctx = nullptr)
+        : pb(tm, llvm::PipelineTuningOptions(), std::nullopt,
+             (ctx && timePassesWanted()) ? &pic : nullptr) {
         pb.registerModuleAnalyses(mam);
         pb.registerCGSCCAnalyses(cgam);
         pb.registerFunctionAnalyses(fam);
         pb.registerLoopAnalyses(lam);
         pb.crossRegisterProxies(lam, fam, cgam, mam);
+        if (ctx && timePassesWanted()) {
+            si = std::make_unique<llvm::StandardInstrumentations>(
+                *ctx, /*DebugLogging=*/false);
+            si->registerCallbacks(pic, &mam);
+        }
+    }
+    ~PassEnv() {
+        if (si) si->getTimePasses().print();
     }
 };
 
 } // namespace
+
+bool timePassesWanted() {
+    // Read every time, not cached: a process that sets the variable, runs a
+    // pipeline and unsets it (the tests do) must fall silent again.
+    const char* env = std::getenv("CAJETA_TIME_PASSES");
+    bool on = env != nullptr && env[0] != 0 && !(env[0] == '0' && env[1] == 0);
+    if (on) llvm::TimePassesIsEnabled = true;
+    return on;
+}
 
 void optimizeModule(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level) {
     if (level == OptLevel::O0) {
@@ -263,7 +290,7 @@ void optimizeModule(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level) {
         case OptLevel::O3: lv = llvm::OptimizationLevel::O3; break;
         default:           return;
     }
-    PassEnv env(tm);
+    PassEnv env(tm, &m.getContext());
     llvm::ModulePassManager mpm = env.pb.buildPerModuleDefaultPipeline(lv);
     mpm.run(m, env.mam);
 }
@@ -284,7 +311,7 @@ void optimizeModuleThinLTOPreLink(llvm::Module& m, llvm::TargetMachine* tm, OptL
         case OptLevel::O3: lv = llvm::OptimizationLevel::O3; break;
         default:           return;
     }
-    PassEnv env(tm);
+    PassEnv env(tm, &m.getContext());
     // Pre-link half: optimize locally but leave import and cross-module inlining to the
     // linker's ThinLTO backend; optimizing fully here strips symbols the importer needs.
     llvm::ModulePassManager mpm = env.pb.buildThinLTOPreLinkDefaultPipeline(lv);
