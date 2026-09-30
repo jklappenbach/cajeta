@@ -1148,6 +1148,16 @@ void foldWaveVariants(llvm::Function& f) {
                         linked->getFnAttribute("cajeta.xpu.coop-wavew"));
                 if (linked->hasFnAttribute("cajeta.xpu.uses-group"))
                     wrapper->addFnAttr(linked->getFnAttribute("cajeta.xpu.uses-group"));
+                // The clone REPLACED the wrapper's function attributes with the
+                // kernel's: the tune set at creation is gone, and the kernel's
+                // `alwaysinline` (meant for inlining it INTO the wrapper) is now
+                // on the wrapper itself, so the always-inliner copied every
+                // fission wrapper into its launch thunk and the host codegen
+                // compiled each one twice: a 275k-instruction distributed coop
+                // tile, 550k. Measured 2026-09-29 in the WmmaKernel module of
+                // the cajeta-llm test binary, an hour of codegen (6.4.12).
+                wrapper->removeFnAttr(llvm::Attribute::AlwaysInline);
+                tuneKernelWrapper(*wrapper);
                 linked->eraseFromParent();        // body cloned into the wrapper
                 // Fission redirected only the wrapper's uses of the kernel's
                 // `shared` globals (so a declined attempt could be retried);

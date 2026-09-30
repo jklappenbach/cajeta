@@ -70,6 +70,27 @@ const char* kSource =
     "    }\n"
     "}\n";
 
+// A barrier kernel takes the FISSION path: its body is cloned into the wrapper
+// region by region, and the clone replaces the wrapper's function attributes
+// with the kernel's. The tune set at creation was lost there, and the
+// kernel's `alwaysinline` landed on the wrapper, which the always-inliner
+// then copied whole into the launch thunk (the cajeta-llm WmmaKernel module,
+// 2026-09-29: four 230k to 275k instruction wrappers, each compiled twice).
+const char* kBarrierSource =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "import cajeta.xpu.Barrier;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void tuneStaged(KernelBuffer<uint32> a, KernelBuffer<uint32> b) {\n"
+    "        uint32 t = KernelThread.globalIdX();\n"
+    "        a[t] = t;\n"
+    "        Barrier.workgroup();\n"
+    "        b[t] = t + 100;\n"
+    "    }\n"
+    "}\n";
+
 cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
                              const std::string& name) {
     for (auto& [k, m] : klass->getMethods())
@@ -101,10 +122,11 @@ struct Lowered {
 
 // Lower the probe kernel through the real registration path into a host
 // module that also holds an ordinary host function.
-Lowered lower(Compiler& compiler, llvm::TargetMachine& tm) {
+Lowered lower(Compiler& compiler, llvm::TargetMachine& tm,
+              const char* source = kSource, const char* kernel = "tuneProbe") {
     Lowered out;
-    auto module = compileForInspection(compiler, kSource);
-    auto k = findMethod(module->getStructures()["test.M"], "tuneProbe");
+    auto module = compileForInspection(compiler, source);
+    auto k = findMethod(module->getStructures()["test.M"], kernel);
     if (!k) return out;
     out.ctx = std::make_unique<llvm::LLVMContext>();
     out.host = std::make_unique<llvm::Module>("xpu_cpu_tune", *out.ctx);
@@ -174,4 +196,20 @@ TEST(XpuCpuKernelTuneTests, anotherTuneTargetIsNamedByTheSameKnob) {
 
     EXPECT_EQ(l.wrapper->getFnAttribute("tune-cpu").getValueAsString(), "haswell");
     EXPECT_FALSE(postRAScheduling(*tm, *l.wrapper));
+}
+
+TEST(XpuCpuKernelTuneTests, aFissionWrapperKeepsTheTuneAndIsNotAlwaysInline) {
+    auto tm = zenTargetMachine();
+    if (!tm) GTEST_SKIP() << "x86 only: the post-RA model in question is Zen's";
+    Compiler compiler;
+    Lowered l = lower(compiler, *tm, kBarrierSource, "tuneStaged");
+    ASSERT_NE(l.wrapper, nullptr) << "no per-block wrapper was emitted";
+
+    EXPECT_EQ(l.wrapper->getFnAttribute("tune-cpu").getValueAsString(), "generic");
+    EXPECT_FALSE(postRAScheduling(*tm, *l.wrapper));
+    // The kernel's alwaysinline is for inlining the kernel INTO the wrapper;
+    // on the wrapper it would copy the whole body into the launch thunk.
+    EXPECT_FALSE(l.wrapper->hasFnAttribute(llvm::Attribute::AlwaysInline));
+    // The kernel's other attributes the clone carried over still ride it.
+    EXPECT_TRUE(l.wrapper->hasFnAttribute("cajeta-cpu-kernel"));
 }
