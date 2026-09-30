@@ -84,12 +84,12 @@ import cajeta.collection.Collectors;
 
 public final class D {
     public static int32 run() {
-        int32[] xs = { 1, 2, 3, 4, 5 };
+        int32[] xs = [ 1, 2, 3, 4, 5 ];
         ArrayStream<int32> s = heap ArrayStream<int32>(xs, 5);
 
         // Built-in: drain into an owned ArrayList (caller owns `out`).
-        Collector<int32, ArrayList<int32>> c = Collectors.toList<int32>();
-        ArrayList<int32> out = s.collect(c);          // #ArrayList<int32>
+        Collector<int32, ArrayList<int32>> c #= Collectors.toList<int32>();
+        ArrayList<int32> out #= s.collect(c);         // #ArrayList<int32>, owned
         return out.count();                            // 5
     }
 }
@@ -101,12 +101,13 @@ Custom scalar reduction — sum, no list involved:
 import cajeta.lang.stream.ArrayStream;
 import cajeta.collection.Collector;
 
+int32[] xs = [ 1, 2, 3, 4, 5 ];
 ArrayStream<int32> s = heap ArrayStream<int32>(xs, 5);
 Collector<int32, int32> sum = heap Collector<int32, int32>(
     () -> 0,                                  // supplier: identity
     (int32 acc, int32 x) -> acc + x,          // accumulator
     (int32 a, int32 b) -> a + b);             // combiner (parallel merge)
-int32 total = s.collect(sum);                 // 15
+int32 total = s.collect(sum);                 // 15, a primitive R binds with plain =
 ```
 
 See `cajeta/lang/stream/Stream` for the `collect<R>` terminal and `collection/ArrayList`

@@ -521,6 +521,7 @@ namespace cajeta {
         if (!cond) {
             return llvm::ConstantInt::getTrue(*module->getLlvmContext());
         }
+        size_t tempMark = module->statementTempMark();
         llvm::Value* v = cond->generateCode(module);
         if (!v) {
             throw locatedException(
@@ -554,6 +555,7 @@ namespace cajeta {
             llvm::Value* zero = llvm::ConstantInt::get(v->getType(), 0);
             v = builder->CreateICmpNE(v, zero);
         }
+        module->flushStatementTemps(tempMark);
         return v;
     }
 
@@ -1759,6 +1761,7 @@ namespace cajeta {
                 m->emitAfterReturningAdvice(module);
                 m->emitAfterThrowingTryPop(module);
             }
+            module->flushStatementTemps(0, true);
             emitTryFinallyUnwind(module);
             emitScopeExitToWatermark(module);
             if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
@@ -1886,6 +1889,8 @@ namespace cajeta {
                 m->emitAfterReturningAdvice(module);
                 m->emitAfterThrowingTryPop(module);
             }
+            if (expression) rejectBorrowOfTemporary(expression, module);
+            module->flushStatementTemps(0, true);
             emitTryFinallyUnwind(module);
             emitScopeExitToWatermark(module);
             if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
@@ -2353,6 +2358,8 @@ namespace cajeta {
                                 curM->emitAfterReturningAdvice(module);
                                 curM->emitAfterThrowingTryPop(module);
                             }
+                            if (expression) rejectBorrowOfTemporary(expression, module);
+                            module->flushStatementTemps(0, true);
                             emitTryFinallyUnwind(module);
                             emitScopeExitToWatermark(module);
                             if (auto curM = module->getCurrentMethod())
@@ -2582,6 +2589,8 @@ namespace cajeta {
             m->emitAfterReturningAdvice(module);
             m->emitAfterThrowingTryPop(module);
         }
+        if (expression) rejectBorrowOfTemporary(expression, module);
+        module->flushStatementTemps(0, true);
         emitTryFinallyUnwind(module);
         emitScopeExitToWatermark(module);
         if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);

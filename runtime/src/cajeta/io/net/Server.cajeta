@@ -1,5 +1,6 @@
 package cajeta.io.net;
 
+import cajeta.concurrent.Fiber;
 import cajeta.io.net.ServerBuilder;
 import cajeta.io.net.SocketAddress;
 import cajeta.io.net.TcpListener;
@@ -354,7 +355,7 @@ public class Server {
      *      longer `RUNNING` — returns `null`, so the accept loop exits and
      *      [`serve`](#serve)'s scope begins joining the connection fibers.
      *   3. **Drain** — poll [`inflight`](#inflight) to zero, parking the
-     *      caller's fiber between polls (`Cajeta.fiberSleepNanos`, so the
+     *      caller's fiber between polls (`Fiber.sleep`, so the
      *      carrier stays free), until either it reaches zero (clean drain)
      *      or the `deadline` elapses (force stop — remaining handlers are
      *      abandoned to the scope-join, which a future NET-4.4 force-close
@@ -407,7 +408,7 @@ public class Server {
             if (Cajeta.currentTimeNanos() >= stop) {
                 return false;             // deadline hit — connections remain
             }
-            Cajeta.fiberSleepNanos(backoff);
+            Fiber.sleep(Duration.ofNanos(backoff));
             if (backoff < 10000000) {
                 backoff = backoff * 2;
             }

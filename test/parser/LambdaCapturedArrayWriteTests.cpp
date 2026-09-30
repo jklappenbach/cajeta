@@ -134,7 +134,7 @@ TEST(LambdaCapturedArrayWriteTests, writeInsidePredicateOfParallelFindFirst) {
         "        int32[] xs = heap int32[100];\n"
         "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
         "        Probe p = heap Probe(8);\n"
-        "        Optional<int32> o = xs.stream().parallel()\n"
+        "        Optional<int32> o #= xs.stream().parallel()\n"
         "                              .findFirst((x) -> {\n"
         "                                  if (x == 73) {\n"
         "                                      p.log[p.next] = x;\n"

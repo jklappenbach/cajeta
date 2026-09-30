@@ -42,6 +42,10 @@
 #include "cajeta/error/Exception.h"
 #include "cajeta/util/MemoryManager.h"
 #include "Expression.h"
+#include "CreatorRest.h"
+#include "cajeta/asn/LocalVariableDeclaration.h"
+#include <functional>
+#include <set>
 #include "BinaryOpExpression.h"
 #include "DotExpression.h"
 #include "Identifier.h"
@@ -1430,6 +1434,184 @@ namespace cajeta {
             match = mm;
         }
         return match;
+    }
+
+    static std::string temporaryBorrowed(const AbstractSyntaxNodePtr& node) {
+        AbstractSyntaxNodePtr e = node;
+        while (isMoveKind(e) && moveInner(e)) e = moveInner(e);
+        auto mce = dynamic_pointer_cast<MethodCallExpression>(e);
+        if (!mce || mce->getChildren().empty()) return "";
+        MethodPtr m = mce->getResolvedMethod();
+        if (!m || m->isReturnsOwnership()) return "";
+        if (m->getModifiers().find(STATIC) != m->getModifiers().end()) return "";
+        CajetaTypePtr rt = mce->getResolvedType();
+        if (!rt || rt->isValueType() || dynamic_pointer_cast<CajetaView>(rt)) return "";
+        if ((rt->getTypeFlags() & PRIMITIVE_FLAG) && !dynamic_pointer_cast<CajetaArray>(rt)) return "";
+        if (auto byValue = dynamic_pointer_cast<CajetaClass>(rt)) {
+            if (m->returnsStackValue() && !byValue->needsOwnershipWord()) return "";
+        }
+        auto recv = mce->getChildren()[0];
+        if (MethodCallExpression::freshHeapCreatorTempClass(recv)) return m->getName();
+        if (auto rm = dynamic_pointer_cast<MethodCallExpression>(recv)) {
+            MethodPtr r = rm->getResolvedMethod();
+            if (r && r->isReturnsOwnership()
+                    && MethodCallExpression::droppableTempClass(rm->getResolvedType())) {
+                return m->getName();
+            }
+            return temporaryBorrowed(rm).empty() ? "" : m->getName();
+        }
+        return "";
+    }
+
+    void rejectBorrowOfTemporary(const AbstractSyntaxNodePtr& e, CajetaModulePtr module) {
+        std::string name = temporaryBorrowed(e);
+        if (name.empty()) return;
+        throw Exception(
+            "`" + name + "()` returns a borrow reaching a temporary that is freed at the end of "
+            "this statement, so the value cannot be kept. Bind the temporary to a local first, "
+            "or call a method that returns an owned value (`#T`).",
+            "CAJETA_ERROR_BORROW_OF_TEMPORARY", module->getSourcePath(),
+            (int) e->getSourceLine(), (int) e->getSourceColumn() + 1);
+    }
+
+    static bool formalMayBeKept(const MethodPtr& method, size_t formalIdx,
+                                std::set<std::pair<const Method*, size_t>>& seen);
+
+    // Whether a plain `names` argument to this call can be kept by its callee.
+    static bool forwardMayKeep(const std::shared_ptr<MethodCallExpression>& call, size_t argIdx,
+                               const MethodPtr& enclosing,
+                               std::set<std::pair<const Method*, size_t>>& seen) {
+        auto& kids = call->getChildren();
+        AbstractSyntaxNodePtr recv = kids.empty() ? nullptr : kids[0];
+        while (auto d = dynamic_pointer_cast<DotExpression>(recv)) {
+            if (d->getChildren().empty()) break;
+            recv = d->getChildren()[0];
+        }
+        if (auto id = dynamic_pointer_cast<IdentifierExpression>(recv)) {
+            if (id->getTextValue() == "System") return false;
+        }
+        bool local = kids.empty() || !kids[0]
+            || dynamic_pointer_cast<ThisExpression>(kids[0])
+            || (dynamic_pointer_cast<IdentifierExpression>(kids[0]) && enclosing->getParent()
+                && dynamic_pointer_cast<IdentifierExpression>(kids[0])->getTextValue()
+                       == enclosing->getParent()->getQName()->getTypeName());
+        if (!local || !enclosing->getParent()) return true;
+        bool any = false;
+        for (auto& [_, m] : enclosing->getParent()->getMethods()) {
+            if (!m || m->getName() != call->getMethodCallName()) continue;
+            size_t off = 0;
+            auto fpl = m->getParameterList();
+            if (!fpl.empty() && fpl.front() && fpl.front()->getName() == "this") off = 1;
+            if (fpl.size() != call->getParameters().size() + off) continue;
+            any = true;
+            if (formalMayBeKept(m, argIdx + off, seen)) return true;
+        }
+        return !any;
+    }
+
+    // Whether `method` may keep its formal `formalIdx` past the call: a `#` formal, or a body
+    // that moves, stores, returns or captures it, or forwards it plainly to a keeper.
+    static bool formalMayBeKept(const MethodPtr& method, size_t formalIdx,
+                                std::set<std::pair<const Method*, size_t>>& seen) {
+        auto fpl = method->getParameterList();
+        if (formalIdx >= fpl.size() || !fpl[formalIdx]) return true;
+        if (fpl[formalIdx]->isTransferred()) return true;
+        if (!seen.insert({method.get(), formalIdx}).second) return false;
+        BlockPtr body = method->getBlock();
+        if (!body) return true;
+        std::set<std::string> names{fpl[formalIdx]->getName()};
+        auto isName = [&](const AbstractSyntaxNodePtr& n) {
+            AbstractSyntaxNodePtr e = n;
+            while (isMoveKind(e) && moveInner(e)) e = moveInner(e);
+            auto id = dynamic_pointer_cast<IdentifierExpression>(e);
+            return id && names.count(id->getTextValue()) > 0;
+        };
+        std::function<bool(const AbstractSyntaxNodePtr&)> usesName = [&](const AbstractSyntaxNodePtr& n) {
+            if (!n) return false;
+            if (isName(n)) return true;
+            bool hit = false;
+            n->forEachSubNode([&](const AbstractSyntaxNodePtr& c) { if (!hit) hit = usesName(c); });
+            return hit;
+        };
+        size_t before = 0;
+        while (before != names.size()) {
+            before = names.size();
+            std::function<void(const AbstractSyntaxNodePtr&)> aliases = [&](const AbstractSyntaxNodePtr& n) {
+                if (!n) return;
+                if (auto lvd = dynamic_pointer_cast<LocalVariableDeclaration>(n)) {
+                    for (auto& d : lvd->getVariableDeclarators()) {
+                        if (!d || !d->getInitializer()) continue;
+                        auto& ik = d->getInitializer()->getChildren();
+                        if (!ik.empty() && isName(ik[0])) names.insert(d->getIdentifier());
+                    }
+                }
+                if (auto bop = dynamic_pointer_cast<BinaryOpExpression>(n)) {
+                    auto& bk = bop->getChildren();
+                    if (bop->getBinaryOp() == BINARY_OP_ASSIGN && bk.size() >= 2 && isName(bk[1])) {
+                        if (auto lid = dynamic_pointer_cast<IdentifierExpression>(bk[0])) {
+                            names.insert(lid->getTextValue());
+                        }
+                    }
+                }
+                n->forEachSubNode(aliases);
+            };
+            aliases(body);
+        }
+        bool kept = false;
+        std::function<void(const AbstractSyntaxNodePtr&)> scan = [&](const AbstractSyntaxNodePtr& n) {
+            if (!n || kept) return;
+            if (isMoveKind(n) && isName(n)) { kept = true; return; }
+            if (auto ret = dynamic_pointer_cast<ReturnStatement>(n)) {
+                if (ret->getExpression() && isName(ret->getExpression())) { kept = true; return; }
+            }
+            if (auto bop = dynamic_pointer_cast<BinaryOpExpression>(n)) {
+                auto& bk = bop->getChildren();
+                if (bop->getBinaryOp() == BINARY_OP_ASSIGN && bk.size() >= 2 && isName(bk[1])
+                        && !dynamic_pointer_cast<IdentifierExpression>(bk[0])) {
+                    kept = true;
+                    return;
+                }
+            }
+            if (dynamic_pointer_cast<LambdaExpression>(n) && usesName(n)) { kept = true; return; }
+            if (auto call = dynamic_pointer_cast<MethodCallExpression>(n)) {
+                auto& ps = call->getParameters();
+                for (size_t i = 0; i < ps.size(); ++i) {
+                    if (!isName(ps[i].expression)) continue;
+                    if (ps[i].callerTransferred || forwardMayKeep(call, i, method, seen)) {
+                        kept = true;
+                        return;
+                    }
+                }
+            }
+            if (auto cr = dynamic_pointer_cast<ClassCreatorRest>(n)) {
+                for (auto& p : cr->getParameters()) {
+                    if (isName(p.expression)) { kept = true; return; }
+                }
+            }
+            n->forEachSubNode(scan);
+        };
+        scan(body);
+        return kept;
+    }
+
+    void rejectBorrowOfTemporaryArgument(const MethodPtr& callee, const vector<MethodCallParameter>& args,
+                                         CajetaModulePtr module) {
+        if (!callee) return;
+        auto fpl = callee->getParameterList();
+        size_t off = (!fpl.empty() && fpl.front() && fpl.front()->getName() == "this") ? 1 : 0;
+        for (size_t i = 0; i < args.size(); ++i) {
+            std::string name = temporaryBorrowed(args[i].expression);
+            if (name.empty()) continue;
+            std::set<std::pair<const Method*, size_t>> seen;
+            if (!formalMayBeKept(callee, i + off, seen)) continue;
+            const auto& e = args[i].expression;
+            throw Exception(
+                "`" + name + "()` returns a borrow reaching a temporary that is freed at the end of "
+                "this statement, and `" + callee->getName() + "` may keep this argument. Bind the "
+                "temporary to a local first and pass that, or pass an owned value (`#T`).",
+                "CAJETA_ERROR_BORROW_OF_TEMPORARY", module->getSourcePath(),
+                (int) e->getSourceLine(), (int) e->getSourceColumn() + 1);
+        }
     }
 
     void ownedFormalStringFlags(const MethodPtr& target,
@@ -4747,15 +4929,6 @@ namespace cajeta {
                         llvm::ConstantInt::get(
                             llvm::Type::getInt64Ty(llvmCtx), 1), ptrTy2);
                     return builder->CreateCall(cancelFn, {fiberPtr, sentinel});
-                }
-                if (ns == "Cajeta" && methodCallName == "fiberSleepNanos"
-                        && parameters.size() == 1) {
-                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_sleep_nanos");
-                    llvm::Value* nanos = loadValue(0);
-                    if (nanos->getType() != i64Ty) {
-                        nanos = builder->CreateIntCast(nanos, i64Ty, /*isSigned=*/true);
-                    }
-                    return builder->CreateCall(fn, {nanos});
                 }
                 if (ns == "System" && methodCallName == "exit" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_exit");
@@ -8837,6 +9010,7 @@ namespace cajeta {
                 resolvedReturnsOwnership = tempTarget->isReturnsOwnership();
                 resolvedReturnsOwnershipKnown = true;
                 resolvedMethod = tempTarget;
+                rejectBorrowOfTemporaryArgument(tempTarget, parameters, module);
                 auto fpl = tempTarget->getParameterList();
                 bool isStaticT = tempTarget->getModifiers().find(STATIC)
                     != tempTarget->getModifiers().end();
@@ -8907,9 +9081,8 @@ namespace cajeta {
                         if (relFn) builder->CreateCall(relFn, {thisValue});
                     } else if (recvTempClass
                             && (recvTempStatic || recvTempFlag)) {
-                        // Reclaim an anonymous owned receiver ONLY for a void/primitive return: a
-                        // class-pointer result may be a wrapper that borrowed it. The dtors inside
-                        // virtual_drop clobber the return-flag TLS, so save and restore it here.
+                        // An owned receiver dies after a scalar-returning call, else at its statement
+                        // end. virtual_drop clobbers the return-flag TLS, so it is saved and restored.
                         CajetaTypePtr rrt = tempTarget->getReturnType();
                         auto rrtClass = dynamic_pointer_cast<CajetaClass>(rrt);
                         bool retIsSafeScalar = !rrt
@@ -8949,6 +9122,14 @@ namespace cajeta {
                             builder->CreateBr(contBB);
                             builder->SetInsertPoint(contBB);
                             builder->CreateCall(fsFn, {savedFl});
+                        } else if (vdropFn && recvTempStatic) {
+                            llvm::Value* ownedRecv = nullptr;
+                            if (tempTarget->isReturnsOwnership() && callResult
+                                    && callResult->getType()->isPointerTy()) {
+                                llvm::Value* distinct = builder->CreateICmpNE(callResult, thisValue);
+                                ownedRecv = ownedRecv ? builder->CreateAnd(ownedRecv, distinct) : distinct;
+                            }
+                            module->addStatementTemp(thisValue, ownedRecv);
                         }
                     }
                 }

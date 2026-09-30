@@ -293,6 +293,9 @@ namespace cajeta {
         CajetaTypePtr initializerType;
         string targetTriple;
 
+        // Owned receiver temporaries awaiting their statement end: a slot and its function.
+        std::vector<std::pair<llvm::AllocaInst*, llvm::Function*>> statementTemps;
+
         // TBAA provenance of array-element / field GEPs, and its metadata nodes.
         std::unordered_map<const llvm::Value*, TbaaKind> tbaaProvenance;
         llvm::MDNode* tbaaCharType = nullptr;
@@ -392,6 +395,12 @@ namespace cajeta {
         // at the insertion point: an alloca inside a loop re-allocates on every
         // iteration and overflows the stack at -O0. Falls back when no function.
         llvm::AllocaInst* createEntryAlloca(llvm::Type* ty, const std::string& name = "");
+
+        // Records an owned temporary (`owned` null means always) to drop at its statement end.
+        void addStatementTemp(llvm::Value* obj, llvm::Value* owned);
+        size_t statementTempMark() const { return statementTemps.size(); }
+        // Drops the temporaries recorded since `mark`; `keep` leaves them recorded (a return path).
+        void flushStatementTemps(size_t mark, bool keep = false);
 
         CajetaTypePtr getInitializerType() const;
 

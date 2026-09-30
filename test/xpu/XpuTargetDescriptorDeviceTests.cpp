@@ -50,12 +50,14 @@ const char* kWidthSource =
     "import cajeta.xpu.KernelStream;\n"
     "import cajeta.xpu.KernelThread;\n"
     "import cajeta.xpu.TargetDescriptor;\n"
+    "import cajeta.xpu.Group;\n"
     "public class Tw {\n"
     "    @Kernel\n"
     "    public static void k(KernelBuffer<int32> out) {\n"
     "        uint32 t = KernelThread.x();\n"
     "        out[t] = TargetDescriptor.waveWidth();\n"
     "    }\n"
+    "    public static int32 hostWidth() { return Group.laneBlock(); }\n"
     "    public static int32 run(int32 block) {\n"
     "        KernelBuffer<int32> out = heap KernelBuffer<int32>(0, 64);\n"
     "        out.allocate();\n"
@@ -94,19 +96,20 @@ TEST(XpuTargetDescriptorDevice, waveWidthIs32OnAmd) {
            "gfx1151; a wrong value here is the geometry-is-literals defect";
 }
 
-// 1.1.1 (CPU): the descriptor folds to 1 — one work-item per cooperative group
-// (spec §3.5). This is the value that MUST differ from Wave.width() on CPU
-// (which returns the host SIMD width), so a delegation-to-Wave regression fails
-// here.
-TEST(XpuTargetDescriptorDevice, waveWidthIs1OnCpu) {
+// 1.1.1 (CPU): the descriptor folds to the cpu wave, the host SIMD width, the
+// width Group.laneBlock() launches a group at (one surface since 23c1eec2).
+TEST(XpuTargetDescriptorDevice, waveWidthIsTheHostSimdWidthOnCpu) {
     auto jit = CajetaJit::compile(kWidthSource, "test.Tw", cpuOptions());
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)(int)>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(1), 1)
-        << "TargetDescriptor.waveWidth() must be 1 on the CPU backend (one "
-           "work-item per group); the host SIMD width would be wrong for the "
-           "Group model";
+    auto host = jit->lookup<int (*)()>("hostWidth");
+    ASSERT_NE(host, nullptr);
+    const int w = host();
+    EXPECT_GE(w, 4) << "the cpu wave is at least one 128-bit vector of words";
+    EXPECT_EQ(fn(w), w)
+        << "TargetDescriptor.waveWidth() must fold to the width the host "
+           "launches the group at";
 }
 
 // 1.1.2: a not-yet-reportable fact returns a documented stub behind a STABLE

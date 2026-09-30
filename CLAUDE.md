@@ -74,6 +74,22 @@ a borrow."*
   that is quietly captured is invisible at the call site.
 - **Deliberate non-owning alias** (back-pointers, intrusive links,
   view handles) — store with `#=`, which records the borrow faithfully.
+- **Owned temporary.** A `#T` call result or a `heap X(...)` creator
+  used as the receiver of a further call is an owned temporary. It dies
+  at the end of its statement. In an `if`, `while`, `do` or `for`
+  condition it dies right after the condition, so a loop frees it on
+  every pass. A plain class, `String`, array or interface result that
+  reaches it can be used inside the statement. Binding that result to a
+  local (with `=` or `#=`), storing it in a field, or returning it is
+  `CAJETA_ERROR_BORROW_OF_TEMPORARY`. The check walks back through plain
+  intermediate calls. `#T` and primitive results always pass.
+  `String s = Doc.parse(t).title();` is rejected and
+  `int32 n = Doc.parse(t).words();` passes. There are three fixes. End a
+  builder chain with its `build()` in the same statement
+  (`HttpServer s #= HttpServer.builder().bind("0.0.0.0:8080").build();`). Bind the
+  temporary to a local first (`Doc d #= Doc.parse(t); String s = d.title();`).
+  Or call a `#T` method that returns an owned copy
+  (`String s #= Doc.parse(t).titleCopy();`). [`StatementTempTests`]
 
 ## 4. Traps that have actually bitten
 
@@ -95,6 +111,26 @@ a borrow."*
   in-language multiplicative hashing (FNV) is impossible — use
   `Cajeta.hashBytes` (XXH3-64).
 - `view` is a reserved word.
+- `Stream.collect<R>` returns `#R`, so on an `ArrayList` the
+  one-statement form is legal: `ArrayList<int32> out #= xs.stream().collect(c);`.
+  A plain `=` is `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`. `findFirst`
+  returns `Optional<T>` by value. A by-value result that holds no reference
+  (`Optional<int32>`) cannot reach a temporary, so
+  `Optional<int32> hit = xs.stream().findFirst(p);` passes. An
+  `Optional<Doc>` from a temporary stream is checked like any plain class. `fold<R>` still
+  returns plain `R`. The stream from an `ArrayList`'s `stream()` is an
+  owned temporary, so a class `R` from `xs.stream().fold<R>(...)` bound
+  to a local is `CAJETA_ERROR_BORROW_OF_TEMPORARY`. Bind the stream
+  first (`ArrayStream<int32> s #= xs.stream();`) and fold on `s`. A
+  primitive result such as `fold<int32>` still passes. On a primitive
+  array the same bind is accepted.
+- Two shapes that keep a temporary compile and then read freed memory.
+  `Stream<int32> e #= xs.stream().filter(p);` passes because `filter` is
+  `#Stream`, but the stage borrows the stream temporary, and using `e`
+  later faulted (SIGSEGV) for both an array and an `ArrayList`.
+  `arr.add(#heap JsonValue().setNumber(1))` passes because an argument is
+  a use, and the array keeps a node that was freed at the statement end.
+  Bind the source or the node to a local first.
 
 ## 5. Method
 

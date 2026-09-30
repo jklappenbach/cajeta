@@ -575,9 +575,19 @@ chains, mutate, then serialize:
 JsonValue v #= Json.parse(input, (int64) input.count());
 JsonObject root = v.object();
 int32 id = root.get("id").asInt32();
-root.put(#keyBytes, keyLen, heap JsonValue().setBoolean(true));
-#int8[] out = Json.toBytes(v);
+JsonValue flag = heap JsonValue();
+flag.setBoolean(true);
+root.put(#keyBytes, keyLen, #flag);
+int8[] out #= Json.toBytes(v);
 ```
+
+Build a new node in a named local and pass it with `#`. The `setX`
+builders return `this` as a plain borrow. On an unnamed
+`heap JsonValue()` that borrow reaches an owned temporary, which is
+freed at the end of its statement. So
+`root.put(#keyBytes, keyLen, heap JsonValue().setBoolean(true))` would
+store a freed node, and binding the chain to a local is rejected with
+`CAJETA_ERROR_BORROW_OF_TEMPORARY`.
 
 `Json.parse(bytes, len)` is sugar for `heap JsonReader(bytes,
 len).readValue()`; `Json.parse(String)` forwards to it against the

@@ -67,3 +67,44 @@ TEST(XpuDeviceProfileAmdDeviceTests, profileCarriesRoofline) {
     EXPECT_TRUE(p.rooflineMeasured);
     EXPECT_GT(p.bandwidthGBps, 10.0) << "measured " << p.bandwidthGBps << " GB/s";
 }
+
+// The Tier-B fields the NVIDIA twin asserts, on HIP. Until 2026-09-30 the HIP
+// query left L2, integrated, per-block shared memory and the launch limits at
+// 0, so the parity table read every cajeta row's residency as unknown.
+TEST(XpuDeviceProfileAmdDeviceTests, tierBGeometryIsQueriedLive) {
+    CAJETA_SKIP_IF_NO_HIP();
+    const DeviceModel m = queryLiveDeviceModel();
+    ASSERT_TRUE(m.queried);
+    EXPECT_GT(m.l2CacheBytes, 0u);
+    EXPECT_GT(m.ldsBytesPerBlock, 0u);
+    EXPECT_LE(m.ldsBytesPerBlock, m.ldsBytesPerMP);
+    EXPECT_GT(m.maxGridDimX, 0u);
+    EXPECT_GT(m.maxBlockDimX, 0u);
+    EXPECT_GT(m.memoryBusWidthBits, 0u);
+    EXPECT_GT(m.memoryClockKHz, 0u);
+}
+
+// gfx1151 is an APU on 256-bit LPDDR5X-8000: 256 GB/s theoretical. HIP reports
+// the LPDDR5 command clock, which read 64 GB/s through the DDR formula.
+TEST(XpuDeviceProfileAmdDeviceTests, gfx1151IsAnApuAtItsRealPeak) {
+    CAJETA_SKIP_IF_NO_HIP();
+    CajetaXpuRawDevice raw;
+    ASSERT_EQ(cajeta_xpu_query_raw_device(&raw), 1);
+    if (std::string(raw.archName).rfind("gfx1151", 0) != 0)
+        GTEST_SKIP() << "not gfx1151: " << raw.archName;
+    const DeviceProfile p = queryLiveDeviceProfile();
+    EXPECT_TRUE(p.model.integrated);
+    EXPECT_NEAR(p.theoreticalBwGBps, 256.0, 1.0);
+}
+
+// The ceiling the NVIDIA twin holds: a measured copy never beats the part's
+// theoretical bandwidth. 64 GB/s against a measured ~200 failed it.
+TEST(XpuDeviceProfileAmdDeviceTests, measuredBandwidthSitsUnderTheoretical) {
+    CAJETA_SKIP_IF_NO_HIP();
+    const DeviceProfile p = queryLiveDeviceProfile();
+    ASSERT_GT(p.theoreticalBwGBps, 0.0);
+    if (!p.rooflineMeasured) GTEST_SKIP() << "roofline probe did not run";
+    EXPECT_LT(p.bandwidthGBps, 1.05 * p.theoreticalBwGBps)
+        << "measured " << p.bandwidthGBps << " GB/s against a theoretical "
+        << p.theoreticalBwGBps;
+}

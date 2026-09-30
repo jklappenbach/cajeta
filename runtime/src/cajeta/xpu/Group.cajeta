@@ -119,7 +119,8 @@ public final class Group {
 
     /**
      * The block size (threads) for a one-group-per-row launch: the group width
-     * for the ACTIVE backend — the wave size on a GPU, 1 on the CPU backend.
+     * for the ACTIVE backend, the wave size on a GPU and the host SIMD width on
+     * the CPU backend.
      * Read this at the launch site instead of a hardcoded 32 (§3.1, §5.3):
      *
      *   k.launch(s, grid: [Group.rowGrid(rows)], block: [Group.laneBlock()])(…)

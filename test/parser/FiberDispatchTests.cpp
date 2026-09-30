@@ -16,7 +16,7 @@
 // is platform-neutral: spawn many fibers, make each park and resume several
 // times, and require every one of them to complete. Parking repeatedly is the
 // point — it is what the non-Linux socket path does for every readiness wait
-// (`Reactor.pollPark` -> `Tasks.sleepMillis` -> the timer wheel), so this drives
+// (`Reactor.pollPark` -> `Fiber.sleep` -> the timer wheel), so this drives
 // the same park/publish machinery that was losing fibers.
 //
 // If a fiber IS dropped the await never returns, so this test hangs rather than
@@ -45,11 +45,13 @@ constexpr int32_t kExpectedCompletions = 64;
 TEST(FiberDispatchTests, everySpawnedFiberCompletesAcrossRepeatedParks) {
     auto src =
         "package test;\n"
+        "import cajeta.time.Duration;\n"
+        "import cajeta.concurrent.Fiber;\n"
         "public final class D {\n"
         "    public static async int32 worker() {\n"
         "        int32 i = 0;\n"
         "        while (i < 3) {\n"
-        "            Tasks.sleepMillis(2);\n"
+        "            Fiber.sleep(Duration.ofMillis(2));\n"
         "            i = i + 1;\n"
         "        }\n"
         "        return 1;\n"

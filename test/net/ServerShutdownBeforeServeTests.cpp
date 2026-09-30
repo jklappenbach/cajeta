@@ -16,6 +16,7 @@ namespace {
 std::string source(const std::string& model) {
     return
         "package test;\n"
+        "import cajeta.concurrent.Fiber;\n"
         "import cajeta.io.net.Server;\n"
         "import cajeta.io.net.ServerBuilder;\n"
         "import cajeta.io.net.ServerModel;\n"
@@ -42,7 +43,7 @@ std::string source(const std::string& model) {
         "            boolean early = false;\n"
         "            scope {\n"
         "                Task<int32> t = spawn serveIt(s);\n"
-        "                Tasks.sleepMillis(300L);\n"
+        "                Fiber.sleep(Duration.ofMillis(300L));\n"
         "                early = M.returned;\n"
         "                if (!early) {\n"
         "                    s.shutdown(Duration.ofMillis(0L));\n"

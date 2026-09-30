@@ -1224,6 +1224,39 @@ static int cajeta_xpu_amdtex_init(void) {
 #endif
 }
 
+// The kernel driver's vram_type (AMDGPU_VRAM_TYPE_*) for the integrated amdgpu part,
+// or 0. HIP reports an LPDDR5 (12) part's command clock, a quarter of its DDR rate.
+#if defined(__linux__)
+#include <fcntl.h>
+#include <sys/ioctl.h>
+static uint32_t cajeta_xpu_amdgpu_apu_vram_type(void) {
+    struct { uint64_t ret; uint32_t size, query; uint32_t arg[4]; } req;
+    uint8_t info[448];
+    for (int n = 128; n < 192; ++n) {
+        char path[32];
+        snprintf(path, sizeof(path), "/dev/dri/renderD%d", n);
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) continue;
+        memset(&req, 0, sizeof(req));
+        memset(info, 0, sizeof(info));
+        req.ret = (uint64_t)(uintptr_t) info;
+        req.size = sizeof(info);
+        req.query = 0x16;   // AMDGPU_INFO_DEV_INFO
+        int rc = ioctl(fd, 0x40206445UL, &req);   // DRM_IOCTL_AMDGPU_INFO
+        close(fd);
+        if (rc != 0) continue;
+        uint64_t ids = 0;
+        uint32_t type = 0;
+        memcpy(&ids, info + 136, sizeof(ids));    // ids_flags
+        memcpy(&type, info + 176, sizeof(type));  // vram_type
+        if (ids & 0x1) return type;               // AMDGPU_IDS_FLAGS_FUSION
+    }
+    return 0;
+}
+#else
+static uint32_t cajeta_xpu_amdgpu_apu_vram_type(void) { return 0; }
+#endif
+
 // Reads this device's gfx arch token (e.g. "gfx1151") into `out`; 1 on success. It
 // scans the R0600 blob rather than mirroring the drift-prone hipDeviceProp_t.
 static int cajeta_xpu_hip_gfx_arch(char* out, size_t outLen) {
@@ -1381,10 +1414,8 @@ int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
         v = 0;   // MaxSharedMemoryPerMultiprocessor (AMD-specific ordinal)
         if (g_xpu_hip.hipDeviceGetAttribute(&v, 10002, dev) == 0 && v >= 1024 && v <= (1 << 20))
             out->ldsBytesPerMP = (uint32_t) v;
-        // Clocks and the bus, for KernelTimer's ceilings. Ordinals are the
-        // hipDeviceAttribute_t enum of hip_runtime_api.h (ROCm 6): ClockRate 5,
-        // MemoryBusWidth 59, MemoryClockRate 60. NOT yet validated live on an
-        // AMD part; the range clamps leave a wrong one at 0 = unknown.
+        // Ordinals are the hipDeviceAttribute_t enum of hip_runtime_api.h,
+        // validated live on gfx1151 (ROCm 7) on 2026-09-30.
         v = 0;   // ClockRate (kHz)
         if (g_xpu_hip.hipDeviceGetAttribute(&v, 5, dev) == 0 && v >= 1000 && v <= 10000000)
             out->clockRateKHz = (uint32_t) v;
@@ -1394,6 +1425,24 @@ int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
         v = 0;   // MemoryClockRate (kHz)
         if (g_xpu_hip.hipDeviceGetAttribute(&v, 60, dev) == 0 && v >= 1000 && v <= 100000000)
             out->memoryClockKHz = (uint32_t) v;
+        v = 0;   // L2CacheSize
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 19, dev) == 0 && v >= 1024)
+            out->l2CacheBytes = (uint32_t) v;
+        v = 0;   // MaxSharedMemoryPerBlock
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 74, dev) == 0 && v >= 1024 && v <= (1 << 20))
+            out->ldsBytesPerBlock = (uint32_t) v;
+        v = 0;   // MaxGridDimX
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 29, dev) == 0 && v >= 1)
+            out->maxGridDimX = (uint32_t) v;
+        v = 0;   // MaxBlockDimX
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 26, dev) == 0 && v >= 1 && v <= 4096)
+            out->maxBlockDimX = (uint32_t) v;
+        v = 0;   // Integrated
+        if (g_xpu_hip.hipDeviceGetAttribute(&v, 16, dev) == 0)
+            out->integrated = v ? 1 : 0;
+        if (out->integrated && out->memoryClockKHz &&
+            cajeta_xpu_amdgpu_apu_vram_type() == 12)
+            out->memoryClockKHz *= 4;
     }
     out->valid = 1;
     return 1;

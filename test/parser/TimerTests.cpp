@@ -133,9 +133,11 @@ TEST(TimerTests, DISABLED_timerThreadSleepsBetweenExpiriesRatherThanSpinning) {}
 TEST(TimerTests, timerThreadSleepsBetweenExpiriesRatherThanSpinning) {
     auto src =
         "package test;\n"
+        "import cajeta.time.Duration;\n"
+        "import cajeta.concurrent.Fiber;\n"
         "public final class D {\n"
         "    public static async int32 napper() {\n"
-        "        Tasks.sleepMillis(300);\n"
+        "        Fiber.sleep(Duration.ofMillis(300));\n"
         "        return 7;\n"
         "    }\n"
         "    public static int32 run() {\n"

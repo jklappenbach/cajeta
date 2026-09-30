@@ -186,7 +186,7 @@ TEST(ClosureOwnershipTests, parallelCollectWithAFreshAccumulatorIsRight) {
         + "            () -> heap ArrayList<int32>(),\n"
         + "            (acc, x) -> { ArrayList<int32> n = heap ArrayList<int32>(); n.appendAll(acc); n.add(x); return n; },\n"
         + "            (l, r) -> { l.appendAll(r); return l; });\n"
-        + "        ArrayList<int32> out = xs.stream().parallel().collect(c);\n"
+        + "        ArrayList<int32> out #= xs.stream().parallel().collect(c);\n"
         + "        int32 total = 0;\n"
         + "        i = 0;\n"
         + "        while (i < out.count()) { total = total + out.get(i); i = i + 1; }\n"

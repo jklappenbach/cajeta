@@ -478,7 +478,7 @@ the scheduler note under `async fn`). Also: explicit `scope { }` + implicit func
 with join-on-exit, R5-C cooperative cancellation, R5-D scope
 exception-escalation, atomic ints (R8.1), Chase–Lev deques (R8.2), the
 carrier pool plumbing (R8.3), a fiber-aware timer (R9.1 — backing
-`Duration` / `Tasks.withTimeout` / `Tasks.withDeadline`), and an
+`Duration` / `Fiber.sleep(Duration)` / `Tasks.withTimeout` / `Tasks.withDeadline`), and an
 epoll-based async I/O reactor (R9.4).
 
 The user-facing surface also gained spawn-of-lambda — `SpawnExpression`

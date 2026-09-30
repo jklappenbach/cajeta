@@ -541,8 +541,10 @@ std::string coopF32Source() {
 // act on is one everybody learns to skip. Three stdlib Ewise.matmul kernels
 // spilled 1232 / 3076 / 6152 bytes and printed on every amdgpu build of
 // cajeta-llm for weeks, read as noise, because of exactly that.
+// Forced replicated here: amdgpu distributes a replicable tile by default.
 TEST(XpuKernelManifest, softwareCoopTileSpillNamesTheTileNotRegisters) {
     CAJETA_SKIP_IF_NO_HIP();
+    setenv("CAJETA_GPU_COOPMATRIX_DIST", "off", 1);
     Compiler compiler;
     auto module = compileForInspection(compiler,
                                        std::string(kImports) + coopF32Source() + kEnd);
@@ -554,6 +556,7 @@ TEST(XpuKernelManifest, softwareCoopTileSpillNamesTheTileNotRegisters) {
     testing::internal::CaptureStderr();
     cajeta::xpu::amd::emitKernelRegistration({k}, host, "gfx1151", {}, &out);
     std::string err = testing::internal::GetCapturedStderr();
+    unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
     ASSERT_EQ(out.size(), 1u);
     ASSERT_TRUE(out[0].spillBytes.has_value());
     EXPECT_GT(*out[0].spillBytes, 0u) << cajeta::xpu::toJson(out[0]);
@@ -569,8 +572,8 @@ TEST(XpuKernelManifest, softwareCoopTileSpillNamesTheTileNotRegisters) {
 
 // A DISTRIBUTED software tile spreads the tile across the wave instead of
 // replicating it in every work-item, so the scratch goes away entirely: a
-// 16x16 f32 GEMM drops from 3076 bytes per work-item to zero. Opt-in while it
-// settles; the env var is read in decideCoopDistribution.
+// 16x16 f32 GEMM drops from 3076 bytes per work-item to zero. The default on
+// amdgpu since 2026-09-30; `off` in decideCoopDistribution is the replicated control.
 TEST(XpuKernelManifest, distributedSoftwareCoopTileRemovesTheScratch) {
     CAJETA_SKIP_IF_NO_HIP();
     auto footprintWith = [](const char* mode) {
@@ -590,15 +593,15 @@ TEST(XpuKernelManifest, distributedSoftwareCoopTileRemovesTheScratch) {
         unsetenv("CAJETA_GPU_COOPMATRIX_DIST");
         return out;
     };
-    auto replicated = footprintWith(nullptr);
+    auto replicated = footprintWith("off");
     ASSERT_EQ(replicated.size(), 1u);
     ASSERT_TRUE(replicated[0].spillBytes.has_value());
-    // The control: without the flag the tile IS replicated and DOES spill, so a
+    // The control: forced off the tile IS replicated and DOES spill, so a
     // zero below means the distribution worked rather than that the kernel never
     // had scratch to begin with.
     EXPECT_GT(*replicated[0].spillBytes, 3000u) << cajeta::xpu::toJson(replicated[0]);
 
-    auto distributed = footprintWith("on");
+    auto distributed = footprintWith(nullptr);
     ASSERT_EQ(distributed.size(), 1u);
     ASSERT_TRUE(distributed[0].spillBytes.has_value());
     EXPECT_EQ(*distributed[0].spillBytes, 0u) << cajeta::xpu::toJson(distributed[0]);
@@ -1373,6 +1376,47 @@ TEST(XpuKernelManifest, nvptxReplicatesThePortableTileWhenDistributionIsForcedOf
     ASSERT_NE(mma, nullptr);
     EXPECT_EQ(mma->instruction, "software-tile.replicated");
     EXPECT_NE(err.find("[xpu-kernel-spill]"), std::string::npos) << err;
+}
+
+// The amdgpu twin: the same three tiles spilled 3076 / 6152 / 1232 bytes per
+// work-item on gfx1151 until amdgpu distributed a replicable tile by default.
+TEST(XpuKernelManifest, amdgpuDistributesTheReplicablePortableTileByDefault) {
+    CAJETA_SKIP_IF_NO_HIP();
+    struct Shape { const char* name; const char* acc; const char* ab;
+                   const char* zero; bool native; };
+    const Shape shapes[] = {
+        {"tf32",  "float32",  "float32",  "0.0f",           false},
+        {"tf64",  "float64",  "float64",  "0.0",            false},
+        {"tbf16", "bfloat16", "bfloat16", "(bfloat16) 0.0", false},
+        {"ti8",   "int32",    "int8",     "0",              true},
+    };
+    for (const Shape& s : shapes) {
+        SCOPED_TRACE(s.name);
+        Compiler compiler;
+        auto module = compileForInspection(
+            compiler, std::string(kImports) +
+                          coopTileSource(s.name, s.acc, s.ab, s.zero) + kEnd);
+        auto k = findMethod(module->getStructures()["test.M"], s.name);
+        ASSERT_NE(k, nullptr);
+        llvm::LLVMContext ctx;
+        llvm::Module host("xpu_manifest_host_amdgpu_dist", ctx);
+        std::vector<KernelManifest> out;
+        testing::internal::CaptureStderr();
+        cajeta::xpu::amd::emitKernelRegistration({k}, host, "gfx1151", {}, &out);
+        std::string err = testing::internal::GetCapturedStderr();
+        ASSERT_EQ(out.size(), 1u) << err;
+        const KernelManifest& m = out[0];
+        std::string json = cajeta::xpu::toJson(m);
+        ASSERT_TRUE(m.spillBytes.has_value()) << json;
+        EXPECT_EQ(*m.spillBytes, 0u) << json << "\n" << err;
+        EXPECT_EQ(err.find("[xpu-kernel-spill]"), std::string::npos) << err;
+        const auto* mma = nativeOpNamed(m, "mma");
+        ASSERT_NE(mma, nullptr) << json;
+        if (s.native)
+            EXPECT_TRUE(mma->native()) << mma->instruction;
+        else
+            EXPECT_EQ(mma->instruction, "software-tile.distributed") << json;
+    }
 }
 
 // xpu-kernel-adaptor 7.0.1 / 7.0.3: a kernel launched with a NON-CONSTANT block

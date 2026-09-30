@@ -123,6 +123,13 @@ void noteKernelLowered(const Annotatable& kernel,
                        const std::string& backend) {
     const std::string held = unloweredHeldBy(kernel, backend);
     if (held.empty()) return;
+    if (kernelGateWarns()) {
+        fprintf(stderr,
+                "cajeta: warning: [xpu-kernel-skipped] %s: STALE: it has %s device code "
+                "now; remove @Unlowered(backend = \"%s\", tracked = \"%s\")\n",
+                kernelName.c_str(), backend.c_str(), backend.c_str(), held.c_str());
+        return;
+    }
     fprintf(stderr,
             "cajeta: error: [xpu-kernel-skipped] %s: STALE: it has %s device code "
             "now; remove @Unlowered(backend = \"%s\", tracked = \"%s\") "
@@ -167,6 +174,13 @@ void noteKernelBounded(const Annotatable& kernel,
                        const std::string& why) {
     const std::string held = unboundedHeldBy(kernel);
     if (held.empty()) return;
+    if (kernelGateWarns()) {
+        fprintf(stderr,
+                "cajeta: warning: [xpu-kernel-unbounded] %s: STALE: %s; remove "
+                "@Unbounded(tracked = \"%s\")\n",
+                kernelName.c_str(), why.c_str(), held.c_str());
+        return;
+    }
     fprintf(stderr,
             "cajeta: error: [xpu-kernel-unbounded] %s: STALE: %s; remove "
             "@Unbounded(tracked = \"%s\") (CAJETA_ERROR_XPU_KERNEL_GATE)\n",

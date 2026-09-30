@@ -1079,7 +1079,7 @@ static void* __cajeta_timer_loop_body(void* arg) {
             // It stayed invisible on Linux because the epoll engine services I/O
             // waits directly and leaves the timer wheel empty (the branch below
             // waits untimed). On every other host Reactor.pollPark drives all
-            // socket readiness through fiberSleepNanos, so the wheel is never
+            // socket readiness through Fiber.sleep, so the wheel is never
             // empty and the timer thread spun for the life of the process.
             //
             // Convert through the elapsed interval, the way the sibling

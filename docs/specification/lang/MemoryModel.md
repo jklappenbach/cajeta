@@ -243,20 +243,28 @@ Keep one. A plain formal already accepts both a lend and a transfer.
 
 ### Anonymous-owner error
 
-A chained access whose root is an unnamed temporary, where any intermediate produces a borrow, is a static error:
+An owned temporary is the result of a `#T` call or a `heap X(...)` creator that nothing names, used as the receiver of a further call. It is freed at the end of its statement. In the condition of an `if`, `while`, `do` or `for`, it is freed right after the condition is evaluated. A plain class, `String`, array or interface result that reaches the temporary through plain calls may be used inside the statement. Binding that result to a local, storing it in a field, or returning it is a static error, `CAJETA_ERROR_BORROW_OF_TEMPORARY`. A `#T` result and a primitive result always pass. In this example `makeUser` is declared `#User`:
 
 ```
 String name = factory.makeUser().getName();
-//             └ anon User (drops at end of expression)
-//                             └ borrow into it — would outlive owner
-//                               STATIC ERROR
+//             └ anon User (freed at end of statement)
+//                             └ borrow into it, would outlive owner
+//                               CAJETA_ERROR_BORROW_OF_TEMPORARY
+
+System.stdout.println(factory.makeUser().getName());   // accepted: used inside the statement
 ```
 
-Fix: bind the intermediate.
+Fix: bind the temporary to a local.
 
 ```
-User u = factory.makeUser();
+User u #= factory.makeUser();
 String name = u.getName();
+```
+
+Or call a method that returns an owned copy, declared `#String`:
+
+```
+String name #= factory.makeUser().nameCopy();
 ```
 
 ### Alias-mutation
@@ -591,7 +599,7 @@ orig.setValue(5);          // use-after-free — compiles, faults at runtime
 | Alias-mutation invalidation | Path-based borrow tracking |
 | Drop-order error | LIFO scope analysis |
 | Borrow-of-frame-local returned | Signature conformance check |
-| Anonymous-owner chained borrow | Expression-level lifetime check |
+| Anonymous-owner chained borrow | Statement-level lifetime check (`CAJETA_ERROR_BORROW_OF_TEMPORARY`) |
 | Double-free of aliased field | Runtime live-set claim (see `FieldOwnership.md`) |
 | Use-after-free of a borrow whose owner dropped first — including a transferred binding | Programmer responsibility at v1 (Phase 6+ lifetime tracker) |
 | Escaping holder retaining a lend of a dying local | Single-hop dangling-lend check (`CAJETA_ERROR_DANGLING_LEND`) |

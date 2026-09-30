@@ -235,7 +235,8 @@ Functions are **first-class values** with the type `(P1, P2) -> R`:
 (int32, int32) -> int32 op = (a, b) -> a + b;   // lambda
 int32 s = op(2, 3);                              // 5
 
-Stream<String> names #= people.stream().map<String>(Person::getName);  // method reference
+ArrayStream<Person> src #= people.stream();                   // a kept stage needs a named source
+Stream<String> names #= src.map<String>(Person::getName);     // method reference
 ```
 
 - Lambdas may have expression or block bodies; parameter types infer from the

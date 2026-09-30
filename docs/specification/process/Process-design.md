@@ -27,7 +27,7 @@ public final class ProcessBuilder {
     public ProcessBuilder stdout(Stdio mode);
     public ProcessBuilder stderr(Stdio mode);
     @capability("process")
-    public Process start();
+    public #Process start();
 }
 
 public final class Process {
@@ -55,7 +55,7 @@ public final class ExitStatus {        // a small value-carrier (plain class, li
 import cajeta.process.ProcessBuilder;
 import cajeta.process.Stdio;
 
-Process p = heap ProcessBuilder("ls")
+Process p #= heap ProcessBuilder("ls")
     .arg("-la")
     .cwd(Path.of("/tmp"))
     .stdout(Stdio.PIPE)

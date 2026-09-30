@@ -40,6 +40,7 @@
 #include "cajeta/xpu/XpuTarget.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -285,7 +286,7 @@ TEST(XpuCoopConformance, everyBackendHonoursOrRefusesEveryVerb) {
         SCOPED_TRACE(b.label);
         Outcome o = runOn(b.be, b.live);
 
-        int bit = 0;
+        int bit = 0, checked = 0;
         for (const Verb& v : verbs()) {
             const int32_t myBit = 1 << bit++;
             SCOPED_TRACE(std::string("CooperativeMatrix.") + v.name);
@@ -307,11 +308,14 @@ TEST(XpuCoopConformance, everyBackendHonoursOrRefusesEveryVerb) {
                 continue;
             }
             if (!b.live) continue;   // lowered; no device here to run it on
+            ++checked;
             EXPECT_EQ(o.mask & myBit, 0)
                 << v.name << " lowered on " << b.label
                 << " and disagreed with its contract — the outcome this test "
                    "exists to forbid. NvptxCoopConformanceTests prints which "
                    "column a wrong cell took.";
         }
+        std::fprintf(stderr, "[conformance] %s: %d of %zu verbs checked on a device\n",
+                     b.label, checked, verbs().size());
     }
 }

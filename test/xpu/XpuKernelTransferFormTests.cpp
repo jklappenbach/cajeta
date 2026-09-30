@@ -32,6 +32,8 @@
 #include "cajeta/xpu/cpu/CpuBackend.h"
 #include "cajeta/xpu/nvidia/NvptxKernelLowering.h"
 #include "cajeta/xpu/nvidia/NvptxBackend.h"
+#include "cajeta/xpu/amd/AmdgpuKernelLowering.h"
+#include "cajeta/xpu/amd/AmdgpuBackend.h"
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -202,6 +204,24 @@ TEST(XpuKernelTransferFormTests, aTransferInitializerLowersOnNvptx) {
     ASSERT_NO_THROW(f = cajeta::xpu::nvidia::lowerKernel(sharp, dev));
     ASSERT_NE(f, nullptr);
     // The initializer survived: the loop counter is stored before the loop.
+    EXPECT_NE(functionIr(f).find("store i64 0"), std::string::npos)
+        << functionIr(f);
+}
+
+TEST(XpuKernelTransferFormTests, aTransferInitializerLowersOnAmdgpu) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kPair);
+    auto sharp = findMethod(module->getStructures()["test.M"], "sharpInit");
+    ASSERT_NE(sharp, nullptr);
+
+    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr) << "amdgcn target not registered";
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_xfer_amdgpu", ctx);
+    cajeta::xpu::amd::configureDeviceModule(dev, *tm);
+    llvm::Function* f = nullptr;
+    ASSERT_NO_THROW(f = cajeta::xpu::amd::lowerKernel(sharp, dev));
+    ASSERT_NE(f, nullptr);
     EXPECT_NE(functionIr(f).find("store i64 0"), std::string::npos)
         << functionIr(f);
 }

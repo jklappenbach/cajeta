@@ -21,6 +21,8 @@ int32_t runI32(const std::string& src) {
 
 const char* kHeader =
     "package test;\n"
+    "import cajeta.time.Duration;\n"
+    "import cajeta.concurrent.Fiber;\n"
     "import cajeta.concurrent.Tasks;\n"
     "import cajeta.error.RecoverableException;\n"
     "import cajeta.error.ScopeNotActiveException;\n"
@@ -39,7 +41,7 @@ const char* kHeader =
     "    public int32 id;\n"
     "    public Cart() {\n"
     "        U.built = U.built + 1;\n"
-    "        Tasks.sleepMillis(30);\n"
+    "        Fiber.sleep(Duration.ofMillis(30));\n"
     "        if (U.failNext) {\n"
     "            U.failNext = false;\n"
     "            throw heap Oops();\n"
@@ -154,6 +156,8 @@ TEST(ScopeConcurrencyTests, structuredChildInheritsTheScope) {
 TEST(ScopeConcurrencyTests, detachedTaskSeesNoScope) {
     auto src = std::string(
         "package test;\n"
+        "import cajeta.time.Duration;\n"
+        "import cajeta.concurrent.Fiber;\n"
         "import cajeta.concurrent.Tasks;\n"
         "import cajeta.error.ScopeNotActiveException;\n"
         "@Component(scope = \"Request\") public class Box {\n"
@@ -180,7 +184,7 @@ TEST(ScopeConcurrencyTests, detachedTaskSeesNoScope) {
         "        U.outcome = 0;\n"
         "        U.handle();\n"
         "        int32 i = 0;\n"
-        "        while (U.outcome == 0 && i < 2000) { Tasks.sleepMillis(1); i = i + 1; }\n"
+        "        while (U.outcome == 0 && i < 2000) { Fiber.sleep(Duration.ofMillis(1)); i = i + 1; }\n"
         "        return U.outcome;\n"
         "    }\n"
         "}\n");
@@ -191,12 +195,14 @@ TEST(ScopeConcurrencyTests, detachedTaskSeesNoScope) {
 TEST(ScopeConcurrencyTests, singletonRacedByTwoFibersIsBuiltOnce) {
     auto src = std::string(
         "package test;\n"
+        "import cajeta.time.Duration;\n"
+        "import cajeta.concurrent.Fiber;\n"
         "import cajeta.concurrent.Tasks;\n"
         "@Component public class Slow {\n"
         "    public int32 id;\n"
         "    public Slow() {\n"
         "        U.built = U.built + 1;\n"
-        "        Tasks.sleepMillis(30);\n"
+        "        Fiber.sleep(Duration.ofMillis(30));\n"
         "        this.id = U.built;\n"
         "        return;\n"
         "    }\n"

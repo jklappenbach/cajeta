@@ -3735,9 +3735,10 @@ private:
                                         useVal = (uint32_t) u->getValue();
                                     }
                                     if (el && r && c) {
-                                        auto t = target.coopMatrixTier(
-                                            el, (uint32_t) r->getValue(),
-                                            (uint32_t) c->getValue(), useVal);
+                                        auto t = resolveImplTier("COOPMATRIX",
+                                            target.coopMatrixTier(
+                                                el, (uint32_t) r->getValue(),
+                                                (uint32_t) c->getValue(), useVal));
                                         if (t == LoweringTarget::ImplTier::Native)
                                             anyNative = true;
                                         else

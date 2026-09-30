@@ -135,7 +135,7 @@ int64 nowMs = System.currentTimeMillis();         // wall-clock ms since epoch
 - `System.exit(int32 code)` lowers to the `__cajeta_exit` runtime helper; the argument is cast to `i32` and used as the process exit status.
 - `System.currentTimeMillis()` lowers to `__cajeta_currentTimeMillis` and returns an `int64` millisecond timestamp (Java-shaped). Pinned by `test/expression/SystemUtilTests.cpp`.
 
-(Cooperative fiber sleep lives on a different namespace — `Cajeta.fiberSleepNanos(nanos)` — not `System`.)
+(Cooperative fiber sleep lives on a different namespace — `Fiber.sleep(Duration)` in `cajeta.concurrent` — not `System`.)
 
 ---
 

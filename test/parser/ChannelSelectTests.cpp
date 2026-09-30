@@ -1,7 +1,7 @@
 //
 // Channel.select (R9.6) — Tasks.selectReceive<T> multiplexed receive across
 // an array of Channel<T>. v1 implementation polls each channel via
-// tryReceive() with exponential-backoff fiberSleepNanos between passes.
+// tryReceive() with exponential-backoff Fiber.sleep between passes.
 // Returns `Optional<SelectResult<T>>`: present wraps a SelectResult carrying
 // `index` (the channel that fired) and `value` (the dequeued item); empty
 // once every channel is closed AND drained.

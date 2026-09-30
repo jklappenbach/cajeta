@@ -200,7 +200,7 @@ sentinels). Use this when:
 
 Carry both outcomes through the pipeline as the element type:
 
-```cajeta
+```text
 class Outcome<T> {
     public T value;
     public Exception error;
@@ -215,17 +215,27 @@ class Outcome<T> {
     }
 }
 
-Stream<Outcome<Score>> results = urls.stream()
+ArrayList<Outcome<Score>> all #= urls.stream()
     .parallel()
-    .map(u -> Outcome.tryRun(() -> fetchScore(u)));
+    .map(u -> Outcome.tryRun(() -> fetchScore(u)))
+    .collect(Collectors.toList<Outcome<Score>>());
 
-// downstream: separate ok from err. Today this needs .sequential()
-// before collect because parallel collect is blocked on the
-// Collector supplier gap (see StreamParallelism.Examples.md § 7.9).
-results = results.sequential();
-ArrayList<Score> ok = results.filter(o -> o.ok).map(o -> o.value).collect(Collectors.toList());
-ArrayList<Exception> errs = results.filter(o -> !o.ok).map(o -> o.error).collect(Collectors.toList());
+// downstream: a stream is single-pass, so split the collected list
+ArrayList<Score> ok = heap ArrayList<Score>();
+ArrayList<Exception> errs = heap ArrayList<Exception>();
+for (int32 i = 0; i < all.count(); i = i + 1) {
+    Outcome<Score> o = all.get(i);
+    if (o.ok) { ok.add(o.value); } else { errs.add(o.error); }
+}
 ```
+
+`collect` returns an owned `#R`, so the pipeline fits in one
+statement. The streams it builds are freed at the end of that statement,
+and the collected list outlives them. The elements are another matter.
+`Collectors.toList` keeps borrows of class elements, and nothing owns an
+`Outcome` that `map` creates once the statement ends. So today `all`
+holds freed nodes, and reading them returns garbage. Collect class
+elements only when their source owns them.
 
 `Outcome<T>` is **user-defined**, not stdlib. The stream layer
 doesn't impose it; it imposes nothing about element types other
@@ -356,11 +366,11 @@ thrown earlier in the same call, the scope's join-pass would have
 re-raised the trigger before the combiner ran — the combiner
 wouldn't be reached. The combiner-throws case is post-success only.
 
-```cajeta
+```text
 try {
-    R result = xs.stream()
-                 .parallel()
-                 .fold(seed, (acc, x) -> riskyAcc(acc, x), (a, b) -> riskyCombine(a, b));
+    ArrayStream<T> s #= xs.stream();
+    R result = s.parallel()
+                .fold(seed, (acc, x) -> riskyAcc(acc, x), (a, b) -> riskyCombine(a, b));
 } catch (Exception e) {
     // Could be from any worker's riskyAcc OR the orchestrator's
     // riskyCombine. The user catches at the terminal regardless.

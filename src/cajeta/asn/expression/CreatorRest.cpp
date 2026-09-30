@@ -279,6 +279,8 @@ namespace cajeta {
                     }
                 }
             }
+            rejectBorrowOfTemporaryArgument(klass->resolveMethod(ctorName, entries,
+                    /*isConstructor=*/true, /*floatingParams=*/false), parameters, module);
             ownedFormalStringFlags(klass->resolveMethod(ctorName, entries,
                     /*isConstructor=*/true, /*floatingParams=*/false),
                 parameters, ctorArgTitles, plainArgTempFlags);

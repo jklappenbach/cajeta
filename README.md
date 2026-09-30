@@ -666,16 +666,17 @@ public void demo() {
 
 Because `#` forwards whatever the source holds, mode-forwarding wrappers just work: a plain formal's ownership is decided at the call site (`f(x)` lends, `f(#x)` transfers), and `#p` — or `this.f #= p` — inside the callee hands along whichever mode actually arrived. Only a value the compiler can see is purely a borrow (a local borrowing another local, or a borrow returned by a plain method) refuses the `#` — that surrender would be a lie.
 
-The borrow checker is static. Transfer-from-a-borrow, borrow-escape-on-return, and definite-assignment violations are caught at compile time:
+The borrow checker is static. Transfer-from-a-borrow, borrow-escape-on-return, keeping a borrow of an owned temporary, and definite-assignment violations are caught at compile time:
 
 ```
 CAJETA_ERROR_MOVE_OF_BORROW
 CAJETA_ERROR_BORROW_ESCAPE
+CAJETA_ERROR_BORROW_OF_TEMPORARY
 CAJETA_ERROR_VARIABLE_NOT_ASSIGNED
 CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM
 ```
 
-The drop chain is a per-thread linked list of stack-allocated entries; entries fire in reverse declaration order at scope exit, and the throw path unwinds the chain to a try-frame's watermark so drops fire on the exceptional path too. See [`MemoryModel.md`](docs/specification/lang/MemoryModel.md) and [`FieldOwnership.md`](docs/specification/lang/FieldOwnership.md).
+The drop chain is a per-thread linked list of stack-allocated entries; entries fire in reverse declaration order at scope exit, and the throw path unwinds the chain to a try-frame's watermark so drops fire on the exceptional path too. An owned temporary, such as a `#T` call result used as the receiver of a further call, pushes no entry and is freed at the end of its statement. See [`MemoryModel.md`](docs/specification/lang/MemoryModel.md) and [`FieldOwnership.md`](docs/specification/lang/FieldOwnership.md).
 
 ### Classes, inheritance, and dispatch
 
@@ -785,8 +786,9 @@ xs.stream().filter((x) -> x > 0).map<int64>((x) -> (int64) x).reduce(0L, (a, b) 
 int32 total = 0;
 xs.forEach((x) -> { total = total + x; });   // total captured by reference
 
-// Method references.
-Stream<String> names = ps.stream().map<String>(Person::getName);
+// Method references. A kept stage needs a named source stream.
+ArrayStream<Person> src #= ps.stream();
+Stream<String> names #= src.map<String>(Person::getName);
 ```
 
 Block-body lambdas, return-type inference, capture-by-borrow with lifetime tracking, and parameter-type inference from method-template formals are all working. See [`Lambdas.md`](docs/specification/lang/Lambdas.md).

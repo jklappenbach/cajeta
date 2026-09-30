@@ -117,6 +117,11 @@ block, in reverse declaration order (LIFO). A `throw` unwinds the same chain,
 so cleanup runs on the exception path too. A moved-from local's drop entry is
 deactivated — no double free is possible. There is no `delete`.
 
+An owned temporary has no name and no block of its own. It is a builder, or
+any `#T` call result, used as the receiver of a further call. It is freed at
+the end of its statement. In an `if`, `while`, `do` or `for` condition it is
+freed right after the condition is evaluated, so a loop frees it on every pass.
+
 ## The borrow checker
 
 The checker is static and scope-based. Beyond transfer-from-a-borrow
@@ -127,6 +132,38 @@ The checker is static and scope-based. Beyond transfer-from-a-borrow
 - **Alias-mutation** — writing through a path while a live borrow into it
   exists (e.g. `list.add(...)` inside a `for` iterating `list`).
 - **Definite assignment** — reading a local before it is assigned.
+- **Borrow of a temporary** (`CAJETA_ERROR_BORROW_OF_TEMPORARY`). A plain
+  result that reaches an owned temporary can be used inside its statement.
+  Binding it to a local, storing it in a field, or returning it is rejected,
+  because the temporary is freed when the statement ends. End a builder chain
+  with its `build()` in the same statement. Or bind the temporary to a local
+  first and configure it in later statements. Or call a method that returns
+  an owned `#T` copy.
+
+```cajeta
+import cajeta.io.net.Server;
+import cajeta.io.net.ServerBuilder;
+import cajeta.io.net.TcpStream;
+
+public class Boot {
+    public static void handle(TcpStream conn) { }
+
+    public static #Server open() {
+        Server s #= Server.builder()
+            .bind("127.0.0.1:0")
+            .handler((TcpStream c) -> { Boot.handle(c); })
+            .build();                            // build() is #Server, so s owns it
+        return #s;
+    }
+
+    public static #ServerBuilder configure() {
+        // ServerBuilder b #= Server.builder().bind("127.0.0.1:0");   // CAJETA_ERROR_BORROW_OF_TEMPORARY
+        ServerBuilder b #= Server.builder();    // bind the temporary first
+        b.bind("127.0.0.1:0");
+        return #b;
+    }
+}
+```
 
 ## Slices and the `shared` state
 

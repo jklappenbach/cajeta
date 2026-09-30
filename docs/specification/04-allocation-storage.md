@@ -59,6 +59,8 @@ C.run();
 
 The program prints `drop 3`, `drop 4`, `caught`, `drop 2`, `drop 1`.
 
+An owned temporary is not a local and pushes no drop entry. It is the result of a `#T` call or a `heap X(...)` creator that nothing names, used as the receiver of a further call, as in `Doc.parse(t).words()`. The temporary is freed at the end of its statement. In the condition of an `if`, `while`, `do` or `for`, it is freed right after the condition is evaluated, so a loop condition frees its temporary once per pass. A borrow that reaches the temporary cannot be kept past that point (Ownership §5.2).
+
 ## 4.3 Stack Allocation
 
 A stack instance lives in the current frame's stack region. Its drop entry runs the destructor at the declaring block's closing brace like any other, and the bytes themselves are reclaimed at frame teardown.

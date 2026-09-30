@@ -1582,6 +1582,7 @@ namespace cajeta {
         // Non-assignment ops need both sides as r-values; assignment forms coerce rhs only.
         switch (binaryOp) {
             case BINARY_OP_ASSIGN: {
+                rejectBorrowOfTemporary(rhsAst, module);
                 // A record field only initializes inside the record's own constructor; statics
                 // stay assignable, and a class field that merely holds a record is unaffected.
                 if (auto recDotLhs = dynamic_pointer_cast<DotExpression>(lhsAst)) {

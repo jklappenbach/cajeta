@@ -12,7 +12,7 @@
 // It is not self-evident. `Tasks.cajeta` says the body "sees the
 // cancellation at its next await" and lists yield points as "await,
 // channel receive, Lock.acquire, etc."; `awaitReadable` yields via
-// `Cajeta.fiberSleepNanos`, and whether THAT observes a cancellation
+// `Fiber.sleep`, and whether THAT observes a cancellation
 // signal is precisely the open question.
 //
 // The discriminator is wall-clock, taken inside the program. A waiter

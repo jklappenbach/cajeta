@@ -173,7 +173,9 @@ namespace cajeta {
             if (resultCandidate && child.get() == resultCandidate) {
                 module->setScriptResultPending(true);
             }
+            size_t tempMark = module->statementTempMark();
             child->generateCode(module);
+            module->flushStatementTemps(tempMark);
         }
 
         if (linScope) {
