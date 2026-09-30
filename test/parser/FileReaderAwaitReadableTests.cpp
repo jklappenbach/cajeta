@@ -196,13 +196,15 @@ TEST(FileReaderAwaitReadableTests, dataArrivingDuringTheWaitWakesIt) {
     ASSERT_TRUE(p.ok()) << "pipe() failed";
     auto src =
         "package test;\n"
+        "import cajeta.time.Duration;\n"
+        "import cajeta.concurrent.Fiber;\n"
         "import cajeta.io.file.FileReader;\n"
         "import cajeta.io.file.FileWriter;\n"
         "public final class D {\n"
         "    static int32 RD = " + std::to_string(p.rd) + ";\n"
         "    static int32 WR = " + std::to_string(p.wr) + ";\n"
         "    public static int32 writer() {\n"
-        "        Cajeta.fiberSleepNanos(100000000L);\n"   // 100ms
+        "        Fiber.sleep(Duration.ofNanos(100000000L));\n"   // 100ms
         "        FileWriter w = heap FileWriter(D.WR);\n"
         "        int8[] one = heap int8[1];\n"
         "        one[0] = (int8) 120;\n"
@@ -259,6 +261,8 @@ TEST(FileReaderAwaitReadableTests, aParkedWaiterDoesNotHoldTheCarrier) {
     ASSERT_TRUE(p.ok()) << "pipe() failed";
     auto src =
         "package test;\n"
+        "import cajeta.time.Duration;\n"
+        "import cajeta.concurrent.Fiber;\n"
         "import cajeta.io.file.FileReader;\n"
         "import cajeta.io.file.FileWriter;\n"
         "import cajeta.time.Clock;\n"
@@ -278,7 +282,7 @@ TEST(FileReaderAwaitReadableTests, aParkedWaiterDoesNotHoldTheCarrier) {
         "    public static int32 observer() {\n"
         "        int32 i = 0;\n"
         "        while (i < 60) {\n"
-        "            Cajeta.fiberSleepNanos(1000000L);\n"  // 1ms, yields
+        "            Fiber.sleep(Duration.ofNanos(1000000L));\n"  // 1ms, yields
         "            i = i + 1;\n"
         "        }\n"
         "        return 1;\n"

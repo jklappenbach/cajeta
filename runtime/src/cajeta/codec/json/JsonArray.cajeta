@@ -12,15 +12,23 @@ package cajeta.codec.json;
  * ## Usage
  * ```cajeta
  * JsonArray arr = heap JsonArray();
- * arr.add(heap JsonValue().setNumber(1));
- * arr.add(heap JsonValue().setString("two"));
+ * JsonValue one = heap JsonValue();
+ * one.setNumber(1);
+ * arr.add(#one);
+ * JsonValue two = heap JsonValue();
+ * two.setString("two");
+ * arr.add(#two);
  *
  * int32 n = arr.count();      // 2
  * JsonValue first = arr.get(0);
  *
  * // wrap as a JsonValue of kind ARRAY
- * JsonValue v = heap JsonValue().setArray(arr);
+ * JsonValue v = heap JsonValue();
+ * v.setArray(#arr);
  * ```
+ *
+ * Name each node before you set it. `setX` returns a borrow, and on an
+ * unnamed `heap JsonValue()` that borrow dies at the end of the statement.
  *
  * v1 surface; `Stream<JsonValue>` inheritance lands when
  * `JsonValue` settles further.
@@ -36,7 +44,9 @@ public final class JsonArray {
      *
      * ```cajeta
      * JsonArray arr = heap JsonArray();
-     * arr.add(heap JsonValue().setNull());
+     * JsonValue nothing = heap JsonValue();
+     * nothing.setNull();
+     * arr.add(#nothing);
      * ```
      */
     public JsonArray() {
@@ -64,8 +74,12 @@ public final class JsonArray {
      *
      * ```cajeta
      * JsonArray arr = heap JsonArray();
-     * arr.add(heap JsonValue().setBoolean(true));
-     * arr.add(heap JsonValue().setNumber(42));
+     * JsonValue yes = heap JsonValue();
+     * yes.setBoolean(true);
+     * arr.add(#yes);
+     * JsonValue answer = heap JsonValue();
+     * answer.setNumber(42);
+     * arr.add(#answer);
      * ```
      */
     public void add(#JsonValue v) {

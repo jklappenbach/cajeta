@@ -191,8 +191,9 @@ if (some.isPresent()) {
 
 int32 fallback = none.orElse(99);              // 99
 
-// Returned from Stream.findFirst:
-Optional<int32> hit = xs.stream().findFirst((int32 v) -> { return v > 3; });
+// Returned from Stream.findFirst by value:
+int32[] xs = [2, 4, 6];
+Optional<int32> hit = xs.stream().findFirst((int32 v) -> { return v > 3; });   // 4
 ```
 
 ### Status

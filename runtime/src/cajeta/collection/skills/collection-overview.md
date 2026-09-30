@@ -67,8 +67,8 @@ if (counts.containsKey(tag)) {
 }
 
 // Stream → owned collection. Both results' ownership transfers (#).
-int32[] data = { 3, 1, 2 };
-ArrayList<int32> xs = (heap ArrayStream<int32>(data, 3))
+int32[] data = [ 3, 1, 2 ];
+ArrayList<int32> xs #= (heap ArrayStream<int32>(data, 3))
     .collect(Collectors.toList<int32>());
 xs.sort();                              // [1, 2, 3], in place
 ```

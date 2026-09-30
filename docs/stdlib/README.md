@@ -62,6 +62,7 @@ tutorial; it links here for API detail. Docs link the
 | [AtomicInt64](concurrent/AtomicInt64.md) | Lock-free atomic `int64` cell |
 | [FiberLocal](concurrent/FiberLocal.md) | Ambient per-request state |
 | [Tasks](concurrent/Tasks.md) | Task utilities |
+| [Fiber](concurrent/Fiber.md) | Sleep the calling fiber |
 
 ## cajeta.time
 

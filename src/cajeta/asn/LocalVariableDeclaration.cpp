@@ -804,6 +804,7 @@ namespace cajeta {
                     initExpr = dynamic_pointer_cast<Expression>(kids[0]);
                 }
             }
+            if (initExpr) rejectBorrowOfTemporary(initExpr, module);
             const ownership::TitleShape initShape = initExpr
                 ? ownership::classify(initExpr, module)
                 : ownership::TitleShape();

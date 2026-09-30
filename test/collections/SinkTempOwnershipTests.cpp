@@ -178,14 +178,9 @@ TEST(SinkTempOwnershipTests, creatorTempReceiverReclaimedOnPrimitiveReturn) {
     EXPECT_EQ(runI32(src), 14);
 }
 
-// `(heap Cell(1)).plusOne().plusOne().doubled()` — a temp receiver is
-// reclaimed ONLY on a void/primitive-returning call: even a flag-true
-// fresh class result may be a WRAPPER borrowing the receiver as its inner
-// source (FluentStream chains SIGSEGV'd when intermediates were reclaimed
-// mid-chain), so the two class-returning links keep their receivers alive
-// (bounded leak, 2 objects) and only doubled()'s primitive return
-// reclaims its receiver. t = 6, leaked = 2.
-TEST(SinkTempOwnershipTests, chainReclaimsOnlyPrimitiveReturnLink) {
+// `(heap Cell(1)).plusOne().plusOne().doubled()`: each owned temp receiver dies at
+// the end of the statement, never mid-chain, so nothing leaks. t = 6, leaked = 0.
+TEST(SinkTempOwnershipTests, chainReclaimsEveryTempAtStatementEnd) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
@@ -200,15 +195,12 @@ TEST(SinkTempOwnershipTests, chainReclaimsOnlyPrimitiveReturnLink) {
         "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 206);
+    EXPECT_EQ(runI32(src), 6);
 }
 
-// SAFETY pin — a flag-0 class-pointer return may be a borrow of the
-// receiver's interior, so the temp receiver is NOT dropped: `peek()`
-// returns the held Cell plain; the read stays valid, and the Holder temp
-// (plus the Cell it owns) intentionally leaks — 2 objects. This is the
-// documented safe-leak edge, not a regression.
-TEST(SinkTempOwnershipTests, borrowReturnLeavesTempReceiverAlive) {
+// `peek()` returns a borrow of the Holder temp's interior. The read happens inside the
+// statement, and the Holder (with the Cell it owns) is freed at its end. t = 3, leaked = 0.
+TEST(SinkTempOwnershipTests, borrowReadInsideTheStatementFreesTheTemp) {
     std::string src = std::string(kCellSrc) +
         "public class Holder {\n"
         "    public Cell c;\n"
@@ -228,5 +220,5 @@ TEST(SinkTempOwnershipTests, borrowReturnLeavesTempReceiverAlive) {
         "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 203);
+    EXPECT_EQ(runI32(src), 3);
 }

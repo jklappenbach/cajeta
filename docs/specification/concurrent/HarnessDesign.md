@@ -8,8 +8,8 @@ numbers against other languages' concurrency primitives.
 > `BufferChain` type, and the comparison harnesses under `harness/`
 > are not built yet — this is the plan for them. The pieces they lean
 > on are at different stages: the multi-carrier work-stealing scheduler
-> is shipped (see below); `Fiber.sleep` lowers to a runtime call but the
-> full fiber-side timer wheel is still landing (R9.x). Treat the dials,
+> is shipped (see below). `Fiber.sleep(Duration)` parks the calling fiber
+> on the runtime timer wheel. Treat the dials,
 > CLI shape, and methodology here as the target, not current behavior.
 
 ## What we're measuring
@@ -48,7 +48,7 @@ Each simulated "connection" is a fiber that loops:
    arrival rate; gives a realistic request stream rather than a closed loop).
 2. Grab a buffer from the inbound `BufferChain`.
 3. Decode a request payload out of the buffer.
-4. **Simulate work:** `Fiber.sleep(work_ms + jitter)`.
+4. **Simulate work:** `Fiber.sleep(Duration.ofMillis(work_ms + jitter))`.
 5. Compute a response (a constant transform on the request).
 6. Grab a buffer from the outbound `BufferChain`, encode the response.
 7. Record `now - request_start` into a per-fiber latency histogram.
@@ -138,7 +138,7 @@ table.
 
 **Apples-to-apples on `work-ms`:**
 
-The "work" is `Fiber.sleep(work_ms)` — a parked wait, not a busy loop. Every
+The "work" is `Fiber.sleep(Duration.ofMillis(work_ms))` — a parked wait, not a busy loop. Every
 implementation parks the work unit cooperatively or blocks the underlying
 thread; the comparison is fair because the *scheduler* is doing all the
 heavy lifting. A busy-loop version (CPU-bound work) is a separate sweep —

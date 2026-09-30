@@ -21,6 +21,15 @@ namespace cajeta {
 
     namespace ownership { struct ArgTitle; }
 
+    // Throws CAJETA_ERROR_BORROW_OF_TEMPORARY when `e`, being bound, stored or returned, is a
+    // plain result reaching an owned receiver temporary that dies at the statement end.
+    void rejectBorrowOfTemporary(const AbstractSyntaxNodePtr& e, CajetaModulePtr module);
+
+    // The argument form: throws when a borrow reaching an owned temporary is passed to a
+    // formal `callee` may keep (a `#` formal, or one it moves, stores, returns or captures).
+    void rejectBorrowOfTemporaryArgument(const MethodPtr& callee,
+        const vector<MethodCallParameter>& args, CajetaModulePtr module);
+
     // A fresh String argument to a `#String` formal carries its title in the transfer
     // word: String is no droppable temp class, so without this the callee never frees it.
     void ownedFormalStringFlags(const MethodPtr& target,

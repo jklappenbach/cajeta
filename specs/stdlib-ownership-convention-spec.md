@@ -164,6 +164,25 @@ lending a view, and each has one correct default.
   a format, a copy (`asString`, `toBytes`, `readBytes`, `encode`) — it
   returns **owned** (`#T`). A conversion-shaped call never hands back a
   window into another object's interior.
+
+  The owned-temporary rule makes this binding, not only advisory. A
+  `#T` call result or a `heap X(...)` creator used as the receiver of a
+  further call is an owned temporary, freed at the end of its statement.
+  A plain class, `String`, array or interface result that reaches it
+  through plain calls cannot be bound to a local, stored in a field, or
+  returned. That is `CAJETA_ERROR_BORROW_OF_TEMPORARY`. The check reads
+  the declared return, not the runtime flag, so a Producer declared
+  plain cannot be kept when its receiver is a temporary, even when its
+  body hands out a fresh title. This is why a method that builds a fresh
+  value declares `#T` and its callers bind the result with `#=`.
+  `Stream.collect<R>` builds a fresh value on every path, so it is
+  declared `#R`. `findFirst` returns `Optional<T>` by value (sret), and a
+  by-value result holding no reference passes the check like a primitive. On an `ArrayList`,
+  `ArrayList<int32> out #= xs.stream().collect(c);` passes in one
+  statement. `fold<R>` stays plain because its result is whatever the
+  callback hands back. A class `R` from `fold` on a stream temporary
+  cannot be kept, so the caller binds the stream first
+  (`ArrayStream<int32> s #= xs.stream();`). A primitive `R` still passes.
 - **2.2** When an API exposes interior state for reading (`keyAt`,
   `asBytes`, `get(i)`) it returns a **view**: spelled plain `T`, and its
   body returns *only* interior reads, so the return flag is always

@@ -34,11 +34,11 @@ int64 sum = xs.stream()
 | `boolean anyMatch((T) -> boolean pred)` | True if any remaining element matches `pred` |
 | `boolean allMatch((T) -> boolean pred)` | True iff every remaining element matches `pred` |
 | `boolean noneMatch((T) -> boolean pred)` | True iff no remaining element matches `pred` |
-| `Optional<T> findFirst((T) -> boolean pred)` | First matching element, or an empty Optional |
+| `Optional<T> findFirst((T) -> boolean pred)` | First matching element, or an empty Optional, returned by value |
 | `T reduce(T seed, (T, T) -> #T fn)` | Left-fold with an explicit seed |
 | `final R fold<R>(R seed, (R, T) -> #R fn)` | Cross-type left-fold |
 | `final R fold<R>(R seed, (R, T) -> #R fn, (R, R) -> #R combiner)` | Cross-type left-fold with explicit `combiner` for the parallel path |
-| `final R collect<R>(Collector<T, R> c)` | Reduce via a `Collector`'s (supplier, accumulator, combiner) triple |
+| `final #R collect<R>(Collector<T, R> c)` | Reduce via a `Collector`'s (supplier, accumulator, combiner) triple. Owned, so bind it with `#=` |
 | `#Stream<T> filter((T) -> boolean pred)` | Lazy intermediate: keep only elements matching `pred` |
 | `#Stream<T> take(int32 n)` | Stateful intermediate: cap the stream at the first `n` elements |
 | `#Stream<T> skip(int32 n)` | Stateful intermediate: drop the first `n` elements |

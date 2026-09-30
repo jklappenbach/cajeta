@@ -85,10 +85,26 @@ import cajeta.codec.json.JsonValue;
 import cajeta.codec.json.JsonArray;
 
 JsonArray arr = heap JsonArray();
-arr.add(#heap JsonValue().setNumber(1));        // setX mutate `this` and chain;
-arr.add(#heap JsonValue().setBoolean(true));    // `#` prefixes the whole argument
-JsonValue v = heap JsonValue().setArray(#arr);  // the call-site `#` is what transfers
+JsonValue one = heap JsonValue();
+one.setNumber(1);          // setX mutates `this` and returns it as a plain borrow
+arr.add(#one);             // the call-site `#` is what transfers
+JsonValue yes = heap JsonValue();
+yes.setBoolean(true);
+arr.add(#yes);
+JsonValue v = heap JsonValue();
+v.setArray(#arr);          // v now owns the array and both nodes
 ```
+
+Name each node before you set it. A fresh `heap JsonValue()` that nothing names
+is an owned temporary, and it is freed at the end of its statement. The `setX`
+result is a borrow of that temporary. Binding it to a local is a compile error:
+
+```text
+JsonValue v = heap JsonValue().setArray(#arr);   // CAJETA_ERROR_BORROW_OF_TEMPORARY
+```
+
+Passing it on with `#`, as in `arr.add(#heap JsonValue().setNumber(1))`, still
+compiles. The array then keeps a node that was already freed. Use the named form.
 
 ## What this DOM does NOT do
 - No float/double — `NUMBER` is `int64` only in v1 (`asInt32` truncates).

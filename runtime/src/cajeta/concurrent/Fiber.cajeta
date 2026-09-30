@@ -1,0 +1,22 @@
+package cajeta.concurrent;
+
+import cajeta.time.Duration;
+
+/**
+ * The calling fiber. Its operations act on whichever fiber runs them and never
+ * block the carrier thread underneath; on the main thread, which is not a fiber,
+ * they wait on the runtime's task condition instead.
+ */
+public final class Fiber {
+    @Native("__cajeta_fiber_sleep_nanos")
+    private static void sleepNanos(int64 nanos);
+
+    /** Parks the calling fiber for `d`, never its carrier; a zero or negative `d` returns at once. */
+    public static void sleep(Duration d) {
+        int64 nanos = d.toNanos();
+        if (nanos <= 0) {
+            return;
+        }
+        Fiber.sleepNanos(nanos);
+    }
+}

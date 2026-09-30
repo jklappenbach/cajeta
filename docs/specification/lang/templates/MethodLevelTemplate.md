@@ -352,9 +352,9 @@ public class Collectors {
 Call-site examples:
 
 ```cajeta
-ArrayList<int32> doubled = src.collect(Collectors.toList<int32>());
+ArrayList<int32> doubled #= src.collect(Collectors.toList<int32>());
 
-HashMap<String, ArrayList<Counter>> byName =
+HashMap<String, ArrayList<Counter>> byName #=
     counterStream.collect(Collectors.groupingBy<Counter, String>(
         (Counter c) -> c.name
     ));

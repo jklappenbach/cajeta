@@ -70,8 +70,49 @@ A borrow tracks its *path* from the named root, not only the variable it was rea
 
 Two further rules protect borrows.
 
-- **Anonymous owners.** A chained access whose root is an unnamed temporary, where an intermediate step borrows into the temporary, is a compile-time error. The temporary drops at the end of the expression and the borrow would dangle. Binding the intermediate to a name resolves it.
+- **Anonymous owners.** An owned temporary is a call receiver that nothing names and that holds a title. It is the result of a call declared `#T`, or a `heap X(...)` creator, used as the receiver of a further call. The temporary drops at the end of its statement. In the condition of an `if`, `while`, `do` or `for`, it drops right after the condition is evaluated, so a loop condition drops its temporary on every pass. A plain class, `String`, array or interface result that reaches the temporary through plain calls may be used within the statement. It may be passed as an argument, read or compared. Binding it to a local with `=` or `#=`, storing it in a field, or returning it is a compile-time error, `CAJETA_ERROR_BORROW_OF_TEMPORARY`, because the borrow would dangle. The check walks back through plain intermediate calls, so `Doc.parse(t).self().title()` is caught too. A `#T` result and a primitive result always pass. Binding the temporary itself to a name resolves the error, and so does calling a method that returns an owned copy.
 - **Alias mutation.** A live borrow into a value blocks mutation of, or through, that value's path. Iteration is a borrow construct, so mutating a collection inside its own `for`-each body is a compile-time error.
+
+**Example 5.2-4.** A rejected program. `title()` returns a plain borrow that reaches the `Doc` temporary, and the local would outlive it.
+
+<!-- snippet: skip -->
+```cajeta
+public class Doc {
+    String head;
+    public Doc(String text) { this.head = "title: " + text; }
+    public static #Doc parse(String text) { return heap Doc(text); }
+    public String title() { return this.head; }
+}
+public final class C {
+    public static int32 run() {
+        String s = Doc.parse("intro").title();   // CAJETA_ERROR_BORROW_OF_TEMPORARY
+        return (int32) s.byteLength();
+    }
+}
+```
+
+**Example 5.2-5.** The accepted shapes. The borrow is used inside its statement, the temporary is bound to a name, or the call returns an owned copy.
+
+```cajeta
+public class Doc {
+    String head;
+    public Doc(String text) { this.head = "title: " + text; }
+    public static #Doc parse(String text) { return heap Doc(text); }
+    public String title() { return this.head; }
+    public #String titleCopy() { return "" + this.head; }
+}
+public final class C {
+    public static int32 run() {
+        int32 n = (int32) Doc.parse("intro").title().byteLength();   // used inside the statement
+        Doc d #= Doc.parse("intro");
+        String s = d.title();                                         // d owns the Doc to the block end
+        String c #= Doc.parse("intro").titleCopy();                   // an owned copy
+        return n + (int32) s.byteLength() + (int32) c.byteLength();   // 36
+    }
+}
+```
+
+> *Discussion.* This is the full-expression rule of C++ and the check behind Rust's E0716. Dropping the temporary at the end of the enclosing block would let the borrow live longer. It would also cost a drop-entry push and pop on every run of the block.
 
 > *Discussion.* An escaping borrow whose source is an eligible immutable leaf buffer does not error. It resolves into a copy or a shared stake (Arrays, Views, Slices & Records §12). The error-and-`#` discipline described in this chapter is the rule for identity objects and mutable values. At script top level, bindings live in the session scope, and a top-level borrow of a session binding is `CAJETA_ERROR_SESSION_BORROW_ESCAPE` (Script Units §18).
 

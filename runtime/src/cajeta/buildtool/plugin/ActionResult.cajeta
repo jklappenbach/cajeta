@@ -118,10 +118,8 @@ public class ActionResult {
     public ArrayList<Finding>      findings() { return this.findingsList; }
 
     /**
-     * Static fail-fast factory. Equivalent to
-     * `heap ActionResult().error(message)` — provided so param-
-     * validation paths read as `return ActionResult.error("...");`
-     * without the temporary.
+     * Static fail-fast factory for `return ActionResult.error("...");`. It exists because
+     * `return heap ActionResult().fail(#m);` returns a borrow of a temporary and is rejected.
      */
     public static #ActionResult error(#String message) {
         ActionResult r #= heap ActionResult();

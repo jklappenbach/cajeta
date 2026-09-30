@@ -1,5 +1,6 @@
 package cajeta.io.net;
 
+import cajeta.concurrent.Fiber;
 import cajeta.lang.String;
 import cajeta.io.net.ConnectionLimits;
 import cajeta.io.net.LoadShedPolicy;
@@ -204,7 +205,7 @@ public class ConnectionLimiter {
      * taken — the [`BLOCK`](LoadShedPolicy.cajeta#BLOCK) wait. A
      * poll-with-backoff over [`tryAdmit`](#tryAdmit), the same shape
      * [`Server.drainInflight`](Server.cajeta#drainInflight) uses: spin
-     * `tryAdmit`, and on a full cap `Cajeta.fiberSleepNanos` the fiber for a
+     * `tryAdmit`, and on a full cap `Fiber.sleep` the fiber for a
      * backoff interval (100µs, doubling to a 10ms cap) before retrying — so
      * a saturated server's waiting acceptors stay cheap, and the carrier is
      * free to run the in-flight handlers whose completion will
@@ -214,7 +215,7 @@ public class ConnectionLimiter {
     public void awaitPermit() {
         int64 backoff = 100000;           // 100µs, doubling to a 10ms cap
         while (!this.tryAdmit()) {
-            Cajeta.fiberSleepNanos(backoff);
+            Fiber.sleep(Duration.ofNanos(backoff));
             if (backoff < 10000000) {
                 backoff = backoff * 2;
             }

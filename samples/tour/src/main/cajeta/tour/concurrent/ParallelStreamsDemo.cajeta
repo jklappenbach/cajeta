@@ -139,7 +139,7 @@ public class ParallelStreamsDemo extends DemoClass {
         int32[] xs = heap int32[1000];
         for (int32 i = 0; i < 1000; i = i + 1) { xs[i] = i + 1; }
 
-        Optional<int32> hit = xs.stream().parallel()
+        Optional<int32> hit #= xs.stream().parallel()
                                 .findFirst((x) -> x > 500);
         if (hit.isPresent()) {
             int32 v = hit.get();
@@ -150,7 +150,7 @@ public class ParallelStreamsDemo extends DemoClass {
                 + (v > 500 && v <= 1000));
         }
 
-        Optional<int32> miss = xs.stream().parallel()
+        Optional<int32> miss #= xs.stream().parallel()
                                  .findFirst((x) -> x > 9999);
         System.stdout.println("  findFirst(>9999) miss isPresent = " + miss.isPresent());
         boolean foundInRange = hit.isPresent() && hit.get() > 500

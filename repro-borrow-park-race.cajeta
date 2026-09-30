@@ -14,7 +14,8 @@
 // `Server.serve()` `#=` line (that change is a behavioral no-op).
 package probe;
 
-import cajeta.concurrent.Tasks;
+import cajeta.concurrent.Fiber;
+import cajeta.time.Duration;
 
 public class Conn {
     public int32 fd;
@@ -33,9 +34,9 @@ public final class Main {
     public static async int32 serveConn(#Conn conn) {
         Reader r = heap Reader(conn);          // borrower 1
         Reader w = heap Reader(conn);          // borrower 2
-        Tasks.sleepMillis((int64) 40);         // park: carrier hands off
+        Fiber.sleep(Duration.ofMillis((int64) 40));         // park: carrier hands off
         int32 x = r.read() + w.read();
-        Tasks.sleepMillis((int64) 20);
+        Fiber.sleep(Duration.ofMillis((int64) 20));
         return x;
     }
 

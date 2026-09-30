@@ -346,6 +346,11 @@ ArrayList<int32> evens #= xs.stream()
     .collect(Collectors.toList<int32>());
 ```
 
+`collect<R>` returns an owned `#R`. The collected list is a fresh value,
+not a borrow into the stream, so it outlives the stream temporary that
+is freed at the end of the statement. Bind it with `#=`. A plain `=` is
+`CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`.
+
 ## For-loop desugaring through Stream
 
 The `for (v : iterable)` form lowers to `iterable.next()` walking

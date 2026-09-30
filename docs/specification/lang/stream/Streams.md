@@ -81,11 +81,11 @@ from `Stream<T>`; subclasses don't override them.
 | `anyMatch` | `((T) -> boolean) : boolean` | True iff any remaining element matches. Short-circuits. |
 | `allMatch` | `((T) -> boolean) : boolean` | True iff every remaining element matches. Empty → true. |
 | `noneMatch` | `((T) -> boolean) : boolean` | True iff no remaining element matches. Empty → true. |
-| `findFirst` | `((T) -> boolean) : Optional<T>` | First matching element, or empty Optional. Becomes `findAny` under `.parallel()`. |
+| `findFirst` | `((T) -> boolean) : Optional<T>` | First matching element, or empty Optional, returned by value. Becomes `findAny` under `.parallel()`. |
 | `reduce` | `(T seed, (T, T) -> #T) : T` | Left-fold; result and seed share `T`. Thin wrapper over `fold<T>`. |
 | `fold<R>` | `(R seed, (R, T) -> #R) : R` | Cross-type left-fold; the accumulator type `R` is method-level, so it may differ from `T`. Sequential-only (rejects a parallel stream — use the 3-arg form). |
 | `fold<R>` | `(R seed, (R, T) -> #R, (R, R) -> #R) : R` | Cross-type fold with an explicit `combiner` that merges per-worker partials on the parallel path. |
-| `collect<R>` | `(Collector<T, R>) : R` | Reduce via a `Collector` (supplier / accumulator / combiner triple). See Collections.md § Collector. |
+| `collect<R>` | `(Collector<T, R>) : #R` | Reduce via a `Collector` (supplier / accumulator / combiner triple); owned. See Collections.md § Collector. |
 
 `fold<R>` / `map<R>` / `flatMap<R>` / `collect<R>` and the `mapOr*<R>`
 ops carry a method-level type parameter (written `final` in source, so
@@ -95,9 +95,11 @@ they can't sit in a vtable — see `MethodLevelTemplate.md`); the inherited
 ### Examples
 
 ```cajeta
+import cajeta.collection.ArrayList;
+import cajeta.collection.Collectors;
 import cajeta.lang.stream.Stream;
 
-int32[] xs = {1, 2, 3, 4, 5};
+int32[] xs = [1, 2, 3, 4, 5];
 
 // count
 int32 n = xs.stream().count();                                     // 5
@@ -112,9 +114,10 @@ boolean any = xs.stream().anyMatch(isEven);                        // true
 boolean all = xs.stream().allMatch(isEven);                        // false
 boolean none = xs.stream().noneMatch(isEven);                      // false
 
-// findFirst
+// findFirst returns Optional<T> by value. Optional<int32> holds no reference, so it can be kept.
 (int32) -> boolean over3 = (int32 v) -> { return v > 3; };
 Optional<int32> hit = xs.stream().findFirst(over3);                // 4
+int32 first = xs.stream().findFirst(over3).get();                  // 4
 
 // reduce (sum)
 (int32, int32) -> int32 add = (int32 a, int32 b) -> { return a + b; };
@@ -124,8 +127,8 @@ int32 sum = xs.stream().reduce(0, add);                            // 15
 int64 wide = xs.stream().fold<int64>(0L,
     (int64 acc, int32 e) -> { return acc + (int64) e; });          // 15
 
-// collect into an owned ArrayList via a Collector
-ArrayList<int32> all = xs.stream().collect(Collectors.toList<int32>());
+// collect returns an owned #R, here an ArrayList
+ArrayList<int32> everything #= xs.stream().collect(Collectors.toList<int32>());
 ```
 
 Pinned by `test/parser/StreamTerminalTests.cpp` (13 tests) and
@@ -195,6 +198,41 @@ they chain directly. The historical P6.6 two-step workaround (binding
 each wrapper stream to a named local) is no longer required;
 `test/parser/ChainedFormTests.cpp` pins the chained terminal forms, and
 the parallel suite pins fluent dispatch through filter chains.
+
+A stream made by a `#` call inside a statement, such as `list.stream()`
+on an `ArrayList`, is an owned temporary. It is freed at the end of that
+statement. A terminal that returns a primitive or a `#T` result can be
+kept even when it runs on that temporary. `collect<R>` returns `#R`, a
+fresh owned value, so bind it with `#=`. A plain `=` is
+`CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`. `findFirst` returns
+`Optional<T>` by value. When `T` holds no reference, as `Optional<int32>`
+does, the result cannot reach the stream and can be kept with a plain `=`.
+An `Optional<T>` of a class `T` is checked like any plain class result. A terminal that
+returns a plain class value, such as `fold<R>` with a class `R`, may be
+used inside the statement but not kept past it. Binding it to a local is
+`CAJETA_ERROR_BORROW_OF_TEMPORARY`, so bind the stream first. A
+combinator such as `filter` borrows its source, so a stage you keep past
+its statement also needs a named source.
+
+```cajeta
+import cajeta.collection.ArrayList;
+import cajeta.collection.Collectors;
+import cajeta.lang.stream.ArrayStream;
+
+ArrayList<int32> list = heap ArrayList<int32>();
+list.add(2); list.add(5); list.add(8);
+(int32) -> boolean isEven = (int32 v) -> { return (v % 2) == 0; };
+
+int32 n = list.stream().filter(isEven).count();                  // 2
+Optional<int32> hit = list.stream().findFirst(isEven);           // 2, by value
+ArrayList<int32> evens #= list.stream().filter(isEven)
+    .collect(Collectors.toList<int32>());                        // [2, 8], owned
+
+// ArrayList<int32> kept = list.stream().fold<ArrayList<int32>>(...);   // CAJETA_ERROR_BORROW_OF_TEMPORARY
+ArrayStream<int32> s #= list.stream();
+ArrayList<int32> kept = s.fold<ArrayList<int32>>(heap ArrayList<int32>(),
+    (ArrayList<int32> acc, int32 e) -> { acc.add(e); return #acc; });   // s owns the stream
+```
 
 ## Lambda binding
 

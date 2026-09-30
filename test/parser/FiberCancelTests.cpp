@@ -5,13 +5,13 @@
 // This pins the property that makes `Reactor.pollPark` abandonable. On every
 // host without a dedicated fiber-park engine (Windows/macOS), socket readiness
 // is not an epoll park — `pollPark` runs a probe-and-back-off loop that parks
-// the FIBER through `Cajeta.fiberSleepNanos` (50us doubling to a 2ms cap) and
+// the FIBER through `Fiber.sleep` (50us doubling to a 2ms cap) and
 // retries. The loop itself has no deadline, by design: the untimed
 // `awaitReadable` contract is "wait until ready", the same unbounded wait the
 // Linux epoll park performs. What bounds it is an ENCLOSING cancellation.
 //
 // So the whole deadline story on those hosts rests on one thing — that a
-// cancellation delivered while the fiber sits in `fiberSleepNanos` is honored
+// cancellation delivered while the fiber sits in `Fiber.sleep` is honored
 // at the next resume rather than ignored. If it were ignored, every
 // `Tasks.withTimeout` over a socket read on Windows would silently never fire,
 // and `withTimeoutInt32` would not merely return late: it `await`s the task
@@ -19,7 +19,7 @@
 // invisible in review and looks exactly like the network being slow.
 //
 // The assertion is platform-neutral because the mechanism is: the sleep loop
-// below is the same `fiberSleepNanos` park `pollPark` performs, driven by the
+// below is the same `Fiber.sleep` park `pollPark` performs, driven by the
 // same timer wheel, on Linux as anywhere else. A regression here hangs rather
 // than fails — the suite's per-test timeout is what reports it, which is still
 // a signal, where an unhonored cancellation on a socket produces none.
@@ -35,6 +35,8 @@ using cajeta_test::CajetaJit;
 TEST(FiberCancelTests, aFiberParkedOnTheTimerWheelHonorsCancellation) {
     auto src =
         "package test;\n"
+        "import cajeta.time.Duration;\n"
+        "import cajeta.concurrent.Fiber;\n"
         "public final class D {\n"
         // The shape Reactor.pollPark runs: park the fiber, wake, retry,
         // forever. The bound is large enough to outlive the deadline by
@@ -42,7 +44,7 @@ TEST(FiberCancelTests, aFiberParkedOnTheTimerWheelHonorsCancellation) {
         "    public static async int32 spin() {\n"
         "        int32 n = 0;\n"
         "        while (n < 1000000) {\n"
-        "            Tasks.sleepMillis(2);\n"
+        "            Fiber.sleep(Duration.ofMillis(2));\n"
         "            n = n + 1;\n"
         "        }\n"
         "        return n;\n"

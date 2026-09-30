@@ -10,11 +10,30 @@ the platform listen backlog (`UNSET_BACKLOG`). The builder is a pure value
 until `build()` is called — no I/O happens while recording choices.
 
 ```cajeta
-ServerBuilder b #= Server.builder()
+ServerBuilder b #= Server.builder();
+b.bind("127.0.0.1:0");
+b.model(ServerModel.fiberPerConnection());
+b.handler((TcpStream conn) -> { conn.close(); });
+Server s #= b.build();
+```
+
+Each setter returns the builder as a plain borrow. The builder that
+`Server.builder()` returns is an owned temporary when nothing names it, and it
+is freed at the end of its statement. So bind the builder to a local first, as
+above, or end a single chain with `build()`, which returns an owned `#Server`:
+
+```cajeta
+Server s #= Server.builder()
     .bind("127.0.0.1:0")
     .model(ServerModel.fiberPerConnection())
-    .handler((TcpStream conn) -> { conn.close(); });
-Server s #= b.build();
+    .handler((TcpStream conn) -> { conn.close(); })
+    .build();
+```
+
+Keeping a setter's result is rejected:
+
+```text
+ServerBuilder b #= Server.builder().bind("127.0.0.1:0").handler(h);   // CAJETA_ERROR_BORROW_OF_TEMPORARY
 ```
 
 ## Methods

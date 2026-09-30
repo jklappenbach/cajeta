@@ -28,7 +28,7 @@ public class CollectorsDemo extends DemoClass {
 
         // toList at the end of a filter pipeline: the accumulator
         // appends in stream order, so encounter order is preserved.
-        ArrayList<int32> evens = data.stream()
+        ArrayList<int32> evens #= data.stream()
             .filter((x) -> x % 2 == 0)
             .collect(Collectors.toList<int32>());
         this.check(evens.count() == 3, "toList collects every surviving element");
@@ -39,7 +39,7 @@ public class CollectorsDemo extends DemoClass {
         // Per-T monomorphization: after map<int64> the pipeline's
         // element type is int64, so the matching factory is
         // toList<int64>() — a different instantiation than above.
-        ArrayList<int64> wide = data.stream()
+        ArrayList<int64> wide #= data.stream()
             .map<int64>((x) -> (int64) x * 10L)
             .collect(Collectors.toList<int64>());
         this.check(wide.count() == 6 && wide.get(0) == 50L && wide.get(5) == 60L,
@@ -55,7 +55,7 @@ public class CollectorsDemo extends DemoClass {
         for (int32 i = 0; i < 200; i = i + 1) {
             xs[i] = i + 1;
         }
-        ArrayList<int32> par = xs.stream()
+        ArrayList<int32> par #= xs.stream()
             .parallel()
             .collect(Collectors.toList<int32>());
         this.check(par.count() == 200, "parallel collect merges every worker partial");
@@ -86,7 +86,7 @@ public class CollectorsDemo extends DemoClass {
             () -> heap Counter(),
             (acc, x) -> { acc.bump(); return acc; },
             (left, right) -> { left.bumpBy(right.value()); return left; });
-        Counter n = data.stream().collect<Counter>(counting);
+        Counter n #= data.stream().collect<Counter>(counting);
         this.check(n.value() == 6, "custom counting collector sees every element");
         System.stdout.println("  custom counting collector = " + n.value());
     }

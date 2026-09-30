@@ -94,12 +94,20 @@ stream is rejected at compile time (see §2.2).
 ### 1.6 — Parallel collect with combiner-bearing Collector
 
 ```cajeta
-ArrayList<int32> doubled = xs.stream()
+ArrayList<int32> doubled #= xs.stream()
     .parallel()
-    .filter((x) -> x > 0)
-    .map<int32>((x) -> x * 2)
+    .filter((int32 x) -> { return x > 0; })
+    .map<int32>((int32 x) -> { return x * 2; })
     .collect<ArrayList<int32>>(Collectors.toList<int32>());
 ```
+
+`collect` returns an owned `#R`, so the whole pipeline fits in one
+statement. The streams that `stream()`, `filter` and `map` build are
+freed at the end of the statement. The collected list is a fresh value
+that outlives them. Bind it with `#=`. A stage kept past its statement
+is different. `Stream<int32> kept #= xs.stream().filter(p);` compiles,
+but the stage borrows the stream temporary and reads freed memory once
+the statement ends. Bind the source first when you keep a stage.
 
 `Collectors.toList<T>` ships with a combiner (`(a, b) -> a.appendAll(b)`).
 Each worker accumulates into its own ArrayList; orchestrator appends
@@ -389,18 +397,20 @@ Listed here so the diagnostic shape is committed if we add it.)
 ### 2.7 — Nested `parallel()` calls (warn, not error)
 
 ```cajeta
-xs.stream().parallel().flatMap<int32>((x) -> {
-    int32[] inner = ...;
-    return inner.stream().parallel();   // inner parallel
+xs.stream().parallel().flatMap<int32>((int32 x) -> {
+    int32[] inner = [x, x + 1];
+    Stream<int32> s #= inner.stream();
+    s.parallel();                        // inner parallel
+    return #s;
 }).count();
 ```
 
 ```
 warning[parallel-nested]: inner stream marked .parallel() inside a
        parallel outer flatMap will run sequentially
-  --> example.cajeta:7:32
-   7 |         return inner.stream().parallel();
-     |                                ^^^^^^^^^^
+  --> example.cajeta:4:7
+   4 |     s.parallel();
+     |       ^^^^^^^^^^
 
   = note: v1 doesn't propagate parallelism through flatMap inner
           streams — the outer parallel already saturates the worker
@@ -727,12 +737,17 @@ order-loss caveat — under parallel, `findFirst` is really
 
 ```cajeta
 // String concatenation is associative but NOT commutative
-String joined = words.stream()
-    .parallel()
+ArrayStream<String> s #= words.stream();
+String joined = s.parallel()
     .fold<String>("",
-        (acc, w) -> acc + w,
-        (a, b) -> a + b);
+        (String acc, String w) -> { return acc + w; },
+        (String a, String b) -> { return a + b; });
 ```
+
+`fold<R>` returns a plain `R`. On a stream temporary such as an
+`ArrayList`'s `stream()`, binding a `String` or other class result to a
+local is `CAJETA_ERROR_BORROW_OF_TEMPORARY`, so the stream is named
+first.
 
 Splits are disjoint contiguous index ranges, so worker N processes
 indices [start_N, end_N). Per-worker accumulators are in-order
@@ -1386,7 +1401,7 @@ workers isn't preserved, so "first in source order" isn't meaningful.
 The dispatch flip lives entirely on the existing `findFirst` method:
 
 ```cajeta
-public #Optional<T> findFirst((T) -> boolean pred) {
+public Optional<T> findFirst((T) -> boolean pred) {
     if (this.isParallel) {
         return ParallelDriver.findAnyParallelChain<T>(this, pred);
     }

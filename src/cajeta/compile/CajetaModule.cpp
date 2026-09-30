@@ -320,6 +320,43 @@ namespace cajeta {
         return builder->CreateAlloca(ty, nullptr, name);
     }
 
+    void CajetaModule::addStatementTemp(llvm::Value* obj, llvm::Value* owned) {
+        if (!builder || !builder->GetInsertBlock() || !obj) return;
+        llvm::Function* dropFn = getRuntimeFunction("__cajeta_class_virtual_drop");
+        if (!dropFn) return;
+        llvm::PointerType* ptrTy = llvm::PointerType::get(*llvmContext, 0);
+        llvm::Constant* nul = llvm::ConstantPointerNull::get(ptrTy);
+        llvm::AllocaInst* slot = createEntryAlloca(ptrTy, "stmt.temp");
+        llvm::IRBuilder<> eb(slot->getNextNode());
+        eb.CreateStore(nul, slot);
+        builder->CreateCall(dropFn, {builder->CreateLoad(ptrTy, slot)});
+        builder->CreateStore(owned ? builder->CreateSelect(owned, obj, nul) : obj, slot);
+        statementTemps.emplace_back(slot, builder->GetInsertBlock()->getParent());
+    }
+
+    void CajetaModule::flushStatementTemps(size_t mark, bool keep) {
+        if (statementTemps.size() <= mark) return;
+        llvm::BasicBlock* bb = builder ? builder->GetInsertBlock() : nullptr;
+        if (bb && !bb->hasTerminator()) {
+            llvm::Function* fn = bb->getParent();
+            llvm::Function* dropFn = getRuntimeFunction("__cajeta_class_virtual_drop");
+            llvm::Function* fgFn = getRuntimeFunction("__cajeta_return_flag_get");
+            llvm::Function* fsFn = getRuntimeFunction("__cajeta_return_flag_set");
+            if (dropFn && fgFn && fsFn) {
+                llvm::PointerType* ptrTy = llvm::PointerType::get(*llvmContext, 0);
+                llvm::Value* saved = builder->CreateCall(fgFn, {}, "stmt_temp_savefl");
+                for (size_t i = statementTemps.size(); i > mark; --i) {
+                    auto& [slot, owner] = statementTemps[i - 1];
+                    if (owner != fn) continue;
+                    builder->CreateCall(dropFn, {builder->CreateLoad(ptrTy, slot)});
+                    builder->CreateStore(llvm::ConstantPointerNull::get(ptrTy), slot);
+                }
+                builder->CreateCall(fsFn, {saved});
+            }
+        }
+        if (!keep) statementTemps.resize(mark);
+    }
+
     // Records the unit's package and checks it against the path the module was
     // built from. A script unit may omit the declaration, so a null ctx is legal.
     void CajetaModule::onPackageDeclaration(CajetaParser::PackageDeclarationContext* ctx) {

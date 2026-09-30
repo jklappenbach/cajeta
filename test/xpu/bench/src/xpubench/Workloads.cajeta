@@ -1,6 +1,7 @@
 package xpubench;
 
-import cajeta.concurrent.Tasks;
+import cajeta.concurrent.Fiber;
+import cajeta.time.Duration;
 import cajeta.lang.String;
 import cajeta.time.Clock;
 import cajeta.xpu.Barrier;
@@ -670,7 +671,7 @@ public final class Workloads {
         int64 now = Clock.nanoTime();
         int64 remainMs = (deadline - now) / 1000000 - 1;
         if (remainMs > 0) {
-            Tasks.sleepMillis(remainMs);
+            Fiber.sleep(Duration.ofMillis(remainMs));
         }
         while (Clock.nanoTime() < deadline) {
         }

@@ -211,7 +211,7 @@ public class Tasks {
      * v1 implementation: poll-and-backoff over `tryReceive()` /
      * `isClosed()`. Each pass tries every channel non-blocking; if all
      * empty and at least one is still open, the fiber sleeps via
-     * `Cajeta.fiberSleepNanos` with exponential backoff (100us → 10ms
+     * `Fiber.sleep` with exponential backoff (100us → 10ms
      * cap) before re-polling. The carrier is never held — sleeping
      * parks on the timer wheel, freeing the carrier to run other fibers.
      *
@@ -258,30 +258,10 @@ public class Tasks {
             if (!any_open) {
                 return stack Optional<SelectResult<T>>(false);
             }
-            Cajeta.fiberSleepNanos(backoff);
+            Fiber.sleep(Duration.ofNanos(backoff));
             if (backoff < 10000000) {
                 backoff = backoff * 2;
             }
         }
-    }
-
-    /** Native cooperative sleep: parks the FIBER (main-thread callers
-     *  cond_timedwait) for up to `nanos` — the timer-wheel path
-     *  (`__cajeta_fiber_sleep_nanos`), same primitive Channel.select's
-     *  polling backoff uses. */
-    @Native("__cajeta_fiber_sleep_nanos")
-    private static void sleepNanosNative(int64 nanos);
-
-    /**
-     * Cooperative sleep for `millis` milliseconds — parks the calling
-     * fiber (never the carrier). Non-positive durations return
-     * immediately. The building block for bounded polling waits (e.g. a
-     * timed channel drain) until cancellable parks land.
-     */
-    public static void sleepMillis(int64 millis) {
-        if (millis <= 0) {
-            return;
-        }
-        Tasks.sleepNanosNative(millis * 1000000);
     }
 }
