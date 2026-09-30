@@ -509,12 +509,23 @@ public:
         return pureCall(b, m, sym, f32, {value}, "wave.reducef");
     }
 
-    // Routes to the whole-wave reduce, which vectorizes where the base butterfly does
-    // not: a segment (a quant block of 32 or 256) always covers the <= 16-lane wave.
+    // A stub with the segment as a DATA argument; registration attaches a
+    // variant that reduces each aligned span of `segment` lanes separately (a
+    // select-guarded butterfly, so the segment can be a runtime value). This
+    // used to route to the whole-wave reduce on the grounds that a segment
+    // always covered the host's 8- or 16-lane wave; a declared 32-lane wave
+    // holding four 8-lane segments (the flash decode kernels) proved the
+    // grounds gone (2026-09-30).
     llvm::Value* waveReduceF32Segmented(llvm::IRBuilderBase& b, llvm::Module& m,
                                         WaveReduceFOp op, llvm::Value* value,
-                                        llvm::Value* /*segment*/) override {
-        return waveReduceF32(b, m, op, value);
+                                        llvm::Value* segment) override {
+        const char* sym = op == WaveReduceFOp::Sum
+            ? "__cajeta_xpu_wave_reduce_sum_f32_seg"
+            : "__cajeta_xpu_wave_reduce_max_f32_seg";
+        llvm::Type* f32 = llvm::Type::getFloatTy(m.getContext());
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Value* seg = b.CreateZExtOrTrunc(segment, i32, "wave.seg");
+        return pureCall(b, m, sym, f32, {value, seg}, "wave.reducef.seg");
     }
     // A stub, not the base Hillis-Steele shuffle loop, which does not vectorize here.
     llvm::Value* waveScan(llvm::IRBuilderBase& b, llvm::Module& m,

@@ -48,6 +48,9 @@ const char* kSource =
     "import cajeta.xpu.KernelStream;\n"
     "import cajeta.xpu.KernelThread;\n"
     "import cajeta.xpu.Wave;\n"
+    "import cajeta.xpu.Barrier;\n"
+    "import cajeta.xpu.Shared;\n"
+    "import cajeta.xpu.Workgroup;\n"
     "public class W {\n"
     "    @Kernel @Wave(width = 32)\n"
     "    public static void declared(KernelBuffer<float32> out, KernelBuffer<float32> x) {\n"
@@ -76,6 +79,111 @@ const char* kSource =
     "            k = k + 1;\n"
     "        }\n"
     "        out[t] = Wave.reduceMaxF32(amax) + 100000.0f * (float32) Wave.width();\n"
+    "    }\n"
+    "    /** A segmented reduce inside the declared wave: eight-lane segments of a\n"
+    "     *  32-lane wave sum their lane ids, so lane t answers 8 * (t / 8 % 4) * ... :\n"
+    "     *  the sum of t & ~7 .. t | 7. */\n"
+    "    @Kernel @Wave(width = 32)\n"
+    "    public static void segmented(KernelBuffer<float32> sum, KernelBuffer<float32> max) {\n"
+    "        uint32 t = KernelThread.x();\n"
+    "        sum[t] = Wave.reduceSumF32Segmented((float32) t, 8);\n"
+    "        max[t] = Wave.reduceMaxF32Segmented((float32) t, 8);\n"
+    "    }\n"
+    "    /** Lanes whose segmented sum or max is not its own eight-lane segment's. */\n"
+    "    public static int32 wrongSegments() {\n"
+    "        KernelBuffer<float32> sm = heap KernelBuffer<float32>(0, 256);\n"
+    "        KernelBuffer<float32> mx = heap KernelBuffer<float32>(0, 256);\n"
+    "        sm.allocate(); mx.allocate();\n"
+    "        KernelStream s #= KernelStream.current();\n"
+    "        segmented.launch(s, grid: [1], block: [256])(sm, mx);\n"
+    "        s.sync();\n"
+    "        float32[] gs #= heap float32[256];\n"
+    "        float32[] gm #= heap float32[256];\n"
+    "        sm.download(gs); mx.download(gm);\n"
+    "        sm.free(); mx.free();\n"
+    "        int32 bad = 0;\n"
+    "        int32 t = 0;\n"
+    "        while (t < 256) {\n"
+    "            int32 base = t - (t % 8);\n"
+    "            float32 wantSum = (float32) (8 * base + 28);\n"
+    "            float32 wantMax = (float32) (base + 7);\n"
+    "            if (gs[t] != wantSum || gm[t] != wantMax) { bad = bad + 1; }\n"
+    "            t = t + 1;\n"
+    "        }\n"
+    "        return bad;\n"
+    "    }\n"
+    "    /**\n"
+    "     * The grouped-id GLU kernels' shape at a declared 32: a lane-strided loop\n"
+    "     * whose start is lane / 8 and whose step is 4 (four blocks in flight, eight\n"
+    "     * lanes each), the reduce, a uniform early return, a barrier, and a tail\n"
+    "     * that only the last wave of the block writes. rows = grid, one wave a row.\n"
+    "     */\n"
+    "    @Kernel @Wave(width = 32)\n"
+    "    public static void strided(KernelBuffer<float32> out, KernelBuffer<float32> in,\n"
+    "            uint32 nb, uint32 packOn) {\n"
+    "        Shared<float32> tail = shared float32[8];\n"
+    "        uint32 tid = KernelThread.x();\n"
+    "        uint32 lane = tid % 32;\n"
+    "        uint32 wave = KernelThread.globalIdX() / 32;\n"
+    "        float32 acc = 0.0f;\n"
+    "        uint32 b = lane >> 3;\n"
+    "        while (b < nb) {\n"
+    "            acc = acc + in[(int64) (wave * nb + b)] * (float32) (1 + (lane & 7));\n"
+    "            b = b + 4;\n"
+    "        }\n"
+    "        float32 tot = Wave.reduceSumF32(acc);\n"
+    "        if (lane == 0) { out[(int64) wave] = tot; }\n"
+    "        if (packOn == 0) { return; }\n"
+    "        Barrier.workgroup();\n"
+    "        if (lane == 0) { tail[tid / 32] = tot; }\n"
+    "        Barrier.workgroup();\n"
+    "        if (tid == 0) {\n"
+    "            float32 s = 0.0f;\n"
+    "            uint32 w = 0;\n"
+    "            while (w < 8) { s = s + tail[w]; w = w + 1; }\n"
+    "            out[(int64) (8 * Workgroup.x() + 7)] = s;\n"
+    "        }\n"
+    "    }\n"
+    "    /** Rows (waves) whose strided sum is wrong, or -1000 when the launch did not\n"
+    "     *  finish inside ten seconds of host time (a hang). */\n"
+    "    public static int32 wrongStrided(uint32 packOn) {\n"
+    "        uint32 nb = 6;\n"
+    "        uint32 waves = 16;\n"
+    "        float32[] hin #= heap float32[waves * nb];\n"
+    "        int32 i = 0;\n"
+    "        while (i < (int32) (waves * nb)) { hin[i] = (float32) (i % 7); i = i + 1; }\n"
+    "        KernelBuffer<float32> bin = heap KernelBuffer<float32>(0, waves * nb);\n"
+    "        KernelBuffer<float32> bout = heap KernelBuffer<float32>(0, waves);\n"
+    "        bin.allocate(); bout.allocate();\n"
+    "        bin.upload(hin);\n"
+    "        KernelStream s #= KernelStream.current();\n"
+    "        strided.launch(s, grid: [waves / 8], block: [256])(bout, bin, nb, packOn);\n"
+    "        s.sync();\n"
+    "        float32[] got #= heap float32[waves];\n"
+    "        bout.download(got);\n"
+    "        bin.free(); bout.free();\n"
+    "        int32 bad = 0;\n"
+    "        uint32 w = 0;\n"
+    "        while (w < waves) {\n"
+    "            // Every block b of the row is read by eight lanes weighted 1..8: 36 x.\n"
+    "            float32 want = 0.0f;\n"
+    "            uint32 b = 0;\n"
+    "            while (b < nb) { want = want + 36.0f * hin[w * nb + b]; b = b + 1; }\n"
+    "            if (packOn != 0 && (w % 8) == 7) {\n"
+    "                // The pack tail overwrote row 7 of each block with the block's sum.\n"
+    "                float32 bs = 0.0f;\n"
+    "                uint32 r = w - 7;\n"
+    "                while (r <= w) {\n"
+    "                    uint32 c = 0;\n"
+    "                    while (c < nb) { bs = bs + 36.0f * hin[r * nb + c]; c = c + 1; }\n"
+    "                    r = r + 1;\n"
+    "                }\n"
+    "                want = bs;\n"
+    "            }\n"
+    "            if (got[w] != want) { bad = bad + 1; }\n"
+    "            w = w + 1;\n"
+    "        }\n"
+    "        return bad;\n"
     "    }\n"
     "    /** Lanes whose answer is not the block max under a 32-lane wave, or -1 when\n"
     "     *  the kernel reported a width other than 32. */\n"
@@ -140,4 +248,30 @@ TEST(XpuCpuDeclaredWave, anUndeclaredKernelRunsAtTheHostWidth) {
     if (hostWave() == 32) GTEST_SKIP() << "the host wave is 32: nothing to tell apart";
     EXPECT_LT(wrong(0), 0) << "an undeclared kernel reported width 32 on a host whose wave is "
                            << hostWave();
+}
+
+// A segmented reduce keeps its segments on a wave wider than the segment. The
+// cpu backend routed every segmented reduce to the whole-wave reduce, which
+// was right while its wave was never wider than a quant block's 8 or 32 lanes
+// and wrong the moment a declared 32-lane wave held four 8-lane segments (the
+// flash decode kernels: eight lanes per K/V row, measured 2026-09-30).
+TEST(XpuCpuDeclaredWave, aSegmentedReduceKeepsItsSegmentsInsideTheDeclaredWave) {
+    auto jit = CajetaJit::compile(kSource, "test.W", cpuOnly());
+    ASSERT_NE(jit, nullptr);
+    auto wrong = jit->lookup<int32_t (*)()>("wrongSegments");
+    ASSERT_NE(wrong, nullptr);
+    EXPECT_EQ(wrong(), 0) << "lanes whose eight-lane segmented sum or max spanned more than its segment";
+}
+
+// The grouped-id GLU shape: a lane-strided loop (start lane / 8, step 4), the
+// reduce, a uniform early return before a barrier, and a last-wave tail. On
+// the first cpu leg with the wave declared, iq3xxsQ8IdGateUpGluKernel hung the
+// box for twenty minutes in exactly this shape (2026-09-30).
+TEST(XpuCpuDeclaredWave, aLaneStridedLoopWithAnEarlyReturnBeforeABarrierEnds) {
+    auto jit = CajetaJit::compile(kSource, "test.W", cpuOnly());
+    ASSERT_NE(jit, nullptr);
+    auto wrong = jit->lookup<int32_t (*)(uint32_t)>("wrongStrided");
+    ASSERT_NE(wrong, nullptr);
+    EXPECT_EQ(wrong(0), 0) << "rows wrong with the early return taken by every work item";
+    EXPECT_EQ(wrong(1), 0) << "rows wrong with the pack tail run";
 }

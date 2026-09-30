@@ -285,6 +285,51 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
                                               masked->getArg(0), idv);
             b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, sel)));
         }
+    } else if (scalarName == "__cajeta_xpu_wave_reduce_sum_f32_seg" ||
+               scalarName == "__cajeta_xpu_wave_reduce_max_f32_seg") {
+        // Segmented: each aligned span of `segment` lanes reduces on its own
+        // and every lane of a span receives the span's result. The segment
+        // rides as a data argument (uniform, so lane 0 of its vector is the
+        // value), and the reduce is a butterfly over xor-partners at 1, 2,
+        // 4 ... W/2 with each step taken only while the segment is wider
+        // than the stride, so a runtime segment costs a select a step. The
+        // masked form folds inactive lanes to the identity first.
+        tokens = "vv";
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        auto* vTy = llvm::FixedVectorType::get(f32, W);
+        auto* segTy = llvm::FixedVectorType::get(i32, W);
+        const bool isSum = scalarName == "__cajeta_xpu_wave_reduce_sum_f32_seg";
+        llvm::Constant* ident = isSum
+            ? llvm::ConstantFP::get(f32, 0.0)
+            : llvm::ConstantFP::get(f32, -3.402823466e38);
+        auto butterfly = [&](llvm::IRBuilder<>& b, llvm::Value* v, llvm::Value* segV) {
+            llvm::Value* seg = b.CreateExtractElement(segV, b.getInt32(0), "seg");
+            for (unsigned d = 1; d < W; d <<= 1) {
+                llvm::SmallVector<int, 64> mask;
+                for (unsigned i = 0; i < W; ++i) mask.push_back((int) (i ^ d));
+                llvm::Value* partner = b.CreateShuffleVector(v, v, mask, "seg.partner");
+                llvm::Value* cand = isSum
+                    ? b.CreateFAdd(v, partner, "seg.sum")
+                    : b.CreateMaxNum(v, partner);
+                llvm::Value* take = b.CreateICmpUGT(seg, llvm::ConstantInt::get(i32, d), "seg.take");
+                v = b.CreateSelect(b.CreateVectorSplat(W, take), cand, v, "seg.step");
+            }
+            return v;
+        };
+        unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
+                                    llvm::FunctionType::get(vTy, {vTy, segTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", unmasked));
+            b.CreateRet(butterfly(b, unmasked->getArg(0), unmasked->getArg(1)));
+        }
+        masked = makeVariantShell(m, scalarName.str() + "_Mv" + sw,
+                                  llvm::FunctionType::get(vTy, {vTy, segTy, maskTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", masked));
+            llvm::Value* idv = b.CreateVectorSplat(W, ident);
+            llvm::Value* sel = b.CreateSelect(masked->getArg(2), masked->getArg(0), idv);
+            b.CreateRet(butterfly(b, sel, masked->getArg(1)));
+        }
     } else if (scalarName.ends_with("_f32_m") &&
                scalarName.starts_with("__cajeta_xpu_wave_reduce_")) {
         llvm::StringRef base = scalarName.drop_back(2);   // strip "_m"
@@ -507,6 +552,8 @@ static const char* const kWaveOps[] = {
     "__cajeta_xpu_wave_reduce_max_u32",
     "__cajeta_xpu_wave_reduce_sum_f32",
     "__cajeta_xpu_wave_reduce_max_f32",
+    "__cajeta_xpu_wave_reduce_sum_f32_seg",
+    "__cajeta_xpu_wave_reduce_max_f32_seg",
     "__cajeta_xpu_wave_reduce_min_u32",
     "__cajeta_xpu_wave_reduce_and_u32",
     "__cajeta_xpu_wave_reduce_or_u32",
