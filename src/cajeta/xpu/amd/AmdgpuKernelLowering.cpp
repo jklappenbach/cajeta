@@ -829,6 +829,9 @@ public:
                                       unsigned /*waveW*/) override {
         fn->addFnAttr("target-features", "+wavefrontsize32");
     }
+    // Replicated, the stdlib's f32 / f64 / bf16 Ewise.matmul tiles spilled 3076 /
+    // 6152 / 1232 bytes per work-item on gfx1151; distributed they spill none.
+    bool distributeReplicablePortableTiles() const override { return true; }
 
     // The per-lane fragment type for each tile role (see the CM7 layout above).
     llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type* elem,

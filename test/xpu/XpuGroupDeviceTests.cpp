@@ -130,6 +130,7 @@ const char* kStripeSource =
     "        }\n"
     "    }\n"
     "    public static int32 run(int32 block, int32 width) {\n"
+    "        if (block <= 0) { block = Group.laneBlock(); width = block; }\n"
     "        uint32 n = 100;\n"
     "        int32[] hout = heap int32[n];\n"
     "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
@@ -168,6 +169,7 @@ const char* kRowSumSource =
     "        if (Group.laneId() == 0) { out[0] = total; }\n"
     "    }\n"
     "    public static float32 run(int32 block) {\n"
+    "        if (block <= 0) { block = Group.laneBlock(); }\n"
     "        uint32 n = 100;\n"
     "        float32[] ha = heap float32[n];\n"
     "        for (uint32 i = 0; i < n; i = i + 1) { ha[i] = (float32)(i + 1); }\n"
@@ -299,15 +301,15 @@ TEST(XpuGroupDevice, stripeCoversEveryItemOnceOnAmd) {
         << "Group.stripe did not cover [0,100) exactly once across 32 lanes";
 }
 
-// 2.1.3 (CPU): one work-item (width 1) owns every column -> out[j] == 0.
+// 2.1.3 (CPU): the cpu wave is the host SIMD width (23c1eec2), launched at Group.laneBlock().
 TEST(XpuGroupDevice, stripeCoversEveryItemOnceOnCpu) {
     auto jit = CajetaJit::compile(kStripeSource, "test.Gt", cpuOptions());
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)(int, int)>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(1, 1), 0)
-        << "Group.stripe on the CPU backend must be a full serial loop (lane 0 "
-           "owns every column)";
+    EXPECT_EQ(fn(0, 0), 0)
+        << "Group.stripe on the CPU backend did not cover [0,100) exactly once "
+           "across the host-width wave";
 }
 
 // 2.3.1 (AMD): the combined stripe+reduce row sum from one source.
@@ -327,8 +329,8 @@ TEST(XpuGroupDevice, rowSumStripeThenReduceOnCpu) {
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<float (*)(int)>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_FLOAT_EQ(fn(1), 5050.0f)
-        << "stripe + reduce row sum wrong on CPU (width-1 shape) — the "
+    EXPECT_FLOAT_EQ(fn(0), 5050.0f)
+        << "stripe + reduce row sum wrong on CPU at the host-width wave: the "
            "abstraction is not portable";
 }
 

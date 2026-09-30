@@ -31,17 +31,10 @@ public final class TargetDescriptor {
     private TargetDescriptor() { }
 
     /**
-     * The cooperative-group width for the target being compiled — the number of
-     * lanes that cooperate in one {@code Group} (§3). A per-target compile-time
-     * constant on the device hot path: 32 on gfx1151 wave32 (the wave/subgroup
-     * size), and 1 on the CPU backend, where the cooperative unit is one
-     * work-item and SIMD is exploited beneath this abstraction (§3.5).
-     *
-     * DEVICE-side only: usable inside a {@code @Kernel}, where the compiler
-     * folds it per target. It is deliberately NOT {@code Wave.width()}: on CPU
-     * that returns the host SIMD width (8/16), which is the wrong number for the
-     * Group model. The `@Native` symbol is the lowering key; the call never
-     * reaches a runtime symbol (the compiler emits the folded constant).
+     * The cooperative-group width for the target being compiled, a compile-time
+     * constant: 32 on gfx1151 wave32, and the host SIMD width on the CPU backend
+     * (8 or 16), the width {@link Group#laneBlock} launches a group at there.
+     * DEVICE-side only; the compiler folds the `@Native` call per target.
      */
     @Native("__cajeta_xpu_group_width")
     public static int32 waveWidth();

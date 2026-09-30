@@ -204,6 +204,19 @@ TEST(XpuKernelGate, theSweepSwitchDemotesTheGateToAWarning) {
     EXPECT_EQ(b.log.find("cajeta: error:"), std::string::npos) << b.log;
 }
 
+// The sweep switch demotes a STALE hold too. The cpu backend's wave width
+// follows the host's SIMD width, so a hold written on an AVX2 host is stale on
+// an AVX-512 one, and a sweep there must still build.
+TEST(XpuKernelGate, theSweepSwitchDemotesAStaleHoldToAWarning) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(program(TRACKED, TRACKED), "cpu",
+                    cajeta_env_prefix({{"CAJETA_XPU_KERNEL_GATE", "warn"}}));
+    EXPECT_EQ(b.rc, 0) << b.log;
+    EXPECT_NE(b.log.find("cajeta: warning: [xpu-kernel-skipped] good: STALE"),
+              std::string::npos) << b.log;
+    EXPECT_EQ(b.log.find("cajeta: error:"), std::string::npos) << b.log;
+}
+
 // The JIT harness sweeps by default (a dozen suites deliberately compile a
 // kernel a backend refuses and probe the refused LAUNCH), and gates when a
 // test asks, so the in-process failure is testable too.
