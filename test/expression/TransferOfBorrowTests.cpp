@@ -253,6 +253,61 @@ TEST(TransferOfBorrowTests, doubleTransferRejected) {
     }
 }
 
+// A declaration is a new binding: two sibling loops that each declare and
+// transfer their own `a` are two owners, not one transferred twice.
+TEST(TransferOfBorrowTests, siblingLoopsEachTransferTheirOwnLocal) {
+    std::string src = std::string(kBoxSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 t = 0;\n"
+        "        int32 q = 0;\n"
+        "        while (q < 2) {\n"
+        "            int8[] a = heap int8[4];\n"
+        "            a[0] = (int8) 3;\n"
+        "            Sink s = heap Sink(#a);\n"
+        "            t = t + s.first();\n"
+        "            q = q + 1;\n"
+        "        }\n"
+        "        q = 0;\n"
+        "        while (q < 2) {\n"
+        "            int8[] a = heap int8[4];\n"
+        "            a[0] = (int8) 5;\n"
+        "            Sink s = heap Sink(#a);\n"
+        "            t = t + s.first();\n"
+        "            q = q + 1;\n"
+        "        }\n"
+        "        return t;\n"
+        "    }\n"
+        "}\n";
+    compileExpectOk(src);
+    EXPECT_EQ(runI32(src), 16);
+}
+
+// The does-fire twin: one loop body transferring its local twice.
+TEST(TransferOfBorrowTests, doubleTransferInOneLoopBodyRejected) {
+    std::string src = std::string(kBoxSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 t = 0;\n"
+        "        int32 q = 0;\n"
+        "        while (q < 2) {\n"
+        "            int8[] a = heap int8[4];\n"
+        "            Sink s1 = heap Sink(#a);\n"
+        "            Sink s2 = heap Sink(#a);\n"
+        "            t = t + s1.first() + s2.first();\n"
+        "            q = q + 1;\n"
+        "        }\n"
+        "        return t;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        ADD_FAILURE() << "expected a compile error for the double transfer";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MOVE_OF_BORROW") << e.getMessage();
+    }
+}
+
 // A borrow that is COPIED before transfer is the documented fix, and it
 // must keep compiling — the check has to leave the escape route open.
 TEST(TransferOfBorrowTests, copyThenTransferIsTheFix) {
