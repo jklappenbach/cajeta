@@ -7,6 +7,7 @@
 #include "../lowering/KernelLowering.h"
 #include "../lowering/LoweringTarget.h"
 #include "../core/XpuKernelAttr.h"
+#include "../../method/Method.h"
 #include "cajeta/error/Exception.h"
 
 #include "llvm/IR/DerivedTypes.h"
@@ -1362,6 +1363,16 @@ uint64_t relocateOversizedStaticShared(llvm::Function* kfn,
 
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
                             uint64_t* dynSharedBytes) {
+    // `@Wave(width = N)`: the warp is 32 and nothing here can make it
+    // otherwise, so a declaration of anything else is refused (CajetaXPU.md
+    // §3.2) rather than lowered onto a wave it was not written for.
+    if (auto attr = XpuKernelAttr::from(*method)) {
+        if (attr->waveWidth() && *attr->waveWidth() != 32)
+            throw cajeta::Exception(
+                "XPU NVPTX: kernel '" + method->getName() + "' declares @Wave(width = "
+                + std::to_string(*attr->waveWidth()) + ") and the warp is 32",
+                "XPU-N03");
+    }
     NvptxTarget target;
     llvm::Function* f =
         cajeta::xpu::lowerKernel(method, deviceModule, target);

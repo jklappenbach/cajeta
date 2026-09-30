@@ -3,6 +3,8 @@
 //
 
 #include "CpuKernelLowering.h"
+#include "../core/XpuKernelAttr.h"
+#include "../../method/Method.h"
 
 #include "../lowering/KernelLowering.h"
 #include "../lowering/LoweringTarget.h"
@@ -572,7 +574,33 @@ private:
 llvm::Function* lowerKernel(const MethodPtr& method,
                             llvm::Module& deviceModule) {
     CpuTarget target;
-    return cajeta::xpu::lowerKernel(method, deviceModule, target);
+    llvm::Function* fn = cajeta::xpu::lowerKernel(method, deviceModule, target);
+    // `@Wave(width = N)`: the kernel is written for an N-lane wave, and this
+    // backend can give it one, since its wave is whatever width the work-item
+    // loop is vectorized at. The same marker a distributed cooperative tile
+    // uses to pin 32 carries the declaration; cpuVectorWidthI32 reads it at
+    // registration, `Wave.width()` folds to N and the wave ops' variants
+    // widen at N. A tile that pinned a different width is a contradiction the
+    // author has to resolve, not a choice to make quietly.
+    if (fn) {
+        if (auto attr = XpuKernelAttr::from(*method)) {
+            if (attr->waveWidth() && *attr->waveWidth() >= 2) {
+                const std::string want = std::to_string(*attr->waveWidth());
+                if (fn->hasFnAttribute("cajeta.xpu.coop-wavew")) {
+                    const std::string have = fn->getFnAttribute("cajeta.xpu.coop-wavew")
+                                                 .getValueAsString().str();
+                    if (have != want)
+                        throw cajeta::Exception(
+                            "XPU cpu: kernel '" + method->getName() + "' declares "
+                            "@Wave(width = " + want + ") but its distributed cooperative "
+                            "tile lays out at " + have + " lanes; the two must agree",
+                            "XPU-N03");
+                }
+                fn->addFnAttr("cajeta.xpu.coop-wavew", want);
+            }
+        }
+    }
+    return fn;
 }
 
 } // namespace cpu

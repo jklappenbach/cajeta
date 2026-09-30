@@ -341,6 +341,19 @@ on NVPTX, and on Vulkan emits a `LocalSize` decoration plus
 the request rejects the kernel at compile time (NVIDIA / AMD) or
 pipeline-create time (Vulkan).
 
+On the **cpu backend** the wave is the width the work-item loop is
+vectorized at, so the declaration is honored exactly: the loop is forced
+to `N` lanes (four AVX2 vectors per value at 32), `Wave.width()` and
+`Group.width()` fold to `N`, the wave ops' vector variants widen at `N`,
+and the kernel's manifest records `waveWidth = N` (`Group.laneBlockOf`
+reads it). A kernel written against a 32-lane wave (`lane = tid % 32`, a
+reduce across the 32 lanes that hold a block) therefore runs on cpu
+unchanged instead of answering for a quarter of its block at the host's
+width of 8 (measured 2026-09-30, `XpuCpuDeclaredWaveTests`). A block
+launched for such a kernel is a multiple of `N`, as it is on a GPU. A
+declaration that contradicts a distributed cooperative tile's own width
+is refused (`XPU-N03`), as is any width but 32 on NVPTX.
+
 ### 3.3 Capability traits
 
 A *capability* is a feature that some devices have and others don't.
