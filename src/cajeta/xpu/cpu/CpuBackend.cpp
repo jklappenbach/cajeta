@@ -2,6 +2,7 @@
 
 #include "CpuBackend.h"
 
+#include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -15,6 +16,7 @@
 #include "llvm/TargetParser/SubtargetFeature.h"
 #include "llvm/TargetParser/Triple.h"
 
+#include <cstdlib>
 #include <string>
 
 namespace cajeta {
@@ -82,6 +84,20 @@ std::vector<uint8_t> emitObject(llvm::Module& m, llvm::TargetMachine& tm) {
     }
     pm.run(m);
     return std::vector<uint8_t>(buf.begin(), buf.end());
+}
+
+std::string kernelTuneCpu() {
+    const char* env = std::getenv("CAJETA_XPU_CPU_TUNE");
+    if (env == nullptr || env[0] == 0) return "generic";
+    std::string tune = env;
+    if (tune == "host" || tune == "native") return std::string();
+    return tune;
+}
+
+void tuneKernelWrapper(llvm::Function& wrapper) {
+    std::string tune = kernelTuneCpu();
+    if (tune.empty()) return;
+    wrapper.addFnAttr("tune-cpu", tune);
 }
 
 } // namespace cpu

@@ -7,7 +7,10 @@
 #include <memory>
 #include <vector>
 
+#include <string>
+
 namespace llvm {
+    class Function;
     class Module;
     class TargetMachine;
 }
@@ -26,6 +29,23 @@ namespace cpu {
     // Emits a native relocatable object for `m` through a host-configured `tm`;
     // returns the object bytes, or empty on a (logged) codegen error.
     std::vector<uint8_t> emitObject(llvm::Module& m, llvm::TargetMachine& tm);
+
+    // The codegen TUNING of a lowered kernel's per-block wrapper. The wrapper
+    // is codegen'd by the HOST program's TargetMachine (CpuRegistration links
+    // the kernel into the host module and builds the wrapper there), so it
+    // would take the host CPU's scheduling model, and on a Zen host that model
+    // turns on LLVM's post-RA list scheduler, which is quadratic in basic-block
+    // size. A fission wrapper after unrolling is one enormous basic block: the
+    // cajeta-llm test binary took 57 minutes to compile on znver2
+    // (xpu-kernel-adaptor 6.4.12). The wrapper carries `tune-cpu` instead,
+    // "generic" by default (the tuning clang gives every program built
+    // without -mtune, no post-RA scheduling), and the ISA attributes are never
+    // touched: the wrapper inherits the host machine's SIMD and the vectorizer
+    // still sees the host. CAJETA_XPU_CPU_TUNE names another tune target;
+    // "host" keeps the host program's own tuning (the A/B knob for measuring
+    // what the tuning costs at runtime). Returns the target, empty for "host".
+    std::string kernelTuneCpu();
+    void tuneKernelWrapper(llvm::Function& wrapper);
 
 } // namespace cpu
 } // namespace xpu

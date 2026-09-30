@@ -1017,6 +1017,10 @@ void foldWaveVariants(llvm::Function& f) {
                 llvm::FunctionType::get(voidTy, wtys, false),
                 llvm::GlobalValue::ExternalLinkage,
                 "__cajeta_xpu_cpu_block." + symSuffix(method), hostModule);
+            // Tuned as generic x86-64 for codegen, ISA untouched: the host
+            // machine's post-RA list scheduler is quadratic in the block the
+            // fission wrappers become (6.4.12). CpuBackend.h says why.
+            tuneKernelWrapper(*wrapper);
             // The trailing wrapper param is the dynamic shared byte count.
             llvm::Value* dynSharedBytes = wrapper->getArg(nReal + kNumBlockCoordParams);
 
@@ -1079,6 +1083,7 @@ void foldWaveVariants(llvm::Function& f) {
                                 llvm::GlobalValue::ExternalLinkage,
                                 "__cajeta_xpu_cpu_block." + symSuffix(method),
                                 hostModule);
+                            tuneKernelWrapper(*wrapper);
                             dynSharedBytes = wrapper->getArg(nReal + kNumBlockCoordParams);
                             ctaidX = wrapper->getArg(nReal + 0);
                             ctaidY = wrapper->getArg(nReal + 1);
