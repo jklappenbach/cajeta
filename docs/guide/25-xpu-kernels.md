@@ -510,14 +510,16 @@ public static void splitLaunch(KernelBuffer<int8> out,
   the index is a multiple of four, and the compiler proves that from
   the index's own arithmetic (a product of 144, a shift by five, a
   loop carried in steps of 32) without a depth limit. Where it can, the
-  load is word loads and `dotAccum` is `dp4a`; the hot Q4_K mat-vec went
-  from 260 byte loads and 258 multiplies to 72 word loads and 80 `dp4a`.
-  The proof is about the offset, so the launch checks the BASE: a
-  buffer parameter read in words whose base is not word-aligned is
-  refused by name (`XpuLaunchException`, "not aligned"), and a slice
-  handed to such a kernel must start at a multiple of four bytes. An
-  index the compiler cannot prove stays a byte load and works at any
-  alignment.
+  load is word loads, or 16-byte vector loads where the offset proves a
+  multiple of sixteen, and `dotAccum` is `dp4a`; the hot Q4_K mat-vec
+  went from 260 byte loads and 258 multiplies to 16 vector loads, 8 word
+  loads and 80 `dp4a`. The proof is about the offset, so the launch
+  checks the BASE: a buffer parameter read in words or vectors whose
+  base is short of the widest access proved on it is refused by name
+  (`XpuLaunchException`, "not aligned"), and a slice handed to such a
+  kernel must start at that multiple (four bytes for words, sixteen for
+  vectors). An index the compiler cannot prove stays a byte load and
+  works at any alignment.
 
 ## 25.6 Routing: declare it, then let the test find the gaps
 
