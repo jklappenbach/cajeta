@@ -94,6 +94,19 @@ const char* kSource =
     "            out[(int64) i] = t[0] + t[1] + t[2] + t[3] + t[4] + t[5] + t[6] + t[7];\n"
     "        }\n"
     "    }\n"
+    "    /** Sixteen bytes at an index that is a multiple of four but not of sixteen. */\n"
+    "    @Kernel\n"
+    "    public static void words(KernelBuffer<int32> out,\n"
+    "            KernelBuffer<int8> w, KernelBuffer<int8> x, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<int32,4> zv = heap Vector<int32,4>(0, 0, 0, 0);\n"
+    "            Vector<uint8,16> wv = w.vload<16>((int64) i * 4L).asUnsigned();\n"
+    "            Vector<int8,16> xv = x.vload<16>((int64) i * 4L);\n"
+    "            Vector<int32,4> t = wv.dotAccum(xv, zv);\n"
+    "            out[(int64) i] = t[0] + t[1] + t[2] + t[3];\n"
+    "        }\n"
+    "    }\n"
     "    /** A loop-carried offset that starts at a multiple of 32 and steps by 32. */\n"
     "    @Kernel\n"
     "    public static void loopAligned(KernelBuffer<int32> out,\n"
@@ -282,6 +295,23 @@ TEST(NvptxWordForm, aByteVectorAtAProvablyAlignedIndexLoadsWords) {
            "byte by byte\n" << l.ptx;
     EXPECT_EQ(countOf(l.ptx, "prmt.b32"), 0u)
         << "bytes are still being reassembled into words\n" << l.ptx;
+    // ... and a multiple of sixteen: 32 bytes of weights and 32 of activations
+    // are four 16-byte vector loads, which move four times the bytes of a
+    // word load per instruction.
+    EXPECT_GE(countOf(l.ptx, "ld.global.v4.b32"), 4u)
+        << "an index of i * 32 is a multiple of sixteen and the loads are not "
+           "16-byte vectors\n" << l.ptx;
+}
+
+// An index that is a multiple of four but not of sixteen gets words, never
+// vectors: the proof credits exactly the zeros the arithmetic has.
+TEST(NvptxWordForm, anIndexAlignedToFourLoadsWordsNotVectors) {
+    const Lowered l = lower("words");
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_EQ(countOf(l.ptx, "ld.global.b8"), 0u) << l.ptx;
+    EXPECT_EQ(countOf(l.ptx, "ld.global.v4.b32"), 0u)
+        << "an index of i * 4 was credited with sixteen-byte alignment\n" << l.ptx;
+    EXPECT_GE(countOf(l.ptx, "ld.global.b32"), 8u) << l.ptx;
 }
 
 // Does NOT fire: nothing proves `i + off` a multiple of four, and a word load

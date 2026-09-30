@@ -316,11 +316,21 @@ private:
     }
 };
 
+// CAJETA_XPU_WORD_ALIGN_CAP=4 confines the raise to words (the A/B arm for
+// the 16-byte vector loads); unset or anything else takes the full width.
+bool wordAlignCap16() {
+    static const bool cap16 = [] {
+        const char* e = std::getenv("CAJETA_XPU_WORD_ALIGN_CAP");
+        return !(e && std::strcmp(e, "4") == 0);
+    }();
+    return cap16;
+}
+
 void raiseProvableBufferAlignment(llvm::Module& m) {
     const llvm::DataLayout& dl = m.getDataLayout();
     for (llvm::Function& f : m) {
         if (f.isDeclaration()) continue;
-        std::set<unsigned> raised;
+        std::map<unsigned, uint64_t> raised;   // argument index -> alignment it owes
         for (llvm::BasicBlock& bb : f) {
             for (llvm::Instruction& inst : bb) {
                 auto* ld = llvm::dyn_cast<llvm::LoadInst>(&inst);
@@ -330,9 +340,14 @@ void raiseProvableBufferAlignment(llvm::Module& m) {
                 llvm::Type* ty = ld ? ld->getType() : st->getValueOperand()->getType();
                 llvm::Value* ptr = ld ? ld->getPointerOperand() : st->getPointerOperand();
                 const uint64_t have = (ld ? ld->getAlign() : st->getAlign()).value();
-                // What the access wants: a byte vector is read in words, anything
-                // else at its own natural alignment, and never past a word (the
-                // runtime's contract on a base is four bytes).
+                // What the access wants: a vector at the widest PTX vector
+                // load its size allows (16 bytes, ld.global.v4.b32, which the
+                // backend emits for a 16-aligned <4 x i32> piece and which
+                // moves four times the bytes of a word load per instruction:
+                // the hot Q4_K mat-vec is load-issue bound when hot), anything
+                // else at its own natural alignment. The proof decides what
+                // it gets, and the launch holds the base to the widest an
+                // access on that argument took.
                 uint64_t want = 0;
                 if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(ty)) {
                     // Whatever the element: the pipeline rewrites a byte
@@ -341,20 +356,22 @@ void raiseProvableBufferAlignment(llvm::Module& m) {
                     llvm::Type* et = vt->getElementType();
                     if (et->isIntegerTy() || et->isFloatingPointTy()) {
                         const uint64_t bytes = dl.getTypeStoreSize(ty).getFixedValue();
-                        want = bytes % 4 == 0 ? 4 : bytes % 2 == 0 ? 2 : 0;
+                        want = bytes % 16 == 0 ? 16 : bytes % 8 == 0 ? 8
+                             : bytes % 4 == 0 ? 4 : bytes % 2 == 0 ? 2 : 0;
                     }
                 } else if (ty->isIntegerTy() || ty->isFloatingPointTy()) {
-                    want = std::min<uint64_t>(dl.getABITypeAlign(ty).value(), 4);
+                    want = std::min<uint64_t>(dl.getABITypeAlign(ty).value(), 16);
                 }
+                if (!wordAlignCap16()) want = std::min<uint64_t>(want, 4);
                 if (want <= have) continue;
                 auto* arg = llvm::dyn_cast<llvm::Argument>(
                     llvm::getUnderlyingObject(ptr));
                 if (!arg || !arg->getType()->isPointerTy()) continue;
                 // The zeros of the address under the contract this pass would
                 // be signing the launch up to: the base aligned to a word.
-                const unsigned tz = TrailingZeroProof(arg, 2, dl).of(ptr);
+                const unsigned tz = TrailingZeroProof(arg, 4, dl).of(ptr);
                 const uint64_t proven = std::min<uint64_t>(
-                    want, uint64_t(1) << std::min<unsigned>(tz, 2));
+                    want, uint64_t(1) << std::min<unsigned>(tz, 4));
                 if (std::getenv("CAJETA_XPU_DEBUG_ALIGN"))
                     llvm::errs() << "align? " << f.getName() << " arg " << arg->getArgNo()
                                  << " have " << have << " want " << want << " tz "
@@ -362,23 +379,25 @@ void raiseProvableBufferAlignment(llvm::Module& m) {
                 if (proven > have) {
                     const llvm::Align al(proven);
                     if (ld) ld->setAlignment(al); else st->setAlignment(al);
-                    raised.insert(arg->getArgNo());
+                    uint64_t& need = raised[arg->getArgNo()];
+                    need = std::max<uint64_t>(need, proven);
                 }
             }
         }
-        // The contract, stated on the arguments it was taken on.
-        for (unsigned i : raised) {
+        // The contract, stated on the arguments it was taken on: each base
+        // aligned to the widest access proved on it.
+        for (auto& [i, need] : raised) {
             llvm::Argument* arg = f.getArg(i);
             const llvm::MaybeAlign before = arg->getParamAlign();
-            if (before && before->value() >= 4) continue;
+            if (before && before->value() >= need) continue;
             arg->removeAttr(llvm::Attribute::Alignment);
-            arg->addAttr(llvm::Attribute::getWithAlignment(f.getContext(), llvm::Align(4)));
+            arg->addAttr(llvm::Attribute::getWithAlignment(f.getContext(), llvm::Align(need)));
         }
         if (raised.empty()) continue;
         std::string list;
-        for (unsigned i : raised) {
+        for (auto& [i, need] : raised) {
             if (!list.empty()) list += ",";
-            list += std::to_string(i);
+            list += std::to_string(i) + ":" + std::to_string(need);
         }
         f.addFnAttr("cajeta-word-aligned-params", list);
     }

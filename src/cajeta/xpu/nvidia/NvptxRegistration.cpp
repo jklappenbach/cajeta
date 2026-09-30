@@ -235,10 +235,13 @@ namespace nvidia {
                     list.split(parts, ',', -1, /*KeepEmpty=*/false);
                     bool any = false;
                     for (llvm::StringRef part : parts) {
-                        unsigned idx = 0;
-                        if (part.getAsInteger(10, idx) || idx >= aligns.size())
+                        auto [idxS, alS] = part.split(':');
+                        unsigned idx = 0, al = 4;
+                        if (idxS.getAsInteger(10, idx) || idx >= aligns.size())
                             continue;
-                        aligns[idx] = 4;
+                        if (!alS.empty() && alS.getAsInteger(10, al)) al = 4;
+                        if (al > 255) al = 255;
+                        aligns[idx] = (uint8_t) al;
                         any = true;
                     }
                     if (any) {
