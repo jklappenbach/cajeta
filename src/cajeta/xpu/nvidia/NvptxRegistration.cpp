@@ -74,6 +74,16 @@ namespace nvidia {
         llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
             "__cajeta_xpu_register_kernel_params", kpTy);
 
+        // (i8* name, i32 count, i8* align): the buffer parameters whose base
+        // the device code reads in WORDS (NvptxBackend's
+        // raiseProvableBufferAlignment). The launch checks each base against
+        // it and refuses a misaligned one by name. Emitted only for a kernel
+        // that has such a parameter.
+        llvm::FunctionType* paTy = llvm::FunctionType::get(
+            voidTy, {ptrTy, i32Ty, ptrTy}, false);
+        llvm::FunctionCallee paFn = hostModule.getOrInsertFunction(
+            "__cajeta_xpu_register_kernel_param_align", paTy);
+
         // (i8* name, i32 bytes): a kernel whose static Shared<T> went over the
         // PTX static cap had its tiles relocated into one `extern .shared`
         // block, which carries no size in the PTX. The launch sizes it from
@@ -214,6 +224,36 @@ namespace nvidia {
                                     llvm::ConstantInt::get(i32Ty,
                                                            (uint32_t) info.size()),
                                     kindGV, szGV});
+                // The word-aligned bases, read off the attribute the device
+                // pipeline left on the kernel. Kernel parameters and function
+                // arguments are one to one, in order.
+                if (kfn->hasFnAttribute("cajeta-word-aligned-params")) {
+                    std::vector<uint8_t> aligns(info.size(), 1);
+                    llvm::StringRef list = kfn->getFnAttribute(
+                        "cajeta-word-aligned-params").getValueAsString();
+                    llvm::SmallVector<llvm::StringRef, 8> parts;
+                    list.split(parts, ',', -1, /*KeepEmpty=*/false);
+                    bool any = false;
+                    for (llvm::StringRef part : parts) {
+                        unsigned idx = 0;
+                        if (part.getAsInteger(10, idx) || idx >= aligns.size())
+                            continue;
+                        aligns[idx] = 4;
+                        any = true;
+                    }
+                    if (any) {
+                        llvm::Constant* alInit = llvm::ConstantDataArray::get(
+                            ctx, llvm::ArrayRef<uint8_t>(aligns.data(), aligns.size()));
+                        auto* alGV = new llvm::GlobalVariable(
+                            hostModule, alInit->getType(), /*isConstant=*/true,
+                            llvm::GlobalValue::PrivateLinkage, alInit,
+                            "xpu.kpalign." + entryName);
+                        b.CreateCall(paFn, {nameStr,
+                                            llvm::ConstantInt::get(
+                                                i32Ty, (uint32_t) info.size()),
+                                            alGV});
+                    }
+                }
             }
 
             // Only when the lowering actually relocated something: an absent

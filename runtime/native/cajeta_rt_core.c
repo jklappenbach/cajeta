@@ -540,10 +540,17 @@ int32_t __cajeta_prof_arm(void) {
     __cajeta_prof_out = getenv("CAJETA_PROFILER_OUT");
     // GPU capture arms from the same variable and HERE, before any backend
     // initializes: rocprofiler's configure hook only gets this one window.
+    // CAJETA_PROFILER_GPU=0 leaves device capture unarmed: host sampling
+    // only. Device capture attributes each launch as it is submitted, which
+    // keeps a deferred stream from queueing (cajeta_xpu_defer.c), so a host
+    // profile of a program that defers is only honest with capture off.
     {
-        const char* gring_s = getenv("CAJETA_PROFILER_GPU_RING");
-        int gcap = gring_s ? atoi(gring_s) : 0;   // 0 = the capture default
-        __cajeta_prof_gpu_capture_arm(gcap);
+        const char* gpu_s = getenv("CAJETA_PROFILER_GPU");
+        if (!(gpu_s && gpu_s[0] == '0')) {
+            const char* gring_s = getenv("CAJETA_PROFILER_GPU_RING");
+            int gcap = gring_s ? atoi(gring_s) : 0;   // 0 = the capture default
+            __cajeta_prof_gpu_capture_arm(gcap);
+        }
     }
     __cajeta_prof_head = __cajeta_prof_tail = 0;
     __cajeta_prof_stop = 0;

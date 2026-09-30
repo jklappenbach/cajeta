@@ -90,6 +90,75 @@ public final class KernelStream {
         this.nativeDestroy(this.handle);
     }
 
+    /** {@link #deferStat} keys. */
+    public static final int32 DEFER_QUEUED = 0;
+    public static final int32 DEFER_REPLAYED = 1;
+    public static final int32 DEFER_DIRECT = 2;
+    public static final int32 DEFER_GRAPHS_BUILT = 3;
+    public static final int32 DEFER_GRAPH_LAUNCHES = 4;
+    public static final int32 DEFER_PATCHES = 5;
+    public static final int32 DEFER_FLUSHES = 6;
+
+    /**
+     * Queue this stream's launches instead of submitting each one, and submit
+     * the queue together at the next point where its results can be observed:
+     * a `sync()`, a host transfer, an event, a buffer release, `flush()`, or
+     * turning deferral off. The results a program can observe do not change.
+     * What changes is the cost of submitting: a launch is a driver call, some
+     * microseconds whatever the kernel does, and a program that launches the
+     * same sequence of kernels again and again (one decode token, one solver
+     * step) pays it per launch per repetition. A queue whose kernel sequence
+     * this stream has submitted before is replayed as ONE recorded submission
+     * with only the changed grids and arguments patched in.
+     *
+     * The recording is a CUDA graph on nvptx. A backend without such a thing
+     * submits the queue launch by launch, and a synchronous backend (cpu)
+     * queues nothing: there the switch is accepted and has no effect. A launch
+     * that cannot be queued (a texture, an image, a buffer array, a launch-time
+     * specialization) submits the queue ahead of itself and goes directly, so
+     * order on the stream is always the order of the launch calls.
+     *
+     * One consequence to know: a queued launch has not started. Host work that
+     * used to overlap the device now precedes it, so defer where the launches
+     * are many and small, which is where the submit cost dominates.
+     */
+    public void setDeferred(boolean on) {
+        KernelStream.nativeSetDeferred(this.handle, on ? 1 : 0);
+    }
+
+    /** Submit every launch this stream has queued. Does not wait for them. */
+    public void flush() {
+        KernelStream.nativeFlush(this.handle);
+    }
+
+    /** Launches queued on this stream and not yet submitted. */
+    public int64 pendingLaunches() {
+        return KernelStream.nativePending(this.handle);
+    }
+
+    /**
+     * Process-wide deferral counters, by `DEFER_*` key: launches queued,
+     * launches submitted through a replayed recording, launches submitted one
+     * by one, recordings built, recordings launched, launches whose grid or
+     * arguments were patched into a recording, and queue submissions.
+     * Every queued launch is eventually either replayed or direct.
+     */
+    public static int64 deferStat(int32 which) {
+        return KernelStream.nativeDeferStat(which);
+    }
+
+    @Native("__cajeta_xpu_stream_set_deferred")
+    private static void nativeSetDeferred(int64 handle, int32 on);
+
+    @Native("__cajeta_xpu_stream_flush")
+    private static void nativeFlush(int64 handle);
+
+    @Native("__cajeta_xpu_stream_pending")
+    private static int64 nativePending(int64 handle);
+
+    @Native("__cajeta_xpu_defer_stat")
+    private static int64 nativeDeferStat(int32 which);
+
     // Native stream primitives. The handle (int64) IS the backend stream object
     // (0 = the default stream); current()/create() return it wrapped in a KernelStream
     // and the instance ops pass `this.handle` so the C side speaks only handles.

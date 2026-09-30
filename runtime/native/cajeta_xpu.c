@@ -6,4 +6,5 @@
 #include "cajeta_xpu_texture_amd.c"
 #include "cajeta_xpu_texture_cuda.c"
 #include "cajeta_xpu_accel.c"
+#include "cajeta_xpu_defer.c"
 #include "cajeta_xpu_launch.c"

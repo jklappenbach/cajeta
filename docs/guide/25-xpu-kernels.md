@@ -495,6 +495,29 @@ public static void splitLaunch(KernelBuffer<int8> out,
 - **Trust the manifest over the wall clock.** `spillBytes`, `vgpr` and
   `residentGroupsPerCu` are read from the code object. A kernel that
   spills can A/B flat against one that does not.
+- **A launch is a driver call before it is a kernel.** 6 to 13
+  microseconds on an RTX 4090 under WSL2, whatever the kernel does; a
+  decode token is hundreds of them. `KernelStream.setDeferred(true)`
+  queues a stream's launches and replays a sequence it has seen before
+  as one recorded submission (a CUDA graph on nvptx), submitting at the
+  next sync, transfer, event or release. Results are unchanged; the
+  token's submit cost goes from milliseconds to a fraction of one. The
+  same floor sits under a timing loop: a bracket around back-to-back
+  launches of a kernel faster than the submit reads the submit rate,
+  not the kernel. Defer the timed stream (`ParityLeg --deferred`).
+- **Byte vectors are words on NVPTX when the offset is provable.**
+  `vload<32>` on a `KernelBuffer<int8>` is a byte-by-byte load unless
+  the index is a multiple of four, and the compiler proves that from
+  the index's own arithmetic (a product of 144, a shift by five, a
+  loop carried in steps of 32) without a depth limit. Where it can, the
+  load is word loads and `dotAccum` is `dp4a`; the hot Q4_K mat-vec went
+  from 260 byte loads and 258 multiplies to 72 word loads and 80 `dp4a`.
+  The proof is about the offset, so the launch checks the BASE: a
+  buffer parameter read in words whose base is not word-aligned is
+  refused by name (`XpuLaunchException`, "not aligned"), and a slice
+  handed to such a kernel must start at a multiple of four bytes. An
+  index the compiler cannot prove stays a byte load and works at any
+  alignment.
 
 ## 25.6 Routing: declare it, then let the test find the gaps
 

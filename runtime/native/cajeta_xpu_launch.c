@@ -247,10 +247,14 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                                    uint32_t sharedBytes, void* argv,
                                    int64_t streamHandle,
                                    int32_t specCount, const int32_t* specValues) {
+    // Everything the runtime knows about this name, resolved once per launch
+    // site and again only when a registration moves (cajeta_xpu_defer.c).
+    struct caj_kres kresScratch;
+    struct caj_kres* kres = caj_kres_get(kernelName, &kresScratch);
     // Read the ACTUAL AS argument's impl (POD offset 12), not a global resolve.
-    {
+    if (kres->hasAccel || kres->rq) {
         void** av0 = (void**) argv;
-        struct cajeta_kparams* kpx = cajeta_xpu_find_kparams(kernelName);
+        struct cajeta_kparams* kpx = kres->kp;
         int32_t asArgImpl = -1;            // this launch's AS arg impl (-1 = no AS arg)
         int64_t asPrimary = 0;             // its POD handle (offset 0)
         if (kpx && av0) {
@@ -261,7 +265,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                     break;
                 }
         }
-        struct cajeta_optix_rq* rq = cajeta_xpu_find_optix_rq(kernelName);
+        struct cajeta_optix_rq* rq = kres->rq;
         if (rq && cajeta_xpu_optix_available() && asPrimary) {
             int64_t optixHandle = 0;
             if (asArgImpl == CAJ_AS_IMPL_OPTIX)
@@ -274,9 +278,9 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
             }
         }
     }
-    pthread_mutex_lock(&g_xpu_cuda_lock);
-    struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName, CAJ_XPU_CUDA);
-    if (e) {
+    struct cajeta_xpu_module* e = kres->mod;
+    if (e && !e->function) {
+        pthread_mutex_lock(&g_xpu_cuda_lock);
         if (!e->module) {
             if (g_xpu_cuda.cuModuleLoadData(&e->module, e->image) != 0)
                 e->module = NULL;
@@ -286,20 +290,43 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                                                kernelName) != 0)
                 e->function = NULL;
         }
+        pthread_mutex_unlock(&g_xpu_cuda_lock);
     }
     void* fn = e ? e->function : NULL;
     void* mod = e ? e->module : NULL;
-    pthread_mutex_unlock(&g_xpu_cuda_lock);
     if (!fn) {
         cajeta_xpu_note_launch_refusal(kernelName, CAJ_XPU_CUDA);
         fprintf(stderr, "cajeta.xpu: no registered kernel '%s' to launch\n",
                 kernelName);
         return;
     }
+    // The device code reads these buffers in words (the compiler proved the
+    // offsets aligned and registered the parameters): a base that is not
+    // word-aligned would be a misaligned-address fault that takes the context
+    // with it. Refused here, by name.
+    if (kres->alignChecked && argv) {
+        const struct cajeta_kparams* kp = kres->kp;
+        for (int i = 0; i < kp->count; ++i) {
+            if (kp->align[i] <= 1 || kp->kind[i] != CAJETA_KP_BUFFER) continue;
+            const void* slot = ((void**) argv)[i];
+            cajeta_cudeviceptr base = slot ? *(const cajeta_cudeviceptr*) slot : 0;
+            if (base & (cajeta_cudeviceptr) (kp->align[i] - 1)) {
+                cajeta_xpu_note_launch_refusal(kernelName, CAJ_XPU_CUDA);
+                g_xpu_refusal_reason = 1;
+                fprintf(stderr,
+                        "cajeta.xpu: not launching '%s': buffer parameter %d is "
+                        "based at 0x%llx, and the kernel reads it in %d-byte "
+                        "words. Slice the buffer at a multiple of %d bytes.\n",
+                        kernelName, i, (unsigned long long) base,
+                        (int) kp->align[i], (int) kp->align[i]);
+                return;
+            }
+        }
+    }
     // An unbacked (0) texture/image handle would feed tex/suld a null object and FAULT.
-    {
+    if (kres->needsXlat) {
         void** av = (void**) argv;
-        struct cajeta_kparams* kp = cajeta_xpu_find_kparams(kernelName);
+        struct cajeta_kparams* kp = kres->kp;
         if (kp && kp->count > 0 && av) {
             for (int i = 0; i < kp->count; ++i)
                 if ((kp->kind[i] == CAJETA_KP_IMAGE ||
@@ -322,7 +349,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
     // `max` rather than assignment: a kernel may ALSO have a runtime-sized
     // Shared<T> whose bytes came from the launch site.
     {
-        uint32_t relocated = cajeta_xpu_dynamic_shared_bytes(kernelName);
+        uint32_t relocated = kres->dynShared;
         if (relocated > sharedBytes) sharedBytes = relocated;
         if (relocated > CAJETA_XPU_CUDA_STATIC_SHARED_CAP) {
             if (!g_xpu_cuda.cuFuncSetAttribute) {
@@ -347,19 +374,56 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
         }
     }
     // The kernel reads `(slot < count) ? values[slot] : default`, so count 0 clears.
+    // Whether the module HAS the globals is asked of the driver once per load,
+    // and a count of 0 over a count already 0 is not written again: that write
+    // is a synchronous host copy, and it was paid by every launch of every
+    // module that uses a specialization constant at all.
+    int specWrote = 0;
     if (mod && g_xpu_cuda.cuModuleGetGlobal && g_xpu_cuda.cuMemcpyHtoD) {
         cajeta_cudeviceptr g; size_t gbytes;
         int32_t count = (specCount > 0 && specValues) ? specCount : 0;
         if (count > 60) count = 60;
-        if (g_xpu_cuda.cuModuleGetGlobal(&g, &gbytes, mod,
-                "__cajeta_xpu_spec_count") == 0 && gbytes >= sizeof(int32_t)) {
-            g_xpu_cuda.cuMemcpyHtoD(g, &count, sizeof(int32_t));
+        if (e->specState == 0) {
+            if (g_xpu_cuda.cuModuleGetGlobal(&g, &gbytes, mod,
+                    "__cajeta_xpu_spec_count") == 0 && gbytes >= sizeof(int32_t)) {
+                e->specCountG = g;
+                e->lastSpecCount = -1;
+                e->specState = 2;
+            } else {
+                e->specState = 1;
+            }
+        }
+        if (e->specState == 2 && !(count == 0 && e->lastSpecCount == 0)) {
+            g_xpu_cuda.cuMemcpyHtoD(e->specCountG, &count, sizeof(int32_t));
+            e->lastSpecCount = count;
+            specWrote = 1;
             if (count > 0 && g_xpu_cuda.cuModuleGetGlobal(&g, &gbytes, mod,
                     "__cajeta_xpu_spec_values") == 0) {
                 size_t want = (size_t) count * sizeof(int32_t);
                 g_xpu_cuda.cuMemcpyHtoD(g, specValues,
                                         want <= gbytes ? want : gbytes);
             }
+        }
+    }
+    // A deferred stream queues the launch here: every argument is copied by
+    // value, so the launch site's frame can go. What cannot be queued (a
+    // translated argument, a specialization written above, a kernel whose
+    // argument sizes are unknown) submits the stream's queue first and goes
+    // directly, so the stream's order stays the order of the launch calls.
+    {
+        void* st = (void*) (intptr_t) streamHandle;
+        if (caj_defer_wants(st)) {
+            if (kres->queueable && !kres->needsXlat && !kres->hasAccel && !specWrote
+                    && argv) {
+                const unsigned grid[3] = { (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ };
+                const unsigned block[3] = { (unsigned) blockX, (unsigned) blockY, (unsigned) blockZ };
+                if (caj_defer_enqueue(st, kres, fn, kernelName, grid, block,
+                                      (unsigned) sharedBytes, (void**) argv))
+                    return;
+            }
+            caj_defer_flush_stream(st);
+        } else if (__atomic_load_n(&g_defer_pending, __ATOMIC_RELAXED)) {
+            caj_defer_flush_stream(st);   // deferral was just turned off under a queue
         }
     }
     // Per-launch kernarg translation: TEXTURE → a CUtexObject built from the record
@@ -376,8 +440,8 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
     // count, i32 impl} = 16 bytes, matching the struct the cubin reads by value.
     struct { int64_t handle; uint32_t count; int32_t impl; } asPods[8];
     int nas = 0;
-    {
-        struct cajeta_kparams* kpa = cajeta_xpu_find_kparams(kernelName);
+    if (kres->needsXlat || kres->hasAccel) {
+        struct cajeta_kparams* kpa = kres->kp;
         if (kpa && kpa->count > 0 && kpa->count <= 64) {
             int hasXlat = 0;
             for (int i = 0; i < kpa->count; ++i) {
@@ -503,11 +567,13 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
     caj_cuda_bracket_drain();
     const int profSlot = caj_cuda_bracket_begin(
         __cajeta_prof_cuda_current_launch(), (void*) (intptr_t) streamHandle);
+    const int64_t profT0 = caj_drv_prof() ? caj_drv_prof_now() : 0;
     int launchRc = g_xpu_cuda.cuLaunchKernel(
         fn, (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ,
         (unsigned) blockX, (unsigned) blockY, (unsigned) blockZ,
         (unsigned) sharedBytes, /*stream=*/(void*) (intptr_t) streamHandle,
         useArgv, /*extra=*/NULL);
+    if (profT0) caj_drv_prof_add(CAJ_DP_cuLaunchKernel, profT0);
     caj_cuda_bracket_end(profSlot, (void*) (intptr_t) streamHandle);
     // Sync before freeing: the launch is async and still reads these resources.
     if (nbufarr > 0 || ntex > 0 || nsurf > 0) {
@@ -1068,7 +1134,10 @@ static void cajeta_xpu_register_module_impl(const char* kernelName,
         e->len = len;
         e->module = NULL;
         e->function = NULL;
+        e->specState = 0;
+        e->lastSpecCount = -1;
     }
+    g_xpu_registry_gen++;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 }
 

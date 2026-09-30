@@ -26,9 +26,15 @@ static __thread char    g_xpu_refusal_name[256];
 // One call at every no-op site: it bumps the process-wide counter AND records
 // the nameable detail, so launchFailures() and checkLaunch() can never disagree
 // about whether the last dispatch ran.
+// Why the last launch was refused: 0 no device code registered for the name,
+// 1 a buffer's base is not aligned to the words the kernel reads it in.
+static __thread int32_t g_xpu_refusal_reason;
+int32_t __cajeta_xpu_last_launch_reason(void) { return g_xpu_refusal_reason; }
+
 static void cajeta_xpu_note_launch_refusal(const char* name, int32_t backend) {
     cajeta_xpu_note_launch_failure();
     g_xpu_refusal_pending = 1;
+    g_xpu_refusal_reason = 0;
     g_xpu_refusal_backend = backend;
     if (name) {
         size_t n = strlen(name);
@@ -132,9 +138,285 @@ struct cajeta_cuda_api {
     int (*cuTexObjectDestroy)(unsigned long long);
     int (*cuSurfObjectCreate)(unsigned long long*, const void*);
     int (*cuSurfObjectDestroy)(unsigned long long);
+    // Graphs; optional. A deferred stream replays a recorded launch sequence
+    // through them (cajeta_xpu_defer.c); without them it submits one by one.
+    int (*cuGraphCreate)(void**, unsigned);
+    int (*cuGraphAddKernelNode)(void**, void*, const void**, size_t, const void*);
+    int (*cuGraphInstantiate)(void**, void*, unsigned long long);
+    int (*cuGraphLaunch)(void*, void*);
+    int (*cuGraphExecKernelNodeSetParams)(void*, void*, const void*);
+    int (*cuGraphExecDestroy)(void*);
+    int (*cuGraphDestroy)(void*);
 };
 static struct cajeta_cuda_api g_xpu_cuda;                       // zero-initialized
 static pthread_mutex_t g_xpu_cuda_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// Bumped by every registration (module, kernel params, dynamic shared, OptiX
+// program): the launch resolution cache re-resolves a name when it moves.
+static unsigned g_xpu_registry_gen = 1;
+
+// The driver entries as bound, before the deferral wrappers below replace the
+// ones that OBSERVE device state. Every site in the runtime calls through
+// g_xpu_cuda, so a stream's queued launches are submitted ahead of any sync,
+// transfer, event or release without each site having to know about deferral;
+// the queue itself submits through this table.
+static struct cajeta_cuda_api g_xpu_cuda_real;
+static int g_defer_pending;               // launches queued, over every stream
+static void caj_defer_flush_all(void);
+static void caj_defer_stream_gone(void* stream);
+
+#define CAJ_DEFER_SUBMIT() \
+    do { if (__atomic_load_n(&g_defer_pending, __ATOMIC_RELAXED)) caj_defer_flush_all(); } while (0)
+
+// CAJETA_XPU_DRIVER_PROFILE=1: where the host's time at the driver goes. Every
+// wrapped entry, the direct launch and the deferred submission are counted and
+// timed on the host clock, and the table prints to stderr at exit. A launch
+// floor, a sync that is really a wait for the device, and a transfer nobody
+// knew was there all read off it directly.
+enum {
+    CAJ_DP_cuMemcpyHtoD,
+    CAJ_DP_cuMemcpyDtoH,
+    CAJ_DP_cuMemcpyDtoD,
+    CAJ_DP_cuMemFree,
+    CAJ_DP_cuMemFreeHost,
+    CAJ_DP_cuStreamSynchronize,
+    CAJ_DP_cuStreamDestroy,
+    CAJ_DP_cuMemcpyHtoDAsync,
+    CAJ_DP_cuMemcpyDtoHAsync,
+    CAJ_DP_cuEventRecord,
+    CAJ_DP_cuEventSynchronize,
+    CAJ_DP_cuEventQuery,
+    CAJ_DP_cuStreamWaitEvent,
+    CAJ_DP_cuCtxSynchronize,
+    CAJ_DP_cuArrayDestroy,
+    CAJ_DP_cuMemcpy2D,
+    CAJ_DP_cuTexObjectDestroy,
+    CAJ_DP_cuSurfObjectDestroy,
+    CAJ_DP_cuLaunchKernel, CAJ_DP_deferSubmit, CAJ_DP_COUNT
+};
+static const char* const g_drv_prof_names[CAJ_DP_COUNT] = {
+    "cuMemcpyHtoD",
+    "cuMemcpyDtoH",
+    "cuMemcpyDtoD",
+    "cuMemFree",
+    "cuMemFreeHost",
+    "cuStreamSynchronize",
+    "cuStreamDestroy",
+    "cuMemcpyHtoDAsync",
+    "cuMemcpyDtoHAsync",
+    "cuEventRecord",
+    "cuEventSynchronize",
+    "cuEventQuery",
+    "cuStreamWaitEvent",
+    "cuCtxSynchronize",
+    "cuArrayDestroy",
+    "cuMemcpy2D",
+    "cuTexObjectDestroy",
+    "cuSurfObjectDestroy",
+    "cuLaunchKernel (direct)", "deferred submission"
+};
+static int g_drv_prof_on = -1;
+static int64_t g_drv_prof_calls[CAJ_DP_COUNT];
+static int64_t g_drv_prof_ns[CAJ_DP_COUNT];
+
+static int64_t caj_drv_prof_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t) ts.tv_sec * 1000000000ll + (int64_t) ts.tv_nsec;
+}
+static void caj_drv_prof_report(void) {
+    fprintf(stderr, "cajeta.xpu driver profile (host clock):\n");
+    for (int i = 0; i < CAJ_DP_COUNT; ++i) {
+        if (!g_drv_prof_calls[i]) continue;
+        fprintf(stderr, "  %-26s %10lld calls %12.3f ms %10.2f us/call\n",
+                g_drv_prof_names[i], (long long) g_drv_prof_calls[i],
+                (double) g_drv_prof_ns[i] / 1e6,
+                (double) g_drv_prof_ns[i] / 1e3 / (double) g_drv_prof_calls[i]);
+    }
+}
+static int caj_drv_prof(void) {
+    if (g_drv_prof_on < 0) {
+        const char* e = getenv("CAJETA_XPU_DRIVER_PROFILE");
+        g_drv_prof_on = (e && e[0] && e[0] != '0') ? 1 : 0;
+        if (g_drv_prof_on) atexit(caj_drv_prof_report);
+    }
+    return g_drv_prof_on;
+}
+// CAJETA_XPU_DRIVER_SITES=1 (with the profile): each timed call also prints
+// the cajeta source line that asked for it, so a per-token transfer or
+// release nobody remembers writing has a name.
+static void caj_ledger_site(char* out, size_t cap);
+static void caj_drv_prof_add(int which, int64_t t0) {
+    const int64_t ns = caj_drv_prof_now() - t0;
+    __atomic_fetch_add(&g_drv_prof_ns[which], ns, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_drv_prof_calls[which], (int64_t) 1, __ATOMIC_RELAXED);
+    static int sites = -1;
+    if (sites < 0) sites = getenv("CAJETA_XPU_DRIVER_SITES") ? 1 : 0;
+    if (sites) {
+        char site[512];
+        caj_ledger_site(site, sizeof site);
+        fprintf(stderr, "driver-site\t%s\t%.1f us\t%s\n", g_drv_prof_names[which],
+                (double) ns / 1e3, site);
+    }
+}
+
+static int caj_w_cuMemcpyHtoD(cajeta_cudeviceptr d, const void* s, size_t n) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuMemcpyHtoD(d, s, n);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuMemcpyHtoD(d, s, n);
+    caj_drv_prof_add(CAJ_DP_cuMemcpyHtoD, t0);
+    return rc;
+}
+static int caj_w_cuMemcpyDtoH(void* d, cajeta_cudeviceptr s, size_t n) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuMemcpyDtoH(d, s, n);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuMemcpyDtoH(d, s, n);
+    caj_drv_prof_add(CAJ_DP_cuMemcpyDtoH, t0);
+    return rc;
+}
+static int caj_w_cuMemcpyDtoD(cajeta_cudeviceptr d, cajeta_cudeviceptr s, size_t n) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuMemcpyDtoD(d, s, n);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuMemcpyDtoD(d, s, n);
+    caj_drv_prof_add(CAJ_DP_cuMemcpyDtoD, t0);
+    return rc;
+}
+static int caj_w_cuMemFree(cajeta_cudeviceptr p) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuMemFree(p);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuMemFree(p);
+    caj_drv_prof_add(CAJ_DP_cuMemFree, t0);
+    return rc;
+}
+static int caj_w_cuMemFreeHost(void* p) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuMemFreeHost(p);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuMemFreeHost(p);
+    caj_drv_prof_add(CAJ_DP_cuMemFreeHost, t0);
+    return rc;
+}
+static int caj_w_cuStreamSynchronize(void* st) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuStreamSynchronize(st);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuStreamSynchronize(st);
+    caj_drv_prof_add(CAJ_DP_cuStreamSynchronize, t0);
+    return rc;
+}
+static int caj_w_cuStreamDestroy(void* st) {
+    CAJ_DEFER_SUBMIT(); caj_defer_stream_gone(st);
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuStreamDestroy(st);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuStreamDestroy(st);
+    caj_drv_prof_add(CAJ_DP_cuStreamDestroy, t0);
+    return rc;
+}
+static int caj_w_cuMemcpyHtoDAsync(cajeta_cudeviceptr d, const void* s, size_t n, void* st) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuMemcpyHtoDAsync(d, s, n, st);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuMemcpyHtoDAsync(d, s, n, st);
+    caj_drv_prof_add(CAJ_DP_cuMemcpyHtoDAsync, t0);
+    return rc;
+}
+static int caj_w_cuMemcpyDtoHAsync(void* d, cajeta_cudeviceptr s, size_t n, void* st) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuMemcpyDtoHAsync(d, s, n, st);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuMemcpyDtoHAsync(d, s, n, st);
+    caj_drv_prof_add(CAJ_DP_cuMemcpyDtoHAsync, t0);
+    return rc;
+}
+static int caj_w_cuEventRecord(void* ev, void* st) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuEventRecord(ev, st);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuEventRecord(ev, st);
+    caj_drv_prof_add(CAJ_DP_cuEventRecord, t0);
+    return rc;
+}
+static int caj_w_cuEventSynchronize(void* ev) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuEventSynchronize(ev);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuEventSynchronize(ev);
+    caj_drv_prof_add(CAJ_DP_cuEventSynchronize, t0);
+    return rc;
+}
+static int caj_w_cuEventQuery(void* ev) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuEventQuery(ev);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuEventQuery(ev);
+    caj_drv_prof_add(CAJ_DP_cuEventQuery, t0);
+    return rc;
+}
+static int caj_w_cuStreamWaitEvent(void* st, void* ev, unsigned f) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuStreamWaitEvent(st, ev, f);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuStreamWaitEvent(st, ev, f);
+    caj_drv_prof_add(CAJ_DP_cuStreamWaitEvent, t0);
+    return rc;
+}
+static int caj_w_cuCtxSynchronize(void) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuCtxSynchronize();
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuCtxSynchronize();
+    caj_drv_prof_add(CAJ_DP_cuCtxSynchronize, t0);
+    return rc;
+}
+static int caj_w_cuArrayDestroy(void* a) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuArrayDestroy(a);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuArrayDestroy(a);
+    caj_drv_prof_add(CAJ_DP_cuArrayDestroy, t0);
+    return rc;
+}
+static int caj_w_cuMemcpy2D(const void* p) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuMemcpy2D(p);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuMemcpy2D(p);
+    caj_drv_prof_add(CAJ_DP_cuMemcpy2D, t0);
+    return rc;
+}
+static int caj_w_cuTexObjectDestroy(unsigned long long o) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuTexObjectDestroy(o);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuTexObjectDestroy(o);
+    caj_drv_prof_add(CAJ_DP_cuTexObjectDestroy, t0);
+    return rc;
+}
+static int caj_w_cuSurfObjectDestroy(unsigned long long o) {
+    CAJ_DEFER_SUBMIT();
+    if (!caj_drv_prof()) return g_xpu_cuda_real.cuSurfObjectDestroy(o);
+    int64_t t0 = caj_drv_prof_now();
+    int rc = g_xpu_cuda_real.cuSurfObjectDestroy(o);
+    caj_drv_prof_add(CAJ_DP_cuSurfObjectDestroy, t0);
+    return rc;
+}
+
+// Replaces the observing entries with their wrappers. Once, after binding.
+static void caj_defer_install_wrappers(void) {
+    g_xpu_cuda_real = g_xpu_cuda;
+    #define CAJ_WRAP(fp) do { if (g_xpu_cuda.fp) g_xpu_cuda.fp = caj_w_##fp; } while (0)
+    CAJ_WRAP(cuMemcpyHtoD);      CAJ_WRAP(cuMemcpyDtoH);      CAJ_WRAP(cuMemcpyDtoD);
+    CAJ_WRAP(cuMemFree);         CAJ_WRAP(cuMemFreeHost);     CAJ_WRAP(cuStreamSynchronize);
+    CAJ_WRAP(cuStreamDestroy);   CAJ_WRAP(cuMemcpyHtoDAsync); CAJ_WRAP(cuMemcpyDtoHAsync);
+    CAJ_WRAP(cuEventRecord);     CAJ_WRAP(cuEventSynchronize); CAJ_WRAP(cuEventQuery);
+    CAJ_WRAP(cuStreamWaitEvent); CAJ_WRAP(cuCtxSynchronize);  CAJ_WRAP(cuArrayDestroy);
+    CAJ_WRAP(cuMemcpy2D);        CAJ_WRAP(cuTexObjectDestroy); CAJ_WRAP(cuSurfObjectDestroy);
+    #undef CAJ_WRAP
+}
 
 
 static void* cajeta_xpu_libsym(void* lib, const char* name) {
@@ -465,6 +747,22 @@ static int cajeta_xpu_cuda_init_locked(void) {
     CAJ_BIND(cuLaunchKernel, "cuLaunchKernel");
     CAJ_BIND(cuCtxSynchronize, "cuCtxSynchronize");
     #undef CAJ_BIND
+    // Graphs (CUDA 12 entry points, the v2 kernel-node layout); all optional.
+    *(void**) (&g_xpu_cuda.cuGraphCreate) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuGraphCreate");
+    *(void**) (&g_xpu_cuda.cuGraphAddKernelNode) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuGraphAddKernelNode_v2");
+    *(void**) (&g_xpu_cuda.cuGraphInstantiate) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuGraphInstantiateWithFlags");
+    *(void**) (&g_xpu_cuda.cuGraphLaunch) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuGraphLaunch");
+    *(void**) (&g_xpu_cuda.cuGraphExecKernelNodeSetParams) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuGraphExecKernelNodeSetParams_v2");
+    *(void**) (&g_xpu_cuda.cuGraphExecDestroy) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuGraphExecDestroy");
+    *(void**) (&g_xpu_cuda.cuGraphDestroy) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuGraphDestroy");
+    caj_defer_install_wrappers();
     if (getenv("CAJETA_XPU_DEBUG")) {
         fprintf(stderr, "cajeta.xpu.cuda[dbg]: optional symbols: "
             "AllocManaged=%p HostAlloc=%p FreeHost=%p StreamCreate=%p "
@@ -1188,6 +1486,9 @@ struct cajeta_kparams {
     int count;
     const uint8_t* kind;
     const uint32_t* byteSize;
+    // Per parameter, the alignment the device code assumes of a buffer's base
+    // (1 = none), or NULL when the kernel assumes none at all.
+    const uint8_t* align;
 };
 // 1024 by convention, equal to CAJETA_XPU_MAX_MODULES; overflow drops kernels.
 #define CAJETA_XPU_MAX_KPARAMS 1024
@@ -1224,8 +1525,29 @@ void __cajeta_xpu_register_kernel_params(const char* name, int32_t count,
     e->count = count;
     e->kind = kind;
     e->byteSize = byteSize;
+    e->align = NULL;          // a re-registration starts clean; the align call follows
+    g_xpu_registry_gen++;
     // Publish a new slot only after its fields are written (lock-free readers).
     if (isNew) g_xpu_kparam_count++;
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+}
+
+// The buffer parameters whose base the device code reads in words. Registered
+// right after the kernel's params, by the backends that raise an access's
+// alignment on a proof about its OFFSET (NVPTX: a word at an unaligned address
+// is a device fault); the launch holds the base to it.
+void __cajeta_xpu_register_kernel_param_align(const char* name, int32_t count,
+                                              const uint8_t* align) {
+    if (!name || !align) return;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    for (int i = 0; i < g_xpu_kparam_count; ++i) {
+        if (strncmp(g_xpu_kparams[i].name, name,
+                    sizeof(g_xpu_kparams[i].name)) == 0) {
+            if (g_xpu_kparams[i].count == count) g_xpu_kparams[i].align = align;
+            break;
+        }
+    }
+    g_xpu_registry_gen++;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 }
 
@@ -1268,6 +1590,7 @@ void __cajeta_xpu_register_dynamic_shared(const char* name, uint32_t bytes) {
             sizeof(g_xpu_dynshared[idx].name) - 1);
     g_xpu_dynshared[idx].name[sizeof(g_xpu_dynshared[idx].name) - 1] = '\0';
     g_xpu_dynshared[idx].bytes = bytes;
+    g_xpu_registry_gen++;
     if (isNew) g_xpu_dynshared_count++;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 }

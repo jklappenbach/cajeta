@@ -9,6 +9,11 @@ struct cajeta_xpu_module {
     uint64_t len;     // image byte length (SPIR-V needs it; CUDA/HIP ignore it)
     void* module;     // CUmodule/hipModule, lazily loaded
     void* function;   // CUfunction/hipFunction, lazily resolved
+    // The module's launch-time specialization globals, resolved once per load:
+    // 0 not asked, 1 the module has none, 2 it has them at specCountG.
+    int specState;
+    cajeta_cudeviceptr specCountG;
+    int32_t lastSpecCount;   // the count last written, -1 when unknown
 };
 // An overflow is reported at registration (cajeta_xpu_register_module_impl).
 #define CAJETA_XPU_MAX_MODULES 1024
@@ -212,12 +217,33 @@ static int g_xpu_census_count = 0;
 static pthread_mutex_t g_xpu_census_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Called by the dispatch seam after a launch the failure counter did not mark.
+// The last census slot each launch-site name pointer resolved to: a launch is
+// counted by one compare of its name against the slot it used last time, not
+// by a scan of the table. The slot's own name is the identity, so a pointer a
+// dead JIT handed to another string simply misses and rescans.
+#define CAJETA_XPU_CENSUS_HINTS 1024
+static struct { const char* key; int slot; } g_xpu_census_hint[CAJETA_XPU_CENSUS_HINTS];
+
 void cajeta_xpu_census_note_launch(const char* name) {
     if (!name || !name[0]) return;
+    uintptr_t hh = (uintptr_t) name;
+    hh ^= hh >> 17; hh *= (uintptr_t) 0x9E3779B97F4A7C15ull; hh ^= hh >> 29;
+    unsigned hint = (unsigned) hh & (CAJETA_XPU_CENSUS_HINTS - 1);
     pthread_mutex_lock(&g_xpu_census_lock);
+    if (g_xpu_census_hint[hint].key == name) {
+        int slot = g_xpu_census_hint[hint].slot;
+        if (slot < g_xpu_census_count &&
+            strncmp(g_xpu_census[slot].name, name, sizeof(g_xpu_census[slot].name)) == 0) {
+            g_xpu_census[slot].launches++;
+            pthread_mutex_unlock(&g_xpu_census_lock);
+            return;
+        }
+    }
     for (int i = 0; i < g_xpu_census_count; ++i) {
         if (strncmp(g_xpu_census[i].name, name, sizeof(g_xpu_census[i].name)) == 0) {
             g_xpu_census[i].launches++;
+            g_xpu_census_hint[hint].key = name;
+            g_xpu_census_hint[hint].slot = i;
             pthread_mutex_unlock(&g_xpu_census_lock);
             return;
         }
@@ -226,6 +252,8 @@ void cajeta_xpu_census_note_launch(const char* name) {
         snprintf(g_xpu_census[g_xpu_census_count].name,
                  sizeof(g_xpu_census[g_xpu_census_count].name), "%s", name);
         g_xpu_census[g_xpu_census_count].launches = 1;
+        g_xpu_census_hint[hint].key = name;
+        g_xpu_census_hint[hint].slot = g_xpu_census_count;
         g_xpu_census_count++;
     }
     pthread_mutex_unlock(&g_xpu_census_lock);

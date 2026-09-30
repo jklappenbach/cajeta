@@ -292,6 +292,34 @@ public:
     // 64 bytes — 4, 8 or 16 lanes — and past that the chain stops being
     // obviously cheaper than the round trip, so a wider vector keeps the
     // default rather than being guessed at.
+    // `dp4a`: four bytes against four bytes plus an accumulator, in one
+    // instruction, in all four signedness pairings (sm_61 and later; this
+    // backend already needs sm_80 for redux.sync). The portable default is
+    // four extends, four multiplies and three adds, and it is what every
+    // quantized mat-vec spent its device time in (NvptxWordFormTests). The
+    // operands arrive as `<4 x i8>`, which NVPTX keeps in one 32-bit register,
+    // so the casts are free.
+    llvm::Value* integerDot4x8(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* a, llvm::Value* c, llvm::Value* acc,
+                               bool aSigned, bool cSigned) override {
+        auto isV4i8 = [](llvm::Value* v) {
+            auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(v->getType());
+            return vt && vt->getNumElements() == 4
+                && vt->getElementType()->isIntegerTy(8);
+        };
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        if (!isV4i8(a) || !isV4i8(c) || !acc->getType()->isIntegerTy(32))
+            return LoweringTarget::integerDot4x8(b, m, a, c, acc, aSigned, cSigned);
+        const llvm::Intrinsic::ID id =
+            aSigned ? (cSigned ? llvm::Intrinsic::nvvm_idp4a_s_s
+                               : llvm::Intrinsic::nvvm_idp4a_s_u)
+                    : (cSigned ? llvm::Intrinsic::nvvm_idp4a_u_s
+                               : llvm::Intrinsic::nvvm_idp4a_u_u);
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id);
+        return b.CreateCall(f, {b.CreateBitCast(a, i32, "dp4a.a"),
+                                b.CreateBitCast(c, i32, "dp4a.b"), acc}, "dp4a");
+    }
+
     llvm::Value* extractLaneDynamic(llvm::IRBuilderBase& b, llvm::Module& m,
                                     llvm::Value* vec,
                                     llvm::Value* idx) override {

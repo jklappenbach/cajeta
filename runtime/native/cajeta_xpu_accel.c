@@ -60,6 +60,7 @@ void __cajeta_xpu_register_optix_rayquery(const char* name, const void* ptx,
     snprintf(e->prog1,  sizeof(e->prog1),  "%s", prog1 ? prog1 : "");
     snprintf(e->prog2,  sizeof(e->prog2),  "%s", prog2 ? prog2 : "");
     snprintf(e->prog3,  sizeof(e->prog3),  "%s", prog3 ? prog3 : "");
+    g_xpu_registry_gen++;
 }
 
 static struct cajeta_optix_rq* cajeta_xpu_find_optix_rq(const char* name) {

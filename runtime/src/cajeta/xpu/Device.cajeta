@@ -325,6 +325,7 @@ public final class Device {
     public static void checkLaunch() {
         if (Device.nativeLastLaunchFailed() == 0) { return; }
         int32 be = Device.nativeLastLaunchBackend();
+        int32 reason = Device.nativeLastLaunchReason();
         Device.nativeConsumeLaunchRefusal();
         int8[] buf = heap int8[256];
         int64 n = Device.nativeLastLaunchName(buf, (int64) 256);
@@ -334,11 +335,19 @@ public final class Device {
         if (be == 1) { backend = "hip"; }
         if (be == 2) { backend = "vulkan"; }
         if (be == 3) { backend = "cpu"; }
+        String why = "no device code registered";
+        if (reason == 1) {
+            why = "a buffer argument's base is not aligned to the words the "
+                + "kernel reads it in; slice it at a multiple of 4 bytes";
+        }
         String msg #= "cajeta.xpu: launch refused for kernel '" + kernel
                     + "' on backend '" + backend
-                    + "' (no device code registered)";
+                    + "' (" + why + ")";
         throw heap XpuLaunchException(#msg);
     }
+
+    @Native("__cajeta_xpu_last_launch_reason")
+    private static int32 nativeLastLaunchReason();
 
     @Native("__cajeta_xpu_last_launch_failed")
     private static int32 nativeLastLaunchFailed();

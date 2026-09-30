@@ -48,6 +48,7 @@ profile, or --debug-info=full to also get exact line numbers.
 | `CAJETA_PROFILER_RING` | `4096` | Samples buffered between the sampler and the writer. |
 | `CAJETA_PROFILER_GPU_RING` | capture default (`8192`) | **Device** records buffered between the GPU capture layer and the writer. Separate ring, separate limit: a busy kernel loop overflows this long before the sampler's. |
 | `CAJETA_PROFILER_OUT` | `cajeta.pftrace` | Where to write the trace. |
+| `CAJETA_PROFILER_GPU` | unset | `0` leaves device capture unarmed: host sampling only. Device capture attributes every launch as it is submitted, which turns a deferred stream (`KernelStream.setDeferred`) back into one submission per launch, so a host profile of a program that defers is only honest with capture off. |
 
 The trace is written when `main` returns, and also when a program ends through
 `System.exit`. A run killed part-way still leaves a **readable** trace of
