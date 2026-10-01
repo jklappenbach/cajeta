@@ -3227,9 +3227,9 @@ namespace cajeta {
     // Emits (or reuses) `__cajeta_vrel_<class>`, which releases one value of this
     // type through emitValueSharedOp. LinkOnceODR plus comdat: it is materialized
     // per use and must merge across TUs rather than collide.
-    llvm::Function* CajetaClass::getOrCreateValueReleaseFunction() {
+    llvm::Function* CajetaClass::getOrCreateValueReleaseFunction(llvm::Module* into) {
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = getEmitModule()->getLlvmModule();
+        auto* lmod = into ? into : getEmitModule()->getLlvmModule();
         std::string relName = std::string("__cajeta_vrel_") + qName->toCanonical();
         for (char& c : relName) {
             if (c == ':' || c == '.' || c == '<' || c == '>' || c == ',' || c == ' ') {
@@ -3237,6 +3237,18 @@ namespace cajeta {
             }
         }
         if (llvm::Function* existing = lmod->getFunction(relName)) {
+            if (!existing->isDeclaration()) return existing;
+            existing->setLinkage(llvm::Function::LinkOnceODRLinkage);
+            llvm::Triple relTriple(lmod->getTargetTriple());
+            if (!relTriple.isOSBinFormatMachO()) {
+                existing->setComdat(lmod->getOrInsertComdat(relName));
+            }
+            llvm::Module* prev = CajetaModule::getCurrentEmitLlvmModule();
+            CajetaModule::setCurrentEmitLlvmModule(lmod);
+            llvm::IRBuilder<> eb(llvm::BasicBlock::Create(ctx, "entry", existing));
+            emitValueSharedOp(eb, existing->getArg(0), module, lmod, /*retain=*/false);
+            eb.CreateRetVoid();
+            CajetaModule::setCurrentEmitLlvmModule(prev);
             return existing;
         }
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);

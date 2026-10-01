@@ -9062,7 +9062,8 @@ namespace cajeta {
                         }
                         llvm::Function* relFn = CajetaModule::ensureFunctionInModule(
                             module->getLlvmModule(),
-                            vCls->getOrCreateValueReleaseFunction());
+                            vCls->getOrCreateValueReleaseFunction(
+                                    builder->GetInsertBlock()->getModule()));
                         if (relFn) builder->CreateCall(relFn, {slot});
                     }
                 }
@@ -9077,7 +9078,8 @@ namespace cajeta {
                         llvm::Function* relFn =
                             CajetaModule::ensureFunctionInModule(
                                 module->getLlvmModule(),
-                                rCls->getOrCreateValueReleaseFunction());
+                                rCls->getOrCreateValueReleaseFunction(
+                                    builder->GetInsertBlock()->getModule()));
                         if (relFn) builder->CreateCall(relFn, {thisValue});
                     } else if (recvTempClass
                             && (recvTempStatic || recvTempFlag)) {

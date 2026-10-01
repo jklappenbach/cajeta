@@ -858,7 +858,8 @@ namespace cajeta {
                             /*retain=*/true);
                     }
                     emitValueDropEntryFor(module, field,
-                        vClass->getOrCreateValueReleaseFunction(),
+                        vClass->getOrCreateValueReleaseFunction(
+                            builder->GetInsertBlock()->getModule()),
                         getSourceLine());
                 }
             }
