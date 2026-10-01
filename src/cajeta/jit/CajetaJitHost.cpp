@@ -45,6 +45,7 @@
 #include "cajeta/type/CajetaType.h"
 #include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/dbg/DebugTypeTable.h"
+#include "cajeta/util/SelfPath.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
 
@@ -395,20 +396,7 @@ std::string wholeProgramKey(const JitRunOptions& opts,
                             const std::vector<std::filesystem::path>& sources,
                             const std::filesystem::path& sourceRoot) {
     std::ostringstream in;
-    in << CAJETA_VERSION << '+' << CAJETA_GIT_HASH << '\n';
-    // Fold the binary's own identity in: CAJETA_GIT_HASH bakes at CMake configure
-    // time and goes stale across dev rebuilds.
-    {
-        std::error_code ec;
-        auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-        if (!ec) {
-            auto size = std::filesystem::file_size(exe, ec);
-            auto mtime = std::filesystem::last_write_time(exe, ec);
-            if (!ec)
-                in << "bin=" << (unsigned long long) size << ':'
-                   << (long long) mtime.time_since_epoch().count() << '\n';
-        }
-    }
+    in << util::compilerIdentity() << '\n';
     in << "mode=debug\n"
        << "debugInfo=" << (opts.debugInfo ? 1 : 0) << '\n'
        << "entry=" << opts.entryMethod << '\n';

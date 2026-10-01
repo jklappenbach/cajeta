@@ -15,13 +15,6 @@
 #include "ObligationReplay.h"
 #include "ReflectionKeepSet.h"
 
-// Stamped by CMake add_compile_definitions; fallbacks for editors/tools.
-#ifndef CAJETA_VERSION
-#define CAJETA_VERSION "0.0.0-unknown"
-#endif
-#ifndef CAJETA_GIT_HASH
-#define CAJETA_GIT_HASH "unknown"
-#endif
 #include "CajetaModule.h"
 #include "NativeLink.h"
 #include "CajetaLlvmVisitor.h"
@@ -51,6 +44,7 @@
 #include "../type/FormalParameter.h"
 #include "../type/QualifiedName.h"
 #include "cajeta/error/CajetaExceptions.h"
+#include "cajeta/util/SelfPath.h"
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/DiagnosticEngine.h"
 #include "CajetaParserBaseVisitor.h"
@@ -861,7 +855,7 @@ namespace cajeta {
         PrimeCacheKey key;
         key.discriminator = std::string("jitprime-")
             + buildtool::computeCacheDiscriminator(
-                  std::string(CAJETA_VERSION) + "+" + CAJETA_GIT_HASH,
+                  util::compilerIdentity(),
                   std::move(flagSet));
         key.digest = buildtool::primeDigestOver(std::move(files), preludeTag);
         return key;
@@ -1792,10 +1786,7 @@ namespace cajeta {
             pairs.emplace_back("classpath:" + cp,
                                buildtool::sha256Hex(ss.str()));
         }
-        // Fold the git hash in: two dev builds of the same VERSION can differ
-        // in codegen, and reusing IR across them would be a silent miscompile.
-        return buildtool::computeCacheDiscriminator(
-            CAJETA_VERSION "+" CAJETA_GIT_HASH, pairs);
+        return buildtool::computeCacheDiscriminator(util::compilerIdentity(), pairs);
     }
 
     bool Compiler::setupCacheManifest() {
