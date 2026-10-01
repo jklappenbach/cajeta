@@ -358,7 +358,7 @@ jobs:
           [ -f llm-census.log ] || { echo "::error::the llm suite produced no log"; exit 1; }
           LINE=$(grep -E '^kernel census \(cuda\):' llm-census.log | tail -1 || true)
           [ -n "$LINE" ] || { echo "::error::no kernel census line on nvptx — the gate never ran"; exit 1; }
-          RAN=$(sed -n 's/.*, ran \([0-9]*\),.*/\1/p' <<<"$LINE")
+          RAN=$(sed -n 's/.*, ran \([0-9]*\)[ ,].*/\1/p' <<<"$LINE")
           UNCOVERED=$(sed -n 's/.*, uncovered \([0-9]*\),.*/\1/p' <<<"$LINE")
           STALE=$(sed -n 's/.*, stale skips \([0-9]*\).*/\1/p' <<<"$LINE")
           SUITE=$(sed -n 's/^SUITE_RC=//p' llm-census.log | tail -1)
