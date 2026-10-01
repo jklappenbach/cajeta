@@ -2,8 +2,9 @@ package cvm;
 
 import cajeta.lang.System;
 import cajeta.lang.Optional;
+import cajeta.lang.Slice;
 import dev.cajeta.http.client.HttpClient;
-import dev.cajeta.http.HttpResponse;
+import dev.cajeta.http.ClientResponse;
 import cajeta.codec.json.JsonReader;
 import cajeta.codec.json.JsonValue;
 import cajeta.codec.json.JsonObject;
@@ -45,15 +46,15 @@ public final class Installer {
 
         // ── 1. fetch the manifest ───────────────────────────────────
         String manifestUrl #= Catalog.manifestUrl(selector);
-        HttpResponse mresp #= client.get(manifestUrl);
-        if (mresp.status != 200) {
+        ClientResponse mresp #= client.get(manifestUrl);
+        if (mresp.status() != 200) {
             System.stderr.println("cvm: could not fetch the release manifest "
-                + "(HTTP " + mresp.status + ") " + manifestUrl);
+                + "(HTTP " + mresp.status() + ") " + manifestUrl);
             return 1;
         }
 
         // ── 2. parse + resolve the asset for this host ──────────────
-        int8[] mbody = mresp.body;
+        int8[] mbody #= Installer.copyOf(mresp.body());
         JsonReader reader = heap JsonReader(mbody, mbody.count());
         JsonValue root #= reader.readValue();
         JsonObject obj = root.object();
@@ -100,13 +101,13 @@ public final class Installer {
         // ── 3. download the binary ──────────────────────────────────
         System.stdout.println("cvm: downloading cajeta " + version
             + " (" + triple + ")...");
-        HttpResponse aresp #= client.get(url);
-        if (aresp.status != 200) {
+        ClientResponse aresp #= client.get(url);
+        if (aresp.status() != 200) {
             System.stderr.println("cvm: download failed (HTTP "
-                + aresp.status + ") " + url);
+                + aresp.status() + ") " + url);
             return 1;
         }
-        int8[] binary = aresp.body;
+        int8[] binary #= Installer.copyOf(aresp.body());
         int64 binaryLen = binary.count();
 
         // ── 4. verify the checksum ──────────────────────────────────
@@ -147,5 +148,15 @@ public final class Installer {
             + " and set it as the default.");
         System.stdout.println("  " + Home.shimFile(home) + " -> " + binPath);
         return 0;
+    }
+
+    /** An owned copy of a response body, which the response only lends. */
+    static #int8[] copyOf(Slice<int8> s) {
+        int64 n = s.count();
+        int8[] out = heap int8[n];
+        for (int64 i = 0; i < n; i = i + 1) {
+            out[i] = s[i];
+        }
+        return #out;
     }
 }
