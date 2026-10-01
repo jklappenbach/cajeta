@@ -1,12 +1,14 @@
 // SPIR-V backend — see header.
 
 #include "SpirvBackend.h"
+#include "cajeta/xpu/core/CodegenGuard.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/ReplaceConstant.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/IR/IRBuilder.h"
@@ -66,9 +68,11 @@ void ensureTargetsInitialized() {
 }
 
 // Runs the codegen pipeline into an in-memory buffer, as SPIR-V text for Assembly or
-// binary for Object. False, with a log line, on failure.
+// binary for Object. False on failure, with an LLVM fatal error's reason in `failure`.
 bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
-                  llvm::CodeGenFileType type, llvm::SmallVectorImpl<char>& out) {
+                  llvm::CodeGenFileType type, llvm::SmallVectorImpl<char>& out,
+                  std::string* failure) {
+    std::string reason;
     // A SPIR-V Buffer<T> is a descriptor HANDLE, and the instruction selector traces a
     // load's handle back to its handlefrombinding WITHIN one function: a handle crossing
     // a call boundary crashes selectStore, so every @Device helper is inlined first.
@@ -102,7 +106,10 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
         fpm.addPass(llvm::StructurizeCFGPass());
         mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
     }
-    mpm.run(m, mam);
+    if (!runGuardedCodegen([&] { mpm.run(m, mam); }, reason)) {
+        if (failure != nullptr) *failure = reason;
+        return false;
+    }
 
     // FP narrowing canonicalizes fptrunc(op(fpext a, fpext b)) into direct bfloat
     // arithmetic, which needs SPV_INTEL_bfloat16_arithmetic, not a Vulkan extension.
@@ -145,6 +152,14 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
         }
     }
 
+    // SPIRVLegalizePointerCast crashes on an address that is a constant-expression GEP, a
+    // shared array read at a constant index, so every such address becomes an instruction.
+    {
+        llvm::SmallVector<llvm::Constant*, 16> globals;
+        for (auto& g : m.globals()) globals.push_back(&g);
+        llvm::convertUsersOfConstantsToInstructions(globals);
+    }
+
     // CAJETA_XPU_DUMP_BC=<dir>: the post-structurize, pre-codegen bitcode, so a legalizer
     // failure can be reproduced under a standalone `llc -global-isel`.
     if (const char* dumpDir = std::getenv("CAJETA_XPU_DUMP_BC")) {
@@ -159,14 +174,20 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
     }
 
     llvm::raw_svector_ostream os(out);
-    llvm::legacy::PassManager pm;
-    if (tm.addPassesToEmitFile(pm, os, /*DwoOut=*/nullptr, type)) {
+    auto* pm = new llvm::legacy::PassManager();
+    if (tm.addPassesToEmitFile(*pm, os, /*DwoOut=*/nullptr, type)) {
         llvm::errs() << "cajeta.xpu.vulkan: SPIR-V TargetMachine cannot emit "
                      << (type == llvm::CodeGenFileType::AssemblyFile
                              ? "assembly" : "object") << "\n";
+        delete pm;
         return false;
     }
-    pm.run(m);
+    // A fatal error leaves passes mid-run, so the manager is leaked rather than destroyed.
+    if (!runGuardedCodegen([&] { pm->run(m); }, reason)) {
+        if (failure != nullptr) *failure = reason;
+        return false;
+    }
+    delete pm;
     return true;
 }
 
@@ -532,20 +553,21 @@ void configureDeviceModuleForStage(llvm::Module& m, llvm::TargetMachine& tm,
     m.setDataLayout(tm.createDataLayout());
 }
 
-std::string emitSpirvText(llvm::Module& deviceModule, llvm::TargetMachine& tm) {
+std::string emitSpirvText(llvm::Module& deviceModule, llvm::TargetMachine& tm,
+                          std::string* failure) {
     llvm::SmallString<0> buf;
     if (!emitToBuffer(deviceModule, tm, llvm::CodeGenFileType::AssemblyFile,
-                      buf)) {
+                      buf, failure)) {
         return {};
     }
     return std::string(buf.begin(), buf.end());
 }
 
 std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
-                               llvm::TargetMachine& tm) {
+                               llvm::TargetMachine& tm, std::string* failure) {
     llvm::SmallString<0> buf;
     if (!emitToBuffer(deviceModule, tm, llvm::CodeGenFileType::ObjectFile,
-                      buf)) {
+                      buf, failure)) {
         return {};
     }
     std::vector<uint8_t> spirv(buf.begin(), buf.end());
