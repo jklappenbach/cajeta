@@ -222,6 +222,9 @@ public:
         if (auto rr = attr.maxRegisters()) annotate("maxnreg", *rr);
     }
 
+    // The warp is 32 lanes and nothing else, so only @Wave(width = 32) can run.
+    bool pinWaveWidth(llvm::Function* /*fn*/, unsigned width) override { return width == 32; }
+
     // Wave ops: NVIDIA warps are 32 wide; shuffle + ballot are hardware.
     llvm::Value* waveWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
         return readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_warpsize);
@@ -1363,16 +1366,6 @@ uint64_t relocateOversizedStaticShared(llvm::Function* kfn,
 
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
                             uint64_t* dynSharedBytes) {
-    // `@Wave(width = N)`: the warp is 32 and nothing here can make it
-    // otherwise, so a declaration of anything else is refused (CajetaXPU.md
-    // §3.2) rather than lowered onto a wave it was not written for.
-    if (auto attr = XpuKernelAttr::from(*method)) {
-        if (attr->waveWidth() && *attr->waveWidth() != 32)
-            throw cajeta::Exception(
-                "XPU NVPTX: kernel '" + method->getName() + "' declares @Wave(width = "
-                + std::to_string(*attr->waveWidth()) + ") and the warp is 32",
-                "XPU-N03");
-    }
     NvptxTarget target;
     llvm::Function* f =
         cajeta::xpu::lowerKernel(method, deviceModule, target);

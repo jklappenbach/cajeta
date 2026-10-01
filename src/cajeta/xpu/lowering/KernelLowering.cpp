@@ -7309,6 +7309,12 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
     // it wins.
     if (auto attr = XpuKernelAttr::from(*method); attr && attr->hasOccupancy())
         target.applyOccupancy(fn, *attr);
+    if (auto attr = XpuKernelAttr::from(*method); attr && attr->waveWidth()) {
+        int w = *attr->waveWidth();
+        if (w < 1 || !target.pinWaveWidth(fn, (unsigned) w))
+            unsupported("@Wave(width = " + std::to_string(w) + ") on a " + target.name()
+                        + " kernel, whose wave cannot be " + std::to_string(w) + " lanes");
+    }
 
     DeviceLowerer lowerer(deviceModule, fn, target);
     lowerer.setParams(std::move(params));

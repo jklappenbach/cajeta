@@ -59,6 +59,13 @@ public:
         // to; cpuVectorWidthI32 reads it off the kernel at registration time.
         fn->addFnAttr("cajeta.xpu.coop-wavew", std::to_string(waveW));
     }
+    // @Wave(width = N) takes the same pin: the work-item loop runs at N lanes whatever
+    // the host SIMD width, so a kernel written for 32 lanes is correct on every host.
+    bool pinWaveWidth(llvm::Function* fn, unsigned width) override {
+        if (width < 2) return width == 1;
+        fn->addFnAttr("cajeta.xpu.coop-wavew", std::to_string(width));
+        return true;
+    }
     // The inner loops must be gone for LoopVectorize to widen the work-item
     // loop (4A.7.2's loop-exposure spike).
     bool distributedCoopMatrixUnrollsLoops() const override { return true; }
@@ -585,33 +592,7 @@ private:
 llvm::Function* lowerKernel(const MethodPtr& method,
                             llvm::Module& deviceModule) {
     CpuTarget target;
-    llvm::Function* fn = cajeta::xpu::lowerKernel(method, deviceModule, target);
-    // `@Wave(width = N)`: the kernel is written for an N-lane wave, and this
-    // backend can give it one, since its wave is whatever width the work-item
-    // loop is vectorized at. The same marker a distributed cooperative tile
-    // uses to pin 32 carries the declaration; cpuVectorWidthI32 reads it at
-    // registration, `Wave.width()` folds to N and the wave ops' variants
-    // widen at N. A tile that pinned a different width is a contradiction the
-    // author has to resolve, not a choice to make quietly.
-    if (fn) {
-        if (auto attr = XpuKernelAttr::from(*method)) {
-            if (attr->waveWidth() && *attr->waveWidth() >= 2) {
-                const std::string want = std::to_string(*attr->waveWidth());
-                if (fn->hasFnAttribute("cajeta.xpu.coop-wavew")) {
-                    const std::string have = fn->getFnAttribute("cajeta.xpu.coop-wavew")
-                                                 .getValueAsString().str();
-                    if (have != want)
-                        throw cajeta::Exception(
-                            "XPU cpu: kernel '" + method->getName() + "' declares "
-                            "@Wave(width = " + want + ") but its distributed cooperative "
-                            "tile lays out at " + have + " lanes; the two must agree",
-                            "XPU-N03");
-                }
-                fn->addFnAttr("cajeta.xpu.coop-wavew", want);
-            }
-        }
-    }
-    return fn;
+    return cajeta::xpu::lowerKernel(method, deviceModule, target);
 }
 
 } // namespace cpu

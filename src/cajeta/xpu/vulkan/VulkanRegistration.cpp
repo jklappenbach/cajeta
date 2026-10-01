@@ -84,8 +84,14 @@ namespace vulkan {
             // Access modes come off the lowered IR, before SPIR-V codegen.
             KernelAccessSummary access = classifyKernelAccess(*kfn, method);
 
-            std::vector<uint8_t> spirv = emitSpirv(devMod, *tm);
-            if (spirv.empty()) return false;  // codegen error (logged)
+            std::string codegenFailure;
+            std::vector<uint8_t> spirv = emitSpirv(devMod, *tm, &codegenFailure);
+            if (spirv.empty()) {
+                if (!codegenFailure.empty())
+                    reportUnloweredKernel(*method, regName, "vulkan",
+                                          "LLVM SPIR-V codegen: " + codegenFailure);
+                return false;
+            }
 
             // Pipeline statistics are a driver fact, so the footprint is ABSENT.
             std::optional<KernelManifest> manifest;

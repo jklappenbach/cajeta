@@ -67,12 +67,15 @@ namespace vulkan {
                                        ShaderStage stage,
                                        const std::string& arch = "vulkan1.3");
 
-    // SPIR-V assembly text for `deviceModule`, GPU-free; empty on failure.
-    std::string emitSpirvText(llvm::Module& deviceModule, llvm::TargetMachine& tm);
+    // SPIR-V assembly text for `deviceModule`, GPU-free; empty on failure, with an LLVM
+    // fatal error's reason in `failure` when one is given.
+    std::string emitSpirvText(llvm::Module& deviceModule, llvm::TargetMachine& tm,
+                              std::string* failure = nullptr);
 
-    // The Khronos SPIR-V binary for `deviceModule`; empty on failure.
+    // The Khronos SPIR-V binary for `deviceModule`; empty on failure, as emitSpirvText.
     std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
-                                   llvm::TargetMachine& tm);
+                                   llvm::TargetMachine& tm,
+                                   std::string* failure = nullptr);
 
 } // namespace vulkan
 } // namespace xpu

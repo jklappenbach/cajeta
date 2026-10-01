@@ -27,6 +27,16 @@ namespace cajeta {
 
     void Scope::putField(FieldPtr field) {
         fields[field->getName()] = field;
+        // A declaration starts a new binding: an earlier one of the same name keeps its transfer.
+        const string& n = field->getName();
+        borrowedBindings.erase(n);
+        transferSites.erase(n);
+        lendEdges.erase(n);
+        callBorrowOrigins.erase(n);
+        for (auto it = borrowedPaths.begin(); it != borrowedPaths.end();) {
+            if (*it == n || it->rfind(n + ".", 0) == 0) it = borrowedPaths.erase(it);
+            else ++it;
+        }
         fieldList.push_back(field);
         // A slotless field has no alloca to reverse-map, and keying the map on
         // null would make every such field alias every other one.
@@ -357,6 +367,7 @@ namespace cajeta {
 
     bool Scope::isBorrow(const string& name) {
         if (borrowedBindings.find(name) != borrowedBindings.end()) return true;
+        if (fields.find(name) != fields.end()) return false;
         if (parent) return parent->isBorrow(name);
         return false;
     }

@@ -541,6 +541,52 @@ public:
         return b.CreateCall(f, {acc, x, y}, "dp4a");
     }
 
+    // Vulkan has no byte permute and no 16-lane vector: each byte selects its table word
+    // and shifts its byte out, so neither a scratch table nor a <16 x i8> build is emitted.
+    llvm::Value* byteLut16(llvm::IRBuilderBase& b, llvm::Module& m,
+                           llvm::Value* indices, llvm::Value* table) override {
+        auto* ivt = llvm::dyn_cast<llvm::FixedVectorType>(indices->getType());
+        if (ivt == nullptr) return LoweringTarget::byteLut16(b, m, indices, table);
+        unsigned n = ivt->getNumElements();
+        if (n % 4 != 0) {
+            unsigned padded = (n + 3) / 4 * 4;
+            llvm::SmallVector<int, 16> widen, narrow;
+            for (unsigned i = 0; i < padded; ++i) widen.push_back(i < n ? (int) i : (int) n);
+            for (unsigned i = 0; i < n; ++i) narrow.push_back((int) i);
+            llvm::Value* wide = b.CreateShuffleVector(
+                indices, llvm::Constant::getNullValue(ivt), widen, "lut.pad");
+            return b.CreateShuffleVector(byteLut16(b, m, wide, table), narrow, "lut.cut");
+        }
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        unsigned groups = n / 4;
+        llvm::Value* tw = b.CreateBitCast(table, llvm::FixedVectorType::get(i32, 4),
+                                          "lut.tw");
+        llvm::Value* t[4];
+        for (unsigned k = 0; k < 4; ++k)
+            t[k] = b.CreateExtractElement(tw, (uint64_t) k, "lut.t");
+        auto* iw = llvm::FixedVectorType::get(i32, groups);
+        llvm::Value* idxW = b.CreateBitCast(indices, iw, "lut.iw");
+        llvm::Value* out = llvm::UndefValue::get(iw);
+        for (unsigned g = 0; g < groups; ++g) {
+            llvm::Value* word = b.CreateExtractElement(idxW, (uint64_t) g, "lut.g");
+            llvm::Value* acc = b.getInt32(0);
+            for (unsigned k = 0; k < 4; ++k) {
+                llvm::Value* idx = b.CreateAnd(b.CreateLShr(word, 8 * k), 15, "lut.i");
+                llvm::Value* lo = b.CreateSelect(
+                    b.CreateICmpULT(idx, b.getInt32(4)), t[0], t[1], "lut.lo");
+                llvm::Value* hi = b.CreateSelect(
+                    b.CreateICmpULT(idx, b.getInt32(12)), t[2], t[3], "lut.hi");
+                llvm::Value* w = b.CreateSelect(
+                    b.CreateICmpULT(idx, b.getInt32(8)), lo, hi, "lut.w");
+                llvm::Value* sh = b.CreateShl(b.CreateAnd(idx, 3), 3, "lut.sh");
+                llvm::Value* byte = b.CreateAnd(b.CreateLShr(w, sh), 255, "lut.b");
+                acc = b.CreateOr(acc, b.CreateShl(byte, 8 * k), "lut.acc");
+            }
+            out = b.CreateInsertElement(out, acc, (uint64_t) g, "lut.out");
+        }
+        return b.CreateBitCast(out, ivt, "lut.bytes");
+    }
+
     // Atomic memory scope from the pointer's storage class: Workgroup for `shared`
     // (addrspace 3), Device for a StorageBuffer. Vulkan rejects CrossDevice.
     llvm::SyncScope::ID atomicScope(llvm::Module& m, llvm::Value* ptr) {

@@ -350,9 +350,11 @@ reads it). A kernel written against a 32-lane wave (`lane = tid % 32`, a
 reduce across the 32 lanes that hold a block) therefore runs on cpu
 unchanged instead of answering for a quarter of its block at the host's
 width of 8 (measured 2026-09-30, `XpuCpuDeclaredWaveTests`). A block
-launched for such a kernel is a multiple of `N`, as it is on a GPU. A
-declaration that contradicts a distributed cooperative tile's own width
-is refused (`XPU-N03`), as is any width but 32 on NVPTX.
+launched for such a kernel is a multiple of `N`, as it is on a GPU. The
+lowering hands the declared width to the target (`pinWaveWidth`): cpu
+pins the loop, AMDGPU pins the wavefront to 32 or 64, NVPTX accepts 32
+and refuses any other width by name, and a declaration that coincides
+with a distributed cooperative tile's own width is the same pin.
 
 ### 3.3 Capability traits
 
