@@ -236,11 +236,15 @@ static void caj_drv_prof_report(void) {
                 (double) g_drv_prof_ns[i] / 1e3 / (double) g_drv_prof_calls[i]);
     }
 }
+// Prints the driver profile once, from __cajeta_prof_shutdown: atexit is unusable in a JIT session.
+void __cajeta_xpu_driver_profile_report(void) {
+    static int done = 0;
+    if (g_drv_prof_on == 1 && !done) { done = 1; caj_drv_prof_report(); }
+}
 static int caj_drv_prof(void) {
     if (g_drv_prof_on < 0) {
         const char* e = getenv("CAJETA_XPU_DRIVER_PROFILE");
         g_drv_prof_on = (e && e[0] && e[0] != '0') ? 1 : 0;
-        if (g_drv_prof_on) atexit(caj_drv_prof_report);
     }
     return g_drv_prof_on;
 }

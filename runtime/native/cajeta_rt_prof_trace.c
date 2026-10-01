@@ -1033,12 +1033,14 @@ int64_t __cajeta_prof_drain_to_trace(const char* path) {
 // tests all reach it, and two of those can happen in one run.
 int32_t __cajeta_prof_gpu_trace_detach(void);   // cajeta_rt_prof_gpu.c, later in this TU
 int64_t __cajeta_prof_gpu_only_to_trace(const char* path);   // ditto
+void __cajeta_xpu_driver_profile_report(void);  // cajeta_xpu_driver.c
 
 static volatile int __cajeta_prof_shutdown_done = 0;
 
 int64_t __cajeta_prof_shutdown(void) {
     if (__atomic_exchange_n(&__cajeta_prof_shutdown_done, 1, __ATOMIC_ACQ_REL))
         return 0;
+    __cajeta_xpu_driver_profile_report();
     // Stop the sampler BEFORE reading the ring, or the copy loop races head and
     // the transform sees a torn sample.
     __cajeta_prof_disarm();
