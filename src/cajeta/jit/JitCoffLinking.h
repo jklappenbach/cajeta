@@ -8,6 +8,8 @@
 #include "llvm/ExecutionEngine/JITLink/JITLink.h"
 #include "llvm/ExecutionEngine/Orc/DebugUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/ExecutionEngine/Orc/MapperJITLinkMemoryManager.h"
+#include "llvm/ExecutionEngine/Orc/MemoryMapper.h"
 #include "llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h"
 #include "llvm/ExecutionEngine/Orc/ObjectTransformLayer.h"
 #include "llvm/TargetParser/Host.h"
@@ -125,8 +127,22 @@ inline void applyCoffJitLink(llvm::orc::LLJITBuilder& builder) {
         [](llvm::orc::ExecutionSession& es,
            llvm::jitlink::JITLinkMemoryManager& memMgr)
             -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
-            auto layer =
-                std::make_unique<llvm::orc::ObjectLinkingLayer>(es, memMgr);
+            // One 512 MiB slab (committed on Windows) keeps every graph within PCRel32 reach.
+            std::unique_ptr<llvm::orc::ObjectLinkingLayer> layer;
+            if (!(std::getenv("CAJETA_COFF_SLAB")
+                  && std::string(std::getenv("CAJETA_COFF_SLAB")) == "off")) {
+                auto slab = llvm::orc::MapperJITLinkMemoryManager::CreateWithMapper<
+                    llvm::orc::InProcessMemoryMapper>(size_t(512) << 20);
+                if (slab)
+                    layer = std::make_unique<llvm::orc::ObjectLinkingLayer>(
+                        es, std::move(*slab));
+                else
+                    fprintf(stderr, "cajeta.jit: COFF host — no JIT slab (%s), "
+                                    "using per-graph allocation\n",
+                            llvm::toString(slab.takeError()).c_str());
+            }
+            if (!layer)
+                layer = std::make_unique<llvm::orc::ObjectLinkingLayer>(es, memMgr);
             if (!envOn("CAJETA_COFF_NOCLAIM")) {
                 layer->setOverrideObjectFlagsWithResponsibilityFlags(true);
                 layer->setAutoClaimResponsibilityForObjectSymbols(true);
