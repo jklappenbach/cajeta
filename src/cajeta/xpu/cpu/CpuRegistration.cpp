@@ -956,6 +956,19 @@ void foldWaveVariants(llvm::Function& f) {
 
         // Host TargetMachine, for LoopVectorize's TTI. Null is tolerated.
         std::unique_ptr<llvm::TargetMachine> hostTm = createCpuTargetMachine();
+        // The host's own wave, for @Unlowered(hostWaveBelow = N): the native
+        // f32 vector width with no per-kernel marker in play.
+        {
+            unsigned hostW = 0;
+            if (hostTm) {
+                llvm::Function* probe = llvm::Function::Create(
+                    llvm::FunctionType::get(voidTy, false),
+                    llvm::GlobalValue::InternalLinkage, "__cajeta_host_wave_probe", &hostModule);
+                hostW = cpuVectorWidthI32(hostTm.get(), *probe);
+                probe->eraseFromParent();
+            }
+            setKernelGateHostWave(hostW);
+        }
 
         // The wrapper's 9 coordinate params; nctaid rides through for gridSize().
         const unsigned kNumBlockCoordParams = 9;

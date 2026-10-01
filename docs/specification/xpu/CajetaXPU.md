@@ -1280,6 +1280,15 @@ kernel whose every launch site passes a constant block or that declares
 `no assembler`. `CAJETA_XPU_KERNEL_GATE=warn` demotes both to warnings for
 a sweep.
 
+On the cpu backend a hold may be conditional on the HOST's own wave, its
+native f32 vector width (8 on AVX2, 16 on AVX-512):
+`@Unlowered(backend = "cpu", tracked = "...", hostWaveBelow = 16)` holds
+only on a host narrower than 16 lanes. On a wider host the kernel is
+expected to lower and the hold is neither applied nor stale. This is the
+shape of a kernel that vectorizes at a declared 32 lanes on a 16-wide host
+and not on an 8-wide one (the id down-combine family, 2026-09-30), where
+an unconditional hold was right on one box and STALE on the other.
+
 > **Status.** The compile-time workgroup-size budgeting and `@Occupancy` override
 > are active today; the DeviceProfile, analytic picker, and bounded sweep are the
 > config-decision layer (`cajeta gpu-profile` is live). Applying a *runtime-chosen*

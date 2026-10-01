@@ -17,6 +17,7 @@ namespace xpu {
 namespace {
 
 int g_override = -1;   // -1 = ask the environment, 0 = error, 1 = warn
+unsigned g_hostWave = 0;   // the cpu backend's host wave for this build, 0 = unknown
 unsigned g_errors = 0;
 std::vector<std::string> g_failures;
 
@@ -46,14 +47,25 @@ std::string unloweredHeldBy(const Annotatable& kernel, const std::string& backen
     const std::string tracked = ann->getString("tracked");
     if (tracked.empty()) return "";
     const std::string be = canonicalBackend(backend);
+    bool named = false;
     if (auto* arg = ann->findArg("backend")) {
         if (arg->kind == AnnotationArgKind::String && canonicalBackend(arg->strVal) == be)
-            return tracked;
+            named = true;
         if (arg->kind == AnnotationArgKind::StringList)
             for (const auto& s : arg->strList)
-                if (canonicalBackend(s) == be) return tracked;
+                if (canonicalBackend(s) == be) named = true;
     }
-    return "";
+    if (!named) return "";
+    // hostWaveBelow = N: the hold is conditional on the cpu host's wave. On a
+    // host at or above N the kernel is expected to lower, and the hold is
+    // neither applied nor stale. Unknown host wave (0): the hold applies.
+    if (be == "cpu") {
+        if (auto* below = ann->findArg("hostWaveBelow");
+                below && below->kind == AnnotationArgKind::Int64) {
+            if (g_hostWave != 0 && (int64_t) g_hostWave >= below->i64Val) return "";
+        }
+    }
+    return tracked;
 }
 
 bool hasUnloweredFor(const Annotatable& kernel, const std::string& backend) {
@@ -78,6 +90,9 @@ bool kernelGateWarns() {
     const char* v = std::getenv("CAJETA_XPU_KERNEL_GATE");
     return v && std::strcmp(v, "warn") == 0;
 }
+
+void setKernelGateHostWave(unsigned lanes) { g_hostWave = lanes; }
+unsigned kernelGateHostWave() { return g_hostWave; }
 
 void setKernelGateWarns(bool on) { g_override = on ? 1 : 0; }
 void clearKernelGateWarnsOverride() { g_override = -1; }

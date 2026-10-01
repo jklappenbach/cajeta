@@ -37,6 +37,17 @@ namespace xpu {
     void setKernelGateWarns(bool on);
     void clearKernelGateWarnsOverride();
 
+    // The cpu backend's host wave (its native f32 vector width: 8 on AVX2, 16
+    // on AVX-512), set by the cpu registration for the build it runs, 0 when
+    // unknown. An @Unlowered(backend = "cpu", hostWaveBelow = N) holds only
+    // while the host wave is below N: a kernel that vectorizes at a declared
+    // 32 lanes on a 16-wide host and not on an 8-wide one is held on the
+    // second host and expected on the first, and neither reads STALE on the
+    // other (found 2026-09-30: the id down-combine family, right on proton,
+    // declined on Phoenix).
+    void setKernelGateHostWave(unsigned lanes);
+    unsigned kernelGateHostWave();
+
     // Per-build state.
     void resetKernelGate();
     unsigned kernelGateErrors();

@@ -168,6 +168,42 @@ TEST(XpuKernelGate, aDeclarationForAnotherBackendDoesNotHold) {
     EXPECT_NE(b.log.find("cajeta: error: [xpu-kernel-skipped] bad"), std::string::npos) << b.log;
 }
 
+// hostWaveBelow = N: the hold is conditional on the cpu host's own wave (8 on
+// AVX2, 16 on AVX-512). Found 2026-09-30: the id down-combine kernels
+// vectorize at a declared 32 lanes on a 16-wide host and not on an 8-wide
+// one, so an unconditional hold was right on one box and STALE on the other.
+// Both arms, whatever this host is: a bound above every host holds (a note),
+// a bound of 2 holds nowhere (the error), and neither claims the host's width.
+TEST(XpuKernelGate, aHoldBelowAHostWaveAboveThisHostHolds) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(program(
+        "    @Unlowered(backend = \"cpu\", tracked = \"xpu-kernel-adaptor 4.2.1.13\", "
+        "hostWaveBelow = 1024)\n"), "cpu");
+    EXPECT_EQ(b.rc, 0) << b.log;
+    EXPECT_NE(b.log.find("cajeta: note: [xpu-kernel-skipped] bad"), std::string::npos) << b.log;
+    EXPECT_EQ(b.log.find("cajeta: error:"), std::string::npos) << b.log;
+}
+
+TEST(XpuKernelGate, aHoldBelowAHostWaveThisHostReachesDoesNotHold) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(program(
+        "    @Unlowered(backend = \"cpu\", tracked = \"xpu-kernel-adaptor 4.2.1.13\", "
+        "hostWaveBelow = 2)\n"), "cpu");
+    EXPECT_NE(b.rc, 0) << b.log;
+    EXPECT_NE(b.log.find("cajeta: error: [xpu-kernel-skipped] bad"), std::string::npos) << b.log;
+}
+
+// And the stale side: a lowerable kernel held with a bound this host reaches
+// is not STALE, because the hold does not apply here.
+TEST(XpuKernelGate, aConditionalHoldThisHostReachesIsNotStale) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(program(TRACKED,
+        "    @Unlowered(backend = \"cpu\", tracked = \"xpu-kernel-adaptor 4.2.1.13\", "
+        "hostWaveBelow = 2)\n"), "cpu");
+    EXPECT_EQ(b.rc, 0) << b.log;
+    EXPECT_EQ(b.log.find("STALE"), std::string::npos) << b.log;
+}
+
 // Every failing kernel is named before the build fails, so a build with 53
 // of them reports 53 rather than the first.
 TEST(XpuKernelGate, everyUnloweredKernelIsNamedBeforeTheBuildFails) {
