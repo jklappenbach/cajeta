@@ -1306,9 +1306,58 @@ static void caj_ledger_note(int64_t h, uint64_t bytes, int32_t kind, int alloc) 
     pthread_mutex_unlock(&caj_ledger_mu);
 }
 static int64_t caj_buffer_alloc_raw(uint64_t byteCount, int32_t kind);
+
+// CAJETA_XPU_POISON=1: every fresh device buffer is filled with 0xFF bytes
+// (NaN as a float, -1 as an integer) before it is handed out, on every
+// backend. A kernel that reads a buffer region nothing wrote then answers
+// NaN deterministically, where a zero page or a recycled allocation had
+// let it answer "whatever was there". CAJETA_XPU_POISON_MIN / _MAX bound
+// the byte count that is poisoned (both inclusive), so a culprit buffer
+// can be found by its size; CAJETA_XPU_POISON_LOG=1 prints each poisoned
+// allocation. Found 2026-09-30: a cajeta-llm test turned red only when a
+// trivial test had run before it, because a float buffer landed on a
+// recycled chunk holding NaN-patterned bytes.
+// Read on every allocation, not cached: a buffer allocation is not a hot
+// path, and a test binary that runs many tests in one process sets and
+// clears the variable around the one that asks.
+static int caj_poison_on(void) {
+    const char* e = getenv("CAJETA_XPU_POISON");
+    return (e && *e && *e != '0') ? 1 : 0;
+}
+static int caj_poison_wants(uint64_t byteCount) {
+    uint64_t lo = 0, hi = ~(uint64_t) 0;
+    const char* a = getenv("CAJETA_XPU_POISON_MIN");
+    const char* b = getenv("CAJETA_XPU_POISON_MAX");
+    if (a && *a) lo = strtoull(a, NULL, 10);
+    if (b && *b) hi = strtoull(b, NULL, 10);
+    return byteCount >= lo && byteCount <= hi;
+}
+static void caj_poison_fill(int64_t h, uint64_t byteCount, int32_t kind) {
+    if (!h || !caj_poison_wants(byteCount)) return;
+    int done = 0;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            if (kind == CAJ_MEMKIND_PINNED) { memset((void*) (intptr_t) h, 0xFF, (size_t) byteCount); done = 1; }
+            else if (g_xpu_cuda.cuMemsetD8) { done = g_xpu_cuda.cuMemsetD8((cajeta_cudeviceptr) h, 0xFF, (size_t) byteCount) == 0; }
+            break;
+        case CAJ_XPU_HIP:
+            if (kind == CAJ_MEMKIND_PINNED) { memset((void*) (intptr_t) h, 0xFF, (size_t) byteCount); done = 1; }
+            else if (g_xpu_hip.hipMemset) { done = g_xpu_hip.hipMemset((void*) (intptr_t) h, 0xFF, (size_t) byteCount) == 0; }
+            break;
+        case CAJ_XPU_CPU:
+            memset((void*) (intptr_t) h, 0xFF, (size_t) byteCount); done = 1;
+            break;
+        default: break;
+    }
+    const char* lg = getenv("CAJETA_XPU_POISON_LOG");
+    if (lg && *lg && *lg != '0') fprintf(stderr, "[xpu-poison] %s %llu bytes kind=%d handle=%llx\n",
+                       done ? "filled" : "NOT filled", (unsigned long long) byteCount, kind,
+                       (unsigned long long) h);
+}
 int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind) {
     (void) self;
     int64_t h = caj_buffer_alloc_raw(byteCount, kind);
+    if (h && caj_poison_on()) caj_poison_fill(h, byteCount, kind);
     if (h && caj_alloc_trace_on()) caj_ledger_note(h, byteCount, kind, 1);
     return h;
 }

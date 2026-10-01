@@ -108,6 +108,8 @@ struct cajeta_cuda_api {
     int (*cuMemcpyDtoH)(void*, cajeta_cudeviceptr, size_t);
     int (*cuMemcpyDtoD)(cajeta_cudeviceptr, cajeta_cudeviceptr, size_t);
     int (*cuMemFree)(cajeta_cudeviceptr);
+    // Optional: the CAJETA_XPU_POISON fill of a fresh allocation.
+    int (*cuMemsetD8)(cajeta_cudeviceptr, unsigned char, size_t);
     // Pinned / unified memory; optional (pinned frees with cuMemFreeHost).
     int (*cuMemAllocManaged)(cajeta_cudeviceptr*, size_t, unsigned);
     int (*cuMemHostAlloc)(void**, size_t, unsigned);
@@ -696,6 +698,8 @@ static int cajeta_xpu_cuda_init_locked(void) {
     CAJ_BIND(cuMemcpyHtoD, "cuMemcpyHtoD_v2");
     CAJ_BIND(cuMemcpyDtoH, "cuMemcpyDtoH_v2");
     CAJ_BIND(cuMemFree, "cuMemFree_v2");
+    *(void**) (&g_xpu_cuda.cuMemsetD8) =                      // optional (non-fatal)
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemsetD8_v2");
     *(void**) (&g_xpu_cuda.cuMemcpyDtoD) =                    // optional (non-fatal)
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemcpyDtoD_v2");
     *(void**) (&g_xpu_cuda.cuMemAllocManaged) =
@@ -884,6 +888,7 @@ struct cajeta_hip_api {
     int (*hipFuncGetAttribute)(int*, int, void*);
     int (*hipModuleGetGlobal)(void**, size_t*, void*, const char*);
     int (*hipMalloc)(void**, size_t);
+    int (*hipMemset)(void*, int, size_t);     // optional: CAJETA_XPU_POISON
     int (*hipMemcpyHtoD)(void*, const void*, size_t);
     int (*hipMemcpyDtoH)(void*, void*, size_t);
     int (*hipFree)(void*);
@@ -1123,6 +1128,8 @@ static int cajeta_xpu_hip_init_locked(void) {
     *(void**) (&g_xpu_hip.hipFuncGetAttribute) =               // optional (non-fatal)
         cajeta_xpu_libsym(g_xpu_hip.lib, "hipFuncGetAttribute");
     CAJ_HBIND(hipMalloc, "hipMalloc");
+    *(void**) (&g_xpu_hip.hipMemset) =                        // optional (non-fatal)
+        cajeta_xpu_libsym(g_xpu_hip.lib, "hipMemset");
     CAJ_HBIND(hipMemcpyHtoD, "hipMemcpyHtoD");
     CAJ_HBIND(hipMemcpyDtoH, "hipMemcpyDtoH");
     CAJ_HBIND(hipFree, "hipFree");

@@ -43,6 +43,23 @@ x.download(hx);
 
 ⚑ = `@EntryPoint`
 
+## Fresh memory is unspecified, and a lever makes it loud
+
+A new buffer's contents are whatever the allocator left there: a zero page
+on first touch, a previous allocation's bytes on a recycled chunk, on every
+backend. A kernel that reads a region nothing wrote therefore answers
+differently from run to run, and a defect of that shape can hide behind a
+zero page for weeks and surface only when some unrelated code ran first.
+`CAJETA_XPU_POISON=1` fills every fresh buffer with `0xFF` bytes (NaN as a
+float or half, `-1` as an integer) before it is handed out, so such a read
+answers NaN deterministically; `CAJETA_XPU_POISON_MIN` and
+`CAJETA_XPU_POISON_MAX` (bytes, inclusive) confine the fill to a size range,
+which finds the culprit buffer by its size, and `CAJETA_XPU_POISON_LOG=1`
+prints each filled allocation. `MALLOC_PERTURB_` cannot stand in for this:
+its allocation fill is the complement of the byte, never `0xFF`, and it
+does not reach a GPU. Run a suite under the lever before trusting a
+nondeterministic red to be flaky.
+
 ## See also
 
 - Tour: [XpuTour](../../../samples/tour/xpu/src/tour/xpu/XpuTour.cajeta)
