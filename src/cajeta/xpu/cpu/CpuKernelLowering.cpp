@@ -57,6 +57,13 @@ public:
         // to; cpuVectorWidthI32 reads it off the kernel at registration time.
         fn->addFnAttr("cajeta.xpu.coop-wavew", std::to_string(waveW));
     }
+    // @Wave(width = N) takes the same pin: the work-item loop runs at N lanes whatever
+    // the host SIMD width, so a kernel written for 32 lanes is correct on every host.
+    bool pinWaveWidth(llvm::Function* fn, unsigned width) override {
+        if (width < 2) return width == 1;
+        fn->addFnAttr("cajeta.xpu.coop-wavew", std::to_string(width));
+        return true;
+    }
     // The inner loops must be gone for LoopVectorize to widen the work-item
     // loop (4A.7.2's loop-exposure spike).
     bool distributedCoopMatrixUnrollsLoops() const override { return true; }

@@ -178,6 +178,10 @@ namespace xpu {
         virtual void applyOccupancy(llvm::Function* /*fn*/,
                                     const XpuKernelAttr& /*attr*/) {}
 
+        // @Wave(width = N), the lane count the algorithm is written for: pin the kernel to
+        // it, or answer false when this target's wave cannot be N lanes. DEFAULT: true.
+        virtual bool pinWaveWidth(llvm::Function* /*fn*/, unsigned /*width*/) { return true; }
+
         // --- kernel signature / parameter model (the Vulkan fork) -------------
         // NVPTX/AMDGPU take kernel arguments as a flat parameter list; Vulkan has no
         // raw-pointer kernel ABI, so it alone overrides the three hooks below.

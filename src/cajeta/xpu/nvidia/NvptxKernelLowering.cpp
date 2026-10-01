@@ -221,6 +221,9 @@ public:
         if (auto rr = attr.maxRegisters()) annotate("maxnreg", *rr);
     }
 
+    // The warp is 32 lanes and nothing else, so only @Wave(width = 32) can run.
+    bool pinWaveWidth(llvm::Function* /*fn*/, unsigned width) override { return width == 32; }
+
     // Wave ops: NVIDIA warps are 32 wide; shuffle + ballot are hardware.
     llvm::Value* waveWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
         return readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_warpsize);

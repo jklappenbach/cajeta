@@ -813,6 +813,13 @@ public:
         return ImplTier::Portable;
     }
 
+    // @Wave(width = N) pins the function's wavefront, which is 32 or 64 on this target.
+    bool pinWaveWidth(llvm::Function* fn, unsigned width) override {
+        if (width != 32 && width != 64) return false;
+        fn->addFnAttr("target-features", width == 32 ? "+wavefrontsize32" : "+wavefrontsize64");
+        return true;
+    }
+
     // RDNA3 WMMA exists only in the wave32 encoding, so pin the function's wave size.
     void prepareNativeCoopMatrix(llvm::Function* fn) override {
         fn->addFnAttr("target-features", "+wavefrontsize32");
