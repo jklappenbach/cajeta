@@ -1138,7 +1138,13 @@ jobs:
           # asked to do anything. That is an environment defect, tracked
           # separately, and it says nothing about this compiler.
           #
-          # ONLY those two are tolerated, and both are failures to OBTAIN cvm's
+          # And when a published dependency's OWN sources no longer compile on
+          # this toolchain (a stdlib API it calls was removed), so no archive on
+          # Olla can serve it yet. v0.32.0 removed Tasks.sleepMillis, which
+          # dev.cajeta.http 0.3.1 calls. The next patch release rebuilds cvm on
+          # the http cut for the new toolchain, as v0.29.1 did.
+          #
+          # ONLY those three are tolerated, and all are failures to OBTAIN cvm's
           # inputs, never to build cvm. A cvm that fails to compile or link
           # still fails the job, and every skip is printed with its reason.
           BUILD_LOG="${RUNNER_TEMP:-/tmp}/cvm-build.log"
@@ -1151,6 +1157,8 @@ jobs:
               WHY="the dependency ships no $(grep -oE "native library '[^']+' \([^)]+\)" "$BUILD_LOG" | head -1) for this platform"
             elif grep -qE 'HTTP [A-Z]+ .* failed:' "$BUILD_LOG"; then
               WHY="cvm's dependencies could not be fetched here: $(grep -oE 'HTTP [A-Z]+ [^ ]+ failed: .*' "$BUILD_LOG" | head -1)"
+            elif grep -qE '^cajeta: dev/cajeta/[^ ]+\.cajeta:[0-9]+:[0-9]+: CAJETA_ERROR_' "$BUILD_LOG"; then
+              WHY="a dependency's own sources do not compile on this toolchain: $(grep -oE '^cajeta: dev/cajeta/[^ ]+\.cajeta:[0-9]+:[0-9]+: CAJETA_ERROR_[A-Z_]+' "$BUILD_LOG" | head -1 | sed 's/^cajeta: //')"
             fi
             if [ -n "$WHY" ]; then
               echo "::warning::cvm skipped for ${T}: ${WHY}. No cvm asset is published for this target."
