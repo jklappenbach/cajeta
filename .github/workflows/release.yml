@@ -441,6 +441,7 @@ jobs:
           # vulkan-headers: <vulkan/vulkan.h> for the runtime's Vulkan compute
           # path (the loader vulkan-1.dll is dlopen'd at run time, no link dep).
           # tar: used (with zstd) to unpack the fork toolchain in the fetch step.
+          # p7zip: verify-cvm-package.sh unpacks cvm's MSI with 7z.
           # libxml2: nothing in THIS build links it, but the fork's ld.lld.exe
           # and lld-link.exe import libxml2-16.dll for WindowsManifest support
           # and exit 127 without it. clang does not, so clang ran while both
@@ -460,6 +461,7 @@ jobs:
             mingw-w64-x86_64-curl
             mingw-w64-x86_64-vulkan-headers
             mingw-w64-x86_64-pkgconf
+            p7zip
             tar
             vim
             zip
