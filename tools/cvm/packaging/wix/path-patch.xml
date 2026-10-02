@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  CPack WiX patch for the cvm package (specs/cvm-installer-spec.md 6.2).
+  CPack WiX patch for the cvm package (specs/archive/cvm-installer-spec.md 6.2).
 
   WiX installs under Program Files, which is NOT on PATH. An installer whose
   payload the shell cannot find has not installed anything as far as the reader

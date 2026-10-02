@@ -25,7 +25,7 @@ set(CVM_BINARY "" CACHE FILEPATH "Path to the already-built cvm executable")
 # The version a package manager will order releases by. cvm's own declared
 # version in cajeta.json has been 0.1.0 across every release, so it cannot
 # serve here: two releases would both be 0.1.0 and no upgrade would ever be
-# offered. See specs/cvm-installer-spec.md 3.2 and open question 6.1.
+# offered. See specs/archive/cvm-installer-spec.md 3.2 and open question 6.1.
 set(CVM_PACKAGE_VERSION "" CACHE STRING "Version to declare for the package")
 
 if(NOT CVM_BINARY OR NOT EXISTS "${CVM_BINARY}")
@@ -121,5 +121,9 @@ set(CPACK_RPM_PACKAGE_URL "${CPACK_PACKAGE_HOMEPAGE_URL}")
 # /usr/bin is owned by filesystem; claiming it makes rpm refuse to install
 # alongside anything else.
 set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION "/usr/bin")
+# rpmbuild's post-install pass strips the binary and adds /usr/lib/.build-id
+# links, so the package would carry neither one file nor the bare asset's bytes.
+set(CPACK_RPM_SPEC_MORE_DEFINE "%define __os_install_post %{nil}
+%define _build_id_links none")
 
 include(CPack)

@@ -86,6 +86,10 @@ assert "1.1.4 the packaged binary is byte-identical to the bare asset" "same" \
     "$([ -n "$extracted" ] && [ "$(sha256sum < "$extracted" | cut -d' ' -f1)" = \
         "$(sha256sum < "$CVM_BIN" | cut -d' ' -f1)" ] && echo same || echo differs)"
 
+# 2.1.1 the verifier the release runs on every format passes this .deb.
+assert "2.1.1 verify-cvm-package.sh accepts the .deb" "0" \
+    "$("${SCRIPT_DIR}/verify-cvm-package.sh" --require "$CVM_BIN" "$DEB" >"$TMP/verify.log" 2>&1; echo $?)"
+
 if [ "$fails" -eq 0 ]; then
     echo "check-cvm-package: OK ($(basename "$DEB"))"
     exit 0

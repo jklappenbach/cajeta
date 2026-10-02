@@ -1283,6 +1283,14 @@ jobs:
             exit 1
           fi
 
+          # Every package must carry exactly the bare asset's bytes (spec 4.4).
+          # rpmbuild stripped cvm and added .build-id links until v0.32.2.
+          cvm_pkgs=(cvm-dist/*.deb cvm-dist/*.rpm cvm-dist/*.pkg cvm-dist/*.msi)
+          if ! scripts/verify-cvm-package.sh --require "$CVM" "${cvm_pkgs[@]}"; then
+            echo "::error::a cvm package for ${T} does not carry exactly the cvm executable"
+            exit 1
+          fi
+
           # cvm's MSI carries its own PATH patch, and cvm exists to be the first
           # command a user runs, so an installer that leaves it off PATH is worse
           # here than for the compiler.
