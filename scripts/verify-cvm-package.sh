@@ -52,6 +52,16 @@ unpack() {
             else return 3; fi ;;
         *.msi)
             if have 7z; then (cd "$dir" && 7z x -y "$pkg" >/dev/null)
+            elif have powershell; then
+                # An administrative install lays the files out and copies the
+                # .msi beside them; msiexec ships with every Windows host.
+                local wp wd
+                wp="$(cygpath -w "$pkg" 2>/dev/null || printf '%s' "$pkg")"
+                wd="$(cygpath -w "$dir" 2>/dev/null || printf '%s' "$dir")"
+                MSYS2_ARG_CONV_EXCL='*' powershell -NoProfile -Command "
+                  \$p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/a', '\"${wp}\"', '/qn', 'TARGETDIR=\"${wd}\"')
+                  exit \$p.ExitCode" || return 1
+                find "$dir" -maxdepth 1 -name '*.msi' -delete
             else return 3; fi ;;
         *) echo "FAIL: $(basename "$pkg"): not a .deb, .rpm, .pkg or .msi"; return 1 ;;
     esac
