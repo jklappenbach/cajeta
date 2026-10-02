@@ -166,11 +166,14 @@ uint32_t __cajeta_xpu_bits_rotate_right_u32(uint32_t value, uint32_t amount) {
 // --- CPU backend kernel registry -------------------------------------------
 // The CPU backend lowers each @Kernel to a host function; its registration ctor
 // calls register_cpu_kernel(name, fn) and the launch path resolves by name.
-#ifndef CAJETA_XPU_CPU_KERNEL_MAX
-#define CAJETA_XPU_CPU_KERNEL_MAX 256
-#endif
-static struct { const char* name; void* fn; } g_cpu_kernels[CAJETA_XPU_CPU_KERNEL_MAX];
+// The table GROWS: it was a fixed 256 entries until 2026-10-01, when
+// cajeta-llm's test binary crossed that and whichever kernels registered
+// last (ropeF32, sliceF32) were dropped in silence, their launches refused
+// as "no device code registered" on a backend that had compiled them.
+struct caj_cpu_kernel { const char* name; void* fn; };
+static struct caj_cpu_kernel* g_cpu_kernels = NULL;
 static int g_cpu_kernel_count = 0;
+static int g_cpu_kernel_cap = 0;
 
 // Register a CPU-backend kernel under `name`; last writer wins. The name is
 // strdup'd, since a JIT'd ctor's string dies with its module.
@@ -182,11 +185,22 @@ void __cajeta_xpu_register_cpu_kernel(const char* name, void* fn) {
             return;
         }
     }
-    if (g_cpu_kernel_count < CAJETA_XPU_CPU_KERNEL_MAX) {
-        g_cpu_kernels[g_cpu_kernel_count].name = strdup(name);
-        g_cpu_kernels[g_cpu_kernel_count].fn = fn;
-        ++g_cpu_kernel_count;
+    if (g_cpu_kernel_count == g_cpu_kernel_cap) {
+        int cap = g_cpu_kernel_cap ? g_cpu_kernel_cap * 2 : 512;
+        struct caj_cpu_kernel* grown = (struct caj_cpu_kernel*)
+            realloc(g_cpu_kernels, (size_t) cap * sizeof(*grown));
+        if (!grown) {
+            fprintf(stderr, "cajeta.xpu: CPU kernel registry cannot grow past %d "
+                    "entries; dropping '%s', whose launches will be refused\n",
+                    g_cpu_kernel_cap, name);
+            return;
+        }
+        g_cpu_kernels = grown;
+        g_cpu_kernel_cap = cap;
     }
+    g_cpu_kernels[g_cpu_kernel_count].name = strdup(name);
+    g_cpu_kernels[g_cpu_kernel_count].fn = fn;
+    ++g_cpu_kernel_count;
 }
 
 // Resolve a registered CPU kernel by name; NULL when absent.

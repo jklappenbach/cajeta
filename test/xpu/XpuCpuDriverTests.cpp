@@ -243,6 +243,27 @@ TEST(XpuCpuDriverTests, scalarUnpackingAcrossParamShapes) {
 // raw caller pointer, a later lookup's strcmp() would dereference that freed key
 // and crash. Here we register a uniquely-named kernel, destroy its JIT, then do a
 // lookup: it must be a clean miss, not a SIGSEGV. (Previously crashed.)
+extern "C" void* __cajeta_xpu_lookup_cpu_kernel(const char* name);
+
+// The registry grows: a process that registers more kernels than any
+// fixed table was sized for keeps every one of them. Measured 2026-10-01:
+// the table was 256 entries and cajeta-llm's test binary crossed it, so
+// whichever kernels registered last (ropeF32, sliceF32) were dropped with
+// no message, and their launches were refused as "no device code
+// registered" on a backend that had compiled them.
+TEST(XpuCpuDriverTests, registryKeepsEveryKernelPastTwoHundredFiftySix) {
+    static int probe;
+    for (int i = 0; i < 600; ++i) {
+        std::string name = "cajeta.registry.growth.probe." + std::to_string(i);
+        __cajeta_xpu_register_cpu_kernel(name.c_str(), (void*) &probe);
+    }
+    for (int i = 0; i < 600; ++i) {
+        std::string name = "cajeta.registry.growth.probe." + std::to_string(i);
+        EXPECT_EQ(__cajeta_xpu_lookup_cpu_kernel(name.c_str()), (void*) &probe)
+            << "kernel " << i << " fell out of the registry";
+    }
+}
+
 TEST(XpuCpuDriverTests, registryKeySurvivesCallerTeardown) {
     Compiler compiler;
     std::string failure;
