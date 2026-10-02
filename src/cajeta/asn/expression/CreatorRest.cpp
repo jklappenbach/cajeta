@@ -377,7 +377,8 @@ namespace cajeta {
                             llvm::Function* relFn =
                                 CajetaModule::ensureFunctionInModule(
                                     module->getLlvmModule(),
-                                    vCls->getOrCreateValueReleaseFunction());
+                                    vCls->getOrCreateValueReleaseFunction(
+                                    builder->GetInsertBlock()->getModule()));
                             if (relFn) builder->CreateCall(relFn, {slot});
                         }
                     }

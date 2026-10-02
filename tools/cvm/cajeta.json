@@ -20,7 +20,7 @@
 
     "details": {
         "name":                "cvm",
-        "version":             "0.2.0",
+        "version":             "0.2.1",
         "description":         "Cajeta Version Manager — toolchain installer/switcher",
         "license":             "Apache-2.0",
         "authors":             ["Julian Klappenbach <jklappenbach@gmail.com>"],
@@ -65,7 +65,7 @@
             // resolves codec 0.8.3, per Olla's own dependency records. So on
             // 0.3.0 every non-linux-x64 leg of the release matrix had no zlib
             // to link against, which is why those legs shipped no cvm.
-            "dev.cajeta.http": "0.3.1"
+            "dev.cajeta.http": "0.4.0"
         },
 
         "build": {

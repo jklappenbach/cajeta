@@ -603,8 +603,9 @@ namespace cajeta {
                                CajetaModulePtr cajModule,
                                llvm::Module* bodyModule, bool retain);
 
-        // Synthesized `void(ptr)` release wrapper for a shared-capable value local's slot.
-        llvm::Function* getOrCreateValueReleaseFunction();
+        // Synthesized `void(ptr)` release wrapper for a shared-capable value local's slot,
+        // defined in `into` (the caller's module) so every object that calls it defines it.
+        llvm::Function* getOrCreateValueReleaseFunction(llvm::Module* into = nullptr);
 
         // The DECLARATION of this class's reflective invoke adapter,
         // `void(ptr obj, i32 methodIndex, ptr args, ptr ret)`; the body lands later.

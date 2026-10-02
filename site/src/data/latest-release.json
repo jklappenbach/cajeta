@@ -2,44 +2,44 @@
   "platforms": [
     {
       "archive": {
-        "name": "cajeta-v0.31.0-x86_64-linux-gnu.tar.gz",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-v0.31.0-x86_64-linux-gnu.tar.gz"
+        "name": "cajeta-v0.32.1-x86_64-linux-gnu.tar.gz",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-v0.32.1-x86_64-linux-gnu.tar.gz"
       },
       "compiler": {
-        "name": "cajeta-v0.31.0-x86_64-linux-gnu",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-v0.31.0-x86_64-linux-gnu"
+        "name": "cajeta-v0.32.1-x86_64-linux-gnu",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-v0.32.1-x86_64-linux-gnu"
       },
       "cvm": {
-        "name": "cvm-v0.31.0-x86_64-linux-gnu",
-        "sha256": "2db73005f2322e5eb97286cf59bd09b341b3c0047779139674fe580c58d029b8",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cvm-v0.31.0-x86_64-linux-gnu"
+        "name": "cvm-v0.32.1-x86_64-linux-gnu",
+        "sha256": "031a85b0775b43b07fbbe36c74d00f0bf60b49856a027b0853f9fb3520c6712a",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cvm-v0.32.1-x86_64-linux-gnu"
       },
       "cvm-installers": [
         {
           "format": "rpm",
-          "name": "cajeta-cvm-0.2.0-1.x86_64.rpm",
-          "sha256": "0f42920dcc5df5942106636d00530a924ee1442413e372e976e8a88594f58914",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-cvm-0.2.0-1.x86_64.rpm"
+          "name": "cajeta-cvm-0.2.1-1.x86_64.rpm",
+          "sha256": "7c02712e77265da1a882bc9d2ca65070f69d36d6f79ef53edf51ae895114f28c",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-cvm-0.2.1-1.x86_64.rpm"
         },
         {
           "format": "deb",
-          "name": "cajeta-cvm_0.2.0_amd64.deb",
-          "sha256": "6da06707447e2f9788bd139666724d724242d1cbefffee929f7d8881323c38ff",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-cvm_0.2.0_amd64.deb"
+          "name": "cajeta-cvm_0.2.1_amd64.deb",
+          "sha256": "d81d08d3538c7f3825926155fe371d505665b573bafde8100031a72ebe9d2868",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-cvm_0.2.1_amd64.deb"
         }
       ],
       "installers": [
         {
           "format": "rpm",
-          "name": "cajeta-0.31.0-1.x86_64.rpm",
-          "sha256": "8370165ad19b040e42485104876772f30d77f05a51ea53b853570222ef45f6f8",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-0.31.0-1.x86_64.rpm"
+          "name": "cajeta-0.32.1-1.x86_64.rpm",
+          "sha256": "206da952d96d44a963c0ab5d202c1202038cfc5e6f74e9009dc530c24fc919e6",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-0.32.1-1.x86_64.rpm"
         },
         {
           "format": "deb",
-          "name": "cajeta_0.31.0_amd64.deb",
-          "sha256": "92a119e63fcd95898a22e84daa9f09d4e0a7a2b22cea72a2b4c8fbd3d40c2170",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta_0.31.0_amd64.deb"
+          "name": "cajeta_0.32.1_amd64.deb",
+          "sha256": "473633e570ac521a75fa7a10c44f28d87d7c666f0f13648f054d2c4b16fea57c",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta_0.32.1_amd64.deb"
         }
       ],
       "label": "Linux x86_64",
@@ -47,44 +47,44 @@
     },
     {
       "archive": {
-        "name": "cajeta-v0.31.0-aarch64-linux-gnu.tar.gz",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-v0.31.0-aarch64-linux-gnu.tar.gz"
+        "name": "cajeta-v0.32.1-aarch64-linux-gnu.tar.gz",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-v0.32.1-aarch64-linux-gnu.tar.gz"
       },
       "compiler": {
-        "name": "cajeta-v0.31.0-aarch64-linux-gnu",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-v0.31.0-aarch64-linux-gnu"
+        "name": "cajeta-v0.32.1-aarch64-linux-gnu",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-v0.32.1-aarch64-linux-gnu"
       },
       "cvm": {
-        "name": "cvm-v0.31.0-aarch64-linux-gnu",
-        "sha256": "ffe701e7aad8a8754696d7136d3eb6f957475e3ae8618d0d7e8da59aac0d380a",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cvm-v0.31.0-aarch64-linux-gnu"
+        "name": "cvm-v0.32.1-aarch64-linux-gnu",
+        "sha256": "067bf5214b947f182a23647555f64dc34c9a8ac171b8556841a7f80a0f4d0a23",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cvm-v0.32.1-aarch64-linux-gnu"
       },
       "cvm-installers": [
         {
           "format": "rpm",
-          "name": "cajeta-cvm-0.2.0-1.aarch64.rpm",
-          "sha256": "2d63e278a2904c75a0a197b8e0c14047f39183b2198e8210cdc3a0e28825dfae",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-cvm-0.2.0-1.aarch64.rpm"
+          "name": "cajeta-cvm-0.2.1-1.aarch64.rpm",
+          "sha256": "6e501648dc5cc9e350eb5613e88191aec188ca11773e3caa6bfce811dabcb1d0",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-cvm-0.2.1-1.aarch64.rpm"
         },
         {
           "format": "deb",
-          "name": "cajeta-cvm_0.2.0_arm64.deb",
-          "sha256": "e523baad24753f5356f8ef184eb2ebc61256d6a0440db2f5b7d729ff38c65909",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-cvm_0.2.0_arm64.deb"
+          "name": "cajeta-cvm_0.2.1_arm64.deb",
+          "sha256": "7fac36a253ed0b1bfc4d91604e6b921af1310e16974caea179fc73396aa1ca11",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-cvm_0.2.1_arm64.deb"
         }
       ],
       "installers": [
         {
           "format": "rpm",
-          "name": "cajeta-0.31.0-1.aarch64.rpm",
-          "sha256": "24685669c37c1f2e2abfa409958fff513424c46c0102fe0605855ee9adb8a3e3",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-0.31.0-1.aarch64.rpm"
+          "name": "cajeta-0.32.1-1.aarch64.rpm",
+          "sha256": "32989d19b968dc666d3d6c2bcbddf4f35f1e32b9b2bc56397fc9b8faeaf7ad27",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-0.32.1-1.aarch64.rpm"
         },
         {
           "format": "deb",
-          "name": "cajeta_0.31.0_arm64.deb",
-          "sha256": "9198d80429c55058665c16ad659c09bf72b4c70eed10d8e0dcd3f9e78fe38392",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta_0.31.0_arm64.deb"
+          "name": "cajeta_0.32.1_arm64.deb",
+          "sha256": "d69829d9c55887b5b20ba6c4e5bd9b3cfdd68a306dac99f83c68c8d62f7f523f",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta_0.32.1_arm64.deb"
         }
       ],
       "label": "Linux ARM64",
@@ -92,32 +92,32 @@
     },
     {
       "archive": {
-        "name": "cajeta-v0.31.0-aarch64-apple-darwin.tar.gz",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-v0.31.0-aarch64-apple-darwin.tar.gz"
+        "name": "cajeta-v0.32.1-aarch64-apple-darwin.tar.gz",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-v0.32.1-aarch64-apple-darwin.tar.gz"
       },
       "compiler": {
-        "name": "cajeta-v0.31.0-aarch64-apple-darwin",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-v0.31.0-aarch64-apple-darwin"
+        "name": "cajeta-v0.32.1-aarch64-apple-darwin",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-v0.32.1-aarch64-apple-darwin"
       },
       "cvm": {
-        "name": "cvm-v0.31.0-aarch64-apple-darwin",
-        "sha256": "ba6c6326e1225b9935fc042d1019bb7463a851e00ed28b2e905cdc1ebc5345c6",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cvm-v0.31.0-aarch64-apple-darwin"
+        "name": "cvm-v0.32.1-aarch64-apple-darwin",
+        "sha256": "40eba69307e05df8de174bfb96b31edfcb84b5afc2c259b9fd19fa28d887c0a1",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cvm-v0.32.1-aarch64-apple-darwin"
       },
       "cvm-installers": [
         {
           "format": "pkg",
-          "name": "cajeta-cvm-0.2.0-Darwin.pkg",
-          "sha256": "149563253ecbd84ee50b0ed02af20da60fd58a73e4cb0d281698eda170efa6c2",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-cvm-0.2.0-Darwin.pkg"
+          "name": "cajeta-cvm-0.2.1-Darwin.pkg",
+          "sha256": "42c472bb969f05cd5c89245459bc83ac9135f41972b3e17fb4cc651096002b9f",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-cvm-0.2.1-Darwin.pkg"
         }
       ],
       "installers": [
         {
           "format": "pkg",
-          "name": "cajeta-0.31.0-arm64.pkg",
-          "sha256": "f586d19bd70d226d76dd8df7f229d4fbb4136e85636c6fcf6d73a9b104f33c8b",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-0.31.0-arm64.pkg"
+          "name": "cajeta-0.32.1-arm64.pkg",
+          "sha256": "615690fe08dd03e0b75381f9db95e2e06f105473ca8bcc8aeb367822383f2402",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-0.32.1-arm64.pkg"
         }
       ],
       "label": "macOS Apple Silicon",
@@ -125,40 +125,40 @@
     },
     {
       "archive": {
-        "name": "cajeta-v0.31.0-x86_64-w64-mingw32.zip",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-v0.31.0-x86_64-w64-mingw32.zip"
+        "name": "cajeta-v0.32.1-x86_64-w64-mingw32.zip",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-v0.32.1-x86_64-w64-mingw32.zip"
       },
       "compiler": {
-        "name": "cajeta-v0.31.0-x86_64-w64-mingw32.exe",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-v0.31.0-x86_64-w64-mingw32.exe"
+        "name": "cajeta-v0.32.1-x86_64-w64-mingw32.exe",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-v0.32.1-x86_64-w64-mingw32.exe"
       },
       "cvm": {
-        "name": "cvm-v0.31.0-x86_64-w64-mingw32.exe",
-        "sha256": "e9c94e8c78167012f63cc7bd0eb50f3731e1554156d03c26f99f8809ebcaccf5",
-        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cvm-v0.31.0-x86_64-w64-mingw32.exe"
+        "name": "cvm-v0.32.1-x86_64-w64-mingw32.exe",
+        "sha256": "394d4a027b811909b14cbe5a6e9e2e84da4944bce0135f5255fb4736ad249cb6",
+        "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cvm-v0.32.1-x86_64-w64-mingw32.exe"
       },
       "cvm-installers": [
         {
           "format": "msi",
-          "name": "cajeta-cvm-0.2.0-win64.msi",
-          "sha256": "701f49b6f43fb60059c9b08f82606484e375a5edd54294b9201da77a79857061",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-cvm-0.2.0-win64.msi"
+          "name": "cajeta-cvm-0.2.1-win64.msi",
+          "sha256": "58fb3d755e7f50f3e079b99f7be8c4bd25e88fe8da2a7a3570d8728001ff3a16",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-cvm-0.2.1-win64.msi"
         }
       ],
       "installers": [
         {
           "format": "msi",
-          "name": "cajeta-0.31.0-AMD64.msi",
-          "sha256": "371050df4a1059561e513ecae2da710b88f61b388c145c2ed03de4d775f035ae",
-          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.31.0/cajeta-0.31.0-AMD64.msi"
+          "name": "cajeta-0.32.1-AMD64.msi",
+          "sha256": "ebe5af30030bfc97fb1552b79d6fc42910043a613094c39c3d5afdd67139f009",
+          "url": "https://github.com/jklappenbach/cajeta/releases/download/v0.32.1/cajeta-0.32.1-AMD64.msi"
         }
       ],
       "label": "Windows x86_64",
       "triple": "x86_64-w64-mingw32"
     }
   ],
-  "releaseUrl": "https://github.com/jklappenbach/cajeta/releases/tag/v0.31.0",
+  "releaseUrl": "https://github.com/jklappenbach/cajeta/releases/tag/v0.32.1",
   "schemaVersion": 1,
-  "tag": "v0.31.0",
-  "version": "0.31.0"
+  "tag": "v0.32.1",
+  "version": "0.32.1"
 }
