@@ -2082,34 +2082,56 @@ namespace cajeta {
                             if (auto cm = module->getCurrentMethod()) {
                                 inCtor = cm->isConstructor();
                             }
+                            llvm::Value* strWordPtr = nullptr;
+                            int strBitIdx = -1;
+                            bool strHasBit = locateFieldOwnershipBit(
+                                module, builder, dotLhs2, lhs,
+                                &strWordPtr, &strBitIdx);
+                            auto& sctx = *module->getLlvmContext();
+                            llvm::Type* i64Ty = llvm::Type::getInt64Ty(sctx);
                             if (!inCtor) {
                                 llvm::Value* oldVal = builder->CreateLoad(
-                                    llvm::PointerType::get(*module->getLlvmContext(), 0),
-                                    lhs, "str_old");
+                                    llvm::PointerType::get(sctx, 0), lhs, "str_old");
                                 if (llvm::Function* dropFn =
                                         module->getRuntimeFunction("__cajeta_string_drop")) {
-                                    builder->CreateCall(dropFn, {oldVal});
+                                    if (strHasBit) {
+                                        // A `#=` take clears the bit and leaves the pointer, so the bit decides.
+                                        llvm::Value* oldBit = builder->CreateAnd(
+                                            builder->CreateLShr(
+                                                builder->CreateLoad(i64Ty, strWordPtr,
+                                                                    "str_old_bits"),
+                                                llvm::ConstantInt::get(i64Ty, strBitIdx)),
+                                            llvm::ConstantInt::get(i64Ty, 1));
+                                        llvm::Value* displaced = builder->CreateAnd(
+                                            builder->CreateICmpNE(oldBit,
+                                                llvm::ConstantInt::get(i64Ty, 0)),
+                                            builder->CreateICmpNE(oldVal, fresh),
+                                            "str_displaced");
+                                        llvm::Function* fnOwner =
+                                            builder->GetInsertBlock()->getParent();
+                                        auto* dropBB = llvm::BasicBlock::Create(
+                                            sctx, "str_displace", fnOwner);
+                                        auto* contBB = llvm::BasicBlock::Create(
+                                            sctx, "str_displace_cont", fnOwner);
+                                        builder->CreateCondBr(displaced, dropBB, contBB);
+                                        builder->SetInsertPoint(dropBB);
+                                        builder->CreateCall(dropFn, {oldVal});
+                                        builder->CreateBr(contBB);
+                                        builder->SetInsertPoint(contBB);
+                                    } else {
+                                        builder->CreateCall(dropFn, {oldVal});
+                                    }
                                 }
                             }
                             builder->CreateStore(fresh, lhs);
                             // This path breaks out of the assign switch before the general field-ownership
                             // block below, so it records the title bit itself.
-                            {
-                                llvm::Value* strWordPtr = nullptr;
-                                int strBitIdx = -1;
-                                if (locateFieldOwnershipBit(
-                                        module, builder, dotLhs2, lhs,
-                                        &strWordPtr, &strBitIdx)) {
-                                    auto& sctx = *module->getLlvmContext();
-                                    llvm::Type* i64Ty =
-                                        llvm::Type::getInt64Ty(sctx);
-                                    llvm::Value* w = builder->CreateLoad(
-                                        i64Ty, strWordPtr, "own_bits");
-                                    w = builder->CreateOr(w,
-                                        llvm::ConstantInt::get(
-                                            i64Ty, 1ULL << strBitIdx));
-                                    builder->CreateStore(w, strWordPtr);
-                                }
+                            if (strHasBit) {
+                                llvm::Value* w = builder->CreateLoad(
+                                    i64Ty, strWordPtr, "own_bits");
+                                w = builder->CreateOr(w,
+                                    llvm::ConstantInt::get(i64Ty, 1ULL << strBitIdx));
+                                builder->CreateStore(w, strWordPtr);
                             }
                             result = fresh;
                             break;

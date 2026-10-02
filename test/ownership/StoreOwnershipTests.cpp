@@ -313,3 +313,60 @@ TEST(StoreOwnershipTests, arrayLiteralLendsAStaticOwnerAndAFormal) {
     EXPECT_EQ(runVerdict(src), 0)
         << "130 = wrong value (a lent String was freed with the array); 131 = a leak or double free";
 }
+
+// A `#=` take from a String field clears its bit but keeps the pointer, so the
+// next store into the field must not drop the taker's live value.
+TEST(StoreOwnershipTests, storeOverATakenStringFieldLeavesTheTakerAlive) {
+    std::string src = std::string(PRE)
+        + "    public static int32 run() {\n"
+        + "        Holder c = heap Holder();\n"
+        + "        int64 c0 = Cajeta.liveCount();\n"
+        + "        c.s = \"\" + \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\";\n"
+        + "        int64 fresh = Cajeta.liveCount() - c0;\n"
+        + "        Holder h = heap Holder();\n"
+        + "        h.s = \"\" + \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\";\n"
+        + "        String t #= h.s;\n"
+        + "        int64 b0 = Cajeta.liveCount();\n"
+        + "        h.s = \"\" + \"cccccccccccccccccccccccccccccccccccc\";\n"
+        + "        if (Cajeta.liveCount() - b0 != fresh) { return 1; }\n"
+        + "        if (t.byteLength() != 36 || t.byteAt(35) != (int8) 97) { return 2; }\n"
+        + "        return 0;\n"
+        + "    }\n"
+        + "}\n";
+    EXPECT_EQ(runVerdict(src), 0)
+        << "1 = the store dropped the taken value; 2 = the taker reads freed memory";
+}
+
+// The owned case still releases: overwriting a titled String field frees the old value.
+TEST(StoreOwnershipTests, storeOverAnOwnedStringFieldReleasesIt) {
+    std::string src = loop(
+        "        Holder h = heap Holder();\n"
+        "        h.s #= A.mkS(i);\n"
+        "        h.s #= A.mkS(i + 1);\n"
+        "        return h.s.byteLength();\n", "A.digits(i + 1) + 1", 140);
+    EXPECT_EQ(runVerdict(src), 0) << "140 = wrong value; 141 = the displaced String leaked";
+}
+
+// HashMap.remove takes the value with `#=`; a put that reuses the tombstone must
+// not drop it again (dev.cajeta.cloud's MemoryUserPool crashed on this).
+TEST(StoreOwnershipTests, putIntoATombstoneLeavesTheRemovedValueAlive) {
+    std::string src = std::string(PRE)
+        + "    public static int32 run() {\n"
+        + "        HashMap<String, String> m = heap HashMap<String, String>();\n"
+        + "        String k = \"\" + \"alpha-key-long-enough\";\n"
+        + "        String v = \"\" + \"value-long-enough-0000000000\";\n"
+        + "        m.put(#k, #v);\n"
+        + "        String taken #= m.remove(\"alpha-key-long-enough\");\n"
+        + "        String k2 = \"\" + \"alpha-key-long-enough\";\n"
+        + "        String v2 = \"\" + \"value-long-enough-1111111111\";\n"
+        + "        int64 b0 = Cajeta.liveCount();\n"
+        + "        m.put(#k2, #v2);\n"
+        + "        if (Cajeta.liveCount() != b0) { return 1; }\n"
+        + "        if (taken.byteLength() != 28 || taken.byteAt(27) != (int8) 48) { return 2; }\n"
+        + "        if (m.get(\"alpha-key-long-enough\").byteAt(27) != (int8) 49) { return 3; }\n"
+        + "        return 0;\n"
+        + "    }\n"
+        + "}\n";
+    EXPECT_EQ(runVerdict(src), 0)
+        << "1 = the put dropped the removed value; 2 = it reads freed memory; 3 = wrong stored value";
+}
