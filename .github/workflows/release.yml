@@ -1471,6 +1471,9 @@ jobs:
           # checksum files that go beside it.
           find artifacts -type f \( -name 'cajeta-v*' -o -name 'cvm-v*' \) \
             ! -name '*.tar.gz' ! -name '*.zip' -exec cp {} release-assets/ \;
+          # The copied sidecars would also match artifacts/**/*.sha256, and one name
+          # uploaded twice races the release action into "Not Found" (v0.32.1).
+          find artifacts -type f \( -name 'cajeta-v*.sha256' -o -name 'cvm-v*.sha256' \) -delete
           echo "=== release-assets ==="; ls -la release-assets
 
       - name: Create / update GitHub Release
