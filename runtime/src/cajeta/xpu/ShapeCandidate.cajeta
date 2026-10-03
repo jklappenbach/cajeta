@@ -1,0 +1,39 @@
+package cajeta.xpu;
+
+import cajeta.lang.String;
+
+/**
+ * ShapeCandidate — one shape a kernel family can run at
+ * (xpu-tile-shape-selection §3): the kernel that implements it, by its
+ * registered name, and the facts about the shape the feasibility filter
+ * needs that no manifest records.
+ *
+ * ```cajeta
+ * f.consider(#heap ShapeCandidate("q4kTile8w", 128, 128, 256, 256, 8),
+ *            #KernelFacts.measured("q4kTile8w", 0));
+ * ```
+ */
+public final class ShapeCandidate {
+    /** The registered kernel name, as `KernelManifest` reads it. */
+    public String kernel;
+    /** Rows of the problem's M one workgroup covers. */
+    public int32 tileM;
+    /** Columns of the problem's N one workgroup covers. */
+    public int32 tileN;
+    /** Threads in the launch block. */
+    public int32 threads;
+    /** K elements one split-K part must be a multiple of; 0 = no split-K. */
+    public int32 kBlock;
+    /** The most split-K parts the kernel accepts. */
+    public int32 maxSplits;
+
+    public ShapeCandidate(String kernel, int32 tileM, int32 tileN,
+            int32 threads, int32 kBlock, int32 maxSplits) {
+        this.kernel #= kernel;
+        this.tileM = tileM;
+        this.tileN = tileN;
+        this.threads = threads;
+        this.kBlock = kBlock;
+        this.maxSplits = maxSplits;
+    }
+}

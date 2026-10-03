@@ -1,0 +1,61 @@
+package cajeta.xpu;
+
+import cajeta.lang.String;
+
+/**
+ * ShapeVerdict — what the feasibility filter decided for one candidate
+ * (xpu-tile-shape-selection §3). `rule` is 0 for a survivor, else the rule
+ * that pruned it (1 spill, 2 register file, 3 shared memory, 4 residency).
+ * A survivor carries R4's resident count, R5's split-K count and R6's
+ * padding.
+ */
+public final class ShapeVerdict {
+    public ShapeCandidate candidate;
+    public int32 rule;
+    /** What the candidate needs against the limit, for the rule that fired. */
+    public int64 need;
+    public int64 limit;
+    /** R4: workgroups resident a multiprocessor; -1 when not computable. */
+    public int32 residentGroups;
+    /** R5: split-K parts, 1 when the grid fills the part or cannot split. */
+    public int32 splits;
+    /** R5: whether the grid, split, fills every multiprocessor. */
+    public boolean fills;
+    /** R6: padded elements that are not the problem's, per mille. */
+    public int32 padWastePerMille;
+
+    public ShapeVerdict(ShapeCandidate candidate) {
+        this.candidate #= candidate;
+        this.rule = 0;
+        this.residentGroups = -1;
+        this.splits = 1;
+        this.fills = true;
+        return;
+    }
+
+    public boolean feasible() {
+        return this.rule == 0;
+    }
+
+    /** The one-line form a refusal or a report carries. */
+    public #String text() {
+        String head = this.candidate.kernel + " ";
+        if (this.rule == 1) {
+            return head + "R1: spills " + this.need + " bytes";
+        }
+        if (this.rule == 2) {
+            return head + "R2: " + this.need + " registers a workgroup, the file holds "
+                + this.limit;
+        }
+        if (this.rule == 3) {
+            return head + "R3: " + this.need + " shared bytes, the limit is "
+                + this.limit;
+        }
+        if (this.rule == 4) {
+            return head + "R4: no workgroup fits on a multiprocessor";
+        }
+        return head + "feasible: " + this.residentGroups + " resident, "
+            + this.splits + " split, " + this.padWastePerMille
+            + " per mille padding";
+    }
+}

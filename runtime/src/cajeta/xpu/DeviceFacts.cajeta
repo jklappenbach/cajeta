@@ -1,0 +1,58 @@
+package cajeta.xpu;
+
+/**
+ * DeviceFacts — what the feasibility filter reads about the device
+ * (xpu-tile-shape-selection §3). `current()` takes them from the driver,
+ * never from a table of parts (xpu-kernel-adaptor §1.4). A zero is a fact
+ * the backend does not report, and the rule that needs it does not prune.
+ */
+public final class DeviceFacts {
+    public int64 registersPerMultiprocessor;
+    public int64 sharedBytesPerBlock;
+    /** The per-workgroup limit after the driver's opt-in; 0 when none. */
+    public int64 sharedBytesPerBlockOptIn;
+    public int64 sharedBytesPerMultiprocessor;
+    public int32 threadsPerMultiprocessor;
+    public int32 maxBlocksPerMultiprocessor;
+    public int32 multiprocessorCount;
+    public int32 maxThreadsPerBlock;
+
+    public DeviceFacts() {
+        return;
+    }
+
+    /** The active device's facts, from the driver. */
+    public static #DeviceFacts current() {
+        DeviceFacts d #= heap DeviceFacts();
+        d.registersPerMultiprocessor = Device.registersPerMultiprocessor();
+        d.sharedBytesPerBlock = Device.sharedBytesPerBlock();
+        d.sharedBytesPerBlockOptIn = Device.sharedBytesPerBlockOptIn();
+        d.sharedBytesPerMultiprocessor = Device.sharedBytesPerMultiprocessor();
+        d.threadsPerMultiprocessor = Device.threadsPerMultiprocessor();
+        d.maxBlocksPerMultiprocessor = Device.maxBlocksPerMultiprocessor();
+        d.multiprocessorCount = Device.multiprocessorCount();
+        d.maxThreadsPerBlock = Device.maxThreadsPerBlock();
+        return d;
+    }
+
+    public #DeviceFacts copy() {
+        DeviceFacts d #= heap DeviceFacts();
+        d.registersPerMultiprocessor = this.registersPerMultiprocessor;
+        d.sharedBytesPerBlock = this.sharedBytesPerBlock;
+        d.sharedBytesPerBlockOptIn = this.sharedBytesPerBlockOptIn;
+        d.sharedBytesPerMultiprocessor = this.sharedBytesPerMultiprocessor;
+        d.threadsPerMultiprocessor = this.threadsPerMultiprocessor;
+        d.maxBlocksPerMultiprocessor = this.maxBlocksPerMultiprocessor;
+        d.multiprocessorCount = this.multiprocessorCount;
+        d.maxThreadsPerBlock = this.maxThreadsPerBlock;
+        return d;
+    }
+
+    /** The most shared bytes one workgroup may use. */
+    public int64 sharedLimit() {
+        if (this.sharedBytesPerBlockOptIn > this.sharedBytesPerBlock) {
+            return this.sharedBytesPerBlockOptIn;
+        }
+        return this.sharedBytesPerBlock;
+    }
+}

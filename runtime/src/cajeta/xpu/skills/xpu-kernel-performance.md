@@ -78,6 +78,19 @@ Corollary: arithmetic-intensity arguments are only valid *inside* the
 no-spill region. A tile that spills loses more to memory traffic than any
 reuse argument can win back.
 
+`cajeta.xpu.ShapeFilter` applies these rules for you. Give it the device's
+facts, the problem's (M, N, K) and each candidate shape with its compiled
+facts, and it prunes any candidate that spills (R1), overflows the register
+file (R2) or shared memory (R3), or leaves no workgroup resident (R4). Each
+survivor carries its split-K count (R5) and its padding (R6). If nothing
+survives, `refusal()` names every candidate and the rule it failed.
+
+```cajeta
+ShapeFilter f #= heap ShapeFilter("q4kTile", DeviceFacts.current(), m, n, k);
+f.consider(#heap ShapeCandidate("q4kTile8w", 128, 128, 256, 256, 8),
+           #KernelFacts.measured("q4kTile8w", 0));
+```
+
 ---
 
 ## 3. Word size: make the device layout dword-addressable

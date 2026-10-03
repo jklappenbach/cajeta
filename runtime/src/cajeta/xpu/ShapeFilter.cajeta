@@ -1,0 +1,189 @@
+package cajeta.xpu;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+import cajeta.lang.StringBuilder;
+
+/**
+ * ShapeFilter — the feasibility filter of xpu-tile-shape-selection §3. A
+ * kernel family's candidate shapes are checked against the device's facts
+ * and the compiler's verdict for each, at the problem's exact (M, N, K),
+ * before anything is timed.
+ *
+ * - R1, no spill: any spill prunes.
+ * - R2, threads x registers fits the register file.
+ * - R3, shared bytes fit the per-workgroup limit, opt-in included.
+ * - R4, at least one workgroup is resident a multiprocessor.
+ * - R5, the grid fills the multiprocessors, or carries the split-K count
+ *   that does (cajeta-llm's `TcTile.splitsFor`, generalized). Never prunes.
+ * - R6, the padding the shape costs at the problem. Never prunes.
+ *
+ * A fact the backend does not report prunes nothing. Every pruned candidate
+ * is kept with its rule, and an empty survivor set is a named `refusal()`,
+ * not a fallback.
+ *
+ * ```cajeta
+ * ShapeFilter f #= heap ShapeFilter("q4kTile", DeviceFacts.current(), m, n, k);
+ * f.consider(#heap ShapeCandidate("q4kTile8w", 128, 128, 256, 256, 8),
+ *            #KernelFacts.measured("q4kTile8w", 0));
+ * if (f.survivorCount() == 0) { throw heap XpuLaunchException(f.refusal()); }
+ * ```
+ */
+public final class ShapeFilter {
+    String family;
+    DeviceFacts device;
+    int64 m;
+    int64 n;
+    int64 k;
+    ArrayList<ShapeVerdict> survivors;
+    ArrayList<ShapeVerdict> prunedList;
+
+    /** `family` names the family in a refusal; it must outlive the filter. */
+    public ShapeFilter(String family, DeviceFacts device, int64 m, int64 n,
+            int64 k) {
+        this.family #= family;
+        // A copy: the facts are often a call's temporary.
+        this.device #= device.copy();
+        this.m = m;
+        this.n = n;
+        this.k = k;
+        this.survivors #= heap ArrayList<ShapeVerdict>();
+        this.prunedList #= heap ArrayList<ShapeVerdict>();
+    }
+
+    /**
+     * Check one candidate and keep its verdict, which holds the candidate. A
+     * sink: `consider(#c, ...)` transfers it, `consider(c, ...)` lends it and
+     * the caller keeps it alive.
+     */
+    public void consider(ShapeCandidate c, KernelFacts kf) {
+        ShapeVerdict v #= this.check(#c, kf);
+        if (v.feasible()) {
+            this.survivors.add(#v);
+        } else {
+            this.prunedList.add(#v);
+        }
+    }
+
+    public int32 survivorCount() { return (int32) this.survivors.count(); }
+    public ShapeVerdict survivor(int32 i) { return this.survivors.get(i); }
+    public int32 prunedCount() { return (int32) this.prunedList.count(); }
+    public ShapeVerdict pruned(int32 i) { return this.prunedList.get(i); }
+
+    /**
+     * Empty when a candidate survived; otherwise one line naming the family,
+     * the problem and every candidate with the rule that pruned it.
+     */
+    public #String refusal() {
+        if (this.survivors.count() > 0L) {
+            return "";
+        }
+        StringBuilder out #= heap StringBuilder();
+        out.append("no feasible shape for " + this.family + " at " + this.m
+            + "x" + this.n + "x" + this.k + ":");
+        int32 i = 0;
+        while (i < this.prunedCount()) {
+            String line #= this.pruned(i).text();
+            out.append(" " + line + ";");
+            i = i + 1;
+        }
+        return out.toString();
+    }
+
+    #ShapeVerdict check(ShapeCandidate cand, KernelFacts kf) {
+        ShapeVerdict v #= heap ShapeVerdict(#cand);
+        ShapeCandidate c = v.candidate;
+        DeviceFacts d = this.device;
+        int64 threads = (int64) c.threads;
+        if (kf.spillBytes > 0) {
+            v.rule = 1;
+            v.need = (int64) kf.spillBytes;
+            return v;
+        }
+        if (kf.registersPerThread > 0 && d.registersPerMultiprocessor > 0L) {
+            int64 regs = threads * (int64) kf.registersPerThread;
+            if (regs > d.registersPerMultiprocessor) {
+                v.rule = 2;
+                v.need = regs;
+                v.limit = d.registersPerMultiprocessor;
+                return v;
+            }
+        }
+        int64 sharedLimit = d.sharedLimit();
+        if (kf.sharedBytes > 0 && sharedLimit > 0L
+                && (int64) kf.sharedBytes > sharedLimit) {
+            v.rule = 3;
+            v.need = (int64) kf.sharedBytes;
+            v.limit = sharedLimit;
+            return v;
+        }
+        // R4: the fewest workgroups any budget admits.
+        int64 resident = -1L;
+        if (d.maxThreadsPerBlock > 0 && c.threads > d.maxThreadsPerBlock) {
+            resident = 0L;
+        }
+        if (resident != 0L && d.threadsPerMultiprocessor > 0) {
+            resident = ShapeFilter.lower(resident,
+                (int64) d.threadsPerMultiprocessor / threads);
+        }
+        if (resident != 0L && d.maxBlocksPerMultiprocessor > 0) {
+            resident = ShapeFilter.lower(resident,
+                (int64) d.maxBlocksPerMultiprocessor);
+        }
+        if (resident != 0L && kf.registersPerThread > 0
+                && d.registersPerMultiprocessor > 0L) {
+            resident = ShapeFilter.lower(resident, d.registersPerMultiprocessor
+                / (threads * (int64) kf.registersPerThread));
+        }
+        if (resident != 0L && kf.sharedBytes > 0
+                && d.sharedBytesPerMultiprocessor > 0L) {
+            resident = ShapeFilter.lower(resident,
+                d.sharedBytesPerMultiprocessor / (int64) kf.sharedBytes);
+        }
+        if (resident == 0L) {
+            v.rule = 4;
+            return v;
+        }
+        v.residentGroups = (int32) resident;
+        // R5: split K until the grid covers every multiprocessor.
+        int64 tiles = ShapeFilter.ceilDiv(this.m, (int64) c.tileM)
+            * ShapeFilter.ceilDiv(this.n, (int64) c.tileN);
+        int64 sms = (int64) d.multiprocessorCount;
+        if (sms > 0L && tiles < sms) {
+            v.fills = false;
+            if (c.kBlock > 0) {
+                int64 nb = this.k / (int64) c.kBlock;
+                int64 sp = 2L;
+                while (sp <= (int64) c.maxSplits) {
+                    if (nb % sp == 0L) {
+                        v.splits = (int32) sp;
+                        if (tiles * sp >= sms) {
+                            v.fills = true;
+                            break;
+                        }
+                    }
+                    sp = sp + 1L;
+                }
+            }
+        }
+        // R6: the padding, per mille of the padded problem.
+        int64 pm = ShapeFilter.ceilDiv(this.m, (int64) c.tileM) * (int64) c.tileM;
+        int64 pn = ShapeFilter.ceilDiv(this.n, (int64) c.tileN) * (int64) c.tileN;
+        int64 padded = pm * pn;
+        if (padded > 0L) {
+            v.padWastePerMille = (int32) ((padded - this.m * this.n) * 1000L / padded);
+        }
+        return v;
+    }
+
+    static int64 ceilDiv(int64 a, int64 b) {
+        return (a + b - 1L) / b;
+    }
+
+    static int64 lower(int64 cur, int64 cand) {
+        if (cur < 0L || cand < cur) {
+            return cand;
+        }
+        return cur;
+    }
+}

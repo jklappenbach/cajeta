@@ -1,0 +1,42 @@
+package cajeta.xpu;
+
+import cajeta.lang.Optional;
+import cajeta.lang.String;
+
+/**
+ * KernelFacts — the compiler's and the driver's verdict for one compiled
+ * candidate (xpu-tile-shape-selection §3): registers a thread, spill bytes
+ * and shared bytes a workgroup. -1 is ABSENT, never zero: a backend that
+ * reports no register count (cpu) prunes nothing on it.
+ */
+public final class KernelFacts {
+    /** Registers a thread, -1 absent. */
+    public int32 registersPerThread;
+    /** Spill bytes a thread, -1 absent. */
+    public int32 spillBytes;
+    /** Shared bytes a workgroup, static plus dynamic, -1 absent. */
+    public int32 sharedBytes;
+
+    public KernelFacts(int32 registersPerThread, int32 spillBytes,
+            int32 sharedBytes) {
+        this.registersPerThread = registersPerThread;
+        this.spillBytes = spillBytes;
+        this.sharedBytes = sharedBytes;
+    }
+
+    /**
+     * The facts the driver measured for `kernel` on the active backend,
+     * plus the dynamic shared bytes its launch will ask for. A kernel the
+     * backend reports no registers for reads every fact absent.
+     */
+    public static #KernelFacts measured(String kernel, int32 dynamicSharedBytes) {
+        Optional<int32> regs = KernelManifest.measuredRegsPerThread(kernel);
+        if (!regs.isPresent()) {
+            return heap KernelFacts(-1, -1, -1);
+        }
+        // measuredSpillBytes is empty for a kernel that does not spill.
+        int32 spill = KernelManifest.measuredSpillBytes(kernel).orElse(0);
+        int32 lds = KernelManifest.measuredLdsStaticBytes(kernel).orElse(0);
+        return heap KernelFacts(regs.get(), spill, lds + dynamicSharedBytes);
+    }
+}
