@@ -1466,6 +1466,24 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                                         a->getName() + ".ctx");
             arr->setAlignment(a->getAlign());
             ctxArray[a] = arr;
+            // ZERO-FILLED (xpu-kernel-adaptor 4.2.1.15). The array is stack
+            // memory in the wrapper. A work-item that skips the region that
+            // writes its slot, and reads the slot in a later region its
+            // predicate does not exclude, otherwise reads the PREVIOUS
+            // kernel's frame: address-derived, so it moves with ASLR. On a
+            // 16-lane AVX-512 host a stale `mask`/`active` byte enabled a lane
+            // whose offset was never computed, and q4kQ8WaveMatVecKernel's
+            // masked load faulted on 2.7 GB, but only after
+            // q6kQ8WaveMatVecKernel had run. Zero is "inactive" for every
+            // flag and 0 for every value. It costs one memset of
+            // ntid x size per array per launch.
+            const llvm::DataLayout& dl = wrapper->getParent()->getDataLayout();
+            const uint64_t elem = dl.getTypeAllocSize(a->getAllocatedType());
+            llvm::Value* bytes = eb.CreateMul(
+                eb.CreateZExt(ntidAll, llvm::Type::getInt64Ty(ctx)),
+                llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), elem));
+            eb.CreateMemSet(arr, llvm::ConstantInt::get(i8b, 0), bytes,
+                            arr->getAlign());
         }
     }
 

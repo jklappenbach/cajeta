@@ -29,6 +29,11 @@
 #include "../PortableEnv.h"
 #include "cajeta/xpu/XpuTarget.h"
 
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <regex>
+#include <sstream>
 #include <string>
 
 using cajeta_test::CajetaJit;
@@ -227,6 +232,50 @@ TEST(XpuCpuFissionUniformize, theWaveMatVecShapeUnderAUniformGuardLowersAndAgree
     const int r = runOnCpu(std::string(kPreamble) + kGuardedSrc);
     EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100 wrong row sum, 101 the "
                        "guarded-out row was written)";
+}
+
+// A per-work-item context array (`<local>.ctx`: a value that crosses regions,
+// and the `mask` / `active` flags of a predicated arm or loop) is a stack
+// allocation in the cpu wrapper. Uninitialized, a work-item that skipped the
+// region writing its slot and reads it in a later region gets whatever the
+// PREVIOUS kernel's frame left there. That is address-derived, and it moves
+// with ASLR. Measured 2026-10-02 on a 16-lane AVX-512 host (cajeta-llm
+// xpu-kernel-adaptor 4.2.1.15): q4kQ8WaveMatVecKernel's release build faulted
+// on a 2.7 GB offset, but only right after q6kQ8WaveMatVecKernel ran, and
+// zero-filling the arrays stopped it (0/5 against 5/5). Every context array
+// starts zeroed: a flag that was never set reads "inactive".
+TEST(XpuCpuFissionUniformize, everyContextArrayStartsZeroed) {
+    std::mt19937_64 rng(std::random_device{}());
+    const std::filesystem::path dir = std::filesystem::temp_directory_path()
+        / ("cajeta-ctxzero-" + std::to_string(rng()));
+    std::filesystem::create_directories(dir);
+    setenv("CAJETA_XPU_CPU_DUMP_PREOPT", dir.string().c_str(), 1);
+    const int r = runOnCpu(std::string(kPreamble) + kGuardedSrc);
+    unsetenv("CAJETA_XPU_CPU_DUMP_PREOPT");
+    EXPECT_EQ(r, 0) << "the guarded wave mat-vec shape must still agree";
+    std::string ir;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) {
+        std::ifstream in(e.path());
+        std::stringstream ss;
+        ss << in.rdbuf();
+        ir += ss.str();
+    }
+    std::filesystem::remove_all(dir);
+    ASSERT_FALSE(ir.empty()) << "no pre-opt dump was written";
+    const std::regex allocaRe(R"((%[A-Za-z0-9_.]+\.ctx) = alloca)");
+    int arrays = 0;
+    for (auto it = std::sregex_iterator(ir.begin(), ir.end(), allocaRe);
+         it != std::sregex_iterator(); ++it) {
+        const std::string name = (*it)[1].str();
+        ++arrays;
+        const std::regex zeroed("llvm\\.memset[^\\n]*" +
+                                std::regex_replace(name, std::regex(R"(\.)"), R"(\.)") +
+                                ", i8 0,");
+        EXPECT_TRUE(std::regex_search(ir, zeroed))
+            << name << " is allocated and never zero-filled";
+    }
+    EXPECT_GT(arrays, 0) << "the shape no longer produces context arrays; the "
+                            "test needs a shape that does";
 }
 
 // ---- (c) the top-k shape: tainted loops nested in a uniform loop -------- //
