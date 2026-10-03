@@ -3,6 +3,7 @@ package cajeta.xpu;
 import cajeta.lang.Optional;
 import cajeta.lang.String;
 import cajeta.lang.StringBuilder;
+import cajeta.lang.System;
 
 /**
  * ShapeChoice — the measured choice among a family's feasible shapes
@@ -27,6 +28,17 @@ public final class ShapeChoice {
     public static int32 rounds = 5;
     /** A lead under this, per mille, is a tie. */
     public static int32 tiePerMille = 30;
+
+    /** At or above this foreign load, per cent, a measurement is not cached. */
+    public static int32 foreignLoadLimit = 25;
+    /**
+     * A test's fixed reading of the device's foreign load; -2 reads the
+     * device. The reading is otherwise reused for 5 s, so a family's first
+     * use pays for it once, not once per shape.
+     */
+    public static int32 foreignLoadOverride = -2;
+    static int32 lastForeignLoad = -1;
+    static int64 lastForeignLoadAt = 0L;
 
     static String[] overrideFamily;
     static String[] overrideKernel;
@@ -101,8 +113,15 @@ public final class ShapeChoice {
             }
             return r;
         }
+        int32 busy = ShapeChoice.foreignLoad();
         ShapeChoice.time(r, f, probe);
         if (r.survivor < 0) {
+            return r;
+        }
+        if (busy >= ShapeChoice.foreignLoadLimit) {
+            String why #= "not cached: the device was " + busy
+                + "% busy with another process (foreign load) while it was timed";
+            r.note #= why;
             return r;
         }
         Autotune.rememberFor(dir, name, r.survivor, bid);
@@ -164,6 +183,19 @@ public final class ShapeChoice {
             r.tie = r.marginPerMille < ShapeChoice.tiePerMille;
         }
         return;
+    }
+
+    static int32 foreignLoad() {
+        if (ShapeChoice.foreignLoadOverride != -2) {
+            return ShapeChoice.foreignLoadOverride;
+        }
+        int64 now = System.currentTimeMillis();
+        if (ShapeChoice.lastForeignLoadAt == 0L
+                || now - ShapeChoice.lastForeignLoadAt > 5000L) {
+            ShapeChoice.lastForeignLoad = Device.foreignLoadPercent();
+            ShapeChoice.lastForeignLoadAt = now;
+        }
+        return ShapeChoice.lastForeignLoad;
     }
 
     /** The median of `n` samples from `at`, without disturbing them. */

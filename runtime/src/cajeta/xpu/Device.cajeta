@@ -725,8 +725,24 @@ public final class Device {
         return Device.nativeDriverVersion();
     }
 
+    /**
+     * How busy another process keeps the GPU, 0 to 100, or -1 when it cannot
+     * be read (not CUDA, no NVML). A foreign compute process reads 100; where
+     * the platform lists none (WSL2), the device's utilization, sampled three
+     * times over 200 ms and taken at its lowest so this process's own
+     * finished work does not count. Call it with this process idle.
+     *
+     * @EntryPoint
+     */
+    public static int32 foreignLoadPercent() {
+        return Device.nativeForeignLoad();
+    }
+
     @Native("__cajeta_xpu_device_geometry")
     private static int64 nativeGeometry(int32 key);
+
+    @Native("__cajeta_xpu_foreign_load")
+    private static int32 nativeForeignLoad();
 
     @Native("__cajeta_xpu_device_uuid")
     private static int32 nativeUuid(int8[] out);

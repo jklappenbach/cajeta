@@ -1700,3 +1700,95 @@ static struct cajeta_kparams* cajeta_xpu_find_kparams(const char* name) {
             return &g_xpu_kparams[i];
     return NULL;
 }
+
+/* --- foreign load (xpu-tile-shape-selection §7.12) ------------------------ *
+ * How busy another process keeps the active GPU, 0..100, or -1 when this
+ * cannot be read (not CUDA, no NVML). A foreign compute process in NVML's
+ * list reads 100. Where the platform lists none -- measured on WSL2: an
+ * empty list with a foreign CUDA spinner running -- utilization answers,
+ * and it is the WHOLE device's, so this process's own finished work would
+ * read as foreign: the reading is the MINIMUM of three samples 100 ms apart,
+ * long enough for our work to decay out of NVML's window while a foreign
+ * process that is still running stays. */
+typedef struct { unsigned int gpu, memory; } CajNvmlUtil;
+typedef struct {
+    unsigned int pid;
+    unsigned long long usedGpuMemory;
+    unsigned int gpuInstanceId, computeInstanceId;
+} CajNvmlProc;
+
+static struct {
+    int loaded;   /* 0 untried, 1 ready, -1 unavailable */
+    void* lib;
+    void* dev;
+    int (*util)(void*, CajNvmlUtil*);
+    int (*procs)(void*, unsigned int*, CajNvmlProc*);
+} g_xpu_nvml;
+static pthread_mutex_t g_xpu_nvml_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int cajeta_xpu_nvml_init_locked(void) {
+    if (g_xpu_nvml.loaded) return g_xpu_nvml.loaded == 1;
+    g_xpu_nvml.loaded = -1;
+    CajetaXpuRawDevice raw;
+    if (!cajeta_xpu_query_raw_device(&raw) || !raw.hasUuid
+            || strncmp(raw.archName, "sm_", 3) != 0)
+        return 0;
+#if defined(_WIN32)
+    g_xpu_nvml.lib = cajeta_xpu_libopen("nvml.dll");
+#else
+    g_xpu_nvml.lib = cajeta_xpu_libopen("libnvidia-ml.so.1");
+#endif
+    if (!g_xpu_nvml.lib) return 0;
+    int (*init)(void) = (int (*)(void)) cajeta_xpu_libsym(g_xpu_nvml.lib, "nvmlInit_v2");
+    int (*byUuid)(const char*, void**) = (int (*)(const char*, void**))
+        cajeta_xpu_libsym(g_xpu_nvml.lib, "nvmlDeviceGetHandleByUUID");
+    *(void**) (&g_xpu_nvml.util) =
+        cajeta_xpu_libsym(g_xpu_nvml.lib, "nvmlDeviceGetUtilizationRates");
+    *(void**) (&g_xpu_nvml.procs) =
+        cajeta_xpu_libsym(g_xpu_nvml.lib, "nvmlDeviceGetComputeRunningProcesses_v3");
+    if (!init || !byUuid || !g_xpu_nvml.util || init() != 0) return 0;
+    /* NVML names a device by the CUDA UUID in its canonical text form. */
+    const uint8_t* u = raw.uuid;
+    char name[48];
+    snprintf(name, sizeof(name),
+             "GPU-%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9],
+             u[10], u[11], u[12], u[13], u[14], u[15]);
+    if (byUuid(name, &g_xpu_nvml.dev) != 0 || !g_xpu_nvml.dev) return 0;
+    g_xpu_nvml.loaded = 1;
+    return 1;
+}
+
+int32_t __cajeta_xpu_foreign_load(void) {
+    pthread_mutex_lock(&g_xpu_nvml_lock);
+    int up = cajeta_xpu_nvml_init_locked();
+    pthread_mutex_unlock(&g_xpu_nvml_lock);
+    if (!up) return -1;
+    if (g_xpu_nvml.procs) {
+        CajNvmlProc ps[64];
+        unsigned int n = 64;
+        if (g_xpu_nvml.procs(g_xpu_nvml.dev, &n, ps) == 0) {
+#if defined(_WIN32)
+            unsigned int self = (unsigned int) GetCurrentProcessId();
+#else
+            unsigned int self = (unsigned int) getpid();
+#endif
+            for (unsigned int i = 0; i < n && i < 64; ++i)
+                if (ps[i].pid != self) return 100;
+        }
+    }
+    int lowest = -1;
+    for (int k = 0; k < 3; ++k) {
+        if (k) {
+#if defined(_WIN32)
+            Sleep(100);
+#else
+            usleep(100000);
+#endif
+        }
+        CajNvmlUtil ut = {0, 0};
+        if (g_xpu_nvml.util(g_xpu_nvml.dev, &ut) != 0) return -1;
+        if (lowest < 0 || (int) ut.gpu < lowest) lowest = (int) ut.gpu;
+    }
+    return lowest;
+}

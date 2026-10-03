@@ -84,7 +84,10 @@ public class M {
 int run(const std::string& body, const std::string& dir) {
     std::string program = std::string(kHead) +
         "    public static int32 run() {\n"
-        "        String dir = \"" + dir + "\";\n" + body +
+        "        String dir = \"" + dir + "\";\n"
+        // The device's real load is not under test here, and the box's GPU
+        // is shared with CI runners: read it as idle unless a test says not.
+        "        ShapeChoice.foreignLoadOverride = 0;\n" + body +
         "    }\n"
         "}\n";
     CajetaJit::Options o;
@@ -267,4 +270,29 @@ TEST(XpuShapeChoice, theKeyCarriesTheDeviceUuidAndDriverOnNvptx) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 0);
+}
+
+// 4.6.1.7: a measurement taken while another process uses the device is
+// returned but not cached, and the result says why by name. Measured on
+// Phoenix's WSL2: NVML lists no processes there, but a foreign spinner reads
+// 87% utilization against 0% idle, so the guard reads utilization.
+TEST(XpuShapeChoice, aMeasurementUnderForeignLoadIsNotCached) {
+    EXPECT_EQ(run(R"CJ(
+        ShapeChoice.foreignLoadOverride = 87;
+        ShapeFilter f #= M.three(128);
+        Fake p #= heap Fake(300L, 280L, 307L);
+        ShapeResult r #= ShapeChoice.choose(dir, f, p);
+        if (!r.timed || !r.kernel.equals("b")) { return 1; }
+        if (r.note.indexOf("foreign load") < 0 || r.note.indexOf("87%") < 0) { return 2; }
+        Fake q #= heap Fake(300L, 280L, 307L);
+        ShapeResult s #= ShapeChoice.choose(dir, f, q);
+        if (s.fromCache || q.calls == 0) { return 3; }
+        ShapeChoice.foreignLoadOverride = 0;
+        ShapeResult t #= ShapeChoice.choose(dir, f, q);
+        if (t.note.count() != 0L) { return 4; }
+        Fake w #= heap Fake(1L, 1L, 1L);
+        ShapeResult u #= ShapeChoice.choose(dir, f, w);
+        if (!u.fromCache || w.calls != 0) { return 5; }
+        return 0;
+)CJ", freshDir()), 0);
 }
