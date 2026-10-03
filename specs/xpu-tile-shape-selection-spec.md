@@ -234,7 +234,22 @@ used until a winner is measured.
 - 7.13 Spelling: a family lists its candidates with `@Shapes`, a list of
   instantiations on the family class (Julian, 2026-10-03).
 
-### 7.12 Still open
+### 7.12 Cache invalidation (Julian, 2026-10-03)
 
-- How the cache is invalidated when the driver or clocks change, not only
-  the build. The rows-per-block knob keys on the build id alone today.
+The cache must re-measure whenever something could change which candidate
+wins.
+- **Key:** an entry is keyed by the device's UUID (not its name), the driver
+  version, the build id, the family and the exact (M, N, K). A change to any
+  of them misses the cache, and the next first use times again. The
+  rows-per-block knob keys on the build id alone today.
+- **Margin:** the entry records how far the winner led. A lead under about
+  3% is recorded as a TIE, and either shape is acceptable. Clocks are NOT
+  part of the key, since on Phoenix they move constantly. A clock or
+  power-limit change can only reorder close candidates, and those are ties.
+- **Measurement guard:** the probe refuses to cache a measurement taken
+  while another process uses the device (foreign compute apps, a busy CI
+  runner on the box). It interleaves and repeats the candidates, because
+  the box's clock is bimodal.
+- **Reset:** `cajeta tune --reset` clears the cache by hand.
+- **Not yet:** periodic re-checks of the winner against the runner-up, until
+  there is evidence of drift the above misses.
