@@ -58,7 +58,9 @@ std::string unloweredHeldBy(const Annotatable& kernel, const std::string& backen
     if (!named) return "";
     // hostWaveBelow = N: the hold is conditional on the cpu host's wave. On a
     // host at or above N the kernel is expected to lower, and the hold is
-    // neither applied nor stale. Unknown host wave (0): the hold applies.
+    // neither applied nor stale. Below N it holds a kernel that does not
+    // lower and permits one that does (noteKernelLowered). Unknown host wave
+    // (0): the hold applies.
     if (be == "cpu") {
         if (auto* below = ann->findArg("hostWaveBelow");
                 below && below->kind == AnnotationArgKind::Int64) {
@@ -138,6 +140,18 @@ void noteKernelLowered(const Annotatable& kernel,
                        const std::string& backend) {
     const std::string held = unloweredHeldBy(kernel, backend);
     if (held.empty()) return;
+    // A CONDITIONAL hold (hostWaveBelow = N) is never stale. Below N it
+    // permits lowering rather than demanding a failure: the host's wave is
+    // the width LLVM prefers, and an AVX-512 part tuned to prefer 256 bits
+    // reads 8 while its 32 registers still let a 32-lane kernel lower
+    // (2026-10-03, cajeta-cabra CI 37129095762). At or above N the hold
+    // does not apply at all.
+    if (canonicalBackend(backend) == "cpu") {
+        if (auto ann = kernel.findAnnotation(XpuAttr::Unlowered))
+            if (auto* below = ann->findArg("hostWaveBelow");
+                    below && below->kind == AnnotationArgKind::Int64)
+                return;
+    }
     if (kernelGateWarns()) {
         fprintf(stderr,
                 "cajeta: warning: [xpu-kernel-skipped] %s: STALE: it has %s device code "

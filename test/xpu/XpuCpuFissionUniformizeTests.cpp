@@ -56,6 +56,7 @@ int runOnCpu(const std::string& src) {
 
 const char* kPreamble = R"CJ(
 package test;
+import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
@@ -232,6 +233,33 @@ TEST(XpuCpuFissionUniformize, theWaveMatVecShapeUnderAUniformGuardLowersAndAgree
     const int r = runOnCpu(std::string(kPreamble) + kGuardedSrc);
     EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100 wrong row sum, 101 the "
                        "guarded-out row was written)";
+}
+
+// The runtime's cpu wave is the wave the compiler BUILT the kernels at, not
+// a fresh CPUID answer. The two can disagree on one machine: on an Intel
+// AVX-512 part tuned to prefer 256-bit vectors, the compiler vectorizes at 8
+// while CPUID says 16. A launcher that sizes its geometry from
+// Device.waveSize() then maps rows onto a wave that does not exist (found
+// 2026-10-03 beside the stale-hold gate failure). Built here for SSE2, 4
+// lanes, on an AVX2 host whose CPUID says 8: the kernel's Wave.width() and the
+// host's Device.waveSize() must both answer 4.
+const char* kWaveAgreeSrc = R"CJ(
+    public static int32 run() {
+        uint32 kw = probeWidth();
+        int32 dw = Device.waveSize();
+        return (int32) kw * 100 + dw;
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, theRuntimeWaveIsTheWaveTheKernelsWereBuiltAt) {
+    setenv("CAJETA_XPU_CPU_MCPU", "x86-64", 1);
+    setenv("CAJETA_XPU_CPU_MATTR", "+sse2", 1);
+    const int r = runOnCpu(std::string(kPreamble) + kWaveAgreeSrc);
+    unsetenv("CAJETA_XPU_CPU_MCPU");
+    unsetenv("CAJETA_XPU_CPU_MATTR");
+    EXPECT_EQ(r, 404) << "kernel wave " << r / 100 << ", Device.waveSize() "
+                      << r % 100 << " (both must be the built wave, 4)";
 }
 
 // A per-work-item context array (`<local>.ctx`: a value that crosses regions,

@@ -464,6 +464,15 @@ static int caj_resolve_worker_cap(void);
 #if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 #endif
+/* The wave the compiler built this program's cpu kernels at, set by each cpu
+ * kernel's registration constructor; 0 when none registered. Preferred over
+ * the CPUID answer below, because the two disagree on an AVX-512 part tuned
+ * to prefer 256-bit vectors (built 8, CPUID 16). */
+static int32_t g_cpu_built_wave = 0;
+void __cajeta_xpu_set_cpu_wave(int32_t lanes) {
+    if (lanes > 0) g_cpu_built_wave = lanes;
+}
+
 static int64_t cajeta_xpu_host_simd_lanes_i32(void) {
 #if defined(__x86_64__) || defined(__i386__)
     unsigned a, b, c, d;
@@ -575,7 +584,9 @@ static int64_t cajeta_xpu_cpu_geometry(CajetaXpuGeometryKey key) {
             return cores;
         }
         case CAJETA_XPU_GEO_SIMDS_PER_MP:          return 1;
-        case CAJETA_XPU_GEO_WAVE_SIZE:             return cajeta_xpu_host_simd_lanes_i32();
+        case CAJETA_XPU_GEO_WAVE_SIZE:
+            return g_cpu_built_wave > 0 ? (int64_t) g_cpu_built_wave
+                                        : cajeta_xpu_host_simd_lanes_i32();
         case CAJETA_XPU_GEO_TOTAL_VRAM_BYTES:      return cajeta_xpu_host_physical_bytes();
         case CAJETA_XPU_GEO_INTEGRATED:            return 1;
         case CAJETA_XPU_GEO_MAX_GRID_DIM_X:        return INT32_MAX;

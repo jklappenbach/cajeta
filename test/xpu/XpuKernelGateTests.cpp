@@ -204,6 +204,24 @@ TEST(XpuKernelGate, aConditionalHoldThisHostReachesIsNotStale) {
     EXPECT_EQ(b.log.find("STALE"), std::string::npos) << b.log;
 }
 
+// Below its bound a conditional hold PERMITS lowering; it does not demand
+// that the kernel fail. Found 2026-10-03: on an Intel AVX-512 host tuned to
+// prefer 256-bit vectors (GitHub's ubuntu-latest), the host wave reads 8, so
+// hostWaveBelow = 16 applied, yet the id down-combine kernels lowered at 32
+// lanes using AVX-512's 32 registers. The gate called the hold STALE, and
+// cajeta-llm 0.1.0 failed to build there (cajeta-cabra CI 37129095762).
+// Reproduced on Phoenix with CAJETA_XPU_CPU_MCPU=icelake-server and
+// +prefer-256-bit. A conditional hold is stale nowhere: below N either
+// outcome is allowed, and at or above N it does not apply.
+TEST(XpuKernelGate, aConditionalHoldBelowItsBoundAllowsTheKernelToLower) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(program(TRACKED,
+        "    @Unlowered(backend = \"cpu\", tracked = \"xpu-kernel-adaptor 4.2.1.13\", "
+        "hostWaveBelow = 1024)\n"), "cpu");
+    EXPECT_EQ(b.rc, 0) << b.log;
+    EXPECT_EQ(b.log.find("STALE"), std::string::npos) << b.log;
+}
+
 // Every failing kernel is named before the build fails, so a build with 53
 // of them reports 53 rather than the first.
 TEST(XpuKernelGate, everyUnloweredKernelIsNamedBeforeTheBuildFails) {

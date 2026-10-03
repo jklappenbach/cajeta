@@ -953,13 +953,17 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
         llvm::FunctionCallee regFn = hostModule.getOrInsertFunction(
             "__cajeta_xpu_register_cpu_kernel", regTy);
+        // void __cajeta_xpu_set_cpu_wave(i32 lanes)
+        llvm::FunctionCallee setWaveFn = hostModule.getOrInsertFunction(
+            "__cajeta_xpu_set_cpu_wave",
+            llvm::FunctionType::get(voidTy, {llvm::Type::getInt32Ty(ctx)}, false));
 
         // Host TargetMachine, for LoopVectorize's TTI. Null is tolerated.
         std::unique_ptr<llvm::TargetMachine> hostTm = createCpuTargetMachine();
         // The host's own wave, for @Unlowered(hostWaveBelow = N): the native
         // f32 vector width with no per-kernel marker in play.
+        unsigned hostW = 0;
         {
-            unsigned hostW = 0;
             if (hostTm) {
                 llvm::Function* probe = llvm::Function::Create(
                     llvm::FunctionType::get(voidTy, false),
@@ -1516,6 +1520,14 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::Value* nameStr =
                 b.CreateGlobalString(entryName, "xpu.cpu.kname." + entryName);
             b.CreateCall(regFn, {nameStr, thunk});
+            // The host wave these kernels were BUILT at, so Device.waveSize()
+            // answers the compiler's width rather than a fresh CPUID read.
+            // They differ on an AVX-512 part tuned to prefer 256-bit vectors
+            // (compiled 8, CPUID 16), and a launcher sizing geometry from the
+            // runtime would map rows onto a wave that does not exist.
+            if (hostW > 0)
+                b.CreateCall(setWaveFn,
+                             {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), hostW)});
             emitManifestRegistration(hostModule, b, nameStr, /*CAJ_XPU_CPU=*/3,
                                      "", manifest);
             b.CreateRetVoid();
