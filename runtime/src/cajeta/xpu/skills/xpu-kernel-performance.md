@@ -91,6 +91,18 @@ f.consider(#heap ShapeCandidate("q4kTile8w", 128, 128, 256, 256, 8),
            #KernelFacts.measured("q4kTile8w", 0));
 ```
 
+`cajeta.xpu.ShapeChoice` then picks among the survivors by measurement. You
+implement `ShapeProbe.timeNanos(i)` to time one run of survivor `i` with
+`KernelTimer`. `choose` times them in interleaved rounds and caches the
+fastest median for this device, driver, build and exact (M, N, K). A lead
+under 3% is reported as a tie. A measurement taken while another process
+keeps the GPU busy is returned but not cached. `setShapeOverride` forces a
+shape for a sweep, and `cajeta tune --reset <dir>` empties the cache.
+
+```cajeta
+ShapeResult r #= ShapeChoice.choose(tuneDir, f, probe);
+```
+
 ---
 
 ## 3. Word size: make the device layout dword-addressable
