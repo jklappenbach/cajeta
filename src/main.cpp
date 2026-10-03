@@ -24,6 +24,7 @@
 #include "cajeta/cli/ArchiveCommands.h"
 #include "cajeta/cli/DocCommand.h"
 #include "cajeta/cli/IdeCommands.h"
+#include "cajeta/cli/TuneCommand.h"
 #include "cajeta/cli/NativeCommands.h"
 #include "cajeta/cli/StdlibCommands.h"
 #include "cajeta/cli/XpuProfileCommand.h"
@@ -411,6 +412,13 @@ int main(int argc, const char* argv[]) {
     // (tools/cajetadoc/), the same code as the standalone `cajetadoc` binary.
     if (argc >= 2 && std::string(argv[1]) == "doc") {
         return cajeta::doc::dispatchDoc(argc, argv);
+    }
+
+    // `cajeta tune --reset <dir>` — empty a tune store, so every tuned value
+    // and cached kernel shape is measured again (xpu-tile-shape-selection
+    // §7.12).
+    if (argc >= 2 && std::string(argv[1]) == "tune") {
+        return cajeta::dispatchTune(argc, argv);
     }
 
     // `cajeta ide <install|uninstall|list>` — manage the bundled IntelliJ IDEA
