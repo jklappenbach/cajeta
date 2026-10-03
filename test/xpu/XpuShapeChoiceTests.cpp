@@ -14,6 +14,7 @@
 #include "gtest/gtest.h"
 
 #include "../jit/JitTestHelper.h"
+#include "XpuDeviceTestUtil.h"
 #include "cajeta/xpu/XpuTarget.h"
 
 #include <cstdint>
@@ -28,6 +29,7 @@ namespace {
 const char* kHead = R"CJ(
 package test;
 import cajeta.lang.String;
+import cajeta.xpu.Device;
 import cajeta.xpu.DeviceFacts;
 import cajeta.xpu.KernelFacts;
 import cajeta.xpu.ShapeCandidate;
@@ -219,4 +221,50 @@ TEST(XpuShapeChoice, noSurvivorRefusesAndOneSurvivorIsNotTimed) {
         if (s.survivor != 0 || s.timed || p.calls != 0) { return 2; }
         return 0;
 )CJ", freshDir()), 0);
+}
+
+// 4.6.1.5: the cache key carries the device's UUID and the driver's version,
+// so an entry written on another device or under another driver is not
+// found, and is measured again (by the same build-id path the rebuild test
+// above pins). The identity is the device the other Device facts describe:
+// empty when the active backend is cpu, the GPU's when the query reaches one
+// (a program with no kernels has no active backend, and asks the driver).
+TEST(XpuShapeChoice, theKeyLeadsWithTheDeviceIdentity) {
+    EXPECT_EQ(run(R"CJ(
+        String be #= Device.activeBackend();
+        String u #= Device.uuid();
+        if (be.equals("cpu") && u.count() != 0L) { return 1; }
+        if (u.count() != 0L && u.count() != 32L) { return 2; }
+        ShapeFilter f #= M.three(128);
+        String id #= ShapeChoice.buildIdOf(f);
+        String head #= "u" + u + "d" + Device.driverVersion() + "|";
+        if (id.indexOf(head) != 0L) { return 3; }
+        return 0;
+)CJ", freshDir()), 0);
+}
+
+TEST(XpuShapeChoice, theKeyCarriesTheDeviceUuidAndDriverOnNvptx) {
+    if (!cajeta::xpu::nvidia::CudaDriver::available())
+        GTEST_SKIP() << "no CUDA driver";
+    std::string program = std::string(kHead) + R"CJ(
+    public static int32 run() {
+        String u #= Device.uuid();
+        if (u.count() != 32L) { return 1; }
+        int32 d = Device.driverVersion();
+        if (d < 10000) { return 2; }
+        ShapeFilter f #= M.three(128);
+        String id #= ShapeChoice.buildIdOf(f);
+        String head #= "u" + u + "d" + d + "|";
+        if (id.indexOf(head) != 0L) { return 3; }
+        return 0;
+    }
+}
+)CJ";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(program, "test.M", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 0);
 }

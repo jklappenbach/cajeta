@@ -93,6 +93,13 @@ typedef struct CajetaXpuRawDevice {
      * VK_AMD_shader_core_properties); 0 means the query could not answer and
      * cajeta_xpu_simds_per_mp's arch-name constant stands. */
     uint32_t simdsPerMP;
+    /* The device's identity, APPENDED: its 16-byte UUID and the driver's
+     * version, so a tuned answer is keyed to the exact device and driver it
+     * was measured on (xpu-tile-shape-selection §7.12). hasUuid 0 and
+     * driverVersion 0 mean the backend did not report them. */
+    uint8_t  uuid[16];
+    int32_t  hasUuid;
+    int32_t  driverVersion;
 } CajetaXpuRawDevice;
 
 /* Scheduler partitions per multiprocessor: an ARCH constant, not a driver

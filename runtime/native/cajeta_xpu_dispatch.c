@@ -637,6 +637,38 @@ int64_t __cajeta_xpu_device_geometry(int32_t key) {
     return 0;
 }
 
+/* The active device's identity (xpu-tile-shape-selection §7.12): its UUID as
+ * 32 lowercase hex characters into a cajeta int8[] of at least 32 elements
+ * (data after the array's 8-byte header), returning 1, or 0 when the backend
+ * reports none (cpu, Vulkan today). */
+int32_t __cajeta_xpu_device_uuid(void* arr) {
+    if (!arr) return 0;
+    char* out = (char*) arr + 8;
+    if (cajeta_xpu_active_backend() == CAJ_XPU_CPU) return 0;
+    if (g_xpu_geo_state == 0) {
+        g_xpu_geo_state = cajeta_xpu_query_raw_device(&g_xpu_geo) && g_xpu_geo.valid
+                        ? 1 : -1;
+    }
+    if (g_xpu_geo_state != 1 || !g_xpu_geo.hasUuid) return 0;
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 16; ++i) {
+        out[2 * i]     = hex[g_xpu_geo.uuid[i] >> 4];
+        out[2 * i + 1] = hex[g_xpu_geo.uuid[i] & 15];
+    }
+    return 1;
+}
+
+/* The driver's version as it reports it (CUDA 12080 is 12.8), 0 unknown. */
+int32_t __cajeta_xpu_driver_version(void) {
+    if (cajeta_xpu_active_backend() == CAJ_XPU_CPU) return 0;
+    if (g_xpu_geo_state == 0) {
+        g_xpu_geo_state = cajeta_xpu_query_raw_device(&g_xpu_geo) && g_xpu_geo.valid
+                        ? 1 : -1;
+    }
+    if (g_xpu_geo_state != 1) return 0;
+    return g_xpu_geo.driverVersion;
+}
+
 // Per-kernel footprint, MEASURED on the loaded module. The compile-time
 // manifest models occupancy for a part that is not present; this asks the
 // driver what it actually allocated, which is the number that is true on the

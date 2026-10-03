@@ -92,6 +92,8 @@ struct cajeta_cuda_api {
     int (*cuDeviceGetAttribute)(int*, int, int);
     int (*cuDeviceTotalMem)(size_t*, int);
     int (*cuMemGetInfo)(size_t*, size_t*);
+    int (*cuDeviceGetUuid)(unsigned char*, int);   // CUuuid is 16 bytes
+    int (*cuDriverGetVersion)(int*);
     // R4: the PRIMARY context is a process-wide singleton shared with OptiX.
     int (*cuDevicePrimaryCtxRetain)(void**, int);
     int (*cuCtxSetCurrent)(void*);   // H9: bind the ctx to the launching thread
@@ -690,6 +692,13 @@ static int cajeta_xpu_cuda_init_locked(void) {
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuDeviceTotalMem_v2");
     *(void**) (&g_xpu_cuda.cuMemGetInfo) =                    // optional (non-fatal)
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemGetInfo_v2");
+    *(void**) (&g_xpu_cuda.cuDeviceGetUuid) =                 // optional (non-fatal)
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuDeviceGetUuid_v2");
+    if (!g_xpu_cuda.cuDeviceGetUuid)
+        *(void**) (&g_xpu_cuda.cuDeviceGetUuid) =
+            cajeta_xpu_libsym(g_xpu_cuda.lib, "cuDeviceGetUuid");
+    *(void**) (&g_xpu_cuda.cuDriverGetVersion) =              // optional (non-fatal)
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuDriverGetVersion");
     CAJ_BIND(cuDevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain");  // NO _v2 suffix
     CAJ_BIND(cuCtxSetCurrent, "cuCtxSetCurrent");
     CAJ_BIND(cuModuleLoadData, "cuModuleLoadData");
@@ -939,6 +948,8 @@ struct cajeta_hip_api {
     int (*hipGetDevicePropertiesR0600)(void*, int);
     int (*hipDeviceGetAttribute)(int*, int, int);
     int (*hipMemcpyDtoD)(void*, void*, size_t);
+    int (*hipDeviceGetUuid)(unsigned char*, int);  // hipUUID is 16 bytes
+    int (*hipDriverGetVersion)(int*);
     // Device memory size; on a UMA part `total` is the GTT-visible pool.
     int (*hipMemGetInfo)(size_t*, size_t*);
 };
@@ -1176,6 +1187,8 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipDeviceGetAttribute, "hipDeviceGetAttribute");
     CAJ_HBIND_OPT(hipMemcpyDtoD, "hipMemcpyDtoD");
     CAJ_HBIND_OPT(hipMemGetInfo, "hipMemGetInfo");
+    CAJ_HBIND_OPT(hipDeviceGetUuid, "hipDeviceGetUuid");
+    CAJ_HBIND_OPT(hipDriverGetVersion, "hipDriverGetVersion");
     #undef CAJ_HBIND_OPT
     // The one window rocprofiler can be configured in: it intercepts HIP while
     // HIP loads, so this runs after the symbols bind and BEFORE hipInit.
@@ -1356,6 +1369,13 @@ static int cajeta_xpu_cuda_fill_raw_device(CajetaXpuRawDevice* out) {
         if (g_xpu_cuda.cuDeviceTotalMem(&tot, dev) == 0 && tot > 0)
             out->totalGlobalMemBytes = (uint64_t) tot;
     }
+    if (g_xpu_cuda.cuDeviceGetUuid
+            && g_xpu_cuda.cuDeviceGetUuid(out->uuid, dev) == 0)
+        out->hasUuid = 1;
+    v = 0;
+    if (g_xpu_cuda.cuDriverGetVersion
+            && g_xpu_cuda.cuDriverGetVersion(&v) == 0 && v > 0)
+        out->driverVersion = v;
     return 1;
 }
 
@@ -1454,6 +1474,15 @@ int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
         if (out->integrated && out->memoryClockKHz &&
             cajeta_xpu_amdgpu_apu_vram_type() == 12)
             out->memoryClockKHz *= 4;
+    }
+    if (g_xpu_hip.hipDeviceGetUuid
+            && g_xpu_hip.hipDeviceGetUuid(out->uuid, g_xpu_hip.device) == 0)
+        out->hasUuid = 1;
+    {
+        int dv = 0;
+        if (g_xpu_hip.hipDriverGetVersion
+                && g_xpu_hip.hipDriverGetVersion(&dv) == 0 && dv > 0)
+            out->driverVersion = dv;
     }
     out->valid = 1;
     return 1;

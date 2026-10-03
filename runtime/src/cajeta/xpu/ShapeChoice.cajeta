@@ -184,12 +184,20 @@ public final class ShapeChoice {
     }
 
     /**
-     * The build the survivors are: each one's code hash where the backend
-     * registered it, else the facts the filter read. Any rebuild that changes
-     * a candidate changes this, and the cached answer is re-measured.
+     * What a cached answer is valid for: the device's UUID and driver
+     * version (§7.12), then each survivor's code hash where the backend
+     * registered it, else the facts the filter read. Another device or
+     * driver, or a rebuild that changes any candidate, changes this, and the
+     * cached answer is re-measured.
      */
+    public static #String buildIdOf(ShapeFilter f) {
+        return ShapeChoice.buildId(f);
+    }
+
     static #String buildId(ShapeFilter f) {
         StringBuilder out #= heap StringBuilder();
+        String uuid #= Device.uuid();
+        out.append("u" + uuid + "d" + Device.driverVersion() + "|");
         int32 i = 0;
         while (i < f.survivorCount()) {
             ShapeVerdict v = f.survivor(i);

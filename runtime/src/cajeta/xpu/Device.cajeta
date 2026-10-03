@@ -698,6 +698,39 @@ public final class Device {
     // append-only; an unknown key answers 0 rather than trapping, so an
     // older runtime paired with a newer stdlib degrades to "unknown"
     // instead of failing to link.
+    /**
+     * The active device's UUID, 32 lowercase hex characters, or "" when the
+     * backend reports none (cpu, Vulkan today). Two identical parts in one
+     * box have different UUIDs; a tuned answer is keyed by it
+     * (xpu-tile-shape-selection §7.12).
+     *
+     * @EntryPoint
+     */
+    public static #String uuid() {
+        int8[] b #= heap int8[32];
+        if (Device.nativeUuid(b) == 0) {
+            return "";
+        }
+        return heap String(#b, 32);
+    }
+
+    /**
+     * The driver's version as the driver reports it (CUDA 12080 is 12.8), or
+     * 0 when the backend reports none. A driver update can change which
+     * kernel shape is fastest, so tuned answers are keyed by it.
+     *
+     * @EntryPoint
+     */
+    public static int32 driverVersion() {
+        return Device.nativeDriverVersion();
+    }
+
     @Native("__cajeta_xpu_device_geometry")
     private static int64 nativeGeometry(int32 key);
+
+    @Native("__cajeta_xpu_device_uuid")
+    private static int32 nativeUuid(int8[] out);
+
+    @Native("__cajeta_xpu_driver_version")
+    private static int32 nativeDriverVersion();
 }
