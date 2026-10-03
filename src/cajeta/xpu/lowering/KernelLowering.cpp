@@ -48,6 +48,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -417,6 +418,13 @@ private:
         uint32_t layout = 0;
     };
     std::map<std::string, CoopMatrixSlot> coopMatrixSlots;
+    // A fragment array, `CooperativeMatrix<...>[2][4] acc;`: its sizes in
+    // source order. Each element is its own slot in coopMatrixSlots, keyed
+    // `acc[1][3]`, so an array costs what that many named fragments cost.
+    std::map<std::string, std::vector<uint32_t>> fragmentArrays;
+    // The counter of a `for` loop being unrolled over a fragment array, bound
+    // to its value in the copy of the body being lowered.
+    std::map<std::string, llvm::Constant*> unrolledCounters;
     // A WaveVector<T,N> local: the wave-distributed column vector, recorded by
     // how it was built (ofSlice -> a Shared slice + stride; broadcast/ofLane ->
     // a scalar) so an epilogue verb that names it resolves to the same path an
@@ -606,6 +614,7 @@ private:
             if (!t) unsupported(bs->getLabel().empty()
                     ? "break outside loop"
                     : "break: no enclosing loop labeled '" + bs->getLabel() + "'");
+            if (!t->breakBB) unsupported(kUnrolledExitRefusal);
             builder.CreateBr(t->breakBB);
             // Dead trailing statements still need a block to land in; the
             // enclosing loop's tail fixup terminates it.
@@ -617,6 +626,7 @@ private:
             if (!t) unsupported(cs->getLabel().empty()
                     ? "continue outside loop"
                     : "continue: no enclosing loop labeled '" + cs->getLabel() + "'");
+            if (!t->continueBB) unsupported(kUnrolledExitRefusal);
             builder.CreateBr(t->continueBB);
             builder.SetInsertPoint(llvm::BasicBlock::Create(ctx, "after.continue", fn));
             return;
@@ -720,6 +730,9 @@ private:
                 rayQuerySlots[nm] = entryAlloca(rqTy, nm);
                 continue;
             }
+            if (std::dynamic_pointer_cast<CajetaArray>(declType)
+                    && lowerFragmentArrayDecl(nm, declType, vd))
+                continue;
             if (isCooperativeMatrixType(declType) || isTileType(declType)) {
                 CoopMatrixSlot cms = buildCoopMatrixSlot(declType, nm);
                 checkKernelRedeclare(nm, "a cooperative-matrix tile",
@@ -1102,9 +1115,182 @@ private:
         builder.SetInsertPoint(endBB);
     }
 
+    static constexpr const char* kUnrolledExitRefusal =
+        "break or continue inside a `for` loop unrolled over a fragment array; "
+        "the loop is unrolled at compile time, so it runs every iteration";
+
+    // `CooperativeMatrix<...>[2][4] acc;`: one fragment slot per element. False
+    // when the array is not of fragments, so the caller tries other kinds.
+    bool lowerFragmentArrayDecl(const std::string& nm, const CajetaTypePtr& declType,
+                                const std::shared_ptr<VariableDeclarator>& vd) {
+        std::vector<uint32_t> dims;
+        bool sized = true;
+        CajetaTypePtr inner = declType;
+        while (auto a = std::dynamic_pointer_cast<CajetaArray>(inner)) {
+            if (a->getFixedLength() <= 0) sized = false;
+            else dims.push_back((uint32_t) a->getFixedLength());
+            inner = a->getElementType();
+        }
+        if (!isCooperativeMatrixType(inner) && !isTileType(inner)) return false;
+        if (!sized)
+            unsupported("fragment array '" + nm + "' needs a literal size in every "
+                        "dimension, declared as `CooperativeMatrix<...>[2][4] " +
+                        nm + ";`");
+        if (vd->getInitializer() && !vd->getInitializer()->getChildren().empty())
+            unsupported("fragment array '" + nm + "' takes no initializer; declare "
+                        "it as `CooperativeMatrix<...>[2][4] " + nm + ";`");
+        // `T[2][4]` wraps the LAST bracket outermost; dims reads outside-in.
+        std::reverse(dims.begin(), dims.end());
+        uint64_t count = 1;
+        for (uint32_t d : dims) count *= d;
+        if (count > 256)
+            unsupported("fragment array '" + nm + "' has " + std::to_string(count) +
+                        " fragments; more than 256 cannot live in registers");
+        checkKernelRedeclare(nm, "a fragment array", nullptr);
+        std::vector<uint32_t> at(dims.size(), 0);
+        for (uint64_t n = 0; n < count; ++n) {
+            std::string key = nm;
+            for (uint32_t v : at) key += "[" + std::to_string(v) + "]";
+            coopMatrixSlots[key] = buildCoopMatrixSlot(inner, key);
+            for (size_t d = dims.size(); d-- > 0;) {
+                if (++at[d] < dims[d]) break;
+                at[d] = 0;
+            }
+        }
+        fragmentArrays[nm] = dims;
+        return true;
+    }
+
+    // The slot key `acc[1][3]` an indexed fragment array names, or "" when `e`
+    // is not one. Every index must be a compile-time constant in range.
+    std::string fragmentSlotName(const ExpressionPtr& e) {
+        std::vector<ExpressionPtr> idx;
+        ExpressionPtr cur = e;
+        while (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(cur)) {
+            idx.push_back(exprChild(ai, 1));
+            cur = exprChild(ai, 0);
+        }
+        auto id = std::dynamic_pointer_cast<IdentifierExpression>(cur);
+        if (!id || idx.empty()) return "";
+        const std::string& nm = id->getTextValue();
+        auto fa = fragmentArrays.find(nm);
+        if (fa == fragmentArrays.end()) return "";
+        std::reverse(idx.begin(), idx.end());
+        const auto& dims = fa->second;
+        if (idx.size() != dims.size())
+            unsupported("fragment array '" + nm + "' has " +
+                        std::to_string(dims.size()) + " dimensions and is indexed by " +
+                        std::to_string(idx.size()));
+        std::string key = nm;
+        for (size_t k = 0; k < idx.size(); ++k) {
+            auto* ci = llvm::dyn_cast<llvm::ConstantInt>(lowerExpr(idx[k]));
+            if (!ci)
+                unsupported("fragment array '" + nm + "' is indexed by a value that "
+                            "is not a compile-time constant; index it from a `for` "
+                            "loop whose trip is a compile-time constant, which is "
+                            "unrolled");
+            const uint64_t v = ci->getZExtValue();
+            if (ci->isNegative() || v >= dims[k])
+                unsupported("fragment array '" + nm + "': index " +
+                            std::to_string(ci->getSExtValue()) + " is out of range "
+                            "for a dimension of " + std::to_string(dims[k]));
+            key += "[" + std::to_string(v) + "]";
+        }
+        return key;
+    }
+
+    bool usesFragmentArray(const AbstractSyntaxNodePtr& node) {
+        if (!node) return false;
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(node))
+            return fragmentArrays.count(id->getTextValue()) > 0;
+        bool found = false;
+        node->forEachSubNode([&](const AbstractSyntaxNodePtr& c) {
+            if (!found) found = usesFragmentArray(c);
+        });
+        return found;
+    }
+
+    // Unroll `for (T i = c0; <cond on i>; i = <expr on i>)` whose body uses a
+    // fragment array: the body is lowered once per iteration with `i` bound to
+    // that iteration's constant, so every fragment index in it is constant.
+    // False, having emitted nothing that matters, when the trip is not a
+    // compile-time constant; the loop then lowers as a loop, and an index by
+    // its counter is refused by name.
+    bool tryUnrollFor(const std::shared_ptr<ForStatement>& fs) {
+        auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(fs->getInit());
+        if (!lvd || lvd->getVariableDeclarators().size() != 1 || !fs->getCondition())
+            return false;
+        auto vd = lvd->getVariableDeclarators().front();
+        if (!vd || !vd->getInitializer()
+                || vd->getInitializer()->getChildren().empty())
+            return false;
+        llvm::Type* ty = deviceScalarType(lvd->getType(), ctx);
+        if (!ty || !ty->isIntegerTy()) return false;
+        const std::string nm = vd->getIdentifier();
+        const bool sgn = typeIsSigned(lvd->getType());
+        auto initExpr = std::dynamic_pointer_cast<Expression>(
+            vd->getInitializer()->getChildren()[0]);
+        auto asConst = [&](llvm::Value* v) -> llvm::Constant* {
+            auto* c = llvm::dyn_cast<llvm::ConstantInt>(v);
+            if (!c) return nullptr;
+            return llvm::ConstantInt::get(ty, sgn ? c->getSExtValue()
+                                                  : c->getZExtValue(), sgn);
+        };
+        llvm::Constant* cur = asConst(lowerExpr(initExpr));
+        if (!cur) return false;
+        // Every update must assign the counter.
+        for (auto& u : fs->getUpdate()) {
+            auto bin = std::dynamic_pointer_cast<BinaryOpExpression>(u);
+            auto lhs = bin && bin->isAssignment()
+                ? std::dynamic_pointer_cast<IdentifierExpression>(exprChild(bin, 0))
+                : nullptr;
+            if (!lhs || lhs->getTextValue() != nm) return false;
+        }
+        signedness[nm] = sgn;
+        unrolledCounters[nm] = cur;
+        auto cond0 = llvm::dyn_cast<llvm::ConstantInt>(
+            toI1(lowerExpr(fs->getCondition())));
+        if (!cond0) { unrolledCounters.erase(nm); return false; }
+        unsigned trips = 0;
+        for (bool go = cond0->isOne(); go;) {
+            if (++trips > 1024)
+                unsupported("a `for` loop over fragment array runs more than 1024 "
+                            "times; it is unrolled at compile time");
+            pushLoop(nullptr, nullptr);
+            lowerStatement(fs->getBody());
+            loopTargets.pop_back();
+            for (auto& u : fs->getUpdate()) {
+                auto bin = std::static_pointer_cast<BinaryOpExpression>(u);
+                ExpressionPtr rhs = exprChild(bin, 1);
+                llvm::Value* v = lowerExpr(rhs);
+                if (bin->getBinaryOp() != BINARY_OP_ASSIGN)
+                    v = applyBinOp(compoundBase(bin->getBinaryOp()), cur,
+                                   coerceTo(v, ty, exprSigned(rhs)), sgn, false);
+                llvm::Constant* next = asConst(coerceTo(v, ty, sgn));
+                if (!next)
+                    unsupported("the update of `for` counter '" + nm + "' is not a "
+                                "compile-time constant; a loop over a fragment array "
+                                "is unrolled");
+                cur = next;
+                unrolledCounters[nm] = cur;
+            }
+            auto c = llvm::dyn_cast<llvm::ConstantInt>(
+                toI1(lowerExpr(fs->getCondition())));
+            if (!c)
+                unsupported("the condition of `for` counter '" + nm + "' stopped "
+                            "being a compile-time constant");
+            go = c->isOne();
+        }
+        unrolledCounters.erase(nm);
+        return true;
+    }
+
     // for (init; cond; update) body Ã¢ÂÂ BB shape mirrors the host
     // (Statement.cpp): head(cond) / body / update / exit; continueÃ¢ÂÂupdate.
     void lowerFor(const std::shared_ptr<ForStatement>& fs) {
+        if (!fragmentArrays.empty() && usesFragmentArray(fs->getBody())
+                && tryUnrollFor(fs))
+            return;
         if (fs->getInit()) lowerStatement(fs->getInit());
         auto* head = llvm::BasicBlock::Create(ctx, "for.head", fn);
         auto* body = llvm::BasicBlock::Create(ctx, "for.body", fn);
@@ -1340,6 +1526,11 @@ private:
     void lowerAssign(const std::shared_ptr<BinaryOpExpression>& bin) {
         ExpressionPtr lhs = exprChild(bin, 0);
         ExpressionPtr rhs = exprChild(bin, 1);
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(lhs);
+                id && unrolledCounters.count(id->getTextValue()))
+            unsupported("the counter '" + id->getTextValue() + "' of a `for` loop "
+                        "unrolled over a fragment array is assigned in its body; "
+                        "the loop's update is the only place it may change");
         if (tryMatrixElementAssign(bin, lhs, rhs)) return;  // m[r][c] = Ã¢ÂÂ¦ (B1)
         if (tryVectorElementAssign(bin, lhs, rhs)) return;
         auto [addr, elemTy] = lowerLValueAddr(lhs);
@@ -1420,6 +1611,8 @@ private:
 
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(expr)) {
             const std::string& nm = id->getTextValue();
+            if (auto uc = unrolledCounters.find(nm); uc != unrolledCounters.end())
+                return uc->second;
             auto bb = bufferBases.find(nm);
             if (bb != bufferBases.end()) return bb->second;  // buffer base ptr
             auto it = values.find(nm);
@@ -2567,6 +2760,10 @@ private:
             if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(
                     mc->getChildren()[0])) {
                 recv = id->getTextValue();
+            } else {
+                // `acc[i][j].mma(...)`: the element's own fragment slot.
+                recv = fragmentSlotName(std::dynamic_pointer_cast<Expression>(
+                    mc->getChildren()[0]));
             }
         }
         const std::string& name = mc->getMethodCallName();
@@ -4379,6 +4576,8 @@ private:
             auto it = coopMatrixSlots.find(id->getTextValue());
             if (it != coopMatrixSlots.end()) return it->second;
         }
+        if (std::string key = fragmentSlotName(e); !key.empty())
+            return coopMatrixSlots[key];
         unsupported("CooperativeMatrix.mma: operands must be CooperativeMatrix "
                     "kernel locals");
     }

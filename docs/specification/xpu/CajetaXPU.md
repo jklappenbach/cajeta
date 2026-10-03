@@ -675,6 +675,25 @@ capability traits. A request for `mma<16, 16, 16, f16, f16, f32>` on
 a device whose only mma shape is `16x16x4` is a compile error with a
 suggested alternative.
 
+A tile that owns several fragments can hold them in an array, with a
+literal size in every dimension:
+
+```cajeta
+CooperativeMatrix<float32,16,16,2>[2][4] acc;
+for (uint32 i = 0; i < 2; i = i + 1) {
+    for (uint32 j = 0; j < 4; j = j + 1) { acc[i][j].splat(0.0f); }
+}
+```
+
+Each element is its own fragment, so the array costs what eight named
+fragments cost and stays in registers. A `for` loop whose start, bound and
+step are compile-time constants, and whose body uses a fragment array, is
+unrolled at compile time, so every index in it is a constant. A runtime
+loop around it, such as the K loop, stays a loop. An index that is not a
+compile-time constant would put the array in memory, so it is refused,
+naming the array. `break`, `continue` and assigning the counter inside an
+unrolled loop are refused too.
+
 ### 5.6 Vendor-only surfaces
 
 Each native backend exposes things its hardware uniquely supports:
