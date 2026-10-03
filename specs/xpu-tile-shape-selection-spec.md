@@ -231,6 +231,8 @@ used until a winner is measured.
 - 7.10 `@Occupancy` constant expressions over template parameters are in
   scope.
 - 7.11 Routes: one arm per family, reading the winner at its (M, N, K).
+- 7.13 Spelling: a family lists its candidates with `@Shapes`, a list of
+  instantiations on the family class (Julian, 2026-10-03).
 
 ### 7.12 Still open
 
