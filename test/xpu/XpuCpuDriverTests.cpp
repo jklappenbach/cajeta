@@ -49,6 +49,9 @@
 extern "C" void __cajeta_xpu_register_cpu_kernel(const char* name, void* fn);
 // Also called by the registration ctor (KernelManifest registration). Native
 // runtime function, bound below exactly like __cajeta_xpu_register_cpu_kernel.
+// Called by every cpu registration ctor since 225e90bc: the wave the kernels
+// were built at, which the runtime's cpu geometry reports.
+extern "C" void __cajeta_xpu_set_cpu_wave(int32_t lanes);
 extern "C" void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
                                                       int32_t backend,
                                                       const char* arch,
@@ -125,6 +128,14 @@ std::unique_ptr<llvm::orc::LLJIT> registerKernel(Compiler& compiler,
     // it took down ViewSafeConsumerTests). This host module only calls it.
     syms[mangle("__cajeta_xpu_register_kernel_manifest")] = llvm::orc::ExecutorSymbolDef(
         llvm::orc::ExecutorAddr::fromPtr(&__cajeta_xpu_register_kernel_manifest),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
+    // And the built-wave setter the ctor calls first (225e90bc). Mapped here
+    // for the same reason: on Windows a bare LLJIT resolves nothing from the
+    // process, and the shared bridge tables must not carry a symbol the full
+    // runtime bitcode defines. Found when the v0.33.1 dry-run's Windows leg
+    // failed this suite.
+    syms[mangle("__cajeta_xpu_set_cpu_wave")] = llvm::orc::ExecutorSymbolDef(
+        llvm::orc::ExecutorAddr::fromPtr(&__cajeta_xpu_set_cpu_wave),
         llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
     if (auto err = JD.define(llvm::orc::absoluteSymbols(std::move(syms)))) {
         failure = llvm::toString(std::move(err));
