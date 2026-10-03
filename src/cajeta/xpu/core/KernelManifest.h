@@ -94,11 +94,19 @@ namespace xpu {
                 || ldsDynamicParam || threadsPerGroup || residentGroupsPerCu
                 || !feasibleBlocks.empty() || occupancyLimiter;
         }
-        std::string simpleName() const;   // the name after the last '.'
+        std::string simpleName() const;   // the registered name (registryNameOf)
     };
 
     // "<declaring class canonical>.<method>" — the manifest's kernel key.
     std::string qualifiedKernelName(const MethodPtr& kernel);
+
+    // The name a kernel registers and launches under, which the runtime also
+    // uses as its device entry symbol. A kernel of an ordinary class keeps its
+    // bare method name. A kernel of a class template instantiation is named
+    // per instantiation, `pkg.Tile<4>.fill` registering as `Tile_4_fill`, so
+    // two instantiations of one template never share a name.
+    std::string registryNameOf(const std::string& qualified);
+    std::string kernelRegistryName(const MethodPtr& kernel);
 
     void applyAccess(KernelManifest& m, const KernelAccessSummary& access);
 

@@ -303,6 +303,32 @@ saxpy.launch(stream, grid: [(n + 255) / 256], block: [256])
 `launch` returns an `Event` (§3.5) and consumes a borrow of each
 buffer argument for the lifetime of the launch.
 
+A kernel may live in a class template with non-type parameters. Each
+instantiation lowers its own copy, and the body reads the parameters as
+compile-time constants: they can size a `Shared` tile or bound a loop. The
+launch goes in one of the instantiation's methods, so it resolves in that
+instantiation.
+
+```cajeta
+public class Tile<uint32 TM> {
+    @Kernel
+    public static void fill(KernelBuffer<uint32> out) {
+        Shared<uint32> s = shared uint32[TM * 8];
+        ...
+    }
+    public void run(KernelBuffer<uint32> out) {
+        fill.launch(KernelStream.current(), grid: [1], block: [64])(out);
+    }
+}
+```
+
+A kernel registers under its method name (`saxpy`). An instantiation's
+kernel registers under a per-instantiation name, `Tile_4_fill` for
+`Tile<4>.fill`, so two instantiations never collide. This name is also the
+device entry symbol, so it uses only symbol-safe characters. A manifest
+records the qualified name (`pkg.Tile<4>.fill`) and is filed under the
+registered one.
+
 ### 3.2 Execution model
 
 The shared model is the **wave-tiered** one — chosen because CUDA's

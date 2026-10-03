@@ -12,6 +12,7 @@
 #include "cajeta/type/Scope.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/xpu/core/KernelArgTrait.h"
+#include "cajeta/xpu/core/KernelManifest.h"
 
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
@@ -88,6 +89,7 @@ namespace cajeta {
         if (kernelName.empty()) {
             throw Exception("launch receiver is not a kernel name", "XPU-N02");
         }
+        std::string registryName = kernelName;
         {
             // The receiver must be a @Kernel of the launching class (XPU-N02): a
             // name nothing declares used to lower to a runtime refusal with no
@@ -99,6 +101,8 @@ namespace cajeta {
                 for (auto& [mkey, m] : launcher->getMethods()) {
                     if (m && m->getName() == kernelName && m->findAnnotation("Kernel")) {
                         declared = true;
+                        // An instantiation's kernel registers under its own name.
+                        registryName = cajeta::xpu::kernelRegistryName(m);
                         break;
                     }
                 }
@@ -369,7 +373,7 @@ namespace cajeta {
             {llvm::ConstantInt::get(i64Ty, 0),
              llvm::ConstantInt::get(i64Ty, 0)}, "argv.base");
         llvm::Value* nameStr =
-            builder->CreateGlobalString(kernelName, "xpu.kernel.name");
+            builder->CreateGlobalString(registryName, "xpu.kernel.name");
 
         // `spec:[v0,v1,…]` lowers to a stack `[N x i32]`, entry i overriding
         // spec slot i; only overrides select __cajeta_xpu_launch_v3.

@@ -79,7 +79,7 @@ namespace amd {
         int emitted = 0;
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
-            const std::string entryName = method->getName();
+            const std::string entryName = kernelRegistryName(method);
 
             // The device lowerer has its own context; the host module is untouched until bytes.
             llvm::LLVMContext devCtx;
@@ -106,7 +106,7 @@ namespace amd {
             KernelAccessSummary access = classifyKernelAccess(*kfn, method);
 
             // Pin the real launch workgroup size so registers are budgeted for it.
-            if (auto it = maxThreads.find(entryName); it != maxThreads.end()) {
+            if (auto it = maxThreads.find(method->getName()); it != maxThreads.end()) {
                 setKernelWorkgroupSize(kfn, it->second);
             } else {
                 // xpu-kernel-adaptor 7.0.4: an UNBOUNDED kernel (a non-constant
@@ -174,7 +174,7 @@ namespace amd {
                     else pinnedWaves = attr->maxWaves();
                 }
                 if (!pinned && !pinnedWaves)
-                    if (auto it = maxThreads.find(entryName); it != maxThreads.end())
+                    if (auto it = maxThreads.find(method->getName()); it != maxThreads.end())
                         pinned = it->second;
                 for (const ArchHsaco& ah : perArch) {
                     KernelManifest m;

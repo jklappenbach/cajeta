@@ -179,7 +179,7 @@ namespace vulkan {
         int emitted = 0;
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
-            const std::string entryName = method->getName();
+            const std::string entryName = kernelRegistryName(method);
             if (!emitVariant(method, entryName, /*software=*/false,
                              /*registerKparams=*/true))
                 continue;

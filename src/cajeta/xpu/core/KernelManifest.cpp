@@ -28,12 +28,38 @@
 #define CAJETA_VERSION "0.0.0-unknown"
 #endif
 
+#include <cctype>
+
 namespace cajeta {
 namespace xpu {
 
     std::string KernelManifest::simpleName() const {
-        auto dot = kernel.rfind('.');
-        return dot == std::string::npos ? kernel : kernel.substr(dot + 1);
+        return registryNameOf(kernel);
+    }
+
+    std::string registryNameOf(const std::string& qualified) {
+        const auto open = qualified.find('<');
+        const auto dot = qualified.rfind('.');
+        if (open == std::string::npos || dot == std::string::npos || dot < open)
+            return dot == std::string::npos ? qualified : qualified.substr(dot + 1);
+        // `pkg.Tile<4>.fill`: the class's short name, its arguments and the
+        // method, joined by '_'. The runtime uses the name as the device entry
+        // symbol too, and PTX and AMDGCN accept no '<', ',' or '.' there.
+        const auto classDot = qualified.rfind('.', open);
+        const std::size_t from = classDot == std::string::npos ? 0 : classDot + 1;
+        std::string out;
+        for (std::size_t i = from; i < dot; ++i) {
+            const char c = qualified[i];
+            const bool keep = std::isalnum((unsigned char) c) || c == '_';
+            if (keep) out += c;
+            else if (!out.empty() && out.back() != '_') out += '_';
+        }
+        if (out.empty() || out.back() != '_') out += '_';
+        return out + qualified.substr(dot + 1);
+    }
+
+    std::string kernelRegistryName(const MethodPtr& kernel) {
+        return registryNameOf(qualifiedKernelName(kernel));
     }
 
     std::string qualifiedKernelName(const MethodPtr& kernel) {

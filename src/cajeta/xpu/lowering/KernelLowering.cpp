@@ -1372,6 +1372,31 @@ private:
         }
     }
 
+    // A non-type parameter of the kernel's class template instantiation
+    // (`TM` in `Tile<4>`), as its argument at the parameter's declared width
+    // and signedness. A local of the same name shadows it, since locals
+    // resolve first. Null when `nm` names no such parameter.
+    llvm::Constant* templateConstant(const std::string& nm,
+                                     bool* isSigned = nullptr) {
+        if (!cls) return nullptr;
+        const auto& params = cls->getTypeParameters();
+        const auto& args = cls->getTypeArguments();
+        for (size_t i = 0; i < params.size() && i < args.size(); ++i) {
+            if (!params[i].isNonType || params[i].name != nm) continue;
+            auto c = std::dynamic_pointer_cast<CajetaConstantType>(args[i]);
+            if (!c) return nullptr;
+            const std::string& prim = params[i].nonTypePrimitive;
+            unsigned bits = 32;
+            size_t d = prim.find_first_of("0123456789");
+            if (d != std::string::npos) bits = (unsigned) std::stoul(prim.substr(d));
+            const bool sgn = prim.empty() || prim[0] != 'u';
+            if (isSigned) *isSigned = sgn;
+            return llvm::ConstantInt::get(llvm::IntegerType::get(ctx, bits),
+                                          (uint64_t) c->getValue(), sgn);
+        }
+        return nullptr;
+    }
+
     bool lvalueSigned(const ExpressionPtr& e) {
         if (auto* f = structFieldOf(e)) return f->isSigned;
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
@@ -1402,6 +1427,7 @@ private:
                 return builder.CreateLoad(slotTypes[nm], it->second, nm);  // load slot
             auto sv = structValues.find(nm);
             if (sv != structValues.end()) return sv->second;
+            if (llvm::Constant* c = templateConstant(nm)) return c;
             unsupported("unbound identifier '" + nm + "'");
         }
         if (auto il = std::dynamic_pointer_cast<IntegerLiteralExpression>(expr)) {
@@ -6130,7 +6156,12 @@ private:
         if (auto* f = structFieldOf(e)) return f->isSigned;
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
             auto it = signedness.find(id->getTextValue());
-            return it != signedness.end() ? it->second : true;
+            if (it != signedness.end()) return it->second;
+            bool isSigned = true;
+            if (!values.count(id->getTextValue())
+                    && templateConstant(id->getTextValue(), &isSigned))
+                return isSigned;
+            return true;
         }
         if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(e)) {
             if (auto b = std::dynamic_pointer_cast<IdentifierExpression>(
@@ -7302,7 +7333,7 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
 
     std::vector<LoweringTarget::KernelParam> params = collectParams(method, ctx);
 
-    std::string kname = entryName.empty() ? method->getName() : entryName;
+    std::string kname = entryName.empty() ? kernelRegistryName(method) : entryName;
     llvm::Function* fn = target.createKernel(deviceModule, kname, params);
 
     // An explicit @Occupancy override is applied before the auto budgeting, so

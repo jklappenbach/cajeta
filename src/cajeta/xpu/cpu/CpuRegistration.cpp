@@ -995,11 +995,11 @@ void foldWaveVariants(llvm::Function& f) {
             if (!method || !isKernel(*method)) continue;
             std::string owner = method->getParent()
                 ? method->getParent()->toCanonical() : std::string("<none>");
-            auto ins = simpleNameOwner.emplace(method->getName(), owner);
+            auto ins = simpleNameOwner.emplace(kernelRegistryName(method), owner);
             if (!ins.second && ins.first->second != owner) {
                 throw cajeta::Exception(
                     "two @Kernel methods share the simple name '"
-                    + method->getName() + "' (" + ins.first->second + " and "
+                    + kernelRegistryName(method) + "' (" + ins.first->second + " and "
                     + owner + "). Kernel launches resolve by simple name, so "
                     "one would silently shadow the other; rename one.",
                     "CAJETA_ERROR_XPU_KERNEL_NAME_COLLISION");
@@ -1009,7 +1009,7 @@ void foldWaveVariants(llvm::Function& f) {
         int emitted = 0;
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
-            const std::string entryName = method->getName();
+            const std::string entryName = kernelRegistryName(method);
             const std::string sym = "__cajeta_xpu_cpu." + symSuffix(method);
 
             // A fresh module sharing the host context; a throw leaves host clean.

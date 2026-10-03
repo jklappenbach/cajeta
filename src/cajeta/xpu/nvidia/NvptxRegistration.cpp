@@ -104,7 +104,7 @@ namespace nvidia {
         int emitted = 0;
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
-            const std::string entryName = method->getName();
+            const std::string entryName = kernelRegistryName(method);
 
             // The device lowerer has its own context; the host module waits for bytes.
             llvm::LLVMContext devCtx;
