@@ -360,6 +360,22 @@ public:
         }
     }
 
+    // @Occupancy(maxWaves = N), once the body has settled the kernel's wave: a
+    // @Wave(width = 64) pin makes it wave64; everything else here is wave32,
+    // the device libraries' setting (oclc_wavefrontsize64_off) and what the
+    // WMMA and distributed-tile pins force.
+    void finishOccupancy(llvm::Function* fn, const XpuKernelAttr& attr) override {
+        if (attr.maxThreads() || !attr.maxWaves()) return;
+        unsigned wave = 32;
+        if (fn->hasFnAttribute("target-features")) {
+            const std::string f =
+                fn->getFnAttribute("target-features").getValueAsString().str();
+            if (f.find("+wavefrontsize64") != std::string::npos) wave = 64;
+        }
+        fn->addFnAttr("amdgpu-flat-work-group-size",
+                      "1," + std::to_string(*attr.maxThreadsAt(wave)));
+    }
+
     // A texture kernel param points at the HIP texture object in the constant address
     // space (4): { image SRD (12 dwords) | sampler SRD (8 dwords) }, and sample reads both.
     llvm::Type* textureParamType(llvm::Module& m) override {

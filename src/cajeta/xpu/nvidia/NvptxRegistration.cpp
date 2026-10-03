@@ -169,7 +169,7 @@ namespace nvidia {
             {
                 std::optional<unsigned> pinned;
                 if (auto attr = XpuKernelAttr::from(*method))
-                    if (attr->maxThreads()) pinned = *attr->maxThreads();
+                    pinned = attr->maxThreadsAt(32);
                 fillOccupancy(manifest, arch, pinned);
             }
             applyAccess(manifest, access);

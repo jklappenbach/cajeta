@@ -7307,8 +7307,14 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
 
     // An explicit @Occupancy override is applied before the auto budgeting, so
     // it wins.
-    if (auto attr = XpuKernelAttr::from(*method); attr && attr->hasOccupancy())
+    if (auto attr = XpuKernelAttr::from(*method); attr && attr->hasOccupancy()) {
+        if (attr->maxThreads() && attr->maxWaves())
+            unsupported("@Occupancy on " + kname + " declares both maxThreads and "
+                        "maxWaves; they are two spellings of one bound, so declare "
+                        "maxWaves for a kernel built as N waves per workgroup and "
+                        "maxThreads for one built as N threads");
         target.applyOccupancy(fn, *attr);
+    }
     if (auto attr = XpuKernelAttr::from(*method); attr && attr->waveWidth()) {
         int w = *attr->waveWidth();
         if (w < 1 || !target.pinWaveWidth(fn, (unsigned) w))
@@ -7327,6 +7333,9 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
     // reconvergence (a no-op where it is not modelled).
     if (lowerer.usedSubgroupOp())
         target.onSubgroupOpsUsed(fn, deviceModule);
+    // The wave is final now; a per-kernel-wave target resolves maxWaves here.
+    if (auto attr = XpuKernelAttr::from(*method); attr && attr->hasOccupancy())
+        target.finishOccupancy(fn, *attr);
     // Honour the author's parameter declarations against the LOWERED body:
     // `@Streaming` tags loads/stores non-temporal where the backend supports it,
     // `@Access(m)` is checked for a contradiction (a compile error).

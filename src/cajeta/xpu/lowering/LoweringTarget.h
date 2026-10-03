@@ -178,6 +178,14 @@ namespace xpu {
         virtual void applyOccupancy(llvm::Function* /*fn*/,
                                     const XpuKernelAttr& /*attr*/) {}
 
+        // Called after the body is lowered, when the kernel's wave width is
+        // final (a cooperative-matrix pin may set it during the body): the
+        // place a target whose wave varies per kernel resolves
+        // @Occupancy(maxWaves = N). A target with one fixed wave resolves it
+        // in applyOccupancy instead. Default no-op.
+        virtual void finishOccupancy(llvm::Function* /*fn*/,
+                                     const XpuKernelAttr& /*attr*/) {}
+
         // @Wave(width = N), the lane count the algorithm is written for: pin the kernel to
         // it, or answer false when this target's wave cannot be N lanes. DEFAULT: true.
         virtual bool pinWaveWidth(llvm::Function* /*fn*/, unsigned /*width*/) { return true; }

@@ -516,6 +516,11 @@ All three parameters are optional. They lower per-backend (AMD →
 `maxnreg`) and are a no-op where a backend has no equivalent. An explicit
 `@Occupancy` always wins over the automatic budgeting.
 
+A kernel built as N waves per workgroup states its bound in waves,
+`@Occupancy(maxWaves = 8)`. Each backend multiplies it by the kernel's own
+wave width: 256 threads at wave 32, 512 at wave 64. Declare `maxThreads` or
+`maxWaves`, not both.
+
 See [`gpu/xpu/CajetaXPU.md`](../../specification/xpu/CajetaXPU.md),
 [`gpu/CajetaGPU.md`](../../specification/gpu/CajetaGPU.md), and the capability matrix
 [`gpu/xpu/CajetaXPU-Matrix.md`](../../specification/xpu/CajetaXPU-Matrix.md).

@@ -2649,7 +2649,7 @@ namespace cajeta {
                 if (!method || !cajeta::xpu::isKernel(*method)) continue;
                 auto it = kernelUnboundedBlock.find(method->getName());
                 auto attr = cajeta::xpu::XpuKernelAttr::from(*method);
-                const bool ceiling = attr && attr->maxThreads();
+                const bool ceiling = attr && attr->hasThreadBound();
                 if (ceiling) {
                     cajeta::xpu::noteKernelBounded(*method, method->getName(),
                                                    "it declares @Occupancy(maxThreads)");

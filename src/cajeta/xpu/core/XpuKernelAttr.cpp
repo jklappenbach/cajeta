@@ -71,7 +71,7 @@ std::optional<XpuKernelAttr> XpuKernelAttr::from(const Annotatable& a) {
         }
     }
 
-    // @Occupancy(maxThreads, minResident, maxRegisters): optional named Int64 args; non-positive values are ignored.
+    // @Occupancy(maxThreads, maxWaves, minResident, maxRegisters): optional named Int64 args; non-positive values are ignored.
     if (auto occ = a.findAnnotation(XpuAttr::Occupancy)) {
         auto readU = [&](const char* key) -> std::optional<unsigned> {
             if (auto* arg = occ->findArg(key)) {
@@ -84,6 +84,7 @@ std::optional<XpuKernelAttr> XpuKernelAttr::from(const Annotatable& a) {
         out.maxThreads_   = readU("maxThreads");
         out.minResident_  = readU("minResident");
         out.maxRegisters_ = readU("maxRegisters");
+        out.maxWaves_     = readU("maxWaves");
     }
 
     return out;

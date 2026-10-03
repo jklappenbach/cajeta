@@ -45,8 +45,23 @@ namespace xpu {
         std::optional<unsigned> maxThreads() const { return maxThreads_; }
         std::optional<unsigned> minResident() const { return minResident_; }
         std::optional<unsigned> maxRegisters() const { return maxRegisters_; }
+        // @Occupancy(maxWaves = N): the workgroup bound in the kernel's own
+        // waves, for a kernel built as N waves per workgroup. Each backend
+        // resolves it against the wave it gave the kernel (maxThreadsAt), so
+        // one declaration is 256 threads at wave 32 and 512 at wave 64.
+        // Declaring it beside maxThreads is refused at lowering.
+        std::optional<unsigned> maxWaves() const { return maxWaves_; }
+        // The thread bound at wave width `wave`: maxThreads when declared,
+        // else maxWaves x wave, else nullopt.
+        std::optional<unsigned> maxThreadsAt(unsigned wave) const {
+            if (maxThreads_) return maxThreads_;
+            if (maxWaves_) return *maxWaves_ * wave;
+            return std::nullopt;
+        }
+        // Either form of the workgroup bound is declared.
+        bool hasThreadBound() const { return maxThreads_ || maxWaves_; }
         bool hasOccupancy() const {
-            return maxThreads_ || minResident_ || maxRegisters_;
+            return maxThreads_ || maxWaves_ || minResident_ || maxRegisters_;
         }
 
     private:
@@ -55,6 +70,7 @@ namespace xpu {
         std::optional<unsigned> maxThreads_;
         std::optional<unsigned> minResident_;
         std::optional<unsigned> maxRegisters_;
+        std::optional<unsigned> maxWaves_;
     };
 
 } // namespace xpu

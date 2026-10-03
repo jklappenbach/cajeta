@@ -1225,6 +1225,25 @@ public static void gemm(KernelBuffer<float32> c, KernelBuffer<float32> a,
 The choice is just *who owns the logistics*: omit `@Occupancy` and Cajeta
 configures the kernel from the live device; add it and you do, portably.
 
+**A bound in waves, `maxWaves`.** A kernel written as N waves per workgroup
+(each wave owning a slice of a tile, with `wg`, `wid` and the lane derived from
+`Group.width()`) launches N times the wave width: 256 threads at wave 32, 512
+at wave 64. A thread count can state only one of those, and stating the larger
+halves the register budget the bound promises on a wave-32 part. Declare the
+structure instead:
+
+```cajeta
+@Kernel
+@Occupancy(maxWaves = 8)
+public static void tile(...) { ... }   // 256 threads on sm_89, 512 at wave 64
+```
+
+Each backend resolves `maxWaves` against the wave it gave the kernel. NVIDIA
+resolves it before the body against its fixed 32. AMD resolves it after the
+body, because a `@Wave` or cooperative-matrix pin settles the wave there.
+`maxWaves` is a declared ceiling like `maxThreads`. Declaring both is
+refused: they are two spellings of one bound.
+
 **A derived block needs a declared ceiling.** The compiler scans every launch
 site for a constant block and budgets the kernel's registers for the largest
 one it finds. A block that is not a constant at every site (`block: [n]`, the

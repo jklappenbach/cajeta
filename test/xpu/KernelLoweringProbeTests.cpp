@@ -211,3 +211,78 @@ TEST(KernelLoweringProbeTests, ptxasAgreesWhenThereIsNoFrame) {
     EXPECT_EQ(f.stackFrame, 0u);
     EXPECT_EQ(f.spillStores, 0u);
 }
+
+// --- @Occupancy reaches ptxas ----------------------------------------------
+
+namespace {
+
+const char* kOccupancySource =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    @Occupancy(maxThreads = 512, minResident = 1, maxRegisters = 64)\n"
+    "    public static void bounded(KernelBuffer<float32> out) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        out[(int64) i] = (float32) i;\n"
+    "    }\n"
+    "    @Kernel\n"
+    "    public static void unbounded(KernelBuffer<float32> out) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        out[(int64) i] = (float32) i;\n"
+    "    }\n"
+    "    public static int32 run() { return 1; }\n"
+    "}\n";
+
+} // namespace
+
+// @Occupancy is the bound ptxas allocates registers against: `.maxntid` caps a
+// thread at the register file over the block, `.maxnreg` caps it outright. The
+// lowering used to write them as nvvm.annotations, which LLVM 23's NVPTX
+// printer no longer reads from an in-memory module (only the textual and
+// bitcode readers upgrade them to the nvvm.* function attributes), so every
+// bound was dropped in silence: a 512-thread kernel allocated 164 registers a
+// thread, 84K against a 64K register file, and could not launch (measured
+// 2026-10-02 on cajeta-llm's 16-warp TcTile).
+TEST(KernelLoweringProbeTests, occupancyBoundsReachThePtx) {
+    const Lowered l = lowerForNvptx(kOccupancySource, "bounded", "test.M",
+                                    "sm_89", "occbound");
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_NE(l.ptx.find(".maxntid 512"), std::string::npos) << l.ptx;
+    EXPECT_NE(l.ptx.find(".minnctapersm 1"), std::string::npos) << l.ptx;
+    EXPECT_NE(l.ptx.find(".maxnreg 64"), std::string::npos) << l.ptx;
+}
+
+// The counterpart: a kernel that declares nothing gets no bound.
+TEST(KernelLoweringProbeTests, noOccupancyMeansNoBound) {
+    const Lowered l = lowerForNvptx(kOccupancySource, "unbounded", "test.M",
+                                    "sm_89", "occnone");
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_EQ(l.ptx.find(".maxntid"), std::string::npos) << l.ptx;
+    EXPECT_EQ(l.ptx.find(".maxnreg"), std::string::npos) << l.ptx;
+}
+
+namespace {
+const char* kWavesNvSource =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    @Occupancy(maxWaves = 8)\n"
+    "    public static void waves(KernelBuffer<float32> out) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        out[(int64) i] = (float32) i;\n"
+    "    }\n"
+    "    public static int32 run() { return 1; }\n"
+    "}\n";
+} // namespace
+
+// @Occupancy(maxWaves = 8) is 8 x the warp on nvptx: a 256-thread bound.
+TEST(KernelLoweringProbeTests, maxWavesIsEightWarpsOnNvptx) {
+    const Lowered l = lowerForNvptx(kWavesNvSource, "waves", "test.M",
+                                    "sm_89", "occwaves");
+    ASSERT_TRUE(l.ok) << l.why;
+    EXPECT_NE(l.ptx.find(".maxntid 256"), std::string::npos) << l.ptx;
+}

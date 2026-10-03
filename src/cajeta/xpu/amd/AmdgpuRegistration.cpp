@@ -166,9 +166,14 @@ namespace amd {
             std::vector<KernelManifest> kernelManifests;
             {
                 std::optional<unsigned> pinned;
-                if (auto attr = XpuKernelAttr::from(*method))
+                // maxWaves resolves per arch, against the code object's own
+                // wave (below); maxThreads is one number for every arch.
+                std::optional<unsigned> pinnedWaves;
+                if (auto attr = XpuKernelAttr::from(*method)) {
                     if (attr->maxThreads()) pinned = *attr->maxThreads();
-                if (!pinned)
+                    else pinnedWaves = attr->maxWaves();
+                }
+                if (!pinned && !pinnedWaves)
                     if (auto it = maxThreads.find(entryName); it != maxThreads.end())
                         pinned = it->second;
                 for (const ArchHsaco& ah : perArch) {
@@ -186,7 +191,10 @@ namespace amd {
                         m.ldsStaticBytes = fp.groupSegmentBytes;
                         m.waveWidth = fp.wavefrontSize;
                     }
-                    fillOccupancy(m, ah.arch, pinned);
+                    std::optional<unsigned> archPinned = pinned;
+                    if (pinnedWaves)
+                        archPinned = *pinnedWaves * m.waveWidth.value_or(32u);
+                    fillOccupancy(m, ah.arch, archPinned);
                     applyAccess(m, access);
                     applyNativeOps(m, kfn);
                     warnIfSpilling(m, softwareCoopTileBytesOf(kfn));

@@ -217,9 +217,23 @@ public:
             m.getOrInsertNamedMetadata("nvvm.annotations")
                 ->addOperand(llvm::MDNode::get(ctx, ops));
         };
-        if (auto mt = attr.maxThreads())   annotate("maxntidx", *mt);
-        if (auto mr = attr.minResident())  annotate("minctasm", *mr);
-        if (auto rr = attr.maxRegisters()) annotate("maxnreg", *rr);
+        // LLVM 23's NVPTX printer reads the bounds from the nvvm.* FUNCTION
+        // ATTRIBUTES; the annotations are upgraded to them only by the
+        // textual and bitcode readers, never in an in-memory module like
+        // this one, so written as annotations alone every bound was dropped
+        // in silence (KernelLoweringProbeTests.occupancyBoundsReachThePtx).
+        // The annotation stays for maxntidx: fromWords sizes its staging
+        // from it.
+        // The warp is always 32 lanes here, so maxWaves resolves before the
+        // body, where fromWords' staging reads the bound.
+        if (auto mt = attr.maxThreadsAt(32)) {
+            annotate("maxntidx", *mt);
+            fn->addFnAttr("nvvm.maxntid", std::to_string(*mt));
+        }
+        if (auto mr = attr.minResident())
+            fn->addFnAttr("nvvm.minctasm", std::to_string(*mr));
+        if (auto rr = attr.maxRegisters())
+            fn->addFnAttr("nvvm.maxnreg", std::to_string(*rr));
     }
 
     // The warp is 32 lanes and nothing else, so only @Wave(width = 32) can run.
