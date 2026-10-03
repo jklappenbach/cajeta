@@ -1,0 +1,203 @@
+# xpu-tile-shape-selection — a tile's shape chosen by rule and measurement, not by hand
+
+Status: **draft**, filed 2026-10-02. Requested by Julian on 2026-10-02, in
+the conversation that measured the TcTile reshapes: "How can we formulate
+rules that will enable the business logic to identify this configuration
+and employ it without forcing this work on kernel designers. Or is this
+absolutely something that could not be automated?" He agreed to a spec the
+same day.
+
+## 1. Definition
+
+A matrix-core kernel's performance turns on its **shape**:
+- the workgroup tile (tokens by rows);
+- the warp grid, and the warp tile each warp owns;
+- the K step staged per barrier;
+- how many stages are in flight;
+- whether K is split across workgroups.
+
+Today the author picks the shape by hand, for one device, by repeated
+measurement. The cost is that the shape becomes part of the kernel's source.
+It is re-picked by hand for every new part, and nothing records why it was
+chosen.
+
+This spec moves the choice out of the author's hands. The author writes the
+tile ONCE, over its shape parameters. The compiler instantiates candidate
+shapes, and a feasibility filter discards those the device cannot run well,
+using rules computed from device facts and from the compiler's own verdicts.
+The survivors are timed on the device, the winner is recorded in the kernel
+manifest, and a route reads the winner from there. The author still owns the
+ARITHMETIC: how scales fold, where a correction term goes, and what precision
+each step keeps. Those are offered as named variants that the same machinery
+chooses among (§5), never invented by it.
+
+### 1.1 The evidence that motivates it (2026-10-01/02, cajeta-llm on an RTX 4090)
+
+- The Q4_K prefill tile (`TcTile.q4kQ8TcTileKernel`) was shaped by hand
+  over a day of measurement: 128 tokens x 128 rows, 8 warps as 4x2, 32x64
+  warp tiles, 128-k half blocks, double-buffered, 255 registers. It reached
+  parity with llama.cpp's prefill, and every alternative was found by
+  writing a variant, building it (about 2 minutes) and timing it.
+- Three reshapes were measured, and all lost:
+  - 16 warps with 32x32 warp tiles: 128 registers with a 52-byte spill,
+    10-15% slower.
+  - 128x64 tiles: 170 registers, 15-20% slower.
+  - 128x64 unrolled: 255 registers and a spill, a tie at best.
+
+  Two of the three were rejectable WITHOUT a run, because ptxas reported a
+  spill. A rule would have pruned them in seconds.
+- The register cap is not a knob. 255 registers a thread is NVIDIA's
+  hardware limit. What binds is the register file, 64K a multiprocessor, so
+  every shape trades threads against registers inside a fixed budget. The
+  rules have to reason in those units.
+- `@Occupancy` did nothing on nvptx until cajeta a171d180 (2026-10-02),
+  because the bound never reached ptxas. Every shape decision before it
+  rested on an unbounded register allocation that happened to fit. A
+  selection system must read the compiler's VERDICT (registers, spill,
+  shared bytes per candidate), not assume the declaration took effect.
+
+### 1.2 Scope
+
+- matrix-core GEMM tiles first (the TcTile family, the WMMA Mw family);
+- the shape parameters named above;
+- nvptx and amdgpu, with cpu reporting "no matrix core" through the probe
+  that already exists (`Linear.matrixCoresPay`).
+
+### 1.3 Non-goals
+
+- **Inventing arithmetic.** An integer fold against a float fold, or a
+  per-block against a per-sub-block correction, is a precision-bearing
+  rewrite. The author supplies variants (§5). This spec only chooses among
+  them.
+- **The launch block at bind.** That is `xpu-kernel-adaptor` §4. This spec
+  chooses which compiled kernel to bind, not its block.
+- **Scheduling among kernels.** That is `xpu-tile-scheduling`.
+- **A shipped table of shapes per part.** `xpu-kernel-adaptor` §1.4 forbids
+  it, and this spec inherits that. A winner is measured per machine and
+  cached, never committed.
+
+## 2. The parameterized tile
+
+The author writes the tile once, with its shape as template parameters, and
+the fragments as arrays the compiler unrolls.
+
+```cajeta
+public final class QkTile<uint32 TM, uint32 TN, uint32 WM, uint32 WN, uint32 KS> {
+    @Kernel @FastMath
+    @Occupancy(maxWaves = (TM / WM) * (TN / WN))
+    public static void q4kQ8(KernelBuffer<float32> y, ...) {
+        CooperativeMatrix<float32,16,16,2>[WM / 16][WN / 16] facc;
+        ...
+    }
+}
+```
+
+**Measured 2026-10-02:** a `@Kernel` inside a class template with a
+`uint32` parameter is instantiated per argument, but its lowering does not
+bind the parameter. It fails with "unbound identifier 'TM'" (probe:
+`class Tile<uint32 TM>` with a kernel reading `TM`). So this feature starts
+with compiler work.
+
+Use cases:
+- 2.1 An author writes the TcTile once over (TM, TN, WM, WN, KS). The 128x128
+  / 4x2 / 32x64 shape of today is one instantiation of it, and the rejected
+  reshapes are three more.
+- 2.2 A kernel body reads TM, TN, WM, WN and KS as compile-time constants.
+  Shared array sizes, loop trips and fragment counts derive from them, and
+  every loop over fragments is fully unrolled, so a fragment array lives in
+  registers.
+- 2.3 `@Occupancy` takes an expression over the template parameters
+  (`maxWaves = (TM / WM) * (TN / WN)`), so the bound travels with the shape.
+- 2.4 A shape the body cannot serve is refused at instantiation, by name
+  (for example WM not a multiple of 16), rather than miscompiled.
+
+## 3. The feasibility filter
+
+Before anything runs, a candidate must pass rules computed from two kinds of
+fact.
+
+- **Device facts, read from the driver and never tabled:** register file per
+  multiprocessor, maximum registers a thread, shared memory per block with
+  and without opt-in, multiprocessor count, wave width, and the matrix-core
+  shapes the backend lowers natively.
+- **Kernel facts, read from the compiler's verdict for the instantiation:**
+  registers a thread, spill bytes, static and dynamic shared bytes. These
+  already land in the kernel manifest.
+
+The rules:
+- R1, no spill. This is the existing gate (`[xpu-kernel-spill]`), applied
+  per candidate.
+- R2, the register file holds the workgroup: threads x registers is at most
+  the register file.
+- R3, shared memory fits, with the opt-in limit where the backend opts in.
+- R4, at least one workgroup is resident per multiprocessor, and the
+  candidate reports how many.
+- R5, the grid at the problem's shape fills the multiprocessors, or the
+  candidate carries a split-K that does (`TcTile.splitsFor`'s rule,
+  generalized).
+- R6, the shape divides the problem or pads it, and the padding cost is
+  stated.
+
+Use cases:
+- 3.1 On sm_89 the 16-warp, 32x32 candidate is pruned by R1 (52-byte spill)
+  without a timed run.
+- 3.2 On a 64 KB-LDS part (gfx1151, Vulkan) the double-buffered 128x128
+  candidate is pruned by R3. A smaller one survives, where today the whole
+  family is `@Unlowered` there.
+- 3.3 A pruned candidate is reported by name with the rule it failed, so an
+  empty survivor set is a diagnosable result, not a silent fallback.
+
+## 4. The measured choice
+
+The survivors are timed on the device at the shapes the model actually runs.
+For cajeta-llm these are the engine's projections at the prefill chunk.
+
+- The probe is the existing pattern: `Linear.matrixCoresPay` for the "do
+  matrix cores pay at all" decision, and `Autotune` with `tuneBuildId` for a
+  per-machine knob (`QuantKernel.mvRowsPerBlock` is a working example).
+- The winner is recorded per (device, kernel family, problem class), keyed
+  by the build id, so a rebuild that changes the kernel re-measures it.
+- Timing uses the deferred stream and the event tier with its calibrated
+  clock (`KernelTimer`), and interleaves candidates, because the box's clock
+  is bimodal and a single sequential sweep has read 2x off.
+
+Use cases:
+- 4.1 First use on a new machine times the survivors once (a budgeted few
+  seconds) and caches the winner. Later runs read the cache.
+- 4.2 A user can force a shape for a sweep (`setShapeOverride`), as
+  `setSplitOverride` does today.
+- 4.3 The choice is visible: the route record names the shape it took, as
+  `batch-route` names the kernel today.
+
+## 5. Variants the author supplies
+
+A family may carry more than one formulation of the same product. For the
+Q4_K tile that is the integer per-sub-block fold, the float fold, and the
+dual epilogue. Each variant:
+- is held to the same precision contract by its own tests against the host
+  oracle;
+- enters the filter and the timing as one more candidate dimension.
+
+**Measured 2026-10-02 on sm_89 at 4096x14336:** integer fold 280 us, float
+fold 307, dual epilogue 295. The integer fold wins there, and the same may
+not hold on another part. That is exactly the choice this spec automates.
+
+## 6. The route reads the choice
+
+A route asks the manifest which instantiation won for its problem class and
+launches that one. It never names a backend or a part. The existing
+`Linear.matmulBatchKeep` arms become one arm per family.
+
+## 7. Open questions
+
+- 7.1 Template kernels: the lowering's binding of class template parameters
+  (§2, measured missing). Is that one compiler unit or several (Shared sizes,
+  fragment arrays, `@Occupancy` expressions)?
+- 7.2 Compile cost: N candidates multiply the device compile. The cpu
+  backend already spends minutes per large tile. Do candidates compile
+  lazily, at first use, or at build behind a cap?
+- 7.3 Where the probe runs: first use (latency on the first prefill) or an
+  explicit warm-up (`cajeta-llm --prewarm` exists).
+- 7.4 The candidate space: who bounds it, the author (a list of shapes on
+  the family) or the compiler (all shapes passing §3)? Recommend the author
+  lists, and §3 prunes the list.
