@@ -1,6 +1,6 @@
 # xpu-tile-shape-selection — a tile's shape chosen by rule and measurement, not by hand
 
-Status: **draft**, filed 2026-10-02. Requested by Julian on 2026-10-02, in
+Status: **active**, approved by Julian 2026-10-03 in an interactive review (decisions in §7); plan `agents/xpu-tile-shape-selection-plan.md`. Filed 2026-10-02. Requested by Julian on 2026-10-02, in
 the conversation that measured the TcTile reshapes: "How can we formulate
 rules that will enable the business logic to identify this configuration
 and employ it without forcing this work on kernel designers. Or is this
@@ -60,8 +60,14 @@ chooses among (§5), never invented by it.
 
 - matrix-core GEMM tiles first (the TcTile family, the WMMA Mw family);
 - the shape parameters named above;
-- nvptx and amdgpu, with cpu reporting "no matrix core" through the probe
-  that already exists (`Linear.matrixCoresPay`).
+- nvptx FIRST, built and proven on sm_89 where the tile exists; amdgpu next
+  (64 KB LDS, the wave64 option); cpu answers "no matrix core" through the
+  probe that already exists (`Linear.matrixCoresPay`).
+
+This spec belongs to the tile family, beside `xpu-tile-manifest` (whose
+footprint fields it consumes) and `xpu-tile-scheduling`. It fills the gap
+`xpu-kernel-adaptor` §1.3 leaves on purpose: "ranking survivors (tile
+family)".
 
 ### 1.3 Non-goals
 
@@ -106,8 +112,14 @@ Use cases:
   Shared array sizes, loop trips and fragment counts derive from them, and
   every loop over fragments is fully unrolled, so a fragment array lives in
   registers.
-- 2.3 `@Occupancy` takes an expression over the template parameters
+- 2.3 `@Occupancy` takes a constant expression over the template parameters
   (`maxWaves = (TM / WM) * (TN / WN)`), so the bound travels with the shape.
+  Constant expressions in annotation arguments are in this spec's compiler
+  work.
+- 2.5 The family LISTS its candidate shapes, under a cap the family
+  declares (about 6). Every listed shape is lowered at build, so an AOT
+  executable carries all of them, and the compile cost is known up front.
+  The compiler does not enumerate a parameter grid.
 - 2.4 A shape the body cannot serve is refused at instantiation, by name
   (for example WM not a multiple of 16), rather than miscompiled.
 
@@ -126,7 +138,8 @@ fact.
 
 The rules:
 - R1, no spill. This is the existing gate (`[xpu-kernel-spill]`), applied
-  per candidate.
+  per candidate. ANY spill prunes the candidate; a spilling shape is never
+  timed.
 - R2, the register file holds the workgroup: threads x registers is at most
   the register file.
 - R3, shared memory fits, with the opt-in limit where the backend opts in.
@@ -155,8 +168,14 @@ For cajeta-llm these are the engine's projections at the prefill chunk.
 - The probe is the existing pattern: `Linear.matrixCoresPay` for the "do
   matrix cores pay at all" decision, and `Autotune` with `tuneBuildId` for a
   per-machine knob (`QuantKernel.mvRowsPerBlock` is a working example).
-- The winner is recorded per (device, kernel family, problem class), keyed
-  by the build id, so a rebuild that changes the kernel re-measures it.
+- The probe runs at FIRST USE, within a budget of a few seconds, and its
+  answer is cached, as `matrixCoresPay` and the rows-per-block tune are
+  today. An explicit warm-up (`--prewarm`) can do the same ahead of time.
+- The winner is recorded per (device, kernel family, exact (M, N, K)),
+  keyed by the build id, so a rebuild that changes the kernel re-measures
+  it. An LLM runs a handful of fixed projection shapes, so one entry per
+  shape is exact and few; buckets were rejected because a bucket edge can
+  pick the wrong shape.
 - Timing uses the deferred stream and the event tier with its calibrated
   clock (`KernelTimer`), and interleaves candidates, because the box's clock
   is bimodal and a single sequential sweep has read 2x off.
@@ -170,6 +189,9 @@ Use cases:
   `batch-route` names the kernel today.
 
 ## 5. Variants the author supplies
+
+LATER UNIT, not the first version: v1 chooses among shapes only, and
+variants join as a second candidate dimension once the machinery exists.
 
 A family may carry more than one formulation of the same product. For the
 Q4_K tile that is the integer per-sub-block fold, the float fold, and the
@@ -186,18 +208,31 @@ not hold on another part. That is exactly the choice this spec automates.
 
 A route asks the manifest which instantiation won for its problem class and
 launches that one. It never names a backend or a part. The existing
-`Linear.matmulBatchKeep` arms become one arm per family.
+`Linear.matmulBatchKeep` arms become ONE ARM PER FAMILY: the arm asks the
+cache for the winning instantiation at its (M, N, K) and launches it.
+Today's hand-picked TcTile shape becomes the family's default listed shape,
+used until a winner is measured.
 
-## 7. Open questions
+## 7. Decisions (Julian, 2026-10-03, in an interactive review)
 
-- 7.1 Template kernels: the lowering's binding of class template parameters
-  (§2, measured missing). Is that one compiler unit or several (Shared sizes,
-  fragment arrays, `@Occupancy` expressions)?
-- 7.2 Compile cost: N candidates multiply the device compile. The cpu
-  backend already spends minutes per large tile. Do candidates compile
-  lazily, at first use, or at build behind a cap?
-- 7.3 Where the probe runs: first use (latency on the first prefill) or an
-  explicit warm-up (`cajeta-llm --prewarm` exists).
-- 7.4 The candidate space: who bounds it, the author (a list of shapes on
-  the family) or the compiler (all shapes passing §3)? Recommend the author
-  lists, and §3 prunes the list.
+- 7.1 Home: its own spec in the tile family, not folded into
+  `xpu-kernel-adaptor` or `xpu-tile-manifest`.
+- 7.2 Parameterization: class template parameters. The lowering must bind
+  them (measured missing on 2026-10-02: "unbound identifier 'TM'"), and
+  fragment arrays must unroll under constant-trip loops.
+- 7.3 Candidate space: the author lists shapes, and §3's rules prune them.
+- 7.4 Compile: every listed candidate is lowered at build, under a cap the
+  family declares.
+- 7.5 Probe: at first use, cached; a warm-up may run it ahead of time.
+- 7.6 Cache key: exact (M, N, K) per device, family and build id.
+- 7.7 Spills: any spill prunes.
+- 7.8 Variants: shapes first; variants in a later unit.
+- 7.9 Backends: nvptx first, amdgpu next.
+- 7.10 `@Occupancy` constant expressions over template parameters are in
+  scope.
+- 7.11 Routes: one arm per family, reading the winner at its (M, N, K).
+
+### 7.12 Still open
+
+- How the cache is invalidated when the driver or clocks change, not only
+  the build. The rows-per-block knob keys on the build id alone today.
