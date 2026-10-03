@@ -1,0 +1,37 @@
+package cajeta.xpu;
+
+import cajeta.lang.String;
+
+/**
+ * ShapeResult — which shape `ShapeChoice` picked for a family at one
+ * problem, and how (xpu-tile-shape-selection §4). The route launches
+ * `kernel` and names it in its route record.
+ */
+public final class ShapeResult {
+    /** The chosen kernel, a copy; null when no candidate survived. */
+    public String kernel;
+    /** The filter's survivor index, -1 when none or when overridden onto a
+     *  pruned candidate. */
+    public int32 survivor;
+    /** The survivors were timed for this answer. */
+    public boolean timed;
+    /** The answer came from the cache. */
+    public boolean fromCache;
+    /** `setShapeOverride` forced it. */
+    public boolean overridden;
+    /** The winner's lead over the runner-up, per mille of the runner-up. */
+    public int32 marginPerMille;
+    /** A lead under 3%: either shape is acceptable. */
+    public boolean tie;
+    /** Empty, or why the answer was not cached. */
+    public String note;
+    /** Empty, or the filter's refusal when nothing survived. */
+    public String refusal;
+
+    public ShapeResult() {
+        this.survivor = -1;
+        this.note #= "";
+        this.refusal #= "";
+        return;
+    }
+}

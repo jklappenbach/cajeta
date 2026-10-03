@@ -1,0 +1,17 @@
+package cajeta.xpu;
+
+/**
+ * ShapeProbe — how a kernel family times one of its surviving shapes for
+ * `ShapeChoice` (xpu-tile-shape-selection §4). The family knows how to
+ * launch each candidate at the problem's shape; ShapeChoice decides how often
+ * and in what order, interleaving the candidates because a device's clock
+ * moves between runs.
+ */
+public interface ShapeProbe {
+    /**
+     * One timed run of survivor `i` (the filter's survivor index), in
+     * nanoseconds, measured on the calibrated event tier (`KernelTimer`).
+     * Zero or less refuses the candidate: it could not be run.
+     */
+    int64 timeNanos(int32 i);
+}

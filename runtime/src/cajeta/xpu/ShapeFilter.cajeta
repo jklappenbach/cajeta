@@ -65,6 +65,11 @@ public final class ShapeFilter {
         }
     }
 
+    public String family() { return this.family; }
+    public int64 m() { return this.m; }
+    public int64 n() { return this.n; }
+    public int64 k() { return this.k; }
+
     public int32 survivorCount() { return (int32) this.survivors.count(); }
     public ShapeVerdict survivor(int32 i) { return this.survivors.get(i); }
     public int32 prunedCount() { return (int32) this.prunedList.count(); }
@@ -94,6 +99,9 @@ public final class ShapeFilter {
         ShapeVerdict v #= heap ShapeVerdict(#cand);
         ShapeCandidate c = v.candidate;
         DeviceFacts d = this.device;
+        v.registersPerThread = kf.registersPerThread;
+        v.spillBytes = kf.spillBytes;
+        v.sharedBytes = kf.sharedBytes;
         int64 threads = (int64) c.threads;
         if (kf.spillBytes > 0) {
             v.rule = 1;

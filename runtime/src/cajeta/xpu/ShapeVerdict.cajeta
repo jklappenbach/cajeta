@@ -23,6 +23,10 @@ public final class ShapeVerdict {
     public boolean fills;
     /** R6: padded elements that are not the problem's, per mille. */
     public int32 padWastePerMille;
+    /** The facts the verdict was reached on, -1 absent; a cache keys on them. */
+    public int32 registersPerThread;
+    public int32 spillBytes;
+    public int32 sharedBytes;
 
     public ShapeVerdict(ShapeCandidate candidate) {
         this.candidate #= candidate;

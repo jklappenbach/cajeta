@@ -1,0 +1,244 @@
+package cajeta.xpu;
+
+import cajeta.lang.Optional;
+import cajeta.lang.String;
+import cajeta.lang.StringBuilder;
+
+/**
+ * ShapeChoice — the measured choice among a family's feasible shapes
+ * (xpu-tile-shape-selection §4, §7.5, §7.6, §7.12).
+ *
+ * At first use the survivors of a `ShapeFilter` are timed through the
+ * family's `ShapeProbe`, interleaved and repeated, and the fastest median
+ * wins. The winner is cached in `Autotune`'s store under the family and the
+ * exact M x N x K, against a build id made from every survivor's code, so a
+ * rebuild that changes any candidate re-measures. The entry records the
+ * winner's margin; a lead under 3% is a tie, and either shape is fine.
+ *
+ * ```cajeta
+ * ShapeResult r #= ShapeChoice.choose(tuneDir, filter, probe);
+ * if (r.kernel == null) { throw heap XpuLaunchException(r.refusal); }
+ * ```
+ */
+public final class ShapeChoice {
+    private ShapeChoice() { }
+
+    /** Timed rounds over the survivors; each round visits every one. */
+    public static int32 rounds = 5;
+    /** A lead under this, per mille, is a tie. */
+    public static int32 tiePerMille = 30;
+
+    static String[] overrideFamily;
+    static String[] overrideKernel;
+    static int32 overrideN = 0;
+
+    /** Force `kernel` for `family` until cleared: a sweep's lever. */
+    public static void setShapeOverride(String family, String kernel) {
+        ShapeChoice.clearShapeOverride(family);
+        if (ShapeChoice.overrideN == 0) {
+            ShapeChoice.overrideFamily #= heap String[16];
+            ShapeChoice.overrideKernel #= heap String[16];
+        }
+        if (ShapeChoice.overrideN == 16) { return; }
+        // Copies: the caller's strings may be temporaries.
+        String f #= "" + family;
+        String k #= "" + kernel;
+        ShapeChoice.overrideFamily[ShapeChoice.overrideN] #= f;
+        ShapeChoice.overrideKernel[ShapeChoice.overrideN] #= k;
+        ShapeChoice.overrideN = ShapeChoice.overrideN + 1;
+        return;
+    }
+
+    public static void clearShapeOverride(String family) {
+        int32 i = 0;
+        while (i < ShapeChoice.overrideN) {
+            if (ShapeChoice.overrideFamily[i].equals(family)) {
+                int32 last = ShapeChoice.overrideN - 1;
+                ShapeChoice.overrideFamily[i] #= ShapeChoice.overrideFamily[last];
+                ShapeChoice.overrideKernel[i] #= ShapeChoice.overrideKernel[last];
+                ShapeChoice.overrideN = last;
+                return;
+            }
+            i = i + 1;
+        }
+        return;
+    }
+
+    /** Fill the cache ahead of first use; the same as a first `choose`. */
+    public static #ShapeResult prewarm(String dir, ShapeFilter f, ShapeProbe probe) {
+        return ShapeChoice.choose(dir, f, probe);
+    }
+
+    /** The shape `f`'s family runs at its problem on this device. */
+    public static #ShapeResult choose(String dir, ShapeFilter f, ShapeProbe probe) {
+        ShapeResult r #= heap ShapeResult();
+        int32 ov = ShapeChoice.findOverride(f.family());
+        if (ov >= 0) {
+            ShapeChoice.applyOverride(r, f, ShapeChoice.overrideKernel[ov]);
+            return r;
+        }
+        int32 ns = f.survivorCount();
+        if (ns == 0) {
+            String why #= f.refusal();
+            r.refusal #= why;
+            return r;
+        }
+        if (ns == 1) {
+            ShapeChoice.pick(r, f, 0);
+            return r;
+        }
+        String name #= "shape." + f.family() + "." + f.m() + "x" + f.n() + "x" + f.k();
+        String marginName #= name + ".margin";
+        String bid #= ShapeChoice.buildId(f);
+        Optional<int32> hit = Autotune.recallFor(dir, name, bid);
+        if (hit.isPresent() && hit.get() < ns) {
+            ShapeChoice.pick(r, f, hit.get());
+            r.fromCache = true;
+            Optional<int32> mg = Autotune.recallFor(dir, marginName, bid);
+            if (mg.isPresent()) {
+                r.marginPerMille = mg.get();
+                r.tie = mg.get() < ShapeChoice.tiePerMille;
+            }
+            return r;
+        }
+        ShapeChoice.time(r, f, probe);
+        if (r.survivor < 0) {
+            return r;
+        }
+        Autotune.rememberFor(dir, name, r.survivor, bid);
+        Autotune.rememberFor(dir, marginName, r.marginPerMille, bid);
+        return r;
+    }
+
+    /**
+     * Time every survivor `rounds` times. Each round visits all of them,
+     * starting one further along than the last, so no candidate always runs
+     * first; the fastest median wins.
+     */
+    static void time(ShapeResult r, ShapeFilter f, ShapeProbe probe) {
+        int32 ns = f.survivorCount();
+        int32 rn = ShapeChoice.rounds;
+        if (rn < 1) { rn = 1; }
+        int64[] samples #= heap int64[ns * rn];
+        boolean[] refused #= heap boolean[ns];
+        int32 round = 0;
+        while (round < rn) {
+            int32 j = 0;
+            while (j < ns) {
+                int32 i = (j + round) % ns;
+                if (!refused[i]) {
+                    int64 t = probe.timeNanos(i);
+                    if (t <= 0L) { refused[i] = true; }
+                    samples[i * rn + round] = t;
+                }
+                j = j + 1;
+            }
+            round = round + 1;
+        }
+        r.timed = true;
+        int32 best = -1;
+        int64 bestT = 0L;
+        int64 second = -1L;
+        int32 i = 0;
+        while (i < ns) {
+            if (!refused[i]) {
+                int64 med = ShapeChoice.median(samples, i * rn, rn);
+                if (best < 0 || med < bestT) {
+                    if (best >= 0) { second = bestT; }
+                    best = i;
+                    bestT = med;
+                } else if (second < 0L || med < second) {
+                    second = med;
+                }
+            }
+            i = i + 1;
+        }
+        if (best < 0) {
+            String all #= "every survivor of " + f.family() + " refused its timed run";
+            r.refusal #= all;
+            return;
+        }
+        ShapeChoice.pick(r, f, best);
+        if (second > 0L) {
+            r.marginPerMille = (int32) ((second - bestT) * 1000L / second);
+            r.tie = r.marginPerMille < ShapeChoice.tiePerMille;
+        }
+        return;
+    }
+
+    /** The median of `n` samples from `at`, without disturbing them. */
+    static int64 median(int64[] s, int32 at, int32 n) {
+        int64[] c #= heap int64[n];
+        int32 i = 0;
+        while (i < n) {
+            int64 v = s[at + i];
+            int32 j = i;
+            while (j > 0 && c[j - 1] > v) {
+                c[j] = c[j - 1];
+                j = j - 1;
+            }
+            c[j] = v;
+            i = i + 1;
+        }
+        return c[n / 2];
+    }
+
+    /**
+     * The build the survivors are: each one's code hash where the backend
+     * registered it, else the facts the filter read. Any rebuild that changes
+     * a candidate changes this, and the cached answer is re-measured.
+     */
+    static #String buildId(ShapeFilter f) {
+        StringBuilder out #= heap StringBuilder();
+        int32 i = 0;
+        while (i < f.survivorCount()) {
+            ShapeVerdict v = f.survivor(i);
+            String part #= ShapeChoice.codeOf(v);
+            out.append(v.candidate.kernel + ":" + part + ";");
+            i = i + 1;
+        }
+        return out.toString();
+    }
+
+    static #String codeOf(ShapeVerdict v) {
+        KernelManifest m #= KernelManifest.of(v.candidate.kernel);
+        if (m != null && m.codeHash != null) {
+            String h #= "" + m.codeHash;
+            return h;
+        }
+        String facts #= "r" + v.registersPerThread + "s" + v.spillBytes
+            + "l" + v.sharedBytes;
+        return facts;
+    }
+
+    static void pick(ShapeResult r, ShapeFilter f, int32 i) {
+        String k #= "" + f.survivor(i).candidate.kernel;
+        r.kernel #= k;
+        r.survivor = i;
+        return;
+    }
+
+    static int32 findOverride(String family) {
+        int32 i = 0;
+        while (i < ShapeChoice.overrideN) {
+            if (ShapeChoice.overrideFamily[i].equals(family)) { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    static void applyOverride(ShapeResult r, ShapeFilter f, String kernel) {
+        String k #= "" + kernel;
+        r.kernel #= k;
+        r.overridden = true;
+        int32 i = 0;
+        while (i < f.survivorCount()) {
+            if (f.survivor(i).candidate.kernel.equals(kernel)) {
+                r.survivor = i;
+                return;
+            }
+            i = i + 1;
+        }
+        return;
+    }
+}

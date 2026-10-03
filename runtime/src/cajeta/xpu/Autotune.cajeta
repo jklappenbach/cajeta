@@ -323,7 +323,14 @@ public final class Autotune {
         }
         Optional<int32> v = Autotune.recall(dir, name);
         if (!v.isPresent()) { return v; }
-        if (dir.byteLength() == 0) { return v; }
+        if (dir.byteLength() == 0) {
+            // No store: the memo is the only record, and it did not match
+            // THIS build above, so what `recall` found was measured for other
+            // code (or never checked against any).
+            Autotune.warn("XPU-T02", name, "value=" + v.get()
+                + " tunedFor=<absent or different> nowBuild=" + buildId);
+            return stack Optional<int32>(false, 0);
+        }
         String key #= Autotune.deviceKey();
         String sp #= dir + "/" + key + "/" + name + ".for";
         Path s #= Path.of(sp);

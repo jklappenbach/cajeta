@@ -226,3 +226,21 @@ TEST(XpuAutotune, theMemoDoesNotAnswerAheadOfTheBuildCheck) {
     EXPECT_NE(out.find("XPU-T02"), std::string::npos)
         << "a differing build must be reported, not silently trusted: " << out;
 }
+
+// The same check with NO store directory. A process that tunes in memory only
+// (dir empty) fell through to `recall`, which answers from the memo, and the
+// build was never compared: a value measured against build A answered for
+// build B. ShapeChoice keys its cache by the candidates' build, so it needs
+// this to hold with or without a store.
+TEST(XpuAutotune, theMemoChecksTheBuildWithNoStoreDirectory) {
+    testing::internal::CaptureStderr();
+    int rc = runWith(
+        "        Autotune.rememberFor(\"\", \"w\", 60, \"build-A\");\n"
+        "        Optional<int32> same = Autotune.recallFor(\"\", \"w\", \"build-A\");\n"
+        "        if (!same.isPresent() || same.get() != 60) { return 1; }\n"
+        "        Optional<int32> other = Autotune.recallFor(\"\", \"w\", \"build-B\");\n"
+        "        if (other.isPresent()) { return 2; }\n"
+        "        return 0;\n", "");
+    std::string out = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(rc, 0) << out;
+}
