@@ -86,8 +86,11 @@ a borrow."*
   3. A `T` or `#T` formal that is kept is stored with `#=`. A sink
      (`add(T v) { slot #= v; }`) is this case: the caller chooses.
   4. An owned local stored into a field or slot is stored with `#=`.
-  5. Storing an interior read of a `T`/`#T` formal (`b.child`) needs a
-     `^T` formal, so the caller keeps the root alive.
+  5. Storing an interior read of a `T`/`#T` formal (`b.child`) with `=` needs
+     a `^T` formal, so the caller keeps the root alive. `#=` records the
+     title the slot held. `^` is an error on a primitive formal and on a
+     type-parameter declaration, and legal on a formal typed by one
+     (`void foo(^T p)`).
   6. Plain `=` stays right for local bindings, arguments, literals,
      primitives, `null`, and a `heap T(...)` or call written in place.
 

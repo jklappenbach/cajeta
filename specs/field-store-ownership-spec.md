@@ -38,7 +38,7 @@ compile time, every store that would dangle on every call.
 2. A `T` or `#T` formal that is kept is stored with `#=`.
 3. An owned local stored into a field or slot that outlives it is stored with
    `#=`.
-4. An interior read of a `T` or `#T` formal is never stored into a field. The
+4. An interior read of a `T` or `#T` formal is never stored into a field with `=`. The
    formal must be `^T`, so the caller keeps the root alive.
 5. `=` into a String field is a borrow, like every other type.
 6. Everything else about `=` is unchanged. A local binding `T b = a;` lends, an
@@ -122,7 +122,7 @@ title when it was bound from `heap`, with `#=`, or from a call with a plain
 `T` result. A local that is a borrow, for example one bound with `=` from a
 `^T` formal or from a field read, may be stored with `=`.
 
-An interior read of a `T` or `#T` formal (`b.child`, `b.items[i]`) stored into
+An interior read of a `T` or `#T` formal (`b.child`, `b.items[i]`) stored with `=` into
 a field or slot is a compile-time error. The fix is to spell the formal `^T`.
 
 ### 4.2 Use cases
@@ -216,11 +216,15 @@ allocations, and read it back. The plan turns them into tests.
   4.1), CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM (2.2.2, 2.2.3),
   CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM (4.1), and
   CAJETA_ERROR_BORROW_MARK_MISMATCH (2.2.6).
-- **9.2** Whether a `^T` formal of a primitive or value type is an error or
-  is ignored.
-- **9.3** Whether `T` in `^T` may be a template parameter, and what `^T` means
-  when it is instantiated with a primitive.
-- **9.4** Rule 4 as written rejects an interior read of a `T`/`#T` formal
+- **9.2** DECIDED (Julian 2026-10-04): `^` written on a primitive or
+  value-type formal (`^int32 n`) is a compile-time error.
+- **9.3** DECIDED (Julian 2026-10-04): `^` never marks a type-parameter
+  declaration (`class C<^K>` is an error). A formal whose type is a
+  parameter may be spelled `^K key`, as in `void foo(^T param)`. When the
+  template is instantiated with a primitive the mark has nothing to act on and
+  is ignored there (inferred from 9.2 and 9.3 together, not asked).
+- **9.4** DECIDED (Julian 2026-10-04): rule 4 covers `=` only. An interior
+  read stored with `#=` records the title the slot held. Background: rule 4 as written rejects an interior read of a `T`/`#T` formal
   stored with `#=`. Ten stdlib sites move element titles out of a consumed
   source that way (`ArrayList(#T[] items)`: `this.data[i] #= items[i]`,
   `appendAll`, BPlusTree splits, ImmutableList, ImmutableSet). Proposed:
@@ -232,7 +236,8 @@ allocations, and read it back. The plan turns them into tests.
 - **9.6** Stores into a local holder's field (`Node n = heap Node(); n.x = p;
   return #n;`): 117 in the stdlib. Proposed: a holder that escapes (returned,
   stored, or passed with `#`) counts as a field, and 4.2.5 covers the rest.
-- **9.7** The 47 borrow-intent sites already spelled `#=` (CacheNode's key,
+- **9.7** DECIDED (Julian 2026-10-04): every documented borrow moves to `^T`
+  in Unit 3, all 86 sites. Background: the 47 borrow-intent sites already spelled `#=` (CacheNode's key,
   Channel's slots, the stream and reader constructors) compile under the
   rule but accept a `#x` that turns a borrow slot into an owner. Whether
   they move to `^T` in Unit 3 (agents/field-store-ownership-census.md).
