@@ -30,7 +30,7 @@ public final class RouteAudit {
     int32 nq;
     int32 nr;
 
-    public RouteAudit(RouteTable table, RouteQuery[] queries) {
+    public RouteAudit(^RouteTable table, ^RouteQuery[] queries) {
         this.table #= table;
         this.queries #= queries;
         this.nq = (int32) queries.count();

@@ -108,7 +108,7 @@ public class DynFrame {
     }
 
     /** Copy `o`'s index declarations into this frame (alias carry). */
-    void __copyIndexed(DynFrame o) {
+    void __copyIndexed(^DynFrame o) {
         this.spatialX = o.spatialX;
         this.spatialY = o.spatialY;
         if (o.indexed == null) { return; }

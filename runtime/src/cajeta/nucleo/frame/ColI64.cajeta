@@ -15,7 +15,7 @@ public class ColI64 {
 
     ColI64(int32 ordinal, String name) {
         this.ordinal = ordinal;
-        this.name = name;
+        this.name #= name;
     }
 
     /** A column reference (the synthesized builders call this). */

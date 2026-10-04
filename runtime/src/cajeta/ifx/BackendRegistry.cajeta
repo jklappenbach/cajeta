@@ -73,7 +73,7 @@ public final class BackendRegistry {
             r.registerWindow(heap NullWindowBackend());
             r.registerInput(heap NullInputBackend());
             r.registerAudio(heap NullAudioBackend());
-            BackendRegistry.shared = r;
+            BackendRegistry.shared #= r;
         }
         return BackendRegistry.shared;
     }

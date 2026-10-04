@@ -11,7 +11,7 @@ import cajeta.lang.String;
  */
 public class ConnectionResetException extends NetException {
     public ConnectionResetException(#String message) {
-        this.message = message;
+        this.message #= message;
         this.cause = 0;
         this.kind = 3;   // NetException.KIND_CONNECTION_RESET
     }

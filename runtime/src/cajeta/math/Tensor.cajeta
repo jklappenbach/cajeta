@@ -768,7 +768,7 @@ public class Tensor<T> {
 
     // ────────────────────────────── views (Phase 3) ──────────────────────────
 
-    void markView(Tensor<T> base) {
+    void markView(^Tensor<T> base) {
         this.viewFlag = true;
         this.baseTensor #= base;
     }

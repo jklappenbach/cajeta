@@ -572,7 +572,7 @@ public class Table<T> {
         Plan pl #= this.__takeChain();
         DynFrame sr #= this.__takeSrc();
         Table<T> h = heap Table<T>(#pl, #sr, #sch, false);
-        h.rsTsName = tsName;
+        h.rsTsName #= tsName;
         h.rsEvery = every;
         h.rsOrigin = origin;
         h.rsOffset = offset;
@@ -599,7 +599,7 @@ public class Table<T> {
         Plan pl #= this.__takeChain();
         DynFrame sr #= this.__takeSrc();
         Table<T> h = heap Table<T>(#pl, #sr, #sch, false);
-        h.winTsName = tsName;
+        h.winTsName #= tsName;
         h.winSize = size;
         h.winByTime = byTime;
         h.windowing = true;

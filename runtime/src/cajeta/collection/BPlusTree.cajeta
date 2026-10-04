@@ -253,7 +253,7 @@ public final class BPlusTree<K, V> {
     }
 
     /** Split an overflowed leaf and propagate the separator upward. */
-    private void splitLeaf(BPlusTreeNode<K, V> leaf) {
+    private void splitLeaf(^BPlusTreeNode<K, V> leaf) {
         int32 total = leaf.numKeys;
         int32 mid = total / 2;
         BPlusTreeNode<K, V> right = heap BPlusTreeNode<K, V>(true, this.order);
@@ -284,8 +284,8 @@ public final class BPlusTree<K, V> {
      * `left`) into `left`'s parent, creating a new root or cascading a
      * split as needed.
      */
-    private void insertIntoParent(BPlusTreeNode<K, V> left, K sep,
-                                  BPlusTreeNode<K, V> right) {
+    private void insertIntoParent(^BPlusTreeNode<K, V> left, ^K sep,
+                                  ^BPlusTreeNode<K, V> right) {
         BPlusTreeNode<K, V> parent = left.parent;
         if (parent == null) {
             BPlusTreeNode<K, V> newRoot = heap BPlusTreeNode<K, V>(false, this.order);
@@ -327,7 +327,7 @@ public final class BPlusTree<K, V> {
     }
 
     /** Split an overflowed internal node; the median key moves up. */
-    private void splitInternal(BPlusTreeNode<K, V> node) {
+    private void splitInternal(^BPlusTreeNode<K, V> node) {
         int32 total = node.numKeys;
         int32 mid = total / 2;
         K promote = node.keys[mid];

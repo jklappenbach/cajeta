@@ -26,7 +26,7 @@ public final class CsvReader {
     int64[] fEnd;      // current row: field end offsets (exclusive, \r-trimmed)
     int32 fc;          // current row: field count
 
-    public CsvReader(int8[] buf, int64 n) {
+    public CsvReader(^int8[] buf, int64 n) {
         this.n = n;
         int64 cap = n + 16;
         this.idx = heap int32[cap];

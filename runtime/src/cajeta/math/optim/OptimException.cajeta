@@ -12,7 +12,7 @@ import cajeta.lang.String;
  */
 public class OptimException extends RecoverableException {
     public OptimException(#String message) {
-        this.message = message;
+        this.message #= message;
         this.cause = 0;
     }
 }

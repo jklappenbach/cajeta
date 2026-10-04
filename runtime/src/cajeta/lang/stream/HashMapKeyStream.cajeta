@@ -44,7 +44,7 @@ public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
      * Stream<K> s = heap HashMapKeyStream<K, V>(map.keys, map.state, map.cap);
      * ```
      */
-    public HashMapKeyStream(MapEntry<K, V>[] slots, int8[] ctrl, int64 cap) {
+    public HashMapKeyStream(^MapEntry<K, V>[] slots, ^int8[] ctrl, int64 cap) {
         this.slots #= slots;
         this.ctrl #= ctrl;
         this.cap = cap;

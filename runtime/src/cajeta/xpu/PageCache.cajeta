@@ -141,12 +141,9 @@ public final class PageCache<K, V> {
      * no eviction. Otherwise it is inserted at the MRU head; if that pushes the
      * cache over `capacity` the LRU tail is evicted and its key is published via
      * {@link #evictedKey}. Returns true exactly when a tile was evicted.
+     * The cache borrows `key` and `value`: the consumer owns every tile.
      */
-    public boolean admit(K key, V value) {
-        // borrow-alias: the cache is an INDEX over consumer-owned tiles —
-        // slots hold lends only (eviction publishes the key back via
-        // evictedKey, so an owning slot would dangle it). See the
-        // eviction-UAF note in the class doc.
+    public boolean admit(^K key, ^V value) {
         K k = key;
         V v = value;
         if (this.index.containsKey(k)) {

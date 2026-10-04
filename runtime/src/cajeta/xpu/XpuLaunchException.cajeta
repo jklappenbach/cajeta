@@ -24,7 +24,7 @@ import cajeta.lang.String;
  */
 public class XpuLaunchException extends RecoverableException {
     public XpuLaunchException(#String message) {
-        this.message = message;
+        this.message #= message;
         this.cause = 0;
     }
 }

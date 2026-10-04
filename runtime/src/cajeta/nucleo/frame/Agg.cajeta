@@ -29,9 +29,9 @@ package cajeta.nucleo.frame;
  */
 public class Agg {
     int32 kind;
-    ColF64 expr;      // owned: float64 elementwise input (leaf aggregates)
-    ColI64 iRef;      // owned: exact-integer reference
-    ColStr strRef;    // owned: utf8 reference
+    ColF64 expr;      // borrowed from the frame: float64 elementwise input (leaf aggregates)
+    ColI64 iRef;      // borrowed from the frame: exact-integer reference
+    ColStr strRef;    // borrowed from the frame: utf8 reference
     Agg left;         // arithmetic children (owned); kind 20 borrows `left`
     Agg right;
     String outName;   // set by alias(); the collector requires it
@@ -44,19 +44,19 @@ public class Agg {
     // The reduction builders are INSTANCE methods on the expression types,
     // so the input arrives as a borrow of `this` and binds like
     // Sel.bindExpr — the expression temp lives in the caller's statement.
-    static #Agg overF64(int32 kind, ColF64 e) {
+    static #Agg overF64(int32 kind, ^ColF64 e) {
         Agg a = heap Agg(kind);
         a.expr = e;
         return #a;
     }
 
-    static #Agg overI64(int32 kind, ColI64 e) {
+    static #Agg overI64(int32 kind, ^ColI64 e) {
         Agg a = heap Agg(kind);
         a.iRef = e;
         return #a;
     }
 
-    static #Agg overStr(int32 kind, ColStr e) {
+    static #Agg overStr(int32 kind, ^ColStr e) {
         Agg a = heap Agg(kind);
         a.strRef = e;
         return #a;
@@ -79,7 +79,7 @@ public class Agg {
     public #Agg alias(String name) {
         Agg a = heap Agg(20);
         a.left = this;
-        a.outName = name;
+        a.outName #= name;
         return #a;
     }
 

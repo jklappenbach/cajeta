@@ -107,7 +107,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
      * staging ring. The stream is **borrowed**; the caller still owns and
      * closes it.
      */
-    public AsyncReader(ByteChannel stream) {
+    public AsyncReader(^ByteChannel stream) {
         // Bind the static-final to a local before using it as an array
         // dimension / ctor arg: a direct `heap int8[AsyncReader.DEFAULT_BUFFER]`
         // mis-lowers the static-field read as the global's *address* (`ptr`),
@@ -130,7 +130,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
      * fine for a line-oriented protocol, a large one amortizes syscalls
      * on a bulk download.
      */
-    public AsyncReader(ByteChannel stream, int32 capacity) {
+    public AsyncReader(^ByteChannel stream, int32 capacity) {
         int32 c = capacity;
         if (c < 1) {
             c = 1;

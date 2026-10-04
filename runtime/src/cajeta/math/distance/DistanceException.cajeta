@@ -13,7 +13,7 @@ import cajeta.lang.String;
  */
 public class DistanceException extends RecoverableException {
     public DistanceException(#String message) {
-        this.message = message;
+        this.message #= message;
         this.cause = 0;
     }
 }

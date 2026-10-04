@@ -13,7 +13,7 @@ import cajeta.lang.String;
  */
 public class HostUnreachableException extends NetException {
     public HostUnreachableException(#String message) {
-        this.message = message;
+        this.message #= message;
         this.cause = 0;
         this.kind = 7;   // NetException.KIND_HOST_UNREACHABLE
     }

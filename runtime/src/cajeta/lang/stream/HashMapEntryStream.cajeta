@@ -47,7 +47,7 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Spli
      *     heap HashMapEntryStream<K, V>(keys, vals, state, cap);
      * ```
      */
-    public HashMapEntryStream(MapEntry<K, V>[] slots, int8[] ctrl, int64 cap) {
+    public HashMapEntryStream(^MapEntry<K, V>[] slots, ^int8[] ctrl, int64 cap) {
         this.slots #= slots;
         this.ctrl #= ctrl;
         this.cap = cap;

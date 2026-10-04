@@ -52,7 +52,7 @@ public class Command {
 
     /** Run the child in `dir` instead of inheriting the parent's cwd. */
     public void workingDir(#String dir) {
-        this.cwd = dir;
+        this.cwd #= dir;
     }
 
     /**

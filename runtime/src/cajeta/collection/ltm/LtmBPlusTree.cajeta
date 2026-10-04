@@ -196,7 +196,7 @@ public final class LtmBPlusTree<K, V> {
                     leaf.dead[pos] = false;
                     this.pager.incEntryCount();
                 }
-                leaf.values[pos] = value;
+                leaf.values[pos] #= value;
                 this.pager.markDirty(leafId);
                 updated = true;
             }
@@ -531,7 +531,7 @@ public final class LtmBPlusTree<K, V> {
      * the node at `path[depth-1]`, creating a new root or cascading
      * internal splits up the pinned path as needed.
      */
-    private void insertIntoParent(int64[] path, int32 depth, K upKey, int64 rightId) {
+    private void insertIntoParent(int64[] path, int32 depth, ^K upKey, int64 rightId) {
         int32 level = depth - 1;
         K curKey = upKey;
         int64 curRight = rightId;

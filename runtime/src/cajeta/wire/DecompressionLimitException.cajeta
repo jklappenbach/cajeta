@@ -10,7 +10,7 @@ public class DecompressionLimitException extends RecoverableException {
 
     /** A limit failure for a cap of `limit` bytes. */
     public DecompressionLimitException(#String message, int64 limit) {
-        this.message = message;
+        this.message #= message;
         this.cause = 0;
         this.limit = limit;
     }

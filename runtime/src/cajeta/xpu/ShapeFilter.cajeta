@@ -39,7 +39,7 @@ public final class ShapeFilter {
     ArrayList<ShapeVerdict> prunedList;
 
     /** `family` names the family in a refusal; it must outlive the filter. */
-    public ShapeFilter(String family, DeviceFacts device, int64 m, int64 n,
+    public ShapeFilter(^String family, DeviceFacts device, int64 m, int64 n,
             int64 k) {
         this.family #= family;
         // A copy: the facts are often a call's temporary.

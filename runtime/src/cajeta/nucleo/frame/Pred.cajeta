@@ -45,7 +45,7 @@ public class Pred {
     static #Pred cmpStr(int32 kind, #ColStr a, String v) {
         Pred p = heap Pred(kind, 0.0);
         p.strOperand #= a;
-        p.strValue = v;
+        p.strValue #= v;
         return #p;
     }
 

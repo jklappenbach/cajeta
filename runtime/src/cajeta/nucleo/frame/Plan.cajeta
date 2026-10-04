@@ -117,7 +117,7 @@ public class Plan {
     /** A fill-null node: `col`'s nulls replaced by a float value (U6). */
     public static #Plan fillNullNode(String col, float64 v, #Plan child) {
         Plan n = heap Plan(12);
-        n.colName = col;
+        n.colName #= col;
         n.fillF = v;
         n.fillIsInt = false;
         n.child #= child;
@@ -127,7 +127,7 @@ public class Plan {
     /** A fill-null node, exact-integer value (U6). */
     public static #Plan fillNullIntNode(String col, int64 v, #Plan child) {
         Plan n = heap Plan(12);
-        n.colName = col;
+        n.colName #= col;
         n.fillI = v;
         n.fillIsInt = true;
         n.child #= child;
@@ -247,7 +247,7 @@ public class Plan {
                                      boolean closedRight, #Agg aggs,
                                      int32 naggs, #Plan child) {
         Plan n = heap Plan(8);
-        n.colName = tsName;
+        n.colName #= tsName;
         n.rsEvery = every;
         n.rsOrigin = origin;
         n.rsOffset = offset;
@@ -279,7 +279,7 @@ public class Plan {
                                    boolean byTime, #Agg aggs, int32 naggs,
                                    #Plan child) {
         Plan n = heap Plan(9);
-        n.colName = tsName;
+        n.colName #= tsName;
         n.winSize = size;
         n.winByTime = byTime;
         n.aggs #= aggs;
@@ -296,10 +296,10 @@ public class Plan {
 
     /** A melt node (U11.. U12, wide->long, spec §4.1): each row's value
      *  columns are stacked into a `variable`/`value` pair, the id columns
-     *  repeated. The string arrays are COPIED so the node owns them (the
-     *  builder's arrays are the caller's). Schema-static, so this stays an
+     *  repeated. The arrays are copied; the names in them are borrowed from
+     *  the caller, which keeps them alive while the plan lives. Schema-static, so this stays an
      *  ordinary lazy node. */
-    public static #Plan meltNode(String[] idVars, int32 nId, String[] valVars,
+    public static #Plan meltNode(^String[] idVars, int32 nId, ^String[] valVars,
                                  int32 nVal, String varName, String valName,
                                  #Plan child) {
         Plan n = heap Plan(11);
@@ -317,8 +317,8 @@ public class Plan {
         n.nMeltId = nId;
         n.meltVal #= vc;
         n.nMeltVal = nVal;
-        n.meltVarName = varName;
-        n.meltValName = valName;
+        n.meltVarName #= varName;
+        n.meltValName #= valName;
         n.child #= child;
         return #n;
     }
@@ -353,7 +353,7 @@ public class Plan {
      *  the check to one column, null checks every nullable column (U6). */
     public static #Plan dropNullsNode(String col, #Plan child) {
         Plan n = heap Plan(13);
-        n.colName = col;
+        n.colName #= col;
         n.child #= child;
         return #n;
     }
@@ -397,7 +397,7 @@ public class Plan {
     /** U7 optimizer: a copy of `orig` over a new child whose payloads
      *  BORROW the original's — the rewritten chain never owns predicates
      *  or selection chains; the handle's original plan keeps them alive. */
-    static #Plan borrowNode(Plan orig, #Plan child) {
+    static #Plan borrowNode(^Plan orig, #Plan child) {
         Plan n = heap Plan(orig.kindOf());
         n.pred = orig.predOf();
         n.sels = orig.selsOf();

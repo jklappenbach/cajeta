@@ -25,7 +25,7 @@ public class ColF64 {
     ColF64(int32 kind, int32 ordinal, String name, float64 lit) {
         this.kind = kind;
         this.ordinal = ordinal;
-        this.name = name;
+        this.name #= name;
         this.lit = lit;
     }
 

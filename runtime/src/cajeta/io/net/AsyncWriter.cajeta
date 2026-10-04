@@ -82,7 +82,7 @@ public class AsyncWriter {
      * coalescing buffer. The stream is **borrowed**; the caller still
      * owns and closes it.
      */
-    public AsyncWriter(ByteChannel stream) {
+    public AsyncWriter(^ByteChannel stream) {
         // Bind the static-final to a local before using it as an array
         // dimension: `heap int8[AsyncWriter.DEFAULT_BUFFER]` mis-lowers the
         // static-field read as the global's *address* (a `ptr`), which the
@@ -109,7 +109,7 @@ public class AsyncWriter {
      * must be `> 0`; pick small for a latency-sensitive request/response
      * exchange, large to amortize syscalls on a bulk upload.
      */
-    public AsyncWriter(ByteChannel stream, int32 capacity) {
+    public AsyncWriter(^ByteChannel stream, int32 capacity) {
         int32 c = capacity;
         if (c < 1) {
             c = 1;

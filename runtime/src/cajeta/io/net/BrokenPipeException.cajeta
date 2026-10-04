@@ -13,7 +13,7 @@ import cajeta.lang.String;
  */
 public class BrokenPipeException extends NetException {
     public BrokenPipeException(#String message) {
-        this.message = message;
+        this.message #= message;
         this.cause = 0;
         this.kind = 9;   // NetException.KIND_BROKEN_PIPE
     }

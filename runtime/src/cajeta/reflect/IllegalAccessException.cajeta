@@ -33,7 +33,7 @@ public class IllegalAccessException extends RecoverableException {
      * message ownership transfers in; `cause` is left unset.
      */
     public IllegalAccessException(#String message) {
-        this.message = message;
+        this.message #= message;
         this.cause = 0;
     }
 }

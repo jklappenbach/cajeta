@@ -75,12 +75,12 @@ public class EncodingException extends RecoverableException {
     public EncodingException(#String message, int64 offset, int32 codepoint,
                              int32 sourceEncoding, int32 targetEncoding,
                              #String reason) {
-        this.message = message;
+        this.message #= message;
         this.cause = 0;
         this.offset = offset;
         this.codepoint = codepoint;
         this.sourceEncoding = sourceEncoding;
         this.targetEncoding = targetEncoding;
-        this.reason = reason;
+        this.reason #= reason;
     }
 }

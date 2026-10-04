@@ -21,9 +21,9 @@ public final class IfxInfo {
     private String audioName;
 
     private IfxInfo(String window, String input, String audio) {
-        this.windowName = window;
-        this.inputName = input;
-        this.audioName = audio;
+        this.windowName #= window;
+        this.inputName #= input;
+        this.audioName #= audio;
     }
 
     public static int32 version() {

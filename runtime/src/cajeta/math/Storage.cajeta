@@ -63,7 +63,7 @@ public class Storage<T> {
      * borrow for the residency guards. Offsets accumulate through chained
      * slices, mirroring the mode-2 String window rule (slice-spec §7.1).
      */
-    public Storage(Storage<T> parent, int64 offset, int64 length) {
+    public Storage(^Storage<T> parent, int64 offset, int64 length) {
         this.host = parent.host;
         this.length = length;
         this.offset = parent.offset + offset;

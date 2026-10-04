@@ -334,8 +334,8 @@ public class QueryParams {
         if (this.sizeCount >= this.cap) {
             this.grow();
         }
-        this.keys[this.sizeCount] = key;
-        this.values[this.sizeCount] = value;
+        this.keys[this.sizeCount] #= key;
+        this.values[this.sizeCount] #= value;
         this.sizeCount = this.sizeCount + 1;
     }
 

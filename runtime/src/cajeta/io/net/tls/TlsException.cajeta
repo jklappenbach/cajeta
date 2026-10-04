@@ -12,7 +12,7 @@ import cajeta.io.net.NetException;
  */
 public class TlsException extends NetException {
     public TlsException(#String message) {
-        this.message = message;
+        this.message #= message;
         this.cause = 0;
         this.kind = 99;   // NetException.KIND_OTHER
     }

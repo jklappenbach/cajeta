@@ -39,9 +39,9 @@ public final class StackFrame {
 
     public StackFrame(#String declaringType, #String method, #String file,
                       int32 line, FrameRole role, int64 nativeAddress) {
-        this.declaringType = declaringType;
-        this.method = method;
-        this.file = file;
+        this.declaringType #= declaringType;
+        this.method #= method;
+        this.file #= file;
         this.line = line;
         this.role = role;
         this.nativeAddress = nativeAddress;

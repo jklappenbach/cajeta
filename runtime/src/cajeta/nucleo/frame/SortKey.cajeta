@@ -39,19 +39,19 @@ public class SortKey {
     // so the reference arrives as a borrow of `this` and binds exactly like
     // Agg's reduction builders — the expression temp lives in the caller's
     // statement.
-    static #SortKey overF64(ColF64 e, boolean descending) {
+    static #SortKey overF64(^ColF64 e, boolean descending) {
         SortKey k = heap SortKey(descending);
         k.expr = e;
         return #k;
     }
 
-    static #SortKey overI64(ColI64 e, boolean descending) {
+    static #SortKey overI64(^ColI64 e, boolean descending) {
         SortKey k = heap SortKey(descending);
         k.iRef = e;
         return #k;
     }
 
-    static #SortKey overStr(ColStr e, boolean descending) {
+    static #SortKey overStr(^ColStr e, boolean descending) {
         SortKey k = heap SortKey(descending);
         k.strRef = e;
         return #k;

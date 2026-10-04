@@ -34,7 +34,7 @@ public class Throwable {
      * @EntryPoint
      */
     public Throwable(#String message) {
-        this.message = message;
+        this.message #= message;
     }
 
     /**

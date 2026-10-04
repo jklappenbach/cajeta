@@ -36,7 +36,7 @@ public final class RouteRefusal {
     /** Index into the row's `needs()` of the missing capability, else -1. */
     public int32 needIndex;
 
-    public RouteRefusal(Route row, RouteClause clause, Regime regime,
+    public RouteRefusal(^Route row, RouteClause clause, Regime regime,
             int32 ty, String detail, int32 needIndex) {
         this.row #= row;
         this.clause = clause;
