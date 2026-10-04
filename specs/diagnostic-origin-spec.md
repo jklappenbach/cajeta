@@ -15,7 +15,7 @@ has an empty source path, so they sort ahead of every located diagnostic. The
 engine keeps the first 100 (diagnostic-engine 2.3), so the user's own
 diagnostics are the ones cut. SliceLint.ResolvedStoreEmitsNote turned red when
 cajeta f823b826 added three stdlib warnings and crossed the cap. That blocked
-the v0.33.2 release.
+the next release, cut as v0.34.0.
 
 A diagnostic must say where the code it describes comes from, the engine must
 never let one origin crowd out another, and the stdlib must compile without
