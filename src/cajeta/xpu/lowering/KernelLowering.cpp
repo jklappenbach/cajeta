@@ -1133,8 +1133,9 @@ private:
         }
         if (!isCooperativeMatrixType(inner) && !isTileType(inner)) return false;
         if (!sized)
-            unsupported("fragment array '" + nm + "' needs a literal size in every "
-                        "dimension, declared as `CooperativeMatrix<...>[2][4] " +
+            unsupported("fragment array '" + nm + "' needs a compile-time constant "
+                        "size in every dimension, a literal or an expression over "
+                        "the class's template values: `CooperativeMatrix<...>[2][4] " +
                         nm + ";`");
         if (vd->getInitializer() && !vd->getInitializer()->getChildren().empty())
             unsupported("fragment array '" + nm + "' takes no initializer; declare "
@@ -7535,6 +7536,8 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
     std::string kname = entryName.empty() ? kernelRegistryName(method) : entryName;
     llvm::Function* fn = target.createKernel(deviceModule, kname, params);
 
+    if (auto attr = XpuKernelAttr::from(*method); attr && !attr->occupancyError().empty())
+        unsupported(attr->occupancyError() + " (on " + kname + ")");
     // An explicit @Occupancy override is applied before the auto budgeting, so
     // it wins.
     if (auto attr = XpuKernelAttr::from(*method); attr && attr->hasOccupancy()) {

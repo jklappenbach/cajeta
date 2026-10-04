@@ -11,6 +11,8 @@
 #include <vector>
 
 namespace cajeta {
+class Method;
+class CajetaClass;
 namespace xpu {
 
     // Which backend(s) a kernel is restricted to.
@@ -30,6 +32,9 @@ namespace xpu {
     public:
         // Build from an Annotatable; nullopt when @Kernel is absent.
         static std::optional<XpuKernelAttr> from(const Annotatable& a);
+        // A kernel method: annotation expressions are evaluated against its
+        // class's template values when the class is an instantiation.
+        static std::optional<XpuKernelAttr> from(const Method& m);
 
         // @Wave(width = N); nullopt lets the lowering pass pick a target default.
         std::optional<int> waveWidth() const { return waveWidth_; }
@@ -60,17 +65,23 @@ namespace xpu {
         }
         // Either form of the workgroup bound is declared.
         bool hasThreadBound() const { return maxThreads_ || maxWaves_; }
+        // Non-empty when an @Occupancy argument is an expression that is not
+        // a compile-time constant: the lowering refuses the kernel with it.
+        const std::string& occupancyError() const { return occupancyError_; }
         bool hasOccupancy() const {
             return maxThreads_ || maxWaves_ || minResident_ || maxRegisters_;
         }
 
     private:
+        static std::optional<XpuKernelAttr> fromWith(const Annotatable& a,
+                                                     const CajetaClass* cls);
         std::optional<int> waveWidth_;
         std::vector<XpuBackend> backends_;
         std::optional<unsigned> maxThreads_;
         std::optional<unsigned> minResident_;
         std::optional<unsigned> maxRegisters_;
         std::optional<unsigned> maxWaves_;
+        std::string occupancyError_;
     };
 
 } // namespace xpu

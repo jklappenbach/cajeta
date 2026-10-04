@@ -675,8 +675,10 @@ capability traits. A request for `mma<16, 16, 16, f16, f16, f32>` on
 a device whose only mma shape is `16x16x4` is a compile error with a
 suggested alternative.
 
-A tile that owns several fragments can hold them in an array, with a
-literal size in every dimension:
+A tile that owns several fragments can hold them in an array. Every
+dimension's size must be a compile-time constant: a literal, or an
+expression over the class template's values, such as `[WM / 16]`, which each
+instantiation evaluates for itself:
 
 ```cajeta
 CooperativeMatrix<float32,16,16,2>[2][4] acc;
@@ -1288,6 +1290,13 @@ resolves it before the body against its fixed 32. AMD resolves it after the
 body, because a `@Wave` or cooperative-matrix pin settles the wave there.
 `maxWaves` is a declared ceiling like `maxThreads`. Declaring both is
 refused: they are two spellings of one bound.
+
+In a class template, an `@Occupancy` argument can be an integer expression
+over the template's values, so the bound travels with the shape:
+`@Occupancy(maxWaves = (TM / WM) * (TN / WN))` is 8 waves for
+`Tile<128, 128, 32, 64>` and 16 for `Tile<128, 128, 32, 32>`. An argument that
+is not a compile-time constant refuses the kernel, naming the argument and
+the name it could not bind.
 
 **A derived block needs a declared ceiling.** The compiler scans every launch
 site for a constant block and budgets the kernel's registers for the largest

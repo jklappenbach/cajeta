@@ -2,6 +2,11 @@
 
 #include "XpuKernelAttr.h"
 
+#include "cajeta/method/Method.h"
+#include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaConstantType.h"
+#include "cajeta/type/ConstExpr.h"
+
 #include <algorithm>
 #include <cctype>
 
@@ -40,6 +45,15 @@ const char* backendName(XpuBackend b) {
 }
 
 std::optional<XpuKernelAttr> XpuKernelAttr::from(const Annotatable& a) {
+    return fromWith(a, nullptr);
+}
+
+std::optional<XpuKernelAttr> XpuKernelAttr::from(const Method& m) {
+    return fromWith(m, m.getParent().get());
+}
+
+std::optional<XpuKernelAttr> XpuKernelAttr::fromWith(const Annotatable& a,
+                                                     const CajetaClass* cls) {
     if (!isKernel(a)) return std::nullopt;
 
     XpuKernelAttr out;
@@ -73,10 +87,38 @@ std::optional<XpuKernelAttr> XpuKernelAttr::from(const Annotatable& a) {
 
     // @Occupancy(maxThreads, maxWaves, minResident, maxRegisters): optional named Int64 args; non-positive values are ignored.
     if (auto occ = a.findAnnotation(XpuAttr::Occupancy)) {
+        // An argument that is not a literal arrives as its source text, and
+        // is a constant expression over the class template's non-type
+        // parameters (`maxWaves = (TM / WM) * (TN / WN)`), evaluated for
+        // this instantiation (xpu-kernel-independence §3.3).
+        ConstLookup bound;
+        if (cls) {
+            bound = [cls](const std::string& n) -> std::optional<int64_t> {
+                const auto& params = cls->getTypeParameters();
+                const auto& args = cls->getTypeArguments();
+                for (size_t i = 0; i < params.size() && i < args.size(); ++i) {
+                    if (!params[i].isNonType || params[i].name != n) continue;
+                    if (auto c = std::dynamic_pointer_cast<CajetaConstantType>(args[i]))
+                        return c->getValue();
+                }
+                return std::nullopt;
+            };
+        }
         auto readU = [&](const char* key) -> std::optional<unsigned> {
             if (auto* arg = occ->findArg(key)) {
                 if (arg->kind == AnnotationArgKind::Int64 && arg->i64Val > 0) {
                     return static_cast<unsigned>(arg->i64Val);
+                }
+                if (arg->kind == AnnotationArgKind::String && !arg->strVal.empty()) {
+                    ConstExprResult r = evalConstExpr(arg->strVal, bound);
+                    if (!r.ok) {
+                        if (out.occupancyError_.empty())
+                            out.occupancyError_ = "@Occupancy(" + std::string(key) + " = "
+                                + arg->strVal + ") is not a compile-time constant: "
+                                + r.error;
+                        return std::nullopt;
+                    }
+                    if (r.value > 0) return static_cast<unsigned>(r.value);
                 }
             }
             return std::nullopt;

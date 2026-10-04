@@ -15,6 +15,7 @@
 #include "CajetaView.h"
 #include "CajetaTask.h"
 #include "CajetaConstantType.h"
+#include "ConstExpr.h"
 #include "CajetaVector.h"
 #include "CajetaMatrix.h"
 #include "CajetaQuaternion.h"
@@ -1167,6 +1168,21 @@ namespace cajeta {
             if (i < static_cast<int>(ctx->expression().size())) {
                 if (auto* sizeExpr = ctx->expression(i)) {
                     fixedLength = parseConstantArrayLength(sizeExpr->getText());
+                    // Not a literal: a constant expression over the template
+                    // values in scope, `[WM / 16]` (xpu-kernel-independence
+                    // §3.3). Unbound outside an instantiation, where the
+                    // length stays unknown.
+                    if (fixedLength < 0 && module) {
+                        ConstExprResult r = evalConstExpr(sizeExpr->getText(),
+                            [&module](const std::string& n) -> std::optional<int64_t> {
+                                auto c = std::dynamic_pointer_cast<CajetaConstantType>(
+                                    module->lookupTypeParameter(n));
+                                if (c) return c->getValue();
+                                return std::nullopt;
+                            });
+                        if (r.ok && r.value >= 0 && r.value <= 0x7fffffff)
+                            fixedLength = (int32_t) r.value;
+                    }
                 }
             }
             type = make_shared<CajetaArray>(module, type, fixedLength);
