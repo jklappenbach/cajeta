@@ -840,3 +840,43 @@ TEST(XpuReferenceInterpreter, aCallsUnsignedResultStaysUnsigned) {
     EXPECT_EQ(got[7], 1u);
     EXPECT_EQ(compareOn<uint32_t>(p, ins, 0, shape(1, N)), "");
 }
+
+// Workgroups run on a pool of threads; the answer, and the error a failing
+// run reports, do not depend on how many.
+TEST(XpuReferenceInterpreter, parallelWorkgroupsAnswerAsOneThreadDoes) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refGroups(KernelBuffer<int32> out, KernelBuffer<int32> in) {
+        Shared<int32> t = shared int32[64];
+        uint32 l = KernelThread.x();
+        uint32 g = KernelThread.globalIdX();
+        t[l] = in[g] * 7 + (int32) Workgroup.x();
+        Barrier.workgroup();
+        out[g] = t[63 - l] - t[(l + 5) % 64];
+    }
+    @Kernel
+    public static void refLateFault(KernelBuffer<int32> out) {
+        uint32 w = Workgroup.x();
+        uint32 g = KernelThread.globalIdX();
+        if (w == 5 || w == 11) { out[g + 100000] = 1; }
+        out[g] = (int32) w;
+    }
+)CJ", "refGroups");
+    ASSERT_EQ(p.failure, "");
+    std::vector<int32_t> in(64 * 32);
+    for (size_t i = 0; i < in.size(); ++i) in[i] = (int32_t) (i * 2654435761u >> 11);
+    std::vector<In> one = {buffer(std::vector<int32_t>(in.size())), buffer(in)}, many = one;
+    setenv("CAJETA_XPU_REF_THREADS", "1", 1);
+    ASSERT_EQ(runRef(p.kernel, one, shape(32, 64)), "");
+    setenv("CAJETA_XPU_REF_THREADS", "8", 1);
+    ASSERT_EQ(runRef(p.kernel, many, shape(32, 64)), "");
+    EXPECT_EQ(as<int32_t>(one[0].buf), as<int32_t>(many[0].buf));
+
+    auto fault = findKernel(p.module, "test.M", "refLateFault");
+    for (int rep = 0; rep < 5; ++rep) {
+        std::vector<In> f = {buffer(std::vector<int32_t>(16 * 64))};
+        std::string why = runRef(fault, f, shape(16, 64));
+        EXPECT_NE(why.find("out[100320]"), std::string::npos) << why;   // group 5, lane 0
+    }
+    unsetenv("CAJETA_XPU_REF_THREADS");
+}

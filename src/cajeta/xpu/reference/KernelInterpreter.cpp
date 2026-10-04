@@ -40,7 +40,10 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <set>
+#include <thread>
+#include <tuple>
 #include <typeinfo>
 #include <unordered_map>
 
@@ -246,12 +249,24 @@ struct Mem {
     bool shared = false;
     std::vector<uint8_t> written;   // shared only: which elements a work-item stored
     std::vector<uint8_t> own;       // shared only: the storage
+    // Bumped by every store, so a memoized tile load from this memory is
+    // recomputed once the memory changes (stores may come from other threads).
+    std::atomic<uint64_t> version{0};
+};
+
+// A tile's elements, row-major and immutable once made: floats as doubles
+// that hold the element type's value exactly, integers as their masked bits.
+// Tiles are wave-uniform values, so the lanes of a workgroup that compute the
+// same tile share one of these (see Group::tileMemo).
+struct TileData {
+    std::vector<double> f;
+    std::vector<uint64_t> i;
 };
 
 struct Tile {
     Ty elem;
     uint32_t rows = 0, cols = 0, use = 0;
-    std::vector<Val> e;   // row-major scalars
+    std::shared_ptr<const TileData> data;
 };
 
 [[noreturn]] void refuse(const std::string& what) {
@@ -548,6 +563,7 @@ void storeElem(Mem& m, uint64_t idx, const Val& v, const Where& where) {
         default: std::memcpy(p, &c.i, bytesOf(m.elem.prim)); break;
     }
     if (m.shared) m.written[idx] = 1;
+    m.version.fetch_add(1, std::memory_order_relaxed);
 }
 
 uint64_t indexOf(const Val& v, const Where& where) {
@@ -685,6 +701,40 @@ const std::map<LocalKind, std::set<std::string>>& memberBuiltins() {
     return m;
 }
 
+// ---- literals --------------------------------------------------------------
+
+Val parseFloatLiteral(const FloatLiteralExpression* fl) {
+    std::string text = fl->getRawValue();
+    // The host's rule: an `f` suffix is float32, anything else float64.
+    bool f32 = !text.empty() && (text.back() == 'f' || text.back() == 'F');
+    if (!text.empty() && std::strchr("fFdD", text.back())) text.pop_back();
+    return mkFloat(f32 ? Prim::F32 : Prim::F64,
+                   f32 ? (double) std::strtof(text.c_str(), nullptr)
+                       : std::strtod(text.c_str(), nullptr));
+}
+
+Val parseIntLiteral(const IntegerLiteralExpression* il) {
+    unsigned radix = 10;
+    size_t prefix = 0;
+    switch (il->getIntegerLiteralType()) {
+        case INTEGER_LITERAL_TYPE_BINARY: radix = 2; prefix = 2; break;
+        case INTEGER_LITERAL_TYPE_OCT: radix = 8; break;
+        case INTEGER_LITERAL_TYPE_HEX: radix = 16; prefix = 2; break;
+        default: break;
+    }
+    std::string text = il->getRawValue();
+    if (prefix && text.size() >= prefix) text.erase(0, prefix);
+    bool isLong = !text.empty() && (text.back() == 'l' || text.back() == 'L');
+    if (isLong) text.pop_back();
+    text.erase(std::remove(text.begin(), text.end(), '_'), text.end());
+    uint64_t v = text.empty() ? 0 : std::stoull(text, nullptr, (int) radix);
+    // Past int32, an unsuffixed literal is read as int64, so it adapts to a
+    // uint32 or int64 sibling with its value intact.
+    Val out = mkInt({isLong || v > 0x7FFFFFFFull ? Prim::I64 : Prim::I32, true}, v);
+    out.lit = true;
+    return out;
+}
+
 // ---- the refusal pass ------------------------------------------------------
 
 // What the survey resolved, by node: the compiler's type registries are
@@ -701,6 +751,8 @@ struct Bindings {
     llvm::DenseMap<const void*, std::pair<int, int>> forSlots;   // for-each -> element, iterator
     llvm::DenseMap<const Method*, std::vector<int>> paramSlots;
     llvm::DenseMap<const Method*, int> frameSize;
+    // Every literal, parsed once, so workgroups on other threads only read.
+    llvm::DenseMap<const Expression*, Val> literals;
 };
 
 // A non-type parameter of `cls`'s class template instantiation, at its
@@ -727,6 +779,7 @@ public:
     std::vector<std::string> refused;
     bool usesCollective = false;
     bool usesWave = false;
+    bool usesAtomic = false;
     Bindings bindings;
 
     void kernel(const MethodPtr& m) { function(m, ""); }
@@ -963,6 +1016,7 @@ private:
             bindName(recvId, r);
             const auto& ok = memberBuiltins().at(k->second);
             if (!ok.count(name)) note("`" + r + "." + name + "`", mc);
+            if (startsWith(name, "atomic")) usesAtomic = true;
             return;
         }
         std::string q = r + "." + name;
@@ -986,8 +1040,14 @@ private:
             bindName(e, id->getTextValue());
             return;
         }
-        if (std::dynamic_pointer_cast<IntegerLiteralExpression>(e)
-                || std::dynamic_pointer_cast<FloatLiteralExpression>(e)) return;
+        if (auto il = std::dynamic_pointer_cast<IntegerLiteralExpression>(e)) {
+            bindings.literals[e.get()] = parseIntLiteral(il.get());
+            return;
+        }
+        if (auto fl = std::dynamic_pointer_cast<FloatLiteralExpression>(e)) {
+            bindings.literals[e.get()] = parseFloatLiteral(fl.get());
+            return;
+        }
         if (auto tl = std::dynamic_pointer_cast<TextLiteralExpression>(e)) {
             if (tl->getLiteralType() != LITERAL_TYPE_BOOL) note("a string literal", e);
             return;
@@ -1064,7 +1124,6 @@ struct Run {
     std::map<std::string, Mem> buffers;
     std::map<std::string, Val> scalars;
     Bindings bindings;
-    llvm::DenseMap<const Expression*, Val> literals;   // parsed once per node
     bool hasDeadline = false;
     std::chrono::steady_clock::time_point deadline;
 };
@@ -1179,6 +1238,22 @@ struct Group {
     uint64_t steps = 0;           // statements run, for the budget check
     std::exception_ptr failure;
     std::vector<ItemSync> sync;
+    // Tile operations memoized by their exact inputs: a lane whose splat,
+    // load or mma matches one another lane already ran takes its result. The
+    // entry keeps its inputs alive, so a freed tile's address cannot match.
+    struct TileKey {
+        int op;
+        const void* a; const void* b; const void* c;
+        uint64_t x, y, z, w;
+        bool operator<(const TileKey& o) const {
+            return std::tie(op, a, b, c, x, y, z, w) < std::tie(o.op, o.a, o.b, o.c, o.x, o.y, o.z, o.w);
+        }
+    };
+    struct TileEntry {
+        std::shared_ptr<const TileData> out;
+        std::shared_ptr<const TileData> in[3];
+    };
+    std::map<TileKey, TileEntry> tileMemo;
     explicit Group(Run& r) : run(r) {}
 };
 
@@ -1429,9 +1504,7 @@ private:
                 tile->rows = (uint32_t) constArg(t, 1);
                 tile->cols = (uint32_t) constArg(t, 2);
                 tile->use = (uint32_t) constArg(t, 3);
-                tile->e.assign((size_t) tile->rows * tile->cols,
-                               isFloat(tile->elem.prim) ? mkFloat(tile->elem.prim, 0)
-                                                        : mkInt(tile->elem, 0));
+                tile->data = zeroTile(*tile);
                 s.v.k = Val::TileRef;
                 s.v.t = tile->elem;
                 s.v.tile = tile;
@@ -1481,12 +1554,11 @@ private:
                 return name(static_cast<IdentifierExpression*>(e)->getTextValue(), e);
             case ExprKind::IntegerLiteral:
             case ExprKind::FloatLiteral: {
-                auto c = R.literals.find(e);
-                if (c != R.literals.end()) return c->second;
-                Val v = e->kind() == ExprKind::IntegerLiteral
-                    ? intLiteral(static_cast<IntegerLiteralExpression*>(e)) : floatLiteral(e);
-                R.literals.try_emplace(e, v);
-                return v;
+                auto c = R.bindings.literals.find(e);
+                if (c != R.bindings.literals.end()) return c->second;
+                return e->kind() == ExprKind::IntegerLiteral
+                    ? parseIntLiteral(static_cast<IntegerLiteralExpression*>(e))
+                    : parseFloatLiteral(static_cast<FloatLiteralExpression*>(e));
             }
             case ExprKind::BinaryOp:
                 return binary(static_cast<BinaryOpExpression*>(e));
@@ -1497,8 +1569,8 @@ private:
         }
         if (auto id = dynamic_cast<IdentifierExpression*>(e))
             return name(id->getTextValue(), e);
-        if (auto il = dynamic_cast<IntegerLiteralExpression*>(e)) return intLiteral(il);
-        if (dynamic_cast<FloatLiteralExpression*>(e)) return floatLiteral(e);
+        if (auto il = dynamic_cast<IntegerLiteralExpression*>(e)) return parseIntLiteral(il);
+        if (auto fl = dynamic_cast<FloatLiteralExpression*>(e)) return parseFloatLiteral(fl);
         if (false) {
             std::string text;
             // The host's rule: an `f` suffix is float32, anything else float64.
@@ -1571,38 +1643,6 @@ private:
         }
         if (dynamic_cast<MoveExpression*>(e)) return eval(child(e, 0));
         refuse("the expression " + std::string(ownership::toString(e->kind())) + " (" + at(e) + ")");
-    }
-
-    Val floatLiteral(Expression* e) {
-        std::string text = static_cast<FloatLiteralExpression*>(e)->getRawValue();
-        // The host's rule: an `f` suffix is float32, anything else float64.
-        bool f32 = !text.empty() && (text.back() == 'f' || text.back() == 'F');
-        if (!text.empty() && std::strchr("fFdD", text.back())) text.pop_back();
-        return mkFloat(f32 ? Prim::F32 : Prim::F64,
-                       f32 ? (double) std::strtof(text.c_str(), nullptr)
-                           : std::strtod(text.c_str(), nullptr));
-    }
-
-    Val intLiteral(IntegerLiteralExpression* il) {
-        unsigned radix = 10;
-        size_t prefix = 0;
-        switch (il->getIntegerLiteralType()) {
-            case INTEGER_LITERAL_TYPE_BINARY: radix = 2; prefix = 2; break;
-            case INTEGER_LITERAL_TYPE_OCT: radix = 8; break;
-            case INTEGER_LITERAL_TYPE_HEX: radix = 16; prefix = 2; break;
-            default: break;
-        }
-        std::string text = il->getRawValue();
-        if (prefix && text.size() >= prefix) text.erase(0, prefix);
-        bool isLong = !text.empty() && (text.back() == 'l' || text.back() == 'L');
-        if (isLong) text.pop_back();
-        text.erase(std::remove(text.begin(), text.end(), '_'), text.end());
-        uint64_t v = text.empty() ? 0 : std::stoull(text, nullptr, (int) radix);
-        // Past int32, an unsuffixed literal is read as int64, so it adapts to a
-        // uint32 or int64 sibling with its value intact.
-        Val out = mkInt({isLong || v > 0x7FFFFFFFull ? Prim::I64 : Prim::I32, true}, v);
-        out.lit = true;
-        return out;
     }
 
     Val prefix(PrefixExpression* pre) {
@@ -1990,11 +2030,46 @@ private:
 
     // Tiles are wave-uniform values; each work-item holds its own copy and every
     // copy is computed identically from the same uniform arguments.
+    static uint64_t tyCode(const Ty& t) { return ((uint64_t) t.prim << 1) | (t.sgn ? 1 : 0); }
+
+    // The memoized result of a tile operation, or the one `make` computes.
+    std::shared_ptr<const TileData> memo(const Group::TileKey& key,
+                                         std::initializer_list<std::shared_ptr<const TileData>> in,
+                                         const std::function<std::shared_ptr<const TileData>()>& make) {
+        auto it = G.tileMemo.find(key);
+        if (it != G.tileMemo.end()) return it->second.out;
+        Group::TileEntry e;
+        e.out = make();
+        size_t n = 0;
+        for (auto& d : in) if (n < 3) e.in[n++] = d;
+        G.tileMemo.emplace(key, e);
+        return e.out;
+    }
+
+    std::shared_ptr<const TileData> zeroTile(const Tile& t) {
+        Group::TileKey key{0, nullptr, nullptr, nullptr, tyCode(t.elem), t.rows, t.cols, 0};
+        return memo(key, {}, [&] {
+            auto d = std::make_shared<TileData>();
+            if (isFloat(t.elem.prim)) d->f.assign((size_t) t.rows * t.cols, 0.0);
+            else d->i.assign((size_t) t.rows * t.cols, 0);
+            return std::shared_ptr<const TileData>(d);
+        });
+    }
+
     Val tileCall(Tile& t, const std::string& nm, const std::vector<Val>& a, const Where& where) {
+        const size_t n = (size_t) t.rows * t.cols;
+        const bool fl = isFloat(t.elem.prim);
         if (nm == "splat") {
             if (a.size() != 1) refuse("`splat` takes one value (" + where + ")");
             Val v = convert(a[0], t.elem);
-            for (auto& x : t.e) x = v;
+            uint64_t bits;
+            if (fl) std::memcpy(&bits, &v.f, 8); else bits = v.i;
+            Group::TileKey key{1, nullptr, nullptr, nullptr, tyCode(t.elem), t.rows, t.cols, bits};
+            t.data = memo(key, {}, [&] {
+                auto d = std::make_shared<TileData>();
+                if (fl) d->f.assign(n, v.f); else d->i.assign(n, v.i);
+                return std::shared_ptr<const TileData>(d);
+            });
             return Val();
         }
         if (nm == "load" || nm == "store") {
@@ -2007,13 +2082,33 @@ private:
             uint64_t off = indexOf(a[1], where), layout = indexOf(a[2], where),
                      stride = indexOf(a[3], where);
             if (layout > 1) undefined("tile layout " + std::to_string(layout) + " (" + where + ")");
-            for (uint32_t r = 0; r < t.rows; ++r)
-                for (uint32_t c = 0; c < t.cols; ++c) {
-                    uint64_t at = off + (layout == 0 ? r * stride + c : c * stride + r);
-                    Val& x = t.e[(size_t) r * t.cols + c];
-                    if (nm == "load") x = loadElem(m, at, where);
-                    else storeElem(m, at, x, where);
-                }
+            auto at = [&](uint32_t r, uint32_t c) {
+                return off + (layout == 0 ? (uint64_t) r * stride + c : (uint64_t) c * stride + r);
+            };
+            if (nm == "store") {
+                const TileData& d = *t.data;
+                for (uint32_t r = 0; r < t.rows; ++r)
+                    for (uint32_t c = 0; c < t.cols; ++c) {
+                        size_t k = (size_t) r * t.cols + c;
+                        storeElem(m, at(r, c), fl ? mkFloat(t.elem.prim, d.f[k]) : mkInt(t.elem, d.i[k]),
+                                  where);
+                    }
+                return Val();
+            }
+            Group::TileKey key{2, &m, nullptr, nullptr,
+                               m.version.load(std::memory_order_relaxed), off,
+                               (layout << 40) ^ stride, ((uint64_t) t.rows << 32) | t.cols};
+            t.data = memo(key, {}, [&] {
+                auto d = std::make_shared<TileData>();
+                if (fl) d->f.resize(n); else d->i.resize(n);
+                for (uint32_t r = 0; r < t.rows; ++r)
+                    for (uint32_t c = 0; c < t.cols; ++c) {
+                        Val x = loadElem(m, at(r, c), where);
+                        size_t k = (size_t) r * t.cols + c;
+                        if (fl) d->f[k] = x.f; else d->i[k] = x.i;
+                    }
+                return std::shared_ptr<const TileData>(d);
+            });
             return Val();
         }
         if (nm == "mma") {
@@ -2023,33 +2118,49 @@ private:
             const Tile& B = *a[1].tile;
             if (A.rows != t.rows || B.cols != t.cols || A.cols != B.rows)
                 refuse("`mma` on tiles whose shapes do not chain (" + where + ")");
-            for (uint32_t r = 0; r < t.rows; ++r)
-                for (uint32_t c = 0; c < t.cols; ++c) {
-                    Val& acc = t.e[(size_t) r * t.cols + c];
-                    if (isFloat(t.elem.prim)) {
-                        // Accumulated in float32 in k order, one rounding per product
-                        // and one per sum; float64 tiles in float64.
-                        Prim p = t.elem.prim == Prim::F64 ? Prim::F64 : Prim::F32;
-                        double s = acc.f;
-                        for (uint32_t k = 0; k < A.cols; ++k) {
-                            bool ic, cmp;
-                            double prod = floatOp(BINARY_OP_MUL, p, convert(A.e[r * A.cols + k], {p, true}).f,
-                                                  convert(B.e[k * B.cols + c], {p, true}).f, ic, cmp);
-                            s = floatOp(BINARY_OP_ADD, p, s, prod, ic, cmp);
+            if (isFloat(A.elem.prim) != fl || isFloat(B.elem.prim) != fl)
+                refuse("`mma` mixing float and integer tiles (" + where + ")");
+            Group::TileKey key{3, t.data.get(), A.data.get(), B.data.get(), tyCode(t.elem),
+                               tyCode(A.elem), tyCode(B.elem), 0};
+            t.data = memo(key, {t.data, A.data, B.data}, [&] {
+                auto d = std::make_shared<TileData>(*t.data);
+                const TileData& ad = *A.data;
+                const TileData& bd = *B.data;
+                const uint32_t K = A.cols;
+                for (uint32_t r = 0; r < t.rows; ++r)
+                    for (uint32_t c = 0; c < t.cols; ++c) {
+                        size_t k0 = (size_t) r * t.cols + c;
+                        if (fl && t.elem.prim == Prim::F64) {
+                            double s = d->f[k0];
+                            for (uint32_t k = 0; k < K; ++k) {
+                                double prod = ad.f[(size_t) r * K + k] * bd.f[(size_t) k * B.cols + c];
+                                s = s + prod;
+                            }
+                            d->f[k0] = s;
+                        } else if (fl) {
+                            // Accumulated in float32 in k order, one rounding per
+                            // product and one per sum.
+                            float s = (float) d->f[k0];
+                            for (uint32_t k = 0; k < K; ++k) {
+                                float prod = (float) ad.f[(size_t) r * K + k] *
+                                             (float) bd.f[(size_t) k * B.cols + c];
+                                s = s + prod;
+                            }
+                            d->f[k0] = roundTo(t.elem.prim, (double) s);
+                        } else {
+                            const unsigned aw = bitsOf(A.elem.prim), bw = bitsOf(B.elem.prim);
+                            uint64_t s = d->i[k0];
+                            for (uint32_t k = 0; k < K; ++k) {
+                                uint64_t x = ad.i[(size_t) r * K + k], y = bd.i[(size_t) k * B.cols + c];
+                                int64_t xv = A.elem.sgn ? sext(x, aw) : (int64_t) x;
+                                int64_t yv = B.elem.sgn ? sext(y, bw) : (int64_t) y;
+                                s += (uint64_t) (xv * yv);
+                            }
+                            d->i[k0] = s & maskOf(bitsOf(t.elem.prim));
                         }
-                        acc = mkFloat(t.elem.prim, s);
-                    } else {
-                        uint64_t s = acc.i;
-                        for (uint32_t k = 0; k < A.cols; ++k) {
-                            const Val& x = A.e[r * A.cols + k];
-                            const Val& y = B.e[k * B.cols + c];
-                            int64_t xv = x.t.sgn ? x.s64() : (int64_t) x.u64();
-                            int64_t yv = y.t.sgn ? y.s64() : (int64_t) y.u64();
-                            s += (uint64_t) (xv * yv);
-                        }
-                        acc = mkInt(t.elem, s);
                     }
-                }
+                return std::shared_ptr<const TileData>(d);
+            });
             return Val();
         }
         refuse("the tile operation `" + nm + "` (" + where + ")");
@@ -2489,12 +2600,11 @@ void run(const MethodPtr& kernel, const std::vector<Arg>& args, const Launch& la
         CajetaTypePtr t = p->getType();
         if (isBuffer(t)) {
             if (!a.isBuffer) refuse("argument `" + p->getName() + "` of " + kname + " is a buffer");
-            Mem m;
+            Mem& m = R.buffers[p->getName()];
             m.name = p->getName();
             m.elem = *primOf(typeArg(t, 0));
             m.data = (uint8_t*) a.data;
             m.count = a.byteCount ? a.byteCount / bytesOf(m.elem.prim) : a.count;
-            R.buffers[p->getName()] = m;
         } else {
             Ty st = *primOf(t);
             Val v;
@@ -2520,20 +2630,58 @@ void run(const MethodPtr& kernel, const std::vector<Arg>& args, const Launch& la
         refuse("kernel " + kname + " takes " + std::to_string(ai) + " arguments, not " +
                std::to_string(args.size()));
 
+    // Workgroups cannot synchronize with each other, so they run on a pool of
+    // threads, each taking the next group in order. A kernel with atomics runs
+    // its groups in order on one thread: atomics would need real atomicity
+    // across threads, and float atomics answer by the order they ran in.
+    // CAJETA_XPU_REF_THREADS caps the pool. A failure stops new groups from
+    // starting, and the lowest-numbered failing group's error is the one
+    // reported, so the report does not depend on scheduling.
     const uint32_t* g = launch.grid;
     const uint32_t* b = launch.block;
-    Fibers fibers;
-    for (uint32_t z = 0; z < g[2]; ++z)
-        for (uint32_t y = 0; y < g[1]; ++y)
-            for (uint32_t x = 0; x < g[0]; ++x) {
-                Group G(R);
-                G.id[0] = x; G.id[1] = y; G.id[2] = z;
-                G.size = b[0] * b[1] * b[2];
+    const uint64_t groups = (uint64_t) g[0] * g[1] * g[2];
+    unsigned threads = std::max(1u, std::thread::hardware_concurrency());
+    if (const char* t = std::getenv("CAJETA_XPU_REF_THREADS"); t && *t)
+        threads = std::max(1, std::atoi(t));
+    if (survey.usesAtomic) threads = 1;
+    threads = (unsigned) std::min<uint64_t>(threads, groups);
+
+    std::atomic<uint64_t> next{0};
+    std::atomic<uint64_t> firstFailure{UINT64_MAX};
+    std::mutex failureLock;
+    std::exception_ptr failure;
+    auto worker = [&] {
+        Fibers fibers;
+        for (;;) {
+            uint64_t i = next.fetch_add(1);
+            if (i >= groups || i > firstFailure.load()) return;
+            Group G(R);
+            G.id[0] = (uint32_t) (i % g[0]);
+            G.id[1] = (uint32_t) ((i / g[0]) % g[1]);
+            G.id[2] = (uint32_t) (i / ((uint64_t) g[0] * g[1]));
+            G.size = b[0] * b[1] * b[2];
+            try {
                 if (R.hasDeadline && std::chrono::steady_clock::now() > R.deadline)
                     throw Exception("the reference run of " + kname + " outlasted its budget",
                                     "XPU-REF03");
                 runGroup(G, survey.usesCollective, fibers);
+            } catch (...) {
+                std::lock_guard<std::mutex> lk(failureLock);
+                if (i < firstFailure.load()) {
+                    firstFailure.store(i);
+                    failure = std::current_exception();
+                }
             }
+        }
+    };
+    if (threads <= 1) {
+        worker();
+    } else {
+        std::vector<std::thread> pool;
+        for (unsigned t = 0; t < threads; ++t) pool.emplace_back(worker);
+        for (auto& t : pool) t.join();
+    }
+    if (failure) std::rethrow_exception(failure);
 }
 
 std::vector<ParamShape> paramShapes(const MethodPtr& kernel) {
