@@ -1,7 +1,7 @@
 # xpu-kernel-independence: new kernels and new models without compiler changes
 
-Status: **draft**, written 2026-10-03 at Julian's request; its §7 decisions
-taken the same day in an interactive review. Plan:
+Status: **active**, approved by Julian 2026-10-03 after an interactive
+review that took the §7 decisions. Written the same day at his request. Plan:
 [`agents/xpu-kernel-independence-plan.md`](../agents/xpu-kernel-independence-plan.md).
 
 ## 1. Definition
