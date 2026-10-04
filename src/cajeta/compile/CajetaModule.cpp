@@ -1651,6 +1651,20 @@ namespace cajeta {
             if (CajetaClass::drainDeferredInstantiations()) {
                 changed = true;
             }
+            // A template's `@Instantiate` list is built like any reference.
+            // Collected first: instantiating inserts into the map being walked.
+            vector<CajetaClassPtr> listing;
+            for (auto& [key, type] : CajetaType::getCanonicalMap()) {
+                auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
+                if (klass && klass->isTemplate() && !klass->isPlaceholder()
+                        && klass->findAnnotation("Instantiate"))
+                    listing.push_back(klass);
+            }
+            for (auto& klass : listing) {
+                bool before = klass->explicitInstantiationsBuilt();
+                klass->instantiateListed();
+                if (!before && klass->explicitInstantiationsBuilt()) changed = true;
+            }
             for (auto& [key, type] : CajetaType::getCanonicalMap()) {
                 auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
                 if (!klass) continue;

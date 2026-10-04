@@ -37,6 +37,9 @@ namespace cajeta {
         vector<int64_t> i64List;
         vector<string> strList;
         vector<bool> boolList;
+        // A single value's source text as written, spacing kept, for a
+        // diagnostic that quotes it; strVal joins the tokens without spaces.
+        string sourceText;
     };
 
     class AnnotationInstance {

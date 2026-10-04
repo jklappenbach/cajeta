@@ -1298,6 +1298,12 @@ over the template's values, so the bound travels with the shape:
 is not a compile-time constant refuses the kernel, naming the argument and
 the name it could not bind.
 
+A family of shapes is built ahead of time by listing its instantiations on
+the class, `@Instantiate({Tile<128, 128, 32, 64>, Tile<128, 128, 32, 32>})`,
+and a shape the body cannot serve is refused by name with
+`@Requires(WM % 16 == 0)`. Both are described in
+`docs/specification/lang/templates/ExplicitInstantiation.md`.
+
 **A derived block needs a declared ceiling.** The compiler scans every launch
 site for a constant block and budgets the kernel's registers for the largest
 one it finds. A block that is not a constant at every site (`block: [n]`, the

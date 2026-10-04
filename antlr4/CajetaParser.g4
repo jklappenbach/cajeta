@@ -534,6 +534,11 @@ elementValue
     : elementValueArrayInitializer
     | annotation
     | expression
+    // A class template instantiation, `Tile<4>`, as in
+    // `@Instantiate({Tile<4>, Tile<7>})`. It is not an expression (`4 >` has
+    // no right operand), so it is tried after one; a bare name stays an
+    // expression.
+    | classOrInterfaceType
     ;
 
 elementValueArrayInitializer

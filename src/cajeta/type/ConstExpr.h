@@ -6,8 +6,10 @@
 //
 // The grammar is the integer subset of the language: decimal and hex
 // literals (with `_` grouping and an `L` suffix), names, parentheses, a
-// primitive cast such as `(int64)`, unary `- + ~`, and the binary operators
-// `* / % + - << >> & ^ |` at the language's precedence.
+// primitive cast such as `(int64)`, unary `- + ~ !`, and the binary operators
+// `* / % + - << >> < <= > >= == != & ^ | && ||` at the language's precedence.
+// A comparison or logical operator yields 1 or 0, so a template's
+// `@Requires(N % 16 == 0)` evaluates here too.
 #pragma once
 
 #include <cstdint>

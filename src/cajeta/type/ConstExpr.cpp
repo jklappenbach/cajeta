@@ -27,10 +27,15 @@ struct Parser {
         ws();
         size_t n = std::char_traits<char>::length(tok);
         if (s.compare(i, n, tok) != 0) return false;
-        // `<` must not eat the first half of `<<`, and so on.
-        if (n == 1 && i + 1 < s.size() && (tok[0] == '<' || tok[0] == '>')
-                && s[i + 1] == tok[0])
-            return false;
+        // `<` must not eat the first half of `<<` or `<=`, `&` of `&&`, `!`
+        // of `!=`, and so on.
+        if (n == 1 && i + 1 < s.size()) {
+            char c = tok[0], next = s[i + 1];
+            if ((c == '<' || c == '>' || c == '&' || c == '|') && next == c)
+                return false;
+            if ((c == '<' || c == '>' || c == '!') && next == '=')
+                return false;
+        }
         i += n;
         return true;
     }
@@ -115,6 +120,7 @@ struct Parser {
         if (eat("-")) return -unary();
         if (eat("+")) return unary();
         if (eat("~")) return ~unary();
+        if (eat("!")) return unary() == 0 ? 1 : 0;
         return primary();
     }
 
@@ -155,9 +161,32 @@ struct Parser {
         return v;
     }
 
-    int64_t band() {
+    // A comparison is 1 or 0, as `&&`, `||` and `!` read any nonzero as true.
+    int64_t rel() {
         int64_t v = shift();
-        while (!failed() && eat("&")) v = v & shift();
+        while (!failed()) {
+            if (eat("<=")) v = v <= shift();
+            else if (eat(">=")) v = v >= shift();
+            else if (eat("<")) v = v < shift();
+            else if (eat(">")) v = v > shift();
+            else break;
+        }
+        return v;
+    }
+
+    int64_t eq() {
+        int64_t v = rel();
+        while (!failed()) {
+            if (eat("==")) v = v == rel();
+            else if (eat("!=")) v = v != rel();
+            else break;
+        }
+        return v;
+    }
+
+    int64_t band() {
+        int64_t v = eq();
+        while (!failed() && eat("&")) v = v & eq();
         return v;
     }
 
@@ -167,9 +196,27 @@ struct Parser {
         return v;
     }
 
-    int64_t expr() {
+    int64_t bor() {
         int64_t v = bxor();
         while (!failed() && eat("|")) v = v | bxor();
+        return v;
+    }
+
+    int64_t land() {
+        int64_t v = bor();
+        while (!failed() && eat("&&")) {
+            int64_t r = bor();
+            v = (v != 0 && r != 0) ? 1 : 0;
+        }
+        return v;
+    }
+
+    int64_t expr() {
+        int64_t v = land();
+        while (!failed() && eat("||")) {
+            int64_t r = land();
+            v = (v != 0 || r != 0) ? 1 : 0;
+        }
         return v;
     }
 };

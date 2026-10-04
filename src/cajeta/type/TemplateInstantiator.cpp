@@ -4,6 +4,8 @@
 
 #include "CajetaArray.h"
 #include "CajetaClass.h"
+#include "CajetaConstantType.h"
+#include "ConstExpr.h"
 #include "QualifiedName.h"
 #include "../asn/ClassBodyDeclaration.h"
 #include "../compile/CajetaModule.h"
@@ -147,6 +149,100 @@ namespace cajeta {
 
     // instantiateInternal, plus the cross-module obligation: a result distinct from
     // `this` is a real instantiation the current codegen module has to be told about.
+    // `@Instantiate({Tile<4>, Tile<7>})` on a class template: build every
+    // listed instantiation now, whether or not code names it, so a library
+    // carries the instantiations it needs ahead of time (xpu-kernel-
+    // independence §3.4). The list is capped, at 8 unless the class declares
+    // `max`, so its compile cost is known up front. Each entry is parsed as a
+    // type against the template's own module and instantiated like any
+    // reference, so `@Requires` and the bounds hold for it.
+    void CajetaClass::instantiateListed() {
+        if (explicitInstantiationsDone || !isTemplate()) return;
+        auto inst = findAnnotation("Instantiate");
+        if (!inst) return;
+        explicitInstantiationsDone = true;
+        const string owner = qName->toCanonical();
+
+        vector<string> entries;
+        if (const AnnotationArg* a = inst->findArg("value")) {
+            if (a->kind == AnnotationArgKind::StringList) entries = a->strList;
+            else if (a->kind == AnnotationArgKind::String && !a->strVal.empty())
+                entries.push_back(a->strVal);
+        }
+        if (entries.empty()) {
+            throw Exception(
+                "@Instantiate on " + owner + " lists no instantiations; write "
+                    "@Instantiate({" + qName->getTypeName() + "<...>, ...})",
+                "CAJETA_ERROR_INSTANTIATE_LIST");
+        }
+        constexpr int64_t kDefaultCap = 8;
+        const int64_t cap = inst->getInt("max", kDefaultCap);
+        if ((int64_t) entries.size() > cap) {
+            throw Exception(
+                "@Instantiate on " + owner + " lists "
+                    + std::to_string(entries.size())
+                    + " instantiations, over its cap (max = "
+                    + std::to_string(cap) + "); remove some, or raise the cap "
+                    "with @Instantiate(value = {...}, max = N)",
+                "CAJETA_ERROR_INSTANTIATE_CAP");
+        }
+
+        for (const string& entry : entries) {
+            // The entry must name this template: `Tile<4>` or `pkg.Tile<4>`.
+            size_t lt = entry.find('<');
+            string head = entry.substr(0, lt);
+            size_t dot = head.rfind('.');
+            string shortName = dot == string::npos ? head : head.substr(dot + 1);
+            if (lt == string::npos || shortName != qName->getTypeName()
+                    || (dot != string::npos && head != owner)) {
+                throw Exception(
+                    "@Instantiate on " + owner + " lists '" + entry
+                        + "', which is not an instantiation of " + owner,
+                    "CAJETA_ERROR_INSTANTIATE_LIST");
+            }
+
+            antlr4::ANTLRInputStream input(entry);
+            CajetaLexer lexer(&input);
+            lexer.removeErrorListeners();
+            antlr4::CommonTokenStream tokens(&lexer);
+            CajetaParser parser(&tokens);
+            parser.removeErrorListeners();
+            auto* typeCtx = parser.typeType();
+            if (!typeCtx || parser.getNumberOfSyntaxErrors() > 0
+                    || tokens.LA(1) != antlr4::Token::EOF) {
+                throw Exception(
+                    "@Instantiate on " + owner + ": '" + entry
+                        + "' is not a type",
+                    "CAJETA_ERROR_INSTANTIATE_LIST");
+            }
+            xref::SyntheticSourceScope xrefMask;
+            auto prevActive = CajetaModule::getActiveModule();
+            CajetaModule::setActiveModule(module);
+            CajetaTypePtr type;
+            try {
+                type = CajetaType::fromContext(typeCtx, module);
+            } catch (const char* why) {
+                CajetaModule::setActiveModule(prevActive);
+                throw Exception(
+                    "@Instantiate on " + owner + ": '" + entry + "': " + why,
+                    "CAJETA_ERROR_INSTANTIATE_LIST");
+            } catch (...) {
+                CajetaModule::setActiveModule(prevActive);
+                throw;
+            }
+            CajetaModule::setActiveModule(prevActive);
+            auto built = dynamic_pointer_cast<CajetaClass>(type);
+            auto origin = built ? built->getTemplateOrigin() : nullptr;
+            if (!built || !built->isInstantiation() || !origin
+                    || origin->getQName()->toCanonical() != owner) {
+                throw Exception(
+                    "@Instantiate on " + owner + ": '" + entry
+                        + "' did not instantiate " + owner,
+                    "CAJETA_ERROR_INSTANTIATE_LIST");
+            }
+        }
+    }
+
     CajetaClassPtr CajetaClass::instantiate(vector<CajetaTypePtr> args) {
         CajetaClassPtr result = instantiateInternal(std::move(args));
         // Only a genuine instantiation (a distinct object from the template)
@@ -305,6 +401,40 @@ namespace cajeta {
         // Cache key: full canonical name with args, `pkg.Box<cajeta.int32>`.
         string suffix = buildArgSuffix(args);
         string instCanonical = qName->toCanonical() + suffix;
+
+        // `@Requires(N % 16 == 0)`: what the body can serve, a constant
+        // expression over the non-type parameters. An instantiation that
+        // fails it is refused here, by name, before anything is built.
+        if (auto req = findAnnotation("Requires")) {
+            const AnnotationArg* a = req->findArg("value");
+            string text = a ? (a->sourceText.empty() ? a->strVal : a->sourceText) : "";
+            if (a && a->kind == AnnotationArgKind::Bool) text = a->boolVal ? "1" : "0";
+            if (a && a->kind == AnnotationArgKind::Int64) text = std::to_string(a->i64Val);
+            ConstLookup lookup = [&](const string& name) -> std::optional<int64_t> {
+                for (size_t i = 0; i < typeParameters.size(); ++i) {
+                    if (typeParameters[i].name != name) continue;
+                    if (auto c = dynamic_pointer_cast<CajetaConstantType>(args[i]))
+                        return c->getValue();
+                }
+                return std::nullopt;
+            };
+            ConstExprResult r = evalConstExpr(text, lookup);
+            string inst = qName->getTypeName() + suffix;
+            if (!r.ok) {
+                throw Exception(
+                    "template " + qName->toCanonical() + ": @Requires(" + text
+                        + ") is not a constant expression over its values: "
+                        + r.error,
+                    "CAJETA_ERROR_TEMPLATE_REQUIREMENT");
+            }
+            if (r.value == 0) {
+                throw Exception(
+                    inst + " is refused: " + qName->toCanonical()
+                        + " requires " + text + ", which is false for "
+                        + inst,
+                    "CAJETA_ERROR_TEMPLATE_REQUIREMENT");
+            }
+        }
 
         // Resolution runs against `module` (the template's own imports and
         // substitution); IR EMITS into `emitOwner`, which must be picked now

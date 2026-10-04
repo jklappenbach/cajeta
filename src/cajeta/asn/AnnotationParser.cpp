@@ -167,6 +167,13 @@ namespace cajeta {
                     return;
                 }
                 classifyLiteral(ev->getText(), arg);
+                antlr4::Token* b = ev->getStart();
+                antlr4::Token* e = ev->getStop();
+                if (b && e && b->getInputStream()
+                        && e->getStopIndex() >= b->getStartIndex()) {
+                    arg.sourceText = b->getInputStream()->getText(
+                        antlr4::misc::Interval(b->getStartIndex(), e->getStopIndex()));
+                }
             };
 
         if (auto* evp = ann->elementValuePairs()) {

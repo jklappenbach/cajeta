@@ -127,6 +127,8 @@ namespace cajeta {
         int dbgLineDelta = 0;
         // A concrete instantiation's back-pointer to its template; null otherwise.
         CajetaClassPtr templateOrigin;
+        // Set once instantiateListed has built this template's `@Instantiate` list.
+        bool explicitInstantiationsDone = false;
 
         // Explicitly null: writeVirtualTable's already-built guard must not read garbage.
         llvm::StructType* llvmVirtualTableType = nullptr;
@@ -744,6 +746,10 @@ namespace cajeta {
         // The actual instantiation logic; `instantiate` wraps it and also records
         // cross-module instantiation obligations for incremental compilation.
         CajetaClassPtr instantiateInternal(vector<CajetaTypePtr> args);
+        // Build every instantiation a template lists in `@Instantiate`, under
+        // its cap; once per template. Defined in TemplateInstantiator.cpp.
+        void instantiateListed();
+        bool explicitInstantiationsBuilt() const { return explicitInstantiationsDone; }
 
         // Deferred instantiation: instantiating from a still-placeholder template yields a
         // wrong class, so a placeholder is registered per canonical and filled in place.
