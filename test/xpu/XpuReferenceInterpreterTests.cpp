@@ -37,6 +37,7 @@ namespace {
 const char* kImports = R"CJ(
 package test;
 import cajeta.xpu.Barrier;
+import cajeta.xpu.Bits;
 import cajeta.xpu.CooperativeMatrix;
 import cajeta.xpu.Group;
 import cajeta.xpu.GroupOp;
@@ -755,4 +756,87 @@ TEST(XpuReferenceInterpreter, anUnsignedVectorLaneWidensWithZeroExtension) {
     ASSERT_EQ(runRef(p.kernel, r, shape(1, 1)), "");
     EXPECT_EQ(as<int32_t>(r[0].buf), (std::vector<int32_t>{200, 130, -56, 256}));
     EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(1, 1)), "");
+}
+
+// The two for-each forms a kernel has, `Group.stripe(n)` over a wave's lanes
+// and `buf.range(n)` over the grid, and the Bits primitives.
+TEST(XpuReferenceInterpreter, forEachFormsAndBitsMatchTheCpuBackend) {
+    Pair p(R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void refStripe(KernelBuffer<float32> out, KernelBuffer<float32> x,
+                                 KernelBuffer<uint32> bits, KernelBuffer<uint32> bout) {
+        uint32 blk = KernelThread.globalIdX() / (uint32) Group.width();
+        float32 av = 0.0f;
+        for (int32 k : Group.stripe(48)) {
+            float32 v = x[(int64) blk * 48L + (int64) k];
+            if (v < 0.0f) { v = 0.0f - v; }
+            if (v > av) { av = v; }
+        }
+        uint32 g = KernelThread.globalIdX();
+        out[g] = Group.reduce(GroupOp.Max, av);
+        uint32 w = bits[g];
+        bout[g * 4] = Bits.count(w);
+        bout[g * 4 + 1] = Bits.rotateLeft(w, 5);
+        bout[g * 4 + 2] = Bits.reverse(w);
+        bout[g * 4 + 3] = Bits.rotateRight(w, 30);
+        bout[g * 4] = bout[g * 4] + Bits.rotateLeft(w, 5) % 7 + Bits.reverse(w) % 11;
+    }
+)CJ", "refStripe");
+    const uint32_t N = 64;
+    std::vector<uint32_t> bits(N);
+    for (uint32_t i = 0; i < N; ++i) bits[i] = i * 2654435761u;
+    std::vector<In> ins = {buffer(std::vector<float>(N)), buffer(ramp(2 * 48, -0.75f, 30.0f)),
+                           buffer(bits), buffer(std::vector<uint32_t>(N * 4))};
+    // Bound: 0 ulp; a max.
+    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(1, N)), "");
+    EXPECT_EQ(compareOn<uint32_t>(p, ins, 3, shape(1, N)), "");
+
+    Pair r(R"CJ(
+    @Kernel
+    public static void refRange(KernelBuffer<int32> out, KernelBuffer<int32> x, uint32 n) {
+        for (uint32 i, int32 v : x.range(n)) {
+            out[i] = v * 3 + (int32) i;
+        }
+    }
+)CJ", "refRange");
+    std::vector<int32_t> x(300);
+    for (int i = 0; i < 300; ++i) x[i] = i * 7 - 1000;
+    std::vector<In> rins = {buffer(std::vector<int32_t>(300)), buffer(x), u32(290)};
+    EXPECT_EQ(compareOn<int32_t>(r, rins, 0, shape(2, 32)), "");
+}
+
+// Found by the interpreter (Unit 1): a call's result took the lowerer's
+// default signedness, signed, whatever the callee declares. A uint32 from
+// Bits.rotateLeft or a @Device helper with its high bit set then took a
+// signed `%`, `/` or compare on device. The host uses the declared return
+// type, and so must every backend.
+TEST(XpuReferenceInterpreter, aCallsUnsignedResultStaysUnsigned) {
+    Pair p(R"CJ(
+    @Device
+    public static uint32 high(uint32 v) { return v | 2147483648; }
+    @Kernel
+    public static void refCallSign(KernelBuffer<uint32> out, KernelBuffer<uint32> w) {
+        uint32 g = KernelThread.globalIdX();
+        uint32 v = w[g];
+        out[g * 4] = Bits.rotateLeft(v, 5) % 7;
+        out[g * 4 + 1] = high(v) / 3;
+        out[g * 4 + 2] = Bits.reverse(v) >> 28;
+        uint32 c = 0;
+        if (high(v) > 5) { c = 1; }
+        out[g * 4 + 3] = c;
+    }
+)CJ", "refCallSign");
+    const uint32_t N = 32;
+    std::vector<uint32_t> w(N);
+    for (uint32_t i = 0; i < N; ++i) w[i] = i * 2654435761u;
+    std::vector<In> ins = {buffer(std::vector<uint32_t>(N * 4)), buffer(w)};
+    std::vector<In> r = ins;
+    ASSERT_EQ(runRef(p.kernel, r, shape(1, N)), "");
+    auto got = as<uint32_t>(r[0].buf);
+    uint32_t v = w[1], rl = (v << 5) | (v >> 27);
+    EXPECT_EQ(got[4], rl % 7);
+    EXPECT_EQ(got[5], (v | 0x80000000u) / 3);
+    EXPECT_EQ(got[7], 1u);
+    EXPECT_EQ(compareOn<uint32_t>(p, ins, 0, shape(1, N)), "");
 }

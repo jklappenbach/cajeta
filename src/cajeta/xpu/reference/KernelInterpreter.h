@@ -44,6 +44,7 @@ namespace reference {
         void* data = nullptr;
         uint64_t count = 0;      // buffer elements
         uint64_t bits = 0;       // scalar
+        uint64_t byteCount = 0;  // buffer, when given in bytes
         bool isBuffer = false;
 
         static Arg buffer(void* p, uint64_t elements) {
@@ -51,6 +52,11 @@ namespace reference {
         }
         template <typename T>
         static Arg buffer(std::vector<T>& v) { return buffer(v.data(), v.size()); }
+        // A buffer given by its size in bytes; the element count follows from
+        // the parameter's element type.
+        static Arg bufferBytes(void* p, uint64_t bytes) {
+            Arg a; a.data = p; a.byteCount = bytes; a.isBuffer = true; return a;
+        }
         static Arg scalar(uint64_t raw) { Arg a; a.bits = raw; return a; }
         static Arg f32(float f);
         static Arg f64(double d);
@@ -74,6 +80,16 @@ namespace reference {
     // The constructs `kernel` uses that have no reference semantics, each
     // named with its line; empty when the interpreter can run it.
     std::vector<std::string> refusals(const MethodPtr& kernel);
+
+    // A kernel parameter as the corpus runner compares it: a buffer's
+    // element type, or a scalar.
+    struct ParamShape {
+        std::string name;
+        bool isBuffer = false;
+        bool isFloat = false;
+        unsigned elementBytes = 0;   // a buffer's element; 0 for a scalar
+    };
+    std::vector<ParamShape> paramShapes(const MethodPtr& kernel);
 
     // Units in the last place between two floats of one precision: 0 when
     // they are the same value (+0 and -0 included), and the maximum when

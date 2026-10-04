@@ -605,6 +605,7 @@ const std::set<std::string>& staticBuiltins() {
         "Wave.reduceSumF32", "Wave.reduceMaxF32",
         "Wave.prefixSum", "Wave.prefixProduct",
         "Group.width", "Group.laneId", "Group.rowId", "Group.reduce",
+        "Bits.reverse", "Bits.count", "Bits.rotateLeft", "Bits.rotateRight",
         "Cajeta.bitsToF32", "Cajeta.f32ToBits", "Cajeta.bitsToF64", "Cajeta.f64ToBits",
         "Math.min", "Math.max", "Math.abs", "Math.fma",
         "Math.sqrt", "Math.floor", "Math.ceil", "Math.trunc", "Math.round", "Math.rsqrt",
@@ -754,6 +755,22 @@ private:
             expr(fs->getCondition());
             for (auto& u : fs->getUpdate()) expr(u);
             stmt(fs->getBody());
+        } else if (auto ef = std::dynamic_pointer_cast<EnhancedForStatement>(n)) {
+            auto mc = std::dynamic_pointer_cast<MethodCallExpression>(ef->getIterableExpr());
+            auto recv = mc ? std::dynamic_pointer_cast<IdentifierExpression>(child(mc, 0)) : nullptr;
+            bool stripe = recv && recv->getTextValue() == "Group" && mc->getMethodCallName() == "stripe";
+            bool range = recv && mc->getMethodCallName() == "range"
+                && kinds.count(recv->getTextValue())
+                && kinds[recv->getTextValue()] == LocalKind::Buffer;
+            if ((!stripe && !range) || mc->getParameters().size() != 1) {
+                note("a for-each over something other than `Group.stripe(n)` or `buf.range(n)`", n);
+                return;
+            }
+            if (stripe) usesWave = true;
+            expr(mc->getParameters()[0].expression);
+            kinds[ef->getElementName()] = LocalKind::Scalar;
+            if (ef->getIteratorType()) kinds[ef->getIteratorName()] = LocalKind::Scalar;
+            stmt(ef->getBody());
         } else if (auto ws = std::dynamic_pointer_cast<WhileStatement>(n)) {
             expr(ws->getCondition());
             stmt(ws->getBody());
@@ -1055,6 +1072,40 @@ private:
             }
             scopes.pop_back();
             return out;
+        }
+        if (auto ef = std::dynamic_pointer_cast<EnhancedForStatement>(n)) {
+            std::string label = takeLabel();
+            auto mc = std::dynamic_pointer_cast<MethodCallExpression>(ef->getIterableExpr());
+            const std::string recv =
+                std::dynamic_pointer_cast<IdentifierExpression>(child(mc, 0))->getTextValue();
+            const bool stripe = recv == "Group";
+            Val count = eval(mc->getParameters()[0].expression);
+            // Group.stripe(n): this lane, then every wave-width lanes after it.
+            // buf.range(n): this work-item's global x, then every grid-width after.
+            CajetaTypePtr it = stripe ? ef->getElementType() : ef->getIteratorType();
+            Ty idxTy = it && primOf(it) ? *primOf(it) : Ty{Prim::I32, true};
+            uint64_t start = stripe ? me % R.wave
+                                    : (uint64_t) G.id[0] * R.launch.block[0] + tid[0];
+            uint64_t step = stripe ? R.wave : (uint64_t) R.launch.grid[0] * R.launch.block[0];
+            uint64_t limit = convert(count, idxTy).u64() & maskOf(bitsOf(idxTy.prim));
+            Mem* buf = stripe ? nullptr : R.buffers.find(recv) != R.buffers.end()
+                ? &R.buffers.at(recv) : nullptr;
+            if (!stripe && !buf) refuse("`" + recv + ".range` on something not a buffer (" + at(n) + ")");
+            for (uint64_t i = start; i < limit; i += step) {
+                scopes.emplace_back();
+                if (stripe) {
+                    scopes.back()[ef->getElementName()].v = mkInt(idxTy, i);
+                } else {
+                    if (ef->getIteratorType()) scopes.back()[ef->getIteratorName()].v = mkInt(idxTy, i);
+                    scopes.back()[ef->getElementName()].v = loadElem(*buf, i, at(n));
+                }
+                Flow f = exec(ef->getBody());
+                scopes.pop_back();
+                if (f == Flow::Return) return f;
+                if (f == Flow::Break) { if (mine(label)) break; return f; }
+                if (f == Flow::Continue && !mine(label)) return f;
+            }
+            return Flow::Next;
         }
         if (auto ws = std::dynamic_pointer_cast<WhileStatement>(n)) {
             std::string label = takeLabel();
@@ -1766,6 +1817,18 @@ private:
         if (q == "Group.laneId") return mkInt({Prim::I32, true}, me % R.wave);
         if (q == "Group.rowId") return mkInt({Prim::I32, true}, G.id[0]);
         if (startsWith(q, "Cajeta.")) return bitCast(q, args(mc), where);
+        if (startsWith(q, "Bits.")) {
+            std::vector<Val> a = args(mc);
+            if (a.empty()) refuse("`" + q + "` without its value (" + where + ")");
+            uint32_t v = (uint32_t) convert(a[0], {Prim::I32, false}).i;
+            uint32_t k = a.size() > 1 ? (uint32_t) convert(a[1], {Prim::I32, false}).i & 31 : 0;
+            uint32_t r = 0;
+            if (q == "Bits.count") { for (; v; v &= v - 1) ++r; }
+            else if (q == "Bits.reverse") { for (int b = 0; b < 32; ++b) if (v >> b & 1) r |= 1u << (31 - b); }
+            else if (q == "Bits.rotateLeft") r = k ? (v << k) | (v >> (32 - k)) : v;
+            else r = k ? (v >> k) | (v << (32 - k)) : v;
+            return u32(r);
+        }
         if (startsWith(q, "Math.")) return math(q, args(mc), where);
         std::vector<Val> a = args(mc);
         Arrival arr;
@@ -2172,7 +2235,7 @@ void run(const MethodPtr& kernel, const std::vector<Arg>& args, const Launch& la
             m.name = p->getName();
             m.elem = *primOf(typeArg(t, 0));
             m.data = (uint8_t*) a.data;
-            m.count = a.count;
+            m.count = a.byteCount ? a.byteCount / bytesOf(m.elem.prim) : a.count;
             R.buffers[p->getName()] = m;
         } else {
             Ty st = *primOf(t);
@@ -2209,6 +2272,27 @@ void run(const MethodPtr& kernel, const std::vector<Arg>& args, const Launch& la
                 G.size = b[0] * b[1] * b[2];
                 runGroup(G, survey.usesCollective);
             }
+}
+
+std::vector<ParamShape> paramShapes(const MethodPtr& kernel) {
+    std::vector<ParamShape> out;
+    for (auto& p : kernel->getParameterList()) {
+        if (!p || p->getName() == "this") continue;
+        ParamShape s;
+        s.name = p->getName();
+        CajetaTypePtr t = p->getType();
+        if (isBuffer(t)) {
+            s.isBuffer = true;
+            if (auto e = primOf(typeArg(t, 0))) {
+                s.isFloat = isFloat(e->prim);
+                s.elementBytes = bytesOf(e->prim);
+            }
+        } else if (auto e = primOf(t)) {
+            s.isFloat = isFloat(e->prim);
+        }
+        out.push_back(s);
+    }
+    return out;
 }
 
 uint64_t ulpDistance(float a, float b) {

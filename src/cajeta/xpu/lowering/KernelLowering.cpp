@@ -6407,6 +6407,13 @@ private:
                     if (it != bufferElemSigned.end()) return it->second;
                 }
             }
+            // Otherwise the callee's declared return type, as on the host: a
+            // uint32 from Bits.rotateLeft or a @Device helper divides,
+            // shifts and compares unsigned.
+            if (MethodPtr m = declaredCallee(mc))
+                if (CajetaTypePtr rt = m->getReturnType())
+                    if (rt->getTypeFlags() & PRIMITIVE_FLAG)
+                        return typeIsSigned(rt);
         }
         // Composite forms: a computed value is signed if either operand is, else
         // `(a-b) < 0` lowers to an always-false ICmpULT and `sum >> k` to LShr.
@@ -6416,6 +6423,43 @@ private:
             return exprSigned(exprChild(pre, 0));
         // Unknown leaf (cast, call, ternary): signed is the language default.
         return true;
+    }
+
+    // The method a static or helper call names: a @Device helper by the rule
+    // calls dispatch on, else a method of that name and arity on the class of
+    // that simple name (KernelThread, Wave, Bits, ...). Null for a call on a
+    // local, or when nothing matches. Cached, since exprSigned asks per operator.
+    std::map<std::string, MethodPtr> calleeCache;
+    MethodPtr declaredCallee(const std::shared_ptr<MethodCallExpression>& mc) {
+        std::string recv;
+        if (!mc->getChildren().empty()) {
+            auto id = std::dynamic_pointer_cast<IdentifierExpression>(mc->getChildren()[0]);
+            if (!id) return nullptr;
+            recv = id->getTextValue();
+            if (deviceBindingOf(recv).kind) return nullptr;   // a call on a local
+        }
+        const std::string& name = mc->getMethodCallName();
+        size_t argc = mc->getParameters().size();
+        std::string key = recv + "." + name + "/" + std::to_string(argc);
+        if (auto it = calleeCache.find(key); it != calleeCache.end()) return it->second;
+        MethodPtr found = resolveDeviceMethod(recv, name, mc);
+        if (!found && !recv.empty()) {
+            for (auto& kv : CajetaType::getCanonicalMap()) {
+                auto c = std::dynamic_pointer_cast<CajetaClass>(kv.second);
+                if (!c) continue;
+                std::string canon = c->toCanonical();
+                if (canon.substr(canon.find_last_of('.') + 1) != recv) continue;
+                for (auto& mk : c->getMethods())
+                    if (mk.second && mk.second->getName() == name
+                            && mk.second->getParameters().size() == argc) {
+                        found = mk.second;
+                        break;
+                    }
+                if (found) break;
+            }
+        }
+        calleeCache[key] = found;
+        return found;
     }
 
     // Coerce `v` to `ty`. `isSigned` governs integer WIDENING only (sign- vs
