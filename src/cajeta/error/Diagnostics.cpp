@@ -115,7 +115,8 @@ namespace cajeta {
                             const std::string& message,
                             const std::string& file,
                             int line,
-                            int column) {
+                            int column,
+                            const std::string& origin) {
         // Field order and meaning are frozen: a new compiler must not break a plugin.
         std::string o = openRecord("diagnostic");
         strOrNull(o, "severity", severity); o += ",";
@@ -124,6 +125,7 @@ namespace cajeta {
         strOrNull(o, "file", file);         o += ",";
         o += "\"line\":";   o += (line   > 0 ? std::to_string(line)   : "null"); o += ",";
         o += "\"column\":"; o += (column > 0 ? std::to_string(column) : "null");
+        o += ","; strOrNull(o, "origin", origin);
         writeRecord(o);
     }
 
@@ -180,6 +182,21 @@ namespace cajeta {
         }
         if (json) setJsonProgressEnabled(true);
         return json;
+    }
+
+    namespace {
+        bool g_allOrigins = false;
+    }
+
+    void setShowAllDiagnosticOrigins(bool all) { g_allOrigins = all; }
+    bool showAllDiagnosticOrigins() { return g_allOrigins; }
+
+    void resolveDiagOriginsFromArgv(int argc, const char* argv[]) {
+        for (int i = 1; i < argc; ++i) {
+            const std::string a = argv[i];
+            if (a == "--diag-origins=all") g_allOrigins = true;
+            else if (a == "--diag-origins=project") g_allOrigins = false;
+        }
     }
 
     void emitStreamRecord() {

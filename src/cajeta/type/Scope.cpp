@@ -2,6 +2,7 @@
 #include "../field/Field.h"
 #include "../field/ParameterField.h"
 #include "../compile/CajetaModule.h"
+#include "../compile/DiagnosticSite.h"
 #include "../error/Exception.h"
 #include "../ownership/MigrationSwitch.h"
 #include "CajetaClass.h"
@@ -278,7 +279,8 @@ namespace cajeta {
                 + " src=" + srcName + " into=" + intoDesc
                 + " type=" + (klass ? klass->toCanonical() : string("(function)")),
             "CAJETA_WARN_CAPTURED_BORROW_PARAM", message,
-            module ? module->getSourcePath() : string(), sourceLine);
+            module ? diagnosticSiteOf(*module).file : string(), sourceLine,
+            module ? diagnosticSiteOf(*module).origin : string("project"));
     }
 
     set<string> Scope::lendsOf(const string& holder) {

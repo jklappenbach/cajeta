@@ -21,6 +21,7 @@
 #include "../../type/QuaternionOps.h"
 #include "../../type/MatrixOps.h"
 #include "../../util/MemoryManager.h"
+#include "cajeta/compile/DiagnosticSite.h"
 #include "cajeta/ownership/ReturnTitleAudit.h"
 #include "cajeta/ownership/OwnedBindCheck.h"
 #include "cajeta/ownership/TitleClassifier.h"
@@ -894,8 +895,8 @@ namespace cajeta {
                                         "meant to KEEP it, spell `#" + advId->getTextValue()
                                             + "` to transfer the title. As written the title "
                                         "stays with the local and is released at scope exit.",
-                                        module->getSourcePath(),
-                                        advId->getSourceLine(), advId->getSourceColumn() + 1);
+                                        diagnosticSiteOf(*module).file,
+                                        advId->getSourceLine(), advId->getSourceColumn() + 1, diagnosticSiteOf(*module).origin);
                                 }
                             }
                             llvm::Value* opxWord = builder->getInt64(0);
@@ -1002,7 +1003,7 @@ namespace cajeta {
                             "plain store borrows it and the armed entry frees "
                             "it at exit. Spell `dst #= " + n + "` to move its "
                             "title, or store a copy (`dst = " + n + ".clone()`)",
-                            module->getSourcePath(), (int) getSourceLine(), -1);
+                            diagnosticSiteOf(*module).file, (int) getSourceLine(), -1, diagnosticSiteOf(*module).origin);
                     }
                 }
             }
@@ -2072,8 +2073,8 @@ namespace cajeta {
                                         "<= 256 B or arena/SSO-backed, otherwise takes "
                                         "a shared stake); a `#` transfer of the source "
                                         "would make this store free",
-                                        module->getSourcePath(),
-                                        (int) getSourceLine(), -1);
+                                        diagnosticSiteOf(*module).file,
+                                        (int) getSourceLine(), -1, diagnosticSiteOf(*module).origin);
                                 }
                             }
                             // Skipped inside constructors: a stack class body is not zero-initialized, so

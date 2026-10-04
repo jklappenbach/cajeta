@@ -26,7 +26,7 @@ namespace cajeta::ownership {
         // `message` becomes a real warning under `warnCode`, deduped and capped.
         void report(const std::string& note, const std::string& warnCode,
                     const std::string& message, const std::string& file,
-                    int line) const;
+                    int line, const std::string& origin = "project") const;
 
     private:
         const char* envVar_;
