@@ -120,6 +120,35 @@ it should not.
 - **5.2.4** When an owned local is lent at its final use to a callee that can
   keep it, the warning is still reported.
 
+### 5.3 Measured 2026-10-04: the String-field premise is half right
+
+5.1 says a plain store into a String field copies, so it cannot dangle. That
+holds for a `#String` formal and fails for a plain one. A callee stored its
+formal into a String field, the caller passed `#s`, then churned 2000
+substrings and read the field (probes in cajeta-six tmp/u6):
+
+| formal | store | result |
+|---|---|---|
+| `String p` | `this.v = p` | SIGSEGV |
+| `#String p` | `this.v = p` | correct, and 400000 stores of 2 KB peak at 2.7 MB |
+| `String p` | `this.v #= p` | correct |
+| `#String p` | `this.v #= p` | correct |
+| `Exception(#String)` | `this.message = message` | correct |
+
+The 42 exception-class sites take `#String message`, so they are the safe
+shape and the warning is noise there. A plain formal stored plainly into a
+String field is a captured borrow. The same store into a class field is
+already CAJETA_ERROR_CAPTURED_BORROW_PARAM, and the String field is the gap.
+`cajeta.ifx.IfxInfo`'s private constructor has that shape today. Its only
+caller passes literal names, so it does not crash yet.
+
+Two more facts bear on 5.1. The warning fires on both formal kinds alike.
+And a CLI compile turns the engine off for codegen (Compiler.cpp,
+CodegenEngineOff), so this codegen-time warning reaches only JIT compiles
+and the kernel session, never `cajeta build` or `--lint`.
+
+5.2.1 is therefore under review (7.2).
+
 ## 6. A warning-free stdlib
 
 ### 6.1 Requirements
@@ -141,3 +170,8 @@ on any warning, naming the class and line.
   CAJETA_ERROR_CAPTURED_BORROW_PARAM, so the candidate rule is "warn only for
   a `#` formal or an unresolved callee". Decided in plan Unit 3 against the
   ownership tests.
+- **7.2** What replaces 5.2.1, given 5.3. The proposal: no warning when the
+  stored value is a `#` formal, and a plain formal stored into a String field
+  becomes CAJETA_ERROR_CAPTURED_BORROW_PARAM, as it is for a class field.
+  `#` formals stored into class fields and array slots (DnsCache's resolver,
+  QueryParams.append's keys) are not yet measured. Needs Julian's decision.
