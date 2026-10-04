@@ -880,3 +880,76 @@ TEST(XpuReferenceInterpreter, parallelWorkgroupsAnswerAsOneThreadDoes) {
     }
     unsetenv("CAJETA_XPU_REF_THREADS");
 }
+
+// The compiled path and the walker (CAJETA_XPU_REF_WALK=1) answer alike, bit
+// for bit, over the operators, conversions and statements the compiler
+// specializes.
+TEST(XpuReferenceInterpreter, theCompiledPathAnswersAsTheWalkerDoes) {
+    Pair p(R"CJ(
+    @Device
+    public static uint32 mixer(uint32 v, int32 s) { return (v >> 3) ^ (uint32) (s * 31); }
+    @Kernel
+    @Wave(width = 32)
+    public static void refDiff(KernelBuffer<int32> out, KernelBuffer<float32> fout,
+                               KernelBuffer<int32> in, KernelBuffer<float32> fin, uint32 n) {
+        Shared<int32> sh = shared int32[64];
+        uint32 l = KernelThread.x();
+        uint32 g = KernelThread.globalIdX();
+        int32 x = in[g];
+        uint32 u = (uint32) x * 2654435761;
+        int64 w = (int64) x * 1000003L - 7L;
+        int32 acc = 0;
+        for (int32 i = 0; i < 40; i++) {
+            if (i == 33) { break; }
+            if (i % 5 == 2) { continue; }
+            acc += (x >> (i % 7)) - i * 3;
+            acc ^= (int32) (u >> 11);
+        }
+        uint32 q = u / 13 + u % 7;
+        int32 sq = x / 9 - x % 9;
+        uint32 k = 0;
+        while (k < 10) { k = k + 3; }
+        int8 b = (int8) x;
+        uint16 h = (uint16) u;
+        sh[l] = acc + (int32) b + (int32) h;
+        Barrier.workgroup();
+        int32 nb = sh[(l + 1) % 64];
+        int32 t = 0;
+        for (int32 j : Group.stripe(48)) { t = t + j; }
+        float32 f = fin[g];
+        float32 fa = f * 1.5f - 0.25f;
+        fa /= 3.0f;
+        float64 d = (float64) f * 0.1 + (float64) x;
+        boolean flag = (x < 0) && !(u > 4000000000);
+        int32 z = 0;
+        if (flag || q == 5) { z = 1; }
+        out[g * 8] = acc;
+        out[g * 8 + 1] = (int32) q;
+        out[g * 8 + 2] = sq;
+        out[g * 8 + 3] = (int32) (w >> 9);
+        out[g * 8 + 4] = nb + (int32) k + z;
+        out[g * 8 + 5] = t;
+        out[g * 8 + 6] = (int32) mixer(u, x);
+        out[g * 8 + 7] = (int32) (d * 0.25);
+        fout[g] = fa + (float32) d;
+    }
+)CJ", "refDiff");
+    ASSERT_EQ(p.failure, "");
+    const uint32_t N = 128;
+    std::vector<int32_t> in(N);
+    std::vector<float> fin(N);
+    for (uint32_t i = 0; i < N; ++i) {
+        in[i] = (int32_t) (i * 2246822519u);
+        fin[i] = 0.37f * (float) i - 11.0f;
+    }
+    std::vector<In> compiled = {buffer(std::vector<int32_t>(N * 8)), buffer(std::vector<float>(N)),
+                                buffer(in), buffer(fin), u32(N)};
+    std::vector<In> walked = compiled;
+    ASSERT_EQ(runRef(p.kernel, compiled, shape(2, 64)), "");
+    setenv("CAJETA_XPU_REF_WALK", "1", 1);
+    std::string why = runRef(p.kernel, walked, shape(2, 64));
+    unsetenv("CAJETA_XPU_REF_WALK");
+    ASSERT_EQ(why, "");
+    EXPECT_EQ(as<int32_t>(compiled[0].buf), as<int32_t>(walked[0].buf));
+    EXPECT_EQ(as<uint32_t>(compiled[1].buf), as<uint32_t>(walked[1].buf));
+}

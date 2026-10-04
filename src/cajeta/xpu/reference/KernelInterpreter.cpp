@@ -37,6 +37,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <map>
@@ -1116,6 +1117,8 @@ struct ItemSync {
     Arrival arrival;
 };
 
+struct Compiled;
+
 struct Run {
     MethodPtr kernel;
     std::shared_ptr<CajetaClass> cls;
@@ -1124,6 +1127,7 @@ struct Run {
     std::map<std::string, Mem> buffers;
     std::map<std::string, Val> scalars;
     Bindings bindings;
+    const Compiled* compiled = nullptr;
     bool hasDeadline = false;
     std::chrono::steady_clock::time_point deadline;
 };
@@ -1259,6 +1263,62 @@ struct Group {
 
 enum class Flow { Next, Break, Continue, Return };
 
+// ---- compiled kernels --------------------------------------------------------
+//
+// Before a launch runs, each kernel and helper body is compiled once into a
+// tree of nodes over 8-byte scalars: types, literal adaptation, conversions
+// and slots are settled at compile time, so a node does its operation and
+// nothing else. A construct the compiler does not specialize (vectors, tiles,
+// collectives, most calls) compiles to a fallback node that hands its subtree
+// to the walker below, so the semantics live in one place.
+// CAJETA_XPU_REF_WALK=1 runs everything through the walker instead.
+
+class Item;
+
+union SV {
+    uint64_t i;
+    double f;
+};
+
+struct CExpr {
+    using Fn = SV (*)(const CExpr&, Item&);
+    Fn fn = nullptr;
+    Ty t;                       // the result's static type
+    bool lit = false;           // a literal (or literals folded): adapts to its sibling
+    const CExpr* a = nullptr;
+    const CExpr* b = nullptr;
+    int slot = -1;              // a local or a buffer's slot
+    SV k{};                     // a constant
+    BinaryOp op = BINARY_OP_ADD;
+    int kind = 0;               // the operation's family, per fn
+    Ty at, bt;                  // operand types, as the operation reads them
+    unsigned w = 0;             // integer operation width
+    bool sgn = false;           // signed operation / extension
+    bool flag = false;          // per fn: postfix, compare-signed, ...
+    Expression* src = nullptr;  // for messages and the fallback
+};
+
+struct CStmt {
+    using Fn = Flow (*)(const CStmt&, Item&);
+    Fn fn = nullptr;
+    std::vector<const CStmt*> kids;
+    const CStmt* s0 = nullptr;
+    const CStmt* s1 = nullptr;
+    const CStmt* s2 = nullptr;
+    const CExpr* e = nullptr;
+    std::vector<const CExpr*> upd;
+    int slot = -1, slot2 = -1, slot3 = -1;
+    bool flag = false;
+    Ty t;
+    AbstractSyntaxNode* src = nullptr;
+};
+
+struct Compiled {
+    std::deque<CExpr> exprs;
+    std::deque<CStmt> stmts;
+    llvm::DenseMap<const Method*, const CStmt*> bodies;
+};
+
 class Item {
 public:
     Item(Group& g, uint32_t linear, bool threaded)
@@ -1284,10 +1344,263 @@ public:
                 sl.v = R.scalars.at(p->getName());
             }
         }
-        exec(R.kernel->getBlock());
+        runBody(R.kernel.get(), R.kernel->getBlock());
+    }
+
+    // A function's body, compiled when it was compiled.
+    void runBody(const Method* m, const BlockPtr& block) {
+        if (R.compiled) {
+            auto it = R.compiled->bodies.find(m);
+            if (it != R.compiled->bodies.end()) {
+                run(*it->second);
+                return;
+            }
+        }
+        exec(block);
+    }
+
+    // ---- compiled nodes: each the one operation it was compiled to ----
+
+    Flow run(const CStmt& s) { return s.fn(s, *this); }
+    SV ev(const CExpr& e) { return e.fn(e, *this); }
+
+    static Val toVal(SV v, const Ty& t) {
+        if (isFloat(t.prim)) return mkFloat(t.prim, v.f);
+        return mkInt(t, v.i);
+    }
+    static SV toSV(const Val& v) {
+        SV r;
+        if (isFloat(v.t.prim)) r.f = v.f; else r.i = v.i;
+        return r;
+    }
+    static SV cvt(SV v, const Ty& from, const Ty& to) {
+        if (from == to) return v;
+        return toSV(convert(toVal(v, from), to));
+    }
+    void tick() {
+        if (R.hasDeadline && (++G.steps & 0xFFF) == 0
+                && std::chrono::steady_clock::now() > R.deadline)
+            throw Exception("the reference run of " + R.kernel->getName() +
+                            " outlasted its budget", "XPU-REF03");
+    }
+
+    static SV xConst(const CExpr& n, Item&) { return n.k; }
+    static SV xLocal(const CExpr& n, Item& it) { return toSV(it.frame[(size_t) n.slot].v); }
+    static SV xFallback(const CExpr& n, Item& it) {
+        Val v = it.eval(n.src);
+        if (v.k != Val::Scalar) refuse("a value that is not a scalar where one was compiled (" + at(n.src) + ")");
+        if (!(v.t == n.t)) v = convert(v, n.t);
+        return toSV(v);
+    }
+    static SV xThread(const CExpr& n, Item& it) {
+        const uint32_t* b = it.R.launch.block;
+        SV r;
+        switch (n.kind) {
+            case 0: case 1: case 2: r.i = it.tid[n.kind]; break;
+            case 3: case 4: case 5: r.i = (uint64_t) it.G.id[n.kind - 3] * b[n.kind - 3] + it.tid[n.kind - 3]; break;
+            case 6: case 7: case 8: r.i = it.G.id[n.kind - 6]; break;
+            case 9: case 10: case 11: r.i = b[n.kind - 9]; break;
+            case 12: r.i = it.R.wave; break;
+            default: r.i = it.R.wave ? it.me % it.R.wave : 0; break;
+        }
+        r.i &= maskOf(bitsOf(n.t.prim));
+        return r;
+    }
+    static uint64_t index(const CExpr& ix, Item& it, const Where& w) {
+        return indexOf(toVal(it.ev(ix), ix.t), w);
+    }
+    static SV xLoad(const CExpr& n, Item& it) {
+        Mem& m = *it.frame[(size_t) n.slot].v.mem;
+        return toSV(loadElem(m, index(*n.a, it, n.src), n.src));
+    }
+    static SV xCast(const CExpr& n, Item& it) { return cvt(it.ev(*n.a), n.a->t, n.t); }
+    static SV xNeg(const CExpr& n, Item& it) {
+        SV v = it.ev(*n.a);
+        if (isFloat(n.t.prim)) { v.f = roundTo(n.t.prim, -v.f); return v; }
+        v.i = (0 - v.i) & maskOf(bitsOf(n.t.prim));
+        return v;
+    }
+    static SV xBitNot(const CExpr& n, Item& it) {
+        SV v = it.ev(*n.a);
+        v.i = ~v.i & maskOf(bitsOf(n.t.prim));
+        return v;
+    }
+    static SV xNot(const CExpr& n, Item& it) {
+        SV v = it.ev(*n.a);
+        v.i = v.i ? 0 : 1;
+        return v;
+    }
+    static SV xAnd(const CExpr& n, Item& it) {
+        SV r;
+        r.i = it.ev(*n.a).i && it.ev(*n.b).i ? 1 : 0;
+        return r;
+    }
+    static SV xOr(const CExpr& n, Item& it) {
+        SV r;
+        r.i = it.ev(*n.a).i || it.ev(*n.b).i ? 1 : 0;
+        return r;
+    }
+    // A binary operator over two scalars of settled types. kind 0: boolean,
+    // 1: float in n.at's precision, 2: integer at width n.w.
+    static SV xBinary(const CExpr& n, Item& it) {
+        SV x = cvt(it.ev(*n.a), n.a->t, n.at);
+        SV y = cvt(it.ev(*n.b), n.b->t, n.bt);
+        return binop(n, x, y);
+    }
+    static SV binop(const CExpr& n, SV x, SV y) {
+        SV r;
+        if (n.kind == 0) {
+            switch (n.op) {
+                case BINARY_OP_EQ: r.i = x.i == y.i; break;
+                case BINARY_OP_NE: r.i = x.i != y.i; break;
+                case BINARY_OP_BITAND: r.i = x.i & y.i; break;
+                case BINARY_OP_BITOR: r.i = x.i | y.i; break;
+                default: r.i = x.i ^ y.i; break;
+            }
+            return r;
+        }
+        if (n.kind == 1) {
+            bool isCmp = false, cmp = false;
+            double d = floatOp(n.op, n.at.prim, x.f, y.f, isCmp, cmp);
+            if (isCmp) r.i = cmp ? 1 : 0;
+            else r.f = roundTo(n.at.prim, d);
+            return r;
+        }
+        // Integers, by scalarOp's rules: each operand extended by its own
+        // signedness to the wider width, unsigned when either operand is,
+        // compared signed when either is, `>>` by the shifted operand.
+        const unsigned w = n.w;
+        const uint64_t mask = maskOf(w);
+        uint64_t a = (n.at.sgn ? (uint64_t) sext(x.i, bitsOf(n.at.prim)) : x.i) & mask;
+        uint64_t b = (n.bt.sgn ? (uint64_t) sext(y.i, bitsOf(n.bt.prim)) : y.i) & mask;
+        switch (n.op) {
+            case BINARY_OP_LT: r.i = n.flag ? sext(a, w) < sext(b, w) : a < b; return r;
+            case BINARY_OP_LE: r.i = n.flag ? sext(a, w) <= sext(b, w) : a <= b; return r;
+            case BINARY_OP_GT: r.i = n.flag ? sext(a, w) > sext(b, w) : a > b; return r;
+            case BINARY_OP_GE: r.i = n.flag ? sext(a, w) >= sext(b, w) : a >= b; return r;
+            case BINARY_OP_EQ: r.i = a == b; return r;
+            case BINARY_OP_NE: r.i = a != b; return r;
+            case BINARY_OP_ADD: r.i = (a + b) & mask; return r;
+            case BINARY_OP_SUB: r.i = (a - b) & mask; return r;
+            case BINARY_OP_MUL: r.i = (a * b) & mask; return r;
+            case BINARY_OP_BITAND: r.i = a & b; return r;
+            case BINARY_OP_BITOR: r.i = a | b; return r;
+            case BINARY_OP_BITXOR: r.i = a ^ b; return r;
+            default: break;
+        }
+        // Division, remainder and shifts, with their undefined cases.
+        return toSV(scalarOp(n.op, toVal(x, n.at), toVal(y, n.bt), n.src));
+    }
+    static SV xAssignLocal(const CExpr& n, Item& it) {
+        SV v = cvt(it.ev(*n.a), n.a->t, n.t);
+        Val& dst = it.frame[(size_t) n.slot].v;
+        dst = toVal(v, n.t);
+        return v;
+    }
+    static SV xAssignElem(const CExpr& n, Item& it) {
+        Mem& m = *it.frame[(size_t) n.slot].v.mem;
+        uint64_t idx = index(*n.b, it, n.src);
+        SV v = cvt(it.ev(*n.a), n.a->t, n.t);
+        storeElem(m, idx, toVal(v, n.t), n.src);
+        return v;
+    }
+    // ++ and -- on a local; n.flag: postfix, n.sgn: increment.
+    static SV xIncDec(const CExpr& n, Item& it) {
+        Val& cur = it.frame[(size_t) n.slot].v;
+        Val old = cur;
+        Val one = isFloat(old.t.prim) ? mkFloat(old.t.prim, 1) : mkInt(old.t, 1);
+        cur = convert(binaryOp(n.sgn ? BINARY_OP_ADD : BINARY_OP_SUB, old, one, n.src), old.t);
+        return toSV(n.flag ? old : cur);
+    }
+
+    static Flow sBlock(const CStmt& s, Item& it) {
+        for (const CStmt* k : s.kids) {
+            Flow f = it.run(*k);
+            if (f != Flow::Next) return f;
+        }
+        return Flow::Next;
+    }
+    static Flow sExpr(const CStmt& s, Item& it) { it.ev(*s.e); return Flow::Next; }
+    static Flow sFallback(const CStmt& s, Item& it) { return it.exec(s.src); }
+    static Flow sDecl(const CStmt& s, Item& it) {
+        it.frame[(size_t) s.slot].v = toVal(cvt(it.ev(*s.e), s.e->t, s.t), s.t);
+        return Flow::Next;
+    }
+    static Flow sIf(const CStmt& s, Item& it) {
+        if (it.ev(*s.e).i) return s.s1 ? it.run(*s.s1) : Flow::Next;
+        return s.s2 ? it.run(*s.s2) : Flow::Next;
+    }
+    // A loop body's outcome: true to leave the loop, with `out` what to return.
+    bool leave(Flow f, Flow& out) {
+        if (f == Flow::Return) { out = f; return true; }
+        if (f == Flow::Break) { if (!mine("")) out = f; return true; }
+        if (f == Flow::Continue && !mine("")) { out = f; return true; }
+        return false;
+    }
+    static Flow sWhile(const CStmt& s, Item& it) {
+        Flow out = Flow::Next;
+        while (it.ev(*s.e).i) {
+            it.tick();
+            if (s.s1 && it.leave(it.run(*s.s1), out)) break;
+        }
+        return out;
+    }
+    static Flow sDo(const CStmt& s, Item& it) {
+        Flow out = Flow::Next;
+        do {
+            it.tick();
+            if (s.s1 && it.leave(it.run(*s.s1), out)) break;
+        } while (it.ev(*s.e).i);
+        return out;
+    }
+    static Flow sFor(const CStmt& s, Item& it) {
+        if (s.s0) it.run(*s.s0);
+        Flow out = Flow::Next;
+        while (!s.e || it.ev(*s.e).i) {
+            it.tick();
+            if (s.s1 && it.leave(it.run(*s.s1), out)) break;
+            for (const CExpr* u : s.upd) it.ev(*u);
+        }
+        return out;
+    }
+    static Flow sBreak(const CStmt& s, Item& it) {
+        it.flowLabel = static_cast<BreakStatement*>(s.src)->getLabel();
+        return Flow::Break;
+    }
+    static Flow sContinue(const CStmt& s, Item& it) {
+        it.flowLabel = static_cast<ContinueStatement*>(s.src)->getLabel();
+        return Flow::Continue;
+    }
+    // Group.stripe(n) (s.flag) or buf.range(n): as the walker runs them.
+    static Flow sForEach(const CStmt& s, Item& it) {
+        const Ty& idxTy = s.t;
+        uint64_t limit = cvt(it.ev(*s.e), s.e->t, idxTy).i & maskOf(bitsOf(idxTy.prim));
+        uint64_t start, step;
+        Mem* buf = nullptr;
+        if (s.flag) {
+            start = it.me % it.R.wave;
+            step = it.R.wave;
+        } else {
+            start = (uint64_t) it.G.id[0] * it.R.launch.block[0] + it.tid[0];
+            step = (uint64_t) it.R.launch.grid[0] * it.R.launch.block[0];
+            buf = it.frame[(size_t) s.slot3].v.mem;
+        }
+        Flow out = Flow::Next;
+        for (uint64_t i = start; i < limit; i += step) {
+            it.tick();
+            if (s.flag) {
+                it.frame[(size_t) s.slot].v = mkInt(idxTy, i);
+            } else {
+                if (s.slot2 >= 0) it.frame[(size_t) s.slot2].v = mkInt(idxTy, i);
+                it.frame[(size_t) s.slot].v = loadElem(*buf, i, s.src);
+            }
+            if (s.s1 && it.leave(it.run(*s.s1), out)) break;
+        }
+        return out;
     }
 
 private:
+    friend class KernelCompiler;
     Group& G;
     Run& R;
     uint32_t me;
@@ -1795,7 +2108,7 @@ private:
         if (m->getParent()) cls = m->getParent();
         active.insert(m.get());
         retVal = Val();
-        exec(m->getBlock());
+        runBody(m.get(), m->getBlock());
         Val r = retVal;
         retVal = Val();
         CajetaTypePtr rt = m->getReturnType();
@@ -2341,6 +2654,516 @@ private:
     }
 };
 
+// ---- the compiler ------------------------------------------------------------
+
+class KernelCompiler {
+public:
+    KernelCompiler(Compiled& c, const Bindings& b) : C(c), B(b) {}
+
+    // Compile `m`'s body once. A helper is compiled when a call to it is, so
+    // the caller's slot types are kept aside meanwhile; a recursive helper is
+    // left to the walker, which refuses it.
+    void function(const MethodPtr& m) {
+        if (C.bodies.count(m.get()) || !inProgress.insert(m.get()).second) return;
+        std::vector<STy> outer = std::move(slots);
+        struct Restore {
+            KernelCompiler& kc;
+            std::vector<STy>& outer;
+            const Method* m;
+            ~Restore() { kc.slots = std::move(outer); kc.inProgress.erase(m); }
+        } restore{*this, outer, m.get()};
+        slots.assign((size_t) B.frameSize.lookup(m.get()), STy{});
+        auto ps = B.paramSlots.find(m.get());
+        if (ps == B.paramSlots.end()) return;
+        size_t i = 0;
+        for (auto& p : m->getParameterList()) {
+            if (!p || p->getName() == "this") continue;
+            int sl = ps->second[i++];
+            CajetaTypePtr t = p->getType();
+            if (isBuffer(t)) {
+                if (auto e = primOf(typeArg(t, 0))) slots[(size_t) sl] = {2, *e};
+            } else if (auto e = primOf(t)) {
+                slots[(size_t) sl] = {1, *e};
+            }
+        }
+        C.bodies[m.get()] = stmt(m->getBlock().get());
+    }
+
+private:
+    struct STy { int k = 0; Ty t; };   // k: 0 not compiled, 1 scalar, 2 memory
+    Compiled& C;
+    const Bindings& B;
+    std::vector<STy> slots;
+    std::set<const Method*> inProgress;
+
+    CExpr* node(CExpr::Fn fn, Ty t, Expression* src) {
+        C.exprs.emplace_back();
+        CExpr* n = &C.exprs.back();
+        n->fn = fn;
+        n->t = t;
+        n->src = src;
+        return n;
+    }
+    CStmt* snode(CStmt::Fn fn, AbstractSyntaxNode* src) {
+        C.stmts.emplace_back();
+        CStmt* n = &C.stmts.back();
+        n->fn = fn;
+        n->src = src;
+        return n;
+    }
+    const CExpr* constant(const Val& v, Expression* src) {
+        CExpr* n = node(&Item::xConst, v.t, src);
+        n->k = Item::toSV(v);
+        n->lit = v.lit;
+        return n;
+    }
+    static Val valueOf(const CExpr& c) {
+        Val v = Item::toVal(c.k, c.t);
+        v.lit = c.lit;
+        return v;
+    }
+    static bool isConst(const CExpr* c) { return c && c->fn == &Item::xConst; }
+    static bool isBool(const CExpr* c) { return c && c->t.prim == Prim::Bool; }
+    const Bindings::Name* nameOf(Expression* e) const {
+        auto it = B.names.find(e);
+        return it == B.names.end() ? nullptr : &it->second;
+    }
+    const STy* slotTy(int sl) const {
+        return sl >= 0 && (size_t) sl < slots.size() ? &slots[(size_t) sl] : nullptr;
+    }
+
+    // ---- statements ----
+
+    // CAJETA_XPU_REF_COMPILE_LOG=1 names each statement left to the walker.
+    const CStmt* fallback(AbstractSyntaxNode* n) {
+        static const bool log = [] {
+            const char* e = std::getenv("CAJETA_XPU_REF_COMPILE_LOG");
+            return e && *e && *e != '0';
+        }();
+        if (log) std::fprintf(stderr, "[ref-compile] walker: %s\n", at(n).c_str());
+        return snode(&Item::sFallback, n);
+    }
+
+    const CStmt* stmt(AbstractSyntaxNode* n) {
+        if (!n) return nullptr;
+        if (auto b = dynamic_cast<Block*>(n)) {
+            CStmt* s = snode(&Item::sBlock, n);
+            for (auto& k : b->getChildren())
+                if (const CStmt* c = stmt(k.get())) s->kids.push_back(c);
+            return s;
+        }
+        if (auto ls = dynamic_cast<LabelStatement*>(n)) return stmt(ls->getBlock().get());
+        if (auto es = dynamic_cast<ExpressionStatement*>(n)) {
+            if (const CExpr* e = expr(es->getExpression().get())) {
+                CStmt* s = snode(&Item::sExpr, n);
+                s->e = e;
+                return s;
+            }
+            return fallback(n);
+        }
+        if (auto lvd = dynamic_cast<LocalVariableDeclaration*>(n)) return decl(lvd);
+        if (auto is = dynamic_cast<IfStatement*>(n)) {
+            const CExpr* c = expr(is->getCondition().get());
+            if (!isBool(c)) return fallback(n);
+            CStmt* s = snode(&Item::sIf, n);
+            s->e = c;
+            s->s1 = stmt(is->getThenBranch().get());
+            s->s2 = stmt(is->getElseBranch().get());
+            return s;
+        }
+        if (auto ws = dynamic_cast<WhileStatement*>(n)) {
+            const CExpr* c = expr(ws->getCondition().get());
+            if (!isBool(c)) return fallback(n);
+            CStmt* s = snode(&Item::sWhile, n);
+            s->e = c;
+            s->s1 = stmt(ws->getBody().get());
+            return s;
+        }
+        if (auto ds = dynamic_cast<DoStatement*>(n)) {
+            const CStmt* body = stmt(ds->getBody().get());
+            const CExpr* c = expr(ds->getCondition().get());
+            if (!isBool(c)) return fallback(n);
+            CStmt* s = snode(&Item::sDo, n);
+            s->e = c;
+            s->s1 = body;
+            return s;
+        }
+        if (auto fs = dynamic_cast<ForStatement*>(n)) {
+            const CStmt* init = stmt(fs->getInit().get());
+            const CExpr* c = fs->getCondition() ? expr(fs->getCondition().get()) : nullptr;
+            if (fs->getCondition() && !isBool(c)) return fallback(n);
+            std::vector<const CExpr*> upd;
+            for (auto& u : fs->getUpdate()) {
+                const CExpr* ce = expr(u.get());
+                if (!ce) return fallback(n);
+                upd.push_back(ce);
+            }
+            CStmt* s = snode(&Item::sFor, n);
+            s->s0 = init;
+            s->e = c;
+            s->upd = std::move(upd);
+            s->s1 = stmt(fs->getBody().get());
+            return s;
+        }
+        if (auto ef = dynamic_cast<EnhancedForStatement*>(n)) return forEach(ef);
+        if (dynamic_cast<BreakStatement*>(n)) return snode(&Item::sBreak, n);
+        if (dynamic_cast<ContinueStatement*>(n)) return snode(&Item::sContinue, n);
+        // A bare expression in statement position (an assignment, a call).
+        if (auto e = dynamic_cast<Expression*>(n)) {
+            if (const CExpr* ce = expr(e)) {
+                CStmt* s = snode(&Item::sExpr, n);
+                s->e = ce;
+                return s;
+            }
+        }
+        return fallback(n);
+    }
+
+    const CStmt* decl(LocalVariableDeclaration* lvd) {
+        CajetaTypePtr t = lvd->getType();
+        auto p = primOf(t);
+        if (!p) {
+            // Memory locals compile their element reads and writes; anything
+            // else (vectors, tiles) stays with the walker.
+            if (isShared(t))
+                if (auto e = primOf(typeArg(t, 0)))
+                    for (auto& vd : lvd->getVariableDeclarators())
+                        if (vd) slots[(size_t) B.declSlots.lookup(vd.get())] = {2, *e};
+            return fallback(lvd);
+        }
+        CStmt* blk = snode(&Item::sBlock, lvd);
+        for (auto& vd : lvd->getVariableDeclarators()) {
+            if (!vd) continue;
+            int sl = B.declSlots.lookup(vd.get());
+            auto init = vd->getInitializer();
+            Expression* ie = init && !init->getChildren().empty()
+                ? dynamic_cast<Expression*>(init->getChildren()[0].get()) : nullptr;
+            const CExpr* e = ie ? expr(ie) : constant(isFloat(p->prim) ? mkFloat(p->prim, 0)
+                                                                       : mkInt(*p, 0), nullptr);
+            if (!e || e->t.prim == Prim::Bool) {
+                if (!e || p->prim != Prim::Bool) return fallback(lvd);
+            }
+            slots[(size_t) sl] = {1, *p};
+            CStmt* d = snode(&Item::sDecl, lvd);
+            d->slot = sl;
+            d->t = *p;
+            d->e = e;
+            blk->kids.push_back(d);
+        }
+        return blk;
+    }
+
+    const CStmt* forEach(EnhancedForStatement* ef) {
+        auto mc = dynamic_cast<MethodCallExpression*>(ef->getIterableExpr().get());
+        auto recv = mc ? dynamic_cast<IdentifierExpression*>(child(mc, 0)) : nullptr;
+        auto fs = B.forSlots.find(ef);
+        if (!recv || fs == B.forSlots.end() || mc->getParameters().size() != 1) return fallback(ef);
+        const bool stripe = recv->getTextValue() == "Group" && mc->getMethodCallName() == "stripe";
+        int bufSlot = -1;
+        if (!stripe) {
+            const Bindings::Name* nm = nameOf(recv);
+            const STy* st = nm && !nm->isConst ? slotTy(nm->slot) : nullptr;
+            if (mc->getMethodCallName() != "range" || !st || st->k != 2) return fallback(ef);
+            bufSlot = nm->slot;
+        }
+        const CExpr* count = expr(mc->getParameters()[0].expression.get());
+        if (!count || isFloat(count->t.prim) || count->t.prim == Prim::Bool) return fallback(ef);
+        CajetaTypePtr it = stripe ? ef->getElementType() : ef->getIteratorType();
+        Ty idxTy = it && primOf(it) ? *primOf(it) : Ty{Prim::I32, true};
+        slots[(size_t) fs->second.first] = stripe ? STy{1, idxTy} : STy{1, slots[(size_t) bufSlot].t};
+        if (fs->second.second >= 0) slots[(size_t) fs->second.second] = {1, idxTy};
+        CStmt* s = snode(&Item::sForEach, ef);
+        s->flag = stripe;
+        s->e = count;
+        s->t = idxTy;
+        s->slot = fs->second.first;
+        s->slot2 = fs->second.second;
+        s->slot3 = bufSlot;
+        s->s1 = stmt(ef->getBody().get());
+        return s;
+    }
+
+    // ---- expressions: null when the walker must evaluate it ----
+
+    const CExpr* expr(Expression* e) {
+        if (!e) return nullptr;
+        switch (e->kind()) {
+            case ExprKind::Identifier: {
+                const Bindings::Name* nm = nameOf(e);
+                if (!nm) return nullptr;
+                if (nm->isConst) return constant(nm->c, e);
+                const STy* st = slotTy(nm->slot);
+                if (!st || st->k != 1) return nullptr;
+                CExpr* n = node(&Item::xLocal, st->t, e);
+                n->slot = nm->slot;
+                return n;
+            }
+            case ExprKind::IntegerLiteral:
+            case ExprKind::FloatLiteral: {
+                auto it = B.literals.find(e);
+                return it == B.literals.end() ? nullptr : constant(it->second, e);
+            }
+            case ExprKind::TextLiteral: {
+                auto* tl = static_cast<TextLiteralExpression*>(e);
+                if (tl->getLiteralType() != LITERAL_TYPE_BOOL) return nullptr;
+                return constant(mkBool(tl->getRawValue() == "true"), e);
+            }
+            case ExprKind::Cast: {
+                auto* cast = static_cast<CastExpression*>(e);
+                CajetaTypePtr ct = cast->getResolvedType() ? cast->getResolvedType() : cast->getDestType();
+                auto to = primOf(ct);
+                const CExpr* a = expr(child(cast, 0));
+                if (!to || !a) return nullptr;
+                if (isConst(a)) {
+                    Val v = valueOf(*a);
+                    v.lit = false;
+                    return constant(convert(v, *to), e);
+                }
+                CExpr* n = node(&Item::xCast, *to, e);
+                n->a = a;
+                return n;
+            }
+            case ExprKind::Move:
+                return expr(child(e, 0));
+            case ExprKind::Prefix: return prefix(static_cast<PrefixExpression*>(e));
+            case ExprKind::Postfix: {
+                auto* post = static_cast<PostfixExpression*>(e);
+                return incDec(child(post, 0), post->getOp() == POSTFIX_OP_INC, true, e);
+            }
+            case ExprKind::ArrayIndex: return load(static_cast<ArrayIndexExpression*>(e));
+            case ExprKind::MethodCall: return call(static_cast<MethodCallExpression*>(e));
+            case ExprKind::BinaryOp: return binary(static_cast<BinaryOpExpression*>(e));
+            default: return nullptr;
+        }
+    }
+
+    const CExpr* incDec(Expression* operand, bool inc, bool post, Expression* src) {
+        const Bindings::Name* nm = nameOf(operand);
+        const STy* st = nm && !nm->isConst ? slotTy(nm->slot) : nullptr;
+        if (!st || st->k != 1 || st->t.prim == Prim::Bool) return nullptr;
+        CExpr* n = node(&Item::xIncDec, st->t, src);
+        n->slot = nm->slot;
+        n->sgn = inc;
+        n->flag = post;
+        return n;
+    }
+
+    const CExpr* prefix(PrefixExpression* pre) {
+        Expression* operand = child(pre, 0);
+        switch (pre->getOp()) {
+            case PREFIX_OP_POSITIVE: return expr(operand);
+            case PREFIX_OP_INC: return incDec(operand, true, false, pre);
+            case PREFIX_OP_DEC: return incDec(operand, false, false, pre);
+            default: break;
+        }
+        const CExpr* a = expr(operand);
+        if (!a) return nullptr;
+        if (pre->getOp() == PREFIX_OP_LOGNOT) {
+            if (!isBool(a)) return nullptr;
+            CExpr* n = node(&Item::xNot, a->t, pre);
+            n->a = a;
+            return n;
+        }
+        if (a->t.prim == Prim::Bool) return nullptr;
+        if (pre->getOp() == PREFIX_OP_BITNOT && isFloat(a->t.prim)) return nullptr;
+        if (isConst(a)) {
+            Val v = valueOf(*a);
+            Val r;
+            if (pre->getOp() == PREFIX_OP_BITNOT) r = mkInt(v.t, ~v.i);
+            else if (isFloat(v.t.prim)) r = mkFloat(v.t.prim, -v.f);
+            else {
+                Val zero = mkInt(v.t, 0);
+                zero.lit = v.lit;
+                r = binaryOp(BINARY_OP_SUB, zero, v, Where{});
+            }
+            r.lit = v.lit && !isFloat(v.t.prim);
+            return constant(r, pre);
+        }
+        CExpr* n = node(pre->getOp() == PREFIX_OP_BITNOT ? &Item::xBitNot : &Item::xNeg, a->t, pre);
+        n->a = a;
+        n->lit = a->lit && !isFloat(a->t.prim);
+        return n;
+    }
+
+    // A memory local's slot, if `base` names one.
+    int memSlot(Expression* base, Ty& elem) {
+        const Bindings::Name* nm = nameOf(base);
+        const STy* st = nm && !nm->isConst ? slotTy(nm->slot) : nullptr;
+        if (!st || st->k != 2) return -1;
+        elem = st->t;
+        return nm->slot;
+    }
+
+    const CExpr* load(ArrayIndexExpression* ai) {
+        Ty elem;
+        int sl = memSlot(child(ai, 0), elem);
+        if (sl < 0) return nullptr;
+        const CExpr* ix = expr(child(ai, 1));
+        if (!ix) return nullptr;
+        CExpr* n = node(&Item::xLoad, elem, ai);
+        n->slot = sl;
+        n->a = ix;
+        return n;
+    }
+
+    // The scalar return type of a call the compiler leaves to the walker but
+    // whose result type is fixed, so its parent can still be compiled.
+    std::optional<Ty> fixedReturn(const std::string& q) {
+        static const std::map<std::string, Ty> table = {
+            {"Wave.reduceSum", {Prim::I32, false}}, {"Wave.reduceMax", {Prim::I32, false}},
+            {"Wave.reduceMin", {Prim::I32, false}}, {"Wave.reduceAnd", {Prim::I32, false}},
+            {"Wave.reduceOr", {Prim::I32, false}}, {"Wave.reduceXor", {Prim::I32, false}},
+            {"Wave.prefixSum", {Prim::I32, false}}, {"Wave.prefixProduct", {Prim::I32, false}},
+            {"Wave.ballotSync", {Prim::I64, false}}, {"Wave.isFirstLane", {Prim::Bool, false}},
+            {"Wave.reduceSumF32", {Prim::F32, true}}, {"Wave.reduceMaxF32", {Prim::F32, true}},
+            {"Group.reduce", {Prim::F32, true}},
+            {"Bits.count", {Prim::I32, false}}, {"Bits.reverse", {Prim::I32, false}},
+            {"Bits.rotateLeft", {Prim::I32, false}}, {"Bits.rotateRight", {Prim::I32, false}},
+            {"Cajeta.bitsToF32", {Prim::F32, true}}, {"Cajeta.f32ToBits", {Prim::I32, true}},
+            {"Cajeta.bitsToF64", {Prim::F64, true}}, {"Cajeta.f64ToBits", {Prim::I64, true}},
+        };
+        auto it = table.find(q);
+        if (it == table.end()) return std::nullopt;
+        return it->second;
+    }
+
+    const CExpr* call(MethodCallExpression* mc) {
+        Expression* recvE = child(mc, 0);
+        auto* recvId = dynamic_cast<IdentifierExpression*>(recvE);
+        const std::string& nm = mc->getMethodCallName();
+        auto bound = B.helpers.find(mc);
+        if (bound != B.helpers.end()) {
+            function(bound->second);
+            auto rt = primOf(bound->second->getReturnType());
+            if (!rt) return nullptr;
+            return node(&Item::xFallback, *rt, mc);
+        }
+        if (!recvId || nameOf(recvId)) return nullptr;   // a call on a local
+        const std::string q = recvId->getTextValue() + "." + nm;
+        static const std::map<std::string, int> ids = {
+            {"KernelThread.x", 0}, {"KernelThread.y", 1}, {"KernelThread.z", 2},
+            {"KernelThread.globalIdX", 3}, {"KernelThread.globalIdY", 4},
+            {"KernelThread.globalIdZ", 5}, {"Workgroup.x", 6}, {"Workgroup.y", 7},
+            {"Workgroup.z", 8}, {"Workgroup.dimX", 9}, {"Workgroup.dimY", 10},
+            {"Workgroup.dimZ", 11}, {"Wave.width", 12}, {"Wave.laneId", 13},
+            {"Group.width", 12}, {"Group.laneId", 13},
+        };
+        if (auto it = ids.find(q); it != ids.end() && mc->getParameters().empty()) {
+            Ty t = recvId->getTextValue() == "Group" ? Ty{Prim::I32, true} : Ty{Prim::I32, false};
+            CExpr* n = node(&Item::xThread, t, mc);
+            n->kind = it->second;
+            return n;
+        }
+        if (auto rt = fixedReturn(q)) return node(&Item::xFallback, *rt, mc);
+        return nullptr;
+    }
+
+    const CExpr* binary(BinaryOpExpression* bin) {
+        BinaryOp op = bin->getBinaryOp();
+        Expression* l = child(bin, 0);
+        Expression* r = child(bin, 1);
+        if (bin->isAssignment()) return assignment(bin, op, l, r);
+        if (op == BINARY_OP_LOGAND || op == BINARY_OP_LOGOR) {
+            const CExpr* a = expr(l);
+            const CExpr* b = expr(r);
+            if (!isBool(a) || !isBool(b)) return nullptr;
+            CExpr* n = node(op == BINARY_OP_LOGAND ? &Item::xAnd : &Item::xOr, a->t, bin);
+            n->a = a;
+            n->b = b;
+            return n;
+        }
+        return binop(op, expr(l), expr(r), bin);
+    }
+
+    // A binary operator, its types settled as scalarOp settles them at run time.
+    const CExpr* binop(BinaryOp op, const CExpr* a, const CExpr* b, Expression* src) {
+        if (!a || !b) return nullptr;
+        if (isConst(a) && isConst(b)) {
+            try {
+                return constant(scalarOp(op, valueOf(*a), valueOf(*b), src), src);
+            } catch (Exception&) {
+                return nullptr;   // the walker reports it, at its line, when it runs
+            }
+        }
+        if (a->lit && !b->lit && b->t.prim != Prim::Bool) {
+            if (!isConst(a)) return nullptr;
+            a = constant(convert(valueOf(*a), b->t), src);
+        } else if (b->lit && !a->lit && a->t.prim != Prim::Bool) {
+            if (!isConst(b)) return nullptr;
+            b = constant(convert(valueOf(*b), a->t), src);
+        }
+        if (a->t.prim == Prim::Bool || b->t.prim == Prim::Bool) {
+            if (a->t.prim != b->t.prim) return nullptr;
+            if (op != BINARY_OP_EQ && op != BINARY_OP_NE && op != BINARY_OP_BITAND
+                    && op != BINARY_OP_BITOR && op != BINARY_OP_BITXOR) return nullptr;
+            CExpr* n = node(&Item::xBinary, a->t, src);
+            n->kind = 0;
+            n->op = op;
+            n->a = a; n->b = b;
+            n->at = a->t; n->bt = b->t;
+            return n;
+        }
+        if (isFloat(a->t.prim) || isFloat(b->t.prim)) {
+            Prim p = widerFloat(a->t.prim, b->t.prim);
+            bool cmp = isCompare(op);
+            if (!cmp && op != BINARY_OP_ADD && op != BINARY_OP_SUB && op != BINARY_OP_MUL
+                    && op != BINARY_OP_DIV && op != BINARY_OP_MOD) return nullptr;
+            CExpr* n = node(&Item::xBinary, cmp ? Ty{Prim::Bool, false} : Ty{p, true}, src);
+            n->kind = 1;
+            n->op = op;
+            n->a = a; n->b = b;
+            n->at = n->bt = Ty{p, true};
+            return n;
+        }
+        unsigned w = std::max(bitsOf(a->t.prim), bitsOf(b->t.prim));
+        Prim ip = intOfBits(w);
+        bool unsignedWins = !(a->t.sgn && b->t.sgn);
+        Ty rt{ip, !unsignedWins};
+        if (op == BINARY_OP_SHIFTLEFT || op == BINARY_OP_SHIFTRIGHT || op == BINARY_OP_USHIFTRIGHT)
+            rt = Ty{ip, a->t.sgn};
+        CExpr* n = node(&Item::xBinary, isCompare(op) ? Ty{Prim::Bool, false} : rt, src);
+        n->kind = 2;
+        n->op = op;
+        n->a = a; n->b = b;
+        n->at = a->t; n->bt = b->t;
+        n->w = w;
+        n->flag = a->t.sgn || b->t.sgn;   // a comparison is signed when either is
+        return n;
+    }
+
+    const CExpr* assignment(BinaryOpExpression* bin, BinaryOp op, Expression* l, Expression* r) {
+        const CExpr* rv = expr(r);
+        if (!rv) return nullptr;
+        if (dynamic_cast<IdentifierExpression*>(l)) {
+            const Bindings::Name* nm = nameOf(l);
+            const STy* st = nm && !nm->isConst ? slotTy(nm->slot) : nullptr;
+            if (!st || st->k != 1) return nullptr;
+            const CExpr* v = rv;
+            if (op != BINARY_OP_ASSIGN) v = binop(compoundBase(op), expr(l), rv, bin);
+            if (!v) return nullptr;
+            CExpr* n = node(&Item::xAssignLocal, st->t, bin);
+            n->slot = nm->slot;
+            n->a = v;
+            return n;
+        }
+        if (auto ai = dynamic_cast<ArrayIndexExpression*>(l)) {
+            Ty elem;
+            int sl = memSlot(child(ai, 0), elem);
+            const CExpr* ix = sl >= 0 ? expr(child(ai, 1)) : nullptr;
+            if (!ix) return nullptr;
+            const CExpr* v = rv;
+            if (op != BINARY_OP_ASSIGN) v = binop(compoundBase(op), load(ai), rv, bin);
+            if (!v) return nullptr;
+            CExpr* n = node(&Item::xAssignElem, elem, bin);
+            n->slot = sl;
+            n->a = v;
+            n->b = ix;
+            return n;
+        }
+        return nullptr;
+    }
+};
+
 // ---- collectives -----------------------------------------------------------
 
 void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
@@ -2575,6 +3398,12 @@ void run(const MethodPtr& kernel, const std::vector<Arg>& args, const Launch& la
     Run R;
     R.bindings = survey.bindings;
     R.kernel = kernel;
+    Compiled compiled;
+    if (const char* walk = std::getenv("CAJETA_XPU_REF_WALK"); !walk || !*walk || *walk == '0') {
+        KernelCompiler kc(compiled, R.bindings);
+        kc.function(kernel);
+        R.compiled = &compiled;
+    }
     R.cls = kernel->getParent();
     R.launch = launch;
     R.wave = launch.waveWidth;
