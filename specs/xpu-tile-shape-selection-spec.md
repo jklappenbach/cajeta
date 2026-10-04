@@ -238,7 +238,8 @@ used until a winner is measured.
   2026-10-03): template values, fragment arrays, constant expressions and
   the family's instantiation are kernel language that every library needs,
   not tile-selection features. 7.13's `@Shapes` is generalized there as
-  explicit instantiation, and its final spelling is that spec's §7.3. This
+  explicit instantiation, spelled `@Instantiate` (that spec's §7.3,
+  decided 2026-10-03); a family is a class template carrying it. This
   spec keeps the filter (§3), the measured choice (§4), variants (§5) and
   the routes (§6).
 

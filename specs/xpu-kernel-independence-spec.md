@@ -1,8 +1,8 @@
 # xpu-kernel-independence: new kernels and new models without compiler changes
 
-Status: **draft**, written 2026-10-03 at Julian's request. Plan:
+Status: **draft**, written 2026-10-03 at Julian's request; its §7 decisions
+taken the same day in an interactive review. Plan:
 [`agents/xpu-kernel-independence-plan.md`](../agents/xpu-kernel-independence-plan.md).
-Decisions still open are in §7.
 
 ## 1. Definition
 
@@ -162,8 +162,8 @@ Use cases:
 New hardware reaches libraries before it becomes a building block.
 
 Use cases:
-- 5.1 A kernel calls a target intrinsic by name, with arms per backend and a
-  portable arm. A backend with no arm and no portable arm refuses the kernel
+- 5.1 A kernel calls a target intrinsic by name, or embeds inline PTX or
+  AMDGCN assembly (§7.5), with arms per backend and a portable arm. A backend with no arm and no portable arm refuses the kernel
   by name at build.
 - 5.2 An intrinsic call is checked like any other operation: argument types,
   and the conformance rules of §2 where a reference exists.
@@ -181,26 +181,29 @@ records each moved unit:
 | Unit 1, template values in kernels | Unit 3 (§3.3) | done, cajeta 75bd8c83 |
 | Unit 2, fragment arrays | Unit 4 (§3.3) | done, cajeta 3f58538a |
 | Unit 3, constant expressions | Unit 5 (§3.3) | open |
-| Unit 4, the family and `@Shapes` | Unit 6 (§3.4), explicit instantiation | open, spelling in §7.3 |
+| Unit 4, the family and `@Shapes` | Unit 6 (§3.4), explicit instantiation | open; spelled `@Instantiate` (§7.3) |
 
 Tile-selection keeps the feasibility filter, the measured choice and the
 llm tile families. Its tile families wait on Units 5 and 6 here.
 
-## 7. Decisions open
+## 7. Decisions (Julian, 2026-10-03, in an interactive review)
 
-- 7.1 The corpus home: copy cajeta-llm's kernels into cajeta's tests, or pin
-  a cajeta-llm revision that cajeta's CI builds. A copy is stable; a pin
-  stays current.
-- 7.2 The reference semantics: each corpus kernel brings its own host
-  reference (cajeta-llm's census does this today), or the compiler grows a
-  scalar reference interpreter for kernels.
-- 7.3 The spelling of explicit instantiation. Tile-selection decided
-  `@Shapes` on 2026-10-03 for a family's list. Under this spec the general
-  feature is any class template listing its instantiations, so a spelling
-  such as `@Instantiate({Tile<4>, Tile<7>})` fits, and a family reads that
-  list. Julian decides whether `@Shapes` becomes this general annotation,
-  or stays as a family annotation built on it.
-- 7.4 The bound for free composition in 4.3, for example within 3% of the
-  built-in.
-- 7.5 The escape hatch's spelling and how far it reaches: LLVM intrinsics
-  only, or inline PTX and AMDGCN assembly too.
+- 7.1 The corpus home: cajeta's CI builds a PINNED cajeta-llm revision and
+  runs every kernel it registers on each backend the runner has. The pin is
+  bumped deliberately, and llm's build time joins cajeta's CI.
+- 7.2 The reference semantics: the compiler grows a REFERENCE INTERPRETER
+  that runs any kernel's source on the host, scalar, as the expected answer.
+  A corpus entry is then a kernel and its inputs, with no hand-written
+  reference. The interpreter shares the front end with the code under test,
+  so a front-end defect can agree with itself; cajeta-llm's own host oracles
+  stay in its CI as the independent check on that path.
+- 7.3 Explicit instantiation is spelled `@Instantiate({Tile<4>, Tile<7>})`,
+  usable on any class template, and a tile family is a class template that
+  carries it; `ShapeChoice` reads the list. This replaces tile-selection's
+  `@Shapes` (its 7.13).
+- 7.4 Free composition means within 3% of the built-in, by interleaved wall
+  time at the engine's shapes, the same line `ShapeChoice` uses for a tie.
+- 7.5 The escape hatch reaches both target LLVM intrinsics and inline PTX
+  and AMDGCN assembly. Intrinsic calls are typed and checked; inline
+  assembly is checked only at its boundary (operand types and constraints),
+  and a kernel using it names the backend arms it covers.
