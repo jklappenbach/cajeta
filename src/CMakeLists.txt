@@ -1140,6 +1140,18 @@ if(DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
             PROPERTIES COMPILE_OPTIONS "-fno-rtti")
 endif()
 
+# The kernel reference interpreter is optimized in every build type: the
+# conformance corpus interprets hundreds of recorded launches, and at -O0 its
+# shared_ptr and map traffic made a statement cost microseconds (measured
+# 2026-10-04). -ffp-contract=off keeps its float32 arithmetic one rounding per
+# operation, as its semantics state, whatever the host compiler's default.
+if(NOT MSVC)
+    set_source_files_properties(
+            ${CMAKE_CURRENT_SOURCE_DIR}/cajeta/xpu/reference/KernelInterpreter.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/cajeta/xpu/reference/Conformance.cpp
+            PROPERTIES COMPILE_OPTIONS "-O2;-ffp-contract=off")
+endif()
+
 # ------------------------------------------------------------------------------
 # Embedded `cajeta init` archetype templates.
 #

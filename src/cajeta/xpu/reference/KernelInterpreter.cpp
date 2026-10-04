@@ -30,16 +30,25 @@
 #include "../../type/CajetaVector.h"
 #include "../../type/FormalParameter.h"
 
+#include "llvm/ADT/DenseMap.h"
+
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstring>
 #include <functional>
 #include <limits>
 #include <map>
-#include <mutex>
 #include <set>
-#include <thread>
+#include <typeinfo>
+#include <unordered_map>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <ucontext.h>
+#endif
 
 namespace cajeta {
 namespace xpu {
@@ -252,13 +261,30 @@ struct Tile {
     throw Exception(what, "XPU-REF02");
 }
 
-// Where a node is, for a message: "line L, near `text`".
-std::string at(const AbstractSyntaxNodePtr& n) {
-    if (!n) return "";
-    std::string s = "line " + std::to_string(n->getSourceLine());
-    const std::string& text = n->getSourceText();
+
+// A source location, formatted only when a message is built: the operators
+// take one on every evaluation, and only an error reads it.
+struct Where {
+    const AbstractSyntaxNode* n = nullptr;
+    Where() = default;
+    template <typename T>
+    Where(const std::shared_ptr<T>& p) : n(p.get()) {}
+    Where(const AbstractSyntaxNode* p) : n(p) {}
+};
+
+std::string at(const Where& w) {
+    if (!w.n) return "";
+    std::string s = "line " + std::to_string(w.n->getSourceLine());
+    const std::string& text = w.n->getSourceText();
     if (!text.empty() && text.size() <= 80) s += ", near `" + text + "`";
     return s;
+}
+std::string operator+(const std::string& s, const Where& w) { return s + at(w); }
+std::string operator+(const char* s, const Where& w) { return std::string(s) + at(w); }
+
+Expression* child(AbstractSyntaxNode* n, size_t i) {
+    if (!n || n->getChildren().size() <= i) return nullptr;
+    return dynamic_cast<Expression*>(n->getChildren()[i].get());
 }
 
 ExpressionPtr child(const AbstractSyntaxNodePtr& n, size_t i) {
@@ -363,7 +389,7 @@ const char* opText(BinaryOp op) {
 // signedness to the wider width; `/`, `%` and the bitwise operators are
 // unsigned when either operand is; a comparison is signed when either is;
 // `>>` follows the shifted operand alone.
-Val scalarOp(BinaryOp op, Val a, Val b, const std::string& where) {
+Val scalarOp(BinaryOp op, Val a, Val b, const Where& where) {
     if (a.lit && !b.lit && b.k == Val::Scalar && b.t.prim != Prim::Bool) a = convert(a, b.t);
     if (b.lit && !a.lit && a.k == Val::Scalar && a.t.prim != Prim::Bool) b = convert(b, a.t);
     const bool bothLit = a.lit && b.lit;
@@ -450,7 +476,7 @@ Val scalarOp(BinaryOp op, Val a, Val b, const std::string& where) {
     refuse("binary operator (" + where + ")");
 }
 
-Val binaryOp(BinaryOp op, const Val& a, const Val& b, const std::string& where) {
+Val binaryOp(BinaryOp op, const Val& a, const Val& b, const Where& where) {
     if (a.k == Val::Vector || b.k == Val::Vector) {
         const Val& vec = a.k == Val::Vector ? a : b;
         Val out;
@@ -487,7 +513,7 @@ BinaryOp compoundBase(BinaryOp op) {
 
 // ---- memory ----------------------------------------------------------------
 
-Val loadElem(Mem& m, uint64_t idx, const std::string& where) {
+Val loadElem(Mem& m, uint64_t idx, const Where& where) {
     if (idx >= m.count)
         undefined("`" + m.name + "[" + std::to_string(idx) + "]` reads out of bounds (" +
                   std::to_string(m.count) + " elements; " + where + ")");
@@ -508,7 +534,7 @@ Val loadElem(Mem& m, uint64_t idx, const std::string& where) {
     }
 }
 
-void storeElem(Mem& m, uint64_t idx, const Val& v, const std::string& where) {
+void storeElem(Mem& m, uint64_t idx, const Val& v, const Where& where) {
     if (idx >= m.count)
         undefined("`" + m.name + "[" + std::to_string(idx) + "]` writes out of bounds (" +
                   std::to_string(m.count) + " elements; " + where + ")");
@@ -524,7 +550,7 @@ void storeElem(Mem& m, uint64_t idx, const Val& v, const std::string& where) {
     if (m.shared) m.written[idx] = 1;
 }
 
-uint64_t indexOf(const Val& v, const std::string& where) {
+uint64_t indexOf(const Val& v, const Where& where) {
     if (v.k != Val::Scalar || isFloat(v.t.prim) || v.t.prim == Prim::Bool)
         refuse("an index that is not an integer (" + where + ")");
     if (v.t.sgn && v.s64() < 0) undefined("negative index " + show(v) + " (" + where + ")");
@@ -665,9 +691,36 @@ const std::map<LocalKind, std::set<std::string>>& memberBuiltins() {
 // thread_local, so nothing that needs them may be looked up again from a
 // work-item's thread.
 struct Bindings {
-    std::map<const Expression*, int32_t> enums;
-    std::map<const Expression*, MethodPtr> helpers;
+    llvm::DenseMap<const Expression*, int32_t> enums;
+    llvm::DenseMap<const Expression*, MethodPtr> helpers;
+    // Each identifier the run reads: the frame slot of the local or parameter
+    // it names, or the value of the template constant it names.
+    struct Name { int slot = -1; bool isConst = false; Val c; };
+    llvm::DenseMap<const Expression*, Name> names;
+    llvm::DenseMap<const void*, int> declSlots;          // VariableDeclarator -> slot
+    llvm::DenseMap<const void*, std::pair<int, int>> forSlots;   // for-each -> element, iterator
+    llvm::DenseMap<const Method*, std::vector<int>> paramSlots;
+    llvm::DenseMap<const Method*, int> frameSize;
 };
+
+// A non-type parameter of `cls`'s class template instantiation, at its
+// declared width and signedness, or nullopt.
+std::optional<Val> templateConst(const std::shared_ptr<CajetaClass>& cls, const std::string& n) {
+    if (!cls) return std::nullopt;
+    const auto& params = cls->getTypeParameters();
+    const auto& args = cls->getTypeArguments();
+    for (size_t i = 0; i < params.size() && i < args.size(); ++i) {
+        if (!params[i].isNonType || params[i].name != n) continue;
+        auto c = std::dynamic_pointer_cast<CajetaConstantType>(args[i]);
+        if (!c) return std::nullopt;
+        const std::string& prim = params[i].nonTypePrimitive;
+        unsigned bits = 32;
+        size_t d = prim.find_first_of("0123456789");
+        if (d != std::string::npos) bits = (unsigned) std::stoul(prim.substr(d));
+        return mkInt({intOfBits(bits), prim.empty() || prim[0] != 'u'}, (uint64_t) c->getValue());
+    }
+    return std::nullopt;
+}
 
 class Survey {
 public:
@@ -684,13 +737,48 @@ private:
     std::string prefix;              // "in <helper>: " inside a helper's body
     bool inHelper = false;
     std::set<const Method*> visited;
+    // The function being surveyed: its lexical scopes, innermost last, each a
+    // list of (name, slot), and the next free slot of its frame.
+    std::vector<std::vector<std::pair<std::string, int>>> lex;
+    int nextSlot = 0;
+
+    int declare(const std::string& n) {
+        lex.back().push_back({n, nextSlot});
+        return nextSlot++;
+    }
+    int slotOf(const std::string& n) const {
+        for (auto s = lex.rbegin(); s != lex.rend(); ++s)
+            for (auto v = s->rbegin(); v != s->rend(); ++v)
+                if (v->first == n) return v->second;
+        return -1;
+    }
+    // Bind an identifier the run will read: a local or parameter, else a
+    // template constant; a name that binds neither is refused.
+    void bindName(const ExpressionPtr& e, const std::string& n) {
+        if (int sl = slotOf(n); sl >= 0) {
+            bindings.names[e.get()].slot = sl;
+            return;
+        }
+        if (auto c = templateConst(cls, n)) {
+            auto& b = bindings.names[e.get()];
+            b.isConst = true;
+            b.c = *c;
+            return;
+        }
+        note("the name `" + n + "`, which binds no local, parameter or template value", e);
+    }
 
     void function(const MethodPtr& m, const std::string& pre) {
         cls = m->getParent();
         prefix = pre;
         kinds.clear();
+        lex.assign(1, {});
+        nextSlot = 0;
+        std::vector<int>& params = bindings.paramSlots[m.get()];
+        params.clear();
         for (auto& p : m->getParameterList()) {
             if (!p || p->getName() == "this") continue;
+            params.push_back(declare(p->getName()));
             CajetaTypePtr t = p->getType();
             if (isBuffer(t)) {
                 if (!primOf(typeArg(t, 0)))
@@ -714,6 +802,7 @@ private:
                 note("returning " + canonical(rt), m->getBlock());
         }
         stmt(m->getBlock());
+        bindings.frameSize[m.get()] = nextSlot;
     }
 
     // Survey a helper's body once, in its own frame, its refusals prefixed
@@ -723,12 +812,16 @@ private:
         auto savedKinds = kinds;
         auto savedCls = cls;
         auto savedPrefix = prefix;
+        auto savedLex = lex;
+        int savedNext = nextSlot;
         bool savedIn = inHelper;
         inHelper = true;
         function(m, "in " + qualified(m) + ": ");
         kinds = savedKinds;
         cls = savedCls;
         prefix = savedPrefix;
+        lex = savedLex;
+        nextSlot = savedNext;
         inHelper = savedIn;
     }
 
@@ -739,7 +832,9 @@ private:
     void stmt(const AbstractSyntaxNodePtr& n) {
         if (!n) return;
         if (auto b = std::dynamic_pointer_cast<Block>(n)) {
+            lex.emplace_back();
             for (auto& s : b->getChildren()) stmt(s);
+            lex.pop_back();
         } else if (auto ls = std::dynamic_pointer_cast<LabelStatement>(n)) {
             stmt(ls->getBlock());
         } else if (auto il = std::dynamic_pointer_cast<IdentifierLabel>(n)) {
@@ -751,10 +846,12 @@ private:
             stmt(is->getThenBranch());
             stmt(is->getElseBranch());
         } else if (auto fs = std::dynamic_pointer_cast<ForStatement>(n)) {
+            lex.emplace_back();
             stmt(fs->getInit());
             expr(fs->getCondition());
             for (auto& u : fs->getUpdate()) expr(u);
             stmt(fs->getBody());
+            lex.pop_back();
         } else if (auto ef = std::dynamic_pointer_cast<EnhancedForStatement>(n)) {
             auto mc = std::dynamic_pointer_cast<MethodCallExpression>(ef->getIterableExpr());
             auto recv = mc ? std::dynamic_pointer_cast<IdentifierExpression>(child(mc, 0)) : nullptr;
@@ -767,10 +864,18 @@ private:
                 return;
             }
             if (stripe) usesWave = true;
+            else bindName(recv, recv->getTextValue());
             expr(mc->getParameters()[0].expression);
+            lex.emplace_back();
             kinds[ef->getElementName()] = LocalKind::Scalar;
-            if (ef->getIteratorType()) kinds[ef->getIteratorName()] = LocalKind::Scalar;
+            int el = declare(ef->getElementName()), it = -1;
+            if (ef->getIteratorType()) {
+                kinds[ef->getIteratorName()] = LocalKind::Scalar;
+                it = declare(ef->getIteratorName());
+            }
+            bindings.forSlots[ef.get()] = {el, it};
             stmt(ef->getBody());
+            lex.pop_back();
         } else if (auto ws = std::dynamic_pointer_cast<WhileStatement>(n)) {
             expr(ws->getCondition());
             stmt(ws->getBody());
@@ -823,13 +928,12 @@ private:
                 if (!ne || !ne->getSharedAlloc() || !acr || acr->getChildren().size() != 1)
                     note("a Shared<T> local not initialized by `shared T[n]`", lvd);
                 else expr(std::dynamic_pointer_cast<Expression>(acr->getChildren()[0]));
-                continue;
-            }
-            if (k == LocalKind::Tile) {
+            } else if (k == LocalKind::Tile) {
                 if (e) note("an initialized tile local", lvd);
-                continue;
+            } else if (e) {
+                expr(e);
             }
-            if (e) expr(e);
+            bindings.declSlots[vd.get()] = declare(vd->getIdentifier());
         }
     }
 
@@ -855,7 +959,8 @@ private:
             return;
         }
         const std::string& r = recvId->getTextValue();
-        if (auto k = kinds.find(r); k != kinds.end()) {
+        if (auto k = kinds.find(r); k != kinds.end() && slotOf(r) >= 0) {
+            bindName(recvId, r);
             const auto& ok = memberBuiltins().at(k->second);
             if (!ok.count(name)) note("`" + r + "." + name + "`", mc);
             return;
@@ -877,8 +982,11 @@ private:
 
     void expr(const ExpressionPtr& e) {
         if (!e) return;
-        if (std::dynamic_pointer_cast<IdentifierExpression>(e)
-                || std::dynamic_pointer_cast<IntegerLiteralExpression>(e)
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
+            bindName(e, id->getTextValue());
+            return;
+        }
+        if (std::dynamic_pointer_cast<IntegerLiteralExpression>(e)
                 || std::dynamic_pointer_cast<FloatLiteralExpression>(e)) return;
         if (auto tl = std::dynamic_pointer_cast<TextLiteralExpression>(e)) {
             if (tl->getLiteralType() != LITERAL_TYPE_BOOL) note("a string literal", e);
@@ -902,7 +1010,11 @@ private:
         if (auto dot = std::dynamic_pointer_cast<DotExpression>(e)) {
             auto lhs = std::dynamic_pointer_cast<IdentifierExpression>(child(dot, 0));
             if (lhs && kinds.count(lhs->getTextValue())
-                    && kinds[lhs->getTextValue()] == LocalKind::Vector) return;
+                    && kinds[lhs->getTextValue()] == LocalKind::Vector
+                    && slotOf(lhs->getTextValue()) >= 0) {
+                bindName(lhs, lhs->getTextValue());
+                return;
+            }
             if (lhs)
                 if (auto c = CajetaType::lookupEnumConstant(lhs->getTextValue(), dot->getIdentifier())) {
                     bindings.enums[e.get()] = *c;
@@ -934,7 +1046,7 @@ struct Group;
 struct Arrival {
     std::string what;           // "Barrier.workgroup", "Wave.reduceSum", ...
     const void* site = nullptr; // the call node
-    std::string where;
+    Where where;
     Val arg, arg2;
     Val result;
 };
@@ -952,6 +1064,109 @@ struct Run {
     std::map<std::string, Mem> buffers;
     std::map<std::string, Val> scalars;
     Bindings bindings;
+    llvm::DenseMap<const Expression*, Val> literals;   // parsed once per node
+    bool hasDeadline = false;
+    std::chrono::steady_clock::time_point deadline;
+};
+
+// Work-items of a workgroup with a rendezvous run as fibers on the calling
+// thread: each runs until it reaches a barrier or a wave collective, then
+// switches back to the scheduler. A switch costs what a call does, where an
+// OS-thread handoff cost microseconds, and everything stays on the thread
+// that owns the compiler's thread_local registries.
+class Fibers {
+public:
+    using Entry = void (*)(void*, uint32_t);
+
+    Fibers() = default;
+    Fibers(const Fibers&) = delete;
+    Fibers& operator=(const Fibers&) = delete;
+    ~Fibers() {
+#ifdef _WIN32
+        for (void* f : fibers_) if (f) DeleteFiber(f);
+        if (converted_) ConvertFiberToThread();
+#endif
+    }
+
+    // Prepare `n` fibers, each to run entry(arg, index) when first resumed.
+    void start(uint32_t n, Entry entry, void* arg) {
+        entry_ = entry;
+        arg_ = arg;
+#ifdef _WIN32
+        if (!converted_ && !IsThreadAFiber()) {
+            main_ = ConvertThreadToFiber(nullptr);
+            converted_ = true;
+        } else if (!main_) {
+            main_ = GetCurrentFiber();
+        }
+        for (void* f : fibers_) if (f) DeleteFiber(f);
+        fibers_.assign(n, nullptr);
+        slots_.resize(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            slots_[i] = {this, i};
+            fibers_[i] = CreateFiber(kStack, &Fibers::trampolineWin, &slots_[i]);
+        }
+#else
+        ctx_.resize(n);
+        if (stacks_.size() < n) stacks_.resize(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            // Left uninitialized: the pages are committed only as a stack grows.
+            if (!stacks_[i]) stacks_[i].reset(new char[kStack]);
+            getcontext(&ctx_[i]);
+            ctx_[i].uc_stack.ss_sp = stacks_[i].get();
+            ctx_[i].uc_stack.ss_size = kStack;
+            ctx_[i].uc_link = &main_;
+            uintptr_t self = (uintptr_t) this;
+            makecontext(&ctx_[i], (void (*)()) &Fibers::trampolinePosix, 3,
+                        (unsigned) (self & 0xFFFFFFFFu), (unsigned) (self >> 32), i);
+        }
+#endif
+    }
+
+    // From the scheduler: run fiber `i` until it yields or ends.
+    void resume(uint32_t i) {
+#ifdef _WIN32
+        SwitchToFiber(fibers_[i]);
+#else
+        swapcontext(&main_, &ctx_[i]);
+#endif
+    }
+
+    // From fiber `i`: hand control back to the scheduler.
+    void yield(uint32_t i) {
+#ifdef _WIN32
+        (void) i;
+        SwitchToFiber(main_);
+#else
+        swapcontext(&ctx_[i], &main_);
+#endif
+    }
+
+private:
+    static constexpr size_t kStack = 512 * 1024;
+    Entry entry_ = nullptr;
+    void* arg_ = nullptr;
+#ifdef _WIN32
+    struct Slot { Fibers* self; uint32_t i; };
+    std::vector<Slot> slots_;
+    std::vector<void*> fibers_;
+    void* main_ = nullptr;
+    bool converted_ = false;
+    static void WINAPI trampolineWin(void* p) {
+        Slot* s = (Slot*) p;
+        s->self->entry_(s->self->arg_, s->i);
+        SwitchToFiber(s->self->main_);
+    }
+#else
+    ucontext_t main_;
+    std::vector<ucontext_t> ctx_;
+    std::vector<std::unique_ptr<char[]>> stacks_;
+    static void trampolinePosix(unsigned lo, unsigned hi, unsigned i) {
+        Fibers* self = (Fibers*) (((uintptr_t) hi << 32) | (uintptr_t) lo);
+        self->entry_(self->arg_, i);
+        // Returning ends the fiber; uc_link resumes the scheduler.
+    }
+#endif
 };
 
 struct Group {
@@ -959,12 +1174,10 @@ struct Group {
     uint32_t id[3];
     uint32_t size = 1;
     std::map<const void*, std::unique_ptr<Mem>> shared;
-    // The baton: only the work-item named by `turn` runs; -1 hands it back to
-    // the scheduler.
-    std::mutex m;
-    std::condition_variable cv;
-    int turn = -1;
+    Fibers* fibers = nullptr;
     bool abort = false;
+    uint64_t steps = 0;           // statements run, for the budget check
+    std::exception_ptr failure;
     std::vector<ItemSync> sync;
     explicit Group(Run& r) : run(r) {}
 };
@@ -982,7 +1195,20 @@ public:
     }
 
     void body() {
-        scopes.emplace_back();
+        frame.assign((size_t) R.bindings.frameSize.lookup(R.kernel.get()), Slot{});
+        const std::vector<int>& ps = R.bindings.paramSlots.find(R.kernel.get())->second;
+        size_t i = 0;
+        for (auto& p : R.kernel->getParameterList()) {
+            if (!p || p->getName() == "this") continue;
+            Slot& sl = frame[(size_t) ps[i++]];
+            if (auto b = R.buffers.find(p->getName()); b != R.buffers.end()) {
+                sl.v.k = Val::MemRef;
+                sl.v.mem = &b->second;
+                sl.v.t = b->second.elem;
+            } else {
+                sl.v = R.scalars.at(p->getName());
+            }
+        }
         exec(R.kernel->getBlock());
     }
 
@@ -993,74 +1219,79 @@ private:
     bool threaded;
     uint32_t tid[3];
     struct Slot { Val v; };
-    std::vector<std::map<std::string, Slot>> scopes;
+    // The running function's locals and parameters, by the slot the survey
+    // gave each declaration.
+    std::vector<Slot> frame;
     std::string flowLabel;
     std::shared_ptr<CajetaClass> cls;   // the class whose code is running
     Val retVal;                         // a helper's `return e`
     std::set<const Method*> active;     // helpers on the call stack
 
     // -- names --
-    Slot* lookup(const std::string& n) {
-        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it)
-            if (auto f = it->find(n); f != it->end()) return &f->second;
-        return nullptr;
+    // The slot an identifier names, or null when it names a template constant.
+    Slot* slotOf(Expression* id) {
+        auto it = R.bindings.names.find(id);
+        if (it == R.bindings.names.end() || it->second.isConst) return nullptr;
+        return &frame[(size_t) it->second.slot];
     }
 
-    Val name(const std::string& n, const ExpressionPtr& e) {
-        if (Slot* s = lookup(n)) return s->v;
-        if (auto b = R.buffers.find(n); b != R.buffers.end()) {
-            Val v; v.k = Val::MemRef; v.mem = &b->second; v.t = b->second.elem; return v;
-        }
-        if (auto s = R.scalars.find(n); s != R.scalars.end()) return s->second;
-        if (cls) {
-            const auto& params = cls->getTypeParameters();
-            const auto& args = cls->getTypeArguments();
-            for (size_t i = 0; i < params.size() && i < args.size(); ++i) {
-                if (!params[i].isNonType || params[i].name != n) continue;
-                auto c = std::dynamic_pointer_cast<CajetaConstantType>(args[i]);
-                if (!c) break;
-                const std::string& prim = params[i].nonTypePrimitive;
-                unsigned bits = 32;
-                size_t d = prim.find_first_of("0123456789");
-                if (d != std::string::npos) bits = (unsigned) std::stoul(prim.substr(d));
-                return mkInt({intOfBits(bits), prim.empty() || prim[0] != 'u'},
-                             (uint64_t) c->getValue());
-            }
-        }
-        refuse("the name `" + n + "` binds nothing the interpreter knows (" + at(e) + ")");
+    Val name(const std::string& n, Expression* e) {
+        auto it = R.bindings.names.find(e);
+        if (it == R.bindings.names.end())
+            refuse("the name `" + n + "` binds nothing the interpreter knows (" + at(e) + ")");
+        if (it->second.isConst) return it->second.c;
+        return frame[(size_t) it->second.slot].v;
     }
 
     // -- statements --
-    Flow exec(const AbstractSyntaxNodePtr& n) {
+    Flow exec(const AbstractSyntaxNodePtr& n) { return exec(n.get()); }
+    Flow exec(AbstractSyntaxNode* n) {
         if (!n) return Flow::Next;
-        if (auto b = std::dynamic_pointer_cast<Block>(n)) {
-            scopes.emplace_back();
+        if (R.hasDeadline && (++G.steps & 0xFFF) == 0
+                && std::chrono::steady_clock::now() > R.deadline)
+            throw Exception("the reference run of " + R.kernel->getName() +
+                            " outlasted its budget", "XPU-REF03");
+        // The common statements by exact type first: a typeid compare where the
+        // cast chain below pays a failed dynamic_cast per kind it passes.
+        const std::type_info& ti = typeid(*n);
+        if (ti == typeid(ExpressionStatement)) {
+            eval(static_cast<ExpressionStatement*>(n)->getExpression().get());
+            return Flow::Next;
+        }
+        if (ti == typeid(IfStatement)) {
+            auto* is = static_cast<IfStatement*>(n);
+            if (cond(is->getCondition().get())) return exec(is->getThenBranch().get());
+            return exec(is->getElseBranch().get());
+        }
+        if (auto b = dynamic_cast<Block*>(n)) {
             Flow f = Flow::Next;
             for (auto& s : b->getChildren()) {
                 f = exec(s);
                 if (f != Flow::Next) break;
             }
-            scopes.pop_back();
             return f;
         }
-        if (auto ls = std::dynamic_pointer_cast<LabelStatement>(n)) return exec(ls->getBlock());
-        if (auto il = std::dynamic_pointer_cast<IdentifierLabel>(n)) {
+        if (auto ls = dynamic_cast<LabelStatement*>(n)) return exec(ls->getBlock());
+        if (auto il = dynamic_cast<IdentifierLabel*>(n)) {
             pendingLabel = il->getIdentifier();
             Flow f = exec(il->getBody());
             pendingLabel.clear();
             return f;
         }
-        if (auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(n)) {
+        if (ti == typeid(LocalVariableDeclaration)) {
+            decl(static_cast<LocalVariableDeclaration*>(n));
+            return Flow::Next;
+        }
+        if (auto lvd = dynamic_cast<LocalVariableDeclaration*>(n)) {
             decl(lvd);
             return Flow::Next;
         }
-        if (auto is = std::dynamic_pointer_cast<IfStatement>(n)) {
+        if (auto is = dynamic_cast<IfStatement*>(n)) {
             if (cond(is->getCondition())) return exec(is->getThenBranch());
             return exec(is->getElseBranch());
         }
-        if (auto fs = std::dynamic_pointer_cast<ForStatement>(n)) {
+        if (auto fs = dynamic_cast<ForStatement*>(n)) {
             std::string label = takeLabel();
-            scopes.emplace_back();
             exec(fs->getInit());
             Flow out = Flow::Next;
             while (!fs->getCondition() || cond(fs->getCondition())) {
@@ -1070,14 +1301,13 @@ private:
                 if (f == Flow::Continue && !mine(label)) { out = f; break; }
                 for (auto& u : fs->getUpdate()) eval(u);
             }
-            scopes.pop_back();
             return out;
         }
-        if (auto ef = std::dynamic_pointer_cast<EnhancedForStatement>(n)) {
+        if (auto ef = dynamic_cast<EnhancedForStatement*>(n)) {
             std::string label = takeLabel();
-            auto mc = std::dynamic_pointer_cast<MethodCallExpression>(ef->getIterableExpr());
+            auto mc = dynamic_cast<MethodCallExpression*>(ef->getIterableExpr().get());
             const std::string recv =
-                std::dynamic_pointer_cast<IdentifierExpression>(child(mc, 0))->getTextValue();
+                dynamic_cast<IdentifierExpression*>(child(mc, 0))->getTextValue();
             const bool stripe = recv == "Group";
             Val count = eval(mc->getParameters()[0].expression);
             // Group.stripe(n): this lane, then every wave-width lanes after it.
@@ -1088,26 +1318,27 @@ private:
                                     : (uint64_t) G.id[0] * R.launch.block[0] + tid[0];
             uint64_t step = stripe ? R.wave : (uint64_t) R.launch.grid[0] * R.launch.block[0];
             uint64_t limit = convert(count, idxTy).u64() & maskOf(bitsOf(idxTy.prim));
-            Mem* buf = stripe ? nullptr : R.buffers.find(recv) != R.buffers.end()
-                ? &R.buffers.at(recv) : nullptr;
+            Mem* buf = nullptr;
+            if (!stripe)
+                if (Slot* bs = slotOf(child(mc, 0)); bs && bs->v.k == Val::MemRef) buf = bs->v.mem;
+            auto fsl = R.bindings.forSlots.find(ef);
+            const int elSlot = fsl->second.first, itSlot = fsl->second.second;
             if (!stripe && !buf) refuse("`" + recv + ".range` on something not a buffer (" + at(n) + ")");
             for (uint64_t i = start; i < limit; i += step) {
-                scopes.emplace_back();
                 if (stripe) {
-                    scopes.back()[ef->getElementName()].v = mkInt(idxTy, i);
+                    frame[(size_t) elSlot].v = mkInt(idxTy, i);
                 } else {
-                    if (ef->getIteratorType()) scopes.back()[ef->getIteratorName()].v = mkInt(idxTy, i);
-                    scopes.back()[ef->getElementName()].v = loadElem(*buf, i, at(n));
+                    if (itSlot >= 0) frame[(size_t) itSlot].v = mkInt(idxTy, i);
+                    frame[(size_t) elSlot].v = loadElem(*buf, i, n);
                 }
                 Flow f = exec(ef->getBody());
-                scopes.pop_back();
                 if (f == Flow::Return) return f;
                 if (f == Flow::Break) { if (mine(label)) break; return f; }
                 if (f == Flow::Continue && !mine(label)) return f;
             }
             return Flow::Next;
         }
-        if (auto ws = std::dynamic_pointer_cast<WhileStatement>(n)) {
+        if (auto ws = dynamic_cast<WhileStatement*>(n)) {
             std::string label = takeLabel();
             while (cond(ws->getCondition())) {
                 Flow f = exec(ws->getBody());
@@ -1117,7 +1348,7 @@ private:
             }
             return Flow::Next;
         }
-        if (auto ds = std::dynamic_pointer_cast<DoStatement>(n)) {
+        if (auto ds = dynamic_cast<DoStatement*>(n)) {
             std::string label = takeLabel();
             do {
                 Flow f = exec(ds->getBody());
@@ -1127,23 +1358,23 @@ private:
             } while (cond(ds->getCondition()));
             return Flow::Next;
         }
-        if (auto bs = std::dynamic_pointer_cast<BreakStatement>(n)) {
+        if (auto bs = dynamic_cast<BreakStatement*>(n)) {
             flowLabel = bs->getLabel();
             return Flow::Break;
         }
-        if (auto cs = std::dynamic_pointer_cast<ContinueStatement>(n)) {
+        if (auto cs = dynamic_cast<ContinueStatement*>(n)) {
             flowLabel = cs->getLabel();
             return Flow::Continue;
         }
-        if (auto rs = std::dynamic_pointer_cast<ReturnStatement>(n)) {
+        if (auto rs = dynamic_cast<ReturnStatement*>(n)) {
             if (rs->getExpression()) retVal = eval(rs->getExpression());
             return Flow::Return;
         }
-        if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(n)) {
+        if (auto es = dynamic_cast<ExpressionStatement*>(n)) {
             eval(es->getExpression());
             return Flow::Next;
         }
-        if (auto e = std::dynamic_pointer_cast<Expression>(n)) {
+        if (auto e = dynamic_cast<Expression*>(n)) {
             eval(e);
             return Flow::Next;
         }
@@ -1159,21 +1390,22 @@ private:
         return false;
     }
 
-    bool cond(const ExpressionPtr& e) {
+    bool cond(const ExpressionPtr& e) { return cond(e.get()); }
+    bool cond(Expression* e) {
         Val v = eval(e);
         if (v.k != Val::Scalar || v.t.prim != Prim::Bool)
             refuse("a condition that is not boolean (" + at(e) + ")");
         return v.i != 0;
     }
 
-    void decl(const std::shared_ptr<LocalVariableDeclaration>& lvd) {
+    void decl(LocalVariableDeclaration* lvd) {
         CajetaTypePtr t = lvd->getType();
         for (auto& vd : lvd->getVariableDeclarators()) {
             if (!vd) continue;
             const std::string& nm = vd->getIdentifier();
             auto init = vd->getInitializer();
             auto e = init && !init->getChildren().empty()
-                ? std::dynamic_pointer_cast<Expression>(init->getChildren()[0]) : nullptr;
+                ? dynamic_cast<Expression*>(init->getChildren()[0].get()) : nullptr;
             Slot s;
             if (auto p = primOf(t)) {
                 s.v = e ? convert(eval(e), *p) : (isFloat(p->prim) ? mkFloat(p->prim, 0) : mkInt(*p, 0));
@@ -1208,18 +1440,18 @@ private:
             } else {
                 refuse("a local of type " + canonical(t) + " (" + at(lvd) + ")");
             }
-            scopes.back()[nm] = s;
+            frame[(size_t) R.bindings.declSlots.lookup(vd.get())] = s;
         }
     }
 
     // One Shared array per declaration per workgroup: the first work-item to
     // reach the declaration makes it, and every other binds the same storage.
-    Val sharedArray(const std::string& nm, const CajetaTypePtr& t, const ExpressionPtr& e,
+    Val sharedArray(const std::string& nm, const CajetaTypePtr& t, Expression* e,
                     const void* site) {
-        auto ne = std::dynamic_pointer_cast<NewExpression>(e);
-        auto acr = std::dynamic_pointer_cast<ArrayCreatorRest>(ne->getCreatorRest());
-        Val n = eval(std::dynamic_pointer_cast<Expression>(acr->getChildren()[0]));
-        uint64_t count = indexOf(n, at(e));
+        auto ne = dynamic_cast<NewExpression*>(e);
+        auto acr = dynamic_cast<ArrayCreatorRest*>(ne->getCreatorRest().get());
+        Val n = eval(dynamic_cast<Expression*>(acr->getChildren()[0].get()));
+        uint64_t count = indexOf(n, e);
         auto& slot = G.shared[site];
         if (!slot) {
             slot = std::make_unique<Mem>();
@@ -1242,12 +1474,33 @@ private:
     }
 
     // -- expressions --
-    Val eval(const ExpressionPtr& e) {
-        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e))
+    Val eval(const ExpressionPtr& e) { return eval(e.get()); }
+    Val eval(Expression* e) {
+        switch (e->kind()) {
+            case ExprKind::Identifier:
+                return name(static_cast<IdentifierExpression*>(e)->getTextValue(), e);
+            case ExprKind::IntegerLiteral:
+            case ExprKind::FloatLiteral: {
+                auto c = R.literals.find(e);
+                if (c != R.literals.end()) return c->second;
+                Val v = e->kind() == ExprKind::IntegerLiteral
+                    ? intLiteral(static_cast<IntegerLiteralExpression*>(e)) : floatLiteral(e);
+                R.literals.try_emplace(e, v);
+                return v;
+            }
+            case ExprKind::BinaryOp:
+                return binary(static_cast<BinaryOpExpression*>(e));
+            case ExprKind::MethodCall:
+                return call(static_cast<MethodCallExpression*>(e));
+            default:
+                break;
+        }
+        if (auto id = dynamic_cast<IdentifierExpression*>(e))
             return name(id->getTextValue(), e);
-        if (auto il = std::dynamic_pointer_cast<IntegerLiteralExpression>(e)) return intLiteral(il);
-        if (auto fl = std::dynamic_pointer_cast<FloatLiteralExpression>(e)) {
-            std::string text = fl->getRawValue();
+        if (auto il = dynamic_cast<IntegerLiteralExpression*>(e)) return intLiteral(il);
+        if (dynamic_cast<FloatLiteralExpression*>(e)) return floatLiteral(e);
+        if (false) {
+            std::string text;
             // The host's rule: an `f` suffix is float32, anything else float64.
             bool f32 = !text.empty() && (text.back() == 'f' || text.back() == 'F');
             if (!text.empty() && std::strchr("fFdD", text.back())) text.pop_back();
@@ -1255,30 +1508,30 @@ private:
                            f32 ? (double) std::strtof(text.c_str(), nullptr)
                                : std::strtod(text.c_str(), nullptr));
         }
-        if (auto tl = std::dynamic_pointer_cast<TextLiteralExpression>(e))
+        if (auto tl = dynamic_cast<TextLiteralExpression*>(e))
             return mkBool(tl->getRawValue() == "true");
-        if (auto bin = std::dynamic_pointer_cast<BinaryOpExpression>(e)) return binary(bin);
-        if (auto pre = std::dynamic_pointer_cast<PrefixExpression>(e)) return prefix(pre);
-        if (auto post = std::dynamic_pointer_cast<PostfixExpression>(e)) {
+        if (auto bin = dynamic_cast<BinaryOpExpression*>(e)) return binary(bin);
+        if (auto pre = dynamic_cast<PrefixExpression*>(e)) return prefix(pre);
+        if (auto post = dynamic_cast<PostfixExpression*>(e)) {
             Val old = eval(child(post, 0));
             Val one = old.k == Val::Scalar && isFloat(old.t.prim) ? mkFloat(old.t.prim, 1) : mkInt(old.t, 1);
             assign(child(post, 0), binaryOp(post->getOp() == POSTFIX_OP_INC ? BINARY_OP_ADD
                                                                           : BINARY_OP_SUB,
-                                            old, one, at(e)));
+                                            old, one, e));
             return old;
         }
-        if (auto cast = std::dynamic_pointer_cast<CastExpression>(e)) {
+        if (auto cast = dynamic_cast<CastExpression*>(e)) {
             CajetaTypePtr ct = cast->getResolvedType() ? cast->getResolvedType() : cast->getDestType();
             Val v = eval(child(cast, 0));
             v.lit = false;
             return convert(v, *primOf(ct));
         }
-        if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(e)) {
+        if (auto ai = dynamic_cast<ArrayIndexExpression*>(e)) {
             Val base = eval(child(ai, 0));
             Val idx = eval(child(ai, 1));
-            if (base.k == Val::MemRef) return loadElem(*base.mem, indexOf(idx, at(e)), at(e));
+            if (base.k == Val::MemRef) return loadElem(*base.mem, indexOf(idx, e), e);
             if (base.k == Val::Vector) {
-                uint64_t l = indexOf(idx, at(e));
+                uint64_t l = indexOf(idx, e);
                 if (l >= base.lanes.size())
                     undefined("lane " + std::to_string(l) + " of a " +
                               std::to_string(base.lanes.size()) + "-lane vector (" + at(e) + ")");
@@ -1286,10 +1539,10 @@ private:
             }
             refuse("indexing a value that is not a buffer, Shared array or vector (" + at(e) + ")");
         }
-        if (auto dot = std::dynamic_pointer_cast<DotExpression>(e)) {
-            auto lhs = std::dynamic_pointer_cast<IdentifierExpression>(child(dot, 0));
+        if (auto dot = dynamic_cast<DotExpression*>(e)) {
+            auto lhs = dynamic_cast<IdentifierExpression*>(child(dot, 0));
             if (lhs) {
-                if (Slot* s = lookup(lhs->getTextValue()); s && s->v.k == Val::Vector) {
+                if (Slot* s = slotOf(lhs); s && s->v.k == Val::Vector) {
                     static const std::string comps = "xyzw";
                     size_t l = comps.find(dot->getIdentifier());
                     if (dot->getIdentifier().size() != 1 || l == std::string::npos
@@ -1297,16 +1550,16 @@ private:
                         refuse("the vector component `." + dot->getIdentifier() + "` (" + at(e) + ")");
                     return s->v.lanes[l];
                 }
-                if (auto c = R.bindings.enums.find(e.get()); c != R.bindings.enums.end())
+                if (auto c = R.bindings.enums.find(e); c != R.bindings.enums.end())
                     return mkInt({Prim::I32, true}, (uint64_t) (int64_t) c->second);
             }
             refuse("the field access `." + dot->getIdentifier() + "` (" + at(e) + ")");
         }
-        if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(e)) return call(mc);
-        if (auto ne = std::dynamic_pointer_cast<NewExpression>(e)) {
+        if (auto mc = dynamic_cast<MethodCallExpression*>(e)) return call(mc);
+        if (auto ne = dynamic_cast<NewExpression*>(e)) {
             const auto& ta = ne->getTypeArguments();
             Ty et = *primOf(ta[0]);
-            auto ccr = std::dynamic_pointer_cast<ClassCreatorRest>(ne->getCreatorRest());
+            auto ccr = dynamic_cast<ClassCreatorRest*>(ne->getCreatorRest().get());
             auto cN = std::dynamic_pointer_cast<CajetaConstantType>(ta[1]);
             Val v;
             v.k = Val::Vector;
@@ -1316,11 +1569,21 @@ private:
                 refuse("a Vector built from the wrong number of lanes (" + at(e) + ")");
             return v;
         }
-        if (std::dynamic_pointer_cast<MoveExpression>(e)) return eval(child(e, 0));
+        if (dynamic_cast<MoveExpression*>(e)) return eval(child(e, 0));
         refuse("the expression " + std::string(ownership::toString(e->kind())) + " (" + at(e) + ")");
     }
 
-    Val intLiteral(const std::shared_ptr<IntegerLiteralExpression>& il) {
+    Val floatLiteral(Expression* e) {
+        std::string text = static_cast<FloatLiteralExpression*>(e)->getRawValue();
+        // The host's rule: an `f` suffix is float32, anything else float64.
+        bool f32 = !text.empty() && (text.back() == 'f' || text.back() == 'F');
+        if (!text.empty() && std::strchr("fFdD", text.back())) text.pop_back();
+        return mkFloat(f32 ? Prim::F32 : Prim::F64,
+                       f32 ? (double) std::strtof(text.c_str(), nullptr)
+                           : std::strtod(text.c_str(), nullptr));
+    }
+
+    Val intLiteral(IntegerLiteralExpression* il) {
         unsigned radix = 10;
         size_t prefix = 0;
         switch (il->getIntegerLiteralType()) {
@@ -1342,8 +1605,8 @@ private:
         return out;
     }
 
-    Val prefix(const std::shared_ptr<PrefixExpression>& pre) {
-        ExpressionPtr operand = child(pre, 0);
+    Val prefix(PrefixExpression* pre) {
+        Expression* operand = child(pre, 0);
         switch (pre->getOp()) {
             case PREFIX_OP_POSITIVE: return eval(operand);
             case PREFIX_OP_NEGATIVE: {
@@ -1351,7 +1614,7 @@ private:
                 if (v.k == Val::Scalar && isFloat(v.t.prim)) return mkFloat(v.t.prim, -v.f);
                 Val zero = mkInt(v.t, 0);
                 zero.lit = v.lit;
-                Val r = binaryOp(BINARY_OP_SUB, zero, v, at(pre));
+                Val r = binaryOp(BINARY_OP_SUB, zero, v, pre);
                 r.lit = v.lit;
                 return r;
             }
@@ -1367,7 +1630,7 @@ private:
                 Val old = eval(operand);
                 Val one = isFloat(old.t.prim) ? mkFloat(old.t.prim, 1) : mkInt(old.t, 1);
                 Val nv = binaryOp(pre->getOp() == PREFIX_OP_INC ? BINARY_OP_ADD : BINARY_OP_SUB,
-                                  old, one, at(pre));
+                                  old, one, pre);
                 assign(operand, nv);
                 return eval(operand);
             }
@@ -1375,51 +1638,52 @@ private:
         refuse("prefix operator (" + at(pre) + ")");
     }
 
-    Val binary(const std::shared_ptr<BinaryOpExpression>& bin) {
+    Val binary(BinaryOpExpression* bin) {
         BinaryOp op = bin->getBinaryOp();
-        ExpressionPtr l = child(bin, 0), r = child(bin, 1);
+        Expression* l = child(bin, 0); Expression* r = child(bin, 1);
         if (bin->isAssignment()) {
             Val rv = eval(r);
-            if (op != BINARY_OP_ASSIGN) rv = binaryOp(compoundBase(op), eval(l), rv, at(bin));
-            assign(l, rv);
-            return eval(l);
+            if (op != BINARY_OP_ASSIGN) rv = binaryOp(compoundBase(op), eval(l), rv, bin);
+            return assign(l, rv);
         }
         if (op == BINARY_OP_LOGAND) return mkBool(cond(l) && cond(r));
         if (op == BINARY_OP_LOGOR) return mkBool(cond(l) || cond(r));
-        return binaryOp(op, eval(l), eval(r), at(bin));
+        return binaryOp(op, eval(l), eval(r), bin);
     }
 
     // Store `v` through the l-value `e`, converted to its declared type.
-    void assign(const ExpressionPtr& e, const Val& v) {
-        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
-            Slot* s = lookup(id->getTextValue());
+    // Store `v` through the l-value `e`, converted to its declared type, and
+    // return the value as stored.
+    Val assign(Expression* e, const Val& v) {
+        if (auto id = dynamic_cast<IdentifierExpression*>(e)) {
+            Slot* s = slotOf(id);
             if (!s) refuse("assigning `" + id->getTextValue() + "`, which is not a local (" + at(e) + ")");
-            if (s->v.k == Val::Scalar) { s->v = convert(v, s->v.t); return; }
+            if (s->v.k == Val::Scalar) { s->v = convert(v, s->v.t); return s->v; }
             if (s->v.k == Val::Vector && v.k == Val::Vector && v.lanes.size() == s->v.lanes.size()) {
                 for (size_t l = 0; l < v.lanes.size(); ++l) s->v.lanes[l] = convert(v.lanes[l], s->v.t);
-                return;
+                return s->v;
             }
             refuse("assigning `" + id->getTextValue() + "` (" + at(e) + ")");
         }
-        if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(e)) {
+        if (auto ai = dynamic_cast<ArrayIndexExpression*>(e)) {
             Val idx = eval(child(ai, 1));
-            if (auto vid = std::dynamic_pointer_cast<IdentifierExpression>(child(ai, 0))) {
-                if (Slot* s = lookup(vid->getTextValue()); s && s->v.k == Val::Vector) {
-                    uint64_t l = indexOf(idx, at(e));
+            if (auto vid = dynamic_cast<IdentifierExpression*>(child(ai, 0))) {
+                if (Slot* s = slotOf(vid); s && s->v.k == Val::Vector) {
+                    uint64_t l = indexOf(idx, e);
                     if (l >= s->v.lanes.size()) undefined("lane " + std::to_string(l) + " (" + at(e) + ")");
                     s->v.lanes[l] = convert(v, s->v.t);
-                    return;
+                    return s->v.lanes[l];
                 }
             }
             Val base = eval(child(ai, 0));
             if (base.k != Val::MemRef) refuse("storing through `" + at(e) + "`");
-            storeElem(*base.mem, indexOf(idx, at(e)), v, at(e));
-            return;
+            storeElem(*base.mem, indexOf(idx, e), v, e);
+            return convert(v, base.mem->elem);
         }
         refuse("an assignment target that is not a local or an element (" + at(e) + ")");
     }
 
-    std::vector<Val> args(const std::shared_ptr<MethodCallExpression>& mc) {
+    std::vector<Val> args(MethodCallExpression* mc) {
         std::vector<Val> out;
         for (auto& p : mc->getParameters()) out.push_back(eval(p.expression));
         return out;
@@ -1427,18 +1691,17 @@ private:
 
     Val u32(uint64_t v) { return mkInt({Prim::I32, false}, v); }
 
-    Val call(const std::shared_ptr<MethodCallExpression>& mc) {
+    Val call(MethodCallExpression* mc) {
         const std::string& nm = mc->getMethodCallName();
         auto recvE = child(mc, 0);
-        auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(recvE);
-        std::string where = at(mc);
-        auto bound = R.bindings.helpers.find(mc.get());
+        auto recvId = dynamic_cast<IdentifierExpression*>(recvE);
+        Where where{mc};
+        auto bound = R.bindings.helpers.find(mc);
         if (!recvE) {
             if (bound != R.bindings.helpers.end()) return deviceCall(bound->second, mc);
             refuse("the call `" + nm + "`, which names no @Device helper (" + where + ")");
         }
-        if (recvId && !lookup(recvId->getTextValue())
-                && !R.buffers.count(recvId->getTextValue())) {
+        if (recvId && !slotOf(recvId)) {
             std::string q = recvId->getTextValue() + "." + nm;
             if (staticBuiltins().count(q)) return staticCall(q, mc);
             if (bound != R.bindings.helpers.end()) return deviceCall(bound->second, mc);
@@ -1456,11 +1719,12 @@ private:
     // A @Device helper: its own frame, the arguments converted to its
     // parameter types, its result to its return type. Buffers pass by
     // reference, everything else by value.
-    Val deviceCall(const MethodPtr& m, const std::shared_ptr<MethodCallExpression>& mc) {
-        std::string where = at(mc);
+    Val deviceCall(const MethodPtr& m, MethodCallExpression* mc) {
+        Where where{mc};
         if (active.count(m.get())) refuse("a recursive call to " + qualified(m) + " (" + where + ")");
         std::vector<Val> a = args(mc);
-        std::map<std::string, Slot> frame;
+        std::vector<Slot> callee((size_t) R.bindings.frameSize.lookup(m.get()));
+        const std::vector<int>& ps = R.bindings.paramSlots.find(m.get())->second;
         size_t i = 0;
         for (auto& p : m->getParameterList()) {
             if (!p || p->getName() == "this") continue;
@@ -1478,17 +1742,16 @@ private:
             } else if (v.k != Val::MemRef) {
                 refuse("passing `" + p->getName() + "` to " + qualified(m) + " (" + where + ")");
             }
-            frame[p->getName()].v = v;
+            callee[(size_t) ps[i - 1]].v = std::move(v);
         }
         struct Restore {
             Item& it;
-            std::vector<std::map<std::string, Slot>> scopes;
+            std::vector<Slot> frame;
             std::shared_ptr<CajetaClass> cls;
             const Method* m;
-            ~Restore() { it.scopes = std::move(scopes); it.cls = cls; it.active.erase(m); }
-        } restore{*this, std::move(scopes), cls, m.get()};
-        scopes.clear();
-        scopes.push_back(std::move(frame));
+            ~Restore() { it.frame = std::move(frame); it.cls = cls; it.active.erase(m); }
+        } restore{*this, std::move(frame), cls, m.get()};
+        frame = std::move(callee);
         if (m->getParent()) cls = m->getParent();
         active.insert(m.get());
         retVal = Val();
@@ -1510,8 +1773,8 @@ private:
     }
 
     Val bufferCall(const Val& self, const std::string& nm,
-                   const std::shared_ptr<MethodCallExpression>& mc, const std::vector<Val>& a) {
-        std::string where = at(mc);
+                   MethodCallExpression* mc, const std::vector<Val>& a) {
+        Where where{mc};
         Mem& m = *self.mem;
         if (nm == "vload") {
             const auto& ta = mc->getExplicitMethodTypeArgs();
@@ -1536,7 +1799,7 @@ private:
 
     // One work-item at a time, so an atomic is a load, an operation and a
     // store, in work-item order; it returns the element's old value.
-    Val atomic(Mem& m, const std::string& nm, const std::vector<Val>& a, const std::string& where) {
+    Val atomic(Mem& m, const std::string& nm, const std::vector<Val>& a, const Where& where) {
         size_t need = nm == "atomicCompareExchange" ? 3 : 2;
         if (a.size() < need) refuse("`" + nm + "` arity (" + where + ")");
         uint64_t idx = indexOf(a[0], where);
@@ -1574,7 +1837,7 @@ private:
     // The Vector methods, by the host compiler's definitions
     // (MethodCallExpression's Vector branch, VectorOps.h).
     Val vectorCall(const Val& self, const std::string& nm, const std::vector<Val>& a,
-                   const std::string& where) {
+                   const Where& where) {
         const Ty et = self.t;
         const size_t n = self.lanes.size();
         const unsigned w = bitsOf(et.prim);
@@ -1703,7 +1966,7 @@ private:
 
     // dotAccum: unsigned-or-signed weights (the receiver's own signedness)
     // times SIGNED activations, four lanes into each int32 accumulator lane.
-    Val dotAccum(const Val& w, const std::vector<Val>& a, const std::string& where) {
+    Val dotAccum(const Val& w, const std::vector<Val>& a, const Where& where) {
         if (a.size() != 2 || a[0].k != Val::Vector || a[1].k != Val::Vector)
             refuse("`dotAccum` takes (Vector, Vector) (" + where + ")");
         const Val& act = a[0];
@@ -1727,7 +1990,7 @@ private:
 
     // Tiles are wave-uniform values; each work-item holds its own copy and every
     // copy is computed identically from the same uniform arguments.
-    Val tileCall(Tile& t, const std::string& nm, const std::vector<Val>& a, const std::string& where) {
+    Val tileCall(Tile& t, const std::string& nm, const std::vector<Val>& a, const Where& where) {
         if (nm == "splat") {
             if (a.size() != 1) refuse("`splat` takes one value (" + where + ")");
             Val v = convert(a[0], t.elem);
@@ -1792,8 +2055,8 @@ private:
         refuse("the tile operation `" + nm + "` (" + where + ")");
     }
 
-    Val staticCall(const std::string& q, const std::shared_ptr<MethodCallExpression>& mc) {
-        std::string where = at(mc);
+    Val staticCall(const std::string& q, MethodCallExpression* mc) {
+        Where where{mc};
         const uint32_t* b = R.launch.block;
         if (q == "KernelThread.x") return u32(tid[0]);
         if (q == "KernelThread.y") return u32(tid[1]);
@@ -1833,7 +2096,7 @@ private:
         std::vector<Val> a = args(mc);
         Arrival arr;
         arr.what = q;
-        arr.site = mc.get();
+        arr.site = mc;
         arr.where = where;
         if (q == "Group.reduce") {
             if (a.size() != 2) refuse("`Group.reduce` takes (GroupOp, value) (" + where + ")");
@@ -1851,7 +2114,7 @@ private:
         return rendezvous(arr);
     }
 
-    Val bitCast(const std::string& q, const std::vector<Val>& a, const std::string& where) {
+    Val bitCast(const std::string& q, const std::vector<Val>& a, const Where& where) {
         if (a.size() != 1) refuse("`" + q + "` takes one value (" + where + ")");
         if (q == "Cajeta.bitsToF32") {
             uint32_t b = (uint32_t) convert(a[0], {Prim::I32, true}).i;
@@ -1882,7 +2145,7 @@ private:
     // rounded; the transcendentals are computed in float64 and rounded to the
     // argument's precision, so a backend's device library is compared within
     // a stated bound.
-    Val math(const std::string& q, const std::vector<Val>& a, const std::string& where) {
+    Val math(const std::string& q, const std::vector<Val>& a, const Where& where) {
         if (!a.empty() && a[0].k == Val::Vector) {
             std::vector<Val> out;
             for (size_t i = 0; i < a[0].lanes.size(); ++i) {
@@ -1957,14 +2220,11 @@ private:
 
     Val rendezvous(Arrival& arr) {
         if (!threaded)
-            refuse("`" + arr.what + "` outside a threaded run (" + arr.where + ")");
-        std::unique_lock<std::mutex> lk(G.m);
+            refuse("`" + arr.what + "` outside a fibered run (" + arr.where + ")");
         ItemSync& s = G.sync[me];
         s.arrival = arr;
         s.st = ItemSync::Waiting;
-        G.turn = -1;
-        G.cv.notify_all();
-        G.cv.wait(lk, [&] { return G.turn == (int) me || G.abort; });
+        G.fibers->yield(me);
         if (G.abort) throw Abort{};
         return s.arrival.result;
     }
@@ -1975,7 +2235,7 @@ private:
 void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
     ItemSync& first = G.sync[lanes[0]];
     const std::string& q = first.arrival.what;
-    const std::string& where = first.arrival.where;
+    const Where& where = first.arrival.where;
     for (uint32_t m : lanes)
         if (G.sync[m].arrival.site != first.arrival.site)
             undefined("lanes of one wave reach different wave operations: `" + q + "` (" +
@@ -2101,62 +2361,53 @@ bool resolve(Group& G) {
     return false;
 }
 
-void runGroup(Group& G, bool threaded) {
+// A fiber's body: run work-item `m` to its end, recording a failure for the
+// scheduler, and unwinding quietly when the group is being abandoned.
+void runItem(void* g, uint32_t m) {
+    Group& G = *(Group*) g;
+    try {
+        Item(G, m, true).body();
+    } catch (Abort&) {
+    } catch (...) {
+        if (!G.failure) G.failure = std::current_exception();
+    }
+    G.sync[m].st = ItemSync::Done;
+}
+
+void runGroup(Group& G, bool threaded, Fibers& fibers) {
     const uint32_t n = G.size;
     G.sync.assign(n, ItemSync());
     if (!threaded) {
         for (uint32_t m = 0; m < n; ++m) Item(G, m, false).body();
         return;
     }
-    std::exception_ptr failure;
-    std::vector<std::thread> workers;
-    workers.reserve(n);
-    for (uint32_t m = 0; m < n; ++m) {
-        workers.emplace_back([&G, m, &failure] {
-            {
-                std::unique_lock<std::mutex> lk(G.m);
-                G.cv.wait(lk, [&] { return G.turn == (int) m || G.abort; });
-                if (G.abort) return;
-            }
-            std::exception_ptr ep;
-            try {
-                Item(G, m, true).body();
-            } catch (Abort&) {
-                return;
-            } catch (...) {
-                ep = std::current_exception();
-            }
-            std::lock_guard<std::mutex> lk(G.m);
-            if (ep && !failure) failure = ep;
-            G.sync[m].st = ItemSync::Done;
-            G.turn = -1;
-            G.cv.notify_all();
-        });
-    }
-    auto stopAll = [&] {
-        {
-            std::lock_guard<std::mutex> lk(G.m);
-            G.abort = true;
-            G.cv.notify_all();
-        }
-        for (auto& t : workers) t.join();
+    G.fibers = &fibers;
+    fibers.start(n, &runItem, &G);
+    // Resume every fiber still parked, with `abort` set, so each unwinds its
+    // own frames before the group is torn down.
+    auto abandon = [&] {
+        G.abort = true;
+        for (uint32_t m = 0; m < n; ++m)
+            if (G.sync[m].st == ItemSync::Waiting) fibers.resume(m);
+    };
+    auto pastBudget = [&] {
+        return G.run.hasDeadline && std::chrono::steady_clock::now() > G.run.deadline;
     };
     try {
         for (;;) {
             bool ranAny = false;
-            for (uint32_t m = 0; m < n; ++m) {
-                std::unique_lock<std::mutex> lk(G.m);
+            for (uint32_t m = 0; m < n && !G.failure; ++m) {
                 if (G.sync[m].st != ItemSync::Ready) continue;
-                G.turn = (int) m;
-                G.cv.notify_all();
-                G.cv.wait(lk, [&] { return G.turn == -1; });
+                fibers.resume(m);
                 ranAny = true;
-                if (failure) break;
             }
-            if (failure) break;
+            if (G.failure) break;
             bool allDone = true;
-            for (auto& s : G.sync) if (s.st != ItemSync::Done) allDone = false;
+            for (auto& st : G.sync) if (st.st != ItemSync::Done) allDone = false;
             if (allDone) break;
+            if (pastBudget())
+                throw Exception("the reference run of " + G.run.kernel->getName() +
+                                " outlasted its budget", "XPU-REF03");
             if (!resolve(G) && !ranAny) {
                 std::string what;
                 for (uint32_t m = 0; m < n; ++m)
@@ -2169,11 +2420,13 @@ void runGroup(Group& G, bool threaded) {
             }
         }
     } catch (...) {
-        stopAll();
+        abandon();
         throw;
     }
-    stopAll();
-    if (failure) std::rethrow_exception(failure);
+    if (G.failure) {
+        abandon();
+        std::rethrow_exception(G.failure);
+    }
 }
 
 } // namespace
@@ -2214,6 +2467,11 @@ void run(const MethodPtr& kernel, const std::vector<Arg>& args, const Launch& la
     R.cls = kernel->getParent();
     R.launch = launch;
     R.wave = launch.waveWidth;
+    if (launch.budgetSeconds > 0) {
+        R.hasDeadline = true;
+        R.deadline = std::chrono::steady_clock::now() +
+            std::chrono::microseconds((int64_t) (launch.budgetSeconds * 1e6));
+    }
     if (!R.wave)
         if (auto attr = XpuKernelAttr::from(*kernel); attr && attr->waveWidth())
             R.wave = (uint32_t) *attr->waveWidth();
@@ -2264,13 +2522,17 @@ void run(const MethodPtr& kernel, const std::vector<Arg>& args, const Launch& la
 
     const uint32_t* g = launch.grid;
     const uint32_t* b = launch.block;
+    Fibers fibers;
     for (uint32_t z = 0; z < g[2]; ++z)
         for (uint32_t y = 0; y < g[1]; ++y)
             for (uint32_t x = 0; x < g[0]; ++x) {
                 Group G(R);
                 G.id[0] = x; G.id[1] = y; G.id[2] = z;
                 G.size = b[0] * b[1] * b[2];
-                runGroup(G, survey.usesCollective);
+                if (R.hasDeadline && std::chrono::steady_clock::now() > R.deadline)
+                    throw Exception("the reference run of " + kname + " outlasted its budget",
+                                    "XPU-REF03");
+                runGroup(G, survey.usesCollective, fibers);
             }
 }
 

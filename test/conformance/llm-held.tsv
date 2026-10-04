@@ -1,0 +1,2 @@
+# The conformance corpus held list over cajeta-llm (scripts/llm-conformance.sh).
+# kernel<TAB>backend<TAB>held|ulps=N<TAB>the plan item or reason. Backend * matches all.

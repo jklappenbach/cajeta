@@ -69,11 +69,15 @@ namespace reference {
         // `@Wave(width = N)`; a kernel that uses a wave operation with neither
         // is refused, since its answer depends on the width.
         uint32_t waveWidth = 0;
+        // Wall-clock seconds the run may take; 0 for no limit. A run past it
+        // stops with XPU-REF03.
+        double budgetSeconds = 0;
     };
 
     // Run `kernel` over `launch`. Throws cajeta::Exception XPU-REF01 when the
     // kernel uses something the interpreter has no semantics for (nothing has
-    // run), and XPU-REF02 on undefined behaviour met while running.
+    // run), XPU-REF02 on undefined behaviour met while running, and XPU-REF03
+    // when the run outlasts the launch's budget.
     void run(const MethodPtr& kernel, const std::vector<Arg>& args,
              const Launch& launch);
 

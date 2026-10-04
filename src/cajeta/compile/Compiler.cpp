@@ -2681,8 +2681,12 @@ namespace cajeta {
                 for (auto& method : module->getAllMethods())
                     if (method && cajeta::xpu::isKernel(*method)) all.push_back(method);
             const char* heldPath = std::getenv("CAJETA_XPU_CONFORMANCE_HELD");
+            // CAJETA_XPU_CONFORMANCE_BUDGET: seconds of interpretation per launch
+            // (default 60); a launch past it is reported slow.
+            const char* budget = std::getenv("CAJETA_XPU_CONFORMANCE_BUDGET");
             cajeta::xpu::reference::CorpusRun corpusRun = cajeta::xpu::reference::runCorpus(
-                all, corpus, heldPath ? heldPath : "");
+                all, corpus, heldPath ? heldPath : "",
+                budget && *budget ? std::atof(budget) : 60.0, &cerr);
             std::ofstream(std::string(corpus) + "/conformance.tsv")
                 << cajeta::xpu::reference::toTsv(corpusRun);
             std::map<std::string, size_t> outcomes;

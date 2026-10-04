@@ -10,9 +10,11 @@
 #include "llvm/Support/JSON.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <ostream>
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -117,7 +119,7 @@ size_t CorpusRun::failures() const {
 }
 
 CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& recordDir,
-                    const std::string& heldPath) {
+                    const std::string& heldPath, double budgetSeconds, std::ostream* log) {
     CorpusRun run;
     HeldList held = readHeld(heldPath);
     std::map<std::string, MethodPtr> byName;
@@ -214,13 +216,28 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
             launch.block[d] = (uint32_t) (*b)[d].getAsInteger().value_or(1);
         }
         launch.waveWidth = (uint32_t) L.getInteger("waveWidth").value_or(0);
+        launch.budgetSeconds = budgetSeconds;
 
+        auto t0 = std::chrono::steady_clock::now();
+        auto progress = [&]() {
+            if (!log) return;
+            double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            (*log) << "cajeta: conformance: [" << run.results.size() << "/" << launches.size()
+                   << "] " << r.launch << " " << run.results.back().outcome << " ("
+                   << (int) (s * 1000) << " ms)";
+            const std::string& o = run.results.back().outcome;
+            if (o != "pass") (*log) << ": " << run.results.back().detail;
+            (*log) << "\n";
+            log->flush();
+        };
         try {
             reference::run(kernel, argv, launch);
         } catch (cajeta::Exception& e) {
-            r.outcome = e.getErrorId() == "XPU-REF01" ? "refused" : "undefined";
+            r.outcome = e.getErrorId() == "XPU-REF01" ? "refused"
+                      : e.getErrorId() == "XPU-REF03" ? "slow" : "undefined";
             r.detail = e.getErrorId() + ": " + e.getMessage();
             run.results.push_back(r);
+            progress();
             continue;
         }
 
@@ -270,6 +287,7 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
             r.detail = first + (h.held ? " [held: " + h.note + "]" : "");
         }
         run.results.push_back(r);
+        progress();
     }
     return run;
 }

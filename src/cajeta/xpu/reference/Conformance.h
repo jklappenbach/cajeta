@@ -18,6 +18,7 @@
 #pragma once
 
 #include <cstdint>
+#include <iosfwd>
 #include <map>
 #include <memory>
 #include <string>
@@ -36,7 +37,7 @@ namespace reference {
         std::string kernel;
         std::string backend;
         std::string launch;     // the recording's directory name
-        // pass | fail | held | stale | refused | undefined | missing
+        // pass | fail | held | stale | refused | undefined | missing | slow
         std::string outcome;
         std::string detail;     // the first disagreement, or why it did not run
     };
@@ -51,8 +52,12 @@ namespace reference {
     // `kernels` (matched by the name the kernel registers under), against
     // the held list at `heldPath` ("" for none). A recording whose kernel is
     // not among them is reported `missing`.
+    // Each launch may take `budgetSeconds` of interpretation (0: no limit);
+    // one that runs past it is reported `slow`, which does not fail the run
+    // but is not coverage either. With `log`, one line per launch as it ends.
     CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& recordDir,
-                        const std::string& heldPath);
+                        const std::string& heldPath, double budgetSeconds = 0,
+                        std::ostream* log = nullptr);
 
     // The run as a table, one row per launch: kernel, backend, launch,
     // outcome, detail.
