@@ -147,6 +147,18 @@ And a CLI compile turns the engine off for codegen (Compiler.cpp,
 CodegenEngineOff), so this codegen-time warning reaches only JIT compiles
 and the kernel session, never `cajeta build` or `--lint`.
 
+Why the `#String` row reads correct (IR, same day): the compiler emits
+byte-identical code for `this.v = p` and `this.v #= p` when `p` is a `#`
+formal. It disarms the formal's drop entry and moves the title, so the plain
+`=` is a hidden `#=`, not a borrow. The plain-formal row is a half move: it
+stores the pointer and sets the field's owner bit but never disarms the
+formal, so the formal frees it at exit. A class field gets neither:
+`put(#Cell p) { this.c = p; }` stores a borrow and the formal frees the
+object at exit. It compiles without a diagnostic and read back
+2015288503259401176 for 8100. With `#=` it reads 8100. So a plain `=` field
+store of a formal means three different things today, and only `#=` means
+the same thing everywhere.
+
 5.2.1 is therefore under review (7.2).
 
 ## 6. A warning-free stdlib
