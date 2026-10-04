@@ -70,10 +70,39 @@ a borrow."*
 - **Sink** — a container whose job is holding values: take plain `T`
   and store with `#=`, so `add(v)` lends and `add(#v)` transfers. This
   is the `ArrayList` model and the only genre where the caller chooses.
-- **Non-sink keeping a parameter** — spell it `#T`. A plain parameter
-  that is quietly captured is invisible at the call site.
+- **Keeping a value in a field or slot.** Decided with Julian
+  2026-10-04 (specs/field-store-ownership-spec.md). This REPLACES the old
+  "non-sink keeping a parameter: spell it `#T`" rule, which was wrong:
+  `#T` with a plain `=` store still dangles. Not yet enforced by the
+  compiler, and `^T` formals do not parse yet. Write new code to this rule.
+  The language-ownership skill, docs/guide/11-ownership.md, the language
+  specification and the CAPTURED_BORROW_PARAM fix-it still teach the old
+  `#T` rule until the plan's Units 4 and 7 land. Do not follow them.
+  1. `=` is a borrow, `#=` records the mode that arrived (a transfer when
+     the source owns, a borrow when it does not), `#` transfers. This
+     holds for every field type, String included.
+  2. A formal kept with `=` must be spelled `^T` (borrow only: callers
+     cannot pass `#x`). This is the explicit way to keep a borrow.
+  3. A `T` or `#T` formal that is kept is stored with `#=`. A sink
+     (`add(T v) { slot #= v; }`) is this case: the caller chooses.
+  4. An owned local stored into a field or slot is stored with `#=`.
+  5. Storing an interior read of a `T`/`#T` formal (`b.child`) needs a
+     `^T` formal, so the caller keeps the root alive.
+  6. Plain `=` stays right for local bindings, arguments, literals,
+     primitives, `null`, and a `heap T(...)` or call written in place.
+
+  | Store | Today (v0.34.0, measured) | Rule |
+  |---|---|---|
+  | `#T p; this.f = p` | class: silent use-after-free. String: hidden move | error, use `#=` |
+  | `T p; this.f = p` | class: CAPTURED_BORROW_PARAM. String: SIGSEGV on `#x` | error, use `#=` or `^T` |
+  | `Cell l = heap ..; this.f = l` | silent use-after-free | error, use `#=` |
+  | `this.f #= p` / `#= l` | correct in every case | correct |
+
+  A `=` store that compiles and reads back correctly is NOT evidence it
+  is right: the String field path hides a move. Check the IR.
 - **Deliberate non-owning alias** (back-pointers, intrusive links,
-  view handles) — store with `#=`, which records the borrow faithfully.
+  view handles): store with `#=`, which records the borrow faithfully,
+  or take a `^T` formal and store it with `=`.
 - **Owned temporary.** A `#T` call result or a `heap X(...)` creator
   used as the receiver of a further call is an owned temporary. It dies
   at the end of its statement. In an `if`, `while`, `do` or `for`

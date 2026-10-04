@@ -200,9 +200,11 @@ lending a view, and each has one correct default.
   and stores with `#=`, so `add(v)` lends and `add(#v)` transfers, with
   the mode recorded per slot. This is `ArrayList`'s existing model and
   it is the only genre where the developer chooses.
-- **2.4** When a non-sink API stores a parameter beyond the call, the
-  parameter is spelled `#T`. A plain parameter that is quietly captured
-  is invisible at the call site and is the `setString` failure.
+- **2.4** SUPERSEDED 2026-10-04 by field-store-ownership-spec §1.2. Do
+  not follow it. A `#T` formal stored with `=` still dangles. A kept `T`
+  or `#T` formal is stored with `#=`, and a formal kept with `=` is
+  spelled `^T`. Original text: when a non-sink API stores a parameter
+  beyond the call, the parameter is spelled `#T`.
 - **2.5** When an API could either copy or alias, it **copies**, and the
   aliasing variant is a separately-named method. The safe spelling is
   the unmarked one; the sharp spelling is explicit. `setString` /
@@ -395,10 +397,11 @@ than as corruption.
     `demoteToBorrow` tracking; no new work (verified by test 2.1.5,
     which passed against the unmodified compiler).
 
-- **4.2** `CAJETA_ERROR_CAPTURED_BORROW_PARAM` — reject storing a plain
-  parameter into a field, array element, or container beyond the call,
-  naming `#T` as the fix. Sinks (§2.3) opt out by spelling the store
-  `#=` on a parameter the signature already marks as caller's-choice.
+- **4.2** SUPERSEDED 2026-10-04 by field-store-ownership-spec §3 and §6.
+  `CAJETA_ERROR_CAPTURED_BORROW_PARAM` is retired there. Its `#T` fix-it
+  is wrong, and it forbade a legitimate borrow. Original text: reject
+  storing a plain parameter into a field, array element, or container
+  beyond the call, naming `#T` as the fix.
 - **4.3** Both checks report the *declaration* that created the borrow
   alongside the offending use, so the diagnostic names both ends.
 - **4.4** Neither check fires on conforming existing code; the stdlib
