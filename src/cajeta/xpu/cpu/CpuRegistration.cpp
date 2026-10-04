@@ -564,6 +564,20 @@ static const char* const kWaveOps[] = {
     "__cajeta_xpu_wave_shuffle_sync_u32",
 };
 
+// Marks every wave-op call and stub convergent, so no pass sinks one into a branch
+// its result is used in, where LoopVectorize would mask it to that branch's lanes.
+static void markWaveCallsConvergent(llvm::Function& f) {
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                if (auto* cf = c->getCalledFunction())
+                    for (const char* op : kWaveOps)
+                        if (cf->getName() == op) {
+                            c->setConvergent();
+                            cf->setConvergent();
+                        }
+}
+
 // ── Mask-as-data rewrite (divergent wave calls) ────────────────────────────
 // A guarded wave reduce that LoopVectorize SCALARIZES is a width-1 identity, silently
 // wrong, so the guard becomes a DATA argument on an unconditional call in the merge block.
@@ -1276,6 +1290,7 @@ void foldWaveVariants(llvm::Function& f) {
                         ctx.setDiagnosticHandler(std::make_unique<WaveRemarkHandler>());
                         fprintf(stderr, "[wave-remarks] %s\n", entryName.c_str());
                     }
+                    if (waveKernel) markWaveCallsConvergent(*wrapper);
                     if (waveKernel) markWorkItemLoopsParallel(*wrapper);
                     wavePre = waveOpCallCount(*wrapper);
                     vectorizeFunction(*wrapper, hostTm.get(), waveKernel);
@@ -1429,6 +1444,7 @@ void foldWaveVariants(llvm::Function& f) {
                     ctx.setDiagnosticHandler(std::make_unique<WaveRemarkHandler>());
                     fprintf(stderr, "[wave-remarks] %s\n", entryName.c_str());
                 }
+                if (waveKernel) markWaveCallsConvergent(*wrapper);
                 if (waveKernel) markWorkItemLoopsParallel(*wrapper);
                 wavePre = waveOpCallCount(*wrapper);
                 vectorizeFunction(*wrapper, hostTm.get(), waveKernel);
