@@ -12,11 +12,19 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unistd.h>
 using cajeta_test::CajetaJit;
 
 namespace {
+// One store per process and test. A shared fixed path let a parallel run's
+// tests, or a sibling clone's, wipe each other's store mid-test (measured
+// 2026-10-03: discardsAndReportsAHintTunedForAnotherBuild failed under a
+// 32-worker run and passed alone).
 std::string tuneDir() {
-    auto d = std::filesystem::temp_directory_path() / "cajeta-autotune-test";
+    const auto* info = testing::UnitTest::GetInstance()->current_test_info();
+    auto d = std::filesystem::temp_directory_path()
+           / ("cajeta-autotune-test-" + std::to_string(getpid()) + "-"
+              + (info ? info->name() : "none"));
     std::filesystem::remove_all(d);
     std::filesystem::create_directories(d);
     return d.string();
