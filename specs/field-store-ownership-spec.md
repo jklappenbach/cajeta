@@ -175,7 +175,9 @@ still dangles.
 The stdlib and every fleet repository compile under the new rules before the
 release that enforces them. Every place that teaches field stores states the
 rule in section 1.2: CLAUDE.md, the language skills embedded in the compiler,
-the user guide, the language specification and the compiler's messages. The
+the user guide, the tour, the README, the language specification, the
+cajeta.dev site, the release notes and the compiler's messages. Every example
+in them compiles under the enforcing compiler. The
 skill server's search finds a skill by its keywords, so a search for
 "ownership" or "borrow" returns the ownership skill, and the server's
 instructions route language questions to the language skills.
@@ -218,3 +220,19 @@ allocations, and read it back. The plan turns them into tests.
   is ignored.
 - **9.3** Whether `T` in `^T` may be a template parameter, and what `^T` means
   when it is instantiated with a primitive.
+- **9.4** Rule 4 as written rejects an interior read of a `T`/`#T` formal
+  stored with `#=`. Ten stdlib sites move element titles out of a consumed
+  source that way (`ArrayList(#T[] items)`: `this.data[i] #= items[i]`,
+  `appendAll`, BPlusTree splits, ImmutableList, ImmutableSet). Proposed:
+  rule 4 applies to `=` only, and an interior `#=` records what the slot
+  held.
+- **9.5** Whether a store between slots of one formal array
+  (`need[j] = need[j + 1]`) is exempt. It permutes the caller's container
+  and keeps nothing new.
+- **9.6** Stores into a local holder's field (`Node n = heap Node(); n.x = p;
+  return #n;`): 117 in the stdlib. Proposed: a holder that escapes (returned,
+  stored, or passed with `#`) counts as a field, and 4.2.5 covers the rest.
+- **9.7** The 47 borrow-intent sites already spelled `#=` (CacheNode's key,
+  Channel's slots, the stream and reader constructors) compile under the
+  rule but accept a `#x` that turns a borrow slot into an owner. Whether
+  they move to `^T` in Unit 3 (agents/field-store-ownership-census.md).

@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <thread>
 
+#include "cajeta/ownership/FieldStoreCensus.h"
 #include "cajeta/buildtool/IrCache.h"
 #include "cajeta/buildtool/PrimeCache.h"
 #include "cajeta/compile/Compiler.h"
@@ -158,6 +159,9 @@ void runCodegenPasses(const std::list<cajeta::CajetaModulePtr>& modules) {
     cajeta::CajetaModule::resolveAdviceMatches();
     cajeta::CajetaModule::setActiveProfile("test");
     cajeta::CajetaModule::resolveDependencyGraph();
+    if (cajeta::ownership::FieldStoreCensus::enabled()) {
+        cajeta::ownership::FieldStoreCensus::run(modules);
+    }
 
     // REFL-1.7: force-build the canonical Class<?> instantiation before method
     // codegen (cajeta.reflect.Class is a template Class<T>) so its bodies are

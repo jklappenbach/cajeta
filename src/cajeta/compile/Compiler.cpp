@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include "CajetaArchive.h"
+#include "../ownership/FieldStoreCensus.h"
 #include "cajeta/buildtool/IrCache.h"
 #include "cajeta/buildtool/Lockfile.h"   // sha256Hex
 #include "cajeta/buildtool/PrimeCache.h"
@@ -2120,6 +2121,10 @@ namespace cajeta {
         CajetaModule::resolveAdviceMatches();
 
         CajetaModule::resolveDependencyGraph();
+
+        if (ownership::FieldStoreCensus::enabled()) {
+            ownership::FieldStoreCensus::run(modules);
+        }
 
         // Stop before codegen when the resolution passes reported recoverable errors:
         // a broken program produces no artifact, and error types must not reach
