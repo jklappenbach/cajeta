@@ -24,6 +24,9 @@ argument is passed as its bits.
 ## Execution model
 
 - Workgroups run one after another, in x, then y, then z order.
+- The survey resolves names that need the compiler's type registries, such as
+  enum constants and `@Device` helpers, before anything runs. Those
+  registries are thread-local, so a work-item's thread never looks them up.
 - Within a workgroup, each work-item runs until it reaches a rendezvous or
   returns. A rendezvous is `Barrier.workgroup`, `Barrier.wave` or a wave
   collective. Once every live member of the rendezvous's scope has arrived,
@@ -84,9 +87,26 @@ These are every built-in the interpreter defines.
 | `Wave.reduceSum/Max/Min/And/Or/Xor` | uint32, over the active lanes in lane order; sums wrap |
 | `Wave.reduceSumF32`, `reduceMaxF32` | an xor butterfly over the full width; inactive lanes contribute 0 or -inf |
 | `Wave.prefixSum`, `prefixProduct` | exclusive scan in lane order, uint32 |
-| `Math.min`, `max`, `abs` | exact |
-| `buf.vload<N>(i)`, `buf.vstore(i, v)` | lanes `i .. i+N-1` |
+| `Group.width`, `laneId`, `rowId` | `W`; `linear % W`; `Workgroup.x`, as int32 |
+| `Group.reduce(op, v)` | `Wave.reduceSumF32` for `GroupOp.Add`, `Wave.reduceMaxF32` for `GroupOp.Max` |
+| `Cajeta.bitsToF32`, `f32ToBits`, `bitsToF64`, `f64ToBits` | the same bits, reinterpreted |
+| `Math.min`, `max`, `abs`, `floor`, `ceil`, `trunc`, `fma` | exact, in the argument's float type |
+| `Math.sqrt` | correctly rounded in the argument's float type |
+| `Math.round` | rounds half away from zero, and returns a float |
+| `Math.exp`, `exp2`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pow`, `rsqrt` | computed in float64, then rounded once to the argument's type. A backend's device library is compared within a stated bound. |
+| `buf.vload<N>(i)`, `buf.vstore(i, v)` | lanes `i .. i+N-1`; on a `KernelBuffer` or a `Shared` array |
+| `buf.atomicAdd/Sub/Min/Max/And/Or/Xor/Exchange/CompareExchange` | a load, the operation and a store, in work-item order; returns the old value. Integer min and max follow the element's signedness; float min and max are `minnum` and `maxnum`. |
+| `v.asUnsigned()`, `asSigned()` | the same bits with the element's signedness flipped |
+| `v.asWords()`, `asBytes()` | 8-bit lanes regrouped into int32, little-endian, and back |
+| `v.widenLo()`, `widenHi()` | the low or high half of the lanes, each extended by its own signedness to twice the width |
+| `v.narrow(w)` | the lanes of `v`, then those of `w`, each truncated to half the width |
+| `v.toF32()`, `toF16()`, `toI32()` | lane conversions; `toI32` truncates toward zero |
+| `v.bitcastF32()`, `bitcastI32()` | 32-bit lanes reinterpreted |
+| `v.lut4(t)` | lane `i` is `t[v[i] & 15]` |
+| `v.dotSum(a, acc)` | `acc + Σi v[i]·a[i]`, with `v` extended by its own signedness and `a` sign-extended, wrapping in int32 |
+| `v.dot(w)`, `dot(w, acc)` | float: products summed in lane order. 4 × 8-bit integers: both operands take the receiver's signedness. |
 | `w.dotAccum(a, acc)` | `acc[j] + Σk w[4j+k]·a[4j+k]`, with `w` extended by its own signedness and `a` always sign-extended, wrapping in int32 |
+| a call to a `@Device` helper | a new frame. Arguments are converted to the parameter types, buffers pass by reference, and the result is converted to the return type. A recursive call is refused. |
 | `CooperativeMatrix` `splat`, `load`, `store` | element (r, c) is `src[off + r·stride + c]` for row layout 0, or `src[off + c·stride + r]` for column layout 1 |
 | `CooperativeMatrix.mma(a, b)` | `this[r][c] += Σk a[r][k]·b[k][c]`, in k order. A float tile accumulates in float32, rounding once per product and once per sum. An integer tile accumulates exactly and wraps. |
 
@@ -102,12 +122,9 @@ is never run partially. Today that list includes:
 
 - the epilogue tile verbs, such as `scaledAccumInto` and `fromWords`;
 - segmented wave reductions;
+- `WaveVector`, and padded or swizzled `Shared` arrays;
 - textures, images and samplers;
-- atomics;
-- `Math` functions beyond `min`, `max` and `abs`, because device
-  approximations differ from libm;
-- vector methods other than `dotAccum`;
-- value types, and `@Device` helper calls.
+- value types.
 
 The conformance corpus adds built-ins here as its kernels need them.
 

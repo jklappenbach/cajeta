@@ -1,6 +1,7 @@
 // Shared @Kernel AST -> device llvm::Function lowering; see KernelLowering.h.
 
 #include "../core/KernelManifest.h"
+#include "../reference/KernelInterpreter.h"
 #include "KernelLowering.h"
 #include "LoweringTarget.h"
 
@@ -49,6 +50,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <fstream>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -6375,6 +6377,13 @@ private:
                     exprChild(ai, 0))) {
                 auto it = bufferElemSigned.find(b->getTextValue());
                 if (it != bufferElemSigned.end()) return it->second;
+                // A lane of a vector local carries the element's signedness
+                // (`signedness` holds it for a vector): `(int32) u[i]` on a
+                // Vector<uint8,N> zero-extends, as on the host.
+                if (vectorSlotType(b->getTextValue())) {
+                    auto sv = signedness.find(b->getTextValue());
+                    if (sv != signedness.end()) return sv->second;
+                }
             }
             return true;
         }
@@ -7533,6 +7542,22 @@ llvm::Value* LoweringTarget::quadAny(llvm::IRBuilderBase& b, llvm::Module& m,
                           "quad.any");
 }
 
+// CAJETA_XPU_REF_SURVEY=<file>: append one line per kernel lowered, saying
+// whether the reference interpreter can run it and, if not, everything it
+// refuses. The measure of how much of a library the conformance corpus can
+// check today.
+static void surveyForReference(const MethodPtr& method, const std::string& kname) {
+    const char* path = std::getenv("CAJETA_XPU_REF_SURVEY");
+    if (!path || !*path) return;
+    static std::set<std::string> seen;
+    if (!seen.insert(kname).second) return;
+    std::vector<std::string> why = reference::refusals(method);
+    std::ofstream out(path, std::ios::app);
+    out << kname << '\t' << (why.empty() ? "RUNS" : "REFUSED") << '\t' << why.size();
+    for (auto& w : why) out << '\t' << w;
+    out << '\n';
+}
+
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
                             LoweringTarget& target, const std::string& entryName) {
     if (!method) unsupported("null kernel method");
@@ -7542,6 +7567,7 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
 
     std::string kname = entryName.empty() ? kernelRegistryName(method) : entryName;
     llvm::Function* fn = target.createKernel(deviceModule, kname, params);
+    surveyForReference(method, kname);
 
     if (auto attr = XpuKernelAttr::from(*method); attr && !attr->occupancyError().empty())
         unsupported(attr->occupancyError() + " (on " + kname + ")");

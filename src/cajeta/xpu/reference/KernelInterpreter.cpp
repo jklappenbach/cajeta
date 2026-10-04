@@ -5,6 +5,7 @@
 #include "KernelInterpreter.h"
 
 #include "../core/KernelArgTrait.h"
+#include "../core/XpuAttributes.h"
 #include "../core/XpuKernelAttr.h"
 #include "../../asn/AbstractSyntaxNode.h"
 #include "../../asn/Block.h"
@@ -550,6 +551,40 @@ int64_t constArg(const CajetaTypePtr& t, size_t i) {
 bool isBuffer(const CajetaTypePtr& t) { return startsWith(canonical(t), "cajeta.xpu.KernelBuffer"); }
 bool isShared(const CajetaTypePtr& t) { return startsWith(canonical(t), "cajeta.xpu.Shared"); }
 
+std::string simpleName(const std::shared_ptr<CajetaClass>& c) {
+    std::string q = c ? c->toCanonical() : "";
+    return q.substr(q.find_last_of('.') + 1);
+}
+
+// `name(args)` or `Cls.name(args)` to a @Device method, by name and arity:
+// unqualified and `Self.name` resolve in the calling class, `Other.name` in
+// the class of that simple or canonical name. Null when nothing matches.
+MethodPtr resolveDevice(const std::shared_ptr<CajetaClass>& self, const std::string& recv,
+                        const std::string& name, size_t argc) {
+    auto findIn = [&](const std::shared_ptr<CajetaClass>& c) -> MethodPtr {
+        if (!c) return nullptr;
+        for (auto& kv : c->getMethods()) {
+            const MethodPtr& m = kv.second;
+            if (m && m->getName() == name && isDevice(*m) && m->getParameters().size() == argc)
+                return m;
+        }
+        return nullptr;
+    };
+    if (recv.empty() || recv == simpleName(self)) return findIn(self);
+    for (auto& kv : CajetaType::getCanonicalMap()) {
+        auto c = std::dynamic_pointer_cast<CajetaClass>(kv.second);
+        if (!c) continue;
+        if (simpleName(c) == recv || c->toCanonical() == recv)
+            if (auto m = findIn(c)) return m;
+    }
+    return nullptr;
+}
+
+std::string qualified(const MethodPtr& m) {
+    auto c = m->getParent();
+    return (c ? c->toCanonical() + "." : std::string()) + m->getName();
+}
+
 // ---- the reference semantics of each built-in, by name ---------------------
 //
 // Every built-in the interpreter runs is listed here; anything else is
@@ -569,7 +604,29 @@ const std::set<std::string>& staticBuiltins() {
         "Wave.reduceAnd", "Wave.reduceOr", "Wave.reduceXor",
         "Wave.reduceSumF32", "Wave.reduceMaxF32",
         "Wave.prefixSum", "Wave.prefixProduct",
-        "Math.min", "Math.max", "Math.abs",
+        "Group.width", "Group.laneId", "Group.rowId", "Group.reduce",
+        "Cajeta.bitsToF32", "Cajeta.f32ToBits", "Cajeta.bitsToF64", "Cajeta.f64ToBits",
+        "Math.min", "Math.max", "Math.abs", "Math.fma",
+        "Math.sqrt", "Math.floor", "Math.ceil", "Math.trunc", "Math.round", "Math.rsqrt",
+        "Math.sin", "Math.cos", "Math.tan", "Math.asin", "Math.acos", "Math.atan", "Math.atan2",
+        "Math.exp", "Math.exp2", "Math.log", "Math.log2", "Math.log10", "Math.pow",
+    };
+    return s;
+}
+
+const std::set<std::string>& vectorMethods() {
+    static const std::set<std::string> s = {
+        "dotAccum", "dot", "dotSum", "asUnsigned", "asSigned", "asWords", "asBytes",
+        "widenLo", "widenHi", "narrow", "toF32", "toF16", "toI32",
+        "bitcastF32", "bitcastI32", "lut4",
+    };
+    return s;
+}
+
+const std::set<std::string>& atomics() {
+    static const std::set<std::string> s = {
+        "atomicAdd", "atomicSub", "atomicMin", "atomicMax", "atomicAnd", "atomicOr",
+        "atomicXor", "atomicExchange", "atomicCompareExchange",
     };
     return s;
 }
@@ -577,7 +634,7 @@ const std::set<std::string>& staticBuiltins() {
 // The built-ins that are a rendezvous: every live member of the scope must
 // arrive before any of them continues.
 bool isCollective(const std::string& q) {
-    if (q == "Barrier.workgroup" || q == "Barrier.wave") return true;
+    if (q == "Barrier.workgroup" || q == "Barrier.wave" || q == "Group.reduce") return true;
     if (!startsWith(q, "Wave.")) return false;
     return q != "Wave.width" && q != "Wave.laneId" && q != "Wave.isFirstLane";
 }
@@ -586,9 +643,15 @@ enum class LocalKind { Scalar, Vector, Buffer, Shared, Tile };
 
 const std::map<LocalKind, std::set<std::string>>& memberBuiltins() {
     static const std::map<LocalKind, std::set<std::string>> m = {
-        {LocalKind::Buffer, {"vload", "vstore"}},
-        {LocalKind::Shared, {}},
-        {LocalKind::Vector, {"dotAccum"}},
+        {LocalKind::Buffer, {"vload", "vstore", "atomicAdd", "atomicSub", "atomicMin",
+                             "atomicMax", "atomicAnd", "atomicOr", "atomicXor",
+                             "atomicExchange", "atomicCompareExchange"}},
+        {LocalKind::Shared, {"vload", "vstore", "atomicAdd", "atomicSub", "atomicMin",
+                             "atomicMax", "atomicAnd", "atomicOr", "atomicXor",
+                             "atomicExchange", "atomicCompareExchange"}},
+        {LocalKind::Vector, {"dotAccum", "dot", "dotSum", "asUnsigned", "asSigned", "asWords",
+                             "asBytes", "widenLo", "widenHi", "narrow", "toF32", "toF16",
+                             "toI32", "bitcastF32", "bitcastI32", "lut4"}},
         {LocalKind::Tile, {"splat", "load", "store", "mma"}},
         {LocalKind::Scalar, {}},
     };
@@ -597,13 +660,34 @@ const std::map<LocalKind, std::set<std::string>>& memberBuiltins() {
 
 // ---- the refusal pass ------------------------------------------------------
 
+// What the survey resolved, by node: the compiler's type registries are
+// thread_local, so nothing that needs them may be looked up again from a
+// work-item's thread.
+struct Bindings {
+    std::map<const Expression*, int32_t> enums;
+    std::map<const Expression*, MethodPtr> helpers;
+};
+
 class Survey {
 public:
     std::vector<std::string> refused;
     bool usesCollective = false;
     bool usesWave = false;
+    Bindings bindings;
 
-    void kernel(const MethodPtr& m) {
+    void kernel(const MethodPtr& m) { function(m, ""); }
+
+private:
+    std::map<std::string, LocalKind> kinds;
+    std::shared_ptr<CajetaClass> cls;
+    std::string prefix;              // "in <helper>: " inside a helper's body
+    bool inHelper = false;
+    std::set<const Method*> visited;
+
+    void function(const MethodPtr& m, const std::string& pre) {
+        cls = m->getParent();
+        prefix = pre;
+        kinds.clear();
         for (auto& p : m->getParameterList()) {
             if (!p || p->getName() == "this") continue;
             CajetaTypePtr t = p->getType();
@@ -614,18 +698,41 @@ public:
                 kinds[p->getName()] = LocalKind::Buffer;
             } else if (primOf(t)) {
                 kinds[p->getName()] = LocalKind::Scalar;
+            } else if (auto v = std::dynamic_pointer_cast<CajetaVector>(t);
+                       v && inHelper && primOf(v->getElementType())) {
+                kinds[p->getName()] = LocalKind::Vector;
             } else {
                 note("parameter `" + p->getName() + "` of type " + canonical(t), m->getBlock());
             }
         }
+        if (inHelper) {
+            CajetaTypePtr rt = m->getReturnType();
+            auto v = std::dynamic_pointer_cast<CajetaVector>(rt);
+            if (rt && !primOf(rt) && canonical(rt) != "void"
+                    && !(v && primOf(v->getElementType())))
+                note("returning " + canonical(rt), m->getBlock());
+        }
         stmt(m->getBlock());
     }
 
-private:
-    std::map<std::string, LocalKind> kinds;
+    // Survey a helper's body once, in its own frame, its refusals prefixed
+    // with its name.
+    void helper(const MethodPtr& m) {
+        if (!visited.insert(m.get()).second) return;
+        auto savedKinds = kinds;
+        auto savedCls = cls;
+        auto savedPrefix = prefix;
+        bool savedIn = inHelper;
+        inHelper = true;
+        function(m, "in " + qualified(m) + ": ");
+        kinds = savedKinds;
+        cls = savedCls;
+        prefix = savedPrefix;
+        inHelper = savedIn;
+    }
 
     void note(const std::string& what, const AbstractSyntaxNodePtr& n) {
-        refused.push_back(what + " (" + at(n) + ")");
+        refused.push_back(prefix + what + " (" + at(n) + ")");
     }
 
     void stmt(const AbstractSyntaxNodePtr& n) {
@@ -656,7 +763,10 @@ private:
         } else if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(n)) {
             expr(es->getExpression());
         } else if (auto rs = std::dynamic_pointer_cast<ReturnStatement>(n)) {
-            if (rs->getExpression()) note("a return with a value", n);
+            if (rs->getExpression()) {
+                if (!inHelper) note("a return with a value", n);
+                else expr(rs->getExpression());
+            }
         } else if (std::dynamic_pointer_cast<BreakStatement>(n)
                    || std::dynamic_pointer_cast<ContinueStatement>(n)) {
         } else if (auto e = std::dynamic_pointer_cast<Expression>(n)) {
@@ -711,9 +821,19 @@ private:
         auto recvE = child(mc, 0);
         auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(recvE);
         for (auto& p : mc->getParameters()) expr(p.expression);
+        const size_t argc = mc->getParameters().size();
+        if (!recvE) {
+            if (auto m = resolveDevice(cls, "", name, argc)) {
+                bindings.helpers[mc.get()] = m;
+                helper(m);
+                return;
+            }
+            note("the call `" + name + "`, which names no @Device helper", mc);
+            return;
+        }
         if (!recvId) {
-            if (recvE) expr(recvE);
-            if (name == "dotAccum" && recvE) return;   // a vector-valued receiver
+            expr(recvE);
+            if (vectorMethods().count(name)) return;   // a vector-valued receiver
             note("the call `" + name + "` on a computed receiver", mc);
             return;
         }
@@ -724,9 +844,18 @@ private:
             return;
         }
         std::string q = r + "." + name;
-        if (!staticBuiltins().count(q)) { note("`" + q + "`", mc); return; }
+        if (!staticBuiltins().count(q)) {
+            if (auto m = resolveDevice(cls, r, name, argc)) {
+                bindings.helpers[mc.get()] = m;
+                helper(m);
+                return;
+            }
+            note("`" + q + "`", mc);
+            return;
+        }
         if (isCollective(q)) usesCollective = true;
-        if (startsWith(q, "Wave.") || q == "Barrier.wave") usesWave = true;
+        if (startsWith(q, "Wave.") || startsWith(q, "Group.") || q == "Barrier.wave")
+            usesWave = true;
     }
 
     void expr(const ExpressionPtr& e) {
@@ -757,8 +886,11 @@ private:
             auto lhs = std::dynamic_pointer_cast<IdentifierExpression>(child(dot, 0));
             if (lhs && kinds.count(lhs->getTextValue())
                     && kinds[lhs->getTextValue()] == LocalKind::Vector) return;
-            if (lhs && CajetaType::lookupEnumConstant(lhs->getTextValue(), dot->getIdentifier()))
-                return;
+            if (lhs)
+                if (auto c = CajetaType::lookupEnumConstant(lhs->getTextValue(), dot->getIdentifier())) {
+                    bindings.enums[e.get()] = *c;
+                    return;
+                }
             note("the field access `." + dot->getIdentifier() + "`", e);
             return;
         }
@@ -802,6 +934,7 @@ struct Run {
     uint32_t wave = 0;
     std::map<std::string, Mem> buffers;
     std::map<std::string, Val> scalars;
+    Bindings bindings;
 };
 
 struct Group {
@@ -823,7 +956,8 @@ enum class Flow { Next, Break, Continue, Return };
 
 class Item {
 public:
-    Item(Group& g, uint32_t linear, bool threaded) : G(g), R(g.run), me(linear), threaded(threaded) {
+    Item(Group& g, uint32_t linear, bool threaded)
+        : G(g), R(g.run), me(linear), threaded(threaded), cls(g.run.cls) {
         const uint32_t* b = R.launch.block;
         tid[0] = linear % b[0];
         tid[1] = (linear / b[0]) % b[1];
@@ -844,6 +978,9 @@ private:
     struct Slot { Val v; };
     std::vector<std::map<std::string, Slot>> scopes;
     std::string flowLabel;
+    std::shared_ptr<CajetaClass> cls;   // the class whose code is running
+    Val retVal;                         // a helper's `return e`
+    std::set<const Method*> active;     // helpers on the call stack
 
     // -- names --
     Slot* lookup(const std::string& n) {
@@ -858,9 +995,9 @@ private:
             Val v; v.k = Val::MemRef; v.mem = &b->second; v.t = b->second.elem; return v;
         }
         if (auto s = R.scalars.find(n); s != R.scalars.end()) return s->second;
-        if (R.cls) {
-            const auto& params = R.cls->getTypeParameters();
-            const auto& args = R.cls->getTypeArguments();
+        if (cls) {
+            const auto& params = cls->getTypeParameters();
+            const auto& args = cls->getTypeArguments();
             for (size_t i = 0; i < params.size() && i < args.size(); ++i) {
                 if (!params[i].isNonType || params[i].name != n) continue;
                 auto c = std::dynamic_pointer_cast<CajetaConstantType>(args[i]);
@@ -947,7 +1084,10 @@ private:
             flowLabel = cs->getLabel();
             return Flow::Continue;
         }
-        if (std::dynamic_pointer_cast<ReturnStatement>(n)) return Flow::Return;
+        if (auto rs = std::dynamic_pointer_cast<ReturnStatement>(n)) {
+            if (rs->getExpression()) retVal = eval(rs->getExpression());
+            return Flow::Return;
+        }
         if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(n)) {
             eval(es->getExpression());
             return Flow::Next;
@@ -1106,8 +1246,8 @@ private:
                         refuse("the vector component `." + dot->getIdentifier() + "` (" + at(e) + ")");
                     return s->v.lanes[l];
                 }
-                if (auto c = CajetaType::lookupEnumConstant(lhs->getTextValue(), dot->getIdentifier()))
-                    return mkInt({Prim::I32, true}, (uint64_t) (int64_t) *c);
+                if (auto c = R.bindings.enums.find(e.get()); c != R.bindings.enums.end())
+                    return mkInt({Prim::I32, true}, (uint64_t) (int64_t) c->second);
             }
             refuse("the field access `." + dot->getIdentifier() + "` (" + at(e) + ")");
         }
@@ -1241,15 +1381,81 @@ private:
         auto recvE = child(mc, 0);
         auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(recvE);
         std::string where = at(mc);
+        auto bound = R.bindings.helpers.find(mc.get());
+        if (!recvE) {
+            if (bound != R.bindings.helpers.end()) return deviceCall(bound->second, mc);
+            refuse("the call `" + nm + "`, which names no @Device helper (" + where + ")");
+        }
         if (recvId && !lookup(recvId->getTextValue())
-                && !R.buffers.count(recvId->getTextValue()))
-            return staticCall(recvId->getTextValue() + "." + nm, mc);
+                && !R.buffers.count(recvId->getTextValue())) {
+            std::string q = recvId->getTextValue() + "." + nm;
+            if (staticBuiltins().count(q)) return staticCall(q, mc);
+            if (bound != R.bindings.helpers.end()) return deviceCall(bound->second, mc);
+            refuse("`" + q + "` (" + where + ")");
+        }
         Val self = eval(recvE);
         std::vector<Val> a = args(mc);
         if (self.k == Val::MemRef) return bufferCall(self, nm, mc, a);
         if (self.k == Val::Vector && nm == "dotAccum") return dotAccum(self, a, where);
+        if (self.k == Val::Vector && vectorMethods().count(nm)) return vectorCall(self, nm, a, where);
         if (self.k == Val::TileRef) return tileCall(*self.tile, nm, a, where);
         refuse("the call `." + nm + "` (" + where + ")");
+    }
+
+    // A @Device helper: its own frame, the arguments converted to its
+    // parameter types, its result to its return type. Buffers pass by
+    // reference, everything else by value.
+    Val deviceCall(const MethodPtr& m, const std::shared_ptr<MethodCallExpression>& mc) {
+        std::string where = at(mc);
+        if (active.count(m.get())) refuse("a recursive call to " + qualified(m) + " (" + where + ")");
+        std::vector<Val> a = args(mc);
+        std::map<std::string, Slot> frame;
+        size_t i = 0;
+        for (auto& p : m->getParameterList()) {
+            if (!p || p->getName() == "this") continue;
+            CajetaTypePtr t = p->getType();
+            Val v = a.at(i++);
+            if (auto pt = primOf(t)) {
+                v = convert(v, *pt);
+            } else if (auto vt = std::dynamic_pointer_cast<CajetaVector>(t)) {
+                Ty et = *primOf(vt->getElementType());
+                if (v.k != Val::Vector || v.lanes.size() != vt->getLanes())
+                    refuse("passing a value that is not a " + canonical(t) + " to " + qualified(m) +
+                           " (" + where + ")");
+                for (auto& l : v.lanes) l = convert(l, et);
+                v.t = et;
+            } else if (v.k != Val::MemRef) {
+                refuse("passing `" + p->getName() + "` to " + qualified(m) + " (" + where + ")");
+            }
+            frame[p->getName()].v = v;
+        }
+        struct Restore {
+            Item& it;
+            std::vector<std::map<std::string, Slot>> scopes;
+            std::shared_ptr<CajetaClass> cls;
+            const Method* m;
+            ~Restore() { it.scopes = std::move(scopes); it.cls = cls; it.active.erase(m); }
+        } restore{*this, std::move(scopes), cls, m.get()};
+        scopes.clear();
+        scopes.push_back(std::move(frame));
+        if (m->getParent()) cls = m->getParent();
+        active.insert(m.get());
+        retVal = Val();
+        exec(m->getBlock());
+        Val r = retVal;
+        retVal = Val();
+        CajetaTypePtr rt = m->getReturnType();
+        if (auto pt = primOf(rt)) {
+            if (r.k == Val::None) undefined(qualified(m) + " ends without returning a value");
+            r.lit = false;
+            return convert(r, *pt);
+        }
+        if (auto vt = std::dynamic_pointer_cast<CajetaVector>(rt)) {
+            Ty et = *primOf(vt->getElementType());
+            for (auto& l : r.lanes) l = convert(l, et);
+            r.t = et;
+        }
+        return r;
     }
 
     Val bufferCall(const Val& self, const std::string& nm,
@@ -1273,7 +1479,175 @@ private:
             for (size_t l = 0; l < a[1].lanes.size(); ++l) storeElem(m, base + l, a[1].lanes[l], where);
             return Val();
         }
+        if (atomics().count(nm)) return atomic(m, nm, a, where);
         refuse("`" + m.name + "." + nm + "` (" + where + ")");
+    }
+
+    // One work-item at a time, so an atomic is a load, an operation and a
+    // store, in work-item order; it returns the element's old value.
+    Val atomic(Mem& m, const std::string& nm, const std::vector<Val>& a, const std::string& where) {
+        size_t need = nm == "atomicCompareExchange" ? 3 : 2;
+        if (a.size() < need) refuse("`" + nm + "` arity (" + where + ")");
+        uint64_t idx = indexOf(a[0], where);
+        Val old = loadElem(m, idx, where);
+        Val v = convert(a[1], m.elem);
+        Val nv;
+        if (nm == "atomicExchange") nv = v;
+        else if (nm == "atomicCompareExchange") {
+            Val desired = convert(a[2], m.elem);
+            bool eq = isFloat(m.elem.prim) ? old.f == v.f : old.i == v.i;
+            nv = eq ? desired : old;
+        } else if (nm == "atomicMin" || nm == "atomicMax") {
+            bool lt = scalarOp(BINARY_OP_LT, v, old, where).i != 0;
+            if (isFloat(m.elem.prim) && (std::isnan(v.f) || std::isnan(old.f)))
+                nv = std::isnan(old.f) ? v : old;          // maxnum / minnum
+            else nv = (nm == "atomicMin") == lt ? v : old;
+        } else {
+            BinaryOp op = nm == "atomicAdd" ? BINARY_OP_ADD : nm == "atomicSub" ? BINARY_OP_SUB
+                        : nm == "atomicAnd" ? BINARY_OP_BITAND : nm == "atomicOr" ? BINARY_OP_BITOR
+                        : BINARY_OP_BITXOR;
+            nv = scalarOp(op, old, v, where);
+        }
+        storeElem(m, idx, nv, where);
+        return old;
+    }
+
+    Val vec(Ty et, std::vector<Val> lanes) {
+        Val v;
+        v.k = Val::Vector;
+        v.t = et;
+        v.lanes = std::move(lanes);
+        return v;
+    }
+
+    // The Vector methods, by the host compiler's definitions
+    // (MethodCallExpression's Vector branch, VectorOps.h).
+    Val vectorCall(const Val& self, const std::string& nm, const std::vector<Val>& a,
+                   const std::string& where) {
+        const Ty et = self.t;
+        const size_t n = self.lanes.size();
+        const unsigned w = bitsOf(et.prim);
+        auto lane = [&](const Val& v, size_t i) -> int64_t {
+            const Val& l = v.lanes[i];
+            return l.t.sgn ? l.s64() : (int64_t) l.u64();
+        };
+        auto bad = [&](const std::string& why) -> Val {
+            refuse("`." + nm + "` " + why + " (" + where + ")");
+        };
+        if (nm == "asUnsigned" || nm == "asSigned") {
+            if (isFloat(et.prim)) return bad("on a float vector");
+            Val out = self;
+            out.t.sgn = nm == "asSigned";
+            for (auto& l : out.lanes) l.t.sgn = out.t.sgn;
+            return out;
+        }
+        if (nm == "asWords") {
+            if (w != 8 || n % 4) return bad("needs 8-bit lanes, a multiple of 4");
+            std::vector<Val> out;
+            for (size_t j = 0; j < n / 4; ++j) {
+                uint64_t word = 0;
+                for (size_t k = 0; k < 4; ++k) word |= (self.lanes[j * 4 + k].i & 0xFF) << (8 * k);
+                out.push_back(mkInt({Prim::I32, true}, word));
+            }
+            return vec({Prim::I32, true}, out);
+        }
+        if (nm == "asBytes") {
+            if (w != 32 || isFloat(et.prim)) return bad("needs 32-bit integer lanes");
+            std::vector<Val> out;
+            for (auto& l : self.lanes)
+                for (size_t k = 0; k < 4; ++k) out.push_back(mkInt({Prim::I8, true}, l.i >> (8 * k)));
+            return vec({Prim::I8, true}, out);
+        }
+        if (nm == "widenLo" || nm == "widenHi") {
+            if (isFloat(et.prim) || w >= 64 || n < 2) return bad("on these lanes");
+            Ty wt{intOfBits(w * 2), et.sgn};
+            std::vector<Val> out;
+            size_t base = nm == "widenLo" ? 0 : n / 2;
+            for (size_t i = 0; i < n / 2; ++i) out.push_back(convert(self.lanes[base + i], wt));
+            return vec(wt, out);
+        }
+        if (nm == "narrow") {
+            if (a.size() != 1 || a[0].k != Val::Vector || a[0].lanes.size() != n || w <= 8)
+                return bad("takes a vector of the receiver's type");
+            Ty nt{intOfBits(w / 2), et.sgn};
+            std::vector<Val> out;
+            for (auto& l : self.lanes) out.push_back(mkInt(nt, l.i));
+            for (auto& l : a[0].lanes) out.push_back(mkInt(nt, l.i));
+            return vec(nt, out);
+        }
+        if (nm == "toF32" || nm == "toF16") {
+            Prim p = nm == "toF32" ? Prim::F32 : Prim::F16;
+            if (nm == "toF16" && !isFloat(et.prim)) return bad("needs float lanes");
+            std::vector<Val> out;
+            for (auto& l : self.lanes) out.push_back(convert(l, {p, true}));
+            return vec({p, true}, out);
+        }
+        if (nm == "toI32") {
+            if (!isFloat(et.prim)) return bad("needs float lanes");
+            std::vector<Val> out;
+            for (auto& l : self.lanes) out.push_back(convert(l, {Prim::I32, true}));
+            return vec({Prim::I32, true}, out);
+        }
+        if (nm == "bitcastF32" || nm == "bitcastI32") {
+            bool toF = nm == "bitcastF32";
+            if (toF == isFloat(et.prim) || w != 32) return bad("on these lanes");
+            std::vector<Val> out;
+            for (auto& l : self.lanes) {
+                if (toF) {
+                    uint32_t b = (uint32_t) l.i;
+                    float f;
+                    std::memcpy(&f, &b, 4);
+                    out.push_back(mkFloat(Prim::F32, f));
+                } else {
+                    float f = (float) l.f;
+                    uint32_t b;
+                    std::memcpy(&b, &f, 4);
+                    out.push_back(mkInt({Prim::I32, true}, b));
+                }
+            }
+            return toF ? vec({Prim::F32, true}, out) : vec({Prim::I32, true}, out);
+        }
+        if (nm == "lut4") {
+            if (w != 8 || a.size() != 1 || a[0].k != Val::Vector || a[0].lanes.size() != 16
+                    || bitsOf(a[0].t.prim) != 8)
+                return bad("takes a 16-lane 8-bit table");
+            std::vector<Val> out;
+            for (auto& l : self.lanes) out.push_back(mkInt(et, a[0].lanes[l.i & 15].i));
+            return vec(et, out);
+        }
+        if (nm == "dotSum") {
+            if (w != 8 || n % 4 || a.size() != 2 || a[0].k != Val::Vector
+                    || a[0].lanes.size() != n)
+                return bad("takes (8-bit vector, int32)");
+            uint64_t sum = convert(a[1], {Prim::I32, true}).i;
+            for (size_t i = 0; i < n; ++i)
+                sum += (uint64_t) (lane(self, i) * sext(a[0].lanes[i].i, 8));
+            return mkInt({Prim::I32, true}, sum);
+        }
+        if (nm == "dot") {
+            if (a.empty() || a[0].k != Val::Vector || a[0].lanes.size() != n)
+                return bad("takes a vector of the same length");
+            if (isFloat(et.prim)) {
+                Prim p = et.prim == Prim::F64 ? Prim::F64 : Prim::F32;
+                Val acc = scalarOp(BINARY_OP_MUL, convert(self.lanes[0], {p, true}),
+                                   convert(a[0].lanes[0], {p, true}), where);
+                for (size_t i = 1; i < n; ++i)
+                    acc = scalarOp(BINARY_OP_ADD, acc,
+                                   scalarOp(BINARY_OP_MUL, convert(self.lanes[i], {p, true}),
+                                            convert(a[0].lanes[i], {p, true}), where), where);
+                return mkFloat(et.prim, acc.f);
+            }
+            if (w != 8 || n != 4) return bad("on integers needs 4 lanes of 8 bits");
+            // Symmetric: both operands take the receiver's signedness.
+            uint64_t sum = a.size() == 2 ? convert(a[1], {Prim::I32, true}).i : 0;
+            for (size_t i = 0; i < n; ++i) {
+                int64_t x = et.sgn ? sext(self.lanes[i].i, 8) : (int64_t) (self.lanes[i].i & 0xFF);
+                int64_t y = et.sgn ? sext(a[0].lanes[i].i, 8) : (int64_t) (a[0].lanes[i].i & 0xFF);
+                sum += (uint64_t) (x * y);
+            }
+            return mkInt({Prim::I32, true}, sum);
+        }
+        return bad("has no reference semantics");
     }
 
     // dotAccum: unsigned-or-signed weights (the receiver's own signedness)
@@ -1388,13 +1762,21 @@ private:
         if (q == "Wave.width") return u32(R.wave);
         if (q == "Wave.laneId") return u32(me % R.wave);
         if (q == "Wave.isFirstLane") return mkBool(me % R.wave == 0);
-        if (q == "Math.min" || q == "Math.max" || q == "Math.abs") return math(q, args(mc), where);
+        if (q == "Group.width") return mkInt({Prim::I32, true}, R.wave);
+        if (q == "Group.laneId") return mkInt({Prim::I32, true}, me % R.wave);
+        if (q == "Group.rowId") return mkInt({Prim::I32, true}, G.id[0]);
+        if (startsWith(q, "Cajeta.")) return bitCast(q, args(mc), where);
+        if (startsWith(q, "Math.")) return math(q, args(mc), where);
         std::vector<Val> a = args(mc);
         Arrival arr;
         arr.what = q;
         arr.site = mc.get();
         arr.where = where;
-        if (q.rfind("Wave.", 0) == 0) {
+        if (q == "Group.reduce") {
+            if (a.size() != 2) refuse("`Group.reduce` takes (GroupOp, value) (" + where + ")");
+            arr.what = a[0].i == 0 ? "Wave.reduceSumF32" : "Wave.reduceMaxF32";
+            arr.arg = convert(a[1], {Prim::F32, true});
+        } else if (q.rfind("Wave.", 0) == 0) {
             // Each argument at its declared parameter type.
             bool f32 = q == "Wave.reduceSumF32" || q == "Wave.reduceMaxF32";
             Ty pt = f32 ? Ty{Prim::F32, true} : Ty{Prim::I32, false};
@@ -1406,7 +1788,94 @@ private:
         return rendezvous(arr);
     }
 
+    Val bitCast(const std::string& q, const std::vector<Val>& a, const std::string& where) {
+        if (a.size() != 1) refuse("`" + q + "` takes one value (" + where + ")");
+        if (q == "Cajeta.bitsToF32") {
+            uint32_t b = (uint32_t) convert(a[0], {Prim::I32, true}).i;
+            float f;
+            std::memcpy(&f, &b, 4);
+            return mkFloat(Prim::F32, f);
+        }
+        if (q == "Cajeta.f32ToBits") {
+            float f = (float) convert(a[0], {Prim::F32, true}).f;
+            uint32_t b;
+            std::memcpy(&b, &f, 4);
+            return mkInt({Prim::I32, true}, b);
+        }
+        if (q == "Cajeta.bitsToF64") {
+            uint64_t b = convert(a[0], {Prim::I64, true}).i;
+            double d;
+            std::memcpy(&d, &b, 8);
+            return mkFloat(Prim::F64, d);
+        }
+        double d = convert(a[0], {Prim::F64, true}).f;
+        uint64_t b;
+        std::memcpy(&b, &d, 8);
+        return mkInt({Prim::I64, true}, b);
+    }
+
+    // The Math intrinsics, in the argument's float type, element-wise over a
+    // vector. sqrt, floor, ceil, trunc, round and fma are exact or correctly
+    // rounded; the transcendentals are computed in float64 and rounded to the
+    // argument's precision, so a backend's device library is compared within
+    // a stated bound.
     Val math(const std::string& q, const std::vector<Val>& a, const std::string& where) {
+        if (!a.empty() && a[0].k == Val::Vector) {
+            std::vector<Val> out;
+            for (size_t i = 0; i < a[0].lanes.size(); ++i) {
+                std::vector<Val> la;
+                for (auto& x : a) la.push_back(x.k == Val::Vector ? x.lanes.at(i) : x);
+                out.push_back(math(q, la, where));
+            }
+            return vec(out.empty() ? a[0].t : out[0].t, out);
+        }
+        static const std::map<std::string, double (*)(double)> unary = {
+            {"Math.sin", [](double x) { return std::sin(x); }},
+            {"Math.cos", [](double x) { return std::cos(x); }},
+            {"Math.tan", [](double x) { return std::tan(x); }},
+            {"Math.asin", [](double x) { return std::asin(x); }},
+            {"Math.acos", [](double x) { return std::acos(x); }},
+            {"Math.atan", [](double x) { return std::atan(x); }},
+            {"Math.exp", [](double x) { return std::exp(x); }},
+            {"Math.exp2", [](double x) { return std::exp2(x); }},
+            {"Math.log", [](double x) { return std::log(x); }},
+            {"Math.log2", [](double x) { return std::log2(x); }},
+            {"Math.log10", [](double x) { return std::log10(x); }},
+            {"Math.rsqrt", [](double x) { return 1.0 / std::sqrt(x); }},
+            {"Math.floor", [](double x) { return std::floor(x); }},
+            {"Math.ceil", [](double x) { return std::ceil(x); }},
+            {"Math.trunc", [](double x) { return std::trunc(x); }},
+            {"Math.round", [](double x) { return std::round(x); }},
+        };
+        auto fp = [&](const Val& v) {
+            if (isFloat(v.t.prim)) return v;
+            return convert(v, {Prim::F32, true});
+        };
+        if (auto u = unary.find(q); u != unary.end()) {
+            if (a.size() != 1) refuse("`" + q + "` takes one value (" + where + ")");
+            Val x = fp(a[0]);
+            return mkFloat(x.t.prim, u->second(x.f));
+        }
+        if (q == "Math.sqrt") {
+            if (a.size() != 1) refuse("`Math.sqrt` takes one value (" + where + ")");
+            Val x = fp(a[0]);
+            if (x.t.prim == Prim::F64) return mkFloat(Prim::F64, std::sqrt(x.f));
+            return mkFloat(x.t.prim, (double) std::sqrt((float) x.f));
+        }
+        if (q == "Math.fma") {
+            if (a.size() != 3) refuse("`Math.fma` takes three values (" + where + ")");
+            Prim p = widerFloat(widerFloat(fp(a[0]).t.prim, fp(a[1]).t.prim), fp(a[2]).t.prim);
+            double x = convert(a[0], {p, true}).f, y = convert(a[1], {p, true}).f,
+                   z = convert(a[2], {p, true}).f;
+            if (p == Prim::F64) return mkFloat(p, std::fma(x, y, z));
+            return mkFloat(p, (double) std::fma((float) x, (float) y, (float) z));
+        }
+        if (q == "Math.atan2" || q == "Math.pow") {
+            if (a.size() != 2) refuse("`" + q + "` takes two values (" + where + ")");
+            Prim p = widerFloat(fp(a[0]).t.prim, fp(a[1]).t.prim);
+            double x = convert(a[0], {p, true}).f, y = convert(a[1], {p, true}).f;
+            return mkFloat(p, q == "Math.pow" ? std::pow(x, y) : std::atan2(x, y));
+        }
         if (q == "Math.abs") {
             if (a.size() != 1) refuse("`Math.abs` arity (" + where + ")");
             const Val& v = a[0];
@@ -1677,6 +2146,7 @@ void run(const MethodPtr& kernel, const std::vector<Arg>& args, const Launch& la
     }
 
     Run R;
+    R.bindings = survey.bindings;
     R.kernel = kernel;
     R.cls = kernel->getParent();
     R.launch = launch;

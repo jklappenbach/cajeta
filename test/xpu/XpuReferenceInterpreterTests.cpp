@@ -22,6 +22,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -36,6 +38,8 @@ const char* kImports = R"CJ(
 package test;
 import cajeta.xpu.Barrier;
 import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.Group;
+import cajeta.xpu.GroupOp;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelThread;
 import cajeta.xpu.Shared;
@@ -488,4 +492,267 @@ TEST(XpuReferenceInterpreter, aFlippedActivationSignIsCaughtOnTheBackendThatHasI
 
     Pair clean(body, "refDotFault");
     EXPECT_EQ(compareOn<int32_t>(clean, ins, 0, shape(1, G)), "");
+}
+
+// ---- Unit 1: @Device helpers, and the survey lever ------------------------
+
+// A helper in the kernel's class, one in another class, and one that takes a
+// buffer: each is a call with its own frame, arguments converted to the
+// helper's parameter types and the result to its return type.
+TEST(XpuReferenceInterpreter, deviceHelperCallsMatchTheCpuBackend) {
+    cajeta::Compiler compiler;
+    auto module = cajeta::xpu::probe::compileForInspection(compiler, std::string(kImports) + R"CJ(
+public class Ops {
+    @Device
+    public static int32 mix(int32 a, uint32 b) {
+        int32 t = a * 7;
+        if (t < 0) { return t - (int32) (b & 15); }
+        return t + (int32) (b >> 3);
+    }
+}
+public class M {
+    @Device
+    public static float32 scaleOf(KernelBuffer<float32> s, uint32 i) {
+        return s[i / 4] * 0.5f;
+    }
+    @Device
+    public static int64 widen(int32 v) { return (int64) v * 3000000L; }
+    @Kernel
+    public static void refHelpers(KernelBuffer<int32> out, KernelBuffer<float32> fout,
+                                  KernelBuffer<int32> a, KernelBuffer<float32> s) {
+        uint32 g = KernelThread.globalIdX();
+        int32 m = Ops.mix(a[g], g * 2654435761);
+        out[g] = m ^ (int32) (widen(m) >> 20);
+        fout[g] = scaleOf(s, g) + (float32) m;
+    }
+}
+)CJ");
+    ASSERT_NE(module, nullptr);
+    auto k = findKernel(module, "test.M", "refHelpers");
+    ASSERT_NE(k, nullptr);
+    EXPECT_TRUE(ref::refusals(k).empty()) << ref::refusals(k)[0];
+    const uint32_t N = 64;
+    std::vector<int32_t> a(N);
+    for (uint32_t i = 0; i < N; ++i) a[i] = (int32_t) (i * 2246822519u);
+    std::vector<In> ins = {buffer(std::vector<int32_t>(N)), buffer(std::vector<float>(N)),
+                           buffer(a), buffer(ramp(N / 4, 1.25f, -3.0f))};
+    std::vector<In> cpu = ins, r = ins;
+    ASSERT_EQ(runCpu(k, cpu, shape(1, N)), "");
+    ASSERT_EQ(runRef(k, r, shape(1, N)), "");
+    EXPECT_EQ(disagreement("refHelpers", "cpu", as<int32_t>(r[0].buf), as<int32_t>(cpu[0].buf)), "");
+    EXPECT_EQ(disagreement("refHelpers", "cpu", as<float>(r[1].buf), as<float>(cpu[1].buf)), "");
+}
+
+// A refusal inside a helper names the helper, so the reader goes straight to it.
+TEST(XpuReferenceInterpreter, aRefusalInsideAHelperNamesTheHelper) {
+    Pair p(R"CJ(
+    @Device
+    public static uint32 spread(uint32 v) {
+        if (Wave.reduceSumF32Segmented(1.0f, 8) > 0.0f) { return v; }
+        return 0;
+    }
+    @Kernel
+    @Wave(width = 32)
+    public static void refInHelper(KernelBuffer<uint32> out) {
+        out[KernelThread.globalIdX()] = spread(3);
+    }
+)CJ", "refInHelper");
+    ASSERT_EQ(p.failure, "");
+    auto why = ref::refusals(p.kernel);
+    ASSERT_FALSE(why.empty());
+    EXPECT_NE(why[0].find("in test.M.spread"), std::string::npos) << why[0];
+}
+
+// CAJETA_XPU_REF_SURVEY=<file>: the compiler writes one line per kernel it
+// lowers, saying whether the interpreter can run it.
+TEST(XpuReferenceInterpreter, theSurveyLeverWritesOneLinePerKernel) {
+    std::string path = (std::filesystem::temp_directory_path() /
+                        ("ref-survey-" + std::to_string(cajeta_getpid()) + ".tsv")).string();
+    std::filesystem::remove(path);
+    setenv("CAJETA_XPU_REF_SURVEY", path.c_str(), 1);
+    {
+        Pair p(R"CJ(
+    @Kernel
+    public static void refSurveyRuns(KernelBuffer<int32> out) {
+        out[KernelThread.globalIdX()] = 1;
+    }
+    @Kernel
+    @Wave(width = 32)
+    public static void refSurveyRefused(KernelBuffer<float32> out) {
+        out[KernelThread.globalIdX()] = Wave.reduceSumF32Segmented(1.0f, 8);
+    }
+)CJ", "refSurveyRuns");
+        ASSERT_EQ(p.failure, "");
+        std::string failure;
+        for (const char* n : {"refSurveyRuns", "refSurveyRefused"}) {
+            auto cpu = CpuKernel::load(findKernel(p.module, "test.M", n), failure);
+            ASSERT_NE(cpu, nullptr) << failure;
+        }
+    }
+    unsetenv("CAJETA_XPU_REF_SURVEY");
+    std::ifstream in(path);
+    std::stringstream all;
+    all << in.rdbuf();
+    std::string s = all.str();
+    std::filesystem::remove(path);
+    EXPECT_NE(s.find("refSurveyRuns\tRUNS\t0\n"), std::string::npos) << s;
+    EXPECT_NE(s.find("refSurveyRefused\tREFUSED\t1\t"), std::string::npos) << s;
+    EXPECT_NE(s.find("Wave.reduceSumF32Segmented"), std::string::npos) << s;
+}
+
+// ---- Unit 1: the built-in families cajeta-llm's kernels use ---------------
+
+TEST(XpuReferenceInterpreter, vectorMethodsMatchTheCpuBackend) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refVectorMethods(KernelBuffer<int32> out, KernelBuffer<float32> fout,
+                                        KernelBuffer<uint8> q, KernelBuffer<int8> a,
+                                        KernelBuffer<uint8> table) {
+        uint32 g = KernelThread.globalIdX();
+        int64 o = (int64) g * 16L;
+        Vector<uint8,16> qv = q.vload<16>(o);
+        Vector<int8,16> av = a.vload<16>(o);
+        Vector<uint8,16> tv = table.vload<16>(0L);
+        Vector<int32,4> words = qv.asWords();
+        Vector<uint16,8> lo = qv.widenLo();
+        Vector<uint16,8> hi = qv.widenHi();
+        Vector<uint8,16> back = lo.narrow(hi);
+        Vector<uint8,16> looked = qv.lut4(tv);
+        Vector<int8,16> sq = qv.asSigned();
+        Vector<float32,8> lf = lo.toF32();
+        int32 ds = qv.dotSum(av, 7);
+        Vector<int8,4> a4 = a.vload<4>(o);
+        Vector<int8,4> b4 = a.vload<4>(o + 4L);
+        int32 d4 = a4.dot(b4);
+        uint32 b = g * 8;
+        out[b] = words[1];
+        out[b + 1] = (int32) hi[3] * 1000 + (int32) (back[13] & 127);
+        out[b + 2] = (int32) (looked[5] & 127) + (int32) (looked[11] & 127) * 256;
+        out[b + 3] = (int32) sq[2];
+        out[b + 4] = ds;
+        out[b + 5] = d4;
+        out[b + 6] = words[3] >> 7;
+        out[b + 7] = (int32) lo[7];
+        fout[g] = lf[2] * 0.25f + lf[6];
+    }
+)CJ", "refVectorMethods");
+    const uint32_t G = 16;
+    std::vector<uint8_t> q(G * 16), table(16);
+    std::vector<int8_t> a(G * 16);
+    for (uint32_t i = 0; i < G * 16; ++i) { q[i] = (uint8_t) (i * 89 + 7); a[i] = (int8_t) (i * 41 - 70); }
+    for (int i = 0; i < 16; ++i) table[i] = (uint8_t) (255 - i * 13);
+    std::vector<In> ins = {buffer(std::vector<int32_t>(G * 8)), buffer(std::vector<float>(G)),
+                           buffer(q), buffer(a), buffer(table)};
+    EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(1, G)), "");
+    // Bound: 0 ulp; small integers converted exactly, two roundings each side.
+    EXPECT_EQ(compareOn<float>(p, ins, 1, shape(1, G)), "");
+}
+
+TEST(XpuReferenceInterpreter, mathMatchesTheCpuBackendWithinItsBound) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refMath(KernelBuffer<float32> exact, KernelBuffer<float32> approx,
+                               KernelBuffer<float32> x) {
+        uint32 g = KernelThread.globalIdX();
+        float32 v = x[g];
+        exact[g * 4] = Math.sqrt(v * v + 1.0f);
+        exact[g * 4 + 1] = Math.round(v * 3.5f) + Math.floor(v) - Math.ceil(v * 0.5f);
+        exact[g * 4 + 2] = Math.fma(v, 1.5f, -2.25f);
+        exact[g * 4 + 3] = Math.min(v, 0.5f) + Math.max(v, -0.5f) + Math.abs(v);
+        approx[g * 2] = Math.exp(v * 0.25f);
+        approx[g * 2 + 1] = Math.sin(v) + Math.cos(v * 0.5f);
+    }
+)CJ", "refMath");
+    const uint32_t N = 64;
+    std::vector<In> ins = {buffer(std::vector<float>(N * 4)), buffer(std::vector<float>(N * 2)),
+                           buffer(ramp(N, 0.173f, -5.5f))};
+    // Bound: 0 ulp for sqrt, round, floor, ceil, fma, min, max and abs, which
+    // are exact or correctly rounded everywhere.
+    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(1, N)), "");
+    // Bound: 4 ulp for exp and sin+cos: the reference is float64 rounded once,
+    // the cpu backend's libm is within 1 ulp per call, and the sum adds one.
+    EXPECT_EQ(compareOn<float>(p, ins, 1, shape(1, N), 4), "");
+}
+
+TEST(XpuReferenceInterpreter, bitCastsAndGroupPrimitivesMatchTheCpuBackend) {
+    Pair p(R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void refGroup(KernelBuffer<int32> out, KernelBuffer<float32> fout,
+                                KernelBuffer<int32> bits) {
+        uint32 g = KernelThread.globalIdX();
+        float32 f = Cajeta.bitsToF32(bits[g]);
+        int32 back = Cajeta.f32ToBits(f * 2.0f);
+        float32 s = Group.reduce(GroupOp.Add, f);
+        float32 m = Group.reduce(GroupOp.Max, f);
+        out[g * 3] = back;
+        out[g * 3 + 1] = Group.width() * 100 + Group.laneId();
+        out[g * 3 + 2] = Group.rowId();
+        fout[g * 2] = s;
+        fout[g * 2 + 1] = m;
+    }
+)CJ", "refGroup");
+    const uint32_t N = 64;
+    std::vector<int32_t> bits(N);
+    for (uint32_t i = 0; i < N; ++i) {
+        float f = (float) ((int) i - 30) * 0.5f;     // halves: every partial sum is exact
+        std::memcpy(&bits[i], &f, 4);
+    }
+    std::vector<In> ins = {buffer(std::vector<int32_t>(N * 3)), buffer(std::vector<float>(N * 2)),
+                           buffer(bits)};
+    EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(2, 32)), "");
+    // Bound: 0 ulp; halves sum exactly in any order.
+    EXPECT_EQ(compareOn<float>(p, ins, 1, shape(2, 32)), "");
+}
+
+TEST(XpuReferenceInterpreter, atomicsMatchTheCpuBackend) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refAtomics(KernelBuffer<int32> hist, KernelBuffer<uint32> hi,
+                                  KernelBuffer<int32> x) {
+        uint32 g = KernelThread.globalIdX();
+        int32 v = x[g];
+        hist.atomicAdd((uint32) (v & 7), 1);
+        hist.atomicMax(8, v);
+        hist.atomicMin(9, v);
+        hi.atomicOr(0, (uint32) 1 << (g & 31));
+        hi.atomicXor(1, (uint32) v);
+    }
+)CJ", "refAtomics");
+    const uint32_t N = 128;
+    std::vector<int32_t> x(N);
+    for (uint32_t i = 0; i < N; ++i) x[i] = (int32_t) (i * 2654435761u) >> 9;
+    std::vector<int32_t> hist(10, 0);
+    hist[9] = INT32_MAX;
+    hist[8] = INT32_MIN;
+    std::vector<In> ins = {buffer(hist), buffer(std::vector<uint32_t>(2)), buffer(x)};
+    // Integer atomics commute, so any order gives the same answer.
+    EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(2, 64)), "");
+    EXPECT_EQ(compareOn<uint32_t>(p, ins, 1, shape(2, 64)), "");
+}
+
+// Found by the interpreter (Unit 1): a lane of an unsigned vector local,
+// `(int32) v[i]`, was sign-extended on device, so a uint8 lane of 200 read
+// back as -56. The host zero-extends it, and so must every backend.
+TEST(XpuReferenceInterpreter, anUnsignedVectorLaneWidensWithZeroExtension) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refLaneSign(KernelBuffer<int32> out, KernelBuffer<uint8> q,
+                                   KernelBuffer<int8> s) {
+        Vector<uint8,4> u = q.vload<4>(0L);
+        Vector<int8,4> v = s.vload<4>(0L);
+        int32 x = u[3];
+        out[0] = (int32) u[1];
+        out[1] = x;
+        out[2] = (int32) v[1];
+        out[3] = (int32) u[2] + 1;
+    }
+)CJ", "refLaneSign");
+    std::vector<In> ins = {buffer(std::vector<int32_t>(4)),
+                           buffer(std::vector<uint8_t>{1, 200, 255, 130}),
+                           buffer(std::vector<int8_t>{1, -56, 3, 4})};
+    std::vector<In> r = ins;
+    ASSERT_EQ(runRef(p.kernel, r, shape(1, 1)), "");
+    EXPECT_EQ(as<int32_t>(r[0].buf), (std::vector<int32_t>{200, 130, -56, 256}));
+    EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(1, 1)), "");
 }
