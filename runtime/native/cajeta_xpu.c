@@ -8,3 +8,4 @@
 #include "cajeta_xpu_accel.c"
 #include "cajeta_xpu_defer.c"
 #include "cajeta_xpu_launch.c"
+#include "cajeta_xpu_record.c"

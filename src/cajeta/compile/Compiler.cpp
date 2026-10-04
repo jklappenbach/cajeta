@@ -49,6 +49,7 @@
 #include "cajeta/error/DiagnosticEngine.h"
 #include "CajetaParserBaseVisitor.h"
 #include "../xpu/core/XpuAttributes.h"
+#include "../xpu/reference/Conformance.h"
 #include "../xpu/core/XpuKernelAttr.h"
 #include "../xpu/core/XpuKernelGate.h"
 #include "../xpu/XpuTarget.h"
@@ -2667,6 +2668,34 @@ namespace cajeta {
                 // 4.2.3 (Julian, 2026-09-25): an error, held only by @Unbounded(tracked).
                 cajeta::xpu::reportUnboundedKernel(*method, method->getName(), it->second);
             }
+        }
+
+        // CAJETA_XPU_CONFORMANCE=<dir>: replay the launches recorded under
+        // <dir> (CAJETA_XPU_RECORD) through the reference interpreter against
+        // this build's kernels, write <dir>/conformance.tsv, and stop: no code
+        // is generated. CAJETA_XPU_CONFORMANCE_HELD names the held list. The
+        // exit status is 1 when a launch failed, went stale or misbehaved.
+        if (const char* corpus = std::getenv("CAJETA_XPU_CONFORMANCE"); corpus && *corpus) {
+            std::vector<MethodPtr> all;
+            for (auto& module : xpuModules)
+                for (auto& method : module->getAllMethods())
+                    if (method && cajeta::xpu::isKernel(*method)) all.push_back(method);
+            const char* heldPath = std::getenv("CAJETA_XPU_CONFORMANCE_HELD");
+            cajeta::xpu::reference::CorpusRun corpusRun = cajeta::xpu::reference::runCorpus(
+                all, corpus, heldPath ? heldPath : "");
+            std::ofstream(std::string(corpus) + "/conformance.tsv")
+                << cajeta::xpu::reference::toTsv(corpusRun);
+            std::map<std::string, size_t> outcomes;
+            for (auto& r : corpusRun.results) {
+                ++outcomes[r.outcome];
+                if (r.outcome == "fail" || r.outcome == "stale" || r.outcome == "undefined")
+                    cerr << "cajeta: conformance: " << r.outcome << ": " << r.kernel << " on "
+                         << r.backend << " (" << r.launch << "): " << r.detail << "\n";
+            }
+            cerr << "cajeta: conformance: " << corpusRun.results.size() << " launches";
+            for (auto& [o, n] : outcomes) cerr << ", " << o << " " << n;
+            cerr << " (" << corpus << "/conformance.tsv)\n";
+            std::exit(corpusRun.failures() ? 1 : 0);
         }
 
         for (auto& module : xpuModules) {

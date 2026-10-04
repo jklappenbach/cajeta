@@ -90,6 +90,9 @@ These are every built-in the interpreter defines.
 | `Group.width`, `laneId`, `rowId` | `W`; `linear % W`; `Workgroup.x`, as int32 |
 | `Group.reduce(op, v)` | `Wave.reduceSumF32` for `GroupOp.Add`, `Wave.reduceMaxF32` for `GroupOp.Max` |
 | `Cajeta.bitsToF32`, `f32ToBits`, `bitsToF64`, `f64ToBits` | the same bits, reinterpreted |
+| `Bits.count`, `reverse`, `rotateLeft`, `rotateRight` | on uint32; a rotate takes its amount modulo 32 |
+| `for (T k : Group.stripe(n))` | `k` runs from `laneId` while below `n`, stepping by `W` |
+| `for (idx, e : buf.range(n))` | `idx` runs from `globalIdX` while below `n`, stepping by the grid's width in work-items; `e` is a copy of `buf[idx]` |
 | `Math.min`, `max`, `abs`, `floor`, `ceil`, `trunc`, `fma` | exact, in the argument's float type |
 | `Math.sqrt` | correctly rounded in the argument's float type |
 | `Math.round` | rounds half away from zero, and returns a float |
@@ -139,6 +142,43 @@ with `XPU-REF02`. The message names the operation and its line:
 - a `Barrier.workgroup` that some work-items return without reaching;
 - lanes of one wave that reach different wave operations;
 - a shuffle from an inactive lane.
+
+## The conformance corpus
+
+The corpus is real launches, recorded as a backend runs them, then replayed
+through the interpreter.
+
+1. Run a program, such as cajeta-llm's tests, with
+   `CAJETA_XPU_RECORD=<dir>`. The runtime records the first
+   `CAJETA_XPU_RECORD_PER_KERNEL` launches of each kernel (default 2). For
+   each one it writes `launch.json`, giving the kernel, backend, grid, block,
+   wave width and arguments, plus each allocation an argument points into,
+   before (`a<i>.in`) and after (`a<i>.out`). An allocation is written once,
+   however many arguments point into it, so aliasing survives the replay.
+   The runtime skips a launch on a deferred stream, a Vulkan launch, and one
+   whose allocations come to more than `CAJETA_XPU_RECORD_MAX_BYTES`
+   (default 64 MiB). Each skip goes in `<dir>/skipped.tsv` with its reason.
+2. Compile the same program with `CAJETA_XPU_CONFORMANCE=<dir>`, and
+   optionally `CAJETA_XPU_CONFORMANCE_HELD=<file>`. The compiler replays
+   every recording against its own kernels, writes `<dir>/conformance.tsv`
+   and stops before generating code. It exits 1 when any launch fails.
+
+Each launch gets one of these outcomes:
+
+| Outcome | Meaning | Fails the run |
+|---|---|---|
+| `pass` | every element agrees | no |
+| `fail` | an element disagrees; the detail names the parameter, the element and both values | yes |
+| `held` | it disagrees, and the held list tracks it | no |
+| `stale` | the held list holds it, but it agrees now | yes |
+| `refused` | the interpreter has no semantics for something it uses | no |
+| `undefined` | the interpreter met undefined behaviour, or the recording is damaged | yes |
+| `missing` | no kernel of that name is in this build | no |
+
+The held list has one tab-separated line per kernel and backend.
+`<kernel> <backend> held <note>` holds a known disagreement, and
+`<kernel> <backend> ulps=N <why>` states a float bound. A backend of `*`
+matches every backend.
 
 ## Comparing against it
 

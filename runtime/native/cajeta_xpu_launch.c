@@ -973,7 +973,21 @@ static void caj_xpu_dispatch_thunk(void* p) {
                          a->argv, a->streamHandle, a->specCount, a->specValues);
 }
 
-// Dispatch through the profiler seam: unarmed, the raw dispatch; armed, the thunk.
+static void* caj_record_begin(const char* kernelName,
+                              int32_t gx, int32_t gy, int32_t gz,
+                              int32_t bx, int32_t by, int32_t bz,
+                              uint32_t sharedBytes, void* argv, int64_t stream);
+static void caj_record_end(void* rec);
+
+static void caj_xpu_dispatch_seam(const char* kernelName,
+                                  int32_t gridX, int32_t gridY, int32_t gridZ,
+                                  int32_t blockX, int32_t blockY, int32_t blockZ,
+                                  uint32_t sharedBytes, void* argv,
+                                  int64_t streamHandle,
+                                  int32_t specCount, const int32_t* specValues,
+                                  int32_t deviceId);
+
+// Dispatch, recorded when CAJETA_XPU_RECORD asks (cajeta_xpu_record.c).
 static void caj_xpu_dispatch(const char* kernelName,
                              int32_t gridX, int32_t gridY, int32_t gridZ,
                              int32_t blockX, int32_t blockY, int32_t blockZ,
@@ -981,6 +995,22 @@ static void caj_xpu_dispatch(const char* kernelName,
                              int64_t streamHandle,
                              int32_t specCount, const int32_t* specValues,
                              int32_t deviceId) {
+    void* rec = caj_record_begin(kernelName, gridX, gridY, gridZ, blockX, blockY,
+                                 blockZ, sharedBytes, argv, streamHandle);
+    caj_xpu_dispatch_seam(kernelName, gridX, gridY, gridZ, blockX, blockY, blockZ,
+                          sharedBytes, argv, streamHandle, specCount, specValues,
+                          deviceId);
+    if (rec) caj_record_end(rec);
+}
+
+// Dispatch through the profiler seam: unarmed, the raw dispatch; armed, the thunk.
+static void caj_xpu_dispatch_seam(const char* kernelName,
+                                  int32_t gridX, int32_t gridY, int32_t gridZ,
+                                  int32_t blockX, int32_t blockY, int32_t blockZ,
+                                  uint32_t sharedBytes, void* argv,
+                                  int64_t streamHandle,
+                                  int32_t specCount, const int32_t* specValues,
+                                  int32_t deviceId) {
     if (__cajeta_prof_gpu_sink_count() == 0) {
         caj_xpu_dispatch_raw(kernelName, gridX, gridY, gridZ, blockX, blockY,
                              blockZ, sharedBytes, argv, streamHandle,

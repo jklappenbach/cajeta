@@ -1536,6 +1536,42 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::Value* nameStr =
                 b.CreateGlobalString(entryName, "xpu.cpu.kname." + entryName);
             b.CreateCall(regFn, {nameStr, thunk});
+            // The parameter kinds and sizes, as nvptx, amdgpu and vulkan
+            // register them. The cpu launch reads none of it; the launch
+            // recorder (CAJETA_XPU_RECORD) needs it to tell a buffer argument
+            // from a scalar.
+            {
+                std::vector<KernelParamInfo> info =
+                    collectKernelParamInfo(method, ctx, hostModule.getDataLayout());
+                if (!info.empty()) {
+                    std::vector<uint8_t> kinds;
+                    std::vector<uint32_t> sizes;
+                    for (auto& pi : info) {
+                        kinds.push_back(pi.kind);
+                        sizes.push_back(pi.byteSize);
+                    }
+                    llvm::Constant* kindInit = llvm::ConstantDataArray::get(
+                        ctx, llvm::ArrayRef<uint8_t>(kinds.data(), kinds.size()));
+                    auto* kindGV = new llvm::GlobalVariable(
+                        hostModule, kindInit->getType(), /*isConstant=*/true,
+                        llvm::GlobalValue::PrivateLinkage, kindInit,
+                        "xpu.cpu.kpkind." + entryName);
+                    llvm::Constant* szInit = llvm::ConstantDataArray::get(
+                        ctx, llvm::ArrayRef<uint32_t>(sizes.data(), sizes.size()));
+                    auto* szGV = new llvm::GlobalVariable(
+                        hostModule, szInit->getType(), /*isConstant=*/true,
+                        llvm::GlobalValue::PrivateLinkage, szInit,
+                        "xpu.cpu.kpsz." + entryName);
+                    llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+                    llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+                    llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
+                        "__cajeta_xpu_register_kernel_params",
+                        llvm::FunctionType::get(voidTy, {ptrTy, i32Ty, ptrTy, ptrTy}, false));
+                    b.CreateCall(kpFn, {nameStr,
+                                        llvm::ConstantInt::get(i32Ty, (uint32_t) info.size()),
+                                        kindGV, szGV});
+                }
+            }
             // The host wave these kernels were BUILT at, so Device.waveSize()
             // answers the compiler's width rather than a fresh CPUID read.
             // They differ on an AVX-512 part tuned to prefer 256-bit vectors

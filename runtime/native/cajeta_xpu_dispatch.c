@@ -45,6 +45,9 @@ static struct cajeta_xpu_module* cajeta_xpu_find_module(const char* name,
 // The Stream handle (int64) is the backend stream object: 0 = the default
 // stream; create() makes a real one so copies and launches queue independently.
 static void cajeta_xpu_sync_active(void);
+// The launch recorder (cajeta_xpu_record.c, included after launch.c).
+static void caj_record_alloc(int64_t h, uint64_t bytes);
+static void caj_record_free(int64_t h);
 
 int64_t __cajeta_xpu_stream_current(void) { return 0; }   // the default stream
 
@@ -1416,6 +1419,7 @@ int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount, int32_t kind) 
     int64_t h = caj_buffer_alloc_raw(byteCount, kind);
     if (h && caj_poison_on()) caj_poison_fill(h, byteCount, kind);
     if (h && caj_alloc_trace_on()) caj_ledger_note(h, byteCount, kind, 1);
+    if (h) caj_record_alloc(h, byteCount);
     return h;
 }
 static int64_t caj_buffer_alloc_raw(uint64_t byteCount, int32_t kind) {
@@ -2087,6 +2091,7 @@ void __cajeta_xpu_buffer_free(void* self, int64_t handle, int32_t kind) {
     (void) self;
     if (!handle) return;
     if (caj_alloc_trace_on()) caj_ledger_note(handle, 0, kind, 0);
+    caj_record_free(handle);
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA:
             // Pinned frees with cuMemFreeHost; device + managed with cuMemFree.
