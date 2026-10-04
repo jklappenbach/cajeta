@@ -125,7 +125,8 @@ void printUsage(const char* progname) {
               << "  --diag-hints=on|off                  \"Did you mean...\" suggestions.\n"
               << "  --diag-format=text|json              Diagnostic output format. json = one NDJSON\n"
               << "                                       object per line on stderr for tools/IDEs (default text).\n"
-              << "  --profile-counters=on|off            Per-method PGO-collection instrumentation.\n"
+              << "  --diag-origins=project|all           Whose diagnostics to show (default project). all adds\n"
+              << "                                       dependency and stdlib warnings; errors always show.\n"              << "  --profile-counters=on|off            Per-method PGO-collection instrumentation.\n"
               << "  --debug-info=off|line|full           Debug records in the binary (default line).\n"
               << "                                       line = shadow stack, so traces resolve to\n"
               << "                                       Type.method(File.cajeta:NN). full = adds\n"
@@ -299,6 +300,7 @@ int main(int argc, const char* argv[]) {
     // makes it one flag with one meaning; the loop below still parses it for
     // the compile path's own flags struct, and agrees by construction.
     cajeta::resolveDiagFormatFromArgv(argc, argv);
+    cajeta::resolveDiagOriginsFromArgv(argc, argv);
 
     // Top-level subcommand dispatch. `cajeta archive ...` routes to
     // the archive-management surface (docs/ArchiveManagement.md);
@@ -582,6 +584,11 @@ int main(int argc, const char* argv[]) {
             if (!selErrors.empty()) {
                 for (const auto& e : selErrors) std::cerr << "cajeta: " << e << "\n";
                 return 1;
+            }
+        } else if (match(arg, "diag-origins", value)) {
+            if (value != "project" && value != "all") {
+                std::cerr << "--diag-origins must be project or all\n";
+                printUsage(argv[0]); return 1;
             }
         } else if (match(arg, "diag-format", value)) {
             if (!setEnumFlag<DiagFormat>("diag-format", value,

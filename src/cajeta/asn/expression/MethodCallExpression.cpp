@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include "MethodCallExpression.h"
+#include "cajeta/compile/DiagnosticSite.h"
 #include "cajeta/ownership/TitleClassifier.h"
 #include "CallExpression.h"
 #include "../../error/DiagnosticEngine.h"
@@ -8741,8 +8742,8 @@ namespace cajeta {
                             + advId->getTextValue() + "` to transfer the title. "
                         "As written the title stays with the local and is "
                         "released at scope exit (a plain argument lends).",
-                        module->getSourcePath(),
-                        advId->getSourceLine(), advId->getSourceColumn() + 1);
+                        diagnosticSiteOf(*module).file,
+                        advId->getSourceLine(), advId->getSourceColumn() + 1, diagnosticSiteOf(*module).origin);
                 }
             }
             if (!children.empty()) {

@@ -15,6 +15,7 @@ namespace cajeta {
         std::string file;
         int line = -1;         // 1-based; <= 0 = no location
         int column = -1;       // 1-based
+        std::string origin = "project";  // "project" | "dependency" | "stdlib"
     };
 
     class DiagnosticEngine {
@@ -30,12 +31,14 @@ namespace cajeta {
 
         void report(const std::string& severity, const std::string& code,
                     const std::string& message, const std::string& file = "",
-                    int line = -1, int column = -1);
+                    int line = -1, int column = -1,
+                    const std::string& origin = "project");
 
         bool hasErrors() const { return errorSeen_; }
         std::size_t count() const { return diags_.size(); }
 
-        // Deduped by (file,line,column,code), sorted by span, and capped with a trailing note.
+        // Deduped by (file,line,column,code), ordered project, dependency, stdlib and by span
+        // within each, and each origin capped with its own trailing note.
         std::vector<CollectedDiagnostic> finalize() const;
 
         // Writes finalize()'s diagnostics to stderr: `json` selects the structured

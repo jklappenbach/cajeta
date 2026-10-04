@@ -3,6 +3,7 @@
 //
 
 #include "Expression.h"
+#include "cajeta/compile/DiagnosticSite.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/ownership/TitleClassifier.h"
 #include "cajeta/dbg/LineInfoCodegen.h"
@@ -2419,7 +2420,7 @@ bool cajetaRhsCarriesRedundantSharp(
                     "the source's mode (a title when it has one, a borrow "
                     "otherwise), so the second `#` adds nothing. Write "
                     "`dst #= x`.",
-                    module->getSourcePath(), (int) getSourceLine(), -1);
+                    diagnosticSiteOf(*module).file, (int) getSourceLine(), -1, diagnosticSiteOf(*module).origin);
             }
         }
         if (legacyTransferAssign) {
@@ -2433,7 +2434,7 @@ bool cajetaRhsCarriesRedundantSharp(
                     "ownership store; write `dst #= " + rhs + "` instead. "
                     "`#` stays required at call arguments, returns, and "
                     "extraction reads — those are not assignments",
-                    module->getSourcePath(), (int) getSourceLine(), -1);
+                    diagnosticSiteOf(*module).file, (int) getSourceLine(), -1, diagnosticSiteOf(*module).origin);
             }
         }
         // Evaluate the wrapped expression BEFORE marking the source moved, or the

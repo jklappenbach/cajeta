@@ -81,7 +81,8 @@ namespace cajeta {
                             const std::string& message,
                             const std::string& file = "",
                             int line = -1,
-                            int column = -1);
+                            int column = -1,
+                            const std::string& origin = "project");
 
     // Process-wide gate for the progress records below, set once at flag parse.
     void setJsonProgressEnabled(bool enabled);
@@ -95,6 +96,12 @@ namespace cajeta {
     // Resolve `--diag-format=json` from raw argv BEFORE any verb dispatches —
     // `jit-run` and `dap` return before the main flag loop. True when selected.
     bool resolveDiagFormatFromArgv(int argc, const char* argv[]);
+
+    // Which origins emit() shows: project only (the default), or every origin under
+    // `--diag-origins=all`. Errors are shown whatever their origin.
+    void setShowAllDiagnosticOrigins(bool all);
+    bool showAllDiagnosticOrigins();
+    void resolveDiagOriginsFromArgv(int argc, const char* argv[]);
 
     // Announce the stream with one `{"kind":"stream",...}` record, before any
     // other record and at most once per process; emitted even for a silent run,

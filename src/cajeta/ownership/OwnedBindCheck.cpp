@@ -38,7 +38,8 @@ namespace cajeta::ownership {
             "[owned-bind] " + inMethod + ":" + std::to_string(line)
                 + " lvalue=" + lvalue + " callee=" + calleeKey
                 + " file=" + (file.empty() ? std::string("?") : file),
-            "CAJETA_WARN_OWNED_RESULT_NEEDS_TRANSFER", message, file, line);
+            "CAJETA_WARN_OWNED_RESULT_NEEDS_TRANSFER", message, file, line,
+            classpathOrigin ? "dependency" : (file.empty() ? "stdlib" : "project"));
     }
 
 }  // namespace cajeta::ownership
