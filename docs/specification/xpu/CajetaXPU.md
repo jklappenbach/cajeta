@@ -218,6 +218,11 @@ build does not depend on the out-of-tree Khronos translator (it
 remains a fallback for SPIR-V extensions LLVM is slow to pick up —
 see §6.2).
 
+Every backend is checked against one expected answer: the kernel reference
+interpreter runs a kernel's source on the host, sharing the front end but
+none of the lowering, and refuses by name what it cannot define. Its
+semantics are in `docs/specification/xpu/ReferenceInterpreter.md`.
+
 ---
 
 ## 3. Shared layer — `cajeta.xpu`

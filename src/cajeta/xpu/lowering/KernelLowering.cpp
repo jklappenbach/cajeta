@@ -2341,9 +2341,16 @@ private:
                 unsupported("Vector.dotAccum's accumulator must be "
                             "Vector<int32,N> for 4N lanes of int8");
             bool sgn = signedness.count(recv) ? signedness[recv] : true;
-            if (llvm::Value* wide = target.integerDotWide(
-                    builder, mod, self, other, accv, /*wUnsigned=*/!sgn))
-                return wide;
+            // CAJETA_XPU_FAULT=dot-activation-sign puts back the single-flag
+            // seam cajeta 3ba58bda fixed, for the reference interpreter's test
+            // that a broken lowering is caught. Never set it otherwise.
+            const char* fault = std::getenv("CAJETA_XPU_FAULT");
+            const bool faultDotSign =
+                fault && std::string(fault) == "dot-activation-sign";
+            if (!faultDotSign)
+                if (llvm::Value* wide = target.integerDotWide(
+                        builder, mod, self, other, accv, /*wUnsigned=*/!sgn))
+                    return wide;
             llvm::Type* i32d = llvm::Type::getInt32Ty(builder.getContext());
             unsigned n = avt->getNumElements();
             llvm::Value* out = accv;
@@ -2406,7 +2413,7 @@ private:
                 // receiver's signedness and always sign-extends the activations.
                 llvm::Value* r = target.integerDot4x8(builder, mod, ws, as,
                     builder.CreateIntCast(a0, i32d, true), sgn,
-                    /*cSigned=*/true);
+                    /*cSigned=*/faultDotSign ? sgn : true);
                 out = builder.CreateInsertElement(out, r, lane, "dotacc.ins");
             }
             return out;
