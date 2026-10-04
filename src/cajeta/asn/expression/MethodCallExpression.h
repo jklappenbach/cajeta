@@ -30,6 +30,10 @@ namespace cajeta {
     void rejectBorrowOfTemporaryArgument(const MethodPtr& callee,
         const vector<MethodCallParameter>& args, CajetaModulePtr module);
 
+    // Throws when a `#x` transfer or an owned temporary is passed to a `^T` formal.
+    void rejectTransferIntoBorrowParam(const MethodPtr& callee,
+        const vector<MethodCallParameter>& args, CajetaModulePtr module);
+
     // A fresh String argument to a `#String` formal carries its title in the transfer
     // word: String is no droppable temp class, so without this the callee never frees it.
     void ownedFormalStringFlags(const MethodPtr& target,

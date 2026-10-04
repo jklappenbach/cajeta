@@ -62,7 +62,8 @@ A formal may be spelled `^T`. The callee receives a borrow on every call. A
 call site may pass a name, a field read or another borrow. It may not pass a
 transfer or an owned temporary. An override's `^` marks must match the method
 it overrides. A `^T` formal carries no runtime ownership flag, since its mode
-is known.
+is known. A varargs parameter may not be `^`: the call site packs a fresh
+array for it, so nothing outlives the call to be borrowed from.
 
 ### 2.2 Use cases
 

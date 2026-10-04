@@ -29,6 +29,8 @@ namespace cajeta {
         CajetaTypePtr type;
         // `#String s` — the parameter takes ownership of its argument.
         bool transferred = false;
+        // `^String s` — the parameter is only ever borrowed; callers cannot transfer.
+        bool borrowOnly = false;
         // `int32 x = 42`, an AST node so it evaluates in the caller's scope.
         ExpressionPtr defaultValue;
         string declaredTypeParamName;   // empty = not T-var-typed
@@ -49,10 +51,13 @@ namespace cajeta {
             name = src.name;
             type = src.type;
             transferred = src.transferred;
+            borrowOnly = src.borrowOnly;
         }
 
         bool isTransferred() const { return transferred; }
         void setTransferred(bool v) { transferred = v; }
+        bool isBorrowOnly() const { return borrowOnly; }
+        void setBorrowOnly(bool v) { borrowOnly = v; }
 
         // The method-level template parameter this formal was DECLARED with
         // (`toBytes<T>(T value)` -> "T"): the resolved CajetaTypePtr is not a

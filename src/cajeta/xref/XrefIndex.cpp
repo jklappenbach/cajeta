@@ -424,6 +424,7 @@ namespace cajeta::xref {
                 if (!first) s << ", ";
                 first = false;
                 if (p->isTransferred()) s << "#";
+                if (p->isBorrowOnly()) s << "^";
                 s << (p->getType() ? p->getType()->toCanonical() : "?");
                 if (!p->getName().empty()) s << " " << p->getName();
             }

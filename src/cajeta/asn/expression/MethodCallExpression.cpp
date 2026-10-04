@@ -1615,6 +1615,43 @@ namespace cajeta {
         }
     }
 
+    void rejectTransferIntoBorrowParam(const MethodPtr& callee, const vector<MethodCallParameter>& args,
+                                       CajetaModulePtr module) {
+        if (!callee) return;
+        auto fpl = callee->getParameterList();
+        size_t off = (!fpl.empty() && fpl.front() && fpl.front()->getName() == "this") ? 1 : 0;
+        for (size_t i = 0; i < args.size(); ++i) {
+            size_t fi = i + off;
+            if (fi >= fpl.size() || !fpl[fi] || !fpl[fi]->isBorrowOnly()) continue;
+            const auto& e = args[i].expression;
+            AbstractSyntaxNodePtr inner = e;
+            while (auto mv = dynamic_pointer_cast<MoveExpression>(inner)) {
+                if (mv->getChildren().empty()) break;
+                inner = mv->getChildren()[0];
+            }
+            std::string why;
+            if (args[i].callerTransferred || inner != e) {
+                why = "the call site transfers it with `#`";
+            } else if (dynamic_pointer_cast<NewExpression>(inner)) {
+                why = "it is a fresh `heap` value with no owner to outlive the call";
+            } else if (auto call = dynamic_pointer_cast<MethodCallExpression>(inner)) {
+                if (call->getResolvedMethod() && call->getResolvedMethod()->isReturnsOwnership()) {
+                    why = "`" + call->getResolvedMethod()->getName()
+                        + "()` returns an owned `#` value that is freed at the end of the statement";
+                }
+            }
+            if (why.empty()) continue;
+            int line = e ? (int) e->getSourceLine() : 0;
+            int col = e ? (int) e->getSourceColumn() + 1 : 0;
+            throw Exception(
+                "cannot pass this argument to `" + callee->getName() + "`: its parameter `"
+                    + fpl[fi]->getName() + "` is `^`, only ever borrowed, and " + why
+                    + ". Fix: pass a name the caller keeps alive (bind the value to a local "
+                      "first and pass the local without `#`).",
+                "CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM", module->getSourcePath(), line, col);
+        }
+    }
+
     void ownedFormalStringFlags(const MethodPtr& target,
                                 const vector<MethodCallParameter>& args,
                                 const std::vector<ownership::ArgTitle>& titles,
@@ -9012,6 +9049,7 @@ namespace cajeta {
                 resolvedReturnsOwnershipKnown = true;
                 resolvedMethod = tempTarget;
                 rejectBorrowOfTemporaryArgument(tempTarget, parameters, module);
+                rejectTransferIntoBorrowParam(tempTarget, parameters, module);
                 auto fpl = tempTarget->getParameterList();
                 bool isStaticT = tempTarget->getModifiers().find(STATIC)
                     != tempTarget->getModifiers().end();
@@ -9151,6 +9189,7 @@ namespace cajeta {
                 resolvedReturnsOwnership = resolved->isReturnsOwnership();
                 resolvedReturnsOwnershipKnown = true;
                 resolvedMethod = resolved;
+                rejectTransferIntoBorrowParam(resolved, parameters, module);
             }
             if (resolved && resolved->getReturnType()) {
                 preProjectionReturnType = resolved->getReturnType();

@@ -11,6 +11,7 @@
 #include "Scope.h"
 #include "Templates.h"
 
+#include <functional>
 #include <vector>
 #include <map>
 #include <unordered_map>
@@ -713,6 +714,8 @@ namespace cajeta {
         // Single-pass hierarchy walk filling `virtualMethodList` in slot order; an override
         // replaces its ancestor's slot. Sets Method::virtualTableIndex. Idempotent.
         void buildVirtualTable();
+        // Rejects an override or implementation whose `^` formal marks differ from the method it overrides.
+        void checkBorrowMarks(const std::function<std::string(const std::string&)>& suffixOf);
 
         // Full vtable build: the slot list, then StructureMetadata::populate for the
         // LLVM vtable type and global. No-ops after the first success.

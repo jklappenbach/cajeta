@@ -9,6 +9,33 @@
 #include "CajetaArray.h"
 
 namespace cajeta {
+    namespace {
+        // Applies `^` to a formal: an error on a primitive or value type spelled directly,
+        // ignored when a template parameter resolves to one.
+        void applyBorrowMark(const FormalParameterPtr& parameter,
+                             CajetaParser::TypeTypeContext* ctxType, const string& name) {
+            CajetaTypePtr t = parameter->getType();
+            bool isArr = dynamic_pointer_cast<CajetaArray>(t) != nullptr;
+            bool titleless = t && !isArr
+                && ((t->getTypeFlags() & PRIMITIVE_FLAG) || t->isValueType());
+            if (!titleless) {
+                parameter->setBorrowOnly(true);
+                return;
+            }
+            string written = ctxType ? ctxType->getText() : string();
+            string resolved = t->getQName() ? t->getQName()->getTypeName() : t->toCanonical();
+            bool spelledDirectly = ctxType
+                && (ctxType->primitiveType() != nullptr || written == resolved
+                    || written == t->toCanonical());
+            if (spelledDirectly) {
+                reportOrThrow(ctxType->getStart(), "CAJETA_ERROR_BORROW_MARK_ON_VALUE",
+                    "`^` cannot mark parameter '" + name + "' of type `" + written
+                        + "`: a primitive or value type carries no title, so there is "
+                          "nothing to borrow. Fix: drop the `^`.");
+            }
+        }
+    }
+
     FormalParameterPtr FormalParameter::fromContext(CajetaParser::LastFormalParameterContext* ctx, CajetaModulePtr module) {
         if (!ctx) return nullptr;
         string name = ctx->variableDeclaratorId()->identifier()->getText();
@@ -25,6 +52,11 @@ namespace cajeta {
                         + "' in varargs parameter '" + name + "'");
             }
             return nullptr;
+        }
+        if (ctx->CARET() != nullptr) {
+            reportOrThrow(ctx->CARET()->getSymbol(), "CAJETA_ERROR_BORROW_MARK_ON_VARARGS",
+                "`^` cannot mark the varargs parameter '" + name + "': the call site packs a "
+                "fresh array for it, so there is no owner to borrow from");
         }
         // Wrap as T[]: the caller packs trailing args into one array here.
         auto arrType = make_shared<CajetaArray>(module, elemType);
@@ -74,6 +106,9 @@ namespace cajeta {
             // `REFERENCE? typeType`, so the token is already parsed by here.
             if (ctx->REFERENCE() != nullptr) {
                 parameter->setTransferred(true);
+            }
+            if (ctx->CARET() != nullptr) {
+                applyBorrowMark(parameter, ctxType, name);
             }
             // The default value is kept as an AST node so the call site can
             // clone and emit it for each missing argument.

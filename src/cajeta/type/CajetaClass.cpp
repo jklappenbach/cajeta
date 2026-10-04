@@ -427,7 +427,7 @@ namespace cajeta {
             const std::string erased = method->getMapKey();
             std::string rawKey;
             for (auto& fp : method->getParameterList()) {
-                rawKey.push_back(fp && fp->isTransferred() ? '#' : '.');
+                rawKey.push_back(!fp ? '.' : fp->isTransferred() ? '#' : fp->isBorrowOnly() ? '^' : '.');
             }
             auto prior = modeErasedMethodKeys.find(erased);
             if (prior != modeErasedMethodKeys.end() && prior->second != rawKey) {
@@ -435,7 +435,7 @@ namespace cajeta {
                     "method `" + method->getName() + "` is declared twice in `"
                         + (getQName() ? getQName()->toCanonical() : std::string("<anonymous>"))
                         + "` with signatures that differ only in transfer mode "
-                          "(`#`). Transfer mode is a per-call decision made by "
+                          "(`#` or `^`). Transfer mode is a per-call decision made by "
                           "the CALLER, not part of the signature — dispatch "
                           "erases `#`, so these two declarations collide. Fix: "
                           "keep ONE declaration (a plain formal already accepts "
@@ -3907,6 +3907,49 @@ namespace cajeta {
         }
     }
 
+    void CajetaClass::checkBorrowMarks(
+            const std::function<std::string(const std::string&)>& suffixOf) {
+        auto marksOf = [](const MethodPtr& m) {
+            std::string s;
+            for (auto& fp : m->getParameterList()) {
+                if (!fp || fp->getName() == "this") continue;
+                s.push_back(fp->isBorrowOnly() ? '^' : '.');
+            }
+            return s;
+        };
+        std::map<std::string, std::pair<CajetaClassPtr, MethodPtr>> inherited;
+        std::set<const CajetaClass*> visited;
+        std::function<void(const CajetaClassPtr&)> gather = [&](const CajetaClassPtr& c) {
+            if (!c || !visited.insert(c.get()).second) return;
+            for (auto& m : c->getMethodList()) {
+                if (!m || m->isConstructor() || m->isMethodTemplate()) continue;
+                if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                inherited.emplace(suffixOf(m->toCanonical(false)), std::make_pair(c, m));
+            }
+            for (auto& sup : c->getSuperClasses()) gather(sup);
+            for (auto& iface : c->getImplementedInterfaces()) gather(iface);
+        };
+        for (auto& sup : getSuperClasses()) gather(sup);
+        for (auto& iface : getImplementedInterfaces()) gather(iface);
+        for (auto& m : methodList) {
+            if (!m || m->isConstructor() || m->isMethodTemplate()) continue;
+            if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+            auto it = inherited.find(suffixOf(m->toCanonical(false)));
+            if (it == inherited.end()) continue;
+            std::string mine = marksOf(m);
+            std::string theirs = marksOf(it->second.second);
+            if (mine == theirs) continue;
+            throw Exception(
+                "method `" + m->getName() + "` in `" + toCanonical()
+                    + "` overrides `" + it->second.first->toCanonical() + "::"
+                    + m->getName() + "` with different `^` marks on its parameters. A `^T` "
+                      "formal promises callers it is only borrowed, and a call through "
+                      "the other declaration would break that promise. Fix: spell the "
+                      "same parameters `^` in both.",
+                "CAJETA_ERROR_BORROW_MARK_MISMATCH");
+        }
+    }
+
     // Computes this class's virtual slots: the unique method set walked parent-first
     // with overrides matched by name+params suffix, aliased under parent, interface
     // and template-origin canonicals, then sorted by signature hash.
@@ -4011,6 +4054,7 @@ namespace cajeta {
             }
         };
         walk(static_pointer_cast<CajetaClass>(shared_from_this()));
+        checkBorrowMarks(suffixOf);
 
         {
             std::map<std::string,

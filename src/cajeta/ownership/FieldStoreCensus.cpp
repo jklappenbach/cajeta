@@ -99,7 +99,7 @@ namespace cajeta::ownership {
                     std::map<std::string, int> ordinal;
                     for (auto& [pname, fp] : method->getParameters()) {
                         if (!fp || pname == "this") continue;
-                        scope[pname] = {fp->isTransferred() ? "formal-sharp" : "formal-plain",
+                        scope[pname] = {fp->isTransferred() ? "formal-sharp" : fp->isBorrowOnly() ? "formal-borrow" : "formal-plain",
                                         carriesNoTitle(fp->getType()) ? "" : typeName(fp->getType()),
                                         pname, fp->getType()};
                     }

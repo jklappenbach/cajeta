@@ -848,6 +848,7 @@ namespace cajeta {
                 continue;
             }
             if (++bit >= 64) break;
+            if (formalParameter->isBorrowOnly()) continue;
             CajetaTypePtr pt = formalParameter->getType();
             auto arr = dynamic_pointer_cast<CajetaArray>(pt);
             auto klass = dynamic_pointer_cast<CajetaClass>(pt);

@@ -450,14 +450,15 @@ formalParameterList
     ;
 
 // Optional REFERENCE ('#') prefix on the parameter type declares that this
-// parameter takes ownership of its argument. See MemoryModel.md § Borrow /
+// parameter takes ownership of its argument. CARET ('^') declares it is only
+// ever borrowed: a caller cannot transfer into it. See MemoryModel.md § Borrow /
 // transfer rules.
 formalParameter
-    : variableModifier* REFERENCE? typeType variableDeclaratorId (ASSIGN expression)?
+    : variableModifier* (REFERENCE | CARET)? typeType variableDeclaratorId (ASSIGN expression)?
     ;
 
 lastFormalParameter
-    : variableModifier* REFERENCE? typeType annotation* '...' variableDeclaratorId
+    : variableModifier* (REFERENCE | CARET)? typeType annotation* '...' variableDeclaratorId
     ;
 
 // local variable type inference

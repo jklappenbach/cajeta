@@ -141,6 +141,17 @@ namespace cajeta {
                 "CAJETA_ERROR_MOVE_OF_BORROW");
         }
 
+        if (isFormal) {
+            auto pf = dynamic_pointer_cast<ParameterField>(field);
+            auto fp = pf ? pf->getFormalParameter() : nullptr;
+            if (fp && fp->isBorrowOnly()) {
+                throw Exception(
+                    "cannot transfer ownership of `" + name + "`: it is a `^` parameter, "
+                        "only ever borrowed, so it holds no title to surrender. Fix: pass "
+                        "or store it without `#`, or copy the value and transfer the copy.",
+                    "CAJETA_ERROR_MOVE_OF_BORROW");
+            }
+        }
         // A formal's ownership is decided at the call site and carried at run
         // time, so rejecting `#p` statically would outlaw mode-forwarding.
         if (isFormal) return;
@@ -229,6 +240,7 @@ namespace cajeta {
         // A `#T` formal already told the caller it would be kept.
         auto fp = pf->getFormalParameter();
         if (fp && fp->isTransferred()) return;
+        if (fp && fp->isBorrowOnly()) return;
 
         auto klass = dynamic_pointer_cast<CajetaClass>(field->getType());
         auto fnTy = dynamic_pointer_cast<CajetaFunctionType>(field->getType());
