@@ -18,3 +18,12 @@ attnFlashDecodeGqa8Kernel	cpu	rel=5e-7	@FastMath flushes subnormals to zero; wor
 attnFlashPrefillGqa4Kernel	cpu	rel=5e-7	@FastMath reassociation; worst 1.8e-7
 attnFlashPrefillKernel	cpu	rel=5e-7	@FastMath reassociation; worst 2.4e-7
 attnScorePrefillRowV2Kernel	cpu	rel=5e-7	@FastMath reassociation; worst 8.6e-8
+# @FastMath Wmma dequant kernels: the epilogue verbs' products and sums may be fused and
+# reassociated. Worst measured 1.4e-7 relative, 64 ulp.
+q2kWmmaDeqMw8Kernel	cpu	rel=5e-7	@FastMath epilogue; worst 1.4e-7
+q3kWmmaDeqMw8Kernel	cpu	rel=5e-7	@FastMath epilogue; worst 2.9e-8
+q4kWmmaDeqMw8Kernel	cpu	rel=5e-7	@FastMath epilogue; worst 1.3e-7
+q6kWmmaDeqMw4Kernel	cpu	rel=5e-7	@FastMath epilogue; worst 9.2e-8
+q6kWmmaDeqMw8Kernel	cpu	rel=5e-7	@FastMath epilogue; worst 3.4e-8
+q80WmmaDeqMw8Kernel	cpu	rel=5e-7	@FastMath epilogue; worst 8.8e-8
+q4kWmmaMwKernel	cpu	rel=5e-7	@FastMath epilogue; worst 3.9e-8

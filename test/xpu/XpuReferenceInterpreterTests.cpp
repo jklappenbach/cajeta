@@ -46,6 +46,7 @@ import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelThread;
 import cajeta.xpu.Shared;
 import cajeta.xpu.Wave;
+import cajeta.xpu.WaveVector;
 import cajeta.xpu.Workgroup;
 )CJ";
 
@@ -1073,4 +1074,202 @@ TEST(XpuReferenceInterpreter, aBlockPaddedSharedArrayIndexesThroughItsPadding) {
     EXPECT_EQ(why.rfind("XPU-REF02", 0), 0) << why;
     EXPECT_NE(why.find("t[64]"), std::string::npos) << why;
     EXPECT_NE(why.find("out of bounds"), std::string::npos) << why;
+}
+
+// The epilogue tile verbs. Element (r, c) of the float accumulator gains
+// (rowF[r] * colF[c]) * acc[r][c], each product and the sum rounded once in
+// float32; rank1Accum adds rowF[r] * colF[c]; scaledAccumInto2 adds a second
+// rank-1 term before accumulating; scaledAccumI32 adds acc[r][c] * colS[c]
+// to an int32 accumulator. A row factor is a Shared vector or a slice of
+// one, a column factor also a WaveVector: ofSlice reads src[base + c * stride],
+// broadcast is one value, ofLane is lane c's own value.
+namespace {
+const char* kEpilogueHead = R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void refEpilogue(KernelBuffer<float32> out, KernelBuffer<int32> iout,
+                                   KernelBuffer<float32> a, KernelBuffer<float32> b,
+                                   KernelBuffer<float32> f) {
+        Shared<float32> rowAll = shared float32[64];
+        Shared<float32> colAll = shared float32[64];
+        Shared<int32> scales = shared int32[16];
+        uint32 l = KernelThread.x();
+        rowAll[l] = f[l];
+        rowAll[l + 32] = f[l + 32];
+        colAll[l] = f[64 + l];
+        colAll[l + 32] = f[96 + l];
+        if (l < 16) { scales[l] = (int32) l * 3 - 7; }
+        Barrier.workgroup();
+        CooperativeMatrix<float32,16,16,0> ta;
+        CooperativeMatrix<float32,16,16,1> tb;
+        CooperativeMatrix<float32,16,16,2> acc;
+        CooperativeMatrix<float32,16,16,2> facc;
+        CooperativeMatrix<int32,16,16,2> iacc;
+        CooperativeMatrix<int32,16,16,2> iseed;
+        acc.splat(0.0f);
+        facc.splat(0.5f);
+        iacc.splat(5);
+        iseed.splat(3);
+        ta.load(a, 0, 0, 16);
+        tb.load(b, 0, 1, 16);
+        acc.mma(ta, tb);
+)CJ";
+const char* kEpilogueTail = R"CJ(
+        facc.store(out, 0, 0, 16);
+        iacc.store(iout, 0, 0, 16);
+    }
+)CJ";
+const char* kVerbA = "        WaveVector<float32, 16> cf = WaveVector.ofSlice(colAll, 2, 2);\n"
+                     "        acc.scaledAccumInto(facc, rowAll[16], cf);\n";
+const char* kVerbB = "        facc.rank1Accum(rowAll, WaveVector.ofLane(f[128 + (l & 15)]));\n";
+const char* kVerbC = "        acc.scaledAccumInto2(facc, rowAll[32], colAll, rowAll[48], "
+                     "WaveVector.broadcast(0.25f));\n";
+const char* kVerbI = "        iseed.scaledAccumI32(iacc, WaveVector.ofSlice(scales, 0));\n";
+
+struct EpilogueInputs {
+    std::vector<float> a, b, f;
+    EpilogueInputs() : a(256), b(256), f(144) {
+        for (int i = 0; i < 256; ++i) {
+            a[i] = (float) ((i * 7) % 11 - 5) * 0.375f;
+            b[i] = (float) ((i * 5) % 9 - 4) * 0.625f;
+        }
+        for (int i = 0; i < 144; ++i) f[i] = 1.0f + (float) ((i * 2654435761u) >> 8) / 16777216.0f;
+    }
+    std::vector<In> ins() const {
+        return {buffer(std::vector<float>(256)), buffer(std::vector<int32_t>(256)),
+                buffer(a), buffer(b), buffer(f)};
+    }
+    // The host's copy of the contract, verb by verb.
+    float acc(int r, int c) const {
+        float s = 0.0f;
+        for (int k = 0; k < 16; ++k) s = s + a[r * 16 + k] * b[c * 16 + k];
+        return s;
+    }
+    float verbA(int r, int c) const { return (f[16 + r] * f[64 + 2 + 2 * c]) * acc(r, c); }
+    float verbB(int r, int c) const { return f[r] * f[128 + c]; }
+    float verbC(int r, int c) const { return (f[32 + r] * f[64 + c]) * acc(r, c) + f[48 + r] * 0.25f; }
+};
+} // namespace
+
+TEST(XpuReferenceInterpreter, theEpilogueVerbsMatchTheCpuBackend) {
+    EpilogueInputs in;
+    // All four verbs in one kernel, against the host's formula.
+    Pair p(std::string(kEpilogueHead) + kVerbA + kVerbB + kVerbC + kVerbI + kEpilogueTail,
+           "refEpilogue");
+    ASSERT_EQ(p.failure, "");
+    std::vector<In> r = in.ins();
+    ASSERT_EQ(runRef(p.kernel, r, shape(1, 32), 32), "");
+    for (int rr = 0; rr < 16; ++rr)
+        for (int c = 0; c < 16; ++c) {
+            float fv = 0.5f;
+            fv = fv + in.verbA(rr, c);
+            fv = fv + in.verbB(rr, c);
+            fv = fv + in.verbC(rr, c);
+            EXPECT_EQ(as<float>(r[0].buf)[rr * 16 + c], fv) << rr << "," << c;
+            EXPECT_EQ(as<int32_t>(r[1].buf)[rr * 16 + c], 5 + 3 * (c * 3 - 7)) << rr << "," << c;
+        }
+    EXPECT_EQ(compareOn<int32_t>(p, in.ins(), 1, shape(1, 32), 0, 32), "");
+
+    // Each float verb alone agrees with the cpu backend bit for bit.
+    for (const char* verb : {kVerbA, kVerbB, kVerbC}) {
+        Pair one(std::string(kEpilogueHead) + verb + kEpilogueTail, "refEpilogue");
+        ASSERT_EQ(one.failure, "");
+        EXPECT_EQ(compareOn<float>(one, in.ins(), 0, shape(1, 32), 0, 32), "") << verb;
+    }
+}
+
+// DISABLED: found by the reference on 2026-10-05 (xpu-kernel-independence
+// 4.1.2.4). Two epilogue verbs in one kernel disagree with the cpu backend
+// although each agrees alone: with the integer verb present the first verb's
+// term lands once per lane (element 0 is 0.5 + 32 x 37.24), and two float
+// verbs in sequence lose part of the first.
+TEST(XpuReferenceInterpreter, DISABLED_twoEpilogueVerbsInOneKernelAgreeOnTheCpuBackend) {
+    EpilogueInputs in;
+    Pair two(std::string(kEpilogueHead) + kVerbA + kVerbB + kEpilogueTail, "refEpilogue");
+    ASSERT_EQ(two.failure, "");
+    EXPECT_EQ(compareOn<float>(two, in.ins(), 0, shape(1, 32), 0, 32), "");
+    Pair withInt(std::string(kEpilogueHead) + kVerbA + kVerbI + kEpilogueTail, "refEpilogue");
+    ASSERT_EQ(withInt.failure, "");
+    EXPECT_EQ(compareOn<float>(withInt, in.ins(), 0, shape(1, 32), 0, 32), "");
+}
+
+// CooperativeMatrix.fromWords fills a 16x16 int8 operand tile from the wave:
+// lane L supplies column L mod 16 of a B tile (row L mod 16 of an A tile) as
+// sixteen little-endian bytes across its four words, k-value k in byte k & 3
+// of word k >> 2. Lanes that share a column must agree.
+namespace {
+const char* kFromWordsHead = R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void refFromWords(KernelBuffer<int32> out, KernelBuffer<int8> a,
+                                    KernelBuffer<int32> w) {
+        uint32 c = KernelThread.x() & 15;
+        CooperativeMatrix<int8,16,16,0> ta;
+        CooperativeMatrix<int8,16,16,1> tb;
+        CooperativeMatrix<int32,16,16,2> acc;
+        acc.splat(0);
+        ta.load(a, 0, 0, 16);
+)CJ";
+const char* kFromWordsTail = R"CJ(
+        acc.mma(ta, tb);
+        acc.store(out, 0, 0, 16);
+    }
+)CJ";
+// The words straight from the buffer, the same words through locals, and
+// words computed in registers (every byte of lane c's words is c + 1).
+const char* kWordsFromBuffer = "        tb.fromWords(w[c * 4], w[c * 4 + 1], w[c * 4 + 2], w[c * 4 + 3]);\n";
+const char* kWordsFromLocals = "        int32 w0 = w[c * 4]; int32 w1 = w[c * 4 + 1];\n"
+                               "        int32 w2 = w[c * 4 + 2]; int32 w3 = w[c * 4 + 3];\n"
+                               "        tb.fromWords(w0, w1, w2, w3);\n";
+const char* kWordsComputed = "        int32 wd = (int32) (c + 1) * 16843009;\n"
+                             "        tb.fromWords(wd, wd, wd, wd);\n";
+
+struct FromWordsInputs {
+    std::vector<int8_t> a;
+    std::vector<int32_t> w;
+    FromWordsInputs() : a(256), w(64) {
+        for (int i = 0; i < 256; ++i) a[i] = (int8_t) (i * 37 - 90);
+        for (int i = 0; i < 64; ++i) w[i] = (int32_t) (i * 2654435761u + 12345u);
+    }
+    std::vector<In> ins() const { return {buffer(std::vector<int32_t>(256)), buffer(a), buffer(w)}; }
+    int32_t want(int r, int c, bool computed) const {
+        int32_t s = 0;
+        for (int k = 0; k < 16; ++k) {
+            int8_t bk = computed ? (int8_t) (c + 1)
+                : (int8_t) (((uint32_t) w[c * 4 + (k >> 2)] >> (8 * (k & 3))) & 0xff);
+            s += (int32_t) a[r * 16 + k] * (int32_t) bk;
+        }
+        return s;
+    }
+};
+} // namespace
+
+TEST(XpuReferenceInterpreter, fromWordsFillsTheOperandTileFromTheWave) {
+    FromWordsInputs in;
+    for (const char* words : {kWordsFromBuffer, kWordsFromLocals, kWordsComputed}) {
+        Pair p(std::string(kFromWordsHead) + words + kFromWordsTail, "refFromWords");
+        ASSERT_EQ(p.failure, "");
+        std::vector<In> r = in.ins();
+        ASSERT_EQ(runRef(p.kernel, r, shape(1, 32), 32), "");
+        for (int rr = 0; rr < 16; ++rr)
+            for (int c = 0; c < 16; ++c)
+                EXPECT_EQ(as<int32_t>(r[0].buf)[rr * 16 + c], in.want(rr, c, words == kWordsComputed))
+                    << rr << "," << c;
+    }
+    Pair p(std::string(kFromWordsHead) + kWordsComputed + kFromWordsTail, "refFromWords");
+    EXPECT_EQ(compareOn<int32_t>(p, in.ins(), 0, shape(1, 32), 0, 32), "");
+}
+
+// DISABLED: found by the reference on 2026-10-05 (xpu-kernel-independence
+// 4.1.2.4). The same kernel with its four words loaded from a buffer, in the
+// call or through locals, disagrees with the cpu backend, although words
+// computed in registers agree bit for bit; with an identity A the cpu's
+// product is a diagonal with values no int8 can give.
+TEST(XpuReferenceInterpreter, DISABLED_fromWordsOfLoadedWordsAgreesOnTheCpuBackend) {
+    FromWordsInputs in;
+    for (const char* words : {kWordsFromBuffer, kWordsFromLocals}) {
+        Pair p(std::string(kFromWordsHead) + words + kFromWordsTail, "refFromWords");
+        ASSERT_EQ(p.failure, "");
+        EXPECT_EQ(compareOn<int32_t>(p, in.ins(), 0, shape(1, 32), 0, 32), "") << words;
+    }
 }

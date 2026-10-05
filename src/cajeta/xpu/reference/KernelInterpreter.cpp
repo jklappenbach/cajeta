@@ -213,6 +213,10 @@ struct Val {
     double f = 0;            // floats, exactly representable in t.prim
     std::vector<Val> lanes;  // Vector
     Mem* mem = nullptr;
+    // MemRef: a view at `off`, every `stride` elements. A bare buffer or
+    // Shared array is the view at 0 with stride 1; a slice `xs[16]` or a
+    // WaveVector.ofSlice in a tile verb's argument narrows it.
+    uint64_t off = 0, stride = 1;
     std::shared_ptr<Tile> tile;
 
     int64_t s64() const { return sext(i, bitsOf(t.prim)); }
@@ -665,6 +669,7 @@ const std::set<std::string>& staticBuiltins() {
         "Wave.reduceSumF32Segmented", "Wave.reduceMaxF32Segmented",
         "Wave.prefixSum", "Wave.prefixProduct",
         "Group.width", "Group.laneId", "Group.rowId", "Group.reduce", "Group.reduceSegmented",
+        "WaveVector.ofSlice", "WaveVector.broadcast", "WaveVector.ofLane",
         "Bits.reverse", "Bits.count", "Bits.rotateLeft", "Bits.rotateRight",
         "Cajeta.bitsToF32", "Cajeta.f32ToBits", "Cajeta.bitsToF64", "Cajeta.f64ToBits",
         "Math.min", "Math.max", "Math.abs", "Math.fma",
@@ -695,12 +700,22 @@ const std::set<std::string>& atomics() {
 // The built-ins that are a rendezvous: every live member of the scope must
 // arrive before any of them continues.
 bool isCollective(const std::string& q) {
-    if (q == "Barrier.workgroup" || q == "Barrier.wave" || q == "Group.reduce") return true;
+    if (q == "Barrier.workgroup" || q == "Barrier.wave" || q == "Group.reduce"
+            || q == "Group.reduceSegmented" || q == "WaveVector.ofLane") return true;
     if (!startsWith(q, "Wave.")) return false;
     return q != "Wave.width" && q != "Wave.laneId" && q != "Wave.isFirstLane";
 }
 
-enum class LocalKind { Scalar, Vector, Buffer, Shared, Tile };
+enum class LocalKind { Scalar, Vector, Buffer, Shared, Tile, WaveVec };
+
+const std::set<std::string>& tileVerbs() {
+    static const std::set<std::string> s = {"scaledAccumInto", "scaledAccumInto2", "rank1Accum",
+                                            "scaledAccumI32"};
+    return s;
+}
+bool isWaveVectorType(const CajetaTypePtr& t) {
+    return startsWith(canonical(t), "cajeta.xpu.WaveVector");
+}
 
 const std::map<LocalKind, std::set<std::string>>& memberBuiltins() {
     static const std::map<LocalKind, std::set<std::string>> m = {
@@ -713,7 +728,9 @@ const std::map<LocalKind, std::set<std::string>>& memberBuiltins() {
         {LocalKind::Vector, {"dotAccum", "dot", "dotSum", "asUnsigned", "asSigned", "asWords",
                              "asBytes", "widenLo", "widenHi", "narrow", "toF32", "toF16",
                              "toI32", "bitcastF32", "bitcastI32", "lut4"}},
-        {LocalKind::Tile, {"splat", "load", "store", "mma"}},
+        {LocalKind::Tile, {"splat", "load", "store", "mma", "fromWords", "scaledAccumInto",
+                           "scaledAccumInto2", "rank1Accum", "scaledAccumI32"}},
+        {LocalKind::WaveVec, {}},
         {LocalKind::Scalar, {}},
     };
     return m;
@@ -982,6 +999,8 @@ private:
                 note("the tile type " + canonical(t), lvd);
         } else if (isShared(t) && primOf(typeArg(t, 0))) {
             k = LocalKind::Shared;
+        } else if (isWaveVectorType(t) && primOf(typeArg(t, 0))) {
+            k = LocalKind::WaveVec;
         } else {
             note("a local of type " + canonical(t), lvd);
             return;
@@ -1035,6 +1054,7 @@ private:
             const auto& ok = memberBuiltins().at(k->second);
             if (!ok.count(name)) note("`" + r + "." + name + "`", mc);
             if (startsWith(name, "atomic")) usesAtomic = true;
+            if (name == "fromWords") usesCollective = usesWave = true;   // a wave gather
             return;
         }
         std::string q = r + "." + name;
@@ -1048,7 +1068,8 @@ private:
             return;
         }
         if (isCollective(q)) usesCollective = true;
-        if (startsWith(q, "Wave.") || startsWith(q, "Group.") || q == "Barrier.wave")
+        if (startsWith(q, "Wave.") || startsWith(q, "Group.") || q == "Barrier.wave"
+                || q == "WaveVector.ofLane")
             usesWave = true;
     }
 
@@ -1840,6 +1861,11 @@ private:
                 s.v.tile = tile;
             } else if (isShared(t)) {
                 s.v = sharedArray(nm, t, e, vd.get());
+            } else if (isWaveVectorType(t)) {
+                // The factory's value: a view (ofSlice), a scalar (broadcast)
+                // or the wave's values (ofLane).
+                if (!e) refuse("a WaveVector local without its factory (" + at(lvd) + ")");
+                s.v = verbArg(e);
             } else {
                 refuse("a local of type " + canonical(t) + " (" + at(lvd) + ")");
             }
@@ -2067,6 +2093,19 @@ private:
 
     Val u32(uint64_t v) { return mkInt({Prim::I32, false}, v); }
 
+    // An argument of a tile verb: a slice `xs[i]` of a buffer is the view
+    // from element i, not the element; everything else is its value.
+    Val verbArg(Expression* e) {
+        if (auto ai = dynamic_cast<ArrayIndexExpression*>(e)) {
+            Val base = eval(child(ai, 0));
+            if (base.k == Val::MemRef) {
+                base.off += base.stride * indexOf(eval(child(ai, 1)), e);
+                return base;
+            }
+        }
+        return eval(e);
+    }
+
     Val call(MethodCallExpression* mc) {
         const std::string& nm = mc->getMethodCallName();
         auto recvE = child(mc, 0);
@@ -2084,7 +2123,10 @@ private:
             refuse("`" + q + "` (" + where + ")");
         }
         Val self = eval(recvE);
-        std::vector<Val> a = args(mc);
+        std::vector<Val> a;
+        if (self.k == Val::TileRef && tileVerbs().count(nm))
+            for (auto& p : mc->getParameters()) a.push_back(verbArg(p.expression.get()));
+        else a = args(mc);
         if (self.k == Val::MemRef) return bufferCall(self, nm, mc, a);
         if (self.k == Val::Vector && nm == "dotAccum") return dotAccum(self, a, where);
         if (self.k == Val::Vector && vectorMethods().count(nm)) return vectorCall(self, nm, a, where);
@@ -2392,9 +2434,182 @@ private:
         });
     }
 
+    // One factor of an epilogue verb at index i: a view reads its i-th
+    // element, a broadcast is one value, and a wave vector (ofLane) is lane
+    // i's value, which every lane that shares the column (i, i + N, ...) must
+    // agree on, since the lane owns the column.
+    Val factorAt(const Val& v, uint32_t i, uint32_t N, const Where& where) {
+        if (v.k == Val::MemRef) return loadElem(*v.mem, v.off + (uint64_t) i * v.stride, where);
+        if (v.k == Val::Scalar) return v;
+        if (v.k == Val::Vector) {
+            if (i >= v.lanes.size() || v.lanes[i].k == Val::None)
+                undefined("`WaveVector.ofLane` for column " + std::to_string(i) +
+                          " from a lane that is not active (" + where + ")");
+            for (uint32_t l = i + N; l < v.lanes.size(); l += N) {
+                const Val& o = v.lanes[l];
+                if (o.k == Val::None) continue;
+                bool same = isFloat(o.t.prim) ? o.f == v.lanes[i].f : o.u64() == v.lanes[i].u64();
+                if (!same)
+                    undefined("`WaveVector.ofLane`: lanes " + std::to_string(i) + " and " +
+                              std::to_string(l) + " own column " + std::to_string(i) +
+                              " and disagree (" + where + ")");
+            }
+            return v.lanes[i];
+        }
+        refuse("a tile verb factor that is not a Shared vector, a slice or a WaveVector (" +
+               where + ")");
+    }
+    static double asDouble(const Val& v) {
+        return isFloat(v.t.prim) ? v.f : v.t.sgn ? (double) v.s64() : (double) v.u64();
+    }
+    static uint64_t hashValues(const std::vector<double>& xs) {
+        uint64_t h = 1469598103934665603ull;
+        for (double x : xs) {
+            uint64_t b;
+            std::memcpy(&b, &x, 8);
+            for (int k = 0; k < 8; ++k) { h ^= (b >> (8 * k)) & 0xff; h *= 1099511628211ull; }
+        }
+        return h;
+    }
+
+    // The epilogue verbs. Element (r, c) of the target accumulator gains
+    // (rowF[r] * colF[c]) * this[r][c], each product and the sum rounded once
+    // in float32, as every backend's lowering groups it; rank1Accum adds
+    // rowF[r] * colF[c] to the receiver; scaledAccumInto2 adds rowG[r] *
+    // colG[c] to the term first; scaledAccumI32 adds this[r][c] * colS[c] to
+    // an int32 accumulator, where both operands fit 24 bits because the
+    // native multiply is the 24-bit one.
+    Val epilogue(Tile& t, const std::string& nm, const std::vector<Val>& a, const Where& where) {
+        const bool integer = nm == "scaledAccumI32";
+        const bool scaled = nm != "rank1Accum";
+        const bool dual = nm == "scaledAccumInto2";
+        const size_t want = integer ? 2 : dual ? 5 : scaled ? 3 : 2;
+        if (a.size() != want)
+            refuse("`" + nm + "` takes " + std::to_string(want) + " arguments (" + where + ")");
+        Tile* dst = &t;
+        if (scaled) {
+            if (a[0].k != Val::TileRef) refuse("`" + nm + "` without its target tile (" + where + ")");
+            dst = a[0].tile.get();
+        }
+        if (dst->rows != t.rows || dst->cols != t.cols || t.use != 2 || dst->use != 2)
+            refuse("`" + nm + "` between tiles that are not accumulators of one shape (" + where + ")");
+        if (integer ? (t.elem.prim != Prim::I32 || dst->elem.prim != Prim::I32)
+                    : dst->elem.prim != Prim::F32)
+            refuse("`" + nm + "` on a " + tyName(t.elem) + " tile into a " + tyName(dst->elem) +
+                   " one (" + where + ")");
+        const uint32_t R = t.rows, N = t.cols;
+        const size_t ri = scaled ? 1 : 0;
+        std::vector<double> rowF, colF, rowG, colG;
+        auto gather = [&](const Val& v, uint32_t count, bool row) {
+            if (row && v.k != Val::MemRef)
+                refuse("`" + nm + "`: a row factor must be a Shared vector or a slice (" + where + ")");
+            std::vector<double> out(count);
+            for (uint32_t i = 0; i < count; ++i) out[i] = asDouble(factorAt(v, i, N, where));
+            return out;
+        };
+        if (integer) {
+            colF = gather(a[1], N, false);
+        } else {
+            rowF = gather(a[ri], R, true);
+            colF = gather(a[ri + 1], N, false);
+            if (dual) {
+                rowG = gather(a[ri + 2], R, true);
+                colG = gather(a[ri + 3], N, false);
+            }
+        }
+        Group::TileKey key{integer ? 7 : dual ? 5 : scaled ? 4 : 6, t.data.get(), dst->data.get(),
+                           nullptr, hashValues(rowF), hashValues(colF), hashValues(rowG),
+                           hashValues(colG)};
+        dst->data = memo(key, {t.data, dst->data}, [&] {
+            auto d = std::make_shared<TileData>(*dst->data);
+            const TileData& acc = *t.data;
+            const bool accFloat = isFloat(t.elem.prim);
+            for (uint32_t r = 0; r < R; ++r)
+                for (uint32_t c = 0; c < N; ++c) {
+                    size_t k = (size_t) r * N + c;
+                    if (integer) {
+                        int64_t av = sext(acc.i[k], 32), cs = (int64_t) colF[c];
+                        const int64_t lim = 1ll << 23;
+                        if (av < -lim || av >= lim || cs < -lim || cs >= lim)
+                            undefined("`scaledAccumI32` with an operand outside 24 bits (" +
+                                      std::to_string(av) + " * " + std::to_string(cs) + "; " +
+                                      where + ")");
+                        d->i[k] = (uint64_t) (sext(d->i[k], 32) + av * cs) & maskOf(32);
+                        continue;
+                    }
+                    float term = (float) rowF[r] * (float) colF[c];
+                    if (scaled) {
+                        float av = accFloat ? (float) acc.f[k]
+                                 : (float) (t.elem.sgn ? sext(acc.i[k], bitsOf(t.elem.prim))
+                                                       : (int64_t) acc.i[k]);
+                        term = term * av;
+                    }
+                    if (dual) term = term + (float) rowG[r] * (float) colG[c];
+                    d->f[k] = (double) ((float) d->f[k] + term);
+                }
+            return std::shared_ptr<const TileData>(d);
+        });
+        return Val();
+    }
+
     Val tileCall(Tile& t, const std::string& nm, const std::vector<Val>& a, const Where& where) {
         const size_t n = (size_t) t.rows * t.cols;
         const bool fl = isFloat(t.elem.prim);
+        if (tileVerbs().count(nm)) return epilogue(t, nm, a, where);
+        if (nm == "fromWords") {
+            // The 16x16 int8 operand tile from the wave: lane L supplies
+            // column L mod 16 of a B tile (row L mod 16 of an A tile) as
+            // sixteen little-endian bytes across its four words. Lanes that
+            // share a column must agree.
+            if (a.size() != 4) refuse("`fromWords` takes four words (" + where + ")");
+            if (t.rows != 16 || t.cols != 16 || bitsOf(t.elem.prim) != 8 || t.use == 2)
+                refuse("`fromWords` on a tile that is not a 16x16 int8 operand (" + where + ")");
+            Arrival arr;
+            arr.what = "CooperativeMatrix.fromWords";
+            arr.site = where.n;
+            arr.where = where;
+            arr.arg.k = Val::Vector;
+            arr.arg.t = {Prim::I32, false};
+            for (const Val& w : a) arr.arg.lanes.push_back(convert(w, {Prim::I32, false}));
+            Val wave = rendezvous(arr);
+            std::vector<double> words;
+            std::vector<uint64_t> col(16 * 4);
+            for (uint32_t c = 0; c < 16; ++c) {
+                const Val* have = nullptr;
+                for (uint32_t l = c; l < wave.lanes.size(); l += 16) {
+                    const Val& o = wave.lanes[l];
+                    if (o.k == Val::None) continue;
+                    if (!have) { have = &o; continue; }
+                    for (int k = 0; k < 4; ++k)
+                        if (o.lanes[k].u64() != have->lanes[k].u64())
+                            undefined("`fromWords`: lanes " + std::to_string(c) + " and " +
+                                      std::to_string(l) + " supply column " + std::to_string(c) +
+                                      " and disagree (" + where + ")");
+                }
+                if (!have)
+                    undefined("`fromWords`: no active lane supplies column " + std::to_string(c) +
+                              " (" + where + ")");
+                for (int k = 0; k < 4; ++k) {
+                    col[c * 4 + k] = have->lanes[k].u64();
+                    words.push_back((double) col[c * 4 + k]);
+                }
+            }
+            Group::TileKey key{8, nullptr, nullptr, nullptr, tyCode(t.elem), t.use,
+                               hashValues(words), 0};
+            t.data = memo(key, {}, [&] {
+                auto d = std::make_shared<TileData>();
+                d->i.resize(n);
+                for (uint32_t c = 0; c < 16; ++c)
+                    for (uint32_t k = 0; k < 16; ++k) {
+                        uint64_t byte = (col[c * 4 + (k >> 2)] >> (8 * (k & 3))) & 0xff;
+                        // A B tile's lane holds a column (k, c); an A tile's a row (c, k).
+                        size_t at = t.use == 1 ? (size_t) k * 16 + c : (size_t) c * 16 + k;
+                        d->i[at] = byte;
+                    }
+                return std::shared_ptr<const TileData>(d);
+            });
+            return Val();
+        }
         if (nm == "splat") {
             if (a.size() != 1) refuse("`splat` takes one value (" + where + ")");
             Val v = convert(a[0], t.elem);
@@ -2540,6 +2755,21 @@ private:
             return u32(r);
         }
         if (startsWith(q, "Math.")) return math(q, args(mc), where);
+        if (q == "WaveVector.ofSlice") {
+            std::vector<Val> a = args(mc);
+            if ((a.size() != 2 && a.size() != 3) || a[0].k != Val::MemRef)
+                refuse("`WaveVector.ofSlice` takes (Shared src, base[, stride]) (" + where + ")");
+            Val v = a[0];
+            v.off += v.stride * indexOf(a[1], where);
+            if (a.size() == 3) v.stride *= indexOf(a[2], where);
+            return v;
+        }
+        if (q == "WaveVector.broadcast") {
+            std::vector<Val> a = args(mc);
+            if (a.size() != 1 || a[0].k != Val::Scalar)
+                refuse("`WaveVector.broadcast` takes one value (" + where + ")");
+            return a[0];
+        }
         std::vector<Val> a = args(mc);
         Arrival arr;
         arr.what = q;
@@ -2549,6 +2779,11 @@ private:
             if (a.size() != 2) refuse("`Group.reduce` takes (GroupOp, value) (" + where + ")");
             arr.what = a[0].i == 0 ? "Wave.reduceSumF32" : "Wave.reduceMaxF32";
             arr.arg = convert(a[1], {Prim::F32, true});
+        } else if (q == "WaveVector.ofLane") {
+            // Lane c's value is column c's factor: gathered across the wave.
+            if (a.size() != 1 || a[0].k != Val::Scalar)
+                refuse("`WaveVector.ofLane` takes one value (" + where + ")");
+            arr.arg = a[0];
         } else if (q == "Group.reduceSegmented") {
             if (a.size() != 3)
                 refuse("`Group.reduceSegmented` takes (segment, GroupOp, value) (" + where + ")");
@@ -3227,6 +3462,17 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
                           ", which is not active (" + where + ")");
             G.sync[m].arrival.result = argOf(it->second);
         }
+        return;
+    }
+    if (q == "WaveVector.ofLane" || q == "CooperativeMatrix.fromWords") {
+        // Every lane receives the wave's values, lane by lane; a lane that
+        // has returned leaves a hole, which a verb that reads it reports.
+        Val v;
+        v.k = Val::Vector;
+        v.t = argOf(lanes[0]).t;
+        v.lanes.assign(W, Val());
+        for (auto& [l, m] : byLane) v.lanes[l] = argOf(m);
+        for (uint32_t m : lanes) G.sync[m].arrival.result = v;
         return;
     }
     if (q == "Wave.ballotSync") {

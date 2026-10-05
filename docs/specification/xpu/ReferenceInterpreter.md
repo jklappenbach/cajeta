@@ -116,6 +116,14 @@ These are every built-in the interpreter defines.
 | `w.dotAccum(a, acc)` | `acc[j] + Σk w[4j+k]·a[4j+k]`, with `w` extended by its own signedness and `a` always sign-extended, wrapping in int32 |
 | a call to a `@Device` helper | a new frame. Arguments are converted to the parameter types, buffers pass by reference, and the result is converted to the return type. A recursive call is refused. |
 | `CooperativeMatrix` `splat`, `load`, `store` | element (r, c) is `src[off + r·stride + c]` for row layout 0, or `src[off + c·stride + r]` for column layout 1 |
+| `CooperativeMatrix.fromWords(w0, w1, w2, w3)` | the 16x16 int8 operand tile from the wave: lane `L` supplies column `L mod 16` of a B tile (row `L mod 16` of an A tile) as sixteen little-endian bytes across its four words, k-value `k` in byte `k & 3` of word `k >> 2`. Lanes that share a column must agree |
+| `acc.scaledAccumInto(facc, rowF, colF)` | `facc[r][c] += (rowF[r] · colF[c]) · acc[r][c]`, each product and the sum rounded once in float32, `acc` converted to float32 first |
+| `acc.scaledAccumInto2(facc, rowF, colF, rowG, colG)` | the same with `rowG[r] · colG[c]` added to the term before it is accumulated |
+| `facc.rank1Accum(rowF, colF)` | `facc[r][c] += rowF[r] · colF[c]` |
+| `acc.scaledAccumI32(iacc, colS)` | `iacc[r][c] += acc[r][c] · colS[c]`, wrapping at 32 bits; an operand outside 24 bits is undefined behaviour, because the native multiply is the 24-bit one |
+| a row factor | a `Shared` vector, or a slice `xs[i]` of one, read at `[r]` |
+| a column factor | a `Shared` vector or slice read at `[c]`, or a `WaveVector`: `ofSlice(src, base, stride)` reads `src[base + c · stride]`, `broadcast(v)` is `v` for every column, `ofLane(x)` is lane `c`'s `x`, which every lane that shares the column (`c`, `c + N`, ...) must agree on |
+| a `WaveVector<T, N>` local | the factory's value, bound once |
 | `CooperativeMatrix.mma(a, b)` | `this[r][c] += Σk a[r][k]·b[k][c]`, in k order. A float tile accumulates in float32, rounding once per product and once per sum. An integer tile accumulates exactly and wraps. |
 
 A tile is a wave-uniform value. Each work-item holds its own copy, and every
@@ -128,8 +136,7 @@ interpreter cannot define. Each entry names the construct and its line. If the
 list is not empty, `run` throws `XPU-REF01` with the first entry, so the kernel
 is never run partially. Today that list includes:
 
-- the epilogue tile verbs, such as `scaledAccumInto` and `fromWords`;
-- `WaveVector`, and swizzled `Shared` arrays;
+- swizzled `Shared` arrays;
 - textures, images and samplers;
 - value types;
 - `KernelThread.clock()`, which has no reference value by nature.
