@@ -1658,6 +1658,7 @@ namespace cajeta {
         CajetaModule::buildPendingPrototypes();
         CajetaModule::resolveAdviceMatches();
         CajetaModule::resolveDependencyGraph();
+        ownership::FieldStoreCensus::check({module});
 
         // Resolve the TARGET module's bodies so a per-edit shard carries the same
         // records as the whole-root export. Per method, best-effort: mid-edit is normal.
@@ -1904,6 +1905,13 @@ namespace cajeta {
         guarded("prototypes", [] { CajetaModule::buildPendingPrototypes(); });
         guarded("advice", [] { CajetaModule::resolveAdviceMatches(); });
         guarded("dependencies", [] { CajetaModule::resolveDependencyGraph(); });
+        guarded("field-store", [&] {
+            std::list<CajetaModulePtr> own;
+            for (auto& m : modules) {
+                if (m && m != CajetaModule::getStdlibModule()) own.push_back(m);
+            }
+            ownership::FieldStoreCensus::check(own);
+        });
 
         // Resolve method BODIES: field references and call edges are recorded there, and
         // used to be reachable only from codegen. After the four passes above.
@@ -2125,6 +2133,7 @@ namespace cajeta {
         if (ownership::FieldStoreCensus::enabled()) {
             ownership::FieldStoreCensus::run(modules);
         }
+        ownership::FieldStoreCensus::check(modules);
 
         // Stop before codegen when the resolution passes reported recoverable errors:
         // a broken program produces no artifact, and error types must not reach

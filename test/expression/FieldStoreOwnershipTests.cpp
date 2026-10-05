@@ -14,6 +14,8 @@ namespace {
 
 const char* kPrelude =
     "package test;\n"
+    "import cajeta.collection.LinkedList;\n"
+    "import cajeta.collection.RedBlackTree;\n"
     "public class Cell {\n"
     "    public int64 n;\n"
     "    public Cell(int64 v) { this.n = v; }\n"
@@ -292,4 +294,50 @@ TEST(FieldStoreOwnershipTests, churnExposesALendThatOutlivesItsOwner) {
         "    }\n"
         "}\n"),
         8100);
+}
+
+// Census finding (plan 3.2.5): LinkedList.add(#v) hands the title to the node.
+TEST(FieldStoreOwnershipTests, linkedListAddTransferKeepsValue) {
+    EXPECT_EQ(runI64(
+        "public final class D {\n"
+        "    static void fill(LinkedList<Cell> l) {\n"
+        "        Cell a = heap Cell(8100L);\n"
+        "        l.add(#a);\n"
+        "    }\n"
+        "    public static int64 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int64 got = 0L;\n"
+        "        {\n"
+        "            LinkedList<Cell> l = heap LinkedList<Cell>();\n"
+        "            D.fill(l);\n"
+        "            Churn.cells();\n"
+        "            got = l.get(0L).n;\n"
+        "        }\n"
+        "        return got * 10L + (Cajeta.liveCount() - base);\n"
+        "    }\n"
+        "}\n"),
+        81000);
+}
+
+// Census finding (plan 3.2.5): RedBlackTree.put(#k, #v) hands the value to the node.
+TEST(FieldStoreOwnershipTests, redBlackTreePutTransferKeepsValue) {
+    EXPECT_EQ(runI64(
+        "public final class D {\n"
+        "    static void fill(RedBlackTree<int64, Cell> t) {\n"
+        "        Cell a = heap Cell(8100L);\n"
+        "        t.put(7L, #a);\n"
+        "    }\n"
+        "    public static int64 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int64 got = 0L;\n"
+        "        {\n"
+        "            RedBlackTree<int64, Cell> t = heap RedBlackTree<int64, Cell>();\n"
+        "            D.fill(t);\n"
+        "            Churn.cells();\n"
+        "            got = t.get(7L).n;\n"
+        "        }\n"
+        "        return got * 10L + (Cajeta.liveCount() - base);\n"
+        "    }\n"
+        "}\n"),
+        81000);
 }

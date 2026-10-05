@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <list>
 #include <string>
 #include <vector>
@@ -18,6 +19,9 @@ namespace cajeta::ownership {
         std::string source;    // formal-plain, formal-sharp, local-heap, local-call, ...
         std::string name;      // the stored name, or the root of an interior read
         std::string type;      // declared type of the stored name, `?` when unknown
+        std::string file;
+        std::string origin;    // project, dependency or stdlib
+        int column = 0;
     };
 
     // Walks every method body of `modules` after resolution and prints `[field-store]` lines.
@@ -27,6 +31,11 @@ namespace cajeta::ownership {
         static bool enabled();
         static void setEnabled(bool on);
         static void run(const std::list<CajetaModulePtr>& modules);
+        // Reports every store that breaks spec 1.2 as an error, through the active engine or by throwing.
+        static void check(const std::list<CajetaModulePtr>& modules);
+        // Calls `sink` once per store, deduplicated across template instantiations.
+        static void walk(const std::list<CajetaModulePtr>& modules,
+                         const std::function<void(const FieldStoreRecord&)>& sink);
         static const std::vector<FieldStoreRecord>& records();
         static void clear();
     };

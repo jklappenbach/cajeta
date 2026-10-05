@@ -32,7 +32,7 @@ const char* PRE =
     "final class Keep { public static Sh shared; }\n"
     "final class Box {\n"
     "    Sh v;\n"
-    "    Box(#Sh p) { if (p.f() < 0) { p = Keep.shared; } this.v = p; }\n"
+    "    Box(#Sh p) { if (p.f() < 0) { p = Keep.shared; } this.v #= p; }\n"
     "}\n"
     "public final class V {\n"
     "    static Sh pick(Sh a) { return a; }\n"

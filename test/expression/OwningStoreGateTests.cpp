@@ -22,6 +22,8 @@
 #include <cstdint>
 #include <string>
 
+#include "cajeta/error/Exception.h"
+
 using cajeta_test::CajetaJit;
 
 namespace {
@@ -62,16 +64,15 @@ int64_t deltaFor(const char* storeStmt, int32_t n) {
 
 }  // namespace
 
-// 3.2.1 — a bare `#`-param field store MOVES: it leaves the SAME live
-// population as the explicit `#`-move store. Pre-gate the bare store copies and
-// strands the moved-in source, so its delta exceeds the move baseline by ~n.
-TEST(OwningStoreGateTests, bareHashParamStoreMovesLikeExplicitMove) {
-    const int32_t n = 2000;
-    int64_t moveDelta = deltaFor("this.s #= s;", n);
-    int64_t bareDelta = deltaFor("this.s = s;", n);
-    ASSERT_GE(moveDelta, 0);
-    ASSERT_GE(bareDelta, 0);
-    EXPECT_EQ(bareDelta, moveDelta)
-        << "bare `#`-param store copy-stranded " << (bareDelta - moveDelta)
-        << " buffers over " << n << " iterations vs the explicit-move baseline";
+// field-store-ownership 3.2.4: a bare `=` of a `#`-param is rejected, and the `#=` store
+// takes the title, so the loop strands no buffer.
+TEST(OwningStoreGateTests, bareHashParamStoreRejectedAndSharpStoreMoves) {
+    std::string code;
+    try {
+        CajetaJit::compile(src("this.s = s;"), "test.D");
+    } catch (cajeta::Exception& e) {
+        code = e.getErrorId();
+    }
+    EXPECT_EQ(code, "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
+    EXPECT_EQ(deltaFor("this.s #= s;", 2000), 0);
 }

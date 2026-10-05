@@ -25,6 +25,19 @@ public class OwnershipDemo extends DemoClass {
         int32 hypoSq = this.consume(#owner);
         System.stdout.println("  consume(#Point(7,24)).distSq() = " + hypoSq);
         this.check(hypoSq == 625, "ownership transferred, value computed");
+
+        // Keeping a value in a field. `keep` stores with `#=`, so the caller
+        // chooses: `keep(#p)` hands the title to the holder and `keep(p)` lends.
+        // `watch` takes a `^Point`, which is only ever borrowed, so it may store
+        // with plain `=` and a caller cannot pass `#p`. A `T` or `#T` parameter
+        // stored with plain `=` is CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE.
+        Point seen = heap Point(6, 8);
+        Holder h = heap Holder();
+        Point kept = heap Point(3, 4);
+        h.keep(#kept);
+        h.watch(seen);
+        System.stdout.println("  holder kept " + h.kept.distSq() + ", watched " + h.seen.distSq());
+        this.check(h.kept.distSq() == 25 && h.seen.distSq() == 100, "field stores keep their values");
     }
 
     // Helper that takes ownership of `p` (it's destroyed when this
@@ -32,4 +45,15 @@ public class OwnershipDemo extends DemoClass {
     public int32 consume(Point p) {
         return p.distSq();
     }
+}
+
+class Holder {
+    public Point kept;
+    public Point seen;
+
+    public Holder() { }
+
+    public void keep(Point p) { this.kept #= p; }
+
+    public void watch(^Point p) { this.seen = p; }
 }

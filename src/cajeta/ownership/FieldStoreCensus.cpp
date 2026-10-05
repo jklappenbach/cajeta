@@ -21,6 +21,9 @@
 #include "../asn/expression/LiteralExpression.h"
 #include "../asn/expression/MethodCallExpression.h"
 #include "../asn/expression/NewExpression.h"
+#include "../error/DiagnosticEngine.h"
+#include "../error/Exception.h"
+#include <algorithm>
 
 namespace cajeta::ownership {
 
@@ -63,7 +66,9 @@ namespace cajeta::ownership {
         }
 
         std::string producerKind(const AbstractSyntaxNodePtr& e) {
-            if (std::dynamic_pointer_cast<NewExpression>(e)) return "heap";
+            if (auto ne = std::dynamic_pointer_cast<NewExpression>(e)) {
+                return ne->getStackAlloc() ? "stack" : "heap";
+            }
             if (std::dynamic_pointer_cast<MethodCallExpression>(e)) return "call";
             if (std::dynamic_pointer_cast<LiteralExpression>(e)) return "literal";
             if (std::dynamic_pointer_cast<BinaryOpExpression>(e)) return "expr";
@@ -84,15 +89,25 @@ namespace cajeta::ownership {
 
     void FieldStoreCensus::clear() { g_records.clear(); }
 
-    void FieldStoreCensus::run(const std::list<CajetaModulePtr>& modules) {
+    void FieldStoreCensus::walk(const std::list<CajetaModulePtr>& modules,
+                                const std::function<void(const FieldStoreRecord&)>& sink) {
         std::set<std::string> seen;
         for (auto& module : modules) {
             if (!module) continue;
+            std::string origin = module == CajetaModule::getStdlibModule() ? "stdlib"
+                : module->isClasspathOrigin() ? "dependency" : "project";
             for (auto& [qname, klass] : module->getStructures()) {
                 if (!klass || !klass->getQName()) continue;
                 auto& props = klass->getProperties();
                 std::string className = klass->getQName()->toCanonical();
                 className = className.substr(0, className.find('<'));
+                std::string file = klass->getDeclaringFile();
+                if (file.empty()) file = module->getSourcePath();
+                if (file.empty()) {
+                    file = "<stdlib>/" + className;
+                    std::replace(file.begin(), file.end(), '.', '/');
+                    file += ".cajeta";
+                }
                 for (auto& [mkey, method] : klass->getMethods()) {
                     if (!method || !method->getBlock()) continue;
                     std::map<std::string, Binding> scope;
@@ -281,18 +296,12 @@ namespace cajeta::ownership {
                                         std::string kind = classify(rhs, name, type);
                                         if (!kind.empty()) {
                                             FieldStoreRecord rec{className, method->getName(),
-                                                (int) bin->getSourceLine(), target, op, kind, name, type};
+                                                (int) bin->getSourceLine(), target, op, kind, name, type,
+                                                file, origin, (int) bin->getSourceColumn() + 1};
                                             std::string key = className + " " + rec.methodName + " " + target + " " + op
                                                 + " " + kind + " " + name;
                                             key += " " + std::to_string(ordinal[key]++);
-                                            if (seen.insert(key).second) {
-                                                std::cerr << "[field-store] " << className << "."
-                                                          << rec.methodName << ":" << rec.line
-                                                          << " into=" << target << " op=" << op
-                                                          << " src=" << kind << " name=" << name
-                                                          << " type=" << type << "\n";
-                                                g_records.push_back(std::move(rec));
-                                            }
+                                            if (seen.insert(key).second) sink(rec);
                                         }
                                     }
                                 }
@@ -303,6 +312,84 @@ namespace cajeta::ownership {
                 }
             }
         }
+    }
+
+    void FieldStoreCensus::run(const std::list<CajetaModulePtr>& modules) {
+        walk(modules, [](const FieldStoreRecord& rec) {
+            std::cerr << "[field-store] " << rec.className << "." << rec.methodName << ":"
+                      << rec.line << " into=" << rec.target << " op=" << rec.op
+                      << " src=" << rec.source << " name=" << rec.name
+                      << " type=" << rec.type << "\n";
+            g_records.push_back(rec);
+        });
+    }
+
+    namespace {
+        bool keepsBeyondTheCall(const std::string& target) {
+            return target == "field" || target == "nested" || target == "slot"
+                || target == "static" || target == "field-of-formal"
+                || target == "slot-of-formal";
+        }
+
+        bool startsWith(const std::string& s, const char* p) { return s.rfind(p, 0) == 0; }
+
+        // `cajeta.lang.String` as `String`, `a.b.Node<a.b.K>` as `Node<a.b.K>`: the spelling a user writes.
+        std::string shortType(const std::string& t) {
+            size_t lt = t.find('<');
+            size_t dot = t.rfind('.', lt == std::string::npos ? std::string::npos : lt);
+            return dot == std::string::npos ? t : t.substr(dot + 1);
+        }
+
+        // The error code and message for a store that breaks spec 1.2, or an empty code.
+        std::pair<std::string, std::string> violation(const FieldStoreRecord& r) {
+            if (r.op != "=" || !keepsBeyondTheCall(r.target)) return {};
+            if (r.type.empty() || r.type[0] == '?') return {};
+            const std::string& s = r.source;
+            std::string where = "the " + std::string(r.target.find("slot") != std::string::npos
+                ? "slot" : r.target == "static" ? "static" : "field");
+            if (s == "formal-sharp" || s == "local-alias-of-formal-sharp") {
+                return {"CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE",
+                    "parameter `" + r.name + "` is `#`: it owns its argument and frees it when "
+                    "the call returns, so `=` leaves " + where + " pointing at freed memory. "
+                    "Fix: store it with `#=`, which takes the title."};
+            }
+            if (s == "formal-plain" || s == "local-alias-of-formal-plain") {
+                return {"CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE",
+                    "`=` keeps parameter `" + r.name + "` as a borrow, but a caller may pass "
+                    "it with `#`, and then the parameter frees it when the call returns. Fix: "
+                    "store it with `#=`, which records whatever the caller passed, or spell "
+                    "the parameter `^" + shortType(r.type) + "` if it is only ever borrowed."};
+            }
+            if (startsWith(s, "interior-of-formal") && s != "interior-of-formal-borrow") {
+                return {"CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM",
+                    "`=` keeps a value read out of parameter `" + r.name + "`, which only lives "
+                    "as long as `" + r.name + "` does. Fix: spell the parameter "
+                    "`^` so callers must keep it alive, or store with `#=`."};
+            }
+            if (s == "local-heap" || s == "local-call" || s == "local-expr"
+                    || startsWith(s, "local-sharp")) {
+                return {"CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE",
+                    "local `" + r.name + "` may own its value, and it frees it at the end of "
+                    "its scope, so `=` leaves " + where + " pointing at freed memory. Fix: "
+                    "store it with `#=`, which takes the title when the local holds one."};
+            }
+            return {};
+        }
+    }
+
+    void FieldStoreCensus::check(const std::list<CajetaModulePtr>& modules) {
+        walk(modules, [](const FieldStoreRecord& rec) {
+            auto [code, message] = violation(rec);
+            if (code.empty()) return;
+            DiagnosticEngine* eng = DiagnosticEngine::active();
+            if (eng && eng->collectsErrors()) {
+                eng->report("error", code, message, rec.file, rec.line, rec.column, rec.origin);
+                return;
+            }
+            std::cerr << "cajeta: " << rec.file << ":" << rec.line << ":" << rec.column << ": "
+                      << code << ": " << message << "\n";
+            throw Exception(message, code, rec.file, rec.line, rec.column);
+        });
     }
 
 } // namespace cajeta::ownership

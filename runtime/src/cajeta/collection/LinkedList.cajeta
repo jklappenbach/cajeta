@@ -39,16 +39,10 @@ package cajeta.collection;
  * ## Storage
  *
  * Heap-allocates one `LinkedListNode`<T> per insert. The list owns the
- * nodes; it does NOT own their values. The add formals are plain `T`
- * and `addTail` / `addHead` hand the value on to the `heap
- * LinkedListNode`<T> ctor PLAIN, so the node's store records a
- * borrow whatever the caller spelled — and `add(#v)` merely moves the
- * title onto the add's formal, which releases it when the add returns,
- * leaving the node aliasing freed storage. Values must therefore
- * outlive the list, and nothing diagnoses a value that does not.
- * Dropping a node — via `remove(T)`, a pop, or list teardown — frees
- * the node alone. The pops' remove-shaped return reads the value field
- * as it stands, so it hands back a borrow (flag 0).
+ * nodes. `add(v)` lends the value, which must outlive the list. `add(#v)`
+ * hands the title to the node, and the value is freed with the list.
+ * The pops' remove-shaped return reads the value field as it stands, so
+ * it hands back a borrow (flag 0).
  */
 public final class LinkedList<T> {
 
@@ -115,18 +109,16 @@ public final class LinkedList<T> {
      */
     public void addTail(T value) {
         LinkedListNode<T> node = heap LinkedListNode<T>(#value);
-        // Title spelling (title-tracking §5): the FORWARD chain owns —
-        // headNode / each node's `next` take titles (`#`); tailNode and
-        // `prev` are borrows. Borrow-stores precede the owning store,
-        // which is the node's last use.
+        // The forward chain owns: headNode and each `next` take the title first,
+        // then tailNode and `prev` record borrows of the demoted local.
         if (this.tailNode == null) {
-            this.tailNode = node;
             this.headNode #= node;
+            this.tailNode #= node;
         } else {
             node.prev = this.tailNode;
             LinkedListNode<T> oldTail = this.tailNode;
-            this.tailNode = node;
             oldTail.next #= node;
+            this.tailNode #= node;
         }
         this.sizeCount = this.sizeCount + 1;
     }
@@ -142,16 +134,14 @@ public final class LinkedList<T> {
     public void addHead(T value) {
         LinkedListNode<T> node = heap LinkedListNode<T>(#value);
         if (this.headNode == null) {
-            this.tailNode = node;
             this.headNode #= node;
+            this.tailNode #= node;
         } else {
-            // Extract the old head's title into node.next (its bit decays
-            // but the reference stays readable), backlink, then store the
-            // new head's title — no displaced release fires on the now-
-            // borrowed headNode slot.
+            // The old head's title moves into node.next, so the headNode store displaces a borrow.
+            LinkedListNode<T> oldHead = this.headNode;
             node.next #= this.headNode;
-            this.headNode.prev = node;
             this.headNode #= node;
+            oldHead.prev #= node;
         }
         this.sizeCount = this.sizeCount + 1;
     }

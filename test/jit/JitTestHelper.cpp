@@ -162,6 +162,7 @@ void runCodegenPasses(const std::list<cajeta::CajetaModulePtr>& modules) {
     if (cajeta::ownership::FieldStoreCensus::enabled()) {
         cajeta::ownership::FieldStoreCensus::run(modules);
     }
+    cajeta::ownership::FieldStoreCensus::check(modules);
 
     // REFL-1.7: force-build the canonical Class<?> instantiation before method
     // codegen (cajeta.reflect.Class is a template Class<T>) so its bodies are

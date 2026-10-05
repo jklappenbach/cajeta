@@ -863,6 +863,7 @@ namespace cajeta {
                         startTok->getStartIndex(), stopTok->getStopIndex());
                     structure->setTemplateSource(
                         startTok->getInputStream()->getText(interval));
+                    structure->setTemplateSourceLine((int) startTok->getLine());
                 }
             }
 
@@ -1542,6 +1543,7 @@ namespace cajeta {
                         startTok->getStartIndex(), stopTok->getStopIndex());
                     interface->setTemplateSource(
                         startTok->getInputStream()->getText(interval));
+                    interface->setTemplateSourceLine((int) startTok->getLine());
                 }
             }
 

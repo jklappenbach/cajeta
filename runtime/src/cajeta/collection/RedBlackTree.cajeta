@@ -101,14 +101,7 @@ public final class RedBlackTree<K, V> {
      * red-black invariants restored. O(log n).
      */
     public void put(K key, V value) {
-        // The formals are plain — the tree does not own by default. Only the
-        // REPLACE path below reads a formal directly, so only its `#=` stores
-        // whichever mode the caller tendered. Both insertion paths hand key
-        // and value on to `heap RedBlackNode<K, V>(#key, #value)` PLAIN, and a
-        // plain argument lends: a freshly inserted node's key/value slots
-        // record borrows however the call was spelled, and a title tendered
-        // as `put(#k, #v)` is released when this call returns. Keys and
-        // values must outlive the entry on the caller's own account.
+        // The formals are plain: `put(k, v)` lends, and `put(#k, #v)` hands the titles to the node.
         if (this.root == null) {
             // The registry owns every node; `r` is a borrow, so links record borrows.
             this.nodes.add(heap RedBlackNode<K, V>(#key, #value));

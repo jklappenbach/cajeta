@@ -319,3 +319,22 @@ TEST(BorrowOnlyFormalTests, ownedCallResultIntoBorrowFormalRejected) {
         "}\n",
         "CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM");
 }
+
+// 2.2.3: a String built by `+` is a temporary too.
+TEST(BorrowOnlyFormalTests, concatTemporaryIntoBorrowFormalRejected) {
+    expectError(
+        "public final class Names {\n"
+        "    String v;\n"
+        "    public Names() { }\n"
+        "    public void keep(^String s) { this.v = s; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        Names n = heap Names();\n"
+        "        String a = \"x\";\n"
+        "        n.keep(a + \"y\");\n"
+        "        return 0L;\n"
+        "    }\n"
+        "}\n",
+        "CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM");
+}
