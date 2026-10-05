@@ -2,6 +2,7 @@
 // xpu/lowering/KernelLowering.cpp; this file is the NVPTX LoweringTarget.
 
 #include "../core/KernelManifest.h"
+#include "cajeta/xpu/core/DeclarationCheck.h"
 #include "NvptxKernelLowering.h"
 
 #include "../lowering/KernelLowering.h"
@@ -228,7 +229,11 @@ public:
         // body, where fromWords' staging reads the bound.
         if (auto mt = attr.maxThreadsAt(32)) {
             annotate("maxntidx", *mt);
-            fn->addFnAttr("nvvm.maxntid", std::to_string(*mt));
+            // CAJETA_XPU_FAULT=drop-occupancy restores a538aa77's shape, the
+            // bound in the annotation only, for the declaration check's test
+            // that it fires (XpuDeclarationCheckTests).
+            if (!xpuFault("drop-occupancy"))
+                fn->addFnAttr("nvvm.maxntid", std::to_string(*mt));
         }
         if (auto mr = attr.minResident())
             fn->addFnAttr("nvvm.minctasm", std::to_string(*mr));

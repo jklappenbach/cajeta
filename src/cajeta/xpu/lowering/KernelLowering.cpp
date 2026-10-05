@@ -574,7 +574,7 @@ private:
     void lowerStatement(const AbstractSyntaxNodePtr& node) {
         if (!node) return;
         if (auto blk = std::dynamic_pointer_cast<Block>(node)) {
-            for (auto& s : blk->getChildren()) lowerStatement(s);
+            scoped([&] { for (auto& s : blk->getChildren()) lowerStatement(s); });
             return;
         }
         if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
@@ -596,7 +596,7 @@ private:
             return;
         }
         if (auto fs = std::dynamic_pointer_cast<ForStatement>(node)) {
-            lowerFor(fs);
+            scoped([&] { lowerFor(fs); });   // the counter is the loop's
             return;
         }
         if (auto ws = std::dynamic_pointer_cast<WhileStatement>(node)) {
@@ -608,7 +608,7 @@ private:
             return;
         }
         if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
-            lowerEnhancedFor(efs);
+            scoped([&] { lowerEnhancedFor(efs); });   // the element name is the loop's
             return;
         }
         if (auto bs = std::dynamic_pointer_cast<BreakStatement>(node)) {
@@ -700,11 +700,52 @@ private:
         return s;
     }
 
-    // A kernel body has no block scope down here - the lowering keeps FLAT
-    // per-name maps - so a redeclaration under a name that is already bound
-    // rebinds one kind over another and every read after it silently takes the
-    // wrong slot. Sibling blocks reusing a name at the SAME kind and type is
-    // what existing kernels do and stays legal; anything else is rejected.
+    // Lexical scope (xpu-kernel-independence 4.2.2.2). The lowering keeps
+    // per-name maps, and until 2026-10-05 they were function-wide: a local
+    // declared in one block stayed bound after it closed, so a sibling block
+    // read the stale slot (cajeta-llm 0f1ee39: a Q6_K body took the Q4_K
+    // body's activation scale for twelve days). A block now forgets every
+    // name it bound when it closes, so a read outside the declaring block is
+    // an unbound identifier, as it is on the host.
+    std::set<std::string> boundNames() const {
+        std::set<std::string> out;
+        auto keys = [&](const auto& m) { for (auto& kv : m) out.insert(kv.first); };
+        keys(values); keys(slotTypes); keys(signedness); keys(bufferBases); keys(bufferElems);
+        keys(bufferElemSigned); keys(bufferArrayBindings); keys(bufferArrayBases);
+        keys(textureHandles); keys(textureTexelTypes); keys(textureDims); keys(imageHandles);
+        keys(samplerHandles); keys(accelHandles); keys(rayQuerySlots); keys(coopMatrixSlots);
+        keys(fragmentArrays); keys(unrolledCounters); keys(waveVectorLocals);
+        keys(tileInferredUse); keys(structValues); keys(structFields); keys(valueTypeNames);
+        keys(valueTypeCtors); keys(matrixShapes); keys(arrayShared); keys(callables);
+        for (auto& n : quaternionLocals) out.insert(n);
+        return out;
+    }
+    // The names blocks have closed over, so a read of one says where it went.
+    std::set<std::string> outOfScope;
+    void forgetLocal(const std::string& n) {
+        outOfScope.insert(n);
+        values.erase(n); slotTypes.erase(n); signedness.erase(n); bufferBases.erase(n);
+        bufferElems.erase(n); bufferElemSigned.erase(n); bufferArrayBindings.erase(n);
+        bufferArrayBases.erase(n); textureHandles.erase(n); textureTexelTypes.erase(n);
+        textureDims.erase(n); imageHandles.erase(n); samplerHandles.erase(n);
+        accelHandles.erase(n); rayQuerySlots.erase(n); coopMatrixSlots.erase(n);
+        fragmentArrays.erase(n); unrolledCounters.erase(n); waveVectorLocals.erase(n);
+        tileInferredUse.erase(n); structValues.erase(n); structFields.erase(n);
+        valueTypeNames.erase(n); valueTypeCtors.erase(n); matrixShapes.erase(n);
+        arrayShared.erase(n); callables.erase(n); quaternionLocals.erase(n);
+    }
+    // Lower `f` as one scope: every name it binds is forgotten after it.
+    template <class F> void scoped(F&& f) {
+        const std::set<std::string> before = boundNames();
+        f();
+        for (const std::string& n : boundNames())
+            if (!before.count(n)) forgetLocal(n);
+    }
+
+    // Within one scope a redeclaration under a name that is already bound
+    // would rebind one kind over another, and every read after it would
+    // silently take the wrong slot. A rebinding at the SAME kind and type
+    // reuses the slot; anything else is rejected.
     void checkKernelRedeclare(const std::string& nm, const char* kind,
                               llvm::Type* ty) {
         DeviceBinding prior = deviceBindingOf(nm);
@@ -1624,6 +1665,10 @@ private:
             auto sv = structValues.find(nm);
             if (sv != structValues.end()) return sv->second;
             if (llvm::Constant* c = templateConstant(nm)) return c;
+            if (outOfScope.count(nm))
+                unsupported("'" + nm + "' is not in scope here: it was declared in a block that "
+                            "has closed (a sibling block, or a loop's counter past its loop), and "
+                            "a kernel follows the host's scopes");
             unsupported("unbound identifier '" + nm + "'");
         }
         if (auto il = std::dynamic_pointer_cast<IntegerLiteralExpression>(expr)) {

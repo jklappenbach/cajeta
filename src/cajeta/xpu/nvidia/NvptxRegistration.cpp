@@ -3,6 +3,7 @@
 #include "NvptxRegistration.h"
 #include "NvptxBackend.h"
 #include "cajeta/xpu/core/KernelManifest.h"
+#include "cajeta/xpu/core/DeclarationCheck.h"
 #include "cajeta/xpu/core/XpuKernelAttr.h"
 #include "cajeta/xpu/core/XpuKernelGate.h"
 #include <optional>
@@ -139,6 +140,12 @@ namespace nvidia {
                         "code — no assembler input: PTX emission failed (see the "
                         "cajeta.xpu.nvidia line above)\n", entryName.c_str());
                 continue;
+            }
+            // The declarations against the PTX itself, before it is assembled:
+            // a bound the printer dropped is an error here, not a slower kernel.
+            if (auto attr = XpuKernelAttr::from(*method)) {
+                checkOccupancyInPtx(*attr, entryName, ptx);
+                checkWaveWidthBuilt(*attr, entryName, "nvptx", 32);
             }
             std::string ptxasLog;
             std::vector<uint8_t> cubin = assembleCubin(ptx, arch, &ptxasLog);

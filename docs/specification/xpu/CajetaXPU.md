@@ -387,6 +387,34 @@ pins the loop, AMDGPU pins the wavefront to 32 or 64, NVPTX accepts 32
 and refuses any other width by name, and a declaration that coincides
 with a distributed cooperative tile's own width is the same pin.
 
+**A declaration the backend did not receive is an error, never a note**
+(xpu-kernel-independence spec §2.3). `@Wave(width)` and `@Occupancy` were
+once parsed and then ignored: the bound reached the IR and the PTX printer
+dropped it, and the kernel ran unbounded while its manifest said otherwise.
+Each declaration is now checked after the backend has spoken, against the
+backend's own output rather than the IR it was asked for. On NVPTX the
+PTX entry header must carry `.maxntid` for a thread bound,
+`.minnctapersm` for `minResident` and `.maxnreg` for `maxRegisters`; on
+every backend a kernel built with a wave (its manifest's `waveWidth` is 2
+or more) must have been built at the declared width. A declaration that
+did not land is `CAJETA_ERROR_XPU_DECLARATION_DROPPED`, naming the kernel,
+the backend and the declaration (`XpuDeclarationCheckTests`, with the
+test-only lever `CAJETA_XPU_FAULT=drop-occupancy` / `drop-wave-pin` that
+makes the backend lose the declaration so the check is seen to fire). A
+kernel the cpu backend runs with no wave at all, because it uses no wave
+operation, is left alone: the declaration binds nothing there.
+
+**A kernel follows the host's scopes.** A local is visible from its
+declaration to the end of the block that declares it, a loop's counter
+and element name to the end of the loop, and nowhere else. Until
+2026-10-05 the lowering kept its locals in one function-wide table, so a
+name declared in one block stayed bound after the block closed and a
+sibling block read the stale slot (cajeta-llm 0f1ee39: a fused mat-vec's
+Q6_K body read the Q4_K body's activation scale for twelve days). A read
+outside the declaring block is now refused, naming the identifier and
+saying its block has closed (`XpuKernelScopeTests`). Within one scope a
+name may not be rebound at another kind or type.
+
 ### 3.3 Capability traits
 
 A *capability* is a feature that some devices have and others don't.

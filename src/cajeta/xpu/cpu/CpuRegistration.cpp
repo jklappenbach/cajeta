@@ -4,6 +4,7 @@
 #include "CpuRegistration.h"
 #include <llvm/IR/DiagnosticInfo.h>
 #include "CpuKernelLowering.h"
+#include "cajeta/xpu/core/DeclarationCheck.h"
 #include "../lowering/KernelLowering.h"   // collectKernelParamInfo / KernelParamInfo
 #include "CpuBackend.h"
 #include "../core/XpuKernelGate.h"
@@ -1272,6 +1273,8 @@ void foldWaveVariants(llvm::Function& f) {
                     // stood here (2026-09-28) assumed the host could only launch at
                     // Device.waveSize() lanes per group.
                     manifest.waveWidth = waveKernel ? waveW : 1u;
+                    if (auto attr = XpuKernelAttr::from(*method))
+                        checkWaveWidthBuilt(*attr, entryName, "cpu", *manifest.waveWidth);
                     if (waveKernel) {
                         rewriteWaveWidth(*wrapper, waveW);
                         waveMaskAsData(*wrapper, hostModule, waveW);
@@ -1413,6 +1416,8 @@ void foldWaveVariants(llvm::Function& f) {
             // The width the kernel is built at, for Group.laneBlockOf (see the
             // fission path's note).
             manifest.waveWidth = waveKernel ? waveW : 1u;
+            if (auto attr = XpuKernelAttr::from(*method))
+                checkWaveWidthBuilt(*attr, entryName, "cpu", *manifest.waveWidth);
 
             // Inline the kernel into the loop body, then mem2reg + LoopVectorize.
             llvm::InlineFunctionInfo ifi;

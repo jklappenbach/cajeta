@@ -4,6 +4,7 @@
 
 #include "CpuKernelLowering.h"
 #include "../core/XpuKernelAttr.h"
+#include "cajeta/xpu/core/DeclarationCheck.h"
 #include "../../method/Method.h"
 
 #include "../lowering/KernelLowering.h"
@@ -63,7 +64,10 @@ public:
     // the host SIMD width, so a kernel written for 32 lanes is correct on every host.
     bool pinWaveWidth(llvm::Function* fn, unsigned width) override {
         if (width < 2) return width == 1;
-        fn->addFnAttr("cajeta.xpu.coop-wavew", std::to_string(width));
+        // CAJETA_XPU_FAULT=drop-wave-pin accepts the declaration and pins
+        // nothing, for the declaration check's test that it fires.
+        if (!xpuFault("drop-wave-pin"))
+            fn->addFnAttr("cajeta.xpu.coop-wavew", std::to_string(width));
         return true;
     }
     // The inner loops must be gone for LoopVectorize to widen the work-item

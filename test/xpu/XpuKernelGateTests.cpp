@@ -133,6 +133,21 @@ TEST(XpuKernelGate, anUnloweredKernelFailsTheBuildByName) {
     EXPECT_NE(b.log.find("CAJETA_ERROR_XPU_KERNEL_GATE"), std::string::npos) << b.log;
 }
 
+// xpu-kernel-independence 4.2.1.3 (spec §2.3): a kernel that lowers on NO
+// backend of a build that declares two fails the build, named once per
+// backend, and the kernel beside it that lowers on both is not named.
+TEST(XpuKernelGate, aKernelThatLowersOnNoBackendFailsTheBuildOnEach) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(program(""), "cpu,nvptx");
+    EXPECT_NE(b.rc, 0) << b.log;
+    EXPECT_NE(b.log.find("[xpu-kernel-skipped] bad: no cpu device code"), std::string::npos)
+        << b.log;
+    EXPECT_NE(b.log.find("[xpu-kernel-skipped] bad: no nvptx device code"), std::string::npos)
+        << b.log;
+    EXPECT_EQ(b.log.find("[xpu-kernel-skipped] good"), std::string::npos) << b.log;
+    EXPECT_NE(b.log.find("CAJETA_ERROR_XPU_KERNEL_GATE"), std::string::npos) << b.log;
+}
+
 // The tracked escape: the kernel names the plan item holding it and the
 // build passes with a NOTE that carries the item, the census's countable
 // shape (`[tracked: <item>]`, the 1.6.5 spelling).
