@@ -123,8 +123,10 @@ Strings follow the same spellings. A `#=` of an owned window (a `substring`
 or `trim` result) moves the window and its shared stake on the root. A lent
 window stored with `#=` resolves to a copy up to 256 bytes and to a shared
 stake on the root above that. Bytes from the frame arena always copy when
-they escape. A String `=` from a borrowed source still resolves the same way
-at run time today. It does not yet store a plain borrow.
+they escape. A String `=` into a field is a plain borrow and makes no
+copy. To keep your own String past its source, write
+`this.v #= o.v.clone()`. A String array slot still copies on `=` until
+String arrays carry per-slot titles.
 
 A store that compiles and reads back correctly is NOT evidence it was right.
 Before this check, `#String p; this.v = p` compiled to the same IR as `#=`

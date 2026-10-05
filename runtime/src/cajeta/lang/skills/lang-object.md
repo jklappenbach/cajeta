@@ -2,7 +2,7 @@
 id: lang-object
 applies-to: [cajeta/lang/Object]
 title: Object — the universal class root (identity hash, toString, clone, ==, drop)
-description: Default pointer-identity hash/== and stub toString/clone every class inherits; when and how to override for value-keyed (HashMap) use.
+description: Default pointer-identity hash/==, a stub toString and a live clone every class inherits; when and how to override for value-keyed (HashMap) use.
 ---
 
 # Object
@@ -33,7 +33,7 @@ equality (this is exactly how `String` works — it overrides only `hash()`).
 ```cajeta
 @Native("__cajeta_object_hash")      public int64  hash();      // identity hash
 @Native("__cajeta_object_to_string") public String toString();  // returns null (stub)
-@Native("__cajeta_object_clone")     public Object clone();     // returns null (stub)
+@Native("__cajeta_object_clone")     public #Object clone();    // owned copy
 public static boolean operator== (Object a, Object b);          // a.hash()==b.hash()
 ~Object() { }                                                    // empty virtual drop
 ```
@@ -47,10 +47,13 @@ public static boolean operator== (Object a, Object b);          // a.hash()==b.h
 - **`toString() -> String`** — **currently returns `null`** (placeholder until the
   synthesizer + `String` surface land). Do not rely on it; override it if you need debug
   output now. Borrowed/owned semantics of the returned `String` are not yet defined.
-- **`clone() -> Object`** — **currently returns `null`** (placeholder). The planned
-  default is a *shallow* copy: value-typed fields `memcpy`'d, class-typed fields shared by
-  reference (Java-style). Override for deep copies. Subclass overrides narrow the return
-  type to the declaring class, so callers need no cast.
+- **`clone() -> #Object`** returns an owned copy. On a String it is the way to keep
+  your own String past its source: `this.v #= o.v.clone();` copies the bytes at any
+  size and stops pinning the source's buffer. A plain `=` into a String field only
+  borrows. On any other class it is a *shallow* RTTI copy, and it is NOT yet safe
+  when the class owns a class-typed or array field: the copy records the same title,
+  so dropping the copy frees the original's field. Override `clone()` for those
+  classes until the runtime clears the copied titles.
 - **`operator==`** — `static`, **null-safe**: two `null`s are equal, one `null` is not,
   and the `null` check lowers to a pointer compare (non-recursive, no segfault on null
   vtable). `!=` is auto-derived as its negation — do not declare `operator!=`.

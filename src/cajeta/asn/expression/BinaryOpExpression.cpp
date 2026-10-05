@@ -629,6 +629,31 @@ namespace cajeta {
         return true;
     }
 
+    // For a plain `=` String store, the title the stored pointer takes: 0 for a name or a literal (a
+    // borrow), the producer's title flag otherwise. Null for `#=`, which keeps resolving a lent source.
+    static llvm::Value* plainStringStoreFlag(const CajetaModulePtr& module, llvm::IRBuilder<>* builder,
+                                             const ExpressionPtr& rhsAst, const char* where) {
+        if (!rhsAst || rhsAst->kind() == ExprKind::Move) return nullptr;
+        using F = ownership::TitleFamily;
+        ownership::TitleShape s = ownership::classify(rhsAst, module);
+        bool name = s.family == F::LocalRead || s.family == F::FieldRead || s.family == F::ElementRead
+            || s.family == F::ThisRead || s.family == F::Literal;
+        llvm::Value* flag = name ? nullptr : ownership::storeTitleFlagOf(
+            s, ownership::ConsumerRole::StoreString, rhsAst, module, where);
+        return flag ? flag : builder->getInt64(0);
+    }
+
+    // The bit a plain `=` into a String field records, when the field carries one. Null otherwise.
+    static llvm::Value* plainStringStoreBit(const CajetaModulePtr& module, llvm::IRBuilder<>* builder,
+                                            const std::shared_ptr<DotExpression>& dot, llvm::Value* slotPtr,
+                                            const ExpressionPtr& rhsAst) {
+        if (!rhsAst || rhsAst->kind() == ExprKind::Move) return nullptr;
+        llvm::Value* wordPtr = nullptr;
+        int bitIdx = -1;
+        if (!locateFieldOwnershipBit(module, builder, dot, slotPtr, &wordPtr, &bitIdx)) return nullptr;
+        return plainStringStoreFlag(module, builder, rhsAst, "a String field");
+    }
+
     // `*` on a Matrix LHS: matmul against a Matrix (inner dimension checked),
     // matVec against a Vector, element-wise scale against a scalar. Stamps
     // resolvedType; returns nullptr for any other op or RHS, so the caller falls through.
@@ -1962,7 +1987,8 @@ namespace cajeta {
                             llvm::Value* mvBit = nullptr;
                             // fldResolve: the field takes its own copy; otherwise a static owner is adopted.
                             bool fldResolve = false;
-                            {
+                            llvm::Value* plainBit = plainStringStoreBit(module, builder, dotLhs2, lhs, rhsAst);
+                            if (!plainBit) {
                                 llvm::Value* ft = ownership::storeTitleFlag(
                                     rhsAst, ownership::ConsumerRole::StoreString,
                                     module, "a String field");
@@ -2095,8 +2121,17 @@ namespace cajeta {
                             if (strHasBit) {
                                 llvm::Value* w = builder->CreateLoad(
                                     i64Ty, strWordPtr, "own_bits");
-                                w = builder->CreateOr(w,
-                                    llvm::ConstantInt::get(i64Ty, 1ULL << strBitIdx));
+                                if (plainBit) {
+                                    w = builder->CreateOr(
+                                        builder->CreateAnd(w,
+                                            llvm::ConstantInt::get(i64Ty, ~(1ULL << strBitIdx))),
+                                        builder->CreateShl(
+                                            builder->CreateAnd(plainBit, llvm::ConstantInt::get(i64Ty, 1)),
+                                            llvm::ConstantInt::get(i64Ty, strBitIdx)));
+                                } else {
+                                    w = builder->CreateOr(w,
+                                        llvm::ConstantInt::get(i64Ty, 1ULL << strBitIdx));
+                                }
                                 builder->CreateStore(w, strWordPtr);
                             }
                             result = fresh;

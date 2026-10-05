@@ -80,9 +80,9 @@ a borrow."*
   before codegen (CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE,
   CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM,
   CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM), and CAPTURED_BORROW_PARAM is
-  retired. Rule 5 is checked like every other type, but its codegen half
-  (String `=` as a pure borrow) is still open as Unit 6. Today a String
-  `=` from a borrowed source still resolves at run time.
+  retired. Rule 5 is done for fields: a String `=` into a field is a plain
+  borrow, and `#= x.clone()` is the copy. String array slots still copy
+  on `=` until String arrays carry per-slot titles (plan 6.2.4).
   1. A formal kept with `=` must be spelled `^T` (borrow only: callers
      cannot pass `#x`). This is the explicit way to keep a borrow.
   2. A `T` or `#T` formal that is kept is stored with `#=`. A sink
