@@ -918,7 +918,7 @@ namespace cajeta {
     }
 
     // True when an array element of type `elem` owns a droppable object per slot: a
-    // vtable-bearing class that is not a String, a view, or a value type.
+    // vtable-bearing class, String included, that is not a view or a value type.
     bool CajetaClass::arrayElementCarriesSlotBits(const CajetaTypePtr& elem) {
         if (!elem) return false;
         if (dynamic_pointer_cast<CajetaArray>(elem)) return false;
@@ -927,11 +927,6 @@ namespace cajeta {
         if (!cls) return false;
         if (cls->isInterface() || cls->isValueType()) return false;
         if (cls->isSharedCapableValue()) return false;
-        if (cls->getQName()
-                && cls->getQName()->getTypeName() == "String"
-                && cls->getQName()->getPackageName() == "cajeta.lang") {
-            return false;
-        }
         return cls->hasVtablePointerAtSlotZero();
     }
 
@@ -3018,25 +3013,6 @@ namespace cajeta {
                                     iwDl.getTypeAllocSize(arrField->getLlvmType())),
                                 llvm::ConstantInt::get(iwI64,
                                     arrField->elementStrideBytes(iwDl, &ctx))});
-                        }
-                    }
-                }
-                {
-                    auto strElem = dynamic_pointer_cast<CajetaClass>(
-                        arrField->getElementType());
-                    if (strElem && slotMemberIsString(strElem)) {
-                        if (llvm::Function* swFn = cajModule->getRuntimeFunction(
-                                "__cajeta_string_elem_drop_walk", bodyModule)) {
-                            const llvm::DataLayout& swDl =
-                                bodyModule->getDataLayout();
-                            llvm::Type* swi64 = llvm::Type::getInt64Ty(ctx);
-                            b.CreateCall(swFn, {arrPtr,
-                                llvm::ConstantInt::get(swi64,
-                                    swDl.getTypeAllocSize(
-                                        arrField->getLlvmType())),
-                                llvm::ConstantInt::get(swi64,
-                                    arrField->elementStrideBytes(
-                                        swDl, &ctx))});
                         }
                     }
                 }

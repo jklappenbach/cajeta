@@ -38,7 +38,7 @@ TEST(StringElemStoreTests, fieldGrowCopyLoopKeepsElements) {
         "        String[] dst = heap String[nc];\n"
         "        int32 i = 0;\n"
         "        while (i < this.n) {\n"
-        "            dst[i] = this.keys[i];\n"
+        "            dst[i] #= this.keys[i];\n"
         "            i = i + 1;\n"
         "        }\n"
         "        this.keys #= dst;\n"

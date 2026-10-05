@@ -204,9 +204,8 @@ that relied on the copy to outlive its source writes `#= x.clone()` (9.9).
 - **5.2.5** When `this.v = a + b` runs, the field owns the result, which
   stays correct after the frame's arena resets.
 - **5.2.6** When a String slot is stored (`this.names[i] = s` with `^String
-  s`), the slot follows 5.2.1 to 5.2.5. Not yet: String arrays carry no
-  per-slot title that travels with the array, so a slot still copies (plan
-  6.2.4).
+  s`), the slot follows 5.2.1 to 5.2.5. Each String array carries a
+  per-slot title in its tail, which travels with the array.
 
 ## 6. Diagnostics
 

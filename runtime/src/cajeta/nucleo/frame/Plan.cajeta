@@ -307,12 +307,12 @@ public class Plan {
         if (icap < 1) { icap = 1; }
         String[] ic = heap String[icap];
         int32 i = 0;
-        while (i < nId) { ic[i] = idVars[i]; i = i + 1; }
+        while (i < nId) { ic[i] #= idVars[i].clone(); i = i + 1; }
         int32 vcap = nVal;
         if (vcap < 1) { vcap = 1; }
         String[] vc = heap String[vcap];
         int32 j = 0;
-        while (j < nVal) { vc[j] = valVars[j]; j = j + 1; }
+        while (j < nVal) { vc[j] #= valVars[j].clone(); j = j + 1; }
         n.meltId #= ic;
         n.nMeltId = nId;
         n.meltVal #= vc;

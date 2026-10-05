@@ -80,11 +80,11 @@ namespace cajeta {
                 && ec->getQName() && ec->getQName()->getTypeName() == "String"
                 && ec->getQName()->getPackageName() == "cajeta.lang";
         }();
-        const bool elemTailBits = !useArena && !elemIsString
+        const bool elemTailBits = !useArena
             && CajetaClass::arrayElementCarriesSlotBits(elementType);
         const bool elemArrBits = !useArena && !elemIsString && !elemTailBits
             && CajetaClass::arrayElementCarriesArraySlotBits(elementType);
-        llvm::Function* strStoreFn = (elemIsString && !useArena)
+        llvm::Function* strStoreFn = (elemIsString && !useArena && !elemTailBits)
             ? module->getRuntimeFunction("__cajeta_string_elem_store") : nullptr;
         llvm::Function* tailStoreFn = elemTailBits
             ? module->getRuntimeFunction("__cajeta_tail_elem_store") : nullptr;

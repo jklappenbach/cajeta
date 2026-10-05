@@ -1286,9 +1286,8 @@ namespace cajeta {
                     emitDropEntryFor(module, field, "__cajeta_free_array",
                         getSourceLine(), arrFlag);
                 }
-                // A local String[] owns what its stores TOOK: register the walk
-                // that reclaims them. Class elements instead mark a slot bit per
-                // store and release through the element vtable's drop.
+                // Titled elements, String included, mark a slot bit per store and release through
+                // the element vtable's drop, which String already supplies natively.
                 if (auto arrT = dynamic_pointer_cast<CajetaArray>(type)) {
                     auto elemCls = dynamic_pointer_cast<CajetaClass>(
                         arrT->getElementType());
@@ -1297,31 +1296,10 @@ namespace cajeta {
                         && elemCls->getQName()
                         && elemCls->getQName()->getTypeName() == "String"
                         && elemCls->getQName()->getPackageName() == "cajeta.lang";
-                    bool elemTitled = !elemIsString
-                        && CajetaClass::arrayElementCarriesSlotBits(
+                    bool elemTitled = CajetaClass::arrayElementCarriesSlotBits(
                                arrT->getElementType());
-                    if (elemTitled && !arrT->isInlineArray()) {
-                        // The walk rides the single walk+free entry registered
-                        // above; only the element vtable's drop needs patching.
+                    if (elemTitled && !arrT->isInlineArray() && !elemIsString) {
                         elemCls->patchVirtualTableDropFn();
-                    } else if (elemIsString && !arrT->isInlineArray()) {
-                        emitArrayElemDropEntry(module, field, arrT,
-                            "__cajeta_string_array_owned_drop",
-                            getSourceLine(), arrFlag);
-                        // A literal's String slots belong to the array: mark
-                        // them so the teardown walk frees them.
-                        if (initShape.leaf
-                                && initShape.leaf->kind() == ExprKind::ArrayLiteral
-                                && field->getElemOwnSidecar()) {
-                            if (llvm::Function* markFn = module->getRuntimeFunction(
-                                    "__cajeta_string_array_sidecar_mark_all")) {
-                                module->getBuilder()->CreateCall(markFn, {
-                                    field->getElemOwnSidecar(),
-                                    llvm::ConstantInt::get(
-                                        llvm::Type::getInt64Ty(*module->getLlvmContext()),
-                                        (uint64_t) initShape.leaf->getChildren().size())});
-                            }
-                        }
                     }
                 }
             }

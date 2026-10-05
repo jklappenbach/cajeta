@@ -125,8 +125,9 @@ window stored with `#=` resolves to a copy up to 256 bytes and to a shared
 stake on the root above that. Bytes from the frame arena always copy when
 they escape. A String `=` into a field is a plain borrow and makes no
 copy. To keep your own String past its source, write
-`this.v #= o.v.clone()`. A String array slot still copies on `=` until
-String arrays carry per-slot titles.
+`this.v #= o.v.clone()`. A String array slot follows the same rule: each
+slot carries its own title, so `a[i] = s` borrows and `a[i] #= s` takes
+the title or resolves a lent source.
 
 A store that compiles and reads back correctly is NOT evidence it was right.
 Before this check, `#String p; this.v = p` compiled to the same IR as `#=`

@@ -288,7 +288,7 @@ public final class BPlusTree<K, V> {
         if (parent == null) {
             BPlusTreeNode<K, V> newRoot = heap BPlusTreeNode<K, V>(false, this.order);
             this.nodes.add(#newRoot);
-            newRoot.keys[0] = sep;
+            newRoot.keys[0] #= sep;
             newRoot.numKeys = 1;
             newRoot.children[0] = left;
             newRoot.children[1] = right;
@@ -308,7 +308,7 @@ public final class BPlusTree<K, V> {
             parent.keys[j] #= parent.keys[j - 1];
             j = j - 1;
         }
-        parent.keys[i] = sep;
+        parent.keys[i] #= sep;
         int32 c = parent.numKeys + 1;
         while (c > i + 1) {
             parent.children[c] = parent.children[c - 1];

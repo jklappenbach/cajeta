@@ -2,6 +2,8 @@
 // Created by James Klappenbach on 4/8/23.
 //
 
+#include <cstdlib>
+#include <iostream>
 #include "../../error/Diagnostics.h"
 #include "BinaryOpExpression.h"
 #include "OperatorDispatch.h"
@@ -196,12 +198,6 @@ namespace cajeta {
         if (!rt || ((rt->getTypeFlags() & PRIMITIVE_FLAG)
                     && !std::dynamic_pointer_cast<CajetaArray>(rt))) {
             return;
-        }
-        if (auto rc = std::dynamic_pointer_cast<CajetaClass>(rt)) {
-            if (rc->getQName() && rc->getQName()->getTypeName() == "String"
-                    && rc->getQName()->getPackageName() == "cajeta.lang") {
-                return;
-            }
         }
         auto& kids = lhsIndex->getChildren();
         if (kids.size() < 2) return;
@@ -2502,9 +2498,39 @@ namespace cajeta {
                         if (elemTitled && tailHdr) {
                             llvm::LLVMContext& tsCtx = *module->getLlvmContext();
                             llvm::Type* tsI64 = llvm::Type::getInt64Ty(tsCtx);
-                            llvm::Value* ownedVal = ownership::storeTitleFlag(
-                                rhsAst, ownership::ConsumerRole::StoreSlot,
-                                module, "an array element slot");
+                            auto slotCls = dynamic_pointer_cast<CajetaClass>(lhsAst->getResolvedType());
+                            bool slotIsString = slotCls && slotCls->getQName()
+                                && slotCls->getQName()->getTypeName() == "String"
+                                && slotCls->getQName()->getPackageName() == "cajeta.lang";
+                            llvm::Value* ownedVal = slotIsString
+                                ? plainStringStoreFlag(module, builder, rhsAst, "a String array slot")
+                                : nullptr;
+                            static const bool slotAudit = std::getenv("CAJETA_STRING_SLOT_AUDIT") != nullptr;
+                            if (slotAudit && ownedVal && rhsAst->kind() != ExprKind::TextLiteral
+                                    && rhsAst->kind() != ExprKind::Literal) {
+                                auto* oc = llvm::dyn_cast<llvm::ConstantInt>(ownedVal);
+                                if (!oc || oc->isZero()) {
+                                    std::cerr << "[string-slot-borrow] " << diagnosticSiteOf(*module).file
+                                              << ":" << getSourceLine() << "\n";
+                                }
+                            }
+                            if (slotIsString && !ownedVal) {
+                                llvm::Value* f = ownership::storeTitleFlag(
+                                    rhsAst, ownership::ConsumerRole::StoreString,
+                                    module, "a String array slot");
+                                if (!f) f = llvm::ConstantInt::get(tsI64, 0);
+                                if (llvm::Function* orFn = module->getRuntimeFunction(
+                                        "__cajeta_string_own_or_resolve")) {
+                                    rhsVal = builder->CreateCall(orFn, {rhsVal, f}, "slot_str");
+                                    ownedVal = llvm::ConstantInt::get(tsI64, 1);
+                                } else {
+                                    ownedVal = f;
+                                }
+                            } else if (!slotIsString) {
+                                ownedVal = ownership::storeTitleFlag(
+                                    rhsAst, ownership::ConsumerRole::StoreSlot,
+                                    module, "an array element slot");
+                            }
                             if (!ownedVal) ownedVal = llvm::ConstantInt::get(tsI64, 0);
                             const llvm::DataLayout& tsDl =
                                 module->getLlvmModule()->getDataLayout();
@@ -2554,7 +2580,7 @@ namespace cajeta {
                                 storedViaElemOwn = true;
                                 storedViaClassElem = true;
                             }
-                        } else if (sidecar) {
+                        } else if (sidecar && !elemTitled) {
                             // An identifier hands its wrapper over only when the local actually HOLDS title;
                             // a borrow-holding local would double-title the string its owner still frees.
                             bool takesOwnership = false;
@@ -2601,7 +2627,7 @@ namespace cajeta {
                                 builder->CreateCall(setFn, {sidecar, lhs, rhsVal});
                                 storedViaElemOwn = true;
                             }
-                        } else if ([&]{
+                        } else if (!elemTitled && [&]{
                             auto selc = dynamic_pointer_cast<CajetaClass>(
                                 lhsAst->getResolvedType());
                             return selc && selc->getQName()

@@ -274,7 +274,7 @@ public class DynFrame {
     #String[] namesCopy() {
         String[] c = heap String[this.w];
         int32 i = 0;
-        while (i < this.w) { c[i] = this.names[i]; i = i + 1; }
+        while (i < this.w) { c[i] #= this.names[i].clone(); i = i + 1; }
         return #c;
     }
 
