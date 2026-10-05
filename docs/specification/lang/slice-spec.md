@@ -17,6 +17,12 @@
 >
 > Provenance: initial draft red-teamed 2026-07-02 (code-grounded adversarial pass); this revision
 > consolidates the surviving design. §12 records the resolved findings for traceability.
+>
+> **Amended by the field-store rule** (`specs/field-store-ownership-spec.md`). A plain `=`
+> field or slot store never moves, so the "move when it is the last use" of §4.2 and the
+> auto-move of §9 do not apply to it. An owned String or slice local kept in a field is
+> spelled `#=`, which moves the window and its shared stake. A lent window stored with `#=`
+> resolves to a copy up to 256 bytes and to a shared stake above that.
 
 ## 0. The model — cajeta's implicit smart-pointer family
 

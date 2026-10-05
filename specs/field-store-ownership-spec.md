@@ -49,7 +49,9 @@ compile time, every store that would dangle on every call.
    primitive, `null`, a `heap T(...)`, a call, or a String `+`. A local
    binding `T b = a;` lends, and an argument `f(a)` lends.
 8. A local holder that escapes (returned, stored, or passed with `#`) is a
-   field for these rules. A holder that stays local is exempt.
+   field for these rules. So is a holder that is not the frame's own, and a
+   holder in an outer block that keeps an owned local from an inner block.
+   A holder that stays local is exempt.
 
 Principle (Julian 2026-10-05): where a dangling reference can be detected at
 compile time, detect it. Not everything can be. What matters most is that one

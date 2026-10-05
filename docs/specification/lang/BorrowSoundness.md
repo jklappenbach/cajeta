@@ -27,7 +27,9 @@ One of the two body-side checks has since shipped; the other is still deferred:
   chooses (the `ArrayList` model, §2.3), or spell the formal `^T` when it is
   only ever borrowed. Spelling it `#T` alone is not a fix, because a `#T`
   formal frees its argument at return. The rule covers `this.f = p`,
-  `this.arr[i] = p` and a nested path (`this.head.prev = p`). A forward into
+  `this.arr[i] = p` and a nested path (`this.head.prev = p`). The same rule
+  rejects a plain `=` of an owned local or of a value read out of one, and it
+  treats a local holder that escapes as a field. A forward into
   a container call (`this.entries.put(k, v)`) is a plain argument and stays
   allowed, so the shapes discussed below remain unlinted.
 - **Closure-capture of borrow** — a closure captures a class-typed

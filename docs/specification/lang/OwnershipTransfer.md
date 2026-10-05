@@ -305,15 +305,26 @@ and replaced by these rules.
 2. A `T` or `#T` formal that is kept is stored with `#=`. `set(x)` lends and
    `set(#x)` transfers, and the field records which.
 3. An owned local (bound from `heap`, a call, `#=` or a `+`) stored into a
-   field or slot is stored with `#=`.
-4. A value read out of a `T` or `#T` formal (`p.child`) stored with `=` needs
-   a `^T` formal. A `#=` store records whatever title the slot held.
-5. `=` into a String field is a borrow, like every other type.
-6. Plain `=` stays right for a literal, a primitive, `null`, and a
-   `heap T(...)` or call written in place.
+   field or slot that outlives it is stored with `#=`.
+4. A value read out of a `T` or `#T` formal, or out of an owned local
+   (`p.child`), is never stored with `=`. For a formal, spell it `^T`. For
+   either, `#=` takes the title the slot held.
+5. Strings follow every rule here, like every other type.
+6. `=` never moves. There is no last-use move, so an owned local stored
+   with `=` is rejected even when nothing reads it again.
+7. A producer written in place takes the title with `=`: a literal, a
+   primitive, `null`, a `heap T(...)`, a call, or a String `+`.
+8. A local holder whose field or slot is stored into counts as a field when
+   it escapes: returned, passed or stored with `#`, or stored into a field,
+   a slot, a static, or another holder that escapes or is not the frame's
+   own. A holder bound from a parameter, a field read or a call is not the
+   frame's own. A holder declared in an outer block that keeps an owned
+   local from an inner block is checked too. A holder that stays local is
+   exempt.
 
-Rules 1 to 3 report `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`, and rule 4 reports
-`CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM`. The rules apply to a direct
+Rule 4 for a `T` or `#T` formal reports
+`CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM`. Every other violation
+reports `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`. The rules apply to a direct
 `this.field = p`, to `this.slots[i] = p`, and to a nested path such as
 `this.head.prev = p`. Declaring the formal `#T` does not make a plain `=`
 safe, because a `#T` formal frees its argument at return. The sink model
