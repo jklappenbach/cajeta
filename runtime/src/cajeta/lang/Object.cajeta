@@ -127,9 +127,9 @@ public class Object {
      * - **String fields** — a fresh stake on the same immutable byte
      *   buffer (wrapper-per-stake; cajeta has no GC, so aliasing one
      *   wrapper would use-after-free when either owner drops)
-     * - **other class-typed fields** — copied by reference (Java's
-     *   shallow `Object.clone()`); override to deep-copy when that's
-     *   the right thing
+     * - **other class-typed, array, closure and interface fields** — shared
+     *   by reference and recorded as borrows, so dropping the copy never
+     *   frees the original's; override to deep-copy when that's the right thing
      * - a **String receiver** DETACHES: the (possibly windowed) text
      *   materializes into a fresh owned buffer — the retention-
      *   amplification valve (slice-spec §4.4)

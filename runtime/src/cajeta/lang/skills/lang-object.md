@@ -50,10 +50,11 @@ public static boolean operator== (Object a, Object b);          // a.hash()==b.h
 - **`clone() -> #Object`** returns an owned copy. On a String it is the way to keep
   your own String past its source: `this.v #= o.v.clone();` copies the bytes at any
   size and stops pinning the source's buffer. A plain `=` into a String field only
-  borrows. On any other class it is a *shallow* RTTI copy, and it is NOT yet safe
-  when the class owns a class-typed or array field: the copy records the same title,
-  so dropping the copy frees the original's field. Override `clone()` for those
-  classes until the runtime clears the copied titles.
+  borrows. On any other class it is a *shallow* copy: each String field gets its own
+  stake, and every class-typed, array, closure or interface field is shared as a
+  borrow, so dropping the copy never frees the original's fields. The copy must not
+  outlive the original while it reads those shared fields. Override `clone()` for a
+  deep copy.
 - **`operator==`** — `static`, **null-safe**: two `null`s are equal, one `null` is not,
   and the `null` check lowers to a pointer compare (non-recursive, no segfault on null
   vtable). `!=` is auto-derived as its negation — do not declare `operator!=`.
