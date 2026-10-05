@@ -99,7 +99,7 @@ TEST(LocalLinearityTests, readAfterCtorArgTransferIsLegal) {
     std::string src = std::string(kCellSrc) +
         "public class Holder {\n"
         "    public Cell held;\n"
-        "    public Holder(#Cell c) { this.held = c; }\n"
+        "    public Holder(#Cell c) { this.held #= c; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"

@@ -2,6 +2,7 @@
 // re-parsing its captured source under a type-parameter substitution. Kept in
 // its own TU so CajetaClass.h need not drag in the visitor + parser machinery.
 
+#include <algorithm>
 #include "CajetaArray.h"
 #include "CajetaClass.h"
 #include "CajetaConstantType.h"
@@ -55,6 +56,14 @@ namespace cajeta {
             }
         }
         return out;
+    }
+
+    // The preamble on one line, padded so `src` starts at its own `line` and diagnostics name real lines.
+    static string snippetInput(CajetaModulePtr module, const string& src, int line) {
+        string pre = synthesizePreamble(module);
+        if (line < 2) return pre + src + "\n";
+        std::replace(pre.begin(), pre.end(), '\n', ' ');
+        return pre + string(line - 1, '\n') + src + "\n";
     }
 
     vector<CajetaClass::DeferredInstantiation>&
@@ -518,7 +527,7 @@ namespace cajeta {
             // instantiated body's callees are not attributed to the call site.
             xref::SyntheticSourceScope xrefMask;
 
-            string ifInput = synthesizePreamble(module) + templateSource + "\n";
+            string ifInput = snippetInput(module, templateSource, templateSourceLine);
             antlr4::ANTLRInputStream ifStream(ifInput);
             CajetaLexer ifLexer(&ifStream);
             antlr4::CommonTokenStream ifTokens(&ifLexer);
@@ -637,7 +646,7 @@ namespace cajeta {
         // demand; the cache above means that runs once per unique arg list.
         xref::SyntheticSourceScope xrefMask;
 
-        string input = synthesizePreamble(module) + templateSource + "\n";
+        string input = snippetInput(module, templateSource, templateSourceLine);
 
         antlr4::ANTLRInputStream inputStream(input);
         CajetaLexer lexer(&inputStream);
@@ -992,7 +1001,7 @@ namespace cajeta {
         // substitution is pushed and no IR is emitted.
         xref::SyntheticSourceScope xrefMask;
 
-        string input = synthesizePreamble(module) + templateSource + "\n";
+        string input = snippetInput(module, templateSource, templateSourceLine);
         antlr4::ANTLRInputStream inputStream(input);
         CajetaLexer lexer(&inputStream);
         antlr4::CommonTokenStream tokens(&lexer);

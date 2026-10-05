@@ -2,7 +2,7 @@
 id: time-DateTimeFormatter
 applies-to: [cajeta/time/DateTimeFormatter]
 title: DateTimeFormatter — render temporal values to text (the formatting entry point)
-description: Immutable strftime/FormatStyle formatter for LocalDate/Time/DateTime/ZonedDateTime; ofStandard/ofPattern build it, format* return owned #String. Formats only — no parsing, no fluent builder here.
+description: "Immutable strftime/FormatStyle formatter for LocalDate/Time/DateTime/ZonedDateTime; ofStandard/ofPattern build it, format* return owned #String. Formats only — no parsing, no fluent builder here."
 ---
 
 # DateTimeFormatter

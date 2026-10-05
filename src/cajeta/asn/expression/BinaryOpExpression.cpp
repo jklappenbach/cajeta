@@ -784,31 +784,6 @@ namespace cajeta {
         // Indexed-assignment overload: `recv[idx] = value` on a class declaring
         // `operator[]=`. Must short-circuit BEFORE the LHS codegen below, which would
         // call `operator[]` (the read form) for its side effects and discard it.
-        if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2) {
-            if (auto eIdx = dynamic_pointer_cast<ArrayIndexExpression>(
-                    children[0])) {
-                auto& ech = eIdx->getChildren();
-                auto eRecv = ech.empty() ? nullptr
-                    : dynamic_pointer_cast<DotExpression>(ech[0]);
-                bool onThis = false;
-                if (eRecv) {
-                    auto& rch = eRecv->getChildren();
-                    onThis = !rch.empty()
-                        && dynamic_pointer_cast<ThisExpression>(rch[0]);
-                }
-                if (onThis) {
-                    if (auto eSrc = dynamic_pointer_cast<IdentifierExpression>(
-                            children[1])) {
-                        if (auto sc = module->getScopeStack().peek()) {
-                            sc->rejectCapturedBorrowParam(
-                                eSrc->getTextValue(),
-                                "element of `" + eRecv->getIdentifier() + "`",
-                                (int) getSourceLine());
-                        }
-                    }
-                }
-            }
-        }
         if (binaryOp == BINARY_OP_ASSIGN
                 && !children.empty()
                 && dynamic_pointer_cast<ArrayIndexExpression>(children[0])) {
@@ -1918,16 +1893,6 @@ namespace cajeta {
                     if (lhsCls && lhsCls->isInterface()) {
                         llvm::Type* ifaceTy = lhsAst->getResolvedType()->getLlvmType();
                         if (ifaceTy && ifaceTy->isStructTy()) {
-                            auto& ich = dotLhs->getChildren();
-                            auto capSrc = dynamic_pointer_cast<IdentifierExpression>(rhsAst);
-                            if (capSrc && !ich.empty()
-                                    && dynamic_pointer_cast<ThisExpression>(ich[0])) {
-                                if (auto sc = module->getScopeStack().peek()) {
-                                    sc->rejectCapturedBorrowParam(capSrc->getTextValue(),
-                                        "field `" + dotLhs->getIdentifier() + "`",
-                                        (int) getSourceLine());
-                                }
-                            }
                             storeInterfaceInlineBody(module, lhs, loadR(rhs),
                                 lhsCls, rhsAst);
                             result = lhs;
@@ -2752,27 +2717,6 @@ namespace cajeta {
                     // A plain store LENDS, so record the edge (receiver -> lent local): the escape
                     // sites reject a receiver that outlives the source. `#` spellings own.
                     if (!fobOwnedSpelling) {
-                        if (auto capDot = dynamic_pointer_cast<DotExpression>(
-                                lhsAst)) {
-                            // Only a DIRECT `this.field = p`: a nested path writes into another object's
-                            // field, where the capture is not this frame's to judge.
-                            auto& cch = capDot->getChildren();
-                            bool onThis = !cch.empty()
-                                && dynamic_pointer_cast<ThisExpression>(cch[0]);
-                            if (onThis) {
-                                if (auto capSrc = dynamic_pointer_cast<
-                                        IdentifierExpression>(rhsAst)) {
-                                    if (auto sc =
-                                            module->getScopeStack().peek()) {
-                                        sc->rejectCapturedBorrowParam(
-                                            capSrc->getTextValue(),
-                                            "field `" + capDot->getIdentifier()
-                                                + "`",
-                                            (int) getSourceLine());
-                                    }
-                                }
-                            }
-                        }
                         if (auto lendDot = dynamic_pointer_cast<DotExpression>(
                                 lhsAst)) {
                             auto& lch = lendDot->getChildren();

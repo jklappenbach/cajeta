@@ -33,7 +33,7 @@ Throwable                       root identity — carries `message`
 
 Two cooperating mechanisms, both keyed off the vtable chain every instance carries:
 
-1. **The `cause` chain (data).** `Exception.cause` is a `Throwable` pointer forming a "X caused by Y caused by Z" linked list. It is `0`-terminated, not null-via-Optional — check `e.cause != 0` before walking. A bare throw leaves `cause = 0`; a rewrap site assigns `this.cause = caught` to chain.
+1. **The `cause` chain (data).** `Exception.cause` is a `Throwable` pointer forming a "X caused by Y caused by Z" linked list. It is `0`-terminated, not null-via-Optional — check `e.cause != 0` before walking. A bare throw leaves `cause = 0`; a rewrap site stores `this.cause #= caught` to chain.
 2. **The recoverable/unrecoverable split (control).** The split is *not* a flag on the instance — the runtime resolves it structurally. At startup, codegen emits a global constructor (`__cajeta_set_unrecoverable_vtable`) that registers `UnrecoverableException`'s vtable. On a throw, the runtime helper `__cajeta_is_unrecoverable` reads the thrown instance's vtable (slot 0) and walks the `parent_vtable` chain upward, matching that address. Any descendant of `UnrecoverableException` matches and bypasses user `catch` arms straight to `abort()`; everything else (including `RecoverableException` and its subclasses) stays catchable. **Consequence:** you make a domain error fatal-vs-catchable purely by *which root you extend* — there is no field to set, and subclasses inherit tier membership automatically through the vtable parent chain.
 
 ## The no-super constructor pattern (the sharp edge)
@@ -45,17 +45,17 @@ package myapp.io;
 
 public class IOException extends RecoverableException {
     public IOException(#String message) {
-        this.message = message;   // inherited from Throwable
+        this.message #= message;  // inherited from Throwable
         this.cause = 0;           // inherited from Exception — MUST set; no super runs
     }
 }
 ```
 
-Forgetting `this.cause = 0` leaves it uninitialized — there is no base constructor to default it. To chain a cause, add an overload that assigns `this.cause = cause` instead of `0`.
+Forgetting `this.cause = 0` leaves it uninitialized — there is no base constructor to default it. To chain a cause, add an overload that takes `#Throwable cause` and stores `this.cause #= cause` instead of `0`.
 
 ## Ownership across the boundary
 
-- The `#String message` parameter is an **ownership transfer** (`#`): the string moves into the exception and the exception now owns it. Pass a freshly built/owned string; don't reuse it after the throw.
+- The `#String message` parameter is an **ownership transfer** (`#`): the string moves into the exception and the exception now owns it. Pass a freshly built/owned string; don't reuse it after the throw. The constructor keeps it with `this.message #= message`. A `#String` formal stored with a plain `=` is `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`, because the formal frees it at return.
 - Exceptions are thrown as heap values: `throw heap RecoverableException("...")`. On unwind the drop chain frees the instance (and its owned `message`) along the throw path, the same way it unwinds owned locals on a normal return.
 - `cause` is a borrowed-then-owned link: when you assign a caught exception into `this.cause` you are extending its lifetime into the wrapper's graph — don't also let it drop separately.
 

@@ -8,7 +8,7 @@ This chapter defines four ways to shape data. Arrays are the indexed storage typ
 
 Index access is bounds-checked at run time: an out-of-bounds access reports the index and the dimension size and terminates the program. It is not an exception a program can catch.
 
-An element store participates in ownership: a plain store lends into the slot, `#=` passes the source's title into it, and the slot records the arrived mode in its own ownership bit (Ownership §5.4). Storing a plain formal into an element is rejected like the field case (Ownership §5.7).
+An element store participates in ownership: a plain store lends into the slot, `#=` passes the source's mode into it, and the slot records the arrived mode in its own ownership bit (Ownership §5.4). Keeping a `T` or `#T` formal or an owned local in an element of a field follows the same rule as a field store. It is stored with `#=`, or a formal that is only ever borrowed is spelled `^T` (Ownership §5.7).
 
 **Example 12.1-1.** Creation, length, and indexing.
 

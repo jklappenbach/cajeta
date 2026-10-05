@@ -37,7 +37,7 @@ const char* kExceptions =
     "import cajeta.error.RecoverableException;\n"
     "import cajeta.lang.String;\n"
     "public class NotFound extends RecoverableException {\n"
-    "    public NotFound(String message) { this.message = message; this.cause = 0; }\n"
+    "    public NotFound(String message) { this.message #= message; this.cause = 0; }\n"
     "}\n";
 
 const char* kExceptions2 =
@@ -45,7 +45,7 @@ const char* kExceptions2 =
     "import cajeta.error.RecoverableException;\n"
     "import cajeta.lang.String;\n"
     "public class Timeout extends RecoverableException {\n"
-    "    public Timeout(String message) { this.message = message; this.cause = 0; }\n"
+    "    public Timeout(String message) { this.message #= message; this.cause = 0; }\n"
     "}\n";
 
 int32_t runMulti(const std::string& entryBody) {

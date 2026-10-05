@@ -138,20 +138,6 @@ namespace cajeta {
         // rejectTransferOfBorrow; a `#=` consumes its source only when this is true.
         bool holdsStaticTitle(const string& name);
 
-        // The CALLEE-side mirror: throws CAJETA_ERROR_CAPTURED_BORROW_PARAM when
-        // `srcName` is a plain parameter stored beyond the call, naming `#T` as the
-        // fix. `intoDesc` names the destination; `sourceLine` is for warn mode only.
-        void rejectCapturedBorrowParam(const string& srcName,
-                                       const string& intoDesc,
-                                       int sourceLine = -1);
-
-        // The warning-first migration switch: ERROR by default, demoted by
-        // CAJETA_CAPTURED_BORROW=warn so one build enumerates every site instead of
-        // stopping at the first. Read per call, so a test may flip it mid-process.
-        static bool capturedBorrowWarns();
-        static void setCapturedBorrowWarns(bool on);
-        static void clearCapturedBorrowWarnsOverride();
-
         // Record that `holder` now holds a lend of the local owner `src`.
         void recordLend(const string& holder, const string& src);
         // The local owners `holder` holds lends of (empty when none).

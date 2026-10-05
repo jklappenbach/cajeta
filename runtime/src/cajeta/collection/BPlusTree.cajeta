@@ -100,9 +100,8 @@ public final class BPlusTree<K, V> {
             r.keys[0] #= key;
             r.values[0] #= value;
             r.numKeys = 1;
-            // Borrow link first; the registry add is the node's LAST use.
-            this.root = r;
             this.nodes.add(#r);
+            this.root #= r;
             this.sizeCount = 1;
             return;
         }
@@ -257,6 +256,7 @@ public final class BPlusTree<K, V> {
         int32 total = leaf.numKeys;
         int32 mid = total / 2;
         BPlusTreeNode<K, V> right = heap BPlusTreeNode<K, V>(true, this.order);
+        this.nodes.add(#right);
         right.numKeys = total - mid;
         int32 k = 0;
         while (k < right.numKeys) {
@@ -268,15 +268,13 @@ public final class BPlusTree<K, V> {
         }
         leaf.numKeys = mid;
         right.next = leaf.next;
-        leaf.next = right;
+        leaf.next #= right;
         right.parent = leaf.parent;
         // Copy-up: the separator equals the first key of the right leaf —
         // a routing BORROW (internal nodes never own; the leaf keeps the
         // key's title).
         K sep = right.keys[0];
         this.insertIntoParent(leaf, sep, right);
-        // Registry takes the new node's title — right's last use.
-        this.nodes.add(#right);
     }
 
     /**
@@ -289,15 +287,14 @@ public final class BPlusTree<K, V> {
         BPlusTreeNode<K, V> parent = left.parent;
         if (parent == null) {
             BPlusTreeNode<K, V> newRoot = heap BPlusTreeNode<K, V>(false, this.order);
+            this.nodes.add(#newRoot);
             newRoot.keys[0] = sep;
             newRoot.numKeys = 1;
             newRoot.children[0] = left;
             newRoot.children[1] = right;
-            left.parent = newRoot;
-            right.parent = newRoot;
-            this.root = newRoot;
-            // Registry takes the new root's title — its last use.
-            this.nodes.add(#newRoot);
+            left.parent #= newRoot;
+            right.parent #= newRoot;
+            this.root #= newRoot;
             return;
         }
         // Index of `left` among the parent's children.

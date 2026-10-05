@@ -38,8 +38,8 @@ public class JsonTiersDemo extends DemoClass {
         //    materializing anything. The token protocol: next() advances
         //    and returns the token; KEY precedes each value; END closes.
         String events = "[{\"ms\":12},{\"ms\":45},{\"ms\":30}]";
-        JsonReader r = heap JsonReader(events.toBytes(),
-            (int64) events.byteLength());
+        int8[] eventBytes #= events.toBytes();
+        JsonReader r = heap JsonReader(eventBytes, (int64) events.byteLength());
         int32 records = 0;
         int32 totalMs = 0;
         JsonToken t = r.next();
@@ -78,7 +78,8 @@ public class JsonTiersDemo extends DemoClass {
         //    the right tool exactly when no class describes the payload.
         String cfg = "{\"service\":\"api\",\"limits\":{\"rps\":100,"
             + "\"burst\":250},\"tags\":[\"edge\",\"beta\"]}";
-        JsonReader cr = heap JsonReader(cfg.toBytes(),
+        int8[] cfgBytes #= cfg.toBytes();
+        JsonReader cr = heap JsonReader(cfgBytes,
             (int64) cfg.byteLength());
         JsonValue root #= cr.readValue();
         JsonObject obj = root.object();

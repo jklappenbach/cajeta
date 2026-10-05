@@ -19,7 +19,7 @@ exceptions extend one of these from their owning package
 (`cajeta.io.file.IoException`, …), and so should yours.
 
 **Mechanical note:** `super(...)` is not supported yet — a subclass
-constructor assigns the inherited fields directly (`this.message = message;
+constructor assigns the inherited fields directly (`this.message #= message;
 this.cause = null;`).
 
 ## Checked in the advisory sense
@@ -72,7 +72,7 @@ import cajeta.lang.System;
 @DiagnosticCode("APP_ERR_BAD_PORT")
 public class BadPortException extends RecoverableException {
     public BadPortException(#String message) {
-        this.message = message;      // no super(...) yet — set inherited fields
+        this.message #= message;     // no super(...) yet — set inherited fields
         this.cause = null;
     }
 }

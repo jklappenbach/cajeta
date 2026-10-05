@@ -69,6 +69,9 @@ namespace cajeta::buildtool::skill {
             if (!entry.title.empty()) {
                 keys_.push_back({entry.title, MatchSource::Title, {id}});
             }
+            for (const std::string& kw : entry.keywords) {
+                if (!kw.empty()) keys_.push_back({kw, MatchSource::Keyword, {id}});
+            }
         }
         for (size_t i = 0; i < keys_.size(); ++i) {
             for (const std::string& g : trigramsOf(keys_[i].key)) {
@@ -84,7 +87,7 @@ namespace cajeta::buildtool::skill {
                 return indexError("skills/index.json",
                                   "duplicate skill id '" + d.id + "'");
             }
-            idx.skills_[d.id] = SkillEntry{d.title, "skills/" + d.id + ".md"};
+            idx.skills_[d.id] = SkillEntry{d.title, "skills/" + d.id + ".md", d.keywords};
             for (const std::string& name : d.appliesTo) {
                 idx.names_[name].push_back(d.id);
             }
@@ -119,7 +122,15 @@ namespace cajeta::buildtool::skill {
         first = true;
         for (const auto& [id, entry] : skills_) {
             os << (first ? "\n" : ",\n") << "    " << jstr(id) << ": {\"title\": "
-               << jstr(entry.title) << ", \"member\": " << jstr(entry.member) << "}";
+               << jstr(entry.title) << ", \"member\": " << jstr(entry.member);
+            if (!entry.keywords.empty()) {
+                os << ", \"keywords\": [";
+                for (size_t i = 0; i < entry.keywords.size(); ++i) {
+                    os << (i ? ", " : "") << jstr(entry.keywords[i]);
+                }
+                os << "]";
+            }
+            os << "}";
             first = false;
         }
         os << (first ? "" : "\n  ") << "}\n";
@@ -160,6 +171,11 @@ namespace cajeta::buildtool::skill {
                 SkillEntry entry;
                 if (auto t = e->getString("title")) entry.title = t->str();
                 if (auto m = e->getString("member")) entry.member = m->str();
+                if (const llvm::json::Array* kws = e->getArray("keywords")) {
+                    for (const auto& kw : *kws) {
+                        if (auto s = kw.getAsString()) entry.keywords.push_back(s->str());
+                    }
+                }
                 idx.skills_[kv.first.str()] = std::move(entry);
             }
         }

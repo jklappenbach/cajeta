@@ -113,8 +113,8 @@ TEST(ClosureOwnershipTests, lambdaLiteralKeptWithASharpStoreIsDroppedWithTheHold
     EXPECT_EQ(runVerdict(src), 0) << "40 = wrong value; 41 = the kept closure leaked or was freed twice";
 }
 
-// 9.1.5 — a plain `=` of a function-typed parameter into a field is a captured borrow.
-TEST(ClosureOwnershipTests, plainStoreOfAFunctionParameterIsACapturedBorrow) {
+// 9.1.5 — a plain `=` of a function-typed parameter into a field needs `#=` or `^`.
+TEST(ClosureOwnershipTests, plainStoreOfAFunctionParameterNeedsSharpStore) {
     std::string src = std::string(PRE)
         + "    static class KPlain {\n"
         + "        (int32) -> int32 f;\n"
@@ -125,7 +125,7 @@ TEST(ClosureOwnershipTests, plainStoreOfAFunctionParameterIsACapturedBorrow) {
         + "        return 0;\n"
         + "    }\n"
         + "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_CAPTURED_BORROW_PARAM");
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
     EXPECT_NE(msg.find("#="), std::string::npos) << "the fix names the sink spelling: " << msg;
 }
 

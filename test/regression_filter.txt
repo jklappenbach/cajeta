@@ -369,22 +369,20 @@ WrapperArrayInTemplateTests.workerSharedSlotPairResult
 # complete, or a rule that quietly stops firing — and the second one looks
 # exactly like success.
 #
-# `defaultModeStillThrows` in two of these suites pins the END of a spec §5.5
-# warning-first migration: it asserts the check is an ERROR by default, so the
-# flip back from `warn` is verified rather than asserted. Both fail by
-# construction if the gate is run with `CAJETA_CAPTURED_BORROW=warn` or
-# `CAJETA_OWNED_BIND=warn` in the environment — which is correct. That
-# environment is a migration in progress, not a green build.
-CapturedBorrowParamTests.plainParamStoredIntoFieldRejected
-CapturedBorrowParamTests.plainParamStoredIntoElementRejected
-CapturedBorrowParamTests.sinkStoringWithSharpAssignStillCompiles
-CapturedBorrowParamTests.sharpParamStoredStillCompiles
-CapturedBorrowParamTests.captureThroughStraightLineLocalRejected
-CapturedBorrowParamTests.unprovableCaptureIsAllowed
-CapturedBorrowParamTests.plainParamReadOnlyStillCompiles
-CapturedBorrowParamTests.warnModeAdmitsTheCaptureAndKeepsCompiling
-CapturedBorrowParamTests.warnModeCoversTheElementStoreSiteToo
-CapturedBorrowParamTests.defaultModeStillThrows
+# `defaultModeStillThrows` pins the END of a spec §5.5 warning-first
+# migration: it asserts the check is an ERROR by default. It fails by
+# construction if the gate is run with `CAJETA_OWNED_BIND=warn` in the
+# environment, which is correct.
+KeepStoreRuleTests.plainFormalPlainStoreRejected
+KeepStoreRuleTests.plainFormalPlainSlotStoreRejected
+KeepStoreRuleTests.plainFormalSharpStoreCompiles
+KeepStoreRuleTests.borrowFormalPlainStoreCompiles
+KeepStoreRuleTests.sharpFormalPlainStoreRejected
+KeepStoreRuleTests.formalThroughAliasLocalRejected
+KeepStoreRuleTests.formalReadOnlyCompiles
+KeepStoreRuleTests.heapLocalPlainStoreRejected
+KeepStoreRuleTests.interiorReadOfPlainFormalRejected
+KeepStoreRuleTests.storeIntoNonEscapingHolderLocalCompiles
 OwnedResultTransferTests.plainBindOfOwnedResultRejected
 OwnedResultTransferTests.sharpAssignBindOfOwnedResultCompilesAndRuns
 OwnedResultTransferTests.plainBindOfBorrowResultStillCompiles
@@ -453,7 +451,7 @@ NetTaxonomyTests.malformedAddressStillCaughtBySpecificSubtype
 NullHandlingTests.bareNullAsInstanceMethodArg
 NullHandlingTests.bareNullAsPointerArg
 OwnedIntrinsicTests.moveMaskRetired
-OwningStoreGateTests.bareHashParamStoreMovesLikeExplicitMove
+OwningStoreGateTests.bareHashParamStoreRejectedAndSharpStoreMoves
 SignatureAbiTests.castReturnOfArmedPlainFormalPassesTitleThrough
 SignatureAbiTests.castReturnOfConsumedFormalPassesTitleThrough
 SignatureAbiTests.concatReturnedInsideTryKeepsFreshReturnGate

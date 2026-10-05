@@ -30,7 +30,10 @@ namespace cajeta::buildtool::mcp {
             "If a relevant skill is returned, call getSkills to fetch its "
             "payload and follow that guidance over your prior assumptions. Use "
             "listSkills to browse what is available, and follow a skill's "
-            "references to related skills.";
+            "references to related skills. For the language itself (ownership, "
+            "borrowing, `#`, `#=`, `^T` parameters, keeping a value in a field), "
+            "search the topic or read the cajeta/language skills, starting with "
+            "language-ownership, before writing code that stores or moves a value.";
 
         constexpr const char* kProtocolVersion = "2024-11-05";
 

@@ -1,8 +1,8 @@
 ---
 id: reflect-Method-invokeObject
 applies-to: [cajeta/reflect/Method.invokeObject]
-title: Method.invokeObject — reflective call returning an owned #Object
-description: Reflectively invoke a reference-returning method; result is an owned #Object — only safe for methods returning heap T, never a borrow.
+title: "Method.invokeObject — reflective call returning an owned #Object"
+description: "Reflectively invoke a reference-returning method; result is an owned #Object — only safe for methods returning heap T, never a borrow."
 ---
 
 # `Method.invokeObject` — reflective call that returns an owned reference

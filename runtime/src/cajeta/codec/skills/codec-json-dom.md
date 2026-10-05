@@ -2,7 +2,7 @@
 id: codec-json-dom
 applies-to: [cajeta/codec/json/JsonValue, cajeta/codec/json/JsonArray, cajeta/codec/json/JsonObject]
 title: JSON DOM (Tier 3) — JsonValue tree, JsonObject, JsonArray
-description: In-memory JSON tagged-union tree — kind-gated reads, Optional getters, and #-ownership of nodes and borrowed string bytes.
+description: "In-memory JSON tagged-union tree — kind-gated reads, Optional getters, and #-ownership of nodes and borrowed string bytes."
 ---
 
 # JSON DOM — the Tier 3 value tree

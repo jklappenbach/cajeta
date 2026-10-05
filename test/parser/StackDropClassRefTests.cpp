@@ -185,7 +185,7 @@ TEST(StackDropClassRefTests, diamondSharedBaseFieldDroppedOnce) {
         "    public String v;\n"
         "    public Root() { return; }\n"
         "    public void setV(String s) {\n"
-        "        this.v = s;\n"
+        "        this.v #= \"\" + s;\n"
         "    }\n"
         "}\n"
         "public class L extends Root {\n"

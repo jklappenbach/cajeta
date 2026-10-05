@@ -125,6 +125,7 @@ namespace cajeta {
         vector<TypeParameter> typeParameters;
         vector<CajetaTypePtr> typeArguments;
         string templateSource;
+        int templateSourceLine = 0;  // 1-based line of templateSource in its file, 0 when unknown
         int dbgLineDelta = 0;
         // A concrete instantiation's back-pointer to its template; null otherwise.
         CajetaClassPtr templateOrigin;
@@ -788,6 +789,8 @@ namespace cajeta {
 
         const string& getTemplateSource() const { return templateSource; }
         void setTemplateSource(string src) { templateSource = std::move(src); }
+        void setTemplateSourceLine(int line) { templateSourceLine = line; }
+        int getTemplateSourceLine() const { return templateSourceLine; }
         CajetaClassPtr getTemplateOrigin() const { return templateOrigin; }
         void setTemplateOrigin(CajetaClassPtr origin) { templateOrigin = std::move(origin); }
 

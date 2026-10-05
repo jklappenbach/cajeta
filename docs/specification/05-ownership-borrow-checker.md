@@ -282,7 +282,7 @@ public final class C {
 
 ### 5.5.1 Must-own parameters
 
-A parameter type may be spelled `#T`. This is an opt-in must-own edge for a method that cannot function with a borrow, because it stores the value somewhere that outlives the call and has no way to cope with the caller keeping the title. Passing a plain argument at such an edge is a compile-time error.
+A parameter type may be spelled `#T`. This is an opt-in must-own edge for a method that cannot function with a borrow, because it stores the value somewhere that outlives the call and has no way to cope with the caller keeping the title. Passing a plain argument at such an edge is a compile-time error. A `#T` formal owns its argument and frees it at return, so the store that keeps it is still spelled `#=` (§5.7).
 
 **Example 5.5-2.** A `#T` parameter, satisfied by a transfer.
 
@@ -338,6 +338,30 @@ The receiving local's *type* never carries the marker. `#Point q = …` is a com
 
 > *Discussion.* Nothing in user code reads the per-call flag positionally, and the retired `Cajeta.moveMask()` accessor is rejected with `CAJETA_ERROR_MOVEMASK_RETIRED`. Code that branches on a formal's arrived mode calls `Cajeta.owned(formal)`. Ownership is never inferred from the body. A lend at a local's last use is often a transfer the author did not spell, and the compiler advises (§5.10) rather than guesses, because the guess is wrong exactly where it matters — a value handed to a spawned task outlives the frame that appears finished with it.
 
+### 5.5.3 Borrow-only parameters
+
+A parameter type may be spelled `^T`. The callee receives a borrow on every call, so a `^T` formal carries no runtime ownership flag. A call site may pass a name, a field read or another borrow. Passing `#x`, a fresh `heap` value, an owned `#T` result or a `+` String is a compile-time error, `CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM`, because nothing would own the value after the call. Inside the callee, `#p` on a `^T` formal is `CAJETA_ERROR_MOVE_OF_BORROW`. A plain argument or a `#=` store passes the formal on as a borrow.
+
+An override must spell the same `^` marks as the method it overrides (`CAJETA_ERROR_BORROW_MARK_MISMATCH`), and a call through an interface or a virtual call is checked against the declared signature. `^` on a primitive or value-type formal is `CAJETA_ERROR_BORROW_MARK_ON_VALUE`, and on a varargs formal it is `CAJETA_ERROR_BORROW_MARK_ON_VARARGS`. `^` never marks a type-parameter declaration (`class C<^K>` is an error). A formal typed by a type parameter may be spelled `^K key`, and the mark has no effect where `K` is instantiated with a primitive.
+
+**Example 5.5-5.** A borrow-only formal kept in a field.
+
+```cajeta
+public class Cell { public int32 v; public Cell(int32 v) { this.v = v; } }
+public final class Watcher {
+    Cell seen;
+    public Watcher(^Cell c) { this.seen = c; }      // the field borrows
+    public int32 read() { return this.seen.v; }
+}
+public final class C {
+    public static int32 run() {
+        Cell c = heap Cell(7);
+        Watcher w = heap Watcher(c);   // a lend; heap Watcher(#c) is rejected
+        return w.read();               // 7
+    }
+}
+```
+
 ## 5.6 Restrictions on Transfer
 
 This section governs `#`, the transfer spelling. `#` asserts that its source holds a title to surrender, so the restriction is a single rule: **you cannot transfer from a borrow.** Applying `#` to a value the compiler can prove holds no title is a compile-time error, `CAJETA_ERROR_MOVE_OF_BORROW`.
@@ -391,11 +415,49 @@ public final class C {
 
 ## 5.7 Escapes and Retention
 
-A plain store and a plain argument lend. Two rules keep a lend from outliving its source.
+A plain store and a plain argument lend. The rules below keep a lend from outliving its source, within the limit stated at the end of this section.
 
-**Dangling lend.** If a method lends a local into a receiver that *retains* it, storing it into a field, and the receiver then escapes the method, the escape is a compile-time error. The receiver would leave holding a pointer to a local that is about to drop. The check fires only when the callee actually retains, because a method that merely reads its argument cannot strand anything and does not poison its receiver. The fix is to say what was meant. `h.c #= s` gives the holder the title.
+**Keeping a value in a field.** A store into a field, an element or a static outlives the call that makes it. The compiler checks each such store against the form of its source.
 
-**Example 5.7-1.** A dangling lend is rejected.
+| Source | `this.f = v` | `this.f #= v` |
+|---|---|---|
+| `^T v` formal (§5.5.3) | the field borrows | the field borrows |
+| `T v` formal | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE` | the field records the mode that arrived |
+| `#T v` formal | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE` | the field takes the title |
+| owned local, bound from `heap`, a call, `#=` or `+` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE` | the field takes the title |
+| interior read of a `T` or `#T` formal (`v.child`) | `CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM` | the field records the title the slot held |
+| local bound with `=` from a `^T` formal or a field read | the field borrows | the field borrows |
+
+The same table governs an element store (`this.items[i] = v`) and a nested path (`this.head.prev = v`). A `=` into a String field is a borrow, like every other type. A plain `=` stays correct for a literal, a primitive, `null`, and a `heap T(...)` or call written in place. A primitive or value-type source carries no title and may be stored with `=`. Spelling the formal `#T` does not make `=` safe, because a `#T` formal owns its argument and frees it at return. Each message names the spelling that fixes the store.
+
+**Example 5.7-1.** A kept formal stored with `=` is rejected.
+
+<!-- snippet: skip -->
+```cajeta
+public final class Holder {
+    int8[] f;
+    public Holder() { this.f = heap int8[1]; }
+    public void set(int8[] v) {
+        this.f = v;           // CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE
+    }
+}
+```
+
+**Example 5.7-2.** The two correct spellings. `set` lets the caller choose, and `watch` only ever borrows.
+
+```cajeta
+public final class Keeper {
+    int8[] f;
+    int8[] g;
+    public Keeper() { this.f = heap int8[1]; this.g = heap int8[1]; }
+    public void set(int8[] v) { this.f #= v; }       // set(a) lends, set(#a) transfers
+    public void watch(^int8[] v) { this.g = v; }     // a borrow on every call
+}
+```
+
+**Dangling lend.** When a method lends one of its own owned locals into a holder local and then returns the holder, the return is a compile-time error, `CAJETA_ERROR_DANGLING_LEND`. The lend may be a plain store into the holder's field or a plain argument to a method that retains it. The holder would leave holding a pointer to a local that is about to drop. The check is intra-procedural and single-hop. It fires only when the callee actually retains, because a method that merely reads its argument cannot strand anything. The fix is to say what was meant. `h.c #= s` gives the holder the title.
+
+**Example 5.7-3.** A dangling lend is rejected.
 
 <!-- snippet: skip -->
 ```cajeta
@@ -414,20 +476,7 @@ public final class C {
 }
 ```
 
-**Captured borrow parameter.** A plain store of a plain formal into a field or element is a compile-time error, `CAJETA_ERROR_CAPTURED_BORROW_PARAM`. The field would borrow, while the formal's armed drop entry frees the value at callee exit on exactly the calls that surrendered it. Spell `this.f #= v` to record whatever title arrived, or `this.f = v.clone()` to keep a copy. Stores this check cannot reach — a nested path such as `this.head.prev = v`, or a source that is a runtime-conditional owner rather than a formal — warn instead (`CAJETA_WARN_PLAIN_RETAIN_STORE`).
-
-**Example 5.7-2.** A captured borrow parameter is rejected.
-
-<!-- snippet: skip -->
-```cajeta
-public final class Holder {
-    int8[] f;
-    public Holder() { this.f = heap int8[1]; }
-    public void set(int8[] v) {
-        this.f = v;           // CAJETA_ERROR_CAPTURED_BORROW_PARAM
-    }
-}
-```
+**Not checked.** A caller that lends `x` to a holder that outlives `x` in any other way is not caught. The holder may be a field, a parameter, or a local declared in an enclosing block. Catching it needs lifetime information the language does not track. When the holder must outlive the value, transfer it with `#x`.
 
 ## 5.8 Field Ownership and the Live-Set Claim
 

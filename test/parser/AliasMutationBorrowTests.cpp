@@ -48,7 +48,7 @@ TEST(AliasMutationBorrowTests, writeThroughAliasIsAllowed) {
     auto src =
         "package test;\n"
         "public class Person { String name; "
-        "  public Person(String n) { this.name = n; } }\n"
+        "  public Person(String n) { this.name #= n; } }\n"
         "public final class A {\n"
         "    public static int32 run() {\n"
         "        Person p = heap Person(\"Bob\");\n"
@@ -69,7 +69,7 @@ TEST(AliasMutationBorrowTests, writeToBorrowedPathPrefixIsAllowed) {
     auto src =
         "package test;\n"
         "public class Address { String city; "
-        "  public Address(String c) { this.city = c; } }\n"
+        "  public Address(String c) { this.city #= c; } }\n"
         "public class Person { Address addr; "
         "  public Person(Address a) { this.addr #= a; } }\n"
         "public final class A {\n"

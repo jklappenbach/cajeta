@@ -738,7 +738,7 @@ TEST(ErrorModelTests, classWithStringField) {
         "package test;\n"
         "public class Holder {\n"
         "    public String message;\n"
-        "    public Holder(String s) { this.message = s; }\n"
+        "    public Holder(String s) { this.message #= s; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"

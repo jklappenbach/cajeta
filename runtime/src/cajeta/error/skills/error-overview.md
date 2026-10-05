@@ -2,7 +2,7 @@
 id: error-overview
 applies-to: [cajeta.error]
 title: cajeta.error — exception hierarchy orientation & routing
-description: Pick Recoverable vs Unrecoverable vs ClassCastException, transfer the #String message on throw, chain causes, and how vtable-walk decides what aborts.
+description: "Pick Recoverable vs Unrecoverable vs ClassCastException, transfer the #String message on throw, chain causes, and how vtable-walk decides what aborts."
 ---
 
 # cajeta.error — orientation & routing

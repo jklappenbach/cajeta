@@ -362,7 +362,7 @@ erasure. Type parameters are class-level or method-level.
 ```cajeta
 public class Box<T> {                 // class-level
     T value;
-    public Box(T v) { this.value = v; }
+    public Box(T v) { this.value #= v; }
     public T get() { return this.value; }
 }
 

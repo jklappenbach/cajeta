@@ -26,16 +26,17 @@ public class Box<T> {
 **Hazard (now a compile error; history in**
 `specs/archive/field-store-title-trap-spec.md`**)**: the plain shape
 `Box(T v) { this.value = v; }` is rejected with
-`CAJETA_ERROR_CAPTURED_BORROW_PARAM` (ownership spec §4.2), because it *would*
+`CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE` (field-store-ownership spec), because it *would*
 dangle: `heap Box<Dog>(heap Dog())` surrenders the title to a formal that never
 consumes it, so the object would be freed at constructor exit and the field
 would point at freed memory. The rejection lands on the CONSTRUCTOR, so it
 fires whatever the call site does — passing a named local does not make the
 shape legal. This is **not** template-specific: a concrete `Dog value;` field is
-rejected identically. Two legal spellings, and the choice is an API decision:
-`Box(#T v) { this.value #= v; }` forces every caller to surrender, while
+rejected identically. Three legal spellings, and the choice is an API decision:
+`Box(#T v) { this.value #= v; }` forces every caller to surrender,
 `Box(T v) { this.value #= v; }` is the sink model (§2.3) where `#=` records the
-source's mode and the caller chooses per call.
+source's mode and the caller chooses per call, and `Box(^T v) { this.value = v; }`
+keeps a borrow that callers cannot transfer into.
 
 ## Method templates
 

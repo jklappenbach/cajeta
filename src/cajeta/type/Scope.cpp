@@ -4,7 +4,6 @@
 #include "../compile/CajetaModule.h"
 #include "../compile/DiagnosticSite.h"
 #include "../error/Exception.h"
-#include "../ownership/MigrationSwitch.h"
 #include "CajetaClass.h"
 #include "CajetaFunctionType.h"
 
@@ -200,99 +199,6 @@ namespace cajeta {
         if (!field->getDropEntry()) return false;       // (b) never owned
         if (!field->getCallBorrowOrigin().empty()) return false;  // (c) call borrow
         return true;
-    }
-
-    namespace {
-        ownership::MigrationSwitch g_capturedBorrow("CAJETA_CAPTURED_BORROW");
-    }
-
-    bool Scope::capturedBorrowWarns() { return g_capturedBorrow.warns(); }
-
-    void Scope::setCapturedBorrowWarns(bool on) {
-        g_capturedBorrow.setWarns(on);
-    }
-
-    void Scope::clearCapturedBorrowWarnsOverride() {
-        g_capturedBorrow.clearOverride();
-    }
-
-    void Scope::rejectCapturedBorrowParam(const string& srcName,
-                                          const string& intoDesc,
-                                          int sourceLine) {
-        FieldPtr field = getField(srcName);
-        if (!field) return;
-
-        // Only a FORMAL: a local is already policed by DANGLING_LEND.
-        auto pf = dynamic_pointer_cast<ParameterField>(field);
-        string origin = srcName;
-        if (!pf) {
-            // Reached through an intermediate local, whose provenance is on the
-            // FIELD by identity, never by name.
-            const string& via = field->getParamBorrowOrigin();
-            if (via.empty()) return;
-            origin = via;
-            FieldPtr pfield = getField(via);
-            pf = pfield ? dynamic_pointer_cast<ParameterField>(pfield)
-                        : nullptr;
-            if (!pf) return;
-        }
-
-        // A `#T` formal already told the caller it would be kept.
-        auto fp = pf->getFormalParameter();
-        if (fp && fp->isTransferred()) return;
-        if (fp && fp->isBorrowOnly()) return;
-
-        auto klass = dynamic_pointer_cast<CajetaClass>(field->getType());
-        auto fnTy = dynamic_pointer_cast<CajetaFunctionType>(field->getType());
-        bool titleBearing = (klass && !klass->isValueType()
-                && !klass->isSharedCapableValue()) || fnTy != nullptr;
-        if (!titleBearing) return;
-
-        string what = (origin == srcName)
-            ? ("parameter `" + origin + "`")
-            : ("parameter `" + origin + "` (via `" + srcName + "`)");
-        string message = fnTy
-            ? ("cannot keep " + what + " in " + intoDesc
-                + ": a plain parameter is a BORROW — a closure local passed here "
-                  "stays the caller's and is freed with its frame, so this object "
-                  "would be left pointing at freed memory. Fix: store with `#=`, "
-                  "which records the title that arrived (a lambda literal moves "
-                  "in, a name lends — the ArrayList model), or spell the "
-                  "parameter with a leading `#` on its function type so the call "
-                  "site must surrender ownership.")
-            : ("cannot keep " + what + " in " + intoDesc
-                + ": a plain parameter is a BORROW — the caller keeps the "
-                  "title and frees it, so this object would be left pointing "
-                  "at freed memory once the call returns. Fix: spell the "
-                  "parameter `#" + klass->toCanonical() + "` so the call site "
-                  "must surrender ownership, or store with `#=` if this type "
-                  "is a container whose caller chooses (the ArrayList model), "
-                  "or copy the value.");
-
-        if (!capturedBorrowWarns()) {
-            throw Exception(message, "CAJETA_ERROR_CAPTURED_BORROW_PARAM");
-        }
-
-        string className;
-        string methodName;
-        if (module) {
-            if (!module->getStructureStack().empty()
-                    && module->getStructureStack().back()) {
-                className = module->getStructureStack().back()
-                    ->getQName()->toCanonical();
-            }
-            if (MethodPtr m = module->getCurrentMethod()) {
-                methodName = m->getName();
-            }
-        }
-        g_capturedBorrow.report(
-            "[captured-borrow] " + className + "." + methodName + ":"
-                + std::to_string(sourceLine) + " param=" + origin
-                + " src=" + srcName + " into=" + intoDesc
-                + " type=" + (klass ? klass->toCanonical() : string("(function)")),
-            "CAJETA_WARN_CAPTURED_BORROW_PARAM", message,
-            module ? diagnosticSiteOf(*module).file : string(), sourceLine,
-            module ? diagnosticSiteOf(*module).origin : string("project"));
     }
 
     set<string> Scope::lendsOf(const string& holder) {

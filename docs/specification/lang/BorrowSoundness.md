@@ -20,15 +20,16 @@ via `return` or via `#x` to another call).
 
 One of the two body-side checks has since shipped; the other is still deferred:
 
-- **Field-store of borrow** — `this.f = param;` where `param` is a
-  plain-`T` formal and `f` is a class-typed field. **Now rejected** by
-  `CAJETA_ERROR_CAPTURED_BORROW_PARAM` (spec §4.2, `Scope.cpp:203`): spell the
-  formal `#T` so the call site must surrender, store with `#=` if the type is a
-  sink whose caller chooses (the `ArrayList` model, §2.3), or copy. The check
-  covers a DIRECT `this.f = p` store and `this.arr[i] = p` only — a nested path
-  (`this.head.prev = p`) and a forward into a container call
-  (`this.entries.put(k, v)`) are deliberately still allowed (§7.2), so the
-  shapes discussed below remain unlinted.
+- **Field-store of a parameter.** `this.f = param;` where `param` is a
+  `T` or `#T` formal. **Now rejected** by the field-store rule
+  (`specs/field-store-ownership-spec.md`) with
+  `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`. Store with `#=` so the caller
+  chooses (the `ArrayList` model, §2.3), or spell the formal `^T` when it is
+  only ever borrowed. Spelling it `#T` alone is not a fix, because a `#T`
+  formal frees its argument at return. The rule covers `this.f = p`,
+  `this.arr[i] = p` and a nested path (`this.head.prev = p`). A forward into
+  a container call (`this.entries.put(k, v)`) is a plain argument and stays
+  allowed, so the shapes discussed below remain unlinted.
 - **Closure-capture of borrow** — a closure captures a class-typed
   local or borrow param into its environment, and the closure value
   itself outlives the captured source.
@@ -135,6 +136,11 @@ At the call site, the lint applies the same scope-ordering check as S1
 but **per formal**, driven by the annotation. The annotation also
 documents the lifetime contract to readers — "this method retains
 your value past the call."
+
+> **Partly shipped as `^T`.** A borrow-only formal (`void keep(^Foo v)`) now
+> states this contract in the signature. A caller cannot transfer into it, and
+> the callee may keep it with a plain `=`. It carries no lifetime check, so the
+> call-site ordering lint below is still unbuilt.
 
 **Why not just promote to `#T`?** Because `#T` *transfers* — the
 caller surrenders ownership, the caller's drop chain stops tracking

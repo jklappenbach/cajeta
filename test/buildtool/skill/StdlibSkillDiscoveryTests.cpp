@@ -34,6 +34,21 @@ TEST(StdlibSkillDiscoveryTests, contextSeededWithStdlibWhenNoPackages) {
     EXPECT_TRUE(sawProcess) << "search must surface an embedded stdlib skill";
 }
 
+// field-store-ownership 7.1.1: a topic word finds the ownership skill through its keywords.
+TEST(StdlibSkillDiscoveryTests, ownershipTopicsFindTheOwnershipSkill) {
+    auto ctx = loadSkillSearchContext(
+        std::vector<ResolvedPackageEntry>{},
+        [](llvm::StringRef) -> std::optional<std::string> { return std::nullopt; });
+    ASSERT_TRUE((bool) ctx);
+    for (const char* topic : {"ownership", "borrow", "#=", "^T", "field store", "use-after-free", "setter"}) {
+        auto results = searchSkills(topic, std::nullopt, std::nullopt, *ctx);
+        bool found = false;
+        for (const auto& r : results)
+            if (r.uri.find("language-ownership") != std::string::npos) found = true;
+        EXPECT_TRUE(found) << "searching `" << topic << "` must return language-ownership";
+    }
+}
+
 #ifndef _WIN32
 
 #include "cajeta/buildtool/Subprocess.h"

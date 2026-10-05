@@ -71,7 +71,7 @@ const char* kOwning =
     "package test;\n"
     "public final class Box {\n"
     "    String s;\n"
-    "    public Box(String s) { this.s = s; }\n"
+    "    public Box(String s) { this.s #= s; }\n"
     "    public int64 len() { return this.s.count(); }\n"
     "}\n"
     "public final class G {\n"

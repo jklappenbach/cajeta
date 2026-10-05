@@ -1,9 +1,9 @@
 ---
 id: language-ownership
 applies-to: [cajeta/language/ownership, cajeta/language/borrowing, cajeta/language/slices]
-title: Ownership, borrowing, # transfer, drops, and slices
-description: The rules that keep cajeta memory-safe — borrow by default, transfer with #, drop at scope exit — WHO decides ownership at each position, and the borrow-checker errors you will meet.
-keywords: [ownership, borrow, borrowing, transfer, title, move, lend, lifetime, drop, memory, "#=", use-after-free, double-free]
+title: "Ownership, borrowing, # transfer, ^ borrow-only parameters, field stores, drops, and slices"
+description: "The rules that keep cajeta memory-safe: borrow by default, transfer with #, drop at scope exit, how to keep a value in a field (#= or a ^T parameter), who decides ownership at each position, and the errors you will meet."
+keywords: [ownership, borrow, borrowing, transfer, title, move, lend, lifetime, drop, memory, "#=", "^T", borrow-only, field store, setter, keep, use-after-free, double-free]
 ---
 
 # Ownership & transfer — read this before storing, returning, or passing heap values
@@ -52,8 +52,68 @@ use-after-free, not a style issue.
 the source actually holds, so a **lent source records a BORROW** and is not
 moved. It makes no claim of title, is therefore always safe, and is the
 correct spelling for a deliberate non-owning alias — an intrusive link, a
-back-pointer, a view handle. `Cache`'s LRU links and `Channel`'s slots both
-use it for exactly that.
+back-pointer, a view handle. `Cache`'s LRU links use it for exactly that.
+
+## Keeping a value in a field or slot
+
+A store into a field, an array slot or a static is where a value starts to
+outlive the call that produced it. The compiler checks every such store
+(spec `field-store-ownership`):
+
+1. A parameter kept with `=` must be spelled `^T`. A `^T` parameter is only
+   ever borrowed: a caller cannot pass `#x`, a fresh `heap` value, an owned
+   `#T` result or a `+` String into it (`CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM`).
+2. A `T` or `#T` parameter that is kept is stored with `#=`. That is the sink
+   and setter shape: `set(x)` lends, `set(#x)` transfers.
+3. An owned local (bound from `heap`, a call, `#=` or a `+`) stored into a
+   field or slot is stored with `#=`.
+4. Storing a value read out of a `T`/`#T` parameter (`b.child`) with `=`
+   needs a `^T` parameter, so the caller keeps the root alive. `#=` records
+   whatever title the slot held.
+5. `=` into a String field is a borrow, like every other type.
+6. `=` stays right for local bindings, arguments, literals, primitives,
+   `null`, and a `heap T(...)` or call written in place.
+
+```cajeta
+public final class Holder {
+    Block kept;
+    Block seen;
+    public void keep(Block b) { this.kept #= b; }   // caller chooses: lend or transfer
+    public void watch(^Block b) { this.seen = b; }  // only ever a borrow
+}
+```
+
+| Store | Verdict |
+|---|---|
+| `void f(Block b) { this.b = b; }` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: use `#=`, or spell `^Block` |
+| `void f(#Block b) { this.b = b; }` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: use `#=` |
+| `Block l = heap Block(); this.b = l;` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: use `#=` |
+| `void f(Node n) { this.c = n.child; }` | `CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM`: spell `^Node` |
+| `void f(^Block b) { this.b = b; }` | correct, a borrow |
+| `this.b #= b;` from any of the above | correct |
+
+Spelling `#T` on the parameter is not a fix by itself: a `#T` parameter owns
+its argument and frees it at return, so `#T` with `=` still dangles.
+
+A store that compiles and reads back correctly is NOT evidence it was right.
+Before this check, `#String p; this.v = p` compiled to the same IR as `#=`
+(a hidden move), and `#Cell p; this.c = p` read reused memory.
+
+When a fresh node is both registered and linked, register it first and link
+it with `#=`: the transfer demotes the local, so the link records a borrow.
+
+```cajeta
+this.nodes.add(#node);     // the registry takes the title
+this.root #= node;         // node is now a borrow; the link records a borrow
+```
+
+`^` is an error on a primitive or value-type parameter and on varargs. On a
+parameter typed by a template parameter (`void put(^K key)`) it is legal and
+does nothing when `K` is a primitive. An override must spell the same `^`
+marks as the method it overrides (`CAJETA_ERROR_BORROW_MARK_MISMATCH`).
+
+The one hazard the compiler cannot see: a caller that lends `x` to a holder
+that outlives `x`. That needs lifetimes the language does not track.
 
 ## The four places `#` appears — and the one place it never does
 
@@ -63,6 +123,8 @@ use it for exactly that.
 - **Move expression**: `this.consume(#a)`, `return #a`, `#this.data[i]` — at
   call arguments, returns, and slot extractions (none of these are stores).
 - **Parameter type**: `void consume(#Point p)` — the callee demands ownership.
+  Its opposite is `void watch(^Point p)` — the callee only ever borrows, and
+  a caller cannot transfer into it.
 - **Return type**: `#Point make()` — the callee hands ownership out; a fresh
   `heap T(...)` promotes implicitly.
 
@@ -101,8 +163,16 @@ double free is structurally impossible, and the binding stays readable. There is
   readable borrow of the same live instance.
 - `CAJETA_ERROR_TRANSFER_REQUIRED` — passing plain `a` where the parameter is
   `#T`: write `#a`, or pass a fresh `heap T(...)` construction.
-- `CAJETA_ERROR_CAPTURED_BORROW_PARAM` — keeping a plain parameter in a field
-  or element beyond the call: store with `#=`, or spell the formal `#T`.
+- `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE` — keeping a `T` or `#T` parameter, or
+  an owned local, in a field, slot or static with `=`: store with `#=`, or
+  spell the parameter `^T` when it is only ever borrowed.
+- `CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM` — keeping a value read out
+  of a parameter with `=`: spell the parameter `^T`.
+- `CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM` — passing `#x`, a fresh `heap`
+  value, an owned `#T` result or a `+` String to a `^T` parameter: bind it to
+  a local and pass the local.
+- `CAJETA_ERROR_BORROW_MARK_MISMATCH` — an override whose `^` marks differ
+  from the method it overrides.
 - `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER` — receiving a `#T` result with a
   plain `=`: spell the binding `x #= f()`.
 - `CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER` — returning an owned local
@@ -151,11 +221,12 @@ lending a view, and each genre has one correct spelling
 | **producer** (§2.1) | materializes a NEW value | returns `#T`; receive with `#=` | `asString`, `toBytes`, `encode` |
 | **view** (§2.2) | exposes interior state for reading | plain `T`, body is interior reads only — always a borrow | `keyAt`, `get(i)`, `asBytes` |
 | **sink** (§2.3) | container whose job is holding values | plain `T` param + `#=` slot store — the CALLER chooses per call | `ArrayList.add`, node/carrier ctors |
-| **capture** (§2.4) | non-sink that keeps a parameter | the formal is `#T` | every exception's `#String message` |
+| **keeper** | keeps a parameter beyond the call | `#=` store; a `^T` parameter when it is only ever borrowed (field-store-ownership spec) | every exception's `this.message #= message`, `Cache`'s link helpers (`^`) |
 | **copy-vs-alias** (§2.5) | could do either | it COPIES; the alias is a separately-named sharp variant | `setString` / `setStringBorrowed` |
 
 `^T` (§2.8) is the opt-in FORCED-borrow return — body restricted to borrow
-sources, checked rather than described. Plain `T` stays the default because a
+sources, checked rather than described. On a parameter, `^T` is the
+borrow-only formal described above. Plain `T` stays the default because a
 view's frame holds no title: it already carries a borrow.
 
 Ownership conditioned on a runtime property the caller cannot see — SSO vs
@@ -209,26 +280,18 @@ placement keyword).
   `Cell c = stack Cell(); return #c;`. Anything that escapes a frame must be
   `heap`. (This was silent UB before 2026-07-31.)
 
-  `#=` consumes the formal's title, so its drop is deactivated. It is safe
-  whichever way the caller passed the value — surrendering
-  (`heap Box(heap Cell(1))`) and lending (`Cell c = heap Cell(1); heap Box(c);`)
-  both work — so you can apply this at the store site without reasoning about
-  callers.
-
-  Declaring `#T` is a *different*, stronger choice: it is API-visible and forces
-  every caller to surrender. Reach for it when you want to REQUIRE ownership,
-  not to fix this — changing the store is enough.
-
-  Passing a named local with a plain `=` store also stays correct: that lends,
-  and the field aliases a value the caller still owns.
-  (`specs/field-store-title-trap-spec.md`.)
+- **A setter stores with `#=`.** It is safe whichever way the caller passed
+  the value: a surrendered value is owned by the field, a lent one is
+  borrowed. A plain `=` there is `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`.
+  Declaring `#T` is a different, stronger choice: it forces every caller to
+  surrender, and the store still needs `#=`.
 
   ```cajeta
-  public Box(T v) { this.value #= v; }   // field takes the title
+  public Box(T v) { this.value #= v; }   // the field records what arrived
   ```
 - Ownership at a call site is directional: a plain `T` parameter can *accept*
-  an offered `#x` (the value then drops in the callee) — but a `#T` parameter
-  never accepts a plain borrow.
+  an offered `#x` (the value then drops in the callee), a `#T` parameter
+  never accepts a plain borrow, and a `^T` parameter never accepts a transfer.
 - **Containers do NOT own their elements by default — the CALLER chooses, per
   call.** A collection sink takes a plain `T` and stores it with `#=`, so
   `list.add(g)` LENDS and `list.add(#g)` transfers, with the arriving mode

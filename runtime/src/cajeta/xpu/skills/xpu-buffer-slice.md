@@ -24,7 +24,7 @@ points into.
 - **The parent must outlive every view of it.** A view dangles if the parent drops
   (or is `free()`d, or moved out with `#parent`) first. Parent-outlives-view is
   *not* a hard compile error yet — it is interim lint / debug-runtime checking (the
-  same borrow-soundness deferral as field-stored / captured borrows), so the
+  same lifetime gap as a lend kept by a holder that outlives its owner), so the
   compiler will not catch a use-after-free here. This is the sharp edge.
 - The view value passed at a launch site is still subject to the launch-borrow rule
   (XPU-K02): it is borrowed by the launch until the next `GpuStream.sync()`.

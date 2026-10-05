@@ -64,4 +64,4 @@ System.stdout.println(sum);          // 72
 
 ## 14.7 Ownership Spellings in Expressions
 
-`#v` surrenders the title its source holds, written at a store, a call argument, or a return (Ownership §5.3). `dst #= v` is the passthrough store, which hands along whatever title the source holds (Ownership §5.4). The positional flag accessor `Cajeta.moveMask()` is retired (`CAJETA_ERROR_MOVEMASK_RETIRED`) in favor of `Cajeta.owned(formal)`.
+`#v` surrenders the title its source holds, written at a store, a call argument, or a return (Ownership §5.3). `dst #= v` is the passthrough store, which hands along whatever title the source holds (Ownership §5.4). A store into a field, an element or a static that keeps a `T` or `#T` formal or an owned local is spelled `#=`, and a formal kept with a plain `=` is spelled `^T` (Ownership §5.5.3, §5.7). The positional flag accessor `Cajeta.moveMask()` is retired (`CAJETA_ERROR_MOVEMASK_RETIRED`) in favor of `Cajeta.owned(formal)`.

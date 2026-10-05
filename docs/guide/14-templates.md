@@ -19,9 +19,12 @@ public class Box<T> {
 
 A `Box` holds whatever it is handed, so it takes a plain `T` and stores it with
 `#=`, the container shape from [chapter 11](11-ownership.md). `set(v)` lends
-and `set(#v)` transfers. Storing a plain parameter with a plain `=` is rejected
-as `CAJETA_ERROR_CAPTURED_BORROW_PARAM`, because the caller keeps the title and
-frees the value once the call returns.
+and `set(#v)` transfers. Storing a `T` parameter with a plain `=` is rejected
+as `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`, because a caller that passed `#v`
+would have the value freed when the call returns. A parameter that is only
+ever borrowed is spelled `^T` and may be stored with `=`. The mark does
+nothing when `T` is instantiated with a primitive, and it never goes on the
+type-parameter declaration itself (`class Box<^T>` is an error).
 
 ## Method templates
 

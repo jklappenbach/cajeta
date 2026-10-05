@@ -1,7 +1,7 @@
 ---
 id: reflect-Method-invokeBoxed
 applies-to: [cajeta/reflect/Method.invokeBoxed]
-title: Method.invokeBoxed — type-erased reflective call returning an owned #Object
+title: "Method.invokeBoxed — type-erased reflective call returning an owned #Object"
 description: Invoke a method generically and get its result boxed into a cajeta.lang wrapper; handle the unsupported-type fallback.
 ---
 

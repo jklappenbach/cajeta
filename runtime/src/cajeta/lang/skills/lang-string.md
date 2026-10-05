@@ -1,8 +1,8 @@
 ---
 id: lang-string
 applies-to: [cajeta/lang/String]
-title: String — immutable UTF-8 text (transforms transfer #String, queries don't allocate)
-description: How to use cajeta.lang.String — owned vs view storage, codepoint-vs-byte counts, content equality/hash, and which transforms hand back an owned #String.
+title: "String — immutable UTF-8 text (transforms transfer #String, queries don't allocate)"
+description: "How to use cajeta.lang.String — owned vs view storage, codepoint-vs-byte counts, content equality/hash, and which transforms hand back an owned #String."
 ---
 
 # String — immutable UTF-8 text

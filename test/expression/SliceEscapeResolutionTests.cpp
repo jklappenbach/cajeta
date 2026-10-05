@@ -29,7 +29,7 @@ std::string makeSource(const std::string& runBody) {
            "public class Keep {\n"
            "    public String v;\n"
            "    public Keep(String v) {\n"
-           "        this.v = v;\n"
+           "        this.v #= v;\n"
            "    }\n"
            "}\n"
            "public final class Ut {\n"
@@ -202,7 +202,7 @@ TEST(SliceEscapeResolutionTests, unsureResolves) {
         "        this.kept = \"\";\n"
         "    }\n"
         "    public void accept(String v) {\n"
-        "        this.kept = v;\n"                              // callee-side escape site
+        "        this.kept #= v;\n"                             // callee-side escape site
         "    }\n"
         "}\n"
         "public final class Ut {\n"

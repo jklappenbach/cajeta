@@ -1634,6 +1634,12 @@ namespace cajeta {
                 why = "the call site transfers it with `#`";
             } else if (dynamic_pointer_cast<NewExpression>(inner)) {
                 why = "it is a fresh `heap` value with no owner to outlive the call";
+            } else if (auto bin = dynamic_pointer_cast<BinaryOpExpression>(inner)) {
+                auto bt = dynamic_pointer_cast<CajetaClass>(bin->getResolvedType());
+                if (bin->getBinaryOp() == BINARY_OP_ADD && bt && bt->getQName()
+                        && bt->getQName()->getTypeName() == "String") {
+                    why = "it is a fresh String built by `+`, freed at the end of the statement";
+                }
             } else if (auto call = dynamic_pointer_cast<MethodCallExpression>(inner)) {
                 if (call->getResolvedMethod() && call->getResolvedMethod()->isReturnsOwnership()) {
                     why = "`" + call->getResolvedMethod()->getName()

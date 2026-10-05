@@ -8,7 +8,6 @@
 #include <string>
 
 #include "cajeta/ownership/FieldStoreCensus.h"
-#include "cajeta/type/Scope.h"
 
 using cajeta_test::CajetaJit;
 using cajeta::ownership::FieldStoreCensus;
@@ -56,12 +55,10 @@ std::string key(const cajeta::ownership::FieldStoreRecord& r) {
 TEST(FieldStoreCensusTests, oneLinePerStoreKind) {
     FieldStoreCensus::clear();
     FieldStoreCensus::setEnabled(true);
-    cajeta::Scope::setCapturedBorrowWarns(true);
     try {
         CajetaJit::compile(kSrc, "test.D");
     } catch (...) {
     }
-    cajeta::Scope::clearCapturedBorrowWarnsOverride();
     FieldStoreCensus::setEnabled(false);
 
     std::set<std::string> got;

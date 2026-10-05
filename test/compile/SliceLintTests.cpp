@@ -47,7 +47,7 @@ TEST(SliceLint, ResolvedStoreEmitsNote) {
         "public class Keep {\n"
         "    public String v;\n"
         "    public Keep(String v) {\n"
-        "        this.v = v;\n"
+        "        this.v #= v;\n"
         "    }\n"
         "}\n"
         "public final class Ut {\n"

@@ -47,11 +47,11 @@ const char* kRoot =
     "    public String v;\n"
     "    public Root() { return; }\n"
     "    public void setV(String s) {\n"
-    "        this.v = s;\n"
+    "        this.v #= \"\" + s;\n"
     "    }\n"
     "    public void ignore(String s) { return; }\n"
     "    public void take(#String s) {\n"
-    "        this.v = s;\n"
+    "        this.v #= s;\n"
     "    }\n"
     "    public static void sIgnore(String s) { return; }\n"
     "}\n";
@@ -68,9 +68,8 @@ TEST(CallArgTempDropTests, concatTempToBorrowFormalDropped) {
 }
 
 // The original StackDropClassRefTests.diamondSharedBaseFieldDroppedOnce
-// shape minus the diamond (which was a red herring): the setter stores
-// a borrow, 3A materializes the field copy, and the caller-side temp
-// must still be reclaimed.
+// shape minus the diamond (which was a red herring): the setter keeps a
+// copy, and the caller-side temp must still be reclaimed.
 TEST(CallArgTempDropTests, concatTempThroughBorrowSetterBalances) {
     EXPECT_EQ(liveDelta(kRoot,
         "Root d = stack Root();\n"
