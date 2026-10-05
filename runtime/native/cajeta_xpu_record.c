@@ -13,12 +13,13 @@
 // its end, once however many arguments point into it, so two slices of one
 // buffer stay one memory when the launch is replayed.
 //
-// The first CAJETA_XPU_RECORD_PER_KERNEL launches of each kernel are recorded
-// (default 2). A launch is not recorded when an argument's allocation is
-// unknown, when the allocations come to more than CAJETA_XPU_RECORD_MAX_BYTES
-// (default 64 MiB), or when its stream is deferred, since a deferred launch
-// does not run until a later flush; each such launch is counted in
-// <dir>/skipped.tsv with its reason. Recording synchronizes the device around
+// The first CAJETA_XPU_RECORD_PER_KERNEL recordable launches of each kernel
+// are recorded (default 2). A launch is not recorded when an argument's
+// allocation is unknown, when the allocations come to more than
+// CAJETA_XPU_RECORD_MAX_BYTES (default 64 MiB), or when its stream is
+// deferred, since a deferred launch does not run until a later flush; each
+// such launch is counted in <dir>/skipped.tsv with its reason and does not
+// spend the kernel's quota. Recording synchronizes the device around
 // every recorded launch, so it is for test runs, never for timing.
 
 #include <ctype.h>
@@ -90,24 +91,37 @@ static int caj_record_find(int64_t p) {
     return -1;
 }
 
-// How many times `name` has been recorded, counting this one.
-static int caj_record_take(const char* name) {
+// The quota entry for `name`, made on first sight; NULL when out of memory.
+static struct caj_rec_kernel* caj_record_entry(const char* name) {
     for (int i = 0; i < g_rec_kernel_count; i++)
         if (strncmp(g_rec_kernels[i].name, name, sizeof(g_rec_kernels[i].name)) == 0)
-            return ++g_rec_kernels[i].seen;
+            return &g_rec_kernels[i];
     if (g_rec_kernel_count == g_rec_kernel_cap) {
         int cap = g_rec_kernel_cap ? g_rec_kernel_cap * 2 : 256;
         struct caj_rec_kernel* grown = (struct caj_rec_kernel*)
             realloc(g_rec_kernels, (size_t) cap * sizeof(*grown));
-        if (!grown) return 1 << 30;
+        if (!grown) return NULL;
         g_rec_kernels = grown;
         g_rec_kernel_cap = cap;
     }
     struct caj_rec_kernel* k = &g_rec_kernels[g_rec_kernel_count++];
     strncpy(k->name, name, sizeof(k->name) - 1);
     k->name[sizeof(k->name) - 1] = '\0';
-    k->seen = 1;
-    return 1;
+    k->seen = 0;
+    return k;
+}
+
+// How many times `name` has been recorded so far. A skipped launch is not
+// a recording: it leaves the quota for a launch that can be recorded.
+static int caj_record_seen(const char* name) {
+    struct caj_rec_kernel* k = caj_record_entry(name);
+    return k ? k->seen : 1 << 30;
+}
+
+// Spend one of `name`'s recordings, returning its ordinal.
+static int caj_record_take(const char* name) {
+    struct caj_rec_kernel* k = caj_record_entry(name);
+    return k ? ++k->seen : 1 << 30;
 }
 
 static uint64_t caj_record_env_u64(const char* var, uint64_t dflt) {
@@ -115,8 +129,19 @@ static uint64_t caj_record_env_u64(const char* var, uint64_t dflt) {
     return (e && *e) ? strtoull(e, NULL, 10) : dflt;
 }
 
+static void caj_record_mkdir(const char* dir) {
+#ifdef _WIN32
+    _mkdir(dir);
+#else
+    mkdir(dir, 0755);
+#endif
+}
+
+// The skip log lives under the root, so the root exists before the first
+// recording as well as after it.
 static void caj_record_skip(const char* dir, const char* name, const char* why) {
     char path[4096];
+    caj_record_mkdir(dir);
     snprintf(path, sizeof path, "%s/skipped.tsv", dir);
     FILE* f = fopen(path, "a");
     if (!f) return;
@@ -185,9 +210,9 @@ static int caj_record_begin_into(struct caj_rec_launch* L, const char* kernelNam
     if (!root || !kernelName) return 0;
     int backend = cajeta_xpu_active_backend();
     pthread_mutex_lock(&g_rec_lock);
-    int nth = caj_record_take(kernelName);
+    int seen = caj_record_seen(kernelName);
     pthread_mutex_unlock(&g_rec_lock);
-    if ((uint64_t) nth > caj_record_env_u64("CAJETA_XPU_RECORD_PER_KERNEL", 2)) return 0;
+    if ((uint64_t) seen >= caj_record_env_u64("CAJETA_XPU_RECORD_PER_KERNEL", 2)) return 0;
     if (backend == CAJ_XPU_VULKAN) { caj_record_skip(root, kernelName, "vulkan handles are not addresses"); return 0; }
     if (backend == CAJ_XPU_CUDA && caj_defer_wants((void*) (intptr_t) stream)) { caj_record_skip(root, kernelName, "deferred stream"); return 0; }
     struct cajeta_kparams* kp = cajeta_xpu_find_kparams(kernelName);
@@ -239,14 +264,12 @@ static int caj_record_begin_into(struct caj_rec_launch* L, const char* kernelNam
     for (const char* c = kernelName; *c && j + 1 < sizeof safe; c++)
         safe[j++] = (isalnum((unsigned char) *c) || *c == '_' || *c == '.') ? *c : '_';
     safe[j] = 0;
+    pthread_mutex_lock(&g_rec_lock);
+    int nth = caj_record_take(kernelName);
+    pthread_mutex_unlock(&g_rec_lock);
     snprintf(L->dir, sizeof L->dir, "%s/%s.%d", root, safe, nth);
-#ifdef _WIN32
-    _mkdir(root);
-    _mkdir(L->dir);
-#else
-    mkdir(root, 0755);
-    mkdir(L->dir, 0755);
-#endif
+    caj_record_mkdir(root);
+    caj_record_mkdir(L->dir);
     cajeta_xpu_sync_active();
     char path[4352];
     for (int k = 0; k < L->n; k++) {

@@ -33,8 +33,11 @@ out="$(cd "$out" && pwd)"
 rm -rf "$out/rec"
 
 echo ">> conformance: recording cajeta-llm $(git -C "$llm" rev-parse --short HEAD) on $backend"
+# CAJETA_XPU_DEFER=0: a deferred launch runs at a later flush and cannot be
+# recorded; recording synchronizes around every launch anyway, so nothing is
+# timed here and every launch is taken as it comes.
 ( cd "$llm" && CAJETA="$CAJETA" XPU_BACKEND="$backend" RELEASE_PASS=0 \
-      CAJETA_XPU_RECORD="$out/rec" \
+      CAJETA_XPU_RECORD="$out/rec" CAJETA_XPU_DEFER=0 \
       CAJETA_XPU_RECORD_MAX_BYTES="${CAJETA_XPU_RECORD_MAX_BYTES:-16777216}" \
       ./run-tests.sh ) > "$out/leg.log" 2>&1
 suite_rc=$?
@@ -56,6 +59,10 @@ done
 
 recorded=$(find "$out/rec" -name launch.json 2>/dev/null | wc -l)
 echo ">> conformance: $recorded launches recorded"
+if [ -s "$out/rec/skipped.tsv" ]; then
+    echo ">> conformance: launches not recorded, by reason"
+    cut -f2 "$out/rec/skipped.tsv" | sort | uniq -c | sort -rn | sed 's/^/   /'
+fi
 if [ "$recorded" -eq 0 ]; then
     echo "::error::nothing was recorded: an empty corpus is not a passing one" >&2
     exit 1

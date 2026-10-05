@@ -76,6 +76,17 @@ public class M {
         out.download(got);
         return got[0];
     }
+    // The same launch over allocations too large to record, then run().
+    public static int32 runBigThenSmall() {
+        KernelBuffer<uint8> w = heap KernelBuffer<uint8>(65536);
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(65536);
+        KernelBuffer<int32> zero = heap KernelBuffer<int32>(16384);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(16384);
+        KernelStream s #= KernelStream.current();
+        corpusDot.launch(s, grid: [1], block: [8])(out, w, a, zero);
+        s.sync();
+        return M.run();
+    }
 }
 )CJ";
 
@@ -86,16 +97,16 @@ fs::path freshDir(const std::string& tag) {
     return d;
 }
 
-// Compile and run the host program on the cpu backend with launches recorded
-// into `dir`. `fault` sets CAJETA_XPU_FAULT for the compile.
-void recordOnCpu(const fs::path& dir, const char* fault) {
+// Compile and run the host program's `entry` on the cpu backend with launches
+// recorded into `dir`. `fault` sets CAJETA_XPU_FAULT for the compile.
+void recordOnCpu(const fs::path& dir, const char* fault, const char* entry = "run") {
     if (fault) setenv("CAJETA_XPU_FAULT", fault, 1);
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
     auto jit = CajetaJit::compile(kSource, "test.M", o);
     if (fault) unsetenv("CAJETA_XPU_FAULT");
     ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int32_t (*)()>("run");
+    auto fn = jit->lookup<int32_t (*)()>(entry);
     ASSERT_NE(fn, nullptr);
     setenv("CAJETA_XPU_RECORD", dir.string().c_str(), 1);
     fn();
@@ -170,6 +181,26 @@ TEST(XpuConformanceCorpus, aRecordedCpuLaunchReplaysAndPasses) {
     EXPECT_EQ(r->outcome, "pass") << r->detail;
     EXPECT_EQ(r->backend, "cpu");
     EXPECT_EQ(run.failures(), 0u) << ref::toTsv(run);
+    fs::remove_all(dir);
+}
+
+// A launch the recorder skips does not spend the kernel's quota, and the skip
+// is logged even before anything has been recorded. The first corpusDot launch
+// runs over allocations above CAJETA_XPU_RECORD_MAX_BYTES; the second is the
+// kernel's first recording, not its second.
+TEST(XpuConformanceCorpus, aSkippedLaunchDoesNotSpendTheKernelsQuota) {
+    fs::path dir = freshDir("skip");
+    setenv("CAJETA_XPU_RECORD_MAX_BYTES", "4096", 1);
+    recordOnCpu(dir, nullptr, "runBigThenSmall");
+    unsetenv("CAJETA_XPU_RECORD_MAX_BYTES");
+    EXPECT_TRUE(fs::exists(dir / "corpusDot.1" / "launch.json"))
+        << "the skipped launch took the kernel's first slot";
+    EXPECT_FALSE(fs::exists(dir / "corpusDot.2"));
+    std::ifstream skipped(dir / "skipped.tsv");
+    std::string line;
+    ASSERT_TRUE(std::getline(skipped, line)) << "the skip was not logged under " << dir;
+    EXPECT_EQ(line, "corpusDot\tallocations larger than CAJETA_XPU_RECORD_MAX_BYTES");
+    EXPECT_FALSE(std::getline(skipped, line)) << "a second skip was logged: " << line;
     fs::remove_all(dir);
 }
 
