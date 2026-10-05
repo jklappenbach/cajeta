@@ -816,7 +816,7 @@ public class Exec {
                     }
                 }
             }
-            names[at] = outName;
+            names[at] #= outName;
             tags[at] = tag;
             nulls[at] = nullable;
             if (at == w) { w = w + 1; }
@@ -1888,7 +1888,7 @@ public class Exec {
                 ck = ck + 1;
             }
             if (found < 0) {
-                colNames[nCols] = k;
+                colNames[nCols] #= k;
                 found = nCols;
                 nCols = nCols + 1;
             }

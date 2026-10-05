@@ -159,6 +159,14 @@ a field or slot is a compile-time error. The fix is to spell the formal `^T`.
 - **4.2.8** When `String w #= s.substring(1, 9); this.v = w;` is compiled with
   `w` used for the last time, it is a compile-time error offering `#=`. No
   hidden move is made.
+- **4.2.9** When a holder local declared in an outer block keeps an owned
+  local from an inner block with `=` (`Node h = heap Node(); { Cell l = heap
+  Cell(1); h.c = l; }`), it is a compile-time error offering `#=`, since the
+  holder outlives the local.
+- **4.2.10** When a holder is stored into another local holder, it escapes
+  only if that holder escapes or is not the frame's own. A holder bound from
+  a parameter, a field read or a call is not the frame's own, so a store into
+  it is a field store.
 
 ## 5. String fields
 
@@ -274,3 +282,10 @@ allocations, and read it back. The plan turns them into tests.
   Channel's slots, the stream and reader constructors) compile under the
   rule but accept a `#x` that turns a borrow slot into an owner. Whether
   they move to `^T` in Unit 3 (agents/field-store-ownership-census.md).
+- **9.8** Whether `#=` of an owned window copies a small window. Measured
+  2026-10-05: `String w #= s.substring(10, 26); k.v #= w;` moves the window
+  with its shared stake, so 16 bytes pin the 64 byte root. Only resolve, run
+  for a lent source, applies the copy at 256 B or below. The old `=` path
+  resolved every String store, which is why `=` looked like a last-use move.
+  Copying on the move adds a runtime call to every owned String `#=`. Decide
+  in Unit 6.
