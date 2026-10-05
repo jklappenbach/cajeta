@@ -2,7 +2,7 @@
 id: lang-guid-parse
 applies-to: [cajeta/lang/Guid.parse]
 title: Guid.parse — canonical 8-4-4-4-12 hex text to an owned Guid
-description: Parse a 36-char 8-4-4-4-12 hex UUID into a #Guid; consumes the #String input, returns owned, raises recoverable GuidFormatException on any malformed input.
+description: "Parse a 36-char 8-4-4-4-12 hex UUID into a #Guid; consumes the #String input, returns owned, raises recoverable GuidFormatException on any malformed input."
 ---
 
 # Guid.parse(#String) — text to a 128-bit Guid

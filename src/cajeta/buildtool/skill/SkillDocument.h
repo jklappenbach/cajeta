@@ -18,6 +18,8 @@ namespace cajeta::buildtool::skill {
         // Optional, "" when absent; also indexed for fuzzy title search.
         std::string title;
         std::string description;
+        // Optional search terms; each is a fuzzy search key like the title.
+        std::vector<std::string> keywords;
         std::string body;
 
         // Parse front-matter Markdown into a validated document; `sourceName` is

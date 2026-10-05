@@ -2,7 +2,7 @@
 id: time-ZoneId
 applies-to: [cajeta/time/ZoneId]
 title: ZoneId — region time zone, DST-aware offset lookup via the tz database
-description: Use ZoneId.of(id) to get an owned #ZoneId, then offsetAt/resolve for a DST-aware offset; UTC-equivalent ids work with no tz db.
+description: "Use ZoneId.of(id) to get an owned #ZoneId, then offsetAt/resolve for a DST-aware offset; UTC-equivalent ids work with no tz db."
 ---
 
 # ZoneId — region time zone with DST-aware offsets

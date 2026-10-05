@@ -22,7 +22,7 @@ Domain exceptions extend one of these from their owning packages
 (`cajeta.io.file.IoException`, `cajeta.io.net.TimedOutException`,
 `cajeta.codec.Base64Exception`, ...). Your own exceptions do the same. One
 mechanical note: `super(...)` isn't supported yet, so a subclass constructor
-writes the inherited fields directly (`this.message = message;`).
+writes the inherited fields directly (`this.message #= message;`).
 
 ## throw, try, catch, finally
 
@@ -136,7 +136,7 @@ import cajeta.error.Exception;
 @DiagnosticCode("APP_ERR_CONFIG_MISSING")
 public class ConfigMissingException extends Exception {
     public ConfigMissingException(#String message) {
-        this.message = message;
+        this.message #= message;
         this.cause = null;
     }
 }

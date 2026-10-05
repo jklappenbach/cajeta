@@ -666,10 +666,24 @@ public void demo() {
 
 Because `#` forwards whatever the source holds, mode-forwarding wrappers just work: a plain formal's ownership is decided at the call site (`f(x)` lends, `f(#x)` transfers), and `#p` — or `this.f #= p` — inside the callee hands along whichever mode actually arrived. Only a value the compiler can see is purely a borrow (a local borrowing another local, or a borrow returned by a plain method) refuses the `#` — that surrender would be a lie.
 
-The borrow checker is static. Transfer-from-a-borrow, borrow-escape-on-return, keeping a borrow of an owned temporary, and definite-assignment violations are caught at compile time:
+Keeping a value in a field follows the same spellings. A parameter or an owned local kept in a field, slot or static is stored with `#=`, so the caller chooses: `keep(p)` lends and `keep(#p)` transfers. A parameter that is only ever borrowed is spelled `^T`. It may be stored with plain `=`, and a caller cannot transfer into it.
+
+```cajeta
+public class Holder {
+    Point kept;
+    Point seen;
+    public Holder() { }
+    public void keep(Point p) { this.kept #= p; }   // the caller chooses
+    public void watch(^Point p) { this.seen = p; }  // only ever a borrow
+}
+```
+
+The borrow checker is static. Transfer-from-a-borrow, borrow-escape-on-return, keeping a borrow of an owned temporary, keeping a parameter or an owned local in a field with plain `=`, and definite-assignment violations are caught at compile time:
 
 ```
 CAJETA_ERROR_MOVE_OF_BORROW
+CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE
+CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM
 CAJETA_ERROR_BORROW_ESCAPE
 CAJETA_ERROR_BORROW_OF_TEMPORARY
 CAJETA_ERROR_VARIABLE_NOT_ASSIGNED
@@ -724,7 +738,7 @@ True C++-style templates — full monomorphization per instantiation, no type er
 ```cajeta
 public class Box<T> {           // class-level template
     T value;
-    public Box(T v) { this.value = v; }
+    public Box(T v) { this.value #= v; }
     public T get() { return this.value; }
 }
 

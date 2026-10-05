@@ -58,7 +58,7 @@ public class ArrayStream<T> extends Stream<T> {
     int32 idx;
     int32 limit;
 
-    public ArrayStream(T[] data, int32 limit) {
+    public ArrayStream(^T[] data, int32 limit) {   // only ever a borrow
         this.data = data;
         this.idx = 0;
         this.limit = limit;
@@ -85,7 +85,7 @@ buffer when it pops; ArrayList frees it again when it pops. Double free.
 public class Optional<T> {
     boolean present;
     T value;
-    public Optional(boolean p, T v) { this.present = p; this.value = v; }
+    public Optional(boolean p, T v) { this.present = p; this.value #= v; }
 }
 
 // caller
@@ -94,7 +94,8 @@ Optional<Hello> opt = heap Optional<Hello>(true, h);
 print(h.greet());      // expected: still works
 ```
 
-`opt.value` aliases `h`. Naive auto-drop frees Hello when opt pops;
+`opt.value` aliases `h`. The caller lent `h`, so the `#=` store records a
+borrow. Naive auto-drop frees Hello when opt pops;
 h's own chain entry frees it again. Double free.
 
 Template wrinkle: `Optional<int32>` has nothing to drop. `Optional<Hello>`
@@ -107,7 +108,7 @@ discriminator can't be syntactic.
 public class Pair<K, V> {
     K first;
     V second;
-    public Pair(K a, V b) { this.first = a; this.second = b; }
+    public Pair(K a, V b) { this.first #= a; this.second #= b; }
 }
 
 Hello a = heap Hello();
@@ -382,6 +383,9 @@ mechanism:
   live-set claim. Use-after-free of an aliased field whose source dropped
   first is the programmer's responsibility at v1; a lifetime tracker is the
   planned tightening.
+- Which sources a field store may keep with a plain `=` is governed by the
+  field-store rule (MemoryModel § Fields). A `T` or `#T` parameter or an owned
+  local is kept with `#=`, and a parameter kept with `=` is spelled `^T`.
 - The "automatic field drops" gap is documented as ✅ Done via
   `emitDropBodyInline` + the live-set claim dispatchers (not a chain-walk
   helper).

@@ -306,8 +306,8 @@ public class Collector<T, R> {
     R seed;
     (R, T) -> R accumulator;
     public Collector(R seed, (R, T) -> R accumulator) {
-        this.seed = seed;
-        this.accumulator = accumulator;
+        this.seed #= seed;
+        this.accumulator #= accumulator;
     }
 }
 

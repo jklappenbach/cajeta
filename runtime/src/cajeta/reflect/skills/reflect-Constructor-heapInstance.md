@@ -2,7 +2,7 @@
 id: reflect-Constructor-heapInstance
 applies-to: [cajeta/reflect/Constructor.heapInstance]
 title: Constructor.heapInstance — reflective new (no-arg and int64[]-packed-args)
-description: Build a fresh owned #Object via a reflected constructor — no-arg heapInstance() vs heapInstance(int64[]) arg marshalling, the @Sealed gate, and caller ownership of the result.
+description: "Build a fresh owned #Object via a reflected constructor — no-arg heapInstance() vs heapInstance(int64[]) arg marshalling, the @Sealed gate, and caller ownership of the result."
 ---
 
 # Constructor.heapInstance

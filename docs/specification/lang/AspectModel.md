@@ -67,7 +67,7 @@ component declares no lifetime of its own — that is a per-`@Inject`-site decis
 
 @Component public class ReportGenerator {
     private UserService users;
-    public ReportGenerator(@Inject UserService users) { this.users = users; }  // ctor injection
+    public ReportGenerator(@Inject UserService users) { this.users #= users; }  // ctor injection
 }
 ```
 

@@ -2,7 +2,7 @@
 id: collection-overview
 applies-to: [cajeta.collection]
 title: cajeta.collection — orientation and task→type routing
-description: Pick the right collection (list / hash / ordered-tree / immutable / cache / disk) and learn the library-wide K-type, null-on-miss, and #-ownership rules.
+description: "Pick the right collection (list / hash / ordered-tree / immutable / cache / disk) and learn the library-wide K-type, null-on-miss, and #-ownership rules."
 ---
 
 # cajeta.collection — what to reach for

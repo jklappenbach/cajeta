@@ -13,6 +13,13 @@ two non-obvious arguments before any code lands.
 > emits. The existing return-edge checks it builds on
 > (`CAJETA_ERROR_BORROW_ESCAPE`, `CAJETA_ERROR_VIEW_ESCAPE`) are real and
 > shipped; the field-store edge described below is design-stage.
+>
+> **Partly covered by the field-store rule.** A plain `=` store of a local
+> bound from `heap` into a field of `this` or of a parameter is now rejected
+> with `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`, and a parameter kept with `=`
+> must be spelled `^T` (`specs/field-store-ownership-spec.md`). A `stack`
+> local is outside that rule, because `#=` cannot fix it (argument (a) below),
+> so the edge this document proposes is still open.
 
 ## Background — the gap left by the field-ownership relaxation
 
@@ -240,7 +247,7 @@ Safe — must keep compiling (these are why the old blanket rule was
 dropped):
 
 ```cajeta
-this.data = someParam;          // source is caller-owned, outlives `this`
+this.data = someParam;          // someParam is a `^T` formal, a borrow on every call
 this.value = heap Widget(9);    // fresh heap, auto-promoted to ownership
 this.w #= heapLocal;            // heap source, ownership transferred
 this.w = src.clone();           // independent fresh instance  (once clone lands)

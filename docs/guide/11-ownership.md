@@ -3,8 +3,9 @@
 Every heap value has exactly one owner at any time. `=` is always a borrow —
 ownership stays with the right-hand side. The `#` operator is a passthrough of
 whatever the source holds: a transfer when the source owns, a borrow handed
-along when it doesn't. All of it is checked at compile time — no annotations,
-no runtime cost.
+along when it doesn't. The spelling rules are checked at compile time. Whether
+a call or a return carries a title can be decided at run time, so a few
+ownership bits travel with the value.
 
 ```cajeta
 public class Point {
@@ -47,15 +48,17 @@ Point r #= p;     // ERROR — CAJETA_ERROR_MOVE_OF_BORROW
 `#` marks where a title changes hands. It appears in exactly four places:
 
 - **A store** — `Point c #= a`, `this.held #= v`, `this.data[i] #= v`. The
-  destination takes the title; the source is moved. `#=` is one token: an
-  ownership store cannot be half-written.
+  destination records the source's mode. It takes the title when the source
+  owns one, and it records a borrow when the source was lent. `#=` is one
+  token: an ownership store cannot be half-written.
 - **A move expression** — `this.consume(#a)`, `return #a`, `#this.data[i]`.
   The source is moved; its drop entry is deactivated. This is the spelling at
   call arguments, returns, and slot extractions — none of which are
   assignments.
 - **A parameter type** — `void consume(#Point p)`. The callee demands
   ownership; a caller that passes plain `x` gets
-  `CAJETA_ERROR_TRANSFER_REQUIRED`.
+  `CAJETA_ERROR_TRANSFER_REQUIRED`. Its opposite is `void watch(^Point p)`,
+  which only ever borrows (see [Keeping a value in a field](#keeping-a-value-in-a-field)).
 - **A return type** — `#Point make()`. The callee hands ownership to the
   caller.
 
@@ -109,6 +112,79 @@ lent, an owned one transfers. Only a value the compiler can see is purely a
 borrow — a local borrowing another local, or a borrow returned by a plain
 method — refuses the `#` with `CAJETA_ERROR_MOVE_OF_BORROW`: that surrender
 would be a lie.
+
+## Keeping a value in a field
+
+A store into a field, an array slot or a static is where a value starts to
+outlive the call that produced it. The compiler checks every such store.
+
+1. A parameter kept with `=` must be spelled `^T`. A `^T` parameter is only
+   ever borrowed. A caller cannot pass `#x`, a fresh `heap` value, an owned
+   `#T` result or a `+` String into it
+   (`CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM`).
+2. A `T` or `#T` parameter that is kept is stored with `#=`. This is the sink
+   and setter shape. `set(x)` lends and `set(#x)` transfers.
+3. An owned local (bound from `heap`, a call, `#=` or a `+`) stored into a
+   field or slot is stored with `#=`.
+4. Storing a value read out of a `T` or `#T` parameter (`b.child`) with `=`
+   needs a `^T` parameter, so the caller keeps the root alive. A `#=` store
+   records whatever title the slot held.
+5. `=` into a String field is a borrow, like every other type.
+6. Plain `=` stays right for local bindings, arguments, literals, primitives,
+   `null`, and a `heap T(...)` or call written in place.
+
+```cajeta
+public class Block {
+    public Block child;
+}
+```
+
+```cajeta
+public class Holder {
+    Block kept;
+    Block seen;
+    int32 count;
+
+    public void keep(Block b) { this.kept #= b; }     // the caller chooses: lend or transfer
+    public void watch(^Block b) { this.seen = b; }    // only ever a borrow
+    public void setCount(int32 n) { this.count = n; } // a primitive carries no title
+}
+```
+
+| Store | Verdict |
+|---|---|
+| `void f(Block b) { this.b = b; }` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: use `#=`, or spell `^Block` |
+| `void f(#Block b) { this.b = b; }` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: use `#=` |
+| `Block l = heap Block(); this.b = l;` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: use `#=` |
+| `void f(Block b) { this.c = b.child; }` | `CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM`: spell `^Block` |
+| `void f(^Block b) { this.b = b; }` | correct, the field borrows |
+| `this.b #= b;` in any of the above | correct |
+
+Spelling the parameter `#T` is not a fix on its own. A `#T` parameter owns its
+argument and frees it at return, so `#T` with `=` still leaves the field
+dangling.
+
+When a fresh node is both registered and linked, register it first and link
+it with `#=`. The transfer demotes the local, so the link records a borrow.
+
+<!-- snippet: skip -->
+```cajeta
+this.nodes.add(#node);     // the registry takes the title
+this.root #= node;         // node is now a borrow, so the link records a borrow
+```
+
+`^` is an error on a primitive or value-type parameter
+(`CAJETA_ERROR_BORROW_MARK_ON_VALUE`) and on varargs
+(`CAJETA_ERROR_BORROW_MARK_ON_VARARGS`). It never marks a type-parameter
+declaration (`class C<^K>` is an error). A parameter typed by a template
+parameter may be spelled `^K key`, and the mark does nothing when `K` is a
+primitive. An override must spell the same `^` marks as the method it
+overrides (`CAJETA_ERROR_BORROW_MARK_MISMATCH`). Moving a `^T` parameter with
+`#p` is `CAJETA_ERROR_MOVE_OF_BORROW`.
+
+The compiler cannot see one hazard. When a caller lends `x` to a holder that
+outlives `x`, the holder dangles. That needs lifetimes the language does not
+track.
 
 ## Drops at scope exit
 

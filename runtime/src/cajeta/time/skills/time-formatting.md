@@ -2,7 +2,7 @@
 id: time-formatting
 applies-to: [cajeta/time/DateTimeFormatter, cajeta/time/FormatStyle, cajeta/time/DateTimeFields]
 title: Rendering temporals to text with DateTimeFormatter
-description: How to turn a LocalDate/Time/DateTime/ZonedDateTime into an owned #String — DateTimeFields decomposition, FormatStyle vs strftime pattern, ownership.
+description: "How to turn a LocalDate/Time/DateTime/ZonedDateTime into an owned #String — DateTimeFields decomposition, FormatStyle vs strftime pattern, ownership."
 ---
 
 To render a temporal value to text: get a `DateTimeFormatter`, then call one of its

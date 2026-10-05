@@ -234,7 +234,7 @@ public final class Grid<T> {
     }
 
     public void operator[]= (int32 i, T value) {
-        this.cells[i] = value;
+        this.cells[i] #= value;
     }
 }
 ```

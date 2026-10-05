@@ -2,7 +2,7 @@
 id: concurrent-locks
 applies-to: [cajeta/concurrent/Lock, cajeta/concurrent/LockGuard]
 title: Lock + LockGuard — the no-data RAII mutex gate
-description: Acquire a Lock to guard a critical region; the returned #LockGuard releases on drop, or use tryAcquire/releaseLock manually.
+description: "Acquire a Lock to guard a critical region; the returned #LockGuard releases on drop, or use tryAcquire/releaseLock manually."
 ---
 
 # Lock + LockGuard — the RAII mutex gate

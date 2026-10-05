@@ -14,7 +14,7 @@
 
 namespace cajeta::buildtool::skill {
 
-    enum class MatchSource { Name, Title };   // where a candidate key came from
+    enum class MatchSource { Name, Title, Keyword };   // where a candidate key came from
 
     // A candidate key: a name may bind several skills, a title binds only one.
     struct SkillCandidate {
@@ -26,6 +26,7 @@ namespace cajeta::buildtool::skill {
     struct SkillEntry {
         std::string title;  // may be empty
         std::string member; // in-archive path, "skills/<id>.md"
+        std::vector<std::string> keywords;
     };
 
     class SkillIndex {

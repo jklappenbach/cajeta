@@ -73,11 +73,12 @@ a borrow."*
 - **Keeping a value in a field or slot.** Decided with Julian
   2026-10-04 (specs/field-store-ownership-spec.md). This REPLACES the old
   "non-sink keeping a parameter: spell it `#T`" rule, which was wrong:
-  `#T` with a plain `=` store still dangles. Not yet enforced by the
-  compiler, and `^T` formals do not parse yet. Write new code to this rule.
-  The language-ownership skill, docs/guide/11-ownership.md, the language
-  specification and the CAPTURED_BORROW_PARAM fix-it still teach the old
-  `#T` rule until the plan's Units 4 and 7 land. Do not follow them.
+  `#T` with a plain `=` store still dangles. The compiler enforces rules 1
+  to 4 before codegen (CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE,
+  CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM,
+  CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM), and CAPTURED_BORROW_PARAM is
+  retired. Rule 5 (String `=` is a plain borrow) is not done yet: String
+  `=` still resolves a copy.
   1. `=` is a borrow, `#=` records the mode that arrived (a transfer when
      the source owns, a borrow when it does not), `#` transfers. This
      holds for every field type, String included.

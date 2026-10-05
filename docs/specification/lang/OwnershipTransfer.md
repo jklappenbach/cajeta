@@ -13,8 +13,9 @@
 > and the body-side return/re-transfer escape check) are **shipped**:
 > `CAJETA_ERROR_TRANSFER_REQUIRED` and `CAJETA_ERROR_BORROW_PARAM_ESCAPES`
 > are thrown from `MethodCallExpression.cpp`, `CreatorRest.cpp`, and
-> `Statement.cpp`. Field-store of a borrow is no longer deferred: it is
-> rejected by `CAJETA_ERROR_CAPTURED_BORROW_PARAM` (spec §4.2). One body-side
+> `Statement.cpp`. Field-store of a parameter is no longer deferred: it is
+> governed by the field-store rule (`specs/field-store-ownership-spec.md`),
+> described below. One body-side
 > shape remains deliberately deferred — **closure-capture of a borrow** (see
 > the end of this doc and [`BorrowSoundness`](BorrowSoundness.md)).
 
@@ -96,13 +97,18 @@ stories.
   cannot function with a borrow: it stores the value somewhere that outlives the
   call and has no way to cope with the caller keeping the title. It refuses a lend
   (`CAJETA_ERROR_TRANSFER_REQUIRED`). It is no longer the way to *permit* a
-  transfer — a plain formal already accepts one.
+  transfer — a plain formal already accepts one. The store that keeps it is
+  still `#=`, because the formal frees its argument at return.
+
+- **Callee-side `^T param`** is *borrow-only*. The callee receives a borrow on
+  every call and may keep it with a plain `=`. It refuses a transfer or an
+  owned temporary (`CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM`).
 
 ### Interaction matrix (rev 2)
 
 | Callee formal | Caller writes | Behavior |
 |---------------|---------------|----------|
-| `T param`     | `x`           | **Lend** — the caller keeps the title and drops the value at its own scope exit. The callee may still store it (the store is a borrow store); if the receiving object escapes, the dangling-lend check fires. |
+| `T param`     | `x`           | **Lend** — the caller keeps the title and drops the value at its own scope exit. The callee may keep it with `this.f #= param`, which records a borrow. A field that outlives the caller's value dangles, and no check catches that. |
 | `T param`     | `#x`          | **Transfer** — the caller's drop deactivates; the callee is a runtime owner. If it consumes the value (`#param` into a field / a forward / a return) the title moves on; if it doesn't, the value drops in the callee. |
 | `#T param`    | `x`           | **Compile error** `CAJETA_ERROR_TRANSFER_REQUIRED` — the must-own edge refuses a lend. |
 | `#T param`    | `#x`          | **Transfer** — same as row 2; the signature simply made it mandatory. |
@@ -129,7 +135,9 @@ rather than the default.
 > EVERY instantiation — the old borrow-mode dissolution is gone. (c) Rule 2
 > below is retired for class-typed formals (see the rev-2 note further
 > down): a plain formal is a RUNTIME owner, so `#param` forwards whatever
-> flag it actually holds.
+> flag it actually holds. (d) Rule 3 below no longer lets a `#T` formal be
+> stored with a plain `=`. A `#T` formal frees its argument at return, so the
+> store that keeps it is `#=` (see the field-store section below).
 
 The new rule is paired:
 
@@ -285,48 +293,37 @@ future phase pending the reference / lifetime feature that would let
 the language reason about whether the storing object's lifetime is
 bounded by the borrow's lifetime.
 
-### Field-store of borrow: rejected (`CAJETA_ERROR_CAPTURED_BORROW_PARAM`)
+### Field-store of a parameter: the field-store rule
 
-> **Partly addressed in rev 2.** The field store itself is still allowed — and the
-> reasoning below (index / cache collections legitimately hold values owned
-> elsewhere) is exactly why containers now carry no ownership spelling at all. What
-> changed is that the *store* is now explicitly a borrow store (it does not silently
-> take ownership), and the escape it enables is caught: if the storing object then
-> leaves the method holding a lend of a dying local, that is
-> `CAJETA_ERROR_DANGLING_LEND`. The general cross-procedure case remains deferred.
->
-> **Superseded by Unit 3's capture check.** For the common shape the store is
-> now *rejected*, not merely loud: `this.f = param`, where `param` is a plain
-> (non-`#`) class-typed formal and the destination is a direct `this.`-field or
-> `this.`-element slot, is the hard error `CAJETA_ERROR_CAPTURED_BORROW_PARAM`
-> (spec §4.2). `CAJETA_WARN_PLAIN_RETAIN_STORE` remains for the wider
-> runtime-conditional-owner shapes that check does not reach — a non-`this`
-> receiver, a nested path such as `this.head.prev = param`, or a flagged local
-> rather than a formal as the source. That case is not the
-> legitimate indexing pattern below — it is a store that borrows while the armed
-> drop entry frees `param` at callee exit, leaving the field dangling on exactly
-> the calls that transferred. It was the most recurring use-after-free family in
-> the stdlib. The fix is `this.f #= param`, which records whatever title the caller
-> actually handed over, so one method body is correct for both kinds of call; a
-> deliberate borrow store spells `this.f = param.clone()` or keeps the plain store
-> and stays quiet when the source cannot be owned. Element slots get the same
-> treatment (`this.data[i] #= v`, per-slot bits) — see
-> [`MemoryModel`](MemoryModel.md). The deferred case below is unchanged: a plain
-> store of a *statically borrowed* value whose source outlives nothing in
-> particular is still the caller's burden until reference types land.
+A store into a field, an element slot or a static outlives the call, so the
+compiler checks what it keeps. `CAJETA_ERROR_CAPTURED_BORROW_PARAM` is retired
+and replaced by these rules.
 
-Field-store of a plain-`T` parameter — `this.f = param;` inside a
-ctor or setter — is **rejected**: `CAJETA_ERROR_CAPTURED_BORROW_PARAM`
-(spec §2.4, §4.2), thrown from `Scope::rejectCapturedBorrowParam`. Three
-spellings are correct instead: store with `#=`, which records whichever mode
-the caller sent so one body serves a lend and a transfer (the sink model
-§2.3 — how `Optional` and `ArrayStream` are written); declare the formal `#T`
-to demand ownership outright (§2.4); or copy with `this.f = param.clone()`.
-The check is deliberately narrow (§7.2): it fires only when the source is a
-plain formal of a title-bearing class type — directly, or through a
-straight-line local — stored by a direct `this.field = p` or
-`this.slots[i] = p`. A nested path such as `this.head.prev = p` writes into
-another object's field and stays legal.
+1. A formal kept with `=` must be spelled `^T`. A `^T` formal is a borrow on
+   every call. A caller cannot pass `#x`, a fresh `heap` value, an owned `#T`
+   result or a `+` String into it (`CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM`).
+2. A `T` or `#T` formal that is kept is stored with `#=`. `set(x)` lends and
+   `set(#x)` transfers, and the field records which.
+3. An owned local (bound from `heap`, a call, `#=` or a `+`) stored into a
+   field or slot is stored with `#=`.
+4. A value read out of a `T` or `#T` formal (`p.child`) stored with `=` needs
+   a `^T` formal. A `#=` store records whatever title the slot held.
+5. `=` into a String field is a borrow, like every other type.
+6. Plain `=` stays right for a literal, a primitive, `null`, and a
+   `heap T(...)` or call written in place.
+
+Rules 1 to 3 report `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`, and rule 4 reports
+`CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM`. The rules apply to a direct
+`this.field = p`, to `this.slots[i] = p`, and to a nested path such as
+`this.head.prev = p`. Declaring the formal `#T` does not make a plain `=`
+safe, because a `#T` formal frees its argument at return. The sink model
+(§2.3) is rule 2, and it is how `Optional` and `ArrayStream` are written.
+
+<!-- snippet: skip -->
+```cajeta
+public void set(T v)    { this.value #= v; }   // the caller chooses
+public void watch(^T v) { this.seen = v; }     // only ever a borrow
+```
 
 > **How the stdlib collections spell it.** Collection key and element
 > parameters are plain `K`/`V`: `HashMap.put`, `HashSet.add`, `Cache.put`,

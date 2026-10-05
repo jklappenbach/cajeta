@@ -2,7 +2,7 @@
 id: wire-Schema
 applies-to: [cajeta/wire/Schema]
 title: Schema — opaque owned carrier of a format's raw schema bytes
-description: Wrap raw schema-definition bytes (constructor takes #, definition() returns a borrow) to pass to a SchemaEncoder<T> for untagged formats like Avro.
+description: "Wrap raw schema-definition bytes (constructor takes #, definition() returns a borrow) to pass to a SchemaEncoder<T> for untagged formats like Avro."
 ---
 
 # Schema

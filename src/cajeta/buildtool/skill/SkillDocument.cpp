@@ -28,6 +28,11 @@ namespace cajeta::buildtool::skill {
             if (auto desc = obj.getString("description")) {
                 out.description = desc->str();
             }
+            if (const auto* kws = obj.getArray("keywords")) {
+                for (const auto& kw : *kws) {
+                    if (auto s = kw.getAsString()) out.keywords.push_back(s->str());
+                }
+            }
             if (const auto* applies = obj.getArray("applies-to")) {
                 for (const auto& entry : *applies) {
                     if (auto s = entry.getAsString()) {

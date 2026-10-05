@@ -59,7 +59,8 @@ class instances always pass and return by reference.
 - **`heap`** when the value must outlive the frame: it is returned to the
   caller, stored in a field or collection, or handed to another owner with
   `#` (next chapter). The heap block is freed automatically when its owner
-  goes out of scope — there is no `delete`.
+  goes out of scope — there is no `delete`. A heap local kept in a field is
+  stored with `#=` ([chapter 11](11-ownership.md#keeping-a-value-in-a-field)).
 
 The compiler enforces the boundary. Returning a stack-allocated local from a
 method is a compile error — the frame it lives in is gone before the caller
