@@ -545,6 +545,16 @@ typedef struct {
     const CajetaAnnotationDesc* annotations;
 } CajetaParamDesc;
 
+// One titled field of an instance (#TitledField), byte offsets from the instance start. kind 0 is a
+// bit-carrying class, array or closure field, 1 a String, 2 an inline interface body, 3 a base
+// pointer that must point into the copy.
+typedef struct {
+    int32_t fieldOffset;
+    int32_t wordOffset;
+    int32_t bit;
+    int32_t kind;
+} CajetaTitledField;
+
 // Field descriptor (#FieldDesc). MUST match getFieldStructType() in
 // StructureMetadata.cpp: { ptr, ptr, i32, i16, ptr, i32, i64 }.
 typedef struct {
@@ -599,6 +609,8 @@ typedef struct {
     const CajetaTemplateParamDesc* templateParams;
     int16_t                       templateArgCount;
     const char**                  templateArgs;
+    int16_t                       titledCount;    // every titled field, inherited ones included
+    const CajetaTitledField*      titled;
 } CajetaRtti;
 
 // Object.getClass(): obj -> its cached #ClassObject, a process-lifetime borrow.

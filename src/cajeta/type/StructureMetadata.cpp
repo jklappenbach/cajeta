@@ -5,6 +5,8 @@
 #include "StructureMetadata.h"
 
 #include <cstdint>
+#include <functional>
+#include <set>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/Transforms/Utils/ModuleUtils.h>
 
@@ -122,6 +124,8 @@ namespace cajeta {
             ptrTy,          // 17 templateParams (#TemplateParamDesc[])
             llvmInt16Type,  // 18 templateArgCount
             ptrTy,          // 19 templateArgs (i8*[] canonical names)
+            llvmInt16Type,  // 20 titledCount
+            ptrTy,          // 21 titled (#TitledField[])
         }, "cajeta.reflect.#Rtti");
         return llvmRttiType;
     }
@@ -349,6 +353,88 @@ namespace cajeta {
             llvm::ConstantArray::get(arrTy, rows), ".rtti.fields");
     }
 
+    // #TitledField: { i32 fieldOffset, i32 wordOffset, i32 bit, i32 kind }, byte offsets into the
+    // instance. kind 0 is a bit-carrying class, array or closure field, 1 a String, 2 an interface
+    // body, 3 a base-pointer slot that must point into the copy.
+    llvm::Constant* StructureMetadata::emitTitledTable(CajetaClassPtr structure, size_t& count) {
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Constant* none = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+        count = 0;
+        auto* instTy = llvm::dyn_cast_or_null<llvm::StructType>(structure->getLlvmType());
+        if (!instTy || instTy->isOpaque() || structure->isInterface()) return none;
+        const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+        const llvm::StructLayout* inst = dl.getStructLayout(instTy);
+        llvm::StructType* rowTy = llvm::StructType::getTypeByName(ctx, "cajeta.reflect.#TitledField");
+        if (!rowTy) {
+            rowTy = llvm::StructType::create(ctx,
+                {llvmInt32Type, llvmInt32Type, llvmInt32Type, llvmInt32Type}, "cajeta.reflect.#TitledField");
+        }
+        vector<llvm::Constant*> rows;
+        std::set<const CajetaClass*> seen;
+        std::function<void(const CajetaClassPtr&)> walk = [&](const CajetaClassPtr& cls) {
+            if (!cls || !seen.insert(cls.get()).second) return;
+            for (auto& parent : cls->getSuperClasses()) walk(parent);
+            auto* ownTy = llvm::dyn_cast_or_null<llvm::StructType>(cls->getLlvmType());
+            const llvm::StructLayout* own = ownTy && !ownTy->isOpaque() ? dl.getStructLayout(ownTy) : nullptr;
+            int ownWord = cls->getOwnershipWordLlvmIndex();
+            for (auto& p : cls->getPropertyList()) {
+                if (p->isStatic() || !p->getType()) continue;
+                int xi = structure->getFieldLlvmIndex(p);
+                if (xi < 0 || (unsigned) xi >= instTy->getNumElements()) continue;
+                int64_t fieldOff = (int64_t) inst->getElementOffset((unsigned) xi);
+                auto pc = dynamic_pointer_cast<CajetaClass>(p->getType());
+                int kind = -1, bit = -1;
+                int64_t wordOff = -1;
+                if (CajetaClass::fieldHasOwnershipBit(p)) {
+                    int ci = cls->getFieldLlvmIndex(p);
+                    if (!own || ownWord < 0 || ci < 0) continue;
+                    bit = cls->ownershipBitIndexOf(p);
+                    wordOff = fieldOff + (int64_t) own->getElementOffset((unsigned) ownWord)
+                        - (int64_t) own->getElementOffset((unsigned) ci);
+                    bool isString = pc && pc->getQName() && pc->getQName()->getTypeName() == "String"
+                        && pc->getQName()->getPackageName() == "cajeta.lang";
+                    kind = isString ? 1 : 0;
+                } else if (pc && pc->isInterface()
+                           && llvm::isa<llvm::StructType>(instTy->getElementType((unsigned) xi))) {
+                    kind = 2;
+                }
+                if (kind < 0) continue;
+                rows.push_back(llvm::ConstantStruct::get(rowTy, {
+                    llvm::ConstantInt::get(llvmInt32Type, (uint64_t) (uint32_t) fieldOff),
+                    llvm::ConstantInt::get(llvmInt32Type, (uint64_t) (uint32_t) wordOff),
+                    llvm::ConstantInt::get(llvmInt32Type, (uint64_t) (uint32_t) bit),
+                    llvm::ConstantInt::get(llvmInt32Type, (uint64_t) kind)}));
+            }
+        };
+        walk(structure);
+        int slot = 0;
+        std::function<void(CajetaClass*, bool)> vbases = [&](CajetaClass* cls, bool ownVtable) {
+            if (ownVtable) slot++;
+            int idx = 0;
+            for (auto& parent : cls->getSuperClasses()) vbases(parent.get(), idx++ != 0);
+            for (auto& p : cls->getPropertyList()) {
+                if (!p->isStatic()) slot++;
+            }
+            if (cls->needsOwnershipWord()) slot++;
+            for (size_t i = 0; i < cls->getVbaseAncestors().size(); ++i, ++slot) {
+                if ((unsigned) slot >= instTy->getNumElements()) continue;
+                rows.push_back(llvm::ConstantStruct::get(rowTy, {
+                    llvm::ConstantInt::get(llvmInt32Type, inst->getElementOffset((unsigned) slot)),
+                    llvm::ConstantInt::get(llvmInt32Type, (uint64_t) (uint32_t) -1),
+                    llvm::ConstantInt::get(llvmInt32Type, (uint64_t) (uint32_t) -1),
+                    llvm::ConstantInt::get(llvmInt32Type, 3)}));
+            }
+        };
+        vbases(structure.get(), structure->hasVtablePointerAtSlotZero());
+        if (rows.empty()) return none;
+        count = rows.size();
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(rowTy, rows.size());
+        return new llvm::GlobalVariable(*module->getLlvmModule(), arrTy, true,
+            llvm::GlobalValue::PrivateLinkage,
+            llvm::ConstantArray::get(arrTy, rows), ".rtti.titled");
+    }
+
     llvm::Constant* StructureMetadata::emitMethodTable(CajetaClassPtr structure) {
         auto& ctx = *module->getLlvmContext();
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
@@ -451,6 +537,8 @@ namespace cajeta {
         if (!newInstanceAdapter) newInstanceAdapter = nullPtr;
         size_t ctorCount = structure->getReflectConstructorList().size();
 
+        size_t titledCount = 0;
+        llvm::Constant* titled = emitTitledTable(structure, titledCount);
         args.clear();
         return llvm::ConstantStruct::get(rttiTy, {
             llvm::ConstantInt::get(llvmInt64Type, allocSize),                  // 0
@@ -479,6 +567,8 @@ namespace cajeta {
             llvm::ConstantInt::get(llvmInt16Type,                            // 18
                 structure->getTypeArguments().size()),
             emitTemplateArgArray(structure),                                // 19
+            llvm::ConstantInt::get(llvmInt16Type, titledCount),             // 20
+            titled,                                                          // 21
         });
     }
 

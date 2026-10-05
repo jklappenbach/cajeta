@@ -98,6 +98,8 @@ namespace cajeta {
         // Build the per-class descriptor-table globals; return ptr to the
         // table (or null ptr constant when empty).
         llvm::Constant* emitFieldTable(CajetaClassPtr structure);
+        // Every titled field of the instance, inherited ones included, as #TitledField rows for clone().
+        llvm::Constant* emitTitledTable(CajetaClassPtr structure, size_t& count);
         // One row per declared method, carrying its signature hash and its own
         // parameter table; the implicit `this` is left out of the parameter count.
         llvm::Constant* emitMethodTable(CajetaClassPtr structure);

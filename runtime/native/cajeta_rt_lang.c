@@ -15,8 +15,8 @@ void* __cajeta_object_to_string(void* self) {
     return NULL;
 }
 
-// Shallow copy plus per-field fixup: a String field becomes a FRESH STAKE on the same
-// buffer (no GC, so a shared wrapper would UAF) and a String receiver DETACHES.
+// Shallow copy that owns a fresh stake on each String field and borrows every other shared
+// field, inherited ones included. A String receiver DETACHES into its own buffer.
 void* __cajeta_object_clone(void* self) {
     if (!self) return NULL;
     CajetaRtti* r = (CajetaRtti*) cajeta_rtti_from_obj(self);
@@ -38,17 +38,33 @@ void* __cajeta_object_clone(void* self) {
     }
     void* out = __cajeta_alloc((uint64_t) r->allocationSize);
     memcpy(out, self, (size_t) r->allocationSize);
+    for (int32_t i = 0; i < (int32_t) r->titledCount; i++) {
+        const CajetaTitledField* t = &r->titled[i];
+        char* field = (char*) out + t->fieldOffset;
+        uint64_t mask = t->bit >= 0 ? (1ULL << t->bit) : 0;
+        uint64_t* word = t->wordOffset >= 0 ? (uint64_t*) ((char*) out + t->wordOffset) : NULL;
+        if (t->kind == 1) {
+            void* src = *(void**) field;
+            if (src) {
+                *(void**) field = __cajeta_string_slice(src, 0, caj_str_len((cajeta_string_layout*) src));
+                if (word) *word |= mask;
+            }
+        } else if (t->kind == 0) {
+            if (word) *word &= ~mask;
+        } else if (t->kind == 2) {
+            int64_t* kindSlot = (int64_t*) (field + 16);
+            if (*kindSlot == 1) *kindSlot = 0;
+        } else if (t->kind == 3) {
+            char* p = *(char**) field;
+            if (p >= (char*) self && p < (char*) self + r->allocationSize) {
+                *(char**) field = (char*) out + (p - (char*) self);
+            }
+        }
+    }
     for (int32_t i = 0; i < (int32_t) r->propertyCount; i++) {
         const CajetaFieldDesc* f = &r->properties[i];
         if (f->byteOffset < 0 || !f->type) continue;
-        if (strcmp(f->type, "cajeta.lang.String") == 0) {
-            void** slot = (void**) ((char*) out + f->byteOffset);
-            void* src = *slot;
-            if (src) {
-                cajeta_string_layout* fs = (cajeta_string_layout*) src;
-                *slot = __cajeta_string_slice(src, 0, caj_str_len(fs));
-            }
-        } else if (strcmp(f->type, "cajeta.lang.Utf8") == 0) {
+        if (strcmp(f->type, "cajeta.lang.Utf8") == 0) {
             // The memcpy duplicated the inline 16 bytes, so a Shared form needs its own
             // stake. Direct Utf8 fields only — RTTI lists direct fields.
             __cajeta_utf8_retain((char*) out + f->byteOffset);
