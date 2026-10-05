@@ -21,6 +21,9 @@
 #include "llvm/Transforms/Scalar/SROA.h"
 #include "llvm/Transforms/Scalar/Scalarizer.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/ADT/DepthFirstIterator.h"
+#include "cajeta/xpu/core/DeclarationCheck.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
 #include "llvm/Transforms/Vectorize/LoopVectorize.h"
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
@@ -57,6 +60,150 @@ namespace {
     setBool("funcspec-for-literal-constant", true);
     setUInt("funcspec-min-function-size", 1);
     setUInt("funcspec-max-clones", 8);
+}
+
+// LoopVectorize must not SPECULATE a unit stride for a wave kernel. LAA
+// versions a loop on "stride == 1" for an index `tid * n` with `n` a runtime
+// value, and the loop it leaves for every other `n` is the scalar twin,
+// where a wave op is its width-1 stub. Off, the access is a gather. The
+// switch is a process-global cl::opt, so it is scoped to the wrapper
+// pipeline and the host's own code keeps LLVM's default.
+struct ScopedNoUnitStrideSpeculation {
+    llvm::cl::opt<bool>* opt = nullptr;
+    bool was = true;
+    ScopedNoUnitStrideSpeculation() {
+        auto& opts = llvm::cl::getRegisteredOptions();
+        auto it = opts.find("laa-speculate-unit-stride");
+        if (it == opts.end()) return;
+        opt = static_cast<llvm::cl::opt<bool>*>(it->second);
+        was = opt->getValue();
+        opt->setValue(false);
+    }
+    ~ScopedNoUnitStrideSpeculation() { if (opt) opt->setValue(was); }
+};
+
+// Blind the stride analysis to a power-of-two mask on a loop-varying value.
+//
+// ScalarEvolution reads `x & 15` and `x % 16` as `zext i4 (trunc x)`, and
+// when `x` is the work-item induction variable LoopVectorize converts that to
+// an affine recurrence under the PREDICATE that the truncation never wraps
+// over the loop, which is "block <= 16". The predicate is added by the cost
+// model's consecutive-pointer analysis, past the legality threshold, and it
+// cannot be refused by option. It becomes a runtime check that sends every
+// launch it fails to the scalar twin of the loop, where a wave shuffle is the
+// identity and a wave reduce is its own input: `(x & 7) * 4` answered 2 for
+// 929, `x & 31` at a two-wave block the same, and fromWords of words loaded
+// from a buffer read each lane's own A element for every k (measured
+// 2026-10-05, xpu-kernel-independence 4.1.2.4). The same mask written as
+// `x - ((x >> k) << k)` is an add of a recurrence and a udiv, which the
+// predicate rewriter cannot make affine, so the access is a gather: the right
+// answer, with no twin. InstCombine folds the spelling straight back, which
+// is why this runs after the last InstCombine before LoopVectorize.
+struct BlindLaneMasksPass : llvm::PassInfoMixin<BlindLaneMasksPass> {
+    llvm::PreservedAnalyses run(llvm::Function& f, llvm::FunctionAnalysisManager&) {
+        llvm::SmallVector<llvm::BinaryOperator*, 16> masks;
+        for (auto& bb : f)
+            for (auto& in : bb) {
+                auto* bo = llvm::dyn_cast<llvm::BinaryOperator>(&in);
+                if (!bo || !bo->getType()->isIntegerTy()) continue;
+                auto* c = llvm::dyn_cast<llvm::ConstantInt>(bo->getOperand(1));
+                if (!c || !llvm::isa<llvm::Instruction>(bo->getOperand(0))) continue;
+                const llvm::APInt& v = c->getValue();
+                if (bo->getOpcode() == llvm::Instruction::And) {
+                    if (v.isMask() && !v.isZero() && v.countr_one() < v.getBitWidth())
+                        masks.push_back(bo);
+                } else if (bo->getOpcode() == llvm::Instruction::URem) {
+                    if (v.isPowerOf2() && v.logBase2() >= 1) masks.push_back(bo);
+                }
+            }
+        for (auto* bo : masks) {
+            auto* c = llvm::cast<llvm::ConstantInt>(bo->getOperand(1));
+            const llvm::APInt& v = c->getValue();
+            unsigned k = bo->getOpcode() == llvm::Instruction::And ? v.countr_one()
+                                                                   : v.logBase2();
+            llvm::IRBuilder<> b(bo);
+            llvm::Value* x = bo->getOperand(0);
+            llvm::Value* hi = b.CreateShl(b.CreateLShr(x, k), k, "lane.hi");
+            llvm::Value* lo = b.CreateSub(x, hi, "lane.lo");
+            bo->replaceAllUsesWith(lo);
+            bo->eraseFromParent();
+        }
+        return masks.empty() ? llvm::PreservedAnalyses::all()
+                             : llvm::PreservedAnalyses::none();
+    }
+};
+
+// The scalar twin of a widened work-item loop never runs in a wave kernel.
+//
+// LoopVectorize leaves a scalar copy of every loop it widens, for the
+// remainder when the trip count is not a multiple of the width and for every
+// launch a runtime check it added turns away. In a wave kernel that copy
+// runs the wave ops as their width-1 stubs, which is a wrong answer with no
+// diagnostic. After widening, the twin's preheader becomes a call to the
+// runtime's `__cajeta_xpu_cpu_scalar_twin(kernel)` and a return from the
+// block: the launcher counts it, refuses the launch by name, and
+// Device.checkLaunch raises. The twin is then unreachable and deleted.
+struct RetireScalarTwinsPass : llvm::PassInfoMixin<RetireScalarTwinsPass> {
+    std::string kernelName;
+    explicit RetireScalarTwinsPass(llvm::StringRef name) : kernelName(name.str()) {}
+    llvm::PreservedAnalyses run(llvm::Function& f, llvm::FunctionAnalysisManager& am);
+};
+
+llvm::PreservedAnalyses RetireScalarTwinsPass::run(llvm::Function& f,
+                                                   llvm::FunctionAnalysisManager& am) {
+    llvm::LoopInfo& li = am.getResult<llvm::LoopAnalysis>(f);
+    auto hasHint = [](llvm::Loop* L, llvm::StringRef hint) {
+        llvm::MDNode* id = L->getLoopID();
+        if (!id) return false;
+        for (unsigned i = 1; i < id->getNumOperands(); ++i)
+            if (auto* md = llvm::dyn_cast<llvm::MDNode>(id->getOperand(i)))
+                if (md->getNumOperands() > 0)
+                    if (auto* str = llvm::dyn_cast<llvm::MDString>(md->getOperand(0)))
+                        if (str->getString() == hint) return true;
+        return false;
+    };
+    llvm::SmallVector<llvm::Loop*, 4> twins;
+    for (llvm::Loop* top : li)
+        for (llvm::Loop* L : llvm::depth_first(top)) {
+            if (!hasHint(L, "cajeta.xpu.wi") || !hasHint(L, "llvm.loop.isvectorized"))
+                continue;
+            llvm::BasicBlock* h = L->getHeader();
+            if (h->hasName() && h->getName().starts_with("vector.body")) continue;
+            // A twin with no wave op in it is ordinary scalar code and stays:
+            // a barrier region that only loops over a row has a right answer
+            // at width 1, for a block of any size.
+            bool wave = false;
+            for (llvm::BasicBlock* bb : L->blocks())
+                for (auto& in : *bb)
+                    if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                        if (auto* cf = c->getCalledFunction())
+                            if (cf->getName().starts_with("__cajeta_xpu_wave_")
+                                && cf->getName() != "__cajeta_xpu_wave_width")
+                                wave = true;
+            if (wave) twins.push_back(L);
+        }
+    if (twins.empty()) return llvm::PreservedAnalyses::all();
+    llvm::Module& m = *f.getParent();
+    llvm::LLVMContext& ctx = f.getContext();
+    llvm::FunctionCallee hook = m.getOrInsertFunction(
+        "__cajeta_xpu_cpu_scalar_twin",
+        llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                                {llvm::PointerType::get(ctx, 0)}, false));
+    unsigned retired = 0;
+    for (llvm::Loop* L : twins) {
+        llvm::BasicBlock* pre = L->getLoopPreheader();
+        if (!pre) continue;
+        llvm::Instruction* term = pre->getTerminator();
+        llvm::IRBuilder<> b(term);
+        b.CreateCall(hook, {b.CreateGlobalString(kernelName, "cajeta.twin.kernel")});
+        if (f.getReturnType()->isVoidTy()) b.CreateRetVoid();
+        else b.CreateUnreachable();
+        term->eraseFromParent();
+        ++retired;
+    }
+    if (!retired) return llvm::PreservedAnalyses::all();
+    llvm::removeUnreachableBlocks(f);
+    return llvm::PreservedAnalyses::none();
 }
 
 // Does `f` hold a fixed-vector value anywhere? The scalarize prefix has
@@ -327,7 +474,7 @@ void fuseFunction(llvm::Function& f, llvm::TargetMachine* tm) {
 }
 
 void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
-                       bool scalarizeVectorValues) {
+                       bool scalarizeVectorValues, llvm::StringRef kernelName) {
     if (f.isDeclaration()) return;
     PassEnv env(tm);
 
@@ -409,13 +556,25 @@ void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
         fpm.addPass(llvm::EarlyCSEPass());
         fpm.addPass(llvm::InstCombinePass());
     }
+    // Only a wave kernel has a twin that must not run; an ordinary kernel's
+    // remainder loop is right, and its masks stay as written.
+    const bool waveKernel = askedToScalarize;
+    if (waveKernel && !xpu::xpuFault("keep-lane-masks"))
+        fpm.addPass(BlindLaneMasksPass());
     fpm.addPass(llvm::createFunctionToLoopPassAdaptor(
         llvm::LoopRotatePass()));                     // rotate for LV
     fpm.addPass(llvm::LoopVectorizePass());           // the work-item loop → SIMD
-    fpm.addPass(llvm::SLPVectorizerPass());
-    fpm.addPass(llvm::InstCombinePass());
-    fpm.addPass(llvm::SimplifyCFGPass());
-    fpm.run(f, env.fam);
+    {
+        ScopedNoUnitStrideSpeculation noSpeculation;
+        fpm.run(f, env.fam);
+    }
+    llvm::FunctionPassManager post;
+    if (waveKernel)
+        post.addPass(RetireScalarTwinsPass(kernelName.empty() ? f.getName() : kernelName));
+    post.addPass(llvm::SLPVectorizerPass());
+    post.addPass(llvm::InstCombinePass());
+    post.addPass(llvm::SimplifyCFGPass());
+    post.run(f, env.fam);
 }
 
 } // namespace cajeta

@@ -5,6 +5,8 @@
 
 #include "CompilerMode.h"   // OptLevel
 
+#include "llvm/ADT/StringRef.h"
+
 namespace llvm {
     class Module;
     class Function;
@@ -44,7 +46,10 @@ namespace cajeta {
     // width, and the wave op is what the lanes are FOR. An ordinary
     // data-parallel cpu kernel keeps its vector values, where a
     // `Vector<float32,4>` is deliberate host SIMD.
+    // `kernelName` names the kernel in the scalar-twin refusal; empty means the
+    // function's own name.
     void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
-                           bool scalarizeVectorValues = false);
+                           bool scalarizeVectorValues = false,
+                           llvm::StringRef kernelName = {});
 
 } // namespace cajeta

@@ -402,6 +402,39 @@ not a miscompile to fix: tail-folding wouldn't make a non-W-multiple block cross
 by every warp-multiple block size (32/64/128/256 — all divisible by 4/8/16), i.e. by all
 GPU-idiomatic launch shapes. Inherited from the barrier-free 5C path; Inc 9 adds nothing new here.
 
+**The scalar twin never runs (2026-10-05).** The scalar epilogue above is one of two ways
+into the scalar copy LoopVectorize leaves beside a widened loop; the other is a runtime
+check the vectorizer adds when it widened under a predicate it could not prove. Every
+power-of-two mask on the thread id (`x & 15`, `x % 16`, at any stride, in 32 or 64 bits)
+produced one: ScalarEvolution reads the mask as a truncation, the cost model's
+consecutive-pointer analysis makes it affine under the predicate that the truncation never
+wraps over the loop, and the check is "block <= mask + 1". For `x & 15` no launch passes it,
+for `x & 31` only a one-wave block does, and the loop that ran was the scalar twin, where
+`Wave.reduceSum` is its own input and a tile's wave collectives are width-1 (measured: cpu 2
+for reference 929 on `(x & 7) * 4`; fromWords of words loaded from a buffer read each lane's
+own A element for every k; two epilogue verbs in one kernel disagreed although each agreed
+alone). Two changes, both in `vectorizeFunction`:
+
+- a lane mask is blinded to the stride analysis before LoopVectorize, rewritten as
+  `x - ((x >> k) << k)`, an add of a recurrence and a udiv that the predicate rewriter cannot
+  make affine, so the access is a gather with no predicate (unit-stride speculation is off for
+  the same span, `laa-speculate-unit-stride`, so `x * n` is a gather rather than a loop
+  versioned on `n == 1`); the test lever `CAJETA_XPU_FAULT=keep-lane-masks` leaves the mask
+  as written;
+- after widening, the scalar twin of every work-item loop that holds a wave op is retired:
+  its preheader becomes a call to `__cajeta_xpu_cpu_scalar_twin` and a return from the block,
+  the twin is deleted, and the launcher refuses the launch by name (reason 2,
+  `Device.checkLaunch` raises). A partial tail wave is therefore a refused launch now, not a
+  width-1 result. A twin with no wave op in it is ordinary scalar code and stays, since a
+  region that only loops over a row is right at width 1 for a block of any size.
+
+The work-item loop also carries `llvm.loop.interleave.count` 1: left to its cost model
+LoopVectorize interleaved some regions four times, so their vector loop needed a 4W-wide
+block and every smaller block ran the scalar copy.
+
+`XpuReferenceInterpreter.aMaskedLaneIndexSumsOverTheWaveOnCpu` holds the masks at one and two
+waves, `theScalarTwinOfAWaveKernelIsRefusedNotRun` the refusal.
+
 ### Docs
 - This file (the log). The matrix gains a **CPU column** (today: emit + grid→threads
   measured; wave width 1; barrier deferred). The NVIDIA∩AMD variance reckoning

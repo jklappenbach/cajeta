@@ -875,6 +875,22 @@ static void cajeta_xpu_sync_active(void) {
     }
 }
 
+// The scalar twin of a widened work-item loop, entered. A wave kernel's
+// work-item loop is widened to the wave width, and LoopVectorize leaves a
+// scalar copy beside it for the remainder and for the launches a runtime
+// check it added turns away. In that copy a wave op is its width-1 stub, so
+// the compiler retires the copy to this call: it runs instead of the twin,
+// the block returns, and the launcher below refuses the launch by name.
+// Counted process-wide, since the blocks run on workers.
+static int32_t g_cpu_scalar_twin_hits;
+void __cajeta_xpu_cpu_scalar_twin(const char* kernel) {
+    (void) kernel;
+    __atomic_add_fetch(&g_cpu_scalar_twin_hits, 1, __ATOMIC_RELAXED);
+}
+int32_t __cajeta_xpu_cpu_scalar_twin_hits(void) {
+    return __atomic_load_n(&g_cpu_scalar_twin_hits, __ATOMIC_RELAXED);
+}
+
 // CPU launch thunk: coord = [tid.xyz, ctaid.xyz, ntid.xyz, ...]; argv is shared.
 typedef void (*cajeta_cpu_launch_fn)(void** argv, const int32_t* coord);
 
@@ -1193,6 +1209,19 @@ void __cajeta_xpu_kpool_shutdown(void) {
     pthread_mutex_unlock(&g_caj_kpool.mu);
 }
 
+// A wave kernel whose scalar twin ran did not compute: refuse the launch by
+// name (Device.checkLaunch raises, reason 2) and say why once per launch.
+static void cajeta_xpu_cpu_refuse_if_twin_ran(const char* name, int32_t before,
+                                              int32_t blockX) {
+    if (__cajeta_xpu_cpu_scalar_twin_hits() == before) return;
+    cajeta_xpu_note_launch_refusal(name, CAJ_XPU_CPU);
+    g_xpu_refusal_reason = 2;
+    fprintf(stderr, "cajeta.xpu: CPU launch of '%s' refused: the work-item loop's "
+            "scalar twin ran (block.x %d is not a multiple of the wave width, or "
+            "the vectorizer's runtime check turned this launch away), which would "
+            "run the wave ops at width 1\n", name, blockX);
+}
+
 // CPU launch: resolve the registered thunk and run the grid, chunked across
 // min(blocks, cores) workers — blocks fan out, never one block's work-items.
 static void cajeta_xpu_launch_cpu(const char* name,
@@ -1219,6 +1248,8 @@ static void cajeta_xpu_launch_cpu(const char* name,
         return;
     }
 
+
+    const int32_t twinsBefore = __cajeta_xpu_cpu_scalar_twin_hits();
 
     // CAJETA_XPU_CPU_SERIAL forces single-threaded execution. Read once.
     static int force_serial = -1;
@@ -1261,6 +1292,7 @@ static void cajeta_xpu_launch_cpu(const char* name,
                                             0, nblocks, sharedBytes,
                                             specCount, specValues};
         cajeta_xpu_cpu_run_slice(&all);
+        cajeta_xpu_cpu_refuse_if_twin_ran(name, twinsBefore, blockX);
         return;
     }
 
@@ -1291,6 +1323,7 @@ static void cajeta_xpu_launch_cpu(const char* name,
     for (int32_t i = njobs; i < nworkers - 1; ++i)
         cajeta_xpu_cpu_run_slice(&slices[i]);   // pool-short surplus, inline
     caj_kpool_join();
+    cajeta_xpu_cpu_refuse_if_twin_ran(name, twinsBefore, blockX);
 }
 
 // --- Buffer<T> device memory (backend-dispatched) ---------------------------

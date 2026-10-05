@@ -498,6 +498,12 @@ void forceLoopVectorWidth(llvm::UncondBrInst* latch, unsigned W) {
     ops.push_back(nullptr);  // self-reference, patched below
     ops.push_back(md("llvm.loop.vectorize.width", llvm::ConstantInt::get(i32, W)));
     ops.push_back(md("llvm.loop.vectorize.enable", llvm::ConstantInt::getTrue(ctx)));
+    // One vector iteration is one wave. Left to its cost model LoopVectorize
+    // interleaved some regions four times, so their vector loop needed a
+    // 4W-wide block and every smaller block ran the scalar copy instead
+    // (measured 2026-10-05 on an 8-wide block: the loop vectorized at width
+    // 8, interleaved count 4, min iterations 32).
+    ops.push_back(md("llvm.loop.interleave.count", llvm::ConstantInt::get(i32, 1)));
     // Names this loop as a WORK-ITEM loop. LoopVectorize keeps a hint it does
     // not own on both the vector loop and the scalar remainder, so after the
     // pass the left-scalar gate can find the work-item loop a wave call sits
@@ -1307,7 +1313,7 @@ void foldWaveVariants(llvm::Function& f) {
                     if (waveKernel) markWaveCallsConvergent(*wrapper);
                     if (waveKernel) markWorkItemLoopsParallel(*wrapper);
                     wavePre = waveOpCallCount(*wrapper);
-                    vectorizeFunction(*wrapper, hostTm.get(), waveKernel);
+                    vectorizeFunction(*wrapper, hostTm.get(), waveKernel, entryName);
                     if (dbg) ctx.setDiagnosticHandler(std::move(saved));
                 }
                 if (waveKernel) {
@@ -1463,7 +1469,7 @@ void foldWaveVariants(llvm::Function& f) {
                 if (waveKernel) markWaveCallsConvergent(*wrapper);
                 if (waveKernel) markWorkItemLoopsParallel(*wrapper);
                 wavePre = waveOpCallCount(*wrapper);
-                vectorizeFunction(*wrapper, hostTm.get(), waveKernel);
+                vectorizeFunction(*wrapper, hostTm.get(), waveKernel, entryName);
                 if (dbg) ctx.setDiagnosticHandler(std::move(saved));
             }
 

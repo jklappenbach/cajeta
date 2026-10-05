@@ -340,6 +340,11 @@ public final class Device {
             why = "a buffer argument's base is not aligned to the words the "
                 + "kernel reads it in; slice it at a multiple of 4 bytes";
         }
+        if (reason == 2) {
+            why = "the work-item loop's scalar twin ran, which would run the "
+                + "wave ops at width 1; the block is not a multiple of the wave "
+                + "width, or the vectorizer's runtime check turned the launch away";
+        }
         String msg #= "cajeta.xpu: launch refused for kernel '" + kernel
                     + "' on backend '" + backend
                     + "' (" + why + ")";

@@ -1260,12 +1260,12 @@ TEST(XpuReferenceInterpreter, aTileReadsWhatTheWaveWroteJustBefore) {
     EXPECT_EQ(compareOn<float>(p, again, 0, shape(1, 32), 0, 32), "");
 }
 
-// DISABLED: found by the reference on 2026-10-05 (xpu-kernel-independence
-// 4.1.2.4). Two epilogue verbs in one kernel disagree with the cpu backend
-// although each agrees alone: with the integer verb present the first verb's
-// term lands once per lane (element 0 is 0.5 + 32 x 37.24), and two float
-// verbs in sequence lose part of the first.
-TEST(XpuReferenceInterpreter, DISABLED_twoEpilogueVerbsInOneKernelAgreeOnTheCpuBackend) {
+// Found by the reference on 2026-10-05 (xpu-kernel-independence 4.1.2.4): two
+// epilogue verbs in one kernel disagreed with the cpu backend although each
+// agreed alone. The same versioned work-item loop as fromWordsOfLoadedWords:
+// `f[128 + (l & 15)]` made LoopVectorize version on "block <= 16" and the
+// scalar twin ran the tile's wave collectives at width 1.
+TEST(XpuReferenceInterpreter, twoEpilogueVerbsInOneKernelAgreeOnTheCpuBackend) {
     EpilogueInputs in;
     Pair two(std::string(kEpilogueHead) + kVerbA + kVerbB + kEpilogueTail, "refEpilogue");
     ASSERT_EQ(two.failure, "");
@@ -1342,16 +1342,80 @@ TEST(XpuReferenceInterpreter, fromWordsFillsTheOperandTileFromTheWave) {
     EXPECT_EQ(compareOn<int32_t>(p, in.ins(), 0, shape(1, 32), 0, 32), "");
 }
 
-// DISABLED: found by the reference on 2026-10-05 (xpu-kernel-independence
-// 4.1.2.4). The same kernel with its four words loaded from a buffer, in the
-// call or through locals, disagrees with the cpu backend, although words
-// computed in registers agree bit for bit; with an identity A the cpu's
-// product is a diagonal with values no int8 can give.
-TEST(XpuReferenceInterpreter, DISABLED_fromWordsOfLoadedWordsAgreesOnTheCpuBackend) {
+// Found by the reference on 2026-10-05 (xpu-kernel-independence 4.1.2.4): the
+// same kernel with its four words loaded from a buffer, in the call or through
+// locals, answered each lane's own A element for every k on the cpu backend,
+// although words computed in registers agreed bit for bit. The index
+// `(x & 15) * 4` made LoopVectorize version the work-item loop on "block <=
+// 16", which no launch satisfies, and the scalar twin ran the wave shuffle as
+// its width-1 identity. Lane masks are now blinded to the stride analysis, so
+// the access is a gather and the vector loop is the only loop.
+TEST(XpuReferenceInterpreter, fromWordsOfLoadedWordsAgreesOnTheCpuBackend) {
     FromWordsInputs in;
     for (const char* words : {kWordsFromBuffer, kWordsFromLocals}) {
         Pair p(std::string(kFromWordsHead) + words + kFromWordsTail, "refFromWords");
         ASSERT_EQ(p.failure, "");
         EXPECT_EQ(compareOn<int32_t>(p, in.ins(), 0, shape(1, 32), 0, 32), "") << words;
     }
+}
+
+
+// Every power-of-two mask on the thread id, at any stride, in 32 or 64 bits,
+// made LoopVectorize version the work-item loop on "block <= mask + 1" and run
+// the scalar twin, where Wave.reduceSum is its own input (measured 2026-10-05:
+// cpu 2 for reference 929 on `(x & 7) * 4`, and `x & 31` at a two-wave block
+// the same). The masked index is a gather now; the sum is over the wave.
+namespace {
+const char* kMaskHead = R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void refMask(KernelBuffer<uint32> out, KernelBuffer<uint32> w, uint32 n) {
+        uint32 i = )CJ";
+const char* kMaskTail = R"CJ(;
+        uint32 v = w[i] + w[i + 1];
+        out[KernelThread.x()] = Wave.reduceSum(v) + v;
+    }
+)CJ";
+std::vector<In> maskInputs() {
+    std::vector<uint32_t> wv(512);
+    for (uint32_t i = 0; i < 512; ++i) wv[i] = i;
+    return {buffer(std::vector<uint32_t>(64)), buffer(wv), u32(4)};
+}
+} // namespace
+
+TEST(XpuReferenceInterpreter, aMaskedLaneIndexSumsOverTheWaveOnCpu) {
+    for (const char* idx : {"(KernelThread.x() & 15) * 4", "(KernelThread.x() & 7) * n",
+                            "(uint32) ((int64) (KernelThread.x() & 7) * 4)",
+                            "KernelThread.x() % 16", "(KernelThread.x() & 31) * 4"}) {
+        Pair p(std::string(kMaskHead) + idx + kMaskTail, "refMask");
+        ASSERT_EQ(p.failure, "") << idx;
+        EXPECT_EQ(compareOn<uint32_t>(p, maskInputs(), 0, shape(1, 32), 0, 32), "") << idx;
+        EXPECT_EQ(compareOn<uint32_t>(p, maskInputs(), 0, shape(1, 64), 0, 32), "") << idx;
+    }
+}
+
+// The scalar twin LoopVectorize leaves beside a widened work-item loop never
+// runs in a wave kernel. The test-only lever CAJETA_XPU_FAULT=keep-lane-masks
+// keeps `x & 15` visible to the stride analysis, so the loop is versioned on
+// "block <= 16" again and every launch is turned to the twin: the twin is now
+// a call to the runtime, counted, and the block computes nothing.
+extern "C" int32_t __cajeta_xpu_cpu_scalar_twin_hits(void);
+
+namespace {
+struct EnvGuard {
+    std::string name;
+    EnvGuard(const char* var, const char* value) : name(var) { setenv(var, value, 1); }
+    ~EnvGuard() { unsetenv(name.c_str()); }
+};
+} // namespace
+
+TEST(XpuReferenceInterpreter, theScalarTwinOfAWaveKernelIsRefusedNotRun) {
+    EnvGuard lever("CAJETA_XPU_FAULT", "keep-lane-masks");
+    Pair p(std::string(kMaskHead) + "(KernelThread.x() & 15) * 4" + kMaskTail, "refMask");
+    ASSERT_EQ(p.failure, "");
+    const int32_t before = __cajeta_xpu_cpu_scalar_twin_hits();
+    std::vector<In> r = maskInputs();
+    ASSERT_EQ(runCpu(p.kernel, r, shape(1, 32)), "");
+    EXPECT_GT(__cajeta_xpu_cpu_scalar_twin_hits(), before);
+    for (uint32_t v : as<uint32_t>(r[0].buf)) EXPECT_EQ(v, 0u);
 }
