@@ -31,6 +31,11 @@ argument is passed as its bits.
   returns. A rendezvous is `Barrier.workgroup`, `Barrier.wave` or a wave
   collective. Once every live member of the rendezvous's scope has arrived,
   the collective is computed and they all continue.
+- A cooperative matrix is the wave's object, so a tile operation that reads
+  memory (`load`, `fromWords`, the epilogue verbs) is a wave collective: it
+  reads once every lane of the wave has arrived, so what the lanes stored
+  just before it, with no barrier between, is there, as on a wave that runs
+  in lockstep. A kernel that uses a tile is a wave kernel and needs the width.
 - Scheduling is deterministic, so a run is reproducible.
 - A kernel with no rendezvous runs its work-items in sequence on one thread.
 - Memory is sequentially consistent, so `Barrier.workgroupMemory` and
@@ -97,6 +102,7 @@ These are every built-in the interpreter defines.
 | `Cajeta.bitsToF32`, `f32ToBits`, `bitsToF64`, `f64ToBits` | the same bits, reinterpreted |
 | `Bits.count`, `reverse`, `rotateLeft`, `rotateRight` | on uint32; a rotate takes its amount modulo 32 |
 | `for (T k : Group.stripe(n))` | `k` runs from `laneId` while below `n`, stepping by `W` |
+| `Group.mac(acc, a, b)` | `a.dotSum(b, acc)`: `acc` plus the int8 products, wrapping in int32; a lane's own, not a wave operation |
 | `for (idx, e : buf.range(n))` | `idx` runs from `globalIdX` while below `n`, stepping by the grid's width in work-items; `e` is a copy of `buf[idx]` |
 | `Math.min`, `max`, `abs`, `floor`, `ceil`, `trunc`, `fma` | exact, in the argument's float type |
 | `Math.sqrt` | correctly rounded in the argument's float type |
@@ -191,9 +197,21 @@ The held list has one tab-separated line per kernel and backend.
 `<kernel> <backend> held <note>` holds a known disagreement, and
 `<kernel> <backend> ulps=N <why>` states a float bound in units in the last
 place, and `<kernel> <backend> rel=X <why>` states one as a fraction of the
-largest finite reference magnitude in the buffer. The two can be joined as
-`ulps=N,rel=X`, and an element inside either passes. A backend of `*` matches
-every backend.
+buffer's scale. The two can be joined as `ulps=N,rel=X`, and an element inside
+either passes. A backend of `*` matches every backend. On an integer buffer
+`ulps=N` is a step bound: the two elements' distance as integers of the
+buffer's width, for a quantized output whose float scale the backend reduced
+in another order.
+
+The scale is the largest finite reference magnitude the launch wrote, over the
+whole buffer when it wrote nothing. An element the launch left as it was (a
+fill pattern, a row it did not reach) does not set it, and nor does a
+sentinel, a magnitude at or above a quarter of the type's largest value (an
+attention kernel's -3e38 for an empty partition). Both still have to match;
+they only do not make a relative bound vacuous.
+
+With `CAJETA_XPU_CONFORMANCE_DUMP` set, a failed launch leaves the reference's
+bytes of each allocation a parameter reads beside the backend's, as `a<i>.ref`.
 
 A relative bound is for results whose error scales with the buffer rather than
 with the element: a `@FastMath` kernel, which the backend may reassociate,
@@ -205,10 +223,10 @@ and how many elements fall outside the bound.
 
 ## Comparing against it
 
-Integers compare bit for bit. Floats compare within a stated count of units in
-the last place, using `ulpDistance`, or within a stated fraction of the
-buffer's largest value, and each comparison states its bound and the reason
-for it.
+Integers compare bit for bit unless a step bound is stated. Floats compare
+within a stated count of units in the last place, using `ulpDistance`, or
+within a stated fraction of the buffer's scale, and each comparison states its
+bound and the reason for it.
 
 The interpreter shares the front end with the code under test, so a front-end
 defect can agree with itself. cajeta-llm's host oracles stay in that

@@ -669,6 +669,7 @@ const std::set<std::string>& staticBuiltins() {
         "Wave.reduceSumF32Segmented", "Wave.reduceMaxF32Segmented",
         "Wave.prefixSum", "Wave.prefixProduct",
         "Group.width", "Group.laneId", "Group.rowId", "Group.reduce", "Group.reduceSegmented",
+        "Group.mac",
         "WaveVector.ofSlice", "WaveVector.broadcast", "WaveVector.ofLane",
         "Bits.reverse", "Bits.count", "Bits.rotateLeft", "Bits.rotateRight",
         "Cajeta.bitsToF32", "Cajeta.f32ToBits", "Cajeta.bitsToF64", "Cajeta.f64ToBits",
@@ -1054,7 +1055,12 @@ private:
             const auto& ok = memberBuiltins().at(k->second);
             if (!ok.count(name)) note("`" + r + "." + name + "`", mc);
             if (startsWith(name, "atomic")) usesAtomic = true;
-            if (name == "fromWords") usesCollective = usesWave = true;   // a wave gather
+            // A tile operation that reads memory is a wave collective: it
+            // reads once every lane has arrived, so the lanes' own stores
+            // just before it are there without a barrier.
+            if (k->second == LocalKind::Tile
+                    && (name == "fromWords" || name == "load" || tileVerbs().count(name)))
+                usesCollective = usesWave = true;
             return;
         }
         std::string q = r + "." + name;
@@ -1068,9 +1074,9 @@ private:
             return;
         }
         if (isCollective(q)) usesCollective = true;
-        if (startsWith(q, "Wave.") || startsWith(q, "Group.") || q == "Barrier.wave"
-                || q == "WaveVector.ofLane")
-            usesWave = true;
+        if (startsWith(q, "Wave.") || (startsWith(q, "Group.") && q != "Group.mac")
+                || q == "Barrier.wave" || q == "WaveVector.ofLane")
+            usesWave = true;   // Group.mac is a lane's own dot, not a wave operation
     }
 
     void expr(const ExpressionPtr& e) {
@@ -2552,10 +2558,24 @@ private:
         return Val();
     }
 
+    // The wave arrives at a tile operation that reads memory before it reads:
+    // what every lane stored just before it, with no barrier between, is
+    // visible, as it is on a wave that runs in lockstep.
+    void tileArrive(const std::string& nm, const Where& where) {
+        Arrival arr;
+        arr.what = "CooperativeMatrix." + nm;
+        arr.site = where.n;
+        arr.where = where;
+        rendezvous(arr);
+    }
+
     Val tileCall(Tile& t, const std::string& nm, const std::vector<Val>& a, const Where& where) {
         const size_t n = (size_t) t.rows * t.cols;
         const bool fl = isFloat(t.elem.prim);
-        if (tileVerbs().count(nm)) return epilogue(t, nm, a, where);
+        if (tileVerbs().count(nm)) {
+            tileArrive(nm, where);
+            return epilogue(t, nm, a, where);
+        }
         if (nm == "fromWords") {
             // The 16x16 int8 operand tile from the wave: lane L supplies
             // column L mod 16 of a B tile (row L mod 16 of an A tile) as
@@ -2633,6 +2653,7 @@ private:
             uint64_t off = indexOf(a[1], where), layout = indexOf(a[2], where),
                      stride = indexOf(a[3], where);
             if (layout > 1) undefined("tile layout " + std::to_string(layout) + " (" + where + ")");
+            if (nm == "load") tileArrive(nm, where);
             auto at = [&](uint32_t r, uint32_t c) {
                 return off + (layout == 0 ? (uint64_t) r * stride + c : (uint64_t) c * stride + r);
             };
@@ -2741,6 +2762,14 @@ private:
         if (q == "Group.width") return mkInt({Prim::I32, true}, R.wave);
         if (q == "Group.laneId") return mkInt({Prim::I32, true}, me % R.wave);
         if (q == "Group.rowId") return mkInt({Prim::I32, true}, G.id[0]);
+        if (q == "Group.mac") {
+            // The surface's dp4a dot: acc plus the int8 products, wrapping in
+            // int32, both operands signed as the vectors are: a.dotSum(b, acc).
+            std::vector<Val> a = args(mc);
+            if (a.size() != 3 || a[1].k != Val::Vector)
+                refuse("`Group.mac` takes (int32 acc, int8 vector a, int8 vector b) (" + where + ")");
+            return vectorCall(a[1], "dotSum", {a[2], a[0]}, where);
+        }
         if (startsWith(q, "Cajeta.")) return bitCast(q, args(mc), where);
         if (startsWith(q, "Bits.")) {
             std::vector<Val> a = args(mc);
@@ -3284,6 +3313,7 @@ private:
             {"Wave.reduceSumF32Segmented", {Prim::F32, true}},
             {"Wave.reduceMaxF32Segmented", {Prim::F32, true}},
             {"Group.reduce", {Prim::F32, true}}, {"Group.reduceSegmented", {Prim::F32, true}},
+            {"Group.mac", {Prim::I32, true}},
             {"Bits.count", {Prim::I32, false}}, {"Bits.reverse", {Prim::I32, false}},
             {"Bits.rotateLeft", {Prim::I32, false}}, {"Bits.rotateRight", {Prim::I32, false}},
             {"Cajeta.bitsToF32", {Prim::F32, true}}, {"Cajeta.f32ToBits", {Prim::I32, true}},
@@ -3448,7 +3478,8 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
     for (uint32_t m : lanes) byLane[laneOf(m)] = m;
     const Ty u32{Prim::I32, false};
 
-    if (q == "Barrier.wave") {
+    if (q == "Barrier.wave" || q == "CooperativeMatrix.load"
+            || (startsWith(q, "CooperativeMatrix.") && tileVerbs().count(q.substr(18)))) {
         for (uint32_t m : lanes) G.sync[m].arrival.result = Val();
         return;
     }

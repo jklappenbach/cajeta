@@ -137,17 +137,20 @@ const ref::CorpusResult* only(const ref::CorpusRun& run, const std::string& kern
     return hit;
 }
 
-// A hand-made recording of corpusScale: y = x * s over 4 elements, where the
-// backend's y is `got`.
+// A hand-made recording of corpusScale: y = x * s over the first `block`
+// elements (all of them by default), where the backend's y is `got` and y
+// held `yIn` (zeros by default) before the launch.
 void handRecording(const fs::path& dir, const std::vector<float>& x, float s,
-                   const std::vector<float>& got) {
+                   const std::vector<float>& got, size_t block = 0,
+                   const std::vector<float>* yIn = nullptr) {
     fs::path d = dir / "test.M.corpusScale.1";
     fs::create_directories(d);
     auto put = [&](const std::string& f, const void* p, size_t n) {
         std::ofstream o(d / f, std::ios::binary);
         o.write((const char*) p, (std::streamsize) n);
     };
-    std::vector<float> y0(x.size(), 0.0f);
+    std::vector<float> y0 = yIn ? *yIn : std::vector<float>(x.size(), 0.0f);
+    if (!block) block = x.size();
     put("a0.in", y0.data(), y0.size() * 4);
     put("a0.out", got.data(), got.size() * 4);
     put("a1.in", x.data(), x.size() * 4);
@@ -159,7 +162,7 @@ void handRecording(const fs::path& dir, const std::vector<float>& x, float s,
                   (sb >> 16) & 0xFF, sb >> 24);
     std::ofstream(d / "launch.json")
         << "{\"kernel\":\"corpusScale\",\"backend\":\"cpu\",\"grid\":[1,1,1],"
-           "\"block\":[" << x.size() << ",1,1],\"sharedBytes\":0,\"waveWidth\":0,"
+           "\"block\":[" << block << ",1,1],\"sharedBytes\":0,\"waveWidth\":0,"
            "\"allocs\":[{\"bytes\":" << x.size() * 4 << "},{\"bytes\":" << x.size() * 4
         << "}],\"args\":[{\"kind\":\"buffer\",\"alloc\":0,\"offset\":0},"
            "{\"kind\":\"buffer\",\"alloc\":1,\"offset\":0},{\"kind\":\"scalar\",\"hex\":\""
@@ -280,6 +283,88 @@ TEST(XpuConformanceCorpus, floatsCompareWithinTheirStatedBound) {
     fs::remove_all(dir);
 }
 
+// The scale is over what the launch wrote: an element the reference left as
+// it was (a fill pattern, a row the kernel did not reach) does not set it.
+TEST(XpuConformanceCorpus, theRelativeScaleIsOverWhatTheLaunchWrote) {
+    std::vector<float> x = {1.0f, 3.0f, -2.5f, 1.0f};
+    std::vector<float> yIn = {0.0f, 0.0f, 0.0f, 777.0f};
+    float s = 1.5f;
+    std::vector<float> got(x.size());
+    for (size_t i = 0; i < 3; ++i) got[i] = x[i] * s;
+    got[3] = 777.0f;   // untouched by the backend too
+    got[1] *= 1.001f;  // a thousandth of the largest value written
+    Kernels k;
+    fs::path dir = freshDir("written");
+    handRecording(dir, x, s, got, 3, &yIn);
+    writeHeld(dir / "held.tsv", "corpusScale\tcpu\trel=1e-6\tfast math\n");
+    auto run = ref::runCorpus(k.all, dir.string(), (dir / "held.tsv").string());
+    const ref::CorpusResult* r = only(run, "corpusScale");
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(r->outcome, "fail") << r->detail;
+    EXPECT_NE(r->detail.find("relative 0.001"), std::string::npos) << r->detail;
+    fs::remove_all(dir);
+}
+
+// An integer view takes a step bound: `ulps=N` admits elements N apart, for
+// a quantized output whose float scale is reduced in another order.
+TEST(XpuConformanceCorpus, anIntegerViewAdmitsAStepBound) {
+    fs::path dir = freshDir("step");
+    recordOnCpu(dir, nullptr);
+    fs::path outFile = dir / "corpusDot.1" / "a0.out";
+    ASSERT_TRUE(fs::exists(outFile));
+    std::vector<int32_t> out(32);
+    std::ifstream(outFile, std::ios::binary).read((char*) out.data(), 128);
+    out[5] += 1;
+    out[9] -= 1;
+    std::ofstream(outFile, std::ios::binary).write((const char*) out.data(), 128);
+    Kernels k;
+    EXPECT_EQ(only(ref::runCorpus(k.all, dir.string(), ""), "corpusDot")->outcome, "fail");
+    writeHeld(dir / "held.tsv", "corpusDot\tcpu\tulps=1\ta step\n");
+    EXPECT_EQ(only(ref::runCorpus(k.all, dir.string(), (dir / "held.tsv").string()),
+                   "corpusDot")->outcome, "pass");
+    out[9] -= 1;
+    std::ofstream(outFile, std::ios::binary).write((const char*) out.data(), 128);
+    auto run = ref::runCorpus(k.all, dir.string(), (dir / "held.tsv").string());
+    const ref::CorpusResult* r = only(run, "corpusDot");
+    EXPECT_EQ(r->outcome, "fail");
+    EXPECT_NE(r->detail.find("out[9]"), std::string::npos) << r->detail;
+    fs::remove_all(dir);
+}
+
+// With CAJETA_XPU_CONFORMANCE_DUMP set, a failed launch leaves the reference's
+// bytes of each compared allocation beside the backend's, as a<i>.ref, so the
+// two can be read side by side; a passing launch leaves nothing.
+TEST(XpuConformanceCorpus, aFailedLaunchDumpsTheReferenceOutputOnRequest) {
+    std::vector<float> x = {1.0f, 3.0f, -2.5f, 0.1f};
+    float s = 1.75f;
+    std::vector<float> got(x.size()), want(x.size());
+    for (size_t i = 0; i < x.size(); ++i) want[i] = got[i] = x[i] * s;
+    got[2] = std::nextafter(got[2], 100.0f);
+    Kernels k;
+    fs::path dir = freshDir("dump");
+    handRecording(dir, x, s, got);
+    setenv("CAJETA_XPU_CONFORMANCE_DUMP", "1", 1);
+    auto run = ref::runCorpus(k.all, dir.string(), "");
+    unsetenv("CAJETA_XPU_CONFORMANCE_DUMP");
+    ASSERT_EQ(only(run, "corpusScale")->outcome, "fail");
+    fs::path refFile = dir / "test.M.corpusScale.1" / "a0.ref";
+    ASSERT_TRUE(fs::exists(refFile)) << "no reference dump under " << dir;
+    std::vector<float> ref(x.size());
+    std::ifstream(refFile, std::ios::binary).read((char*) ref.data(), (std::streamsize) (ref.size() * 4));
+    EXPECT_EQ(ref, want);
+    EXPECT_TRUE(fs::exists(dir / "test.M.corpusScale.1" / "a1.ref"))
+        << "every allocation a parameter reads is dumped, the unchanged input too";
+    fs::remove_all(dir);
+
+    handRecording(dir, x, s, want);
+    setenv("CAJETA_XPU_CONFORMANCE_DUMP", "1", 1);
+    run = ref::runCorpus(k.all, dir.string(), "");
+    unsetenv("CAJETA_XPU_CONFORMANCE_DUMP");
+    ASSERT_EQ(only(run, "corpusScale")->outcome, "pass");
+    EXPECT_FALSE(fs::exists(refFile)) << "a passing launch was dumped";
+    fs::remove_all(dir);
+}
+
 // A float failure names the first element that disagrees, and also the worst
 // distance and how many elements are out of bound, so a bound can be stated
 // from one run.
@@ -330,5 +415,26 @@ TEST(XpuConformanceCorpus, aRelativeBoundIsMeasuredAgainstTheLargestValue) {
     writeHeld(dir / "held.tsv", "corpusScale\tcpu\tulps=2,rel=1e-6\tboth\n");
     EXPECT_EQ(only(ref::runCorpus(k.all, dir.string(), (dir / "held.tsv").string()),
                    "corpusScale")->outcome, "pass");
+    fs::remove_all(dir);
+}
+
+// A sentinel in the view (an attention kernel's -3e38 for an empty partition)
+// is not the scale: a magnitude at or above a quarter of the type's largest
+// finite value does not set it, or a relative bound would admit anything.
+TEST(XpuConformanceCorpus, aSentinelDoesNotSetTheRelativeScale) {
+    std::vector<float> x = {-2.0e38f, 3.0f, -2.5f, 1.0f};
+    float s = 1.5f;
+    std::vector<float> got(x.size());
+    for (size_t i = 0; i < x.size(); ++i) got[i] = x[i] * s;
+    got[1] *= 1.001f; // a thousandth of the largest ordinary value
+    Kernels k;
+    fs::path dir = freshDir("sentinel");
+    handRecording(dir, x, s, got);
+    writeHeld(dir / "held.tsv", "corpusScale\tcpu\trel=1e-6\tfast math\n");
+    auto run = ref::runCorpus(k.all, dir.string(), (dir / "held.tsv").string());
+    const ref::CorpusResult* r = only(run, "corpusScale");
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(r->outcome, "fail") << r->detail;
+    EXPECT_NE(r->detail.find("relative 0.001"), std::string::npos) << r->detail;
     fs::remove_all(dir);
 }

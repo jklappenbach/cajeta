@@ -354,8 +354,42 @@ TEST(XpuReferenceInterpreter, cooperativeMatrixFragmentsMatchTheCpuBackend) {
     std::vector<float> a(16 * 32), b(32 * 16);
     for (int i = 0; i < 16 * 32; ++i) { a[i] = (float) ((i * 7) % 11 - 5); b[i] = (float) ((i * 5) % 9 - 4); }
     std::vector<In> ins = {buffer(std::vector<float>(256)), buffer(a), buffer(b)};
-    // Bound: 0 ulp. Small integers, so every partial sum is exact in f32.
-    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(1, 32)), "");
+    // Bound: 0 ulp. Small integers, so every partial sum is exact in f32. A
+    // tile is a wave's object, so the launch states the width.
+    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(1, 32), 0, 32), "");
+}
+
+// Group.mac(acc, a, b) is the surface's dp4a dot: acc plus the sum of the
+// int8 products, in a wrapping int32, both operands signed as the vectors
+// are (the same as `a.dotSum(b, acc)`).
+TEST(XpuReferenceInterpreter, groupMacMatchesTheCpuBackend) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refMac(KernelBuffer<int32> out, KernelBuffer<int8> a,
+                              KernelBuffer<int8> b) {
+        uint32 g = KernelThread.globalIdX();
+        int64 o = (int64) g * 16L;
+        Vector<int8,16> av = a.vload<16>(o);
+        Vector<int8,16> bv = b.vload<16>(o);
+        int32 s = (int32) g * 1000 - 7;
+        s = Group.mac(s, av, bv);
+        out[g] = s;
+    }
+)CJ", "refMac");
+    ASSERT_EQ(p.failure, "");
+    const int G = 32;
+    std::vector<int8_t> a(G * 16), b(G * 16);
+    for (int i = 0; i < G * 16; ++i) { a[i] = (int8_t) (i * 37 + 200); b[i] = (int8_t) (i * 53 - 90); }
+    std::vector<In> ins = {buffer(std::vector<int32_t>(G)), buffer(a), buffer(b)};
+    EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(1, G)), "");
+    std::vector<In> r = ins;
+    ASSERT_EQ(runRef(p.kernel, r, shape(1, G)), "");
+    std::vector<int32_t> got = as<int32_t>(r[0].buf);
+    for (int g = 0; g < G; ++g) {
+        int32_t want = g * 1000 - 7;
+        for (int k = 0; k < 16; ++k) want += (int32_t) a[g * 16 + k] * (int32_t) b[g * 16 + k];
+        ASSERT_EQ(got[g], want) << "group " << g;
+    }
 }
 
 TEST(XpuReferenceInterpreter, dotAccumMatchesTheCpuBackend) {
@@ -1176,6 +1210,54 @@ TEST(XpuReferenceInterpreter, theEpilogueVerbsMatchTheCpuBackend) {
         ASSERT_EQ(one.failure, "");
         EXPECT_EQ(compareOn<float>(one, in.ins(), 0, shape(1, 32), 0, 32), "") << verb;
     }
+}
+
+// A tile operation that reads memory is a wave collective: it reads once
+// every lane of the wave has arrived, so what the lanes wrote to shared
+// memory just before it, with no barrier between, is there. The lanes stage
+// the A tile and the row factors immediately before the load and the verb,
+// as the Wmma kernels do.
+namespace {
+const char* kLockstep = R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void refLockstep(KernelBuffer<float32> out, KernelBuffer<float32> a,
+                                   KernelBuffer<float32> b, KernelBuffer<float32> f) {
+        Shared<float32> stage = shared float32[256];
+        Shared<float32> late = shared float32[16];
+        uint32 l = KernelThread.x();
+        uint32 i = 0;
+        while (i < 8) { stage[l * 8 + i] = a[l * 8 + i]; i = i + 1; }
+        CooperativeMatrix<float32,16,16,0> ta;
+        CooperativeMatrix<float32,16,16,1> tb;
+        CooperativeMatrix<float32,16,16,2> acc;
+        CooperativeMatrix<float32,16,16,2> facc;
+        acc.splat(0.0f);
+        facc.splat(0.5f);
+        ta.load(stage, 0, 0, 16);
+        tb.load(b, 0, 1, 16);
+        acc.mma(ta, tb);
+        if (l < 16) { late[l] = f[16 + l]; }
+        acc.scaledAccumInto(facc, late, WaveVector.broadcast(1.0f));
+        facc.store(out, 0, 0, 16);
+    }
+)CJ";
+}
+
+TEST(XpuReferenceInterpreter, aTileReadsWhatTheWaveWroteJustBefore) {
+    EpilogueInputs in;
+    Pair p(kLockstep, "refLockstep");
+    ASSERT_EQ(p.failure, "");
+    std::vector<In> r = {buffer(std::vector<float>(256)), buffer(in.a), buffer(in.b),
+                         buffer(in.f)};
+    ASSERT_EQ(runRef(p.kernel, r, shape(1, 32), 32), "");
+    for (int rr = 0; rr < 16; ++rr)
+        for (int c = 0; c < 16; ++c)
+            EXPECT_EQ(as<float>(r[0].buf)[rr * 16 + c], 0.5f + (in.f[16 + rr] * 1.0f) * in.acc(rr, c))
+                << rr << "," << c;
+    std::vector<In> again = {buffer(std::vector<float>(256)), buffer(in.a), buffer(in.b),
+                             buffer(in.f)};
+    EXPECT_EQ(compareOn<float>(p, again, 0, shape(1, 32), 0, 32), "");
 }
 
 // DISABLED: found by the reference on 2026-10-05 (xpu-kernel-independence

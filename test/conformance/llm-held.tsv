@@ -1,6 +1,8 @@
 # The conformance corpus held list over cajeta-llm (scripts/llm-conformance.sh).
 # kernel<TAB>backend<TAB>held|ulps=N|rel=X<TAB>the plan item or reason. Backend * matches all.
-# rel=X admits |backend - reference| <= X times the largest reference magnitude in the view.
+# rel=X admits |backend - reference| <= X times the view's scale, the largest magnitude the
+# launch wrote (a fill pattern or a sentinel such as -3e38 does not set it). On an integer
+# view ulps=N admits elements N steps apart.
 # Bounds may be joined, ulps=N,rel=X, and either admits an element.
 #
 # The device library's exp, sin and cos against the reference's float64 rounded once.
@@ -27,3 +29,77 @@ q6kWmmaDeqMw4Kernel	cpu	rel=5e-7	@FastMath epilogue; worst 9.2e-8
 q6kWmmaDeqMw8Kernel	cpu	rel=5e-7	@FastMath epilogue; worst 3.4e-8
 q80WmmaDeqMw8Kernel	cpu	rel=5e-7	@FastMath epilogue; worst 8.8e-8
 q4kWmmaMwKernel	cpu	rel=5e-7	@FastMath epilogue; worst 3.9e-8
+#
+# cuda (sm_89, measured 2026-10-05 over 376 launches). The device library's exp, sin, cos and
+# rsqrt against the reference's float64 rounded once, fma contraction, and the 32-lane reduce
+# order: worst 3.8e-7 relative. Stated as rel=5e-7, the same bound as cpu's @FastMath rows.
+addSigmoidRowsF32	cuda	rel=5e-7	Math.exp from the device library; worst 2.0e-07
+attendF32	cuda	rel=5e-7	Math.exp from the device library; worst 1.2e-07
+attnCombineKernel	cuda	rel=5e-7	@FastMath reassociation and Math.exp from the device library; worst 1.6e-07
+attnCombinePrefillKernel	cuda	rel=5e-7	@FastMath reassociation and Math.exp from the device library; worst 1.3e-07
+attnCombinePrefillV2Kernel	cuda	rel=5e-7	@FastMath reassociation and Math.exp from the device library; worst 1.6e-07
+attnFlashDecodeGqa1Kernel	cuda	rel=5e-7	@FastMath reassociation and Math.exp from the device library; worst 1.4e-07
+attnFlashDecodeGqa4Kernel	cuda	rel=5e-7	@FastMath reassociation and Math.exp from the device library; worst 8.7e-08
+attnFlashDecodeGqa8Kernel	cuda	rel=5e-7	@FastMath reassociation and Math.exp from the device library; worst 2.2e-07
+attnFlashPrefillGqa4Kernel	cuda	rel=5e-7	@FastMath reassociation and Math.exp from the device library; worst 2.4e-07
+attnFlashPrefillKernel	cuda	rel=5e-7	@FastMath reassociation and Math.exp from the device library; worst 2.4e-07
+attnFlashPrefillOnlineKernel	cuda	rel=5e-7	@FastMath reassociation and Math.exp from the device library; worst 2.5e-07
+attnFlashPrefillTileKernel	cuda	rel=5e-7	@FastMath reassociation and Math.exp from the device library; worst 3.8e-07
+attnScorePrefillRowV2Kernel	cuda	rel=5e-7	@FastMath reassociation and Math.exp from the device library; worst 1.3e-07
+gluF32	cuda	rel=5e-7	Math.exp from the device library; worst 5.5e-08
+gluFusedF32	cuda	rel=5e-7	Math.exp from the device library; worst 9.1e-08
+iq3xxsQ8IdGateUpGluKernel	cuda	ulps=2,rel=5e-7	Math.exp from the device library; worst 2.1e-08 on y, and the packed block's float32 scale (its low byte 2 ulp apart, 6 of 5760 bytes)
+moeTopKBatchKernel	cuda	rel=5e-7	Math.exp from the device library; worst 8.4e-08
+moeTopKKernel	cuda	rel=5e-7	Math.exp from the device library; worst 4.9e-08
+q2kWmmaDeqMw8Kernel	cuda	rel=5e-7	@FastMath epilogue over the int8 mma; worst 1.3e-07
+q3kWmmaDeqMw8Kernel	cuda	rel=5e-7	@FastMath epilogue over the int8 mma; worst 8.5e-08
+q4kQ8IdGateUpGluKernel	cuda	rel=5e-7	@FastMath epilogue over the int8 mma; worst 8.2e-09
+q4kQ8TcTileKernel	cuda	rel=5e-7	@FastMath epilogue over the int8 mma; worst 7.8e-08
+q4kWmmaMwKernel	cuda	rel=5e-7	@FastMath epilogue over the int8 mma; worst 1.2e-07
+q6kQ8TcTileKernel	cuda	rel=5e-7	@FastMath epilogue over the int8 mma; worst 1.1e-07
+q6kWmmaDeqMw4Kernel	cuda	rel=5e-7	@FastMath epilogue over the int8 mma; worst 6.9e-08
+q6kWmmaDeqMw8Kernel	cuda	rel=5e-7	@FastMath epilogue over the int8 mma; worst 6.7e-08
+q80WmmaDeqMw8Kernel	cuda	rel=5e-7	@FastMath epilogue over the int8 mma; worst 1.8e-07
+qkPrepKernel	cuda	rel=5e-7	Math.sin, Math.cos and Math.sqrt from the device library; worst 1.2e-07
+rmsnormRouterTopKKernel	cuda	rel=5e-7	Math.exp and Math.rsqrt from the device library; worst 2.1e-08
+ropeAppendRowsKernel	cuda	rel=5e-7	Math.sin and Math.cos from the device library; worst 9.4e-08
+ropeDecodeKernel	cuda	rel=5e-7	Math.sin and Math.cos from the device library; worst 6.6e-08
+ropeF32	cuda	rel=5e-7	Math.sin and Math.cos near zero from the device library; worst 1.6e-07
+routerTopKKernel	cuda	rel=5e-7	Math.exp from the device library; worst 7.4e-08
+symWmmaDeqIdMw8Kernel	cuda	rel=5e-7	@FastMath epilogue over the int8 mma; worst 3.1e-07
+# The @FastMath epilogue over a longer K: worst 8.7e-7.
+q4kWmmaDeqMw8Kernel	cuda	rel=1e-6	@FastMath epilogue over the int8 mma; worst 5.0e-07
+q4kWmmaIdMw8Kernel	cuda	rel=1e-6	@FastMath epilogue over the int8 mma; worst 8.7e-07
+# A quantized output: the row's float32 scale is reduced in the wave's order, and a value on a
+# rounding boundary lands one step away. 4 of 81920 bytes, each one step apart.
+gluFusedPackF32	cuda	ulps=1	a quantization step from the row scale's reduce order
+# The f16 cooperative-matrix kernels: mma.sync accumulates f16 products with truncation, so the
+# bias grows with K. The backend's magnitude is the smaller in 82% of the differing elements,
+# and the distance grew 60x for 33x the K (q5kF16CoopX1Kernel, 1.1e-7 at K=256, 6.7e-6 at
+# K=8448). Stated as rel=1e-5 for every f16 coop kernel, the largest llm K being 14336.
+f16F16CoopX3Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 2.9e-07
+iq4nlF16CoopIdN64Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 1.4e-06
+iq4nlF16CoopN64Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 1.3e-06
+iq4nlF16CoopX1Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 1.1e-06
+iq4nlF16CoopX3Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 4.9e-07
+iq4xsF16CoopX1Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 5.1e-06
+iq4xsF16CoopX3Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 1.6e-07
+q2kF16CoopX1Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 6.2e-07
+q4kF16CoopKernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 2.3e-07
+q4kF16CoopM64Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 2.3e-07
+q4kF16CoopN256GKernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 2.3e-07
+q4kF16CoopN256Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 2.3e-07
+q4kF16CoopX1Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 5.1e-06
+q4kF16CoopX3Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 2.3e-07
+q50F16CoopX1Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 5.9e-08
+q51F16CoopX1Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 1.6e-07
+q5kF16CoopX1Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 6.7e-06
+q5kF16CoopX3Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 1.1e-07
+q6kF16CoopKernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 1.0e-07
+q6kF16CoopM64Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 1.0e-07
+q6kF16CoopN256GKernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 1.0e-07
+q6kF16CoopN256Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 1.0e-07
+q6kF16CoopX1Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 4.5e-06
+q6kF16CoopX3Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 1.0e-07
+q80F16CoopX1Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 5.0e-07
+q80F16CoopX3Kernel	cuda	rel=1e-5	mma.sync f16 truncating accumulation; worst 1.2e-07

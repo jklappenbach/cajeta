@@ -398,3 +398,63 @@ jobs:
           name: llm-census-${{ matrix.name }}
           path: llm-census.log
           if-no-files-found: warn
+
+      # ── The kernel conformance corpus on nvptx (xpu-kernel-independence Unit 1) ──
+      #
+      # scripts/llm-conformance.sh runs the cajeta-llm suite again with every
+      # launch recorded (inputs and the backend's outputs), then replays each
+      # recording through the reference interpreter against this compiler's
+      # kernels. A launch the backend got wrong fails the leg, naming the
+      # kernel and the backend; a kernel held on a backend is reported held;
+      # the held list is test/conformance/llm-held.tsv. The llm revision is
+      # pinned in test/conformance/llm-revision so the corpus is the same
+      # from run to run; the census step above tracks llm's head instead.
+      # This leg hard-fails on the corpus and reports the suite's own result.
+      - name: Check out cajeta-llm at the corpus revision
+        if: runner.os != 'Windows'
+        id: llm_rev
+        run: echo "rev=$(tr -d '[:space:]' < test/conformance/llm-revision)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: runner.os != 'Windows'
+        with:
+          repository: jklappenbach/cajeta-llm
+          ref: ${{ steps.llm_rev.outputs.rev }}
+          path: llm-corpus
+
+      - name: Run the kernel conformance corpus on nvptx
+        if: runner.os != 'Windows'
+        run: |
+          set -uo pipefail
+          if [ -x /usr/local/cuda/bin/ptxas ]; then export CUDA_PATH=/usr/local/cuda; fi
+          scripts/llm-conformance.sh llm-corpus nvptx conformance 2>&1 | tee conformance.log
+          RC=${PIPESTATUS[0]}
+          LINE=$(grep -E '^cajeta: conformance: [0-9]+ launches' conformance.log | tail -1 || true)
+          {
+            echo "### kernel conformance corpus on nvptx (${{ matrix.name }})"
+            echo ""
+            echo '```'
+            echo "${LINE:-the replay did not run}"
+            grep -E '^>> conformance: [0-9]+ launches recorded' conformance.log || true
+            echo '```'
+            echo ""
+            if [ -f conformance/rec/conformance.tsv ]; then
+              echo "| launch | backend | outcome | detail |"
+              echo "|---|---|---|---|"
+              awk -F'\t' '$4 != "pass" && NR > 1 { printf "| %s | %s | %s | %s |\n", $3, $2, $4, $5 }' \
+                conformance/rec/conformance.tsv
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$RC"
+
+      - name: Upload the conformance table
+        if: always() && runner.os != 'Windows'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-conformance-${{ matrix.name }}
+          path: |
+            conformance.log
+            conformance/rec/conformance.tsv
+            conformance/rec/skipped.tsv
+          if-no-files-found: warn

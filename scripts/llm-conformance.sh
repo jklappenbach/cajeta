@@ -12,6 +12,10 @@
 #    reference interpreter against this compiler's kernels and stops before
 #    codegen. The table lands in <out-dir>/rec/conformance.tsv.
 #
+# The corpus is pinned to the cajeta-llm revision in
+# test/conformance/llm-revision; CI checks that out, and a local run against
+# another revision is warned about, not refused.
+#
 # The held list is test/conformance/llm-held.tsv. The exit status is the
 # corpus's: 1 when a launch failed, a hold went stale, or the interpreter met
 # undefined behaviour; the llm suite's own result is reported, not gated on.
@@ -32,7 +36,12 @@ mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 rm -rf "$out/rec"
 
-echo ">> conformance: recording cajeta-llm $(git -C "$llm" rev-parse --short HEAD) on $backend"
+pinned="$(tr -d '[:space:]' < "$here/test/conformance/llm-revision")"
+actual="$(git -C "$llm" rev-parse HEAD)"
+if [ "$actual" != "$pinned" ]; then
+    echo "::warning::cajeta-llm is at ${actual:0:7}; the corpus is pinned to ${pinned:0:7} (test/conformance/llm-revision)"
+fi
+echo ">> conformance: recording cajeta-llm ${actual:0:7} on $backend"
 # CAJETA_XPU_DEFER=0: a deferred launch runs at a later flush and cannot be
 # recorded; recording synchronizes around every launch anyway, so nothing is
 # timed here and every launch is taken as it comes.

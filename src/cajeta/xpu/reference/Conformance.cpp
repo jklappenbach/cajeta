@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <cfloat>
 #include <fstream>
 #include <ostream>
 #include <sstream>
@@ -249,6 +250,9 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
             (*log) << "\n";
             log->flush();
         };
+        // The allocations as recorded, so the scale can tell what the
+        // launch wrote from what it left.
+        const std::vector<std::vector<uint8_t>> in = mem;
         try {
             reference::run(kernel, argv, launch);
         } catch (cajeta::Exception& e) {
@@ -280,13 +284,26 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
             uint64_t worst = 0;
             size_t outside = 0;
             double worstRel = 0;
-            // The scale a relative error is measured against.
+            // The scale a relative error is measured against: the largest
+            // finite magnitude the reference wrote, over the whole view when
+            // it wrote nothing. An element the launch left as it was (a fill
+            // pattern, a row it did not reach) does not set the scale, and
+            // nor does a sentinel, a magnitude at or above a quarter of the
+            // type's largest value (an attention kernel's -3e38 for an empty
+            // partition); both still have to match.
             double scale = 0;
-            if (shapes[i].isFloat)
-                for (size_t e = 0; e < n; ++e) {
-                    double v = std::fabs(floatValue(loadBits(want + off + e * eb, eb), eb));
-                    if (std::isfinite(v)) scale = std::max(scale, v);
-                }
+            if (shapes[i].isFloat) {
+                double sentinel = (eb == 2 ? 65504.0 : eb == 4 ? (double) FLT_MAX : DBL_MAX) / 4;
+                const uint8_t* before = (size_t) al < in.size() ? in[al].data() : nullptr;
+                for (int pass = 0; pass < 2 && scale == 0; ++pass)
+                    for (size_t e = 0; e < n; ++e) {
+                        uint64_t bits = loadBits(want + off + e * eb, eb);
+                        if (pass == 0 && before && loadBits(before + off + e * eb, eb) == bits)
+                            continue;
+                        double v = std::fabs(floatValue(bits, eb));
+                        if (std::isfinite(v) && v < sentinel) scale = std::max(scale, v);
+                    }
+            }
             for (size_t e = 0; e < n; ++e) {
                 uint64_t x = loadBits(want + off + e * eb, eb);
                 uint64_t y = loadBits(got + off + e * eb, eb);
@@ -303,6 +320,16 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
                         same = d <= h.ulps || (h.rel > 0 && rel <= h.rel);
                         if (!same) worstRel = std::max(worstRel, rel);
                     }
+                } else if (h.ulps > 0) {
+                    // An integer view takes `ulps=N` as a step bound: the
+                    // elements' distance as integers of the view's width, so a
+                    // quantized output whose scale was reduced in another
+                    // order may differ by a step.
+                    uint64_t lo = std::min(x, y), hi = std::max(x, y);
+                    uint64_t span = eb >= 8 ? 0 : (uint64_t) 1 << (8 * eb);
+                    d = hi - lo;
+                    if (span && span - d < d) d = span - d; // wrapped, as signed
+                    same = d <= h.ulps;
                 }
                 if (same) continue;
                 ++outside;
@@ -315,6 +342,8 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
                         os << " (" << d << " ulp, bound " << h.ulps;
                         if (h.rel > 0) os << ", relative bound " << h.rel;
                         os << ")";
+                    } else if (!shapes[i].isFloat && h.ulps > 0) {
+                        os << " (" << d << " apart, bound " << h.ulps << ")";
                     }
                     first = os.str();
                 }
@@ -335,6 +364,17 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
         } else {
             r.outcome = h.held ? "held" : "fail";
             r.detail = first + (h.held ? " [held: " + h.note + "]" : "");
+            // CAJETA_XPU_CONFORMANCE_DUMP: leave the reference's bytes of each
+            // allocation a buffer parameter reads beside the backend's, as
+            // a<i>.ref, the ones past the first disagreement included.
+            if (const char* dump = std::getenv("CAJETA_XPU_CONFORMANCE_DUMP"); dump && *dump)
+                for (size_t al = 0; al < mem.size(); ++al) {
+                    bool used = false;
+                    for (auto& w : where) used = used || w.first == (int64_t) al;
+                    if (!used) continue;
+                    std::ofstream o(dir / ("a" + std::to_string(al) + ".ref"), std::ios::binary);
+                    o.write((const char*) mem[al].data(), (std::streamsize) mem[al].size());
+                }
         }
         run.results.push_back(r);
         progress();
