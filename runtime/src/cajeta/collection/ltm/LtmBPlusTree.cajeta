@@ -204,8 +204,8 @@ public final class LtmBPlusTree<K, V> {
         if (updated == false) {
             int32 j = leaf.numKeys;
             while (j > pos) {
-                leaf.keys[j] = leaf.keys[j - 1];
-                leaf.values[j] = leaf.values[j - 1];
+                leaf.keys[j] #= leaf.keys[j - 1];
+                leaf.values[j] #= leaf.values[j - 1];
                 leaf.dead[j] = leaf.dead[j - 1];
                 j = j - 1;
             }
@@ -512,8 +512,8 @@ public final class LtmBPlusTree<K, V> {
         right.numKeys = total - mid;
         int32 k = 0;
         while (k < right.numKeys) {
-            right.keys[k] = leaf.keys[mid + k];
-            right.values[k] = leaf.values[mid + k];
+            right.keys[k] #= leaf.keys[mid + k];
+            right.values[k] #= leaf.values[mid + k];
             right.dead[k] = leaf.dead[mid + k];
             k = k + 1;
         }
@@ -539,7 +539,7 @@ public final class LtmBPlusTree<K, V> {
         while (done == false) {
             if (level == 0) {
                 LtmBPlusTreeNode<K, V> nr = this.pager.allocNode(false);
-                nr.keys[0] = curKey;
+                nr.keys[0] #= curKey;
                 nr.numKeys = 1;
                 nr.childIds[0] = path[0];
                 nr.childIds[1] = curRight;
@@ -556,10 +556,10 @@ public final class LtmBPlusTree<K, V> {
                 }
                 int32 j = parent.numKeys;
                 while (j > ci) {
-                    parent.keys[j] = parent.keys[j - 1];
+                    parent.keys[j] #= parent.keys[j - 1];
                     j = j - 1;
                 }
-                parent.keys[ci] = curKey;
+                parent.keys[ci] #= curKey;
                 int32 c = parent.numKeys + 1;
                 while (c > ci + 1) {
                     parent.childIds[c] = parent.childIds[c - 1];
@@ -579,7 +579,7 @@ public final class LtmBPlusTree<K, V> {
                     rightInternal.numKeys = total - mid - 1;
                     int32 kk = 0;
                     while (kk < rightInternal.numKeys) {
-                        rightInternal.keys[kk] = parent.keys[mid + 1 + kk];
+                        rightInternal.keys[kk] #= parent.keys[mid + 1 + kk];
                         kk = kk + 1;
                     }
                     int32 cc = 0;

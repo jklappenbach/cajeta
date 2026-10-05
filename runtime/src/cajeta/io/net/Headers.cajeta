@@ -238,8 +238,8 @@ public class Headers {
         int32 r = 0;
         while (r < this.sizeCount) {
             if (!this.keys[r].equals(lname)) {
-                this.keys[w] = this.keys[r];
-                this.values[w] = this.values[r];
+                this.keys[w] #= this.keys[r];
+                this.values[w] #= this.values[r];
                 w = w + 1;
             }
             r = r + 1;

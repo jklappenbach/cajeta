@@ -1251,7 +1251,7 @@ void* __cajeta_args_make(void* string_vtable, int64_t str_size,
     if (argc < 0) argc = 0;
     // A String[] slot is str_size wide but holds a String* in its first 8 bytes.
     // Offsets are (lenTag, aux, base, cachedCpLength); aux and base are contiguous.
-    void* arr = __cajeta_new_array_header(8, (uint64_t) str_size, (uint64_t) argc);
+    void* arr = __cajeta_new_array_header_bits(8, (uint64_t) str_size, (uint64_t) argc);
     char* base = (char*) arr + 8;
     for (int64_t i = 0; i < argc; i++) {
         const char* s = __cajeta_args_get(i);
@@ -1274,6 +1274,10 @@ void* __cajeta_args_make(void* string_vtable, int64_t str_size,
             *(void**)   ((char*) str + off_base)   = bytes;
         }
         *(void**) (base + (size_t) i * (size_t) str_size) = str;
+    }
+    if (arr) {
+        uint8_t* bits = (uint8_t*) base + (size_t) argc * (size_t) str_size;
+        for (int64_t i = 0; i < argc; i++) bits[i >> 3] |= (uint8_t) (1 << (i & 7));
     }
     return arr;
 }

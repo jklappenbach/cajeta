@@ -293,6 +293,11 @@ void* __cajeta_string_resolve(void* src_v) {
     return out;
 }
 
+// A `#=` into a String slot: an owned source hands its wrapper over, a lent one resolves.
+void* __cajeta_string_own_or_resolve(void* src, int64_t owned) {
+    return (owned & 1) ? src : __cajeta_string_resolve(src);
+}
+
 // --- Slice<T> escape machinery (slice-spec §7.2) ----------------------------
 // A Slice<T> VALUE is {T[] store; i64 off; i64 len}: locals are borrows (zero rc),
 // escapes resolve in place, copies retain and drops release, all sign-bit gated.

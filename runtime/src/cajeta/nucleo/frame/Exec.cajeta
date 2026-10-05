@@ -720,7 +720,7 @@ public class Exec {
         int32 w = 0;
         if (keepAll) {
             while (w < in.width()) {
-                names[w] = in.nameAt(w);
+                names[w] #= in.nameAt(w);
                 tags[w] = in.tagAt(w);
                 nulls[w] = in.nullableAt(w);
                 // A null slot is a column the U7 scan pruned — carry it.
@@ -1090,7 +1090,7 @@ public class Exec {
                     + "' is not in schema " + in.schemaText());
             }
             kord[c] = o;
-            names[c] = s.outNameOf();
+            names[c] #= s.outNameOf();
             tags[c] = in.tagAt(o);
             nulls[c] = in.nullableAt(o);
             c = c + 1;
@@ -1098,7 +1098,7 @@ public class Exec {
         }
         Agg a = node.aggsOf();
         while (a != null) {
-            names[c] = a.outNameOf();
+            names[c] #= a.outNameOf();
             tags[c] = Exec.aggTag(a, in);
             nulls[c] = Exec.aggNullable(a, in);
             c = c + 1;
@@ -1271,13 +1271,13 @@ public class Exec {
         String[] names = heap String[w];
         int32[] tags = heap int32[w];
         boolean[] nulls = heap boolean[w];
-        names[0] = tsName;
+        names[0] #= tsName;
         tags[0] = 4;              // epoch-nanos int64, the bucket start
         nulls[0] = false;         // every bucket has a defined start
         int32 c = 1;
         Agg a = node.aggsOf();
         while (a != null) {
-            names[c] = a.outNameOf();
+            names[c] #= a.outNameOf();
             tags[c] = Exec.aggTag(a, in);
             nulls[c] = true;      // an empty bucket nulls EVERY aggregate
             c = c + 1;
@@ -1589,14 +1589,14 @@ public class Exec {
                     + "' is '" + in.typeNameAt(tsOrd) + "', not an integer "
                     + "epoch column");
             }
-            names[0] = tsName;
+            names[0] #= tsName;
             tags[0] = 4;
             nulls[0] = false;
             c = 1;
         }
         Agg a = node.aggsOf();
         while (a != null) {
-            names[c] = a.outNameOf();
+            names[c] #= a.outNameOf();
             tags[c] = Exec.aggTag(a, in);
             nulls[c] = Exec.aggNullable(a, in);
             c = c + 1;
@@ -1687,7 +1687,7 @@ public class Exec {
                     + in.schemaText());
             }
             idOrd[c] = o;
-            names[c] = in.nameAt(o);
+            names[c] #= in.nameAt(o);
             tags[c] = in.tagAt(o);
             nulls[c] = in.nullableAt(o);
             c = c + 1;
@@ -1717,10 +1717,10 @@ public class Exec {
             valOrd[v] = o;
             v = v + 1;
         }
-        names[nId] = node.meltVarNameOf();
+        names[nId] #= node.meltVarNameOf();
         tags[nId] = 11;
         nulls[nId] = false;
-        names[nId + 1] = node.meltValNameOf();
+        names[nId + 1] #= node.meltValNameOf();
         tags[nId + 1] = valTag;
         nulls[nId + 1] = valNullable;
         if (in.isSchemaOnly()) {
@@ -1744,7 +1744,7 @@ public class Exec {
         String[] varVals = heap String[rcap];
         int64 o2 = 0;
         while (o2 < nout) {
-            varVals[o2] = node.meltValAt((int32) (o2 % (int64) nVal));
+            varVals[o2] #= node.meltValAt((int32) (o2 % (int64) nVal));
             o2 = o2 + 1;
         }
         cols[nId] #= DynCol.newStr(varVals);
@@ -1949,7 +1949,7 @@ public class Exec {
         DynCol[] cols = heap DynCol[w];
         int32 j = 0;
         while (j < nIndex) {
-            names[j] = in.nameAt(iord[j]);
+            names[j] #= in.nameAt(iord[j]);
             tags[j] = in.tagAt(iord[j]);
             nulls[j] = in.nullableAt(iord[j]);
             cols[j] #= in.colAt(iord[j]).gather(repRow, nRows);
@@ -1958,7 +1958,7 @@ public class Exec {
         int32 cc = 0;
         while (cc < nCols) {
             int32 oc = nIndex + cc;
-            names[oc] = colNames[cc];
+            names[oc] #= colNames[cc];
             tags[oc] = valTag;
             nulls[oc] = true;      // a pivot cell may be absent
             DynCol col;
@@ -2282,7 +2282,7 @@ public class Exec {
         int32 oi = 0;
         int32 j = 0;
         while (j < wl) {
-            names[oi] = left.nameAt(j);
+            names[oi] #= left.nameAt(j);
             tags[oi] = left.tagAt(j);
             boolean nn = false;
             int32 kIdx = Exec.joinKeyIndexL(lord, nk, j);
@@ -2304,7 +2304,7 @@ public class Exec {
         j = 0;
         while (j < wr) {
             if (!rIsKey[j]) {
-                names[oi] = right.nameAt(j);
+                names[oi] #= right.nameAt(j);
                 tags[oi] = right.tagAt(j);
                 boolean nn = right.nullableAt(j) || extendRight;
                 if (nn && tags[oi] == 11) {

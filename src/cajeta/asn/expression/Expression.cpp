@@ -2798,7 +2798,12 @@ bool cajetaRhsCarriesRedundantSharp(
                     {
                         auto mvElemCls = dynamic_pointer_cast<CajetaClass>(
                             mvElemT);
-                        if (mvElemCls && mvElemCls->getQName()
+                        auto mvRecv = dynamic_pointer_cast<Expression>(
+                            aixInner->getChildren()[0]);
+                        bool mvRecvSimple = mvRecv
+                            && (dynamic_pointer_cast<IdentifierExpression>(mvRecv)
+                                || dynamic_pointer_cast<DotExpression>(mvRecv));
+                        if (!mvRecvSimple && mvElemCls && mvElemCls->getQName()
                                 && mvElemCls->getQName()->getTypeName()
                                        == "String"
                                 && mvElemCls->getQName()->getPackageName()

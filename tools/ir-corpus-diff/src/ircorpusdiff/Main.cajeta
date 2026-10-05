@@ -312,7 +312,7 @@ public final class Main {
                         argv[2 + a] = words.get(a);
                         a = a + 1;
                     }
-                    argv[2 + words.count()] = out;
+                    argv[2 + words.count()] #= out;
                     Command cmd = heap Command(#argv);
                     cmd.captureStdout();
                     cmd.captureStderr();

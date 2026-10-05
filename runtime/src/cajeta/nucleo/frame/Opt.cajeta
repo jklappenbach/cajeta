@@ -216,7 +216,7 @@ public class Opt {
             int32 c2 = 0;
             while (c2 < src.width()) {
                 if (Opt.contains(need, nNeed, src.nameAt(c2))) {
-                    sc[keepN] = src.nameAt(c2);
+                    sc[keepN] #= src.nameAt(c2);
                     keepN = keepN + 1;
                 }
                 c2 = c2 + 1;
@@ -531,7 +531,7 @@ public class Opt {
                 if (need[i].equals(s.outNameOf())) {
                     int32 j = i;
                     while (j < n2 - 1) {
-                        need[j] = need[j + 1];
+                        need[j] #= need[j + 1];
                         j = j + 1;
                     }
                     n2 = n2 - 1;

@@ -76,14 +76,14 @@ public class Sort {
                 // isn't threaded through a second templated-static call.
                 int32 ii = lo + 1;
                 while (ii <= hi) {
-                    T key = a[ii];
+                    T key #= a[ii];
                     int32 jj = ii;
                     boolean moving = true;
                     while (moving) {
                         if (jj > lo) {
                             T prev = a[jj - 1];
                             if (cmp(key, prev) < 0) {
-                                a[jj] = prev;
+                                a[jj] #= a[jj - 1];
                                 jj = jj - 1;
                             } else {
                                 moving = false;
@@ -92,7 +92,7 @@ public class Sort {
                             moving = false;
                         }
                     }
-                    a[jj] = key;
+                    a[jj] #= key;
                     ii = ii + 1;
                 }
                 if (sp == 0) {
@@ -125,9 +125,9 @@ public class Sort {
                     else if (cmp(y, z) < 0) { mp = hi; }   // y < z <= x
                     else { mp = mid; }                      // z <= y <= x
                 }
-                T tlo = a[lo];
-                a[lo] = a[mp];
-                a[mp] = tlo;
+                T tlo #= a[lo];
+                a[lo] #= a[mp];
+                a[mp] #= tlo;
                 T pivot = a[lo];
                 // Hoare partition around `pivot` (present at a[lo], so the
                 // scans are bounded). Result: a[lo..j] <= pivot, a[j+1..hi] >= pivot.
@@ -148,10 +148,9 @@ public class Sort {
                     if (i >= j) {
                         part = false;
                     } else {
-                        T ai = a[i];
-                        T aj = a[j];
-                        a[i] = aj;
-                        a[j] = ai;
+                        T ai #= a[i];
+                        a[i] #= a[j];
+                        a[j] #= ai;
                     }
                 }
                 // Recurse both bands; loop the smaller and push the larger so the
@@ -217,23 +216,23 @@ public class Sort {
                 int32 lo2 = start;
                 int32 hi2 = runEnd - 1;
                 while (lo2 < hi2) {
-                    T t = a[lo2];
-                    a[lo2] = a[hi2];
-                    a[hi2] = t;
+                    T t #= a[lo2];
+                    a[lo2] #= a[hi2];
+                    a[hi2] #= t;
                     lo2 = lo2 + 1;
                     hi2 = hi2 - 1;
                 }
             }
             int32 ii = start + 1;
             while (ii < end) {
-                T key = a[ii];
+                T key #= a[ii];
                 int32 jj = ii;
                 boolean moving = true;
                 while (moving) {
                     if (jj > start) {
                         T prev = a[jj - 1];
                         if (cmp(key, prev) < 0) {
-                            a[jj] = prev;
+                            a[jj] #= a[jj - 1];
                             jj = jj - 1;
                         } else {
                             moving = false;
@@ -242,7 +241,7 @@ public class Sort {
                         moving = false;
                     }
                 }
-                a[jj] = key;
+                a[jj] #= key;
                 ii = ii + 1;
             }
             start = end;
@@ -282,21 +281,21 @@ public class Sort {
                     // Stable: take the right run only when it strictly orders
                     // before the left; ties keep the left element first.
                     if (cmp(rv, lv) < 0) {
-                        dst[k] = rv;
+                        dst[k] #= src[ri];
                         ri = ri + 1;
                     } else {
-                        dst[k] = lv;
+                        dst[k] #= src[li];
                         li = li + 1;
                     }
                     k = k + 1;
                 }
                 while (li < mid) {
-                    dst[k] = src[li];
+                    dst[k] #= src[li];
                     li = li + 1;
                     k = k + 1;
                 }
                 while (ri < right) {
-                    dst[k] = src[ri];
+                    dst[k] #= src[ri];
                     ri = ri + 1;
                     k = k + 1;
                 }
@@ -309,7 +308,7 @@ public class Sort {
             // Result parity landed in `buf`; one copy back to `a`.
             int32 c = 0;
             while (c < n) {
-                a[c] = buf[c];
+                a[c] #= buf[c];
                 c = c + 1;
             }
         }
@@ -384,9 +383,9 @@ public class Sort {
     // ─────────────────────────────────────────────────────────────────────
 
     public static void pdqSwap<T>(T[] a, int32 i, int32 j) {
-        T t = a[i];
-        a[i] = a[j];
-        a[j] = t;
+        T t #= a[i];
+        a[i] #= a[j];
+        a[j] #= t;
     }
 
     // Index (relative to begin) of the median of a[begin+i], a[begin+j],
