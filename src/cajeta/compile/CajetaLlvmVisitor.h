@@ -2373,6 +2373,7 @@ namespace cajeta {
                             redMv->setRedundantSharp(true);
                         }
                     }
+                    cajeta::cajetaSharpStoreArms(inner);
                     auto mv = make_shared<MoveExpression>(
                         ctx->variableInitializer()->getStart());
                     mv->setSharpStore(true);

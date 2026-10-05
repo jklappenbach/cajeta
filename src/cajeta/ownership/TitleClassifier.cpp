@@ -980,7 +980,11 @@ namespace cajeta::ownership {
                 break;
             }
             case TitleSource::ArmPhi: {
-                v = conditionalTitleFlag(s.leaf);   // either conditional kind
+                ExpressionPtr cond = s.leaf;
+                while (cond && cond->kind() == ExprKind::Move && !cond->getChildren().empty()) {
+                    cond = std::dynamic_pointer_cast<Expression>(cond->getChildren()[0]);
+                }
+                v = conditionalTitleFlag(cond);   // either conditional kind
                 break;
             }
             case TitleSource::Slot: {

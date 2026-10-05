@@ -90,6 +90,26 @@ bool cajetaRhsCarriesRedundantSharp(
     return rhs->expression().size() == 1;
 }
 
+void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
+    if (!rhs || rhs->kind() != ExprKind::BooleanSwitch) return;
+    auto& ch = rhs->getChildren();
+    for (size_t i = 1; i < ch.size() && i < 3; ++i) {
+        auto arm = dynamic_pointer_cast<Expression>(ch[i]);
+        if (!arm) continue;
+        if (arm->kind() == ExprKind::BooleanSwitch) {
+            cajetaSharpStoreArms(arm);
+            continue;
+        }
+        if (arm->kind() == ExprKind::Move) continue;
+        auto mv = make_shared<MoveExpression>(nullptr);
+        mv->setSourceSpan(arm->getSourceLine(), arm->getSourceColumn());
+        mv->setModeCarrying(true);
+        mv->setSharpStore(true);
+        mv->addChild(arm);
+        ch[i] = mv;
+    }
+}
+
     // `(Name)(operand)` — returns the destination type when this postfix-call node is
     // really a CAST (parenthesized single identifier, one plain argument, and the name
     // resolves to a type), else null to leave it a call. Shape first, resolution last.
@@ -453,6 +473,7 @@ bool cajetaRhsCarriesRedundantSharp(
                         }
                     }
                     if (sharpAssign && childIndex == 1) {
+                        cajetaSharpStoreArms(child);
                         auto mv = make_shared<MoveExpression>(
                             childContext->getStart());
                         mv->addChild(child);

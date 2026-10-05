@@ -772,6 +772,19 @@ namespace cajeta {
                                     slotMv->setForwardingSlotMove(true);
                                     break;
                                 }
+                                if (auto sw = dynamic_pointer_cast<Expression>(src);
+                                        sw && sw->kind() == ExprKind::BooleanSwitch) {
+                                    BooleanSwitchExpression::forEachLeafArm(sw, [](const ExpressionPtr& arm) {
+                                        if (!isMoveKind(arm) || arm->getChildren().empty()) return;
+                                        auto armSrc = arm->getChildren()[0];
+                                        if (dynamic_pointer_cast<ArrayIndexExpression>(armSrc)
+                                                || dynamic_pointer_cast<DotExpression>(armSrc)) {
+                                            std::static_pointer_cast<MoveExpression>(arm)
+                                                ->setForwardingSlotMove(true);
+                                        }
+                                    });
+                                    break;
+                                }
                                 slotMv = isMoveKind(src) ? std::static_pointer_cast<MoveExpression>(src) : nullptr;
                             }
                         }
