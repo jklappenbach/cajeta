@@ -390,6 +390,8 @@ TEST(XpuReferenceInterpreter, dotAccumMatchesTheCpuBackend) {
     }
 }
 
+// KernelThread.clock() reads a free-running counter, so it has no reference
+// value by nature and stays refused; the tests below use it for that.
 TEST(XpuReferenceInterpreter, anOperationWithNoReferenceSemanticsIsRefusedByName) {
     Pair p(R"CJ(
     @Kernel
@@ -397,19 +399,19 @@ TEST(XpuReferenceInterpreter, anOperationWithNoReferenceSemanticsIsRefusedByName
     public static void refRefused(KernelBuffer<float32> out) {
         uint32 g = KernelThread.globalIdX();
         out[g] = 7.0f;
-        out[g] = Wave.reduceSumF32Segmented(out[g], 8);
+        out[g] = (float32) KernelThread.clock();
     }
 )CJ", "refRefused");
     ASSERT_EQ(p.failure, "");
     auto why = ref::refusals(p.kernel);
     ASSERT_EQ(why.size(), 1);
-    EXPECT_NE(why[0].find("Wave.reduceSumF32Segmented"), std::string::npos) << why[0];
+    EXPECT_NE(why[0].find("KernelThread.clock"), std::string::npos) << why[0];
     EXPECT_NE(why[0].find("line"), std::string::npos) << why[0];
 
     std::vector<In> ins = {buffer(std::vector<float>(32, -1.0f))};
     std::string run = runRef(p.kernel, ins, shape(1, 32));
     EXPECT_EQ(run.rfind("XPU-REF01", 0), 0) << run;
-    EXPECT_NE(run.find("Wave.reduceSumF32Segmented"), std::string::npos) << run;
+    EXPECT_NE(run.find("KernelThread.clock"), std::string::npos) << run;
     for (float v : as<float>(ins[0].buf))
         ASSERT_EQ(v, -1.0f) << "a refused kernel ran partially";
 }
@@ -549,7 +551,7 @@ TEST(XpuReferenceInterpreter, aRefusalInsideAHelperNamesTheHelper) {
     Pair p(R"CJ(
     @Device
     public static uint32 spread(uint32 v) {
-        if (Wave.reduceSumF32Segmented(1.0f, 8) > 0.0f) { return v; }
+        if (KernelThread.clock() > 0L) { return v; }
         return 0;
     }
     @Kernel
@@ -580,7 +582,7 @@ TEST(XpuReferenceInterpreter, theSurveyLeverWritesOneLinePerKernel) {
     @Kernel
     @Wave(width = 32)
     public static void refSurveyRefused(KernelBuffer<float32> out) {
-        out[KernelThread.globalIdX()] = Wave.reduceSumF32Segmented(1.0f, 8);
+        out[KernelThread.globalIdX()] = (float32) KernelThread.clock();
     }
 )CJ", "refSurveyRuns");
         ASSERT_EQ(p.failure, "");
@@ -598,7 +600,7 @@ TEST(XpuReferenceInterpreter, theSurveyLeverWritesOneLinePerKernel) {
     std::filesystem::remove(path);
     EXPECT_NE(s.find("refSurveyRuns\tRUNS\t0\n"), std::string::npos) << s;
     EXPECT_NE(s.find("refSurveyRefused\tREFUSED\t1\t"), std::string::npos) << s;
-    EXPECT_NE(s.find("Wave.reduceSumF32Segmented"), std::string::npos) << s;
+    EXPECT_NE(s.find("KernelThread.clock"), std::string::npos) << s;
 }
 
 // ---- Unit 1: the built-in families cajeta-llm's kernels use ---------------
@@ -988,5 +990,44 @@ TEST(XpuReferenceInterpreter, theFloatWaveSumIsAButterflyOnTheCpuBackend) {
     std::vector<In> r = ins;
     ASSERT_EQ(runRef(p.kernel, r, shape(2, 32), 32), "");
     EXPECT_EQ(as<float>(r[0].buf)[0], acc[0]);
+    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(2, 32), 0, 32), "");
+}
+
+// Wave.reduceSumF32Segmented is the same butterfly bounded at `seg` lanes:
+// each aligned span of `seg` lanes reduces on its own, and every lane of a
+// span receives the span's result. The inputs make the order matter, so
+// the reference has to be the butterfly and not an in-order sum.
+TEST(XpuReferenceInterpreter, theSegmentedFloatWaveSumIsABoundedButterfly) {
+    Pair p(R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void refWaveSumSeg(KernelBuffer<float32> out, KernelBuffer<float32> in) {
+        uint32 g = KernelThread.globalIdX();
+        out[g] = Wave.reduceSumF32Segmented(in[g], 8);
+    }
+)CJ", "refWaveSumSeg");
+    ASSERT_EQ(p.failure, "");
+    const uint32_t N = 64;
+    std::vector<float> in(N);
+    // The large values differ by span (an ulp of 1e8 is 8), so spans differ.
+    for (uint32_t i = 0; i < N; ++i)
+        in[i] = i % 4 == 0 ? 1.0e8f + 64.0f * (float) (i / 8)
+              : i % 4 == 2 ? -1.0e8f : 1.0f + 0.25f * (float) (i % 7);
+
+    std::vector<float> acc(in.begin(), in.begin() + 32);
+    for (uint32_t d = 1; d < 8; d <<= 1) {
+        std::vector<float> next(32);
+        for (uint32_t l = 0; l < 32; ++l) next[l] = acc[l] + acc[l ^ d];
+        acc = next;
+    }
+    float inOrder = 0.0f;
+    for (uint32_t l = 8; l < 16; ++l) inOrder += in[l];
+    ASSERT_NE(inOrder, acc[8]) << "the inputs do not tell the two orders apart";
+
+    std::vector<In> ins = {buffer(std::vector<float>(N)), buffer(in)};
+    std::vector<In> r = ins;
+    ASSERT_EQ(runRef(p.kernel, r, shape(2, 32), 32), "");
+    for (uint32_t l = 0; l < 32; ++l) EXPECT_EQ(as<float>(r[0].buf)[l], acc[l]) << "lane " << l;
+    EXPECT_NE(as<float>(r[0].buf)[0], as<float>(r[0].buf)[8]) << "segments were merged";
     EXPECT_EQ(compareOn<float>(p, ins, 0, shape(2, 32), 0, 32), "");
 }

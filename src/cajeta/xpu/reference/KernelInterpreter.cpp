@@ -646,8 +646,9 @@ const std::set<std::string>& staticBuiltins() {
         "Wave.reduceSum", "Wave.reduceMax", "Wave.reduceMin",
         "Wave.reduceAnd", "Wave.reduceOr", "Wave.reduceXor",
         "Wave.reduceSumF32", "Wave.reduceMaxF32",
+        "Wave.reduceSumF32Segmented", "Wave.reduceMaxF32Segmented",
         "Wave.prefixSum", "Wave.prefixProduct",
-        "Group.width", "Group.laneId", "Group.rowId", "Group.reduce",
+        "Group.width", "Group.laneId", "Group.rowId", "Group.reduce", "Group.reduceSegmented",
         "Bits.reverse", "Bits.count", "Bits.rotateLeft", "Bits.rotateRight",
         "Cajeta.bitsToF32", "Cajeta.f32ToBits", "Cajeta.bitsToF64", "Cajeta.f64ToBits",
         "Math.min", "Math.max", "Math.abs", "Math.fma",
@@ -2526,9 +2527,16 @@ private:
             if (a.size() != 2) refuse("`Group.reduce` takes (GroupOp, value) (" + where + ")");
             arr.what = a[0].i == 0 ? "Wave.reduceSumF32" : "Wave.reduceMaxF32";
             arr.arg = convert(a[1], {Prim::F32, true});
+        } else if (q == "Group.reduceSegmented") {
+            if (a.size() != 3)
+                refuse("`Group.reduceSegmented` takes (segment, GroupOp, value) (" + where + ")");
+            arr.what = a[1].i == 0 ? "Wave.reduceSumF32Segmented" : "Wave.reduceMaxF32Segmented";
+            arr.arg = convert(a[2], {Prim::F32, true});
+            arr.arg2 = convert(a[0], {Prim::I32, false});
         } else if (q.rfind("Wave.", 0) == 0) {
             // Each argument at its declared parameter type.
-            bool f32 = q == "Wave.reduceSumF32" || q == "Wave.reduceMaxF32";
+            bool f32 = q == "Wave.reduceSumF32" || q == "Wave.reduceMaxF32"
+                    || q == "Wave.reduceSumF32Segmented" || q == "Wave.reduceMaxF32Segmented";
             Ty pt = f32 ? Ty{Prim::F32, true} : Ty{Prim::I32, false};
             if (q == "Wave.ballotSync") pt = {Prim::Bool, false};
             if (a.empty()) refuse("`" + q + "` without its value (" + where + ")");
@@ -3016,7 +3024,9 @@ private:
             {"Wave.prefixSum", {Prim::I32, false}}, {"Wave.prefixProduct", {Prim::I32, false}},
             {"Wave.ballotSync", {Prim::I64, false}}, {"Wave.isFirstLane", {Prim::Bool, false}},
             {"Wave.reduceSumF32", {Prim::F32, true}}, {"Wave.reduceMaxF32", {Prim::F32, true}},
-            {"Group.reduce", {Prim::F32, true}},
+            {"Wave.reduceSumF32Segmented", {Prim::F32, true}},
+            {"Wave.reduceMaxF32Segmented", {Prim::F32, true}},
+            {"Group.reduce", {Prim::F32, true}}, {"Group.reduceSegmented", {Prim::F32, true}},
             {"Bits.count", {Prim::I32, false}}, {"Bits.reverse", {Prim::I32, false}},
             {"Bits.rotateLeft", {Prim::I32, false}}, {"Bits.rotateRight", {Prim::I32, false}},
             {"Cajeta.bitsToF32", {Prim::F32, true}}, {"Cajeta.f32ToBits", {Prim::I32, true}},
@@ -3212,20 +3222,36 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
         }
         return;
     }
-    if (q == "Wave.reduceSumF32" || q == "Wave.reduceMaxF32") {
+    if (q == "Wave.reduceSumF32" || q == "Wave.reduceMaxF32"
+            || q == "Wave.reduceSumF32Segmented" || q == "Wave.reduceMaxF32Segmented") {
         // A butterfly over the full width, partners at distance 1, 2, 4 ...
         // W/2 in that order, as the shared lowering emits it; inactive lanes
         // contribute the identity. Every lane computes the same association.
-        bool sum = q == "Wave.reduceSumF32";
+        // The segmented form stops at the segment, so each aligned span of
+        // `seg` lanes reduces on its own and every lane of a span holds the
+        // span's result. The segment is uniform, a power of two, and clamped
+        // to the width.
+        bool sum = q == "Wave.reduceSumF32" || q == "Wave.reduceSumF32Segmented";
+        uint32_t seg = W;
+        if (q.size() > 9 && q.compare(q.size() - 9, 9, "Segmented") == 0) {
+            seg = (uint32_t) std::min<uint64_t>(G.sync[lanes[0]].arrival.arg2.u64(), W);
+            for (uint32_t m : lanes)
+                if (G.sync[m].arrival.arg2.u64() != G.sync[lanes[0]].arrival.arg2.u64())
+                    undefined("`" + q + "` with a segment that differs across the wave (" +
+                              where + ")");
+            if (seg == 0 || (seg & (seg - 1)) != 0)
+                undefined("`" + q + "` with a segment of " + std::to_string(seg) +
+                          ", not a power of two (" + where + ")");
+        }
         std::vector<float> v(W, sum ? 0.0f : -std::numeric_limits<float>::infinity());
         for (auto& [l, m] : byLane) v[l] = (float) argOf(m).f;
-        for (uint32_t off = 1; off < W; off *= 2) {
+        for (uint32_t off = 1; off < seg; off *= 2) {
             std::vector<float> nv(W);
             for (uint32_t l = 0; l < W; ++l)
                 nv[l] = sum ? v[l] + v[l ^ off] : std::fmax(v[l], v[l ^ off]);
             v = nv;
         }
-        for (uint32_t m : lanes) G.sync[m].arrival.result = mkFloat(Prim::F32, v[0]);
+        for (uint32_t m : lanes) G.sync[m].arrival.result = mkFloat(Prim::F32, v[laneOf(m)]);
         return;
     }
     uint64_t acc = 0;

@@ -12,6 +12,7 @@ ropeF32	cpu	rel=5e-7	Math.sin and Math.cos near zero at large angles: 2048 ulp b
 # @FastMath kernels: the backend may reassociate, contract and flush subnormals, so the
 # error is stated against the buffer's scale. Worst measured 2.4e-7, about 2 float32 eps.
 attnCombinePrefillV2Kernel	cpu	rel=5e-7	@FastMath reassociation; worst 1.1e-7
+attnFlashDecodeGqa1Kernel	cpu	rel=5e-7	@FastMath flushes subnormals to zero; worst 8e-46
 attnFlashDecodeGqa4Kernel	cpu	rel=5e-7	@FastMath reassociation; worst 1.0e-7
 attnFlashDecodeGqa8Kernel	cpu	rel=5e-7	@FastMath flushes subnormals to zero; worst 6e-45
 attnFlashPrefillGqa4Kernel	cpu	rel=5e-7	@FastMath reassociation; worst 1.8e-7

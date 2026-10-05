@@ -86,9 +86,11 @@ These are every built-in the interpreter defines.
 | `Wave.ballotSync(p)` | bit `i` is set when active lane `i` passes `p` |
 | `Wave.reduceSum/Max/Min/And/Or/Xor` | uint32, over the active lanes in lane order; sums wrap |
 | `Wave.reduceSumF32`, `reduceMaxF32` | an xor butterfly over the full width, partners at distance 1, 2, 4 and up in that order; inactive lanes contribute 0 or -inf. nvptx and cpu sum in this order; amdgpu and SPIR-V use the device's own reduce, whose order is the driver's, so they carry a stated bound |
+| `Wave.reduceSumF32Segmented(v, seg)`, `reduceMaxF32Segmented` | the same butterfly stopped at `seg`: partners at distance 1 up to `seg/2`, so each aligned span of `seg` lanes reduces on its own and every lane of a span holds the span's result. `seg` is uniform across the wave and a power of two, and is clamped to `W` |
 | `Wave.prefixSum`, `prefixProduct` | exclusive scan in lane order, uint32 |
 | `Group.width`, `laneId`, `rowId` | `W`; `linear % W`; `Workgroup.x`, as int32 |
 | `Group.reduce(op, v)` | `Wave.reduceSumF32` for `GroupOp.Add`, `Wave.reduceMaxF32` for `GroupOp.Max` |
+| `Group.reduceSegmented(seg, op, v)` | the segmented form of the same |
 | `Cajeta.bitsToF32`, `f32ToBits`, `bitsToF64`, `f64ToBits` | the same bits, reinterpreted |
 | `Bits.count`, `reverse`, `rotateLeft`, `rotateRight` | on uint32; a rotate takes its amount modulo 32 |
 | `for (T k : Group.stripe(n))` | `k` runs from `laneId` while below `n`, stepping by `W` |
@@ -124,10 +126,10 @@ list is not empty, `run` throws `XPU-REF01` with the first entry, so the kernel
 is never run partially. Today that list includes:
 
 - the epilogue tile verbs, such as `scaledAccumInto` and `fromWords`;
-- segmented wave reductions;
 - `WaveVector`, and padded or swizzled `Shared` arrays;
 - textures, images and samplers;
-- value types.
+- value types;
+- `KernelThread.clock()`, which has no reference value by nature.
 
 The conformance corpus adds built-ins here as its kernels need them.
 
