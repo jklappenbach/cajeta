@@ -4,8 +4,8 @@
 // correctness, not just precision: storing a slice into an outliving object
 // field today stores the BORROWED WRAPPER pointer, and the declaring scope
 // frees that wrapper at exit — instant UAF (SIGSEGV reading the field).
-// The §4 resolution at escape sites (copy-small / share-large / move-on-
-// last-use, arena always copies) is what makes the plain store sound.
+// The §4 resolution at escape sites (copy-small / share-large, arena always
+// copies) is what makes the store sound.
 //
 // Observables: Cajeta.sharedPopulation() (stake count), allocatedBytes()
 // (copy vs zero-copy), content-after-source-drop (the wrapper-lifetime
@@ -22,8 +22,8 @@ using cajeta_test::CajetaJit;
 
 namespace {
 
-// Shared scaffold: a Keep class with a String field (the escape site is the
-// plain `k.v = w` field assign), and a heap-backed source builder.
+// Shared scaffold: a Keep class with a String field, the escape site,
+// a heap-backed source builder, and keepIn, which stores a borrowed window so it resolves.
 std::string makeSource(const std::string& runBody) {
     return "package test;\n"
            "public class Keep {\n"
@@ -33,6 +33,7 @@ std::string makeSource(const std::string& runBody) {
            "    }\n"
            "}\n"
            "public final class Ut {\n"
+           "    public static void keepIn(^Keep k, ^String w) { k.v #= w; }\n"
            "    public static #String makeBig(int32 doublings) {\n"
            "        String s = \"abcdefgh\";\n"
            "        int32 i = 0;\n"
@@ -80,9 +81,8 @@ TEST(SliceEscapeResolutionTests, localSubstringIsBorrow) {
         "return 1;"), 1);
 }
 
-// 4.1.2 (RED) — a ≤threshold slice stored past its scope COPIES: the stored
-// value is independent (correct after the source drops), holds no stake on
-// the source root, and survives the source scope (no wrapper UAF).
+// 4.1.2: a lent window of at most 256 B stored past its scope copies, so the stored
+// value holds no stake on the source root and survives the source scope.
 TEST(SliceEscapeResolutionTests, smallEscapeCopies) {
     EXPECT_EQ(runJit(
         "Keep k = heap Keep(\"\");\n"
@@ -90,7 +90,7 @@ TEST(SliceEscapeResolutionTests, smallEscapeCopies) {
         "{\n"
         "    String s #= heapString(64);\n"
         "    String w #= s.substring(10, 26);\n"                // 16 B window
-        "    k.v = w;\n"                                        // escape: field store
+        "    Ut.keepIn(k, w);\n"
         "}\n"                                                   // s + w drop
         "if (k.v.size() != 16) { return -1; }\n"
         "if (k.v.charAt(0) != (int8) 107) { return -2; }\n"     // 'k' (index 10)
@@ -109,7 +109,7 @@ TEST(SliceEscapeResolutionTests, largeEscapeShares) {
         "    String s #= makeBig(8);\n"                          // 2 KB owned (drop entry)
         "    String w #= s.substring(100, 612);\n"                // 512 B window
         "    int64 before = Cajeta.allocatedBytes();\n"
-        "    k.v = w;\n"                                          // escape: share, no copy
+        "    k.v #= w;\n"                                          // escape: share, no copy
         "    if (Cajeta.allocatedBytes() - before > 128) { return -1; }\n"
         "}\n"                                                     // s + w drop; root pinned
         "if (k.v.size() != 512) { return -2; }\n"
@@ -130,7 +130,7 @@ TEST(SliceEscapeResolutionTests, arenaEscapeCopies) {
         "    String b = \"nopqrstuvwxyz\";\n"
         "    String s = a + b;\n"                                // arena-eligible
         "    String w #= s.substring(10, 16);\n"                  // materializes if arena
-        "    k.v = w;\n"
+        "    k.v #= w;\n"
         "}\n"
         "if (k.v.size() != 6) { return -1; }\n"
         "if (k.v.charAt(0) != (int8) 107) { return -2; }\n"      // 'k'
@@ -166,10 +166,9 @@ TEST(SliceEscapeResolutionTests, mutableEscapeStillErrors) {
     });
 }
 
-// 4.1.6 (RED) — a large escape whose source view is provably dead after the
-// store resolves to a MOVE: no byte copy, no extra rc traffic beyond the
-// single stake the stored view holds; exact retirement when detached.
-TEST(SliceEscapeResolutionTests, autoMoveOnLastUse) {
+// 4.1.6 and field-store-ownership 4.2.8: `#=` of an owned window moves its single stake with no
+// byte copy, and detaching the field retires it exactly.
+TEST(SliceEscapeResolutionTests, sharpStoreOfOwnedWindowMovesItsStake) {
     EXPECT_EQ(runJit(
         "Keep k = heap Keep(\"\");\n"
         "int64 pop = Cajeta.sharedPopulation();\n"
@@ -177,7 +176,7 @@ TEST(SliceEscapeResolutionTests, autoMoveOnLastUse) {
         "    String s #= makeBig(8);\n"                          // 2 KB owned (drop entry)
         "    int64 before = Cajeta.allocatedBytes();\n"
         "    String w #= s.substring(100, 612);\n"                // 512 B window
-        "    k.v = w;\n"                                         // w's LAST use: move
+        "    k.v #= w;\n"
         "    if (Cajeta.allocatedBytes() - before > 192) { return -1; }\n"
         "}\n"
         "if (k.v.size() != 512) { return -2; }\n"

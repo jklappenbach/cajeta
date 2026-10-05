@@ -161,12 +161,12 @@ TEST(SignatureAbiTests, danglingLendOnDirectStoreRejected) {
         "        Holder h = heap Holder();\n"
         "        Cell s = heap Cell(5);\n"
         "        h.c = s;\n"                 // lend of local s into h
-        "        return #h;\n"               // h escapes; s dies here — reject
+        "        return #h;\n"               // h escapes, so h.c is a field (rule 8)
         "    }\n"
         "    public static int32 run() { return build().c.n; }\n"
         "}\n";
     std::string msg =
-        compileExpectError(src, "CAJETA_ERROR_DANGLING_LEND");
+        compileExpectError(src, "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
     EXPECT_NE(msg.find("s"), std::string::npos) << msg;
 }
 

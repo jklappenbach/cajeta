@@ -666,7 +666,7 @@ public void demo() {
 
 Because `#` forwards whatever the source holds, mode-forwarding wrappers just work: a plain formal's ownership is decided at the call site (`f(x)` lends, `f(#x)` transfers), and `#p` — or `this.f #= p` — inside the callee hands along whichever mode actually arrived. Only a value the compiler can see is purely a borrow (a local borrowing another local, or a borrow returned by a plain method) refuses the `#` — that surrender would be a lie.
 
-Keeping a value in a field follows the same spellings. A parameter or an owned local kept in a field, slot or static is stored with `#=`, so the caller chooses: `keep(p)` lends and `keep(#p)` transfers. A parameter that is only ever borrowed is spelled `^T`. It may be stored with plain `=`, and a caller cannot transfer into it.
+Keeping a value in a field follows the same spellings. A parameter or an owned local kept in a field, slot or static is stored with `#=`, so the caller chooses: `keep(p)` lends and `keep(#p)` transfers. A parameter that is only ever borrowed is spelled `^T`. It may be stored with plain `=`, and a caller cannot transfer into it. A value read out of an owned local is kept with `#=` too. `=` never moves, so an owned local needs `#=` even at its last use. A producer written in place, such as `heap T(...)`, a call, a literal or a String `+`, takes the title with plain `=`. A local holder that escapes (returned, passed or stored with `#`, or stored into a field) counts as a field for these rules, and a holder that stays local is exempt.
 
 ```cajeta
 public class Holder {
@@ -683,12 +683,15 @@ The borrow checker is static. Transfer-from-a-borrow, borrow-escape-on-return, k
 ```
 CAJETA_ERROR_MOVE_OF_BORROW
 CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE
+CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM
 CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM
 CAJETA_ERROR_BORROW_ESCAPE
 CAJETA_ERROR_BORROW_OF_TEMPORARY
 CAJETA_ERROR_VARIABLE_NOT_ASSIGNED
 CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM
 ```
+
+Two hazards are not caught. A caller that lends a value to a holder that outlives it leaves the holder dangling. A sibling field alias (`this.a = this.b`) is a legal borrow, and replacing `this.b` afterwards frees what `this.a` points at.
 
 The drop chain is a per-thread linked list of stack-allocated entries; entries fire in reverse declaration order at scope exit, and the throw path unwinds the chain to a try-frame's watermark so drops fire on the exceptional path too. An owned temporary, such as a `#T` call result used as the receiver of a further call, pushes no entry and is freed at the end of its statement. See [`MemoryModel.md`](docs/specification/lang/MemoryModel.md) and [`FieldOwnership.md`](docs/specification/lang/FieldOwnership.md).
 

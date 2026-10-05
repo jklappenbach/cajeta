@@ -329,6 +329,7 @@ public final class BPlusTree<K, V> {
         int32 mid = total / 2;
         K promote = node.keys[mid];
         BPlusTreeNode<K, V> right = heap BPlusTreeNode<K, V>(false, this.order);
+        this.nodes.add(#right);
         right.numKeys = total - mid - 1;
         // Right keys: node.keys[mid+1 ..].
         int32 k = 0;
@@ -341,13 +342,11 @@ public final class BPlusTree<K, V> {
         while (c <= right.numKeys) {
             BPlusTreeNode<K, V> child = node.children[mid + 1 + c];
             right.children[c] = child;
-            child.parent = right;
+            child.parent #= right;
             c = c + 1;
         }
         node.numKeys = mid;
         right.parent = node.parent;
         this.insertIntoParent(node, promote, right);
-        // Registry takes the new node's title — right's last use.
-        this.nodes.add(#right);
     }
 }

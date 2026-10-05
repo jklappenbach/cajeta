@@ -14,10 +14,13 @@ two non-obvious arguments before any code lands.
 > (`CAJETA_ERROR_BORROW_ESCAPE`, `CAJETA_ERROR_VIEW_ESCAPE`) are real and
 > shipped; the field-store edge described below is design-stage.
 >
-> **Partly covered by the field-store rule.** A plain `=` store of a local
-> bound from `heap` into a field of `this` or of a parameter is now rejected
-> with `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`, and a parameter kept with `=`
-> must be spelled `^T` (`specs/field-store-ownership-spec.md`). A `stack`
+> **Partly covered by the field-store rule.** A plain `=` store of an owned
+> local (bound from `heap`, a call, `#=` or a `+`), or of a value read out of
+> one, into a field of `this`, of a parameter, or of a local holder that
+> escapes is now rejected with `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`, and a
+> parameter kept with `=` must be spelled `^T`
+> (`specs/field-store-ownership-spec.md`). A holder in an enclosing block
+> that keeps an owned local from an inner block is rejected the same way. A `stack`
 > local is outside that rule, because `#=` cannot fix it (argument (a) below),
 > so the edge this document proposes is still open.
 

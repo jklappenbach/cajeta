@@ -378,8 +378,8 @@ public final class HashMap<K, V> {
             // store zero.
             K[] kz = stack K[1];
             // The zero-store's displaced release (title-stores §3.3.2)
-            // drops an OWNED class key. Bit clears with the plain store.
-            this.slots[i].key = kz[0];
+            // drops an OWNED class key.
+            this.slots[i].key #= kz[0];
             // Fused claim: the val bit rides into `out` (owned or
             // borrowed, verbatim) and the slot bit clears — then
             // `return #out` carries that flag to the caller (the

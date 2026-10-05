@@ -529,7 +529,7 @@ public class LtmPager<K, V> {
             }
             p = p + klen;
             K k #= this.keyEnc.decode(kslice);
-            node.keys[i] = k;
+            node.keys[i] #= k;
             i = i + 1;
         }
         if (leaf) {
@@ -545,7 +545,7 @@ public class LtmPager<K, V> {
                 }
                 p = p + vlen;
                 V v #= this.valEnc.decode(vslice);
-                node.values[i] = v;
+                node.values[i] #= v;
                 i = i + 1;
             }
             if (leafByte == 2) {

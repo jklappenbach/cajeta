@@ -641,7 +641,7 @@ public final class Class<T> {
         while (i < n) {
             Class<?> c = registryAt(i);
             if (inPackage(c, packageName)) {
-                arr[j] = c;
+                arr[j] #= c;
                 j = j + 1;
             }
             i = i + 1;
@@ -676,7 +676,7 @@ public final class Class<T> {
         while (i < n) {
             Class<?> c = registryAt(i);
             if (c.hasAnnotation(annotationName)) {
-                arr[j] = c;
+                arr[j] #= c;
                 j = j + 1;
             }
             i = i + 1;
@@ -732,7 +732,7 @@ public final class Class<T> {
         while (i < n) {
             Class<?> c = registryAt(i);
             if (anyMethodAnnotated(c, annotationName)) {
-                arr[j] = c;
+                arr[j] #= c;
                 j = j + 1;
             }
             i = i + 1;
@@ -779,7 +779,7 @@ public final class Class<T> {
         while (i < n) {
             Class<?> c = registryAt(i);
             if (isSubtype(c.rtti, bound.rtti) != 0) {
-                arr[j] = c;
+                arr[j] #= c;
                 j = j + 1;
             }
             i = i + 1;

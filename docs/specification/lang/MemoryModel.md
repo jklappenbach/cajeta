@@ -209,30 +209,35 @@ instead of acting: see the last-use advisory below.
 
 ### Dangling lends
 
-A plain store or a plain argument **lends**. If the thing that received the lend
-then escapes the method, it escapes holding a pointer to a local that is about to
-drop:
+A plain argument **lends**. If the holder that received the lend then escapes
+the method, it escapes holding a pointer to a local that is about to drop:
 
+<!-- snippet: skip -->
 ```cajeta
-Holder build() {
+#Holder build() {
     Holder h = heap Holder();
     Cell s = heap Cell(5);
-    h.c = s;          // lend: the title stays with `s`
-    return #h;        // ERROR — CAJETA_ERROR_DANGLING_LEND
-}                     // `s` drops here; the caller's Holder points at freed memory
+    h.keep(s);        // lend: the title stays with `s`, and keep() retains it
+    return #h;        // ERROR: CAJETA_ERROR_DANGLING_LEND
+}                     // `s` drops here, so the caller's Holder points at freed memory
 ```
 
-The fix is to say what was meant: `h.c #= s` gives the holder the title.
+The fix is to say what was meant. `h.keep(#s)` gives the holder the title.
 
 The check is intra-procedural and deliberately conservative. It fires only when
-the receiving callee actually **retains** the argument (stores it into a field);
-a method that merely reads its argument — `sb.append(s)`, `list.contains(x)` —
-cannot strand anything and does not poison its receiver.
+the receiving callee actually **retains** the argument (stores it into a field).
+A method that merely reads its argument, such as `sb.append(s)` or
+`list.contains(x)`, cannot strand anything and does not poison its receiver.
+
+A direct store into the holder, `h.c = s; return #h;`, is caught earlier by
+the field-store rule (§ Fields). An escaping holder counts as a field, so the
+store reports `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE` and the fix is `h.c #= s`.
 
 The check is single-hop. It sees a holder local that the method returns. A
 caller that lends `x` to a holder that outlives `x` in any other way is not
-caught, for example a holder held in a field or declared in an enclosing block.
-That needs lifetime information the language does not track.
+caught. The lend may reach the holder through a `^T` formal, or through a
+retaining call on a holder held in a field. That needs lifetime information
+the language does not track.
 
 ### Last-use advisory (warning)
 
@@ -304,12 +309,26 @@ LIFO within a scope; inner scopes drop before outer. A borrow declared before it
 - **Keeping a value in a field, slot or static.** A store into a field, an element slot or a static outlives the call that makes it, so the compiler checks its source (spec `field-store-ownership`). The same rule covers `this.data[i] = v` and a nested path such as `this.head.prev = v`.
   1. A formal kept with `=` must be spelled `^T`. A `^T` formal is a borrow on every call.
   2. A `T` or `#T` formal that is kept is stored with `#=`. This is the sink and setter shape: `set(x)` lends and `set(#x)` transfers.
-  3. An owned local (bound from `heap`, a call, `#=` or a `+`) stored into a field or slot is stored with `#=`.
-  4. A value read out of a `T` or `#T` formal (`v.child`) stored with `=` needs a `^T` formal, so the caller keeps the root alive. A `#=` store records whatever title the slot held.
-  5. `=` into a String field is a borrow, like every other type.
-  6. Plain `=` stays right for a literal, a primitive, `null`, and a `heap T(...)` or call written in place.
+  3. An owned local (bound from `heap`, a call, `#=` or a `+`) stored into a field or slot that outlives it is stored with `#=`.
+  4. A value read out of a `T` or `#T` formal, or out of an owned local (`v.child`), is never stored with `=`. For a formal, spell it `^T` so the caller keeps the root alive. For either, `#=` takes the title the slot held.
+  5. Strings follow every rule here, like every other type.
+  6. `=` never moves. There is no last-use move. An owned local stored with `=` is rejected even when nothing reads it again.
+  7. A producer written in place takes the title with `=`: a literal, a primitive, `null`, a `heap T(...)`, a call, or a String `+`. A local binding `T b = a;` lends, and an argument `f(a)` lends.
+  8. A local holder whose field or slot is stored into counts as a field when it escapes. It escapes when it is returned, passed or stored with `#`, or stored into a field, a slot, a static, or another holder that escapes or is not the frame's own. A holder bound from a parameter, a field read or a call is not the frame's own, so a store into it is a field store. A holder declared in an outer block that keeps an owned local from an inner block outlives that local, so that store needs `#=` too. A holder that stays local is exempt.
 
-  Rules 1 to 3 report `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE` and rule 4 reports `CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM`. Spelling the formal `#T` is not a fix on its own, because a `#T` formal frees its argument at return and the field would dangle.
+  Rules 1 to 3, rule 4 for an owned local, rule 6 and rule 8 report `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`. Rule 4 for a `T` or `#T` formal reports `CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM`. Spelling the formal `#T` is not a fix on its own, because a `#T` formal frees its argument at return and the field would dangle.
+
+  For a String, a `#=` of an owned window moves the window and its shared stake on the root. A lent window stored with `#=` resolves to a copy up to 256 bytes, or to a shared stake on the root above that. Frame-arena bytes always copy when they escape. A String `=` from a borrowed source still resolves the same way at run time today, rather than recording a plain borrow.
+
+  | Store | Verdict |
+  |---|---|
+  | `Person o = Persons.load(); this.name = o.name;` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`, fix `#=` |
+  | `String w #= s.substring(1, 9); this.v = w;` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`, fix `#=` |
+  | `Node n = heap Node(); n.c = p; return #n;` (`p` a `Cell` formal) | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`, fix `#=` or `^Cell` |
+  | `Node h = heap Node(); { Cell l = heap Cell(1); h.c = l; } return h.c.n;` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`, fix `#=` |
+  | `Node o = heap Node(); this.c #= o.c;` | compiles, the field takes the slot's title |
+  | `Node h = heap Node(); h.c = p; return h.c.n;` | compiles, the holder stays local |
+  | `Node h = heap Node(); Cell l = heap Cell(1); h.c = l; return h.c.n;` | compiles, the holder stays local in `l`'s block |
 
   ```cajeta
   void keep(Cell c)   { this.held #= c; }   // the caller chooses: lend or transfer
@@ -629,13 +648,16 @@ orig.setValue(5);          // use-after-free — compiles, faults at runtime
 | Anonymous-owner chained borrow | Statement-level lifetime check (`CAJETA_ERROR_BORROW_OF_TEMPORARY`) |
 | Double-free of aliased field | Runtime live-set claim (see `FieldOwnership.md`) |
 | Use-after-free of a borrow whose owner dropped first — including a transferred binding | Programmer responsibility at v1 (Phase 6+ lifetime tracker) |
-| Escaping holder retaining a lend of a dying local | Single-hop dangling-lend check (`CAJETA_ERROR_DANGLING_LEND`) |
+| Escaping holder retaining a dying local through a retaining call | Single-hop dangling-lend check (`CAJETA_ERROR_DANGLING_LEND`) |
 | Plain argument at a must-own (`#T`) edge | `CAJETA_ERROR_TRANSFER_REQUIRED` |
 | `T` or `#T` formal, or owned local, kept in a field or slot with `=` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE` |
+| Value read out of an owned local kept with `=` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE` |
+| Store with `=` into an escaping holder, or into an outer-block holder from an inner-block owned local | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE` |
 | Interior read of a `T` or `#T` formal kept with `=` | `CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM` |
 | Transfer or owned temporary passed to a borrow-only (`^T`) formal | `CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM` |
 | Override whose `^` marks differ from the overridden method | `CAJETA_ERROR_BORROW_MARK_MISMATCH` |
 | Lend into a holder that outlives the lender, other than a returned holder local | **Not caught.** Needs lifetime information the language does not track |
+| Sibling field alias (`this.a = this.b`) followed by replacing `this.b` | **Not caught.** The alias is a legal borrow, and the replacement frees what it points at |
 | Two declarations differing only in transfer mode | `CAJETA_ERROR_TRANSFER_MODE_OVERLOAD` |
 | Lend at a local's last use (**warning**, not an error) | `CAJETA_WARN_LAST_USE_TRANSFER` — suggests `#`; never fails the build |
 

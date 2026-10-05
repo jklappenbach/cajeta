@@ -125,17 +125,29 @@ outlive the call that produced it. The compiler checks every such store.
 2. A `T` or `#T` parameter that is kept is stored with `#=`. This is the sink
    and setter shape. `set(x)` lends and `set(#x)` transfers.
 3. An owned local (bound from `heap`, a call, `#=` or a `+`) stored into a
-   field or slot is stored with `#=`.
-4. Storing a value read out of a `T` or `#T` parameter (`b.child`) with `=`
-   needs a `^T` parameter, so the caller keeps the root alive. A `#=` store
-   records whatever title the slot held.
-5. `=` into a String field is a borrow, like every other type.
-6. Plain `=` stays right for local bindings, arguments, literals, primitives,
-   `null`, and a `heap T(...)` or call written in place.
+   field or slot that outlives it is stored with `#=`.
+4. A value read out of a parameter or out of an owned local (`b.child`) is
+   never stored with `=`. For a `T` or `#T` parameter, spell it `^T` so the
+   caller keeps the root alive. For either, `#=` takes the title the slot
+   held.
+5. Strings follow every rule here, like every other type.
+6. `=` never moves. Storing an owned local with `=` is an error even at its
+   last use. Spell it `#=`.
+7. A producer written in place takes the title with `=`. That covers a
+   literal, a primitive, `null`, a `heap T(...)`, a call and a String `+`.
+   A local binding `T b = a;` lends, and an argument `f(a)` lends.
+8. A local holder whose field or slot is stored into counts as a field when
+   it escapes. It escapes when it is returned, passed or stored with `#`, or
+   stored into a field, a slot, a static or another holder that escapes. A
+   holder bound from a parameter, a field read or a call is not the frame's
+   own, so a store into it is a field store. A holder declared in an outer
+   block that keeps an owned local from an inner block outlives that local,
+   so it needs `#=` too. A holder that stays local is exempt.
 
 ```cajeta
 public class Block {
     public Block child;
+    public Block() { }
 }
 ```
 
@@ -156,13 +168,42 @@ public class Holder {
 | `void f(Block b) { this.b = b; }` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: use `#=`, or spell `^Block` |
 | `void f(#Block b) { this.b = b; }` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: use `#=` |
 | `Block l = heap Block(); this.b = l;` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: use `#=` |
-| `void f(Block b) { this.c = b.child; }` | `CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM`: spell `^Block` |
+| `void f(Block b) { this.c = b.child; }` | `CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM`: spell `^Block`, or use `#=` |
+| `Person o = Persons.load(); this.name = o.name;` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: use `#=` |
+| `String w #= s.substring(1, 9); this.v = w;` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: use `#=`, even when `w` is not read again |
+| `Node n = heap Node(); n.c = p; return #n;` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: `n` escapes, use `#=` or spell `^Cell` |
+| `Node h = heap Node(); { Cell l = heap Cell(1); h.c = l; } return h.c.n;` | `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`: `h` outlives `l`, use `#=` |
 | `void f(^Block b) { this.b = b; }` | correct, the field borrows |
+| `Block o = heap Block(); this.c #= o.child;` | correct, the field takes the title the slot held |
+| `Node h = heap Node(); h.c = p; return h.c.n;` | correct, `h` stays local |
+| `Node h = heap Node(); Cell l = heap Cell(1); h.c = l; return h.c.n;` | correct, `h` stays local in `l`'s block |
 | `this.b #= b;` in any of the above | correct |
+
+In the holder rows, `p` is a plain `Cell` parameter, `Node` has a field
+`Cell c`, and `Cell` has a field `n`.
 
 Spelling the parameter `#T` is not a fix on its own. A `#T` parameter owns its
 argument and frees it at return, so `#T` with `=` still leaves the field
 dangling.
+
+A holder that escapes is spelled the same way as a field.
+
+```cajeta
+public class Chain {
+    public static #Block wrap(Block b) {
+        Block h = heap Block();
+        h.child #= b;      // h escapes, so this store follows the field rules
+        return #h;
+    }
+}
+```
+
+Strings follow the same spellings. A `#=` of an owned window, such as a
+`substring` result, moves the window and its shared stake on the root. A lent window
+stored with `#=` resolves. It becomes a copy up to 256 bytes and a shared
+stake on the root above that. Bytes from the frame arena always copy when
+they escape. A String `=` from a borrowed source also resolves this way
+today, rather than storing a plain borrow.
 
 When a fresh node is both registered and linked, register it first and link
 it with `#=`. The transfer demotes the local, so the link records a borrow.
@@ -182,9 +223,14 @@ primitive. An override must spell the same `^` marks as the method it
 overrides (`CAJETA_ERROR_BORROW_MARK_MISMATCH`). Moving a `^T` parameter with
 `#p` is `CAJETA_ERROR_MOVE_OF_BORROW`.
 
-The compiler cannot see one hazard. When a caller lends `x` to a holder that
-outlives `x`, the holder dangles. That needs lifetimes the language does not
-track.
+The compiler cannot see two hazards. When a caller lends `x` to a holder that
+outlives `x`, the holder dangles. The lend may reach the holder through a
+`^T` parameter, or through a call such as `h.keep(x)` whose callee keeps it.
+The compiler catches only the case where the method that owns `x` returns
+`h` (`CAJETA_ERROR_DANGLING_LEND`). The rest needs lifetimes the language
+does not track. The second hazard is a sibling field
+alias. `this.a = this.b` is a legal borrow. Replacing `this.b` afterwards
+frees what `this.a` points at, and the compiler does not track that.
 
 ## Drops at scope exit
 

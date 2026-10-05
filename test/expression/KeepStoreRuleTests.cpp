@@ -295,3 +295,189 @@ TEST(KeepStoreRuleTests, errorInsideTemplateNamesItsRealLine) {
     }
     EXPECT_EQ(line, 10);
 }
+
+// 4.2.6: a holder local that escapes is a field (rule 8).
+TEST(KeepStoreRuleTests, escapingHolderPlainStoreRejected) {
+    std::string msg = expectError(
+        "public final class K {\n"
+        "    public K() { }\n"
+        "    public static #Node make(Cell p) {\n"
+        "        Node n = heap Node();\n"
+        "        n.c = p;\n"
+        "        return #n;\n"
+        "    }\n"
+        "}\n",
+        "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
+    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+    EXPECT_NE(msg.find("`^Cell`"), std::string::npos) << msg;
+}
+
+// 4.2.6: storing the holder with `#=` is an escape too.
+TEST(KeepStoreRuleTests, holderStoredIntoFieldRejected) {
+    expectError(
+        "public final class K {\n"
+        "    Node head;\n"
+        "    public K() { }\n"
+        "    public void add(Cell p) {\n"
+        "        Node n = heap Node();\n"
+        "        n.c = p;\n"
+        "        this.head #= n;\n"
+        "    }\n"
+        "}\n",
+        "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
+}
+
+// 4.2.6: a holder reached through a parameter is not the frame's own.
+TEST(KeepStoreRuleTests, holderReadOutOfFormalRejected) {
+    expectError(
+        "public final class K {\n"
+        "    public K() { }\n"
+        "    public static void link(^Node q, Cell p) {\n"
+        "        Node n = q.prev;\n"
+        "        n.c = p;\n"
+        "    }\n"
+        "}\n",
+        "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
+}
+
+// 4.2.6: a holder that outlives the owned local stored into it keeps a dangling borrow.
+TEST(KeepStoreRuleTests, holderOutlivingTheSourceRejected) {
+    expectError(
+        "public final class K {\n"
+        "    public K() { }\n"
+        "    public static int64 peek() {\n"
+        "        Node h = heap Node();\n"
+        "        {\n"
+        "            Cell l = heap Cell(1L);\n"
+        "            h.c = l;\n"
+        "        }\n"
+        "        return h.c.n;\n"
+        "    }\n"
+        "}\n",
+        "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
+}
+
+// 4.2.5 twins: a non-escaping holder in the source's scope, and `#=` into an escaping one.
+TEST(KeepStoreRuleTests, sameScopeHolderAndSharpStoreIntoEscapingHolderCompile) {
+    expectCompiles(
+        "public final class K {\n"
+        "    public K() { }\n"
+        "    public static int64 peek() {\n"
+        "        Node h = heap Node();\n"
+        "        Cell l = heap Cell(1L);\n"
+        "        h.c = l;\n"
+        "        return h.c.n;\n"
+        "    }\n"
+        "    public static #Node make(Cell p) {\n"
+        "        Node n = heap Node();\n"
+        "        n.c #= p;\n"
+        "        return #n;\n"
+        "    }\n"
+        "}\n");
+}
+
+// 4.2.7: a value read out of an owned local dies with it.
+TEST(KeepStoreRuleTests, interiorReadOfOwnedLocalRejected) {
+    std::string msg = expectError(
+        "public final class K {\n"
+        "    Cell c;\n"
+        "    public K() { }\n"
+        "    public static #Node load() { return heap Node(); }\n"
+        "    public void fill() {\n"
+        "        Node o = K.load();\n"
+        "        this.c = o.c;\n"
+        "    }\n"
+        "}\n",
+        "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
+    EXPECT_NE(msg.find("`o`"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+}
+
+// 4.2.7 twins: `#=` takes the slot's title, and an alias of a field is the sibling-alias gap (1.3).
+TEST(KeepStoreRuleTests, interiorOfOwnedLocalSharpStoreAndFieldAliasCompile) {
+    expectCompiles(
+        "public final class K {\n"
+        "    Cell c;\n"
+        "    Cell d;\n"
+        "    Node head;\n"
+        "    public K() { }\n"
+        "    public void fill() {\n"
+        "        Node o = heap Node();\n"
+        "        this.c #= o.c;\n"
+        "        Node h = this.head;\n"
+        "        this.d = h.c;\n"
+        "    }\n"
+        "}\n");
+}
+
+// 4.2.8: `=` never moves, so an owned String local needs `#=` at its last use too.
+TEST(KeepStoreRuleTests, ownedStringLocalPlainStoreRejectedAtLastUse) {
+    std::string msg = expectError(
+        "public final class K {\n"
+        "    String v;\n"
+        "    public K() { }\n"
+        "    public void put(^String s) {\n"
+        "        String w #= s.substring(1, 9);\n"
+        "        this.v = w;\n"
+        "    }\n"
+        "}\n",
+        "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
+    EXPECT_NE(msg.find("`w`"), std::string::npos) << msg;
+}
+
+// 4.2.8: the same store with a later read is the same error.
+TEST(KeepStoreRuleTests, ownedStringLocalPlainStoreRejectedBeforeLaterRead) {
+    expectError(
+        "public final class K {\n"
+        "    String v;\n"
+        "    int64 n;\n"
+        "    public K() { }\n"
+        "    public void put(^String s) {\n"
+        "        String w #= s.substring(1, 9);\n"
+        "        this.v = w;\n"
+        "        this.n = w.size();\n"
+        "    }\n"
+        "}\n",
+        "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
+}
+
+// 4.2.8 twin
+TEST(KeepStoreRuleTests, ownedStringLocalSharpStoreCompiles) {
+    expectCompiles(
+        "public final class K {\n"
+        "    String v;\n"
+        "    public K() { }\n"
+        "    public void put(^String s) {\n"
+        "        String w #= s.substring(1, 9);\n"
+        "        this.v #= w;\n"
+        "    }\n"
+        "}\n");
+}
+
+// 4.2.10: an alias of a frame-made holder is that holder, and an alias that escapes takes it along.
+TEST(KeepStoreRuleTests, aliasOfNonEscapingHolderCompilesAndEscapingAliasRejected) {
+    expectCompiles(
+        "public final class K {\n"
+        "    public K() { }\n"
+        "    public static int64 peek() {\n"
+        "        Node h = heap Node();\n"
+        "        Node a = h;\n"
+        "        Cell l = heap Cell(1L);\n"
+        "        a.c = l;\n"
+        "        return h.c.n;\n"
+        "    }\n"
+        "}\n");
+    expectError(
+        "public final class K {\n"
+        "    Node keep;\n"
+        "    public K() { }\n"
+        "    public void hold() {\n"
+        "        Node h = heap Node();\n"
+        "        Node a = h;\n"
+        "        Cell l = heap Cell(1L);\n"
+        "        a.c = l;\n"
+        "        this.keep #= h;\n"
+        "    }\n"
+        "}\n",
+        "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
+}

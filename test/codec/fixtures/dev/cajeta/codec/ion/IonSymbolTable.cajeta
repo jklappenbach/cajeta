@@ -135,7 +135,7 @@ public final class IonSymbolTable {
                                         }
                                         String sym = heap cajeta.lang.String(
                                             #sb, (int32) eContent);
-                                        locals[lc] = sym;
+                                        locals[lc] #= sym;
                                         lc = lc + 1;
                                         ep = sByteStart + eContent;
                                     }

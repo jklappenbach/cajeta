@@ -73,29 +73,58 @@ a borrow."*
 - **Keeping a value in a field or slot.** Decided with Julian
   2026-10-04 (specs/field-store-ownership-spec.md). This REPLACES the old
   "non-sink keeping a parameter: spell it `#T`" rule, which was wrong:
-  `#T` with a plain `=` store still dangles. The compiler enforces rules 1
-  to 4 before codegen (CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE,
+  `#T` with a plain `=` store still dangles. `=` is a borrow, `#=` records
+  the mode that arrived (a transfer when the source owns, a borrow when it
+  does not), and `#` transfers, for every field type. The rules are the
+  spec's §1.2 numbering. The compiler enforces rules 1 to 4, 6, 7 and 8
+  before codegen (CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE,
   CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM,
   CAJETA_ERROR_TRANSFER_INTO_BORROW_PARAM), and CAPTURED_BORROW_PARAM is
-  retired. Rule 5 (String `=` is a plain borrow) is not done yet: String
-  `=` still resolves a copy.
-  1. `=` is a borrow, `#=` records the mode that arrived (a transfer when
-     the source owns, a borrow when it does not), `#` transfers. This
-     holds for every field type, String included.
-  2. A formal kept with `=` must be spelled `^T` (borrow only: callers
+  retired. Rule 5 is checked like every other type, but its codegen half
+  (String `=` as a pure borrow) is still open as Unit 6. Today a String
+  `=` from a borrowed source still resolves at run time.
+  1. A formal kept with `=` must be spelled `^T` (borrow only: callers
      cannot pass `#x`). This is the explicit way to keep a borrow.
-  3. A `T` or `#T` formal that is kept is stored with `#=`. A sink
+  2. A `T` or `#T` formal that is kept is stored with `#=`. A sink
      (`add(T v) { slot #= v; }`) is this case: the caller chooses.
-  4. An owned local stored into a field or slot is stored with `#=`.
-  5. Storing an interior read of a `T`/`#T` formal (`b.child`) with `=` needs
-     a `^T` formal, so the caller keeps the root alive. `#=` records the
-     title the slot held. `^` is an error on a primitive formal and on a
-     type-parameter declaration, and legal on a formal typed by one
-     (`void foo(^T p)`).
-  6. Plain `=` stays right for local bindings, arguments, literals,
-     primitives, `null`, and a `heap T(...)` or call written in place.
+  3. An owned local stored into a field or slot that outlives it is stored
+     with `#=`.
+  4. A value read out of a `T`/`#T` formal or out of an owned local
+     (`b.child`) is never stored with `=`. For a formal, spell it `^T`
+     (INTERIOR_KEEP_NEEDS_BORROW_PARAM). For an owned local
+     (`Person o = Persons.load(); this.name = o.name;`) it is
+     KEEP_NEEDS_SHARP_STORE. For either, `#=` takes the title the slot
+     held. `^` is an error on a primitive formal and on a type-parameter
+     declaration, and legal on a formal typed by one (`void foo(^T p)`).
+  5. Strings follow every rule. `#=` of an owned window moves the window
+     and its shared stake. A lent window stored with `#=` resolves to a
+     copy up to 256 B and a shared stake on the root above that.
+     Frame-arena bytes always copy when they escape.
+  6. `=` never moves. There is no last-use move.
+     `String w #= s.substring(1, 9); this.v = w;` is an error whether or
+     not `w` is read again. Spell `this.v #= w;`.
+  7. A producer written in place takes the title with `=`: a literal, a
+     primitive, `null`, `heap T(...)`, a call, a String `+`. Local
+     bindings and arguments lend.
+  8. A local holder whose field or slot is stored into counts as a field
+     when it escapes: returned, passed or stored with `#`, stored into a
+     field, slot or static, or stored into another holder that escapes or
+     is not the frame's own. A holder bound from a parameter, a field read
+     or a call is not the frame's own. A holder in an outer block that
+     keeps an owned local from an inner block with `=` is an error. A
+     holder that stays local is exempt
+     (`Node h = heap Node(); h.c = p; return h.c.n;` compiles with `p` a
+     plain formal). `Holder h = heap Holder(); Cell s = heap Cell(5);
+     h.c = s; return #h;` now reports KEEP_NEEDS_SHARP_STORE before the
+     DANGLING_LEND backstop. DANGLING_LEND still covers the call-argument
+     shape (`h.keep(s)` where keep retains).
 
-  | Store | Today (v0.34.0, measured) | Rule |
+  Not caught (spec §1.3): a caller that lends a value (a parameter, or an
+  `h.keep(x)` lend) to a holder that outlives it, and a sibling-field
+  alias (`this.a = this.b`) followed by replacing `this.b`. The alias is a
+  legal borrow, and the replacement frees what `a` points at (card 7).
+
+  | Store | v0.34.0 (measured) | Now |
   |---|---|---|
   | `#T p; this.f = p` | class: silent use-after-free. String: hidden move | error, use `#=` |
   | `T p; this.f = p` | class: CAPTURED_BORROW_PARAM. String: SIGSEGV on `#x` | error, use `#=` or `^T` |
@@ -103,7 +132,7 @@ a borrow."*
   | `this.f #= p` / `#= l` | correct in every case | correct |
 
   A `=` store that compiles and reads back correctly is NOT evidence it
-  is right: the String field path hides a move. Check the IR.
+  is right. On v0.34.0 the String field path hid a move. Check the IR.
 - **Deliberate non-owning alias** (back-pointers, intrusive links,
   view handles): store with `#=`, which records the borrow faithfully,
   or take a `^T` formal and store it with `=`.
