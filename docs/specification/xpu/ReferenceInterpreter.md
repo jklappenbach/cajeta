@@ -177,14 +177,26 @@ Each launch gets one of these outcomes:
 
 The held list has one tab-separated line per kernel and backend.
 `<kernel> <backend> held <note>` holds a known disagreement, and
-`<kernel> <backend> ulps=N <why>` states a float bound. A backend of `*`
-matches every backend.
+`<kernel> <backend> ulps=N <why>` states a float bound in units in the last
+place, and `<kernel> <backend> rel=X <why>` states one as a fraction of the
+largest finite reference magnitude in the buffer. The two can be joined as
+`ulps=N,rel=X`, and an element inside either passes. A backend of `*` matches
+every backend.
+
+A relative bound is for results whose error scales with the buffer rather than
+with the element: a `@FastMath` kernel, which the backend may reassociate,
+contract and flush to zero, and a function such as `sin` near one of its
+zeros. There a count of ulps is huge for an error the buffer cannot see, and a
+ulp bound wide enough to admit it would also admit a real defect elsewhere. A
+float failure reports its first element, its worst distance in both measures,
+and how many elements fall outside the bound.
 
 ## Comparing against it
 
 Integers compare bit for bit. Floats compare within a stated count of units in
-the last place, using `ulpDistance`, and each comparison states its bound and
-the reason for it.
+the last place, using `ulpDistance`, or within a stated fraction of the
+buffer's largest value, and each comparison states its bound and the reason
+for it.
 
 The interpreter shares the front end with the code under test, so a front-end
 defect can agree with itself. cajeta-llm's host oracles stay in that

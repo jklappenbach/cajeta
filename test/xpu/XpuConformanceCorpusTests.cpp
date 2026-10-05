@@ -271,3 +271,33 @@ TEST(XpuConformanceCorpus, aFloatFailureReportsTheWorstDistance) {
     EXPECT_NE(r->detail.find("2 of 4 out of bound"), std::string::npos) << r->detail;
     fs::remove_all(dir);
 }
+
+// A relative bound measures an element's error against the largest reference
+// magnitude in its view, so a result near zero that is many ulps away but a
+// tiny fraction of the buffer's scale passes. Either bound admits an element.
+TEST(XpuConformanceCorpus, aRelativeBoundIsMeasuredAgainstTheLargestValue) {
+    std::vector<float> x = {1000.0f, 3.0f, -2.5f, 1e-6f};
+    float s = 1.75f;
+    std::vector<float> got(x.size());
+    for (size_t i = 0; i < x.size(); ++i) got[i] = x[i] * s;
+    got[3] *= 2.0f; // millions of ulps, about 1e-9 of the largest value
+    Kernels k;
+    fs::path dir = freshDir("rel");
+    handRecording(dir, x, s, got);
+    auto none = ref::runCorpus(k.all, dir.string(), "");
+    const ref::CorpusResult* r = only(none, "corpusScale");
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(r->outcome, "fail");
+    EXPECT_NE(r->detail.find("relative"), std::string::npos) << r->detail;
+
+    writeHeld(dir / "held.tsv", "corpusScale\tcpu\trel=1e-12\ttoo tight\n");
+    EXPECT_EQ(only(ref::runCorpus(k.all, dir.string(), (dir / "held.tsv").string()),
+                   "corpusScale")->outcome, "fail");
+    writeHeld(dir / "held.tsv", "corpusScale\tcpu\trel=1e-6\tfast math\n");
+    EXPECT_EQ(only(ref::runCorpus(k.all, dir.string(), (dir / "held.tsv").string()),
+                   "corpusScale")->outcome, "pass");
+    writeHeld(dir / "held.tsv", "corpusScale\tcpu\tulps=2,rel=1e-6\tboth\n");
+    EXPECT_EQ(only(ref::runCorpus(k.all, dir.string(), (dir / "held.tsv").string()),
+                   "corpusScale")->outcome, "pass");
+    fs::remove_all(dir);
+}

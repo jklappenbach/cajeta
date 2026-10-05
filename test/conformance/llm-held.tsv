@@ -1,2 +1,19 @@
 # The conformance corpus held list over cajeta-llm (scripts/llm-conformance.sh).
-# kernel<TAB>backend<TAB>held|ulps=N<TAB>the plan item or reason. Backend * matches all.
+# kernel<TAB>backend<TAB>held|ulps=N|rel=X<TAB>the plan item or reason. Backend * matches all.
+# rel=X admits |backend - reference| <= X times the largest reference magnitude in the view.
+# Bounds may be joined, ulps=N,rel=X, and either admits an element.
+#
+# The device library's exp, sin and cos against the reference's float64 rounded once.
+attnCombineKernel	cpu	ulps=4	Math.exp from the device library; worst 4 ulp measured 2026-10-05
+attnCombinePrefillKernel	cpu	ulps=6	Math.exp from the device library; worst 6 ulp measured 2026-10-05
+qkPrepKernel	cpu	ulps=1	Math.sin, Math.cos and Math.sqrt from the device library; worst 1 ulp
+ropeAppendRowsKernel	cpu	ulps=2	Math.sin and Math.cos from the device library; worst 2 ulp
+ropeF32	cpu	rel=5e-7	Math.sin and Math.cos near zero at large angles: 2048 ulp but 1.6e-7 of the unit scale
+# @FastMath kernels: the backend may reassociate, contract and flush subnormals, so the
+# error is stated against the buffer's scale. Worst measured 2.4e-7, about 2 float32 eps.
+attnCombinePrefillV2Kernel	cpu	rel=5e-7	@FastMath reassociation; worst 1.1e-7
+attnFlashDecodeGqa4Kernel	cpu	rel=5e-7	@FastMath reassociation; worst 1.0e-7
+attnFlashDecodeGqa8Kernel	cpu	rel=5e-7	@FastMath flushes subnormals to zero; worst 6e-45
+attnFlashPrefillGqa4Kernel	cpu	rel=5e-7	@FastMath reassociation; worst 1.8e-7
+attnFlashPrefillKernel	cpu	rel=5e-7	@FastMath reassociation; worst 2.4e-7
+attnScorePrefillRowV2Kernel	cpu	rel=5e-7	@FastMath reassociation; worst 8.6e-8

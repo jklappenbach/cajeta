@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -36,6 +37,8 @@ struct Held {
     bool held = false;
     std::string note;
     uint64_t ulps = 0;
+    // A fraction of the largest reference magnitude in the view; 0 is none.
+    double rel = 0;
 };
 
 // kernel -> backend -> entry; backend "*" matches every backend.
@@ -56,8 +59,14 @@ HeldList readHeld(const std::string& path) {
         Held& h = out[f[0]][f[1]];
         if (f[2] == "held") {
             h.held = true;
-        } else if (f[2].rfind("ulps=", 0) == 0) {
-            h.ulps = std::stoull(f[2].substr(5));
+        } else {
+            // ulps=N, rel=X, or both joined by a comma.
+            std::stringstream bounds(f[2]);
+            std::string b;
+            while (std::getline(bounds, b, ',')) {
+                if (b.rfind("ulps=", 0) == 0) h.ulps = std::stoull(b.substr(5));
+                else if (b.rfind("rel=", 0) == 0) h.rel = std::stod(b.substr(4));
+            }
         }
         if (f.size() > 3) h.note = f[3];
     }
@@ -98,6 +107,16 @@ bool isNanBits(uint64_t x, unsigned bytes, bool bf16) {
     unsigned man = bytes * 8 - 1 - eb;
     uint64_t e = (x >> man) & ((1ull << eb) - 1);
     return e == ((1ull << eb) - 1) && (x & ((1ull << man) - 1)) != 0;
+}
+
+// The value of a float of `bytes` width; two bytes is read as float16.
+double floatValue(uint64_t x, unsigned bytes) {
+    if (bytes == 8) { double d; std::memcpy(&d, &x, 8); return d; }
+    if (bytes == 4) { float f; uint32_t u = (uint32_t) x; std::memcpy(&f, &u, 4); return f; }
+    int e = (int) ((x >> 10) & 0x1f);
+    double m = (double) (x & 0x3ff);
+    double v = e == 0 ? std::ldexp(m, -24) : e == 31 ? INFINITY : std::ldexp(m + 1024, e - 25);
+    return (x & 0x8000) ? -v : v;
 }
 
 std::string hex(uint64_t v, unsigned bytes) {
@@ -260,6 +279,14 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
             // worst distance and the count out of bound, not only the first.
             uint64_t worst = 0;
             size_t outside = 0;
+            double worstRel = 0;
+            // The scale a relative error is measured against.
+            double scale = 0;
+            if (shapes[i].isFloat)
+                for (size_t e = 0; e < n; ++e) {
+                    double v = std::fabs(floatValue(loadBits(want + off + e * eb, eb), eb));
+                    if (std::isfinite(v)) scale = std::max(scale, v);
+                }
             for (size_t e = 0; e < n; ++e) {
                 uint64_t x = loadBits(want + off + e * eb, eb);
                 uint64_t y = loadBits(got + off + e * eb, eb);
@@ -271,7 +298,10 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
                     same = nx && ny;
                     if (!nx && !ny) {
                         d = ulps(x, y, eb);
-                        same = d <= h.ulps;
+                        double err = std::fabs(floatValue(x, eb) - floatValue(y, eb));
+                        double rel = scale > 0 ? err / scale : (err > 0 ? INFINITY : 0);
+                        same = d <= h.ulps || (h.rel > 0 && rel <= h.rel);
+                        if (!same) worstRel = std::max(worstRel, rel);
                     }
                 }
                 if (same) continue;
@@ -281,8 +311,11 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
                     std::ostringstream os;
                     os << shapes[i].name << "[" << e << "]: the reference wrote " << hex(x, eb)
                        << ", the backend " << hex(y, eb);
-                    if (shapes[i].isFloat && d)
-                        os << " (" << d << " ulp, bound " << h.ulps << ")";
+                    if (shapes[i].isFloat && d) {
+                        os << " (" << d << " ulp, bound " << h.ulps;
+                        if (h.rel > 0) os << ", relative bound " << h.rel;
+                        os << ")";
+                    }
                     first = os.str();
                 }
                 if (!shapes[i].isFloat) break;
@@ -291,7 +324,7 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
                 std::ostringstream os;
                 os << "; worst ";
                 if (worst == ~(uint64_t) 0) os << "a NaN against a number";
-                else os << worst << " ulp";
+                else os << worst << " ulp, relative " << worstRel;
                 os << ", " << outside << " of " << n << " out of bound";
                 first += os.str();
             }
