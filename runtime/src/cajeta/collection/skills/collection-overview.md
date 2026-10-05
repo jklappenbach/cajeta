@@ -41,7 +41,7 @@ Negative rows — capabilities **not** here, so don't hunt for them:
 
 - **K/T type requirements depend on the structure:**
   - Hash-based (`HashMap`, `HashSet`, `ImmutableMap`, `ImmutableSet`) need **`K.hash()` + `==`**. Both primitive K (lowered to a `__cajeta_hash_X` intrinsic) and class K work, no boxing.
-  - Ordered (`RedBlackTree`, `BPlusTree`, `LtmBPlusTree`, `Heap`, `Sort` natural-order) need **`<` / `>`** on K. Primitive K works today; **class K needs `operator<`/`operator>` overloads, which don't link yet** (the v1 operator-overloading-through-templates limitation).
+  - Ordered (`RedBlackTree`, `BPlusTree`, `LtmBPlusTree`, `Heap`, `Sort` natural-order) need **`<`** on K. Primitive K compares natively, `String` orders by content (bytewise UTF-8, null first), and a class K defines `operator<` (`>`, `<=`, `>=` derive from it). A class with no `operator<` still compiles but compares addresses, so it orders arbitrarily.
   - `LinkedList`/`ImmutableList` need only `==`; `ArrayList` needs nothing of T.
 - **Class keys default to *identity*.** Class `hash()`/`==` are pointer identity, so two field-equal instances are different keys. Override **both** `hash()` and `==` for value-keyed semantics (planned `@AutoHash` will synthesize them); overriding only one breaks the bucket contract.
 - **Null-on-miss, NOT `Optional`.** Class-typed `get`/`min`/`max`/`peek`/`pop`/`head`/`tail`/`keyAt` return the **raw value** — `null` for a class T, `0` for a primitive T — when absent or empty. They never throw and never wrap in `Optional`. Disambiguate "absent" from "present-but-null/zero" with `containsKey`/`contains`/`count`. **Exception:** `Cache.get` returns a real `Optional<V>`.
@@ -90,7 +90,7 @@ xs.sort();                              // [1, 2, 3], in place
 
 Import per type, e.g. `import cajeta.collection.HashMap;` (`LtmBPlusTree` lives in the
 nested `cajeta.collection.ltm` package). Ordering-dependent types (`RedBlackTree`,
-`BPlusTree`, `Heap`, `Sort` natural order) are primitive-K-only until class operator
-overloading lands. For per-class construction, method signatures, and ownership detail,
+`BPlusTree`, `Heap`, `Sort` natural order) take primitive, `String` and `operator<` class
+keys. For per-class construction, method signatures, and ownership detail,
 read the class source under `runtime/src/cajeta/collection/`; `Sort`/`Collector` carry the
 comparator and stream-collect contracts respectively.

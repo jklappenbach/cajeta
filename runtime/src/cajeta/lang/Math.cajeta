@@ -65,10 +65,9 @@ package cajeta.lang;
  * }
  * ```
  *
- * **v1 limitation (declared templates only):** the `T` bound on `max`/`min`/
- * `clamp` (`Comparable`) isn't enforced yet — the body uses `>`/`<`, which work
- * for built-in primitives but won't link for user classes until operator
- * overloading flows through method-level template specialization.
+ * **Limitation:** `max`/`min`/`clamp` take primitive `T` only. They lower to
+ * the integer min/max intrinsics, so a `String` or class `T` fails IR
+ * verification even when it defines `operator<`.
  *
  * @see docs/MaskSelect.md      branchless per-lane conditionals
  * @see docs/specification/lang/MethodLevelTemplate.md   the templating mechanism

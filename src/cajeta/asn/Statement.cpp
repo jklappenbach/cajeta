@@ -106,6 +106,7 @@ namespace cajeta {
                         auto& kids = vi->getChildren();
                         if (!kids.empty()) {
                             if (auto inner = dynamic_pointer_cast<Expression>(kids[0])) {
+                                cajetaSharpStoreArms(inner);
                                 auto mv = make_shared<MoveExpression>(
                                     vdCtx->variableInitializer()->getStart());
                                 mv->setSharpStore(true);

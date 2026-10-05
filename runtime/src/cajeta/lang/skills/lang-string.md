@@ -52,7 +52,8 @@ Transforms (return owned `#String`, allocate a fresh buffer):
 ## Ownership / lifecycle / equality
 
 - Transform results are **owned** (`#String`): bind to a local to take ownership. An owned `String` drops at scope end; in **owned** mode the drop chain frees `bytes`, in **view** mode it does not.
-- Equality is **content-based**. `String` does NOT override `operator==`; the value-equality semantics ride on the `hash()` override (FNV-1a over the bytes), which is enough for `HashMap`/`HashSet` keys. For an explicit byte-for-byte check call `equals(String)` directly.
+- Equality is **content-based**. `String` defines a null-safe `operator==` that delegates to `equals(String)`, and `hash()` covers the bytes, so `HashMap`/`HashSet` keys work.
+- Ordering is **content-based** too. `<`, `>`, `<=` and `>=` compare by `compareTo` (unsigned bytewise, which is UTF-8 code-point order), and null orders before every String. Natural-order `Sort.sort<String>`, `RedBlackTree<String, V>` and `BPlusTree<String, V>` use them.
 - Immutable: no method mutates the receiver, so a `String` is freely shareable/reusable.
 
 ## Sharp edges (what it does NOT do)

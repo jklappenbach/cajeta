@@ -120,7 +120,7 @@ public class Channel<T> {
             Cajeta.lockRelease(this.handle);
             return stack Optional<T>(false, none);
         }
-        T item = this.buf[this.head];
+        T item #= this.buf[this.head];
         this.head = (this.head + 1) % this.capacity;
         this.size = this.size - 1;
         Cajeta.condvarNotifyAll(this.cond);
@@ -153,7 +153,7 @@ public class Channel<T> {
             Cajeta.lockRelease(this.handle);
             return stack Optional<T>(false, none);
         }
-        T item = this.buf[this.head];
+        T item #= this.buf[this.head];
         this.head = (this.head + 1) % this.capacity;
         this.size = this.size - 1;
         Cajeta.condvarNotifyAll(this.cond);

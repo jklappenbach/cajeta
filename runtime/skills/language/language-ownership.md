@@ -53,6 +53,9 @@ the source actually holds, so a **lent source records a BORROW** and is not
 moved. It makes no claim of title, is therefore always safe, and is the
 correct spelling for a deliberate non-owning alias — an intrusive link, a
 back-pointer, a view handle. `Cache`'s LRU links use it for exactly that.
+From a conditional, `dst #= c ? a : b` acts on the arm that runs: that
+arm's title moves, a lent arm records a borrow, and the other arm keeps its
+title.
 
 ## Keeping a value in a field or slot
 

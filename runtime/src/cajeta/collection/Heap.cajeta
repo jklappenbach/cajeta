@@ -12,10 +12,8 @@ package cajeta.collection;
  * ## Ordering
  *
  * Element order comes from the `<` operator on `T`, exactly like
- * `cajeta.lang.Math.min` / `max`. Primitive T (int*, float, …) uses
- * the built-in comparison and works today. Class T needs an
- * `operator<` overload; that links once operator overloading flows
- * through template specializations (same v1 limitation Math notes).
+ * `cajeta.lang.Math.min` / `max`. Primitive T compares natively,
+ * `String` orders by content, and a class T defines `operator<`.
  * For a max-heap, wrap values in a type whose `<` is reversed.
  *
  * ## v1 surface

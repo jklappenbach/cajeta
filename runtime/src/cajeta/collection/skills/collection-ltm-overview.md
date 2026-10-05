@@ -84,8 +84,9 @@ lookups with `containsKey(key)` first — there is no `Optional`-style result.
 ## Ordering & key-type limits
 
 Keys are ordered by `<` / `>` on `K` (like `cajeta.collection.BPlusTree` and
-`cajeta.lang.Math`). Primitive `K` works today; a class `K` must define `operator<` /
-`operator>` — the v1 limitation. Equality is derived as `!(a<b) && !(b<a)`.
+`cajeta.lang.Math`). Primitive `K` compares natively, `String` orders by content, and a
+class `K` defines `operator<`. A `K` also needs an `Encoder<K>` for its pages. Equality
+is derived as `!(a<b) && !(b<a)`.
 
 ## How the pieces collaborate (internal flow)
 

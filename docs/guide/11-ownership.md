@@ -50,7 +50,9 @@ Point r #= p;     // ERROR — CAJETA_ERROR_MOVE_OF_BORROW
 - **A store** — `Point c #= a`, `this.held #= v`, `this.data[i] #= v`. The
   destination records the source's mode. It takes the title when the source
   owns one, and it records a borrow when the source was lent. `#=` is one
-  token: an ownership store cannot be half-written.
+  token: an ownership store cannot be half-written. From a conditional,
+  `this.data[i] #= lt ? a : b` acts on the arm that runs. That arm's title
+  moves, a lent arm records a borrow, and the other arm keeps its title.
 - **A move expression** — `this.consume(#a)`, `return #a`, `#this.data[i]`.
   The source is moved; its drop entry is deactivated. This is the spelling at
   call arguments, returns, and slot extractions — none of which are

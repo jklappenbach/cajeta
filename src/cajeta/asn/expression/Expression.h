@@ -617,6 +617,9 @@ namespace cajeta {
     bool cajetaRhsCarriesRedundantSharp(
         CajetaParser::ExpressionContext* rhs);
 
+    // `x #= c ? a : b` stores as `#=` from each arm: wraps every leaf arm in a mode-carrying move.
+    void cajetaSharpStoreArms(const ExpressionPtr& rhs);
+
     // The leaf-arm walk over both conditional kinds; out of the class because it needs SwitchExpression complete.
     template <class F>
     void BooleanSwitchExpression::forEachLeafArm(const ExpressionPtr& e, F&& fn) {

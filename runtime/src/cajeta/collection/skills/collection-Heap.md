@@ -77,11 +77,10 @@ An exception-throwing variant is deferred until the error model lands.
 Element order comes from the `<` operator on `T`, exactly like
 `cajeta.lang.Math.min`/`max`.
 
-- **Primitive `T`** (`int32`, `int64`, `float`, …) works today via built-in
-  comparison.
-- **Class `T`** needs an `operator<` overload, which does not yet link through
-  template specializations (the v1 limitation `Math` documents) — so a class
-  element compiles but won't order correctly until that lands.
+- **Primitive `T`** (`int32`, `int64`, `float`, …) compares natively.
+- **`String` T** orders by content: bytewise UTF-8, null first.
+- **Class `T`** defines `operator<`. A class with no `operator<` still
+  compiles, but compares addresses and orders arbitrarily.
 
 ## What it does NOT do
 

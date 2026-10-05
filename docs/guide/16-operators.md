@@ -14,6 +14,11 @@ comparisons `== != < > <= >=`, unary `-` and `+`, instance `++ --`, and
 function call can't preserve short-circuit evaluation. Unary `!` and `~`
 are specified but do not compile yet (roadmap).
 
+`String` defines `==` by content and `< > <= >=` by `compareTo`, bytewise
+UTF-8 order with null first. So ordered code written with `<`, such as
+`Sort.sort<T>` or `RedBlackTree<K, V>`, takes String keys as it takes
+primitives.
+
 ## Static operators
 
 ```cajeta

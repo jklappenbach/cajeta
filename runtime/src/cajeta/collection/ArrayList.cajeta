@@ -357,13 +357,8 @@ public final class ArrayList<T> {
      * xs.sort();                    // [1, 2, 3]
      * ```
      *
-     * OWNERSHIP CAVEAT: sorting permutes elements WITHOUT their ownership
-     * bits. A list may hold any mix of lent and transferred slots (the
-     * stores record whichever mode the caller tendered), and `#[]`
-     * extraction clears a bit, so the bits are NOT uniform in general and
-     * sorting would attach them to the wrong slots (leak + double free).
-     * Only sort a list whose elements were all added in the same mode and
-     * never extracted.
+     * Each element keeps its own mode: a lent element stays lent and a
+     * transferred one stays owned by the list, whatever the mix.
      */
     public void sort() {
         Sort.sort<T>(this.data, this.sizeCount);
@@ -371,8 +366,8 @@ public final class ArrayList<T> {
 
     /**
      * Sort the live elements in place into ascending natural order, **stable**
-     * (merge sort — equal elements keep their input order). Same ownership
-     * caveat as `sort()`. See {@link cajeta.collection.Sort}.
+     * (merge sort — equal elements keep their input order). Each element
+     * keeps its own mode, as in `sort()`. See {@link cajeta.collection.Sort}.
      */
     public void sortStable() {
         Sort.sortStable<T>(this.data, this.sizeCount);

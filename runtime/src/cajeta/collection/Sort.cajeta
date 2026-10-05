@@ -15,9 +15,8 @@ package cajeta.collection;
  * interface (templated-interface vtable dispatch is still maturing — see
  * `Comparable`'s toolchain note). Every algorithm here is implemented **once**
  * against a comparator; the natural-order entry points are thin wrappers that
- * pass a `<`/`>`-based comparator, so primitive `T` works today and class `T`
- * works once operator overloading flows through template specialization (the
- * same v1 limitation `Heap` / `RedBlackTree` note).
+ * pass a `<`/`>`-based comparator, so they take primitive `T`, `String`, and a
+ * class `T` that defines `operator<`.
  *
  * ## `kind` (numpy parity)
  * - `sort` — **unstable**, fast: an in-place quicksort (middle-element pivot,
@@ -435,10 +434,10 @@ public class Sort {
         while (cur < end) {
             int32 sift = cur;
             if (a[sift] < a[sift - 1]) {
-                T tmp = a[sift];
+                T tmp #= a[sift];
                 boolean go = true;
                 while (go) {
-                    a[sift] = a[sift - 1];
+                    a[sift] #= a[sift - 1];
                     sift = sift - 1;
                     if (sift == begin) {
                         go = false;
@@ -446,7 +445,7 @@ public class Sort {
                         go = false;
                     }
                 }
-                a[sift] = tmp;
+                a[sift] #= tmp;
             }
             cur = cur + 1;
         }
@@ -564,15 +563,15 @@ public class Sort {
         if (len == 0) {
             return 0;
         }
-        T gapValue = a[s];
+        T gapValue #= a[s];
         int32 gapPos = s;
         int32 numLt = 0;
         int32 right = s + 1;
         while (right < e) {
             boolean lt = a[right] < pivot;
             int32 left = s + numLt;
-            a[gapPos] = a[left];
-            a[left] = a[right];
+            a[gapPos] #= a[left];
+            a[left] #= a[right];
             gapPos = right;
             numLt = numLt + (lt ? 1 : 0);
             right = right + 1;
@@ -580,8 +579,8 @@ public class Sort {
         // Close the cycle: the held-out first element re-enters at the gap.
         boolean lt2 = gapValue < pivot;
         int32 left2 = s + numLt;
-        a[gapPos] = a[left2];
-        a[left2] = gapValue;
+        a[gapPos] #= a[left2];
+        a[left2] #= gapValue;
         numLt = numLt + (lt2 ? 1 : 0);
         return numLt;
     }
@@ -594,23 +593,23 @@ public class Sort {
         if (len == 0) {
             return 0;
         }
-        T gapValue = a[s];
+        T gapValue #= a[s];
         int32 gapPos = s;
         int32 numLt = 0;
         int32 right = s + 1;
         while (right < e) {
             boolean le = !(pivot < a[right]);
             int32 left = s + numLt;
-            a[gapPos] = a[left];
-            a[left] = a[right];
+            a[gapPos] #= a[left];
+            a[left] #= a[right];
             gapPos = right;
             numLt = numLt + (le ? 1 : 0);
             right = right + 1;
         }
         boolean le2 = !(pivot < gapValue);
         int32 left2 = s + numLt;
-        a[gapPos] = a[left2];
-        a[left2] = gapValue;
+        a[gapPos] #= a[left2];
+        a[left2] #= gapValue;
         numLt = numLt + (le2 ? 1 : 0);
         return numLt;
     }
@@ -743,11 +742,11 @@ public class Sort {
     public static void pdqSwapIfLess<T>(T[] a, int32 base, int32 i, int32 j) {
         int32 ai = base + i;
         int32 aj = base + j;
-        T va = a[ai];
-        T vb = a[aj];
+        T va #= a[ai];
+        T vb #= a[aj];
         boolean lt = vb < va;
-        a[ai] = lt ? vb : va;
-        a[aj] = lt ? va : vb;
+        a[ai] #= lt ? vb : va;
+        a[aj] #= lt ? va : vb;
     }
 
     // Optimal 9-element sorting network (Bert Dobbelaere). Sorts a[base..base+9).
@@ -848,11 +847,11 @@ public class Sort {
         int32 i = s + presorted;
         while (i < e) {
             if (a[i] < a[i - 1]) {
-                T tmp = a[i];
+                T tmp #= a[i];
                 int32 sift = i;
                 boolean go = true;
                 while (go) {
-                    a[sift] = a[sift - 1];
+                    a[sift] #= a[sift - 1];
                     sift = sift - 1;
                     if (sift == s) {
                         go = false;
@@ -860,7 +859,7 @@ public class Sort {
                         go = false;
                     }
                 }
-                a[sift] = tmp;
+                a[sift] #= tmp;
             }
             i = i + 1;
         }
@@ -882,12 +881,12 @@ public class Sort {
         int32 i = 0;
         while (i < h) {
             boolean isU = !(a[right] < a[left]);
-            scratch[dst] = isU ? a[left] : a[right];
+            scratch[dst] #= isU ? a[left] : a[right];
             right = right + (isU ? 0 : 1);
             left = left + (isU ? 1 : 0);
             dst = dst + 1;
             boolean isD = !(a[rightRev] < a[leftRev]);
-            scratch[dstRev] = isD ? a[rightRev] : a[leftRev];
+            scratch[dstRev] #= isD ? a[rightRev] : a[leftRev];
             rightRev = rightRev - (isD ? 1 : 0);
             leftRev = leftRev - (isD ? 0 : 1);
             dstRev = dstRev - 1;
@@ -895,11 +894,11 @@ public class Sort {
         }
         if ((len % 2) != 0) {
             boolean leftNonempty = left < (leftRev + 1);
-            scratch[dst] = leftNonempty ? a[left] : a[right];
+            scratch[dst] #= leftNonempty ? a[left] : a[right];
         }
         int32 k = 0;
         while (k < len) {
-            a[begin + k] = scratch[k];
+            a[begin + k] #= scratch[k];
             k = k + 1;
         }
     }
@@ -980,7 +979,7 @@ public class Sort {
                         stE[sp] = re;
                         stLim[sp] = limit;
                         stHasAnc[sp] = 1;
-                        stAnc[sp] = pivotVal;
+                        stAnc[sp] #= pivotVal;
                         sp = sp + 1;
                         end = le;
                     } else {
@@ -988,7 +987,7 @@ public class Sort {
                         stE[sp] = le;
                         stLim[sp] = limit;
                         stHasAnc[sp] = hasAnc ? 1 : 0;
-                        stAnc[sp] = anc;
+                        stAnc[sp] #= anc;
                         sp = sp + 1;
                         begin = rb;
                         anc = pivotVal;
@@ -1097,7 +1096,7 @@ public class Sort {
                         stE[sp] = re;
                         stLim[sp] = limit;
                         stHasAnc[sp] = 1;
-                        stAnc[sp] = pivotVal;
+                        stAnc[sp] #= pivotVal;
                         sp = sp + 1;
                         end = le;
                     } else {
@@ -1105,7 +1104,7 @@ public class Sort {
                         stE[sp] = le;
                         stLim[sp] = limit;
                         stHasAnc[sp] = hasAnc ? 1 : 0;
-                        stAnc[sp] = anc;
+                        stAnc[sp] #= anc;
                         sp = sp + 1;
                         begin = rb;
                         anc = pivotVal;

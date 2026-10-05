@@ -172,6 +172,13 @@ a field or slot is a compile-time error. The fix is to spell the formal `^T`.
   only if that holder escapes or is not the frame's own. A holder bound from
   a parameter, a field read or a call is not the frame's own, so a store into
   it is a field store.
+- **4.2.11** When `dst #= c ? a : b` runs, the store acts as `#=` from the
+  arm that ran. That arm's title moves, a lent arm records a borrow, and
+  the other arm keeps its title. Two conditionals on one test can swap two
+  owned locals or slots without a branch.
+- **4.2.12** When a natural-order or comparator sort permutes an array, each
+  element keeps its own mode. A sort neither frees nor leaks, whatever mix of
+  lent and owned elements the array holds.
 
 ## 5. String fields
 

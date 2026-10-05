@@ -221,14 +221,12 @@ void expectRejected(const std::string& src, const std::string& code) {
 
 } // namespace
 
-// `r.other #= c ? r.name : "-"`: both arms are borrows, so the field must
-// RESOLVE its own wrapper (a copy / static alias), never adopt r.name's. The
-// overwrite that follows frees whatever the field holds — with the bug that
-// was r.name's wrapper.
+// `r.other #= c ? lent : "-"`: both arms are borrows, so the field must RESOLVE its own
+// wrapper (a copy or static alias), never adopt the lender's.
 TEST(TernaryOwnershipTests, sharpStoreOfBorrowArmsResolvesTheString) {
     std::string src = std::string(PRE2) +
-        "    static int32 probe(Rec r, boolean c) {\n"
-        "        r.other #= c ? r.name : \"-\";\n"
+        "    static int32 probe(Rec r, ^String lent, boolean c) {\n"
+        "        r.other #= c ? lent : \"-\";\n"
         "        r.other #= \"fresh\" + 1;\n"
         "        return r.other.byteLength();\n"
         "    }\n"
@@ -238,8 +236,8 @@ TEST(TernaryOwnershipTests, sharpStoreOfBorrowArmsResolvesTheString) {
         "        int64 l0 = Cajeta.liveCount();\n"
         "        int32 i = 0;\n"
         "        while (i < 64) {\n"
-        "            A.probe(r, true);\n"
-        "            A.probe(r, false);\n"
+        "            A.probe(r, r.name, true);\n"
+        "            A.probe(r, r.name, false);\n"
         "            i = i + 1;\n"
         "        }\n"
         "        if (!r.name.equals(\"hello1\")) { return 1; }\n"
@@ -253,11 +251,11 @@ TEST(TernaryOwnershipTests, sharpStoreOfBorrowArmsResolvesTheString) {
 }
 
 // Mixed arms into a `#=` field store: the concat transfers as-is when
-// taken, the field read resolves a copy when taken; r.name survives both.
+// taken, the lent arm resolves a copy when taken; r.name survives both.
 TEST(TernaryOwnershipTests, sharpStoreOfMixedArmsTakesOnlyTheFreshString) {
     std::string src = std::string(PRE2) +
-        "    static int32 probe(Rec r, boolean c) {\n"
-        "        r.other #= c ? (\"x\" + 7) : r.name;\n"
+        "    static int32 probe(Rec r, ^String lent, boolean c) {\n"
+        "        r.other #= c ? (\"x\" + 7) : lent;\n"
         "        return r.other.byteLength();\n"
         "    }\n"
         "    public static int32 run() {\n"
@@ -265,10 +263,10 @@ TEST(TernaryOwnershipTests, sharpStoreOfMixedArmsTakesOnlyTheFreshString) {
         "        r.name #= \"hello\" + 1;\n"
         "        int64 l0 = Cajeta.liveCount();\n"
         "        int32 i = 0;\n"
-        "        while (i < 64) { A.probe(r, true); i = i + 1; }\n"
+        "        while (i < 64) { A.probe(r, r.name, true); i = i + 1; }\n"
         "        if (Cajeta.liveCount() != l0 + 1) { return 3; }\n"
         "        i = 0;\n"
-        "        while (i < 64) { A.probe(r, false); i = i + 1; }\n"
+        "        while (i < 64) { A.probe(r, r.name, false); i = i + 1; }\n"
         "        if (!r.name.equals(\"hello1\")) { return 4; }\n"
         "        if (Cajeta.liveCount() != l0 + 1) { return 5; }\n"
         "        return 0;\n"
@@ -326,12 +324,12 @@ TEST(TernaryOwnershipTests, sharpStoreOfMixedArmsClassOwnsOnlyTheFreshCell) {
            "at drop); 13 = the borrowed cell was freed";
 }
 
-// `String s #= c ? ("x" + 7) : r.name` — the `#=` declaration is the same
+// `String s #= c ? ("x" + 7) : lent` — the `#=` declaration is the same
 // mode-carrying wrapper as the field store; it owns only the fresh arm.
 TEST(TernaryOwnershipTests, sharpDeclarationFromMixedArmsOwnsOnlyTheFreshString) {
     std::string src = std::string(PRE2) +
-        "    static int32 probe(Rec r, boolean c) {\n"
-        "        String s #= c ? (\"x\" + 7) : r.name;\n"
+        "    static int32 probe(Rec r, ^String lent, boolean c) {\n"
+        "        String s #= c ? (\"x\" + 7) : lent;\n"
         "        return s.byteLength();\n"
         "    }\n"
         "    public static int32 run() {\n"
@@ -339,10 +337,10 @@ TEST(TernaryOwnershipTests, sharpDeclarationFromMixedArmsOwnsOnlyTheFreshString)
         "        r.name #= \"hello\" + 1;\n"
         "        int64 l0 = Cajeta.liveCount();\n"
         "        int32 i = 0;\n"
-        "        while (i < 64) { A.probe(r, true); i = i + 1; }\n"
+        "        while (i < 64) { A.probe(r, r.name, true); i = i + 1; }\n"
         "        if (Cajeta.liveCount() != l0) { return 14; }\n"
         "        i = 0;\n"
-        "        while (i < 64) { A.probe(r, false); i = i + 1; }\n"
+        "        while (i < 64) { A.probe(r, r.name, false); i = i + 1; }\n"
         "        if (!r.name.equals(\"hello1\")) { return 15; }\n"
         "        if (Cajeta.liveCount() != l0) { return 16; }\n"
         "        return 0;\n"

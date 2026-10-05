@@ -296,7 +296,7 @@ public final class Cache<K, V> {
     @Inline
     void linkAtHead(^CacheNode<K, V> node) {
         node.prev = null;
-        node.next = this.mruHead;
+        node.next #= this.mruHead;
         if (this.mruHead != null) {
             this.mruHead.prev #= node;
         }
@@ -317,14 +317,14 @@ public final class Cache<K, V> {
     /** Detach `node` from the LRU list, mending head/tail and its neighbors. */
     void unlinkOnly(^CacheNode<K, V> node) {
         if (node.prev != null) {
-            node.prev.next = node.next;
+            node.prev.next #= node.next;
         } else {
-            this.mruHead = node.next;
+            this.mruHead #= node.next;
         }
         if (node.next != null) {
-            node.next.prev = node.prev;
+            node.next.prev #= node.prev;
         } else {
-            this.lruTail = node.prev;
+            this.lruTail #= node.prev;
         }
         node.prev = null;
         node.next = null;

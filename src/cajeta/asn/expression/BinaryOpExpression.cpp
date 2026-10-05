@@ -746,6 +746,27 @@ namespace cajeta {
     // Lowers every binary form: short-circuit `&&`/`||`, assignment and compound
     // assignment with the ownership bookkeeping a store implies, operator overloads,
     // matrix/vector/quaternion ops, String concatenation, and primitive arithmetic.
+    // Reports a plain `=` that stores a read into a title-bearing slot or field (CAJETA_PLAIN_STORE_AUDIT).
+    static void auditPlainStore(const CajetaModulePtr& module, const ExpressionPtr& lhs,
+                                const ExpressionPtr& rhs, int line) {
+        static const bool on = std::getenv("CAJETA_PLAIN_STORE_AUDIT") != nullptr;
+        if (!on || !lhs || !rhs) return;
+        if (lhs->kind() != ExprKind::ArrayIndex && lhs->kind() != ExprKind::Dot) return;
+        ExprKind rk = rhs->kind();
+        if (rk != ExprKind::Identifier && rk != ExprKind::Dot && rk != ExprKind::ArrayIndex) return;
+        if (!lhs->getResolvedType()) lhs->resolveTypes(module);
+        auto t = lhs->getResolvedType();
+        bool titled = (bool) dynamic_pointer_cast<CajetaArray>(t)
+            || (bool) dynamic_pointer_cast<CajetaFunctionType>(t);
+        if (auto cls = dynamic_pointer_cast<CajetaClass>(t)) titled = !cls->isValueType();
+        if (!titled) return;
+        auto m = module->getCurrentMethod();
+        std::cerr << "[plain-store] " << diagnosticSiteOf(*module).file << ":" << line << " "
+                  << (m ? m->getName() : std::string("?")) << " "
+                  << (lhs->kind() == ExprKind::ArrayIndex ? "slot" : "field") << " "
+                  << t->toCanonical() << "\n";
+    }
+
     llvm::Value* BinaryOpExpression::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         if (std::getenv("CAJETA_TRACE_BINOP") || std::getenv("CAJETA_DEBUG_ICMP")) {
@@ -757,6 +778,8 @@ namespace cajeta {
             rejectStaleGenerationUse(
                 module, dynamic_pointer_cast<Expression>(children[1]),
                 "the assigned variable");
+            auditPlainStore(module, dynamic_pointer_cast<Expression>(children[0]),
+                            dynamic_pointer_cast<Expression>(children[1]), (int) getSourceLine());
         }
 
         // Short-circuit ops evaluate rhs conditionally, ahead of the upfront-evaluate path.
@@ -1032,8 +1055,9 @@ namespace cajeta {
             }
             auto fwdDotLhs = dynamic_pointer_cast<DotExpression>(children[0]);
             auto fwdIdLhs = dynamic_pointer_cast<IdentifierExpression>(children[0]);
-            if ((fwdLhs || fwdDotLhs || fwdIdLhs) && fwdMv && !fwdMv->getChildren().empty()) {
-                auto srcNode = fwdMv->getChildren()[0];
+            auto markForwarding = [&](const std::shared_ptr<MoveExpression>& mv) {
+                if (!mv || mv->getChildren().empty()) return;
+                auto srcNode = mv->getChildren()[0];
                 bool srcIsSlot = dynamic_pointer_cast<ArrayIndexExpression>(srcNode) != nullptr
                     || dynamic_pointer_cast<DotExpression>(srcNode) != nullptr;
                 if (srcIsSlot) {
@@ -1048,8 +1072,18 @@ namespace cajeta {
                     if (fwdL && fwdS
                             && (fwdIdLhs || fwdBits(fwdL->getResolvedType()))
                             && fwdBits(fwdS->getResolvedType())) {
-                        fwdMv->setForwardingSlotMove(true);
+                        mv->setForwardingSlotMove(true);
                     }
+                }
+            };
+            if ((fwdLhs || fwdDotLhs || fwdIdLhs) && fwdMv && !fwdMv->getChildren().empty()) {
+                auto fwdInner = dynamic_pointer_cast<Expression>(fwdMv->getChildren()[0]);
+                if (fwdInner && fwdInner->kind() == ExprKind::BooleanSwitch) {
+                    BooleanSwitchExpression::forEachLeafArm(fwdInner, [&](const ExpressionPtr& arm) {
+                        if (isMoveKind(arm)) markForwarding(std::static_pointer_cast<MoveExpression>(arm));
+                    });
+                } else {
+                    markForwarding(fwdMv);
                 }
             }
         }

@@ -216,6 +216,29 @@ public final class String {
         return a.equals(b);
     }
 
+    /** Bytewise UTF-8 order by compareTo; null orders before every String. */
+    public static boolean operator< (String a, String b) { return String.order(a, b) < 0; }
+
+    /** Bytewise UTF-8 order by compareTo; null orders before every String. */
+    public static boolean operator> (String a, String b) { return String.order(a, b) > 0; }
+
+    /** Bytewise UTF-8 order by compareTo; null orders before every String. */
+    public static boolean operator<= (String a, String b) { return String.order(a, b) <= 0; }
+
+    /** Bytewise UTF-8 order by compareTo; null orders before every String. */
+    public static boolean operator>= (String a, String b) { return String.order(a, b) >= 0; }
+
+    /** compareTo's sign, with null ordered first. */
+    static int32 order(String a, String b) {
+        if (a == null) {
+            return b == null ? 0 : -1;
+        }
+        if (b == null) {
+            return 1;
+        }
+        return a.compareTo(b);
+    }
+
     /**
      * Raw byte at the given byte index, or 0 out of range. Byte-indexed;
      * codepoint access goes through `codepointAt`.

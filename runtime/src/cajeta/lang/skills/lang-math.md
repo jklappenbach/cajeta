@@ -88,11 +88,10 @@ fast-math flags). Opt-in; trades precision for speed.
 
 ## Sharp edges
 
-- **v1: primitives only.** The `Comparable` bound on `max`/`min`/`clamp` is not
-  enforced yet — the body uses `>`/`<`, which work for built-in numeric
-  primitives but **won't link for user-defined classes** until operator
-  overloading flows through method-level template specialization. Do not call
-  these on your own types yet.
+- **Primitives only.** `max`/`min`/`clamp` lower to the integer min/max
+  intrinsics, so a `String` or class `T` **fails IR verification** even though
+  String and a class with `operator<` order correctly everywhere else. Compare
+  with `<` directly for those types.
 - **`clamp` does not validate `lo <= hi`.** Swapped bounds give a meaningless
   result, no error.
 - **No instances, no overloads to construct.** Don't try `new Math()` or look

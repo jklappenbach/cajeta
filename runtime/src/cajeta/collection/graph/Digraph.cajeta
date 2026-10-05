@@ -9,12 +9,11 @@ import cajeta.lang.String;
  *
  * ## The shape: intern once, then dense `int32` ids everywhere
  *
- * Node payloads are surrendered to the graph exactly once (`intern(#N)`), and
- * every operation after that speaks dense ids. This is the design that fits
- * cajeta's ownership model: the graph is the single owner of its payloads, so
- * algorithms never touch ownership at all — they walk flat `int32[]` arrays
- * inside the engine. Consumers whose data already carries dense indices
- * should use [[IndexGraph]] directly and skip interning altogether.
+ * Node payloads are interned once (`intern(x)` lends, `intern(#x)` transfers),
+ * and every operation after that speaks dense ids. The graph holds each payload
+ * in the mode it was offered, so algorithms never touch ownership at all — they
+ * walk flat `int32[]` arrays inside the engine. Consumers whose data already
+ * carries dense indices should use [[IndexGraph]] directly and skip interning altogether.
  *
  * ## The N contract
  *
@@ -57,11 +56,11 @@ public class Digraph<N> {
     public int32 edgeCount() { return this.core.edgeCount(); }
 
     /**
-     * Add-or-get: the id of `node`, interning it when new. The payload is
-     * surrendered either way — when an equal node is already present, the
-     * offered one is consumed and dropped, and the existing id returns.
+     * Add-or-get: the id of `node`, interning it when new. `intern(x)` lends
+     * and `intern(#x)` transfers. When an equal node is already present the
+     * existing id returns, and a transferred offer is dropped.
      */
-    public int32 intern(#N node) {
+    public int32 intern(N node) {
         int64 h = node.hash();
         int32 found = this.scan(h, node);
         if (found >= 0) {
