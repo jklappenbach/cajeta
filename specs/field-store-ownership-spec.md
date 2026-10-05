@@ -46,8 +46,11 @@ compile time, every store that would dangle on every call.
 6. `=` never moves. There is no last-use move: storing an owned local is
    rule 3, spelled `#=`.
 7. A producer written in place takes the title with `=`: a literal, a
-   primitive, `null`, a `heap T(...)`, a call, or a String `+`. A local
-   binding `T b = a;` lends, and an argument `f(a)` lends.
+   primitive, `null`, a `heap T(...)`, a String `+`, or a call with a plain
+   `T` result, whose flag rides the return. A call with a `#T` result is
+   stored with `#=` (CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER, Julian
+   2026-10-05). A local binding `T b = a;` lends, and an argument `f(a)`
+   lends.
 8. A local holder that escapes (returned, stored, or passed with `#`) is a
    field for these rules. So is a holder that is not the frame's own, and a
    holder in an outer block that keeps an owned local from an inner block.
@@ -272,9 +275,10 @@ allocations, and read it back. The plan turns them into tests.
   `appendAll`, BPlusTree splits, ImmutableList, ImmutableSet). Proposed:
   rule 4 applies to `=` only, and an interior `#=` records what the slot
   held.
-- **9.5** Whether a store between slots of one formal array
-  (`need[j] = need[j + 1]`) is exempt. It permutes the caller's container
-  and keeps nothing new.
+- **9.5** DECIDED (Julian 2026-10-05): no exemption. A shift between slots
+  of one array is spelled `#=`, which moves the slot's title to its new
+  position (`this.keys[w] #= this.keys[r]`). With `=` the shifted slot would
+  borrow, and clearing the tail would free what it points at.
 - **9.6** DECIDED (Julian 2026-10-05, card 1): an escaping holder is a field
   (rule 8, use case 4.2.6). Background: stores into a local holder's field (`Node n = heap Node(); n.x = p;
   return #n;`): 117 in the stdlib. Proposed: a holder that escapes (returned,
@@ -284,10 +288,16 @@ allocations, and read it back. The plan turns them into tests.
   Channel's slots, the stream and reader constructors) compile under the
   rule but accept a `#x` that turns a borrow slot into an owner. Whether
   they move to `^T` in Unit 3 (agents/field-store-ownership-census.md).
-- **9.8** Whether `#=` of an owned window copies a small window. Measured
+- **9.8** DECIDED (Julian 2026-10-05): an owned window moves as is. Measured
   2026-10-05: `String w #= s.substring(10, 26); k.v #= w;` moves the window
   with its shared stake, so 16 bytes pin the 64 byte root. Only resolve, run
   for a lent source, applies the copy at 256 B or below. The old `=` path
   resolved every String store, which is why `=` looked like a last-use move.
-  Copying on the move adds a runtime call to every owned String `#=`. Decide
-  in Unit 6.
+  Copying on the move would add a runtime call to every owned String `#=`.
+  An independent copy is asked for explicitly (spec 9.9).
+- **9.9** How code asks for its own String once `=` borrows. Under
+  discussion with Julian, who raised `clone()`. Measured 2026-10-05:
+  `Object.clone()` on a String receiver is live and detaches. It copies the
+  bytes at any size (600 B cost 641 B, no stake) and the copy survives the
+  source. Its declared result is `#Object`, and `dst.v #= src.v.clone()`
+  compiles. The `lang-object` skill still calls it a stub returning null.
