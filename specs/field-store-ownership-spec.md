@@ -188,14 +188,23 @@ this spec. The runtime forms of a String stay invisible to the author:
   `heap`.
 
 A plain `=` into a String field records a borrow, as for every other type.
-The codegen that turns it into a move or a copy is removed. Code that relied
-on that is caught by sections 3 and 4 first.
+The codegen that turns it into a move or a copy is removed. Sections 3 and 4
+catch an owned source. A field read stored with `=` is a legal alias, so code
+that relied on the copy to outlive its source writes `#= x.clone()` (9.9).
 
 ### 5.2 Use cases
 
 - **5.2.1** When `void f(^String s) { this.v = s; }` runs, the field borrows
   `s` and no copy is made.
 - **5.2.2** When `this.v = "lit"` runs, the field borrows the static literal.
+- **5.2.3** When `this.v = o.v` runs, the field aliases `o.v` with no copy,
+  and dropping the holder leaves `o.v` intact.
+- **5.2.4** When `this.v #= o.v.clone()` runs, the field owns an independent
+  copy that outlives `o`.
+- **5.2.5** When `this.v = a + b` runs, the field owns the result, which
+  stays correct after the frame's arena resets.
+- **5.2.6** When a String slot is stored (`this.names[i] = s` with `^String
+  s`), the slot follows 5.2.1 to 5.2.5.
 
 ## 6. Diagnostics
 
@@ -295,8 +304,8 @@ allocations, and read it back. The plan turns them into tests.
   resolved every String store, which is why `=` looked like a last-use move.
   Copying on the move would add a runtime call to every owned String `#=`.
   An independent copy is asked for explicitly (spec 9.9).
-- **9.9** How code asks for its own String once `=` borrows. Under
-  discussion with Julian, who raised `clone()`. Measured 2026-10-05:
+- **9.9** DECIDED (Julian 2026-10-05): `clone()` is the copy. Code that
+  keeps its own String past the source writes `this.v #= o.v.clone()`. Measured 2026-10-05:
   `Object.clone()` on a String receiver is live and detaches. It copies the
   bytes at any size (600 B cost 641 B, no stake) and the copy survives the
   source. Its declared result is `#Object`, and `dst.v #= src.v.clone()`
