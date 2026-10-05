@@ -38,25 +38,21 @@ bool hasCode(const cajeta::DiagnosticEngine& eng, const std::string& code,
 
 }  // namespace
 
-// 4.1.8 — a local slice stored into an outliving field resolves silently;
-// the NOTE is reported (severity "note" — never an error) and compilation
-// succeeds.
+// 4.1.8: a `=` into a String with no title bit (a static) still resolves, and the NOTE is
+// reported (severity "note", never an error) while compilation succeeds.
 TEST(SliceLint, ResolvedStoreEmitsNote) {
     std::string src =
         "package test;\n"
         "public class Keep {\n"
-        "    public String v;\n"
-        "    public Keep(String v) {\n"
-        "        this.v #= v;\n"
-        "    }\n"
+        "    public static String v;\n"
+        "    public static void keep(^String w) { Keep.v = w; }\n"
         "}\n"
         "public final class Ut {\n"
         "    public static int32 run() {\n"
-        "        Keep k = heap Keep(\"\");\n"
         "        String s = \"abcdefghijklmnopqrstuvwxyz\";\n"
         "        String w #= s.substring(4, 20);\n"
-        "        k.v = w;\n"
-        "        return (int32) k.v.size();\n"
+        "        Keep.keep(w);\n"
+        "        return (int32) Keep.v.size();\n"
         "    }\n"
         "}\n";
     EngineScope scope;

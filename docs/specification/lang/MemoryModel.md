@@ -318,7 +318,7 @@ LIFO within a scope; inner scopes drop before outer. A borrow declared before it
 
   Rules 1 to 3, rule 4 for an owned local, rule 6 and rule 8 report `CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE`. Rule 4 for a `T` or `#T` formal reports `CAJETA_ERROR_INTERIOR_KEEP_NEEDS_BORROW_PARAM`. Spelling the formal `#T` is not a fix on its own, because a `#T` formal frees its argument at return and the field would dangle.
 
-  For a String, a `#=` of an owned window moves the window and its shared stake on the root. A lent window stored with `#=` resolves to a copy up to 256 bytes, or to a shared stake on the root above that. Frame-arena bytes always copy when they escape. A String `=` from a borrowed source still resolves the same way at run time today, rather than recording a plain borrow.
+  For a String, a `#=` of an owned window moves the window and its shared stake on the root. A lent window stored with `#=` resolves to a copy up to 256 bytes, or to a shared stake on the root above that. Frame-arena bytes always copy when they escape. A String `=` into a field is a plain borrow and makes no copy. To keep your own String past its source, write `this.v #= o.v.clone()`. A String array slot still copies on `=` until String arrays carry per-slot titles.
 
   | Store | Verdict |
   |---|---|

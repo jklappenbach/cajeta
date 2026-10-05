@@ -1910,6 +1910,7 @@ namespace cajeta {
             for (auto& m : modules) {
                 if (m && m != CajetaModule::getStdlibModule()) own.push_back(m);
             }
+            if (ownership::FieldStoreCensus::enabled()) ownership::FieldStoreCensus::run(own);
             ownership::FieldStoreCensus::check(own);
         });
 
