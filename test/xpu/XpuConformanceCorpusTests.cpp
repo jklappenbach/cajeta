@@ -248,3 +248,26 @@ TEST(XpuConformanceCorpus, floatsCompareWithinTheirStatedBound) {
                    "corpusScale")->outcome, "pass");
     fs::remove_all(dir);
 }
+
+// A float failure names the first element that disagrees, and also the worst
+// distance and how many elements are out of bound, so a bound can be stated
+// from one run.
+TEST(XpuConformanceCorpus, aFloatFailureReportsTheWorstDistance) {
+    std::vector<float> x = {1.0f, 3.0f, -2.5f, 0.1f};
+    float s = 1.75f;
+    std::vector<float> got(x.size());
+    for (size_t i = 0; i < x.size(); ++i) got[i] = x[i] * s;
+    got[1] = std::nextafter(got[1], 100.0f);
+    for (int n = 0; n < 5; ++n) got[3] = std::nextafter(got[3], 100.0f);
+    Kernels k;
+    fs::path dir = freshDir("worst");
+    handRecording(dir, x, s, got);
+    auto run = ref::runCorpus(k.all, dir.string(), "");
+    const ref::CorpusResult* r = only(run, "corpusScale");
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(r->outcome, "fail");
+    EXPECT_NE(r->detail.find("y[1]"), std::string::npos) << r->detail;
+    EXPECT_NE(r->detail.find("worst 5 ulp"), std::string::npos) << r->detail;
+    EXPECT_NE(r->detail.find("2 of 4 out of bound"), std::string::npos) << r->detail;
+    fs::remove_all(dir);
+}

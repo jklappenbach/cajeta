@@ -85,7 +85,7 @@ These are every built-in the interpreter defines.
 | `Wave.rotate(v, d)` | `v` from lane `(laneId + d) % W` |
 | `Wave.ballotSync(p)` | bit `i` is set when active lane `i` passes `p` |
 | `Wave.reduceSum/Max/Min/And/Or/Xor` | uint32, over the active lanes in lane order; sums wrap |
-| `Wave.reduceSumF32`, `reduceMaxF32` | an xor butterfly over the full width; inactive lanes contribute 0 or -inf |
+| `Wave.reduceSumF32`, `reduceMaxF32` | an xor butterfly over the full width, partners at distance 1, 2, 4 and up in that order; inactive lanes contribute 0 or -inf. nvptx and cpu sum in this order; amdgpu and SPIR-V use the device's own reduce, whose order is the driver's, so they carry a stated bound |
 | `Wave.prefixSum`, `prefixProduct` | exclusive scan in lane order, uint32 |
 | `Group.width`, `laneId`, `rowId` | `W`; `linear % W`; `Workgroup.x`, as int32 |
 | `Group.reduce(op, v)` | `Wave.reduceSumF32` for `GroupOp.Add`, `Wave.reduceMaxF32` for `GroupOp.Max` |

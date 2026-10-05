@@ -3213,12 +3213,13 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
         return;
     }
     if (q == "Wave.reduceSumF32" || q == "Wave.reduceMaxF32") {
-        // A butterfly over the full width, inactive lanes contributing the
-        // identity: the association every lane computes identically.
+        // A butterfly over the full width, partners at distance 1, 2, 4 ...
+        // W/2 in that order, as the shared lowering emits it; inactive lanes
+        // contribute the identity. Every lane computes the same association.
         bool sum = q == "Wave.reduceSumF32";
         std::vector<float> v(W, sum ? 0.0f : -std::numeric_limits<float>::infinity());
         for (auto& [l, m] : byLane) v[l] = (float) argOf(m).f;
-        for (uint32_t off = W / 2; off >= 1; off /= 2) {
+        for (uint32_t off = 1; off < W; off *= 2) {
             std::vector<float> nv(W);
             for (uint32_t l = 0; l < W; ++l)
                 nv[l] = sum ? v[l] + v[l ^ off] : std::fmax(v[l], v[l ^ off]);

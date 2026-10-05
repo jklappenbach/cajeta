@@ -126,6 +126,20 @@ llvm::Function* makeVariantShell(llvm::Module& m, const std::string& name,
 }
 
 // One wave op's width-W SIMD variants: an unmasked `_vW` and a masked `_Mv16`.
+// A float wave sum in the order every backend uses: an xor butterfly, where
+// each lane adds its partner at distance 1, 2, 4 ... W/2 (ReferenceInterpreter.md).
+// Addition commutes exactly, so every lane holds the same sum and lane 0 is
+// the result. An ordered vector reduce adds the lanes in lane order instead,
+// which differs in the last bits; the butterfly is also log2(W) steps, not W.
+llvm::Value* xorButterflySum(llvm::IRBuilder<>& b, llvm::Value* v, unsigned W) {
+    for (unsigned d = 1; d < W; d <<= 1) {
+        llvm::SmallVector<int, 64> mask;
+        for (unsigned i = 0; i < W; ++i) mask.push_back((int) (i ^ d));
+        v = b.CreateFAdd(v, b.CreateShuffleVector(v, v, mask, "wsum.partner"), "wsum.step");
+    }
+    return b.CreateExtractElement(v, b.getInt32(0), "wsum");
+}
+
 void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
                         unsigned W) {
     llvm::Function* scalar = m.getFunction(scalarName);
@@ -262,9 +276,7 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
         auto* vTy = llvm::FixedVectorType::get(f32, W);
         const bool isSum = scalarName == "__cajeta_xpu_wave_reduce_sum_f32";
         auto reduceOf = [&](llvm::IRBuilder<>& b, llvm::Value* x) -> llvm::Value* {
-            if (isSum)
-                return b.CreateFAddReduce(
-                    llvm::ConstantFP::get(f32, 0.0), x);
+            if (isSum) return xorButterflySum(b, x, W);
             return b.CreateFPMaxReduce(x);
         };
         llvm::Constant* ident = isSum
@@ -338,8 +350,7 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
         auto* vTy = llvm::FixedVectorType::get(f32, W);
         const bool isSum = base == "__cajeta_xpu_wave_reduce_sum_f32";
         auto reduceOf = [&](llvm::IRBuilder<>& b, llvm::Value* x) -> llvm::Value* {
-            if (isSum)
-                return b.CreateFAddReduce(llvm::ConstantFP::get(f32, 0.0), x);
+            if (isSum) return xorButterflySum(b, x, W);
             return b.CreateFPMaxReduce(x);
         };
         llvm::Constant* ident = isSum

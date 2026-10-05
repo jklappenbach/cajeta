@@ -256,6 +256,10 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
             const uint8_t* want = mem[al].data();
             const uint8_t* got = after[al].data();
             size_t n = (mem[al].size() - off) / eb;
+            // A float view is scanned to the end, so the report carries the
+            // worst distance and the count out of bound, not only the first.
+            uint64_t worst = 0;
+            size_t outside = 0;
             for (size_t e = 0; e < n; ++e) {
                 uint64_t x = loadBits(want + off + e * eb, eb);
                 uint64_t y = loadBits(got + off + e * eb, eb);
@@ -271,12 +275,25 @@ CorpusRun runCorpus(const std::vector<MethodPtr>& kernels, const std::string& re
                     }
                 }
                 if (same) continue;
+                ++outside;
+                worst = std::max<uint64_t>(worst, d ? d : ~(uint64_t) 0);
+                if (first.empty()) {
+                    std::ostringstream os;
+                    os << shapes[i].name << "[" << e << "]: the reference wrote " << hex(x, eb)
+                       << ", the backend " << hex(y, eb);
+                    if (shapes[i].isFloat && d)
+                        os << " (" << d << " ulp, bound " << h.ulps << ")";
+                    first = os.str();
+                }
+                if (!shapes[i].isFloat) break;
+            }
+            if (shapes[i].isFloat && outside) {
                 std::ostringstream os;
-                os << shapes[i].name << "[" << e << "]: the reference wrote " << hex(x, eb)
-                   << ", the backend " << hex(y, eb);
-                if (shapes[i].isFloat && d) os << " (" << d << " ulp, bound " << h.ulps << ")";
-                first = os.str();
-                break;
+                os << "; worst ";
+                if (worst == ~(uint64_t) 0) os << "a NaN against a number";
+                else os << worst << " ulp";
+                os << ", " << outside << " of " << n << " out of bound";
+                first += os.str();
             }
         }
         if (first.empty()) {

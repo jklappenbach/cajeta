@@ -953,3 +953,40 @@ TEST(XpuReferenceInterpreter, theCompiledPathAnswersAsTheWalkerDoes) {
     EXPECT_EQ(as<int32_t>(compiled[0].buf), as<int32_t>(walked[0].buf));
     EXPECT_EQ(as<uint32_t>(compiled[1].buf), as<uint32_t>(walked[1].buf));
 }
+
+// Wave.reduceSumF32 is an xor butterfly over the full width, on every
+// backend (ReferenceInterpreter.md). The cpu backend summed its whole-wave
+// form in lane order instead, which differs in the last bits whenever the
+// order matters; these inputs make it matter.
+TEST(XpuReferenceInterpreter, theFloatWaveSumIsAButterflyOnTheCpuBackend) {
+    Pair p(R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void refWaveSumF32(KernelBuffer<float32> out, KernelBuffer<float32> in) {
+        uint32 g = KernelThread.globalIdX();
+        out[g] = Wave.reduceSumF32(in[g]);
+    }
+)CJ", "refWaveSumF32");
+    ASSERT_EQ(p.failure, "");
+    const uint32_t N = 64;
+    std::vector<float> in(N);
+    for (uint32_t i = 0; i < N; ++i)
+        in[i] = i % 4 == 0 ? 1.0e8f : i % 4 == 2 ? -1.0e8f : 1.0f + 0.25f * (float) (i % 7);
+
+    // The instrument: on these inputs the two orders give different sums.
+    float inOrder = 0.0f;
+    for (uint32_t l = 0; l < 32; ++l) inOrder += in[l];
+    std::vector<float> acc(in.begin(), in.begin() + 32);
+    for (uint32_t d = 1; d < 32; d <<= 1) {
+        std::vector<float> next(32);
+        for (uint32_t l = 0; l < 32; ++l) next[l] = acc[l] + acc[l ^ d];
+        acc = next;
+    }
+    ASSERT_NE(inOrder, acc[0]) << "the inputs do not tell the two orders apart";
+
+    std::vector<In> ins = {buffer(std::vector<float>(N)), buffer(in)};
+    std::vector<In> r = ins;
+    ASSERT_EQ(runRef(p.kernel, r, shape(2, 32), 32), "");
+    EXPECT_EQ(as<float>(r[0].buf)[0], acc[0]);
+    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(2, 32), 0, 32), "");
+}
