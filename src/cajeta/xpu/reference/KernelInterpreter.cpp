@@ -248,6 +248,8 @@ struct Mem {
     uint64_t count = 0;
     Ty elem;
     bool shared = false;
+    // BlockPadded<T, Block, Pad>: element a lives at a + (a / padBlock) * pad.
+    uint64_t padBlock = 0, pad = 0;
     std::vector<uint8_t> written;   // shared only: which elements a work-item stored
     std::vector<uint8_t> own;       // shared only: the storage
     // Bumped by every store, so a memoized tile load from this memory is
@@ -529,12 +531,19 @@ BinaryOp compoundBase(BinaryOp op) {
 
 // ---- memory ----------------------------------------------------------------
 
-Val loadElem(Mem& m, uint64_t idx, const Where& where) {
+// The physical slot of logical element `idx`: padded tiles insert `pad`
+// elements after every `padBlock`, as the lowering lays them out.
+uint64_t physical(const Mem& m, uint64_t idx) {
+    return m.padBlock ? idx + (idx / m.padBlock) * m.pad : idx;
+}
+
+Val loadElem(Mem& m, uint64_t logical, const Where& where) {
+    uint64_t idx = physical(m, logical);
     if (idx >= m.count)
-        undefined("`" + m.name + "[" + std::to_string(idx) + "]` reads out of bounds (" +
+        undefined("`" + m.name + "[" + std::to_string(logical) + "]` reads out of bounds (" +
                   std::to_string(m.count) + " elements; " + where + ")");
     if (m.shared && !m.written[idx])
-        undefined("`" + m.name + "[" + std::to_string(idx) + "]` is read before any "
+        undefined("`" + m.name + "[" + std::to_string(logical) + "]` is read before any "
                   "work-item wrote it (" + where + ")");
     const uint8_t* p = m.data + idx * bytesOf(m.elem.prim);
     switch (m.elem.prim) {
@@ -550,9 +559,10 @@ Val loadElem(Mem& m, uint64_t idx, const Where& where) {
     }
 }
 
-void storeElem(Mem& m, uint64_t idx, const Val& v, const Where& where) {
+void storeElem(Mem& m, uint64_t logical, const Val& v, const Where& where) {
+    uint64_t idx = physical(m, logical);
     if (idx >= m.count)
-        undefined("`" + m.name + "[" + std::to_string(idx) + "]` writes out of bounds (" +
+        undefined("`" + m.name + "[" + std::to_string(logical) + "]` writes out of bounds (" +
                   std::to_string(m.count) + " elements; " + where + ")");
     Val c = convert(v, m.elem);
     uint8_t* p = m.data + idx * bytesOf(m.elem.prim);
@@ -592,7 +602,13 @@ int64_t constArg(const CajetaTypePtr& t, size_t i) {
 }
 
 bool isBuffer(const CajetaTypePtr& t) { return startsWith(canonical(t), "cajeta.xpu.KernelBuffer"); }
-bool isShared(const CajetaTypePtr& t) { return startsWith(canonical(t), "cajeta.xpu.Shared"); }
+// Shared<T> and BlockPadded<T, Block, Pad>, which is Shared with a padded layout.
+bool isBlockPadded(const CajetaTypePtr& t) {
+    return startsWith(canonical(t), "cajeta.xpu.BlockPadded");
+}
+bool isShared(const CajetaTypePtr& t) {
+    return startsWith(canonical(t), "cajeta.xpu.Shared") || isBlockPadded(t);
+}
 
 std::string simpleName(const std::shared_ptr<CajetaClass>& c) {
     std::string q = c ? c->toCanonical() : "";
@@ -1845,6 +1861,12 @@ private:
             slot->name = nm;
             slot->elem = *primOf(typeArg(t, 0));
             slot->shared = true;
+            if (isBlockPadded(t)) {
+                int64_t blk = constArg(t, 1), pad = constArg(t, 2);
+                if (blk <= 0 || pad < 0) refuse("the padded type " + canonical(t) + " (" + at(e) + ")");
+                slot->padBlock = (uint64_t) blk;
+                slot->pad = (uint64_t) pad;
+            }
             slot->count = count;
             slot->own.assign(count * bytesOf(slot->elem.prim), 0);
             slot->data = slot->own.data();

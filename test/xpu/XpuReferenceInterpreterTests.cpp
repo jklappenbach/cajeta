@@ -38,6 +38,7 @@ const char* kImports = R"CJ(
 package test;
 import cajeta.xpu.Barrier;
 import cajeta.xpu.Bits;
+import cajeta.xpu.BlockPadded;
 import cajeta.xpu.CooperativeMatrix;
 import cajeta.xpu.Group;
 import cajeta.xpu.GroupOp;
@@ -1030,4 +1031,46 @@ TEST(XpuReferenceInterpreter, theSegmentedFloatWaveSumIsABoundedButterfly) {
     for (uint32_t l = 0; l < 32; ++l) EXPECT_EQ(as<float>(r[0].buf)[l], acc[l]) << "lane " << l;
     EXPECT_NE(as<float>(r[0].buf)[0], as<float>(r[0].buf)[8]) << "segments were merged";
     EXPECT_EQ(compareOn<float>(p, ins, 0, shape(2, 32), 0, 32), "");
+}
+
+// BlockPadded<T, Block, Pad> is a Shared array whose element a lives at
+// physical a + (a / Block) * Pad; the declared size is the physical one. The
+// reference indexes logically, and the bound is on the physical slot, so a
+// logical index that lands in the padding past the end is out of bounds.
+TEST(XpuReferenceInterpreter, aBlockPaddedSharedArrayIndexesThroughItsPadding) {
+    Pair p(R"CJ(
+    @Kernel
+    public static void refPadded(KernelBuffer<int32> out, KernelBuffer<int32> in) {
+        BlockPadded<int32, 8, 1> t = shared int32[72];
+        uint32 l = KernelThread.x();
+        t[l] = in[l] * 3;
+        Barrier.workgroup();
+        out[l] = t[63 - l] + t[(l + 9) % 64];
+    }
+    @Kernel
+    public static void refPaddedOver(KernelBuffer<int32> out) {
+        BlockPadded<int32, 8, 1> t = shared int32[72];
+        uint32 l = KernelThread.x();
+        t[l] = 1;
+        if (l == 0) { t[64] = 1; }
+        Barrier.workgroup();
+        out[l] = t[l];
+    }
+)CJ", "refPadded");
+    ASSERT_EQ(p.failure, "");
+    std::vector<int32_t> in(64);
+    for (size_t i = 0; i < in.size(); ++i) in[i] = (int32_t) (i * 2654435761u >> 11);
+    std::vector<In> ins = {buffer(std::vector<int32_t>(64)), buffer(in)};
+    std::vector<In> r = ins;
+    ASSERT_EQ(runRef(p.kernel, r, shape(1, 64)), "");
+    for (uint32_t l = 0; l < 64; ++l)
+        EXPECT_EQ(as<int32_t>(r[0].buf)[l], in[63 - l] * 3 + in[(l + 9) % 64] * 3) << l;
+    EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(1, 64), 0), "");
+
+    auto over = findKernel(p.module, "test.M", "refPaddedOver");
+    ins = {buffer(std::vector<int32_t>(64))};
+    std::string why = runRef(over, ins, shape(1, 64));
+    EXPECT_EQ(why.rfind("XPU-REF02", 0), 0) << why;
+    EXPECT_NE(why.find("t[64]"), std::string::npos) << why;
+    EXPECT_NE(why.find("out of bounds"), std::string::npos) << why;
 }

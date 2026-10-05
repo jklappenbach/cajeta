@@ -36,7 +36,10 @@ argument is passed as its bits.
 - Memory is sequentially consistent, so `Barrier.workgroupMemory` and
   `Barrier.deviceMemory` order nothing.
 - Each `Shared<T>` declaration has one array per workgroup, which every
-  work-item of that workgroup binds.
+  work-item of that workgroup binds. A `BlockPadded<T, Block, Pad>` array is
+  the same with the backend's layout: element `a` lives at slot
+  `a + (a / Block) · Pad`, the declared size counts slots, and the bound is on
+  the slot, so a logical index that lands past the end is out of bounds.
 - A work-item's linear index is `x + y·dimX + z·dimX·dimY`.
 - Lane and wave come from the linear index and the wave width: the lane is
   `linear % W` and the wave is `linear / W`. Lanes that have returned are
@@ -126,7 +129,7 @@ list is not empty, `run` throws `XPU-REF01` with the first entry, so the kernel
 is never run partially. Today that list includes:
 
 - the epilogue tile verbs, such as `scaledAccumInto` and `fromWords`;
-- `WaveVector`, and padded or swizzled `Shared` arrays;
+- `WaveVector`, and swizzled `Shared` arrays;
 - textures, images and samplers;
 - value types;
 - `KernelThread.clock()`, which has no reference value by nature.
