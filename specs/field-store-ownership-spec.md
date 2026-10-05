@@ -38,12 +38,22 @@ compile time, every store that would dangle on every call.
 2. A `T` or `#T` formal that is kept is stored with `#=`.
 3. An owned local stored into a field or slot that outlives it is stored with
    `#=`.
-4. An interior read of a `T` or `#T` formal is never stored into a field with `=`. The
-   formal must be `^T`, so the caller keeps the root alive.
-5. `=` into a String field is a borrow, like every other type.
-6. Everything else about `=` is unchanged. A local binding `T b = a;` lends, an
-   argument `f(a)` lends, and a literal, a primitive, `null`, a `heap T(...)`
-   or a call written in place may be stored with `=`.
+4. A value read out of a `T` or `#T` formal, or out of an owned local, is never
+   stored into a field with `=`. For a formal, spell it `^T` so the caller
+   keeps the root alive. For either, `#=` takes the title the slot held.
+5. Strings follow every rule here, like every other type. `=` into a String
+   field is a borrow.
+6. `=` never moves. There is no last-use move: storing an owned local is
+   rule 3, spelled `#=`.
+7. A producer written in place takes the title with `=`: a literal, a
+   primitive, `null`, a `heap T(...)`, a call, or a String `+`. A local
+   binding `T b = a;` lends, and an argument `f(a)` lends.
+8. A local holder that escapes (returned, stored, or passed with `#`) is a
+   field for these rules. A holder that stays local is exempt.
+
+Principle (Julian 2026-10-05): where a dangling reference can be detected at
+compile time, detect it. Not everything can be. What matters most is that one
+spelling always means one thing.
 
 ### 1.3 Non-goals
 
@@ -53,6 +63,9 @@ compile time, every store that would dangle on every call.
 - A runtime check. Julian ruled it out. Every check in this spec is static.
 - `^T` anywhere else. It already exists on returns and is added on formals
   only. It is not a type, and it does not appear on locals or fields.
+- Aliasing a sibling field (`this.a = this.b`) and then replacing `b`. The
+  alias is a legal borrow. The replacement frees what it points at, and the
+  compiler does not track that (Julian 2026-10-05, card 7).
 
 ## 2. Borrow-only formals
 
@@ -138,10 +151,28 @@ a field or slot is a compile-time error. The fix is to spell the formal `^T`.
   compile-time error offering `^Block`.
 - **4.2.5** When a holder is itself a local that does not escape
   (`Holder h = stack Holder(); h.b = l;`), no error is reported.
+- **4.2.6** When a holder local escapes (`Node n = heap Node(); n.c = p;
+  return #n;` with `p` a `Cell` formal), the store is a compile-time error
+  offering `#=` or `^Cell`.
+- **4.2.7** When `Person o = Persons.load(); this.name = o.name;` is compiled,
+  it is a compile-time error offering `#=`.
+- **4.2.8** When `String w #= s.substring(1, 9); this.v = w;` is compiled with
+  `w` used for the last time, it is a compile-time error offering `#=`. No
+  hidden move is made.
 
 ## 5. String fields
 
 ### 5.1 Requirements
+
+Decided with Julian 2026-10-05 (cards 3, 5, 6): Strings follow every rule in
+this spec. The runtime forms of a String stay invisible to the author:
+
+- A `#=` of a window (`substring`, `trim`) gives the field something it owns:
+  a copy of a window up to 256 B, a shared stake on the root above that.
+- A frame-arena String stays an optimization. Any escape of arena bytes
+  copies, at any size.
+- A String `+` written in place on the right of `=` takes the title, like
+  `heap`.
 
 A plain `=` into a String field records a borrow, as for every other type.
 The codegen that turns it into a move or a copy is removed. Code that relied
@@ -234,7 +265,8 @@ allocations, and read it back. The plan turns them into tests.
 - **9.5** Whether a store between slots of one formal array
   (`need[j] = need[j + 1]`) is exempt. It permutes the caller's container
   and keeps nothing new.
-- **9.6** Stores into a local holder's field (`Node n = heap Node(); n.x = p;
+- **9.6** DECIDED (Julian 2026-10-05, card 1): an escaping holder is a field
+  (rule 8, use case 4.2.6). Background: stores into a local holder's field (`Node n = heap Node(); n.x = p;
   return #n;`): 117 in the stdlib. Proposed: a holder that escapes (returned,
   stored, or passed with `#`) counts as a field, and 4.2.5 covers the rest.
 - **9.7** DECIDED (Julian 2026-10-04): every documented borrow moves to `^T`
