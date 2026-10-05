@@ -267,9 +267,9 @@ public final class BPlusTree<K, V> {
             k = k + 1;
         }
         leaf.numKeys = mid;
-        right.next = leaf.next;
+        right.next #= leaf.next;
         leaf.next #= right;
-        right.parent = leaf.parent;
+        right.parent #= leaf.parent;
         // Copy-up: the separator equals the first key of the right leaf —
         // a routing BORROW (internal nodes never own; the leaf keeps the
         // key's title).
@@ -290,8 +290,8 @@ public final class BPlusTree<K, V> {
             this.nodes.add(#newRoot);
             newRoot.keys[0] #= sep;
             newRoot.numKeys = 1;
-            newRoot.children[0] = left;
-            newRoot.children[1] = right;
+            newRoot.children[0] #= left;
+            newRoot.children[1] #= right;
             left.parent #= newRoot;
             right.parent #= newRoot;
             this.root #= newRoot;
@@ -311,12 +311,12 @@ public final class BPlusTree<K, V> {
         parent.keys[i] #= sep;
         int32 c = parent.numKeys + 1;
         while (c > i + 1) {
-            parent.children[c] = parent.children[c - 1];
+            parent.children[c] #= parent.children[c - 1];
             c = c - 1;
         }
-        parent.children[i + 1] = right;
+        parent.children[i + 1] #= right;
         parent.numKeys = parent.numKeys + 1;
-        right.parent = parent;
+        right.parent #= parent;
 
         if (parent.numKeys > this.order) {
             this.splitInternal(parent);
@@ -341,12 +341,12 @@ public final class BPlusTree<K, V> {
         int32 c = 0;
         while (c <= right.numKeys) {
             BPlusTreeNode<K, V> child = node.children[mid + 1 + c];
-            right.children[c] = child;
+            right.children[c] #= child;
             child.parent #= right;
             c = c + 1;
         }
         node.numKeys = mid;
-        right.parent = node.parent;
+        right.parent #= node.parent;
         this.insertIntoParent(node, promote, right);
     }
 }

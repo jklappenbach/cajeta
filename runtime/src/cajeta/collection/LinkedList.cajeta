@@ -41,8 +41,8 @@ package cajeta.collection;
  * Heap-allocates one `LinkedListNode`<T> per insert. The list owns the
  * nodes. `add(v)` lends the value, which must outlive the list. `add(#v)`
  * hands the title to the node, and the value is freed with the list.
- * The pops' remove-shaped return reads the value field as it stands, so
- * it hands back a borrow (flag 0).
+ * The pops hand each value back in the mode the list held it: an owned
+ * value transfers to the caller, a lent one comes back as a borrow.
  */
 public final class LinkedList<T> {
 
@@ -115,7 +115,7 @@ public final class LinkedList<T> {
             this.headNode #= node;
             this.tailNode #= node;
         } else {
-            node.prev = this.tailNode;
+            node.prev #= this.tailNode;
             LinkedListNode<T> oldTail = this.tailNode;
             oldTail.next #= node;
             this.tailNode #= node;
@@ -241,7 +241,7 @@ public final class LinkedList<T> {
         if (prevNode != null) {
             node #= prevNode.next;
             prevNode.next = null;
-            this.tailNode = prevNode;
+            this.tailNode #= prevNode;
         } else {
             node #= this.headNode;
             this.headNode = null;
@@ -318,9 +318,9 @@ public final class LinkedList<T> {
                     }
                 }
                 if (cur.next != null) {
-                    cur.next.prev = cur.prev;
+                    cur.next.prev #= cur.prev;
                 } else {
-                    this.tailNode = cur.prev;
+                    this.tailNode #= cur.prev;
                 }
                 this.sizeCount = this.sizeCount - 1;
                 return true;

@@ -754,12 +754,15 @@ namespace cajeta {
         if (lhs->kind() != ExprKind::ArrayIndex && lhs->kind() != ExprKind::Dot) return;
         ExprKind rk = rhs->kind();
         if (rk != ExprKind::Identifier && rk != ExprKind::Dot && rk != ExprKind::ArrayIndex) return;
+        if (!lhs->getResolvedType()) lhs->resolveTypes(module);
         auto t = lhs->getResolvedType();
         bool titled = (bool) dynamic_pointer_cast<CajetaArray>(t)
             || (bool) dynamic_pointer_cast<CajetaFunctionType>(t);
         if (auto cls = dynamic_pointer_cast<CajetaClass>(t)) titled = !cls->isValueType();
         if (!titled) return;
+        auto m = module->getCurrentMethod();
         std::cerr << "[plain-store] " << diagnosticSiteOf(*module).file << ":" << line << " "
+                  << (m ? m->getName() : std::string("?")) << " "
                   << (lhs->kind() == ExprKind::ArrayIndex ? "slot" : "field") << " "
                   << t->toCanonical() << "\n";
     }

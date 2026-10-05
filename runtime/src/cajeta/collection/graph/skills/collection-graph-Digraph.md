@@ -22,8 +22,8 @@ analytics library is its intended heavy consumer.
 
 ## The shape: intern once, ids everywhere
 
-The graph is the **single owner** of its node payloads (`intern(#N)` — the
-`#` surrenders the value), and every operation after interning speaks dense
+The graph holds each node payload in the mode it was offered (`intern(x)`
+lends, `intern(#x)` transfers), and every operation after interning speaks dense
 `int32` ids over flat arrays. Adjacency is CSR (offsets + targets, built
 lazily by counting sort on the first query after a mutation), so traversal is
 cache-linear with no per-edge objects and no boxing — a representation a

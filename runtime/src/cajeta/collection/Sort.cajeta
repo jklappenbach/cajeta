@@ -980,7 +980,7 @@ public class Sort {
                         stE[sp] = re;
                         stLim[sp] = limit;
                         stHasAnc[sp] = 1;
-                        stAnc[sp] = pivotVal;
+                        stAnc[sp] #= pivotVal;
                         sp = sp + 1;
                         end = le;
                     } else {
@@ -988,7 +988,7 @@ public class Sort {
                         stE[sp] = le;
                         stLim[sp] = limit;
                         stHasAnc[sp] = hasAnc ? 1 : 0;
-                        stAnc[sp] = anc;
+                        stAnc[sp] #= anc;
                         sp = sp + 1;
                         begin = rb;
                         anc = pivotVal;
@@ -1097,7 +1097,7 @@ public class Sort {
                         stE[sp] = re;
                         stLim[sp] = limit;
                         stHasAnc[sp] = 1;
-                        stAnc[sp] = pivotVal;
+                        stAnc[sp] #= pivotVal;
                         sp = sp + 1;
                         end = le;
                     } else {
@@ -1105,7 +1105,7 @@ public class Sort {
                         stE[sp] = le;
                         stLim[sp] = limit;
                         stHasAnc[sp] = hasAnc ? 1 : 0;
-                        stAnc[sp] = anc;
+                        stAnc[sp] #= anc;
                         sp = sp + 1;
                         begin = rb;
                         anc = pivotVal;
