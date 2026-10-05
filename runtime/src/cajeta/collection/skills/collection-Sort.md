@@ -31,11 +31,10 @@ Every algorithm is implemented once against a comparator function value
 second, **zero** if equal, **positive** if after (same contract as
 `cajeta.lang.Comparable` — total, transitive, sign-symmetric). The
 natural-order overloads (no `cmp` arg) are thin wrappers that pass a `<`/`>`
-comparator. Because they rely on the `<`/`>` operators, primitive `T`
-(`int32`, `float32`, …) works today; **class `T` works only once operator
-overloading flows through template specialization** (the same v1 limit `Heap`
-and `RedBlackTree` note) — until then, pass an explicit comparator for class
-types.
+comparator. They work for primitive `T` (`int32`, `float32`, …), for `String`
+(bytewise UTF-8, null first), and for a class `T` that defines `operator<`. A
+class with no `operator<` still compiles but compares addresses, so pass an
+explicit comparator for it.
 
 ## Ownership & lifecycle
 

@@ -38,11 +38,11 @@ need `max()` or a textbook BST. Both are `O(log n)` put/get.
 Both order keys by the `<` / `>` operators on `K`, exactly like
 `cajeta.lang.Math.min`/`max`. Equality is "neither `<` nor `>`".
 
-- **Primitive `K`** (`int32`, `int64`, `float`, …) works today.
-- **Class `K`** needs `operator<` / `operator>` overloads. These do not yet
-  link through template specializations (the v1 limitation `Math` documents), so
-  a class key compiles but won't compare correctly until that lands. A class K
-  should keep "neither `<` nor `>`" consistent with its `==`.
+- **Primitive `K`** (`int32`, `int64`, `float`, …) compares natively.
+- **`String` K** orders by content: bytewise UTF-8, null first.
+- **Class `K`** defines `operator<`; `>`, `<=` and `>=` derive from it. A class
+  K should keep "neither `<` nor `>`" consistent with its `==`. A class with no
+  `operator<` still compiles, but compares addresses and orders arbitrarily.
 
 ## Usage — instantiate, put, query
 

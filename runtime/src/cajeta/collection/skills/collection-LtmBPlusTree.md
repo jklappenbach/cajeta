@@ -83,7 +83,8 @@ header, which is why a clean close is what makes persistence-across-reopen work.
 - **Mutable, single-owner, not thread/fiber-safe** — do not share one instance across
   fibers without external synchronization (it mutates an internal buffer pool).
 - Keys are ordered by `<` / `>` on `K`; equality is derived as `!(a<b) && !(b<a)`.
-  Primitive `K` works today; a class `K` must define `operator<` / `operator>` (v1 limit).
+  Primitive `K` compares natively, `String` orders by content, and a class `K` defines
+  `operator<`. A `K` also needs an `Encoder<K>` for its pages.
 - No exceptions are raised from the map operations themselves; misses return zero values.
   Failures surface from the underlying `LtmPager`/file I/O (see `cajeta/collection/ltm/LtmPager`).
 

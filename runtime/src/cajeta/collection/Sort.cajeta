@@ -15,9 +15,8 @@ package cajeta.collection;
  * interface (templated-interface vtable dispatch is still maturing — see
  * `Comparable`'s toolchain note). Every algorithm here is implemented **once**
  * against a comparator; the natural-order entry points are thin wrappers that
- * pass a `<`/`>`-based comparator, so primitive `T` works today and class `T`
- * works once operator overloading flows through template specialization (the
- * same v1 limitation `Heap` / `RedBlackTree` note).
+ * pass a `<`/`>`-based comparator, so they take primitive `T`, `String`, and a
+ * class `T` that defines `operator<`.
  *
  * ## `kind` (numpy parity)
  * - `sort` — **unstable**, fast: an in-place quicksort (middle-element pivot,

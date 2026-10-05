@@ -10,12 +10,10 @@ package cajeta.collection;
  * ## Ordering
  *
  * Comparison uses `<` and `>` on `K`, exactly like
- * `cajeta.lang.Math.min` / `max`. Primitive K (int*, float, …) works
- * today; class K needs `operator<` / `operator>` overloads, which
- * link once operator overloading flows through template
- * specializations (the v1 limitation Math documents). Equality is
- * "neither `<` nor `>`" — a class K should keep that consistent with
- * its `==`.
+ * `cajeta.lang.Math.min` / `max`. Primitive K compares natively,
+ * `String` orders by content, and a class K defines `operator<`.
+ * Equality is "neither `<` nor `>`" — a class K should keep that
+ * consistent with its `==`.
  *
  * ## v1 surface
  *
