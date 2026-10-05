@@ -381,6 +381,11 @@ namespace cajeta::ownership {
         walk(modules, [](const FieldStoreRecord& rec) {
             auto [code, message] = violation(rec);
             if (code.empty()) return;
+            if (enabled()) {
+                std::cerr << "[field-store-violation] " << rec.file << ":" << rec.line << ": "
+                          << code << " " << rec.className << "." << rec.methodName << "\n";
+                return;
+            }
             DiagnosticEngine* eng = DiagnosticEngine::active();
             if (eng && eng->collectsErrors()) {
                 eng->report("error", code, message, rec.file, rec.line, rec.column, rec.origin);
