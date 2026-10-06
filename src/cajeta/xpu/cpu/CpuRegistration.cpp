@@ -992,14 +992,24 @@ void foldWaveVariants(llvm::Function& f) {
 
         // Host TargetMachine, for LoopVectorize's TTI. Null is tolerated.
         std::unique_ptr<llvm::TargetMachine> hostTm = createCpuTargetMachine();
-        // The host's own wave, for @Unlowered(hostWaveBelow = N): the native
-        // f32 vector width with no per-kernel marker in play.
+        // The host's own wave, for @Unlowered(hostWaveBelow = N) and for
+        // Device.waveSize(): the native f32 vector width with no per-kernel
+        // marker in play. The probe is TUNED LIKE A KERNEL WRAPPER
+        // (tuneKernelWrapper, tune-cpu=generic since 6.4.12), because the
+        // width is a tuning question: on an AVX-512 part whose own tuning
+        // prefers 256-bit vectors (Intel Ice Lake, GitHub's ubuntu-latest)
+        // an untuned probe answered 8 while every wave kernel, read off its
+        // tuned wrapper, vectorized at 16. A launcher sizing its block from
+        // the 8 then launched 8 threads of a 16-wide kernel, which the scalar
+        // twin refusal reports (cajeta-cabra CI 37495815557, 2026-10-06) and
+        // which before it silently ran the wave ops at width 1.
         unsigned hostW = 0;
         {
             if (hostTm) {
                 llvm::Function* probe = llvm::Function::Create(
                     llvm::FunctionType::get(voidTy, false),
                     llvm::GlobalValue::InternalLinkage, "__cajeta_host_wave_probe", &hostModule);
+                tuneKernelWrapper(*probe);
                 hostW = cpuVectorWidthI32(hostTm.get(), *probe);
                 probe->eraseFromParent();
             }
