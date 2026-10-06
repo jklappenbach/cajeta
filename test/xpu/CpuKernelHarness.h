@@ -41,6 +41,10 @@ extern "C" void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
                                                       const char* arch,
                                                       const void* json,
                                                       uint64_t len);
+extern "C" void __cajeta_xpu_register_kernel_params(const char* name, int32_t count,
+                                                    const uint8_t* kind,
+                                                    const uint32_t* byteSize);
+extern "C" void __cajeta_xpu_cpu_scalar_twin(const char* kernel);
 
 namespace cajeta_test {
 
@@ -91,6 +95,9 @@ public:
         bind("__cajeta_xpu_register_kernel_manifest",
              (void*) &__cajeta_xpu_register_kernel_manifest);
         bind("__cajeta_xpu_set_cpu_wave", (void*) &__cajeta_xpu_set_cpu_wave);
+        bind("__cajeta_xpu_register_kernel_params",
+             (void*) &__cajeta_xpu_register_kernel_params);
+        bind("__cajeta_xpu_cpu_scalar_twin", (void*) &__cajeta_xpu_cpu_scalar_twin);
         if (auto err = JD.define(llvm::orc::absoluteSymbols(std::move(syms)))) {
             failure = llvm::toString(std::move(err));
             return nullptr;

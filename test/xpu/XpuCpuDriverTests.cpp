@@ -52,6 +52,9 @@ extern "C" void __cajeta_xpu_register_cpu_kernel(const char* name, void* fn);
 // Called by every cpu registration ctor since 225e90bc: the wave the kernels
 // were built at, which the runtime's cpu geometry reports.
 extern "C" void __cajeta_xpu_set_cpu_wave(int32_t lanes);
+extern "C" void __cajeta_xpu_register_kernel_params(const char* name, int32_t count,
+                                                    const uint8_t* kind,
+                                                    const uint32_t* byteSize);
 extern "C" void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
                                                       int32_t backend,
                                                       const char* arch,
@@ -136,6 +139,10 @@ std::unique_ptr<llvm::orc::LLJIT> registerKernel(Compiler& compiler,
     // failed this suite.
     syms[mangle("__cajeta_xpu_set_cpu_wave")] = llvm::orc::ExecutorSymbolDef(
         llvm::orc::ExecutorAddr::fromPtr(&__cajeta_xpu_set_cpu_wave),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
+    // And the param shapes the ctor registers since c3eee470, for the same reason.
+    syms[mangle("__cajeta_xpu_register_kernel_params")] = llvm::orc::ExecutorSymbolDef(
+        llvm::orc::ExecutorAddr::fromPtr(&__cajeta_xpu_register_kernel_params),
         llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
     if (auto err = JD.define(llvm::orc::absoluteSymbols(std::move(syms)))) {
         failure = llvm::toString(std::move(err));
