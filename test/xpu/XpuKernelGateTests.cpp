@@ -20,6 +20,7 @@
 #include "../PortableEnv.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
+#include "cajeta/xpu/nvidia/NvptxBackend.h"
 
 #include <cstdlib>
 #if !defined(_WIN32)
@@ -138,6 +139,9 @@ TEST(XpuKernelGate, anUnloweredKernelFailsTheBuildByName) {
 // backend, and the kernel beside it that lowers on both is not named.
 TEST(XpuKernelGate, aKernelThatLowersOnNoBackendFailsTheBuildOnEach) {
     if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    // Without ptxas the nvptx leg of the build has its own skip, not the
+    // gate's, and the lines this test reads are not written (proton, 2026-10-05).
+    if (cajeta::xpu::nvidia::findPtxas().empty()) GTEST_SKIP() << "ptxas not found";
     Built b = build(program(""), "cpu,nvptx");
     EXPECT_NE(b.rc, 0) << b.log;
     EXPECT_NE(b.log.find("[xpu-kernel-skipped] bad: no cpu device code"), std::string::npos)

@@ -1391,6 +1391,9 @@ TEST(XpuReferenceInterpreter, aMaskedLaneIndexSumsOverTheWaveOnCpu) {
         ASSERT_EQ(p.failure, "") << idx;
         EXPECT_EQ(compareOn<uint32_t>(p, maskInputs(), 0, shape(1, 32), 0, 32), "") << idx;
         EXPECT_EQ(compareOn<uint32_t>(p, maskInputs(), 0, shape(1, 64), 0, 32), "") << idx;
+        // A block of one work-item is a one-lane wave: the sum is the lane's
+        // own value, and that launch runs rather than being refused.
+        EXPECT_EQ(compareOn<uint32_t>(p, maskInputs(), 0, shape(1, 1), 0, 32), "") << idx;
     }
 }
 

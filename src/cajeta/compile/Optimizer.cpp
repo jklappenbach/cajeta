@@ -145,7 +145,9 @@ struct BlindLaneMasksPass : llvm::PassInfoMixin<BlindLaneMasksPass> {
 // Device.checkLaunch raises. The twin is then unreachable and deleted.
 struct RetireScalarTwinsPass : llvm::PassInfoMixin<RetireScalarTwinsPass> {
     std::string kernelName;
-    explicit RetireScalarTwinsPass(llvm::StringRef name) : kernelName(name.str()) {}
+    llvm::Value* blockX;
+    RetireScalarTwinsPass(llvm::StringRef name, llvm::Value* blockX)
+        : kernelName(name.str()), blockX(blockX) {}
     llvm::PreservedAnalyses run(llvm::Function& f, llvm::FunctionAnalysisManager& am);
 };
 
@@ -193,11 +195,28 @@ llvm::PreservedAnalyses RetireScalarTwinsPass::run(llvm::Function& f,
     for (llvm::Loop* L : twins) {
         llvm::BasicBlock* pre = L->getLoopPreheader();
         if (!pre) continue;
+        // The refusal block: the hook, then out of the wrapper.
+        auto* refuse = llvm::BasicBlock::Create(ctx, "wi.twin.refused", &f);
+        {
+            llvm::IRBuilder<> b(refuse);
+            b.CreateCall(hook, {b.CreateGlobalString(kernelName, "cajeta.twin.kernel")});
+            if (f.getReturnType()->isVoidTy()) b.CreateRetVoid();
+            else b.CreateUnreachable();
+        }
         llvm::Instruction* term = pre->getTerminator();
         llvm::IRBuilder<> b(term);
-        b.CreateCall(hook, {b.CreateGlobalString(kernelName, "cajeta.twin.kernel")});
-        if (f.getReturnType()->isVoidTy()) b.CreateRetVoid();
-        else b.CreateUnreachable();
+        if (blockX) {
+            // A block of one work-item along x is a one-lane wave, and every
+            // wave op on one lane IS its width-1 stub: a reduce is its input,
+            // a shuffle its own value, a ballot one bit. That twin may run.
+            // Any wider block that reaches the twin is a partial wave or a
+            // failed runtime check, and is refused.
+            llvm::Value* one = b.CreateICmpEQ(
+                blockX, llvm::ConstantInt::get(blockX->getType(), 1), "wi.one.lane");
+            b.CreateCondBr(one, L->getHeader(), refuse);
+        } else {
+            b.CreateBr(refuse);
+        }
         term->eraseFromParent();
         ++retired;
     }
@@ -474,7 +493,8 @@ void fuseFunction(llvm::Function& f, llvm::TargetMachine* tm) {
 }
 
 void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
-                       bool scalarizeVectorValues, llvm::StringRef kernelName) {
+                       bool scalarizeVectorValues, llvm::StringRef kernelName,
+                       llvm::Value* blockX) {
     if (f.isDeclaration()) return;
     PassEnv env(tm);
 
@@ -570,7 +590,8 @@ void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
     }
     llvm::FunctionPassManager post;
     if (waveKernel)
-        post.addPass(RetireScalarTwinsPass(kernelName.empty() ? f.getName() : kernelName));
+        post.addPass(RetireScalarTwinsPass(kernelName.empty() ? f.getName() : kernelName,
+                                           blockX));
     post.addPass(llvm::SLPVectorizerPass());
     post.addPass(llvm::InstCombinePass());
     post.addPass(llvm::SimplifyCFGPass());

@@ -1313,7 +1313,7 @@ void foldWaveVariants(llvm::Function& f) {
                     if (waveKernel) markWaveCallsConvergent(*wrapper);
                     if (waveKernel) markWorkItemLoopsParallel(*wrapper);
                     wavePre = waveOpCallCount(*wrapper);
-                    vectorizeFunction(*wrapper, hostTm.get(), waveKernel, entryName);
+                    vectorizeFunction(*wrapper, hostTm.get(), waveKernel, entryName, ntidX);
                     if (dbg) ctx.setDiagnosticHandler(std::move(saved));
                 }
                 if (waveKernel) {
@@ -1469,7 +1469,7 @@ void foldWaveVariants(llvm::Function& f) {
                 if (waveKernel) markWaveCallsConvergent(*wrapper);
                 if (waveKernel) markWorkItemLoopsParallel(*wrapper);
                 wavePre = waveOpCallCount(*wrapper);
-                vectorizeFunction(*wrapper, hostTm.get(), waveKernel, entryName);
+                vectorizeFunction(*wrapper, hostTm.get(), waveKernel, entryName, ntidX);
                 if (dbg) ctx.setDiagnosticHandler(std::move(saved));
             }
 

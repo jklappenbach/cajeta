@@ -8,6 +8,7 @@
 #include "llvm/ADT/StringRef.h"
 
 namespace llvm {
+    class Value;
     class Module;
     class Function;
     class TargetMachine;
@@ -47,9 +48,12 @@ namespace cajeta {
     // data-parallel cpu kernel keeps its vector values, where a
     // `Vector<float32,4>` is deliberate host SIMD.
     // `kernelName` names the kernel in the scalar-twin refusal; empty means the
-    // function's own name.
+    // function's own name. `blockX` is the wrapper's block width (ntid.x), an
+    // argument of `f`: a block of one work-item is a one-lane wave, and its
+    // scalar twin is allowed to run.
     void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
                            bool scalarizeVectorValues = false,
-                           llvm::StringRef kernelName = {});
+                           llvm::StringRef kernelName = {},
+                           llvm::Value* blockX = nullptr);
 
 } // namespace cajeta

@@ -425,8 +425,11 @@ alone). Two changes, both in `vectorizeFunction`:
   its preheader becomes a call to `__cajeta_xpu_cpu_scalar_twin` and a return from the block,
   the twin is deleted, and the launcher refuses the launch by name (reason 2,
   `Device.checkLaunch` raises). A partial tail wave is therefore a refused launch now, not a
-  width-1 result. A twin with no wave op in it is ordinary scalar code and stays, since a
-  region that only loops over a row is right at width 1 for a block of any size.
+  width-1 result. Two twins keep running: one with no wave op in it, ordinary scalar code
+  that is right at width 1 for a block of any size, and the twin of a block that is one
+  work-item wide, since a one-lane wave IS the width-1 stub (a reduce is its input, a
+  shuffle its own value, a ballot one bit), which `XpuGroupDevice.reduceAddEqualsSerialOnCpu`
+  relies on.
 
 The work-item loop also carries `llvm.loop.interleave.count` 1: left to its cost model
 LoopVectorize interleaved some regions four times, so their vector loop needed a 4W-wide
