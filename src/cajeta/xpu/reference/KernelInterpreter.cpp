@@ -2,6 +2,16 @@
 // docs/specification/xpu/ReferenceInterpreter.md for the semantics written
 // down. Nothing here calls into the lowering; the two meet only at the AST.
 
+// macOS hides the ucontext routines the fibers use unless these are set before any system header.
+#if defined(__APPLE__)
+#  ifndef _XOPEN_SOURCE
+#    define _XOPEN_SOURCE 600
+#  endif
+#  ifndef _DARWIN_C_SOURCE
+#    define _DARWIN_C_SOURCE 1
+#  endif
+#endif
+
 #include "KernelInterpreter.h"
 
 #include "../core/KernelArgTrait.h"
