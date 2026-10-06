@@ -4,9 +4,35 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/error/Exception.h"
 #include "../../type/CajetaClass.h"
+#include "../../type/CajetaConstantType.h"
 #include "../../type/StructureProperty.h"
 
 namespace cajeta {
+    namespace {
+    // A non-type parameter of the enclosing class instantiation (`Tile<uint32
+    // N>` read as `N` in a host method): its declared primitive and bound
+    // value, or false. Kernels read the same pair through the lowerer's
+    // templateConstant; a host method reads it here.
+    bool nonTypeParameterOf(CajetaModulePtr module, const string& name,
+                            string& primitive, int64_t& value) {
+        if (module->getStructureStack().empty()) return false;
+        auto klass = module->getStructureStack().back();
+        if (!klass) return false;
+        const auto& params = klass->getTypeParameters();
+        const auto& args = klass->getTypeArguments();
+        for (size_t i = 0; i < params.size() && i < args.size(); ++i) {
+            if (!params[i].isNonType || params[i].name != name) continue;
+            auto c = std::dynamic_pointer_cast<CajetaConstantType>(args[i]);
+            if (!c) return false;
+            primitive = params[i].nonTypePrimitive.empty() ? "int32"
+                                                           : params[i].nonTypePrimitive;
+            value = c->getValue();
+            return true;
+        }
+        return false;
+    }
+    } // namespace
+
     /// Pins resolvedType to the named field's type, from the active scope or,
     /// failing that, from a property of the enclosing class. A bare CLASS NAME
     /// deliberately stays unresolved; see the note at the end of the body.
@@ -25,7 +51,15 @@ namespace cajeta {
                 auto it = klass->getProperties().find(identifier);
                 if (it != klass->getProperties().end()) {
                     resolvedType = it->second->getType();
+                    return;
                 }
+            }
+        }
+        {
+            string prim; int64_t v;
+            if (nonTypeParameterOf(module, identifier, prim, v)) {
+                resolvedType = CajetaType::of(prim);
+                return;
             }
         }
         // A class-name identifier is deliberately left unresolved:
@@ -124,6 +158,17 @@ namespace cajeta {
                         "receiver ('this' not in scope) — qualify it or make the "
                         "field static", "CAJETA_ERROR_INSTANCE_FIELD_NO_RECEIVER");
                 }
+            }
+        }
+        // A non-type parameter of the instantiation is a constant, an rvalue.
+        {
+            string prim; int64_t v;
+            if (nonTypeParameterOf(module, identifier, prim, v)) {
+                CajetaTypePtr t = CajetaType::of(prim);
+                llvm::Type* lt = t ? t->getLlvmType() : nullptr;
+                if (!lt || !lt->isIntegerTy())
+                    lt = llvm::Type::getInt32Ty(*module->getLlvmContext());
+                return llvm::ConstantInt::get(lt, (uint64_t) v, /*isSigned=*/true);
             }
         }
         return nullptr;

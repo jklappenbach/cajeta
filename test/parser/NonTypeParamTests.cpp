@@ -78,3 +78,25 @@ TEST(NonTypeParamTests, constantArgForTypeParamRejected) {
         "}\n";
     EXPECT_ANY_THROW(runI32(src));
 }
+
+// A HOST method reads a non-type parameter as a constant (xpu-kernel-independence
+// 4.8.1.5): a static and an instance method of `Tile<uint32 N>` both answer N
+// (the static one called through an instance, as the grammar spells it).
+// Measured failing 2026-10-03 with CAJETA_ERROR_NULL_OPERAND: the name resolved
+// to nothing on the host, though kernels in the same class read it.
+TEST(NonTypeParamTests, aHostMethodReadsTheNonTypeParameter) {
+    auto src =
+        "package test;\n"
+        "public class Tile<uint32 N> {\n"
+        "    public static uint32 width() { return N; }\n"
+        "    public uint32 twice() { return N * 2; }\n"
+        "    public uint32 plus(uint32 k) { uint32 n = N; return n + k; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Tile<16> t = heap Tile<16>();\n"
+        "        return (int32) (t.width() + t.twice() + t.plus(1));\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 16 + 32 + 17);
+}

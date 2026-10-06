@@ -110,6 +110,7 @@ public:
     NounImpl accelImpl() const override { return NounImpl::SoftwareBvh; }
 
     unsigned allocaAddressSpace() const override { return 0; }
+    unsigned constantTableAddressSpace() const override { return 0; }
 
     llvm::Value* threadId(llvm::IRBuilderBase& b, llvm::Module&,
                           unsigned dim) override {

@@ -540,6 +540,7 @@ namespace cajeta {
         llvm::Value* runtimeTitleFlag = nullptr;
     public:
         const list<Case>& getCases() const { return cases; }
+        ExpressionPtr getDiscriminator() const { return discriminator; }
         llvm::Value* getRuntimeTitleFlag() const { return runtimeTitleFlag; }
         SwitchExpression(antlr4::Token* token,
                           ExpressionPtr discriminator,

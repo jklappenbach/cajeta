@@ -61,7 +61,8 @@ struct Entry {
 
 // The inventory. A plan item (`4.8.1.1`) is a refusal that closes; `never:`
 // names why a kind cannot apply to a kernel at all (no heap, no fibers, no
-// exceptions, no objects on a device).
+// exceptions, no objects on a device). Unit 8 closed every plan-item refusal
+// on 2026-10-05, so the list holds lowering forms and `never:` entries.
 const Entry kInventory[] = {
     // ---- statements ----
     {"Block",                    "        { y[i] = 1.0f; }\n", ""},
@@ -77,8 +78,8 @@ const Entry kInventory[] = {
     {"BreakStatement",           "        for (uint32 a = 0; a < 3; a = a + 1) { if (a == 1) { break; } y[i] = y[i] + 1.0f; }\n", ""},
     {"ContinueStatement",        "        for (uint32 a = 0; a < 3; a = a + 1) { if (a == 1) { continue; } y[i] = y[i] + 1.0f; }\n", ""},
     {"ReturnStatement",          "        if (which == 0) { return; } y[i] = 1.0f;\n", ""},
-    {"ScopeStatement",           "        scope { y[i] = 1.0f; }\n", "4.8.1.7"},
-    {"SwitchStatement",          "        switch (which) { case 0: y[i] = 1.0f; break; default: y[i] = 2.0f; break; }\n", "4.8.1.6"},
+    {"ScopeStatement",           "        scope { y[i] = 1.0f; }\n", ""},
+    {"SwitchStatement",          "        switch (which) { case 0: y[i] = 1.0f; break; default: y[i] = 2.0f; break; }\n", ""},
     {"TryStatement",             "        try { y[i] = 1.0f; } catch (Exception e) { y[i] = 2.0f; }\n", "never: a kernel raises nothing; a device has no exception"},
     {"ThrowStatement",           "        throw heap Exception(\"no\");\n", "never: a kernel raises nothing; a device has no exception"},
     {"YieldStatement",           "        yield 1;\n", "never: a kernel is not a fiber"},
@@ -93,26 +94,26 @@ const Entry kInventory[] = {
     {"PostfixExpression",        "        uint32 c = which; c++; z[i] = (int32) c;\n", ""},
     {"CastExpression",           "        y[i] = (float32) z[i];\n", ""},
     {"DotExpression",            "        if (which == (uint32) Mode.Fast) { y[i] = 1.0f; }\n", ""},
-    {"DotExpression",            "        y[i] = y[i] * M.SCALE;\n", "4.8.1.8"},
-    {"IdentifierExpression",     "        y[i] = y[i] * SCALE;\n", "4.8.1.8"},
+    {"DotExpression",            "        y[i] = y[i] * M.SCALE;\n", ""},
+    {"IdentifierExpression",     "        y[i] = y[i] * SCALE;\n", ""},
     {"MethodCallExpression",     "        y[i] = twice(y[i]);\n", ""},
     {"CallExpression",           "        (float32) -> float32 f = M::twice; y[i] = f(y[i]);\n", ""},
     {"NewExpression",            "        Shared<float32> s = shared float32[8]; s[i] = y[i]; y[i] = s[i];\n", ""},
     {"ArrayIndexExpression",     "        y[i] = y[i + 1];\n", ""},
     {"ArraySliceExpression",     "        Shared<int32> tile = shared [1, 2, 3]; Slice<int32> part = tile[1:3]; z[i] = 1;\n", "never: a slice is a heap view; a kernel has no heap"},
     {"ArrayLiteralExpression",   "        Shared<int32> tile = shared [1, 2, 3]; z[i] = tile[1];\n", ""},
-    {"ArrayLiteralExpression",   "        int32[] arr = [1, 2, 3]; z[i] = arr[1];\n", "4.8.1.9"},
+    {"ArrayLiteralExpression",   "        int32[] arr = [1, 2, 3]; z[i] = arr[1];\n", ""},
     {"AggregateInitializerExpression", "        int32[] arr = heap int32[] {1, 2, 3}; z[i] = arr[1];\n", "never: `heap T[] {...}` allocates; a kernel has no heap (the literal `[1, 2, 3]` lowers)"},
     {"MapLiteralExpression",     "        HashMap<int32, int32> m = [1: 2]; z[i] = 1;\n", "never: a map is a heap object; a kernel has no heap"},
     {"MoveExpression",           "        int64 c #= 0; z[i] = (int32) c;\n", ""},
     {"ThisExpression",           "        y[i] = this.SCALE;\n", "never: a kernel is static; there is no receiver"},
     {"SuperExpression",          "        y[i] = super.SCALE;\n", "never: a kernel is static; there is no receiver"},
     {"ClassLiteralExpression",   "        Class c = M.class; y[i] = 1.0f;\n", "never: a kernel has no runtime type objects"},
-    {"BooleanSwitchExpression",  "        y[i] = which == 0 ? 1.0f : 2.0f;\n", "4.8.1.1"},
+    {"BooleanSwitchExpression",  "        y[i] = which == 0 ? 1.0f : 2.0f;\n", ""},
     {"InstanceOfExpression",     "        boolean b = y instanceof KernelBuffer; y[i] = 1.0f;\n", "never: a kernel has no runtime type objects"},
     {"MethodReferenceExpression","        (float32) -> float32 f = M::twice; y[i] = 1.0f;\n", ""},
     {"LambdaExpression",         "        y[i] = 1.0f; (float32) -> float32 f = (float32 v) -> v;\n", "never: a lambda is a closure; a function-typed local in a kernel takes a @Device method reference or a dispatch table"},
-    {"SwitchExpression",         "        y[i] = switch (which) { case 0 -> 1.0f; default -> 2.0f; };\n", "4.8.1.6"},
+    {"SwitchExpression",         "        y[i] = switch (which) { case 0 -> 1.0f; default -> 2.0f; };\n", ""},
     {"AwaitExpression",          "        y[i] = await 1.0f;\n", "never: a kernel is not a fiber"},
     {"SpawnExpression",          "        spawn twice(1.0f); y[i] = 1.0f;\n", "never: a kernel is not a fiber"},
     {"DetachExpression",         "        detach twice(1.0f); y[i] = 1.0f;\n", "never: a kernel is not a fiber"},

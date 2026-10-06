@@ -415,6 +415,27 @@ outside the declaring block is now refused, naming the identifier and
 saying its block has closed (`XpuKernelScopeTests`). Within one scope a
 name may not be rebound at another kind or type.
 
+**What host code accepts, a kernel accepts** (xpu-kernel-independence spec
+§3). `XpuKernelInventoryTests` reads every expression and statement kind off
+the AST headers and holds each to a snippet that lowers, or to a stated
+reason a kernel can never meet it: no heap (`heap T[] {...}`, a map, a
+slice), no fibers (`yield`, `await`, `spawn`, `detach`), no exceptions
+(`try`, `throw`), no objects (`this`, `super`, a class literal,
+`instanceof`), and a lambda, which is a closure where a kernel takes a
+`@Device` method reference or a dispatch table. Everything else lowers,
+and these closed on 2026-10-05 (Unit 8): the ternary `c ? a : b`, as a
+branch so the untaken arm never runs (`i < n ? y[i] : 0.0f` is a guard);
+`switch` as a statement, with the host's fallthrough and `break`, and as an
+expression; a `scope` block, which is a block; a `KernelBuffer` local bound
+from a parameter and rebound by assignment, indexing like the parameter; a
+`@Device` helper that indexes a buffer it is passed; a `static final`
+scalar by its bare name or as `M.NAME`, lowered through its initializer; a
+`static final` array literal as a read-only table indexed like a buffer;
+an array literal as a local, a table when its elements are constants and a
+per-thread array otherwise. A host method of a class template reads the
+template's non-type parameters as the kernel does
+(`NonTypeParamTests.aHostMethodReadsTheNonTypeParameter`).
+
 ### 3.3 Capability traits
 
 A *capability* is a feature that some devices have and others don't.

@@ -328,6 +328,7 @@ public:
                 bufferBases[p.name] = v;
                 bufferElems[p.name] = p.type;
                 bufferElemSigned[p.name] = p.isSigned;
+                bufferParams.insert(p.name);
             } else if (p.type->isStructTy()) {
                 // Keep the aggregate an SSA value: under SPIR-V logical
                 // addressing an aggregate store to a Function-storage pointer is
@@ -378,6 +379,24 @@ private:
     std::map<std::string, bool> signedness;
     std::map<std::string, llvm::Value*> bufferBases;  // buffer name -> addrspace(1) ptr
     std::map<std::string, llvm::Type*> bufferElems;   // buffer name -> element type
+    // A KernelBuffer LOCAL bound from a parameter (`KernelBuffer<T> src = y;`,
+    // rebound by `src = w;`): its base lives in a pointer slot, read at each
+    // use. bufferBases holds the slot itself for the name, a pointer no real
+    // base equals, so lookups keyed by base (swizzle, block pad) miss for it.
+    std::map<std::string, llvm::AllocaInst*> bufferSlots;
+    // The kernel's buffer PARAMETERS, the only bases a local may take: a shared
+    // array's base carries swizzle and pad facts a slot could not.
+    std::set<std::string> bufferParams;
+
+    // The base pointer a buffer name denotes here: the slot's current value
+    // for a local, the bound base for a parameter or a shared array.
+    llvm::Value* bufferBase(const std::string& nm) {
+        auto sl = bufferSlots.find(nm);
+        if (sl != bufferSlots.end())
+            return builder.CreateLoad(sl->second->getAllocatedType(), sl->second, nm + ".buf");
+        auto it = bufferBases.find(nm);
+        return it == bufferBases.end() ? nullptr : it->second;
+    }
     // Bindless buffer-array params (Buffer<T>[]): binding + element type by
     // name. There is no single base - `bufs[idx]` selects a descriptor.
     struct BufferArrayInfo { unsigned binding; llvm::Type* elemTy; bool isSigned; };
@@ -637,6 +656,15 @@ private:
             lowerExprStatement(es->getExpression());
             return;
         }
+        if (auto sc = std::dynamic_pointer_cast<ScopeStatement>(node)) {
+            // A kernel has no child tasks to join: a scope block is a block.
+            lowerStatement(sc->getBlock());
+            return;
+        }
+        if (auto sw = std::dynamic_pointer_cast<SwitchStatement>(node)) {
+            lowerSwitch(sw);
+            return;
+        }
         if (auto rs = std::dynamic_pointer_cast<ReturnStatement>(node)) {
             if (rs->getExpression() && target.shaderOutputReturn()) {
                 llvm::Value* v = lowerExpr(rs->getExpression());
@@ -725,6 +753,7 @@ private:
     void forgetLocal(const std::string& n) {
         outOfScope.insert(n);
         values.erase(n); slotTypes.erase(n); signedness.erase(n); bufferBases.erase(n);
+        bufferSlots.erase(n);
         bufferElems.erase(n); bufferElemSigned.erase(n); bufferArrayBindings.erase(n);
         bufferArrayBases.erase(n); textureHandles.erase(n); textureTexelTypes.erase(n);
         textureDims.erase(n); imageHandles.erase(n); samplerHandles.erase(n);
@@ -876,10 +905,18 @@ private:
                     continue;
                 }
             }
+            if (isBufferType(declType)) {
+                lowerBufferLocalDecl(nm, initExpr);
+                continue;
+            }
             if (auto lit =
                     std::dynamic_pointer_cast<ArrayLiteralExpression>(initExpr)) {
                 if (lit->isSharedAlloc()) {
                     lowerSharedArrayLiteral(nm, declType, lit);
+                    continue;
+                }
+                if (std::dynamic_pointer_cast<CajetaArray>(declType)) {
+                    lowerLocalArrayLiteral(nm, declType, lit);
                     continue;
                 }
             }
@@ -892,6 +929,134 @@ private:
             slotTypes[nm] = slotTy;
             signedness[nm] = typeIsSigned(declType);
         }
+    }
+
+    // ---- constants a kernel reads as host code writes them (4.8.1.4/8/9) ---
+    // A `static final` property of the kernel's class with an initializer,
+    // by name. The initializer is an expression over literals (and other
+    // such constants), lowered at each use, so it folds to a constant.
+    StructurePropertyPtr staticConstant(const std::string& nm) {
+        if (!cls) return nullptr;
+        for (auto& prop : cls->getPropertyList()) {
+            if (!prop || prop->getName() != nm || !prop->isStatic()) continue;
+            if (!prop->getModifiers().count(FINAL)) continue;
+            if (!prop->getInitializer() || prop->getInitializer()->getChildren().empty())
+                continue;
+            return prop;
+        }
+        return nullptr;
+    }
+    ExpressionPtr staticConstantInit(const StructurePropertyPtr& prop) {
+        return std::dynamic_pointer_cast<Expression>(
+            prop->getInitializer()->getChildren()[0]);
+    }
+    // `M.NAME`: the class's own simple name, or its canonical one.
+    bool namesOwnClass(const std::string& lhs) const {
+        if (!cls) return false;
+        if (cls->toCanonical() == lhs) return true;
+        const std::string& canon = cls->toCanonical();
+        size_t dot = canon.rfind('.');
+        return canon.substr(dot == std::string::npos ? 0 : dot + 1) == lhs;
+    }
+
+    // Bind `nm` to a constant table: an array literal whose elements are all
+    // compile-time constants becomes one read-only module global, indexed
+    // like a buffer. Returns false when an element is not a constant.
+    bool bindConstantTable(const std::string& nm, const std::string& gname,
+                           const CajetaTypePtr& arrType,
+                           const std::shared_ptr<ArrayLiteralExpression>& lit) {
+        auto arr = std::dynamic_pointer_cast<CajetaArray>(arrType);
+        if (!arr) return false;
+        llvm::Type* elemTy = deviceScalarType(arr->getElementType(), ctx);
+        if (!elemTy) return false;
+        const auto& elems = lit->getElements();
+        if (elems.empty()) unsupported("array literal '" + nm + "' is empty");
+        std::vector<llvm::Constant*> cs;
+        for (auto& e : elems) {
+            auto ex = std::dynamic_pointer_cast<Expression>(e);
+            llvm::Value* v = coerceTo(lowerExpr(ex), elemTy, exprSigned(ex));
+            auto* c = llvm::dyn_cast<llvm::Constant>(v);
+            if (!c) return false;
+            cs.push_back(c);
+        }
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(elemTy, cs.size());
+        auto* gv = new llvm::GlobalVariable(
+            mod, arrTy, /*isConstant=*/true, llvm::GlobalValue::InternalLinkage,
+            llvm::ConstantArray::get(arrTy, cs), gname, nullptr,
+            llvm::GlobalValue::NotThreadLocal, target.constantTableAddressSpace());
+        gv->setAlignment(llvm::MaybeAlign(16));
+        llvm::Value* zero = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0);
+        llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        bufferBases[nm] = eb.CreateGEP(arrTy, gv, {zero, zero}, nm + ".tbl");
+        bufferElems[nm] = elemTy;
+        bufferElemSigned[nm] = typeIsSigned(arr->getElementType());
+        return true;
+    }
+
+    // A static final array literal of the kernel's class, bound on first use
+    // as a constant table under its own name. False when `nm` is not one.
+    bool bindStaticTable(const std::string& nm) {
+        if (bufferBases.count(nm)) return true;
+        StructurePropertyPtr prop = staticConstant(nm);
+        if (!prop) return false;
+        auto lit = std::dynamic_pointer_cast<ArrayLiteralExpression>(staticConstantInit(prop));
+        if (!lit) return false;
+        if (!bindConstantTable(nm, "__cajeta_const_" + nm, prop->getType(), lit))
+            unsupported("static final array '" + nm + "' has an element that is "
+                        "not a compile-time constant; a kernel reads it as a table");
+        return true;
+    }
+
+    // `T[] name = [a, b, c];` as a local (4.8.1.9): constants become a table;
+    // runtime elements fill a per-thread array.
+    void lowerLocalArrayLiteral(const std::string& nm, const CajetaTypePtr& declType,
+                                const std::shared_ptr<ArrayLiteralExpression>& lit) {
+        checkKernelRedeclare(nm, "an array local", nullptr);
+        if (bindConstantTable(nm, fn->getName().str() + "_" + nm, declType, lit)) return;
+        auto arr = std::dynamic_pointer_cast<CajetaArray>(declType);
+        llvm::Type* elemTy = arr ? deviceScalarType(arr->getElementType(), ctx) : nullptr;
+        if (!elemTy)
+            unsupported("array literal local '" + nm + "' needs a scalar element type");
+        const auto& elems = lit->getElements();
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(elemTy, elems.size());
+        llvm::AllocaInst* slot = entryAlloca(arrTy, nm + ".arr");
+        llvm::Value* zero = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0);
+        for (uint64_t i = 0; i < elems.size(); ++i) {
+            auto ex = std::dynamic_pointer_cast<Expression>(elems[i]);
+            llvm::Value* v = coerceTo(lowerExpr(ex), elemTy, exprSigned(ex));
+            llvm::Value* at = builder.CreateGEP(
+                arrTy, slot, {zero, llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), i)});
+            builder.CreateStore(v, at);
+        }
+        bufferBases[nm] = builder.CreateGEP(arrTy, slot, {zero, zero}, nm + ".arr0");
+        bufferElems[nm] = elemTy;
+        bufferElemSigned[nm] = typeIsSigned(arr->getElementType());
+    }
+
+    // `KernelBuffer<T> name = param;` (4.8.1.2): the local indexes like the
+    // parameter, and `name = other;` later rebinds it, so the base lives in a
+    // pointer slot. Only a kernel parameter may be the source.
+    std::string bufferParamNamed(const ExpressionPtr& e) {
+        auto id = std::dynamic_pointer_cast<IdentifierExpression>(e);
+        if (!id) return "";
+        const std::string& src = id->getTextValue();
+        if (bufferParams.count(src) || bufferSlots.count(src)) return src;
+        return "";
+    }
+    void lowerBufferLocalDecl(const std::string& nm, const ExpressionPtr& initExpr) {
+        std::string src = bufferParamNamed(initExpr);
+        if (src.empty())
+            unsupported("KernelBuffer local '" + nm + "' takes a kernel parameter "
+                        "(or another such local) as its value; a kernel has no "
+                        "other buffer to bind");
+        checkKernelRedeclare(nm, "a buffer local", nullptr);
+        llvm::Value* base = bufferBase(src);
+        auto* slot = entryAlloca(base->getType(), nm + ".bufslot");
+        builder.CreateStore(base, slot);
+        bufferSlots[nm] = slot;
+        bufferBases[nm] = slot;
+        bufferElems[nm] = bufferElems[src];
+        bufferElemSigned[nm] = bufferElemSigned[src];
     }
 
     // Lower `Shared<T> name = shared T[size]` to one module-level addrspace(3)
@@ -1509,7 +1674,7 @@ private:
         llvm::Value* i64idx =
             builder.CreateIntCast(i, i64, /*isSigned=*/idxSigned);
         llvm::Value* addr =
-            target.bufferElementPtr(builder, mod, bv->second, elemTy, i64idx);
+            target.bufferElementPtr(builder, mod, bufferBase(bufName), elemTy, i64idx);
         builder.CreateStore(builder.CreateLoad(elemTy, addr, "fe.elem"),
                             elemSlot);
         pushLoop(upd, exit);
@@ -1575,6 +1740,18 @@ private:
             unsupported("the counter '" + id->getTextValue() + "' of a `for` loop "
                         "unrolled over a fragment array is assigned in its body; "
                         "the loop's update is the only place it may change");
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(lhs);
+                id && bufferSlots.count(id->getTextValue())) {
+            std::string src = bufferParamNamed(rhs);
+            if (src.empty() || bin->getBinaryOp() != BINARY_OP_ASSIGN)
+                unsupported("KernelBuffer local '" + id->getTextValue() + "' is "
+                            "rebound only by `= <kernel parameter>`");
+            if (bufferElems[src] != bufferElems[id->getTextValue()])
+                unsupported("KernelBuffer local '" + id->getTextValue() + "' is "
+                            "rebound to a buffer of another element type");
+            builder.CreateStore(bufferBase(src), bufferSlots[id->getTextValue()]);
+            return;
+        }
         if (tryMatrixElementAssign(bin, lhs, rhs)) return;  // m[r][c] = Ã¢ÂÂ¦ (B1)
         if (tryVectorElementAssign(bin, lhs, rhs)) return;
         auto [addr, elemTy] = lowerLValueAddr(lhs);
@@ -1657,14 +1834,16 @@ private:
             const std::string& nm = id->getTextValue();
             if (auto uc = unrolledCounters.find(nm); uc != unrolledCounters.end())
                 return uc->second;
-            auto bb = bufferBases.find(nm);
-            if (bb != bufferBases.end()) return bb->second;  // buffer base ptr
+            if (bufferBases.count(nm)) return bufferBase(nm);  // buffer base ptr
             auto it = values.find(nm);
             if (it != values.end())
                 return builder.CreateLoad(slotTypes[nm], it->second, nm);  // load slot
             auto sv = structValues.find(nm);
             if (sv != structValues.end()) return sv->second;
             if (llvm::Constant* c = templateConstant(nm)) return c;
+            if (bindStaticTable(nm)) return bufferBase(nm);
+            if (StructurePropertyPtr prop = staticConstant(nm))
+                return lowerExpr(staticConstantInit(prop));
             if (outOfScope.count(nm))
                 unsupported("'" + nm + "' is not in scope here: it was declared in a block that "
                             "has closed (a sibling block, or a loop's counter past its loop), and "
@@ -1758,6 +1937,13 @@ private:
                         llvm::Type::getInt32Ty(ctx), (uint64_t) *v,
                         /*isSigned=*/true);
             }
+            if (auto lhs = std::dynamic_pointer_cast<IdentifierExpression>(
+                    exprChild(dot, 0)); lhs && namesOwnClass(lhs->getTextValue())) {
+                if (bindStaticTable(dot->getIdentifier()))
+                    return bufferBase(dot->getIdentifier());
+                if (StructurePropertyPtr prop = staticConstant(dot->getIdentifier()))
+                    return lowerExpr(staticConstantInit(prop));
+            }
             unsupported("field access Ã¢ÂÂ only POD-struct kernel params and enum "
                         "constants support 'name.field'");
         }
@@ -1806,6 +1992,12 @@ private:
         // kernel its device code on every backend.
         if (auto mv = std::dynamic_pointer_cast<MoveExpression>(expr)) {
             return lowerExpr(exprChild(mv, 0));
+        }
+        if (auto bs = std::dynamic_pointer_cast<BooleanSwitchExpression>(expr)) {
+            return lowerTernary(bs);
+        }
+        if (auto sw = std::dynamic_pointer_cast<SwitchExpression>(expr)) {
+            return lowerSwitchExpr(sw);
         }
         // Name the form and the line. A note that says only "expression form"
         // leaves bisecting the kernel by hand as the only way to find out
@@ -2774,11 +2966,19 @@ private:
                 }
             }
         }
-        auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
-            exprChild(ai, 0));
-        if (!baseId) unsupported("buffer index on a non-identifier base");
-        if (auto as = arrayShared.find(baseId->getTextValue());
-            as != arrayShared.end()) {
+        std::string baseName;
+        if (auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(exprChild(ai, 0))) {
+            baseName = baseId->getTextValue();
+        } else if (auto dot = std::dynamic_pointer_cast<DotExpression>(exprChild(ai, 0))) {
+            // `M.TABLE[i]`: the class's static final array literal.
+            if (auto lhs = std::dynamic_pointer_cast<IdentifierExpression>(exprChild(dot, 0));
+                lhs && namesOwnClass(lhs->getTextValue())
+                    && bindStaticTable(dot->getIdentifier()))
+                baseName = dot->getIdentifier();
+        }
+        if (baseName.empty()) unsupported("buffer index on a non-identifier base");
+        bindStaticTable(baseName);
+        if (auto as = arrayShared.find(baseName); as != arrayShared.end()) {
             llvm::Value* idx = lowerExpr(exprChild(ai, 1));
             llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
             if (idx->getType() != i64)
@@ -2788,12 +2988,12 @@ private:
             llvm::Value* zero = llvm::ConstantInt::get(i64, 0);
             llvm::Value* addr = builder.CreateGEP(
                 as->second.second, as->second.first, {zero, idx}, "dynsh.idx");
-            return {addr, bufferElems[baseId->getTextValue()]};
+            return {addr, bufferElems[baseName]};
         }
-        auto bv = bufferBases.find(baseId->getTextValue());
-        auto be = bufferElems.find(baseId->getTextValue());
+        auto bv = bufferBases.find(baseName);
+        auto be = bufferElems.find(baseName);
         if (bv == bufferBases.end() || be == bufferElems.end()) {
-            unsupported("index on non-buffer '" + baseId->getTextValue() + "'");
+            unsupported("index on non-buffer '" + baseName + "'");
         }
         ExpressionPtr idxExpr = exprChild(ai, 1);
         llvm::Value* idx = lowerExpr(idxExpr);
@@ -2802,8 +3002,8 @@ private:
                                         exprSigned(idxExpr));
         }
         idx = maybeSwizzle(bv->second, idx);
-        llvm::Value* addr =
-            target.bufferElementPtr(builder, mod, bv->second, be->second, idx);
+        llvm::Value* addr = target.bufferElementPtr(
+            builder, mod, bufferBase(baseName), be->second, idx);
         return {addr, be->second};
     }
 
@@ -2826,7 +3026,7 @@ private:
         if ((name == "vload" || name == "vstore")
                 && bufferBases.count(recv) && bufferElems.count(recv)) {
             llvm::Type* elemTy = bufferElems[recv];
-            llvm::Value* base = bufferBases[recv];
+            llvm::Value* base = bufferBase(recv);
             const auto& params = mc->getParameters();
             auto toI64 = [&](const ExpressionPtr& e) {
                 llvm::Value* v = lowerExpr(e);
@@ -3289,7 +3489,7 @@ private:
                 idx = builder.CreateIntCast(idx, i64,
                                             exprSigned(args[0].expression));
             llvm::Value* ptr = target.bufferElementPtr(builder, mod,
-                                                       bufferBases[recv],
+                                                       bufferBase(recv),
                                                        elemTy, idx);
             if (isCas) {
                 if (!elemIsInt)
@@ -4239,7 +4439,7 @@ private:
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
             auto bb = bufferBases.find(id->getTextValue());
             if (bb != bufferBases.end()) {
-                base = bb->second;
+                base = bufferBase(id->getTextValue());
                 auto be = bufferElems.find(id->getTextValue());
                 elemTy = be != bufferElems.end() ? be->second : nullptr;
                 return true;
@@ -4616,8 +4816,9 @@ private:
                 llvm::Type* elemTy = be != bufferElems.end() ? be->second : nullptr;
                 llvm::Value* idx = builder.CreateZExtOrTrunc(
                     offset, llvm::Type::getInt64Ty(ctx), "cm.off");
-                return target.bufferElementPtr(builder, mod, bb->second, elemTy,
-                                               idx);
+                return target.bufferElementPtr(builder, mod,
+                                               bufferBase(id->getTextValue()),
+                                               elemTy, idx);
             }
         }
         unsupported("CooperativeMatrix load/store: argument must be a Buffer "
@@ -6179,6 +6380,157 @@ private:
                           r->getType()->isFloatingPointTy());
     }
 
+    // `switch (v) { case a: ... }` with the host's fallthrough: each group's
+    // body is a block, a group with no terminator runs into the next, and
+    // `break` leaves to the end. `continue` inside continues the enclosing
+    // loop, so the switch's target carries that loop's continue block.
+    void lowerSwitch(const std::shared_ptr<SwitchStatement>& sw) {
+        llvm::Value* subject = lowerExpr(sw->getSubject());
+        bool subjSigned = exprSigned(sw->getSubject());
+        const auto& groups = sw->getGroups();
+        auto* endBB = llvm::BasicBlock::Create(ctx, "sw.end", fn);
+        std::vector<llvm::BasicBlock*> bodies;
+        for (size_t g = 0; g < groups.size(); ++g)
+            bodies.push_back(llvm::BasicBlock::Create(ctx, "sw.case", fn));
+        // The dispatch: compare in source order, default last.
+        llvm::BasicBlock* defaultBB = endBB;
+        for (size_t g = 0; g < groups.size(); ++g)
+            if (groups[g].isDefault) defaultBB = bodies[g];
+        for (size_t g = 0; g < groups.size(); ++g) {
+            for (auto& cv : groups[g].caseValues) {
+                llvm::Value* c = lowerExpr(cv);
+                llvm::Value* l = subject;
+                unifyOperands(l, c, subjSigned);
+                auto* next = llvm::BasicBlock::Create(ctx, "sw.test", fn);
+                builder.CreateCondBr(builder.CreateICmpEQ(l, c, "sw.eq"), bodies[g], next);
+                builder.SetInsertPoint(next);
+            }
+        }
+        builder.CreateBr(defaultBB);
+        const LoopTarget* enclosing = findLoopTarget("");
+        loopTargets.push_back({enclosing ? enclosing->continueBB : nullptr, endBB, ""});
+        for (size_t g = 0; g < groups.size(); ++g) {
+            builder.SetInsertPoint(bodies[g]);
+            scoped([&] { for (auto& st : groups[g].statements) lowerStatement(st); });
+            if (!builder.GetInsertBlock()->hasTerminator())
+                builder.CreateBr(g + 1 < groups.size() ? bodies[g + 1] : endBB);
+        }
+        loopTargets.pop_back();
+        builder.SetInsertPoint(endBB);
+    }
+
+    // `switch (v) { case a, b -> x; default -> y; }`: one arm runs, its value
+    // is the result. Arms unify as the ternary's do.
+    llvm::Value* lowerSwitchExpr(const std::shared_ptr<SwitchExpression>& sw) {
+        llvm::Value* subject = lowerExpr(sw->getDiscriminator());
+        bool subjSigned = exprSigned(sw->getDiscriminator());
+        const auto& cases = sw->getCases();
+        if (cases.empty()) unsupported("a switch expression with no arm");
+        auto* doneBB = llvm::BasicBlock::Create(ctx, "swe.done", fn);
+        std::vector<llvm::BasicBlock*> arms;
+        llvm::BasicBlock* defaultBB = nullptr;
+        for (auto& c : cases) {
+            arms.push_back(llvm::BasicBlock::Create(ctx, "swe.arm", fn));
+            if (c.labels.empty()) defaultBB = arms.back();
+        }
+        if (!defaultBB)
+            unsupported("a switch expression in a kernel needs a default arm");
+        size_t ai = 0;
+        for (auto& c : cases) {
+            for (auto& lab : c.labels) {
+                llvm::Value* cv = lowerExpr(lab);
+                llvm::Value* l = subject;
+                unifyOperands(l, cv, subjSigned);
+                auto* next = llvm::BasicBlock::Create(ctx, "swe.test", fn);
+                builder.CreateCondBr(builder.CreateICmpEQ(l, cv, "swe.eq"), arms[ai], next);
+                builder.SetInsertPoint(next);
+            }
+            ++ai;
+        }
+        builder.CreateBr(defaultBB);
+        std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> ins;
+        std::vector<bool> signs;
+        ai = 0;
+        for (auto& c : cases) {
+            builder.SetInsertPoint(arms[ai++]);
+            llvm::Value* v = lowerExpr(c.body);
+            ins.push_back({v, builder.GetInsertBlock()});
+            signs.push_back(exprSigned(c.body));
+            builder.CreateBr(doneBB);
+        }
+        llvm::Type* common = ins[0].first->getType();
+        for (auto& in : ins) common = widerOf(common, in.first->getType());
+        for (size_t k = 0; k < ins.size(); ++k) {
+            if (ins[k].first->getType() == common) continue;
+            builder.SetInsertPoint(ins[k].second->getTerminator());
+            ins[k].first = toType(ins[k].first, common, signs[k]);
+            if (ins[k].first->getType() != common)
+                unsupported("the arms of a switch expression have types that do not unify");
+        }
+        builder.SetInsertPoint(doneBB);
+        llvm::PHINode* phi = builder.CreatePHI(common, (unsigned) ins.size(), "swe");
+        for (auto& in : ins) phi->addIncoming(in.first, in.second);
+        return phi;
+    }
+
+    // The type two arms unify to: float over int, the wider of two floats or
+    // two ints. Vectors unify only with their own type.
+    llvm::Type* widerOf(llvm::Type* a, llvm::Type* b) {
+        if (a == b) return a;
+        if (a->isVectorTy() || b->isVectorTy())
+            unsupported("arms that are vectors of different types do not unify");
+        bool aFp = a->isFloatingPointTy(), bFp = b->isFloatingPointTy();
+        if (aFp && bFp) return a->getPrimitiveSizeInBits() >= b->getPrimitiveSizeInBits() ? a : b;
+        if (aFp || bFp) return aFp ? a : b;
+        return a->getScalarSizeInBits() >= b->getScalarSizeInBits() ? a : b;
+    }
+    llvm::Value* toType(llvm::Value* v, llvm::Type* ty, bool sign) {
+        if (v->getType() == ty) return v;
+        if (ty->isFloatingPointTy() && v->getType()->isIntegerTy())
+            return sign ? builder.CreateSIToFP(v, ty) : builder.CreateUIToFP(v, ty);
+        return coerceTo(v, ty, sign);
+    }
+
+    // `c ? a : b` via branch + phi. The untaken arm does not run: a kernel
+    // writes `i < n ? y[i] : 0.0f` as a guard, and evaluating both arms
+    // would read past the buffer. Arms of two types unify as a binary
+    // operation's operands do (float over int, the wider int), each cast in
+    // its own arm's block.
+    llvm::Value* lowerTernary(const std::shared_ptr<BooleanSwitchExpression>& bs) {
+        llvm::Value* cond = toI1(lowerExpr(exprChild(bs, 0)));
+        auto* thenBB = llvm::BasicBlock::Create(ctx, "sel.then", fn);
+        auto* elseBB = llvm::BasicBlock::Create(ctx, "sel.else", fn);
+        auto* doneBB = llvm::BasicBlock::Create(ctx, "sel.done", fn);
+        builder.CreateCondBr(cond, thenBB, elseBB);
+
+        builder.SetInsertPoint(thenBB);
+        ExpressionPtr ae = exprChild(bs, 1);
+        llvm::Value* a = lowerExpr(ae);
+        llvm::BasicBlock* thenEnd = builder.GetInsertBlock();
+        builder.CreateBr(doneBB);
+
+        builder.SetInsertPoint(elseBB);
+        ExpressionPtr be = exprChild(bs, 2);
+        llvm::Value* b = lowerExpr(be);
+        llvm::BasicBlock* elseEnd = builder.GetInsertBlock();
+        builder.CreateBr(doneBB);
+
+        llvm::Type* common = widerOf(a->getType(), b->getType());
+        if (a->getType() != common || b->getType() != common) {
+            builder.SetInsertPoint(thenEnd->getTerminator());
+            a = toType(a, common, exprSigned(ae));
+            builder.SetInsertPoint(elseEnd->getTerminator());
+            b = toType(b, common, exprSigned(be));
+            if (a->getType() != common || b->getType() != common)
+                unsupported("the two arms of `?:` have types that do not unify");
+        }
+        builder.SetInsertPoint(doneBB);
+        llvm::PHINode* phi = builder.CreatePHI(common, 2, "sel");
+        phi->addIncoming(a, thenEnd);
+        phi->addIncoming(b, elseEnd);
+        return phi;
+    }
+
     // Short-circuit lhs && rhs / lhs || rhs via branch + phi.
     llvm::Value* lowerLogical(const std::shared_ptr<BinaryOpExpression>& bin) {
         bool isAnd = bin->getBinaryOp() == BINARY_OP_LOGAND;
@@ -6433,6 +6785,10 @@ private:
             return true;
         }
         if (std::dynamic_pointer_cast<IntegerLiteralExpression>(e)) return true;
+        // `c ? a : b` is signed when either arm is, as the unified operands of
+        // a binary operation over the two arms would be.
+        if (auto bs = std::dynamic_pointer_cast<BooleanSwitchExpression>(e))
+            return exprSigned(exprChild(bs, 1)) || exprSigned(exprChild(bs, 2));
         // `buf.vload<N>(i)` carries the BUFFER's element signedness; without it a
         // chained call falls to the unknown-leaf default of signed.
         if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(e)) {

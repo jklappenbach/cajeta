@@ -69,6 +69,11 @@ namespace xpu {
         // Address space for entry-block allocas (the mutable scalar-slot model).
         // NVPTX: 0 (generic). AMDGPU: 5 (private) — an AS-0 alloca is invalid there.
         virtual unsigned allocaAddressSpace() const = 0;
+        // Where a read-only table (a static final array literal, a constant
+        // local array literal) lives: a module global the kernel indexes
+        // like a buffer. The global address space by default, where every
+        // pointer-arg backend reads buffers; the cpu backend is flat.
+        virtual unsigned constantTableAddressSpace() const { return 1; }
 
         // True when kernel params arrive as DESCRIPTORS bound in the body (Vulkan:
         // a no-param `void main()`), false when they are real function arguments.

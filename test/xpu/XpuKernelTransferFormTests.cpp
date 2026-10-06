@@ -228,8 +228,9 @@ TEST(XpuKernelTransferFormTests, aTransferInitializerLowersOnAmdgpu) {
 
 // The other half. An expression form the walk genuinely cannot lower must say
 // WHICH form and WHERE, so the next person does not bisect the kernel by hand.
-// A ternary is the probe because nothing in the walk handles it today; if that
-// changes, move this to whatever is still unhandled rather than deleting it.
+// An `instanceof` is the probe: a kernel has no runtime type objects, so it
+// stays unhandled by design (XpuKernelInventoryTests says so). The ternary
+// was the probe until it lowered (xpu-kernel-independence 4.8.1.1).
 TEST(XpuKernelTransferFormTests, anUnloweredExpressionNamesItsKindAndLine) {
     auto src =
         "package test;\n"
@@ -240,8 +241,8 @@ TEST(XpuKernelTransferFormTests, anUnloweredExpressionNamesItsKindAndLine) {
         "    public static void k(KernelBuffer<int32> out, uint32 n) {\n"
         "        uint32 gi = KernelThread.globalIdX();\n"
         "        int32 a = 3;\n"
-        "        int32 b = (a > 2) ? a : 7;\n"
-        "        if (gi < n) { out[(int64) gi] = b; }\n"
+        "        boolean b = out instanceof KernelBuffer;\n"
+        "        if (gi < n) { out[(int64) gi] = a; }\n"
         "    }\n"
         "}\n";
     Compiler compiler;
@@ -261,9 +262,9 @@ TEST(XpuKernelTransferFormTests, anUnloweredExpressionNamesItsKindAndLine) {
     } catch (cajeta::Exception& e) {
         EXPECT_EQ(e.getErrorId(), "XPU-N01");
         const std::string& m = e.getMessage();
-        // The line the ternary is on, so the note points at source.
+        // The line the instanceof is on, so the note points at source.
         EXPECT_NE(m.find("line 9"), std::string::npos) << m;
         // And the node kind, so the note says what to stop writing.
-        EXPECT_NE(m.find("BooleanSwitch"), std::string::npos) << m;
+        EXPECT_NE(m.find("InstanceOf"), std::string::npos) << m;
     }
 }
