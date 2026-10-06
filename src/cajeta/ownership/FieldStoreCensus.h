@@ -30,7 +30,10 @@ namespace cajeta::ownership {
         // Reads CAJETA_FIELD_STORE_CENSUS once, unless setEnabled overrode it.
         static bool enabled();
         static void setEnabled(bool on);
-        static void run(const std::list<CajetaModulePtr>& modules);
+        // Prints every store; with `standIns`, first instantiates each template once so unused ones are walked.
+        static void run(const std::list<CajetaModulePtr>& modules, bool standIns = false);
+        // True when CAJETA_FIELD_STORE_CENSUS=stdlib asks a lint to walk the stdlib as well.
+        static bool includesStdlib();
         // Reports every store that breaks spec 1.2 as an error, through the active engine or by throwing.
         static void check(const std::list<CajetaModulePtr>& modules);
         // Calls `sink` once per store, deduplicated across template instantiations.
