@@ -272,3 +272,30 @@ TEST(CollectionOwnershipNeutralTests, digraphInternLendsOrTransfers) {
         "i = 0;\n"
         "while (i < n) { if (g.nodeAt(i).n != (int64) i) { return -10 - i; } i = i + 1; }\n")), 1);
 }
+
+// Plan 3.2.6: a pop hands an owned value's title to the caller, so it outlives the node.
+TEST(CollectionOwnershipNeutralTests, linkedListPopOfAnOwnedValueOutlivesItsNode) {
+    EXPECT_EQ(runJit(
+        "LinkedList<Cell> l = heap LinkedList<Cell>();\n"
+        "l.add(#heap Cell(8100L));\n"
+        "l.add(#heap Cell(8101L));\n"
+        "l.add(#heap Cell(8102L));\n"
+        "Cell h = l.popHead();\n"
+        "Cell t = l.popTail();\n"
+        "D.churn();\n"
+        "if (h.n != 8100L) { return -1; }\n"
+        "if (t.n != 8102L) { return -2; }\n"
+        "if (l.head().n != 8101L) { return -3; }\n"
+        "return 1;"), 1);
+}
+
+// The instrument: a borrow of the head, kept past a pop whose value nobody takes, reads freed memory.
+TEST(CollectionOwnershipNeutralTests, linkedListChurnExposesABorrowOfAPoppedValue) {
+    EXPECT_EQ(runJit(
+        "LinkedList<Cell> l = heap LinkedList<Cell>();\n"
+        "l.add(#heap Cell(8100L));\n"
+        "Cell b = l.head();\n"
+        "l.popHead();\n"
+        "D.churn();\n"
+        "return b.n == 8100L ? 0 : 1;"), 1);
+}
