@@ -2251,7 +2251,7 @@ private:
         return n == "dot" || n == "dotAccum" || n == "length"
             || n == "normalize"
             || n == "widenLo" || n == "widenHi" || n == "narrow"
-            || n == "toF32" || n == "toI32" || n == "toF16"
+            || n == "toF32" || n == "toI32" || n == "toF16" || n == "toBF16"
             || n == "asUnsigned" || n == "asSigned"
             || n == "asWords" || n == "asBytes" || n == "dotSum"
             || n == "lut4";
@@ -2760,6 +2760,13 @@ private:
             return vecops::convertFpLanes(builder, self,
                 llvm::Type::getHalfTy(builder.getContext()));
         }
+        if (name == "toBF16") {
+            if (!isFloat || !args.empty())
+                unsupported("Vector.toBF16 takes no arguments and a "
+                            "float-element receiver");
+            return vecops::convertFpLanes(builder, self,
+                llvm::Type::getBFloatTy(builder.getContext()));
+        }
         if (name == "toI32") {
             if (!isFloat || !args.empty())
                 unsupported("Vector.toI32 takes no arguments and a "
@@ -3202,6 +3209,47 @@ private:
                 llvm::Value* srcLane = lowerExpr(args[1].expression);
                 return target.waveShuffle(builder, mod, value, srcLane);
             }
+            if (name == "shuffleXorSync" || name == "shuffleUpSync" ||
+                name == "shuffleDownSync") {
+                // The three derived forms are one shuffle from a computed
+                // source lane: xor is the butterfly, up and down clamp to the
+                // lane itself at the wave's edge (CUDA's shfl contract), so
+                // every backend's plain shuffle serves them.
+                if (args.size() != 2) unsupported("Wave." + name + " arity");
+                usedSubgroupOp_ = true;
+                llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+                llvm::Value* value = lowerExpr(args[0].expression);
+                llvm::Value* d = coerceTo(lowerExpr(args[1].expression), i32, false);
+                llvm::Value* lane =
+                    coerceTo(target.waveLaneId(builder, mod), i32, false);
+                llvm::Value* src;
+                if (name == "shuffleXorSync") {
+                    src = builder.CreateXor(lane, d, "shfl.xor");
+                } else if (name == "shuffleUpSync") {
+                    llvm::Value* up = builder.CreateSub(lane, d, "shfl.up");
+                    src = builder.CreateSelect(builder.CreateICmpUGE(lane, d), up,
+                                               lane, "shfl.src");
+                } else {
+                    llvm::Value* down = builder.CreateAdd(lane, d, "shfl.down");
+                    llvm::Value* w =
+                        coerceTo(target.waveWidth(builder, mod), i32, false);
+                    src = builder.CreateSelect(builder.CreateICmpULT(down, w),
+                                               down, lane, "shfl.src");
+                }
+                return target.waveShuffle(builder, mod, value, src);
+            }
+            if (name == "shuffleSyncF32") {
+                if (args.size() != 2) unsupported("Wave.shuffleSyncF32 arity");
+                usedSubgroupOp_ = true;
+                llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+                llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+                llvm::Value* bits = builder.CreateBitCast(
+                    coerceTo(lowerExpr(args[0].expression), f32), i32, "shfl.bits");
+                llvm::Value* srcLane = lowerExpr(args[1].expression);
+                llvm::Value* got = target.waveShuffle(builder, mod, bits, srcLane);
+                return builder.CreateBitCast(coerceTo(got, i32, false), f32,
+                                             "shfl.f32");
+            }
             if (name == "ballotSync") {
                 if (args.size() != 1) unsupported("Wave.ballotSync arity");
                 usedSubgroupOp_ = true;
@@ -3421,6 +3469,11 @@ private:
                 if (args.size() != 1) unsupported("Bits.count arity");
                 return builder.CreateUnaryIntrinsic(
                     llvm::Intrinsic::ctpop, u32arg(0));
+            }
+            if (name == "permute") {
+                if (args.size() != 3) unsupported("Bits.permute arity");
+                return target.bytePermute(builder, mod, u32arg(0), u32arg(1),
+                                          u32arg(2));
             }
             if (name == "rotateLeft" || name == "rotateRight") {
                 if (args.size() != 2) unsupported("Bits.rotate arity");
@@ -4838,6 +4891,33 @@ private:
                     "kernel locals");
     }
 
+    // Element `e` of a native fragment, for either shape: NVPTX fragments are
+    // structs (extractvalue), AMD's are vectors (extractelement).
+    static llvm::Value* nativeFragGet(llvm::IRBuilderBase& b, llvm::Value* agg,
+                                      unsigned e) {
+        if (llvm::isa<llvm::StructType>(agg->getType()))
+            return b.CreateExtractValue(agg, e);
+        return b.CreateExtractElement(agg, e);
+    }
+    static llvm::Value* nativeFragSet(llvm::IRBuilderBase& b, llvm::Value* agg,
+                                      llvm::Value* v, unsigned e) {
+        if (llvm::isa<llvm::StructType>(agg->getType()))
+            return b.CreateInsertValue(agg, v, e);
+        return b.CreateInsertElement(agg, v, e);
+    }
+    // The scalar one element of a native fragment holds: null when a position
+    // is itself a vector (NVPTX's f16 accumulator packs two halves per word),
+    // which has no per-element access.
+    static llvm::Type* nativeFragComponent(llvm::Type* t) {
+        llvm::Type* c = nullptr;
+        if (auto* st = llvm::dyn_cast<llvm::StructType>(t))
+            c = st->getNumElements() ? st->getElementType(0) : nullptr;
+        else if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(t))
+            c = vt->getElementType();
+        if (c && c->isVectorTy()) return nullptr;
+        return c;
+    }
+
     // CooperativeMatrix op dispatch: the slot alloca holds the opaque tile.
     // load/splat/mma write it; store/mma read it, through the backend seams.
     llvm::Value* lowerCoopMatrixMethod(
@@ -4895,6 +4975,70 @@ private:
             llvm::Value* v =
                 target.coopMatrixSplat(builder, mod, val, slot.matrixType);
             builder.CreateStore(v, slot.alloca);
+            return llvm::ConstantInt::get(i32, 0);
+        }
+        if (name == "elements" || name == "get" || name == "set" ||
+            name == "row" || name == "col") {
+            // Per-element access with the lane-to-element map (spec §4.1).
+            // The count is the fragment's arity and the cell is the backend's
+            // measured map; a shape without one is refused by name, so no
+            // kernel ever reads a guessed (row, col).
+            const unsigned n = target.coopMatrixElementCount(slot.matrixType);
+            auto noMap = [&]() {
+                unsupported("CooperativeMatrix." + name + ": the " +
+                            std::string(target.name()) + " fragment of this " +
+                            std::to_string(slot.rows) + "x" +
+                            std::to_string(slot.cols) +
+                            (slot.use == 2 ? " accumulator" : " operand") +
+                            " tile has no established lane-to-element map; "
+                            "stage the tile through Shared<T> with store and "
+                            "read its elements there");
+            };
+            if (n == 0) noMap();
+            if (name == "elements") {
+                if (!args.empty())
+                    unsupported("CooperativeMatrix.elements takes no arguments");
+                return llvm::ConstantInt::get(i32, n);
+            }
+            if (args.empty())
+                unsupported("CooperativeMatrix." + name + " expects (i, ...)");
+            llvm::Value* e = coerceTo(lowerExpr(args[0].expression), i32, false);
+            llvm::Value* row = nullptr;
+            llvm::Value* col = nullptr;
+            if (!target.coopMatrixElementCell(builder, mod, e, slot.rows, slot.cols,
+                                              slot.use, slot.matrixType, row, col))
+                noMap();
+            if (name == "row") return row;
+            if (name == "col") return col;
+            llvm::Type* compTy = nativeFragComponent(slot.matrixType);
+            if (compTy != slot.elemType) noMap();
+            llvm::Value* frag =
+                builder.CreateLoad(slot.matrixType, slot.alloca, recv + ".val");
+            // `e` is a loop counter as often as a constant, and a struct
+            // fragment cannot be indexed dynamically: a select chain over the
+            // constant positions folds to the one extract once the loop over
+            // `elements()` unrolls, which a constant trip count of 8 does.
+            if (name == "get") {
+                if (args.size() != 1)
+                    unsupported("CooperativeMatrix.get expects (i)");
+                llvm::Value* out = nativeFragGet(builder, frag, 0);
+                for (unsigned k = 1; k < n; ++k)
+                    out = builder.CreateSelect(
+                        builder.CreateICmpEQ(e, llvm::ConstantInt::get(i32, k)),
+                        nativeFragGet(builder, frag, k), out, "cm.get");
+                return out;
+            }
+            if (args.size() != 2)
+                unsupported("CooperativeMatrix.set expects (i, value)");
+            llvm::Value* v = coerceTo(lowerExpr(args[1].expression), compTy,
+                                      slot.elemSigned);
+            for (unsigned k = 0; k < n; ++k) {
+                llvm::Value* nv = builder.CreateSelect(
+                    builder.CreateICmpEQ(e, llvm::ConstantInt::get(i32, k)), v,
+                    nativeFragGet(builder, frag, k), "cm.set");
+                frag = nativeFragSet(builder, frag, nv, k);
+            }
+            builder.CreateStore(frag, slot.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
         if (name == "fromWords") {
@@ -5213,6 +5357,53 @@ private:
             emitCountedLoop(slot.perLane, [&](llvm::Value* i) {
                 builder.CreateStore(val, distElemPtr(slot, i));
             });
+            return true;
+        }
+
+        if (name == "elements" || name == "get" || name == "set" ||
+            name == "row" || name == "col") {
+            // Per-element access (spec §4.1): this lane's share is its
+            // `perLane` slice, and the cell is the ownership the load/store
+            // loops use, so the two always agree.
+            if (name == "elements") {
+                if (!args.empty())
+                    unsupported("CooperativeMatrix.elements takes no arguments");
+                result = llvm::ConstantInt::get(i32, slot.perLane);
+                return true;
+            }
+            if (args.empty())
+                unsupported("CooperativeMatrix." + name + " expects (i, ...)");
+            llvm::Value* i = coerceTo(lowerExpr(args[0].expression), i32, false);
+            if (name == "get") {
+                if (args.size() != 1)
+                    unsupported("CooperativeMatrix.get expects (i)");
+                result = builder.CreateLoad(elem, distElemPtr(slot, i), "cm.get");
+                return true;
+            }
+            if (name == "set") {
+                if (args.size() != 2)
+                    unsupported("CooperativeMatrix.set expects (i, value)");
+                builder.CreateStore(
+                    coerceTo(lowerExpr(args[1].expression), elem, slot.elemSigned),
+                    distElemPtr(slot, i));
+                return true;
+            }
+            LaneId id = distLane(slot);
+            llvm::Value* r = nullptr;
+            llvm::Value* c = nullptr;
+            if (slot.use == 1) {
+                r = i; c = id.c;
+            } else if (slot.use == 0) {
+                llvm::Value* lin = builder.CreateAdd(
+                    builder.CreateMul(i, llvm::ConstantInt::get(i32, slot.waveW)),
+                    id.lane);
+                llvm::Value* kc = llvm::ConstantInt::get(i32, slot.cols);
+                r = builder.CreateUDiv(lin, kc);
+                c = builder.CreateURem(lin, kc);
+            } else {
+                distRowCol(slot, id, i, r, c);
+            }
+            result = name == "row" ? r : c;
             return true;
         }
 
@@ -5547,6 +5738,37 @@ private:
                 builder.CreateStore(val, coopElemPtr(slot, lin));
             });
             return llvm::ConstantInt::get(i32, 0);
+        }
+
+        if (name == "elements" || name == "get" || name == "set" ||
+            name == "row" || name == "col") {
+            // Per-element access (spec §4.1) on the replicated tile: every
+            // work-item holds the whole tile, row-major, so element i is cell
+            // (i / C, i % C).
+            if (name == "elements") {
+                if (!args.empty())
+                    unsupported("CooperativeMatrix.elements takes no arguments");
+                return llvm::ConstantInt::get(i32, R * C);
+            }
+            if (args.empty())
+                unsupported("CooperativeMatrix." + name + " expects (i, ...)");
+            llvm::Value* lin = coerceTo(lowerExpr(args[0].expression), i32, false);
+            if (name == "get") {
+                if (args.size() != 1)
+                    unsupported("CooperativeMatrix.get expects (i)");
+                return builder.CreateLoad(elem, coopElemPtr(slot, lin), "cm.get");
+            }
+            if (name == "set") {
+                if (args.size() != 2)
+                    unsupported("CooperativeMatrix.set expects (i, value)");
+                builder.CreateStore(
+                    coerceTo(lowerExpr(args[1].expression), elem, slot.elemSigned),
+                    coopElemPtr(slot, lin));
+                return llvm::ConstantInt::get(i32, 0);
+            }
+            llvm::Value* cc = llvm::ConstantInt::get(i32, C);
+            return name == "row" ? builder.CreateUDiv(lin, cc, "cm.row")
+                                 : builder.CreateURem(lin, cc, "cm.col");
         }
 
         if (name == "load" || name == "store") {
@@ -7580,6 +7802,39 @@ llvm::Type* LoweringTarget::coopMatrixType(llvm::Module& /*m*/, llvm::Type* /*el
                                            uint32_t /*rows*/, uint32_t /*cols*/,
                                            uint32_t /*use*/) {
     throw coopMatrixUnsupported(name());
+}
+
+unsigned LoweringTarget::coopMatrixElementCount(llvm::Type* matrixType) {
+    if (auto* st = llvm::dyn_cast<llvm::StructType>(matrixType))
+        return st->getNumElements();
+    if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(matrixType))
+        return vt->getNumElements();
+    return 0;
+}
+
+llvm::Value* LoweringTarget::bytePermute(llvm::IRBuilderBase& b, llvm::Module& m,
+                                         llvm::Value* lo, llvm::Value* hi,
+                                         llvm::Value* selector) {
+    llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+    llvm::Type* i64 = llvm::Type::getInt64Ty(m.getContext());
+    llvm::Value* pair = b.CreateOr(
+        b.CreateShl(b.CreateZExt(hi, i64), llvm::ConstantInt::get(i64, 32)),
+        b.CreateZExt(lo, i64), "prmt.pair");
+    llvm::Value* out = llvm::ConstantInt::get(i32, 0);
+    for (unsigned i = 0; i < 4; ++i) {
+        llvm::Value* s = b.CreateAnd(
+            b.CreateLShr(selector, llvm::ConstantInt::get(i32, 4 * i)),
+            llvm::ConstantInt::get(i32, 7), "prmt.sel");
+        llvm::Value* byte = b.CreateAnd(
+            b.CreateTrunc(
+                b.CreateLShr(pair, b.CreateShl(b.CreateZExt(s, i64),
+                                               llvm::ConstantInt::get(i64, 3))),
+                i32),
+            llvm::ConstantInt::get(i32, 0xFF), "prmt.byte");
+        out = b.CreateOr(out, b.CreateShl(byte, llvm::ConstantInt::get(i32, 8 * i)),
+                         "prmt");
+    }
+    return out;
 }
 
 llvm::Value* LoweringTarget::coopMatrixLoad(

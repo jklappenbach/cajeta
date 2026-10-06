@@ -372,6 +372,15 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* indices,
             llvm::Value* table);
 
+        // `Bits.permute(lo, hi, selector)`: result byte i is byte (nibble i of
+        // the selector, low three bits) of the eight bytes {lo, hi}. DEFAULT:
+        // shifts over the 64-bit pair. NVPTX is one prmt.b32 and AMDGPU one
+        // v_perm_b32, each with the selector's bit 3s masked off so the
+        // instruction's sign-replicate and constant modes never engage.
+        virtual llvm::Value* bytePermute(llvm::IRBuilderBase& b, llvm::Module& m,
+                                         llvm::Value* lo, llvm::Value* hi,
+                                         llvm::Value* selector);
+
         // `v[i]` with a NON-CONSTANT `i`. DEFAULT: a plain extractelement, left for
         // the backend to legalize. NVPTX overrides it because ITS legalization is a
         // stack round trip: the vector is written to the frame and one lane read
@@ -613,6 +622,27 @@ namespace xpu {
             llvm::Value* iaccVal, llvm::Value* colS,
             llvm::Value* colSPtr = nullptr, llvm::Type* colSETy = nullptr,
             llvm::Value* colSStride = nullptr);
+
+        // --- per-element fragment access (xpu-kernel-independence spec §4.1) --
+        // How many elements of a native fragment of `matrixType` THIS lane
+        // holds: the arity of the fragment struct or vector. 0 for an opaque
+        // fragment (the SPIR-V cooperative matrix), which refuses the access
+        // by name.
+        virtual unsigned coopMatrixElementCount(llvm::Type* matrixType);
+
+        // The (row, col) of element `e` (an i32, a loop counter as often as a
+        // constant) of this lane's fragment, for a `rows` x `cols` tile of
+        // `use`. False when the backend has no established map for the shape:
+        // the default, and every operand fragment that packs bytes. The access
+        // is then refused by name, never guessed; the accumulator maps are the
+        // ones the fused epilogues already measured on the device.
+        virtual bool coopMatrixElementCell(
+            llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*e*/,
+            uint32_t /*rows*/, uint32_t /*cols*/, uint32_t /*use*/,
+            llvm::Type* /*matrixType*/, llvm::Value*& /*row*/,
+            llvm::Value*& /*col*/) {
+            return false;
+        }
 
         // Called once on the kernel the first time a NATIVE coop-matrix tile is
         // allocated: a backend with ABI requirements (AMD WMMA is wave32) sets them.

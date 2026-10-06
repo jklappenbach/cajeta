@@ -991,6 +991,48 @@ public:
     // The iu8 fragment is <4 x i32> per lane, so fromWords is a plain vector build.
     bool coopMatrixFromWordsSupported() const override { return true; }
 
+    // The lane-to-element map of the WMMA wave32 accumulator, the one the
+    // epilogue above walks: element e of lane L is row 2e + (L>>4), column
+    // L & 15. An operand fragment packs its K-values and has no established
+    // map, so it is refused by name (spec §4.1).
+    bool coopMatrixElementCell(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* e, uint32_t rows, uint32_t cols,
+                               uint32_t use, llvm::Type* matrixType,
+                               llvm::Value*& row, llvm::Value*& col) override {
+        auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(matrixType);
+        if (use != 2 || rows != 16 || cols != 16 || !vt || vt->getNumElements() != 8)
+            return false;
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Value* lane = waveLaneId(b, m);
+        row = b.CreateAdd(b.CreateShl(e, llvm::ConstantInt::get(i32, 1)),
+                          b.CreateLShr(lane, llvm::ConstantInt::get(i32, 4)),
+                          "cm.row");
+        col = b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15), "cm.col");
+        return true;
+    }
+
+    // Bits.permute is one v_perm_b32. Its selector is four BYTES where the
+    // contract's is four nibbles, and selector values 0-3 read the SECOND
+    // source: so the nibbles are spread to bytes (a constant selector folds)
+    // and the sources are passed (hi, lo), which puts lo's bytes at 0-3 and
+    // hi's at 4-7 as the contract states.
+    llvm::Value* bytePermute(llvm::IRBuilderBase& b, llvm::Module& m,
+                             llvm::Value* lo, llvm::Value* hi,
+                             llvm::Value* selector) override {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Function* perm = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_perm);
+        llvm::Value* s = b.CreateAnd(selector, llvm::ConstantInt::get(i32, 0x7777u));
+        llvm::Value* sel = b.CreateAnd(s, llvm::ConstantInt::get(i32, 0x7u));
+        for (unsigned i = 1; i < 4; ++i)
+            sel = b.CreateOr(
+                sel,
+                b.CreateShl(b.CreateAnd(s, llvm::ConstantInt::get(i32, 0x7u << (4 * i))),
+                            llvm::ConstantInt::get(i32, 4 * i)),
+                "perm.sel");
+        return b.CreateCall(perm, {hi, lo, sel}, "perm");
+    }
+
     llvm::Value* coopMatrixEpilogueAccum(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
             llvm::Value* faccVal, llvm::Value* rowFPtr, llvm::Type* rowETy,

@@ -174,4 +174,35 @@ public final class Wave {
      */
     @Native("__cajeta_xpu_wave_rotate_u32")
     public static uint32 rotate(uint32 value, uint32 delta);
+
+    /**
+     * `shuffleSync(value, laneId() ^ mask)`: the butterfly form every
+     * tree reduction over a wave is built from. `mask` must keep the source
+     * inside the wave (`mask < width()`).
+     */
+    @Native("__cajeta_xpu_wave_shuffle_xor_u32")
+    public static uint32 shuffleXorSync(uint32 value, uint32 mask);
+
+    /**
+     * The value of lane `laneId() - delta`, or this lane's own `value`
+     * when that lane would be below lane 0 (CUDA's `shfl.up` contract).
+     */
+    @Native("__cajeta_xpu_wave_shuffle_up_u32")
+    public static uint32 shuffleUpSync(uint32 value, uint32 delta);
+
+    /**
+     * The value of lane `laneId() + delta`, or this lane's own `value`
+     * when that lane would be past the last lane (CUDA's `shfl.down`
+     * contract).
+     */
+    @Native("__cajeta_xpu_wave_shuffle_down_u32")
+    public static uint32 shuffleDownSync(uint32 value, uint32 delta);
+
+    /**
+     * {@link #shuffleSync} on a float32: the bits travel unchanged, so the
+     * value arrives exactly. The other shuffle forms take a float through
+     * `Cajeta.f32ToBits` / `Cajeta.bitsToF32`.
+     */
+    @Native("__cajeta_xpu_wave_shuffle_sync_f32")
+    public static float32 shuffleSyncF32(float32 value, uint32 srcLane);
 }

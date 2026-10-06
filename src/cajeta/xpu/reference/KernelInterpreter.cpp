@@ -622,8 +622,14 @@ bool isBuffer(const CajetaTypePtr& t) { return startsWith(canonical(t), "cajeta.
 bool isBlockPadded(const CajetaTypePtr& t) {
     return startsWith(canonical(t), "cajeta.xpu.BlockPadded");
 }
+// Swizzled<T, S> permutes the physical slot of each logical index and is an
+// involution, so at the logical level it is a Shared array: the reference
+// addresses it as one.
+bool isSwizzled(const CajetaTypePtr& t) {
+    return startsWith(canonical(t), "cajeta.xpu.Swizzled");
+}
 bool isShared(const CajetaTypePtr& t) {
-    return startsWith(canonical(t), "cajeta.xpu.Shared") || isBlockPadded(t);
+    return startsWith(canonical(t), "cajeta.xpu.Shared") || isBlockPadded(t) || isSwizzled(t);
 }
 
 std::string simpleName(const std::shared_ptr<CajetaClass>& c) {
@@ -675,6 +681,8 @@ const std::set<std::string>& staticBuiltins() {
         "Barrier.workgroup", "Barrier.wave", "Barrier.workgroupMemory", "Barrier.deviceMemory",
         "Wave.width", "Wave.laneId", "Wave.isFirstLane",
         "Wave.shuffleSync", "Wave.ballotSync", "Wave.rotate",
+        "Wave.shuffleXorSync", "Wave.shuffleUpSync", "Wave.shuffleDownSync",
+        "Wave.shuffleSyncF32",
         "Wave.reduceSum", "Wave.reduceMax", "Wave.reduceMin",
         "Wave.reduceAnd", "Wave.reduceOr", "Wave.reduceXor",
         "Wave.reduceSumF32", "Wave.reduceMaxF32",
@@ -683,7 +691,8 @@ const std::set<std::string>& staticBuiltins() {
         "Group.width", "Group.laneId", "Group.rowId", "Group.reduce", "Group.reduceSegmented",
         "Group.mac",
         "WaveVector.ofSlice", "WaveVector.broadcast", "WaveVector.ofLane",
-        "Bits.reverse", "Bits.count", "Bits.rotateLeft", "Bits.rotateRight",
+        "Bits.reverse", "Bits.count", "Bits.rotateLeft", "Bits.rotateRight", "Bits.permute",
+        "AsyncCopy.copy", "AsyncCopy.commit", "AsyncCopy.wait",
         "Cajeta.bitsToF32", "Cajeta.f32ToBits", "Cajeta.bitsToF64", "Cajeta.f64ToBits",
         "Math.min", "Math.max", "Math.abs", "Math.fma",
         "Math.sqrt", "Math.floor", "Math.ceil", "Math.trunc", "Math.round", "Math.rsqrt",
@@ -696,7 +705,7 @@ const std::set<std::string>& staticBuiltins() {
 const std::set<std::string>& vectorMethods() {
     static const std::set<std::string> s = {
         "dotAccum", "dot", "dotSum", "asUnsigned", "asSigned", "asWords", "asBytes",
-        "widenLo", "widenHi", "narrow", "toF32", "toF16", "toI32",
+        "widenLo", "widenHi", "narrow", "toF32", "toF16", "toBF16", "toI32",
         "bitcastF32", "bitcastI32", "lut4",
     };
     return s;
@@ -740,9 +749,10 @@ const std::map<LocalKind, std::set<std::string>>& memberBuiltins() {
                              "atomicExchange", "atomicCompareExchange"}},
         {LocalKind::Vector, {"dotAccum", "dot", "dotSum", "asUnsigned", "asSigned", "asWords",
                              "asBytes", "widenLo", "widenHi", "narrow", "toF32", "toF16",
-                             "toI32", "bitcastF32", "bitcastI32", "lut4"}},
+                             "toBF16", "toI32", "bitcastF32", "bitcastI32", "lut4"}},
         {LocalKind::Tile, {"splat", "load", "store", "mma", "fromWords", "scaledAccumInto",
-                           "scaledAccumInto2", "rank1Accum", "scaledAccumI32"}},
+                           "scaledAccumInto2", "rank1Accum", "scaledAccumI32",
+                           "elements", "get", "set", "row", "col"}},
         {LocalKind::WaveVec, {}},
         {LocalKind::Scalar, {}},
     };
@@ -2325,9 +2335,9 @@ private:
             for (auto& l : a[0].lanes) out.push_back(mkInt(nt, l.i));
             return vec(nt, out);
         }
-        if (nm == "toF32" || nm == "toF16") {
-            Prim p = nm == "toF32" ? Prim::F32 : Prim::F16;
-            if (nm == "toF16" && !isFloat(et.prim)) return bad("needs float lanes");
+        if (nm == "toF32" || nm == "toF16" || nm == "toBF16") {
+            Prim p = nm == "toF32" ? Prim::F32 : nm == "toF16" ? Prim::F16 : Prim::BF16;
+            if (nm != "toF32" && !isFloat(et.prim)) return bad("needs float lanes");
             std::vector<Val> out;
             for (auto& l : self.lanes) out.push_back(convert(l, {p, true}));
             return vec({p, true}, out);
@@ -2588,6 +2598,73 @@ private:
             tileArrive(nm, where);
             return epilogue(t, nm, a, where);
         }
+        if (nm == "elements" || nm == "get" || nm == "set" || nm == "row" || nm == "col") {
+            // Per-element access with the reference's own lane-to-element
+            // map: lane L of a W-wide wave holds the elements whose row-major
+            // index is i * W + L, so every cell is held by one lane and a
+            // kernel that indexes through row(i) / col(i) agrees with every
+            // backend's map. A tile that does not divide by the wave has no
+            // such map here.
+            const uint32_t W = R.wave;
+            const uint32_t L = (uint32_t) (me % W);
+            if (W == 0 || n % W != 0)
+                refuse("`" + nm + "` on a " + std::to_string(t.rows) + "x" +
+                       std::to_string(t.cols) + " tile over a wave of " + std::to_string(W) +
+                       " (" + where + ")");
+            const uint64_t per = n / W;
+            if (nm == "elements") {
+                if (!a.empty()) refuse("`elements` takes no arguments (" + where + ")");
+                return u32((uint32_t) per);
+            }
+            if (a.empty() || (nm == "set" ? a.size() != 2 : a.size() != 1))
+                refuse("`" + nm + "` takes (i" + std::string(nm == "set" ? ", value" : "") +
+                       ") (" + where + ")");
+            uint64_t i = indexOf(a[0], where);
+            if (i >= per)
+                undefined("`" + nm + "` of element " + std::to_string(i) + " on a lane that holds " +
+                          std::to_string(per) + " (" + where + ")");
+            uint64_t lin = i * W + L;
+            if (nm == "row") return u32((uint32_t) (lin / t.cols));
+            if (nm == "col") return u32((uint32_t) (lin % t.cols));
+            if (nm == "get") {
+                if (!t.data) t.data = zeroTile(t);
+                const TileData& d = *t.data;
+                return fl ? mkFloat(t.elem.prim, d.f[lin]) : mkInt(t.elem, d.i[lin]);
+            }
+            // set: a wave collective, as every tile write is. Each lane brings
+            // (i, value); the wave's new tile is built once and shared.
+            Val v = convert(a[1], t.elem);
+            Arrival arr;
+            arr.what = "CooperativeMatrix.set";
+            arr.site = where.n;
+            arr.where = where;
+            arr.arg.k = Val::Vector;
+            arr.arg.t = {Prim::I32, false};
+            arr.arg.lanes = {u32((uint32_t) i), v};
+            Val wave = rendezvous(arr);
+            if (!t.data) t.data = zeroTile(t);
+            std::vector<double> words;
+            for (uint32_t l = 0; l < wave.lanes.size(); ++l) {
+                const Val& o = wave.lanes[l];
+                if (o.k == Val::None) continue;
+                words.push_back((double) l);
+                words.push_back((double) o.lanes[0].u64());
+                words.push_back(fl ? o.lanes[1].f : (double) o.lanes[1].u64());
+            }
+            Group::TileKey key{9, t.data.get(), nullptr, nullptr, tyCode(t.elem), hashValues(words),
+                               0, 0};
+            t.data = memo(key, {t.data}, [&] {
+                auto d = std::make_shared<TileData>(*t.data);
+                for (uint32_t l = 0; l < wave.lanes.size(); ++l) {
+                    const Val& o = wave.lanes[l];
+                    if (o.k == Val::None) continue;
+                    size_t at = (size_t) o.lanes[0].u64() * W + l;
+                    if (fl) d->f[at] = o.lanes[1].f; else d->i[at] = o.lanes[1].i;
+                }
+                return std::shared_ptr<const TileData>(d);
+            });
+            return Val();
+        }
         if (nm == "fromWords") {
             // The 16x16 int8 operand tile from the wave: lane L supplies
             // column L mod 16 of a B tile (row L mod 16 of an A tile) as
@@ -2783,6 +2860,42 @@ private:
             return vectorCall(a[1], "dotSum", {a[2], a[0]}, where);
         }
         if (startsWith(q, "Cajeta.")) return bitCast(q, args(mc), where);
+        if (q == "AsyncCopy.commit" || q == "AsyncCopy.wait") {
+            // The copy below lands at once, so there is nothing to commit or
+            // wait for; the barrier that publishes it is the kernel's own.
+            args(mc);
+            return Val();
+        }
+        if (q == "AsyncCopy.copy") {
+            // `count` elements of `src` from `srcOffset` land in `dst` at
+            // `dstOffset`, every work-item of the group writing the same
+            // values, which is what the striped hardware copy amounts to.
+            std::vector<Val> a = args(mc);
+            if (a.size() != 5 || a[0].k != Val::MemRef || a[2].k != Val::MemRef)
+                refuse("`AsyncCopy.copy` takes (Shared dst, dstOffset, Buffer src, srcOffset, "
+                       "count) (" + where + ")");
+            Mem& dst = *a[0].mem;
+            Mem& src = *a[2].mem;
+            if (!(dst.elem == src.elem))
+                refuse("`AsyncCopy.copy` between a " + tyName(src.elem) + " buffer and a " +
+                       tyName(dst.elem) + " tile (" + where + ")");
+            uint64_t d0 = indexOf(a[1], where), s0 = indexOf(a[3], where),
+                     cnt = indexOf(a[4], where);
+            for (uint64_t i = 0; i < cnt; ++i)
+                storeElem(dst, d0 + i, loadElem(src, s0 + i, where), where);
+            return Val();
+        }
+        if (q == "Bits.permute") {
+            std::vector<Val> a = args(mc);
+            if (a.size() != 3) refuse("`Bits.permute` takes (lo, hi, selector) (" + where + ")");
+            uint64_t pair = ((uint64_t) (uint32_t) convert(a[1], {Prim::I32, false}).i << 32)
+                          | (uint32_t) convert(a[0], {Prim::I32, false}).i;
+            uint32_t sel = (uint32_t) convert(a[2], {Prim::I32, false}).i;
+            uint32_t r = 0;
+            for (unsigned i = 0; i < 4; ++i)
+                r |= (uint32_t) ((pair >> (8 * ((sel >> (4 * i)) & 7))) & 0xFF) << (8 * i);
+            return u32(r);
+        }
         if (startsWith(q, "Bits.")) {
             std::vector<Val> a = args(mc);
             if (a.empty()) refuse("`" + q + "` without its value (" + where + ")");
@@ -2834,7 +2947,8 @@ private:
         } else if (q.rfind("Wave.", 0) == 0) {
             // Each argument at its declared parameter type.
             bool f32 = q == "Wave.reduceSumF32" || q == "Wave.reduceMaxF32"
-                    || q == "Wave.reduceSumF32Segmented" || q == "Wave.reduceMaxF32Segmented";
+                    || q == "Wave.reduceSumF32Segmented" || q == "Wave.reduceMaxF32Segmented"
+                    || q == "Wave.shuffleSyncF32";
             Ty pt = f32 ? Ty{Prim::F32, true} : Ty{Prim::I32, false};
             if (q == "Wave.ballotSync") pt = {Prim::Bool, false};
             if (a.empty()) refuse("`" + q + "` without its value (" + where + ")");
@@ -3328,6 +3442,9 @@ private:
             {"Group.mac", {Prim::I32, true}},
             {"Bits.count", {Prim::I32, false}}, {"Bits.reverse", {Prim::I32, false}},
             {"Bits.rotateLeft", {Prim::I32, false}}, {"Bits.rotateRight", {Prim::I32, false}},
+            {"Bits.permute", {Prim::I32, false}},
+            {"Wave.shuffleXorSync", {Prim::I32, false}}, {"Wave.shuffleUpSync", {Prim::I32, false}},
+            {"Wave.shuffleDownSync", {Prim::I32, false}}, {"Wave.shuffleSyncF32", {Prim::F32, true}},
             {"Cajeta.bitsToF32", {Prim::F32, true}}, {"Cajeta.f32ToBits", {Prim::I32, true}},
             {"Cajeta.bitsToF64", {Prim::F64, true}}, {"Cajeta.f64ToBits", {Prim::I64, true}},
         };
@@ -3507,7 +3624,28 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
         }
         return;
     }
-    if (q == "WaveVector.ofLane" || q == "CooperativeMatrix.fromWords") {
+    if (q == "Wave.shuffleXorSync" || q == "Wave.shuffleUpSync" || q == "Wave.shuffleDownSync"
+            || q == "Wave.shuffleSyncF32") {
+        // One shuffle from a computed source: xor is the butterfly; up and
+        // down read the lane itself past the wave's edge, as shfl does.
+        for (uint32_t m : lanes) {
+            uint64_t d = G.sync[m].arrival.arg2.u64();
+            uint64_t l = laneOf(m);
+            uint64_t src;
+            if (q == "Wave.shuffleXorSync") src = l ^ d;
+            else if (q == "Wave.shuffleUpSync") src = l >= d ? l - d : l;
+            else if (q == "Wave.shuffleDownSync") src = l + d < W ? l + d : l;
+            else src = d;
+            auto it = byLane.find((uint32_t) src);
+            if (src >= W || it == byLane.end())
+                undefined("`" + q + "` reads lane " + std::to_string(src) +
+                          ", which is not active (" + where + ")");
+            G.sync[m].arrival.result = argOf(it->second);
+        }
+        return;
+    }
+    if (q == "WaveVector.ofLane" || q == "CooperativeMatrix.fromWords"
+            || q == "CooperativeMatrix.set") {
         // Every lane receives the wave's values, lane by lane; a lane that
         // has returned leaves a hole, which a verb that reads it reports.
         Val v;

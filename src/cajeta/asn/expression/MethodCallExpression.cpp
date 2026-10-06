@@ -5631,6 +5631,17 @@ namespace cajeta {
                     return vecops::convertFpLanes(*builder, self,
                         llvm::Type::getHalfTy(builder->getContext()));
                 }
+                if (methodCallName == "toBF16") {
+                    if (!parameters.empty() || !isFloat) {
+                        throw Exception("Vector.toBF16 takes no arguments and "
+                                        "a float-element receiver",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of("bfloat16"), vecT->getLanes());
+                    return vecops::convertFpLanes(*builder, self,
+                        llvm::Type::getBFloatTy(builder->getContext()));
+                }
                 if (methodCallName == "toI32") {
                     if (!parameters.empty() || !isFloat) {
                         throw Exception("Vector.toI32 takes no arguments and "

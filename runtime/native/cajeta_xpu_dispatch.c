@@ -132,6 +132,19 @@ uint32_t __cajeta_xpu_wave_prefix_product_u32(uint32_t value) { (void)value; ret
 uint32_t __cajeta_xpu_wave_rotate_u32(uint32_t value, uint32_t delta) {
     (void)delta; return value;
 }
+// A one-lane wave: every shuffle form reads the lane itself.
+uint32_t __cajeta_xpu_wave_shuffle_xor_u32(uint32_t value, uint32_t mask) {
+    (void)mask; return value;
+}
+uint32_t __cajeta_xpu_wave_shuffle_up_u32(uint32_t value, uint32_t delta) {
+    (void)delta; return value;
+}
+uint32_t __cajeta_xpu_wave_shuffle_down_u32(uint32_t value, uint32_t delta) {
+    (void)delta; return value;
+}
+float __cajeta_xpu_wave_shuffle_sync_f32(float value, uint32_t srcLane) {
+    (void)srcLane; return value;
+}
 
 uint32_t __cajeta_xpu_quad_broadcast(uint32_t value, uint32_t index) {
     (void)index; return value;
@@ -164,6 +177,16 @@ uint32_t __cajeta_xpu_bits_rotate_left_u32(uint32_t value, uint32_t amount) {
 uint32_t __cajeta_xpu_bits_rotate_right_u32(uint32_t value, uint32_t amount) {
     amount &= 31u;
     return amount == 0u ? value : ((value >> amount) | (value << (32u - amount)));
+}
+// Byte permute: result byte i is byte (selector nibble i & 7) of {lo, hi}.
+uint32_t __cajeta_xpu_bits_permute_u32(uint32_t lo, uint32_t hi, uint32_t selector) {
+    uint64_t bytes = ((uint64_t) hi << 32) | (uint64_t) lo;
+    uint32_t out = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+        unsigned s = (selector >> (4 * i)) & 7u;
+        out |= (uint32_t) ((bytes >> (8 * s)) & 0xFFu) << (8 * i);
+    }
+    return out;
 }
 
 // --- CPU backend kernel registry -------------------------------------------

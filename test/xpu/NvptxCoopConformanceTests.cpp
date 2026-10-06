@@ -267,6 +267,10 @@ const std::map<std::string, std::string>& coveredElsewhere() {
         {"splat",     "XpuCooperativeMatrixDeviceTests"},
         {"mma",       "XpuCooperativeMatrixDeviceTests + NvptxCoopColMajorTests"},
         {"fromWords", "NvptxCoopFromWordsTests (layout, 8 waves, refusal)"},
+        // The per-element access: every cell of a float32 and an int32
+        // accumulator, written through get/set at row(i)/col(i), checked
+        // on the device against the store-and-reload contract.
+        {"set",       "XpuFragmentElementTests (every cell, nvptx device)"},
     };
     return m;
 }

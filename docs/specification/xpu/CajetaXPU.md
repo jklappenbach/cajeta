@@ -750,6 +750,65 @@ compile-time constant would put the array in memory, so it is refused,
 naming the array. `break`, `continue` and assigning the counter inside an
 unrolled loop are refused too.
 
+#### 5.5.1 Per-element access with the lane-to-element map
+
+A fragment is spread across the wave in a layout the hardware chooses. Five
+intrinsics let a kernel walk the elements its own lane holds without naming
+that layout, which is what an epilogue written as library code needs:
+
+```cajeta
+uint32 n = acc.elements();                 // this lane's count, a constant
+for (uint32 i = 0; i < n; i = i + 1) {
+    uint32 r = acc.row(i);                 // the element's cell in the tile
+    uint32 c = acc.col(i);
+    acc.set(i, acc.get(i) * rowF[r] * colF[c]);
+}
+```
+
+On the native and distributed tiers every cell is held by exactly one lane,
+so the loop above on every lane visits the tile once; on the replicated
+software tile every work-item holds the whole tile. The map is the
+backend's: NVIDIA's m16n16k16 accumulator layout (the quad selects the row
+pair, the lane's low two bits the column pair, eight elements across two
+column halves), AMD's WMMA wave32 layout (element `e` of lane `L` is row
+`2e + (L >> 4)`, column `L & 15`), the software tile's ownership on cpu, and
+the reference interpreter's own (`i · W + L`, row-major). A kernel that only
+indexes through `row(i)` and `col(i)` therefore agrees everywhere, and one
+that assumes a particular map is caught by the conformance corpus, which
+replays the same kernel through the reference.
+
+The map is established for accumulator fragments (`Use` 2) of the 16x16
+shapes the fused epilogues measured on the device. An A or B operand
+fragment packs its bytes on the native tiers and has no established map, so
+`get`, `set`, `row` and `col` on one are refused by name. The SPIR-V
+cooperative matrix defines no lane-to-element map at all, so the Vulkan
+backend refuses all five by name; stage the tile through `Shared<T>` there.
+
+#### 5.5.2 The building blocks (xpu-kernel-independence spec §4.1)
+
+A finished operation (a Q4_K tile's integer fold, an attention row's
+softmax) is library code over these. This is the inventory as of
+2026-10-06, each with its reference semantics in the interpreter and a
+conformance kernel in the corpus (`XpuBuildingBlockCorpusTests`):
+
+| Block | Spelling | nvptx | amdgpu | vulkan | cpu |
+|---|---|---|---|---|---|
+| fragment load, store, multiply | `CooperativeMatrix.load/store/splat/mma` | wmma | WMMA | KHR coop matrix (bf16 on the software tile) | software tile |
+| per-element access with the lane map | `elements/get/set/row/col` (§5.5.1) | accumulator | accumulator | refused by name | every tile |
+| integer multiply-add over packed bytes | `Vector<u8/i8,N>.dotAccum/dot/dotSum`, `Group.mac` | dp4a | v_dot4 | OpSDot/UDot | VNNI or widening |
+| byte permute | `Bits.permute(lo, hi, sel)`, `Vector<int8,N>.lut4` | prmt | v_perm | shifts (lut4: a vector shuffle) | shifts |
+| wave shuffle, reduce, ballot | `Wave.shuffleSync/F32/XorSync/UpSync/DownSync`, `reduce*`, `ballotSync`, `Group.reduce` | shfl, redux | the wave intrinsics | subgroup ops | the vectorized lanes |
+| conversions between widths | scalar casts; `Vector.toF32/toF16/toBF16/toI32/widenLo/widenHi/narrow/asWords/asBytes` | every backend, through LLVM's conversions | | | |
+| async copy | `AsyncCopy.copy/commit/wait`, `CoopStage.panelAsync` | cp.async | LDS-direct load | synchronous copy | synchronous copy |
+| swizzled shared tile | `Swizzled<T, S> t = shared T[N]` | identity layout | XOR swizzle | identity layout | identity layout |
+
+An identity layout or a synchronous copy is the block present without its
+acceleration: the kernel's answer is the same, as the corpus checks, and
+the speed is a backend's own work, tracked like any codegen defect. What is
+NOT yet a block: a float shuffle in the xor, up and down forms (take the
+bits through `Cajeta.f32ToBits`), a vector `toF64` or packed `toI8/toI16`,
+and the `Quad` ops in the reference interpreter.
+
 ### 5.6 Vendor-only surfaces
 
 Each native backend exposes things its hardware uniquely supports:

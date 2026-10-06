@@ -41,7 +41,9 @@ argument is passed as its bits.
 - Memory is sequentially consistent, so `Barrier.workgroupMemory` and
   `Barrier.deviceMemory` order nothing.
 - Each `Shared<T>` declaration has one array per workgroup, which every
-  work-item of that workgroup binds. A `BlockPadded<T, Block, Pad>` array is
+  work-item of that workgroup binds. A `Swizzled<T, S>` array is a `Shared`
+  array: its XOR permutation of physical slots is an involution the program
+  never observes, so logical index `a` is element `a`. A `BlockPadded<T, Block, Pad>` array is
   the same with the backend's layout: element `a` lives at slot
   `a + (a / Block) · Pad`, the declared size counts slots, and the bound is on
   the slot, so a logical index that lands past the end is out of bounds.
@@ -90,6 +92,9 @@ These are every built-in the interpreter defines.
 | `Barrier.workgroupMemory`, `deviceMemory` | no effect |
 | `Wave.width`, `laneId`, `isFirstLane` | `W`; `linear % W`; `laneId == 0` |
 | `Wave.shuffleSync(v, src)` | `v` from lane `src`, which must be active |
+| `Wave.shuffleSyncF32(v, src)` | the same on a float32; the bits travel unchanged |
+| `Wave.shuffleXorSync(v, m)` | `v` from lane `laneId ^ m`, which must be active |
+| `Wave.shuffleUpSync(v, d)`, `shuffleDownSync(v, d)` | `v` from lane `laneId - d` or `laneId + d`; a lane past the wave's edge reads itself |
 | `Wave.rotate(v, d)` | `v` from lane `(laneId + d) % W` |
 | `Wave.ballotSync(p)` | bit `i` is set when active lane `i` passes `p` |
 | `Wave.reduceSum/Max/Min/And/Or/Xor` | uint32, over the active lanes in lane order; sums wrap |
@@ -101,6 +106,8 @@ These are every built-in the interpreter defines.
 | `Group.reduceSegmented(seg, op, v)` | the segmented form of the same |
 | `Cajeta.bitsToF32`, `f32ToBits`, `bitsToF64`, `f64ToBits` | the same bits, reinterpreted |
 | `Bits.count`, `reverse`, `rotateLeft`, `rotateRight` | on uint32; a rotate takes its amount modulo 32 |
+| `Bits.permute(lo, hi, sel)` | byte `i` of the result is byte `sel.nibble[i] & 7` of the eight bytes `{lo, hi}`, `lo` holding bytes 0 to 3 |
+| `AsyncCopy.copy(dst, d0, src, s0, n)` | `dst[d0 + i] = src[s0 + i]` for `i < n`, landed at once by every work-item of the group; `commit` and `wait` do nothing, and the `Barrier.workgroup` that publishes the tile is the kernel's own |
 | `for (T k : Group.stripe(n))` | `k` runs from `laneId` while below `n`, stepping by `W` |
 | `Group.mac(acc, a, b)` | `a.dotSum(b, acc)`: `acc` plus the int8 products, wrapping in int32; a lane's own, not a wave operation |
 | `for (idx, e : buf.range(n))` | `idx` runs from `globalIdX` while below `n`, stepping by the grid's width in work-items; `e` is a copy of `buf[idx]` |
@@ -114,7 +121,7 @@ These are every built-in the interpreter defines.
 | `v.asWords()`, `asBytes()` | 8-bit lanes regrouped into int32, little-endian, and back |
 | `v.widenLo()`, `widenHi()` | the low or high half of the lanes, each extended by its own signedness to twice the width |
 | `v.narrow(w)` | the lanes of `v`, then those of `w`, each truncated to half the width |
-| `v.toF32()`, `toF16()`, `toI32()` | lane conversions; `toI32` truncates toward zero |
+| `v.toF32()`, `toF16()`, `toBF16()`, `toI32()` | lane conversions, rounding to nearest even into the 16-bit floats; `toI32` truncates toward zero |
 | `v.bitcastF32()`, `bitcastI32()` | 32-bit lanes reinterpreted |
 | `v.lut4(t)` | lane `i` is `t[v[i] & 15]` |
 | `v.dotSum(a, acc)` | `acc + Σi v[i]·a[i]`, with `v` extended by its own signedness and `a` sign-extended, wrapping in int32 |
@@ -123,6 +130,7 @@ These are every built-in the interpreter defines.
 | a call to a `@Device` helper | a new frame. Arguments are converted to the parameter types, buffers pass by reference, and the result is converted to the return type. A recursive call is refused. |
 | `CooperativeMatrix` `splat`, `load`, `store` | element (r, c) is `src[off + r·stride + c]` for row layout 0, or `src[off + c·stride + r]` for column layout 1 |
 | `CooperativeMatrix.fromWords(w0, w1, w2, w3)` | the 16x16 int8 operand tile from the wave: lane `L` supplies column `L mod 16` of a B tile (row `L mod 16` of an A tile) as sixteen little-endian bytes across its four words, k-value `k` in byte `k & 3` of word `k >> 2`. Lanes that share a column must agree |
+| `t.elements()`, `get(i)`, `set(i, v)`, `row(i)`, `col(i)` | per-element access with the reference's own lane-to-element map: lane `L` of a `W`-wide wave holds the `rows·cols / W` elements whose row-major index is `i·W + L`, so `row(i)` is `(i·W + L) / cols` and `col(i)` is `(i·W + L) % cols`. `set` is a wave collective: every lane's `(i, v)` lands in the wave's one tile. A tile that does not divide by the wave is refused; an element index past `elements()` is undefined behaviour. Each backend has its own map, so a kernel that indexes through `row(i)` / `col(i)` agrees with every backend and one that assumes a map does not |
 | `acc.scaledAccumInto(facc, rowF, colF)` | `facc[r][c] += (rowF[r] · colF[c]) · acc[r][c]`, each product and the sum rounded once in float32, `acc` converted to float32 first |
 | `acc.scaledAccumInto2(facc, rowF, colF, rowG, colG)` | the same with `rowG[r] · colG[c]` added to the term before it is accumulated |
 | `facc.rank1Accum(rowF, colF)` | `facc[r][c] += rowF[r] · colF[c]` |
@@ -142,7 +150,6 @@ interpreter cannot define. Each entry names the construct and its line. If the
 list is not empty, `run` throws `XPU-REF01` with the first entry, so the kernel
 is never run partially. Today that list includes:
 
-- swizzled `Shared` arrays;
 - textures, images and samplers;
 - value types;
 - `KernelThread.clock()`, which has no reference value by nature.

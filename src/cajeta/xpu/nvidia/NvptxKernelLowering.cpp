@@ -847,6 +847,52 @@ public:
     // wrong formula there is not noise, it is a readable permutation.
     bool coopMatrixEpilogueSupported() const override { return true; }
 
+    // The lane-to-element map of the m16n16k16 f32/s32 accumulator, as the
+    // epilogue above uses it and the device test measured it: wmma m16n16k16
+    // is two m16n8k16 halves side by side, the quad (lane>>2) selects the row
+    // pair and (lane&3) the column pair. Element e: half h = e>>2, position
+    // j = e&3, row = (lane>>2) + 8*(j>>1), col = 2*(lane&3) + 8*h + (j&1).
+    // Only that shape has a measured map; an operand fragment packs bytes
+    // and is refused by name (spec §4.1).
+    bool coopMatrixElementCell(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* e, uint32_t rows, uint32_t cols,
+                               uint32_t use, llvm::Type* matrixType,
+                               llvm::Value*& row, llvm::Value*& col) override {
+        if (use != 2 || rows != 16 || cols != 16 || fragCount(matrixType) != 8)
+            return false;
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Value* lane = waveLaneId(b, m);
+        llvm::Value* grp = b.CreateLShr(lane, llvm::ConstantInt::get(i32, 2), "cm.grp");
+        llvm::Value* col2 = b.CreateShl(
+            b.CreateAnd(lane, llvm::ConstantInt::get(i32, 3)),
+            llvm::ConstantInt::get(i32, 1), "cm.col2");
+        llvm::Value* h = b.CreateLShr(e, llvm::ConstantInt::get(i32, 2), "cm.h");
+        llvm::Value* j = b.CreateAnd(e, llvm::ConstantInt::get(i32, 3), "cm.j");
+        row = b.CreateAdd(
+            grp,
+            b.CreateShl(b.CreateLShr(j, llvm::ConstantInt::get(i32, 1)),
+                        llvm::ConstantInt::get(i32, 3)),
+            "cm.row");
+        col = b.CreateAdd(
+            b.CreateAdd(col2, b.CreateShl(h, llvm::ConstantInt::get(i32, 3))),
+            b.CreateAnd(j, llvm::ConstantInt::get(i32, 1)), "cm.col");
+        return true;
+    }
+
+    // Bits.permute is one prmt.b32: a holds bytes 0-3 and b bytes 4-7, as
+    // the contract states, and the selector's bit 3s are masked so the
+    // sign-replicate mode never engages.
+    llvm::Value* bytePermute(llvm::IRBuilderBase& b, llvm::Module& m,
+                             llvm::Value* lo, llvm::Value* hi,
+                             llvm::Value* selector) override {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Function* prmt = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::nvvm_prmt);
+        llvm::Value* sel = b.CreateAnd(
+            selector, llvm::ConstantInt::get(i32, 0x7777u), "prmt.sel");
+        return b.CreateCall(prmt, {lo, hi, sel}, "prmt");
+    }
+
     // Element e of an accumulator fragment, for either shape. NVPTX fragments
     // are STRUCTS (extractvalue), where AMD's are vectors (extractelement),
     // so the generic epilogue cannot be shared as written.

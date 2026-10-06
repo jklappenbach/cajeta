@@ -385,4 +385,54 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      */
     @Intrinsic
     public final void store(Shared<T> dst, uint32 offset, uint32 layout, uint32 stride);
+
+    /**
+     * PER-ELEMENT ACCESS WITH THE LANE-TO-ELEMENT MAP (xpu-kernel-independence
+     * §4.1). A fragment is spread across the wave in a layout the hardware
+     * chooses; these five intrinsics let a kernel walk the elements THIS LANE
+     * holds without knowing that layout, which is what a library epilogue
+     * needs (`facc[r][c] += rowF[r] * colF[c] * acc[r][c]` is a loop over
+     * `elements()` reading `row(i)` and `col(i)`):
+     *
+     *     uint32 n = acc.elements();
+     *     for (uint32 i = 0; i < n; i = i + 1) {
+     *         acc.set(i, acc.get(i) * rowF[acc.row(i)] * colF[acc.col(i)]);
+     *     }
+     *
+     * `elements()` is this lane's element count, a compile-time constant on
+     * every backend. `get(i)` and `set(i, v)` read and write element `i` of
+     * this lane; `row(i)` and `col(i)` give its cell in the Rows x Cols tile.
+     * Every cell of the tile is held by exactly one lane of the wave on the
+     * native and distributed tiers, so a loop over `elements()` on every lane
+     * visits the whole tile once; on the replicated software tile every
+     * work-item holds the whole tile. The map is the hardware's (NVIDIA's
+     * m16n16k16 accumulator layout, AMD's WMMA layout, the software tile's
+     * ownership) and the reference interpreter has its own, so a kernel that
+     * only indexes through `row(i)` / `col(i)` is portable and one that
+     * assumes a particular map is caught by the conformance corpus.
+     *
+     * Established for accumulator tiles (`Use` 2). An A or B operand fragment
+     * packs its bytes on the native tiers and has no established map: the
+     * backend refuses `get`/`set`/`row`/`col` on it BY NAME. The SPIR-V
+     * cooperative matrix defines no lane-to-element map, so the Vulkan backend
+     * refuses all five by name; stage the tile through `Shared<T>` there.
+     */
+    @Intrinsic
+    public final uint32 elements();
+
+    /** Element `i` of this lane's fragment (see {@link #elements}). */
+    @Intrinsic
+    public final T get(uint32 i);
+
+    /** Set element `i` of this lane's fragment to `value` (see {@link #elements}). */
+    @Intrinsic
+    public final void set(uint32 i, T value);
+
+    /** The tile row of element `i` of this lane's fragment (see {@link #elements}). */
+    @Intrinsic
+    public final uint32 row(uint32 i);
+
+    /** The tile column of element `i` of this lane's fragment (see {@link #elements}). */
+    @Intrinsic
+    public final uint32 col(uint32 i);
 }
