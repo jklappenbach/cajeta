@@ -21,6 +21,7 @@
 #include "../asn/expression/DotExpression.h"
 #include "../asn/expression/Identifier.h"
 #include "../asn/expression/LiteralExpression.h"
+#include "../asn/expression/CreatorRest.h"
 #include "../asn/expression/MethodCallExpression.h"
 #include "../asn/expression/NewExpression.h"
 #include "../error/DiagnosticEngine.h"
@@ -146,6 +147,13 @@ namespace cajeta::ownership {
                     if (auto mv = std::dynamic_pointer_cast<MoveExpression>(node)) {
                         if (!stored.count(node.get()) && !mv->isCaptureMarker()) keep(node, "", false);
                     }
+                    auto transferred = [&](const std::vector<MethodCallParameter>& params) {
+                        for (auto& p : params) {
+                            if (p.callerTransferred && p.expression) keep(p.expression, "", false);
+                        }
+                    };
+                    if (auto call = std::dynamic_pointer_cast<MethodCallExpression>(node)) transferred(call->getParameters());
+                    if (auto creator = std::dynamic_pointer_cast<ClassCreatorRest>(node)) transferred(creator->getParameters());
                     node->forEachSubNode(walk);
                 };
             walk(body);
@@ -417,8 +425,9 @@ namespace cajeta::ownership {
                                             FieldStoreRecord rec{className, method->getName(),
                                                 (int) bin->getSourceLine(), target, op, kind, name, type,
                                                 file, origin, (int) bin->getSourceColumn() + 1};
-                                            std::string key = className + " " + rec.methodName + " " + target + " " + op
-                                                + " " + kind + " " + name;
+                                            std::string key = className + " " + rec.methodName + "@"
+                                                + std::to_string(rec.line) + ":" + std::to_string(rec.column)
+                                                + " " + target + " " + op + " " + kind + " " + name;
                                             key += " " + std::to_string(ordinal[key]++);
                                             if (seen.insert(key).second) sink(rec);
                                         }

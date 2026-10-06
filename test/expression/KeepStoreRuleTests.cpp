@@ -481,3 +481,58 @@ TEST(KeepStoreRuleTests, aliasOfNonEscapingHolderCompilesAndEscapingAliasRejecte
         "}\n",
         "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
 }
+
+// Rule 8: a holder passed with `#` as a call argument escapes like a returned one.
+TEST(KeepStoreRuleTests, holderPassedWithSharpToAMethodRejected) {
+    expectError(
+        "public final class Sink {\n"
+        "    Node kept;\n"
+        "    public Sink() { }\n"
+        "    public void take(#Node n) { this.kept #= n; }\n"
+        "}\n"
+        "public final class K {\n"
+        "    Sink sink;\n"
+        "    public K() { this.sink = heap Sink(); }\n"
+        "    public void add(Cell p) {\n"
+        "        Node n = heap Node();\n"
+        "        n.c = p;\n"
+        "        this.sink.take(#n);\n"
+        "    }\n"
+        "}\n",
+        "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
+}
+
+TEST(KeepStoreRuleTests, holderPassedWithSharpToAConstructorRejected) {
+    expectError(
+        "public final class Box {\n"
+        "    Node kept;\n"
+        "    public Box(#Node n) { this.kept #= n; }\n"
+        "}\n"
+        "public final class K {\n"
+        "    public K() { }\n"
+        "    public static #Box wrap(Cell p) {\n"
+        "        Node n = heap Node();\n"
+        "        n.c = p;\n"
+        "        return heap Box(#n);\n"
+        "    }\n"
+        "}\n",
+        "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE");
+}
+
+// Twin: a holder lent to a call stays the frame's own.
+TEST(KeepStoreRuleTests, holderLentToACallCompiles) {
+    expectCompiles(
+        "public final class Probe {\n"
+        "    public Probe() { }\n"
+        "    public int64 look(Node n) { return n.c.n; }\n"
+        "}\n"
+        "public final class K {\n"
+        "    public K() { }\n"
+        "    public static int64 peek(Cell p) {\n"
+        "        Node n = heap Node();\n"
+        "        n.c = p;\n"
+        "        Probe pr = heap Probe();\n"
+        "        return pr.look(n);\n"
+        "    }\n"
+        "}\n");
+}

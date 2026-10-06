@@ -141,3 +141,23 @@ TEST(FieldStoreCensusLintTests, aLintWithoutTheCensusInstantiatesNothing) {
     EXPECT_FALSE(has(out, "[field-store")) << out;
     EXPECT_FALSE(has(out, "KEEP_NEEDS_SHARP_STORE")) << out;
 }
+
+// Two overloads that keep a parameter the same way are two violations, not one.
+TEST(FieldStoreCensusLintTests, identicalStoresInTwoOverloadsAreBothListed) {
+    if (!fs::exists(compilerBinary())) GTEST_SKIP() << "no compiler binary";
+    auto root = freshTempDir("src");
+    writeUnit(root, "test/Failure.cajeta",
+        "package test;\n"
+        "public class Failure {\n"
+        "    public String message;\n"
+        "    public int64 code;\n"
+        "    public Failure(String message) { this.message = message; }\n"
+        "    public Failure(String message, int64 code) {\n"
+        "        this.message = message;\n"
+        "        this.code = code;\n"
+        "    }\n"
+        "}\n");
+    std::string out = lint(root, true);
+    EXPECT_TRUE(has(out, "test/Failure.cajeta:5: CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE")) << out;
+    EXPECT_TRUE(has(out, "test/Failure.cajeta:7: CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE")) << out;
+}
