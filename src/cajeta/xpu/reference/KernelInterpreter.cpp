@@ -901,6 +901,11 @@ private:
             } else if (auto v = std::dynamic_pointer_cast<CajetaVector>(t);
                        v && inHelper && primOf(v->getElementType())) {
                 kinds[p->getName()] = LocalKind::Vector;
+            } else if (inHelper && isCooperativeMatrixType(t)) {
+                // The caller's tile, by reference (spec §4.2).
+                kinds[p->getName()] = LocalKind::Tile;
+            } else if (inHelper && isShared(t) && primOf(typeArg(t, 0))) {
+                kinds[p->getName()] = LocalKind::Shared;
             } else {
                 note("parameter `" + p->getName() + "` of type " + canonical(t), m->getBlock());
             }
@@ -2185,6 +2190,14 @@ private:
                            " (" + where + ")");
                 for (auto& l : v.lanes) l = convert(l, et);
                 v.t = et;
+            } else if (isCooperativeMatrixType(t)) {
+                // The caller's tile by reference: the helper's set lands in it.
+                if (v.k != Val::TileRef || !v.tile || v.tile->rows != (uint32_t) constArg(t, 1) ||
+                    v.tile->cols != (uint32_t) constArg(t, 2) ||
+                    v.tile->use != (uint32_t) constArg(t, 3) ||
+                    !(v.tile->elem == *primOf(typeArg(t, 0))))
+                    refuse("passing a tile that is not a " + canonical(t) + " as `" +
+                           p->getName() + "` to " + qualified(m) + " (" + where + ")");
             } else if (v.k != Val::MemRef) {
                 refuse("passing `" + p->getName() + "` to " + qualified(m) + " (" + where + ")");
             }

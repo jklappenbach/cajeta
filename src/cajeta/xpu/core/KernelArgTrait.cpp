@@ -210,10 +210,17 @@ bool isAccelStructType(const CajetaTypePtr& type) {
 bool isDeviceResourceType(const CajetaTypePtr& type) {
     if (!type) return false;
     const std::string c = type->toCanonical();
+    auto starts = [&](const std::string& p) { return c.compare(0, p.size(), p) == 0; };
+    // A fragment or a shared panel as a @Device helper's parameter (the
+    // caller's, by reference) is device memory too: the helper's host copy
+    // is a stub, as a buffer-taking helper's is.
     return isBufferInstantiation(c) || isImageCanonical(c) || isSamplerCanonical(c)
         || isAccelStructCanonical(c) || isTextureCanonical(c)
         || isTexture3DCanonical(c) || isTexture1DCanonical(c)
-        || isTexture2DArrayCanonical(c) || isTextureCubeCanonical(c);
+        || isTexture2DArrayCanonical(c) || isTextureCubeCanonical(c)
+        || isCooperativeMatrixCanonical(c) || isTileCanonical(c)
+        || starts("cajeta.xpu.Shared<") || starts("cajeta.xpu.Swizzled<")
+        || starts("cajeta.xpu.BlockPadded<");
 }
 
 bool isRayQueryType(const CajetaTypePtr& type) {

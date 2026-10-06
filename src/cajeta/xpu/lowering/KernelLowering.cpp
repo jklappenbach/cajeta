@@ -260,7 +260,10 @@ static inline int textureCoordArity(int dim) {
 // One device kernel's worth of lowering state.
 class DeviceLowerer {
 public:
-    using DeviceFnCache = std::map<const Method*, llvm::Function*>;
+    // A helper, and the tile tier it was lowered under ("" for one that
+    // takes no fragment).
+    using DeviceFnKey = std::pair<const Method*, std::string>;
+    using DeviceFnCache = std::map<DeviceFnKey, llvm::Function*>;
 
     DeviceLowerer(llvm::Module& m, llvm::Function* fn, LoweringTarget& target)
         : mod(m), ctx(m.getContext()), builder(ctx), fn(fn), target(target) {}
@@ -310,11 +313,23 @@ public:
                 ++idx;
                 continue;
             }
+            if ((p.isFragment || p.isShared) && !paramsAsArgs)
+                unsupported("kernel parameter type '" +
+                            std::string(p.isFragment ? "CooperativeMatrix" : "Shared") +
+                            "' (" + p.name + "): a fragment or a shared panel is a "
+                            "kernel's own, and a @Device helper's parameter");
             llvm::Value* v = paramsAsArgs
                 ? fn->getArg(idx)
                 : target.materializeParam(builder, mod, fn, idx, p);
             ++idx;
-            if (p.isAccelStruct) {
+            if (p.isFragment) {
+                // The caller's fragment: its slot is the incoming pointer,
+                // shaped by the declared type under the inherited tier.
+                CajetaTypePtr declType;
+                for (auto& q : method->getParameterList())
+                    if (q && q->getName() == p.name) declType = q->getType();
+                coopMatrixSlots[p.name] = buildCoopMatrixSlot(declType, p.name, v);
+            } else if (p.isAccelStruct) {
                 accelHandles[p.name] = v;
             } else if (p.isTexture) {
                 textureHandles[p.name] = v;
@@ -483,6 +498,7 @@ private:
 
     std::vector<LoweringTarget::KernelParam> kparams;  // admitted params
     bool paramsAsArgs = false;  // true for @Device helpers (params are fn args)
+    bool inheritedCoopState = false;  // a fragment-taking helper: the caller's tier
     std::map<std::string, bool> bufferElemSigned;  // buffer name -> elem signed?
     // Set when the body lowers a cross-lane subgroup op; read at finalization to
     // request maximal reconvergence where the backend models it.
@@ -1419,6 +1435,28 @@ private:
         return found;
     }
 
+    // Whether `node` reads or writes a fragment's elements by index
+    // (get/set/row/col on a CooperativeMatrix local or parameter). A loop
+    // over `elements()` with such a body unrolls at compile time, so each
+    // access is at a constant position and lives in a register (spec §4.3:
+    // the library fold must cost what the built-in costs).
+    bool usesFragmentElements(const AbstractSyntaxNodePtr& node) {
+        if (!node) return false;
+        if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
+            const std::string& n = mc->getMethodCallName();
+            if ((n == "get" || n == "set" || n == "row" || n == "col") &&
+                !mc->getChildren().empty())
+                if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(
+                        mc->getChildren()[0]))
+                    if (coopMatrixSlots.count(id->getTextValue())) return true;
+        }
+        bool found = false;
+        node->forEachSubNode([&](const AbstractSyntaxNodePtr& c) {
+            if (!found) found = usesFragmentElements(c);
+        });
+        return found;
+    }
+
     // Unroll `for (T i = c0; <cond on i>; i = <expr on i>)` whose body uses a
     // fragment array: the body is lowered once per iteration with `i` bound to
     // that iteration's constant, so every fragment index in it is constant.
@@ -1497,7 +1535,8 @@ private:
     // for (init; cond; update) body Ã¢ÂÂ BB shape mirrors the host
     // (Statement.cpp): head(cond) / body / update / exit; continueÃ¢ÂÂupdate.
     void lowerFor(const std::shared_ptr<ForStatement>& fs) {
-        if (!fragmentArrays.empty() && usesFragmentArray(fs->getBody())
+        if (((!fragmentArrays.empty() && usesFragmentArray(fs->getBody()))
+                 || (!coopMatrixSlots.empty() && usesFragmentElements(fs->getBody())))
                 && tryUnrollFor(fs))
             return;
         if (fs->getInit()) lowerStatement(fs->getInit());
@@ -3762,9 +3801,31 @@ private:
             const auto& args = mc->getParameters();
             std::vector<llvm::Value*> argv;
             argv.reserve(args.size());
-            for (unsigned i = 0; i < args.size(); ++i)
-                argv.push_back(coerceTo(lowerExpr(args[i].expression),
-                                        hfn->getArg(i)->getType()));
+            unsigned i = 0;
+            for (auto& p : m->getParameterList()) {
+                if (!p || p->getName() == "this") continue;
+                if (i >= args.size()) break;
+                const ExpressionPtr& ae = args[i].expression;
+                CajetaTypePtr pt = p->getType();
+                if (isCooperativeMatrixType(pt)) {
+                    // The caller's fragment, by reference: its slot pointer,
+                    // and only when its shape is the parameter's.
+                    argv.push_back(fragmentArgFor(ae, pt, p->getName(), name));
+                } else if (pt && pt->toCanonical().compare(
+                                     0, 18, "cajeta.xpu.Shared<") == 0) {
+                    llvm::Value* base = nullptr; llvm::Type* et = nullptr;
+                    if (!resolveBufferBase(ae, base, et) ||
+                        base->getType() != hfn->getArg(i)->getType())
+                        unsupported("@Device helper " + name + ": argument " +
+                                    std::to_string(i + 1) + " for `" + p->getName() +
+                                    "` must be a Shared<T> array of the kernel");
+                    argv.push_back(base);
+                } else {
+                    argv.push_back(coerceTo(lowerExpr(ae),
+                                            hfn->getArg(i)->getType()));
+                }
+                ++i;
+            }
             return builder.CreateCall(hfn, argv, hfn->getReturnType()->isVoidTy()
                                                      ? "" : "dev.call");
         }
@@ -4194,6 +4255,7 @@ private:
     // walk the body's tile declarations, ask the target for each base tier, and
     // record whether they straddle. Must run before any slot is built.
     void scanCoopMatrixTiers(const AbstractSyntaxNodePtr& root) {
+        if (inheritedCoopState) return;   // a fragment-taking helper: the caller's
         bool anyNative = false;
         bool anyPortable = false;
         bool anyEpilogueVerb = false;
@@ -4310,7 +4372,8 @@ private:
     // Build a CooperativeMatrix/Tile local's slot from its declared type args,
     // picking the native or the software tier (and honouring a group demotion).
     CoopMatrixSlot buildCoopMatrixSlot(const CajetaTypePtr& declType,
-                                       const std::string& nm) {
+                                       const std::string& nm,
+                                       llvm::Value* existing = nullptr) {
         bool tile = isTileType(declType);
         auto cls = std::dynamic_pointer_cast<CajetaClass>(declType);
         size_t wantArgs = tile ? 3 : 4;
@@ -4369,22 +4432,23 @@ private:
                 slots = s.perLane;
             }
             s.matrixType = llvm::ArrayType::get(elem, slots);
-            s.alloca = entryAlloca(s.matrixType, nm);
+            s.alloca = existing ? existing : entryAlloca(s.matrixType, nm);
             // A software tile is the WHOLE Rows*Cols matrix, per work-item, and
             // its indices are loop variables, so it lands in scratch and shows up
             // as a spill. Record the bytes on the function: the spill warning is
             // otherwise read as "this kernel is untuned", and its advice — cut
             // live registers, pin a smaller block — is the wrong remedy here.
-            noteSoftwareCoopTileBytes(
-                (uint64_t) mod.getDataLayout().getTypeAllocSize(s.matrixType));
-            if (s.use == 0)
+            if (!existing)
+                noteSoftwareCoopTileBytes(
+                    (uint64_t) mod.getDataLayout().getTypeAllocSize(s.matrixType));
+            if (s.use == 0 && !existing)
                 noteSoftwareCoopMatrix(elem, s.rows, s.cols,
                                        baseTier == LoweringTarget::ImplTier::Native
                                            && !straddled);
         } else {
             s.software = false;
             s.matrixType = target.coopMatrixType(mod, elem, s.rows, s.cols, s.use);
-            s.alloca = entryAlloca(s.matrixType, nm);
+            s.alloca = existing ? existing : entryAlloca(s.matrixType, nm);
             target.prepareNativeCoopMatrix(fn);   // e.g. AMD: mark the kernel wave32
         }
         return s;
@@ -4889,6 +4953,45 @@ private:
             return coopMatrixSlots[key];
         unsupported("CooperativeMatrix.mma: operands must be CooperativeMatrix "
                     "kernel locals");
+    }
+
+    // A fragment argument to a @Device helper (spec §4.2): the slot pointer
+    // of the kernel's fragment `e`, which must have the parameter's declared
+    // shape exactly. A mismatch is refused by name: the helper's slot is
+    // built from the declared type, so another shape would read the wrong
+    // layout silently.
+    llvm::Value* fragmentArgFor(const ExpressionPtr& e, const CajetaTypePtr& paramType,
+                                const std::string& paramName,
+                                const std::string& helper) {
+        std::string argText;
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e))
+            argText = id->getTextValue();
+        else
+            argText = fragmentSlotName(e);
+        auto it = argText.empty() ? coopMatrixSlots.end() : coopMatrixSlots.find(argText);
+        if (it == coopMatrixSlots.end())
+            unsupported("@Device helper " + helper + ": the argument for `" + paramName +
+                        "` must be a CooperativeMatrix of the kernel");
+        const CoopMatrixSlot& s = it->second;
+        auto cls = std::dynamic_pointer_cast<CajetaClass>(paramType);
+        if (!cls || cls->getTypeArguments().size() != 4)
+            unsupported("@Device helper " + helper + ": parameter `" + paramName +
+                        "` must be a CooperativeMatrix<T, Rows, Cols, Use>");
+        const auto& targs = cls->getTypeArguments();
+        llvm::Type* elem = deviceScalarType(targs[0], ctx);
+        auto rows = std::dynamic_pointer_cast<CajetaConstantType>(targs[1]);
+        auto cols = std::dynamic_pointer_cast<CajetaConstantType>(targs[2]);
+        auto use = std::dynamic_pointer_cast<CajetaConstantType>(targs[3]);
+        if (!elem || !rows || !cols || !use || elem != s.elemType ||
+            (uint32_t) rows->getValue() != s.rows ||
+            (uint32_t) cols->getValue() != s.cols ||
+            (uint32_t) use->getValue() != s.use)
+            unsupported("@Device helper " + helper + ": `" + argText +
+                        "` is a CooperativeMatrix<" + deviceScalarName(s.elemType) + "," +
+                        std::to_string(s.rows) + "," + std::to_string(s.cols) + "," +
+                        std::to_string(s.use) + "> where the parameter `" + paramName +
+                        "` is " + paramType->toCanonical());
+        return s.alloca;
     }
 
     // Element `e` of a native fragment, for either shape: NVPTX fragments are
@@ -6274,20 +6377,39 @@ private:
     // return), cached. alwaysinline so every backend folds the call away. A
     // nullptr cache entry means it's mid-lowering Ã¢ÂÂ a recursive call (rejected).
     llvm::Function* lowerDeviceFn(const MethodPtr& m) {
-        auto it = deviceFns->find(m.get());
-        if (it != deviceFns->end()) {
-            if (!it->second) unsupported("recursive @Device call");
-            return it->second;
-        }
-        (*deviceFns)[m.get()] = nullptr;            // mark in-progress
 
         std::vector<LoweringTarget::KernelParam> params = collectParams(m, ctx);
         std::vector<llvm::Type*> tys;
         tys.reserve(params.size());
+        bool takesFragment = false;
         for (auto& p : params) {
-            tys.push_back(p.isBuffer ? target.bufferParamType(mod, p.type)
-                                     : p.type);
+            if (p.isFragment) {
+                takesFragment = true;
+                tys.push_back(llvm::PointerType::get(ctx, target.allocaAddressSpace()));
+            } else if (p.isShared) {
+                if (target.descriptorBoundParams())
+                    unsupported("@Device helper '" + m->getName() + "': a Shared<T> "
+                                "parameter has no pointer form on the " +
+                                std::string(target.name()) + " backend");
+                tys.push_back(llvm::PointerType::get(ctx, kSharedAS));
+            } else {
+                tys.push_back(p.isBuffer ? target.bufferParamType(mod, p.type)
+                                         : p.type);
+            }
         }
+        // A helper that takes a fragment is lowered under the CALLER's tile
+        // tier (native, or the software tile at the caller's wave width), so
+        // its slot layout is the caller's; one function per tier.
+        std::string tierSig;
+        if (takesFragment)
+            tierSig = coopDistributeW ? ".w" + std::to_string(coopDistributeW)
+                                      : (coopStraddleDemote ? ".sw" : ".nat");
+        DeviceFnKey key{m.get(), tierSig};
+        if (auto it = deviceFns->find(key); it != deviceFns->end()) {
+            if (!it->second) unsupported("recursive @Device call");
+            return it->second;
+        }
+        (*deviceFns)[key] = nullptr;            // mark in-progress
         llvm::Type* retTy = nullptr;
         if (auto rt = m->getReturnType()) {
             retTy = deviceScalarType(rt, ctx);
@@ -6299,7 +6421,8 @@ private:
         auto owner = m->getParent() ? m->getParent() : cls;
         auto* fnTy = llvm::FunctionType::get(retTy, tys, /*vararg=*/false);
         std::string fname = "__cajeta_xpu_dev." +
-            (owner ? owner->toCanonical() + "." : std::string()) + m->getName();
+            (owner ? owner->toCanonical() + "." : std::string()) + m->getName() +
+            tierSig;
         auto* hfn = llvm::Function::Create(
             fnTy, llvm::GlobalValue::InternalLinkage, fname, &mod);
         hfn->addFnAttr(llvm::Attribute::AlwaysInline);
@@ -6310,10 +6433,20 @@ private:
         sub.setParams(params);
         sub.setParamsAsArgs(true);   // helper params are plain fn args
         sub.setDeviceContext(owner, deviceFns);
+        if (takesFragment) sub.inheritCoopState(coopDistributeW, coopStraddleDemote);
         sub.lowerBody(m);
 
-        (*deviceFns)[m.get()] = hfn;
+        (*deviceFns)[key] = hfn;
         return hfn;
+    }
+
+    // A helper lowered for a caller's fragments takes the caller's tile tier
+    // as given: its own tier scan would see no declared tile and decide a
+    // different layout for the parameters.
+    void inheritCoopState(uint32_t distributeW, bool straddleDemote) {
+        coopDistributeW = distributeW;
+        coopStraddleDemote = straddleDemote;
+        inheritedCoopState = true;
     }
 
     // ----- Stage 11: bounded device-side dispatch -----
@@ -7989,6 +8122,32 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
             LoweringTarget::KernelParam kp{p->getName(), /*isBuffer=*/true, elem,
                                            elemSigned};
             kp.isBufferArray = true;
+            params.push_back(kp);
+        } else if (isCooperativeMatrixType(t)) {
+            // A @Device helper's fragment parameter (spec §4.2): the
+            // caller's fragment by reference. Bound in lowerBody from the
+            // declared type; a kernel cannot take one.
+            LoweringTarget::KernelParam kp{p->getName(), /*isBuffer=*/false,
+                                           nullptr, /*isSigned=*/true};
+            kp.isFragment = true;
+            params.push_back(kp);
+        } else if (t && t->toCanonical().compare(0, 18, "cajeta.xpu.Shared<") == 0) {
+            // A @Device helper's Shared<T> panel parameter: the caller's
+            // shared array by reference, bound like a buffer base. Only the
+            // plain form: a Swizzled or BlockPadded tile's map is keyed by
+            // its base and would not follow it through the call.
+            llvm::Type* elem = nullptr;
+            bool elemSigned = true;
+            if (auto cls = std::dynamic_pointer_cast<CajetaClass>(t)) {
+                if (!cls->getTypeArguments().empty()) {
+                    elem = deviceScalarType(cls->getTypeArguments()[0], ctx);
+                    elemSigned = typeIsSigned(cls->getTypeArguments()[0]);
+                }
+            }
+            if (!elem) elem = llvm::Type::getFloatTy(ctx);
+            LoweringTarget::KernelParam kp{p->getName(), /*isBuffer=*/true, elem,
+                                           elemSigned};
+            kp.isShared = true;
             params.push_back(kp);
         } else if (isBufferType(t)) {
             llvm::Type* elem = nullptr;

@@ -1,0 +1,45 @@
+package cajeta.xpu;
+
+/**
+ * TileOps — finished tile operations written as LIBRARY CODE over the
+ * building blocks (xpu-kernel-independence spec §4.2, §4.3): per-element
+ * fragment access with the lane-to-element map, the wave ops, the shared
+ * tiles. Each one does one job for one format, the way a kernel library
+ * would write it, and the compiler provides only the blocks. A new format
+ * lands as a method here, or in any library, with no compiler change.
+ *
+ * Composition is free: each operation here is held within 3% of the
+ * built-in verb it rewrites, by interleaved wall time at the engine's
+ * shapes (spec §7.4, `XpuLibraryEpilogueTests`). Where it is not, the gap
+ * is a codegen defect, not a reason for a new built-in.
+ *
+ * A fragment parameter is the caller's fragment, by reference: the
+ * operation reads and writes the caller's tile, exactly as the built-in
+ * verb does. A `Shared<T>` parameter is the caller's panel.
+ */
+public final class TileOps {
+    private TileOps() { }
+
+    /**
+     * The Q4_K tile's integer fold, `CooperativeMatrix.scaledAccumI32`
+     * as library code:
+     *
+     *     iacc[r][c] += acc[r][c] * colS[base + c * stride]
+     *
+     * wrapping at 32 bits. `colS` is a `Shared<int32>` panel and the
+     * column's factor is read at `base + c * stride`, the
+     * `WaveVector.ofSlice(colS, base, stride)` form of the built-in. The
+     * loop is over this lane's elements with their columns from the lane
+     * map, so it is the same loop on every backend's fragment layout. The
+     * trip count is a compile-time constant, so the loop unrolls and each
+     * element access is one register.
+     */
+    @Device
+    public static void scaledAccumI32(CooperativeMatrix<int32, 16, 16, 2> acc,
+                                      CooperativeMatrix<int32, 16, 16, 2> iacc,
+                                      Shared<int32> colS, uint32 base, uint32 stride) {
+        for (uint32 i = 0; i < acc.elements(); i = i + 1) {
+            iacc.set(i, iacc.get(i) + acc.get(i) * colS[base + acc.col(i) * stride]);
+        }
+    }
+}

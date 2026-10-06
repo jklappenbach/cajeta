@@ -226,6 +226,16 @@ namespace xpu {
             bool isPushConstant = false;  // @PushConstant (cajeta-gfx §4.b-rest) — a
                                      // by-value scalar riding a graphics stage's
                                      // PushConstant block. Vulkan-only.
+            // The two below are LAST on purpose: call sites build a KernelParam
+            // positionally up to isImage, so a field before it would take
+            // isImage's initializer (a sweep crashed two image tests that way).
+            bool isFragment = false; // CooperativeMatrix<...>: a @Device helper's
+                                     // parameter, the caller's fragment by
+                                     // reference (`type` unused; the slot is
+                                     // built from the declared type).
+            bool isShared = false;   // Shared<T>: a @Device helper's parameter,
+                                     // the caller's panel by reference; with
+                                     // isBuffer, `type` the element type.
         };
 
         // Create the kernel function for `name`. Default: void-returning, one ptr

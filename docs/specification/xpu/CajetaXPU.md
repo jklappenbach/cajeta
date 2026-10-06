@@ -784,6 +784,36 @@ fragment packs its bytes on the native tiers and has no established map, so
 cooperative matrix defines no lane-to-element map at all, so the Vulkan
 backend refuses all five by name; stage the tile through `Shared<T>` there.
 
+A `@Device` helper takes a fragment, and a `Shared<T>` panel, BY REFERENCE:
+the helper reads and writes the caller's tile, exactly as a built-in verb
+does, and a library can therefore hold a finished operation. The helper is
+lowered under the caller's tile tier (native, or the software tile at the
+caller's wave width), one function per tier, and an argument whose shape is
+not the parameter's declared shape is refused by name. A `for` loop over
+`elements()` whose body reads or writes the fragment's elements is unrolled
+at compile time, as a loop over a fragment array is, so every access is at a
+constant position and stays in a register. `cajeta.xpu.TileOps` holds the
+finished operations written this way, the first being the Q4_K tile's
+integer fold:
+
+```cajeta
+@Device
+public static void scaledAccumI32(CooperativeMatrix<int32, 16, 16, 2> acc,
+                                  CooperativeMatrix<int32, 16, 16, 2> iacc,
+                                  Shared<int32> colS, uint32 base, uint32 stride) {
+    for (uint32 i = 0; i < acc.elements(); i = i + 1) {
+        iacc.set(i, iacc.get(i) + acc.get(i) * colS[base + acc.col(i) * stride]);
+    }
+}
+```
+
+Composition is free (xpu-kernel-independence spec §4.3, §7.4): this fold
+agrees with the built-in `scaledAccumI32` bit for bit on cpu, on the nvptx
+device and through the reference, and runs within 3% of it at the engine's
+prefill shape on sm_89 by interleaved wall time (`XpuLibraryEpilogueTests`;
+measured 2026-10-06 at 1% FASTER). Where a library operation misses that
+bound, the gap is a codegen defect to fix, not a reason for a built-in.
+
 #### 5.5.2 The building blocks (xpu-kernel-independence spec §4.1)
 
 A finished operation (a Q4_K tile's integer fold, an attention row's
