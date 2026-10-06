@@ -753,6 +753,8 @@ namespace cajeta {
         // Build every instantiation a template lists in `@Instantiate`, under
         // its cap; once per template. Defined in TemplateInstantiator.cpp.
         void instantiateListed();
+        // Parses `text` as a type against this class's module; null when it is not a type.
+        CajetaTypePtr typeFromText(const string& text);
         bool explicitInstantiationsBuilt() const { return explicitInstantiationsDone; }
 
         // Deferred instantiation: instantiating from a still-placeholder template yields a

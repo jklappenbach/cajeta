@@ -436,7 +436,78 @@ namespace cajeta::ownership {
         }
     }
 
-    void FieldStoreCensus::run(const std::list<CajetaModulePtr>& modules) {
+    namespace {
+        // The argument a template parameter is instantiated with for the census: a class wherever one fits.
+        std::string standIn(const TypeParameter& p) {
+            if (p.isNonType) return "16";
+            if (p.bounds.empty()) return "cajeta.lang.Object";
+            const std::string& b = p.bounds.front()->getTypeName();
+            if (b == "Floating") return "float64";
+            if (b == "Complex") return "";
+            if (CajetaClass::isNumericMarkerName(b)) return "int64";
+            return p.bounds.front()->toCanonical();
+        }
+
+        // Instantiates every template of `modules` once with stand-in arguments, so templates nobody
+        // instantiates are walked too. Prints the instantiation, or why the template refused it.
+        void instantiateTemplates(const std::list<CajetaModulePtr>& modules) {
+            std::vector<CajetaClassPtr> templates;
+            for (auto& module : modules) {
+                if (!module) continue;
+                for (auto& [qname, klass] : module->getStructures()) {
+                    if (klass && klass->getQName() && klass->isTemplate() && !klass->isPlaceholder()) {
+                        templates.push_back(klass);
+                    }
+                }
+            }
+            for (auto& t : templates) {
+                std::string text, why;
+                for (bool primitive : {false, true}) {
+                    text = t->getQName()->toCanonical() + "<";
+                    why.clear();
+                    bool unbounded = false;
+                    for (size_t i = 0; i < t->getTypeParameters().size(); ++i) {
+                        const TypeParameter& p = t->getTypeParameters()[i];
+                        std::string arg = standIn(p);
+                        if (arg.empty()) why = "no stand-in for " + p.name;
+                        if (!p.isNonType && p.bounds.empty()) {
+                            unbounded = true;
+                            if (primitive) arg = "int32";
+                        }
+                        text += (i ? ", " : "") + arg;
+                    }
+                    text += ">";
+                    if (primitive && !unbounded) break;
+                    if (!why.empty()) {
+                        std::cerr << "[field-store-template] " << text << " skipped: " << why << "\n";
+                        break;
+                    }
+                    try {
+                        auto built = std::dynamic_pointer_cast<CajetaClass>(t->typeFromText(text));
+                        if (!built || !built->isInstantiation()) why = "did not instantiate";
+                    } catch (Exception& e) {
+                        why = e.getMessage();
+                    } catch (const char* w) {
+                        why = w;
+                    } catch (const std::exception& e) {
+                        why = e.what();
+                    }
+                    if (why.empty()) break;
+                    std::cerr << "[field-store-template] " << text << " skipped: " << why << "\n";
+                }
+                if (why.empty()) std::cerr << "[field-store-template] " << text << "\n";
+            }
+            CajetaClass::drainDeferredInstantiations();
+        }
+    }
+
+    bool FieldStoreCensus::includesStdlib() {
+        const char* v = std::getenv("CAJETA_FIELD_STORE_CENSUS");
+        return v && std::string(v) == "stdlib";
+    }
+
+    void FieldStoreCensus::run(const std::list<CajetaModulePtr>& modules, bool standIns) {
+        if (standIns) instantiateTemplates(modules);
         walk(modules, [](const FieldStoreRecord& rec) {
             std::cerr << "[field-store] " << rec.className << "." << rec.methodName << ":"
                       << rec.line << " into=" << rec.target << " op=" << rec.op

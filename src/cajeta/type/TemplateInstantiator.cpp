@@ -210,36 +210,20 @@ namespace cajeta {
                     "CAJETA_ERROR_INSTANTIATE_LIST");
             }
 
-            antlr4::ANTLRInputStream input(entry);
-            CajetaLexer lexer(&input);
-            lexer.removeErrorListeners();
-            antlr4::CommonTokenStream tokens(&lexer);
-            CajetaParser parser(&tokens);
-            parser.removeErrorListeners();
-            auto* typeCtx = parser.typeType();
-            if (!typeCtx || parser.getNumberOfSyntaxErrors() > 0
-                    || tokens.LA(1) != antlr4::Token::EOF) {
+            CajetaTypePtr type;
+            try {
+                type = typeFromText(entry);
+            } catch (const char* why) {
+                throw Exception(
+                    "@Instantiate on " + owner + ": '" + entry + "': " + why,
+                    "CAJETA_ERROR_INSTANTIATE_LIST");
+            }
+            if (!type) {
                 throw Exception(
                     "@Instantiate on " + owner + ": '" + entry
                         + "' is not a type",
                     "CAJETA_ERROR_INSTANTIATE_LIST");
             }
-            xref::SyntheticSourceScope xrefMask;
-            auto prevActive = CajetaModule::getActiveModule();
-            CajetaModule::setActiveModule(module);
-            CajetaTypePtr type;
-            try {
-                type = CajetaType::fromContext(typeCtx, module);
-            } catch (const char* why) {
-                CajetaModule::setActiveModule(prevActive);
-                throw Exception(
-                    "@Instantiate on " + owner + ": '" + entry + "': " + why,
-                    "CAJETA_ERROR_INSTANTIATE_LIST");
-            } catch (...) {
-                CajetaModule::setActiveModule(prevActive);
-                throw;
-            }
-            CajetaModule::setActiveModule(prevActive);
             auto built = dynamic_pointer_cast<CajetaClass>(type);
             auto origin = built ? built->getTemplateOrigin() : nullptr;
             if (!built || !built->isInstantiation() || !origin
@@ -250,6 +234,32 @@ namespace cajeta {
                     "CAJETA_ERROR_INSTANTIATE_LIST");
             }
         }
+    }
+
+    CajetaTypePtr CajetaClass::typeFromText(const string& text) {
+        antlr4::ANTLRInputStream input(text);
+        CajetaLexer lexer(&input);
+        lexer.removeErrorListeners();
+        antlr4::CommonTokenStream tokens(&lexer);
+        CajetaParser parser(&tokens);
+        parser.removeErrorListeners();
+        auto* typeCtx = parser.typeType();
+        if (!typeCtx || parser.getNumberOfSyntaxErrors() > 0
+                || tokens.LA(1) != antlr4::Token::EOF) {
+            return nullptr;
+        }
+        xref::SyntheticSourceScope xrefMask;
+        auto prevActive = CajetaModule::getActiveModule();
+        CajetaModule::setActiveModule(module);
+        CajetaTypePtr type;
+        try {
+            type = CajetaType::fromContext(typeCtx, module);
+        } catch (...) {
+            CajetaModule::setActiveModule(prevActive);
+            throw;
+        }
+        CajetaModule::setActiveModule(prevActive);
+        return type;
     }
 
     CajetaClassPtr CajetaClass::instantiate(vector<CajetaTypePtr> args) {
