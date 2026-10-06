@@ -7081,6 +7081,17 @@ namespace cajeta {
                 "Move the call inside an @Kernel.",
                 "CAJETA_ERROR_INTRINSIC_CALLED_ON_HOST");
         }
+        // The escape hatch's arm-only form: backend arms and no portable arm
+        // (no body), so there is nothing for the host to run either.
+        if (targetMethod && cajeta::xpu::hasTargetArms(*targetMethod)
+                && targetMethod->getBlock() == nullptr) {
+            throw Exception(
+                "'" + methodCallName + "' names backend arms (@TargetIntrinsic / "
+                "@TargetAsm) and has no body, so it has no portable arm for host "
+                "code to run. Move the call inside an @Kernel, or give the helper "
+                "a body.",
+                "CAJETA_ERROR_INTRINSIC_CALLED_ON_HOST");
+        }
         if (targetMethod) {
             auto& throwsList = targetMethod->getThrowsList();
             if (!throwsList.empty()) {

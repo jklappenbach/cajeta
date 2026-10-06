@@ -62,6 +62,20 @@ namespace xpu {
         // called from host code at GgufFile.cajeta:417.
         static constexpr const char* Intrinsic    = "Intrinsic";
 
+        // The escape hatch (xpu-kernel-independence spec §5, §7.5): a static
+        // helper names its backend ARMS. @TargetIntrinsic(nvptx = "llvm.nvvm.prmt",
+        // amdgpu = "llvm.amdgcn.perm") calls that LLVM intrinsic with the
+        // helper's own signature, which the lowering checks against the
+        // intrinsic's. @TargetAsm(nvptx = "<template>", nvptxConstraints =
+        // "=r,r,r,r", ...) is inline assembly, checked at its boundary: one
+        // constraint per operand, each admitting the operand's type. Keys are
+        // the backend names (cpu, nvptx, amdgpu, spirv). The body, when there
+        // is one, is the portable arm and what the reference interpreter runs;
+        // without one, a backend the annotation does not name refuses the
+        // kernel by name, and a host call is refused like an @Intrinsic.
+        static constexpr const char* TargetIntrinsic = "TargetIntrinsic";
+        static constexpr const char* TargetAsm       = "TargetAsm";
+
         // KernelArg trait marker; the structural trait check lands later.
         static constexpr const char* KernelArg    = "KernelArg";
 
@@ -86,6 +100,12 @@ namespace xpu {
     /// A compiler intrinsic: no implementation, the lowering IS the body.
     inline bool isIntrinsic(const Annotatable& a) {
         return a.findAnnotation(XpuAttr::Intrinsic) != nullptr;
+    }
+    /// Names an arm for some backend (@TargetIntrinsic or @TargetAsm): the
+    /// escape hatch. Callable from a kernel like a @Device helper.
+    inline bool hasTargetArms(const Annotatable& a) {
+        return a.findAnnotation(XpuAttr::TargetIntrinsic) != nullptr
+            || a.findAnnotation(XpuAttr::TargetAsm) != nullptr;
     }
     inline bool isFastMath(const Annotatable& a) {
         return a.findAnnotation(XpuAttr::FastMath) != nullptr;

@@ -1016,6 +1016,28 @@ public:
     // source: so the nibbles are spread to bytes (a constant selector folds)
     // and the sources are passed (hi, lo), which puts lo's bytes at 0-3 and
     // hi's at 4-7 as the contract states.
+    // AMDGCN inline-asm constraints: v (VGPR), s (SGPR) and a (AGPR) each take
+    // a 16, 32, 64, 96 or 128-bit operand; `{v0}`-style names a register,
+    // which LLVM checks; i and n are integer immediates.
+    bool asmConstraintAdmits(const std::string& code, llvm::Type* t,
+                             std::string& why) const override {
+        if (!code.empty() && code[0] == '{') return true;
+        if (code == "i" || code == "n") {
+            if (t->isIntegerTy()) return true;
+            why = "AMDGCN '" + code + "' is an integer immediate";
+            return false;
+        }
+        if (code != "v" && code != "s" && code != "a") {
+            why = "'" + code + "' is not an AMDGCN constraint (v, s, a, i, n, {reg})";
+            return false;
+        }
+        llvm::TypeSize sz = t->getPrimitiveSizeInBits();
+        unsigned bits = sz.isScalable() ? 0 : (unsigned) sz.getFixedValue();
+        if (bits == 16 || bits == 32 || bits == 64 || bits == 96 || bits == 128) return true;
+        why = "AMDGCN '" + code + "' takes a 16, 32, 64, 96 or 128-bit operand";
+        return false;
+    }
+
     llvm::Value* bytePermute(llvm::IRBuilderBase& b, llvm::Module& m,
                              llvm::Value* lo, llvm::Value* hi,
                              llvm::Value* selector) override {

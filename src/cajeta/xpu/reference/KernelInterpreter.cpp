@@ -646,7 +646,8 @@ MethodPtr resolveDevice(const std::shared_ptr<CajetaClass>& self, const std::str
         if (!c) return nullptr;
         for (auto& kv : c->getMethods()) {
             const MethodPtr& m = kv.second;
-            if (m && m->getName() == name && isDevice(*m) && m->getParameters().size() == argc)
+            if (m && m->getName() == name && (isDevice(*m) || hasTargetArms(*m))
+                    && m->getParameters().size() == argc)
                 return m;
         }
         return nullptr;
@@ -925,6 +926,13 @@ private:
     // with its name.
     void helper(const MethodPtr& m) {
         if (!visited.insert(m.get()).second) return;
+        // An arm-only helper (@TargetIntrinsic / @TargetAsm with no body) has
+        // no portable arm, and the reference runs portable arms only.
+        if (!m->getBlock()) {
+            note("the helper `" + qualified(m) + "`, which names backend arms and "
+                 "has no portable arm (a body)", m->getBlock());
+            return;
+        }
         auto savedKinds = kinds;
         auto savedCls = cls;
         auto savedPrefix = prefix;
@@ -1159,6 +1167,7 @@ private:
                 || std::dynamic_pointer_cast<PrefixExpression>(e)
                 || std::dynamic_pointer_cast<PostfixExpression>(e)
                 || std::dynamic_pointer_cast<ArrayIndexExpression>(e)
+                || std::dynamic_pointer_cast<BooleanSwitchExpression>(e)
                 || std::dynamic_pointer_cast<MoveExpression>(e)) {
             for (auto& c : e->getChildren()) expr(std::dynamic_pointer_cast<Expression>(c));
             return;
@@ -2037,6 +2046,10 @@ private:
             return v;
         }
         if (dynamic_cast<MoveExpression*>(e)) return eval(child(e, 0));
+        // `c ? a : b`: the condition, then ONE arm, as the kernel lowering
+        // branches (XpuKernelTernaryTests): the untaken arm never reads.
+        if (dynamic_cast<BooleanSwitchExpression*>(e))
+            return eval(child(e, 0)).truthy() ? eval(child(e, 1)) : eval(child(e, 2));
         refuse("the expression " + std::string(ownership::toString(e->kind())) + " (" + at(e) + ")");
     }
 

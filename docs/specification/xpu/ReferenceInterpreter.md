@@ -77,6 +77,8 @@ Arithmetic follows the host compiler's rules (`BinaryOpExpression`).
   `float64`.
 - `!=` on floats is true when either operand is NaN.
 - A conversion from float to integer truncates toward zero.
+- `c ? a : b` evaluates the condition and then ONE arm, as the kernel
+  lowering branches; the untaken arm never reads.
 
 ## Built-ins
 
@@ -127,7 +129,7 @@ These are every built-in the interpreter defines.
 | `v.dotSum(a, acc)` | `acc + Σi v[i]·a[i]`, with `v` extended by its own signedness and `a` sign-extended, wrapping in int32 |
 | `v.dot(w)`, `dot(w, acc)` | float: products summed in lane order. 4 × 8-bit integers: both operands take the receiver's signedness. |
 | `w.dotAccum(a, acc)` | `acc[j] + Σk w[4j+k]·a[4j+k]`, with `w` extended by its own signedness and `a` always sign-extended, wrapping in int32 |
-| a call to a `@Device` helper | a new frame. Arguments are converted to the parameter types; buffers, `Shared` arrays and tiles pass by reference, so a tile the helper writes is the caller's, and a tile of another shape than the parameter's is refused. The result is converted to the return type. A recursive call is refused. |
+| a call to a `@Device` helper | a new frame. Arguments are converted to the parameter types; buffers, `Shared` arrays and tiles pass by reference, so a tile the helper writes is the caller's, and a tile of another shape than the parameter's is refused. The result is converted to the return type. A recursive call is refused. A helper that names backend arms (`@TargetIntrinsic`, `@TargetAsm`) runs its BODY, the portable arm, which is how the corpus checks an arm against it; one with arms and no body is refused by name. |
 | `CooperativeMatrix` `splat`, `load`, `store` | element (r, c) is `src[off + r·stride + c]` for row layout 0, or `src[off + c·stride + r]` for column layout 1 |
 | `CooperativeMatrix.fromWords(w0, w1, w2, w3)` | the 16x16 int8 operand tile from the wave: lane `L` supplies column `L mod 16` of a B tile (row `L mod 16` of an A tile) as sixteen little-endian bytes across its four words, k-value `k` in byte `k & 3` of word `k >> 2`. Lanes that share a column must agree |
 | `t.elements()`, `get(i)`, `set(i, v)`, `row(i)`, `col(i)` | per-element access with the reference's own lane-to-element map: lane `L` of a `W`-wide wave holds the `rows·cols / W` elements whose row-major index is `i·W + L`, so `row(i)` is `(i·W + L) / cols` and `col(i)` is `(i·W + L) % cols`. `set` is a wave collective: every lane's `(i, v)` lands in the wave's one tile. A tile that does not divide by the wave is refused; an element index past `elements()` is undefined behaviour. Each backend has its own map, so a kernel that indexes through `row(i)` / `col(i)` agrees with every backend and one that assumes a map does not |
@@ -152,7 +154,8 @@ is never run partially. Today that list includes:
 
 - textures, images and samplers;
 - value types;
-- `KernelThread.clock()`, which has no reference value by nature.
+- `KernelThread.clock()`, which has no reference value by nature;
+- a helper with backend arms and no body (no portable arm).
 
 The conformance corpus adds built-ins here as its kernels need them.
 

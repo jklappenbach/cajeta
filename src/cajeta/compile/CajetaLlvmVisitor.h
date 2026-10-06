@@ -478,13 +478,19 @@ namespace cajeta {
                     "override a private method, so the obligation could never be met.",
                     "CAJETA_ERROR_ABSTRACT_PRIVATE_METHOD");
             }
+            // @TargetIntrinsic / @TargetAsm name backend arms (the escape
+            // hatch); without a body the helper has arms only, and the kernel
+            // lowering supplies the one for its backend.
             const bool bodySupplied = m->findAnnotation("Native") != nullptr
-                || m->findAnnotation("Intrinsic") != nullptr;
+                || m->findAnnotation("Intrinsic") != nullptr
+                || m->findAnnotation("TargetIntrinsic") != nullptr
+                || m->findAnnotation("TargetAsm") != nullptr;
             if (!declared && m->getBlock() == nullptr && !m->isMethodTemplate()
                     && !bodySupplied) {
                 throw Exception(
                     "method " + where + " has no body. Declare it `abstract`, or give "
-                    "it a body, or an annotation that supplies one (, ).",
+                    "it a body, or an annotation that supplies one (@Native, "
+                    "@Intrinsic, @TargetIntrinsic, @TargetAsm).",
                     "CAJETA_ERROR_METHOD_MISSING_BODY");
             }
         }

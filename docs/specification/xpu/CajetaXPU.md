@@ -839,6 +839,65 @@ NOT yet a block: a float shuffle in the xor, up and down forms (take the
 bits through `Cajeta.f32ToBits`), a vector `toF64` or packed `toI8/toI16`,
 and the `Quad` ops in the reference interpreter.
 
+#### 5.5.3 The escape hatch (xpu-kernel-independence spec §5, §7.5)
+
+New hardware reaches a library before the compiler has a building block
+for it. A static helper names its backend ARMS in an annotation, and the
+kernel lowering uses the arm named for its backend as the helper's whole
+body. The body, when the helper has one, is the PORTABLE arm: every backend
+the annotation does not name runs it, and so does the reference
+interpreter, which is how the corpus checks an arm against it (§5.2 of the
+spec: an intrinsic arm that disagrees with the portable arm fails the
+corpus by name). Keys are the backend names: `cpu`, `nvptx`, `amdgpu`,
+`spirv`.
+
+```cajeta
+/** Byte permute: result byte i is byte (nibble i of sel) of {lo, hi}. */
+@Device
+@TargetIntrinsic(nvptx = "llvm.nvvm.prmt")
+public static uint32 permute(uint32 lo, uint32 hi, uint32 sel) {
+    uint32 r = 0;                                   // the portable arm
+    for (uint32 i = 0; i < 4; i = i + 1) {
+        uint32 n = (sel >> (4 * i)) & 7;
+        uint32 b = n < 4 ? (lo >> (8 * n)) & 255 : (hi >> (8 * (n - 4))) & 255;
+        r = r | (b << (8 * i));
+    }
+    return r;
+}
+
+@Device
+@TargetAsm(nvptx = "prmt.b32 $0, $1, $2, $3;",  nvptxConstraints = "=r,r,r,r",
+           amdgpu = "v_perm_b32 $0, $2, $1, $3", amdgpuConstraints = "=v,v,v,v")
+public static uint32 permuteAsm(uint32 lo, uint32 hi, uint32 sel) { ... }
+```
+
+- **`@TargetIntrinsic(<backend> = "<llvm intrinsic>")`** calls the named
+  LLVM intrinsic with the helper's own signature. The call is TYPED: the
+  name must be an intrinsic LLVM knows, and the helper's signature must be
+  one the intrinsic has (`Intrinsic::isSignatureValid`, which also fixes
+  the overload). A name LLVM does not know, or a signature the intrinsic
+  does not take, refuses the kernel naming the helper and the intrinsic.
+- **`@TargetAsm(<backend> = "<template>", <backend>Constraints = "<list>")`**
+  is inline assembly, PTX on nvptx and AMDGCN on amdgpu, checked AT ITS
+  BOUNDARY and nowhere else: the constraint list names one output when
+  the helper returns a value and one input per parameter, and each
+  constraint must admit its operand's type. PTX letters are `b` (boolean),
+  `c`/`h` (16-bit), `r` (32-bit), `l` (64-bit), `q` (128-bit), `f`
+  (float32), `d` (float64). AMDGCN takes `v`, `s` and `a` for a 16, 32, 64,
+  96 or 128-bit operand, `i`/`n` for an integer immediate, and `{v0}` to
+  name a register. A mismatch refuses the kernel naming the helper, the
+  operand, its type and the constraint. The template's text is the
+  author's; the compiler does not read it. A backend with no assembly form
+  (cpu, spirv) refuses an asm arm named for it.
+- Operands are scalars and `Vector`s; a buffer, fragment or `Shared` panel
+  is not an arm operand.
+- A helper with arms and NO body is arm-only. A backend the annotation does
+  not name refuses the kernel by name ("no cpu arm and no portable arm"),
+  the reference refuses it the same way, and a host call is refused like
+  an `@Intrinsic`.
+- When a building block covers what an arm did, the library moves to the
+  block; the hatch stays for what nothing covers yet (spec §5.3).
+
 ### 5.6 Vendor-only surfaces
 
 Each native backend exposes things its hardware uniquely supports:

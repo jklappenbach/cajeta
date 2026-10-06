@@ -882,6 +882,35 @@ public:
     // Bits.permute is one prmt.b32: a holds bytes 0-3 and b bytes 4-7, as
     // the contract states, and the selector's bit 3s are masked so the
     // sign-replicate mode never engages.
+    // PTX inline-asm constraint letters, each a register class of one width:
+    // b pred, c/h 16-bit, r 32-bit, l 64-bit, q 128-bit, f float32, d float64.
+    bool asmConstraintAdmits(const std::string& code, llvm::Type* t,
+                             std::string& why) const override {
+        struct Letter { const char* code; const char* takes; };
+        static const Letter letters[] = {
+            {"b", "a boolean (pred)"},   {"c", "a 16-bit integer"},
+            {"h", "a 16-bit integer"},   {"r", "a 32-bit integer"},
+            {"l", "a 64-bit integer"},   {"q", "a 128-bit integer"},
+            {"f", "float32"},            {"d", "float64"},
+        };
+        bool ok;
+        if (code == "b") ok = t->isIntegerTy(1);
+        else if (code == "c" || code == "h") ok = t->isIntegerTy(16);
+        else if (code == "r") ok = t->isIntegerTy(32);
+        else if (code == "l") ok = t->isIntegerTy(64);
+        else if (code == "q") ok = t->isIntegerTy(128);
+        else if (code == "f") ok = t->isFloatTy();
+        else if (code == "d") ok = t->isDoubleTy();
+        else {
+            why = "'" + code + "' is not a PTX constraint (b, c, h, r, l, q, f, d)";
+            return false;
+        }
+        if (!ok)
+            for (auto& l : letters)
+                if (code == l.code) why = "PTX '" + code + "' takes " + l.takes;
+        return ok;
+    }
+
     llvm::Value* bytePermute(llvm::IRBuilderBase& b, llvm::Module& m,
                              llvm::Value* lo, llvm::Value* hi,
                              llvm::Value* selector) override {

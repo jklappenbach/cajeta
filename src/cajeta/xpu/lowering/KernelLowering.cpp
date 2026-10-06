@@ -48,6 +48,9 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/Support/Error.h"
 
 #include <algorithm>
 #include <fstream>
@@ -6346,7 +6349,7 @@ private:
             if (!c) return nullptr;
             for (auto& kv : c->getMethods()) {
                 const MethodPtr& m = kv.second;
-                if (m && m->getName() == name && isDevice(*m) &&
+                if (m && m->getName() == name && (isDevice(*m) || hasTargetArms(*m)) &&
                     m->getParameters().size() == argc)
                     return m;
             }
@@ -6376,6 +6379,131 @@ private:
     // Lower a @Device method to a device function (scalar params + scalar/void
     // return), cached. alwaysinline so every backend folds the call away. A
     // nullptr cache entry means it's mid-lowering Ã¢ÂÂ a recursive call (rejected).
+    // ----- The escape hatch (spec §5, §7.5) -----
+
+    // The backends a helper names arms for, for a refusal: "nvptx, amdgpu".
+    static std::string targetArmList(const MethodPtr& m) {
+        std::string out;
+        for (const char* ann : {XpuAttr::TargetIntrinsic, XpuAttr::TargetAsm}) {
+            auto a = m->findAnnotation(ann);
+            if (!a) continue;
+            for (auto& arg : a->getArgs()) {
+                const std::string& k = arg.name;
+                if (k.size() > 11 && k.compare(k.size() - 11, 11, "Constraints") == 0) continue;
+                if (!out.empty()) out += ", ";
+                out += k;
+            }
+        }
+        return out.empty() ? std::string("no backend") : out;
+    }
+
+    // A type as a refusal names it: the cajeta primitive the LLVM type carries.
+    static std::string armTypeWord(llvm::Type* t) {
+        if (t->isFloatTy()) return "float32";
+        if (t->isDoubleTy()) return "float64";
+        if (t->isHalfTy()) return "float16";
+        if (t->isBFloatTy()) return "bfloat16";
+        if (t->isIntegerTy(1)) return "boolean";
+        if (t->isIntegerTy()) return "a " + std::to_string(t->getIntegerBitWidth()) + "-bit integer";
+        if (t->isVectorTy()) {
+            std::string s;
+            llvm::raw_string_ostream os(s);
+            t->print(os);
+            return "Vector " + os.str();
+        }
+        return "an operand of another type";
+    }
+
+    // The helper's arm for this backend, lowered as `hfn`'s whole body: a
+    // typed call of the LLVM intrinsic @TargetIntrinsic names, or the inline
+    // assembly @TargetAsm names with its constraints checked at the boundary.
+    // False when the helper names no arm for this backend; a named arm that
+    // does not check out refuses the kernel.
+    bool lowerTargetArm(const MethodPtr& m, llvm::Function* hfn,
+                        const std::vector<LoweringTarget::KernelParam>& params) {
+        auto intr = m->findAnnotation(XpuAttr::TargetIntrinsic);
+        auto asmA = m->findAnnotation(XpuAttr::TargetAsm);
+        if (!intr && !asmA) return false;
+        const std::string be = target.name();
+        const std::string iname = intr ? intr->getString(be) : std::string();
+        const std::string tmpl = asmA ? asmA->getString(be) : std::string();
+        if (iname.empty() && tmpl.empty()) return false;
+        const std::string who = "helper '" + m->getName() + "'";
+        for (auto& p : params)
+            if (p.isBuffer || p.isFragment || p.isShared || p.isTexture || p.isImage ||
+                p.isSampler || p.isAccelStruct)
+                unsupported(who + ": the " + be + " arm takes scalar and Vector "
+                            "operands, and '" + p.name + "' is neither");
+        llvm::FunctionType* fnTy = hfn->getFunctionType();
+        llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "arm", hfn));
+        std::vector<llvm::Value*> args;
+        for (auto& a : hfn->args()) args.push_back(&a);
+        llvm::Value* r = nullptr;
+        if (!iname.empty()) {
+            llvm::Intrinsic::ID id = llvm::Intrinsic::lookupIntrinsicID(iname);
+            if (id == llvm::Intrinsic::not_intrinsic)
+                unsupported(who + ": '" + iname + "' is not an LLVM intrinsic "
+                            "(@TargetIntrinsic " + be + ")");
+            llvm::SmallVector<llvm::Type*, 4> overloads;
+            std::string why;
+            llvm::raw_string_ostream os(why);
+            if (!llvm::Intrinsic::isSignatureValid(id, fnTy, overloads, os)) {
+                std::string sig;
+                llvm::raw_string_ostream ss(sig);
+                fnTy->print(ss);
+                unsupported(who + " declares " + ss.str() + ", which is not a "
+                            "signature of '" + iname + "': " + os.str());
+            }
+            llvm::Function* callee = llvm::Intrinsic::getOrInsertDeclaration(&mod, id, overloads);
+            r = b.CreateCall(callee, args);
+        } else {
+            const std::string cons = asmA->getString(be + "Constraints");
+            llvm::InlineAsm::ConstraintInfoVector infos = llvm::InlineAsm::ParseConstraints(cons);
+            unsigned outs = 0, ins = 0;
+            for (auto& ci : infos) {
+                if (ci.Type == llvm::InlineAsm::isOutput) ++outs;
+                else if (ci.Type == llvm::InlineAsm::isInput) ++ins;
+            }
+            const unsigned wantOut = fnTy->getReturnType()->isVoidTy() ? 0 : 1;
+            if (outs != wantOut || ins != args.size())
+                unsupported(who + ": the " + be + " arm has " + std::to_string(wantOut) +
+                            " result and " + std::to_string(args.size()) + " operand(s), "
+                            "but its constraint list '" + cons + "' names " +
+                            std::to_string(outs) + " output(s) and " + std::to_string(ins) +
+                            " input(s) (" + be + "Constraints)");
+            unsigned ai = 0;
+            for (auto& ci : infos) {
+                llvm::Type* t;
+                std::string what;
+                if (ci.Type == llvm::InlineAsm::isOutput) {
+                    t = fnTy->getReturnType();
+                    what = "the result";
+                } else if (ci.Type == llvm::InlineAsm::isInput) {
+                    t = args[ai]->getType();
+                    what = "operand '" + params[ai].name + "'";
+                    ++ai;
+                } else {
+                    continue;
+                }
+                const std::string code = ci.Codes.empty() ? std::string() : ci.Codes[0];
+                std::string why;
+                if (!target.asmConstraintAdmits(code, t, why))
+                    unsupported(who + ": " + what + " (" + armTypeWord(t) +
+                                ") does not match its " + be + " constraint '" +
+                                (ci.Type == llvm::InlineAsm::isOutput ? "=" : "") + code +
+                                "': " + why);
+            }
+            if (llvm::Error err = llvm::InlineAsm::verify(fnTy, cons))
+                unsupported(who + ": the " + be + " arm's constraints '" + cons +
+                            "' do not fit its signature: " + llvm::toString(std::move(err)));
+            auto* ia = llvm::InlineAsm::get(fnTy, tmpl, cons, /*hasSideEffects=*/true);
+            r = b.CreateCall(ia, args);
+        }
+        if (fnTy->getReturnType()->isVoidTy()) b.CreateRetVoid();
+        else b.CreateRet(r);
+        return true;
+    }
+
     llvm::Function* lowerDeviceFn(const MethodPtr& m) {
 
         std::vector<LoweringTarget::KernelParam> params = collectParams(m, ctx);
@@ -6428,6 +6556,17 @@ private:
         hfn->addFnAttr(llvm::Attribute::AlwaysInline);
         unsigned i = 0;
         for (auto& p : params) hfn->getArg(i++)->setName(p.name);
+
+        // The escape hatch: an arm named for this backend IS the body. With
+        // no arm and no body there is nothing to lower, by name.
+        if (lowerTargetArm(m, hfn, params)) {
+            (*deviceFns)[key] = hfn;
+            return hfn;
+        }
+        if (!m->getBlock())
+            unsupported("helper '" + m->getName() + "' has no " +
+                        std::string(target.name()) + " arm and no portable arm (a "
+                        "body); it names arms for " + targetArmList(m));
 
         DeviceLowerer sub(mod, hfn, target);
         sub.setParams(params);
@@ -7943,6 +8082,13 @@ unsigned LoweringTarget::coopMatrixElementCount(llvm::Type* matrixType) {
     if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(matrixType))
         return vt->getNumElements();
     return 0;
+}
+
+bool LoweringTarget::asmConstraintAdmits(const std::string&, llvm::Type*,
+                                         std::string& why) const {
+    why = "inline assembly has no " + std::string(name()) + " form; give the "
+          "helper a body as its portable arm";
+    return false;
 }
 
 llvm::Value* LoweringTarget::bytePermute(llvm::IRBuilderBase& b, llvm::Module& m,

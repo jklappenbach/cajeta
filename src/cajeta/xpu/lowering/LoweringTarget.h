@@ -391,6 +391,15 @@ namespace xpu {
                                          llvm::Value* lo, llvm::Value* hi,
                                          llvm::Value* selector);
 
+        // The escape hatch's inline assembly (@TargetAsm, spec §7.5), checked at
+        // its boundary: does constraint `code` ("r", "v", "{v0}", the letter(s)
+        // after any `=`) admit an operand of type `t` on this backend? `why`
+        // says what it takes when not. DEFAULT: this backend has no inline
+        // assembly form, so nothing is admitted. NVPTX and AMDGPU know their
+        // letters.
+        virtual bool asmConstraintAdmits(const std::string& code, llvm::Type* t,
+                                         std::string& why) const;
+
         // `v[i]` with a NON-CONSTANT `i`. DEFAULT: a plain extractelement, left for
         // the backend to legalize. NVPTX overrides it because ITS legalization is a
         // stack round trip: the vector is written to the frame and one lane read
