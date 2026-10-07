@@ -171,7 +171,8 @@ TEST(StringArraySlotTests, literalArrayElements) {
         "return 1;"), 1);
 }
 
-// Twin: a slot that lends a frame-owned local cannot leave the frame, as for any element type.
+// Twin: a slot that lends a frame-owned local cannot leave the frame, as for any element type. The
+// field-store census rejects it first, since `#a` makes the holder escape (field-store 1.2.6).
 TEST(StringArraySlotTests, slotLendingAnOwnedLocalCannotEscape) {
     std::string src = makeSource(
         "String s #= Ut.heapString(40);\n"
@@ -182,8 +183,9 @@ TEST(StringArraySlotTests, slotLendingAnOwnedLocalCannotEscape) {
         "return 1;");
     try {
         CajetaJit::compile(src, "test.Ut");
-        ADD_FAILURE() << "expected CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL";
+        ADD_FAILURE() << "expected CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE";
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_ARRAY_SLOT_BORROWS_LOCAL") << e.getMessage();
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE") << e.getMessage();
+        EXPECT_NE(e.getMessage().find("#="), std::string::npos) << e.getMessage();
     }
 }
