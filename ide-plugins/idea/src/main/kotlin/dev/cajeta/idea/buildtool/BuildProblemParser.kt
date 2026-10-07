@@ -60,7 +60,8 @@ class BuildProblemParser {
     fun feed(line: String): BuildProblem? {
         val d = JsonDiagnosticParser.parse(line) ?: return null
         if (d.severity == Diagnostic.Severity.ERROR) sawError = true
-        val message = if (!d.code.isNullOrBlank()) "[${d.code}] ${d.message}" else d.message
+        val shown = d.displayMessage
+        val message = if (!d.code.isNullOrBlank()) "[${d.code}] $shown" else shown
         return BuildProblem(d.severity, message, d.file, d.line, d.column)
     }
 }
