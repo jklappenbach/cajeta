@@ -315,3 +315,119 @@ TEST(XpuLibraryEpilogue, dumpsThePtxWhenAsked) {
         std::ofstream(std::string(dir) + "/" + w + ".ll") << l.ir;
     }
 }
+
+// The library fold under BARRIER FISSION on cpu (xpu-kernel-adaptor 6.4.18,
+// found 2026-10-07 while localizing the TcTile tiles' wrong answers there).
+// Eight waves stage the slice's operands into Shared behind a barrier, each
+// wave folds its product into an int accumulator through the helper, and a
+// second barrier closes the slice. The helper takes the accumulator by
+// pointer; the cpu backend's fission rewrites per-work-item allocas into
+// context arrays while the helper is still a call, so the pointer the helper
+// writes through no longer names each work-item's own slot: every wave read
+// the same 448 at cell 0 where the built-in fold in the same place was right.
+// Checked against the host product; nvptx agrees with the host.
+namespace {
+const char* kFissionFold = R"CJ(
+package test;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.TileOps;
+public class F {
+    @Kernel
+    public static void fold(KernelBuffer<int32> y, KernelBuffer<int8> a, KernelBuffer<int8> b,
+                            KernelBuffer<int32> sc, uint32 slices) {
+        Shared<int8> aT = shared int8[9216];
+        Shared<int8> bT = shared int8[4608];
+        Shared<int32> scS = shared int32[32];
+        uint32 tid = KernelThread.x();
+        uint32 wid = tid / 32;
+        uint32 wr = wid / 2;
+        uint32 wc = wid % 2;
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        CooperativeMatrix<int32,16,16,2> mc;
+        CooperativeMatrix<int32,16,16,2> iacc;
+        iacc.splat(0);
+        for (uint32 s = 0; s < slices; s = s + 1) {
+            for (uint32 i = tid; i < 9216; i = i + 256) { aT[i] = a[s * 9216 + i]; }
+            for (uint32 i = tid; i < 4608; i = i + 256) { bT[i] = b[s * 4608 + i]; }
+            if (tid < 32) { scS[tid] = sc[s * 32 + tid]; }
+            Barrier.workgroup();
+            ma.load(aT, wr * 16 * 144, 0, 144);
+            mb.load(bT, wc * 16 * 144, 1, 144);
+            mc.splat(0);
+            mc.mma(ma, mb);
+            TileOps.scaledAccumI32(mc, iacc, scS, wc * 16, 1);
+            Barrier.workgroup();
+        }
+        iacc.store(y, wid * 256, 0, 16);
+    }
+    // Returns the number of wrong cells over the 8 waves, 4 slices.
+    public static int32 run() {
+        int8[] ha = heap int8[36864];
+        int8[] hb = heap int8[18432];
+        int32[] hsc = heap int32[128];
+        for (int32 i = 0; i < 36864; i = i + 1) { ha[i] = (int8) ((i * 7 + 3) % 23 - 11); }
+        for (int32 i = 0; i < 18432; i = i + 1) { hb[i] = (int8) ((i * 5 + 1) % 19 - 9); }
+        for (int32 i = 0; i < 128; i = i + 1) { hsc[i] = (i * 3) % 7 + 1; }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(36864);
+        KernelBuffer<int8> b = heap KernelBuffer<int8>(18432);
+        KernelBuffer<int32> sc = heap KernelBuffer<int32>(128);
+        a.upload(ha);
+        b.upload(hb);
+        sc.upload(hsc);
+        int32[] hy = heap int32[2048];
+        KernelBuffer<int32> y = heap KernelBuffer<int32>(2048);
+        KernelStream s #= KernelStream.current();
+        fold.launch(s, grid: [1], block: [256])(y, a, b, sc, 4);
+        s.sync();
+        y.download(hy);
+        int32 bad = 0;
+        for (int32 w = 0; w < 8; w = w + 1) {
+            int32 wr = w / 2;
+            int32 wc = w % 2;
+            for (int32 m = 0; m < 16; m = m + 1) {
+                for (int32 n = 0; n < 16; n = n + 1) {
+                    int32 want = 0;
+                    for (int32 sl = 0; sl < 4; sl = sl + 1) {
+                        int32 prod = 0;
+                        for (int32 k = 0; k < 16; k = k + 1) {
+                            prod = prod + (int32) ha[sl * 9216 + (wr * 16 + m) * 144 + k]
+                                        * (int32) hb[sl * 4608 + (wc * 16 + n) * 144 + k];
+                        }
+                        want = want + prod * hsc[sl * 32 + wc * 16 + n];
+                    }
+                    if (hy[w * 256 + m * 16 + n] != want) { bad = bad + 1; }
+                }
+            }
+        }
+        return bad;
+    }
+}
+)CJ";
+} // namespace
+
+TEST(XpuLibraryEpilogue, theLibraryFoldSurvivesBarrierFissionOnCpu) {
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(kFissionFold, "test.F", o);
+    ASSERT_NE(jit, nullptr);
+    auto run = jit->lookup<int (*)()>("run");
+    ASSERT_NE(run, nullptr);
+    EXPECT_EQ(run(), 0) << "wrong cells over 8 waves x 256";
+}
+
+TEST(XpuLibraryEpilogue, theLibraryFoldSurvivesBarrierFissionOnNvptx) {
+    if (!cajeta::xpu::test::cudaAvailable()) GTEST_SKIP() << "no CUDA device";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
+    auto jit = CajetaJit::compile(kFissionFold, "test.F", o);
+    ASSERT_NE(jit, nullptr);
+    auto run = jit->lookup<int (*)()>("run");
+    ASSERT_NE(run, nullptr);
+    EXPECT_EQ(run(), 0);
+}

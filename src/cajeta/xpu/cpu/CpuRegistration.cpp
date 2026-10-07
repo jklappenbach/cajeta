@@ -846,6 +846,40 @@ static unsigned inlineDeviceCallees(llvm::Function& wrapper) {
     return inlined;
 }
 
+// Inline the `__cajeta_xpu_dev.*` calls that pass a pointer into one of `f`'s
+// allocas (a fragment by reference), to a fixpoint; every other helper call
+// stays. See the barrier path for why.
+static unsigned inlineAllocaTakingCallees(llvm::Function& f) {
+    unsigned inlined = 0;
+    for (unsigned round = 0; round < 32; ++round) {
+        llvm::SmallVector<llvm::CallInst*, 16> calls;
+        for (auto& bb : f)
+            for (auto& in : bb) {
+                auto* c = llvm::dyn_cast<llvm::CallInst>(&in);
+                if (!c) continue;
+                auto* cf = c->getCalledFunction();
+                if (!cf || cf->isDeclaration() || cf->isIntrinsic()
+                    || !cf->getName().starts_with("__cajeta_xpu_dev."))
+                    continue;
+                bool takesAlloca = false;
+                for (llvm::Value* arg : c->args())
+                    if (arg->getType()->isPointerTy()
+                        && llvm::isa<llvm::AllocaInst>(
+                               arg->stripInBoundsConstantOffsets()->stripPointerCasts())) {
+                        takesAlloca = true;
+                        break;
+                    }
+                if (takesAlloca) calls.push_back(c);
+            }
+        if (calls.empty()) break;
+        for (llvm::CallInst* c : calls) {
+            llvm::InlineFunctionInfo ifi;
+            if (llvm::InlineFunction(*c, ifi).isSuccess()) ++inlined;
+        }
+    }
+    return inlined;
+}
+
 // A wave op LoopVectorize left as its scalar stub runs with width-1 semantics:
 // a shuffle is the identity, a reduce is its own input. That is silently wrong
 // for a wave of W and is how q6kWmmaDeqMw4Kernel's mma came to read each
@@ -1147,6 +1181,22 @@ void foldWaveVariants(llvm::Function& f) {
             // well, barrier or not: its cross-lane ops widen only when the
             // work-item loop is innermost, and fission makes each workgroup-
             // uniform loop scaffold so that it is (CpuBarrierFission.cpp 4b).
+            // A @Device helper that receives a pointer INTO ONE OF THE KERNEL'S
+            // ALLOCAS (a fragment by reference, TileOps.scaledAccumI32) is
+            // inlined into the kernel BEFORE fission. Fission rewrites the
+            // kernel's per-work-item allocas into context arrays by following
+            // each alloca's loads, stores and GEPs; behind a call those were
+            // invisible, so the pointer the helper wrote through named a slot
+            // no longer anyone's, and every wave read the same value where the
+            // built-in verb in the same place was right
+            // (XpuLibraryEpilogue.theLibraryFoldSurvivesBarrierFissionOnCpu,
+            // cajeta-llm's TcTile tiles on cpu, xpu-kernel-adaptor 6.4.18).
+            // ONLY those: inlining every helper here (the per-format subs with
+            // their own short loops) left 37 llm kernels' wave reduces scalar,
+            // because fission then qualified the helpers' loops as the kernel's.
+            // The other helpers are inlined into the wrapper after fission, as
+            // before.
+            inlineAllocaTakingCallees(*linked);
             bool waveOpsUsed = false;
             for (const char* op : kWaveOps)
                 if (callsRuntimeFn(*linked, op)) { waveOpsUsed = true; break; }
