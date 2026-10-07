@@ -1242,9 +1242,14 @@ const char* kStripeMacSrc = R"CJ(
 }
 )CJ";
 
-// DISABLED until xpu-kernel-adaptor 4.2.1.11 lands: it reads 16 at row 0 (block
-// 0 alone) where 576 is right, on this compiler, at width 8.
-TEST(XpuCpuFissionUniformize, DISABLED_groupStripeMacAndReduceAgreeAtTheWaveWidthOnCpu) {
+// xpu-kernel-adaptor 4.2.1.11. It read 16 at row 0 (block 0 alone) where 576
+// is right, at width 8, when fission scaffolded the striped region and
+// LoopVectorize then refused its work-item loop, so the stripe ran scalar and
+// the reduce combined one lane. Green on cajeta 0.36.0 (2026-10-07, 54 s)
+// and re-enabled then; which change closed it was not bisected, the
+// lane-mask and scalar-twin work of 2026-10-05 (2d4eb927) being the likely
+// one.
+TEST(XpuCpuFissionUniformize, groupStripeMacAndReduceAgreeAtTheWaveWidthOnCpu) {
     const int r = runOnCpu(std::string(kPreamble) + kStripeMacSrc);
     EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100+i wrong at row i)";
 }
