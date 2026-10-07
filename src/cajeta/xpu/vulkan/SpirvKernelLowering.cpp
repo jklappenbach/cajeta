@@ -160,13 +160,24 @@ public:
                              unsigned dim) override {
         return readCoord(b, m, llvm::Intrinsic::spv_group_id, dim);
     }
-    // The WorkgroupSize BuiltIn must decorate a CONSTANT in a Vulkan shader — as a
-    // builtin variable spirv-val rejects the module — so return the baked LocalSize
-    // constant createKernel put in numthreads.
-    llvm::Value* workgroupDim(llvm::IRBuilderBase& /*b*/, llvm::Module& m,
+    // A volatile load of a named witness the post-emit pass turns into the launch's
+    // WorkgroupSize spec constant; the baked LocalSize is only its default.
+    llvm::Value* workgroupDim(llvm::IRBuilderBase& b, llvm::Module& m,
                               unsigned dim) override {
-        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()),
-                                      dim == 0 ? kVulkanLocalSizeX : 1);
+        constexpr unsigned kPrivateAS = 10;
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        std::string gname = std::string(kWorkgroupDimWitness) + std::to_string(dim);
+        llvm::GlobalVariable* gv = m.getGlobalVariable(gname, /*AllowInternal=*/true);
+        if (!gv) {
+            gv = new llvm::GlobalVariable(
+                m, i32, /*isConstant=*/false, llvm::GlobalValue::InternalLinkage,
+                llvm::ConstantInt::get(i32, dim == 0 ? kVulkanLocalSizeX : 1), gname,
+                /*InsertBefore=*/nullptr, llvm::GlobalValue::NotThreadLocal, kPrivateAS);
+            gv->setAlignment(llvm::MaybeAlign(4));
+        }
+        llvm::LoadInst* ld = b.CreateLoad(i32, gv, gname + ".v");
+        ld->setVolatile(true);
+        return ld;
     }
     llvm::Value* globalId(llvm::IRBuilderBase& b, llvm::Module& m,
                           unsigned dim) override {
