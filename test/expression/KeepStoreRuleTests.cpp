@@ -287,13 +287,20 @@ TEST(KeepStoreRuleTests, errorInsideTemplateNamesItsRealLine) {
         "    }\n"
         "}\n";
     int line = -1;
+    int fromLine = -1;
+    std::string via;
     try {
         CajetaJit::compile(src, "test.D");
     } catch (cajeta::Exception& e) {
         EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE") << e.getMessage();
         line = e.getLine();
+        fromLine = e.getGenerated().fromLine;
+        via = e.getGenerated().via;
     }
-    EXPECT_EQ(line, 10);
+    // diagnostic-location 3.2.1: the instantiating line, with the template's real line in `from`.
+    EXPECT_EQ(line, 14);
+    EXPECT_EQ(via, "template");
+    EXPECT_EQ(fromLine, 10);
 }
 
 // 4.2.6: a holder local that escapes is a field (rule 8).

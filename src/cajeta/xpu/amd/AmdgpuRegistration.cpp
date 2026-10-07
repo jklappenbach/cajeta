@@ -98,7 +98,7 @@ namespace amd {
                         || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
                 // Unsupported construct: this kernel gets NO device code here, and a
                 // launch would fail with "no registered kernel", so say so at build time.
-                reportUnloweredKernel(*method, entryName, "amdgpu", ex.getMessage());
+                reportUnloweredKernel(*method, entryName, "amdgpu", ex.getMessage(), arch);
                 continue;
             }
             if (!kfn) continue;
@@ -164,6 +164,7 @@ namespace amd {
             // A code object whose static shared memory is over its part's per-workgroup
             // limit cannot launch there: LLVM only reports it, so refuse it like a lowering.
             std::string overShared;
+            std::string overArch;
             for (const ArchHsaco& ah : perArch) {
                 DeviceModel model;
                 if (!lookupArch(ah.arch, model)) model = defaultDeviceModel();
@@ -175,12 +176,13 @@ namespace amd {
                         overShared = "it needs " + std::to_string(fp.groupSegmentBytes)
                             + " bytes of shared memory a workgroup and " + ah.arch
                             + " offers " + std::to_string(limit);
+                        overArch = ah.arch;
                     }
                 }
                 if (!overShared.empty()) break;
             }
             if (!overShared.empty()) {
-                reportUnloweredKernel(*method, entryName, "amdgpu", overShared);
+                reportUnloweredKernel(*method, entryName, "amdgpu", overShared, overArch);
                 continue;
             }
 
@@ -285,7 +287,7 @@ namespace amd {
             if (manifests)
                 manifests->insert(manifests->end(), kernelManifests.begin(),
                                   kernelManifests.end());
-            noteKernelLowered(*method, entryName, "amdgpu");
+            noteKernelLowered(*method, entryName, "amdgpu", arch);
             ++emitted;
         }
         return emitted;

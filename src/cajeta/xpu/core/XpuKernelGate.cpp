@@ -3,8 +3,11 @@
 #include "XpuKernelGate.h"
 #include "XpuAttributes.h"
 
+#include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/Exception.h"
+#include "cajeta/method/Method.h"
 #include "cajeta/type/Annotatable.h"
+#include "cajeta/type/CajetaClass.h"
 
 #include <cctype>
 #include <cstdio>
@@ -85,6 +88,26 @@ void fail(const std::string& kernelName, const std::string& what) {
     g_failures.push_back(kernelName + " (" + what + ")");
 }
 
+const char* const kGateCode = "CAJETA_ERROR_XPU_KERNEL_GATE";
+
+// `backend` alone, or `backend/arch` when the arch is known.
+std::string targetOf(const std::string& backend, const std::string& arch) {
+    return arch.empty() ? backend : backend + "/" + arch;
+}
+
+// One gate line as text, or under --diag-format=json a diagnostic at the kernel naming it.
+void gateRecord(const Method& kernel, const char* severity, const std::string& code,
+                const std::string& kernelName, const std::string& target,
+                const std::string& text) {
+    if (!jsonProgressEnabled()) {
+        fprintf(stderr, "cajeta: %s: %s\n", severity, text.c_str());
+        return;
+    }
+    SourceSite at = kernel.declarationSite();
+    emitJsonDiagnostic(severity, code, text, at.file, at.line, at.column, "project",
+                       GeneratedOrigin(), DiagnosticArtifact{"kernel", kernelName, target});
+}
+
 } // namespace
 
 bool kernelGateWarns() {
@@ -107,37 +130,36 @@ void resetKernelGate() {
 unsigned kernelGateErrors() { return g_errors; }
 const std::vector<std::string>& kernelGateFailures() { return g_failures; }
 
-void reportUnloweredKernel(const Annotatable& kernel,
+void reportUnloweredKernel(const Method& kernel,
                            const std::string& kernelName,
                            const std::string& backend,
-                           const std::string& reason) {
+                           const std::string& reason,
+                           const std::string& arch) {
+    const std::string target = targetOf(backend, arch);
+    const std::string head = "[xpu-kernel-skipped] " + kernelName + ": no " + backend
+        + " device code — " + reason;
     const std::string held = unloweredHeldBy(kernel, backend);
     if (!held.empty()) {
-        fprintf(stderr,
-                "cajeta: note: [xpu-kernel-skipped] %s: no %s device code — %s "
-                "[tracked: %s]\n",
-                kernelName.c_str(), backend.c_str(), reason.c_str(), held.c_str());
+        gateRecord(kernel, "note", "xpu-kernel-skipped", kernelName, target,
+                   head + " [tracked: " + held + "]");
         return;
     }
     if (kernelGateWarns()) {
-        fprintf(stderr,
-                "cajeta: warning: [xpu-kernel-skipped] %s: no %s device code — %s\n",
-                kernelName.c_str(), backend.c_str(), reason.c_str());
+        gateRecord(kernel, "warning", "xpu-kernel-skipped", kernelName, target, head);
         return;
     }
-    fprintf(stderr,
-            "cajeta: error: [xpu-kernel-skipped] %s: no %s device code — %s. "
-            "A kernel with no device code for a declared backend fails the build "
-            "(CAJETA_ERROR_XPU_KERNEL_GATE, xpu-kernel-adaptor 4.2.2); hold it "
-            "with @Unlowered(backend = \"%s\", tracked = \"<plan item>\") on the "
-            "kernel, or CAJETA_XPU_KERNEL_GATE=warn for a sweep\n",
-            kernelName.c_str(), backend.c_str(), reason.c_str(), backend.c_str());
+    gateRecord(kernel, "error", kGateCode, kernelName, target,
+               head + ". A kernel with no device code for a declared backend fails the build "
+               "(CAJETA_ERROR_XPU_KERNEL_GATE, xpu-kernel-adaptor 4.2.2); hold it "
+               "with @Unlowered(backend = \"" + backend + "\", tracked = \"<plan item>\") on "
+               "the kernel, or CAJETA_XPU_KERNEL_GATE=warn for a sweep");
     fail(kernelName, "no " + backend + " device code");
 }
 
-void noteKernelLowered(const Annotatable& kernel,
+void noteKernelLowered(const Method& kernel,
                        const std::string& kernelName,
-                       const std::string& backend) {
+                       const std::string& backend,
+                       const std::string& arch) {
     const std::string held = unloweredHeldBy(kernel, backend);
     if (held.empty()) return;
     // A CONDITIONAL hold (hostWaveBelow = N) is never stale. Below N it
@@ -152,68 +174,58 @@ void noteKernelLowered(const Annotatable& kernel,
                     below && below->kind == AnnotationArgKind::Int64)
                 return;
     }
+    const std::string target = targetOf(backend, arch);
+    const std::string head = "[xpu-kernel-skipped] " + kernelName + ": STALE: it has " + backend
+        + " device code now; remove @Unlowered(backend = \"" + backend + "\", tracked = \""
+        + held + "\")";
     if (kernelGateWarns()) {
-        fprintf(stderr,
-                "cajeta: warning: [xpu-kernel-skipped] %s: STALE: it has %s device code "
-                "now; remove @Unlowered(backend = \"%s\", tracked = \"%s\")\n",
-                kernelName.c_str(), backend.c_str(), backend.c_str(), held.c_str());
+        gateRecord(kernel, "warning", "xpu-kernel-skipped", kernelName, target, head);
         return;
     }
-    fprintf(stderr,
-            "cajeta: error: [xpu-kernel-skipped] %s: STALE: it has %s device code "
-            "now; remove @Unlowered(backend = \"%s\", tracked = \"%s\") "
-            "(CAJETA_ERROR_XPU_KERNEL_GATE)\n",
-            kernelName.c_str(), backend.c_str(), backend.c_str(), held.c_str());
+    gateRecord(kernel, "error", kGateCode, kernelName, target,
+               head + " (CAJETA_ERROR_XPU_KERNEL_GATE)");
     fail(kernelName, "stale @Unlowered for " + backend);
 }
 
-void reportUnboundedKernel(const Annotatable& kernel,
+void reportUnboundedKernel(const Method& kernel,
                            const std::string& kernelName,
                            unsigned sites) {
-    static const char* kBody =
-        "launched with a non-constant block at %u site(s) and no "
-        "@Occupancy(maxThreads): the compiler cannot bound the block, so amdgpu "
-        "budgets registers for the part's full 1024-thread ceiling and nvptx "
-        "applies no bound. Declare the kernel's structural ceiling, "
-        "@Occupancy(maxThreads = N), in the same change that derives the block "
-        "(xpu-kernel-adaptor 7.0.1)";
+    const std::string head = "[xpu-kernel-unbounded] " + kernelName
+        + ": launched with a non-constant block at " + std::to_string(sites)
+        + " site(s) and no @Occupancy(maxThreads): the compiler cannot bound the block, so "
+          "amdgpu budgets registers for the part's full 1024-thread ceiling and nvptx "
+          "applies no bound. Declare the kernel's structural ceiling, "
+          "@Occupancy(maxThreads = N), in the same change that derives the block "
+          "(xpu-kernel-adaptor 7.0.1)";
     const std::string held = unboundedHeldBy(kernel);
     if (!held.empty()) {
-        fprintf(stderr, "cajeta: note: [xpu-kernel-unbounded] %s: ", kernelName.c_str());
-        fprintf(stderr, kBody, sites);
-        fprintf(stderr, " [tracked: %s]\n", held.c_str());
+        gateRecord(kernel, "note", "xpu-kernel-unbounded", kernelName, "",
+                   head + " [tracked: " + held + "]");
         return;
     }
     if (kernelGateWarns()) {
-        fprintf(stderr, "cajeta: warning: [xpu-kernel-unbounded] %s: ", kernelName.c_str());
-        fprintf(stderr, kBody, sites);
-        fprintf(stderr, "\n");
+        gateRecord(kernel, "warning", "xpu-kernel-unbounded", kernelName, "", head);
         return;
     }
-    fprintf(stderr, "cajeta: error: [xpu-kernel-unbounded] %s: ", kernelName.c_str());
-    fprintf(stderr, kBody, sites);
-    fprintf(stderr,
-            ", or hold it with @Unbounded(tracked = \"<plan item>\") "
-            "(CAJETA_ERROR_XPU_KERNEL_GATE)\n");
+    gateRecord(kernel, "error", kGateCode, kernelName, "",
+               head + ", or hold it with @Unbounded(tracked = \"<plan item>\") "
+               "(CAJETA_ERROR_XPU_KERNEL_GATE)");
     fail(kernelName, "unbounded block, no ceiling");
 }
 
-void noteKernelBounded(const Annotatable& kernel,
+void noteKernelBounded(const Method& kernel,
                        const std::string& kernelName,
                        const std::string& why) {
     const std::string held = unboundedHeldBy(kernel);
     if (held.empty()) return;
+    const std::string head = "[xpu-kernel-unbounded] " + kernelName + ": STALE: " + why
+        + "; remove @Unbounded(tracked = \"" + held + "\")";
     if (kernelGateWarns()) {
-        fprintf(stderr,
-                "cajeta: warning: [xpu-kernel-unbounded] %s: STALE: %s; remove "
-                "@Unbounded(tracked = \"%s\")\n",
-                kernelName.c_str(), why.c_str(), held.c_str());
+        gateRecord(kernel, "warning", "xpu-kernel-unbounded", kernelName, "", head);
         return;
     }
-    fprintf(stderr,
-            "cajeta: error: [xpu-kernel-unbounded] %s: STALE: %s; remove "
-            "@Unbounded(tracked = \"%s\") (CAJETA_ERROR_XPU_KERNEL_GATE)\n",
-            kernelName.c_str(), why.c_str(), held.c_str());
+    gateRecord(kernel, "error", kGateCode, kernelName, "",
+               head + " (CAJETA_ERROR_XPU_KERNEL_GATE)");
     fail(kernelName, "stale @Unbounded");
 }
 

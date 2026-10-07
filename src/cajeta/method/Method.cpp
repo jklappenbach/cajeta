@@ -4,6 +4,7 @@
 
 #include "../error/Diagnostics.h"
 #include "Method.h"
+#include "DefaultConstructorMethod.h"
 #include "llvm/IR/IRBuilder.h"
 #include <atomic>
 #include <functional>
@@ -2100,6 +2101,7 @@ namespace cajeta {
 
     void Method::resolveBodyForLint(CajetaModulePtr module) {
         if (bodyResolved || !block || !module) return;
+        GenerationScope generationScope(generationSite());
 
         const bool pushedClass = (parent != nullptr);
         if (pushedClass) module->getStructureStack().push_back(parent);
@@ -2202,10 +2204,36 @@ namespace cajeta {
         }
     }
 
+    SourceSite Method::declarationSite() const {
+        SourceSite site;
+        if (parent) site.file = parent->declarationSite().file;
+        if (declLine > 0) {
+            site.line = declLine;
+            site.column = declColumn + 1;
+        }
+        return site;
+    }
+
+    GenerationSite Method::generationSite() const {
+        if (!ownSite.via.empty()) return ownSite;
+        GenerationSite site;
+        if (parent && parent->getTemplateOrigin()) {
+            site.via = kViaTemplate;
+            site.request = parent->getRequestSite();
+            site.innerFile = parent->getTemplateOrigin()->declarationSite().file;
+        } else if (constructor && parent && dynamic_cast<const DefaultConstructorMethod*>(this)) {
+            site.via = kViaDefaultConstructor;
+            site.request = parent->declarationSite();
+            site.innerFile = site.request.file;
+        }
+        return site;
+    }
+
     // Lower this method's body into its LLVM function: prologue (scope frame,
     // formals, drop entries, debug/profile frames), advice wrapping, the constructor
     // preamble, the body itself, then the exit drops and terminator.
     void Method::generateCode() {
+        GenerationScope generationScope(generationSite());
         ensureFreshPrototype();
         auto& llvmFunction = llvmFunctionRef();
         auto& llvmFunctionType = llvmFunctionTypeRef();

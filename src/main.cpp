@@ -271,11 +271,12 @@ bool setBoolFlag(const char* flagName, const std::string& value, bool& out) {
 static void emitException(cajeta::Exception& e, bool jsonDiag) {
     if (jsonDiag) {
         cajeta::emitJsonDiagnostic("error", e.getErrorId(), e.getMessage(),
-                                   e.getFile(), e.getLine(), e.getColumn());
+                                   e.getFile(), e.getLine(), e.getColumn(), "project",
+                                   e.getGenerated());
     } else if (e.hasLocation()) {
         std::cerr << "cajeta: " << e.getFile() << ":" << e.getLine() << ":"
                   << e.getColumn() << ": " << e.getErrorId() << ": "
-                  << e.getMessage() << "\n";
+                  << e.getMessage() << cajeta::generatedClause(e.getGenerated()) << "\n";
     } else {
         std::cerr << "cajeta: " << e.getErrorId() << ": " << e.getMessage() << "\n";
     }
@@ -943,9 +944,11 @@ int main(int argc, const char* argv[]) {
                 if (compiler.getFlags().diagFormat == cajeta::DiagFormat::Json)
                     cajeta::emitJsonDiagnostic("error", e.getErrorId(),
                                                e.getMessage(), e.getFile(),
-                                               e.getLine(), e.getColumn());
+                                               e.getLine(), e.getColumn(), "project",
+                                               e.getGenerated());
                 else
-                    std::cerr << "cajeta: " << e.getMessage() << "\n";
+                    std::cerr << "cajeta: " << e.getMessage()
+                              << cajeta::generatedClause(e.getGenerated()) << "\n";
                 return 1;
             } catch (const std::exception& e) {
                 if (compiler.getFlags().diagFormat == cajeta::DiagFormat::Json)
@@ -1161,8 +1164,8 @@ int main(int argc, const char* argv[]) {
         cajeta::emitJsonResult("error", "syntax errors");
         return 1;  // syntax diagnostics already emitted during parsing
     } catch (cajeta::Exception& e) {
-        engine.report("error", e.getErrorId(), e.getMessage(),
-                      e.getFile(), e.getLine(), e.getColumn());
+        engine.reportGenerated("error", e.getErrorId(), e.getMessage(), e.getFile(),
+                               e.getLine(), e.getColumn(), "project", e.getGenerated());
     } catch (const std::exception& e) {
         engine.report("error", "", e.what());
     }

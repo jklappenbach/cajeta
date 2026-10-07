@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "Exception.h"
+#include "GeneratedCode.h"
 
 namespace antlr4 { class Token; }
 
@@ -74,15 +75,28 @@ namespace cajeta {
     // Plugin text for a human, verbatim: no prefix and no added newline.
     void emitJsonWrite(const std::string& text);
 
+    // A diagnostic's non-source subject (diagnostic-location 4): `kind` is kernel, manifest or
+    // build-step, and `target` is a kernel's backend/arch.
+    struct DiagnosticArtifact {
+        std::string kind;
+        std::string name;
+        std::string target;
+    };
+
     // One diagnostic as a self-contained NDJSON line on stderr; severity is
     // "error" | "warning" | "note", and empty or non-positive fields are null.
+    // The kind of place `file` names: "source", "stdlib", "archive", or empty when unlocated.
+    std::string locationKind(const std::string& file, int line);
+
     void emitJsonDiagnostic(const std::string& severity,
                             const std::string& code,
                             const std::string& message,
                             const std::string& file = "",
                             int line = -1,
                             int column = -1,
-                            const std::string& origin = "project");
+                            const std::string& origin = "project",
+                            const GeneratedOrigin& generated = GeneratedOrigin(),
+                            const DiagnosticArtifact& artifact = DiagnosticArtifact());
 
     // Process-wide gate for the progress records below, set once at flag parse.
     void setJsonProgressEnabled(bool enabled);
@@ -115,7 +129,7 @@ namespace cajeta {
     // MAJOR bumps on a breaking change and consumers must REFUSE an unknown
     // one; MINOR bumps on an added record kind or field, which they may ignore.
     constexpr int kJsonlSchemaMajor = 1;
-    constexpr int kJsonlSchemaMinor = 1;
+    constexpr int kJsonlSchemaMinor = 2;
 
     // One compile-phase record on the diagnostics stream, flushed as the phase
     // begins; `phase` is a stable id and `state` is "start" or "finish".

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cajeta.dev/schemas/compiler-jsonl-v1.json",
   "title": "cajeta compiler NDJSON stream",
-  "version": { "major": 1, "minor": 1 },
+  "version": { "major": 1, "minor": 2 },
 
   "description": "One JSON object per line on stderr under --diag-format=json. Every record carries a `kind`; the stream opens with a `stream` record announcing this version. Text mode (the default) emits none of this. Since 1.1 every record also names WHO produced it (`source`/`sourceVersion`) — the stream is no longer single-producer: plugin output joins it rather than forming a parallel one. See specs/compiler-jsonl-spec.md and specs/plugin-output-protocol-spec.md §5.",
 
@@ -76,6 +76,30 @@
         "file": { "type": ["string", "null"] },
         "line": { "type": ["integer", "null"], "description": "1-based; null when unlocated." },
         "column": { "type": ["integer", "null"], "description": "1-based; null when unlocated." },
+        "origin": { "enum": ["project", "dependency", "stdlib", null], "description": "Whose code the diagnostic is in. Emitted since v0.34.0; documented in 1.2." },
+        "at": { "enum": ["source", "stdlib", "archive", "generated", "artifact", null], "description": "The kind of place file/line/column point at; null when unlocated. file/line/column are always where to show the user (diagnostic-location spec 1.2). Added in 1.2." },
+        "archive": { "type": "string", "description": "The .cja file, when at is archive. file keeps its `archive!entry` form. Added in 1.2." },
+        "via": { "type": "string", "description": "What generated the code, when at is generated; file/line/column are then the declaration that asked for it. Free text: the compiler writes template, default-constructor, and <label>-synthesizer for a body synthesizer (json-synthesizer, csv-synthesizer, protobuf-synthesizer, ion-synthesizer, avro-synthesizer, frame-csv-synthesizer). A reader shows it as written. Added in 1.2." },
+        "from": {
+          "type": "object",
+          "description": "The generator's own source position, when it has one (a template body line). Added in 1.2.",
+          "properties": {
+            "file": { "type": "string" },
+            "line": { "type": ["integer", "null"] },
+            "column": { "type": ["integer", "null"] }
+          },
+          "required": ["file"]
+        },
+        "artifact": {
+          "type": "object",
+          "description": "The non-source subject, when at is artifact; file/line/column point at its source declaration or are null. Added in 1.2.",
+          "properties": {
+            "kind": { "enum": ["kernel", "manifest", "build-step"] },
+            "name": { "type": "string" },
+            "target": { "type": ["string", "null"], "description": "A kernel's backend and arch, e.g. amdgpu/gfx1151." }
+          },
+          "required": ["kind", "name"]
+        },
         "source": { "$ref": "#/$defs/source" },
         "sourceVersion": { "$ref": "#/$defs/sourceVersion" }
       }

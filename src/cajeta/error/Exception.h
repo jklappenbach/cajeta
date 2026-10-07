@@ -8,6 +8,14 @@ using namespace std;
 
 namespace cajeta {
 
+    // Where generated code came from: `via` names the generator, `from` its source position.
+    struct GeneratedOrigin {
+        string via;
+        string fromFile;
+        int fromLine = -1;
+        int fromColumn = -1;
+    };
+
     class Exception {
     protected:
         string message;
@@ -16,12 +24,17 @@ namespace cajeta {
         int line = -1;    // 1-based; <= 0 means "no location"
         int column = -1;  // 1-based
         bool scriptRemapped = false;  // see markScriptRemapped()
+        GeneratedOrigin generated;
+
+        // Moves the location to the active generated-code site, when there is one.
+        void stampGenerated();
     public:
         Exception() { }
 
         Exception(string message, string errorId) {
             this->message = message;
             this->errorId = errorId;
+            stampGenerated();
         }
 
         // Located form (located-semantic-diagnostics): 1-based line/column.
@@ -31,11 +44,12 @@ namespace cajeta {
             this->file = file;
             this->line = line;
             this->column = column;
+            stampGenerated();
         }
 
-        string getMessage() { return message; }
+        string getMessage() const { return message; }
 
-        string getErrorId() { return errorId; }
+        string getErrorId() const { return errorId; }
 
         const string& getFile() const { return file; }
 
@@ -44,6 +58,9 @@ namespace cajeta {
         int getColumn() const { return column; }
 
         bool hasLocation() const { return line > 0; }
+
+        const GeneratedOrigin& getGenerated() const { return generated; }
+        void setGenerated(const GeneratedOrigin& g) { generated = g; }
 
         // The remap flag makes the rewrite once-only: nested codegen rethrows through several remap boundaries.
         void setLocation(const string& f, int l, int c) {

@@ -25,6 +25,7 @@
 #include "../asn/expression/MethodCallExpression.h"
 #include "../asn/expression/NewExpression.h"
 #include "../error/DiagnosticEngine.h"
+#include "../error/Diagnostics.h"
 #include "../error/Exception.h"
 #include <algorithm>
 
@@ -194,6 +195,7 @@ namespace cajeta::ownership {
                 }
                 for (auto& [mkey, method] : klass->getMethods()) {
                     if (!method || !method->getBlock()) continue;
+                    const GenerationSite site = method->generationSite();
                     std::map<std::string, Binding> scope;
                     std::map<std::string, int> ordinal;
                     int depth = 0;
@@ -425,6 +427,7 @@ namespace cajeta::ownership {
                                             FieldStoreRecord rec{className, method->getName(),
                                                 (int) bin->getSourceLine(), target, op, kind, name, type,
                                                 file, origin, (int) bin->getSourceColumn() + 1};
+                                            rec.site = site;
                                             std::string key = className + " " + rec.methodName + "@"
                                                 + std::to_string(rec.line) + ":" + std::to_string(rec.column)
                                                 + " " + target + " " + op + " " + kind + " " + name;
@@ -585,27 +588,52 @@ namespace cajeta::ownership {
         }
     }
 
+    namespace {
+        // `rec` at the declaration that asked for its generated code, in the census's own file form.
+        FieldStoreRecord located(const FieldStoreRecord& stored,
+                                 const std::map<std::string, std::string>& censusForm) {
+            FieldStoreRecord rec = stored;
+            if (rec.site.via.empty()) return rec;
+            rec.generated = applyGenerationSite(rec.site, rec.file, rec.line, rec.column);
+            auto form = censusForm.find(rec.file);
+            if (form != censusForm.end()) rec.file = form->second;
+            std::string at = locationKind(rec.file, rec.line);
+            rec.origin = at == "stdlib" ? "stdlib" : at == "archive" ? "dependency" : "project";
+            return rec;
+        }
+    }
+
     void FieldStoreCensus::check(const std::list<CajetaModulePtr>& modules) {
         const bool json = !modules.empty() && modules.front()
             && modules.front()->getFlags().diagFormat == DiagFormat::Json;
-        walk(modules, [json](const FieldStoreRecord& rec) {
-            auto [code, message] = violation(rec);
+        std::map<std::string, std::string> censusForm;
+        for (auto& m : modules) {
+            if (m && !m->getSourcePath().empty()) {
+                censusForm[m->getSourcePath()] = m->remappedSourcePath();
+            }
+        }
+        walk(modules, [json, &censusForm](const FieldStoreRecord& stored) {
+            auto [code, message] = violation(stored);
             if (code.empty()) return;
             if (enabled()) {
-                std::cerr << "[field-store-violation] " << rec.file << ":" << rec.line << ": "
-                          << code << " " << rec.className << "." << rec.methodName << "\n";
+                std::cerr << "[field-store-violation] " << stored.file << ":" << stored.line << ": "
+                          << code << " " << stored.className << "." << stored.methodName << "\n";
                 return;
             }
+            const FieldStoreRecord rec = located(stored, censusForm);
             DiagnosticEngine* eng = DiagnosticEngine::active();
             if (eng && eng->collectsErrors()) {
-                eng->report("error", code, message, rec.file, rec.line, rec.column, rec.origin);
+                eng->reportGenerated("error", code, message, rec.file, rec.line, rec.column,
+                                     rec.origin, rec.generated);
                 return;
             }
             if (!json) {
                 std::cerr << "cajeta: " << rec.file << ":" << rec.line << ":" << rec.column << ": "
-                          << code << ": " << message << "\n";
+                          << code << ": " << message << generatedClause(rec.generated) << "\n";
             }
-            throw Exception(message, code, rec.file, rec.line, rec.column);
+            Exception e(message, code, rec.file, rec.line, rec.column);
+            e.setGenerated(rec.generated);
+            throw e;
         });
     }
 

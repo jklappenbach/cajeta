@@ -1671,9 +1671,11 @@ namespace cajeta {
                 } catch (cajeta::Exception& e) {
                     if (json)
                         emitJsonDiagnostic("error", e.getErrorId(), e.getMessage(),
-                                           e.getFile(), e.getLine(), e.getColumn());
+                                           e.getFile(), e.getLine(), e.getColumn(),
+                                           "project", e.getGenerated());
                     else
-                        std::cerr << "cajeta: body-resolve: " << e.getMessage() << "\n";
+                        std::cerr << "cajeta: body-resolve: " << e.getMessage()
+                                  << generatedClause(e.getGenerated()) << "\n";
                 } catch (const std::exception& e) {
                     if (json)
                         emitJsonDiagnostic("error", "", e.what());
@@ -1878,10 +1880,12 @@ namespace cajeta {
                 ++failed;              // diagnostics already emitted by the parse
             } catch (cajeta::Exception& e) {
                 ++failed;
+                const bool generated = !e.getGenerated().via.empty();
                 if (json) emitJsonDiagnostic("error", e.getErrorId(), e.getMessage(),
-                                             path, e.getLine(), e.getColumn());
-                else std::cerr << "cajeta: " << path << ": " << e.getMessage()
-                               << "\n";
+                                             generated ? e.getFile() : path, e.getLine(),
+                                             e.getColumn(), "project", e.getGenerated());
+                else std::cerr << "cajeta: " << (generated ? e.getFile() : path) << ": "
+                               << e.getMessage() << generatedClause(e.getGenerated()) << "\n";
             } catch (const std::exception& e) {
                 ++failed;
                 if (json) emitJsonDiagnostic("error", "", e.what(), path);
@@ -1895,8 +1899,10 @@ namespace cajeta {
             } catch (cajeta::Exception& e) {
                 ++failed;
                 if (json) emitJsonDiagnostic("error", e.getErrorId(), e.getMessage(),
-                                             e.getFile(), e.getLine(), e.getColumn());
-                else std::cerr << "cajeta: " << pass << ": " << e.getMessage() << "\n";
+                                             e.getFile(), e.getLine(), e.getColumn(), "project",
+                                             e.getGenerated());
+                else std::cerr << "cajeta: " << pass << ": " << e.getMessage()
+                               << generatedClause(e.getGenerated()) << "\n";
             } catch (const std::exception& e) {
                 ++failed;
                 if (json) emitJsonDiagnostic("error", "", e.what());

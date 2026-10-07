@@ -1,4 +1,5 @@
 #include "cajeta/buildtool/TaskRunner.h"
+#include "cajeta/buildtool/BuildErrors.h"
 
 #include <llvm/Support/Error.h>
 
@@ -267,9 +268,9 @@ namespace cajeta::buildtool {
             if (!result) {
                 std::string msg;
                 llvm::raw_string_ostream os(msg);
-                os << breadcrumb << " (" << inv.action << "): "
-                   << result.takeError();
-                return err(msg);
+                os << result.takeError();
+                return llvm::make_error<BuildStepError>(
+                    breadcrumb + " (" + inv.action + ")", os.str());
             }
             if (!inv.id.empty()) {
                 ctx.publishOutputs(inv.id, result->outputs);

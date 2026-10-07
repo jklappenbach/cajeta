@@ -120,7 +120,7 @@ namespace nvidia {
                 if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
                         || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
                 // No device code for this backend; say so, or a launch fails at run time.
-                reportUnloweredKernel(*method, entryName, "nvptx", ex.getMessage());
+                reportUnloweredKernel(*method, entryName, "nvptx", ex.getMessage(), arch);
                 continue;
             }
             if (!kfn) continue;
@@ -334,7 +334,7 @@ namespace nvidia {
 
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);
             if (manifests) manifests->push_back(manifest);
-            noteKernelLowered(*method, entryName, "nvptx");
+            noteKernelLowered(*method, entryName, "nvptx", arch);
             ++emitted;
         }
         return emitted;

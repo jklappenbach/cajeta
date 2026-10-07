@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "Exception.h"
+
 namespace cajeta {
 
     struct CollectedDiagnostic {
@@ -16,6 +18,7 @@ namespace cajeta {
         int line = -1;         // 1-based; <= 0 = no location
         int column = -1;       // 1-based
         std::string origin = "project";  // "project" | "dependency" | "stdlib"
+        GeneratedOrigin generated;
     };
 
     class DiagnosticEngine {
@@ -29,10 +32,17 @@ namespace cajeta {
         bool collectsErrors() const { return collectErrors_; }
         void setCollectErrors(bool v) { collectErrors_ = v; }
 
+        // Inside generated code the location moves to the requesting declaration (spec 3).
         void report(const std::string& severity, const std::string& code,
                     const std::string& message, const std::string& file = "",
                     int line = -1, int column = -1,
                     const std::string& origin = "project");
+
+        // With the generated origin already applied, for a pass that runs outside the codegen scopes.
+        void reportGenerated(const std::string& severity, const std::string& code,
+                             const std::string& message, const std::string& file, int line,
+                             int column, const std::string& origin,
+                             const GeneratedOrigin& generated);
 
         bool hasErrors() const { return errorSeen_; }
         std::size_t count() const { return diags_.size(); }

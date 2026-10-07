@@ -1134,6 +1134,10 @@ namespace cajeta {
                                     "CAJETA_ERROR_TYPE_TRANSFER_RETIRED");
                             }
                         }
+                        static const std::string kNoFile;
+                        RequestCursor cursor(module ? module->getSourcePath() : kNoFile,
+                            (int) ctx->getStart()->getLine(),
+                            (int) ctx->getStart()->getCharPositionInLine() + 1);
                         type = templateClass->instantiate(args);
                     }
                 }

@@ -235,7 +235,7 @@ object CajetacRunner {
             diagnostics += Diagnostic(
                 ruleId = d.code ?: "cajeta",
                 severity = d.severity,
-                message = d.message,
+                message = d.displayMessage,
                 range = rangeFor(d.line, d.column, bufferText),
             )
         }

@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -51,7 +52,10 @@ namespace cajeta::synth {
 
         static SynthesizerRegistry& instance();
 
-        void registerBody(std::string label, BodySynthesizer fn);
+        // `bindsRecord`: the body binds its type argument's record, so diagnostics point at it.
+        void registerBody(std::string label, BodySynthesizer fn, bool bindsRecord = false);
+
+        bool bindsRecord(const std::string& label) const;
 
         void registerMember(std::string label, MemberSynthesizer fn);
 
@@ -79,12 +83,14 @@ namespace cajeta::synth {
 
         // Dispatch a body trigger. AT MOST ONE synthesizer may claim it; two matches
         // throw naming both, zero matches returns nullopt (the failsafe).
-        std::optional<std::string> dispatchBody(const SynthesisContext& ctx) const;
+        std::optional<std::string> dispatchBody(const SynthesisContext& ctx,
+                                                std::string* claimedBy = nullptr) const;
 
         std::size_t bodyCount() const { return bodySynths.size(); }
 
     private:
         std::vector<std::pair<std::string, BodySynthesizer>> bodySynths;
+        std::set<std::string> recordBinders;
         std::vector<std::pair<std::string, MemberSynthesizer>> memberSynths;
         std::vector<std::pair<std::string, CompanionSynthesizer>> companionSynths;
     };

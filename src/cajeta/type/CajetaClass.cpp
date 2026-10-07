@@ -94,6 +94,20 @@ namespace cajeta {
         if (module) declaringFile = module->currentSourceFile();
     }
 
+    SourceSite CajetaClass::declarationSite() {
+        SourceSite site;
+        if (module && module == CajetaModule::getStdlibModule()) {
+            site.file = declaringFile.empty() ? "" : "<stdlib>/" + declaringFile;
+        } else if (module && !module->getSourcePath().empty()) {
+            site.file = module->getSourcePath();
+        } else {
+            site.file = declaringFile;
+        }
+        site.line = declLine > 0 ? declLine : -1;
+        site.column = declLine > 0 ? declColumn + 1 : -1;
+        return site;
+    }
+
     CajetaClass::CajetaClass(CajetaModulePtr module, QualifiedNamePtr qName, list<QualifiedNamePtr> qImplemented) : CajetaType(qName) {
         this->qImplemented = qImplemented;
         this->module = module;

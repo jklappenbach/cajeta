@@ -506,3 +506,23 @@ TEST(LintServer, ClasspathReachesTheWarmCompilers) {
     std::string oracle = oneShotStderr(file, flags + " --emit-xref");
     EXPECT_EQ(slice, oracle);
 }
+
+// diagnostic-location 4.1.2: a generated diagnostic's `at`, `via` and `from` pass through the
+// server byte for byte, as the one-shot lint writes them.
+TEST(LintServer, AGeneratedDiagnosticPassesThroughUnchanged) {
+    SKIP_WITHOUT_BINARY();
+    auto root = freshTempDir("generated") / "src";
+    auto file = writeUnit(root, "Use",
+        "public class Cell {\n    public int64 n;\n    public Cell(int64 v) { this.n = v; }\n}\n"
+        "public class Box<T> {\n    public T v;\n    public Box(T x) { this.v = x; }\n}\n"
+        "public final class Use {\n    public static int64 f() {\n"
+        "        Box<Cell> b = heap Box<Cell>(heap Cell(3));\n        return b.v.n;\n    }\n}");
+
+    auto r = runServer("--diag-format=json", lintRequest(1, file));
+    ASSERT_EQ(r.rc, 0) << r.err;
+    std::string slice;
+    ASSERT_TRUE(payloadSlice(r.out, 1, slice)) << r.out;
+    EXPECT_TRUE(has(slice, "\"at\":\"generated\",\"via\":\"template\"")) << slice;
+    EXPECT_TRUE(has(slice, "\"from\":{")) << slice;
+    EXPECT_EQ(slice, oneShotStderr(file, "--diag-format=json"));
+}

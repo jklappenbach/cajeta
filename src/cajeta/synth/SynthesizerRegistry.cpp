@@ -37,12 +37,18 @@ namespace cajeta::synth {
         return inst;
     }
 
-    void SynthesizerRegistry::registerBody(std::string label, BodySynthesizer fn) {
+    void SynthesizerRegistry::registerBody(std::string label, BodySynthesizer fn,
+                                           bool bindsRecord) {
+        if (bindsRecord) recordBinders.insert(label);
         bodySynths.emplace_back(std::move(label), std::move(fn));
     }
 
+    bool SynthesizerRegistry::bindsRecord(const std::string& label) const {
+        return recordBinders.count(label) != 0;
+    }
+
     std::optional<std::string> SynthesizerRegistry::dispatchBody(
-            const SynthesisContext& ctx) const {
+            const SynthesisContext& ctx, std::string* claimedBy) const {
         std::optional<std::string> matchedBody;
         std::string matchedLabel;
         for (const auto& [label, fn] : bodySynths) {
@@ -58,6 +64,7 @@ namespace cajeta::synth {
             matchedBody = std::move(r);
             matchedLabel = label;
         }
+        if (claimedBy) *claimedBy = matchedLabel;
         return matchedBody;
     }
 
@@ -320,11 +327,11 @@ namespace cajeta::synth {
         std::call_once(builtinOnce, [] {
         auto& reg = SynthesizerRegistry::instance();
         // The codecs are mutually exclusive by declaring class; at most one matches.
-        reg.registerBody("json",     wrapCodec(synthesizeJsonMethodSource));
-        reg.registerBody("csv",      wrapCodec(synthesizeCsvMethodSource));
-        reg.registerBody("protobuf", wrapCodec(synthesizeProtobufMethodSource));
-        reg.registerBody("ion",      wrapCodec(synthesizeIonMethodSource));
-        reg.registerBody("avro",     wrapCodec(synthesizeAvroMethodSource));
+        reg.registerBody("json",     wrapCodec(synthesizeJsonMethodSource), true);
+        reg.registerBody("csv",      wrapCodec(synthesizeCsvMethodSource), true);
+        reg.registerBody("protobuf", wrapCodec(synthesizeProtobufMethodSource), true);
+        reg.registerBody("ion",      wrapCodec(synthesizeIonMethodSource), true);
+        reg.registerBody("avro",     wrapCodec(synthesizeAvroMethodSource), true);
 
         // Table.fromCsv<R>: a per-R schema-descriptor bridge over the CSV parser.
         // R stays symbolic here; the method-template wrapper walk pins it.
@@ -500,7 +507,7 @@ namespace cajeta::synth {
             b += "    return #__t;\n";
             b += "}\n";
             return b;
-        });
+        }, true);
 
         // @Einsum: a bodyless method annotated @Einsum("ij,jk->ik") gets a fused
         // loop-nest body over Tensor's primitives. Declaration-time only.

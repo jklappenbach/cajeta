@@ -1169,14 +1169,15 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         if (cajeta::jsonProgressEnabled()) {
             cajeta::emitJsonDiagnostic("error", e.getErrorId(),
                                        e.getMessage(), e.getFile(),
-                                       e.getLine(), e.getColumn());
+                                       e.getLine(), e.getColumn(), "project",
+                                       e.getGenerated());
         } else {
             std::ostringstream m;
             m << "cajeta jit: ";
             if (e.hasLocation()) {
                 m << e.getFile() << ":" << e.getLine() << ": ";
             }
-            m << "[" << e.getErrorId() << "] " << e.getMessage() << "\n";
+            m << "[" << e.getErrorId() << "] " << e.getMessage() << cajeta::generatedClause(e.getGenerated()) << "\n";
             cajeta::logLine("error", m.str());
         }
         out.errorCode = 1;
