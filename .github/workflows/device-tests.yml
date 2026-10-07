@@ -458,3 +458,108 @@ jobs:
             conformance/rec/conformance.tsv
             conformance/rec/skipped.tsv
           if-no-files-found: warn
+
+  # ── The kernel conformance corpus on cpu (xpu-kernel-independence 4.1.2.3) ──
+  #
+  # The cpu leg needs a QUIET box: cajeta-llm's WidenBudget reserves against
+  # the memory that is free at the moment it asks, and the two device legs
+  # share this one machine, so a cpu suite beside the Windows leg's build
+  # turns its budget tests red for no reason of its own. It therefore runs as
+  # its own job AFTER the whole device matrix (needs: device), on the WSL
+  # runner, where it reuses the WSL leg's workspace: the checkout keeps
+  # build/ (clean: false) and the fork toolchain is still under $HOME, so the
+  # build is incremental. Measured on Phoenix 2026-10-07 against main's
+  # compiler: the llm cpu suite recorded 324 launches in 20 minutes end to
+  # end, and all 324 passed through the reference.
+  cpu-conformance:
+    needs: [setup, device]
+    # Only when the WSL leg was in the matrix, and not after a cancelled run.
+    if: >-
+      always()
+      && contains(needs.setup.outputs.matrix, '"key":"wsl"')
+      && needs.device.result != 'cancelled'
+    name: cpu-conformance
+    runs-on: [self-hosted, wsl]
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source, keeping the WSL leg's build tree
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Point at the fork toolchain the WSL leg fetched
+        env:
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r10
+        run: |
+          set -euo pipefail
+          DEST="$HOME/cajeta-llvm"
+          if [ ! -x "$DEST/bin/clang" ]; then
+            ASSET="${LLVM_RELEASE_TAG}-linux-x64.tar.zst"
+            URL="https://github.com/jklappenbach/cajeta-llvm/releases/download/${LLVM_RELEASE_TAG}/${ASSET}"
+            mkdir -p "$DEST"
+            curl -fsSL "$URL" -o llvm.tar.zst
+            tar --zstd -xf llvm.tar.zst -C "$DEST" --strip-components=1
+            rm -f llvm.tar.zst
+          fi
+          echo "LLVM_DIR=$DEST/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "$DEST/bin" >> "$GITHUB_PATH"
+
+      - name: Configure and build (incremental over the WSL leg's objects)
+        run: |
+          set -euo pipefail
+          export CAJETA_SKIP_DEPS=1
+          if [ -f build/CMakeCache.txt ] && grep -q 'NOTFOUND' build/CMakeCache.txt; then
+            rm -f build/CMakeCache.txt
+          fi
+          ./setup.sh
+          cmake --build build --config Release -- -j 4
+          ./build/src/cajeta --version
+
+      - name: Check out cajeta-llm at the corpus revision
+        id: llm_rev
+        run: echo "rev=$(tr -d '[:space:]' < test/conformance/llm-revision)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: jklappenbach/cajeta-llm
+          ref: ${{ steps.llm_rev.outputs.rev }}
+          path: llm-corpus
+
+      - name: Run the kernel conformance corpus on cpu
+        run: |
+          set -uo pipefail
+          scripts/llm-conformance.sh llm-corpus cpu conformance-cpu 2>&1 | tee conformance-cpu.log
+          RC=${PIPESTATUS[0]}
+          LINE=$(grep -E '^cajeta: conformance: [0-9]+ launches' conformance-cpu.log | tail -1 || true)
+          {
+            echo "### kernel conformance corpus on cpu (wsl, after the device legs)"
+            echo ""
+            echo '```'
+            echo "${LINE:-the replay did not run}"
+            grep -E '^>> conformance: [0-9]+ launches recorded' conformance-cpu.log || true
+            grep -E '^   Tests: ' conformance-cpu.log || true
+            echo '```'
+            echo ""
+            if [ -f conformance-cpu/rec/conformance.tsv ]; then
+              echo "| launch | backend | outcome | detail |"
+              echo "|---|---|---|---|"
+              awk -F'\t' '$4 != "pass" && NR > 1 { printf "| %s | %s | %s | %s |\n", $3, $2, $4, $5 }' \
+                conformance-cpu/rec/conformance.tsv
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$RC"
+
+      - name: Upload the cpu conformance table
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-conformance-cpu
+          path: |
+            conformance-cpu.log
+            conformance-cpu/rec/conformance.tsv
+            conformance-cpu/rec/skipped.tsv
+          if-no-files-found: warn
