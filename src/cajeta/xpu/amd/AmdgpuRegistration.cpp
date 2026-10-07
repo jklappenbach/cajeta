@@ -161,6 +161,29 @@ namespace amd {
                 continue;
             }
 
+            // A code object whose static shared memory is over its part's per-workgroup
+            // limit cannot launch there: LLVM only reports it, so refuse it like a lowering.
+            std::string overShared;
+            for (const ArchHsaco& ah : perArch) {
+                DeviceModel model;
+                if (!lookupArch(ah.arch, model)) model = defaultDeviceModel();
+                unsigned limit = model.ldsBytesPerBlock ? model.ldsBytesPerBlock
+                                                        : model.ldsBytesPerMP;
+                for (const AmdCodeObjectFootprint& fp : readCodeObjectFootprint(ah.hsaco)) {
+                    if (fp.name != entryName) continue;
+                    if (fp.groupSegmentBytes > limit) {
+                        overShared = "it needs " + std::to_string(fp.groupSegmentBytes)
+                            + " bytes of shared memory a workgroup and " + ah.arch
+                            + " offers " + std::to_string(limit);
+                    }
+                }
+                if (!overShared.empty()) break;
+            }
+            if (!overShared.empty()) {
+                reportUnloweredKernel(*method, entryName, "amdgpu", overShared);
+                continue;
+            }
+
             // One manifest per (kernel, arch), hashed over the very code object that
             // registers below; an unpinned block records the picker's feasible sizes.
             std::vector<KernelManifest> kernelManifests;

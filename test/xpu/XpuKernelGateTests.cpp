@@ -20,6 +20,7 @@
 #include "../PortableEnv.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
+#include "cajeta/xpu/amd/AmdgpuBackend.h"
 #include "cajeta/xpu/nvidia/NvptxBackend.h"
 
 #include <cstdlib>
@@ -323,4 +324,54 @@ TEST(XpuKernelGate, theJitHarnessSweepsUnlessAskedToGate) {
     err = testing::internal::GetCapturedStderr();
     ASSERT_NE(held, nullptr) << err;
     EXPECT_NE(err.find("[tracked: xpu-kernel-adaptor 4.2.1]"), std::string::npos) << err;
+}
+
+namespace {
+
+std::string ldsProgram(const std::string& ann) {
+    return
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Shared;\n"
+        "public class M {\n"
+        "    @Kernel\n" + ann +
+        "    public static void big(KernelBuffer<int32> out) {\n"
+        "        Shared<int8> s = shared int8[70000];\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        s[i] = (int8) i;\n"
+        "        out[i] = (int32) s[69999 - i];\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void good(KernelBuffer<float32> y, float32 a, uint32 n) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        if (i < n) { y[i] = a * y[i]; }\n"
+        "    }\n"
+        "    public static void main(String[] args) { }\n"
+        "}\n";
+}
+
+const char* AMD_HELD = "    @Unlowered(backend = \"amdgpu\", tracked = \"xpu-kernel-adaptor 1.8.3\")\n";
+
+}  // namespace
+
+// A kernel whose static shared memory is over the part's per-workgroup limit has no usable
+// amdgpu device code: its hold stays valid, and an unheld one fails the build by name.
+TEST(XpuKernelGate, aKernelOverTheSharedMemoryLimitKeepsItsAmdgpuHold) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    if (cajeta::xpu::amd::findLld().empty()) GTEST_SKIP() << "ld.lld not found";
+    Built b = build(ldsProgram(AMD_HELD), "amdgpu");
+    EXPECT_EQ(b.rc, 0) << b.log;
+    EXPECT_EQ(b.log.find("STALE"), std::string::npos) << b.log;
+    EXPECT_NE(b.log.find("cajeta: note: [xpu-kernel-skipped] big: no amdgpu device code"), std::string::npos) << b.log;
+    EXPECT_NE(b.log.find("70000 bytes of shared memory"), std::string::npos) << b.log;
+    EXPECT_EQ(b.log.find("[xpu-kernel-skipped] good"), std::string::npos) << b.log;
+}
+
+TEST(XpuKernelGate, anUnheldKernelOverTheSharedMemoryLimitFailsTheBuild) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    if (cajeta::xpu::amd::findLld().empty()) GTEST_SKIP() << "ld.lld not found";
+    Built b = build(ldsProgram(""), "amdgpu");
+    EXPECT_NE(b.rc, 0) << b.log;
+    EXPECT_NE(b.log.find("cajeta: error: [xpu-kernel-skipped] big: no amdgpu device code"), std::string::npos) << b.log;
 }
