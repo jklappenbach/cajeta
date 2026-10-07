@@ -3736,7 +3736,8 @@ namespace cajeta {
 
     // Resolves `extends` names into superClasses: module structures by canonical,
     // then by short name, then the process-global canonicalMap, which may yield a
-    // placeholder deliberately — tryGeneratePrototype defers on one.
+    // placeholder deliberately — tryGeneratePrototype defers on one. A class that is
+    // its own ancestor is CAJETA_ERROR_CYCLIC_INHERITANCE.
     void CajetaClass::resolveSuperClasses() {
         superClasses.clear();
         for (auto& qName : qExtended) {
@@ -3748,6 +3749,7 @@ namespace cajeta {
             }
             bool found = false;
             for (auto& entry : structures) {
+                if (entry.second.get() == this) continue;
                 if (entry.second->getQName()->getTypeName() == qName->getTypeName()) {
                     superClasses.push_back(entry.second);
                     found = true;
@@ -3765,6 +3767,27 @@ namespace cajeta {
                     superClasses.push_back(klass);
                 }
             }
+        }
+        std::vector<const CajetaClass*> path{this};
+        std::set<const CajetaClass*> done;
+        std::function<bool(const CajetaClass*)> reaches = [&](const CajetaClass* c) -> bool {
+            for (auto& parent : c->superClasses) {
+                if (!parent) continue;
+                if (parent.get() == this) return true;
+                if (!done.insert(parent.get()).second) continue;
+                path.push_back(parent.get());
+                if (reaches(parent.get())) return true;
+                path.pop_back();
+            }
+            return false;
+        };
+        if (reaches(this)) {
+            std::string cycle;
+            for (auto* c : path) cycle += c->getQName()->toCanonical() + " -> ";
+            cycle += qName->toCanonical();
+            superClasses.clear();
+            throw Exception("class " + qName->toCanonical() + " is its own ancestor: " + cycle,
+                            "CAJETA_ERROR_CYCLIC_INHERITANCE");
         }
     }
 

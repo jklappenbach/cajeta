@@ -161,3 +161,49 @@ TEST(FieldStoreCensusLintTests, identicalStoresInTwoOverloadsAreBothListed) {
     EXPECT_TRUE(has(out, "test/Failure.cajeta:5: CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE")) << out;
     EXPECT_TRUE(has(out, "test/Failure.cajeta:7: CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE")) << out;
 }
+
+namespace {
+
+// Lints `root` with JSON diagnostics and the census off, returning everything printed.
+std::string lintJson(const fs::path& root) {
+    auto dir = freshTempDir("json");
+    auto out = dir / "lint.txt";
+    std::string cmd = compilerBinary() + " --lint " + root.string() + " --emit-xref="
+                    + (dir / "xref.json").string() + " --diag-format=json > " + out.string() + " 2>&1";
+    setCensus(false);
+    (void) std::system(cmd.c_str());
+    return slurp(out);
+}
+
+fs::path keepProject(const std::string& store) {
+    auto root = freshTempDir("keep");
+    writeUnit(root, "test/Keep.cajeta",
+        "package test;\n"
+        "public class Cell {\n"
+        "    public int64 n;\n"
+        "    public Cell(int64 v) { this.n = v; }\n"
+        "}\n"
+        "public final class Keep {\n"
+        "    public Cell c;\n"
+        "    public Keep() { }\n"
+        "    public void set(Cell p) { this.c " + store + " p; }\n"
+        "}\n");
+    return root;
+}
+
+}  // namespace
+
+// Plan 4.1.3 (spec 6.2.2): a lint reports a store error without a build, located, once.
+TEST(FieldStoreCensusLintTests, lintReportsAStoreErrorWithItsLocation) {
+    if (!fs::exists(compilerBinary())) GTEST_SKIP() << "no compiler binary";
+    std::string out = lintJson(keepProject("="));
+    EXPECT_TRUE(has(out, "\"code\":\"CAJETA_ERROR_KEEP_NEEDS_SHARP_STORE\"")) << out;
+    EXPECT_TRUE(has(out, "\"file\":\"test/Keep.cajeta\",\"line\":9,\"column\":31")) << out;
+    EXPECT_FALSE(has(out, "cajeta: test/Keep.cajeta:9")) << out;
+}
+
+TEST(FieldStoreCensusLintTests, lintOfASharpStoreReportsNoStoreError) {
+    if (!fs::exists(compilerBinary())) GTEST_SKIP() << "no compiler binary";
+    std::string out = lintJson(keepProject("#="));
+    EXPECT_FALSE(has(out, "KEEP_NEEDS_SHARP_STORE")) << out;
+}

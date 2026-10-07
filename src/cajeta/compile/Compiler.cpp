@@ -1670,7 +1670,8 @@ namespace cajeta {
                     method->resolveBodyForLint(module);
                 } catch (cajeta::Exception& e) {
                     if (json)
-                        emitJsonDiagnostic("error", e.getErrorId(), e.getMessage());
+                        emitJsonDiagnostic("error", e.getErrorId(), e.getMessage(),
+                                           e.getFile(), e.getLine(), e.getColumn());
                     else
                         std::cerr << "cajeta: body-resolve: " << e.getMessage() << "\n";
                 } catch (const std::exception& e) {
@@ -1877,8 +1878,8 @@ namespace cajeta {
                 ++failed;              // diagnostics already emitted by the parse
             } catch (cajeta::Exception& e) {
                 ++failed;
-                if (json) emitJsonDiagnostic("error", e.getErrorId(),
-                                             e.getMessage(), path);
+                if (json) emitJsonDiagnostic("error", e.getErrorId(), e.getMessage(),
+                                             path, e.getLine(), e.getColumn());
                 else std::cerr << "cajeta: " << path << ": " << e.getMessage()
                                << "\n";
             } catch (const std::exception& e) {
@@ -1893,7 +1894,8 @@ namespace cajeta {
                 fn();
             } catch (cajeta::Exception& e) {
                 ++failed;
-                if (json) emitJsonDiagnostic("error", e.getErrorId(), e.getMessage());
+                if (json) emitJsonDiagnostic("error", e.getErrorId(), e.getMessage(),
+                                             e.getFile(), e.getLine(), e.getColumn());
                 else std::cerr << "cajeta: " << pass << ": " << e.getMessage() << "\n";
             } catch (const std::exception& e) {
                 ++failed;

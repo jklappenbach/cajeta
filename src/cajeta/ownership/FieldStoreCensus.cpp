@@ -586,7 +586,9 @@ namespace cajeta::ownership {
     }
 
     void FieldStoreCensus::check(const std::list<CajetaModulePtr>& modules) {
-        walk(modules, [](const FieldStoreRecord& rec) {
+        const bool json = !modules.empty() && modules.front()
+            && modules.front()->getFlags().diagFormat == DiagFormat::Json;
+        walk(modules, [json](const FieldStoreRecord& rec) {
             auto [code, message] = violation(rec);
             if (code.empty()) return;
             if (enabled()) {
@@ -599,8 +601,10 @@ namespace cajeta::ownership {
                 eng->report("error", code, message, rec.file, rec.line, rec.column, rec.origin);
                 return;
             }
-            std::cerr << "cajeta: " << rec.file << ":" << rec.line << ":" << rec.column << ": "
-                      << code << ": " << message << "\n";
+            if (!json) {
+                std::cerr << "cajeta: " << rec.file << ":" << rec.line << ":" << rec.column << ": "
+                          << code << ": " << message << "\n";
+            }
             throw Exception(message, code, rec.file, rec.line, rec.column);
         });
     }
