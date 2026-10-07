@@ -37,7 +37,8 @@ public final class Workgroup {
     /**
      * Combine `value` from every lane of the workgroup with `op`; every lane receives the
      * result. A barrier: every lane reaches it. Each wave reduces, then the partials combine
-     * from wave 0 upward, so a result is the same on every backend.
+     * from wave 0 upward, so a result is the same on every backend at one wave width. Called
+     * from host code it acts as a workgroup of one lane and returns `value`.
      */
     @Native("__cajeta_xpu_workgroup_reduce_f32")
     public static float32 reduce(GroupOp op, float32 value);

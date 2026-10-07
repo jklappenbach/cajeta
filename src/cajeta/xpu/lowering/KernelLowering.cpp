@@ -4,6 +4,7 @@
 #include "../reference/KernelInterpreter.h"
 #include "KernelLowering.h"
 #include "LoweringTarget.h"
+#include "WorkgroupUniformity.h"
 
 #include "../../method/Method.h"
 #include "../../type/FormalParameter.h"
@@ -96,6 +97,18 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
         const MethodPtr& method, llvm::LLVMContext& ctx);
 
 namespace {
+
+// The cajeta spelling of a scalar device type.
+std::string cajetaScalarName(llvm::Type* t, bool isSigned) {
+    if (t->isHalfTy()) return "float16";
+    if (t->isBFloatTy()) return "bfloat16";
+    if (t->isFloatTy()) return "float32";
+    if (t->isDoubleTy()) return "float64";
+    if (t->isIntegerTy(1)) return "boolean";
+    if (t->isIntegerTy())
+        return std::string(isSigned ? "int" : "uint") + std::to_string(t->getIntegerBitWidth());
+    return "a non-scalar type";
+}
 
 [[noreturn]] void unsupported(const std::string& what) {
     throw cajeta::Exception(
@@ -1108,8 +1121,10 @@ private:
         llvm::Value* v = lowerExpr(args[1].expression);
         llvm::Type* elemTy = v->getType();
         const bool isF = elemTy->isFloatTy();
-        if (!isF && !elemTy->isIntegerTy(32))
-            unsupported("Workgroup.reduce takes a float32 or int32 value");
+        const bool isSigned = exprSigned(args[1].expression);
+        if (!isF && !(elemTy->isIntegerTy(32) && isSigned))
+            unsupported("Workgroup.reduce takes a float32 or int32 value, not " +
+                        cajetaScalarName(elemTy, isSigned));
         usedSubgroupOp_ = true;
         const FOp fop = ord == 0 ? FOp::Sum : ord == 1 ? FOp::Max : FOp::Min;
         llvm::Value* part;
@@ -1133,15 +1148,15 @@ private:
         llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
         auto asI32 = [&](llvm::Value* x) { return builder.CreateZExtOrTrunc(x, i32); };
         llvm::Value* width = asI32(target.waveWidth(builder, mod));
-        llvm::Value* lane = asI32(target.waveLaneId(builder, mod));
+        llvm::Value* lane = asI32(varying(target.waveLaneId(builder, mod)));
         llvm::Value* dx = asI32(target.workgroupDim(builder, mod, 0));
         llvm::Value* dy = asI32(target.workgroupDim(builder, mod, 1));
         llvm::Value* dz = asI32(target.workgroupDim(builder, mod, 2));
         llvm::Value* flat = builder.CreateAdd(
-            asI32(target.threadId(builder, mod, 0)),
+            asI32(varying(target.threadId(builder, mod, 0))),
             builder.CreateMul(builder.CreateAdd(
-                asI32(target.threadId(builder, mod, 1)),
-                builder.CreateMul(asI32(target.threadId(builder, mod, 2)), dy)), dx),
+                asI32(varying(target.threadId(builder, mod, 1))),
+                builder.CreateMul(asI32(varying(target.threadId(builder, mod, 2))), dy)), dx),
             "wgr.flat");
         llvm::Value* waveIdx = builder.CreateUDiv(flat, width, "wgr.wave");
         auto slot = [&](llvm::Value* idx) {
@@ -1158,7 +1173,7 @@ private:
         builder.SetInsertPoint(joinBB);
         target.workgroupBarrier(builder, mod);
         llvm::BasicBlock* readBB = llvm::BasicBlock::Create(ctx, "wgr.read", fn);
-        builder.CreateBr(readBB);
+        markWorkgroupReduce(builder.CreateBr(readBB));
         builder.SetInsertPoint(readBB);
 
         auto combine = [&](llvm::Value* a, llvm::Value* b) -> llvm::Value* {
@@ -1720,7 +1735,7 @@ private:
                 llvm::Value* count = coerceTo(
                     lowerExpr(mc->getParameters()[0].expression), idxTy);
                 llvm::Value* start =
-                    coerceTo(target.groupLaneId(builder, mod), idxTy);
+                    coerceTo(varying(target.groupLaneId(builder, mod)), idxTy);
                 llvm::Value* step =
                     coerceTo(target.groupWidth(builder, mod), idxTy);
                 llvm::Value* idxSlot = entryAlloca(idxTy, idxName);
@@ -1812,7 +1827,7 @@ private:
         std::string idxName = hasIdx ? efs->getIteratorName()
                                      : (bufName + ".fe.idx");
         llvm::Value* idxSlot = entryAlloca(idxTy, idxName);
-        builder.CreateStore(coerceTo(target.globalId(builder, mod, 0), idxTy),
+        builder.CreateStore(coerceTo(varying(target.globalId(builder, mod, 0)), idxTy),
                             idxSlot);
         if (hasIdx) {
             values[idxName] = idxSlot;
@@ -3262,12 +3277,12 @@ private:
         }
 
         if (recv == "KernelThread") {
-            if (name == "x") return target.threadId(builder, mod, 0);
-            if (name == "y") return target.threadId(builder, mod, 1);
-            if (name == "z") return target.threadId(builder, mod, 2);
-            if (name == "globalIdX") return target.globalId(builder, mod, 0);
-            if (name == "globalIdY") return target.globalId(builder, mod, 1);
-            if (name == "globalIdZ") return target.globalId(builder, mod, 2);
+            if (name == "x") return varying(target.threadId(builder, mod, 0));
+            if (name == "y") return varying(target.threadId(builder, mod, 1));
+            if (name == "z") return varying(target.threadId(builder, mod, 2));
+            if (name == "globalIdX") return varying(target.globalId(builder, mod, 0));
+            if (name == "globalIdY") return varying(target.globalId(builder, mod, 1));
+            if (name == "globalIdZ") return varying(target.globalId(builder, mod, 2));
             if (name == "clock") return target.readClock(builder, mod);
         } else if (recv == "Workgroup") {
             if (name == "x") return target.workgroupId(builder, mod, 0);
@@ -3366,9 +3381,9 @@ private:
         } else if (recv == "Wave") {
             const auto& args = mc->getParameters();
             if (name == "width") return target.waveWidth(builder, mod);
-            if (name == "laneId") return target.waveLaneId(builder, mod);
+            if (name == "laneId") return varying(target.waveLaneId(builder, mod));
             if (name == "isFirstLane") {
-                llvm::Value* lane = target.waveLaneId(builder, mod);
+                llvm::Value* lane = varying(target.waveLaneId(builder, mod));
                 return builder.CreateICmpEQ(
                     lane, llvm::ConstantInt::get(lane->getType(), 0),
                     "wave.isfirst");
@@ -3392,7 +3407,7 @@ private:
                 llvm::Value* value = lowerExpr(args[0].expression);
                 llvm::Value* d = coerceTo(lowerExpr(args[1].expression), i32, false);
                 llvm::Value* lane =
-                    coerceTo(target.waveLaneId(builder, mod), i32, false);
+                    coerceTo(varying(target.waveLaneId(builder, mod)), i32, false);
                 llvm::Value* src;
                 if (name == "shuffleXorSync") {
                     src = builder.CreateXor(lane, d, "shfl.xor");
@@ -3485,8 +3500,8 @@ private:
                 auto sop = name == "prefixSum"
                     ? LoweringTarget::WaveScanOp::Sum
                     : LoweringTarget::WaveScanOp::Product;
-                return target.waveScan(builder, mod, sop,
-                                       lowerExpr(args[0].expression));
+                return varying(target.waveScan(builder, mod, sop,
+                                       lowerExpr(args[0].expression)));
             }
         } else if (recv == "TargetDescriptor") {
             if (name == "waveWidth") return target.groupWidth(builder, mod);
@@ -3500,7 +3515,7 @@ private:
             // refuses a kernel that mixes it with a wave op (CpuRegistration).
             fn->addFnAttr("cajeta.xpu.uses-group", "Group." + name);
             if (name == "width") return target.groupWidth(builder, mod);
-            if (name == "laneId") return target.groupLaneId(builder, mod);
+            if (name == "laneId") return varying(target.groupLaneId(builder, mod));
             if (name == "rowId") return target.workgroupId(builder, mod, 0);
             auto groupFop = [&](const ExpressionPtr& e)
                     -> LoweringTarget::WaveReduceFOp {
@@ -4855,7 +4870,7 @@ private:
             llvm::Value* kpad = builder.CreateAdd(rws, pdv, "bt.kpad");
             llvm::Value* cpr = builder.CreateUDiv(cls, lanesV, "bt.cpr");
             llvm::Value* tot = builder.CreateMul(rws, cpr, "bt.total");
-            llvm::Value* tid = coerceTo(target.threadId(builder, mod, 0), i32);
+            llvm::Value* tid = coerceTo(varying(target.threadId(builder, mod, 0)), i32);
             llvm::Value* nth = coerceTo(target.workgroupDim(builder, mod, 0), i32);
             llvm::Value* iv = entryAlloca(i32, "bt.e");
             builder.CreateStore(tid, iv);
@@ -4906,7 +4921,7 @@ private:
         llvm::Value* cols    = coerceTo(lowerExpr(args[5].expression), i32);
         llvm::Value* ld      = coerceTo(lowerExpr(args[6].expression), i32);
         llvm::Value* total   = builder.CreateMul(rows, cols, "stage.total");
-        llvm::Value* tid  = coerceTo(target.threadId(builder, mod, 0), i32);
+        llvm::Value* tid  = coerceTo(varying(target.threadId(builder, mod, 0)), i32);
         llvm::Value* nthr = coerceTo(target.workgroupDim(builder, mod, 0), i32);
         llvm::Value* iv = entryAlloca(i32, "stage.e");
         builder.CreateStore(tid, iv);
@@ -4945,7 +4960,7 @@ private:
                               llvm::Value* count) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
-        llvm::Value* tid  = coerceTo(target.threadId(builder, mod, 0), i32);
+        llvm::Value* tid  = coerceTo(varying(target.threadId(builder, mod, 0)), i32);
         llvm::Value* nthr = coerceTo(target.workgroupDim(builder, mod, 0), i32);
         llvm::Value* iv = entryAlloca(i32, "swzcopy.e");
         builder.CreateStore(tid, iv);
@@ -5491,7 +5506,7 @@ private:
     struct LaneId { llvm::Value* lane; llvm::Value* c; llvm::Value* g; };
     LaneId distLane(const CoopMatrixSlot& s) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
-        llvm::Value* lane = target.waveLaneId(builder, mod);
+        llvm::Value* lane = varying(target.waveLaneId(builder, mod));
         llvm::Value* cols = llvm::ConstantInt::get(i32, s.cols);
         return { lane, builder.CreateURem(lane, cols),
                  builder.CreateUDiv(lane, cols) };
@@ -7382,6 +7397,12 @@ private:
 
     // ---- helpers --------------------------------------------------------
 
+    // `v`, tagged as differing between the lanes of a workgroup.
+    llvm::Value* varying(llvm::Value* v) {
+        markVarying(v);
+        return v;
+    }
+
     ExpressionPtr exprChild(const std::shared_ptr<Expression>& e, size_t i) {
         if (e->getChildren().size() <= i) unsupported("missing operand");
         return std::dynamic_pointer_cast<Expression>(e->getChildren()[i]);
@@ -8739,6 +8760,10 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
     DeviceLowerer::DeviceFnCache deviceFns;
     lowerer.setDeviceContext(method->getParent(), &deviceFns);
     lowerer.lowerBody(method);
+    if (workgroupReduceUnderDivergence(*fn))
+        unsupported("Workgroup.reduce under work-item-divergent control flow in " + kname +
+                    " (every lane of the workgroup must reach it, and none may return "
+                    "before it)");
     // If the kernel used a cross-lane subgroup op, ask the backend for maximal
     // reconvergence (a no-op where it is not modelled).
     if (lowerer.usedSubgroupOp())

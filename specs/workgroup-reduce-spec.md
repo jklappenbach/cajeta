@@ -45,8 +45,9 @@ and stays as it is (1.4).
 
 - Every backend lowers the verb correctly: nvptx, amdgpu, vulkan and cpu,
   and the reference interpreter models it.
-- A result is the same on every backend, bit for bit, because the combine
-  order is defined (6.3).
+- A result is the same on every backend that runs the kernel at the same
+  wave width, bit for bit, because the combine order is defined (6.3). A
+  kernel pins `@Wave(width = 32)` to agree across all of them (6.5).
 - A kernel's source names no wave width and no wave count to use it.
 
 ### 1.4 Non-goals
@@ -99,8 +100,8 @@ defined value, identical on every backend and in the reference interpreter.
 
 ### 3.2 Use cases
 
-- **3.2.1** When the same kernel runs on two backends with the same inputs,
-  the two results are bit-identical.
+- **3.2.1** When the same kernel runs on two backends at the same wave width
+  with the same inputs, the two results are bit-identical.
 - **3.2.2** When a hand-written site that combined `part[0] + part[1] + ...`
   is replaced by the verb, its output is bit-identical to before.
 - **3.2.3** When the reference interpreter replays a recorded launch that uses
@@ -120,8 +121,9 @@ a wrong value at run time.
 - **4.2.2** When `op` is not a literal `GroupOp`, the kernel is refused.
 - **4.2.3** When `value` is a type other than `float32` or `int32`, the
   kernel is refused, naming the type.
-- **4.2.4** When the verb is called from host code, the call is refused, as
-  the other kernel verbs are.
+- **4.2.4** When the verb is called from host code, it acts as a workgroup
+  of one lane and returns its own value, as `Group.reduce`,
+  `Barrier.workgroup()` and the `Workgroup` coordinates do (6.6).
 
 ## 5. Adoption in cajeta-llm
 
@@ -152,3 +154,10 @@ longer names a wave width or a wave count.
   `Min` over `float32` and `int32` on every backend, the reference
   interpreter and the conformance corpus, a release, and cajeta-llm's seven
   sites. The segmented flash-attention site stays as it is.
+- **6.5** (Julian 2026-10-07) Bit-identity holds at equal wave width. Each
+  wave reduces as the wave reduce does, so a float `Add` on cpu at wave 16
+  differs in the last bit from amdgpu and Vulkan at wave 32 (measured
+  2026-10-07). A kernel that needs agreement everywhere pins its width.
+- **6.6** (Julian 2026-10-07) A host call is not refused. The verb keeps its
+  `@Native` one-lane host fallback, like its sibling verbs, so a kernel body
+  that also runs on the host still compiles.
