@@ -129,12 +129,14 @@ class CajetaTypeDeclaration(node: ASTNode) : CajetaNamedElement(node) {
  * Members whose name is a direct `identifier` child: methods, constructors,
  * destructors, interface methods (`interfaceCommonBodyDeclaration` — the rule
  * that actually holds the identifier), and annotation elements
- * (`annotationMethodRest`).
+ * (`annotationMethodRest`, whose name sits in `annotationElementName`).
  */
 class CajetaMemberDeclaration(node: ASTNode) : CajetaNamedElement(node) {
 
     override fun getNameIdentifier(): PsiElement? =
         directChildRule(this, CajetaParser.RULE_identifier)
+            ?: directChildRule(this, CajetaParser.RULE_annotationElementName)
+                ?.let { directChildRule(it, CajetaParser.RULE_identifier) ?: it }
 
     override val fqn: String?
         get() {
