@@ -1,6 +1,7 @@
 // workgroup-reduce Unit 3: Workgroup.reduce on every backend replays through the reference at
 // 0 ulp from a recording, and every device matches the cpu bit for bit at wave width 32.
 #include "gtest/gtest.h"
+#include "../PortableEnv.h"
 #include "../jit/JitTestHelper.h"
 #include "CpuKernelHarness.h"
 #include "KernelLoweringProbe.h"
