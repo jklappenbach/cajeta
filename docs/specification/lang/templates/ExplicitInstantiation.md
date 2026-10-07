@@ -51,4 +51,4 @@ is refused too, naming what could not be bound.
 
 - `docs/specification/xpu/CajetaXPU.md` §14.4, for template values in
   `@Occupancy` and fragment-array sizes.
-- `specs/xpu-kernel-independence-spec.md` §3.4 and §7.3.
+- `specs/archive/xpu-kernel-independence-spec.md` §3.4 and §7.3.

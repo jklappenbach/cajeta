@@ -251,5 +251,5 @@ once it is unset. The variable exists only for that test.
 
 ## See also
 
-- `specs/xpu-kernel-independence-spec.md` §2.2 and §7.2.
+- `specs/archive/xpu-kernel-independence-spec.md` §2.2 and §7.2.
 - `test/xpu/XpuReferenceInterpreterTests.cpp`.
