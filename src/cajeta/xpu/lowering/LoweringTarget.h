@@ -680,6 +680,9 @@ namespace xpu {
         // Every backend has hardware wave ops but they diverge in intrinsic, lane
         // width and ballot shape, so these are pure-virtual seam points.
 
+        // The narrowest wave the target can run: sizes per-wave scratch for the worst case.
+        virtual unsigned minWaveWidth() const { return 32; }
+
         // Lanes per wave: i32. NVPTX warpsize sreg (32); AMDGPU wavefrontsize
         // intrinsic; Vulkan spv.wave.get_lane_count.
         virtual llvm::Value* waveWidth(llvm::IRBuilderBase& b,

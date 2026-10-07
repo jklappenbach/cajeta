@@ -97,6 +97,15 @@ int32_t __cajeta_xpu_group_reduce_i32(int32_t op, int32_t value) {
     (void) op;
     return value;
 }
+// A one-lane workgroup: the host fallback is the lane's own value.
+float __cajeta_xpu_workgroup_reduce_f32(int32_t op, float value) {
+    (void) op;
+    return value;
+}
+int32_t __cajeta_xpu_workgroup_reduce_i32(int32_t op, int32_t value) {
+    (void) op;
+    return value;
+}
 float __cajeta_xpu_group_reduce_f32_seg(int32_t segment, int32_t op, float value) {
     (void) segment; (void) op;
     return value;

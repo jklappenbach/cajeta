@@ -468,6 +468,8 @@ public:
     llvm::Value* groupLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
         return waveLaneId(b, m);
     }
+    // A scalar twin runs the wave at one lane.
+    unsigned minWaveWidth() const override { return 1; }
     llvm::Value* groupReduceF32(llvm::IRBuilderBase& b, llvm::Module& m,
                                 WaveReduceFOp op, llvm::Value* value) override {
         return waveReduceF32(b, m, op, value);

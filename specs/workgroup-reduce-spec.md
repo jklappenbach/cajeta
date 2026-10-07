@@ -79,8 +79,8 @@ not the kernel's.
   maximum or minimum.
 - **2.2.3** When the value is an `int32`, the result is the exact integer sum,
   maximum or minimum, wrapping as `int32` addition wraps on the target.
-- **2.2.4** When the workgroup holds one wave, the result equals
-  `Group.reduce` of the same value.
+- **2.2.4** When the workgroup holds one wave, the result equals the wave
+  reduce of the same value (`Wave.reduceSumF32` and its kin).
 - **2.2.5** When a kernel's launch block is not a compile-time constant, the
   verb still covers every wave the launch holds, up to the kernel's declared
   `@Occupancy(maxThreads)` ceiling or the part's limit.
@@ -91,10 +91,11 @@ not the kernel's.
 
 ### 3.1 Requirements
 
-Each wave reduces its lanes as `Group.reduce` does. The per-wave partials then
-combine left to right in wave order, wave 0 first, the order the hand-written
-sites use. The result of a `float32` reduction is therefore one defined value,
-identical on every backend and in the reference interpreter.
+Each wave reduces its lanes as the wave reduce does (`Wave.reduceSumF32` and
+its kin, which on cpu is not `Group.reduce`, an identity there). The per-wave
+partials then combine left to right in wave order, wave 0 first, the order the
+hand-written sites use. The result of a `float32` reduction is therefore one
+defined value, identical on every backend and in the reference interpreter.
 
 ### 3.2 Use cases
 

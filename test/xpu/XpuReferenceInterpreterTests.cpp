@@ -1449,3 +1449,207 @@ TEST(XpuReferenceInterpreter, theScalarTwinOfAWaveKernelIsRefusedNotRun) {
     EXPECT_GT(__cajeta_xpu_cpu_scalar_twin_hits(), before);
     for (uint32_t v : as<uint32_t>(r[0].buf)) EXPECT_EQ(v, 0u);
 }
+
+// ---- workgroup-reduce Unit 2: Workgroup.reduce on cpu and in the reference ----------
+
+namespace {
+
+// The cpu backend's output `out` for `ins`, or empty with `why` set.
+template <typename T>
+std::vector<T> cpuOut(Pair& p, std::vector<In> ins, size_t out, const Shape& s, std::string& why) {
+    if (!p.failure.empty()) { why = p.failure; return {}; }
+    why = runCpu(p.kernel, ins, s);
+    if (!why.empty()) return {};
+    return as<T>(ins[out].buf);
+}
+
+// The defined order: each wave of `W` lanes reduces by the xor butterfly at distances 1, 2, 4
+// ... W/2, then the per-wave partials combine left to right from wave 0.
+float hostWorkgroupSum(const float* v, uint32_t n, uint32_t W) {
+    float acc = 0.0f;
+    for (uint32_t w0 = 0; w0 < n; w0 += W) {
+        std::vector<float> lanes(W, 0.0f);
+        for (uint32_t l = 0; l < W && w0 + l < n; ++l) lanes[l] = v[w0 + l];
+        for (uint32_t off = 1; off < W; off *= 2) {
+            std::vector<float> nv(W);
+            for (uint32_t l = 0; l < W; ++l) nv[l] = lanes[l] + lanes[l ^ off];
+            lanes = nv;
+        }
+        acc = w0 == 0 ? lanes[0] : acc + lanes[0];
+    }
+    return acc;
+}
+
+}  // namespace
+
+// 2.2.1, 2.2.2, 2.2.3, 3.2.1: every operator over float32 and int32, every lane gets the result,
+// equal to the host and to the reference bit for bit.
+TEST(XpuReferenceInterpreter, workgroupReduceMatchesTheHostAndTheReference) {
+    Pair p(R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void wgAll(KernelBuffer<float32> outF, KernelBuffer<int32> outI,
+                             KernelBuffer<float32> inF, KernelBuffer<int32> inI) {
+        uint32 g = KernelThread.globalIdX();
+        float32 f = inF[g];
+        int32 v = inI[g];
+        outF[g * 3] = Workgroup.reduce(GroupOp.Add, f);
+        outF[g * 3 + 1] = Workgroup.reduce(GroupOp.Max, f);
+        outF[g * 3 + 2] = Workgroup.reduce(GroupOp.Min, f);
+        outI[g * 3] = Workgroup.reduce(GroupOp.Add, v);
+        outI[g * 3 + 1] = Workgroup.reduce(GroupOp.Max, v);
+        outI[g * 3 + 2] = Workgroup.reduce(GroupOp.Min, v);
+    }
+)CJ", "wgAll");
+    const uint32_t B = 128, G = 3, N = B * G;
+    std::vector<float> inF(N);
+    std::vector<int32_t> inI(N);
+    for (uint32_t i = 0; i < N; ++i) {
+        inF[i] = (float) ((int) ((i * 37) % 101) - 50);
+        inI[i] = (int32_t) ((i * 7919) % 2001) - 1000;
+    }
+    std::vector<In> ins = {buffer(std::vector<float>(N * 3)), buffer(std::vector<int32_t>(N * 3)),
+                           buffer(inF), buffer(inI)};
+    std::string why;
+    auto f = cpuOut<float>(p, ins, 0, shape(G, B), why);
+    ASSERT_EQ(why, "");
+    auto iv = cpuOut<int32_t>(p, ins, 1, shape(G, B), why);
+    ASSERT_EQ(why, "");
+    for (uint32_t w = 0; w < G; ++w) {
+        float fmx = inF[w * B], fmn = inF[w * B];
+        int32_t s = 0, mx = inI[w * B], mn = inI[w * B];
+        for (uint32_t l = 0; l < B; ++l) {
+            fmx = std::max(fmx, inF[w * B + l]);
+            fmn = std::min(fmn, inF[w * B + l]);
+            s += inI[w * B + l];
+            mx = std::max(mx, inI[w * B + l]);
+            mn = std::min(mn, inI[w * B + l]);
+        }
+        float fs = hostWorkgroupSum(&inF[w * B], B, 32);
+        for (uint32_t l = 0; l < B; ++l) {
+            uint32_t g = w * B + l;
+            ASSERT_EQ(f[g * 3], fs) << "Add, workgroup " << w << " lane " << l;
+            ASSERT_EQ(f[g * 3 + 1], fmx) << "Max, workgroup " << w << " lane " << l;
+            ASSERT_EQ(f[g * 3 + 2], fmn) << "Min, workgroup " << w << " lane " << l;
+            ASSERT_EQ(iv[g * 3], s) << "int Add, workgroup " << w << " lane " << l;
+            ASSERT_EQ(iv[g * 3 + 1], mx) << "int Max, workgroup " << w << " lane " << l;
+            ASSERT_EQ(iv[g * 3 + 2], mn) << "int Min, workgroup " << w << " lane " << l;
+        }
+    }
+    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(G, B)), "");
+    EXPECT_EQ(compareOn<int32_t>(p, ins, 1, shape(G, B)), "");
+}
+
+// 2.2.4: a workgroup of one wave reduces as the wave does.
+TEST(XpuReferenceInterpreter, aOneWaveWorkgroupReducesAsTheWaveDoes) {
+    Pair p(R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void wgOneWave(KernelBuffer<float32> out, KernelBuffer<float32> in) {
+        uint32 g = KernelThread.globalIdX();
+        float32 f = in[g];
+        out[g] = (Workgroup.reduce(GroupOp.Add, f) - Wave.reduceSumF32(f))
+               + (Workgroup.reduce(GroupOp.Max, f) - Wave.reduceMaxF32(f));
+    }
+)CJ", "wgOneWave");
+    std::vector<In> ins = {buffer(std::vector<float>(64)), buffer(ramp(64, 0.37f, -3.0f))};
+    std::string why;
+    auto out = cpuOut<float>(p, ins, 0, shape(2, 32), why);
+    ASSERT_EQ(why, "");
+    for (size_t i = 0; i < out.size(); ++i) ASSERT_EQ(out[i], 0.0f) << "lane " << i;
+}
+
+// 2.2.5: the launch block is not a compile-time constant, with and without a declared ceiling,
+// including a block that is not a power of two.
+TEST(XpuReferenceInterpreter, workgroupReduceCoversARuntimeBlock) {
+    for (const char* occupancy : {"", "    @Occupancy(maxThreads = 256)\n"}) {
+        Pair p(std::string(R"CJ(
+    @Kernel
+    @Wave(width = 32)
+)CJ") + occupancy + R"CJ(    public static void wgRuntime(KernelBuffer<int32> out, KernelBuffer<int32> in) {
+        uint32 g = KernelThread.globalIdX();
+        out[g] = Workgroup.reduce(GroupOp.Add, in[g]);
+    }
+)CJ", "wgRuntime");
+        for (uint32_t B : {32u, 96u, 256u}) {
+            const uint32_t N = B * 2;
+            std::vector<int32_t> in(N);
+            for (uint32_t i = 0; i < N; ++i) in[i] = (int32_t) (i % 7) - 3;
+            std::vector<In> ins = {buffer(std::vector<int32_t>(N)), buffer(in)};
+            std::string why;
+            auto out = cpuOut<int32_t>(p, ins, 0, shape(2, B), why);
+            ASSERT_EQ(why, "") << "block " << B;
+            for (uint32_t w = 0; w < 2; ++w) {
+                int32_t s = 0;
+                for (uint32_t l = 0; l < B; ++l) s += in[w * B + l];
+                for (uint32_t l = 0; l < B; ++l)
+                    ASSERT_EQ(out[w * B + l], s) << "block " << B << " workgroup " << w;
+            }
+            EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(2, B)), "") << "block " << B;
+        }
+    }
+}
+
+// 2.2.6: two calls in a row, and a call inside a loop, each see only their own values.
+TEST(XpuReferenceInterpreter, workgroupReduceCallsDoNotSeeEachOther) {
+    Pair p(R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void wgRepeat(KernelBuffer<int32> out, KernelBuffer<int32> in) {
+        uint32 g = KernelThread.globalIdX();
+        int32 v = in[g];
+        int32 a = Workgroup.reduce(GroupOp.Add, v);
+        int32 b = Workgroup.reduce(GroupOp.Max, v * 2);
+        int32 acc = 0;
+        int32 k = 0;
+        while (k < 4) {
+            acc = acc + (k + 1) * Workgroup.reduce(GroupOp.Add, v + k);
+            k = k + 1;
+        }
+        out[g * 3] = a;
+        out[g * 3 + 1] = b;
+        out[g * 3 + 2] = acc;
+    }
+)CJ", "wgRepeat");
+    const uint32_t B = 128;
+    std::vector<int32_t> in(B);
+    for (uint32_t i = 0; i < B; ++i) in[i] = (int32_t) (i % 5) - 2;
+    std::vector<In> ins = {buffer(std::vector<int32_t>(B * 3)), buffer(in)};
+    std::string why;
+    auto out = cpuOut<int32_t>(p, ins, 0, shape(1, B), why);
+    ASSERT_EQ(why, "");
+    int32_t s = 0, mx = in[0] * 2;
+    for (uint32_t l = 0; l < B; ++l) { s += in[l]; mx = std::max(mx, in[l] * 2); }
+    int32_t acc = 0;
+    for (int32_t k = 0; k < 4; ++k) acc = acc + (k + 1) * (s + (int32_t) B * k);
+    for (uint32_t l = 0; l < B; ++l) {
+        ASSERT_EQ(out[l * 3], s) << "lane " << l;
+        ASSERT_EQ(out[l * 3 + 1], mx) << "lane " << l;
+        ASSERT_EQ(out[l * 3 + 2], acc) << "lane " << l;
+    }
+    EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(1, B)), "");
+}
+
+// 2.1.5, 3.1: the partials combine from wave 0 upward. Waves of 1e8, 1, -1e8 and 1 sum to 1
+// in that order; pairing (w0 + w1) + (w2 + w3) would give 0.
+TEST(XpuReferenceInterpreter, workgroupReduceCombinesFromWaveZeroUpward) {
+    Pair p(R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void wgOrder(KernelBuffer<float32> out, KernelBuffer<float32> in) {
+        uint32 g = KernelThread.globalIdX();
+        out[g] = Workgroup.reduce(GroupOp.Add, in[g]);
+    }
+)CJ", "wgOrder");
+    std::vector<float> in(128, 0.0f);
+    in[0] = 1.0e8f;
+    in[32] = 1.0f;
+    in[64] = -1.0e8f;
+    in[96] = 1.0f;
+    std::vector<In> ins = {buffer(std::vector<float>(128)), buffer(in)};
+    std::string why;
+    auto out = cpuOut<float>(p, ins, 0, shape(1, 128), why);
+    ASSERT_EQ(why, "");
+    EXPECT_EQ(out[0], 1.0f) << "left to right from wave 0 gives 1, a pairwise tree gives 0";
+    EXPECT_EQ(compareOn<float>(p, ins, 0, shape(1, 128)), "");
+}

@@ -1020,6 +1020,8 @@ public:
             {llvm::Type::getInt32Ty(m.getContext())});
         return b.CreateCall(f, {value}, "wavered");
     }
+    // A Vulkan subgroup may be as narrow as one lane.
+    unsigned minWaveWidth() const override { return 1; }
     llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
                             WaveReduceOp op, llvm::Value* value) override {
         llvm::Intrinsic::ID id;

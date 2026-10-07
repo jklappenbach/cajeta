@@ -33,4 +33,16 @@ public final class Workgroup {
 
     @Native("__cajeta_xpu_workgroup_dim_z")
     public static uint32 dimZ();
+
+    /**
+     * Combine `value` from every lane of the workgroup with `op`; every lane receives the
+     * result. A barrier: every lane reaches it. Each wave reduces, then the partials combine
+     * from wave 0 upward, so a result is the same on every backend.
+     */
+    @Native("__cajeta_xpu_workgroup_reduce_f32")
+    public static float32 reduce(GroupOp op, float32 value);
+
+    /** {@link #reduce} over int32: the sum (wrapping as int32 does), or the signed max or min. */
+    @Native("__cajeta_xpu_workgroup_reduce_i32")
+    public static int32 reduce(GroupOp op, int32 value);
 }
