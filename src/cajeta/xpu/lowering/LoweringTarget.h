@@ -766,16 +766,16 @@ namespace xpu {
                                            llvm::Value* value) = 0;
 
         // The reduction family beyond sum: one i32 reduced across the active lanes,
-        // every lane receiving the result. Max/Min are UNSIGNED. Product is
-        // intentionally absent (no AMD/NVPTX hardware reduce).
-        enum class WaveReduceOp { Max, Min, And, Or, Xor };
+        // every lane receiving the result. Max/Min are UNSIGNED and SMax/SMin signed.
+        // Product is intentionally absent (no AMD/NVPTX hardware reduce).
+        enum class WaveReduceOp { Max, Min, And, Or, Xor, SMax, SMin };
         virtual llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
                                         WaveReduceOp op, llvm::Value* value) = 0;
 
-        // FLOAT wave reduction (sum / max) of an f32 across the active lanes. NOT
+        // FLOAT wave reduction (sum / max / min) of an f32 across the active lanes. NOT
         // pure-virtual: the default is a width-agnostic XOR butterfly over
         // waveShuffleDivergent with f32↔i32 punning. Backends override natively.
-        enum class WaveReduceFOp { Sum, Max };
+        enum class WaveReduceFOp { Sum, Max, Min };
         virtual llvm::Value* waveReduceF32(llvm::IRBuilderBase& b,
                                            llvm::Module& m, WaveReduceFOp op,
                                            llvm::Value* value);
@@ -796,6 +796,14 @@ namespace xpu {
                                             llvm::Module& m, WaveReduceFOp op,
                                             llvm::Value* value) {
             return waveReduceF32(b, m, op, value);
+        }
+
+        // Cooperative-group int32 reduce: the sum, or the SIGNED max or min.
+        virtual llvm::Value* groupReduceI32(llvm::IRBuilderBase& b, llvm::Module& m,
+                                            WaveReduceFOp op, llvm::Value* value) {
+            if (op == WaveReduceFOp::Sum) return waveReduceSum(b, m, value);
+            return waveReduce(b, m, op == WaveReduceFOp::Max ? WaveReduceOp::SMax
+                                                              : WaveReduceOp::SMin, value);
         }
 
         // Segmented cooperative-group float reduce: the GPU default delegates to

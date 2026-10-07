@@ -3377,12 +3377,13 @@ private:
                     -> LoweringTarget::WaveReduceFOp {
                 auto* c = llvm::dyn_cast<llvm::ConstantInt>(lowerExpr(e));
                 if (!c) unsupported("Group.reduce op must be a compile-time "
-                                    "GroupOp constant (GroupOp.Add / .Max)");
+                                    "GroupOp constant (GroupOp.Add / .Max / .Min)");
                 uint64_t ord = c->getZExtValue();
                 if (ord == 0) return LoweringTarget::WaveReduceFOp::Sum; // Add
                 if (ord == 1) return LoweringTarget::WaveReduceFOp::Max;
+                if (ord == 2) return LoweringTarget::WaveReduceFOp::Min;
                 unsupported("Group.reduce: unknown GroupOp ordinal "
-                            + std::to_string(ord) + " (Add=0, Max=1)");
+                            + std::to_string(ord) + " (Add=0, Max=1, Min=2)");
                 return LoweringTarget::WaveReduceFOp::Sum; // unreachable
             };
             if (name == "reduce") {
@@ -3390,8 +3391,12 @@ private:
                     unsupported("Group.reduce(op, value) arity");
                 usedSubgroupOp_ = true;
                 auto fop = groupFop(args[0].expression);
-                return target.groupReduceF32(builder, mod, fop,
-                                             lowerExpr(args[1].expression));
+                llvm::Value* v = lowerExpr(args[1].expression);
+                if (v->getType()->isIntegerTy(32))
+                    return target.groupReduceI32(builder, mod, fop, v);
+                if (!v->getType()->isFloatTy())
+                    unsupported("Group.reduce takes a float32 or int32 value");
+                return target.groupReduceF32(builder, mod, fop, v);
             }
             if (name == "reduceSegmented") {
                 if (args.size() != 3)
@@ -3399,6 +3404,8 @@ private:
                 usedSubgroupOp_ = true;
                 llvm::Value* seg = lowerExpr(args[0].expression);
                 auto fop = groupFop(args[1].expression);
+                if (fop == LoweringTarget::WaveReduceFOp::Min)
+                    unsupported("Group.reduceSegmented takes GroupOp.Add or GroupOp.Max");
                 return target.groupReduceF32Segmented(
                     builder, mod, fop, lowerExpr(args[2].expression), seg);
             }
@@ -8461,8 +8468,9 @@ static llvm::Value* waveReduceF32Butterfly(LoweringTarget& t,
     llvm::Value* other = b.CreateBitCast(otherBits, f32);
     llvm::Value* acc = op == WaveReduceFOp::Sum
         ? b.CreateFAdd(accPhi, other, "fred.sum")
-        : b.CreateBinaryIntrinsic(llvm::Intrinsic::maxnum, accPhi, other,
-                                  llvm::FMFSource(), "fred.max");
+        : b.CreateBinaryIntrinsic(op == WaveReduceFOp::Max ? llvm::Intrinsic::maxnum
+                                                           : llvm::Intrinsic::minnum,
+                                  accPhi, other, llvm::FMFSource(), "fred.max");
     llvm::Value* dNext = b.CreateShl(dPhi, 1);
     accPhi->addIncoming(acc, loop);
     dPhi->addIncoming(dNext, loop);

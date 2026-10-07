@@ -93,6 +93,10 @@ float __cajeta_xpu_group_reduce_f32(int32_t op, float value) {
     (void) op;
     return value;
 }
+int32_t __cajeta_xpu_group_reduce_i32(int32_t op, int32_t value) {
+    (void) op;
+    return value;
+}
 float __cajeta_xpu_group_reduce_f32_seg(int32_t segment, int32_t op, float value) {
     (void) segment; (void) op;
     return value;
@@ -109,6 +113,8 @@ uint64_t __cajeta_xpu_wave_ballot_sync(bool predicate) {
 uint32_t __cajeta_xpu_wave_reduce_sum_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_max_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_min_u32(uint32_t value) { return value; }
+uint32_t __cajeta_xpu_wave_reduce_smax_u32(uint32_t value) { return value; }
+uint32_t __cajeta_xpu_wave_reduce_smin_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_and_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_or_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_xor_u32(uint32_t value) { return value; }
@@ -116,16 +122,20 @@ uint32_t __cajeta_xpu_wave_reduce_xor_u32(uint32_t value) { return value; }
 // lane-active argument so LoopVectorize cannot scalarize the cross-lane op.
 float __cajeta_xpu_wave_reduce_sum_f32(float value) { return value; }
 float __cajeta_xpu_wave_reduce_max_f32(float value) { return value; }
+float __cajeta_xpu_wave_reduce_min_f32(float value) { return value; }
 float __cajeta_xpu_wave_reduce_sum_f32_seg(float value, uint32_t segment) { (void) segment; return value; }
 float __cajeta_xpu_wave_reduce_max_f32_seg(float value, uint32_t segment) { (void) segment; return value; }
 uint32_t __cajeta_xpu_wave_reduce_sum_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
 uint32_t __cajeta_xpu_wave_reduce_max_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
 uint32_t __cajeta_xpu_wave_reduce_min_u32_m(uint32_t value, _Bool active) { return active ? value : 0xFFFFFFFFu; }
+uint32_t __cajeta_xpu_wave_reduce_smax_u32_m(uint32_t value, _Bool active) { return active ? value : 0x80000000u; }
+uint32_t __cajeta_xpu_wave_reduce_smin_u32_m(uint32_t value, _Bool active) { return active ? value : 0x7FFFFFFFu; }
 uint32_t __cajeta_xpu_wave_reduce_and_u32_m(uint32_t value, _Bool active) { return active ? value : 0xFFFFFFFFu; }
 uint32_t __cajeta_xpu_wave_reduce_or_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
 uint32_t __cajeta_xpu_wave_reduce_xor_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
 float __cajeta_xpu_wave_reduce_sum_f32_m(float value, _Bool active) { return active ? value : 0.0f; }
 float __cajeta_xpu_wave_reduce_max_f32_m(float value, _Bool active) { return active ? value : -3.402823466e38f; }
+float __cajeta_xpu_wave_reduce_min_f32_m(float value, _Bool active) { return active ? value : 3.402823466e38f; }
 // Width-1 fallback: lane 0's exclusive prefix is the identity (0 sum, 1 product).
 uint32_t __cajeta_xpu_wave_prefix_sum_u32(uint32_t value) { (void)value; return 0; }
 uint32_t __cajeta_xpu_wave_prefix_product_u32(uint32_t value) { (void)value; return 1; }

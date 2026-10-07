@@ -234,6 +234,8 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
         }
     } else if (scalarName == "__cajeta_xpu_wave_reduce_max_u32" ||
                scalarName == "__cajeta_xpu_wave_reduce_min_u32" ||
+               scalarName == "__cajeta_xpu_wave_reduce_smax_u32" ||
+               scalarName == "__cajeta_xpu_wave_reduce_smin_u32" ||
                scalarName == "__cajeta_xpu_wave_reduce_and_u32" ||
                scalarName == "__cajeta_xpu_wave_reduce_or_u32" ||
                scalarName == "__cajeta_xpu_wave_reduce_xor_u32") {
@@ -245,15 +247,21 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
                 return b.CreateIntMaxReduce(x, /*IsSigned=*/false);
             if (scalarName == "__cajeta_xpu_wave_reduce_min_u32")
                 return b.CreateIntMinReduce(x, /*IsSigned=*/false);
+            if (scalarName == "__cajeta_xpu_wave_reduce_smax_u32")
+                return b.CreateIntMaxReduce(x, /*IsSigned=*/true);
+            if (scalarName == "__cajeta_xpu_wave_reduce_smin_u32")
+                return b.CreateIntMinReduce(x, /*IsSigned=*/true);
             if (scalarName == "__cajeta_xpu_wave_reduce_and_u32")
                 return b.CreateAndReduce(x);
             if (scalarName == "__cajeta_xpu_wave_reduce_or_u32")
                 return b.CreateOrReduce(x);
             return b.CreateXorReduce(x);
         };
-        uint32_t ident =  // AND identity = all-ones, MIN identity = UINT_MAX
+        uint32_t ident =  // AND = all-ones, MIN = UINT_MAX, SMAX = INT_MIN, SMIN = INT_MAX
             (scalarName == "__cajeta_xpu_wave_reduce_and_u32" ||
-             scalarName == "__cajeta_xpu_wave_reduce_min_u32") ? 0xFFFFFFFFu : 0u;
+             scalarName == "__cajeta_xpu_wave_reduce_min_u32") ? 0xFFFFFFFFu
+            : scalarName == "__cajeta_xpu_wave_reduce_smax_u32" ? 0x80000000u
+            : scalarName == "__cajeta_xpu_wave_reduce_smin_u32" ? 0x7FFFFFFFu : 0u;
         unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
                                     llvm::FunctionType::get(vTy, {vTy}, false));
         {
@@ -271,18 +279,21 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
             b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, sel)));
         }
     } else if (scalarName == "__cajeta_xpu_wave_reduce_sum_f32" ||
-               scalarName == "__cajeta_xpu_wave_reduce_max_f32") {
+               scalarName == "__cajeta_xpu_wave_reduce_max_f32" ||
+               scalarName == "__cajeta_xpu_wave_reduce_min_f32") {
         tokens = "v";
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
         auto* vTy = llvm::FixedVectorType::get(f32, W);
         const bool isSum = scalarName == "__cajeta_xpu_wave_reduce_sum_f32";
+        const bool isMin = scalarName == "__cajeta_xpu_wave_reduce_min_f32";
         auto reduceOf = [&](llvm::IRBuilder<>& b, llvm::Value* x) -> llvm::Value* {
             if (isSum) return xorButterflySum(b, x, W);
+            if (isMin) return b.CreateFPMinReduce(x);
             return b.CreateFPMaxReduce(x);
         };
         llvm::Constant* ident = isSum
             ? llvm::ConstantFP::get(f32, 0.0)
-            : llvm::ConstantFP::get(f32, -3.402823466e38);
+            : llvm::ConstantFP::get(f32, isMin ? 3.402823466e38 : -3.402823466e38);
         unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
                                     llvm::FunctionType::get(vTy, {vTy}, false));
         {
@@ -350,13 +361,15 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
         auto* vTy = llvm::FixedVectorType::get(f32, W);
         const bool isSum = base == "__cajeta_xpu_wave_reduce_sum_f32";
+        const bool isMin = base == "__cajeta_xpu_wave_reduce_min_f32";
         auto reduceOf = [&](llvm::IRBuilder<>& b, llvm::Value* x) -> llvm::Value* {
             if (isSum) return xorButterflySum(b, x, W);
+            if (isMin) return b.CreateFPMinReduce(x);
             return b.CreateFPMaxReduce(x);
         };
         llvm::Constant* ident = isSum
             ? llvm::ConstantFP::get(f32, 0.0)
-            : llvm::ConstantFP::get(f32, -3.402823466e38);
+            : llvm::ConstantFP::get(f32, isMin ? 3.402823466e38 : -3.402823466e38);
         unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
                                     llvm::FunctionType::get(vTy, {vTy, maskTy}, false));
         {
@@ -390,13 +403,19 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
                 return b.CreateIntMaxReduce(x, /*IsSigned=*/false);
             if (base == "__cajeta_xpu_wave_reduce_min_u32")
                 return b.CreateIntMinReduce(x, /*IsSigned=*/false);
+            if (base == "__cajeta_xpu_wave_reduce_smax_u32")
+                return b.CreateIntMaxReduce(x, /*IsSigned=*/true);
+            if (base == "__cajeta_xpu_wave_reduce_smin_u32")
+                return b.CreateIntMinReduce(x, /*IsSigned=*/true);
             if (base == "__cajeta_xpu_wave_reduce_and_u32") return b.CreateAndReduce(x);
             if (base == "__cajeta_xpu_wave_reduce_or_u32")  return b.CreateOrReduce(x);
             return b.CreateXorReduce(x);
         };
         const uint32_t ident =
             (base == "__cajeta_xpu_wave_reduce_and_u32" ||
-             base == "__cajeta_xpu_wave_reduce_min_u32") ? 0xFFFFFFFFu : 0u;
+             base == "__cajeta_xpu_wave_reduce_min_u32") ? 0xFFFFFFFFu
+            : base == "__cajeta_xpu_wave_reduce_smax_u32" ? 0x80000000u
+            : base == "__cajeta_xpu_wave_reduce_smin_u32" ? 0x7FFFFFFFu : 0u;
         unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
                                     llvm::FunctionType::get(vTy, {vTy, maskTy}, false));
         {
@@ -570,9 +589,12 @@ static const char* const kWaveOps[] = {
     "__cajeta_xpu_wave_reduce_max_u32",
     "__cajeta_xpu_wave_reduce_sum_f32",
     "__cajeta_xpu_wave_reduce_max_f32",
+    "__cajeta_xpu_wave_reduce_min_f32",
     "__cajeta_xpu_wave_reduce_sum_f32_seg",
     "__cajeta_xpu_wave_reduce_max_f32_seg",
     "__cajeta_xpu_wave_reduce_min_u32",
+    "__cajeta_xpu_wave_reduce_smax_u32",
+    "__cajeta_xpu_wave_reduce_smin_u32",
     "__cajeta_xpu_wave_reduce_and_u32",
     "__cajeta_xpu_wave_reduce_or_u32",
     "__cajeta_xpu_wave_reduce_xor_u32",

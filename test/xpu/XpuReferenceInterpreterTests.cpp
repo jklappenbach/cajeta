@@ -251,6 +251,33 @@ TEST(XpuReferenceInterpreter, aWaveReduceKernelMatchesTheCpuBackend) {
     EXPECT_EQ(compareOn<uint32_t>(p, ins, 0, shape(2, 64)), "");
 }
 
+// workgroup-reduce 1.1.1: Group.reduce's Min and its int32 forms, cpu against the reference.
+TEST(XpuReferenceInterpreter, groupReduceMinAndInt32MatchTheCpuBackend) {
+    Pair p(R"CJ(
+    @Kernel
+    @Wave(width = 32)
+    public static void refGroupMinInt(KernelBuffer<int32> out, KernelBuffer<int32> in,
+                                      KernelBuffer<float32> fin) {
+        uint32 g = KernelThread.globalIdX();
+        int32 v = in[g];
+        float32 f = fin[g];
+        int32 s = Group.reduce(GroupOp.Add, v);
+        int32 mx = Group.reduce(GroupOp.Max, v);
+        int32 mn = Group.reduce(GroupOp.Min, v);
+        float32 fm = Group.reduce(GroupOp.Min, f);
+        out[g] = s * 7 + mx * 3 - mn + (int32) (fm * 4.0f);
+    }
+)CJ", "refGroupMinInt");
+    std::vector<int32_t> in(128);
+    std::vector<float> fin(128);
+    for (int i = 0; i < 128; ++i) {
+        in[i] = (i * 7919) % 200 - 100;
+        fin[i] = 3.0f - (float) ((i * 37) % 64) * 0.25f;
+    }
+    std::vector<In> ins = {buffer(std::vector<int32_t>(128)), buffer(in), buffer(fin)};
+    EXPECT_EQ(compareOn<int32_t>(p, ins, 0, shape(2, 64)), "");
+}
+
 // ---- 4.0.1.2: integers bit for bit, floats in the declared precision ------
 
 TEST(XpuReferenceInterpreter, integerKernelsMatchBitForBit) {

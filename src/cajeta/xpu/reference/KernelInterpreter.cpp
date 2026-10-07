@@ -2957,8 +2957,18 @@ private:
         arr.where = where;
         if (q == "Group.reduce") {
             if (a.size() != 2) refuse("`Group.reduce` takes (GroupOp, value) (" + where + ")");
-            arr.what = a[0].i == 0 ? "Wave.reduceSumF32" : "Wave.reduceMaxF32";
-            arr.arg = convert(a[1], {Prim::F32, true});
+            if (a[0].i > 2) refuse("`Group.reduce` with an unknown GroupOp (" + where + ")");
+            if (a[1].t.prim == Prim::F32) {
+                static const char* const fOps[] = {"Wave.reduceSumF32", "Wave.reduceMaxF32",
+                                                   "Wave.reduceMinF32"};
+                arr.what = fOps[a[0].i];
+                arr.arg = convert(a[1], {Prim::F32, true});
+            } else {
+                static const char* const iOps[] = {"Wave.reduceSum", "Wave.reduceSMax",
+                                                   "Wave.reduceSMin"};
+                arr.what = iOps[a[0].i];
+                arr.arg = convert(a[1], {Prim::I32, true});
+            }
         } else if (q == "WaveVector.ofLane") {
             // Lane c's value is column c's factor: gathered across the wave.
             if (a.size() != 1 || a[0].k != Val::Scalar)
@@ -2967,6 +2977,7 @@ private:
         } else if (q == "Group.reduceSegmented") {
             if (a.size() != 3)
                 refuse("`Group.reduceSegmented` takes (segment, GroupOp, value) (" + where + ")");
+            if (a[1].i > 1) refuse("`Group.reduceSegmented` takes GroupOp.Add or GroupOp.Max (" + where + ")");
             arr.what = a[1].i == 0 ? "Wave.reduceSumF32Segmented" : "Wave.reduceMaxF32Segmented";
             arr.arg = convert(a[2], {Prim::F32, true});
             arr.arg2 = convert(a[0], {Prim::I32, false});
@@ -3506,6 +3517,10 @@ private:
             n->kind = it->second;
             return n;
         }
+        if (q == "Group.reduce" && mc->getParameters().size() == 2) {
+            const CExpr* v = expr(mc->getParameters()[1].expression.get());
+            if (v && v->t.prim != Prim::F32) return node(&Item::xFallback, Ty{Prim::I32, true}, mc);
+        }
         if (auto rt = fixedReturn(q)) return node(&Item::xFallback, *rt, mc);
         return nullptr;
     }
@@ -3697,7 +3712,7 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
         }
         return;
     }
-    if (q == "Wave.reduceSumF32" || q == "Wave.reduceMaxF32"
+    if (q == "Wave.reduceSumF32" || q == "Wave.reduceMaxF32" || q == "Wave.reduceMinF32"
             || q == "Wave.reduceSumF32Segmented" || q == "Wave.reduceMaxF32Segmented") {
         // A butterfly over the full width, partners at distance 1, 2, 4 ...
         // W/2 in that order, as the shared lowering emits it; inactive lanes
@@ -3718,12 +3733,16 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
                 undefined("`" + q + "` with a segment of " + std::to_string(seg) +
                           ", not a power of two (" + where + ")");
         }
-        std::vector<float> v(W, sum ? 0.0f : -std::numeric_limits<float>::infinity());
+        const bool isMin = q == "Wave.reduceMinF32";
+        const float ident = sum ? 0.0f : isMin ? std::numeric_limits<float>::infinity()
+                                              : -std::numeric_limits<float>::infinity();
+        std::vector<float> v(W, ident);
         for (auto& [l, m] : byLane) v[l] = (float) argOf(m).f;
         for (uint32_t off = 1; off < seg; off *= 2) {
             std::vector<float> nv(W);
             for (uint32_t l = 0; l < W; ++l)
-                nv[l] = sum ? v[l] + v[l ^ off] : std::fmax(v[l], v[l ^ off]);
+                nv[l] = sum ? v[l] + v[l ^ off]
+                      : isMin ? std::fmin(v[l], v[l ^ off]) : std::fmax(v[l], v[l ^ off]);
             v = nv;
         }
         for (uint32_t m : lanes) G.sync[m].arrival.result = mkFloat(Prim::F32, v[laneOf(m)]);
@@ -3737,6 +3756,8 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
         if (q == "Wave.reduceSum") acc += x;
         else if (q == "Wave.reduceMax") acc = std::max(acc, x);
         else if (q == "Wave.reduceMin") acc = std::min(acc, x);
+        else if (q == "Wave.reduceSMax") acc = (int32_t) (uint32_t) x > (int32_t) (uint32_t) acc ? x : acc;
+        else if (q == "Wave.reduceSMin") acc = (int32_t) (uint32_t) x < (int32_t) (uint32_t) acc ? x : acc;
         else if (q == "Wave.reduceAnd") acc &= x;
         else if (q == "Wave.reduceOr") acc |= x;
         else if (q == "Wave.reduceXor") acc ^= x;

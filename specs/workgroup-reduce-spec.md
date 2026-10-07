@@ -140,9 +140,9 @@ longer names a wave width or a wave count.
 
 ## 6. Decisions
 
-- **6.1** (Julian 2026-10-07) The verb is `Workgroup.reduce`, in a new
-  `Workgroup` class beside `Barrier.workgroup()`. `Group` stays one wave, as
-  its contract says.
+- **6.1** (Julian 2026-10-07) The verb is `Workgroup.reduce`, in the existing
+  `cajeta.xpu.Workgroup` class beside its coordinates and dimensions
+  (`x()`, `dimX()`). `Group` stays one wave, as its contract says.
 - **6.2** (Julian 2026-10-07) Every lane receives the result. There is no
   first-lane variant.
 - **6.3** (Julian 2026-10-07) The combine order is fixed: each wave reduces,

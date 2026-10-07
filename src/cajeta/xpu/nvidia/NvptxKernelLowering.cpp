@@ -285,6 +285,8 @@ public:
             case WaveReduceOp::And: id = llvm::Intrinsic::nvvm_redux_sync_and; break;
             case WaveReduceOp::Or:  id = llvm::Intrinsic::nvvm_redux_sync_or; break;
             case WaveReduceOp::Xor: id = llvm::Intrinsic::nvvm_redux_sync_xor; break;
+            case WaveReduceOp::SMax: id = llvm::Intrinsic::nvvm_redux_sync_max; break;
+            case WaveReduceOp::SMin: id = llvm::Intrinsic::nvvm_redux_sync_min; break;
         }
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id);

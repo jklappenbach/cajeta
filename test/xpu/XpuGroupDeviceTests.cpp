@@ -359,3 +359,74 @@ TEST(XpuGroupDevice, matVecOneGroupPerRowOnCpu) {
         << "matvec rows disagreed with the dense reference on the CPU backend "
            "(Group.laneBlock() must give a width-1 launch)";
 }
+
+// --- workgroup-reduce Unit 1: GroupOp.Min, and Group.reduce over int32 ------
+// Lane t of one 32-lane wave holds 5 - t/4 (float) and t - 16 (int). The
+// int values straddle zero, so an UNSIGNED max or min reads -1 or 0 and fails.
+namespace {
+const char* kMinIntSource =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "import cajeta.xpu.Group;\n"
+    "import cajeta.xpu.GroupOp;\n"
+    "public class Gi {\n"
+    "    @Kernel\n"
+    "    public static void k(KernelBuffer<float32> fout, KernelBuffer<int32> iout) {\n"
+    "        uint32 t = KernelThread.x();\n"
+    "        float32 f = 5.0f - (float32) t * 0.25f;\n"
+    "        int32 v = (int32) t - 16;\n"
+    "        float32 fmin = Group.reduce(GroupOp.Min, f);\n"
+    "        int32 s = Group.reduce(GroupOp.Add, v);\n"
+    "        int32 mx = Group.reduce(GroupOp.Max, v);\n"
+    "        int32 mn = Group.reduce(GroupOp.Min, v);\n"
+    "        if (t == 0) {\n"
+    "            fout[0] = fmin;\n"
+    "            iout[0] = s;\n"
+    "            iout[1] = mx;\n"
+    "            iout[2] = mn;\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run(int32 block) {\n"
+    "        KernelBuffer<float32> df = heap KernelBuffer<float32>(0, 1);\n"
+    "        KernelBuffer<int32> di = heap KernelBuffer<int32>(0, 3);\n"
+    "        df.allocate();\n"
+    "        di.allocate();\n"
+    "        KernelStream s #= KernelStream.current();\n"
+    "        k.launch(s, grid: [1], block: [block])(df, di);\n"
+    "        s.sync();\n"
+    "        float32[] hf = heap float32[1];\n"
+    "        int32[] hi = heap int32[3];\n"
+    "        df.download(hf);\n"
+    "        di.download(hi);\n"
+    "        df.free();\n"
+    "        di.free();\n"
+    "        if (hf[0] != 5.0f - 31.0f * 0.25f) { return 1; }\n"
+    "        if (hi[0] != 0 - 16) { return 2; }\n"
+    "        if (hi[1] != 15) { return 3; }\n"
+    "        if (hi[2] != 0 - 16) { return 4; }\n"
+    "        return 0;\n"
+    "    }\n"
+    "}\n";
+}  // namespace
+
+// 1.1.1 (AMD): Min over float32 and Add, Max, Min over int32, across a 32-lane wave.
+TEST(XpuGroupDevice, reduceMinAndSignedInt32OnAmd) {
+    CAJETA_SKIP_IF_NO_HIP();
+    auto jit = CajetaJit::compile(kMinIntSource, "test.Gi", amdOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)(int)>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(32), 0) << "1 float Min, 2 int Add, 3 int Max (signed), 4 int Min (signed)";
+}
+
+// 1.1.1 (CPU): the same source compiles and runs; the cpu group is one work-item,
+// so each reduce is the lane's own value and lane 0 reads 5, -16, -16, -16.
+TEST(XpuGroupDevice, reduceMinAndSignedInt32RunOnCpu) {
+    auto jit = CajetaJit::compile(kMinIntSource, "test.Gi", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)(int)>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(1), 1) << "lane 0 alone: Min 5 is not 5 - 31/4, so run() names case 1";
+}

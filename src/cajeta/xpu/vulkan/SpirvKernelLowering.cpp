@@ -1029,6 +1029,8 @@ public:
             case WaveReduceOp::And: id = llvm::Intrinsic::spv_wave_reduce_and; break;
             case WaveReduceOp::Or:  id = llvm::Intrinsic::spv_wave_reduce_or; break;
             case WaveReduceOp::Xor: id = llvm::Intrinsic::spv_wave_reduce_xor; break;
+            case WaveReduceOp::SMax: id = llvm::Intrinsic::spv_wave_reduce_max; break;
+            case WaveReduceOp::SMin: id = llvm::Intrinsic::spv_wave_reduce_min; break;
         }
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, id, {llvm::Type::getInt32Ty(m.getContext())});
@@ -1038,7 +1040,8 @@ public:
                                WaveReduceFOp op, llvm::Value* value) override {
         llvm::Intrinsic::ID id = op == WaveReduceFOp::Sum
             ? llvm::Intrinsic::spv_wave_reduce_sum
-            : llvm::Intrinsic::spv_wave_reduce_max;
+            : op == WaveReduceFOp::Max ? llvm::Intrinsic::spv_wave_reduce_max
+                                       : llvm::Intrinsic::spv_wave_reduce_min;
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, id, {llvm::Type::getFloatTy(m.getContext())});
         return b.CreateCall(f, {value}, "wavered.f");
