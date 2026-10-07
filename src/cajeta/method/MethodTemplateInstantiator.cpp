@@ -3,6 +3,7 @@
 // T-var, then reparent the extracted Method to the template's own parent class.
 
 #include "Method.h"
+#include "../type/CajetaArray.h"
 #include "../type/CajetaClass.h"
 #include "../type/QualifiedName.h"
 #include "../asn/ClassBodyDeclaration.h"
@@ -17,6 +18,7 @@
 
 #include "antlr4-runtime/antlr4-runtime.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include "cajeta/xref/XrefIndex.h"
@@ -55,6 +57,34 @@ namespace cajeta {
             }
         }
         return out;
+    }
+
+    // Where an instance's diagnostics point: the requesting call, or for a codec the record it
+    // binds, inherited by every codec nested inside it.
+    static GenerationSite methodTemplateSite(const CajetaClassPtr& parent, int declLine,
+                                             int declColumn,
+                                             const std::vector<CajetaTypePtr>& args,
+                                             const std::string& synthesizer, bool ownBody) {
+        GenerationSite site;
+        SourceSite templateDecl = parent ? parent->declarationSite() : SourceSite{};
+        site.innerFile = templateDecl.file;
+        site.anchor = {templateDecl.file, declLine, declColumn + 1};
+        site.anchorOnly = !ownBody;
+        site.via = ownBody || synthesizer.empty() ? kViaTemplate : synthesizerVia(synthesizer);
+        const GenerationSite* outer = currentGenerationSite();
+        site.bindsRecord = !ownBody && !synthesizer.empty()
+            && cajeta::synth::SynthesizerRegistry::instance().bindsRecord(synthesizer);
+        const bool inCodec = outer && outer->request.known() && outer->bindsRecord;
+        if (inCodec) site.request = outer->request;
+        if (site.bindsRecord && !inCodec) {
+            CajetaTypePtr bound = args.empty() ? nullptr : args[0];
+            if (auto arr = std::dynamic_pointer_cast<CajetaArray>(bound)) bound = arr->getElementType();
+            if (auto record = std::dynamic_pointer_cast<CajetaClass>(bound)) {
+                site.request = record->declarationSite();
+            }
+        }
+        if (!site.request.known()) site.request = currentRequestSite();
+        return site;
     }
 
     // Monomorphize this template over `args` into a concrete Method, cached per arg
@@ -284,6 +314,7 @@ namespace cajeta {
         // throw-body source is replaced by a per-T synthesized body before re-parsing.
         // It stays the failsafe for unrecognized entry points and non-matching overloads.
         std::string effectiveSource = methodSource;
+        std::string synthesizer;
         {
             std::vector<CajetaTypePtr> paramTypes;
             for (auto& fp : parameterList) {
@@ -319,7 +350,7 @@ namespace cajeta {
             ctx.paramTypes = paramTypes;
             ctx.module = module;
             if (auto body = cajeta::synth::SynthesizerRegistry::instance()
-                    .dispatchBody(ctx)) {
+                    .dispatchBody(ctx, &synthesizer)) {
                 effectiveSource = std::move(*body);
                 if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
                     if (dump[0] == '1') {
@@ -395,6 +426,14 @@ namespace cajeta {
         }
         module->pushTypeSubstitution(subst);
 
+        GenerationSite site = methodTemplateSite(parent, declLine, declColumn, args, synthesizer,
+                                                 effectiveSource == methodSource);
+        if (!site.anchorOnly && declLine > 0) {
+            site.lineDelta = declLine - 1
+                - (int) std::count(input.begin(), input.begin() + input.find(effectiveSource), '\n');
+        }
+        GenerationScope generationScope(site);
+
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);
 
@@ -443,6 +482,10 @@ namespace cajeta {
             const int snippetLine = inst->getDeclLine();
             if (snippetLine > 0) inst->setDbgLineDelta(declLine - snippetLine);
         }
+        if (!site.anchorOnly && declLine > 0 && inst->getDeclLine() > 0) {
+            site.lineDelta = declLine - inst->getDeclLine();
+        }
+        inst->setGenerationSite(site);
         inst->setMethodTypeParameters(methodTypeParameters);
         inst->setMethodTypeArguments(args);
         // Reparent to the template's real parent; the visitor set the wrapper class.

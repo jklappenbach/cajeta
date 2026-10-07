@@ -123,7 +123,9 @@ namespace cajeta {
                             const std::string& file,
                             int line,
                             int column,
-                            const std::string& origin) {
+                            const std::string& origin,
+                            const GeneratedOrigin& generated,
+                            const DiagnosticArtifact& artifact) {
         // Field order and meaning are frozen: a new compiler must not break a plugin.
         std::string o = openRecord("diagnostic");
         strOrNull(o, "severity", severity); o += ",";
@@ -133,10 +135,28 @@ namespace cajeta {
         o += "\"line\":";   o += (line   > 0 ? std::to_string(line)   : "null"); o += ",";
         o += "\"column\":"; o += (column > 0 ? std::to_string(column) : "null");
         o += ","; strOrNull(o, "origin", origin);
-        o += ","; strOrNull(o, "at", locationKind(file, line));
+        std::string at = !artifact.kind.empty() ? "artifact"
+            : !generated.via.empty() ? "generated" : locationKind(file, line);
+        o += ","; strOrNull(o, "at", at);
+        if (!generated.via.empty()) {
+            o += ","; strOrNull(o, "via", generated.via);
+            if (generated.fromLine > 0 && !generated.fromFile.empty()) {
+                o += ",\"from\":{"; strOrNull(o, "file", generated.fromFile);
+                o += ",\"line\":" + std::to_string(generated.fromLine);
+                o += ",\"column\":";
+                o += generated.fromColumn > 0 ? std::to_string(generated.fromColumn) : "null";
+                o += "}";
+            }
+        }
         size_t bang = file.find(".cja!");
         if (bang != std::string::npos) {
             o += ","; strOrNull(o, "archive", file.substr(0, bang + 4));
+        }
+        if (!artifact.kind.empty()) {
+            o += ",\"artifact\":{"; strOrNull(o, "kind", artifact.kind);
+            o += ","; strOrNull(o, "name", artifact.name);
+            o += ","; strOrNull(o, "target", artifact.target);
+            o += "}";
         }
         writeRecord(o);
     }

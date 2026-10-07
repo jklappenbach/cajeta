@@ -8,6 +8,7 @@
 #include "StructureProperty.h"
 #include "../method/Method.h"
 #include "../error/Exception.h"
+#include "../error/GeneratedCode.h"
 #include "Scope.h"
 #include "Templates.h"
 
@@ -129,6 +130,8 @@ namespace cajeta {
         int dbgLineDelta = 0;
         // A concrete instantiation's back-pointer to its template; null otherwise.
         CajetaClassPtr templateOrigin;
+        // The declaration that first asked for this instantiation; unknown when none did.
+        SourceSite requestSite;
         // Set once instantiateListed has built this template's `@Instantiate` list.
         bool explicitInstantiationsDone = false;
 
@@ -794,6 +797,10 @@ namespace cajeta {
         void setTemplateSourceLine(int line) { templateSourceLine = line; }
         int getTemplateSourceLine() const { return templateSourceLine; }
         CajetaClassPtr getTemplateOrigin() const { return templateOrigin; }
+        const SourceSite& getRequestSite() const { return requestSite; }
+        void noteRequestSite(const SourceSite& s) { if (!requestSite.known()) requestSite = s; }
+        // This class's declaration, named the way a diagnostic names its file.
+        SourceSite declarationSite();
         void setTemplateOrigin(CajetaClassPtr origin) { templateOrigin = std::move(origin); }
 
         // Invoke a resolved method. `sretTarget` is the caller-owned slot a value

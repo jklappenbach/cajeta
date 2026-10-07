@@ -1,4 +1,5 @@
 #include <llvm/Support/Base64.h>
+#include "cajeta/buildtool/BuildErrors.h"
 #include "cajeta/buildtool/KeyRevocation.h"
 #include "cajeta/buildtool/RepositoryDelegation.h"
 #include "cajeta/buildtool/OrgKeyDocument.h"
@@ -1298,30 +1299,21 @@ namespace cajeta::buildtool {
 
             auto project = loadProject(manifestPath, overrides);
             if (!project) {
-                std::string msg;
-                llvm::raw_string_ostream os(msg);
-                os << project.takeError();
-                std::cerr << "cajeta " << taskName << ": " << msg << "\n";
+                reportTaskError(taskName, project.takeError());
                 return 1;
             }
 
             ActionRegistry registry;
             if (auto e = wireManifestPlugins(project->manifest, manifestPath,
                                              registry)) {
-                std::string msg;
-                llvm::raw_string_ostream os(msg);
-                os << std::move(e);
-                std::cerr << "cajeta " << taskName << ": " << msg << "\n";
+                reportTaskError(taskName, std::move(e));
                 return 1;
             }
             auto outputs = runTask(
                 project->tasks, taskName, cliParams,
                 project->props, registry, &project->manifest);
             if (!outputs) {
-                std::string msg;
-                llvm::raw_string_ostream os(msg);
-                os << outputs.takeError();
-                std::cerr << "cajeta " << taskName << ": " << msg << "\n";
+                reportTaskError(taskName, outputs.takeError());
                 return 1;
             }
 

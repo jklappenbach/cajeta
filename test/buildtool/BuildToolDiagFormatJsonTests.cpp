@@ -136,3 +136,55 @@ TEST(BuildToolDiagFormatJson, BadDiagFormatValueIsRejected) {
     if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
     EXPECT_NE(rc, 0) << "an invalid --diag-format value must be rejected";
 }
+
+// diagnostic-location 4.2.2: a wrong manifest field is a diagnostic at the manifest whose
+// artifact names the key path, and nothing else is printed as text.
+TEST(BuildToolDiagFormatJson, AWrongManifestFieldNamesItsKeyPath) {
+    auto proj = writeProject(freshTempDir("manifest"), "");
+    {
+        std::ofstream m(proj / "cajeta.json");
+        m << "{ \"details\": { \"name\": \"com.example.t\", \"version\": 7,\n"
+             "  \"cajeta-lang-version\": \"1.0\" },\n"
+             "  \"tasks\": { \"build\": { \"actions\": [ { \"action\": \"build\" } ] } } }\n";
+    }
+    std::string err;
+    int rc = runBuildCapturingStderr(proj, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+    EXPECT_NE(rc, 0) << err;
+    EXPECT_NE(err.find("\"file\":\"./cajeta.json\",\"line\":null"), std::string::npos) << err;
+    EXPECT_NE(err.find("\"at\":\"artifact\",\"artifact\":{\"kind\":\"manifest\","
+                       "\"name\":\"details.version\",\"target\":null}"),
+              std::string::npos) << err;
+    EXPECT_FALSE(hasLineStartingWith(err, "cajeta build:")) << err;
+}
+
+// 4.2.2, text mode: the line names the key path and keeps its shape.
+TEST(BuildToolDiagFormatJson, TheTextFormNamesTheKeyPath) {
+    auto proj = writeProject(freshTempDir("manifest_txt"), "");
+    {
+        std::ofstream m(proj / "cajeta.json");
+        m << "{ \"details\": { \"name\": \"com.example.t\", \"version\": 7,\n"
+             "  \"cajeta-lang-version\": \"1.0\" },\n"
+             "  \"tasks\": { \"build\": { \"actions\": [ { \"action\": \"build\" } ] } } }\n";
+    }
+    std::string err;
+    int rc = runBuildCapturingStderr(proj, "", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+    EXPECT_TRUE(hasLineStartingWith(
+        err, "cajeta build: ./cajeta.json.details.version: field 'version' must be a string"))
+        << err;
+}
+
+// 4.2.3: a failed build step with no source position names the step, and `file` is null.
+TEST(BuildToolDiagFormatJson, AFailedBuildStepNamesTheStep) {
+    auto proj = writeProject(freshTempDir("step"), "NoSuchType z = NoSuchType.create();");
+    std::string err;
+    int rc = runBuildCapturingStderr(proj, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+    EXPECT_NE(rc, 0) << err;
+    EXPECT_NE(err.find("\"code\":\"CAJETA_ERROR_BUILD_STEP\""), std::string::npos) << err;
+    EXPECT_NE(err.find("\"file\":null,\"line\":null,\"column\":null"), std::string::npos) << err;
+    EXPECT_NE(err.find("\"artifact\":{\"kind\":\"build-step\",\"name\":\"task 'build' "
+                       "actions[0] (build)\",\"target\":null}"), std::string::npos) << err;
+    EXPECT_FALSE(hasLineStartingWith(err, "cajeta build:")) << err;
+}

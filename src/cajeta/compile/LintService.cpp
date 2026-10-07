@@ -77,8 +77,8 @@ namespace cajeta::lintservice {
             emitJsonResult("error", "syntax errors");
             return 1;
         } catch (Exception& e) {
-            engine.report("error", e.getErrorId(), e.getMessage(),
-                          e.getFile(), e.getLine(), e.getColumn());
+            engine.reportGenerated("error", e.getErrorId(), e.getMessage(), e.getFile(),
+                                   e.getLine(), e.getColumn(), "project", e.getGenerated());
         } catch (const std::exception& e) {
             engine.report("error", "", e.what());
         } catch (const char* msg) {

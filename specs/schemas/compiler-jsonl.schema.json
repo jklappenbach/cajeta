@@ -79,7 +79,7 @@
         "origin": { "enum": ["project", "dependency", "stdlib", null], "description": "Whose code the diagnostic is in. Emitted since v0.34.0; documented in 1.2." },
         "at": { "enum": ["source", "stdlib", "archive", "generated", "artifact", null], "description": "The kind of place file/line/column point at; null when unlocated. file/line/column are always where to show the user (diagnostic-location spec 1.2). Added in 1.2." },
         "archive": { "type": "string", "description": "The .cja file, when at is archive. file keeps its `archive!entry` form. Added in 1.2." },
-        "via": { "enum": ["template", "json-synthesizer", "csv-synthesizer", "default-constructor"], "description": "What generated the code, when at is generated; file/line/column are then the declaration that asked for it. A closed list, extended by a minor bump. Added in 1.2." },
+        "via": { "type": "string", "description": "What generated the code, when at is generated; file/line/column are then the declaration that asked for it. Free text: the compiler writes template, default-constructor, and <label>-synthesizer for a body synthesizer (json-synthesizer, csv-synthesizer, protobuf-synthesizer, ion-synthesizer, avro-synthesizer, frame-csv-synthesizer). A reader shows it as written. Added in 1.2." },
         "from": {
           "type": "object",
           "description": "The generator's own source position, when it has one (a template body line). Added in 1.2.",

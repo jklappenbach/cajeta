@@ -7,6 +7,7 @@
 #include <tuple>
 
 #include "Diagnostics.h"
+#include "GeneratedCode.h"
 
 namespace cajeta {
 
@@ -23,10 +24,22 @@ namespace cajeta {
                                   const std::string& file,
                                   int line, int column,
                                   const std::string& origin) {
+        std::string f = file;
+        GeneratedOrigin generated;
+        if (auto* site = currentGenerationSite()) {
+            generated = applyGenerationSite(*site, f, line, column);
+        }
+        reportGenerated(severity, code, message, f, line, column, origin, generated);
+    }
+
+    void DiagnosticEngine::reportGenerated(const std::string& severity, const std::string& code,
+                                           const std::string& message, const std::string& file,
+                                           int line, int column, const std::string& origin,
+                                           const GeneratedOrigin& generated) {
         if (suppressed_) return;
         if (severity == "error") errorSeen_ = true;
         diags_.push_back(CollectedDiagnostic{severity, code, message, file, line, column,
-                                             origin.empty() ? "project" : origin});
+                                             origin.empty() ? "project" : origin, generated});
     }
 
     namespace {
@@ -84,10 +97,11 @@ namespace cajeta {
             if (!all && d.origin != "project" && d.severity != "error") continue;
             if (json) {
                 emitJsonDiagnostic(d.severity, d.code, d.message, d.file, d.line, d.column,
-                                   d.origin);
+                                   d.origin, d.generated);
             } else if (d.line > 0) {
                 std::cerr << "cajeta: " << d.file << ":" << d.line << ":" << d.column
-                          << ": " << d.code << ": " << d.message << "\n";
+                          << ": " << d.code << ": " << d.message << generatedClause(d.generated)
+                          << "\n";
             } else {
                 std::cerr << "cajeta: " << d.code << ": " << d.message << "\n";
             }

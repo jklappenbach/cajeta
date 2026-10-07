@@ -27,7 +27,7 @@
 #include <string>
 #include <vector>
 
-namespace cajeta { class Annotatable; }
+namespace cajeta { class Method; }
 
 namespace cajeta {
 namespace xpu {
@@ -53,30 +53,34 @@ namespace xpu {
     unsigned kernelGateErrors();
     const std::vector<std::string>& kernelGateFailures();
 
+    // Under --diag-format=json each report below is a diagnostic at the kernel's declaration
+    // whose `artifact` names the kernel and its backend/arch.
     // A kernel with no device code for `backend` ("cpu", "nvptx", "amdgpu",
     // "vulkan"), with the lowering's reason. A note if @Unlowered holds it
     // for that backend, a warning under the sweep switch, else an error.
-    void reportUnloweredKernel(const Annotatable& kernel,
+    void reportUnloweredKernel(const Method& kernel,
                                const std::string& kernelName,
                                const std::string& backend,
-                               const std::string& reason);
+                               const std::string& reason,
+                               const std::string& arch = "");
 
     // A kernel that registered device code for `backend`: an error, STALE,
     // if @Unlowered names that backend.
-    void noteKernelLowered(const Annotatable& kernel,
+    void noteKernelLowered(const Method& kernel,
                            const std::string& kernelName,
-                           const std::string& backend);
+                           const std::string& backend,
+                           const std::string& arch = "");
 
     // A kernel launched with a non-constant block at `sites` sites and no
     // @Occupancy(maxThreads). A note if @Unbounded holds it, a warning under
     // the sweep switch, else an error.
-    void reportUnboundedKernel(const Annotatable& kernel,
+    void reportUnboundedKernel(const Method& kernel,
                                const std::string& kernelName,
                                unsigned sites);
 
     // A kernel that is bounded (`why` says how: every site constant, or a
     // declared ceiling): an error, STALE, if it carries @Unbounded.
-    void noteKernelBounded(const Annotatable& kernel,
+    void noteKernelBounded(const Method& kernel,
                            const std::string& kernelName,
                            const std::string& why);
 

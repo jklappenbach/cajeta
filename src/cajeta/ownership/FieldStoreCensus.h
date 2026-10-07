@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "../compile/CajetaModule.h"
+#include "../error/GeneratedCode.h"
 
 namespace cajeta::ownership {
 
@@ -22,6 +23,8 @@ namespace cajeta::ownership {
         std::string file;
         std::string origin;    // project, dependency or stdlib
         int column = 0;
+        GenerationSite site;        // the generated code this store is in, None for source
+        GeneratedOrigin generated;  // set by check() when it reports from `site`
     };
 
     // Walks every method body of `modules` after resolution and prints `[field-store]` lines.

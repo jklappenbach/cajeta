@@ -1,4 +1,5 @@
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/BuildErrors.h"
 
 #include "cajeta/buildtool/Flavor.h"
 #include "cajeta/buildtool/JsonC.h"
@@ -33,26 +34,27 @@ namespace cajeta::buildtool {
             "plugin",
         };
 
-        // Build a citation-style llvm::Error, `where` being a human-readable
-        // location prefix (file/source label) and `msg` the explanation.
-        llvm::Error cite(const std::string& where, const std::string& msg) {
-            return llvm::createStringError(
-                llvm::inconvertibleErrorCode(),
-                where + ": " + msg);
+        // A ManifestError about `keyPath` in `file`; an empty key path names the whole file.
+        llvm::Error cite(const std::string& file, const std::string& keyPath,
+                         const std::string& msg) {
+            return llvm::make_error<ManifestError>(file, keyPath, msg);
         }
 
         // Read required field `field` into `out`, erroring when it is absent or
         // is not a string; null is rejected where a value is expected.
         llvm::Error requireString(const std::string& where,
+                                  const std::string& block,
                                   const std::string& field,
                                   const llvm::json::Value* v,
                                   std::string& out) {
             if (!v) {
-                return cite(where, "missing required field '" + field + "'");
+                return cite(where, block + "." + field,
+                            "missing required field '" + field + "'");
             }
             auto s = v->getAsString();
             if (!s) {
-                return cite(where, "field '" + field + "' must be a string");
+                return cite(where, block + "." + field,
+                            "field '" + field + "' must be a string");
             }
             out = s->str();
             return llvm::Error::success();
@@ -69,7 +71,7 @@ namespace cajeta::buildtool {
             }
             const auto* o = v->getAsObject();
             if (!o) {
-                return cite(where, "'" + block + "' must be an object");
+                return cite(where, block, "'" + block + "' must be an object");
             }
             out = *o;
             return llvm::Error::success();
@@ -82,16 +84,16 @@ namespace cajeta::buildtool {
                                 ManifestDetails& out) {
             const auto* detailsV = root.get("details");
             if (!detailsV) {
-                return cite(where, "missing required top-level block 'details'");
+                return cite(where, "details", "missing required top-level block 'details'");
             }
             const auto* d = detailsV->getAsObject();
             if (!d) {
-                return cite(where, "'details' must be an object");
+                return cite(where, "details", "'details' must be an object");
             }
 
             for (const auto& kv : *d) {
                 if (!kDetailsFields.count(kv.first.str())) {
-                    return cite(where,
+                    return cite(where, "details." + kv.first.str(),
                         "unknown field in 'details': '" + kv.first.str() +
                         "' (allowed: name, version, description, license, "
                         "authors, repository-url, cajeta-lang-version)");
@@ -99,11 +101,11 @@ namespace cajeta::buildtool {
             }
 
             if (auto e = requireString(
-                    where + ".details", "name", d->get("name"), out.name)) {
+                    where, "details", "name", d->get("name"), out.name)) {
                 return e;
             }
             if (auto e = requireString(
-                    where + ".details", "version", d->get("version"), out.version)) {
+                    where, "details", "version", d->get("version"), out.version)) {
                 return e;
             }
 
@@ -113,7 +115,7 @@ namespace cajeta::buildtool {
                 if (!v) return llvm::Error::success();
                 auto s = v->getAsString();
                 if (!s) {
-                    return cite(where + ".details",
+                    return cite(where, std::string("details.") + field,
                         std::string("field '") + field + "' must be a string");
                 }
                 dst = s->str();
@@ -127,12 +129,12 @@ namespace cajeta::buildtool {
             if (const auto* a = d->get("authors")) {
                 const auto* arr = a->getAsArray();
                 if (!arr) {
-                    return cite(where + ".details", "'authors' must be an array");
+                    return cite(where, "details.authors", "'authors' must be an array");
                 }
                 for (size_t i = 0; i < arr->size(); ++i) {
                     auto s = (*arr)[i].getAsString();
                     if (!s) {
-                        return cite(where + ".details",
+                        return cite(where, "details.authors[" + std::to_string(i) + "]",
                             "'authors[" + std::to_string(i) + "]' must be a string");
                     }
                     out.authors.push_back(s->str());
@@ -143,7 +145,7 @@ namespace cajeta::buildtool {
             if (const auto* p = d->get("plugin")) {
                 const auto* obj = p->getAsObject();
                 if (!obj) {
-                    return cite(where + ".details",
+                    return cite(where, "details.plugin",
                         "'plugin' must be an object");
                 }
                 out.pluginRaw = *obj;
@@ -178,12 +180,12 @@ namespace cajeta::buildtool {
 
         const auto* root = val->getAsObject();
         if (!root) {
-            return cite(sourceLabel, "manifest root must be a JSON object");
+            return cite(sourceLabel, "", "manifest root must be a JSON object");
         }
 
         for (const auto& kv : *root) {
             if (!kTopLevelBlocks.count(kv.first.str())) {
-                return cite(sourceLabel,
+                return cite(sourceLabel, kv.first.str(),
                     "unknown top-level block '" + kv.first.str() +
                     "' (allowed: details, properties, settings, actions, "
                     "plugins, tasks, workspace, melt)");
@@ -233,7 +235,7 @@ namespace cajeta::buildtool {
                         llvm::raw_string_ostream os(msg);
                         os << e;
                         consumeError(std::move(e));
-                        return cite(sourceLabel, msg);
+                        return cite(sourceLabel, "settings.build.custom-flavors", msg);
                     }
                 }
             }
@@ -241,13 +243,13 @@ namespace cajeta::buildtool {
 
         if (m.hasMelt) {
             if (!m.tasksRaw.empty()) {
-                return cite(sourceLabel,
+                return cite(sourceLabel, "melt",
                     "manifest declares both 'melt' and 'tasks' — a "
                     "melt package exports configuration only and "
                     "cannot define tasks");
             }
             if (m.hasWorkspace) {
-                return cite(sourceLabel,
+                return cite(sourceLabel, "workspace",
                     "manifest declares both 'melt' and 'workspace' "
                     "— these are mutually exclusive");
             }

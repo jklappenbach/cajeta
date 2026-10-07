@@ -16,6 +16,7 @@
 #include "../field/Field.h"
 #include "../type/Templates.h"
 #include "../prof/ProfileFrame.h"
+#include "../error/GeneratedCode.h"
 #include "queue"
 #include "map"
 #include "unordered_map"
@@ -87,6 +88,7 @@ namespace cajeta {
         // Declaration name-token position; see getDeclLine(). 0 = synthesized.
         int declLine = 0;
         int dbgLineDelta = 0;
+        GenerationSite ownSite;
         int declColumn = 0;
         CajetaClassPtr parent;
         CajetaTypePtr returnType;
@@ -331,6 +333,11 @@ namespace cajeta {
         // The template this instance came from; null on templates and ordinary.
         Method* getTemplateOrigin() const { return templateOrigin; }
         void setTemplateOrigin(Method* t) { templateOrigin = t; }
+        // Where diagnostics inside this body point (diagnostic-location spec 3); None for source.
+        GenerationSite generationSite() const;
+        // This method's declaration as a diagnostic names it; the line is unknown when synthesized.
+        SourceSite declarationSite() const;
+        void setGenerationSite(const GenerationSite& site) { ownSite = site; }
         void dropParameter(const string& name);
         void addBoundClosure(const string& name, CajetaTypePtr fnType,
                              llvm::Function* fn, llvm::Constant* record) {

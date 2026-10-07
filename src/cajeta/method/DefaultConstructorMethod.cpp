@@ -28,6 +28,7 @@ namespace cajeta {
     /** Emits the default constructor body: scope, default block, then the field
      *  initializers a class with no declared constructor would otherwise lose. */
     void DefaultConstructorMethod::generateCode() {
+        GenerationScope generationScope(generationSite());
         auto& llvmFunction = llvmFunctionRef();
         llvmBasicBlock = llvm::BasicBlock::Create(*module->getLlvmContext(), name, llvmFunction);
         builder = new llvm::IRBuilder<>(llvmBasicBlock, llvmBasicBlock->begin());

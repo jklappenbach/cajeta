@@ -263,7 +263,17 @@ namespace cajeta {
     }
 
     CajetaClassPtr CajetaClass::instantiate(vector<CajetaTypePtr> args) {
-        CajetaClassPtr result = instantiateInternal(std::move(args));
+        if (!isTemplate()) return instantiateInternal(std::move(args));
+        GenerationSite site;
+        site.via = kViaTemplate;
+        site.request = currentRequestSite();
+        if (module) site.innerFile = module->getSourcePath();
+        CajetaClassPtr result;
+        {
+            GenerationScope scope(site);
+            result = instantiateInternal(std::move(args));
+        }
+        if (result && result.get() != this) result->noteRequestSite(site.request);
         // Only a genuine instantiation (a distinct object from the template)
         // is a cross-module obligation; the note no-ops outside codegen.
         if (result && result.get() != this) {

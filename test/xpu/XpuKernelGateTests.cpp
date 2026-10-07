@@ -87,7 +87,7 @@ struct Built {
 };
 
 Built build(const std::string& source, const std::string& backend,
-            const std::string& envPrefix = "") {
+            const std::string& envPrefix = "", const std::string& flags = "") {
     Built b;
     std::string bin = sourceRoot() + "/build/src/cajeta";
     if (!fs::exists(bin)) return b;
@@ -97,7 +97,7 @@ Built build(const std::string& source, const std::string& backend,
     fs::create_directories(root / "src" / "test");
     fs::create_directories(root / "out");
     std::ofstream(root / "src" / "test" / "M.cajeta") << source;
-    std::string cmd = envPrefix + "\"" + bin + "\" --emit=obj --xpu-backend=" + backend
+    std::string cmd = envPrefix + "\"" + bin + "\" --emit=obj --xpu-backend=" + backend + flags
         + " test.M.main \"" + (root / "src").string() + "\" \""
         + (root / "out").string() + "\" > \"" + (root / "build.log").string()
         + "\" 2>&1";
@@ -374,4 +374,26 @@ TEST(XpuKernelGate, anUnheldKernelOverTheSharedMemoryLimitFailsTheBuild) {
     Built b = build(ldsProgram(""), "amdgpu");
     EXPECT_NE(b.rc, 0) << b.log;
     EXPECT_NE(b.log.find("cajeta: error: [xpu-kernel-skipped] big: no amdgpu device code"), std::string::npos) << b.log;
+}
+
+// diagnostic-location 4.2.1: under --diag-format=json the refusal is a diagnostic at the kernel's
+// declaration whose artifact names the kernel and its backend, with no stray text line.
+TEST(XpuKernelGate, theRefusalIsAKernelArtifactAtItsDeclarationUnderJson) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(program(""), "cpu", "", " --diag-format=json");
+    EXPECT_NE(b.rc, 0) << b.log;
+    EXPECT_NE(b.log.find("/src/test/M.cajeta\",\"line\":6,"), std::string::npos) << b.log;
+    EXPECT_NE(b.log.find("\"at\":\"artifact\",\"artifact\":{\"kind\":\"kernel\",\"name\":\"bad\","
+                         "\"target\":\"cpu\"}"), std::string::npos) << b.log;
+    EXPECT_EQ(b.log.find("cajeta: error: [xpu-kernel-skipped]"), std::string::npos) << b.log;
+}
+
+// 4.2.1: the shared-memory refusal names the arch that cannot hold the kernel.
+TEST(XpuKernelGate, theSharedMemoryRefusalNamesTheArchUnderJson) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    if (cajeta::xpu::amd::findLld().empty()) GTEST_SKIP() << "ld.lld not found";
+    Built b = build(ldsProgram(""), "amdgpu", "", " --diag-format=json");
+    EXPECT_NE(b.rc, 0) << b.log;
+    EXPECT_NE(b.log.find("\"artifact\":{\"kind\":\"kernel\",\"name\":\"big\",\"target\":\"amdgpu/gfx"),
+              std::string::npos) << b.log;
 }

@@ -174,6 +174,7 @@ namespace cajeta {
                 module->setScriptResultPending(true);
             }
             size_t tempMark = module->statementTempMark();
+            RequestCursor cursor(module->getSourcePath(), markLine, child->getSourceColumn() + 1);
             child->generateCode(module);
             module->flushStatementTemps(tempMark);
         }
