@@ -31,6 +31,9 @@ Inside a kernel body:
   item.
 - `Wave.laneId()`, `Wave.shuffleSync`, `Wave.reduceSumF32` and the
   segmented reductions.
+- `Workgroup.reduce(GroupOp.Add, x)` (and `Max`, `Min`) across every
+  wave of the workgroup, with no wave width or count in the source
+  (25.2.3).
 - `Shared<T> t = shared T[n]` for LDS.
 - `Vector<T,N>` with `vload<N>`, `asWords` / `asBytes`, and `lut4`, a
   16-entry byte table in one `v_perm_b32`.
@@ -255,6 +258,71 @@ public static void iq3xxsQ8IdMatVecKernel(KernelBuffer<float32> y,
 Bit-identical to `used` per-expert launches of the dense kernel over
 the same slab (§25.7's gate), and the difference between 39.9 and
 122.1 t/s on a 60-expert model: the launch count, not the arithmetic.
+
+### 25.2.3 Example — a sum across the whole workgroup
+
+`Wave.reduceSumF32` stops at one wave. When every lane needs one value
+from the whole workgroup, such as the sum of squares behind an RMSNorm
+scale or the maximum behind a softmax, call `Workgroup.reduce`. It
+takes `GroupOp.Add`, `GroupOp.Max` or `GroupOp.Min` over a `float32` or
+an `int32`, and every lane receives the result.
+
+```cajeta
+package guide.xpu;
+
+import cajeta.lang.Math;
+import cajeta.xpu.GroupOp;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+
+public class RmsNorm {
+    @Kernel
+    @Wave(width = 32)
+    public static void rmsNorm(KernelBuffer<float32> y, KernelBuffer<float32> x, uint32 n) {
+        uint32 t = KernelThread.x();
+        uint32 row = Workgroup.x() * n;
+        float32 ss = 0.0f;
+        uint32 i = t;
+        while (i < n) {
+            float32 v = x[row + i];
+            ss = ss + v * v;
+            i = i + Workgroup.dimX();
+        }
+        float32 total = Workgroup.reduce(GroupOp.Add, ss);
+        float32 scale = 1.0f / Math.sqrt(total / (float32) n + 0.00001f);
+        i = t;
+        while (i < n) {
+            y[row + i] = x[row + i] * scale;
+            i = i + Workgroup.dimX();
+        }
+    }
+}
+```
+
+What to read in it:
+
+- The kernel names no wave width and no wave count. Each wave reduces
+  its lanes as `Wave.reduceSumF32` does, lane 0 of each wave writes its
+  partial into scratch the compiler owns, one workgroup barrier, then
+  every lane adds the partials from wave 0 upward. That is the code a
+  hand-written cross-wave sum spells out, and it costs the same one
+  barrier.
+- The order is fixed, so a `float32` sum is one defined value. Two
+  backends that run the kernel at the same wave width agree bit for
+  bit, and the reference interpreter reproduces it. `@Wave(width = 32)`
+  pins the width so every backend agrees.
+- A call inside a loop is safe. Each call site has its own scratch,
+  and a call in a loop adds a second barrier so the next trip cannot
+  overwrite a partial another wave has not read.
+- Every lane must reach the call. A call under a branch, a loop exit
+  or an early `return` whose condition depends on the lane is refused
+  at compile time. Guard the value, not the call: compute `0.0f` for a
+  lane past the end and let it contribute.
+- The operator is a `GroupOp` literal and the value a `float32` or an
+  `int32`. Anything else is refused by name, a `uint32` included.
+  Called from host code, it acts as a workgroup of one lane and returns
+  its own value.
 
 ## 25.3 Prefill: fill the device, then feed the tile
 
