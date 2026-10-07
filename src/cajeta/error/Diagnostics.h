@@ -76,6 +76,9 @@ namespace cajeta {
 
     // One diagnostic as a self-contained NDJSON line on stderr; severity is
     // "error" | "warning" | "note", and empty or non-positive fields are null.
+    // The kind of place `file` names: "source", "stdlib", "archive", or empty when unlocated.
+    std::string locationKind(const std::string& file, int line);
+
     void emitJsonDiagnostic(const std::string& severity,
                             const std::string& code,
                             const std::string& message,
@@ -115,7 +118,7 @@ namespace cajeta {
     // MAJOR bumps on a breaking change and consumers must REFUSE an unknown
     // one; MINOR bumps on an added record kind or field, which they may ignore.
     constexpr int kJsonlSchemaMajor = 1;
-    constexpr int kJsonlSchemaMinor = 1;
+    constexpr int kJsonlSchemaMinor = 2;
 
     // One compile-phase record on the diagnostics stream, flushed as the phase
     // begins; `phase` is a stable id and `state` is "start" or "finish".

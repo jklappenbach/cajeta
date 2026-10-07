@@ -110,6 +110,13 @@ namespace cajeta {
         }
     } // namespace
 
+    std::string locationKind(const std::string& file, int line) {
+        if (file.empty()) return line > 0 ? "source" : "";
+        if (file.rfind("<stdlib>/", 0) == 0) return "stdlib";
+        if (file.find(".cja!") != std::string::npos) return "archive";
+        return "source";
+    }
+
     void emitJsonDiagnostic(const std::string& severity,
                             const std::string& code,
                             const std::string& message,
@@ -126,6 +133,11 @@ namespace cajeta {
         o += "\"line\":";   o += (line   > 0 ? std::to_string(line)   : "null"); o += ",";
         o += "\"column\":"; o += (column > 0 ? std::to_string(column) : "null");
         o += ","; strOrNull(o, "origin", origin);
+        o += ","; strOrNull(o, "at", locationKind(file, line));
+        size_t bang = file.find(".cja!");
+        if (bang != std::string::npos) {
+            o += ","; strOrNull(o, "archive", file.substr(0, bang + 4));
+        }
         writeRecord(o);
     }
 
