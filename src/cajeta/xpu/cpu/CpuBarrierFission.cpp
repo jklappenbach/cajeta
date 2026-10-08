@@ -17,11 +17,13 @@
 #include "llvm/IR/ReplaceConstant.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/Local.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <map>
 #include <vector>
 
 namespace cajeta {
@@ -221,6 +223,51 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 for (unsigned sx = 0; sx < t->getNumSuccessors(); ++sx)
                     if (t->getSuccessor(sx) == ex) t->setSuccessor(sx, nb);
             }
+        }
+    }
+
+    // --- 3c. A value live across a barrier goes to a stack slot --------------
+    // A barrier inside an expression (Workgroup.reduce) leaves SSA values defined before it
+    // and used after it, and each region becomes its own work-item loop. Such a value moves
+    // to a slot in the body's entry, which step 4 treats as a local. A use crosses when its
+    // block cannot be reached from the definition's without passing a barrier boundary.
+    {
+        std::map<llvm::BasicBlock*, llvm::SmallPtrSet<llvm::BasicBlock*, 16>> reach;
+        auto reachable = [&](llvm::BasicBlock* from)
+                -> const llvm::SmallPtrSet<llvm::BasicBlock*, 16>& {
+            auto it = reach.find(from);
+            if (it != reach.end()) return it->second;
+            auto& seen = reach[from];
+            std::vector<llvm::BasicBlock*> work{from};
+            seen.insert(from);
+            while (!work.empty()) {
+                llvm::BasicBlock* b = work.back();
+                work.pop_back();
+                for (llvm::BasicBlock* s : llvm::successors(b))
+                    if (!boundarySet.count(s) && seen.insert(s).second) work.push_back(s);
+            }
+            return seen;
+        };
+        std::vector<llvm::Instruction*> crossing;
+        for (auto& bb : *wrapper) {
+            if (&bb == trueEntry) continue;
+            for (auto& in : bb) {
+                if (llvm::isa<llvm::AllocaInst>(in) || in.getType()->isVoidTy()) continue;
+                const auto& r = reachable(&bb);
+                for (llvm::Use& u : in.uses()) {
+                    auto* user = llvm::cast<llvm::Instruction>(u.getUser());
+                    llvm::BasicBlock* ub = user->getParent();
+                    if (auto* phi = llvm::dyn_cast<llvm::PHINode>(user))
+                        ub = phi->getIncomingBlock(u);
+                    if (!r.count(ub)) { crossing.push_back(&in); break; }
+                }
+            }
+        }
+        for (llvm::Instruction* in : crossing) {
+            if (auto* phi = llvm::dyn_cast<llvm::PHINode>(in))
+                llvm::DemotePHIToStack(phi, bodyEntry->getFirstInsertionPt());
+            else
+                llvm::DemoteRegToStack(*in, false, bodyEntry->getFirstInsertionPt());
         }
     }
 

@@ -160,13 +160,24 @@ public:
                              unsigned dim) override {
         return readCoord(b, m, llvm::Intrinsic::spv_group_id, dim);
     }
-    // The WorkgroupSize BuiltIn must decorate a CONSTANT in a Vulkan shader — as a
-    // builtin variable spirv-val rejects the module — so return the baked LocalSize
-    // constant createKernel put in numthreads.
-    llvm::Value* workgroupDim(llvm::IRBuilderBase& /*b*/, llvm::Module& m,
+    // A volatile load of a named witness the post-emit pass turns into the launch's
+    // WorkgroupSize spec constant; the baked LocalSize is only its default.
+    llvm::Value* workgroupDim(llvm::IRBuilderBase& b, llvm::Module& m,
                               unsigned dim) override {
-        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()),
-                                      dim == 0 ? kVulkanLocalSizeX : 1);
+        constexpr unsigned kPrivateAS = 10;
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        std::string gname = std::string(kWorkgroupDimWitness) + std::to_string(dim);
+        llvm::GlobalVariable* gv = m.getGlobalVariable(gname, /*AllowInternal=*/true);
+        if (!gv) {
+            gv = new llvm::GlobalVariable(
+                m, i32, /*isConstant=*/false, llvm::GlobalValue::InternalLinkage,
+                llvm::ConstantInt::get(i32, dim == 0 ? kVulkanLocalSizeX : 1), gname,
+                /*InsertBefore=*/nullptr, llvm::GlobalValue::NotThreadLocal, kPrivateAS);
+            gv->setAlignment(llvm::MaybeAlign(4));
+        }
+        llvm::LoadInst* ld = b.CreateLoad(i32, gv, gname + ".v");
+        ld->setVolatile(true);
+        return ld;
     }
     llvm::Value* globalId(llvm::IRBuilderBase& b, llvm::Module& m,
                           unsigned dim) override {
@@ -1020,6 +1031,8 @@ public:
             {llvm::Type::getInt32Ty(m.getContext())});
         return b.CreateCall(f, {value}, "wavered");
     }
+    // A Vulkan subgroup may be as narrow as one lane.
+    unsigned minWaveWidth() const override { return 1; }
     llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
                             WaveReduceOp op, llvm::Value* value) override {
         llvm::Intrinsic::ID id;
@@ -1029,6 +1042,8 @@ public:
             case WaveReduceOp::And: id = llvm::Intrinsic::spv_wave_reduce_and; break;
             case WaveReduceOp::Or:  id = llvm::Intrinsic::spv_wave_reduce_or; break;
             case WaveReduceOp::Xor: id = llvm::Intrinsic::spv_wave_reduce_xor; break;
+            case WaveReduceOp::SMax: id = llvm::Intrinsic::spv_wave_reduce_max; break;
+            case WaveReduceOp::SMin: id = llvm::Intrinsic::spv_wave_reduce_min; break;
         }
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, id, {llvm::Type::getInt32Ty(m.getContext())});
@@ -1038,7 +1053,8 @@ public:
                                WaveReduceFOp op, llvm::Value* value) override {
         llvm::Intrinsic::ID id = op == WaveReduceFOp::Sum
             ? llvm::Intrinsic::spv_wave_reduce_sum
-            : llvm::Intrinsic::spv_wave_reduce_max;
+            : op == WaveReduceFOp::Max ? llvm::Intrinsic::spv_wave_reduce_max
+                                       : llvm::Intrinsic::spv_wave_reduce_min;
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, id, {llvm::Type::getFloatTy(m.getContext())});
         return b.CreateCall(f, {value}, "wavered.f");

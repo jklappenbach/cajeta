@@ -468,6 +468,8 @@ public:
     llvm::Value* groupLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
         return waveLaneId(b, m);
     }
+    // A scalar twin runs the wave at one lane.
+    unsigned minWaveWidth() const override { return 1; }
     llvm::Value* groupReduceF32(llvm::IRBuilderBase& b, llvm::Module& m,
                                 WaveReduceFOp op, llvm::Value* value) override {
         return waveReduceF32(b, m, op, value);
@@ -508,6 +510,8 @@ public:
             case WaveReduceOp::And: sym = "__cajeta_xpu_wave_reduce_and_u32"; break;
             case WaveReduceOp::Or:  sym = "__cajeta_xpu_wave_reduce_or_u32"; break;
             case WaveReduceOp::Xor: sym = "__cajeta_xpu_wave_reduce_xor_u32"; break;
+            case WaveReduceOp::SMax: sym = "__cajeta_xpu_wave_reduce_smax_u32"; break;
+            case WaveReduceOp::SMin: sym = "__cajeta_xpu_wave_reduce_smin_u32"; break;
         }
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         return pureCall(b, m, sym, i32, {value}, "wave.reduce");
@@ -516,7 +520,8 @@ public:
                                WaveReduceFOp op, llvm::Value* value) override {
         const char* sym = op == WaveReduceFOp::Sum
             ? "__cajeta_xpu_wave_reduce_sum_f32"
-            : "__cajeta_xpu_wave_reduce_max_f32";
+            : op == WaveReduceFOp::Max ? "__cajeta_xpu_wave_reduce_max_f32"
+                                       : "__cajeta_xpu_wave_reduce_min_f32";
         llvm::Type* f32 = llvm::Type::getFloatTy(m.getContext());
         return pureCall(b, m, sym, f32, {value}, "wave.reducef");
     }

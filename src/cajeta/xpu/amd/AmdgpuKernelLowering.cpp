@@ -751,6 +751,8 @@ public:
             case WaveReduceOp::And: id = llvm::Intrinsic::amdgcn_wave_reduce_and; break;
             case WaveReduceOp::Or:  id = llvm::Intrinsic::amdgcn_wave_reduce_or; break;
             case WaveReduceOp::Xor: id = llvm::Intrinsic::amdgcn_wave_reduce_xor; break;
+            case WaveReduceOp::SMax: id = llvm::Intrinsic::amdgcn_wave_reduce_max; break;
+            case WaveReduceOp::SMin: id = llvm::Intrinsic::amdgcn_wave_reduce_min; break;
         }
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id, {i32});
@@ -763,7 +765,8 @@ public:
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
         llvm::Intrinsic::ID id = op == WaveReduceFOp::Sum
             ? llvm::Intrinsic::amdgcn_wave_reduce_fadd
-            : llvm::Intrinsic::amdgcn_wave_reduce_fmax;
+            : op == WaveReduceFOp::Max ? llvm::Intrinsic::amdgcn_wave_reduce_fmax
+                                       : llvm::Intrinsic::amdgcn_wave_reduce_fmin;
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id, {f32});
         return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0)},
                             "wavered.f");

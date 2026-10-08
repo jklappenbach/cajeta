@@ -678,7 +678,7 @@ const std::set<std::string>& staticBuiltins() {
         "KernelThread.x", "KernelThread.y", "KernelThread.z",
         "KernelThread.globalIdX", "KernelThread.globalIdY", "KernelThread.globalIdZ",
         "Workgroup.x", "Workgroup.y", "Workgroup.z",
-        "Workgroup.dimX", "Workgroup.dimY", "Workgroup.dimZ",
+        "Workgroup.dimX", "Workgroup.dimY", "Workgroup.dimZ", "Workgroup.reduce",
         "Barrier.workgroup", "Barrier.wave", "Barrier.workgroupMemory", "Barrier.deviceMemory",
         "Wave.width", "Wave.laneId", "Wave.isFirstLane",
         "Wave.shuffleSync", "Wave.ballotSync", "Wave.rotate",
@@ -727,7 +727,8 @@ const std::set<std::string>& atomics() {
 // arrive before any of them continues.
 bool isCollective(const std::string& q) {
     if (q == "Barrier.workgroup" || q == "Barrier.wave" || q == "Group.reduce"
-            || q == "Group.reduceSegmented" || q == "WaveVector.ofLane") return true;
+            || q == "Group.reduceSegmented" || q == "WaveVector.ofLane"
+            || q == "Workgroup.reduce") return true;
     if (startsWith(q, "Quad.")) return true;   // a quad op is a wave collective over four lanes
     if (!startsWith(q, "Wave.")) return false;
     return q != "Wave.width" && q != "Wave.laneId" && q != "Wave.isFirstLane";
@@ -2977,8 +2978,24 @@ private:
         arr.where = where;
         if (q == "Group.reduce") {
             if (a.size() != 2) refuse("`Group.reduce` takes (GroupOp, value) (" + where + ")");
-            arr.what = a[0].i == 0 ? "Wave.reduceSumF32" : "Wave.reduceMaxF32";
-            arr.arg = convert(a[1], {Prim::F32, true});
+            if (a[0].i > 2) refuse("`Group.reduce` with an unknown GroupOp (" + where + ")");
+            if (a[1].t.prim == Prim::F32) {
+                static const char* const fOps[] = {"Wave.reduceSumF32", "Wave.reduceMaxF32",
+                                                   "Wave.reduceMinF32"};
+                arr.what = fOps[a[0].i];
+                arr.arg = convert(a[1], {Prim::F32, true});
+            } else {
+                static const char* const iOps[] = {"Wave.reduceSum", "Wave.reduceSMax",
+                                                   "Wave.reduceSMin"};
+                arr.what = iOps[a[0].i];
+                arr.arg = convert(a[1], {Prim::I32, true});
+            }
+        } else if (q == "Workgroup.reduce") {
+            if (a.size() != 2) refuse("`Workgroup.reduce` takes (GroupOp, value) (" + where + ")");
+            if (a[0].i > 2) refuse("`Workgroup.reduce` with an unknown GroupOp (" + where + ")");
+            arr.arg = a[1].t.prim == Prim::F32 ? convert(a[1], {Prim::F32, true})
+                                               : convert(a[1], {Prim::I32, true});
+            arr.arg2 = a[0];
         } else if (q == "WaveVector.ofLane") {
             // Lane c's value is column c's factor: gathered across the wave.
             if (a.size() != 1 || a[0].k != Val::Scalar)
@@ -2987,6 +3004,7 @@ private:
         } else if (q == "Group.reduceSegmented") {
             if (a.size() != 3)
                 refuse("`Group.reduceSegmented` takes (segment, GroupOp, value) (" + where + ")");
+            if (a[1].i > 1) refuse("`Group.reduceSegmented` takes GroupOp.Add or GroupOp.Max (" + where + ")");
             arr.what = a[1].i == 0 ? "Wave.reduceSumF32Segmented" : "Wave.reduceMaxF32Segmented";
             arr.arg = convert(a[2], {Prim::F32, true});
             arr.arg2 = convert(a[0], {Prim::I32, false});
@@ -3493,6 +3511,7 @@ private:
             {"Wave.reduceSumF32Segmented", {Prim::F32, true}},
             {"Wave.reduceMaxF32Segmented", {Prim::F32, true}},
             {"Group.reduce", {Prim::F32, true}}, {"Group.reduceSegmented", {Prim::F32, true}},
+            {"Workgroup.reduce", {Prim::F32, true}},
             {"Group.mac", {Prim::I32, true}},
             {"Bits.count", {Prim::I32, false}}, {"Bits.reverse", {Prim::I32, false}},
             {"Bits.rotateLeft", {Prim::I32, false}}, {"Bits.rotateRight", {Prim::I32, false}},
@@ -3538,6 +3557,10 @@ private:
             CExpr* n = node(&Item::xThread, t, mc);
             n->kind = it->second;
             return n;
+        }
+        if ((q == "Group.reduce" || q == "Workgroup.reduce") && mc->getParameters().size() == 2) {
+            const CExpr* v = expr(mc->getParameters()[1].expression.get());
+            if (v && v->t.prim != Prim::F32) return node(&Item::xFallback, Ty{Prim::I32, true}, mc);
         }
         if (auto rt = fixedReturn(q)) return node(&Item::xFallback, *rt, mc);
         return nullptr;
@@ -3767,7 +3790,7 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
         }
         return;
     }
-    if (q == "Wave.reduceSumF32" || q == "Wave.reduceMaxF32"
+    if (q == "Wave.reduceSumF32" || q == "Wave.reduceMaxF32" || q == "Wave.reduceMinF32"
             || q == "Wave.reduceSumF32Segmented" || q == "Wave.reduceMaxF32Segmented") {
         // A butterfly over the full width, partners at distance 1, 2, 4 ...
         // W/2 in that order, as the shared lowering emits it; inactive lanes
@@ -3788,12 +3811,16 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
                 undefined("`" + q + "` with a segment of " + std::to_string(seg) +
                           ", not a power of two (" + where + ")");
         }
-        std::vector<float> v(W, sum ? 0.0f : -std::numeric_limits<float>::infinity());
+        const bool isMin = q == "Wave.reduceMinF32";
+        const float ident = sum ? 0.0f : isMin ? std::numeric_limits<float>::infinity()
+                                              : -std::numeric_limits<float>::infinity();
+        std::vector<float> v(W, ident);
         for (auto& [l, m] : byLane) v[l] = (float) argOf(m).f;
         for (uint32_t off = 1; off < seg; off *= 2) {
             std::vector<float> nv(W);
             for (uint32_t l = 0; l < W; ++l)
-                nv[l] = sum ? v[l] + v[l ^ off] : std::fmax(v[l], v[l ^ off]);
+                nv[l] = sum ? v[l] + v[l ^ off]
+                      : isMin ? std::fmin(v[l], v[l ^ off]) : std::fmax(v[l], v[l ^ off]);
             v = nv;
         }
         for (uint32_t m : lanes) G.sync[m].arrival.result = mkFloat(Prim::F32, v[laneOf(m)]);
@@ -3807,6 +3834,8 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
         if (q == "Wave.reduceSum") acc += x;
         else if (q == "Wave.reduceMax") acc = std::max(acc, x);
         else if (q == "Wave.reduceMin") acc = std::min(acc, x);
+        else if (q == "Wave.reduceSMax") acc = (int32_t) (uint32_t) x > (int32_t) (uint32_t) acc ? x : acc;
+        else if (q == "Wave.reduceSMin") acc = (int32_t) (uint32_t) x < (int32_t) (uint32_t) acc ? x : acc;
         else if (q == "Wave.reduceAnd") acc &= x;
         else if (q == "Wave.reduceOr") acc |= x;
         else if (q == "Wave.reduceXor") acc ^= x;
@@ -3836,7 +3865,8 @@ bool resolve(Group& G) {
                 if (G.sync[m].st == ItemSync::Done) continue;
                 anyLive = true;
                 if (G.sync[m].st != ItemSync::Waiting
-                        || G.sync[m].arrival.what == "Barrier.workgroup") { ready = false; break; }
+                        || G.sync[m].arrival.what == "Barrier.workgroup"
+                        || G.sync[m].arrival.what == "Workgroup.reduce") { ready = false; break; }
                 lanes.push_back(m);
             }
             if (!anyLive || !ready || lanes.empty()) continue;
@@ -3845,6 +3875,69 @@ bool resolve(Group& G) {
             any = true;
         }
         if (any) return true;
+    }
+
+    // Workgroup.reduce: every work-item waits at the same call. Each wave reduces as
+    // resolveWave does, then the partials combine from wave 0 upward.
+    bool allAtReduce = true;
+    for (uint32_t m : waiting)
+        if (G.sync[m].arrival.what != "Workgroup.reduce") allAtReduce = false;
+    if (allAtReduce) {
+        const Arrival& a = G.sync[waiting[0]].arrival;
+        if (!done.empty())
+            undefined("`Workgroup.reduce` (" + a.where + ") is never reached by " +
+                      std::to_string(done.size()) + " of the workgroup's " + std::to_string(n) +
+                      " work-items, which returned first");
+        for (uint32_t m : waiting)
+            if (G.sync[m].arrival.site != a.site)
+                undefined("work-items of one workgroup wait at different `Workgroup.reduce` "
+                          "calls (" + a.where + " and " + G.sync[m].arrival.where + ")");
+        const uint32_t W = G.run.wave;
+        const bool isF = a.arg.t.prim == Prim::F32;
+        const uint64_t op = a.arg2.u64();
+        double accF = 0;
+        int32_t accI = 0;
+        for (uint32_t w0 = 0; w0 < n; w0 += W) {
+            double partF = 0;
+            int32_t partI = 0;
+            if (isF) {
+                const float ident = op == 0 ? 0.0f
+                    : op == 1 ? -std::numeric_limits<float>::infinity()
+                              : std::numeric_limits<float>::infinity();
+                std::vector<float> v(W, ident);
+                for (uint32_t l = 0; l < W && w0 + l < n; ++l)
+                    v[l] = (float) G.sync[w0 + l].arrival.arg.f;
+                for (uint32_t off = 1; off < W; off *= 2) {
+                    std::vector<float> nv(W);
+                    for (uint32_t l = 0; l < W; ++l)
+                        nv[l] = op == 0 ? v[l] + v[l ^ off]
+                              : op == 1 ? std::fmax(v[l], v[l ^ off]) : std::fmin(v[l], v[l ^ off]);
+                    v = nv;
+                }
+                partF = v[0];
+            } else {
+                partI = (int32_t) (uint32_t) G.sync[w0].arrival.arg.i;
+                for (uint32_t l = 1; l < W && w0 + l < n; ++l) {
+                    int32_t x = (int32_t) (uint32_t) G.sync[w0 + l].arrival.arg.i;
+                    partI = op == 0 ? (int32_t) ((uint32_t) partI + (uint32_t) x)
+                          : op == 1 ? std::max(partI, x) : std::min(partI, x);
+                }
+            }
+            if (w0 == 0) { accF = partF; accI = partI; continue; }
+            if (isF) {
+                float x = (float) accF, y = (float) partF;
+                accF = op == 0 ? (double) (x + y) : op == 1 ? std::fmax(x, y) : std::fmin(x, y);
+            } else {
+                accI = op == 0 ? (int32_t) ((uint32_t) accI + (uint32_t) partI)
+                     : op == 1 ? std::max(accI, partI) : std::min(accI, partI);
+            }
+        }
+        for (uint32_t m : waiting) {
+            G.sync[m].arrival.result = isF ? mkFloat(Prim::F32, (float) accF)
+                                           : mkInt(Ty{Prim::I32, true}, (uint32_t) accI);
+            G.sync[m].st = ItemSync::Ready;
+        }
+        return true;
     }
 
     // The workgroup barrier: every work-item waits at the same one.

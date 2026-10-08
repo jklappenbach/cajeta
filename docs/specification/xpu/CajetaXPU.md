@@ -436,6 +436,39 @@ per-thread array otherwise. A host method of a class template reads the
 template's non-type parameters as the kernel does
 (`NonTypeParamTests.aHostMethodReadsTheNonTypeParameter`).
 
+**A reduction across the workgroup is a verb** (workgroup-reduce spec).
+`Workgroup.reduce(op, value)` combines `value` from every lane of the
+workgroup and returns the result to every lane. `op` is a `GroupOp`
+literal (`Add`, `Max` or `Min`) and `value` a `float32` or an `int32`
+(the sum wraps as `int32` addition does, the maximum and minimum are
+signed). Each wave reduces as the wave reduce does, lane 0 of each wave
+stores its partial into per-call-site shared scratch the compiler owns,
+one workgroup barrier, then every lane combines the partials from wave 0
+upward. The scratch holds one slot per wave of the largest block the
+kernel can launch: the constant block, else `@Occupancy(maxThreads)`,
+else 1024 threads. A call site inside a loop adds a trailing barrier, so
+the next trip cannot overwrite a partial another wave has not read.
+
+The order is fixed, so a `float32` result is one defined value at a given
+wave width. Two backends at the same width agree bit for bit, and the
+reference interpreter replays it at 0 ulp (`XpuWorkgroupReduceCorpusTests`).
+Across widths the per-wave order differs: a float sum on cpu at wave 16
+and on amdgpu at wave 32 can differ in the last bit, so a kernel that
+needs agreement everywhere declares `@Wave(width = 32)`.
+
+Every lane must reach the call. The lowering tracks which values differ
+between lanes, starting from the thread and lane coordinates, wave scans
+and atomics and flowing through locals and through stores made under a
+branch on such a value. A call under a branch, a loop exit or a `return`
+whose condition differs between lanes is refused on every backend,
+naming `Workgroup.reduce` and the kernel. This is uniformity by
+provenance: a guard on `globalIdX() / 128` is refused even when the
+launch block is 128, so spell it `Workgroup.x()`. A `GroupOp` that is not
+a literal and a value of any other type, `uint32` included, are refused
+by name (`XpuWorkgroupReduceRefusalTests`). From host code the call acts
+as a workgroup of one lane and returns `value`, as `Group.reduce` and
+`Barrier.workgroup()` do.
+
 ### 3.3 Capability traits
 
 A *capability* is a feature that some devices have and others don't.
@@ -829,6 +862,7 @@ conformance kernel in the corpus (`XpuBuildingBlockCorpusTests`):
 | byte permute | `Bits.permute(lo, hi, sel)`, `Vector<int8,N>.lut4` | prmt | v_perm | shifts (lut4: a vector shuffle) | shifts |
 | wave shuffle, reduce, ballot | `Wave.shuffleSync/XorSync/UpSync/DownSync` and their `F32` forms, `reduce*`, `ballotSync`, `Group.reduce` | shfl, redux | the wave intrinsics | subgroup ops | the vectorized lanes |
 | quad shuffle and vote | `Quad.broadcast/swapHorizontal/swapVertical/swapDiagonal/all/any` | shfl, vote.ballot | the wave intrinsics | OpGroupNonUniformQuad* | the vectorized lanes |
+| workgroup reduce | `Workgroup.reduce(GroupOp, float32/int32)` (§3.2) | the wave reduce, shared scratch, `bar.sync` | the wave reduce, LDS, `s_barrier` | subgroup reduce, Workgroup storage, control barrier | the vectorized lanes and barrier fission |
 | conversions between widths | scalar casts; `Vector.toF32/toF16/toBF16/toF64/toI32/toI8/widenLo/widenHi/narrow/asWords/asBytes` | every backend, through LLVM's conversions | | | |
 | async copy | `AsyncCopy.copy/commit/wait`, `CoopStage.panelAsync` | cp.async | LDS-direct load | synchronous copy | synchronous copy |
 | swizzled shared tile | `Swizzled<T, S> t = shared T[N]` | identity layout | XOR swizzle | identity layout | identity layout |

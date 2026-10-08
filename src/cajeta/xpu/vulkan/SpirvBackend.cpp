@@ -243,15 +243,17 @@ bool fixupControlBarriers(std::vector<uint8_t>& bytes) {
 // Makes the workgroup size a spec constant the launch's `block` dims set at pipeline
 // creation, LLVM 23 having no IR path to a spec-constant LocalSizeId: three
 // OpSpecConstant uint plus a composite decorated BuiltIn WorkgroupSize override it.
+// A load of a workgroup-dim witness becomes an OpCopyObject of that dim's constant.
 bool injectWorkgroupSizeSpecConstant(std::vector<uint8_t>& bytes) {
     if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
     std::vector<uint32_t> w(bytes.size() / 4);
     std::memcpy(w.data(), bytes.data(), bytes.size());
     if (w[0] != 0x07230203u) return false;
 
-    constexpr uint32_t kOpExecMode = 16, kOpTypeInt = 21, kOpTypeVector = 23,
+    constexpr uint32_t kOpName = 5, kOpExecMode = 16, kOpTypeInt = 21, kOpTypeVector = 23,
                        kOpFunction = 54, kOpSpecConstant = 50,
-                       kOpSpecConstComposite = 51, kOpDecorate = 71;
+                       kOpSpecConstComposite = 51, kOpDecorate = 71, kOpLoad = 61,
+                       kOpCopyObject = 83;
     constexpr uint32_t kLocalSize = 17, kSpecId = 1, kBuiltIn = 11,
                        kWorkgroupSize = 25;
 
@@ -260,11 +262,20 @@ bool injectWorkgroupSizeSpecConstant(std::vector<uint8_t>& bytes) {
     size_t decoEnd = 0;      // word idx just past the last OpDecorate/OpMemberDecorate
     size_t firstFn = 0;      // word idx of the first OpFunction
     bool sawLocalSize = false;
+    std::map<uint32_t, uint32_t> dimOfWitness;
 
     for (size_t i = 5; i < w.size();) {
         uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
         if (wc == 0 || i + wc > w.size()) return false;
-        if (op == kOpExecMode && wc >= 6 && w[i + 2] == kLocalSize) {
+        if (op == kOpName && wc >= 3) {
+            const char* s = reinterpret_cast<const char*>(&w[i + 2]);
+            size_t maxLen = (wc - 2) * 4;
+            size_t len = strnlen(s, maxLen);
+            size_t plen = std::strlen(kWorkgroupDimWitness);
+            if (len == plen + 1 && std::strncmp(s, kWorkgroupDimWitness, plen) == 0 &&
+                s[plen] >= '0' && s[plen] <= '2')
+                dimOfWitness[w[i + 1]] = (uint32_t) (s[plen] - '0');
+        } else if (op == kOpExecMode && wc >= 6 && w[i + 2] == kLocalSize) {
             defX = w[i + 3]; defY = w[i + 4]; defZ = w[i + 5];
             sawLocalSize = true;
         } else if (op == kOpTypeInt && wc >= 4 && w[i + 2] == 32 && w[i + 3] == 0) {
@@ -311,6 +322,23 @@ bool injectWorkgroupSizeSpecConstant(std::vector<uint8_t>& bytes) {
     // The later block (constants, at firstFn) goes in first so decoEnd stays valid.
     w.insert(w.begin() + firstFn, consts.begin(), consts.end());
     w.insert(w.begin() + decoEnd, decos.begin(), decos.end());
+
+    if (!dimOfWitness.empty()) {
+        const uint32_t dimId[3] = {idX, idY, idZ};
+        std::vector<uint32_t> out(w.begin(), w.begin() + 5);
+        for (size_t i = 5; i < w.size();) {
+            uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+            if (wc == 0 || i + wc > w.size()) return false;
+            auto d = op == kOpLoad && wc >= 4 ? dimOfWitness.find(w[i + 3]) : dimOfWitness.end();
+            if (d != dimOfWitness.end() && w[i + 1] == uintTy)
+                out.insert(out.end(), {(4u << 16) | kOpCopyObject, w[i + 1], w[i + 2],
+                                       dimId[d->second]});
+            else
+                out.insert(out.end(), w.begin() + i, w.begin() + i + wc);
+            i += wc;
+        }
+        w.swap(out);
+    }
 
     bytes.resize(w.size() * 4);
     std::memcpy(bytes.data(), w.data(), bytes.size());

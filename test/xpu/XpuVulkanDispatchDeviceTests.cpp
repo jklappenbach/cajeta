@@ -1606,3 +1606,67 @@ TEST(XpuVulkanDispatchDeviceTests, labeledBreakContinueOnDevice) {
 // candidate set; `ops[i % 3](i)` lowers to an if/else chain of DIRECT calls (no
 // function pointers — SPIR-V has none). i%3==0 -> i*i, ==1 -> i*i*i, ==2 -> -i.
 // The index is a runtime value, so a constant-folded single candidate fails.
+
+// Workgroup.dimX/Y/Z and the grid stride read the launch's block, not the baked LocalSize.
+TEST(XpuVulkanDispatchDeviceTests, workgroupDimsAndGridStrideReadTheLaunchBlock) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.Workgroup;\n"
+        "public class Dims {\n"
+        "    @Kernel\n"
+        "    public static void dims(KernelBuffer<uint32> out) {\n"
+        "        if (KernelThread.globalIdX() == 0 && KernelThread.globalIdY() == 0) {\n"
+        "            out[0] = Workgroup.dimX();\n"
+        "            out[1] = Workgroup.dimY();\n"
+        "            out[2] = Workgroup.dimZ();\n"
+        "        }\n"
+        "    }\n"
+        "    @Kernel\n"
+        "    public static void visit(KernelBuffer<uint32> out, KernelBuffer<uint32> in, uint32 n) {\n"
+        "        for (uint32 i, uint32 v : in.range(n)) {\n"
+        "            out[i] = out[i] + v;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 dimsOf() {\n"
+        "        uint32[] h = heap uint32[3];\n"
+        "        KernelBuffer<uint32> d = heap KernelBuffer<uint32>(3);\n"
+        "        KernelStream s #= KernelStream.current();\n"
+        "        dims.launch(s, grid: [2], block: [128, 2])(d);\n"
+        "        s.sync();\n"
+        "        d.download(h);\n"
+        "        return (int32) (h[0] * 10000 + h[1] * 100 + h[2]);\n"
+        "    }\n"
+        "    public static int32 visits() {\n"
+        "        uint32 n = 1024;\n"
+        "        uint32[] h = heap uint32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = 1; }\n"
+        "        KernelBuffer<uint32> in = heap KernelBuffer<uint32>(n);\n"
+        "        KernelBuffer<uint32> out = heap KernelBuffer<uint32>(n);\n"
+        "        in.upload(h);\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = 0; }\n"
+        "        out.upload(h);\n"
+        "        KernelStream s #= KernelStream.current();\n"
+        "        visit.launch(s, grid: [2], block: [128])(out, in, n);\n"
+        "        s.sync();\n"
+        "        out.download(h);\n"
+        "        int32 sum = 0;\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { sum = sum + (int32) h[i]; }\n"
+        "        return sum;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.Dims", o);
+    ASSERT_NE(jit, nullptr);
+    auto dimsOf = jit->lookup<int32_t (*)()>("dimsOf");
+    auto visits = jit->lookup<int32_t (*)()>("visits");
+    ASSERT_TRUE(dimsOf && visits);
+    EXPECT_EQ(dimsOf(), 1280201) << "dimX*10000 + dimY*100 + dimZ for block [128, 2]";
+    EXPECT_EQ(visits(), 1024) << "a grid stride of the baked 64 visits elements twice";
+}

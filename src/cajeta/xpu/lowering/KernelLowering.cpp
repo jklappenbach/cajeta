@@ -4,6 +4,7 @@
 #include "../reference/KernelInterpreter.h"
 #include "KernelLowering.h"
 #include "LoweringTarget.h"
+#include "WorkgroupUniformity.h"
 
 #include "../../method/Method.h"
 #include "../../type/FormalParameter.h"
@@ -96,6 +97,18 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
         const MethodPtr& method, llvm::LLVMContext& ctx);
 
 namespace {
+
+// The cajeta spelling of a scalar device type.
+std::string cajetaScalarName(llvm::Type* t, bool isSigned) {
+    if (t->isHalfTy()) return "float16";
+    if (t->isBFloatTy()) return "bfloat16";
+    if (t->isFloatTy()) return "float32";
+    if (t->isDoubleTy()) return "float64";
+    if (t->isIntegerTy(1)) return "boolean";
+    if (t->isIntegerTy())
+        return std::string(isSigned ? "int" : "uint") + std::to_string(t->getIntegerBitWidth());
+    return "a non-scalar type";
+}
 
 [[noreturn]] void unsupported(const std::string& what) {
     throw cajeta::Exception(
@@ -292,6 +305,8 @@ public:
     // True iff the lowered body used a cross-lane subgroup op (shuffle/ballot/
     // reduce). Drives the maximal-reconvergence request at finalization.
     bool usedSubgroupOp() const { return usedSubgroupOp_; }
+    // The most threads a launch of this kernel can have: sizes Workgroup.reduce's scratch.
+    void setBlockLimit(unsigned n) { blockLimit_ = n; }
 
     void lowerBody(const MethodPtr& method) {
         if (!cls) cls = method->getParent();   // for @Device helper resolution
@@ -506,6 +521,9 @@ private:
     // Set when the body lowers a cross-lane subgroup op; read at finalization to
     // request maximal reconvergence where the backend models it.
     bool usedSubgroupOp_ = false;
+    int loopDepth_ = 0;
+    unsigned blockLimit_ = 1024;
+    unsigned wgReduceSites_ = 0;
     // POD struct params: the materialized aggregate SSA value by name plus its
     // field map. Field reads are extractvalue, never an alloca (SPIR-V logical).
     std::map<std::string, llvm::Value*> structValues;       // name -> struct value
@@ -634,19 +652,27 @@ private:
             return;
         }
         if (auto fs = std::dynamic_pointer_cast<ForStatement>(node)) {
+            ++loopDepth_;
             scoped([&] { lowerFor(fs); });   // the counter is the loop's
+            --loopDepth_;
             return;
         }
         if (auto ws = std::dynamic_pointer_cast<WhileStatement>(node)) {
+            ++loopDepth_;
             lowerWhile(ws);
+            --loopDepth_;
             return;
         }
         if (auto ds = std::dynamic_pointer_cast<DoStatement>(node)) {
+            ++loopDepth_;
             lowerDo(ds);
+            --loopDepth_;
             return;
         }
         if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            ++loopDepth_;
             scoped([&] { lowerEnhancedFor(efs); });   // the element name is the loop's
+            --loopDepth_;
             return;
         }
         if (auto bs = std::dynamic_pointer_cast<BreakStatement>(node)) {
@@ -1076,6 +1102,123 @@ private:
         bufferBases[nm] = slot;
         bufferElems[nm] = bufferElems[src];
         bufferElemSigned[nm] = bufferElemSigned[src];
+    }
+
+    // Workgroup.reduce (workgroup-reduce spec 2, 3): each wave reduces, lane 0 of each wave
+    // stores its partial in per-call-site scratch, a barrier, then every lane combines the
+    // partials from wave 0 upward. A call site inside a loop ends with a second barrier.
+    llvm::Value* lowerWorkgroupReduce(const std::vector<MethodCallParameter>& args) {
+        using FOp = LoweringTarget::WaveReduceFOp;
+        if (args.size() != 2) unsupported("Workgroup.reduce(op, value) arity");
+        auto* c = llvm::dyn_cast<llvm::ConstantInt>(lowerExpr(args[0].expression));
+        if (!c)
+            unsupported("Workgroup.reduce op must be a compile-time GroupOp constant "
+                        "(GroupOp.Add / .Max / .Min)");
+        uint64_t ord = c->getZExtValue();
+        if (ord > 2)
+            unsupported("Workgroup.reduce: unknown GroupOp ordinal " + std::to_string(ord) +
+                        " (Add=0, Max=1, Min=2)");
+        llvm::Value* v = lowerExpr(args[1].expression);
+        llvm::Type* elemTy = v->getType();
+        const bool isF = elemTy->isFloatTy();
+        const bool isSigned = exprSigned(args[1].expression);
+        if (!isF && !(elemTy->isIntegerTy(32) && isSigned))
+            unsupported("Workgroup.reduce takes a float32 or int32 value, not " +
+                        cajetaScalarName(elemTy, isSigned));
+        usedSubgroupOp_ = true;
+        const FOp fop = ord == 0 ? FOp::Sum : ord == 1 ? FOp::Max : FOp::Min;
+        llvm::Value* part;
+        if (isF) part = target.waveReduceF32(builder, mod, fop, v);
+        else if (ord == 0) part = target.waveReduceSum(builder, mod, v);
+        else part = target.waveReduce(builder, mod,
+                                      ord == 1 ? LoweringTarget::WaveReduceOp::SMax
+                                               : LoweringTarget::WaveReduceOp::SMin, v);
+
+        const unsigned minW = std::max(1u, target.minWaveWidth());
+        const uint64_t slots = (blockLimit_ + minW - 1) / minW;
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(elemTy, slots);
+        auto* gv = new llvm::GlobalVariable(
+            mod, arrTy, /*isConstant=*/false, llvm::GlobalValue::InternalLinkage,
+            llvm::UndefValue::get(arrTy),
+            fn->getName().str() + "_wgreduce_" + std::to_string(wgReduceSites_++),
+            /*InsertBefore=*/nullptr, llvm::GlobalValue::NotThreadLocal, kSharedAS);
+        gv->setAlignment(llvm::MaybeAlign(16));
+
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        auto asI32 = [&](llvm::Value* x) { return builder.CreateZExtOrTrunc(x, i32); };
+        llvm::Value* width = asI32(target.waveWidth(builder, mod));
+        llvm::Value* lane = asI32(varying(target.waveLaneId(builder, mod)));
+        llvm::Value* dx = asI32(target.workgroupDim(builder, mod, 0));
+        llvm::Value* dy = asI32(target.workgroupDim(builder, mod, 1));
+        llvm::Value* dz = asI32(target.workgroupDim(builder, mod, 2));
+        llvm::Value* flat = builder.CreateAdd(
+            asI32(varying(target.threadId(builder, mod, 0))),
+            builder.CreateMul(builder.CreateAdd(
+                asI32(varying(target.threadId(builder, mod, 1))),
+                builder.CreateMul(asI32(varying(target.threadId(builder, mod, 2))), dy)), dx),
+            "wgr.flat");
+        llvm::Value* waveIdx = builder.CreateUDiv(flat, width, "wgr.wave");
+        auto slot = [&](llvm::Value* idx) {
+            return builder.CreateInBoundsGEP(
+                arrTy, gv, {llvm::ConstantInt::get(i64, 0), builder.CreateZExt(idx, i64)});
+        };
+
+        llvm::BasicBlock* storeBB = llvm::BasicBlock::Create(ctx, "wgr.store", fn);
+        llvm::BasicBlock* joinBB = llvm::BasicBlock::Create(ctx, "wgr.join", fn);
+        builder.CreateCondBr(builder.CreateICmpEQ(lane, builder.getInt32(0)), storeBB, joinBB);
+        builder.SetInsertPoint(storeBB);
+        builder.CreateStore(part, slot(waveIdx));
+        builder.CreateBr(joinBB);
+        builder.SetInsertPoint(joinBB);
+        target.workgroupBarrier(builder, mod);
+        llvm::BasicBlock* readBB = llvm::BasicBlock::Create(ctx, "wgr.read", fn);
+        markWorkgroupReduce(builder.CreateBr(readBB));
+        builder.SetInsertPoint(readBB);
+
+        auto combine = [&](llvm::Value* a, llvm::Value* b) -> llvm::Value* {
+            if (isF) {
+                if (fop == FOp::Sum) return builder.CreateFAdd(a, b, "wgr.add");
+                return builder.CreateBinaryIntrinsic(
+                    fop == FOp::Max ? llvm::Intrinsic::maxnum : llvm::Intrinsic::minnum, a, b);
+            }
+            if (fop == FOp::Sum) return builder.CreateAdd(a, b, "wgr.add");
+            return builder.CreateBinaryIntrinsic(
+                fop == FOp::Max ? llvm::Intrinsic::smax : llvm::Intrinsic::smin, a, b);
+        };
+        // Stack slots, not phis: barrier fission privatizes an alloca per work-item.
+        llvm::AllocaInst* accSlot = entryAlloca(elemTy, "wgr.acc");
+        llvm::AllocaInst* iSlot = entryAlloca(i32, "wgr.i");
+        builder.CreateStore(builder.CreateLoad(elemTy, slot(builder.getInt32(0)), "wgr.p0"),
+                            accSlot);
+        builder.CreateStore(builder.getInt32(1), iSlot);
+        llvm::BasicBlock* loopBB = llvm::BasicBlock::Create(ctx, "wgr.loop", fn);
+        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(ctx, "wgr.body", fn);
+        llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(ctx, "wgr.done", fn);
+        builder.CreateBr(loopBB);
+        builder.SetInsertPoint(loopBB);
+        // Computed in the header: cpu fission may run the header once for the group and the
+        // body per work-item, so the bound must not come from an earlier work-item loop.
+        llvm::Value* rWidth = asI32(target.waveWidth(builder, mod));
+        llvm::Value* threads = builder.CreateMul(
+            builder.CreateMul(asI32(target.workgroupDim(builder, mod, 0)),
+                              asI32(target.workgroupDim(builder, mod, 1))),
+            asI32(target.workgroupDim(builder, mod, 2)));
+        llvm::Value* nWaves = builder.CreateUDiv(
+            builder.CreateAdd(threads, builder.CreateSub(rWidth, builder.getInt32(1))),
+            rWidth, "wgr.waves");
+        llvm::Value* i = builder.CreateLoad(i32, iSlot, "wgr.iv");
+        builder.CreateCondBr(builder.CreateICmpULT(i, nWaves), bodyBB, doneBB);
+        builder.SetInsertPoint(bodyBB);
+        llvm::Value* next = combine(builder.CreateLoad(elemTy, accSlot, "wgr.accv"),
+                                    builder.CreateLoad(elemTy, slot(i), "wgr.pi"));
+        builder.CreateStore(next, accSlot);
+        builder.CreateStore(builder.CreateAdd(i, builder.getInt32(1)), iSlot);
+        builder.CreateBr(loopBB);
+        builder.SetInsertPoint(doneBB);
+        llvm::Value* acc = builder.CreateLoad(elemTy, accSlot, "wgr.result");
+        if (loopDepth_ > 0) target.workgroupBarrier(builder, mod);
+        return acc;
     }
 
     // Lower `Shared<T> name = shared T[size]` to one module-level addrspace(3)
@@ -1592,7 +1735,7 @@ private:
                 llvm::Value* count = coerceTo(
                     lowerExpr(mc->getParameters()[0].expression), idxTy);
                 llvm::Value* start =
-                    coerceTo(target.groupLaneId(builder, mod), idxTy);
+                    coerceTo(varying(target.groupLaneId(builder, mod)), idxTy);
                 llvm::Value* step =
                     coerceTo(target.groupWidth(builder, mod), idxTy);
                 llvm::Value* idxSlot = entryAlloca(idxTy, idxName);
@@ -1684,7 +1827,7 @@ private:
         std::string idxName = hasIdx ? efs->getIteratorName()
                                      : (bufName + ".fe.idx");
         llvm::Value* idxSlot = entryAlloca(idxTy, idxName);
-        builder.CreateStore(coerceTo(target.globalId(builder, mod, 0), idxTy),
+        builder.CreateStore(coerceTo(varying(target.globalId(builder, mod, 0)), idxTy),
                             idxSlot);
         if (hasIdx) {
             values[idxName] = idxSlot;
@@ -3152,12 +3295,12 @@ private:
         }
 
         if (recv == "KernelThread") {
-            if (name == "x") return target.threadId(builder, mod, 0);
-            if (name == "y") return target.threadId(builder, mod, 1);
-            if (name == "z") return target.threadId(builder, mod, 2);
-            if (name == "globalIdX") return target.globalId(builder, mod, 0);
-            if (name == "globalIdY") return target.globalId(builder, mod, 1);
-            if (name == "globalIdZ") return target.globalId(builder, mod, 2);
+            if (name == "x") return varying(target.threadId(builder, mod, 0));
+            if (name == "y") return varying(target.threadId(builder, mod, 1));
+            if (name == "z") return varying(target.threadId(builder, mod, 2));
+            if (name == "globalIdX") return varying(target.globalId(builder, mod, 0));
+            if (name == "globalIdY") return varying(target.globalId(builder, mod, 1));
+            if (name == "globalIdZ") return varying(target.globalId(builder, mod, 2));
             if (name == "clock") return target.readClock(builder, mod);
         } else if (recv == "Workgroup") {
             if (name == "x") return target.workgroupId(builder, mod, 0);
@@ -3166,6 +3309,7 @@ private:
             if (name == "dimX") return target.workgroupDim(builder, mod, 0);
             if (name == "dimY") return target.workgroupDim(builder, mod, 1);
             if (name == "dimZ") return target.workgroupDim(builder, mod, 2);
+            if (name == "reduce") return lowerWorkgroupReduce(mc->getParameters());
         } else if (recv == "Barrier") {
             if (name == "workgroup") {
                 target.workgroupBarrier(builder, mod);
@@ -3255,9 +3399,9 @@ private:
         } else if (recv == "Wave") {
             const auto& args = mc->getParameters();
             if (name == "width") return target.waveWidth(builder, mod);
-            if (name == "laneId") return target.waveLaneId(builder, mod);
+            if (name == "laneId") return varying(target.waveLaneId(builder, mod));
             if (name == "isFirstLane") {
-                llvm::Value* lane = target.waveLaneId(builder, mod);
+                llvm::Value* lane = varying(target.waveLaneId(builder, mod));
                 return builder.CreateICmpEQ(
                     lane, llvm::ConstantInt::get(lane->getType(), 0),
                     "wave.isfirst");
@@ -3288,7 +3432,7 @@ private:
                     value = builder.CreateBitCast(coerceTo(value, f32), i32, "shfl.bits");
                 llvm::Value* d = coerceTo(lowerExpr(args[1].expression), i32, false);
                 llvm::Value* lane =
-                    coerceTo(target.waveLaneId(builder, mod), i32, false);
+                    coerceTo(varying(target.waveLaneId(builder, mod)), i32, false);
                 llvm::Value* src;
                 if (form == "shuffleXorSync") {
                     src = builder.CreateXor(lane, d, "shfl.xor");
@@ -3384,8 +3528,8 @@ private:
                 auto sop = name == "prefixSum"
                     ? LoweringTarget::WaveScanOp::Sum
                     : LoweringTarget::WaveScanOp::Product;
-                return target.waveScan(builder, mod, sop,
-                                       lowerExpr(args[0].expression));
+                return varying(target.waveScan(builder, mod, sop,
+                                       lowerExpr(args[0].expression)));
             }
         } else if (recv == "TargetDescriptor") {
             if (name == "waveWidth") return target.groupWidth(builder, mod);
@@ -3399,18 +3543,19 @@ private:
             // refuses a kernel that mixes it with a wave op (CpuRegistration).
             fn->addFnAttr("cajeta.xpu.uses-group", "Group." + name);
             if (name == "width") return target.groupWidth(builder, mod);
-            if (name == "laneId") return target.groupLaneId(builder, mod);
+            if (name == "laneId") return varying(target.groupLaneId(builder, mod));
             if (name == "rowId") return target.workgroupId(builder, mod, 0);
             auto groupFop = [&](const ExpressionPtr& e)
                     -> LoweringTarget::WaveReduceFOp {
                 auto* c = llvm::dyn_cast<llvm::ConstantInt>(lowerExpr(e));
                 if (!c) unsupported("Group.reduce op must be a compile-time "
-                                    "GroupOp constant (GroupOp.Add / .Max)");
+                                    "GroupOp constant (GroupOp.Add / .Max / .Min)");
                 uint64_t ord = c->getZExtValue();
                 if (ord == 0) return LoweringTarget::WaveReduceFOp::Sum; // Add
                 if (ord == 1) return LoweringTarget::WaveReduceFOp::Max;
+                if (ord == 2) return LoweringTarget::WaveReduceFOp::Min;
                 unsupported("Group.reduce: unknown GroupOp ordinal "
-                            + std::to_string(ord) + " (Add=0, Max=1)");
+                            + std::to_string(ord) + " (Add=0, Max=1, Min=2)");
                 return LoweringTarget::WaveReduceFOp::Sum; // unreachable
             };
             if (name == "reduce") {
@@ -3418,8 +3563,12 @@ private:
                     unsupported("Group.reduce(op, value) arity");
                 usedSubgroupOp_ = true;
                 auto fop = groupFop(args[0].expression);
-                return target.groupReduceF32(builder, mod, fop,
-                                             lowerExpr(args[1].expression));
+                llvm::Value* v = lowerExpr(args[1].expression);
+                if (v->getType()->isIntegerTy(32))
+                    return target.groupReduceI32(builder, mod, fop, v);
+                if (!v->getType()->isFloatTy())
+                    unsupported("Group.reduce takes a float32 or int32 value");
+                return target.groupReduceF32(builder, mod, fop, v);
             }
             if (name == "reduceSegmented") {
                 if (args.size() != 3)
@@ -3427,6 +3576,8 @@ private:
                 usedSubgroupOp_ = true;
                 llvm::Value* seg = lowerExpr(args[0].expression);
                 auto fop = groupFop(args[1].expression);
+                if (fop == LoweringTarget::WaveReduceFOp::Min)
+                    unsupported("Group.reduceSegmented takes GroupOp.Add or GroupOp.Max");
                 return target.groupReduceF32Segmented(
                     builder, mod, fop, lowerExpr(args[2].expression), seg);
             }
@@ -4747,7 +4898,7 @@ private:
             llvm::Value* kpad = builder.CreateAdd(rws, pdv, "bt.kpad");
             llvm::Value* cpr = builder.CreateUDiv(cls, lanesV, "bt.cpr");
             llvm::Value* tot = builder.CreateMul(rws, cpr, "bt.total");
-            llvm::Value* tid = coerceTo(target.threadId(builder, mod, 0), i32);
+            llvm::Value* tid = coerceTo(varying(target.threadId(builder, mod, 0)), i32);
             llvm::Value* nth = coerceTo(target.workgroupDim(builder, mod, 0), i32);
             llvm::Value* iv = entryAlloca(i32, "bt.e");
             builder.CreateStore(tid, iv);
@@ -4798,7 +4949,7 @@ private:
         llvm::Value* cols    = coerceTo(lowerExpr(args[5].expression), i32);
         llvm::Value* ld      = coerceTo(lowerExpr(args[6].expression), i32);
         llvm::Value* total   = builder.CreateMul(rows, cols, "stage.total");
-        llvm::Value* tid  = coerceTo(target.threadId(builder, mod, 0), i32);
+        llvm::Value* tid  = coerceTo(varying(target.threadId(builder, mod, 0)), i32);
         llvm::Value* nthr = coerceTo(target.workgroupDim(builder, mod, 0), i32);
         llvm::Value* iv = entryAlloca(i32, "stage.e");
         builder.CreateStore(tid, iv);
@@ -4837,7 +4988,7 @@ private:
                               llvm::Value* count) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
-        llvm::Value* tid  = coerceTo(target.threadId(builder, mod, 0), i32);
+        llvm::Value* tid  = coerceTo(varying(target.threadId(builder, mod, 0)), i32);
         llvm::Value* nthr = coerceTo(target.workgroupDim(builder, mod, 0), i32);
         llvm::Value* iv = entryAlloca(i32, "swzcopy.e");
         builder.CreateStore(tid, iv);
@@ -5383,7 +5534,7 @@ private:
     struct LaneId { llvm::Value* lane; llvm::Value* c; llvm::Value* g; };
     LaneId distLane(const CoopMatrixSlot& s) {
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
-        llvm::Value* lane = target.waveLaneId(builder, mod);
+        llvm::Value* lane = varying(target.waveLaneId(builder, mod));
         llvm::Value* cols = llvm::ConstantInt::get(i32, s.cols);
         return { lane, builder.CreateURem(lane, cols),
                  builder.CreateUDiv(lane, cols) };
@@ -7274,6 +7425,12 @@ private:
 
     // ---- helpers --------------------------------------------------------
 
+    // `v`, tagged as differing between the lanes of a workgroup.
+    llvm::Value* varying(llvm::Value* v) {
+        markVarying(v);
+        return v;
+    }
+
     ExpressionPtr exprChild(const std::shared_ptr<Expression>& e, size_t i) {
         if (e->getChildren().size() <= i) unsupported("missing operand");
         return std::dynamic_pointer_cast<Expression>(e->getChildren()[i]);
@@ -8489,8 +8646,9 @@ static llvm::Value* waveReduceF32Butterfly(LoweringTarget& t,
     llvm::Value* other = b.CreateBitCast(otherBits, f32);
     llvm::Value* acc = op == WaveReduceFOp::Sum
         ? b.CreateFAdd(accPhi, other, "fred.sum")
-        : b.CreateBinaryIntrinsic(llvm::Intrinsic::maxnum, accPhi, other,
-                                  llvm::FMFSource(), "fred.max");
+        : b.CreateBinaryIntrinsic(op == WaveReduceFOp::Max ? llvm::Intrinsic::maxnum
+                                                           : llvm::Intrinsic::minnum,
+                                  accPhi, other, llvm::FMFSource(), "fred.max");
     llvm::Value* dNext = b.CreateShl(dPhi, 1);
     accPhi->addIncoming(acc, loop);
     dPhi->addIncoming(dNext, loop);
@@ -8623,11 +8781,17 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
 
     DeviceLowerer lowerer(deviceModule, fn, target);
     lowerer.setParams(std::move(params));
+    if (auto attr = XpuKernelAttr::from(*method); attr && attr->maxThreads())
+        lowerer.setBlockLimit(*attr->maxThreads());
     // Per-kernel cache of lowered @Device helpers, so each is emitted once and
     // recursion is caught; the functions themselves live in the module.
     DeviceLowerer::DeviceFnCache deviceFns;
     lowerer.setDeviceContext(method->getParent(), &deviceFns);
     lowerer.lowerBody(method);
+    if (workgroupReduceUnderDivergence(*fn))
+        unsupported("Workgroup.reduce under work-item-divergent control flow in " + kname +
+                    " (every lane of the workgroup must reach it, and none may return "
+                    "before it)");
     // If the kernel used a cross-lane subgroup op, ask the backend for maximal
     // reconvergence (a no-op where it is not modelled).
     if (lowerer.usedSubgroupOp())

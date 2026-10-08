@@ -20,9 +20,11 @@ namespace vulkan {
     // The device triple: 32-bit logical SPIR-V for a Vulkan 1.3 compute env.
     inline constexpr const char* kSpirvTriple = "spirv-unknown-vulkan1.3-compute";
 
-    // Vulkan fixes the local size at SPIR-V compile time rather than per-dispatch,
-    // so this constant is what the driver must use as the launch block dim.
+    // The default LocalSize x; a launch's block overrides it through the WorkgroupSize spec constant.
     inline constexpr unsigned kVulkanLocalSizeX = 64;
+
+    // Name prefix of the Private global a workgroup-dim read loads; its suffix is the dim.
+    inline constexpr const char* kWorkgroupDimWitness = "cajeta_wgdim_";
 
     // Create a SPIR-V TargetMachine for `arch` (the SPIR-V target env), registering
     // the LLVM target on first use; nullptr when the spirv target is not built in.

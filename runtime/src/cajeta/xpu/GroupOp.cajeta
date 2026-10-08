@@ -10,5 +10,6 @@ package cajeta.xpu;
  */
 public enum GroupOp {
     Add,   // 0 — sum across the group's lanes (fadd)
-    Max    // 1 — maximum across the group's lanes (maxnum)
+    Max,   // 1 — maximum across the group's lanes (maxnum)
+    Min    // 2 — minimum across the group's lanes (minnum)
 }

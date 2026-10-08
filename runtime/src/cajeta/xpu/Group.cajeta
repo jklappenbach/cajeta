@@ -77,6 +77,10 @@ public final class Group {
     @Native("__cajeta_xpu_group_reduce_f32")
     public static float32 reduce(GroupOp op, float32 value);
 
+    /** {@link #reduce} over int32: the signed sum, maximum or minimum, the sum wrapping as int32 does. */
+    @Native("__cajeta_xpu_group_reduce_i32")
+    public static int32 reduce(GroupOp op, int32 value);
+
     /**
      * Segmented reduce: each aligned span of `segment` consecutive lanes
      * reduces independently, and every lane in a span receives that span's
