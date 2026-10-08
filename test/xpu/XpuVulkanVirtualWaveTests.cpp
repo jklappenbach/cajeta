@@ -18,6 +18,7 @@ const uint32_t kN = 768;
 
 const char* kSource = R"CJ(
 package test;
+import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
@@ -25,6 +26,7 @@ import cajeta.xpu.Wave;
 public class V {
     static float32[] got32;
     static float32[] got64;
+    static int32 virt64;
     @Kernel
     @Wave(width = 32)
     public static void vw32(KernelBuffer<float32> out, KernelBuffer<float32> in) {
@@ -77,6 +79,7 @@ public class V {
         vw32.launch(s, grid: [3], block: [256])(out32, in);
         s.sync();
         vw64.launch(s, grid: [3], block: [256])(out64, in);
+        virt64 = Device.lastLaunchVirtualSubgroup();
         s.sync();
         got32 = heap float32[n * 4];
         got64 = heap float32[n * 4];
@@ -86,11 +89,13 @@ public class V {
     }
     public static float32 a(uint32 i) { return got32[i]; }
     public static float32 b(uint32 i) { return got64[i]; }
+    public static int32 v64() { return virt64; }
 }
 )CJ";
 
 struct Outputs {
     std::vector<float> a, b;
+    int32_t virt64 = -1;
     std::string stderrText, compileText;
     bool ran = false;
 };
@@ -105,6 +110,7 @@ Outputs runOn(cajeta::xpu::Backend be) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     auto aAt = jit->lookup<float (*)(uint32_t)>("a");
     auto bAt = jit->lookup<float (*)(uint32_t)>("b");
+    auto vAt = jit->lookup<int32_t (*)()>("v64");
     EXPECT_TRUE(fn && aAt && bAt);
     if (!(fn && aAt && bAt)) return o;
     testing::internal::CaptureStderr();
@@ -115,6 +121,7 @@ Outputs runOn(cajeta::xpu::Backend be) {
         o.a.push_back(aAt(k));
         o.b.push_back(bAt(k));
     }
+    if (vAt) o.virt64 = vAt();
     o.ran = true;
     return o;
 }
@@ -238,6 +245,21 @@ Outputs runLoopsOn(cajeta::xpu::Backend be) {
 }
 
 }  // namespace
+
+// 5.1.2: forced onto subgroups of 32 on a device that can pin them, a 64-lane kernel runs as
+// two slots per invocation on real hardware and matches the cpu.
+TEST(XpuVulkanVirtualWave, aWideVariantRunsOnHardwareAndMatchesTheCpu) {
+    if (!cajeta::xpu::vulkan::VulkanDriver::canRunSubgroupWidth(32))
+        GTEST_SKIP() << "this Vulkan device cannot pin subgroups of 32";
+    setenv("CAJETA_XPU_VK_FORCE_SUBGROUP", "32", 1);
+    Outputs dev = runOn(cajeta::xpu::Backend::Spirv);
+    unsetenv("CAJETA_XPU_VK_FORCE_SUBGROUP");
+    ASSERT_TRUE(dev.ran);
+    EXPECT_EQ(dev.virt64, 32) << "the 64-lane launch did not take the wide variant";
+    Outputs cpu = runOn(cajeta::xpu::Backend::Cpu);
+    ASSERT_TRUE(cpu.ran);
+    sameBits(dev.b, cpu.b, "vw64");
+}
 
 // 1.1.4: a lane-varying loop before a reduce, a reduce in a uniform loop, and a reduce
 // before a workgroup barrier run virtually and match the cpu bit for bit.

@@ -371,10 +371,29 @@ on NVPTX, and on Vulkan emits a `LocalSize` decoration plus
 `SPV_KHR_subgroup_uniform_control_flow`. A target that cannot satisfy
 the request rejects the kernel at compile time (NVIDIA / AMD). On Vulkan
 the width is a pipeline fact: the manifest records the declared width,
-the pipeline requests exactly it, and a launch on a device that can
-neither pin it nor run it natively is refused by name, so
-`Device.checkLaunch` throws (lavapipe, whose subgroups are always 8
-lanes, refuses a 32-lane kernel; `XpuWorkgroupReduceCorpusTests`).
+and the pipeline requests exactly it. A device that cannot run it runs a
+**virtual wave** instead. Beside the native module the compiler emits a
+variant for every subgroup width S from 8 to 2W other than W:
+
+- **S below W** (lavapipe runs 8): each invocation carries W / S logical
+  lanes, and lane `l` is invocation `l % S`, slot `l / S`. The launch
+  dispatches block / (W / S) invocations, and the thread ids, global ids,
+  `Workgroup.dimX` and `Wave.laneId()` report logical values.
+- **S above W** (a device fixed at 64): each invocation is one lane, and
+  each aligned span of W invocations is one wave. No verb crosses a span.
+
+Every wave verb keeps its reference meaning over the W logical lanes, and
+the float reduces run the reference butterfly, so a virtual wave matches
+the cpu and the reference bit for bit (`XpuVulkanVirtualWaveTests`, on
+lavapipe and on RADV forced to 32 and 64). A device with size control
+runs a virtual wave at 2W when it can pin that, else at the widest width
+it can pin below W. `Device.lastLaunchVirtualSubgroup()` names the width
+the last launch ran over, 0 when it ran natively, and
+`CAJETA_XPU_VK_FORCE_SUBGROUP=S` forces a variant for testing. A verb the
+virtual lowering cannot carry, such as a shuffle inside a loop whose trip
+count differs between lanes, leaves that variant out with an
+`[xpu-virtual-skipped]` note. A launch with no variant for its device is
+refused by name, so `Device.checkLaunch` throws.
 
 On the **cpu backend** the wave is the width the work-item loop is
 vectorized at, so the declaration is honored exactly: the loop is forced

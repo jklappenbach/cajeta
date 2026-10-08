@@ -104,7 +104,7 @@ These are every built-in the interpreter defines.
 | `Quad.all(p)`, `any(p)` | the AND or OR of `p` over the four lanes of the quad, every one of which must be active |
 | `Wave.ballotSync(p)` | bit `i` is set when active lane `i` passes `p` |
 | `Wave.reduceSum/Max/Min/And/Or/Xor` | uint32, over the active lanes in lane order; sums wrap |
-| `Wave.reduceSumF32`, `reduceMaxF32` | an xor butterfly over the full width, partners at distance 1, 2, 4 and up in that order; inactive lanes contribute 0 or -inf. nvptx and cpu sum in this order; amdgpu and SPIR-V use the device's own reduce, whose order is the driver's, so they carry a stated bound |
+| `Wave.reduceSumF32`, `reduceMaxF32` | an xor butterfly over the full width, partners at distance 1, 2, 4 and up in that order; inactive lanes contribute 0 or -inf. nvptx, cpu and a Vulkan virtual wave sum in this order; amdgpu and native SPIR-V use the device's own reduce, whose order is the driver's, so they carry a stated bound |
 | `Wave.reduceSumF32Segmented(v, seg)`, `reduceMaxF32Segmented` | the same butterfly stopped at `seg`: partners at distance 1 up to `seg/2`, so each aligned span of `seg` lanes reduces on its own and every lane of a span holds the span's result. `seg` is uniform across the wave and a power of two, and is clamped to `W` |
 | `Wave.prefixSum`, `prefixProduct` | exclusive scan in lane order, uint32 |
 | `Group.width`, `laneId`, `rowId` | `W`; `linear % W`; `Workgroup.x`, as int32 |
