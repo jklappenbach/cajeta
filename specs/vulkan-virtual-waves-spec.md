@@ -1,6 +1,6 @@
 # Vulkan virtual waves (spec)
 
-Status: draft, 2026-10-08. Questions answered by Julian 2026-10-08 (§7). Awaiting approval.
+Status: approved by Julian 2026-10-08.
 
 ## 1. Definition
 
