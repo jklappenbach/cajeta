@@ -1,6 +1,6 @@
 # Vulkan virtual waves (spec)
 
-Status: draft, 2026-10-08. Open questions in §7 wait on Julian.
+Status: draft, 2026-10-08. Questions answered by Julian 2026-10-08 (§7). Awaiting approval.
 
 ## 1. Definition
 
@@ -65,7 +65,8 @@ device's real subgroup, and its results match the reference bit for bit.
   and size control. When it can pin W, the native pipeline runs.
 - 2.1.2 Otherwise the runtime selects the virtual variant for the device's S.
 - 2.1.3 When no variant fits, the launch is refused by name as v0.37.0 does.
-- 2.1.4 The launch can say which path it took, so a test can assert it.
+- 2.1.4 The launch record names the path taken, native or virtual at S, so
+  a test can assert it. Nothing is written to stderr.
 
 ### 2.2 Use cases
 
@@ -174,30 +175,26 @@ driver reduces S lanes, not W. So it runs the butterfly by construction.
 ### 6.2 Out of scope here
 
 Whether the native amdgpu and Vulkan float reduces move to the butterfly is
-a separate decision, recorded as §7.4.
+a separate decision, recorded as §7.5.
 
-## 7. Open questions
+## 7. Decisions (Julian, 2026-10-08)
 
-- 7.1 **The wide-case mechanism.** Recommendation: carry the C logical
-  lanes as a vector of C in each invocation, as cpu carries W lanes as a
-  vector, and reuse its masked wave-verb variants. Divergence becomes
-  masking, which 3.1.3 needs. The alternative, a loop over slots split at
-  every wave verb, breaks when a verb sits under divergent control flow.
-  Vulkan vectors stop at 4 components without extra capabilities, so C = 8
-  (64 over 8) would need two vectors or a capability.
-- 7.2 **Which variants the compiler emits.** S is known only at launch.
-  Recommendation: for each kernel that pins W, emit a virtual variant for
-  every power of two S from 8 to 2W that is not W, so 8, 16 and 64 for
-  W = 32. This roughly triples the SPIR-V of a pinned kernel.
-- 7.3 **Whether the narrow case is in scope.** Recommendation: yes. It
-  reuses the segmented butterfly and costs little, and it covers devices
-  fixed at 64.
-- 7.4 **The native float reduce order (§6.1).** Options: keep the driver's
-  reduce and correct decision 6.5 and the docs to say "measured on RADV". Or
-  lower the native float reduce to the butterfly so bit identity holds by
-  construction, paying whatever the butterfly costs against the driver's
-  reduce. Recommendation: measure that cost first (a timing leg, announced),
-  then decide.
-- 7.5 **Saying so at launch.** Recommendation: a virtual launch writes one
-  line per kernel to stderr the first time it runs, as the refusal does, so
-  a slow kernel on lavapipe explains itself.
+- 7.1 **The wide-case mechanism.** Each invocation carries its C logical
+  lanes as a vector of C, as cpu carries a wave as a vector of W. Divergent
+  logical lanes are masked, and the wave verbs reuse cpu's masked variants. A
+  loop over slots split at each verb was rejected because it fails when a
+  verb sits under divergent control flow.
+- 7.2 **C above 4.** Vulkan vectors stop at 4 components without extra
+  capabilities. A C of 8 (64 over 8) is carried as two vectors of 4, so it
+  needs no capability and runs on every device.
+- 7.3 **Variants.** For each kernel that pins W, the compiler emits a
+  virtual variant for every power of two S from 8 to 2W other than W. For
+  W = 32 that is 8, 16 and 64. The SPIR-V of a pinned kernel roughly
+  triples, and that is accepted.
+- 7.4 **The narrow case is in scope.** It reuses the segmented butterfly.
+- 7.5 **The native float reduce order (§6.1).** Measure the butterfly
+  against the driver's reduce on RADV and amdgpu first, as an announced
+  timing leg. Then decide between correcting decision 6.5 and the docs, and
+  moving the native reduce to the butterfly.
+- 7.6 **Reporting.** A virtual launch writes nothing to stderr. The launch
+  record names the path taken, and tests and tools read it there.
