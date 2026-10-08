@@ -511,7 +511,19 @@ TEST(XpuVulkanVirtualWave, everyWaveVerbRunsVirtuallyAndMatchesTheCpu) {
         GTEST_SKIP() << "this Vulkan device pins 32, so nothing runs virtually";
     VerbOutputs dev = runVerbsOn(cajeta::xpu::Backend::Spirv, true);
     EXPECT_GT(dev.virt, 0) << "the launch did not take the virtual path";
+    EXPECT_EQ(dev.runText.find("virtual"), std::string::npos) << dev.runText;
     expectVerbsMatchTheCpu(dev);
+}
+
+// 4.1.1: a device that can pin the declared width runs the native kernel, and the launch
+// record says so.
+TEST(XpuVulkanVirtualWave, aDeviceThatPinsTheWidthRunsNatively) {
+    if (!cajeta::xpu::vulkan::VulkanDriver::canRunSubgroupWidth(32))
+        GTEST_SKIP() << "this Vulkan device cannot pin 32";
+    VerbOutputs dev = runVerbsOn(cajeta::xpu::Backend::Spirv, true);
+    ASSERT_TRUE(dev.ran);
+    EXPECT_EQ(dev.virt, 0);
+    EXPECT_EQ(dev.runText.find("xpu-launch-refused"), std::string::npos) << dev.runText;
 }
 
 // 3.1.1 to 3.1.3: forced onto subgroups of 64 on a device that can pin them, a 32-lane kernel

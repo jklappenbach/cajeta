@@ -771,6 +771,17 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
 
 static int32_t caj_vk_last_virtual = 0;
 
+// The subgroup width a virtual wave of `w` runs over: 2w when the device can pin it (one lane
+// per invocation), else the widest it can pin below `w`, else the width it always runs.
+static uint32_t caj_vk_virtual_width(uint32_t w) {
+    if (!g_xpu_vk.sizeCtlFeature) return g_xpu_vk.defaultSubgroupSize;
+    uint32_t lo = g_xpu_vk.minSubgroupSize, hi = g_xpu_vk.maxSubgroupSize;
+    if (w * 2u >= lo && w * 2u <= hi) return w * 2u;
+    for (uint32_t s = w / 2u; s >= 8u; s /= 2u)
+        if (s >= lo && s <= hi) return s;
+    return g_xpu_vk.defaultSubgroupSize;
+}
+
 // The subgroup width the last Vulkan launch ran a virtual wave over, 0 when it ran natively.
 int32_t __cajeta_xpu_vk_last_virtual_subgroup(void) {
     return __atomic_load_n(&caj_vk_last_virtual, __ATOMIC_ACQUIRE);
@@ -829,7 +840,7 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
         const char* force = getenv("CAJETA_XPU_VK_FORCE_SUBGROUP");
         uint32_t sg = 0;
         if (force && *force) sg = (uint32_t) strtoul(force, NULL, 10);
-        else if (!caj_vk_wave_runnable((uint32_t) declaredWave)) sg = g_xpu_vk.defaultSubgroupSize;
+        else if (!caj_vk_wave_runnable((uint32_t) declaredWave)) sg = caj_vk_virtual_width((uint32_t) declaredWave);
         uint32_t c = sg && sg < (uint32_t) declaredWave ? (uint32_t) declaredWave / sg : 1u;
         struct cajeta_xpu_module* ve = NULL;
         if (sg >= 4 && sg != (uint32_t) declaredWave && blockX > 0 && blockX % declaredWave == 0) {
