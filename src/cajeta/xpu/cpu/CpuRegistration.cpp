@@ -42,6 +42,9 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
+#include <chrono>
+#include <thread>
+#include <future>
 #include <cstdlib>
 
 namespace cajeta {
@@ -53,6 +56,72 @@ namespace {
 // Debug seam: CAJETA_XPU_CPU_NO_VECTORIZE skips the work-item LoopVectorize pass.
 bool cpuVectorizeDisabled() {
     return std::getenv("CAJETA_XPU_CPU_NO_VECTORIZE") != nullptr;
+}
+
+// The vectorize DEADLINE. LoopVectorize's VPlan CSE is superlinear in the
+// plan, and no size the wrapper shows before the pass predicts it: on the
+// cajeta-llm program (2026-10-08, every tile distributed) two 4-block
+// work-item loops of 18k and 19k instructions took 135 s and 2 s, a 37k loop
+// bailed in 0.4 s, and iq3xxsF16CoopIdN64Kernel's 39k loop sat two hours in
+// VPlanTransforms::cse (sampled under gdb). So the bound is wall-clock: the
+// pipeline runs on a worker, and a wrapper that passes the deadline ENDS THE
+// COMPILE with an error naming the kernel and this lever (the worker owns the
+// module and cannot be stopped, and a silent per-kernel decline would make the
+// census depend on the machine's speed). The hold the error prescribes,
+// @Unlowered(backend = "cpu"), is what refuses the kernel by name afterwards.
+// CAJETA_XPU_CPU_VECTORIZE_DEADLINE_S overrides the default of 600; _MS is the
+// test seam; 0 removes the deadline.
+unsigned long long cpuVectorizeDeadlineMs() {
+    if (const char* e = std::getenv("CAJETA_XPU_CPU_VECTORIZE_DEADLINE_MS"))
+        return std::strtoull(e, nullptr, 10);
+    if (const char* e = std::getenv("CAJETA_XPU_CPU_VECTORIZE_DEADLINE_S"))
+        return std::strtoull(e, nullptr, 10) * 1000ULL;
+    return 600ULL * 1000ULL;
+}
+
+// Runs vectorizeFunction under the deadline (see cpuVectorizeDeadlineMs).
+void vectorizeUnderDeadline(llvm::Function& wrapper, llvm::TargetMachine* tm,
+                            bool waveKernel, const std::string& entryName,
+                            llvm::Value* ntidX) {
+    const unsigned long long ms = cpuVectorizeDeadlineMs();
+    if (ms == 0) {
+        vectorizeFunction(wrapper, tm, waveKernel, entryName, ntidX);
+        return;
+    }
+    std::promise<void> done;
+    std::future<void> fut = done.get_future();
+    std::thread worker([&]() {
+        // CAJETA_XPU_FAULT=vectorize-stall: the test's stand-in for a pass
+        // that does not come back, twice the deadline of sleep first.
+        if (xpuFault("vectorize-stall"))
+            std::this_thread::sleep_for(std::chrono::milliseconds(2 * ms + 50));
+        vectorizeFunction(wrapper, tm, waveKernel, entryName, ntidX);
+        done.set_value();
+    });
+    if (fut.wait_for(std::chrono::milliseconds(ms)) == std::future_status::ready) {
+        worker.join();
+        return;
+    }
+    // The worker is spinning inside LoopVectorize on this module; nothing
+    // after this point may touch the module, so the compile ends here.
+    fprintf(stderr,
+            "cajeta: error: [xpu-kernel-hung] %s: LoopVectorize did not finish its "
+            "cpu work-item loop within %llu ms (CAJETA_XPU_CPU_VECTORIZE_DEADLINE_S, "
+            "default 600 s); the compile stops here. Hold the kernel with "
+            "@Unlowered(backend = \"cpu\", tracked = \"<plan item>\") so it is "
+            "refused by name, or raise the deadline (xpu-kernel-adaptor 6.4.16)\n",
+            entryName.c_str(), ms);
+    fflush(stderr);
+    fflush(stdout);
+    worker.detach();
+    std::_Exit(3);
+}
+
+// CAJETA_XPU_CPU_VECTORIZE_TRACE=1: one line per wrapper with its instruction
+// count and the vectorize pipeline's wall time, which is how the budget's
+// default was set and how it is re-measured.
+bool cpuVectorizeTraced() {
+    return std::getenv("CAJETA_XPU_CPU_VECTORIZE_TRACE") != nullptr;
 }
 
 // --- Increment 5C: wave-op SIMD via the Vector Function ABI ----------------
@@ -946,6 +1015,27 @@ static bool loopHasHint(llvm::Loop* L, llvm::StringRef hint) {
                     if (str->getString() == hint) return true;
     return false;
 }
+
+// The instructions inside the largest WORK-ITEM loop (cajeta.xpu.wi), which
+// is the loop LoopVectorize widens and the size its VPlan work grows with.
+// The wrapper's whole instruction count is not it: a 21k-instruction
+// CoopX3 wrapper vectorizes in 2 s where a 21k WmmaDeqMw8 wrapper takes
+// 135 s (traced 2026-10-08), the difference being how much of each sits
+// inside the work-item loop.
+static unsigned workItemLoopInstructionCount(llvm::Function& f, unsigned* blocksOut = nullptr) {
+    llvm::DominatorTree dt(f);
+    llvm::LoopInfo li(dt);
+    unsigned best = 0, bestBlocks = 0;
+    for (llvm::Loop* top : li)
+        for (llvm::Loop* L : llvm::depth_first(top)) {
+            if (!loopHasHint(L, "cajeta.xpu.wi")) continue;
+            unsigned n = 0;
+            for (llvm::BasicBlock* bb : L->blocks()) n += (unsigned) bb->size();
+            if (n > best) { best = n; bestBlocks = (unsigned) L->getNumBlocks(); }
+        }
+    if (blocksOut) *blocksOut = bestBlocks;
+    return best;
+}
 // The WORK-ITEM loop this call sits in (the nearest enclosing loop tagged
 // cajeta.xpu.wi) must itself carry llvm.loop.isvectorized. An inner loop the
 // vectorizer widened instead does not count, and a wave call under no
@@ -1422,7 +1512,22 @@ void foldWaveVariants(llvm::Function& f) {
                     if (waveKernel) markWaveCallsConvergent(*wrapper);
                     if (waveKernel) markWorkItemLoopsParallel(*wrapper);
                     wavePre = waveOpCallCount(*wrapper);
-                    vectorizeFunction(*wrapper, hostTm.get(), waveKernel, entryName, ntidX);
+                    {
+                        const unsigned instrs = wrapper->getInstructionCount();
+                        unsigned wiBlocks = 0;
+                        const unsigned wi = workItemLoopInstructionCount(*wrapper, &wiBlocks);
+                        if (cpuVectorizeTraced())
+                            fprintf(stderr, "[vectorize-begin] %s instrs=%u wi=%u blocks=%u wave=%d\n",
+                                    entryName.c_str(), instrs, wi, wiBlocks, waveKernel ? 1 : 0);
+                        const auto t0 = std::chrono::steady_clock::now();
+                        vectorizeUnderDeadline(*wrapper, hostTm.get(), waveKernel, entryName, ntidX);
+                        if (cpuVectorizeTraced()) {
+                            const double ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - t0).count();
+                            fprintf(stderr, "[vectorize] %s instrs=%u wi=%u wave=%d ms=%.1f\n",
+                                    entryName.c_str(), instrs, wi, waveKernel ? 1 : 0, ms);
+                        }
+                    }
                     if (dbg) ctx.setDiagnosticHandler(std::move(saved));
                 }
                 if (waveKernel) {
@@ -1578,7 +1683,22 @@ void foldWaveVariants(llvm::Function& f) {
                 if (waveKernel) markWaveCallsConvergent(*wrapper);
                 if (waveKernel) markWorkItemLoopsParallel(*wrapper);
                 wavePre = waveOpCallCount(*wrapper);
-                vectorizeFunction(*wrapper, hostTm.get(), waveKernel, entryName, ntidX);
+                {
+                    const unsigned instrs = wrapper->getInstructionCount();
+                    unsigned wiBlocks = 0;
+                    const unsigned wi = workItemLoopInstructionCount(*wrapper, &wiBlocks);
+                    if (cpuVectorizeTraced())
+                        fprintf(stderr, "[vectorize-begin] %s instrs=%u wi=%u blocks=%u wave=%d\n",
+                                entryName.c_str(), instrs, wi, wiBlocks, waveKernel ? 1 : 0);
+                    const auto t0 = std::chrono::steady_clock::now();
+                    vectorizeUnderDeadline(*wrapper, hostTm.get(), waveKernel, entryName, ntidX);
+                    if (cpuVectorizeTraced()) {
+                        const double ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - t0).count();
+                        fprintf(stderr, "[vectorize] %s instrs=%u wi=%u wave=%d ms=%.1f\n",
+                                entryName.c_str(), instrs, wi, waveKernel ? 1 : 0, ms);
+                    }
+                }
                 if (dbg) ctx.setDiagnosticHandler(std::move(saved));
             }
 

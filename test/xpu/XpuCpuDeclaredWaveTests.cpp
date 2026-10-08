@@ -16,6 +16,13 @@
 #include "cajeta/xpu/XpuTarget.h"
 #include "KernelLoweringProbe.h"
 
+#include "../PortableEnv.h"
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <sstream>
+#include <algorithm>
+#include <cstdlib>
 #include <string>
 
 using cajeta_test::CajetaJit;
@@ -81,6 +88,28 @@ public class M {
 )CJ";
 }
 
+// The compiler binary this test drives, as DiagFormatJsonTests finds it.
+std::string compilerBinary() {
+    const char* envRoot = std::getenv("CAJETA_SOURCE_ROOT");
+    std::string r;
+    if (envRoot && *envRoot) {
+        r = envRoot;
+    } else {
+#ifdef CAJETA_SOURCE_ROOT_DEFAULT
+        r = CAJETA_SOURCE_ROOT_DEFAULT;
+#else
+        r = ".";
+#endif
+    }
+#ifdef _WIN32
+    std::string p = r + "/build/src/cajeta.exe";
+    std::replace(p.begin(), p.end(), '/', '\\');
+    return p;
+#else
+    return r + "/build/src/cajeta";
+#endif
+}
+
 float runOnCpu(const std::string& src, int which) {
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
@@ -125,4 +154,44 @@ TEST(XpuCpuDeclaredWave, nvptxRefusesAWaveWidthItCannotRun) {
     Lowered bad = lowerForNvptx(source("    @Wave(width = 64)\n"), "sumk");
     EXPECT_FALSE(bad.ok);
     EXPECT_NE(bad.why.find("@Wave(width = 64)"), std::string::npos) << bad.why;
+}
+
+// A wrapper whose vectorize pipeline does not come back within the deadline
+// ENDS THE COMPILE with an error naming the kernel and the lever, rather than
+// hanging: iq3xxsF16CoopIdN64Kernel's 32-lane wrapper sat two hours in VPlan
+// CSE (xpu-kernel-adaptor 6.4.16, sampled 2026-10-08), and no size the wrapper
+// shows beforehand predicts it. The worker owns the module, so the process is
+// the unit that stops; the test drives the compiler binary. The stall is
+// injected (CAJETA_XPU_FAULT=vectorize-stall) under a 50 ms deadline.
+TEST(XpuCpuDeclaredWave, aWrapperPastTheVectorizeDeadlineEndsTheCompileByName) {
+    namespace fs = std::filesystem;
+    std::string bin = compilerBinary();
+    if (!fs::exists(bin)) GTEST_SKIP() << "no compiler binary at " << bin;
+    static std::mt19937_64 rng(std::random_device{}());
+    fs::path root = fs::temp_directory_path() / ("cajeta_vdeadline_" + std::to_string(rng()));
+    fs::create_directories(root / "test");
+    fs::create_directories(root / "out");
+    { std::ofstream o(root / "test" / "M.cajeta"); o << source("    @Wave(width = 32)\n"); }
+    fs::path errFile = root / "stderr.txt";
+    std::string cmd = cajeta_env_prefix({{"CAJETA_XPU_CPU_VECTORIZE_DEADLINE_MS", "50"},
+                                         {"CAJETA_XPU_FAULT", "vectorize-stall"}})
+        + bin + " --emit=ir --xpu-backend=cpu test.M.run " + root.string() + " "
+        + (root / "out").string() + " > " CAJETA_PORTABLE_DEVNULL " 2> " + errFile.string();
+    int rc = std::system(cmd.c_str());
+    std::ifstream in(errFile);
+    std::stringstream ss; ss << in.rdbuf();
+    std::string err = ss.str();
+    EXPECT_NE(rc, 0) << err;
+    EXPECT_NE(err.find("[xpu-kernel-hung]"), std::string::npos) << err;
+    EXPECT_NE(err.find("CAJETA_XPU_CPU_VECTORIZE_DEADLINE_S"), std::string::npos) << err;
+    fs::remove_all(root);
+}
+
+// The default deadline admits a small wave kernel: it lowers and answers 32 lanes.
+TEST(XpuCpuDeclaredWave, theDefaultVectorizeDeadlineAdmitsASmallWaveKernel) {
+    testing::internal::CaptureStderr();
+    float r = runOnCpu(source("    @Wave(width = 32)\n"), 0);
+    std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(err.find("[xpu-kernel-hung]"), std::string::npos) << err;
+    EXPECT_EQ(r, 32.0f * 1000.0f + 496.0f);
 }
