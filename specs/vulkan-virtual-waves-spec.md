@@ -38,12 +38,12 @@ device's real subgroup, and its results match the reference bit for bit.
 - RADV on gfx1151 can pin 32 and 64. It needs no virtual wave.
 - A device whose subgroup width is fixed, or whose size control range
   excludes W, refuses every kernel pinned to another width.
-- Corrected 2026-10-08: the draft said every cajeta-llm kernel pins a wave.
-  None does. Its 240 kernels declare no `@Wave`, and neither do ml, xgboost,
-  codec or the stdlib. Only 10 compiler test files declare one. An undeclared
-  kernel runs at whatever width the device gives it, 8 lanes on lavapipe, so
-  a virtual wave reaches the fleet only once its kernels declare the width
-  they are written for.
+- On cajeta-llm main (7b474b5), 32 of 257 kernels declare
+  `@Wave(width = 32)`. llm's own audit (its wave-row-geometry 2.2.5) found that
+  every other kernel using a wave op derives its lanes from the device.
+  ml, xgboost and codec declare none. An earlier correction here said no
+  llm kernel declares one. That was measured on a feature branch 81 commits
+  behind main and was wrong.
 
 ### 1.4 Constraints
 
