@@ -12,6 +12,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
 #include "llvm/Transforms/Scalar/StructurizeCFG.h"
 #include "llvm/Transforms/Utils/FixIrreducible.h"
@@ -65,6 +66,32 @@ void ensureTargetsInitialized() {
         llvm::InitializeAllAsmParsers();
         enableSpirvExtensions();
     });
+}
+
+// GLSL Round leaves the direction at .5 to the driver: llvm.round becomes trunc plus a
+// half-away step, exact for every finite float, so Vulkan rounds as the other backends do.
+void expandRoundHalfAway(llvm::Module& m) {
+    llvm::SmallVector<llvm::IntrinsicInst*, 8> rounds;
+    for (auto& f : m)
+        for (auto& bb : f)
+            for (auto& inst : bb)
+                if (auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(&inst))
+                    if (ii->getIntrinsicID() == llvm::Intrinsic::round) rounds.push_back(ii);
+    for (llvm::IntrinsicInst* ii : rounds) {
+        llvm::IRBuilder<> b(ii);
+        llvm::Value* x = ii->getArgOperand(0);
+        llvm::Type* ty = x->getType();
+        llvm::Value* t = b.CreateUnaryIntrinsic(llvm::Intrinsic::trunc, x);
+        llvm::Value* d = b.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, b.CreateFSub(x, t));
+        llvm::Type* ity = ty->getWithNewType(b.getInt32Ty());
+        llvm::Value* step = b.CreateSIToFP(
+            b.CreateSelect(b.CreateFCmpOLT(x, llvm::ConstantFP::get(ty, 0.0)),
+                           llvm::ConstantInt::getSigned(ity, -1), llvm::ConstantInt::get(ity, 1)),
+            ty);
+        llvm::Value* half = b.CreateFCmpOGE(d, llvm::ConstantFP::get(ty, 0.5));
+        ii->replaceAllUsesWith(b.CreateSelect(half, b.CreateFAdd(t, step), t));
+        ii->eraseFromParent();
+    }
 }
 
 // Runs the codegen pipeline into an in-memory buffer, as SPIR-V text for Assembly or
@@ -151,6 +178,8 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
             inst->eraseFromParent();
         }
     }
+
+    expandRoundHalfAway(m);
 
     // SPIRVLegalizePointerCast crashes on an address that is a constant-expression GEP, a
     // shared array read at a constant index, so every such address becomes an instruction.
