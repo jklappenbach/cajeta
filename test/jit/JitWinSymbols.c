@@ -42,6 +42,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
+#include <math.h>
 // opendir/readdir/closedir for __cajeta_path_list — libmingwex statics,
 // absent from the PE export table like the libm family.
 #include <dirent.h>
@@ -235,6 +237,50 @@ static const CajetaJitWinSym kSymbols[] = {
     //              host-set vars are invisible to JIT'd System.env.get.
     CJ_SYM("_commit",          &_commit),
     CJ_SYM("getenv",           &getenv),
+    // The launch recorder's stdio (cajeta_xpu_record.c); see the production
+    // table for the fast-fail this closes.
+    CJ_SYM("fopen",            &fopen),
+    CJ_SYM("fclose",           &fclose),
+    CJ_SYM("fwrite",           &fwrite),
+    CJ_SYM("fread",            &fread),
+    CJ_SYM("fflush",           &fflush),
+    CJ_SYM("fseek",            &fseek),
+    CJ_SYM("ftell",            &ftell),
+    CJ_SYM("strtoull",         &strtoull),
+    // The bitcode's remaining C-runtime imports; see the production table.
+    CJ_SYM("fputc",          &fputc),
+    CJ_SYM("fputs",          &fputs),
+    CJ_SYM("fgets",          &fgets),
+    CJ_SYM("rewind",         &rewind),
+    CJ_SYM("rename",         &rename),
+    CJ_SYM("malloc",         &malloc),
+    CJ_SYM("calloc",         &calloc),
+    CJ_SYM("realloc",        &realloc),
+    CJ_SYM("free",           &free),
+    CJ_SYM("abort",          &abort),
+    CJ_SYM("exit",           &exit),
+    CJ_SYM("_Exit",          &_Exit),
+    CJ_SYM("atoi",           &atoi),
+    CJ_SYM("atol",           &atol),
+    CJ_SYM("strtoll",        &strtoll),
+    CJ_SYM("qsort",          &qsort),
+    CJ_SYM("rand",           &rand),
+    CJ_SYM("srand",          &srand),
+    CJ_SYM("signal",         &signal),
+    CJ_SYM("raise",          &raise),
+    CJ_SYM("llround",        &llround),
+    CJ_SYM("memchr",         &memchr),
+    CJ_SYM("memcmp",         &memcmp),
+    CJ_SYM("memcpy",         &memcpy),
+    CJ_SYM("memset",         &memset),
+    CJ_SYM("strchr",         &strchr),
+    CJ_SYM("strcmp",         &strcmp),
+    CJ_SYM("strcpy",         &strcpy),
+    CJ_SYM("strlen",         &strlen),
+    CJ_SYM("strncmp",        &strncmp),
+    CJ_SYM("strncpy",        &strncpy),
+    CJ_SYM("strrchr",        &strrchr),
+    CJ_SYM("strstr",         &strstr),
     CJ_SYM("_putenv_s",        &_putenv_s),
     // OptiX AS glue (see the extern block above): the embedded runtime's CUDA
     // noun provider calls these, so every JIT module needs them resolvable.

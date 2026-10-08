@@ -16,12 +16,15 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 // libmingwex is off the PE export table, so its dirent trio needs binding too.
 #include <dirent.h>
 
 // fprintf/snprintf/strtod lower to these under ANSI stdio; bound by real name.
 extern "C" int __mingw_fprintf(FILE*, const char*, ...);
 extern "C" int __mingw_snprintf(char*, size_t, const char*, ...);
+// llround by hand: <math.h> in C++ overloads the libm names bound below.
+extern "C" long long llround(double);
 extern "C" double __mingw_strtod(const char*, char**);
 
 // libgcc stack-probe intrinsic clang emits for functions with large frames.
@@ -215,6 +218,62 @@ static const JitWinSym kSymbols[] = {
     // Process-global CRT state: must resolve to the host binary's CRT instance.
     CJ_SYM("_commit",          &::_commit),
     CJ_SYM("getenv",           &::getenv),
+    // The launch recorder (runtime/native/cajeta_xpu_record.c) writes its
+    // corpus through stdio. Unbridged, the process generator handed these
+    // out of whatever CRT DLL the process had loaded, and the recorder
+    // fast-failed (0xC0000409) on the first write; found by
+    // XpuWorkgroupReduceCorpus.everyKernelMatchesTheReferenceOnCpu on
+    // PHOENIX, 2026-10-07.
+    CJ_SYM("fopen",            &::fopen),
+    CJ_SYM("fclose",           &::fclose),
+    CJ_SYM("fwrite",           &::fwrite),
+    CJ_SYM("fread",            &::fread),
+    CJ_SYM("fflush",           &::fflush),
+    CJ_SYM("fseek",            &::fseek),
+    CJ_SYM("ftell",            &::ftell),
+    CJ_SYM("strtoull",         &::strtoull),
+    // Every other C-runtime import of the runtime bitcode, bound to the host
+    // binary's own CRT. Left to the process generator, a name that both
+    // msvcrt.dll and ucrtbase.dll export (ucrtbase rides in behind libcurl)
+    // resolves to whichever module the search meets first: the recorder's
+    // fputc came out of ucrtbase and took an msvcrt FILE into ucrtbase's
+    // stream lock (SIGSEGV in ntdll!RtlEnterCriticalSection under
+    // ucrtbase!fputc, 2026-10-07). Pure functions (mem*, str*) are bound
+    // too, so the whole list is the bitcode's import list and stays
+    // checkable against `llvm-nm -u cajeta_runtime.bc`.
+    CJ_SYM("fputc",          &::fputc),
+    CJ_SYM("fputs",          &::fputs),
+    CJ_SYM("fgets",          &::fgets),
+    CJ_SYM("rewind",         &::rewind),
+    CJ_SYM("rename",         &::rename),
+    CJ_SYM("malloc",         &::malloc),
+    CJ_SYM("calloc",         &::calloc),
+    CJ_SYM("realloc",        &::realloc),
+    CJ_SYM("free",           &::free),
+    CJ_SYM("abort",          &::abort),
+    CJ_SYM("exit",           &::exit),
+    CJ_SYM("_Exit",          &::_Exit),
+    CJ_SYM("atoi",           &::atoi),
+    CJ_SYM("atol",           &::atol),
+    CJ_SYM("strtoll",        &::strtoll),
+    CJ_SYM("qsort",          &::qsort),
+    CJ_SYM("rand",           &::rand),
+    CJ_SYM("srand",          &::srand),
+    CJ_SYM("signal",         &::signal),
+    CJ_SYM("raise",          &::raise),
+    CJ_SYM("llround",        &::llround),
+    CJ_SYM("memchr",         &::memchr),
+    CJ_SYM("memcmp",         &::memcmp),
+    CJ_SYM("memcpy",         &::memcpy),
+    CJ_SYM("memset",         &::memset),
+    CJ_SYM("strchr",         &::strchr),
+    CJ_SYM("strcmp",         &::strcmp),
+    CJ_SYM("strcpy",         &::strcpy),
+    CJ_SYM("strlen",         &::strlen),
+    CJ_SYM("strncmp",        &::strncmp),
+    CJ_SYM("strncpy",        &::strncpy),
+    CJ_SYM("strrchr",        &::strrchr),
+    CJ_SYM("strstr",         &::strstr),
     CJ_SYM("_putenv_s",        &::_putenv_s),
     // DATA symbols: their visibility("default") is an ELF mechanism, so on COFF
     // they go unresolved and poison the runtime module for every JIT'd cell.
