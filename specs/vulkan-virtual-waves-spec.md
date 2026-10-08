@@ -202,7 +202,12 @@ a separate decision, recorded as §7.5.
   W = 32 that is 8, 16 and 64. The SPIR-V of a pinned kernel roughly
   triples, and that is accepted.
 - 7.4 **The narrow case is in scope.** It reuses the segmented butterfly.
-- 7.5 **The native float reduce order (§6.1).** Measure the butterfly
+- 7.5 **The native float reduce order (§6.1).** Decided 2026-10-08: keep the
+  driver's reduce and correct workgroup-reduce decision 6.5 and the docs. On
+  RADV and amdgpu the driver already sums in the reference butterfly order
+  (measured on inputs where a linear sum differs on 110 of 128 waves, pinned
+  by `XpuNativeFloatReduceOrderTests`), so no timing leg was run. The plan as
+  first written: Measure the butterfly
   against the driver's reduce on RADV and amdgpu first, as an announced
   timing leg. Then decide between correcting decision 6.5 and the docs, and
   moving the native reduce to the butterfly.
