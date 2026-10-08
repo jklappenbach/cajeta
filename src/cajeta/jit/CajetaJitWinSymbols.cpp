@@ -130,6 +130,14 @@ namespace cajeta::jit {
 
 #define CJ_SYM(jitname, fn) { jitname, reinterpret_cast<void*>(fn) }
 
+// C-signature forwarders: C++ headers overload these four, so `&::memchr` names no one function.
+static void* cjMemchr(const void* s, int c, size_t n) {
+    return const_cast<void*>(static_cast<const void*>(::memchr(s, c, n)));
+}
+static char* cjStrchr(const char* s, int c) { return const_cast<char*>(::strchr(s, c)); }
+static char* cjStrrchr(const char* s, int c) { return const_cast<char*>(::strrchr(s, c)); }
+static char* cjStrstr(const char* h, const char* n) { return const_cast<char*>(::strstr(h, n)); }
+
 static const JitWinSym kSymbols[] = {
     CJ_SYM("write",            &::write),
     CJ_SYM("read",             &::read),
@@ -262,18 +270,18 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("signal",         &::signal),
     CJ_SYM("raise",          &::raise),
     CJ_SYM("llround",        &::llround),
-    CJ_SYM("memchr",         &::memchr),
+    CJ_SYM("memchr",         &cjMemchr),
     CJ_SYM("memcmp",         &::memcmp),
     CJ_SYM("memcpy",         &::memcpy),
     CJ_SYM("memset",         &::memset),
-    CJ_SYM("strchr",         &::strchr),
+    CJ_SYM("strchr",         &cjStrchr),
     CJ_SYM("strcmp",         &::strcmp),
     CJ_SYM("strcpy",         &::strcpy),
     CJ_SYM("strlen",         &::strlen),
     CJ_SYM("strncmp",        &::strncmp),
     CJ_SYM("strncpy",        &::strncpy),
-    CJ_SYM("strrchr",        &::strrchr),
-    CJ_SYM("strstr",         &::strstr),
+    CJ_SYM("strrchr",        &cjStrrchr),
+    CJ_SYM("strstr",         &cjStrstr),
     CJ_SYM("_putenv_s",        &::_putenv_s),
     // DATA symbols: their visibility("default") is an ELF mechanism, so on COFF
     // they go unresolved and poison the runtime module for every JIT'd cell.
