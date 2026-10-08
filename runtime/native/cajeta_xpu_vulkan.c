@@ -2721,6 +2721,8 @@ static struct caj_vk_pipe* caj_vk_pipe_get(
          * when its entry name carries "W64". */
         uint32_t want = 32u;
         int declared = entry ? caj_record_wave(entry, /*CAJ_XPU_VULKAN=*/2) : 0;
+        const char* virt = entry ? strstr(entry, "$v") : NULL;
+        if (virt && virt[2] >= '0' && virt[2] <= '9') declared = atoi(virt + 2);
         if (declared >= 2) want = (uint32_t) declared;
         else if (entry && strstr(entry, "W64") && g_xpu_vk.maxSubgroupSize >= 64u) want = 64u;
         if (g_xpu_vk.sizeCtlFeature && want >= g_xpu_vk.minSubgroupSize

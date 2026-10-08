@@ -191,6 +191,12 @@ judged by perplexity and by the route records, not by exact tokens.
   wave reduces as the wave reduce does, so a float `Add` on cpu at wave 16
   differs in the last bit from amdgpu and Vulkan at wave 32 (measured
   2026-10-07). A kernel that needs agreement everywhere pins its width.
+  Corrected 2026-10-08 (Julian): amdgpu and native Vulkan reduce with the
+  driver's own float reduce, so this holds by measurement there, not by
+  construction. On RADV and amdgpu the driver sums in the reference
+  butterfly order, measured and pinned by `XpuNativeFloatReduceOrderTests`.
+  Other vendors' Vulkan drivers are unmeasured. cpu, nvptx and a Vulkan
+  virtual wave run the butterfly explicitly.
 - **6.6** (Julian 2026-10-07) A host call is not refused. The verb keeps its
   `@Native` one-lane host fallback, like its sibling verbs, so a kernel body
   that also runs on the host still compiles.

@@ -216,18 +216,18 @@ TEST(XpuWorkgroupReduceCorpus, everyKernelMatchesTheReferenceOnNvptx) {
 // outputs, which the reference replays at 0 ulp.
 TEST(XpuWorkgroupReduceCorpus, everyKernelMatchesTheCpuOnVulkan) {
     if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
-    if (!cajeta::xpu::vulkan::VulkanDriver::canRunSubgroupWidth(32))
-        GTEST_SKIP() << "this Vulkan device cannot run 32-lane subgroups, so the kernels' "
-                        "@Wave(width = 32) launch is refused (aWaveTheVulkanDeviceCannotRunIsRefusedByName)";
     sameAsCpu(runOn(cajeta::xpu::Backend::Spirv, fs::path()), "vulkan");
 }
 
-// A kernel whose declared wave width the Vulkan device cannot run is refused by name, never run at another width.
+// A kernel whose declared wave width the Vulkan device cannot run, and that has no virtual
+// variant, is refused by name, never run at another width.
 TEST(XpuWorkgroupReduceCorpus, aWaveTheVulkanDeviceCannotRunIsRefusedByName) {
     if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    setenv("CAJETA_XPU_VK_VIRTUAL", "0", 1);
     auto jit = CajetaJit::compile(kSource, "test.W", o);
+    unsetenv("CAJETA_XPU_VK_VIRTUAL");
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int32_t (*)()>("refusal");
     ASSERT_NE(fn, nullptr);

@@ -310,8 +310,10 @@ What to read in it:
   barrier.
 - The order is fixed, so a `float32` sum is one defined value. Two
   backends that run the kernel at the same wave width agree bit for
-  bit, and the reference interpreter reproduces it. `@Wave(width = 32)`
-  pins the width so every backend agrees.
+  bit (measured on cpu, nvptx, amdgpu and RADV), and the reference
+  interpreter reproduces it. `@Wave(width = 32)`
+  pins the width so every backend agrees. A Vulkan device whose subgroups
+  are another width runs the kernel as a virtual wave of 32 and agrees too.
 - A call inside a loop is safe. Each call site has its own scratch,
   and a call in a loop adds a second barrier so the next trip cannot
   overwrite a partial another wave has not read.

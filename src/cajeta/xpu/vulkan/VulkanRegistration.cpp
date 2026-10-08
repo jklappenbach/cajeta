@@ -26,10 +26,33 @@
 
 #include <optional>
 #include <cstdio>
+#include <cstdlib>
 
 namespace cajeta {
 namespace xpu {
 namespace vulkan {
+
+    namespace {
+        // The subgroup widths that get a virtual variant: 8 to 128, or CAJETA_XPU_VK_VIRTUAL, a
+        // comma list ("0" for none).
+        std::vector<unsigned> virtualSubgroups() {
+            std::vector<unsigned> out;
+            const char* env = std::getenv("CAJETA_XPU_VK_VIRTUAL");
+            if (!env) return {8, 16, 32, 64, 128};
+            for (const char* p = env; p && *p;) {
+                unsigned v = (unsigned) std::strtoul(p, const_cast<char**>(&p), 10);
+                if (v >= 4 && (v & (v - 1)) == 0) out.push_back(v);
+                while (*p == ',' || *p == ' ') ++p;
+                if (*p && (*p < '0' || *p > '9')) break;
+            }
+            return out;
+        }
+
+        // A virtual variant that cannot lower leaves the native kernel registered, so it is a note.
+        void noteVirtualSkipped(const std::string& name, const std::string& why) {
+            fprintf(stderr, "cajeta: note: [xpu-virtual-skipped] %s: %s\n", name.c_str(), why.c_str());
+        }
+    } // namespace
 
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
@@ -64,7 +87,8 @@ namespace vulkan {
         // Emits one SPIR-V variant of `method`; `registerKparams` is true only
         // for the primary variant, since the variants share that metadata.
         auto emitVariant = [&](const MethodPtr& method, const std::string& regName,
-                               bool software, bool registerKparams) -> bool {
+                               bool software, bool registerKparams,
+                               unsigned virtualWave = 0, unsigned virtualSubgroup = 0) -> bool {
             auto tm = createSpirvTargetMachine(arch);
             if (!tm) return false;
             llvm::LLVMContext devCtx;
@@ -72,13 +96,16 @@ namespace vulkan {
             configureDeviceModule(devMod, *tm);
             llvm::Function* kfn = nullptr;
             try {
-                kfn = lowerKernel(method, devMod, software, regName);
+                kfn = virtualSubgroup
+                    ? lowerVirtualKernel(method, devMod, *tm, regName, virtualWave, virtualSubgroup)
+                    : lowerKernel(method, devMod, software, regName);
             } catch (cajeta::Exception& ex) {
                 // A contradicted @Access is the author's error, never a skip.
                 if (ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_CONTRADICTED"
                         || ex.getErrorId() == "CAJETA_ERROR_XPU_ACCESS_UNKNOWN") throw;
                 // XPU-N01: no device code, so a launch would find no kernel.
-                reportUnloweredKernel(*method, regName, "vulkan", ex.getMessage());
+                if (virtualSubgroup) noteVirtualSkipped(regName, ex.getMessage());
+                else reportUnloweredKernel(*method, regName, "vulkan", ex.getMessage());
                 return false;
             }
             if (!kfn) return false;
@@ -88,7 +115,9 @@ namespace vulkan {
             std::string codegenFailure;
             std::vector<uint8_t> spirv = emitSpirv(devMod, *tm, &codegenFailure);
             if (spirv.empty()) {
-                if (!codegenFailure.empty())
+                if (!codegenFailure.empty() && virtualSubgroup)
+                    noteVirtualSkipped(regName, "LLVM SPIR-V codegen: " + codegenFailure);
+                else if (!codegenFailure.empty())
                     reportUnloweredKernel(*method, regName, "vulkan",
                                           "LLVM SPIR-V codegen: " + codegenFailure);
                 return false;
@@ -192,6 +221,12 @@ namespace vulkan {
             if (usesRayQuery(method))
                 emitVariant(method, entryName + "$sw", /*software=*/true,
                             /*registerKparams=*/false);
+            if (auto attr = XpuKernelAttr::from(*method); attr && attr->waveWidth())
+                for (unsigned s : virtualSubgroups())
+                    if (s != (unsigned) *attr->waveWidth() && s <= 2u * (unsigned) *attr->waveWidth())
+                        emitVariant(method, entryName + "$v" + std::to_string(s),
+                                    /*software=*/false, /*registerKparams=*/false,
+                                    (unsigned) *attr->waveWidth(), s);
         }
         return emitted;
     }
