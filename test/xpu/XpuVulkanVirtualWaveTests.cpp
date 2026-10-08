@@ -259,6 +259,7 @@ const uint32_t kVN = 512;
 
 const char* kVerbSource = R"CJ(
 package test;
+import cajeta.xpu.Device;
 import cajeta.xpu.Group;
 import cajeta.xpu.GroupOp;
 import cajeta.xpu.KernelBuffer;
@@ -273,6 +274,7 @@ public class G {
     static float32[] gotG;
     static int32[] gotW;
     static uint32[] gotD;
+    static int32 virt;
     @Kernel
     @Wave(width = 32)
     public static void verbs(KernelBuffer<uint32> outU, KernelBuffer<float32> outF,
@@ -381,6 +383,7 @@ public class G {
         hits.upload(zeros);
         KernelStream s #= KernelStream.current();
         verbs.launch(s, grid: [2], block: [256])(outU, outF, inU, inF);
+        virt = Device.lastLaunchVirtualSubgroup();
         s.sync();
         wgr.launch(s, grid: [2], block: [256])(outW, outWF, inF);
         s.sync();
@@ -419,6 +422,7 @@ public class G {
     public static float32 gr(uint32 i) { return gotG[i]; }
     public static int32 w(uint32 i) { return gotW[i]; }
     public static uint32 dd(uint32 i) { return gotD[i]; }
+    public static int32 vs() { return virt; }
 }
 )CJ";
 
@@ -426,6 +430,7 @@ struct VerbOutputs {
     std::vector<uint32_t> u, d;
     std::vector<float> f, g;
     std::vector<int32_t> w;
+    int32_t virt = -1;
     std::string compileText, runText;
     bool ran = false;
 };
@@ -445,6 +450,7 @@ VerbOutputs runVerbsOn(cajeta::xpu::Backend be, bool group) {
     auto gAt = jit->lookup<float (*)(uint32_t)>("gr");
     auto wAt = jit->lookup<int32_t (*)(uint32_t)>("w");
     auto dAt = jit->lookup<uint32_t (*)(uint32_t)>("dd");
+    auto vsAt = jit->lookup<int32_t (*)()>("vs");
     EXPECT_TRUE(fn && uAt && fAt && gAt && wAt && dAt);
     if (!(fn && uAt && fAt && gAt && wAt && dAt)) return o;
     testing::internal::CaptureStderr();
@@ -456,6 +462,7 @@ VerbOutputs runVerbsOn(cajeta::xpu::Backend be, bool group) {
     for (uint32_t k = 0; k < kVN * 5; ++k) o.g.push_back(gAt(k));
     for (uint32_t k = 0; k < kVN; ++k) o.w.push_back(wAt(k));
     for (uint32_t k = 0; k < kVN * 3 + 1000; ++k) o.d.push_back(dAt(k));
+    if (vsAt) o.virt = vsAt();
     o.ran = true;
     return o;
 }
@@ -464,10 +471,7 @@ VerbOutputs runVerbsOn(cajeta::xpu::Backend be, bool group) {
 
 // 2.1.1 to 2.1.4: every wave verb, Group, Workgroup.reduce and the logical ids run virtually
 // at W = 32 and match the cpu bit for bit, the Group verbs matching their Wave equivalents.
-TEST(XpuVulkanVirtualWave, everyWaveVerbRunsVirtuallyAndMatchesTheCpu) {
-    if (cajeta::xpu::vulkan::VulkanDriver::canRunSubgroupWidth(32))
-        GTEST_SKIP() << "this Vulkan device pins 32, so nothing runs virtually";
-    VerbOutputs dev = runVerbsOn(cajeta::xpu::Backend::Spirv, true);
+void expectVerbsMatchTheCpu(const VerbOutputs& dev) {
     ASSERT_TRUE(dev.ran);
     EXPECT_EQ(dev.compileText.find("skipped]"), std::string::npos) << dev.compileText;
     EXPECT_EQ(dev.runText.find("xpu-launch-refused"), std::string::npos) << dev.runText;
@@ -500,6 +504,26 @@ TEST(XpuVulkanVirtualWave, everyWaveVerbRunsVirtuallyAndMatchesTheCpu) {
         ASSERT_EQ(dev.g[i * 4 + 2], (float) (i % 32)) << "Group.laneId";
         ASSERT_EQ(dev.g[i * 4 + 3], 32.0f) << "Group.width";
     }
+}
+
+TEST(XpuVulkanVirtualWave, everyWaveVerbRunsVirtuallyAndMatchesTheCpu) {
+    if (cajeta::xpu::vulkan::VulkanDriver::canRunSubgroupWidth(32))
+        GTEST_SKIP() << "this Vulkan device pins 32, so nothing runs virtually";
+    VerbOutputs dev = runVerbsOn(cajeta::xpu::Backend::Spirv, true);
+    EXPECT_GT(dev.virt, 0) << "the launch did not take the virtual path";
+    expectVerbsMatchTheCpu(dev);
+}
+
+// 3.1.1 to 3.1.3: forced onto subgroups of 64 on a device that can pin them, a 32-lane kernel
+// runs two logical waves per subgroup, each confined to its span, and matches the cpu.
+TEST(XpuVulkanVirtualWave, aNarrowVariantKeepsEachWaveInItsSpanAndMatchesTheCpu) {
+    if (!cajeta::xpu::vulkan::VulkanDriver::canRunSubgroupWidth(64))
+        GTEST_SKIP() << "this Vulkan device cannot pin subgroups of 64";
+    setenv("CAJETA_XPU_VK_FORCE_SUBGROUP", "64", 1);
+    VerbOutputs dev = runVerbsOn(cajeta::xpu::Backend::Spirv, true);
+    unsetenv("CAJETA_XPU_VK_FORCE_SUBGROUP");
+    EXPECT_EQ(dev.virt, 64) << "the launch did not take the narrow variant";
+    expectVerbsMatchTheCpu(dev);
 }
 
 namespace {

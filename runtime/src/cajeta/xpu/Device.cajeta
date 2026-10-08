@@ -139,6 +139,16 @@ public final class Device {
     }
 
     /**
+     * The subgroup width the last Vulkan launch ran its declared @Wave over as a virtual wave,
+     * or 0 when it ran natively.
+     *
+     * @EntryPoint
+     */
+    public static int32 lastLaunchVirtualSubgroup() {
+        return Device.nativeLastVirtualSubgroup();
+    }
+
+    /**
      * The active device's total visible memory, in bytes — the number a
      * residency or working-set budget derives from. Per backend: CUDA
      * reports the device's total memory; HIP reports `hipMemGetInfo`'s
@@ -203,6 +213,9 @@ public final class Device {
 
     @Native("__cajeta_xpu_cpu_last_workers")
     private static int32 nativeLastWorkers();
+
+    @Native("__cajeta_xpu_vk_last_virtual_subgroup")
+    private static int32 nativeLastVirtualSubgroup();
 
     // Sets the forced backend id; returns 0 when selection already ran.
     @Native("__cajeta_xpu_force_backend")

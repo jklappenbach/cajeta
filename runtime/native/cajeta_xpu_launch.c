@@ -769,6 +769,13 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
     }
 }
 
+static int32_t caj_vk_last_virtual = 0;
+
+// The subgroup width the last Vulkan launch ran a virtual wave over, 0 when it ran natively.
+int32_t __cajeta_xpu_vk_last_virtual_subgroup(void) {
+    return __atomic_load_n(&caj_vk_last_virtual, __ATOMIC_ACQUIRE);
+}
+
 // Vulkan launch: translate argv into descriptor bindings — buffers to their storage
 // buffers, scalars to transient SSBOs — then dispatch. Vulkan's entry takes no params.
 static void cajeta_xpu_launch_vulkan(const char* kernelName,
@@ -817,11 +824,15 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
     }
     int declaredWave = caj_record_wave(kernelName, CAJ_XPU_VULKAN);
     char virtualName[160];
-    if (declaredWave >= 2 && !caj_vk_wave_runnable((uint32_t) declaredWave)) {
-        uint32_t sg = g_xpu_vk.defaultSubgroupSize;
-        uint32_t c = sg ? (uint32_t) declaredWave / sg : 0u;
+    __atomic_store_n(&caj_vk_last_virtual, 0, __ATOMIC_RELEASE);
+    if (declaredWave >= 2) {
+        const char* force = getenv("CAJETA_XPU_VK_FORCE_SUBGROUP");
+        uint32_t sg = 0;
+        if (force && *force) sg = (uint32_t) strtoul(force, NULL, 10);
+        else if (!caj_vk_wave_runnable((uint32_t) declaredWave)) sg = g_xpu_vk.defaultSubgroupSize;
+        uint32_t c = sg && sg < (uint32_t) declaredWave ? (uint32_t) declaredWave / sg : 1u;
         struct cajeta_xpu_module* ve = NULL;
-        if (c >= 2 && blockX > 0 && blockX % declaredWave == 0) {
+        if (sg >= 4 && sg != (uint32_t) declaredWave && blockX > 0 && blockX % declaredWave == 0) {
             snprintf(virtualName, sizeof(virtualName), "%s$v%u", launchName, sg);
             pthread_mutex_lock(&g_xpu_cuda_lock);
             ve = cajeta_xpu_find_module(virtualName, CAJ_XPU_VULKAN);
@@ -833,6 +844,7 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
             len = ve->len;
             blockX /= (int32_t) c;
             declaredWave = 0;
+            __atomic_store_n(&caj_vk_last_virtual, (int32_t) sg, __ATOMIC_RELEASE);
         }
     }
     if (declaredWave >= 2 && !caj_vk_wave_runnable((uint32_t) declaredWave)) {

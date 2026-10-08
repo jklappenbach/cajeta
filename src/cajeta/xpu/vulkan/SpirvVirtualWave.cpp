@@ -35,6 +35,7 @@
 #include "llvm/Transforms/Vectorize/LoopVectorize.h"
 
 #include <cmath>
+#include <functional>
 #include <map>
 #include <cstdlib>
 #include "llvm/Support/raw_ostream.h"
@@ -70,16 +71,58 @@ llvm::Value* readLane(llvm::IRBuilder<>& b, llvm::Module& m, llvm::Value* v, llv
 llvm::Value* activeInvocations(llvm::IRBuilder<>& b, llvm::Module& m) {
     llvm::Function* f =
         llvm::Intrinsic::getOrInsertDeclaration(&m, llvm::Intrinsic::spv_subgroup_ballot);
-    return b.CreateExtractElement(b.CreateCall(f, {b.getTrue()}, "active"), uint64_t(0));
+    return b.CreateCall(f, {b.getTrue()}, "active");
+}
+
+// The `d` bits of ballot `bal` for the aligned block of invocations starting at `base`.
+llvm::Value* ballotBlock(llvm::IRBuilder<>& b, llvm::Value* bal, llvm::Value* base, unsigned d) {
+    llvm::Value* word = b.CreateExtractElement(bal, b.CreateLShr(base, b.getInt32(5)));
+    llvm::Value* bits = b.CreateLShr(word, b.CreateAnd(base, b.getInt32(31)));
+    return d >= 32 ? bits : b.CreateAnd(bits, b.getInt32((1u << d) - 1));
+}
+
+llvm::Value* firstBitLow(llvm::IRBuilder<>& b, llvm::Module& m, llvm::Value* x) {
+    return b.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
+                            &m, llvm::Intrinsic::spv_firstbitlow, {b.getInt32Ty()}), {x});
+}
+
+// The first invocation of the logical wave this invocation is in, when a subgroup holds several.
+llvm::Value* spanBase(llvm::IRBuilder<>& b, llvm::Value* lane, unsigned w) {
+    return b.CreateAnd(lane, b.getInt32(~(w - 1)), "span.base");
+}
+
+// A butterfly over the invocations of the logical wave, in the reference order. A partner
+// block is read from its first active invocation, or is `ident` when none is active.
+llvm::Value* invocationButterfly(llvm::IRBuilder<>& b, llvm::Module& m, llvm::Value* x,
+                                 unsigned upTo, llvm::Value* ident,
+                                 const std::function<llvm::Value*(llvm::Value*, llvm::Value*)>& op) {
+    llvm::Value* lane = sublaneId(b, m);
+    llvm::Value* active = activeInvocations(b, m);
+    for (unsigned d = 1; d < upTo; d <<= 1) {
+        llvm::Value* base = b.CreateAnd(b.CreateXor(lane, b.getInt32(d)), b.getInt32(~(d - 1)));
+        llvm::Value* blk = ballotBlock(b, active, base, d);
+        llvm::Value* none = b.CreateICmpEQ(blk, b.getInt32(0));
+        llvm::Value* src = b.CreateSelect(none, lane, b.CreateAdd(base, firstBitLow(b, m, blk)));
+        x = op(x, b.CreateSelect(none, ident, readLane(b, m, x, src)));
+    }
+    return x;
 }
 
 // Shuffle: slot k reads logical lane src[k], held by invocation src % S in slot src / S.
-void buildShuffle(llvm::Module& m, llvm::Function* fn, unsigned c, unsigned s) {
+void buildShuffle(llvm::Module& m, llvm::Function* fn, unsigned w, unsigned c, unsigned s) {
     llvm::IRBuilder<> b(llvm::BasicBlock::Create(m.getContext(), "entry", fn));
     llvm::Value* val = fn->getArg(0);
     llvm::Value* src = fn->getArg(1);
     const unsigned logS = (unsigned) std::log2(s);
     llvm::Value* res = llvm::PoisonValue::get(val->getType());
+    if (c == 1 && s > w) {
+        llvm::Value* sk = b.CreateExtractElement(src, uint64_t(0));
+        llvm::Value* phys = b.CreateAdd(spanBase(b, sublaneId(b, m), w),
+                                        b.CreateAnd(sk, b.getInt32(w - 1)));
+        llvm::Value* v0 = b.CreateExtractElement(val, uint64_t(0));
+        b.CreateRet(b.CreateInsertElement(res, readLane(b, m, v0, phys), uint64_t(0)));
+        return;
+    }
     for (unsigned k = 0; k < c; ++k) {
         llvm::Value* sk = b.CreateExtractElement(src, uint64_t(k));
         llvm::Value* inv = b.CreateAnd(sk, b.getInt32(s - 1));
@@ -120,15 +163,13 @@ void buildReduceF32(llvm::Module& m, llvm::Function* fn, const char* stub, unsig
                            "vred.in");
     llvm::Value* lane = sublaneId(b, m);
     llvm::Value* active = activeInvocations(b, m);
-    llvm::Function* cttz = llvm::Intrinsic::getOrInsertDeclaration(
-        &m, llvm::Intrinsic::spv_firstbitlow, {b.getInt32Ty()});
     for (unsigned d = 1; d < w; d <<= 1) {
         llvm::Value* before = x;
         if (d < s) {
             llvm::Value* base = b.CreateAnd(b.CreateXor(lane, b.getInt32(d)), b.getInt32(~(d - 1)));
-            llvm::Value* blk = b.CreateAnd(b.CreateLShr(active, base), b.getInt32((1u << d) - 1));
+            llvm::Value* blk = ballotBlock(b, active, base, d);
             llvm::Value* none = b.CreateICmpEQ(blk, b.getInt32(0));
-            llvm::Value* first = b.CreateCall(cttz, {blk});
+            llvm::Value* first = firstBitLow(b, m, blk);
             llvm::Value* src = b.CreateSelect(none, lane, b.CreateAdd(base, first), "vred.src");
             llvm::Value* next = llvm::PoisonValue::get(x->getType());
             for (unsigned k = 0; k < c; ++k) {
@@ -157,10 +198,23 @@ llvm::Value* sliceMasked(llvm::IRBuilder<>& b, llvm::Function* fn, unsigned mask
 }
 
 // Ballot: slot k's subgroup ballot holds logical lanes k * S to k * S + S - 1.
-void buildBallot(llvm::Module& m, llvm::Function* fn, unsigned c, unsigned s) {
+void buildBallot(llvm::Module& m, llvm::Function* fn, unsigned w, unsigned c, unsigned s) {
     llvm::IRBuilder<> b(llvm::BasicBlock::Create(m.getContext(), "entry", fn));
     llvm::Function* ballot =
         llvm::Intrinsic::getOrInsertDeclaration(&m, llvm::Intrinsic::spv_subgroup_ballot);
+    if (c == 1 && s > w) {
+        llvm::Value* p = sliceMasked(b, fn, 1, 0, b.CreateExtractElement(fn->getArg(0), uint64_t(0)),
+                                     b.getFalse());
+        llvm::Value* bal = b.CreateCall(ballot, {p});
+        llvm::Value* base = spanBase(b, sublaneId(b, m), w);
+        llvm::Value* bits = b.CreateZExt(ballotBlock(b, bal, base, w), b.getInt64Ty());
+        if (w > 32) {
+            llvm::Value* hi = ballotBlock(b, bal, b.CreateAdd(base, b.getInt32(32)), 32);
+            bits = b.CreateOr(bits, b.CreateShl(b.CreateZExt(hi, b.getInt64Ty()), b.getInt64(32)));
+        }
+        b.CreateRet(b.CreateVectorSplat(1, bits));
+        return;
+    }
     llvm::Value* acc = b.getInt64(0);
     for (unsigned k = 0; k < c; ++k) {
         llvm::Value* p = sliceMasked(b, fn, 1, k, b.CreateExtractElement(fn->getArg(0), uint64_t(k)),
@@ -174,7 +228,8 @@ void buildBallot(llvm::Module& m, llvm::Function* fn, unsigned c, unsigned s) {
 }
 
 // An integer reduce is exact in any order: each slot reduces across the subgroup, then the slots combine.
-void buildIntReduce(llvm::Module& m, llvm::Function* fn, const std::string& op, unsigned c) {
+void buildIntReduce(llvm::Module& m, llvm::Function* fn, const std::string& op, unsigned w,
+                    unsigned c, unsigned s) {
     llvm::IRBuilder<> b(llvm::BasicBlock::Create(m.getContext(), "entry", fn));
     llvm::Intrinsic::ID id = op == "sum" ? llvm::Intrinsic::spv_wave_reduce_sum
         : op == "umax" ? llvm::Intrinsic::spv_wave_reduce_umax
@@ -195,6 +250,13 @@ void buildIntReduce(llvm::Module& m, llvm::Function* fn, const std::string& op, 
                            : op == "smax" ? b.CreateICmpSGT(a, x) : b.CreateICmpSLT(a, x);
         return b.CreateSelect(aWins, a, x);
     };
+    if (c == 1 && s > w) {
+        llvm::Value* x = sliceMasked(b, fn, 1, 0, b.CreateExtractElement(fn->getArg(0), uint64_t(0)),
+                                     b.getInt32(ident));
+        b.CreateRet(b.CreateVectorSplat(1, invocationButterfly(b, m, x, w, b.getInt32(ident),
+                                                               combine)));
+        return;
+    }
     llvm::Value* acc = nullptr;
     for (unsigned k = 0; k < c; ++k) {
         llvm::Value* x = sliceMasked(b, fn, 1, k, b.CreateExtractElement(fn->getArg(0), uint64_t(k)),
@@ -207,7 +269,8 @@ void buildIntReduce(llvm::Module& m, llvm::Function* fn, const std::string& op, 
 
 // Exclusive scan in logical lane order: every lane of earlier slots, then the earlier
 // invocations of this slot.
-void buildScan(llvm::Module& m, llvm::Function* fn, bool product, unsigned c, unsigned s) {
+void buildScan(llvm::Module& m, llvm::Function* fn, bool product, unsigned w, unsigned c,
+               unsigned s) {
     llvm::IRBuilder<> b(llvm::BasicBlock::Create(m.getContext(), "entry", fn));
     llvm::Function* pre = llvm::Intrinsic::getOrInsertDeclaration(
         &m, product ? llvm::Intrinsic::spv_wave_prefix_product : llvm::Intrinsic::spv_wave_prefix_sum,
@@ -215,6 +278,30 @@ void buildScan(llvm::Module& m, llvm::Function* fn, bool product, unsigned c, un
     auto op = [&](llvm::Value* a, llvm::Value* x) {
         return product ? b.CreateMul(a, x) : b.CreateAdd(a, x);
     };
+    if (c == 1 && s > w) {
+        llvm::Value* x = sliceMasked(b, fn, 1, 0, b.CreateExtractElement(fn->getArg(0), uint64_t(0)),
+                                     b.getInt32(product ? 1 : 0));
+        llvm::Value* lane = sublaneId(b, m);
+        llvm::Value* base = spanBase(b, lane, w);
+        llvm::Value* act = activeInvocations(b, m);
+        llvm::Value* r;
+        if (!product) {
+            llvm::Value* excl = b.CreateCall(pre, {x});
+            llvm::Value* first = b.CreateAdd(base, firstBitLow(b, m, ballotBlock(b, act, base, w)));
+            r = b.CreateSub(excl, readLane(b, m, excl, first));
+        } else {
+            llvm::Value* mine = b.CreateSub(lane, base);
+            r = b.getInt32(1);
+            for (unsigned j = 0; j < w; ++j) {
+                llvm::Value* at = b.CreateAdd(base, b.getInt32(j));
+                llvm::Value* on = b.CreateICmpNE(ballotBlock(b, act, at, 1), b.getInt32(0));
+                llvm::Value* take = b.CreateAnd(on, b.CreateICmpULT(b.getInt32(j), mine));
+                r = b.CreateSelect(take, b.CreateMul(r, readLane(b, m, x, at)), r);
+            }
+        }
+        b.CreateRet(b.CreateVectorSplat(1, r));
+        return;
+    }
     llvm::Value* before = b.getInt32(product ? 1 : 0);
     llvm::Value* res = llvm::PoisonValue::get(fn->getReturnType());
     for (unsigned k = 0; k < c; ++k) {
@@ -241,18 +328,18 @@ void attachVariants(llvm::Module& m, llvm::Function* stub, unsigned w, unsigned 
     llvm::Function* un = variantShell(m, name + "_v" + sc, llvm::FunctionType::get(vret, vargs, false));
     llvm::Function* mk = variantShell(m, name + "_Mv" + sc, llvm::FunctionType::get(vret, margs, false));
     if (name == kVirtualShuffle) {
-        buildShuffle(m, un, c, s);
-        buildShuffle(m, mk, c, s);
+        buildShuffle(m, un, w, c, s);
+        buildShuffle(m, mk, w, c, s);
     } else if (name == kVirtualBallot) {
-        buildBallot(m, un, c, s);
-        buildBallot(m, mk, c, s);
+        buildBallot(m, un, w, c, s);
+        buildBallot(m, mk, w, c, s);
     } else if (name.rfind(kVirtualIntReduce, 0) == 0) {
         const std::string op = name.substr(std::string(kVirtualIntReduce).size());
-        buildIntReduce(m, un, op, c);
-        buildIntReduce(m, mk, op, c);
+        buildIntReduce(m, un, op, w, c, s);
+        buildIntReduce(m, mk, op, w, c, s);
     } else if (name == kVirtualScanSum || name == kVirtualScanProduct) {
-        buildScan(m, un, name == kVirtualScanProduct, c, s);
-        buildScan(m, mk, name == kVirtualScanProduct, c, s);
+        buildScan(m, un, name == kVirtualScanProduct, w, c, s);
+        buildScan(m, mk, name == kVirtualScanProduct, w, c, s);
     } else {
         buildReduceF32(m, un, name.c_str(), w, c, s, false);
         buildReduceF32(m, mk, name.c_str(), w, c, s, true);
@@ -612,6 +699,23 @@ bool isVirtualStub(llvm::Function* f) {
 }
 
 } // namespace
+
+void finishNarrowKernel(llvm::Module& m, unsigned waveWidth, unsigned subgroup) {
+    for (llvm::Function& stub : llvm::make_early_inc_range(m)) {
+        if (!isVirtualStub(&stub) || !stub.isDeclaration()) continue;
+        attachVariants(m, &stub, waveWidth, 1, subgroup);
+        llvm::Function* one = m.getFunction(stub.getName().str() + "_v1");
+        stub.removeFnAttr("vector-function-abi-variant");
+        stub.setLinkage(llvm::GlobalValue::InternalLinkage);
+        stub.addFnAttr(llvm::Attribute::AlwaysInline);
+        llvm::IRBuilder<> b(llvm::BasicBlock::Create(m.getContext(), "entry", &stub));
+        std::vector<llvm::Value*> args;
+        for (llvm::Argument& a : stub.args())
+            args.push_back(b.CreateInsertElement(
+                llvm::PoisonValue::get(llvm::FixedVectorType::get(a.getType(), 1)), &a, uint64_t(0)));
+        b.CreateRet(b.CreateExtractElement(b.CreateCall(one, args), uint64_t(0)));
+    }
+}
 
 llvm::Function* virtualWaveStub(llvm::Module& m, const char* name, llvm::Type* ret,
                                 const std::vector<llvm::Type*>& args) {

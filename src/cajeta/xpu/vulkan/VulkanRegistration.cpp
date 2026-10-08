@@ -223,7 +223,7 @@ namespace vulkan {
                             /*registerKparams=*/false);
             if (auto attr = XpuKernelAttr::from(*method); attr && attr->waveWidth())
                 for (unsigned s : virtualSubgroups())
-                    if (s < (unsigned) *attr->waveWidth())
+                    if (s != (unsigned) *attr->waveWidth() && s <= 2u * (unsigned) *attr->waveWidth())
                         emitVariant(method, entryName + "$v" + std::to_string(s),
                                     /*software=*/false, /*registerKparams=*/false,
                                     (unsigned) *attr->waveWidth(), s);

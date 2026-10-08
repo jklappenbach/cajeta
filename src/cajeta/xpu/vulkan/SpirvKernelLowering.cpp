@@ -1255,14 +1255,16 @@ private:
 };
 
 
-// A virtual wave of W lanes over subgroups of S: the body is lowered per slot (C = W / S
-// slots per invocation), and logical lane l is invocation l % S, slot l / S.
+// A virtual wave of W lanes over subgroups of S. Wide (S < W): the body is lowered per slot
+// (C = W / S slots per invocation), and logical lane l is invocation l % S, slot l / S.
+// Narrow (S > W): each invocation is one lane, and each aligned span of W is one wave.
 class SpirvVirtualTarget : public SpirvTarget {
 public:
-    SpirvVirtualTarget(unsigned w, unsigned s) : w_(w), s_(s), c_(w / s) {}
+    SpirvVirtualTarget(unsigned w, unsigned s) : w_(w), s_(s), c_(w / s), narrow_(s > w) {}
 
     llvm::Function* createKernel(llvm::Module& m, const std::string& kname,
-                                 const std::vector<KernelParam>& /*params*/) override {
+                                 const std::vector<KernelParam>& params) override {
+        if (narrow_) return SpirvTarget::createKernel(m, kname, params);
         llvm::LLVMContext& ctx = m.getContext();
         std::vector<llvm::Type*> coords(12, llvm::Type::getInt32Ty(ctx));
         auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), coords, false);
@@ -1274,6 +1276,7 @@ public:
     }
 
     void workgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        if (narrow_) return SpirvTarget::workgroupBarrier(b, m);
         llvm::FunctionCallee callee = m.getOrInsertFunction(
             "__cajeta_xpu_cpu_barrier", llvm::FunctionType::get(b.getVoidTy(), false));
         if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee())) {
@@ -1286,16 +1289,16 @@ public:
 
     llvm::Value* threadId(llvm::IRBuilderBase& b, llvm::Module& m, unsigned dim) override {
         llvm::Value* p = SpirvTarget::threadId(b, m, dim);
-        if (dim != 0) return p;
+        if (dim != 0 || narrow_) return p;
         llvm::Value* wave = b.CreateMul(b.CreateUDiv(p, b.getInt32(s_)), b.getInt32(w_));
         return b.CreateAdd(wave, logicalLane(b, b.CreateURem(p, b.getInt32(s_))), "vtid");
     }
     llvm::Value* workgroupDim(llvm::IRBuilderBase& b, llvm::Module& m, unsigned dim) override {
         llvm::Value* d = SpirvTarget::workgroupDim(b, m, dim);
-        return dim == 0 ? b.CreateMul(d, b.getInt32(c_), "vdim") : d;
+        return dim == 0 && !narrow_ ? b.CreateMul(d, b.getInt32(c_), "vdim") : d;
     }
     llvm::Value* globalId(llvm::IRBuilderBase& b, llvm::Module& m, unsigned dim) override {
-        if (dim != 0) return SpirvTarget::globalId(b, m, dim);
+        if (dim != 0 || narrow_) return SpirvTarget::globalId(b, m, dim);
         return b.CreateAdd(b.CreateMul(workgroupId(b, m, 0), workgroupDim(b, m, 0)),
                            threadId(b, m, 0), "vgid");
     }
@@ -1305,7 +1308,9 @@ public:
         return b.getInt32(w_);
     }
     llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
-        return logicalLane(b, SpirvTarget::waveLaneId(b, m));
+        llvm::Value* sub = SpirvTarget::waveLaneId(b, m);
+        if (narrow_) return b.CreateAnd(sub, b.getInt32(w_ - 1), "vlane");
+        return logicalLane(b, sub);
     }
     llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value,
                              llvm::Value* srcLane) override {
@@ -1394,6 +1399,7 @@ private:
     }
 
     unsigned w_, s_, c_;
+    bool narrow_;
     llvm::Argument* slot_ = nullptr;
 };
 } // namespace
@@ -1420,6 +1426,10 @@ llvm::Function* lowerVirtualKernel(const MethodPtr& method, llvm::Module& device
                                    unsigned waveWidth, unsigned subgroup) {
     SpirvVirtualTarget target(waveWidth, subgroup);
     llvm::Function* slotFn = cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
+    if (subgroup > waveWidth) {
+        finishNarrowKernel(deviceModule, waveWidth, subgroup);
+        return slotFn;
+    }
     std::string whyNot;
     llvm::Function* entry = buildVirtualEntry(slotFn, deviceModule, tm, entryName, waveWidth,
                                               subgroup, &whyNot);

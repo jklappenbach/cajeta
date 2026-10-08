@@ -33,6 +33,10 @@ namespace vulkan {
     llvm::Function* virtualWaveStub(llvm::Module& m, const char* name, llvm::Type* ret,
                                     const std::vector<llvm::Type*>& args);
 
+    // A narrow kernel (subgroups wider than the wave) has no slots: each verb stub becomes its
+    // span-confined single-lane form.
+    void finishNarrowKernel(llvm::Module& m, unsigned waveWidth, unsigned subgroup);
+
     // Wraps the per-slot body `slotFn` in a GLCompute entry `entryName` that runs its C slots as
     // one vector. Returns null with the reason in `whyNot` when a verb was left per lane.
     llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
