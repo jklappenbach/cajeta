@@ -28,6 +28,10 @@ namespace cpu {
     // True iff `linked` calls the barrier marker (i.e. needs fission).
     bool usesBarrier(llvm::Function& linked);
 
+    // Inline the `__cajeta_xpu_dev.*` calls that pass a pointer into one of `f`'s allocas.
+    // Other helpers stay calls until after fission. Returns the number inlined.
+    unsigned inlineAllocaTakingCallees(llvm::Function& f);
+
     // Build `wrapper`'s body from per-work-item kernel `linked`: `nReal` params are
     // shared, ctaid/ntid/nctaid hold 3 block coordinates each, region latches are
     // appended to `workItemLatches`. Throws Exception("XPU-N02") if unsupported.

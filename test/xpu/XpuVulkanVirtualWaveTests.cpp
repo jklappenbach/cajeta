@@ -612,3 +612,232 @@ TEST(XpuVulkanVirtualWave, aVerbInALaneCountedLoopIsRefusedAndItsUniformTwinLowe
     EXPECT_EQ(text.find("[xpu-kernel-skipped]"), std::string::npos) << text;
     EXPECT_EQ(text.find("uniformLoop"), std::string::npos) << text;
 }
+
+namespace {
+
+const char* kShapeSource = R"CJ(
+package test;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.MemoryOrder;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Wave;
+import cajeta.xpu.Workgroup;
+public class S {
+    static float32[] got;
+    static int32[] sel;
+    @Device
+    public static float32 widen(int32 h) {
+        int32 e = (h >> 10) & 31;
+        int32 man = h & 1023;
+        int32 k = 0;
+        if (e == 0) {
+            if (man != 0) {
+                k = 9;
+                while ((man & (1 << k)) == 0) { k = k - 1; }
+            }
+        } else {
+            k = e + 16;
+        }
+        return (float32) (k * 1024 + man) * 0.001f;
+    }
+    @Kernel
+    @Wave(width = 32)
+    public static void helperLoop(KernelBuffer<float32> out, KernelBuffer<float32> in,
+            KernelBuffer<int32> hk) {
+        Shared<float32> part = shared float32[8];
+        uint32 tid = KernelThread.x();
+        uint32 lane = tid % 32;
+        uint32 row = KernelThread.globalIdX() / 32;
+        float32 acc = 0.0f;
+        if (row < 12) {
+            uint32 j = lane;
+            while (j < 200) {
+                acc = acc + in[j] * S.widen(hk[(row * 7 + j) % 256]);
+                j = j + 32;
+            }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0) { part[tid / 32] = tot; }
+        Barrier.workgroup();
+        out[KernelThread.globalIdX()] = part[(tid / 32 + 1) % 8] + tot;
+    }
+    @Kernel
+    @Wave(width = 32)
+    public static void lastBlockSelects(KernelBuffer<int32> picks, KernelBuffer<float32> logits,
+            KernelBuffer<float32> in, KernelBuffer<int32> counter, uint32 experts, uint32 used) {
+        Shared<float32> part = shared float32[256];
+        Shared<int32> lastFlag = shared int32[1];
+        uint32 lane = KernelThread.x();
+        uint32 e = Workgroup.x();
+        float32 acc = 0.0f;
+        uint32 j = lane;
+        while (j < 300) {
+            acc = acc + in[(e * 37 + j) % 256] * (float32) ((j % 5) + 1);
+            j = j + 256;
+        }
+        part[lane] = acc;
+        Barrier.workgroup();
+        uint32 sred = 128;
+        while (sred > 0) {
+            if (lane < sred) { part[lane] = part[lane] + part[lane + sred]; }
+            Barrier.workgroup();
+            sred = sred / 2;
+        }
+        if (lane == 0) {
+            logits[e] = part[0];
+            Barrier.deviceMemory(MemoryOrder.Release);
+            int32 old = counter.atomicAdd(0L, 1, MemoryOrder.AcqRel);
+            int32 fl = 0;
+            if ((uint32) old == experts - 1) { fl = 1; }
+            lastFlag[0] = fl;
+        }
+        Barrier.workgroup();
+        if (lastFlag[0] == 0) { return; }
+        if (lane >= 32) { return; }
+        Barrier.deviceMemory(MemoryOrder.Acquire);
+        float32 vLast = 3.0e38f;
+        uint32 iLast = experts;
+        uint32 k = 0;
+        while (k < used) {
+            float32 bv = 0.0f - 3.0e38f;
+            uint32 ee = lane;
+            while (ee < experts) {
+                float32 p = logits[ee];
+                boolean ok = p < vLast || (p == vLast && ee > iLast);
+                if (ok && p > bv) { bv = p; }
+                ee = ee + 32;
+            }
+            float32 vk = Wave.reduceMaxF32(bv);
+            uint32 bi = experts;
+            ee = lane;
+            while (ee < experts) {
+                float32 p = logits[ee];
+                boolean ok = p < vLast || (p == vLast && ee > iLast);
+                if (ok && p == vk && ee < bi) { bi = ee; }
+                ee = ee + 32;
+            }
+            uint32 ik = Wave.reduceMin(bi);
+            if (lane == 0) { picks[k] = (int32) ik; }
+            vLast = vk;
+            iLast = ik;
+            k = k + 1;
+        }
+    }
+    @Kernel
+    @Wave(width = 32)
+    public static void vectorLoads(KernelBuffer<float32> out, KernelBuffer<float32> in) {
+        uint32 lane = KernelThread.x() % 32;
+        uint32 g = KernelThread.globalIdX();
+        float32 m = 0.0f;
+        uint32 t = 0;
+        while (t < 6) {
+            Vector<float32,4> a = in.vload<4>((int64) (t * 128 + lane * 4));
+            Vector<float32,4> b = in.vload<4>((int64) (t * 64 + lane * 4 + 512));
+            Vector<float32,4> p = a * b + a;
+            float32 u = Wave.reduceSumF32(p[0] + p[1] + p[2] + p[3]);
+            m = m * 0.5f + u;
+            t = t + 1;
+        }
+        out[g] = m;
+    }
+    public static int32 run() {
+        float32[] h = heap float32[1024];
+        for (uint32 i = 0; i < 1024; i = i + 1) {
+            h[i] = (float32) ((i * 37) % 101) * 0.0173f - 0.81f;
+        }
+        int32[] hb = heap int32[256];
+        for (uint32 i = 0; i < 256; i = i + 1) {
+            int32 v = (int32) ((i * 2654435) % 65536);
+            if (i % 3 == 0) { v = v & 1023; }
+            hb[i] = v;
+        }
+        KernelBuffer<float32> in = heap KernelBuffer<float32>(1024);
+        KernelBuffer<int32> hk = heap KernelBuffer<int32>(256);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(512);
+        KernelBuffer<float32> logits = heap KernelBuffer<float32>(8);
+        KernelBuffer<int32> counter = heap KernelBuffer<int32>(1);
+        KernelBuffer<int32> picks = heap KernelBuffer<int32>(4);
+        int32[] zero = heap int32[4];
+        in.upload(h);
+        hk.upload(hb);
+        counter.upload(zero);
+        picks.upload(zero);
+        KernelStream s #= KernelStream.current();
+        helperLoop.launch(s, grid: [2], block: [256])(out, in, hk);
+        s.sync();
+        float32[] first = heap float32[512];
+        out.download(first);
+        lastBlockSelects.launch(s, grid: [8], block: [256])(picks, logits, in, counter, 8, 3);
+        s.sync();
+        vectorLoads.launch(s, grid: [2], block: [256])(out, in);
+        s.sync();
+        float32[] second = heap float32[512];
+        out.download(second);
+        float32[] lg = heap float32[8];
+        logits.download(lg);
+        sel = heap int32[4];
+        picks.download(sel);
+        got = heap float32[1032];
+        for (uint32 i = 0; i < 512; i = i + 1) {
+            got[i] = first[i];
+            got[512 + i] = second[i];
+        }
+        for (uint32 i = 0; i < 8; i = i + 1) { got[1024 + i] = lg[i]; }
+        return 1;
+    }
+    public static float32 at(uint32 i) { return got[i]; }
+    public static int32 pick(uint32 i) { return sel[i]; }
+}
+)CJ";
+
+struct ShapeOutputs {
+    std::vector<float> a;
+    std::vector<int32_t> picks;
+    std::string compileText, stderrText;
+    bool ran = false;
+};
+
+ShapeOutputs runShapesOn(cajeta::xpu::Backend be) {
+    ShapeOutputs o;
+    CajetaJit::Options opts;
+    opts.xpuBackends = {be};
+    testing::internal::CaptureStderr();
+    auto jit = CajetaJit::compile(kShapeSource, "test.S", opts);
+    o.compileText = testing::internal::GetCapturedStderr();
+    EXPECT_NE(jit, nullptr) << o.compileText;
+    if (!jit) return o;
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    auto at = jit->lookup<float (*)(uint32_t)>("at");
+    auto pick = jit->lookup<int32_t (*)(uint32_t)>("pick");
+    EXPECT_TRUE(fn && at && pick);
+    if (!(fn && at && pick)) return o;
+    testing::internal::CaptureStderr();
+    int32_t r = fn();
+    o.stderrText = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(r, 1);
+    for (uint32_t k = 0; k < 1032; ++k) o.a.push_back(at(k));
+    for (uint32_t k = 0; k < 3; ++k) o.picks.push_back(pick(k));
+    o.ran = true;
+    return o;
+}
+
+}  // namespace
+
+// vulkan-virtual-waves 7.2.2: three cajeta-llm kernel shapes the virtual path once refused (a
+// helper with its own loop inside a lane-strided loop, a last-block tail behind early returns,
+// vector loads in a uniform loop) lower at 8 and 16 lanes and match the cpu bit for bit.
+TEST(XpuVulkanVirtualWave, llmKernelShapesRunVirtuallyAndMatchTheCpu) {
+    if (cajeta::xpu::vulkan::VulkanDriver::canRunSubgroupWidth(32))
+        GTEST_SKIP() << "this Vulkan device pins 32, so nothing runs virtually";
+    ShapeOutputs dev = runShapesOn(cajeta::xpu::Backend::Spirv);
+    ASSERT_TRUE(dev.ran);
+    EXPECT_EQ(dev.compileText.find("skipped]"), std::string::npos) << dev.compileText;
+    EXPECT_EQ(dev.stderrText.find("xpu-launch-refused"), std::string::npos) << dev.stderrText;
+    ShapeOutputs cpu = runShapesOn(cajeta::xpu::Backend::Cpu);
+    ASSERT_TRUE(cpu.ran);
+    sameBits(dev.a, cpu.a, "shapes");
+    EXPECT_EQ(dev.picks, cpu.picks);
+}

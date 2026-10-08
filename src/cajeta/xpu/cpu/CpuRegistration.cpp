@@ -894,40 +894,6 @@ static unsigned inlineDeviceCallees(llvm::Function& wrapper) {
     return inlined;
 }
 
-// Inline the `__cajeta_xpu_dev.*` calls that pass a pointer into one of `f`'s
-// allocas (a fragment by reference), to a fixpoint; every other helper call
-// stays. See the barrier path for why.
-static unsigned inlineAllocaTakingCallees(llvm::Function& f) {
-    unsigned inlined = 0;
-    for (unsigned round = 0; round < 32; ++round) {
-        llvm::SmallVector<llvm::CallInst*, 16> calls;
-        for (auto& bb : f)
-            for (auto& in : bb) {
-                auto* c = llvm::dyn_cast<llvm::CallInst>(&in);
-                if (!c) continue;
-                auto* cf = c->getCalledFunction();
-                if (!cf || cf->isDeclaration() || cf->isIntrinsic()
-                    || !cf->getName().starts_with("__cajeta_xpu_dev."))
-                    continue;
-                bool takesAlloca = false;
-                for (llvm::Value* arg : c->args())
-                    if (arg->getType()->isPointerTy()
-                        && llvm::isa<llvm::AllocaInst>(
-                               arg->stripInBoundsConstantOffsets()->stripPointerCasts())) {
-                        takesAlloca = true;
-                        break;
-                    }
-                if (takesAlloca) calls.push_back(c);
-            }
-        if (calls.empty()) break;
-        for (llvm::CallInst* c : calls) {
-            llvm::InlineFunctionInfo ifi;
-            if (llvm::InlineFunction(*c, ifi).isSuccess()) ++inlined;
-        }
-    }
-    return inlined;
-}
-
 // A wave op LoopVectorize left as its scalar stub runs with width-1 semantics:
 // a shuffle is the identity, a reduce is its own input. That is silently wrong
 // for a wave of W and is how q6kWmmaDeqMw4Kernel's mma came to read each

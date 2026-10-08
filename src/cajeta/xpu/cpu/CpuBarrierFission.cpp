@@ -122,6 +122,37 @@ void computeTaint(llvm::ArrayRef<llvm::Value*> seeds,
 
 bool usesBarrier(llvm::Function& linked) { return !barrierCalls(linked).empty(); }
 
+unsigned inlineAllocaTakingCallees(llvm::Function& f) {
+    unsigned inlined = 0;
+    for (unsigned round = 0; round < 32; ++round) {
+        llvm::SmallVector<llvm::CallInst*, 16> calls;
+        for (auto& bb : f)
+            for (auto& in : bb) {
+                auto* c = llvm::dyn_cast<llvm::CallInst>(&in);
+                if (!c) continue;
+                auto* cf = c->getCalledFunction();
+                if (!cf || cf->isDeclaration() || cf->isIntrinsic()
+                    || !cf->getName().starts_with("__cajeta_xpu_dev."))
+                    continue;
+                bool takesAlloca = false;
+                for (llvm::Value* arg : c->args())
+                    if (arg->getType()->isPointerTy()
+                        && llvm::isa<llvm::AllocaInst>(
+                               arg->stripInBoundsConstantOffsets()->stripPointerCasts())) {
+                        takesAlloca = true;
+                        break;
+                    }
+                if (takesAlloca) calls.push_back(c);
+            }
+        if (calls.empty()) break;
+        for (llvm::CallInst* c : calls) {
+            llvm::InlineFunctionInfo ifi;
+            if (llvm::InlineFunction(*c, ifi).isSuccess()) ++inlined;
+        }
+    }
+    return inlined;
+}
+
 void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                           unsigned nReal,
                           const std::vector<llvm::Value*>& ctaid,

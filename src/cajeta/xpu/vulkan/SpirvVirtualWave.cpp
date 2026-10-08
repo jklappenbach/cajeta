@@ -397,6 +397,22 @@ void rematerializeInvariants(llvm::Function& f) {
     }
 }
 
+// The element a constant memset over all `n` elements of `elemTy` writes, or null.
+llvm::Constant* memsetElement(llvm::MemSetInst* ms, llvm::Type* elemTy, uint64_t n) {
+    if (!ms) return nullptr;
+    auto* v = llvm::dyn_cast<llvm::ConstantInt>(ms->getValue());
+    auto* len = llvm::dyn_cast<llvm::ConstantInt>(ms->getLength());
+    const llvm::DataLayout& dl = ms->getModule()->getDataLayout();
+    if (!v || !len || len->getZExtValue() != n * dl.getTypeAllocSize(elemTy)) return nullptr;
+    if (v->isZero()) return llvm::Constant::getNullValue(elemTy);
+    if (!elemTy->isIntegerTy() && !elemTy->isFloatingPointTy()) return nullptr;
+    unsigned bits = elemTy->getPrimitiveSizeInBits();
+    if (bits % 8 != 0) return nullptr;
+    llvm::APInt splat = llvm::APInt::getSplat(bits, v->getValue().trunc(8));
+    llvm::Constant* c = llvm::ConstantInt::get(ms->getContext(), splat);
+    return elemTy->isIntegerTy() ? c : llvm::ConstantExpr::getBitCast(c, elemTy);
+}
+
 // SPIR-V has no array allocation: a context array of N slots becomes one [N x T] local.
 bool fixArrayAllocas(llvm::Function& f, std::string* whyNot) {
     llvm::SmallVector<llvm::AllocaInst*, 8> arrays;
@@ -424,17 +440,20 @@ bool fixArrayAllocas(llvm::Function& f, std::string* whyNot) {
                 g->replaceAllUsesWith(ub.CreateInBoundsGEP(
                     arrTy, fixed, {llvm::ConstantInt::get(idx->getType(), 0), idx}, g->getName()));
                 g->eraseFromParent();
-            } else if (auto* ms = llvm::dyn_cast<llvm::MemSetInst>(ui);
-                       ms && llvm::isa<llvm::ConstantInt>(ms->getValue())
-                       && llvm::cast<llvm::ConstantInt>(ms->getValue())->isZero()) {
+            } else if (llvm::Constant* fill = memsetElement(llvm::dyn_cast<llvm::MemSetInst>(ui),
+                                                             elemTy, n->getZExtValue())) {
+                auto* ms = llvm::cast<llvm::MemSetInst>(ui);
                 for (uint64_t k = 0; k < n->getZExtValue(); ++k)
-                    ub.CreateStore(llvm::Constant::getNullValue(elemTy),
+                    ub.CreateStore(fill,
                                    ub.CreateConstInBoundsGEP2_32(arrTy, fixed, 0, (unsigned) k));
                 ms->eraseFromParent();
             } else if (llvm::isa<llvm::LoadInst>(ui) || llvm::isa<llvm::StoreInst>(ui)) {
                 ui->replaceUsesOfWith(a, ub.CreateConstInBoundsGEP2_32(arrTy, fixed, 0, 0));
             } else {
-                *whyNot = "a per-slot local addressed in a way a SPIR-V array cannot be";
+                std::string what = ui->getOpcodeName();
+                if (auto* cb = llvm::dyn_cast<llvm::CallBase>(ui); cb && cb->getCalledFunction())
+                    what += " " + cb->getCalledFunction()->getName().str();
+                *whyNot = "a per-slot local addressed in a way a SPIR-V array cannot be (" + what + ")";
                 return false;
             }
         }
@@ -694,8 +713,41 @@ bool hasLoop(llvm::Function& f) {
     return !li.empty();
 }
 
+bool reachesLoop(llvm::Function& f, llvm::SmallPtrSetImpl<llvm::Function*>& seen) {
+    if (!seen.insert(&f).second) return false;
+    if (hasLoop(f)) return true;
+    for (llvm::BasicBlock& bb : f)
+        for (llvm::Instruction& in : bb)
+            if (auto* cl = llvm::dyn_cast<llvm::CallInst>(&in))
+                if (llvm::Function* cf = cl->getCalledFunction())
+                    if (!cf->isDeclaration() && reachesLoop(*cf, seen)) return true;
+    return false;
+}
+
 bool isVirtualStub(llvm::Function* f) {
     return f->getName().starts_with(kVirtualPrefix);
+}
+
+// Rewrite each `vector.extract.last.active` as a select chain the scalarizer can split.
+void expandLastActive(llvm::Function& f) {
+    llvm::SmallVector<llvm::IntrinsicInst*, 4> found;
+    for (llvm::BasicBlock& bb : f)
+        for (llvm::Instruction& in : bb)
+            if (auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(&in))
+                if (ii->getIntrinsicID() == llvm::Intrinsic::experimental_vector_extract_last_active)
+                    found.push_back(ii);
+    for (llvm::IntrinsicInst* ii : found) {
+        llvm::IRBuilder<> b(ii);
+        llvm::Value* data = ii->getArgOperand(0);
+        llvm::Value* mask = ii->getArgOperand(1);
+        llvm::Value* r = ii->getArgOperand(2);
+        unsigned n = llvm::cast<llvm::FixedVectorType>(data->getType())->getNumElements();
+        for (unsigned i = 0; i < n; ++i)
+            r = b.CreateSelect(b.CreateExtractElement(mask, uint64_t(i)),
+                               b.CreateExtractElement(data, uint64_t(i)), r);
+        ii->replaceAllUsesWith(r);
+        ii->eraseFromParent();
+    }
 }
 
 } // namespace
@@ -738,7 +790,10 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
     auto* entry = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false),
                                          llvm::Function::ExternalLinkage, entryName, &m);
     llvm::AttributeSet slotAttrs = slotFn->getAttributes().getFnAttrs();
-    inlineHelpers(*slotFn);
+    llvm::SmallPtrSet<llvm::Function*, 8> seen;
+    const bool fission = cpu::usesBarrier(*slotFn) || reachesLoop(*slotFn, seen);
+    if (fission) cpu::inlineAllocaTakingCallees(*slotFn);
+    else inlineHelpers(*slotFn);
     rematerializeInvariants(*slotFn);
     auto fail = [&](const std::string& why) -> llvm::Function* {
         *whyNot = why;
@@ -751,7 +806,7 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
     llvm::Value* zero = llvm::ConstantInt::get(i32, 0);
     llvm::Value* one = llvm::ConstantInt::get(i32, 1);
     llvm::Value* cv = llvm::ConstantInt::get(i32, c);
-    if (cpu::usesBarrier(*slotFn) || hasLoop(*slotFn)) {
+    if (fission) {
         std::vector<llvm::UncondBrInst*> wi;
         std::vector<llvm::BasicBlock*> bars;
         cpu::FissionHooks hooks;
@@ -772,6 +827,7 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
         }
         latches.assign(wi.begin(), wi.end());
         slotFn->eraseFromParent();
+        inlineHelpers(*entry);
         std::string why;
         if (!fixArrayAllocas(*entry, &why)) {
             *whyNot = why;
@@ -818,6 +874,9 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
         llvm::FunctionPassManager fpm;
         fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
         fpm.addPass(llvm::PromotePass());
+        llvm::ScalarizerPassOptions pre;
+        pre.ScalarizeLoadStore = true;
+        fpm.addPass(llvm::ScalarizerPass(pre));
         fpm.addPass(llvm::EarlyCSEPass());
         fpm.run(*entry, fam);
     }
@@ -848,6 +907,7 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
     fpm.addPass(llvm::LoopVectorizePass());
     fpm.run(*entry, fam);
     retireScalarTwins(*entry);
+    expandLastActive(*entry);
 
     const std::string vsuf = "_v" + std::to_string(c), msuf = "_Mv" + std::to_string(c);
     for (llvm::BasicBlock& bb : *entry)
