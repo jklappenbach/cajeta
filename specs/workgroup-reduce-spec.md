@@ -41,6 +41,17 @@ none):
 The first seven are this spec's shape. The eighth is a different operation
 and stays as it is (1.4).
 
+Six more sites reduce across the whole workgroup through a shared-memory
+tree (`part[lane] = part[lane] + part[lane + r]`, one barrier per step),
+found 2026-10-07 and added by 6.7:
+
+- Three attention score kernels launched at 32 lanes, one wave, paying six
+  barriers for a reduction that needs none (`attnScoreKernel`,
+  `attnScorePrefillKernel`, `attnScorePrefillRowKernel`).
+- Three kernels launched at 256 lanes paying nine barriers: the RMSNorm in
+  `iq4nlQ8IdDownCombineKernel` and the router logit sums in
+  `routerF32MatVecKernel` and `routerTopKKernel`.
+
 ### 1.3 Constraints
 
 - Every backend lowers the verb correctly: nvptx, amdgpu, vulkan and cpu,
@@ -141,6 +152,28 @@ longer names a wave width or a wave count.
 - **5.2.2** When a moved kernel is timed against its hand-written form at the
   engine's shapes, it is no slower.
 
+### 5.3 Requirements: the tree sites
+
+The six tree sites (1.2) move once the seven have. A one-wave site uses the
+wave reduce and a multi-wave site uses `Workgroup.reduce`. A tree adds in
+pairs, so a moved site's float output changes in the last bits and cannot be
+held to 5.1's bit-identity. It is held instead to a tolerance at the
+engine's shapes and to cajeta-llm's end-to-end results. A router logit that
+moves by a bit can flip a near-tied expert choice, so the router sites are
+judged by perplexity and by the route records, not by exact tokens.
+
+### 5.4 Use cases
+
+- **5.4.1** When a tree site is moved, its output stays within a stated
+  tolerance of the tree's at the engine's shapes, on cpu, amdgpu and nvptx.
+- **5.4.2** When the router sites are moved, perplexity on the reference
+  prompt set does not change beyond the routing-flip floor, and any
+  changed route is a near tie.
+- **5.4.3** When a moved site is timed against its tree at the engine's
+  shapes, it is no slower.
+- **5.4.4** When a test compared a moved site's output exactly, its golden
+  is regenerated and the commit says why.
+
 ## 6. Decisions
 
 - **6.1** (Julian 2026-10-07) The verb is `Workgroup.reduce`, in the existing
@@ -161,3 +194,6 @@ longer names a wave width or a wave count.
 - **6.6** (Julian 2026-10-07) A host call is not refused. The verb keeps its
   `@Native` one-lane host fallback, like its sibling verbs, so a kernel body
   that also runs on the host still compiles.
+- **6.7** (Julian 2026-10-07) The six tree sites (1.2) are in scope, as their
+  own unit after the seven, under 5.3's tolerance gate rather than
+  bit-identity.
