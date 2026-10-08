@@ -130,7 +130,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                           llvm::Module& hostModule,
                           std::vector<llvm::UncondBrInst*>* workItemLatches,
                           llvm::Value* dynSharedBytes,
-                          bool scaffoldUniformLoops) {
+                          bool scaffoldUniformLoops,
+                          const FissionHooks& hooks) {
     llvm::LLVMContext& ctx = wrapper->getContext();
     llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
     llvm::Value* ntidX = ntid[0];
@@ -183,6 +184,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         llvm::SplitBlock(bbBar, bc->getNextNode());
         bc->eraseFromParent();              // bbBar = `br <after>`
         boundarySet.insert(bbBar);
+        if (hooks.barrierBlocks) hooks.barrierBlocks->push_back(bbBar);
     }
 
     // --- 3b. One `ret` per bypass edge --------------------------------------
@@ -1266,6 +1268,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 if (seen.insert(op).second) work.push_back(op);
         }
     }
+    if (hooks.keepSharedMemory) sharedGlobals.clear();
     for (llvm::GlobalVariable* gv : sharedGlobals) {
         llvm::AllocaInst* buf;
         if (gv->hasInitializer()) {

@@ -91,7 +91,7 @@ public class V {
 
 struct Outputs {
     std::vector<float> a, b;
-    std::string stderrText;
+    std::string stderrText, compileText;
     bool ran = false;
 };
 
@@ -145,4 +145,110 @@ TEST(XpuVulkanVirtualWave, aWaveTheDeviceCannotPinRunsVirtuallyAndMatchesTheCpu)
     ASSERT_TRUE(cpu.ran);
     sameBits(dev.a, cpu.a, "vw32");
     sameBits(dev.b, cpu.b, "vw64");
+}
+
+namespace {
+
+const char* kLoopSource = R"CJ(
+package test;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Wave;
+public class L {
+    static float32[] got;
+    @Kernel
+    @Wave(width = 32)
+    public static void vary(KernelBuffer<float32> out, KernelBuffer<float32> in) {
+        uint32 g = KernelThread.globalIdX();
+        uint32 lane = Wave.laneId();
+        float32 acc = 0.0f;
+        uint32 j = lane;
+        while (j < 70) {
+            acc = acc + in[j];
+            j = j + 32;
+        }
+        out[g * 3] = Wave.reduceSumF32(acc);
+    }
+    @Kernel
+    @Wave(width = 32)
+    public static void uniform(KernelBuffer<float32> out, KernelBuffer<float32> in) {
+        uint32 g = KernelThread.globalIdX();
+        float32 acc = 0.0f;
+        uint32 j = 0;
+        while (j < 3) {
+            acc = acc + Wave.reduceSumF32(in[g] * (float32) (j + 1));
+            j = j + 1;
+        }
+        out[g * 3 + 1] = acc;
+    }
+    @Kernel
+    @Wave(width = 32)
+    public static void barrier(KernelBuffer<float32> out, KernelBuffer<float32> in) {
+        uint32 g = KernelThread.globalIdX();
+        float32 r = Wave.reduceSumF32(in[g]);
+        Barrier.workgroup();
+        out[g * 3 + 2] = r + in[(g + 32) % 256];
+    }
+    public static int32 run() {
+        uint32 n = 256;
+        float32[] h = heap float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) {
+            h[i] = (float32) i * 0.4219f - 31.7f;
+        }
+        KernelBuffer<float32> in = heap KernelBuffer<float32>(n);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(n * 3);
+        in.upload(h);
+        KernelStream s #= KernelStream.current();
+        vary.launch(s, grid: [2], block: [128])(out, in);
+        s.sync();
+        uniform.launch(s, grid: [2], block: [128])(out, in);
+        s.sync();
+        barrier.launch(s, grid: [2], block: [128])(out, in);
+        s.sync();
+        got = heap float32[n * 3];
+        out.download(got);
+        return 1;
+    }
+    public static float32 at(uint32 i) { return got[i]; }
+}
+)CJ";
+
+Outputs runLoopsOn(cajeta::xpu::Backend be) {
+    Outputs o;
+    CajetaJit::Options opts;
+    opts.xpuBackends = {be};
+    testing::internal::CaptureStderr();
+    auto jit = CajetaJit::compile(kLoopSource, "test.L", opts);
+    o.compileText = testing::internal::GetCapturedStderr();
+    EXPECT_NE(jit, nullptr);
+    if (!jit) return o;
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    auto at = jit->lookup<float (*)(uint32_t)>("at");
+    EXPECT_TRUE(fn && at);
+    if (!(fn && at)) return o;
+    testing::internal::CaptureStderr();
+    int32_t r = fn();
+    o.stderrText = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(r, 1);
+    for (uint32_t k = 0; k < 256 * 3; ++k) o.a.push_back(at(k));
+    o.ran = true;
+    return o;
+}
+
+}  // namespace
+
+// 1.1.4: a lane-varying loop before a reduce, a reduce in a uniform loop, and a reduce
+// before a workgroup barrier run virtually and match the cpu bit for bit.
+TEST(XpuVulkanVirtualWave, loopsAndBarriersRunVirtuallyAndMatchTheCpu) {
+    if (cajeta::xpu::vulkan::VulkanDriver::canRunSubgroupWidth(32))
+        GTEST_SKIP() << "this Vulkan device pins 32, so nothing runs virtually";
+    Outputs dev = runLoopsOn(cajeta::xpu::Backend::Spirv);
+    ASSERT_TRUE(dev.ran);
+    EXPECT_EQ(dev.compileText.find("[xpu-kernel-skipped]"), std::string::npos) << dev.compileText;
+    EXPECT_EQ(dev.stderrText.find("xpu-launch-refused"), std::string::npos) << dev.stderrText;
+    Outputs cpu = runLoopsOn(cajeta::xpu::Backend::Cpu);
+    ASSERT_TRUE(cpu.ran);
+    sameBits(dev.a, cpu.a, "loops");
 }

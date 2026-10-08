@@ -1264,13 +1264,24 @@ public:
     llvm::Function* createKernel(llvm::Module& m, const std::string& kname,
                                  const std::vector<KernelParam>& /*params*/) override {
         llvm::LLVMContext& ctx = m.getContext();
-        auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
-                                             {llvm::Type::getInt32Ty(ctx)}, false);
+        std::vector<llvm::Type*> coords(12, llvm::Type::getInt32Ty(ctx));
+        auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), coords, false);
         auto* fn = llvm::Function::Create(fnTy, llvm::Function::InternalLinkage,
                                           kname + ".slot", &m);
         slot_ = fn->getArg(0);
         slot_->setName("slot");
         return fn;
+    }
+
+    void workgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        llvm::FunctionCallee callee = m.getOrInsertFunction(
+            "__cajeta_xpu_cpu_barrier", llvm::FunctionType::get(b.getVoidTy(), false));
+        if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee())) {
+            f->addFnAttr(llvm::Attribute::NoInline);
+            f->addFnAttr(llvm::Attribute::NoDuplicate);
+            f->setDoesNotThrow();
+        }
+        b.CreateCall(callee, {});
     }
 
     llvm::Value* threadId(llvm::IRBuilderBase& b, llvm::Module& m, unsigned dim) override {

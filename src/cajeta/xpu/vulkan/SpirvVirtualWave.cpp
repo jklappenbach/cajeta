@@ -2,6 +2,10 @@
 
 #include "SpirvVirtualWave.h"
 #include "SpirvBackend.h"
+#include "../cpu/CpuBarrierFission.h"
+#include "cajeta/error/Exception.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/IR/Dominators.h"
 
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Analysis/LoopAnalysisManager.h"
@@ -20,6 +24,8 @@
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
 #include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Transforms/Scalar/LoopRotation.h"
+#include "llvm/Transforms/Scalar/LoopUnrollPass.h"
+#include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/Transforms/Scalar/SROA.h"
 #include "llvm/Transforms/Scalar/Scalarizer.h"
 #include "llvm/IR/CFG.h"
@@ -165,20 +171,153 @@ void attachVariants(llvm::Module& m, llvm::Function* stub, unsigned w, unsigned 
 }
 
 
-bool inLoop(llvm::BasicBlock* bb, llvm::BasicBlock* pre, llvm::BasicBlock* done) {
-    return bb != pre && bb != done;
+
+bool isSlotInvariant(llvm::Instruction& in) {
+    for (llvm::Value* op : in.operands())
+        if (llvm::isa<llvm::Instruction>(op) || llvm::isa<llvm::Argument>(op)) return false;
+    if (auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(&in)) {
+        switch (ii->getIntrinsicID()) {
+            case llvm::Intrinsic::spv_resource_handlefrombinding:
+            case llvm::Intrinsic::spv_thread_id_in_group:
+            case llvm::Intrinsic::spv_thread_id:
+            case llvm::Intrinsic::spv_group_id:
+            case llvm::Intrinsic::spv_num_workgroups:
+            case llvm::Intrinsic::spv_subgroup_local_invocation_id:
+            case llvm::Intrinsic::spv_subgroup_size:
+                return true;
+            default:
+                return false;
+        }
+    }
+    if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(&in))
+        if (auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(ld->getPointerOperand()))
+            return gv->getName().starts_with(kWorkgroupDimWitness)
+                || gv->getName().starts_with("cajeta_spec_");
+    return false;
 }
 
+// Each read of a handle, a builtin or a launch witness is redone at its use, so none is live
+// across a barrier and fission never parks one in a slot.
+void rematerializeInvariants(llvm::Function& f) {
+    llvm::SmallVector<llvm::Instruction*, 16> defs;
+    for (llvm::BasicBlock& bb : f)
+        for (llvm::Instruction& in : bb)
+            if (isSlotInvariant(in)) defs.push_back(&in);
+    for (llvm::Instruction* def : defs) {
+        for (llvm::Use& u : llvm::make_early_inc_range(def->uses())) {
+            auto* user = llvm::cast<llvm::Instruction>(u.getUser());
+            llvm::Instruction* at = user;
+            if (auto* phi = llvm::dyn_cast<llvm::PHINode>(user))
+                at = phi->getIncomingBlock(u)->getTerminator();
+            llvm::Instruction* copy = def->clone();
+            copy->insertBefore(at->getIterator());
+            u.set(copy);
+        }
+        def->eraseFromParent();
+    }
+}
+
+// SPIR-V has no array allocation: a context array of N slots becomes one [N x T] local.
+bool fixArrayAllocas(llvm::Function& f, std::string* whyNot) {
+    llvm::SmallVector<llvm::AllocaInst*, 8> arrays;
+    for (llvm::BasicBlock& bb : f)
+        for (llvm::Instruction& in : bb)
+            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(&in); a && a->isArrayAllocation())
+                arrays.push_back(a);
+    for (llvm::AllocaInst* a : arrays) {
+        auto* n = llvm::dyn_cast<llvm::ConstantInt>(a->getArraySize());
+        if (!n) {
+            *whyNot = "a per-slot local whose size is not a constant";
+            return false;
+        }
+        llvm::IRBuilder<> b(a);
+        llvm::Type* elemTy = a->getAllocatedType();
+        auto* arrTy = llvm::ArrayType::get(elemTy, n->getZExtValue());
+        llvm::AllocaInst* fixed = b.CreateAlloca(arrTy, nullptr, a->getName());
+        fixed->setAlignment(a->getAlign());
+        for (llvm::User* u : llvm::make_early_inc_range(a->users())) {
+            auto* ui = llvm::cast<llvm::Instruction>(u);
+            llvm::IRBuilder<> ub(ui);
+            if (auto* g = llvm::dyn_cast<llvm::GetElementPtrInst>(ui);
+                    g && g->getSourceElementType() == elemTy && g->getNumIndices() == 1) {
+                llvm::Value* idx = g->getOperand(1);
+                g->replaceAllUsesWith(ub.CreateInBoundsGEP(
+                    arrTy, fixed, {llvm::ConstantInt::get(idx->getType(), 0), idx}, g->getName()));
+                g->eraseFromParent();
+            } else if (auto* ms = llvm::dyn_cast<llvm::MemSetInst>(ui);
+                       ms && llvm::isa<llvm::ConstantInt>(ms->getValue())
+                       && llvm::cast<llvm::ConstantInt>(ms->getValue())->isZero()) {
+                for (uint64_t k = 0; k < n->getZExtValue(); ++k)
+                    ub.CreateStore(llvm::Constant::getNullValue(elemTy),
+                                   ub.CreateConstInBoundsGEP2_32(arrTy, fixed, 0, (unsigned) k));
+                ms->eraseFromParent();
+            } else if (llvm::isa<llvm::LoadInst>(ui) || llvm::isa<llvm::StoreInst>(ui)) {
+                ui->replaceUsesOfWith(a, ub.CreateConstInBoundsGEP2_32(arrTy, fixed, 0, 0));
+            } else {
+                *whyNot = "a per-slot local addressed in a way a SPIR-V array cannot be";
+                return false;
+            }
+        }
+        a->eraseFromParent();
+    }
+    return true;
+}
+
+// `gep T, (gep [N x T], a, 0, i), j` is `gep [N x T], a, 0, i + j`: SPIR-V cannot step a
+// pointer to one element of a local array onto the next.
+void foldElementGeps(llvm::Function& f) {
+    for (bool again = true; again;) {
+        again = false;
+        for (llvm::BasicBlock& bb : f)
+            for (llvm::Instruction& in : llvm::make_early_inc_range(bb)) {
+                auto* g = llvm::dyn_cast<llvm::GetElementPtrInst>(&in);
+                if (!g || g->getNumIndices() != 1) continue;
+                auto* p = llvm::dyn_cast<llvm::GetElementPtrInst>(g->getPointerOperand());
+                if (!p || p->getNumIndices() != 2) continue;
+                auto* arr = llvm::dyn_cast<llvm::ArrayType>(p->getSourceElementType());
+                if (!arr || arr->getElementType() != g->getSourceElementType()) continue;
+                auto* z = llvm::dyn_cast<llvm::ConstantInt>(p->getOperand(1));
+                if (!z || !z->isZero()) continue;
+                llvm::IRBuilder<> b(g);
+                llvm::Value* i = p->getOperand(2);
+                llvm::Value* j = b.CreateSExtOrTrunc(g->getOperand(1), i->getType());
+                llvm::Value* flat = b.CreateInBoundsGEP(arr, p->getPointerOperand(),
+                                                        {z, b.CreateAdd(i, j)}, g->getName());
+                g->replaceAllUsesWith(flat);
+                g->eraseFromParent();
+                again = true;
+            }
+    }
+}
+
+// Fission's work-item loops run a known C, 1 and 1 times: each is unrolled in full, so every
+// context-array index becomes a constant and SROA can keep the slots in registers.
+void markSlotLoopsForUnroll(llvm::Function& f) {
+    llvm::DominatorTree dt(f);
+    llvm::LoopInfo li(dt);
+    llvm::LLVMContext& ctx = f.getContext();
+    for (llvm::Loop* top : li)
+        for (llvm::Loop* l : llvm::depth_first(top)) {
+            if (!l->getHeader()->getName().starts_with("wi.")) continue;
+            llvm::BasicBlock* latch = l->getLoopLatch();
+            if (!latch) continue;
+            llvm::MDNode* id = llvm::MDNode::getDistinct(
+                ctx, {nullptr, llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, "llvm.loop.unroll.full")})});
+            id->replaceOperandWith(0, id);
+            latch->getTerminator()->setMetadata(llvm::LLVMContext::MD_loop, id);
+        }
+}
 // Builtin coordinates, descriptor handles and launch witnesses are the same for every slot.
-void hoistInvariants(llvm::Function& f, llvm::BasicBlock* pre, llvm::BasicBlock* done) {
+void hoistInvariants(llvm::Function& f) {
+    llvm::BasicBlock* entry = &f.getEntryBlock();
     llvm::SmallVector<llvm::Instruction*, 16> moves;
     for (llvm::BasicBlock& bb : f) {
-        if (!inLoop(&bb, pre, done)) continue;
+        if (&bb == entry) continue;
         for (llvm::Instruction& in : bb) {
             bool invariantOperands = true;
             for (llvm::Value* op : in.operands())
                 if (auto* oi = llvm::dyn_cast<llvm::Instruction>(op))
-                    if (inLoop(oi->getParent(), pre, done)) invariantOperands = false;
+                    if (oi->getParent() != entry) invariantOperands = false;
             if (!invariantOperands) continue;
             if (auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(&in)) {
                 switch (ii->getIntrinsicID()) {
@@ -202,7 +341,7 @@ void hoistInvariants(llvm::Function& f, llvm::BasicBlock* pre, llvm::BasicBlock*
             }
         }
     }
-    for (llvm::Instruction* in : moves) in->moveBefore(pre->getTerminator()->getIterator());
+    for (llvm::Instruction* in : moves) in->moveBefore(entry->getTerminator()->getIterator());
 }
 
 struct BufferBase {
@@ -211,14 +350,14 @@ struct BufferBase {
     llvm::Function* getptr;
 };
 
-// Each descriptor element pointer in the loop becomes a GEP off one hoisted base, so the
+// Each descriptor element pointer becomes a GEP off one base in the entry block, so the
 // vectorizer sees plain memory; restoreBufferAccesses turns each back after it has run.
-std::vector<BufferBase> baseBufferAccesses(llvm::Function& f, llvm::BasicBlock* pre,
-                                           llvm::BasicBlock* done) {
+std::vector<BufferBase> baseBufferAccesses(llvm::Function& f) {
+    llvm::BasicBlock* entry = &f.getEntryBlock();
     std::vector<BufferBase> bases;
     llvm::SmallVector<llvm::CallInst*, 16> gps;
     for (llvm::BasicBlock& bb : f) {
-        if (!inLoop(&bb, pre, done)) continue;
+        if (&bb == entry) continue;
         for (llvm::Instruction& in : bb)
             if (auto* ii = llvm::dyn_cast<llvm::IntrinsicInst>(&in))
                 if (ii->getIntrinsicID() == llvm::Intrinsic::spv_resource_getpointer)
@@ -226,6 +365,8 @@ std::vector<BufferBase> baseBufferAccesses(llvm::Function& f, llvm::BasicBlock* 
     }
     for (llvm::CallInst* gp : gps) {
         llvm::Value* h = gp->getArgOperand(0);
+        auto* hi = llvm::dyn_cast<llvm::Instruction>(h);
+        if (hi && hi->getParent() != entry) continue;
         auto* tt = llvm::dyn_cast<llvm::TargetExtType>(h->getType());
         auto* arr = tt && tt->getNumTypeParameters() > 0
             ? llvm::dyn_cast<llvm::ArrayType>(tt->getTypeParameter(0)) : nullptr;
@@ -234,7 +375,7 @@ std::vector<BufferBase> baseBufferAccesses(llvm::Function& f, llvm::BasicBlock* 
         for (auto& x : bases)
             if (x.handle == h && x.getptr == gp->getCalledFunction()) bb = &x;
         if (!bb) {
-            llvm::IRBuilder<> b(pre->getTerminator());
+            llvm::IRBuilder<> b(entry->getTerminator());
             llvm::CallInst* base = b.CreateCall(gp->getCalledFunction(),
                                                 {h, b.getInt32(0)}, "vbuf.base");
             bases.push_back({base, h, gp->getCalledFunction()});
@@ -279,31 +420,33 @@ bool restoreBufferAccesses(std::vector<BufferBase>& bases, std::string* whyNot) 
     return true;
 }
 
-
-// The vectorizer's scalar twin runs only when its index-overflow check fails, which needs an
-// element index past 2^31, out of bounds on any buffer. Every path into it goes to the vector loop.
-void retireScalarTwin(llvm::Function& f) {
-    llvm::BasicBlock* twin = nullptr;
+// A scalar twin runs only when its index-overflow check fails, which needs an element index
+// past 2^31, out of bounds on any buffer. Every path into one goes to its vector loop.
+void retireScalarTwins(llvm::Function& f) {
+    llvm::SmallVector<llvm::BasicBlock*, 4> twins;
     for (llvm::BasicBlock& bb : f)
-        if (bb.getName() == "scalar.ph") twin = &bb;
-    if (!twin) return;
-    for (llvm::BasicBlock* pred : llvm::to_vector(llvm::predecessors(twin))) {
-        auto* br = llvm::dyn_cast<llvm::BranchInst>(pred->getTerminator());
-        if (!br || !br->isConditional()) continue;
-        llvm::BasicBlock* other = br->getSuccessor(0) == twin ? br->getSuccessor(1)
-                                                              : br->getSuccessor(0);
-        twin->removePredecessor(pred);
-        llvm::BranchInst::Create(other, br->getIterator());
-        br->eraseFromParent();
-    }
+        if (bb.getName().starts_with("scalar.ph")) twins.push_back(&bb);
+    for (llvm::BasicBlock* twin : twins)
+        for (llvm::BasicBlock* pred : llvm::to_vector(llvm::predecessors(twin))) {
+            auto* br = llvm::dyn_cast<llvm::BranchInst>(pred->getTerminator());
+            if (!br || !br->isConditional()) continue;
+            llvm::BasicBlock* other = br->getSuccessor(0) == twin ? br->getSuccessor(1)
+                                                                  : br->getSuccessor(0);
+            twin->removePredecessor(pred);
+            llvm::BranchInst::Create(other, br->getIterator());
+            br->eraseFromParent();
+        }
     llvm::removeUnreachableBlocks(f);
 }
-void forceSlotLoop(llvm::BranchInst* latch, unsigned c) {
+
+// The slot loop ending at `latch` vectorizes at exactly C, its slots independent.
+void forceSlotLoop(llvm::Instruction* latch, unsigned c, llvm::LoopInfo& li) {
     llvm::LLVMContext& ctx = latch->getContext();
-    llvm::Function* f = latch->getFunction();
+    llvm::Loop* loop = li.getLoopFor(latch->getParent());
+    if (!loop) return;
     llvm::MDNode* group = llvm::MDNode::getDistinct(ctx, {});
-    for (llvm::BasicBlock& bb : *f)
-        for (llvm::Instruction& in : bb)
+    for (llvm::BasicBlock* bb : loop->blocks())
+        for (llvm::Instruction& in : *bb)
             if (in.mayReadOrWriteMemory())
                 in.setMetadata(llvm::LLVMContext::MD_access_group, group);
     auto md = [&](const char* key, llvm::Constant* v) {
@@ -321,6 +464,32 @@ void forceSlotLoop(llvm::BranchInst* latch, unsigned c) {
     llvm::MDNode* id = llvm::MDNode::getDistinct(ctx, ops);
     id->replaceOperandWith(0, id);
     latch->setMetadata(llvm::LLVMContext::MD_loop, id);
+}
+
+void inlineHelpers(llvm::Function& f) {
+    for (bool again = true; again;) {
+        again = false;
+        llvm::SmallVector<llvm::CallInst*, 16> calls;
+        for (llvm::BasicBlock& bb : f)
+            for (llvm::Instruction& in : bb)
+                if (auto* cl = llvm::dyn_cast<llvm::CallInst>(&in))
+                    if (llvm::Function* cf = cl->getCalledFunction())
+                        if (!cf->isDeclaration() && cf != &f) calls.push_back(cl);
+        for (llvm::CallInst* cl : calls) {
+            llvm::InlineFunctionInfo ifi;
+            if (llvm::InlineFunction(*cl, ifi).isSuccess()) again = true;
+        }
+    }
+}
+
+bool hasLoop(llvm::Function& f) {
+    llvm::DominatorTree dt(f);
+    llvm::LoopInfo li(dt);
+    return !li.empty();
+}
+
+bool isVirtualStub(llvm::Function* f) {
+    return f->getName().starts_with(kVirtualPrefix);
 }
 
 } // namespace
@@ -345,32 +514,72 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
     llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
     auto* entry = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false),
                                          llvm::Function::ExternalLinkage, entryName, &m);
-    for (const llvm::Attribute& a : slotFn->getAttributes().getFnAttrs()) entry->addFnAttr(a);
+    llvm::AttributeSet slotAttrs = slotFn->getAttributes().getFnAttrs();
+    inlineHelpers(*slotFn);
+    rematerializeInvariants(*slotFn);
+    auto fail = [&](const std::string& why) -> llvm::Function* {
+        *whyNot = why;
+        entry->eraseFromParent();
+        if (slotFn->getParent()) slotFn->eraseFromParent();
+        return nullptr;
+    };
+
+    std::vector<llvm::Instruction*> latches;
+    llvm::Value* zero = llvm::ConstantInt::get(i32, 0);
+    llvm::Value* one = llvm::ConstantInt::get(i32, 1);
+    llvm::Value* cv = llvm::ConstantInt::get(i32, c);
+    if (cpu::usesBarrier(*slotFn) || hasLoop(*slotFn)) {
+        std::vector<llvm::UncondBrInst*> wi;
+        std::vector<llvm::BasicBlock*> bars;
+        cpu::FissionHooks hooks;
+        hooks.keepSharedMemory = true;
+        hooks.barrierBlocks = &bars;
+        try {
+            cpu::fissionBarrierKernel(slotFn, entry, 0, {zero, zero, zero}, {cv, one, one},
+                                      {one, one, one}, m, &wi, nullptr,
+                                      /*scaffoldUniformLoops=*/true, hooks);
+        } catch (cajeta::Exception& e) {
+            return fail("slot fission: " + e.getMessage());
+        }
+        llvm::Function* bar = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_group_memory_barrier_with_group_sync);
+        for (llvm::BasicBlock* bb : bars) {
+            llvm::IRBuilder<> b(&*bb->getFirstInsertionPt());
+            b.CreateCall(bar, {});
+        }
+        latches.assign(wi.begin(), wi.end());
+        slotFn->eraseFromParent();
+        std::string why;
+        if (!fixArrayAllocas(*entry, &why)) {
+            *whyNot = why;
+            entry->eraseFromParent();
+            return nullptr;
+        }
+    } else {
+        llvm::BasicBlock* pre = llvm::BasicBlock::Create(ctx, "entry", entry);
+        llvm::BasicBlock* loop = llvm::BasicBlock::Create(ctx, "slot", entry);
+        llvm::BasicBlock* exit = llvm::BasicBlock::Create(ctx, "done", entry);
+        llvm::IRBuilder<> b(pre);
+        b.CreateBr(loop);
+        b.SetInsertPoint(loop);
+        llvm::PHINode* k = b.CreatePHI(i32, 2, "k");
+        k->addIncoming(b.getInt32(0), pre);
+        llvm::CallInst* call = b.CreateCall(slotFn, {k, zero, zero, zero, zero, zero, cv, one,
+                                                     one, one, one, one});
+        llvm::Value* next = b.CreateAdd(k, b.getInt32(1), "k.next");
+        k->addIncoming(next, loop);
+        latches.push_back(b.CreateCondBr(b.CreateICmpULT(next, b.getInt32(c)), loop, exit));
+        b.SetInsertPoint(exit);
+        b.CreateRetVoid();
+        llvm::InlineFunctionInfo ifi;
+        if (!llvm::InlineFunction(*call, ifi).isSuccess())
+            return fail("the per-slot body could not be inlined into the slot loop");
+        slotFn->eraseFromParent();
+    }
+    entry->setAttributes(llvm::AttributeList());
+    for (const llvm::Attribute& a : slotAttrs) entry->addFnAttr(a);
     entry->addFnAttr("hlsl.shader", "compute");
     entry->addFnAttr("hlsl.numthreads", std::to_string(kVulkanLocalSizeX) + ",1,1");
-
-    llvm::BasicBlock* pre = llvm::BasicBlock::Create(ctx, "entry", entry);
-    llvm::BasicBlock* loop = llvm::BasicBlock::Create(ctx, "slot", entry);
-    llvm::BasicBlock* exit = llvm::BasicBlock::Create(ctx, "done", entry);
-    llvm::IRBuilder<> b(pre);
-    b.CreateBr(loop);
-    b.SetInsertPoint(loop);
-    llvm::PHINode* k = b.CreatePHI(i32, 2, "k");
-    k->addIncoming(b.getInt32(0), pre);
-    llvm::CallInst* call = b.CreateCall(slotFn, {k});
-    llvm::Value* next = b.CreateAdd(k, b.getInt32(1), "k.next");
-    k->addIncoming(next, loop);
-    llvm::BranchInst* latch = b.CreateCondBr(b.CreateICmpULT(next, b.getInt32(c)), loop, exit);
-    b.SetInsertPoint(exit);
-    b.CreateRetVoid();
-
-    llvm::InlineFunctionInfo ifi;
-    if (!llvm::InlineFunction(*call, ifi).isSuccess()) {
-        *whyNot = "the per-slot body could not be inlined into the slot loop";
-        entry->eraseFromParent();
-        return nullptr;
-    }
-    slotFn->eraseFromParent();
 
     llvm::PassBuilder pb(&tm);
     llvm::LoopAnalysisManager lam;
@@ -389,13 +598,21 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
         fpm.addPass(llvm::EarlyCSEPass());
         fpm.run(*entry, fam);
     }
-    hoistInvariants(*entry, pre, exit);
-    std::vector<BufferBase> bases = baseBufferAccesses(*entry, pre, exit);
+    hoistInvariants(*entry);
+    {
+        llvm::FunctionPassManager cse;
+        cse.addPass(llvm::EarlyCSEPass());
+        cse.run(*entry, fam);
+    }
+    std::vector<BufferBase> bases = baseBufferAccesses(*entry);
     for (const char* name : kVirtualStubs)
         if (llvm::Function* stub = m.getFunction(name))
             attachVariants(m, stub, waveWidth, c, subgroup);
-    latch = llvm::cast<llvm::BranchInst>(exit->getSinglePredecessor()->getTerminator());
-    forceSlotLoop(latch, c);
+    {
+        llvm::DominatorTree dt(*entry);
+        llvm::LoopInfo li(dt);
+        for (llvm::Instruction* latch : latches) forceSlotLoop(latch, c, li);
+    }
     fam.clear();
     if (const char* dir = std::getenv("CAJETA_XPU_VK_VIRTUAL_DUMP")) {
         std::error_code ec;
@@ -407,37 +624,47 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
     fpm.addPass(llvm::createFunctionToLoopPassAdaptor(llvm::LoopRotatePass()));
     fpm.addPass(llvm::LoopVectorizePass());
     fpm.run(*entry, fam);
-    retireScalarTwin(*entry);
+    retireScalarTwins(*entry);
     if (!restoreBufferAccesses(bases, whyNot)) return nullptr;
 
+    const std::string vsuf = "_v" + std::to_string(c), msuf = "_Mv" + std::to_string(c);
     for (llvm::BasicBlock& bb : *entry)
         for (llvm::Instruction& in : bb)
             if (auto* cl = llvm::dyn_cast<llvm::CallInst>(&in))
                 if (llvm::Function* cf = cl->getCalledFunction())
-                    if (cf->getName().starts_with("__cajeta_vk_v")
-                            && !cf->getName().contains("_v" + std::to_string(c))
-                            && !cf->getName().contains("_Mv" + std::to_string(c))) {
+                    if (isVirtualStub(cf) && !cf->getName().ends_with(vsuf)
+                            && !cf->getName().ends_with(msuf)) {
                         *whyNot = cf->getName().str() + " was left per lane (the slot loop "
                                   "did not vectorize at " + std::to_string(c) + ")";
                         return nullptr;
                     }
-    if (c > 4) {
+    {
         llvm::SmallVector<llvm::CallInst*, 16> calls;
         for (llvm::BasicBlock& bb : *entry)
             for (llvm::Instruction& in : bb)
                 if (auto* cl = llvm::dyn_cast<llvm::CallInst>(&in))
                     if (llvm::Function* cf = cl->getCalledFunction())
-                        if (cf->getName().starts_with("__cajeta_vk_v") && !cf->isDeclaration())
-                            calls.push_back(cl);
+                        if (isVirtualStub(cf) && !cf->isDeclaration()) calls.push_back(cl);
         for (llvm::CallInst* cl : calls) {
             llvm::InlineFunctionInfo vi;
             llvm::InlineFunction(*cl, vi);
         }
         llvm::ScalarizerPassOptions so;
         so.ScalarizeMinBits = 0;
+        so.ScalarizeLoadStore = true;
         llvm::FunctionPassManager split;
         split.addPass(llvm::ScalarizerPass(so));
+        fam.clear();
         split.run(*entry, fam);
+        foldElementGeps(*entry);
+        markSlotLoopsForUnroll(*entry);
+        llvm::FunctionPassManager tidy;
+        tidy.addPass(llvm::createFunctionToLoopPassAdaptor(llvm::LoopFullUnrollPass(2)));
+        tidy.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+        tidy.addPass(llvm::PromotePass());
+        tidy.addPass(llvm::EarlyCSEPass());
+        fam.clear();
+        tidy.run(*entry, fam);
     }
     return entry;
 }

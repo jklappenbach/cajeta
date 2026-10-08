@@ -16,7 +16,7 @@ refuses the launch by name (v0.37.0, `Device.checkLaunch` reason 3).
 That refusal is honest, and it is a gap. lavapipe runs every subgroup at 8
 lanes. A device without `subgroupSizeControl`, or whose range excludes W,
 runs at a width the kernel did not ask for. Those devices cannot run any
-kernel that pins a wave, and every cajeta-llm kernel pins one.
+kernel that pins a wave.
 
 A virtual wave closes the gap. When the device cannot run W natively, the
 kernel still runs as written, on a wave of W logical lanes built from the
@@ -38,6 +38,12 @@ device's real subgroup, and its results match the reference bit for bit.
 - RADV on gfx1151 can pin 32 and 64. It needs no virtual wave.
 - A device whose subgroup width is fixed, or whose size control range
   excludes W, refuses every kernel pinned to another width.
+- Corrected 2026-10-08: the draft said every cajeta-llm kernel pins a wave.
+  None does. Its 240 kernels declare no `@Wave`, and neither do ml, xgboost,
+  codec or the stdlib. Only 10 compiler test files declare one. An undeclared
+  kernel runs at whatever width the device gives it, 8 lanes on lavapipe, so
+  a virtual wave reaches the fleet only once its kernels declare the width
+  they are written for.
 
 ### 1.4 Constraints
 
@@ -188,8 +194,9 @@ a separate decision, recorded as §7.5.
   capabilities. A C of 8 (64 over 8) was to be carried as two vectors of 4.
   Amended 2026-10-08 on measurement: LLVM's Scalarizer counts its minimum
   fragment in bits, so it keeps an 8-wide boolean mask whole, and SPIR-V
-  cannot legalize that. A C above 4 is carried as scalars, which also needs no
-  capability and runs on every device.
+  cannot legalize that. The C lanes are a vector while the slot loop is
+  widened, and the emitted SPIR-V carries them as scalars for every C. That
+  needs no capability and runs on every device.
 - 7.3 **Variants.** For each kernel that pins W, the compiler emits a
   virtual variant for every power of two S from 8 to 2W other than W. For
   W = 32 that is 8, 16 and 64. The SPIR-V of a pinned kernel roughly

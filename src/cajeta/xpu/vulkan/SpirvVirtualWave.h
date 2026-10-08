@@ -17,10 +17,11 @@ namespace cajeta {
 namespace xpu {
 namespace vulkan {
 
-    inline constexpr const char* kVirtualShuffle = "__cajeta_vk_vwave_shuffle";
-    inline constexpr const char* kVirtualReduceSumF32 = "__cajeta_vk_vwave_reduce_sum_f32";
-    inline constexpr const char* kVirtualReduceMaxF32 = "__cajeta_vk_vwave_reduce_max_f32";
-    inline constexpr const char* kVirtualReduceMinF32 = "__cajeta_vk_vwave_reduce_min_f32";
+    inline constexpr const char* kVirtualPrefix = "__cajeta_xpu_wave_vk_";
+    inline constexpr const char* kVirtualShuffle = "__cajeta_xpu_wave_vk_shuffle";
+    inline constexpr const char* kVirtualReduceSumF32 = "__cajeta_xpu_wave_vk_reduce_sum_f32";
+    inline constexpr const char* kVirtualReduceMaxF32 = "__cajeta_xpu_wave_vk_reduce_max_f32";
+    inline constexpr const char* kVirtualReduceMinF32 = "__cajeta_xpu_wave_vk_reduce_min_f32";
 
     // The per-lane stub a virtual wave verb lowers to; the slot vectorizer swaps in its C-wide variant.
     llvm::Function* virtualWaveStub(llvm::Module& m, const char* name, llvm::Type* ret,

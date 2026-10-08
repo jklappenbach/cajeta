@@ -11,11 +11,19 @@ namespace llvm {
     class Module;
     class Value;
     class UncondBrInst;
+    class BasicBlock;
 }
 
 namespace cajeta {
 namespace xpu {
 namespace cpu {
+
+    // What a target other than the cpu needs from fission: `keepSharedMemory` leaves each
+    // addrspace(3) global in place, and `barrierBlocks` receives each barrier's boundary block.
+    struct FissionHooks {
+        bool keepSharedMemory = false;
+        std::vector<llvm::BasicBlock*>* barrierBlocks = nullptr;
+    };
 
     // True iff `linked` calls the barrier marker (i.e. needs fission).
     bool usesBarrier(llvm::Function& linked);
@@ -32,7 +40,8 @@ namespace cpu {
                               std::vector<llvm::UncondBrInst*>* workItemLatches
                                   = nullptr,
                               llvm::Value* dynSharedBytes = nullptr,
-                              bool scaffoldUniformLoops = false);
+                              bool scaffoldUniformLoops = false,
+                              const FissionHooks& hooks = {});
     // `scaffoldUniformLoops`: also treat every workgroup-uniform loop (no
     // barrier inside, uniform exit conditions, entered by every work-item) as
     // scaffold, its body regioned like a barrier loop's. A wave kernel needs
