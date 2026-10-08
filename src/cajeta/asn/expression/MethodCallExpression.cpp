@@ -5652,6 +5652,33 @@ namespace cajeta {
                         CajetaType::of("int32"), vecT->getLanes());
                     return vecops::convertToI32(*builder, self);
                 }
+                if (methodCallName == "toF64") {
+                    if (!parameters.empty() || !isFloat) {
+                        throw Exception("Vector.toF64 takes no arguments and "
+                                        "a float-element receiver",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of("float64"), vecT->getLanes());
+                    return vecops::convertFpLanes(*builder, self,
+                        llvm::Type::getDoubleTy(builder->getContext()));
+                }
+                if (methodCallName == "toI8") {
+                    auto* svt =
+                        llvm::cast<llvm::FixedVectorType>(self->getType());
+                    if (!parameters.empty() || isFloat ||
+                            svt->getElementType()->getIntegerBitWidth() <= 8) {
+                        throw Exception("Vector.toI8 takes no arguments and an "
+                                        "integer receiver wider than 8 bits",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of("int8"), vecT->getLanes());
+                    return builder->CreateTrunc(self,
+                        llvm::FixedVectorType::get(
+                            llvm::Type::getInt8Ty(builder->getContext()),
+                            svt->getNumElements()), "v.toi8");
+                }
                 if (methodCallName == "bitcastF32") {
                     auto* svt =
                         llvm::cast<llvm::FixedVectorType>(self->getType());

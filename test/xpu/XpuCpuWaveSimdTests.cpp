@@ -53,8 +53,14 @@ package test;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
+import cajeta.xpu.Quad;
 import cajeta.xpu.Wave;
 public class M {
+    @Kernel
+    public static void quadallk(KernelBuffer<uint32> out) {
+        uint32 t = KernelThread.globalIdX();
+        out[t] = Quad.all(t < 1000) ? 1 : 0;
+    }
     @Kernel
     public static void widthk(KernelBuffer<uint32> out) {
         uint32 t = KernelThread.globalIdX();
@@ -214,6 +220,24 @@ public class M {
         return w;
     }
 
+    public static uint32 runQuadAll() {
+        uint32 w = probeWidth();
+        if (w < 4) { return 0; }
+        uint32 n = 256;
+        uint32[] hout = heap uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 7; }
+        KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
+        bout.upload(hout);
+        KernelStream s #= KernelStream.current();
+        quadallk.launch(s, grid: [1], block: [256])(bout);
+        s.sync();
+        bout.download(hout);
+        // Every lane's predicate is true, so every quad's AND vote is true.
+        for (uint32 t = 0; t < n; t = t + 1) {
+            if (hout[t] != 1) { return 100 + t; }
+        }
+        return w;
+    }
     public static uint32 runBallot() {
         uint32 w = probeWidth();
         if (w < 2) { return 0; }
@@ -390,6 +414,15 @@ std::string compileToIr(const char* source, const std::string& entry) {
 // ACTIVE lanes only via the masked VFABI variant — GPU active-mask semantics.
 TEST(XpuCpuWaveSimdTests, divergentReduceSumIsActiveLaneMasked) {
     runWaveDriver("runDivergentReduceSum");
+}
+
+// Quad.all on the cpu backend votes over the wave's ballot. In a module that
+// carries the runtime's scalar ballot stub (every in-process JIT does), the
+// stub's definition told the optimizer the ballot is 0 or 1, and the quad's
+// nibble test folded to false before the width-W variant replaced the call:
+// every lane read 0 where all four predicates were true.
+TEST(XpuCpuWaveSimdTests, quadAllVotesOverTheRealBallot) {
+    runWaveDriver("runQuadAll");
 }
 
 // Float wave reduce (10.12.38): reduceSumF32 / reduceMaxF32 via the f32 VFABI

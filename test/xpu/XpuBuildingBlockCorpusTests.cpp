@@ -36,7 +36,7 @@ using cajeta_test::findKernel;
 namespace {
 
 const char* kKernels[] = {"bbFragment", "bbElements", "bbDot", "bbPermute",
-                          "bbWave", "bbConvert", "bbAsyncCopy", "bbSwizzled"};
+                          "bbWave", "bbConvert", "bbAsyncCopy", "bbSwizzled", "bbQuad"};
 
 const char* kSource = R"CJ(
 package test;
@@ -47,6 +47,7 @@ import cajeta.xpu.CooperativeMatrix;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
+import cajeta.xpu.Quad;
 import cajeta.xpu.Shared;
 import cajeta.xpu.Swizzled;
 import cajeta.xpu.Wave;
@@ -112,7 +113,10 @@ public class M {
         out[g * 6 + 3] = Wave.shuffleDownSync(v, 3);
         out[g * 6 + 4] = Wave.reduceSum(v);
         out[g * 6 + 5] = (uint32) Wave.ballotSync(v > 100);
-        outf[g] = Wave.shuffleSyncF32(xf[g], (lane + 2) % w);
+        outf[g * 4] = Wave.shuffleSyncF32(xf[g], (lane + 2) % w);
+        outf[g * 4 + 1] = Wave.shuffleXorSyncF32(xf[g], 1);
+        outf[g * 4 + 2] = Wave.shuffleUpSyncF32(xf[g], 2);
+        outf[g * 4 + 3] = Wave.shuffleDownSyncF32(xf[g], 3);
     }
     // Conversions between widths: the vector forms to and from the 16-bit
     // floats, and scalar casts across the integer and float widths.
@@ -130,8 +134,20 @@ public class M {
         back.vstore((int64) g * 4L, bv.toF32());
         float32 s = x[g];
         wide[g] = (int64) s * 1000L;
-        narrow[g] = (int8) (int32) s;
-        dbl[g] = (float64) s * 0.5;
+        narrow.vstore((int64) g * 4L, v.toI32().toI8());
+        dbl.vstore((int64) g * 4L, v.toF64());
+    }
+    // The quad ops: a broadcast from a quad lane, the three swaps, the two votes.
+    @Kernel
+    public static void bbQuad(KernelBuffer<uint32> out, KernelBuffer<uint32> x) {
+        uint32 g = KernelThread.globalIdX();
+        uint32 v = x[g];
+        out[g * 6] = Quad.broadcast(v, 2);
+        out[g * 6 + 1] = Quad.swapHorizontal(v);
+        out[g * 6 + 2] = Quad.swapVertical(v);
+        out[g * 6 + 3] = Quad.swapDiagonal(v);
+        out[g * 6 + 4] = Quad.all(v > 100) ? 1 : 0;
+        out[g * 6 + 5] = Quad.any((v & 1) == 1) ? 1 : 0;
     }
     // Async copy of a global range into a shared tile.
     @Kernel
@@ -191,8 +207,8 @@ public class M {
         KernelBuffer<bfloat16> b16 = heap KernelBuffer<bfloat16>(128);
         KernelBuffer<float32> back = heap KernelBuffer<float32>(128);
         KernelBuffer<int64> wide = heap KernelBuffer<int64>(32);
-        KernelBuffer<int8> narrow = heap KernelBuffer<int8>(32);
-        KernelBuffer<float64> dbl = heap KernelBuffer<float64>(32);
+        KernelBuffer<int8> narrow = heap KernelBuffer<int8>(128);
+        KernelBuffer<float64> dbl = heap KernelBuffer<float64>(128);
         KernelStream s #= KernelStream.current();
         bbFragment.launch(s, grid: [1], block: [32])(fc, fa, fb);
         s.sync();
@@ -209,6 +225,8 @@ public class M {
         bbAsyncCopy.launch(s, grid: [1], block: [32])(uo, ux);
         s.sync();
         bbSwizzled.launch(s, grid: [1], block: [32])(uo, uy);
+        s.sync();
+        bbQuad.launch(s, grid: [1], block: [32])(uo, ux);
         s.sync();
         return 1;
     }
@@ -240,7 +258,7 @@ void everyBlockPassesOn(cajeta::xpu::Backend be, const char* backend) {
     std::vector<cajeta::MethodPtr> kernels;
     for (const char* n : kKernels)
         if (auto k = findKernel(module, "test.M", n)) kernels.push_back(k);
-    ASSERT_EQ(kernels.size(), 8u);
+    ASSERT_EQ(kernels.size(), 9u);
     ref::CorpusRun run = ref::runCorpus(kernels, dir.string(), "");
     std::map<std::string, std::string> outcome;
     for (auto& r : run.results) {

@@ -596,6 +596,32 @@ static void markWaveCallsConvergent(llvm::Function& f) {
                         }
 }
 
+// The runtime's scalar wave stubs are width-1 identities (`return value;`,
+// `return predicate ? 1 : 0;`). A module that carries their DEFINITIONS, as
+// every in-process JIT module does (the runtime links into the one module
+// there, where an exe build keeps it in the stdlib module and sees only
+// declarations), also carries what clang inferred from those bodies: a
+// `range(i64 0, 2)` return on the ballot, `returned` on every pass-through
+// value. Known-bits reads the range off the callee, so Quad.all's
+// `(ballot >> base) & 15 == 15` folded to false BEFORE LoopVectorize swapped
+// in the width-W variant, which left the ballot dead and the kernel without
+// a wave op (XpuCpuWaveSimdTests.quadAllVotesOverTheRealBallot). The stubs
+// stay defined (the symbol must still link in every flow), but say nothing
+// about their result and are never inlined into the kernel.
+static void neutralizeWaveStubs(llvm::Module& m) {
+    for (llvm::Function& f : m) {
+        llvm::StringRef n = f.getName();
+        if (!(n.starts_with("__cajeta_xpu_wave_") || n.starts_with("__cajeta_xpu_quad_")
+              || n.starts_with("__cajeta_xpu_group_")))
+            continue;
+        // The width-W variants built here are internal and always-inline: not stubs.
+        if (f.hasLocalLinkage() || f.hasFnAttribute(llvm::Attribute::AlwaysInline)) continue;
+        f.removeRetAttr(llvm::Attribute::Range);
+        for (llvm::Argument& a : f.args()) f.removeParamAttr(a.getArgNo(), llvm::Attribute::Returned);
+        if (!f.isDeclaration()) f.addFnAttr(llvm::Attribute::NoInline);
+    }
+}
+
 // ── Mask-as-data rewrite (divergent wave calls) ────────────────────────────
 // A guarded wave reduce that LoopVectorize SCALARIZES is a width-1 identity, silently
 // wrong, so the guard becomes a DATA argument on an unconditional call in the merge block.
@@ -1135,6 +1161,7 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::Function* linked = hostModule.getFunction(sym);
             if (!linked) continue;
             linked->addFnAttr(llvm::Attribute::AlwaysInline);   // inline into loop
+            neutralizeWaveStubs(hostModule);
 
             llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
             llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);

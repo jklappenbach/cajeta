@@ -95,9 +95,13 @@ These are every built-in the interpreter defines.
 | `Wave.width`, `laneId`, `isFirstLane` | `W`; `linear % W`; `laneId == 0` |
 | `Wave.shuffleSync(v, src)` | `v` from lane `src`, which must be active |
 | `Wave.shuffleSyncF32(v, src)` | the same on a float32; the bits travel unchanged |
+| `Wave.shuffleXorSyncF32(v, m)`, `shuffleUpSyncF32(v, d)`, `shuffleDownSyncF32(v, d)` | the xor, up and down forms on a float32; the bits travel unchanged |
 | `Wave.shuffleXorSync(v, m)` | `v` from lane `laneId ^ m`, which must be active |
 | `Wave.shuffleUpSync(v, d)`, `shuffleDownSync(v, d)` | `v` from lane `laneId - d` or `laneId + d`; a lane past the wave's edge reads itself |
 | `Wave.rotate(v, d)` | `v` from lane `(laneId + d) % W` |
+| `Quad.broadcast(v, i)` | `v` from lane `(laneId & ~3) + (i & 3)`, which must be active |
+| `Quad.swapHorizontal(v)`, `swapVertical(v)`, `swapDiagonal(v)` | `v` from lane `laneId ^ 1`, `^ 2`, `^ 3`, which must be active |
+| `Quad.all(p)`, `any(p)` | the AND or OR of `p` over the four lanes of the quad, every one of which must be active |
 | `Wave.ballotSync(p)` | bit `i` is set when active lane `i` passes `p` |
 | `Wave.reduceSum/Max/Min/And/Or/Xor` | uint32, over the active lanes in lane order; sums wrap |
 | `Wave.reduceSumF32`, `reduceMaxF32` | an xor butterfly over the full width, partners at distance 1, 2, 4 and up in that order; inactive lanes contribute 0 or -inf. nvptx and cpu sum in this order; amdgpu and SPIR-V use the device's own reduce, whose order is the driver's, so they carry a stated bound |
@@ -123,7 +127,8 @@ These are every built-in the interpreter defines.
 | `v.asWords()`, `asBytes()` | 8-bit lanes regrouped into int32, little-endian, and back |
 | `v.widenLo()`, `widenHi()` | the low or high half of the lanes, each extended by its own signedness to twice the width |
 | `v.narrow(w)` | the lanes of `v`, then those of `w`, each truncated to half the width |
-| `v.toF32()`, `toF16()`, `toBF16()`, `toI32()` | lane conversions, rounding to nearest even into the 16-bit floats; `toI32` truncates toward zero |
+| `v.toF32()`, `toF16()`, `toBF16()`, `toF64()`, `toI32()` | lane conversions, rounding to nearest even into the 16-bit floats; `toI32` truncates toward zero |
+| `v.toI8()` | each integer lane truncated to its low byte, keeping the element's signedness |
 | `v.bitcastF32()`, `bitcastI32()` | 32-bit lanes reinterpreted |
 | `v.lut4(t)` | lane `i` is `t[v[i] & 15]` |
 | `v.dotSum(a, acc)` | `acc + Σi v[i]·a[i]`, with `v` extended by its own signedness and `a` sign-extended, wrapping in int32 |

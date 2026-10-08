@@ -827,17 +827,16 @@ conformance kernel in the corpus (`XpuBuildingBlockCorpusTests`):
 | per-element access with the lane map | `elements/get/set/row/col` (§5.5.1) | accumulator | accumulator | refused by name | every tile |
 | integer multiply-add over packed bytes | `Vector<u8/i8,N>.dotAccum/dot/dotSum`, `Group.mac` | dp4a | v_dot4 | OpSDot/UDot | VNNI or widening |
 | byte permute | `Bits.permute(lo, hi, sel)`, `Vector<int8,N>.lut4` | prmt | v_perm | shifts (lut4: a vector shuffle) | shifts |
-| wave shuffle, reduce, ballot | `Wave.shuffleSync/F32/XorSync/UpSync/DownSync`, `reduce*`, `ballotSync`, `Group.reduce` | shfl, redux | the wave intrinsics | subgroup ops | the vectorized lanes |
-| conversions between widths | scalar casts; `Vector.toF32/toF16/toBF16/toI32/widenLo/widenHi/narrow/asWords/asBytes` | every backend, through LLVM's conversions | | | |
+| wave shuffle, reduce, ballot | `Wave.shuffleSync/XorSync/UpSync/DownSync` and their `F32` forms, `reduce*`, `ballotSync`, `Group.reduce` | shfl, redux | the wave intrinsics | subgroup ops | the vectorized lanes |
+| quad shuffle and vote | `Quad.broadcast/swapHorizontal/swapVertical/swapDiagonal/all/any` | shfl, vote.ballot | the wave intrinsics | OpGroupNonUniformQuad* | the vectorized lanes |
+| conversions between widths | scalar casts; `Vector.toF32/toF16/toBF16/toF64/toI32/toI8/widenLo/widenHi/narrow/asWords/asBytes` | every backend, through LLVM's conversions | | | |
 | async copy | `AsyncCopy.copy/commit/wait`, `CoopStage.panelAsync` | cp.async | LDS-direct load | synchronous copy | synchronous copy |
 | swizzled shared tile | `Swizzled<T, S> t = shared T[N]` | identity layout | XOR swizzle | identity layout | identity layout |
 
 An identity layout or a synchronous copy is the block present without its
 acceleration: the kernel's answer is the same, as the corpus checks, and
 the speed is a backend's own work, tracked like any codegen defect. What is
-NOT yet a block: a float shuffle in the xor, up and down forms (take the
-bits through `Cajeta.f32ToBits`), a vector `toF64` or packed `toI8/toI16`,
-and the `Quad` ops in the reference interpreter.
+NOT yet a block: a packed vector `toI16`.
 
 #### 5.5.3 The escape hatch (xpu-kernel-independence spec §5, §7.5)
 

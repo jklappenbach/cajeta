@@ -683,7 +683,10 @@ const std::set<std::string>& staticBuiltins() {
         "Wave.width", "Wave.laneId", "Wave.isFirstLane",
         "Wave.shuffleSync", "Wave.ballotSync", "Wave.rotate",
         "Wave.shuffleXorSync", "Wave.shuffleUpSync", "Wave.shuffleDownSync",
-        "Wave.shuffleSyncF32",
+        "Wave.shuffleSyncF32", "Wave.shuffleXorSyncF32", "Wave.shuffleUpSyncF32",
+        "Wave.shuffleDownSyncF32",
+        "Quad.broadcast", "Quad.swapHorizontal", "Quad.swapVertical", "Quad.swapDiagonal",
+        "Quad.all", "Quad.any",
         "Wave.reduceSum", "Wave.reduceMax", "Wave.reduceMin",
         "Wave.reduceAnd", "Wave.reduceOr", "Wave.reduceXor",
         "Wave.reduceSumF32", "Wave.reduceMaxF32",
@@ -707,7 +710,7 @@ const std::set<std::string>& vectorMethods() {
     static const std::set<std::string> s = {
         "dotAccum", "dot", "dotSum", "asUnsigned", "asSigned", "asWords", "asBytes",
         "widenLo", "widenHi", "narrow", "toF32", "toF16", "toBF16", "toI32",
-        "bitcastF32", "bitcastI32", "lut4",
+        "toF64", "toI8", "bitcastF32", "bitcastI32", "lut4",
     };
     return s;
 }
@@ -725,6 +728,7 @@ const std::set<std::string>& atomics() {
 bool isCollective(const std::string& q) {
     if (q == "Barrier.workgroup" || q == "Barrier.wave" || q == "Group.reduce"
             || q == "Group.reduceSegmented" || q == "WaveVector.ofLane") return true;
+    if (startsWith(q, "Quad.")) return true;   // a quad op is a wave collective over four lanes
     if (!startsWith(q, "Wave.")) return false;
     return q != "Wave.width" && q != "Wave.laneId" && q != "Wave.isFirstLane";
 }
@@ -750,7 +754,8 @@ const std::map<LocalKind, std::set<std::string>>& memberBuiltins() {
                              "atomicExchange", "atomicCompareExchange"}},
         {LocalKind::Vector, {"dotAccum", "dot", "dotSum", "asUnsigned", "asSigned", "asWords",
                              "asBytes", "widenLo", "widenHi", "narrow", "toF32", "toF16",
-                             "toBF16", "toI32", "bitcastF32", "bitcastI32", "lut4"}},
+                             "toBF16", "toI32", "toF64", "toI8", "bitcastF32", "bitcastI32",
+                             "lut4"}},
         {LocalKind::Tile, {"splat", "load", "store", "mma", "fromWords", "scaledAccumInto",
                            "scaledAccumInto2", "rank1Accum", "scaledAccumI32",
                            "elements", "get", "set", "row", "col"}},
@@ -1109,7 +1114,8 @@ private:
             return;
         }
         if (isCollective(q)) usesCollective = true;
-        if (startsWith(q, "Wave.") || (startsWith(q, "Group.") && q != "Group.mac")
+        if (startsWith(q, "Wave.") || startsWith(q, "Quad.")
+                || (startsWith(q, "Group.") && q != "Group.mac")
                 || q == "Barrier.wave" || q == "WaveVector.ofLane")
             usesWave = true;   // Group.mac is a lane's own dot, not a wave operation
     }
@@ -2374,6 +2380,20 @@ private:
             for (auto& l : self.lanes) out.push_back(convert(l, {Prim::I32, true}));
             return vec({Prim::I32, true}, out);
         }
+        if (nm == "toF64") {
+            if (!isFloat(et.prim)) return bad("needs float lanes");
+            std::vector<Val> out;
+            for (auto& l : self.lanes) out.push_back(convert(l, {Prim::F64, true}));
+            return vec({Prim::F64, true}, out);
+        }
+        if (nm == "toI8") {
+            // The packed narrow: each integer lane truncated to its low byte.
+            if (isFloat(et.prim) || w <= 8) return bad("needs integer lanes wider than 8 bits");
+            Ty nt{Prim::I8, et.sgn};
+            std::vector<Val> out;
+            for (auto& l : self.lanes) out.push_back(mkInt(nt, l.i));
+            return vec(nt, out);
+        }
         if (nm == "bitcastF32" || nm == "bitcastI32") {
             bool toF = nm == "bitcastF32";
             if (toF == isFloat(et.prim) || w != 32) return bad("on these lanes");
@@ -2970,11 +2990,19 @@ private:
             arr.what = a[1].i == 0 ? "Wave.reduceSumF32Segmented" : "Wave.reduceMaxF32Segmented";
             arr.arg = convert(a[2], {Prim::F32, true});
             arr.arg2 = convert(a[0], {Prim::I32, false});
+        } else if (q.rfind("Quad.", 0) == 0) {
+            // A quad op is a wave collective over the lane's quad: the value at
+            // its declared type, the broadcast's index after it.
+            bool vote = q == "Quad.all" || q == "Quad.any";
+            if (a.empty()) refuse("`" + q + "` without its value (" + where + ")");
+            arr.arg = convert(a[0], vote ? Ty{Prim::Bool, false} : Ty{Prim::I32, false});
+            if (a.size() > 1) arr.arg2 = convert(a[1], {Prim::I32, false});
         } else if (q.rfind("Wave.", 0) == 0) {
             // Each argument at its declared parameter type.
             bool f32 = q == "Wave.reduceSumF32" || q == "Wave.reduceMaxF32"
                     || q == "Wave.reduceSumF32Segmented" || q == "Wave.reduceMaxF32Segmented"
-                    || q == "Wave.shuffleSyncF32";
+                    || q == "Wave.shuffleSyncF32" || q == "Wave.shuffleXorSyncF32"
+                    || q == "Wave.shuffleUpSyncF32" || q == "Wave.shuffleDownSyncF32";
             Ty pt = f32 ? Ty{Prim::F32, true} : Ty{Prim::I32, false};
             if (q == "Wave.ballotSync") pt = {Prim::Bool, false};
             if (a.empty()) refuse("`" + q + "` without its value (" + where + ")");
@@ -3471,6 +3499,11 @@ private:
             {"Bits.permute", {Prim::I32, false}},
             {"Wave.shuffleXorSync", {Prim::I32, false}}, {"Wave.shuffleUpSync", {Prim::I32, false}},
             {"Wave.shuffleDownSync", {Prim::I32, false}}, {"Wave.shuffleSyncF32", {Prim::F32, true}},
+            {"Wave.shuffleXorSyncF32", {Prim::F32, true}}, {"Wave.shuffleUpSyncF32", {Prim::F32, true}},
+            {"Wave.shuffleDownSyncF32", {Prim::F32, true}},
+            {"Quad.broadcast", {Prim::I32, false}}, {"Quad.swapHorizontal", {Prim::I32, false}},
+            {"Quad.swapVertical", {Prim::I32, false}}, {"Quad.swapDiagonal", {Prim::I32, false}},
+            {"Quad.all", {Prim::Bool, false}}, {"Quad.any", {Prim::Bool, false}},
             {"Cajeta.bitsToF32", {Prim::F32, true}}, {"Cajeta.f32ToBits", {Prim::I32, true}},
             {"Cajeta.bitsToF64", {Prim::F64, true}}, {"Cajeta.f64ToBits", {Prim::I64, true}},
         };
@@ -3651,16 +3684,18 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
         return;
     }
     if (q == "Wave.shuffleXorSync" || q == "Wave.shuffleUpSync" || q == "Wave.shuffleDownSync"
-            || q == "Wave.shuffleSyncF32") {
+            || q == "Wave.shuffleSyncF32" || q == "Wave.shuffleXorSyncF32"
+            || q == "Wave.shuffleUpSyncF32" || q == "Wave.shuffleDownSyncF32") {
         // One shuffle from a computed source: xor is the butterfly; up and
-        // down read the lane itself past the wave's edge, as shfl does.
+        // down read the lane itself past the wave's edge, as shfl does. The
+        // F32 forms are the same shuffle of the float's bits.
         for (uint32_t m : lanes) {
             uint64_t d = G.sync[m].arrival.arg2.u64();
             uint64_t l = laneOf(m);
             uint64_t src;
-            if (q == "Wave.shuffleXorSync") src = l ^ d;
-            else if (q == "Wave.shuffleUpSync") src = l >= d ? l - d : l;
-            else if (q == "Wave.shuffleDownSync") src = l + d < W ? l + d : l;
+            if (q == "Wave.shuffleXorSync" || q == "Wave.shuffleXorSyncF32") src = l ^ d;
+            else if (q == "Wave.shuffleUpSync" || q == "Wave.shuffleUpSyncF32") src = l >= d ? l - d : l;
+            else if (q == "Wave.shuffleDownSync" || q == "Wave.shuffleDownSyncF32") src = l + d < W ? l + d : l;
             else src = d;
             auto it = byLane.find((uint32_t) src);
             if (src >= W || it == byLane.end())
@@ -3680,6 +3715,41 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
         v.lanes.assign(W, Val());
         for (auto& [l, m] : byLane) v.lanes[l] = argOf(m);
         for (uint32_t m : lanes) G.sync[m].arrival.result = v;
+        return;
+    }
+    if (q.rfind("Quad.", 0) == 0) {
+        // The lane's quad is lanes base..base+3, base = laneId & ~3. A
+        // broadcast reads quad lane (index & 3); the swaps read lane ^ 1, ^ 2
+        // and ^ 3; the votes fold the four predicates. A quad lane that is
+        // not active is undefined behaviour, as a shuffle from one is.
+        for (uint32_t m : lanes) {
+            uint64_t l = laneOf(m);
+            uint64_t base = l & ~3ull;
+            if (q == "Quad.all" || q == "Quad.any") {
+                bool all = true, any = false;
+                for (uint64_t k = 0; k < 4; ++k) {
+                    auto it = byLane.find((uint32_t) (base + k));
+                    if (base + k >= W || it == byLane.end())
+                        undefined("`" + q + "` reads lane " + std::to_string(base + k) +
+                                  ", which is not active (" + where + ")");
+                    bool p = argOf(it->second).i != 0;
+                    all = all && p;
+                    any = any || p;
+                }
+                G.sync[m].arrival.result = mkBool(q == "Quad.all" ? all : any);
+                continue;
+            }
+            uint64_t src;
+            if (q == "Quad.broadcast") src = base + (G.sync[m].arrival.arg2.u64() & 3);
+            else if (q == "Quad.swapHorizontal") src = l ^ 1;
+            else if (q == "Quad.swapVertical") src = l ^ 2;
+            else src = l ^ 3;
+            auto it = byLane.find((uint32_t) src);
+            if (src >= W || it == byLane.end())
+                undefined("`" + q + "` reads lane " + std::to_string(src) +
+                          ", which is not active (" + where + ")");
+            G.sync[m].arrival.result = argOf(it->second);
+        }
         return;
     }
     if (q == "Wave.ballotSync") {

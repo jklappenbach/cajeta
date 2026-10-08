@@ -205,4 +205,16 @@ public final class Wave {
      */
     @Native("__cajeta_xpu_wave_shuffle_sync_f32")
     public static float32 shuffleSyncF32(float32 value, uint32 srcLane);
+
+    /** {@link #shuffleXorSync} on a float32: the bits travel unchanged. */
+    @Native("__cajeta_xpu_wave_shuffle_xor_f32")
+    public static float32 shuffleXorSyncF32(float32 value, uint32 mask);
+
+    /** {@link #shuffleUpSync} on a float32: the bits travel unchanged. */
+    @Native("__cajeta_xpu_wave_shuffle_up_f32")
+    public static float32 shuffleUpSyncF32(float32 value, uint32 delta);
+
+    /** {@link #shuffleDownSync} on a float32: the bits travel unchanged. */
+    @Native("__cajeta_xpu_wave_shuffle_down_f32")
+    public static float32 shuffleDownSyncF32(float32 value, uint32 delta);
 }

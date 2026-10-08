@@ -145,6 +145,15 @@ uint32_t __cajeta_xpu_wave_shuffle_down_u32(uint32_t value, uint32_t delta) {
 float __cajeta_xpu_wave_shuffle_sync_f32(float value, uint32_t srcLane) {
     (void)srcLane; return value;
 }
+float __cajeta_xpu_wave_shuffle_xor_f32(float value, uint32_t mask) {
+    (void)mask; return value;
+}
+float __cajeta_xpu_wave_shuffle_up_f32(float value, uint32_t delta) {
+    (void)delta; return value;
+}
+float __cajeta_xpu_wave_shuffle_down_f32(float value, uint32_t delta) {
+    (void)delta; return value;
+}
 
 uint32_t __cajeta_xpu_quad_broadcast(uint32_t value, uint32_t index) {
     (void)index; return value;

@@ -2294,6 +2294,7 @@ private:
             || n == "normalize"
             || n == "widenLo" || n == "widenHi" || n == "narrow"
             || n == "toF32" || n == "toI32" || n == "toF16" || n == "toBF16"
+            || n == "toF64" || n == "toI8"
             || n == "asUnsigned" || n == "asSigned"
             || n == "asWords" || n == "asBytes" || n == "dotSum"
             || n == "lut4";
@@ -2815,6 +2816,23 @@ private:
                             "float-element receiver");
             return vecops::convertToI32(builder, self);
         }
+        if (name == "toF64") {
+            if (!isFloat || !args.empty())
+                unsupported("Vector.toF64 takes no arguments and a "
+                            "float-element receiver");
+            return vecops::convertFpLanes(builder, self,
+                llvm::Type::getDoubleTy(builder.getContext()));
+        }
+        if (name == "toI8") {
+            // The packed narrow: each integer lane truncated to its low byte.
+            if (isFloat || !args.empty() || elemTy->getIntegerBitWidth() <= 8)
+                unsupported("Vector.toI8 takes no arguments and an integer "
+                            "receiver wider than 8 bits");
+            auto* vt = llvm::cast<llvm::FixedVectorType>(self->getType());
+            return builder.CreateTrunc(self,
+                llvm::FixedVectorType::get(llvm::Type::getInt8Ty(builder.getContext()),
+                                           vt->getNumElements()), "v.toi8");
+        }
         unsupported("unknown Vector method '" + name + "'");
     }
 
@@ -3252,22 +3270,29 @@ private:
                 return target.waveShuffle(builder, mod, value, srcLane);
             }
             if (name == "shuffleXorSync" || name == "shuffleUpSync" ||
-                name == "shuffleDownSync") {
+                name == "shuffleDownSync" || name == "shuffleXorSyncF32" ||
+                name == "shuffleUpSyncF32" || name == "shuffleDownSyncF32") {
                 // The three derived forms are one shuffle from a computed
                 // source lane: xor is the butterfly, up and down clamp to the
                 // lane itself at the wave's edge (CUDA's shfl contract), so
-                // every backend's plain shuffle serves them.
+                // every backend's plain shuffle serves them. The F32 forms
+                // send the float's bits through the same shuffle.
                 if (args.size() != 2) unsupported("Wave." + name + " arity");
                 usedSubgroupOp_ = true;
                 llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+                llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+                const bool asF32 = name.size() > 3 && name.compare(name.size() - 3, 3, "F32") == 0;
+                const std::string form = asF32 ? name.substr(0, name.size() - 3) : name;
                 llvm::Value* value = lowerExpr(args[0].expression);
+                if (asF32)
+                    value = builder.CreateBitCast(coerceTo(value, f32), i32, "shfl.bits");
                 llvm::Value* d = coerceTo(lowerExpr(args[1].expression), i32, false);
                 llvm::Value* lane =
                     coerceTo(target.waveLaneId(builder, mod), i32, false);
                 llvm::Value* src;
-                if (name == "shuffleXorSync") {
+                if (form == "shuffleXorSync") {
                     src = builder.CreateXor(lane, d, "shfl.xor");
-                } else if (name == "shuffleUpSync") {
+                } else if (form == "shuffleUpSync") {
                     llvm::Value* up = builder.CreateSub(lane, d, "shfl.up");
                     src = builder.CreateSelect(builder.CreateICmpUGE(lane, d), up,
                                                lane, "shfl.src");
@@ -3278,7 +3303,10 @@ private:
                     src = builder.CreateSelect(builder.CreateICmpULT(down, w),
                                                down, lane, "shfl.src");
                 }
-                return target.waveShuffle(builder, mod, value, src);
+                llvm::Value* got = target.waveShuffle(builder, mod, value, src);
+                if (asF32)
+                    return builder.CreateBitCast(coerceTo(got, i32, false), f32, "shfl.f32");
+                return got;
             }
             if (name == "shuffleSyncF32") {
                 if (args.size() != 2) unsupported("Wave.shuffleSyncF32 arity");
