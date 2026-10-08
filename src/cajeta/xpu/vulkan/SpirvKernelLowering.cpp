@@ -4,6 +4,7 @@
 #include "SpirvKernelLowering.h"
 #include "SpirvBackend.h"
 #include "SpirvInterface.h"
+#include "SpirvVirtualWave.h"
 
 #include "../lowering/KernelLowering.h"
 #include "../lowering/LoweringTarget.h"
@@ -1253,6 +1254,110 @@ private:
     std::vector<int> pcMemberOf_;
 };
 
+
+// A virtual wave of W lanes over subgroups of S: the body is lowered per slot (C = W / S
+// slots per invocation), and logical lane l is invocation l % S, slot l / S.
+class SpirvVirtualTarget : public SpirvTarget {
+public:
+    SpirvVirtualTarget(unsigned w, unsigned s) : w_(w), s_(s), c_(w / s) {}
+
+    llvm::Function* createKernel(llvm::Module& m, const std::string& kname,
+                                 const std::vector<KernelParam>& /*params*/) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                                             {llvm::Type::getInt32Ty(ctx)}, false);
+        auto* fn = llvm::Function::Create(fnTy, llvm::Function::InternalLinkage,
+                                          kname + ".slot", &m);
+        slot_ = fn->getArg(0);
+        slot_->setName("slot");
+        return fn;
+    }
+
+    llvm::Value* threadId(llvm::IRBuilderBase& b, llvm::Module& m, unsigned dim) override {
+        llvm::Value* p = SpirvTarget::threadId(b, m, dim);
+        if (dim != 0) return p;
+        llvm::Value* wave = b.CreateMul(b.CreateUDiv(p, b.getInt32(s_)), b.getInt32(w_));
+        return b.CreateAdd(wave, logicalLane(b, b.CreateURem(p, b.getInt32(s_))), "vtid");
+    }
+    llvm::Value* workgroupDim(llvm::IRBuilderBase& b, llvm::Module& m, unsigned dim) override {
+        llvm::Value* d = SpirvTarget::workgroupDim(b, m, dim);
+        return dim == 0 ? b.CreateMul(d, b.getInt32(c_), "vdim") : d;
+    }
+    llvm::Value* globalId(llvm::IRBuilderBase& b, llvm::Module& m, unsigned dim) override {
+        if (dim != 0) return SpirvTarget::globalId(b, m, dim);
+        return b.CreateAdd(b.CreateMul(workgroupId(b, m, 0), workgroupDim(b, m, 0)),
+                           threadId(b, m, 0), "vgid");
+    }
+
+    unsigned minWaveWidth() const override { return w_; }
+    llvm::Value* waveWidth(llvm::IRBuilderBase& b, llvm::Module&) override {
+        return b.getInt32(w_);
+    }
+    llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        return logicalLane(b, SpirvTarget::waveLaneId(b, m));
+    }
+    llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value,
+                             llvm::Value* srcLane) override {
+        llvm::Type* i32 = b.getInt32Ty();
+        return b.CreateCall(virtualWaveStub(m, kVirtualShuffle, i32, {i32, i32}),
+                            {value, srcLane}, "vshfl");
+    }
+    llvm::Value* waveReduceF32(llvm::IRBuilderBase& b, llvm::Module& m, WaveReduceFOp op,
+                               llvm::Value* value) override {
+        const char* name = op == WaveReduceFOp::Sum ? kVirtualReduceSumF32
+                         : op == WaveReduceFOp::Max ? kVirtualReduceMaxF32
+                                                    : kVirtualReduceMinF32;
+        llvm::Type* f32 = b.getFloatTy();
+        return b.CreateCall(virtualWaveStub(m, name, f32, {f32}), {value}, "vred.f");
+    }
+
+    llvm::Value* waveBallot(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*) override {
+        notYet("Wave.ballotSync");
+    }
+    llvm::Value* waveReduceSum(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*) override {
+        notYet("an integer wave reduce");
+    }
+    llvm::Value* waveReduce(llvm::IRBuilderBase&, llvm::Module&, WaveReduceOp,
+                            llvm::Value*) override {
+        notYet("an integer wave reduce");
+    }
+    llvm::Value* waveScan(llvm::IRBuilderBase&, llvm::Module&, WaveScanOp,
+                          llvm::Value*) override {
+        notYet("a wave scan");
+    }
+    llvm::Value* waveRotate(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
+                            llvm::Value*) override {
+        notYet("Wave.rotate");
+    }
+    llvm::Value* quadBroadcast(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
+                               llvm::Value*) override {
+        notYet("a Quad verb");
+    }
+    llvm::Value* quadSwap(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
+                          unsigned) override {
+        notYet("a Quad verb");
+    }
+    llvm::Value* quadAll(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*) override {
+        notYet("a Quad verb");
+    }
+    llvm::Value* quadAny(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*) override {
+        notYet("a Quad verb");
+    }
+
+private:
+    llvm::Value* logicalLane(llvm::IRBuilderBase& b, llvm::Value* sublane) {
+        return b.CreateAdd(sublane, b.CreateMul(slot_, b.getInt32(s_)), "vlane");
+    }
+    [[noreturn]] void notYet(const std::string& what) {
+        throw cajeta::Exception("XPU kernel lowering: unsupported construct — " + what
+                                + " in a virtual wave of " + std::to_string(w_)
+                                + " lanes over subgroups of " + std::to_string(s_),
+                                "XPU-N01");
+    }
+
+    unsigned w_, s_, c_;
+    llvm::Argument* slot_ = nullptr;
+};
 } // namespace
 
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
@@ -1270,6 +1375,22 @@ llvm::Function* lowerGraphicsShader(const MethodPtr& method,
                                     const std::string& entryName) {
     SpirvGraphicsTarget target(stage);
     return cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
+}
+
+llvm::Function* lowerVirtualKernel(const MethodPtr& method, llvm::Module& deviceModule,
+                                   llvm::TargetMachine& tm, const std::string& entryName,
+                                   unsigned waveWidth, unsigned subgroup) {
+    SpirvVirtualTarget target(waveWidth, subgroup);
+    llvm::Function* slotFn = cajeta::xpu::lowerKernel(method, deviceModule, target, entryName);
+    std::string whyNot;
+    llvm::Function* entry = buildVirtualEntry(slotFn, deviceModule, tm, entryName, waveWidth,
+                                              subgroup, &whyNot);
+    if (!entry)
+        throw cajeta::Exception("XPU kernel lowering: unsupported construct — " + whyNot
+                                + " in a virtual wave of " + std::to_string(waveWidth)
+                                + " lanes over subgroups of " + std::to_string(subgroup),
+                                "XPU-N01");
+    return entry;
 }
 
 } // namespace vulkan

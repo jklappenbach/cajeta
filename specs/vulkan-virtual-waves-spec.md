@@ -185,8 +185,11 @@ a separate decision, recorded as §7.5.
   loop over slots split at each verb was rejected because it fails when a
   verb sits under divergent control flow.
 - 7.2 **C above 4.** Vulkan vectors stop at 4 components without extra
-  capabilities. A C of 8 (64 over 8) is carried as two vectors of 4, so it
-  needs no capability and runs on every device.
+  capabilities. A C of 8 (64 over 8) was to be carried as two vectors of 4.
+  Amended 2026-10-08 on measurement: LLVM's Scalarizer counts its minimum
+  fragment in bits, so it keeps an 8-wide boolean mask whole, and SPIR-V
+  cannot legalize that. A C above 4 is carried as scalars, which also needs no
+  capability and runs on every device.
 - 7.3 **Variants.** For each kernel that pins W, the compiler emits a
   virtual variant for every power of two S from 8 to 2W other than W. For
   W = 32 that is 8, 16 and 64. The SPIR-V of a pinned kernel roughly

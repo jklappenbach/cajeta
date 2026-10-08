@@ -11,6 +11,7 @@
 namespace llvm {
     class Module;
     class Function;
+    class TargetMachine;
 }
 
 namespace cajeta {
@@ -37,6 +38,12 @@ namespace vulkan {
                                         llvm::Module& deviceModule,
                                         ShaderStage stage,
                                         const std::string& entryName = "");
+
+    // Lower `method` as a virtual wave of `waveWidth` lanes over subgroups of `subgroup`,
+    // returning the GLCompute entry. Throws XPU-N01 when a verb cannot run virtually.
+    llvm::Function* lowerVirtualKernel(const MethodPtr& method, llvm::Module& deviceModule,
+                                       llvm::TargetMachine& tm, const std::string& entryName,
+                                       unsigned waveWidth, unsigned subgroup);
 
 } // namespace vulkan
 } // namespace xpu

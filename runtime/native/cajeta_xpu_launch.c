@@ -816,6 +816,25 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
         return;
     }
     int declaredWave = caj_record_wave(kernelName, CAJ_XPU_VULKAN);
+    char virtualName[160];
+    if (declaredWave >= 2 && !caj_vk_wave_runnable((uint32_t) declaredWave)) {
+        uint32_t sg = g_xpu_vk.defaultSubgroupSize;
+        uint32_t c = sg ? (uint32_t) declaredWave / sg : 0u;
+        struct cajeta_xpu_module* ve = NULL;
+        if (c >= 2 && blockX > 0 && blockX % declaredWave == 0) {
+            snprintf(virtualName, sizeof(virtualName), "%s$v%u", launchName, sg);
+            pthread_mutex_lock(&g_xpu_cuda_lock);
+            ve = cajeta_xpu_find_module(virtualName, CAJ_XPU_VULKAN);
+            pthread_mutex_unlock(&g_xpu_cuda_lock);
+        }
+        if (ve && ve->image && ve->len >= 4) {
+            launchName = virtualName;
+            spirv = ve->image;
+            len = ve->len;
+            blockX /= (int32_t) c;
+            declaredWave = 0;
+        }
+    }
     if (declaredWave >= 2 && !caj_vk_wave_runnable((uint32_t) declaredWave)) {
         cajeta_xpu_note_launch_refusal(launchName, CAJ_XPU_VULKAN);
         g_xpu_refusal_reason = 3;
