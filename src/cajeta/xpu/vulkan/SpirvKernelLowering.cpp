@@ -1322,40 +1322,67 @@ public:
         return b.CreateCall(virtualWaveStub(m, name, f32, {f32}), {value}, "vred.f");
     }
 
-    llvm::Value* waveBallot(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*) override {
-        notYet("Wave.ballotSync");
+    llvm::Value* waveReduceF32Segmented(llvm::IRBuilderBase& b, llvm::Module& m, WaveReduceFOp op,
+                                        llvm::Value* value, llvm::Value* seg) override {
+        if (op == WaveReduceFOp::Min)
+            return LoweringTarget::waveReduceF32Segmented(b, m, op, value, seg);
+        const char* name = op == WaveReduceFOp::Sum ? kVirtualSegSumF32 : kVirtualSegMaxF32;
+        llvm::Type* f32 = b.getFloatTy();
+        return b.CreateCall(virtualWaveStub(m, name, f32, {f32, b.getInt32Ty()}),
+                            {value, b.CreateZExtOrTrunc(seg, b.getInt32Ty())}, "vsegred");
     }
-    llvm::Value* waveReduceSum(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*) override {
-        notYet("an integer wave reduce");
+    llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* pred) override {
+        return b.CreateCall(virtualWaveStub(m, kVirtualBallot, b.getInt64Ty(), {b.getInt1Ty()}),
+                            {pred}, "vballot");
     }
-    llvm::Value* waveReduce(llvm::IRBuilderBase&, llvm::Module&, WaveReduceOp,
-                            llvm::Value*) override {
-        notYet("an integer wave reduce");
+    llvm::Value* waveReduceSum(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value) override {
+        return intReduce(b, m, "sum", value);
     }
-    llvm::Value* waveScan(llvm::IRBuilderBase&, llvm::Module&, WaveScanOp,
-                          llvm::Value*) override {
-        notYet("a wave scan");
+    llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m, WaveReduceOp op,
+                            llvm::Value* value) override {
+        switch (op) {
+            case WaveReduceOp::Max: return intReduce(b, m, "umax", value);
+            case WaveReduceOp::Min: return intReduce(b, m, "umin", value);
+            case WaveReduceOp::SMax: return intReduce(b, m, "smax", value);
+            case WaveReduceOp::SMin: return intReduce(b, m, "smin", value);
+            case WaveReduceOp::And: return intReduce(b, m, "and", value);
+            case WaveReduceOp::Or: return intReduce(b, m, "or", value);
+            case WaveReduceOp::Xor: return intReduce(b, m, "xor", value);
+        }
+        return intReduce(b, m, "sum", value);
     }
-    llvm::Value* waveRotate(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
-                            llvm::Value*) override {
-        notYet("Wave.rotate");
+    llvm::Value* waveScan(llvm::IRBuilderBase& b, llvm::Module& m, WaveScanOp op,
+                          llvm::Value* value) override {
+        const char* name = op == WaveScanOp::Sum ? kVirtualScanSum : kVirtualScanProduct;
+        return b.CreateCall(virtualWaveStub(m, name, b.getInt32Ty(), {b.getInt32Ty()}), {value},
+                            "vscan");
     }
-    llvm::Value* quadBroadcast(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
-                               llvm::Value*) override {
-        notYet("a Quad verb");
+    llvm::Value* waveRotate(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value,
+                            llvm::Value* delta) override {
+        return LoweringTarget::waveRotate(b, m, value, delta);
     }
-    llvm::Value* quadSwap(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
-                          unsigned) override {
-        notYet("a Quad verb");
+    llvm::Value* quadBroadcast(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value,
+                               llvm::Value* index) override {
+        return LoweringTarget::quadBroadcast(b, m, value, index);
     }
-    llvm::Value* quadAll(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*) override {
-        notYet("a Quad verb");
+    llvm::Value* quadSwap(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value,
+                          unsigned direction) override {
+        return LoweringTarget::quadSwap(b, m, value, direction);
     }
-    llvm::Value* quadAny(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*) override {
-        notYet("a Quad verb");
+    llvm::Value* quadAll(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* pred) override {
+        return LoweringTarget::quadAll(b, m, pred);
+    }
+    llvm::Value* quadAny(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* pred) override {
+        return LoweringTarget::quadAny(b, m, pred);
     }
 
 private:
+    llvm::Value* intReduce(llvm::IRBuilderBase& b, llvm::Module& m, const char* op,
+                           llvm::Value* value) {
+        std::string name = std::string(kVirtualIntReduce) + op;
+        return b.CreateCall(virtualWaveStub(m, name.c_str(), b.getInt32Ty(), {b.getInt32Ty()}),
+                            {value}, "vired");
+    }
     llvm::Value* logicalLane(llvm::IRBuilderBase& b, llvm::Value* sublane) {
         return b.CreateAdd(sublane, b.CreateMul(slot_, b.getInt32(s_)), "vlane");
     }

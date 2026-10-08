@@ -46,9 +46,6 @@ namespace vulkan {
 
 namespace {
 
-const char* kVirtualStubs[] = {kVirtualShuffle, kVirtualReduceSumF32, kVirtualReduceMaxF32,
-                               kVirtualReduceMinF32};
-
 llvm::Function* variantShell(llvm::Module& m, const std::string& name, llvm::FunctionType* ty) {
     if (auto* f = m.getFunction(name)) return f;
     auto* f = llvm::Function::Create(ty, llvm::GlobalValue::InternalLinkage, name, &m);
@@ -103,8 +100,13 @@ void buildReduceF32(llvm::Module& m, llvm::Function* fn, const char* stub, unsig
                     unsigned c, unsigned s, bool masked) {
     llvm::IRBuilder<> b(llvm::BasicBlock::Create(m.getContext(), "entry", fn));
     llvm::Type* f32 = b.getFloatTy();
-    const bool isSum = std::string(stub) == kVirtualReduceSumF32;
-    const bool isMax = std::string(stub) == kVirtualReduceMaxF32;
+    const bool segmented = std::string(stub) == kVirtualSegSumF32
+                        || std::string(stub) == kVirtualSegMaxF32;
+    const bool isSum = std::string(stub) == kVirtualReduceSumF32
+                    || std::string(stub) == kVirtualSegSumF32;
+    const bool isMax = std::string(stub) == kVirtualReduceMaxF32
+                    || std::string(stub) == kVirtualSegMaxF32;
+    llvm::Value* seg = segmented ? b.CreateExtractElement(fn->getArg(1), uint64_t(0)) : nullptr;
     llvm::Constant* ident = isSum ? llvm::ConstantFP::get(f32, 0.0)
         : llvm::ConstantFP::getInfinity(f32, /*Negative=*/isMax);
     auto combine = [&](llvm::Value* a, llvm::Value* p) -> llvm::Value* {
@@ -114,12 +116,14 @@ void buildReduceF32(llvm::Module& m, llvm::Function* fn, const char* stub, unsig
     };
     llvm::Value* x = fn->getArg(0);
     if (masked)
-        x = b.CreateSelect(fn->getArg(1), x, b.CreateVectorSplat(c, ident), "vred.in");
+        x = b.CreateSelect(fn->getArg(segmented ? 2 : 1), x, b.CreateVectorSplat(c, ident),
+                           "vred.in");
     llvm::Value* lane = sublaneId(b, m);
     llvm::Value* active = activeInvocations(b, m);
     llvm::Function* cttz = llvm::Intrinsic::getOrInsertDeclaration(
         &m, llvm::Intrinsic::spv_firstbitlow, {b.getInt32Ty()});
     for (unsigned d = 1; d < w; d <<= 1) {
+        llvm::Value* before = x;
         if (d < s) {
             llvm::Value* base = b.CreateAnd(b.CreateXor(lane, b.getInt32(d)), b.getInt32(~(d - 1)));
             llvm::Value* blk = b.CreateAnd(b.CreateLShr(active, base), b.getInt32((1u << d) - 1));
@@ -140,8 +144,87 @@ void buildReduceF32(llvm::Module& m, llvm::Function* fn, const char* stub, unsig
             for (unsigned k = 0; k < c; ++k) mask.push_back((int) (k ^ (d / s)));
             x = combine(x, b.CreateShuffleVector(x, mask, "vred.partner"));
         }
+        if (seg)
+            x = b.CreateSelect(b.CreateICmpULT(b.getInt32(d), seg), x, before, "vred.seg");
     }
     b.CreateRet(x);
+}
+
+llvm::Value* sliceMasked(llvm::IRBuilder<>& b, llvm::Function* fn, unsigned maskArg, unsigned k,
+                         llvm::Value* x, llvm::Value* ident) {
+    if (fn->arg_size() <= maskArg) return x;
+    return b.CreateSelect(b.CreateExtractElement(fn->getArg(maskArg), uint64_t(k)), x, ident);
+}
+
+// Ballot: slot k's subgroup ballot holds logical lanes k * S to k * S + S - 1.
+void buildBallot(llvm::Module& m, llvm::Function* fn, unsigned c, unsigned s) {
+    llvm::IRBuilder<> b(llvm::BasicBlock::Create(m.getContext(), "entry", fn));
+    llvm::Function* ballot =
+        llvm::Intrinsic::getOrInsertDeclaration(&m, llvm::Intrinsic::spv_subgroup_ballot);
+    llvm::Value* acc = b.getInt64(0);
+    for (unsigned k = 0; k < c; ++k) {
+        llvm::Value* p = sliceMasked(b, fn, 1, k, b.CreateExtractElement(fn->getArg(0), uint64_t(k)),
+                                     b.getFalse());
+        llvm::Value* lo = b.CreateExtractElement(b.CreateCall(ballot, {p}), uint64_t(0));
+        llvm::Value* bits = b.CreateZExt(lo, b.getInt64Ty());
+        if (s < 32) bits = b.CreateAnd(bits, b.getInt64((1ull << s) - 1));
+        acc = b.CreateOr(acc, b.CreateShl(bits, b.getInt64((uint64_t) s * k)));
+    }
+    b.CreateRet(b.CreateVectorSplat(c, acc));
+}
+
+// An integer reduce is exact in any order: each slot reduces across the subgroup, then the slots combine.
+void buildIntReduce(llvm::Module& m, llvm::Function* fn, const std::string& op, unsigned c) {
+    llvm::IRBuilder<> b(llvm::BasicBlock::Create(m.getContext(), "entry", fn));
+    llvm::Intrinsic::ID id = op == "sum" ? llvm::Intrinsic::spv_wave_reduce_sum
+        : op == "umax" ? llvm::Intrinsic::spv_wave_reduce_umax
+        : op == "umin" ? llvm::Intrinsic::spv_wave_reduce_umin
+        : op == "smax" ? llvm::Intrinsic::spv_wave_reduce_max
+        : op == "smin" ? llvm::Intrinsic::spv_wave_reduce_min
+        : op == "and" ? llvm::Intrinsic::spv_wave_reduce_and
+        : op == "or" ? llvm::Intrinsic::spv_wave_reduce_or : llvm::Intrinsic::spv_wave_reduce_xor;
+    uint32_t ident = (op == "and" || op == "umin") ? 0xFFFFFFFFu : op == "smax" ? 0x80000000u
+                   : op == "smin" ? 0x7FFFFFFFu : 0u;
+    llvm::Function* red = llvm::Intrinsic::getOrInsertDeclaration(&m, id, {b.getInt32Ty()});
+    auto combine = [&](llvm::Value* a, llvm::Value* x) -> llvm::Value* {
+        if (op == "sum") return b.CreateAdd(a, x);
+        if (op == "and") return b.CreateAnd(a, x);
+        if (op == "or") return b.CreateOr(a, x);
+        if (op == "xor") return b.CreateXor(a, x);
+        llvm::Value* aWins = op == "umax" ? b.CreateICmpUGT(a, x) : op == "umin" ? b.CreateICmpULT(a, x)
+                           : op == "smax" ? b.CreateICmpSGT(a, x) : b.CreateICmpSLT(a, x);
+        return b.CreateSelect(aWins, a, x);
+    };
+    llvm::Value* acc = nullptr;
+    for (unsigned k = 0; k < c; ++k) {
+        llvm::Value* x = sliceMasked(b, fn, 1, k, b.CreateExtractElement(fn->getArg(0), uint64_t(k)),
+                                     b.getInt32(ident));
+        llvm::Value* r = b.CreateCall(red, {x});
+        acc = acc ? combine(acc, r) : r;
+    }
+    b.CreateRet(b.CreateVectorSplat(c, acc));
+}
+
+// Exclusive scan in logical lane order: every lane of earlier slots, then the earlier
+// invocations of this slot.
+void buildScan(llvm::Module& m, llvm::Function* fn, bool product, unsigned c, unsigned s) {
+    llvm::IRBuilder<> b(llvm::BasicBlock::Create(m.getContext(), "entry", fn));
+    llvm::Function* pre = llvm::Intrinsic::getOrInsertDeclaration(
+        &m, product ? llvm::Intrinsic::spv_wave_prefix_product : llvm::Intrinsic::spv_wave_prefix_sum,
+        {b.getInt32Ty()});
+    auto op = [&](llvm::Value* a, llvm::Value* x) {
+        return product ? b.CreateMul(a, x) : b.CreateAdd(a, x);
+    };
+    llvm::Value* before = b.getInt32(product ? 1 : 0);
+    llvm::Value* res = llvm::PoisonValue::get(fn->getReturnType());
+    for (unsigned k = 0; k < c; ++k) {
+        llvm::Value* x = sliceMasked(b, fn, 1, k, b.CreateExtractElement(fn->getArg(0), uint64_t(k)),
+                                     b.getInt32(product ? 1 : 0));
+        llvm::Value* excl = b.CreateCall(pre, {x});
+        res = b.CreateInsertElement(res, op(before, excl), uint64_t(k));
+        before = op(before, readLane(b, m, op(excl, x), b.getInt32(s - 1)));
+    }
+    b.CreateRet(res);
 }
 
 void attachVariants(llvm::Module& m, llvm::Function* stub, unsigned w, unsigned c, unsigned s) {
@@ -160,6 +243,16 @@ void attachVariants(llvm::Module& m, llvm::Function* stub, unsigned w, unsigned 
     if (name == kVirtualShuffle) {
         buildShuffle(m, un, c, s);
         buildShuffle(m, mk, c, s);
+    } else if (name == kVirtualBallot) {
+        buildBallot(m, un, c, s);
+        buildBallot(m, mk, c, s);
+    } else if (name.rfind(kVirtualIntReduce, 0) == 0) {
+        const std::string op = name.substr(std::string(kVirtualIntReduce).size());
+        buildIntReduce(m, un, op, c);
+        buildIntReduce(m, mk, op, c);
+    } else if (name == kVirtualScanSum || name == kVirtualScanProduct) {
+        buildScan(m, un, name == kVirtualScanProduct, c, s);
+        buildScan(m, mk, name == kVirtualScanProduct, c, s);
     } else {
         buildReduceF32(m, un, name.c_str(), w, c, s, false);
         buildReduceF32(m, mk, name.c_str(), w, c, s, true);
@@ -305,6 +398,32 @@ void markSlotLoopsForUnroll(llvm::Function& f) {
                 ctx, {nullptr, llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, "llvm.loop.unroll.full")})});
             id->replaceOperandWith(0, id);
             latch->getTerminator()->setMetadata(llvm::LLVMContext::MD_loop, id);
+        }
+}
+
+// A dynamic index into a local or workgroup array gains a zero loaded at the access, so loop
+// strength reduction cannot turn it into a pointer induction variable SPIR-V cannot express.
+void launderArrayIndices(llvm::Function& f) {
+    llvm::Module& m = *f.getParent();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(f.getContext());
+    llvm::Value* zero = nullptr;
+    for (llvm::BasicBlock& bb : f)
+        for (llvm::Instruction& in : bb) {
+            auto* g = llvm::dyn_cast<llvm::GetElementPtrInst>(&in);
+            if (!g || g->getNumIndices() < 2) continue;
+            llvm::Value* base = g->getPointerOperand()->stripPointerCasts();
+            auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(base);
+            if (!llvm::isa<llvm::AllocaInst>(base) && !(gv && gv->getAddressSpace() == 3)) continue;
+            llvm::Use& last = g->getOperandUse(g->getNumOperands() - 1);
+            if (llvm::isa<llvm::Constant>(last.get())) continue;
+            if (!zero)
+                zero = new llvm::GlobalVariable(m, i32, false, llvm::GlobalValue::InternalLinkage,
+                                                llvm::ConstantInt::get(i32, 0), "cajeta_vk_zero",
+                                                nullptr, llvm::GlobalValue::NotThreadLocal, 10);
+            llvm::IRBuilder<> b(g);
+            llvm::LoadInst* z = b.CreateLoad(i32, zero, "vzero");
+            z->setVolatile(true);
+            last.set(b.CreateAdd(last.get(), b.CreateZExtOrTrunc(z, last.get()->getType())));
         }
 }
 // Builtin coordinates, descriptor handles and launch witnesses are the same for every slot.
@@ -605,9 +724,9 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
         cse.run(*entry, fam);
     }
     std::vector<BufferBase> bases = baseBufferAccesses(*entry);
-    for (const char* name : kVirtualStubs)
-        if (llvm::Function* stub = m.getFunction(name))
-            attachVariants(m, stub, waveWidth, c, subgroup);
+    for (llvm::Function& stub : llvm::make_early_inc_range(m))
+        if (isVirtualStub(&stub) && stub.isDeclaration())
+            attachVariants(m, &stub, waveWidth, c, subgroup);
     {
         llvm::DominatorTree dt(*entry);
         llvm::LoopInfo li(dt);
@@ -625,7 +744,6 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
     fpm.addPass(llvm::LoopVectorizePass());
     fpm.run(*entry, fam);
     retireScalarTwins(*entry);
-    if (!restoreBufferAccesses(bases, whyNot)) return nullptr;
 
     const std::string vsuf = "_v" + std::to_string(c), msuf = "_Mv" + std::to_string(c);
     for (llvm::BasicBlock& bb : *entry)
@@ -657,6 +775,7 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
         fam.clear();
         split.run(*entry, fam);
         foldElementGeps(*entry);
+        if (!restoreBufferAccesses(bases, whyNot)) return nullptr;
         markSlotLoopsForUnroll(*entry);
         llvm::FunctionPassManager tidy;
         tidy.addPass(llvm::createFunctionToLoopPassAdaptor(llvm::LoopFullUnrollPass(2)));
@@ -666,6 +785,7 @@ llvm::Function* buildVirtualEntry(llvm::Function* slotFn, llvm::Module& m,
         fam.clear();
         tidy.run(*entry, fam);
     }
+    launderArrayIndices(*entry);
     return entry;
 }
 

@@ -22,6 +22,12 @@ namespace vulkan {
     inline constexpr const char* kVirtualReduceSumF32 = "__cajeta_xpu_wave_vk_reduce_sum_f32";
     inline constexpr const char* kVirtualReduceMaxF32 = "__cajeta_xpu_wave_vk_reduce_max_f32";
     inline constexpr const char* kVirtualReduceMinF32 = "__cajeta_xpu_wave_vk_reduce_min_f32";
+    inline constexpr const char* kVirtualSegSumF32 = "__cajeta_xpu_wave_vk_segreduce_sum_f32";
+    inline constexpr const char* kVirtualSegMaxF32 = "__cajeta_xpu_wave_vk_segreduce_max_f32";
+    inline constexpr const char* kVirtualBallot = "__cajeta_xpu_wave_vk_ballot";
+    inline constexpr const char* kVirtualIntReduce = "__cajeta_xpu_wave_vk_ireduce_";
+    inline constexpr const char* kVirtualScanSum = "__cajeta_xpu_wave_vk_prefix_sum";
+    inline constexpr const char* kVirtualScanProduct = "__cajeta_xpu_wave_vk_prefix_product";
 
     // The per-lane stub a virtual wave verb lowers to; the slot vectorizer swaps in its C-wide variant.
     llvm::Function* virtualWaveStub(llvm::Module& m, const char* name, llvm::Type* ret,
