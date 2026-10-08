@@ -45,6 +45,9 @@ namespace vulkan {
         // failed on it — six failures that said nothing about the wave ops.
         static std::uint32_t subgroupWidth();
 
+        // Whether a pipeline on that device can run subgroups of `w` lanes, pinned or natively.
+        static bool canRunSubgroupWidth(std::uint32_t w);
+
         // True iff shader_atomic_float2 + shaderBufferFloat32AtomicMinMax are there:
         // the only way to run Buffer<float32>.atomic{Min,Max}, absent on NVIDIA.
         static bool shaderAtomicFloatMinMaxAvailable();

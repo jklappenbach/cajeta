@@ -86,8 +86,10 @@ struct cajeta_vk {
     PFN_vkQueueWaitIdle vkQueueWaitIdle;
     // Kernels are authored wave32; RADV's gfx11 wave64 default HANGS the device.
     int subgroupCtl;                 // feature enabled + 32 within [min,max]
+    int sizeCtlFeature;              // subgroupSizeControl, whatever the range
     uint32_t minSubgroupSize;
     uint32_t maxSubgroupSize;
+    uint32_t defaultSubgroupSize;    // 0 when the device did not say
     // Deferred batch submission (v2 launch path).
     PFN_vkCreateFence vkCreateFence;
     PFN_vkWaitForFences vkWaitForFences;
@@ -507,6 +509,10 @@ static int cajeta_xpu_vulkan_init_locked(void) {
             VkPhysicalDeviceSubgroupSizeControlProperties pssc;
             memset(&pssc, 0, sizeof(pssc));
             pssc.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
+            VkPhysicalDeviceSubgroupProperties psg;
+            memset(&psg, 0, sizeof(psg));
+            psg.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+            pssc.pNext = &psg;
             VkPhysicalDeviceFeatures2 qf2b;
             memset(&qf2b, 0, sizeof(qf2b));
             qf2b.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -522,6 +528,8 @@ static int cajeta_xpu_vulkan_init_locked(void) {
             if (gp2) gp2(g_xpu_vk.phys, &qp2);
             g_xpu_vk.minSubgroupSize = pssc.minSubgroupSize;
             g_xpu_vk.maxSubgroupSize = pssc.maxSubgroupSize;
+            g_xpu_vk.defaultSubgroupSize = psg.subgroupSize;
+            g_xpu_vk.sizeCtlFeature = qssc.subgroupSizeControl ? 1 : 0;
             g_xpu_vk.subgroupCtl = (qssc.subgroupSizeControl
                                     && pssc.minSubgroupSize <= 32u
                                     && pssc.maxSubgroupSize >= 32u) ? 1 : 0;
@@ -2585,6 +2593,18 @@ struct caj_vk_pipe {
 static struct caj_vk_pipe g_vk_pipes[CAJ_VK_PIPES];
 static int g_vk_pipe_count;
 
+static int caj_record_wave(const char* name, int backend);
+
+// Whether a pipeline can run `w` lanes per subgroup: pinned through size control, or the device's only width.
+static int caj_vk_wave_runnable(uint32_t w) {
+    if (g_xpu_vk.defaultSubgroupSize == 0u) return 1;
+    if (g_xpu_vk.sizeCtlFeature && w >= g_xpu_vk.minSubgroupSize && w <= g_xpu_vk.maxSubgroupSize)
+        return 1;
+    return g_xpu_vk.defaultSubgroupSize == w
+        && (!g_xpu_vk.sizeCtlFeature
+            || (g_xpu_vk.minSubgroupSize == w && g_xpu_vk.maxSubgroupSize == w));
+}
+
 static struct caj_vk_pipe* caj_vk_pipe_get(
         const void* spirv, uint64_t len, const char* entry,
         const uint8_t* kinds, int n,
@@ -2697,13 +2717,14 @@ static struct caj_vk_pipe* caj_vk_pipe_get(
 #if defined(VK_VERSION_1_3)
         // Pin wave32: RADV's gfx11 wave64 default HANGS the cooperating kernels.
         VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss;
-        if (g_xpu_vk.subgroupCtl) {
-            /* An entry name containing "W64" declares a 64-lane kernel; the name
-             * travels inside the blob, so every backend reads one truth. */
-            uint32_t want = 32u;
-            if (entry && strstr(entry, "W64")
-                    && g_xpu_vk.maxSubgroupSize >= 64u)
-                want = 64u;
+        /* A declared @Wave(width) is requested exactly; an undeclared kernel gets 32, or 64
+         * when its entry name carries "W64". */
+        uint32_t want = 32u;
+        int declared = entry ? caj_record_wave(entry, /*CAJ_XPU_VULKAN=*/2) : 0;
+        if (declared >= 2) want = (uint32_t) declared;
+        else if (entry && strstr(entry, "W64") && g_xpu_vk.maxSubgroupSize >= 64u) want = 64u;
+        if (g_xpu_vk.sizeCtlFeature && want >= g_xpu_vk.minSubgroupSize
+                && want <= g_xpu_vk.maxSubgroupSize) {
             memset(&rss, 0, sizeof(rss));
             rss.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
             rss.requiredSubgroupSize = want;

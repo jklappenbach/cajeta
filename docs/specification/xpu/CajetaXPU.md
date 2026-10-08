@@ -369,8 +369,12 @@ void my_reduction(...) { ... }
 This lowers to `-mwavefrontsize32` on AMDGPU (RDNA only), is a no-op
 on NVPTX, and on Vulkan emits a `LocalSize` decoration plus
 `SPV_KHR_subgroup_uniform_control_flow`. A target that cannot satisfy
-the request rejects the kernel at compile time (NVIDIA / AMD) or
-pipeline-create time (Vulkan).
+the request rejects the kernel at compile time (NVIDIA / AMD). On Vulkan
+the width is a pipeline fact: the manifest records the declared width,
+the pipeline requests exactly it, and a launch on a device that can
+neither pin it nor run it natively is refused by name, so
+`Device.checkLaunch` throws (lavapipe, whose subgroups are always 8
+lanes, refuses a 32-lane kernel; `XpuWorkgroupReduceCorpusTests`).
 
 On the **cpu backend** the wave is the width the work-item loop is
 vectorized at, so the declaration is honored exactly: the loop is forced

@@ -8,6 +8,7 @@
 #include "XpuDeviceTestUtil.h"
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/xpu/XpuTarget.h"
+#include "cajeta/xpu/vulkan/VulkanDriver.h"
 #include "cajeta/xpu/reference/Conformance.h"
 #include <cstdlib>
 #include <cstring>
@@ -34,6 +35,7 @@ import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
 import cajeta.xpu.Workgroup;
+import cajeta.xpu.XpuLaunchException;
 public class W {
     static float32[] gotF;
     static int32[] gotI;
@@ -96,6 +98,19 @@ public class W {
         outF.download(gotF);
         outI.download(gotI);
         outL.download(gotL);
+        return 1;
+    }
+    public static int32 refusal() {
+        KernelBuffer<float32> in = heap KernelBuffer<float32>(256);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(768);
+        KernelStream s #= KernelStream.current();
+        try {
+            wgF.launch(s, grid: [1], block: [256])(out, in);
+            s.sync();
+        } catch (XpuLaunchException e) {
+            if (e.message.contains("@Wave(width)")) { return 3; }
+            return 2;
+        }
         return 1;
     }
     public static float32 f(uint32 i) { return gotF[i]; }
@@ -201,5 +216,29 @@ TEST(XpuWorkgroupReduceCorpus, everyKernelMatchesTheReferenceOnNvptx) {
 // outputs, which the reference replays at 0 ulp.
 TEST(XpuWorkgroupReduceCorpus, everyKernelMatchesTheCpuOnVulkan) {
     if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    if (!cajeta::xpu::vulkan::VulkanDriver::canRunSubgroupWidth(32))
+        GTEST_SKIP() << "this Vulkan device cannot run 32-lane subgroups, so the kernels' "
+                        "@Wave(width = 32) launch is refused (aWaveTheVulkanDeviceCannotRunIsRefusedByName)";
     sameAsCpu(runOn(cajeta::xpu::Backend::Spirv, fs::path()), "vulkan");
+}
+
+// A kernel whose declared wave width the Vulkan device cannot run is refused by name, never run at another width.
+TEST(XpuWorkgroupReduceCorpus, aWaveTheVulkanDeviceCannotRunIsRefusedByName) {
+    if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(kSource, "test.W", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int32_t (*)()>("refusal");
+    ASSERT_NE(fn, nullptr);
+    testing::internal::CaptureStderr();
+    int32_t r = fn();
+    std::string err = testing::internal::GetCapturedStderr();
+    if (cajeta::xpu::vulkan::VulkanDriver::canRunSubgroupWidth(32)) {
+        EXPECT_EQ(r, 1) << err;
+        EXPECT_EQ(err.find("[xpu-launch-refused]"), std::string::npos) << err;
+    } else {
+        EXPECT_EQ(r, 3) << err;
+        EXPECT_NE(err.find("declares @Wave(width = 32)"), std::string::npos) << err;
+    }
 }

@@ -11,6 +11,7 @@
 #include "../lowering/KernelLowering.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
+#include "cajeta/xpu/core/XpuKernelAttr.h"
 #include "cajeta/error/Exception.h"
 
 #include "llvm/IR/Constants.h"
@@ -93,7 +94,7 @@ namespace vulkan {
                 return false;
             }
 
-            // Pipeline statistics are a driver fact, so the footprint is ABSENT.
+            // Pipeline statistics are a driver fact, so the footprint holds only a declared wave width.
             std::optional<KernelManifest> manifest;
             if (registerKparams) {
                 KernelManifest m;
@@ -104,6 +105,8 @@ namespace vulkan {
                 m.xpuAbiVersion = CAJETA_XPU_ABI_VERSION;
                 applyAccess(m, access);
                 applyNativeOps(m, kfn);
+                if (auto attr = XpuKernelAttr::from(*method); attr && attr->waveWidth())
+                    m.waveWidth = (unsigned) *attr->waveWidth();
                 manifest = std::move(m);
             }
 

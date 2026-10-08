@@ -345,6 +345,10 @@ public final class Device {
                 + "wave ops at width 1; the block is not a multiple of the wave "
                 + "width, or the vectorizer's runtime check turned the launch away";
         }
+        if (reason == 3) {
+            why = "the kernel declares a @Wave(width) this device cannot run its "
+                + "subgroups at";
+        }
         String msg #= "cajeta.xpu: launch refused for kernel '" + kernel
                     + "' on backend '" + backend
                     + "' (" + why + ")";

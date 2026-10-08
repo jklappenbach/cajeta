@@ -815,6 +815,17 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                 launchName);
         return;
     }
+    int declaredWave = caj_record_wave(kernelName, CAJ_XPU_VULKAN);
+    if (declaredWave >= 2 && !caj_vk_wave_runnable((uint32_t) declaredWave)) {
+        cajeta_xpu_note_launch_refusal(launchName, CAJ_XPU_VULKAN);
+        g_xpu_refusal_reason = 3;
+        fprintf(stderr,
+                "cajeta.xpu: [xpu-launch-refused] %s declares @Wave(width = %d), and this "
+                "Vulkan device runs subgroups of %u to %u lanes%s\n",
+                launchName, declaredWave, g_xpu_vk.minSubgroupSize, g_xpu_vk.maxSubgroupSize,
+                g_xpu_vk.sizeCtlFeature ? "" : " with no size control");
+        return;
+    }
     int64_t bindings[64];
     uint8_t bkinds[64];                     // per-binding resource kind
     int64_t transient[64];                  // transient scalar view slots to free

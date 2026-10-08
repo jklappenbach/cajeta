@@ -547,7 +547,10 @@ bool VulkanDriver::rayQueryAvailable() {
 
 // The first compute device's subgroup (wave) width, 0 if undeterminable.
 // See the header for why a test must ask rather than assume.
-std::uint32_t VulkanDriver::subgroupWidth() {
+// The first compute device's default subgroup width, and its size-control range in `mn`, `mx` (0 when unreported).
+static std::uint32_t querySubgroup(std::uint32_t* mn, std::uint32_t* mx) {
+    *mn = 0;
+    *mx = 0;
     void* lib = nullptr;
 #if defined(__APPLE__)
     for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
@@ -610,19 +613,36 @@ std::uint32_t VulkanDriver::subgroupWidth() {
 
             // The FIRST compute device, matching what init() binds — a width
             // read off a different device would be worse than none at all.
+            VkPhysicalDeviceSubgroupSizeControlProperties sc{};
+            sc.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
             VkPhysicalDeviceSubgroupProperties sg{};
             sg.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+            sg.pNext = &sc;
             VkPhysicalDeviceProperties2 p2{};
             p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
             p2.pNext = &sg;
             getProps2(pd, &p2);
             width = sg.subgroupSize;
+            *mn = sc.minSubgroupSize;
+            *mx = sc.maxSubgroupSize;
             break;
         }
     }
     if (destroyInstance) destroyInstance(inst, nullptr);
     dlclose(lib);
     return width;
+}
+
+std::uint32_t VulkanDriver::subgroupWidth() {
+    std::uint32_t mn, mx;
+    return querySubgroup(&mn, &mx);
+}
+
+bool VulkanDriver::canRunSubgroupWidth(std::uint32_t w) {
+    std::uint32_t mn, mx;
+    std::uint32_t def = querySubgroup(&mn, &mx);
+    if (mn != 0 && w >= mn && w <= mx) return true;
+    return def == w && (mn == 0 || (mn == w && mx == w));
 }
 
 bool VulkanDriver::coopMatrixAvailable() {
@@ -1133,6 +1153,7 @@ bool VulkanDriver::builtWithVulkan() { return false; }
 bool VulkanDriver::rayQueryAvailable() { return false; }
 bool VulkanDriver::coopMatrixAvailable() { return false; }
 std::uint32_t VulkanDriver::subgroupWidth() { return 0; }
+bool VulkanDriver::canRunSubgroupWidth(std::uint32_t) { return false; }
 bool VulkanDriver::shaderAtomicFloatMinMaxAvailable() { return false; }
 bool VulkanDriver::shaderAtomicInt64Available() { return false; }
 bool VulkanDriver::init() { return false; }
