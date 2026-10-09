@@ -279,6 +279,25 @@ public final class ShapeChoice {
             }
             i = i + 1;
         }
+        // Not a survivor: the refusal says why, naming the pruned verdict
+        // when the filter saw the kernel, so the caller never throws an
+        // empty message (a gfx1151 test failure read "::" and nothing else,
+        // xpu-tile-shape-selection 4.9.1, 2026-10-09).
+        StringBuilder out #= heap StringBuilder();
+        out.append("the override names " + kernel + ", which is not a survivor of "
+            + f.family() + " at " + f.m() + "x" + f.n() + "x" + f.k() + ":");
+        boolean seen = false;
+        int32 j = 0;
+        while (j < f.prunedCount()) {
+            if (f.pruned(j).candidate.kernel.equals(kernel)) {
+                String line #= f.pruned(j).text();
+                out.append(" " + line);
+                seen = true;
+            }
+            j = j + 1;
+        }
+        if (!seen) { out.append(" the filter never saw it"); }
+        r.refusal #= out.toString();
         return;
     }
 }

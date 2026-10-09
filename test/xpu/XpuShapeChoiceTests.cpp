@@ -296,3 +296,26 @@ TEST(XpuShapeChoice, aMeasurementUnderForeignLoadIsNotCached) {
         return 0;
 )CJ", freshDir()), 0);
 }
+
+// An override that names a member the filter pruned is a refusal WITH THE
+// RULE, never an empty one. The empty refusal surfaced on gfx1151 as a test
+// failure with no message: the device's facts pruned QkTile_64 and the
+// override path returned survivor -1 and "" (xpu-tile-shape-selection 4.9.1,
+// 2026-10-09).
+TEST(XpuShapeChoice, anOverrideNamingAPrunedMemberRefusesWithTheRule) {
+    EXPECT_EQ(run(R"CJ(
+        ShapeFilter f #= heap ShapeFilter("fam", M.ada(), 512L, 4096L, 4096L);
+        f.consider(#heap ShapeCandidate("spills", 128, 128, 512, 256, 8),
+                   #heap KernelFacts(128, 52, 34816));
+        f.consider(#heap ShapeCandidate("only", 128, 128, 256, 256, 8),
+                   #heap KernelFacts(200, 0, 34816));
+        ShapeChoice.setShapeOverride("fam", "spills");
+        Fake p #= heap Fake(1L, 1L, 1L);
+        ShapeResult r #= ShapeChoice.choose(dir, f, p);
+        ShapeChoice.clearShapeOverride("fam");
+        if (r.survivor != -1 || !r.overridden) { return 1; }
+        if (r.refusal.indexOf("spills") < 0 || r.refusal.indexOf("R1") < 0) { return 2; }
+        if (r.refusal.indexOf("override") < 0) { return 3; }
+        return 0;
+)CJ", freshDir()), 0);
+}
