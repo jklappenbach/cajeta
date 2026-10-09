@@ -1374,6 +1374,199 @@ TEST(XpuCpuFissionUniformize, aVectorValueAndAnEpilogueBufferLoadStillLowerTheRe
     EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused; 100+i wrong at wave i)";
 }
 
+// ---- 4.2.1.10, the second cause: a uniform split INSIDE a per-work-item -- //
+// guard, the shape of iq3xxsQkvWaveMatVecKernel and iq2sIq3xxsQkvWaveMatVecKernel.
+//
+// `if (row < limit) { if (which == 0) {loop} else if (which == 1) {loop} else
+// {loop} }`: the outer guard is per work-item, the inner chain is uniform by
+// provenance (4a splits it), and each arm holds a lane-strided loop. Measured
+// 2026-10-09 with the walk trace: the guard is NOT arm-cut, because every loop
+// post-dominates its own split arm, so the region before the guard collects
+// the way around the guard (the epilogue) while the splits' continuation
+// reaches the same epilogue: "a block is reached by more than one region
+// path: if.end19, collected from if.end22". The uniform-loop scaffolding
+// declines, the plain fission leaves the reduce scalar, and the kernel is
+// refused. The sequential-if spelling of the same arms (fourGuardedArms...)
+// lowers. Same answers as that probe: 40, 40, 80, 80, 120, 120 with the 0.5
+// bias (the arms add 1, 2 and 3).
+const char* kSplitInsideGuardSrc = R"CJ(
+    @Kernel
+    public static void qk(KernelBuffer<float32> y0, KernelBuffer<float32> y1,
+                          KernelBuffer<float32> y2, uint32 n, uint32 rowsQ,
+                          uint32 rowsKv, uint32 vQ6,
+                          KernelBuffer<float32> b0, KernelBuffer<float32> b1,
+                          KernelBuffer<float32> b2, uint32 biased) {
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 wave = KernelThread.globalIdX() / wv;
+        float32 acc = 0.0f;
+        uint32 which = 0;
+        uint32 row = wave;
+        if (wave >= rowsQ + rowsKv) { which = 2; row = wave - rowsQ - rowsKv; }
+        else if (wave >= rowsQ) { which = 1; row = wave - rowsQ; }
+        uint32 limit = rowsQ;
+        if (which != 0) { limit = rowsKv; }
+        if (row < limit) {
+            if (which == 0) {
+                uint32 b = lane;
+                while (b < n) { acc = acc + 1.0f; b = b + wv; }
+            } else if (which == 1) {
+                uint32 b = lane;
+                while (b < n) { acc = acc + 2.0f; b = b + wv; }
+            } else {
+                uint32 b = lane;
+                while (b < n) { acc = acc + 3.0f; b = b + wv; }
+            }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < limit) {
+            if (biased != 0) {
+                if (which == 0) { tot = tot + b0[(int64) row]; }
+                else if (which == 1) { tot = tot + b1[(int64) row]; }
+                else { tot = tot + b2[(int64) row]; }
+            }
+            if (which == 0) { y0[(int64) row] = tot; }
+            else if (which == 1) { y1[(int64) row] = tot; }
+            else { y2[(int64) row] = tot; }
+        }
+    }
+    public static int32 run() {
+        uint32 w = probeWidth();
+        if (w < 2) { return -3; }
+        float32[] h0 = heap float32[2];
+        float32[] h1 = heap float32[2];
+        float32[] h2 = heap float32[2];
+        float32[] hb = heap float32[2];
+        hb[0] = 0.5f; hb[1] = 0.5f;
+        KernelBuffer<float32> y0 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> y1 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> y2 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> b0 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> b1 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> b2 = heap KernelBuffer<float32>(2);
+        b0.upload(hb);
+        b1.upload(hb);
+        b2.upload(hb);
+        KernelStream s #= KernelStream.current();
+        try {
+            qk.launch(s, grid: [6], block: [w])(y0, y1, y2, 40, 2, 2, 0, b0, b1, b2, 1);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        y0.download(h0);
+        y1.download(h1);
+        y2.download(h2);
+        float32[] h = heap float32[6];
+        h[0] = h0[0]; h[1] = h0[1]; h[2] = h1[0]; h[3] = h1[1]; h[4] = h2[0]; h[5] = h2[1];
+        float32[] want = heap float32[6];
+        want[0] = 40.5f; want[1] = 40.5f; want[2] = 80.5f; want[3] = 80.5f;
+        want[4] = 120.5f; want[5] = 120.5f;
+        return verify(h, 6, want);
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, aUniformSplitOfLoopsInsideAPerWorkItemGuardLowers) {
+    const int r = runOnCpu(std::string(kPreamble) + kSplitInsideGuardSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused; 100+i wrong at wave i)";
+}
+
+// The same with an arm that reduces, stores and RETURNS before the rest
+// (iq2sIq3xxsQkvWaveMatVecKernel's v arm): wave 4 and 5 take the returning
+// arm (which == 2, adds 3 per trip), the others the guarded split (1 or 2).
+const char* kReturningArmThenSplitSrc = R"CJ(
+    @Kernel
+    public static void qk(KernelBuffer<float32> y0, KernelBuffer<float32> y1,
+                          KernelBuffer<float32> y2, uint32 n, uint32 rowsQ,
+                          uint32 rowsKv, uint32 vQ6,
+                          KernelBuffer<float32> b0, KernelBuffer<float32> b1,
+                          KernelBuffer<float32> b2, uint32 biased) {
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 wave = KernelThread.globalIdX() / wv;
+        float32 acc = 0.0f;
+        uint32 which = 0;
+        uint32 row = wave;
+        if (wave >= rowsQ + rowsKv) { which = 2; row = wave - rowsQ - rowsKv; }
+        else if (wave >= rowsQ) { which = 1; row = wave - rowsQ; }
+        uint32 limit = rowsQ;
+        if (which != 0) { limit = rowsKv; }
+        if (which == 2) {
+            if (row < limit) {
+                uint32 b = lane;
+                while (b < n) { acc = acc + 3.0f; b = b + wv; }
+            }
+            float32 t2 = Wave.reduceSumF32(acc);
+            if (lane == 0 && row < limit) {
+                if (biased != 0) { t2 = t2 + b2[(int64) row]; }
+                y2[(int64) row] = t2;
+            }
+            return;
+        }
+        if (row < limit) {
+            if (which == 0) {
+                uint32 b = lane;
+                while (b < n) { acc = acc + 1.0f; b = b + wv; }
+            } else {
+                uint32 b = lane;
+                while (b < n) { acc = acc + 2.0f; b = b + wv; }
+            }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < limit) {
+            if (biased != 0) {
+                if (which == 0) { tot = tot + b0[(int64) row]; }
+                else if (which == 1) { tot = tot + b1[(int64) row]; }
+                else { tot = tot + b2[(int64) row]; }
+            }
+            if (which == 0) { y0[(int64) row] = tot; }
+            else if (which == 1) { y1[(int64) row] = tot; }
+            else { y2[(int64) row] = tot; }
+        }
+    }
+    public static int32 run() {
+        uint32 w = probeWidth();
+        if (w < 2) { return -3; }
+        float32[] h0 = heap float32[2];
+        float32[] h1 = heap float32[2];
+        float32[] h2 = heap float32[2];
+        float32[] hb = heap float32[2];
+        hb[0] = 0.5f; hb[1] = 0.5f;
+        KernelBuffer<float32> y0 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> y1 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> y2 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> b0 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> b1 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> b2 = heap KernelBuffer<float32>(2);
+        b0.upload(hb);
+        b1.upload(hb);
+        b2.upload(hb);
+        KernelStream s #= KernelStream.current();
+        try {
+            qk.launch(s, grid: [6], block: [w])(y0, y1, y2, 40, 2, 2, 0, b0, b1, b2, 1);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        y0.download(h0);
+        y1.download(h1);
+        y2.download(h2);
+        float32[] h = heap float32[6];
+        h[0] = h0[0]; h[1] = h0[1]; h[2] = h1[0]; h[3] = h1[1]; h[4] = h2[0]; h[5] = h2[1];
+        float32[] want = heap float32[6];
+        want[0] = 40.5f; want[1] = 40.5f; want[2] = 80.5f; want[3] = 80.5f;
+        want[4] = 120.5f; want[5] = 120.5f;
+        return verify(h, 6, want);
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, aReturningArmBeforeASplitInsideAGuardLowers) {
+    const int r = runOnCpu(std::string(kPreamble) + kReturningArmThenSplitSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused; 100+i wrong at wave i)";
+}
+
 // ---- the mxfp4 Group-surface shape: stripe + mac + reduce at the host width //
 //
 // cajeta-llm's mxfp4MatVecKernelCoopQ8Surface (Group.stripe over the row's

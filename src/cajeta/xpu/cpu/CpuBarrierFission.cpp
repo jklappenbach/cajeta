@@ -779,9 +779,23 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             // census, q4kQ8IdMatVecKernel and three siblings). So this is the
             // last resort, not the first.
             bool needsArm = false;
+            // A uniform split (4a) inside this guard's arm: the split runs
+            // once for the whole block, outside the work-item loops, so the
+            // guard around it has to be an arm too. Left as ordinary control
+            // flow, the region before the guard collects the way around it
+            // (the epilogue after the join) while the split's continuation
+            // reaches the same blocks: "a block is reached by more than one
+            // region path". Each loop under the split post-dominates its
+            // own arm, so the per-loop test below never asks for the arm;
+            // the split inside is what asks. iq3xxsQkvWaveMatVecKernel and
+            // iq2sIq3xxsQkvWaveMatVecKernel (`if (row < limit) { if (which
+            // == 0) {loop} else if ... }`) were declined on cpu by exactly
+            // this (xpu-kernel-adaptor 4.2.1.10, 2026-10-09).
+            bool splitInside = false;
             for (auto* sc : {&scopeT, &scopeF})
                 for (llvm::BasicBlock* b : *sc) {
                     if (boundarySet.count(b)) holdsBarrier = true;
+                    if (splitSet.count(b)) splitInside = true;
                     if (!heads.count(b)) continue;
                     holdsLoop = true;
                     llvm::Loop* L = cLI.getLoopFor(b);
@@ -790,7 +804,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                     if (!pdt.dominates(b, lvl) && !everyMissIsACleanExit(b, lvl))
                         needsArm = true;
                 }
-            if (!holdsLoop || holdsBarrier || !needsArm) continue;
+            if (!holdsLoop || holdsBarrier || !(needsArm || splitInside)) continue;
             for (llvm::BasicBlock* b : scopeT)
                 if (scopeF.count(b))
                     unsupported("a per-work-item branch whose arms share a block "
@@ -823,6 +837,11 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 }
             };
             llvm::BasicBlock* cutJ = cutTo(join);
+            if (std::getenv("CAJETA_XPU_DEBUG_WAVE"))
+                fprintf(stderr, "[wave-cut] guard %s: T %s, F %s, join %s%s\n",
+                        ctl->getName().str().c_str(), T->getName().str().c_str(),
+                        F->getName().str().c_str(), join->getName().str().c_str(),
+                        tRet ? " (T returns)" : fRet ? " (F returns)" : "");
             if (!tRet && (!fArm || !fRet)) {
                 // Both arms real, or no else: the branch runs into the first
                 // arm for every work-item; the arms select by mask.
@@ -1425,7 +1444,9 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             }
             if (!regioned.insert(cur).second)
                 unsupported("unstructured barrier control flow (a block is "
-                            "reached by more than one region path)");
+                            "reached by more than one region path: "
+                            + (cur->hasName() ? cur->getName().str() : std::string("<bb>"))
+                            + ")");
             // A barrier-subloop header with no separating preheader: enter it
             // as a subloop rather than letting `collect` flatten it.
             if (llvm::Loop* cl = LI.getLoopFor(cur))
@@ -1441,7 +1462,11 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             for (llvm::BasicBlock* b : R.blocks)
                 if (b != cur && !regioned.insert(b).second)
                     unsupported("unstructured barrier control flow (a block is "
-                                "reached by more than one region path)");
+                                "reached by more than one region path: "
+                                + (b->hasName() ? b->getName().str() : std::string("<bb>"))
+                                + ", collected from "
+                                + (cur->hasName() ? cur->getName().str() : std::string("<bb>"))
+                                + ")");
             if (R.barrier && R.split)
                 unsupported("a barrier and a workgroup-uniform branch are "
                             "reachable from the same region, so there is no "
@@ -1472,6 +1497,19 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             else if (R.reachedStop) done = stopAt;
             else unsupported("unstructured barrier control flow");
 
+            if (std::getenv("CAJETA_XPU_DEBUG_WAVE")) {
+                auto nm = [](llvm::BasicBlock* b) {
+                    return !b ? std::string("-") : b->hasName() ? b->getName().str()
+                                                                 : std::string("<bb>");
+                };
+                std::string bl;
+                for (llvm::BasicBlock* b : R.blocks) bl += " " + nm(b);
+                fprintf(stderr, "[wave-walk] region %s -> %s (pred %s, %s)%s\n",
+                        nm(cur).c_str(), nm(done).c_str(), nm(pred).c_str(),
+                        R.subloop ? "subloop" : R.barrier ? "barrier" : R.split ? "split"
+                        : R.reachedRet ? "ret" : R.reachedLatch ? "latch" : "join",
+                        bl.c_str());
+            }
             if (hasReal(R.blocks))
                 jobs.push_back({cur, R.blocks, pred, done, nullptr});
 

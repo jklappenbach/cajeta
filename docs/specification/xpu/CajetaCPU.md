@@ -455,6 +455,25 @@ an `opt` replay over it is an approximation (two passes are the compiler's own a
 option scope is not an `opt` flag), so a question about what the vectorizer saw is answered
 by PRELV.
 
+**A uniform split inside a per-work-item guard is an arm (2026-10-09).** Fission runs a
+workgroup-uniform branch once, outside the work-item loops, with each side regioned on its
+own (4a), and predicates a per-work-item guard around a scaffold loop as an arm selected by
+a mask (4c) only when some work-item that enters the guard would miss the loop. A guard
+such as `if (row < limit) { if (which == 0) {loop} else if (which == 1) {loop} else {loop} }`,
+where the inner chain is uniform by provenance and each arm holds a lane-strided loop,
+passed neither test: every loop post-dominates its own split arm, so the guard stayed
+ordinary control flow, the region before it collected the way around it (the epilogue after
+the join) while the splits' continuation reached the same blocks, and the uniform-loop
+scaffolding declined with "a block is reached by more than one region path". Since the
+split runs outside the work-item loops, the guard around it has to be an arm too, and 4c now
+asks for the arm whenever a uniform split lies inside the guard's scope. The two iq qkv
+wave kernels of cajeta-llm were declined on cpu by this
+(`XpuCpuFissionUniformize.aUniformSplitOfLoopsInsideAPerWorkItemGuardLowers`,
+`aReturningArmBeforeASplitInsideAGuardLowers`). Under `CAJETA_XPU_DEBUG_WAVE=1` the walk
+prints every region (`[wave-walk] <start> -> <continuation> (pred, kind) <blocks>`) and every
+arm cut (`[wave-cut] guard: T, F, join`), and the refusal names the block reached twice and
+the region that collected it.
+
 The work-item loop also carries `llvm.loop.interleave.count` 1: left to its cost model
 LoopVectorize interleaved some regions four times, so their vector loop needed a 4W-wide
 block and every smaller block ran the scalar copy.
