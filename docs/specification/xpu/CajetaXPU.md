@@ -1626,6 +1626,15 @@ shape of a kernel that vectorizes at a declared 32 lanes on a 16-wide host
 and not on an 8-wide one (the id down-combine family, 2026-09-30), where
 an unconditional hold was right on one box and STALE on the other.
 
+A plain `@Unlowered` tracks a decline the compiler reaches on its own; it
+does not prevent the attempt. `hold = true` does:
+`@Unlowered(backend = "cpu", tracked = "...", hold = true)` makes the
+backend skip the kernel before lowering, report it as the tracked note
+(`held before lowering`), and never read it STALE, since nothing was tried.
+It is the lever for a kernel whose lowering does not end, which is what the
+cpu vectorize deadline (`CAJETA_XPU_CPU_VECTORIZE_DEADLINE_S`) names
+(xpu-kernel-adaptor 6.4.16). The cpu backend honours it today.
+
 > **Status.** The compile-time workgroup-size budgeting and `@Occupancy` override
 > are active today; the DeviceProfile, analytic picker, and bounded sweep are the
 > config-decision layer (`cajeta gpu-profile` is live). Applying a *runtime-chosen*

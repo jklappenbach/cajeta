@@ -48,6 +48,14 @@ namespace xpu {
     void setKernelGateHostWave(unsigned lanes);
     unsigned kernelGateHostWave();
 
+    // @Unlowered(backend = B, tracked = ..., hold = true): the backend does not
+    // ATTEMPT the kernel. A plain @Unlowered only tracks a decline the compiler
+    // reaches on its own (and reads STALE when the kernel lowers); it cannot
+    // hold a kernel whose lowering never ends (the cpu vectorize deadline,
+    // xpu-kernel-adaptor 6.4.16). A backend asks this before lowering, skips
+    // the kernel with reportUnloweredKernel, and the hold is never stale.
+    bool unloweredHoldsBeforeLowering(const Method& kernel, const std::string& backend);
+
     // Per-build state.
     void resetKernelGate();
     unsigned kernelGateErrors();

@@ -108,8 +108,9 @@ void vectorizeUnderDeadline(llvm::Function& wrapper, llvm::TargetMachine* tm,
             "cajeta: error: [xpu-kernel-hung] %s: LoopVectorize did not finish its "
             "cpu work-item loop within %llu ms (CAJETA_XPU_CPU_VECTORIZE_DEADLINE_S, "
             "default 600 s); the compile stops here. Hold the kernel with "
-            "@Unlowered(backend = \"cpu\", tracked = \"<plan item>\") so it is "
-            "refused by name, or raise the deadline (xpu-kernel-adaptor 6.4.16)\n",
+            "@Unlowered(backend = \"cpu\", tracked = \"<plan item>\", hold = true) so it "
+            "is skipped before lowering and refused by name, or raise the deadline "
+            "(xpu-kernel-adaptor 6.4.16)\n",
             entryName.c_str(), ms);
     fflush(stderr);
     fflush(stdout);
@@ -1191,6 +1192,15 @@ void foldWaveVariants(llvm::Function& f) {
             if (!method || !isKernel(*method)) continue;
             const std::string entryName = kernelRegistryName(method);
             const std::string sym = "__cajeta_xpu_cpu." + symSuffix(method);
+
+            // hold = true: not attempted. The only lever for a kernel whose
+            // lowering does not end (the vectorize deadline below names it);
+            // a plain @Unlowered tracks a decline, it does not prevent one.
+            if (unloweredHoldsBeforeLowering(*method, "cpu")) {
+                reportUnloweredKernel(*method, entryName, "cpu",
+                                      "held before lowering (@Unlowered hold = true)");
+                continue;
+            }
 
             // A fresh module sharing the host context; a throw leaves host clean.
             auto mod = std::make_unique<llvm::Module>("xpu.cpu." + entryName, ctx);

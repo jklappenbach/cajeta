@@ -110,6 +110,13 @@ void gateRecord(const Method& kernel, const char* severity, const std::string& c
 
 } // namespace
 
+bool unloweredHoldsBeforeLowering(const Method& kernel, const std::string& backend) {
+    if (unloweredHeldBy(kernel, backend).empty()) return false;
+    auto ann = kernel.findAnnotation(XpuAttr::Unlowered);
+    auto* hold = ann ? ann->findArg("hold") : nullptr;
+    return hold && hold->kind == AnnotationArgKind::Bool && hold->boolVal;
+}
+
 bool kernelGateWarns() {
     if (g_override >= 0) return g_override == 1;
     const char* v = std::getenv("CAJETA_XPU_KERNEL_GATE");

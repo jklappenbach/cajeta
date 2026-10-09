@@ -195,3 +195,43 @@ TEST(XpuCpuDeclaredWave, theDefaultVectorizeDeadlineAdmitsASmallWaveKernel) {
     EXPECT_EQ(err.find("[xpu-kernel-hung]"), std::string::npos) << err;
     EXPECT_EQ(r, 32.0f * 1000.0f + 496.0f);
 }
+
+// The deadline's prescription must WORK: a kernel held with
+// @Unlowered(backend = "cpu", tracked = ..., hold = true) never reaches the
+// vectorizer, so under the injected stall and a 50 ms deadline the compile
+// ends normally with the kernel reported as a tracked skip. Found 2026-10-08:
+// the first evaluation run held iq3xxsF16CoopIdN64Kernel with a plain
+// @Unlowered, which is a gate declaration and not a hold, and the deadline
+// fired on the same kernel again.
+TEST(XpuCpuDeclaredWave, aHeldKernelNeverReachesTheVectorizer) {
+    namespace fs = std::filesystem;
+    std::string bin = compilerBinary();
+    if (!fs::exists(bin)) GTEST_SKIP() << "no compiler binary at " << bin;
+    static std::mt19937_64 rng(std::random_device{}());
+    fs::path root = fs::temp_directory_path() / ("cajeta_vhold_" + std::to_string(rng()));
+    fs::create_directories(root / "test");
+    fs::create_directories(root / "out");
+    const std::string hold =
+        "    @Unlowered(backend = \"cpu\", tracked = \"xpu-kernel-adaptor 6.4.16\", hold = true)\n";
+    // Every kernel in the file is held: the injected stall catches any that is not.
+    std::string src = source("    @Wave(width = 32)\n" + hold);
+    const std::string widthk = "    public static void widthk(";
+    ASSERT_NE(src.find(widthk), std::string::npos);
+    src.insert(src.find(widthk), hold);
+    { std::ofstream o(root / "test" / "M.cajeta"); o << src; }
+    fs::path errFile = root / "stderr.txt";
+    std::string cmd = cajeta_env_prefix({{"CAJETA_XPU_CPU_VECTORIZE_DEADLINE_MS", "50"},
+                                         {"CAJETA_XPU_FAULT", "vectorize-stall"}})
+        + bin + " --emit=ir --xpu-backend=cpu test.M.run " + root.string() + " "
+        + (root / "out").string() + " > " CAJETA_PORTABLE_DEVNULL " 2> " + errFile.string();
+    int rc = std::system(cmd.c_str());
+    std::ifstream in(errFile);
+    std::stringstream ss; ss << in.rdbuf();
+    std::string err = ss.str();
+    EXPECT_EQ(rc, 0) << err;
+    EXPECT_EQ(err.find("[xpu-kernel-hung]"), std::string::npos) << err;
+    EXPECT_NE(err.find("[xpu-kernel-skipped] sumk: no cpu device code"), std::string::npos) << err;
+    EXPECT_NE(err.find("held before lowering"), std::string::npos) << err;
+    EXPECT_NE(err.find("[tracked: xpu-kernel-adaptor 6.4.16]"), std::string::npos) << err;
+    fs::remove_all(root);
+}

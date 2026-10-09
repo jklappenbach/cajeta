@@ -397,3 +397,23 @@ TEST(XpuKernelGate, theSharedMemoryRefusalNamesTheArchUnderJson) {
     EXPECT_NE(b.log.find("\"artifact\":{\"kind\":\"kernel\",\"name\":\"big\",\"target\":\"amdgpu/gfx"),
               std::string::npos) << b.log;
 }
+
+// hold = true: the backend does not ATTEMPT the kernel. A plain @Unlowered is a
+// gate declaration (it tracks a decline the compiler reaches on its own and
+// reads STALE when the kernel lowers); it never stopped a lowering, so a
+// kernel whose lowering hangs (iq3xxsF16CoopIdN64Kernel's cpu wrapper in VPlan
+// CSE, xpu-kernel-adaptor 6.4.16, 2026-10-08) could not be held by it. With
+// hold = true the kernel is skipped before lowering, reported as the tracked
+// note, and is never stale, because nothing was tried.
+TEST(XpuKernelGate, aHoldBeforeLoweringSkipsTheKernelAndIsNeverStale) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    const char* HOLD = "    @Unlowered(backend = \"cpu\", tracked = \"xpu-kernel-adaptor 6.4.16\", hold = true)\n";
+    Built b = build(program(HOLD, HOLD), "cpu");
+    EXPECT_EQ(b.rc, 0) << b.log;
+    EXPECT_NE(b.log.find("cajeta: note: [xpu-kernel-skipped] good: no cpu device code"),
+              std::string::npos) << "`good` lowers on cpu, yet hold = true must skip it:\n" << b.log;
+    EXPECT_NE(b.log.find("held before lowering"), std::string::npos) << b.log;
+    EXPECT_NE(b.log.find("[tracked: xpu-kernel-adaptor 6.4.16]"), std::string::npos) << b.log;
+    EXPECT_EQ(b.log.find("STALE"), std::string::npos) << b.log;
+    EXPECT_EQ(b.log.find("cajeta: error:"), std::string::npos) << b.log;
+}
