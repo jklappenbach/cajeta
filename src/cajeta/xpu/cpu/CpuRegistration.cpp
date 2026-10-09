@@ -183,6 +183,29 @@ bool callsRuntimeFn(llvm::Function& f, llvm::StringRef name) {
     return false;
 }
 
+// The same question asked of the kernel AND the @Device helpers it reaches:
+// q4kQ8WaveMatVecColsKernel keeps its eight reduces in colsStore, which is
+// inlined only after the fission decision, so the kernel itself showed no
+// wave op, fission was skipped, and the reduce the helper brought in sat
+// beside an un-scaffolded lane-strided loop (xpu-kernel-adaptor 4.2.1,
+// 2026-10-09).
+static bool callsRuntimeFnTransitively(llvm::Function& f, llvm::StringRef name) {
+    llvm::SmallPtrSet<llvm::Function*, 16> seen;
+    llvm::SmallVector<llvm::Function*, 16> work{&f};
+    while (!work.empty()) {
+        llvm::Function* cur = work.pop_back_val();
+        if (!seen.insert(cur).second) continue;
+        for (auto& bb : *cur)
+            for (auto& in : bb)
+                if (auto* call = llvm::dyn_cast<llvm::CallInst>(&in))
+                    if (auto* cf = call->getCalledFunction()) {
+                        if (cf->getName() == name) return true;
+                        if (!cf->isDeclaration()) work.push_back(cf);
+                    }
+    }
+    return false;
+}
+
 // An empty `internal alwaysinline memory(none)` shell for the caller to fill.
 llvm::Function* makeVariantShell(llvm::Module& m, const std::string& name,
                                  llvm::FunctionType* fnTy) {
@@ -621,6 +644,36 @@ void forceLoopVectorWidth(llvm::UncondBrInst* latch, unsigned W) {
 // work-items -- but the nested loop's own ID does not list the group, so its
 // loop-carried dependences (a k reduction, a scan) are untouched.
 static bool loopHasHint(llvm::Loop* L, llvm::StringRef hint);
+// An ACQUIRE fence inside a work-item loop's body (Barrier.deviceMemory(Acquire),
+// the last-block pattern: the block that finishes last reads what the others
+// stored) goes to the loop's preheader. LoopVectorize refuses a fence
+// ("instruction cannot be vectorized"), so the wave reduce after it was left
+// scalar: routerTopKWaveKernel and rmsnormRouterTopKKernel on cpu
+// (xpu-kernel-adaptor 4.2.1, 2026-10-09). One acquire before the loop orders
+// every lane's later loads at least as strongly as one per lane inside it; a
+// release fence is not symmetric (it must follow the lane's stores) and stays.
+static void hoistAcquireFencesOutOfWorkItemLoops(llvm::Function& f) {
+    llvm::DominatorTree dt(f);
+    llvm::LoopInfo li(dt);
+    for (llvm::Loop* top : li)
+        for (llvm::Loop* L : llvm::depth_first(top)) {
+            if (!loopHasHint(L, "cajeta.xpu.wi")) continue;
+            // The x loop sits inside the y and z loops and its only outside
+            // predecessor is the y header, which also branches to the y latch:
+            // no proper preheader. An acquire fence at the end of that
+            // predecessor runs once more per y trip and orders no less.
+            llvm::BasicBlock* ph = L->getLoopPreheader();
+            if (!ph) ph = L->getLoopPredecessor();
+            if (!ph) continue;
+            llvm::SmallVector<llvm::FenceInst*, 4> fences;
+            for (llvm::BasicBlock* bb : L->blocks())
+                for (llvm::Instruction& in : *bb)
+                    if (auto* fe = llvm::dyn_cast<llvm::FenceInst>(&in))
+                        if (fe->getOrdering() == llvm::AtomicOrdering::Acquire)
+                            fences.push_back(fe);
+            for (llvm::FenceInst* fe : fences) fe->moveBefore(ph->getTerminator()->getIterator());
+        }
+}
 static void markWorkItemLoopsParallel(llvm::Function& f) {
     llvm::LLVMContext& ctx = f.getContext();
     llvm::DominatorTree dt(f);
@@ -1315,7 +1368,7 @@ void foldWaveVariants(llvm::Function& f) {
             inlineAllocaTakingCallees(*linked);
             bool waveOpsUsed = false;
             for (const char* op : kWaveOps)
-                if (callsRuntimeFn(*linked, op)) { waveOpsUsed = true; break; }
+                if (callsRuntimeFnTransitively(*linked, op)) { waveOpsUsed = true; break; }
             bool bodyHasLoop = false;
             {
                 llvm::DominatorTree ldt(*linked);
@@ -1487,7 +1540,7 @@ void foldWaveVariants(llvm::Function& f) {
                         fprintf(stderr, "[wave-remarks] %s\n", entryName.c_str());
                     }
                     if (waveKernel) markWaveCallsConvergent(*wrapper);
-                    if (waveKernel) markWorkItemLoopsParallel(*wrapper);
+                    if (waveKernel) { hoistAcquireFencesOutOfWorkItemLoops(*wrapper); markWorkItemLoopsParallel(*wrapper); }
                     wavePre = waveOpCallCount(*wrapper);
                     {
                         const unsigned instrs = wrapper->getInstructionCount();
@@ -1658,7 +1711,7 @@ void foldWaveVariants(llvm::Function& f) {
                     fprintf(stderr, "[wave-remarks] %s\n", entryName.c_str());
                 }
                 if (waveKernel) markWaveCallsConvergent(*wrapper);
-                if (waveKernel) markWorkItemLoopsParallel(*wrapper);
+                if (waveKernel) { hoistAcquireFencesOutOfWorkItemLoops(*wrapper); markWorkItemLoopsParallel(*wrapper); }
                 wavePre = waveOpCallCount(*wrapper);
                 {
                     const unsigned instrs = wrapper->getInstructionCount();

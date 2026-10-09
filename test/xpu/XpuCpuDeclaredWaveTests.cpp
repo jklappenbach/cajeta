@@ -196,6 +196,70 @@ TEST(XpuCpuDeclaredWave, theDefaultVectorizeDeadlineAdmitsASmallWaveKernel) {
     EXPECT_EQ(r, 32.0f * 1000.0f + 496.0f);
 }
 
+// An acquire fence inside the wave kernel's body (Barrier.deviceMemory(Acquire),
+// the last-block pattern: the block that finishes last reads what the others
+// stored) sits inside the work-item loop, and LoopVectorize refuses a fence
+// ("instruction cannot be vectorized"), so the reduce after it was left
+// scalar: routerTopKWaveKernel and rmsnormRouterTopKKernel on cpu
+// (xpu-kernel-adaptor 4.2.1, measured 2026-10-09). An acquire fence hoisted
+// to the loop's preheader orders every lane's later loads the same way, so
+// the registration hoists it and the loop widens. Lanes below n read 1 + lane
+// and the wave sums them: n(n+1)/2, 36 for n = 8, plus width * 1000.
+TEST(XpuCpuDeclaredWave, anAcquireFenceInTheBodyIsHoistedAndTheReduceWidens) {
+    const char* src = R"CJ(
+package test;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.MemoryOrder;
+import cajeta.xpu.Wave;
+public class M {
+    @Kernel
+    @Wave(width = 32)
+    public static void fk(KernelBuffer<float32> out, KernelBuffer<float32> in, uint32 n) {
+        uint32 lane = KernelThread.x() % 32;
+        Barrier.deviceMemory(MemoryOrder.Acquire);
+        float32 v = 0.0f;
+        if (lane < n) { v = in[(int64) lane]; }
+        float32 s = Wave.reduceSumF32(v);
+        out[(int64) KernelThread.globalIdX()] = s + (float32) Wave.width() * 1000.0f;
+    }
+    public static float32 run() {
+        float32[] hin = heap float32[32];
+        uint32 i = 0;
+        while (i < 32) { hin[i] = 1.0f + (float32) i; i = i + 1; }
+        KernelBuffer<float32> bin = heap KernelBuffer<float32>(32);
+        bin.upload(hin);
+        float32[] h = heap float32[32];
+        KernelBuffer<float32> b = heap KernelBuffer<float32>(32);
+        KernelStream s #= KernelStream.current();
+        try {
+            fk.launch(s, grid: [1], block: [32])(b, bin, 8);
+            s.sync();
+        } catch (Exception e) {
+            return -1.0f;
+        }
+        b.download(h);
+        i = 1;
+        while (i < 32) {
+            if (h[i] != h[0]) { return -1.0f - (float32) i; }
+            i = i + 1;
+        }
+        return h[0];
+    }
+}
+)CJ";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(src, "test.M", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<float (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 32.0f * 1000.0f + 36.0f)
+        << "-1 the launch was refused (the reduce left scalar); -1-i the first lane that disagreed";
+}
+
 // The deadline's prescription must WORK: a kernel held with
 // @Unlowered(backend = "cpu", tracked = ..., hold = true) never reaches the
 // vectorizer, so under the injected stall and a 50 ms deadline the compile

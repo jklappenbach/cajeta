@@ -1132,6 +1132,20 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             llvm::BasicBlock* X = Q.c.exit;
             llvm::SmallPtrSet<llvm::BasicBlock*, 32> body(Q.c.blocks.begin(),
                                                          Q.c.blocks.end());
+            // Refreshed: the uniform transforms above split a nested scaffold
+            // loop's latch into a block of its own, and 4c may have cut arms,
+            // after Q.c.blocks was taken. A block created since belongs to the
+            // body it sits in; left out, a load of the nested loop's counter in
+            // its new latch read as "carried" state, the counter became a
+            // context array, and its scaffold accesses were stranded
+            // (q50F32WaveMatVecKernel's `while (j < 16)`, 2026-10-09).
+            {
+                llvm::DominatorTree fDT(*wrapper);
+                llvm::LoopInfo fLI(fDT);
+                if (llvm::Loop* fresh = fLI.getLoopFor(H))
+                    if (fresh->getHeader() == H)
+                        for (llvm::BasicBlock* fb : fresh->blocks()) body.insert(fb);
+            }
             // A preheader of its own, in the region before the loop, to arm
             // the flag per work-item: the edge in may come from scaffold (a
             // barrier boundary, a split) or from more than one block.
@@ -1260,8 +1274,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             uniformScaffoldHeaders.insert(HS);
             predicatedScaffoldHeaders.insert(HS);
             scaffoldExit[HS] = X;
-            std::vector<llvm::BasicBlock*> pbody(Q.c.blocks.begin(),
-                                                 Q.c.blocks.end());
+            std::vector<llvm::BasicBlock*> pbody(body.begin(), body.end());
             pbody.push_back(gate);
             pbody.push_back(leave);
             pbody.push_back(skip);
@@ -1372,6 +1385,31 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             if (!isScaffoldLoop(L)) continue;
             llvm::Loop* P = L->getParentLoop();
             llvm::BasicBlock* levelEntry = P ? inLoopSuccOf(P) : bodyEntry;
+            // Inside a PREDICATED scaffold loop the level is the trip's body,
+            // the gate's active successor, not the gate: a work-item whose
+            // flag is down skips the trip through `skip` (which has work, the
+            // OR into `any`) and does not "miss" the inner loop. q50F32Wave
+            // MatVecKernel's uniform `while (j < 16)` inside its lane-strided
+            // loop was refused as a barrier loop under divergent control flow
+            // by exactly this (xpu-kernel-adaptor 4.2.1, 2026-10-09).
+            if (P && predicatedScaffoldHeaders.count(P->getHeader())) {
+                llvm::BasicBlock* gate = inLoopSuccOf(P);
+                auto sk = predSkipOf.find(P->getHeader());
+                auto lv = predLeaveOf.find(P->getHeader());
+                llvm::BasicBlock* H = nullptr;
+                for (llvm::BasicBlock* s : llvm::successors(gate))
+                    if (sk == predSkipOf.end() || s != sk->second) H = s;
+                // Past the trip's own exit test as well: H branches to the body
+                // or to `leave` (the work-item is done with the loop), and only
+                // the body is the level.
+                if (H) {
+                    levelEntry = H;
+                    for (llvm::BasicBlock* s : llvm::successors(H))
+                        if (P->contains(s) && (lv == predLeaveOf.end() || s != lv->second)
+                            && (sk == predSkipOf.end() || s != sk->second))
+                            levelEntry = s;
+                }
+            }
             if (llvm::BasicBlock* arm = deepestArmEntry(L->getHeader()))
                 if (!P || P->contains(arm)) levelEntry = arm;
             if (!PDT.dominates(L->getHeader(), levelEntry)
@@ -1466,11 +1504,19 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         std::vector<std::pair<llvm::BasicBlock*, unsigned>> predEdges;
         bool reachedSkip = false;
     };
-    // A predicated scaffold loop whose body 4c cut into several regions.
+    // A predicated scaffold loop whose body is split into several regions: by
+    // a 4c cut, by a scaffold subloop (q50F32WaveMatVecKernel's uniform
+    // `while (j < 16)` inside its lane-strided loop), or by a uniform split.
+    // Each is a boundary the trip's regions end at, and the loop's `skip` and
+    // `leave` must then belong to the LAST region only.
     auto predicatedCutBody = [&](llvm::Loop* L) {
         if (!L || !predicatedScaffoldHeaders.count(L->getHeader())) return false;
         for (llvm::BasicBlock* c : cutSet)
             if (L->contains(c)) return true;
+        for (llvm::BasicBlock* c : splitSet)
+            if (L->contains(c)) return true;
+        for (llvm::Loop* sub : L->getSubLoops())
+            if (isScaffoldLoop(sub)) return true;
         return false;
     };
     auto collect = [&](llvm::BasicBlock* start, llvm::Loop* encLoop,
@@ -1562,16 +1608,22 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             Collected R = collect(cur, encLoop, stopAt);
             if (R.reachedSkip) {
                 llvm::BasicBlock* hs = encLoop->getHeader();
-                if (R.barrier) {
-                    // A work-item that leaves the loop in a region before a cut
-                    // clears its flag and goes on to the cut with the others;
-                    // every later region of the body admits only the active
-                    // work-items (step 9), so it does nothing more this trip.
+                llvm::BasicBlock* cont = R.barrier ? R.barrier
+                                       : R.split ? R.split
+                                       : R.subloop ? R.subloop : nullptr;
+                if (cont) {
+                    // A work-item that leaves the loop in a region before a
+                    // boundary (a cut, a uniform split, a scaffold subloop)
+                    // clears its flag and goes on to that boundary with the
+                    // others; every later region of the body admits only the
+                    // active work-items (step 9), so it does nothing more this
+                    // trip, and a scaffold subloop or split runs once for the
+                    // block regardless.
                     auto* lv = llvm::BasicBlock::Create(
-                        ctx, hs->getName() + ".leave.cut", wrapper, R.barrier);
+                        ctx, hs->getName() + ".leave.cut", wrapper, cont);
                     llvm::IRBuilder<> b(lv);
                     b.CreateStore(flag0, predActiveOf[hs]);
-                    b.CreateBr(R.barrier);
+                    b.CreateBr(cont);
                     for (auto& e : R.predEdges)
                         e.first->getTerminator()->setSuccessor(e.second, lv);
                     R.blocks.push_back(lv);

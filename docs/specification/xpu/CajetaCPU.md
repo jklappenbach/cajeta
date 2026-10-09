@@ -514,6 +514,25 @@ are known, any value defined in one region and used outside it takes a slot like
 (step 6b); a tainted one gets a context array in step 7 and its accesses are redirected in
 step 10. `CAJETA_XPU_DEBUG_WAVE` reports how many values moved.
 
+**Four more admissions, measured on the last cpu declines (2026-10-09).** An acquire fence
+inside a work-item loop (`Barrier.deviceMemory(Acquire)`, the last-block pattern) is hoisted
+to the loop's predecessor by the registration, since LoopVectorize refuses a fence and one
+acquire before the loop orders every lane's later loads at least as strongly; a release fence
+is not symmetric and stays (routerTopKWaveKernel, rmsnormRouterTopKKernel). The decision to
+take the fission path for a wave kernel with a loop asks the kernel AND the `@Device` helpers
+it reaches for wave ops, because a reduce kept in a helper inlined after that decision left
+the kernel's lane-strided loop un-scaffolded (the column mat-vecs). Inside a predicated
+scaffold loop, the "one level out" admission takes the trip's body after the gate and the
+loop's own exit test as the level, not the gate: a work-item whose flag is down skips the
+trip, it does not miss an inner loop. And a predicated body split by any boundary, a 4c cut,
+a uniform split or a scaffold subloop, gives its `skip` and `leave` to the last region only
+(the body's block set is refreshed from LoopInfo at transform time, since the uniform
+transforms split latches after it was taken): q50F32WaveMatVecKernel's uniform
+`while (j < 16)` inside its lane-strided loop, and the uniform split inside a predicated
+loop. Pinned by `XpuCpuDeclaredWave.anAcquireFenceInTheBodyIsHoistedAndTheReduceWidens` and
+`XpuCpuFissionUniformize.{aWaveOpInsideADeviceHelperStillTakesTheFissionPath,
+aUniformLoopInsideAPredicatedLoopLowers, aUniformSplitInsideAPredicatedLoopLowersAndMasksRight}`.
+
 The work-item loop also carries `llvm.loop.interleave.count` 1: left to its cost model
 LoopVectorize interleaved some regions four times, so their vector loop needed a 4W-wide
 block and every smaller block ran the scalar copy.
