@@ -499,18 +499,17 @@ const char* kBreakSrc = R"CJ(
 }
 )CJ";
 
-// TRACKED: xpu-kernel-adaptor 4.2.1.3. A `break` gives the loop a SECOND
-// exiting edge, and the predicated scaffold in 4b takes a loop whose exits
-// are the header's and the latch's. Measured 2026-09-26: this shape is
-// refused, not miscompiled, so the kernel has no cpu device code and the
-// launch raises. When 4b learns the multi-exit case this flips to the value
-// check (each work-item accumulates min(n, t), the wave sums those).
-TEST(XpuCpuFissionUniformize, aPerWorkItemBreakIsStillRefused) {
+// xpu-kernel-adaptor 4.2.1.3. A `break` is one more exiting edge, which the
+// predicated scaffold routes to LEAVE like the header's. It was refused until
+// 2026-10-09 for a reason that had nothing to do with the scaffold: the break
+// reaches the exit through an empty forwarding block, so the loop read as
+// having two exit blocks ("more than one non-return exit block"). Folding a
+// loop's forwarding exit block into its target lowers it: each work-item
+// accumulates min(n, t), and the wave sums those.
+TEST(XpuCpuFissionUniformize, aPerWorkItemBreakLeavesTheLoopForThatWorkItem) {
     const int r = runOnCpu(std::string(kPreamble) + kBreakSrc);
-    EXPECT_EQ(r, -1)
-        << "a per-work-item `break` inside a scaffold loop REGISTERED (r=" << r
-        << "); until 4.2.1.3 lands it must be refused rather than run a wave "
-           "op at width 1";
+    EXPECT_EQ(r, 0)
+        << "r=" << r << " (-1 refused, 100+i wrong at lane i)";
 }
 
 // ---- (f) a return inside the loop ends the work-item, not the loop ------ //
@@ -966,13 +965,13 @@ const char* kUniformBreakSrc = R"CJ(
 }
 )CJ";
 
-// TRACKED: xpu-kernel-adaptor 4.2.1.3. The same second-exiting-edge shape,
-// with the break on a workgroup-uniform condition. Refused for the same
-// reason, and pinned as refused so the day it lowers is visible.
-TEST(XpuCpuFissionUniformize, aUniformBreakInsideAScaffoldLoopIsStillRefused) {
+// xpu-kernel-adaptor 4.2.1.3. The same exiting edge on a workgroup-uniform
+// condition, through the same forwarding block; every lane accumulates
+// min(n, m) = 3 and the wave sums 3 * W.
+TEST(XpuCpuFissionUniformize, aUniformBreakInsideAScaffoldLoopLowers) {
     const int r = runOnCpu(std::string(kPreamble) + kUniformBreakSrc);
-    EXPECT_EQ(r, -1)
-        << "a uniform `break` inside a scaffold loop REGISTERED (r=" << r << ")";
+    EXPECT_EQ(r, 0)
+        << "r=" << r << " (-1 refused, 100+i wrong at lane i)";
 }
 
 // (h) A wave reduce of a workgroup-uniform CONSTANT inside a scaffold loop.

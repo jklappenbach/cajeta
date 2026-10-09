@@ -533,6 +533,17 @@ loop. Pinned by `XpuCpuDeclaredWave.anAcquireFenceInTheBodyIsHoistedAndTheReduce
 `XpuCpuFissionUniformize.{aWaveOpInsideADeviceHelperStillTakesTheFissionPath,
 aUniformLoopInsideAPredicatedLoopLowers, aUniformSplitInsideAPredicatedLoopLowersAndMasksRight}`.
 
+**A `break` leaves a scaffold loop (2026-10-09).** The predicated scaffold sends every
+exiting edge of the body to the loop's `leave`, so a `break` was always one more such edge,
+but the shape was declined before the scaffold saw it: the break reaches the code after the
+loop through an empty block of its own, `br <after the loop>`, and the loop read as having
+two exit blocks. Fission now folds a loop's forwarding exit block into its target (step 3d)
+when every predecessor is in the same loop, the block holds nothing but the branch, it is no
+barrier's boundary, and its target merges no values in phis. Both the per-work-item and the
+workgroup-uniform `break` lower as predicated loops and answer by value
+(`XpuCpuFissionUniformize.{aPerWorkItemBreakLeavesTheLoopForThatWorkItem,
+aUniformBreakInsideAScaffoldLoopLowers}`, xpu-kernel-adaptor 4.2.1.3).
+
 The work-item loop also carries `llvm.loop.interleave.count` 1: left to its cost model
 LoopVectorize interleaved some regions four times, so their vector loop needed a 4W-wide
 block and every smaller block ran the scalar copy.

@@ -304,6 +304,42 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         }
     }
 
+    // --- 3d. A loop's forwarding exit block folds into its target ----------
+    // A `break` leaves the loop through a block of its own holding nothing
+    // but `br <after the loop>`, so a loop the predicated scaffold takes
+    // (every exiting edge goes to LEAVE) read as having TWO exit blocks and
+    // was declined before the scaffold was asked (xpu-kernel-adaptor 4.2.1.3).
+    // An empty block whose predecessors are all inside one loop and whose
+    // target is outside it is that loop's exit edge drawn twice; the exiting
+    // edges go straight to the target. A barrier's boundary block is never
+    // folded, and neither is one whose target merges values in phis.
+    {
+        llvm::DominatorTree fDT(*wrapper);
+        llvm::LoopInfo fLI(fDT);
+        std::vector<llvm::BasicBlock*> fold;
+        for (auto& bb : *wrapper) {
+            if (&bb == trueEntry || boundarySet.count(&bb)) continue;
+            auto* br = llvm::dyn_cast<llvm::UncondBrInst>(bb.getTerminator());
+            if (!br || &bb.front() != br) continue;
+            llvm::BasicBlock* to = br->getSuccessor(0);
+            if (to == &bb || llvm::isa<llvm::PHINode>(to->front())) continue;
+            llvm::Loop* L = nullptr;
+            bool ok = !llvm::pred_empty(&bb);
+            for (llvm::BasicBlock* pb : llvm::predecessors(&bb)) {
+                llvm::Loop* pl = fLI.getLoopFor(pb);
+                if (!pl || (L && pl != L)) { ok = false; break; }
+                L = pl;
+            }
+            if (!ok || L->contains(&bb) || L->contains(to)) continue;
+            fold.push_back(&bb);
+        }
+        for (llvm::BasicBlock* bb : fold) {
+            llvm::BasicBlock* to = bb->getSingleSuccessor();
+            bb->replaceAllUsesWith(to);
+            bb->eraseFromParent();
+        }
+    }
+
     // --- 4. Analyses + uniformity guardrails --------------------------------
     // The kernel's locals: taint carriers here, context arrays in step 7.
     llvm::SmallVector<llvm::AllocaInst*, 8> allocas;
@@ -318,9 +354,10 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // XpuCoopEpilogue.waveVectorOfLaneLowersOnTheCpuDistributedTile and the
     // lane-strided-either-side-of-a-barrier probe, because a reduce result
     // staged through shared memory then became a context array and the
-    // region shape changed under it. Reverted; the accumulator defect is
-    // caught as a REFUSAL by the gate's vanished-wave-op check instead
-    // (CpuRegistration), and the narrow taint is 4.2.1.3's remaining work.
+    // region shape changed under it. Reverted; the narrow form landed with
+    // 4.2.1.9: a local READ-MODIFY-WRITTEN with a wave result gets a context
+    // array (aWaveFedAccumulatorIsPerWorkItem), and the gate's vanished-wave-op
+    // check (CpuRegistration) stays as the backstop.
     llvm::Value* seeds[] = {phX, phY, phZ};
     computeTaint(seeds, allocas, tainted);
     // Separately: values that carry a WAVE RESULT. Not part of the taint set
