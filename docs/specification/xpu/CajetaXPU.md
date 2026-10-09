@@ -833,6 +833,14 @@ indexes through `row(i)` and `col(i)` therefore agrees everywhere, and one
 that assumes a particular map is caught by the conformance corpus, which
 replays the same kernel through the reference.
 
+On both software tiers `mma` computes a floating-point cell in the
+accumulator's own width when that is f32 or f64, and in f32 for the narrow
+accumulators (`float16`, `bfloat16`), which are widened for the sum and
+narrowed once at the store. A `float64` tile therefore accumulates in
+float64 on every backend that takes the software tile; it computed in f32
+until 2026-10-09 (xpu-kernel-adaptor 1.5.4.5), which `Ewise.matmulF64`'s
+integer cross-check could not see.
+
 The map is established for accumulator fragments (`Use` 2) of the 16x16
 shapes the fused epilogues measured on the device. An A or B operand
 fragment packs its bytes on the native tiers and has no established map, so
