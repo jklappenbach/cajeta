@@ -472,6 +472,17 @@ kernel can launch: the constant block, else `@Occupancy(maxThreads)`,
 else 1024 threads. A call site inside a loop adds a trailing barrier, so
 the next trip cannot overwrite a partial another wave has not read.
 
+A kernel whose every launch site passes the same constant block is built
+for that block (workgroup-reduce 6.8). The wave count, `Workgroup.dimX/Y/Z`
+and, on amdgpu and nvptx, the global id fold to constants, so the kernel
+reads no workgroup size at run time. On amdgpu that read is a load from
+the dispatch packet, about 1.2 us a launch on gfx1151. The manifest
+records the block as `footprint.block`, and a launch that passes another
+block is refused with `XpuLaunchException` rather than run with the wrong
+count (`XpuPinnedBlockTests`). Every launch site of a kernel sits in its
+own class, so the compiler sees them all. A block that is not a constant
+at some site, or sites that disagree, keep the run-time read.
+
 The order is fixed, so a `float32` result is one defined value at a given
 wave width. Two backends at the same width agree bit for bit, and the
 reference interpreter replays it at 0 ulp (`XpuWorkgroupReduceCorpusTests`).

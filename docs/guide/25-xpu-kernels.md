@@ -317,6 +317,10 @@ What to read in it:
 - A call inside a loop is safe. Each call site has its own scratch,
   and a call in a loop adds a second barrier so the next trip cannot
   overwrite a partial another wave has not read.
+- Launch the kernel with the same constant block at every site. The
+  compiler then builds it for that block, so the reduce counts its waves
+  at compile time and reads no workgroup size at run time. A block that
+  varies costs that read on every launch, about a microsecond on AMD.
 - Every lane must reach the call. A call under a branch, a loop exit
   or an early `return` whose condition depends on the lane is refused
   at compile time. Guard the value, not the call: compute `0.0f` for a
