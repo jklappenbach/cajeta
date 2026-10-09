@@ -5190,6 +5190,14 @@ private:
             return b.CreateInsertValue(agg, v, e);
         return b.CreateInsertElement(agg, v, e);
     }
+    // The type a software tile's mma computes a floating-point cell in: the
+    // accumulator's own type at f32 and above (f64 stays f64), f32 for the
+    // narrow accumulators (f16, bf16), which are widened for the sum and
+    // narrowed once at the store (xpu-kernel-adaptor 1.5.4.5).
+    static llvm::Type* softwareTileComputeType(llvm::Type* acc) {
+        if (acc->isDoubleTy() || acc->isFloatTy()) return acc;
+        return llvm::Type::getFloatTy(acc->getContext());
+    }
     // The scalar one element of a native fragment holds: null when a position
     // is itself a vector (NVPTX's f16 accumulator packs two halves per word),
     // which has no per-element access.
@@ -5755,7 +5763,13 @@ private:
             cajeta::xpu::recordNativeOp(builder, "mma", "software-tile.distributed");
             llvm::Type* acc = slot.elemType;
             bool fp = acc->isFloatingPointTy();
-            llvm::Type* compTy = fp ? llvm::Type::getFloatTy(ctx) : acc;
+            // FP accumulates in the accumulator's own width when that is at
+            // least f32, and in f32 for the narrow types (f16, bf16) before
+            // narrowing. A float64 tile used to compute in f32 here and in the
+            // replicated tier alike (xpu-kernel-adaptor 1.5.4.5): every
+            // operand was rounded to f32 before the multiply, so
+            // Ewise.matmulF64 lost everything below 2^-24 on every mma.
+            llvm::Type* compTy = fp ? softwareTileComputeType(acc) : acc;
             LaneId id = distLane(slot);
             // A[g + i*G][k] lives at A_local[i] on lane g*K + k: the element
             // index is UNIFORM across the wave and only the source lane varies,
@@ -6117,8 +6131,9 @@ private:
             cajeta::xpu::recordNativeOp(builder, "mma", "software-tile.replicated");
             llvm::Type* acc = slot.elemType;
             bool fp = acc->isFloatingPointTy();
-            // FP: accumulate in f32 then narrow to the accumulator dtype.
-            llvm::Type* compTy = fp ? llvm::Type::getFloatTy(ctx) : acc;
+            // FP: accumulate in the accumulator's width (f32 for the narrow
+            // types), then narrow; see the distributed mma (1.5.4.5).
+            llvm::Type* compTy = fp ? softwareTileComputeType(acc) : acc;
             emitCountedLoop(M, [&](llvm::Value* m) {
                 emitCountedLoop(N, [&](llvm::Value* n) {
                     llvm::Value* cLin = builder.CreateAdd(
