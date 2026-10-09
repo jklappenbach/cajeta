@@ -1180,6 +1180,200 @@ TEST(XpuCpuFissionUniformize, anArmChosenByTheGlobalWaveIndexLowersLikeOneChosen
                        " -1 the global-id form is refused; 100+i wrong at wave i)";
 }
 
+// ---- 4.2.1.10, the fused qkv shape ITSELF: four guarded arms, one reduce -- //
+//
+// The two-arm probe above lowers, and the three fused qkv kernels do not. What
+// they have that it lacks: FOUR arms, each `if (row < limit && which == k)`
+// in sequence (not if/else), each with its own lane-strided loop, the last two
+// split by a kernel argument (v as Q4_K or Q6_K), and the reduce after all
+// four under a lane-0 store that selects its buffer by `which`. Measured
+// 2026-09-29: fission scaffolds all four arm loops as predicated and the
+// vectorizer leaves the region after them unvectorized with no remark. Six
+// waves: rowsQ = 2, rowsKv = 2, so waves 0,1 take arm 0, 2,3 arm 1, 4,5 arm 2
+// (vQ6 = 0); every lane strides n = 40 by the width and adds k + 1, so wave w
+// reads 40 * (k + 1): 40, 40, 80, 80, 120, 120.
+const char* kFourArmSrc = R"CJ(
+    @Kernel
+    public static void qk(KernelBuffer<float32> y0, KernelBuffer<float32> y1,
+                          KernelBuffer<float32> y2, uint32 n, uint32 rowsQ,
+                          uint32 rowsKv, uint32 vQ6) {
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 wave = KernelThread.globalIdX() / wv;
+        float32 acc = 0.0f;
+        uint32 which = 0;
+        uint32 row = wave;
+        if (wave >= rowsQ + rowsKv) { which = 2; row = wave - rowsQ - rowsKv; }
+        else if (wave >= rowsQ) { which = 1; row = wave - rowsQ; }
+        uint32 limit = rowsQ;
+        if (which != 0) { limit = rowsKv; }
+        if (row < limit && which == 0) {
+            uint32 b = lane;
+            while (b < n) { acc = acc + 1.0f; b = b + wv; }
+        }
+        if (row < limit && which == 1) {
+            uint32 b = lane;
+            while (b < n) { acc = acc + 2.0f; b = b + wv; }
+        }
+        if (row < limit && which == 2 && vQ6 == 0) {
+            uint32 b = lane;
+            while (b < n) { acc = acc + 3.0f; b = b + wv; }
+        }
+        if (row < limit && which == 2 && vQ6 != 0) {
+            uint32 b = lane;
+            while (b < n) { acc = acc + 4.0f; b = b + wv; }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < limit) {
+            if (which == 0) { y0[(int64) row] = tot; }
+            else if (which == 1) { y1[(int64) row] = tot; }
+            else { y2[(int64) row] = tot; }
+        }
+    }
+    public static int32 run() {
+        uint32 w = probeWidth();
+        if (w < 2) { return -3; }
+        float32[] h0 = heap float32[2];
+        float32[] h1 = heap float32[2];
+        float32[] h2 = heap float32[2];
+        KernelBuffer<float32> b0 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> b1 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> b2 = heap KernelBuffer<float32>(2);
+        KernelStream s #= KernelStream.current();
+        try {
+            qk.launch(s, grid: [6], block: [w])(b0, b1, b2, 40, 2, 2, 0);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        b0.download(h0);
+        b1.download(h1);
+        b2.download(h2);
+        float32[] h = heap float32[6];
+        h[0] = h0[0]; h[1] = h0[1]; h[2] = h1[0]; h[3] = h1[1]; h[4] = h2[0]; h[5] = h2[1];
+        float32[] want = heap float32[6];
+        want[0] = 40.0f; want[1] = 40.0f; want[2] = 80.0f; want[3] = 80.0f;
+        want[4] = 120.0f; want[5] = 120.0f;
+        return verify(h, 6, want);
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, fourGuardedArmsAndOneReduceLowerAtTheWaveWidth) {
+    const int r = runOnCpu(std::string(kPreamble) + kFourArmSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused; 100+i wrong at wave i)";
+}
+
+// ---- 4.2.1.10, THE TRIGGER: a vector value anywhere plus a buffer load in //
+// the epilogue.
+//
+// The four-arm probe above lowers; the real qkv kernels did not. Bisected
+// 2026-10-09 on standalone copies of qkvWaveMatVecKernel: the real kernel
+// lowers without its bias epilogue (`tot = tot + bq[row]` under lane 0,
+// selected by `which`), and with every arm body made trivial; it is refused
+// with arm 0's real body alone. The arm body's part is only that it holds a
+// cajeta Vector value (vload, dotAccum), which turns on vectorizeFunction's
+// scalarize prefix (Scalarizer and InstCombine BEFORE SROA and mem2reg) for
+// the whole wrapper; the probe below has one vload in arm 0 whose value is
+// multiplied by zero and is refused the same way, "cannot identify array
+// bounds" on the forced work-item loop of the epilogue. Same answer as the
+// four-arm probe: 40, 40, 80, 80, 120, 120, plus the bias b0..b2 = 0.5 per
+// row when biased, so 40.5, 40.5, 80.5, 80.5, 120.5, 120.5.
+const char* kVectorValuePlusEpilogueLoadSrc = R"CJ(
+    @Kernel
+    public static void qv(KernelBuffer<float32> y0, KernelBuffer<float32> y1,
+                          KernelBuffer<float32> y2, uint32 n, uint32 rowsQ,
+                          uint32 rowsKv, uint32 vQ6,
+                          KernelBuffer<float32> b0, KernelBuffer<float32> b1,
+                          KernelBuffer<float32> b2, uint32 biased,
+                          KernelBuffer<int8> w) {
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 wave = KernelThread.globalIdX() / wv;
+        float32 acc = 0.0f;
+        uint32 which = 0;
+        uint32 row = wave;
+        if (wave >= rowsQ + rowsKv) { which = 2; row = wave - rowsQ - rowsKv; }
+        else if (wave >= rowsQ) { which = 1; row = wave - rowsQ; }
+        uint32 limit = rowsQ;
+        if (which != 0) { limit = rowsKv; }
+        if (row < limit && which == 0) {
+            uint32 b = lane;
+            while (b < n) {
+                Vector<int8,16> hv = w.vload<16>((int64) (b * 16));
+                acc = acc + 1.0f + (float32) hv[0] * 0.0f;
+                b = b + wv;
+            }
+        }
+        if (row < limit && which == 1) {
+            uint32 b = lane;
+            while (b < n) { acc = acc + 2.0f; b = b + wv; }
+        }
+        if (row < limit && which == 2 && vQ6 == 0) {
+            uint32 b = lane;
+            while (b < n) { acc = acc + 3.0f; b = b + wv; }
+        }
+        if (row < limit && which == 2 && vQ6 != 0) {
+            uint32 b = lane;
+            while (b < n) { acc = acc + 4.0f; b = b + wv; }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < limit) {
+            if (biased != 0) {
+                if (which == 0) { tot = tot + b0[(int64) row]; }
+                else if (which == 1) { tot = tot + b1[(int64) row]; }
+                else { tot = tot + b2[(int64) row]; }
+            }
+            if (which == 0) { y0[(int64) row] = tot; }
+            else if (which == 1) { y1[(int64) row] = tot; }
+            else { y2[(int64) row] = tot; }
+        }
+    }
+    public static int32 run() {
+        uint32 w = probeWidth();
+        if (w < 2) { return -3; }
+        float32[] h0 = heap float32[2];
+        float32[] h1 = heap float32[2];
+        float32[] h2 = heap float32[2];
+        float32[] hb = heap float32[2];
+        hb[0] = 0.5f; hb[1] = 0.5f;
+        int8[] hw = heap int8[640];
+        KernelBuffer<float32> y0 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> y1 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> y2 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> b0 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> b1 = heap KernelBuffer<float32>(2);
+        KernelBuffer<float32> b2 = heap KernelBuffer<float32>(2);
+        KernelBuffer<int8> bw = heap KernelBuffer<int8>(640);
+        b0.upload(hb);
+        b1.upload(hb);
+        b2.upload(hb);
+        bw.upload(hw);
+        KernelStream s #= KernelStream.current();
+        try {
+            qv.launch(s, grid: [6], block: [w])(y0, y1, y2, 40, 2, 2, 0, b0, b1, b2, 1, bw);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        y0.download(h0);
+        y1.download(h1);
+        y2.download(h2);
+        float32[] h = heap float32[6];
+        h[0] = h0[0]; h[1] = h0[1]; h[2] = h1[0]; h[3] = h1[1]; h[4] = h2[0]; h[5] = h2[1];
+        float32[] want = heap float32[6];
+        want[0] = 40.5f; want[1] = 40.5f; want[2] = 80.5f; want[3] = 80.5f;
+        want[4] = 120.5f; want[5] = 120.5f;
+        return verify(h, 6, want);
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, aVectorValueAndAnEpilogueBufferLoadStillLowerTheReduce) {
+    const int r = runOnCpu(std::string(kPreamble) + kVectorValuePlusEpilogueLoadSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused; 100+i wrong at wave i)";
+}
+
 // ---- the mxfp4 Group-surface shape: stripe + mac + reduce at the host width //
 //
 // cajeta-llm's mxfp4MatVecKernelCoopQ8Surface (Group.stripe over the row's

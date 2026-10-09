@@ -431,6 +431,30 @@ alone). Two changes, both in `vectorizeFunction`:
   shuffle its own value, a ballot one bit), which `XpuGroupDevice.reduceAddEqualsSerialOnCpu`
   relies on.
 
+**The parallel tag survives the pipeline (2026-10-09).** Every memory access of a
+work-item loop is tagged with one access group and the loop lists it in
+`llvm.loop.parallel_accesses`, which is what lets LoopVectorize widen a forced loop whose
+buffer addresses are not affine in the work-item without runtime alias checks. The passes
+between that stamp and the vectorizer can make a new access out of tagged ones and drop the
+tag: InstCombine merges a store issued on both arms of an `if` into one store of a PHI, and
+the merged store carries no group. One untagged access makes the whole loop no longer
+annotated parallel, LoopAccessAnalysis checks every store against every load, an epilogue
+`y[row] = tot` against its `tot + bias[row]` has no computable bounds ("cannot identify
+array bounds"), and the wave reduce in that loop is left scalar. The three fused qkv wave
+kernels of cajeta-llm were declined on cpu by exactly this, and only because they also hold a
+Vector value, since the InstCombine rounds that merge the store run only then
+(xpu-kernel-adaptor 4.2.1.10). `vectorizeFunction` therefore re-stamps the groups right
+before LoopVectorize: whatever reads or writes memory inside a loop that lists a parallel
+access group, and lacks it, gets it, since the loops are parallel by construction and an
+access derived from tagged accesses is as independent across work-items as they were. The
+test lever `CAJETA_XPU_FAULT=keep-dropped-access-groups` skips the re-stamp and shows the
+refusal (`XpuCpuFissionUniformize.aVectorValueAndAnEpilogueBufferLoadStillLowerTheReduce`).
+`CAJETA_XPU_CPU_DUMP_PRELV=<dir>` writes each wrapper exactly as LoopVectorize sees it, after
+every pass of the pipeline before it; the PREOPT dump is the module before the pipeline, and
+an `opt` replay over it is an approximation (two passes are the compiler's own and the LAA
+option scope is not an `opt` flag), so a question about what the vectorizer saw is answered
+by PRELV.
+
 The work-item loop also carries `llvm.loop.interleave.count` 1: left to its cost model
 LoopVectorize interleaved some regions four times, so their vector loop needed a 4W-wide
 block and every smaller block ran the scalar copy.

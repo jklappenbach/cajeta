@@ -99,6 +99,104 @@ struct ScopedNoUnitStrideSpeculation {
 // predicate rewriter cannot make affine, so the access is a gather: the right
 // answer, with no twin. InstCombine folds the spelling straight back, which
 // is why this runs after the last InstCombine before LoopVectorize.
+// CAJETA_XPU_CPU_DUMP_PRELV=<dir>: the wrapper exactly as LoopVectorize sees
+// it, after every pass of this pipeline that runs before it. The PREOPT dump
+// is the module before the pipeline, and an opt replay of the pipeline over it
+// is an approximation (two of its passes are the compiler's own, and the LAA
+// option scope below is not an opt flag), so a question about what the
+// vectorizer saw is answered here, not there (xpu-kernel-adaptor 4.2.1.10).
+struct DumpBeforeLoopVectorizePass : llvm::PassInfoMixin<DumpBeforeLoopVectorizePass> {
+    std::string dir;
+    explicit DumpBeforeLoopVectorizePass(std::string d) : dir(std::move(d)) {}
+    llvm::PreservedAnalyses run(llvm::Function& f, llvm::FunctionAnalysisManager&) {
+        std::error_code ec;
+        llvm::raw_fd_ostream os(dir + "/" + f.getName().str() + ".prelv.ll", ec);
+        if (!ec) f.print(os);
+        return llvm::PreservedAnalyses::all();
+    }
+};
+
+// Re-stamp the parallel access groups of the work-item loops.
+//
+// CpuRegistration tags every memory access of a work-item loop with one
+// access group and lists the group in the loop's llvm.loop.parallel_accesses
+// (markWorkItemLoopsParallel): that is what lets LoopVectorize widen a forced
+// loop whose buffer addresses are not affine in the work-item without
+// runtime alias checks. The passes between that stamp and LoopVectorize can
+// create a new access from tagged ones and drop the tag: InstCombine merges a
+// store issued on two arms of an `if` into one store of a PHI
+// (mergeStoreIntoSuccessor), and the merged store carries no access group.
+// One untagged access makes Loop::isAnnotatedParallel() false for the whole
+// loop, LoopAccessAnalysis then checks every store against every load, the
+// epilogue's `y[row] = tot` against `tot + bias[row]` has no computable
+// bounds ("cannot identify array bounds"), and the wave reduce in that loop
+// is left scalar. The three fused qkv kernels of cajeta-llm were declined on
+// cpu by exactly this, and only when the kernel also held a Vector value,
+// because the InstCombine rounds that merge the store run only then
+// (xpu-kernel-adaptor 4.2.1.10, measured 2026-10-09 on
+// CAJETA_XPU_CPU_DUMP_PRELV: one untagged store among 49, none without the
+// prefix). The loops are parallel by construction, an access derived from
+// tagged accesses is as independent across work-items as they were, so the
+// tag is put back on whatever lacks it, right before the vectorizer.
+struct RestampParallelAccessGroupsPass
+    : llvm::PassInfoMixin<RestampParallelAccessGroupsPass> {
+    static llvm::MDNode* parallelGroups(llvm::Loop* L) {
+        llvm::MDNode* id = L->getLoopID();
+        if (!id) return nullptr;
+        for (unsigned i = 1; i < id->getNumOperands(); ++i) {
+            auto* md = llvm::dyn_cast<llvm::MDNode>(id->getOperand(i));
+            if (!md || md->getNumOperands() < 2) continue;
+            auto* name = llvm::dyn_cast<llvm::MDString>(md->getOperand(0));
+            if (name && name->getString() == "llvm.loop.parallel_accesses") return md;
+        }
+        return nullptr;
+    }
+    static bool hasGroup(llvm::MDNode* existing, llvm::MDNode* group) {
+        if (!existing) return false;
+        if (existing == group) return true;
+        for (const llvm::MDOperand& op : existing->operands())
+            if (op.get() == group) return true;
+        return false;
+    }
+    llvm::PreservedAnalyses run(llvm::Function& f, llvm::FunctionAnalysisManager& am) {
+        llvm::LLVMContext& ctx = f.getContext();
+        llvm::LoopInfo& li = am.getResult<llvm::LoopAnalysis>(f);
+        for (llvm::Loop* top : li)
+            for (llvm::Loop* L : llvm::depth_first(top)) {
+                llvm::MDNode* pa = parallelGroups(L);
+                if (!pa) continue;
+                for (unsigned gi = 1; gi < pa->getNumOperands(); ++gi) {
+                    auto* group = llvm::dyn_cast<llvm::MDNode>(pa->getOperand(gi));
+                    if (!group) continue;
+                    for (llvm::BasicBlock* bb : L->blocks())
+                        for (llvm::Instruction& in : *bb) {
+                            if (!in.mayReadOrWriteMemory()) continue;
+                            if (auto* c = llvm::dyn_cast<llvm::CallBase>(&in))
+                                if (!c->getCalledFunction()
+                                        || !c->getCalledFunction()->isIntrinsic())
+                                    continue;       // an opaque call keeps its own effects
+                            llvm::MDNode* have =
+                                in.getMetadata(llvm::LLVMContext::MD_access_group);
+                            if (hasGroup(have, group)) continue;
+                            if (!have) {
+                                in.setMetadata(llvm::LLVMContext::MD_access_group, group);
+                                continue;
+                            }
+                            // A list of groups, or one group: add this one.
+                            llvm::SmallVector<llvm::Metadata*, 4> list;
+                            if (have->getNumOperands() == 0) list.push_back(have);
+                            else for (const llvm::MDOperand& op : have->operands())
+                                list.push_back(op.get());
+                            list.push_back(group);
+                            in.setMetadata(llvm::LLVMContext::MD_access_group,
+                                           llvm::MDNode::get(ctx, list));
+                        }
+                }
+            }
+        return llvm::PreservedAnalyses::all();
+    }
+};
+
 struct BlindLaneMasksPass : llvm::PassInfoMixin<BlindLaneMasksPass> {
     llvm::PreservedAnalyses run(llvm::Function& f, llvm::FunctionAnalysisManager&) {
         llvm::SmallVector<llvm::BinaryOperator*, 16> masks;
@@ -583,6 +681,12 @@ void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
         fpm.addPass(BlindLaneMasksPass());
     fpm.addPass(llvm::createFunctionToLoopPassAdaptor(
         llvm::LoopRotatePass()));                     // rotate for LV
+    // CAJETA_XPU_FAULT=keep-dropped-access-groups shows the defect: the
+    // merged store stays untagged and the epilogue's reduce is left scalar.
+    if (!xpu::xpuFault("keep-dropped-access-groups"))
+        fpm.addPass(RestampParallelAccessGroupsPass());  // 4.2.1.10
+    if (const char* preLv = std::getenv("CAJETA_XPU_CPU_DUMP_PRELV"))
+        fpm.addPass(DumpBeforeLoopVectorizePass(preLv));
     fpm.addPass(llvm::LoopVectorizePass());           // the work-item loop → SIMD
     {
         ScopedNoUnitStrideSpeculation noSpeculation;
