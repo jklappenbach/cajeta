@@ -5,6 +5,8 @@
 #pragma once
 
 #include "../type/Modifiable.h"
+#include <array>
+#include <optional>
 #include "llvm/IR/BasicBlock.h"
 #include "../type/QualifiedName.h"
 #include "../type/Annotatable.h"
@@ -98,6 +100,7 @@ namespace cajeta {
         // receiver, so the caller must not free it and no return flag is
         // written. Mutually exclusive with returnsOwnership.
         bool returnsView = false;
+        std::optional<std::array<unsigned, 3>> pinnedBlock;
         // Injected by a member synthesizer, not user-authored.
         bool synthesizedMember = false;
         // Cached value-return body scan: -1 unknown, 0 false, 1 true. A method
@@ -387,6 +390,10 @@ namespace cajeta {
         void setReturnsOwnership(bool v) { returnsOwnership = v; }
         bool isReturnsView() const { return returnsView; }
         void setReturnsView(bool v) { returnsView = v; }
+
+        // The block every launch site of this @Kernel passes, when all pass one constant block.
+        const std::optional<std::array<unsigned, 3>>& pinnedLaunchBlock() const { return pinnedBlock; }
+        void setPinnedLaunchBlock(std::optional<std::array<unsigned, 3>> b) { pinnedBlock = b; }
 
         // needsTransferWord(): the LLVM signature carries a hidden TRAILING i64
         // whose bit i says user-arg i surrendered a title (true iff any formal

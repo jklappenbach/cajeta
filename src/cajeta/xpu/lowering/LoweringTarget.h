@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <array>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -194,6 +196,10 @@ namespace xpu {
         // @Wave(width = N), the lane count the algorithm is written for: pin the kernel to
         // it, or answer false when this target's wave cannot be N lanes. DEFAULT: true.
         virtual bool pinWaveWidth(llvm::Function* /*fn*/, unsigned /*width*/) { return true; }
+
+        // The block every launch site of the kernel being lowered passes, or none.
+        void setPinnedBlock(std::optional<std::array<unsigned, 3>> b) { pinnedBlock_ = b; }
+        const std::optional<std::array<unsigned, 3>>& pinnedBlock() const { return pinnedBlock_; }
 
         // --- kernel signature / parameter model (the Vulkan fork) -------------
         // NVPTX/AMDGPU take kernel arguments as a flat parameter list; Vulkan has no
@@ -864,6 +870,9 @@ namespace xpu {
         // addrspace(3) global, the native model on NVPTX/AMDGPU. Vulkan cannot, so
         // a backend returning true gets a concrete internal [1 x T] instead.
         virtual bool dynamicSharedNeedsConcreteSize() const { return false; }
+
+    private:
+        std::optional<std::array<unsigned, 3>> pinnedBlock_;
     };
 
     // The explicit-override layer of the degrade seam: apply the

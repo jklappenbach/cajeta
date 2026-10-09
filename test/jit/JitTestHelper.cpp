@@ -32,6 +32,7 @@
 #include "cajeta/method/Method.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
 #include "cajeta/xpu/XpuTarget.h"
+#include "cajeta/xpu/core/LaunchBlocks.h"
 
 #include "JitWinSymbols.h"
 #include "JitErrorShim.h"
@@ -1149,6 +1150,10 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                 backends.push_back(cajeta::xpu::Backend::Nvptx);
             }
             cajeta::xpu::emitBackendManifest(backends, *primary->getLlvmModule());
+            {
+                auto all = compiler->getModules();
+                cajeta::xpu::scanLaunchBlocks({all.begin(), all.end()});
+            }
             // Sweep unless the test gates (Options::xpuKernelGateErrors); the
             // override is restored whatever the registration does.
             struct GateScope {

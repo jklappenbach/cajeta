@@ -204,6 +204,7 @@ namespace amd {
                 for (const ArchHsaco& ah : perArch) {
                     KernelManifest m;
                     m.kernel = qualifiedKernelName(method);
+                    m.block = method->pinnedLaunchBlock();
                     m.target = "amdgpu/" + ah.arch;
                     m.codeHash = sha256Hex(ah.hsaco.data(), ah.hsaco.size());
                     m.compilerVersion = compilerVersionString();

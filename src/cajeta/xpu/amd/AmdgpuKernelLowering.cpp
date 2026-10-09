@@ -57,6 +57,7 @@ public:
     llvm::Value* workgroupDim(llvm::IRBuilderBase& b, llvm::Module& m,
                               unsigned dim) override {
         llvm::LLVMContext& ctx = m.getContext();
+        if (pinnedBlock()) return b.getInt32((*pinnedBlock())[dim]);
         llvm::Function* dp = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::amdgcn_dispatch_ptr);
         llvm::Value* packet = b.CreateCall(dp, {}, "dispatch.ptr");

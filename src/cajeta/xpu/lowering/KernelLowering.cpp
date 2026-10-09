@@ -307,6 +307,11 @@ public:
     bool usedSubgroupOp() const { return usedSubgroupOp_; }
     // The most threads a launch of this kernel can have: sizes Workgroup.reduce's scratch.
     void setBlockLimit(unsigned n) { blockLimit_ = n; }
+    // The block every launch site passes (workgroup-reduce 6.8): workgroup size reads fold to it.
+    void setPinnedBlock(const std::array<unsigned, 3>& b) {
+        pinnedBlock_ = b;
+        blockLimit_ = b[0] * b[1] * b[2];
+    }
 
     void lowerBody(const MethodPtr& method) {
         if (!cls) cls = method->getParent();   // for @Device helper resolution
@@ -523,6 +528,12 @@ private:
     bool usedSubgroupOp_ = false;
     int loopDepth_ = 0;
     unsigned blockLimit_ = 1024;
+    std::optional<std::array<unsigned, 3>> pinnedBlock_;
+
+    llvm::Value* groupDim(unsigned dim) {
+        if (pinnedBlock_) return builder.getInt32((*pinnedBlock_)[dim]);
+        return target.workgroupDim(builder, mod, dim);
+    }
     unsigned wgReduceSites_ = 0;
     // POD struct params: the materialized aggregate SSA value by name plus its
     // field map. Field reads are extractvalue, never an alloca (SPIR-V logical).
@@ -1149,9 +1160,9 @@ private:
         auto asI32 = [&](llvm::Value* x) { return builder.CreateZExtOrTrunc(x, i32); };
         llvm::Value* width = asI32(target.waveWidth(builder, mod));
         llvm::Value* lane = asI32(varying(target.waveLaneId(builder, mod)));
-        llvm::Value* dx = asI32(target.workgroupDim(builder, mod, 0));
-        llvm::Value* dy = asI32(target.workgroupDim(builder, mod, 1));
-        llvm::Value* dz = asI32(target.workgroupDim(builder, mod, 2));
+        llvm::Value* dx = asI32(groupDim(0));
+        llvm::Value* dy = asI32(groupDim(1));
+        llvm::Value* dz = asI32(groupDim(2));
         llvm::Value* flat = builder.CreateAdd(
             asI32(varying(target.threadId(builder, mod, 0))),
             builder.CreateMul(builder.CreateAdd(
@@ -1201,9 +1212,8 @@ private:
         // body per work-item, so the bound must not come from an earlier work-item loop.
         llvm::Value* rWidth = asI32(target.waveWidth(builder, mod));
         llvm::Value* threads = builder.CreateMul(
-            builder.CreateMul(asI32(target.workgroupDim(builder, mod, 0)),
-                              asI32(target.workgroupDim(builder, mod, 1))),
-            asI32(target.workgroupDim(builder, mod, 2)));
+            builder.CreateMul(asI32(groupDim(0)), asI32(groupDim(1))),
+            asI32(groupDim(2)));
         llvm::Value* nWaves = builder.CreateUDiv(
             builder.CreateAdd(threads, builder.CreateSub(rWidth, builder.getInt32(1))),
             rWidth, "wgr.waves");
@@ -3306,9 +3316,9 @@ private:
             if (name == "x") return target.workgroupId(builder, mod, 0);
             if (name == "y") return target.workgroupId(builder, mod, 1);
             if (name == "z") return target.workgroupId(builder, mod, 2);
-            if (name == "dimX") return target.workgroupDim(builder, mod, 0);
-            if (name == "dimY") return target.workgroupDim(builder, mod, 1);
-            if (name == "dimZ") return target.workgroupDim(builder, mod, 2);
+            if (name == "dimX") return groupDim(0);
+            if (name == "dimY") return groupDim(1);
+            if (name == "dimZ") return groupDim(2);
             if (name == "reduce") return lowerWorkgroupReduce(mc->getParameters());
         } else if (recv == "Barrier") {
             if (name == "workgroup") {
@@ -8798,6 +8808,12 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
     lowerer.setParams(std::move(params));
     if (auto attr = XpuKernelAttr::from(*method); attr && attr->maxThreads())
         lowerer.setBlockLimit(*attr->maxThreads());
+    if (method->pinnedLaunchBlock()) lowerer.setPinnedBlock(*method->pinnedLaunchBlock());
+    target.setPinnedBlock(method->pinnedLaunchBlock());
+    struct PinReset {
+        LoweringTarget& t;
+        ~PinReset() { t.setPinnedBlock(std::nullopt); }
+    } pinReset{target};
     // Per-kernel cache of lowered @Device helpers, so each is emitted once and
     // recursion is caught; the functions themselves live in the module.
     DeviceLowerer::DeviceFnCache deviceFns;

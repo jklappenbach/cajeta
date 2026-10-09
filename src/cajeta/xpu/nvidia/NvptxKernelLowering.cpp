@@ -59,6 +59,7 @@ public:
     }
     llvm::Value* workgroupDim(llvm::IRBuilderBase& b, llvm::Module& m,
                               unsigned dim) override {
+        if (pinnedBlock()) return b.getInt32((*pinnedBlock())[dim]);
         static const llvm::Intrinsic::ID ids[3] = {
             llvm::Intrinsic::nvvm_read_ptx_sreg_ntid_x,
             llvm::Intrinsic::nvvm_read_ptx_sreg_ntid_y,

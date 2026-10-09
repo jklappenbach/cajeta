@@ -55,6 +55,7 @@
 #include "../xpu/core/XpuKernelGate.h"
 #include "../xpu/XpuTarget.h"
 #include "../xpu/core/KernelManifest.h"
+#include "../xpu/core/LaunchBlocks.h"
 #include "../xpu/mir/XpuMirBuilder.h"
 #include "../asn/expression/LiteralExpression.h"
 #include "../xpu/nvidia/NvptxBackend.h"
@@ -2616,25 +2617,6 @@ namespace cajeta {
             }
         };
 
-        // Scan every launch site for the constant block size each @Kernel is
-        // dispatched with (the largest across sites): the AMDGPU registration sets it
-        // as amdgpu-flat-work-group-size, so registers are budgeted for real occupancy.
-        std::unordered_map<std::string, unsigned> kernelMaxThreads;
-        std::unordered_map<std::string, unsigned> kernelUnboundedBlock;  // -> site count
-        auto constBlockThreads =
-            [](const std::vector<ExpressionPtr>& dims) -> unsigned {
-            if (dims.empty()) return 0;
-            unsigned prod = 1;
-            for (auto& d : dims) {
-                auto lit = std::dynamic_pointer_cast<IntegerLiteralExpression>(d);
-                if (!lit) return 0;   // non-constant block dim -> unknown
-                unsigned long v = 0;
-                try { v = std::stoul(lit->getRawValue()); } catch (...) { return 0; }
-                if (v == 0) return 0;
-                prod *= static_cast<unsigned>(v);
-            }
-            return prod;
-        };
         // @Kernel methods DEFINED in classpath deps must register like the primary
         // compilation's own: at Obj/Exe emit their bodies are re-driven through this
         // codegen, so walk them here too or a library kernel gets no device code.
@@ -2644,22 +2626,11 @@ namespace cajeta {
             xpuModules.insert(xpuModules.end(),
                               externalModules.begin(), externalModules.end());
         }
-        for (auto& module : xpuModules) {
-            auto mir = cajeta::xpu::mir::XpuMirBuilder::buildForModule(module);
-            if (!mir) continue;
-            for (auto& site : mir->launchSites) {
-                if (!site) continue;
-                std::string simple = site->kernelCanonicalName;
-                if (auto dot = simple.rfind('.'); dot != std::string::npos)
-                    simple = simple.substr(dot + 1);
-                unsigned threads = constBlockThreads(site->block);
-                // A non-constant block at ANY site leaves the backend default (sound).
-                if (threads == 0) { ++kernelUnboundedBlock[simple]; continue; }
-                unsigned& cur = kernelMaxThreads[simple];
-                cur = std::max(cur, threads);
-            }
-        }
-        for (const auto& k : kernelUnboundedBlock) kernelMaxThreads.erase(k.first);
+        // The largest constant block per kernel budgets amdgpu registers, and a block every
+        // site agrees on pins the kernel (workgroup-reduce 6.8).
+        cajeta::xpu::LaunchBlocks launchBlocks = cajeta::xpu::scanLaunchBlocks(xpuModules);
+        std::unordered_map<std::string, unsigned>& kernelMaxThreads = launchBlocks.maxThreads;
+        std::unordered_map<std::string, unsigned>& kernelUnboundedBlock = launchBlocks.unboundedSites;
 
         // xpu-kernel-adaptor 7.0.1 / 7.0.3: a kernel whose block is not a
         // constant at every launch site has NO bound the compiler can see, and

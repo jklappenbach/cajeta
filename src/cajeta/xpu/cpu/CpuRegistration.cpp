@@ -1232,6 +1232,7 @@ void foldWaveVariants(llvm::Function& f) {
                 mod->print(os, nullptr);
                 os.flush();
                 manifest.kernel = qualifiedKernelName(method);
+                manifest.block = method->pinnedLaunchBlock();
                 manifest.target = "cpu/" + (hostTm ? hostTm->getTargetCPU().str()
                                                    : std::string("unknown"));
                 manifest.codeHash = sha256Hex(

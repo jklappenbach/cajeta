@@ -128,6 +128,7 @@ namespace vulkan {
             if (registerKparams) {
                 KernelManifest m;
                 m.kernel = qualifiedKernelName(method);
+                m.block = method->pinnedLaunchBlock();
                 m.target = "spirv/" + arch;
                 m.codeHash = sha256Hex(spirv.data(), spirv.size());
                 m.compilerVersion = compilerVersionString();

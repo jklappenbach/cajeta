@@ -123,6 +123,11 @@ namespace xpu {
         putU(footprint, "ldsStaticBytes", m.ldsStaticBytes);
         putS(footprint, "ldsDynamicParam", m.ldsDynamicParam);
         putU(footprint, "threadsPerGroup", m.threadsPerGroup);
+        if (m.block) {
+            llvm::json::Array b;
+            for (unsigned v : *m.block) b.push_back((int64_t) v);
+            footprint["block"] = std::move(b);
+        }
         putU(footprint, "residentGroupsPerCu", m.residentGroupsPerCu);
         if (!m.feasibleBlocks.empty()) {
             llvm::json::Array fb;
@@ -204,6 +209,16 @@ namespace xpu {
             m.ldsStaticBytes = getU(*fp, "ldsStaticBytes");
             m.ldsDynamicParam = getS(*fp, "ldsDynamicParam");
             m.threadsPerGroup = getU(*fp, "threadsPerGroup");
+            if (const llvm::json::Array* b = fp->getArray("block"); b && b->size() == 3) {
+                std::array<unsigned, 3> v{};
+                bool ok = true;
+                for (size_t i = 0; i < 3; i++) {
+                    auto n = (*b)[i].getAsInteger();
+                    if (!n || *n <= 0) { ok = false; break; }
+                    v[i] = (unsigned) *n;
+                }
+                if (ok) m.block = v;
+            }
             m.residentGroupsPerCu = getU(*fp, "residentGroupsPerCu");
             if (const llvm::json::Array* fb = fp->getArray("feasibleBlocks"))
                 for (const auto& v : *fb)

@@ -161,6 +161,7 @@ namespace nvidia {
             // Hash over the cubin that registers; occupancy needs an arch row sm_* lacks.
             KernelManifest manifest;
             manifest.kernel = qualifiedKernelName(method);
+            manifest.block = method->pinnedLaunchBlock();
             manifest.target = "nvptx/" + arch;
             manifest.codeHash = sha256Hex(cubin.data(), cubin.size());
             manifest.compilerVersion = compilerVersionString();

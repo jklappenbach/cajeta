@@ -4,6 +4,7 @@
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
 #include "cajeta/xpu/core/KernelManifest.h"
+#include "cajeta/xpu/core/LaunchBlocks.h"
 #include "cajeta/xpu/XpuTarget.h"
 
 #include "cajeta/error/Diagnostics.h"
@@ -1259,6 +1260,7 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
             }
             if (!kernels.empty()) {
                 llvm::Module* pm = primary->getLlvmModule();
+                cajeta::xpu::scanLaunchBlocks(mods);
                 cajeta::xpu::emitBackendManifest(opts.xpuBackends, *pm);
                 for (cajeta::xpu::Backend be : opts.xpuBackends) {
                     std::string arch =

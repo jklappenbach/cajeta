@@ -5,6 +5,7 @@
 
 #include "KernelAccess.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -72,6 +73,7 @@ namespace xpu {
         std::optional<std::string> ldsDynamicParam;   // the sizing parameter
         // A pinned block records its residency, an argument block feasibleBlocks.
         std::optional<unsigned> threadsPerGroup;
+        std::optional<std::array<unsigned, 3>> block;  // the block every launch site passes
         std::optional<unsigned> residentGroupsPerCu;  // capacity per multiprocessor
         std::vector<unsigned>   feasibleBlocks;       // empty = absent
         std::optional<std::string> occupancyLimiter;  // registers|lds|waveSlots|unknown

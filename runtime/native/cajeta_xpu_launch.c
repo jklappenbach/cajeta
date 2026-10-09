@@ -1112,6 +1112,8 @@ static int caj_xpu_device_count(int backend) {
 // The versioned host-source launch entry point (ABI v3). `deviceId`: -1 = the active
 // device, >= 0 = an index into the backend's devices, honored above 0 on HIP only;
 // out of range or unsupported is a diagnosed no-op. Frozen: add a v4, never a field.
+static int caj_xpu_block_refused(const char* name, int32_t bx, int32_t by, int32_t bz);
+
 void __cajeta_xpu_launch_v3(const char* kernelName,
                             int32_t gridX, int32_t gridY, int32_t gridZ,
                             int32_t blockX, int32_t blockY, int32_t blockZ,
@@ -1123,6 +1125,7 @@ void __cajeta_xpu_launch_v3(const char* kernelName,
     // Every launch starts with a clean refusal record, so Device.checkLaunch()
     // after this call reports only THIS launch, never a prior thread-local one.
     cajeta_xpu_clear_launch_refusal();
+    if (caj_xpu_block_refused(kernelName, blockX, blockY, blockZ)) return;
 
     if (deviceId >= 0) {
         int backend = cajeta_xpu_active_backend();
@@ -1249,6 +1252,7 @@ struct cajeta_xpu_manifest {
 #define CAJETA_XPU_MAX_MANIFESTS (2 * CAJETA_XPU_MAX_MODULES)
 static struct cajeta_xpu_manifest g_xpu_manifests[CAJETA_XPU_MAX_MANIFESTS];
 static int g_xpu_manifest_count;
+static uint32_t g_xpu_manifest_gen;   // bumped on every registration
 
 void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size,
                                 uint64_t count);
@@ -1288,9 +1292,99 @@ void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
         e->json = (const char*) json;
         e->len = len;
     }
+    g_xpu_manifest_gen++;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 }
 
+
+// --- the pinned launch block (workgroup-reduce 6.8) --------------------------
+// The `"block": [x, y, z]` a manifest records, or 0 when it records none.
+static int caj_xpu_manifest_block(const char* json, uint64_t len, int32_t out[3]) {
+    static const char key[] = "\"block\":";
+    const size_t kl = sizeof(key) - 1;
+    for (uint64_t j = 0; j + kl < len; j++) {
+        if (memcmp(json + j, key, kl) != 0) continue;
+        const char* p = json + j + kl;
+        const char* end = json + len;
+        while (p < end && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) p++;
+        if (p >= end || *p != '[') return 0;
+        p++;
+        for (int d = 0; d < 3; d++) {
+            while (p < end && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t' || *p == ',')) p++;
+            if (p >= end || *p < '0' || *p > '9') return 0;
+            int32_t v = 0;
+            while (p < end && *p >= '0' && *p <= '9') {
+                v = v * 10 + (*p - '0');
+                if (v > (1 << 20)) return 0;
+                p++;
+            }
+            out[d] = v;
+        }
+        return out[0] > 0 && out[1] > 0 && out[2] > 0;
+    }
+    return 0;
+}
+
+#define CAJ_XPU_PIN_SLOTS 1024
+struct caj_xpu_pin {
+    const char* name;   // the launch site's name constant
+    int backend;
+    uint32_t gen;       // g_xpu_manifest_gen when filled
+    int has;
+    int32_t b[3];
+};
+static struct caj_xpu_pin g_xpu_pins[CAJ_XPU_PIN_SLOTS];
+
+// The block `name` was built for on `backend`, cached by name pointer; 0 when unpinned.
+static int caj_xpu_pinned_block(const char* name, int backend, int32_t out[3]) {
+    int has = 0;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    size_t h = (size_t) (((uintptr_t) name >> 4) ^ (uintptr_t) backend) % CAJ_XPU_PIN_SLOTS;
+    struct caj_xpu_pin* slot = NULL;
+    for (int probe = 0; probe < 8; probe++) {
+        struct caj_xpu_pin* e = &g_xpu_pins[(h + probe) % CAJ_XPU_PIN_SLOTS];
+        if ((e->name == name && e->backend == backend) || !e->name) { slot = e; break; }
+    }
+    if (slot && slot->name == name && slot->backend == backend && slot->gen == g_xpu_manifest_gen) {
+        has = slot->has;
+        memcpy(out, slot->b, sizeof slot->b);
+    } else {
+        int32_t b[3] = {0, 0, 0};
+        for (int i = 0; i < g_xpu_manifest_count; i++) {
+            struct cajeta_xpu_manifest* m = &g_xpu_manifests[i];
+            if (m->backend != backend || !m->json ||
+                strncmp(m->name, name, sizeof(m->name)) != 0)
+                continue;
+            has = caj_xpu_manifest_block(m->json, m->len, b);
+            break;
+        }
+        memcpy(out, b, sizeof b);
+        if (slot) {
+            slot->name = name;
+            slot->backend = backend;
+            slot->gen = g_xpu_manifest_gen;
+            slot->has = has;
+            memcpy(slot->b, b, sizeof b);
+        }
+    }
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    return has;
+}
+
+// Refuses, with reason 4, a launch whose block is not the one its kernel was built for.
+static int caj_xpu_block_refused(const char* name, int32_t bx, int32_t by, int32_t bz) {
+    int backend = cajeta_xpu_active_backend();
+    int32_t b[3];
+    if (!caj_xpu_pinned_block(name, backend, b)) return 0;
+    if (b[0] == bx && b[1] == by && b[2] == bz) return 0;
+    cajeta_xpu_note_launch_refusal(name, backend);
+    g_xpu_refusal_reason = 4;
+    fprintf(stderr,
+            "cajeta.xpu: [xpu-launch-refused] %s was built for block [%d, %d, %d], the one "
+            "block every launch site passes, and this launch passes [%d, %d, %d]\n",
+            name, b[0], b[1], b[2], bx, by, bz);
+    return 1;
+}
 // The active backend's manifest JSON as a fresh cajeta int8[] the caller owns, or NULL.
 // STATIC native (no `this`); `nameArr` is an int8[] whose payload starts at +8.
 void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len) {

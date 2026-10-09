@@ -362,6 +362,10 @@ public final class Device {
             why = "the kernel declares a @Wave(width) this device cannot run its "
                 + "subgroups at";
         }
+        if (reason == 4) {
+            why = "the launch passes a block other than the one block every launch "
+                + "site of this kernel passes, which the kernel was built for";
+        }
         String msg #= "cajeta.xpu: launch refused for kernel '" + kernel
                     + "' on backend '" + backend
                     + "' (" + why + ")";
