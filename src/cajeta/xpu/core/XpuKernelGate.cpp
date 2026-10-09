@@ -181,6 +181,14 @@ void noteKernelLowered(const Method& kernel,
                     below && below->kind == AnnotationArgKind::Int64)
                 return;
     }
+    // mayLower = true: the hold is per instantiation. One declaration on a
+    // class template's kernel method covers every instantiation, and they
+    // differ (QkTile<128,...> is over amdgpu's LDS limit, QkTile<64,...>
+    // fits and lowers, 2026-10-08), so a lowering under it is not stale.
+    if (auto ann = kernel.findAnnotation(XpuAttr::Unlowered))
+        if (auto* may = ann->findArg("mayLower");
+                may && may->kind == AnnotationArgKind::Bool && may->boolVal)
+            return;
     const std::string target = targetOf(backend, arch);
     const std::string head = "[xpu-kernel-skipped] " + kernelName + ": STALE: it has " + backend
         + " device code now; remove @Unlowered(backend = \"" + backend + "\", tracked = \""

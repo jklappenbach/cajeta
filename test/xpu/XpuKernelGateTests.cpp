@@ -417,3 +417,20 @@ TEST(XpuKernelGate, aHoldBeforeLoweringSkipsTheKernelAndIsNeverStale) {
     EXPECT_EQ(b.log.find("STALE"), std::string::npos) << b.log;
     EXPECT_EQ(b.log.find("cajeta: error:"), std::string::npos) << b.log;
 }
+
+// mayLower = true: the hold is PER INSTANTIATION. One @Unlowered on a class
+// template's kernel method covers every instantiation, and they differ:
+// QkTile<128,...> needs 73 KB of LDS and is declined on amdgpu, QkTile<64,...>
+// fits and lowers, so the plain hold read STALE on the second (proton,
+// gfx1151, 2026-10-08). With mayLower the decline is the tracked note and a
+// lowering is not stale.
+TEST(XpuKernelGate, aHoldThatMayLowerIsNotStaleWhenTheKernelLowers) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    const char* MAY = "    @Unlowered(backend = \"cpu\", tracked = \"xpu-kernel-adaptor 1.8.3\", mayLower = true)\n";
+    Built b = build(program(MAY, MAY), "cpu");
+    EXPECT_EQ(b.rc, 0) << b.log;
+    EXPECT_EQ(b.log.find("STALE"), std::string::npos) << b.log;
+    EXPECT_NE(b.log.find("cajeta: note: [xpu-kernel-skipped] bad: no cpu device code"), std::string::npos) << b.log;
+    EXPECT_NE(b.log.find("[tracked: xpu-kernel-adaptor 1.8.3]"), std::string::npos) << b.log;
+    EXPECT_EQ(b.log.find("cajeta: error:"), std::string::npos) << b.log;
+}

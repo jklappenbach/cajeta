@@ -1635,6 +1635,15 @@ It is the lever for a kernel whose lowering does not end, which is what the
 cpu vectorize deadline (`CAJETA_XPU_CPU_VECTORIZE_DEADLINE_S`) names
 (xpu-kernel-adaptor 6.4.16). The cpu backend honours it today.
 
+A hold on a class template's kernel method covers every instantiation,
+and instantiations differ: `QkTile<128, 128, 32, 64, 128>` needs 73 KB of
+LDS and is declined on amdgpu, `QkTile<64, 64, 32, 32, 128>` fits and
+lowers. `mayLower = true` makes the hold per instantiation:
+`@Unlowered(backend = {"amdgpu", "vulkan"}, tracked = "...", mayLower = true)`
+keeps a declined instantiation a tracked note and does not read a lowered
+one as STALE. It gives up stale detection for that kernel, so it belongs
+on templates, not on a plain kernel whose cause may go.
+
 > **Status.** The compile-time workgroup-size budgeting and `@Occupancy` override
 > are active today; the DeviceProfile, analytic picker, and bounded sweep are the
 > config-decision layer (`cajeta gpu-profile` is live). Applying a *runtime-chosen*
