@@ -96,6 +96,13 @@ not the kernel's.
 - **2.2.5** When a kernel's launch block is not a compile-time constant, the
   verb still covers every wave the launch holds, up to the kernel's declared
   `@Occupancy(maxThreads)` ceiling or the part's limit.
+- **2.2.7** When every launch site of a kernel passes the same constant block,
+  the verb combines a compile-time count of waves and reads no workgroup size
+  at run time. On amdgpu that size is a load from the dispatch packet, about
+  1.2 us a launch on gfx1151 (measured 2026-10-09).
+- **2.2.8** When a launch passes a block other than the one a kernel was
+  built for under 2.2.7, the launch is refused by name, with both blocks, and
+  never runs with the wrong count.
 - **2.2.6** When a kernel calls the verb twice in a row, the second call reads
   no partial left by the first.
 
@@ -203,3 +210,9 @@ judged by perplexity and by the route records, not by exact tokens.
 - **6.7** (Julian 2026-10-07) The six tree sites (1.2) are in scope, as their
   own unit after the seven, under 5.3's tolerance gate rather than
   bit-identity.
+- **6.8** (Julian 2026-10-09) A kernel whose every launch site passes the same
+  constant block is built for that block: `Workgroup.reduce` and
+  `Workgroup.dimX/Y/Z` fold to it, and its manifest records it. The launch
+  path refuses any other block (2.2.8). A kernel with a non-constant block, or
+  with sites that disagree, keeps the run-time read. Chosen over an author
+  annotation and over amdgpu hidden kernel arguments.
