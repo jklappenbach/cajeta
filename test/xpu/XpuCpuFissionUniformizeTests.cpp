@@ -1567,6 +1567,109 @@ TEST(XpuCpuFissionUniformize, aReturningArmBeforeASplitInsideAGuardLowers) {
     EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused; 100+i wrong at wave i)";
 }
 
+// ---- 4.2.1.5, the store tail of q4kWmmaIdMwKernel: a per-work-item loop ---- //
+// whose body branches per work-item between stores and an inner strided loop.
+//
+// `while (tt < nAct) { if (tb + 16 <= mEnd) { store } else { while (w < 256)
+// { guarded stores } } }` after a wave reduce, nAct and mEnd per work-item.
+// Measured 2026-10-09 on the standalone kernel and on this probe: 4c gave the
+// guard no arm because every block of the outer body "arrives" at the inner
+// loop through the backedge (everyMissIsACleanExit walked across it), so the
+// join was reached by two region paths; with the arm cut, the outer loop held
+// a cut, 4b no longer qualified it and the trip-count rule refused it as a
+// barrier loop. The fix walks one trip only, lets 4b keep a loop that holds
+// cuts, exempts such a predicated loop from the trip-count rule, and admits
+// every region of its body on the loop's active flag, which the HOST
+// REFERENCE below checks by value: a work-item that left the loop must not
+// run a later body region on a stale arm mask.
+const char* kPerWorkItemTailSrc = R"CJ(
+    @Kernel
+    public static void tk(KernelBuffer<float32> out, uint32 n, uint32 mEndArg) {
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 wave = KernelThread.globalIdX() / wv;
+        float32 acc = 0.0f;
+        uint32 b = lane;
+        while (b < n) { acc = acc + 1.0f; b = b + wv; }
+        float32 tot = Wave.reduceSumF32(acc);
+        uint32 nAct = (lane & 1) + 1;
+        uint32 mEnd = mEndArg + (lane & 3);
+        uint32 tt = 0;
+        while (tt < nAct) {
+            uint32 tb = tt * 16;
+            if (tb + 16 <= mEnd) {
+                if (lane == 0) { out[(int64) (wave * 64 + tt * 32)] = tot; }
+            } else {
+                uint32 w = lane;
+                while (w < 256) {
+                    if (tb + (w / 16) < mEnd) {
+                        out[(int64) (wave * 64 + tt * 32 + (w % 32))] = tot * 0.5f;
+                    }
+                    w = w + wv;
+                }
+            }
+            tt = tt + 1;
+        }
+    }
+    public static int32 run() {
+        uint32 w = probeWidth();
+        if (w < 2) { return -3; }
+        uint32 waves = 3;
+        uint32 n = 40;
+        uint32 mEndArg = 16;
+        uint32 cells = waves * 64;
+        float32[] h = heap float32[cells];
+        float32[] want = heap float32[cells];
+        uint32 i = 0;
+        while (i < cells) { h[i] = -1.0f; want[i] = -1.0f; i = i + 1; }
+        // The host reference: the same per-lane program, one lane at a time.
+        float32 tot = (float32) n;
+        uint32 wave = 0;
+        while (wave < waves) {
+            uint32 lane = 0;
+            while (lane < w) {
+                uint32 nAct = (lane & 1) + 1;
+                uint32 mEnd = mEndArg + (lane & 3);
+                uint32 tt = 0;
+                while (tt < nAct) {
+                    uint32 tb = tt * 16;
+                    if (tb + 16 <= mEnd) {
+                        if (lane == 0) { want[wave * 64 + tt * 32] = tot; }
+                    } else {
+                        uint32 ww = lane;
+                        while (ww < 256) {
+                            if (tb + (ww / 16) < mEnd) {
+                                want[wave * 64 + tt * 32 + (ww % 32)] = tot * 0.5f;
+                            }
+                            ww = ww + w;
+                        }
+                    }
+                    tt = tt + 1;
+                }
+                lane = lane + 1;
+            }
+            wave = wave + 1;
+        }
+        KernelBuffer<float32> bo = heap KernelBuffer<float32>(cells);
+        bo.upload(h);
+        KernelStream s #= KernelStream.current();
+        try {
+            tk.launch(s, grid: [waves], block: [w])(bo, n, mEndArg);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        bo.download(h);
+        return verify(h, cells, want);
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, aPerWorkItemLoopWhoseArmHoldsALoopLowersAndMasksRight) {
+    const int r = runOnCpu(std::string(kPreamble) + kPerWorkItemTailSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused; 100+i wrong at cell i)";
+}
+
 // ---- the mxfp4 Group-surface shape: stripe + mac + reduce at the host width //
 //
 // cajeta-llm's mxfp4MatVecKernelCoopQ8Surface (Group.stripe over the row's

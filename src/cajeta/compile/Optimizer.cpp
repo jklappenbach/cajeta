@@ -19,6 +19,7 @@
 #include "llvm/Transforms/Scalar/LoopRotation.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #include "llvm/Transforms/Scalar/SROA.h"
+#include "llvm/Transforms/Scalar/ADCE.h"
 #include "llvm/Transforms/Scalar/Scalarizer.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -650,6 +651,19 @@ void vectorizeFunction(llvm::Function& f, llvm::TargetMachine* tm,
     // bar). Scalar replacement puts each lane's slot in its own SSA value.
     fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
     fpm.addPass(llvm::PromotePass());                 // mem2reg → SSA
+    // Dead PHI cycles out of mem2reg: a per-work-item temporary stored under
+    // one arm of a work-item loop's body (`if (lane < 16) { d0 = ...; }`) is
+    // one alloca for every work-item, so mem2reg threads its value around the
+    // x, y and z loop headers and any enclosing scaffold loop as loop-carried
+    // PHIs that nothing reads. LoopVectorize's legality refuses a header PHI
+    // that is neither an induction nor a reduction ("value that could not be
+    // identified as reduction is used outside the loop"): q4kWmmaIdMwKernel
+    // carried 212 of them and lost its reduce. A wrapper that holds a Vector
+    // value never showed it, because the InstCombine rounds below delete the
+    // cycles; one that holds none reaches the vectorizer with them. ADCE
+    // removes dead webs and nothing else, so it runs for every wrapper
+    // (xpu-kernel-adaptor 4.2.1.5, 2026-10-09).
+    fpm.addPass(llvm::ADCEPass());
     // After scalarizing, mem2reg promotes a per-work-item local slot into a
     // loop-carried PHI that LoopVectorize reports as "value that could not be
     // identified as reduction is used outside the loop". EarlyCSE clears it.

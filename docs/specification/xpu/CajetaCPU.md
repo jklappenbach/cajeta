@@ -474,6 +474,46 @@ prints every region (`[wave-walk] <start> -> <continuation> (pred, kind) <blocks
 arm cut (`[wave-cut] guard: T, F, join`), and the refusal names the block reached twice and
 the region that collected it.
 
+**A predicated loop's body may hold arms (2026-10-09).** A per-work-item loop whose body
+branches per work-item between stores and an inner strided loop, the store tail of the Id
+WMMA kernels (`while (tt < nAct) { if (tb + 16 <= mEnd) { store } else { while (w < 256) ...
+} }`), is scaffolded as a predicated loop with 4c arms inside it. Four rules changed to admit
+it, each measured on the kernel and a reduced probe: the clean-exit question
+("is the only way to miss this loop to leave without doing anything?") is asked of one trip
+of the enclosing loop, never across its backedge, since otherwise every block of the body
+arrives at the inner loop on a later trip and the guard gets no arm; a region cut 4c placed
+does not disqualify a loop from 4b and does not make it a barrier loop for the trip-count
+rule, because the body it splits still runs trip by trip under the work-item flags; a 4c arm
+is a level of its own inside a loop as it is outside one; and the region walk inside such a
+body sends a work-item that leaves the loop before a cut to a `.leave.cut` that clears its
+flag and continues to the cut with the others, the last body region alone owning the loop's
+`skip`. What makes that sound is step 9: every region that starts inside a predicated body is
+admitted on the loop's per-work-item active flag, so a work-item that left runs no later body
+region on an arm mask it never refreshed. The probe
+(`XpuCpuFissionUniformize.aPerWorkItemLoopWhoseArmHoldsALoopLowersAndMasksRight`) checks the
+output cell by cell against a host run of the per-lane program. One shape stays refused and
+is on the plan: a uniform split inside a predicated loop, whose join flows into the loop's
+`skip` (xpu-kernel-adaptor 4.2.1.5).
+
+**Dead PHI cycles out of mem2reg (2026-10-09).** A per-work-item temporary stored under one
+arm of a work-item loop's body is one alloca for every work-item, so mem2reg threads its
+value around the x, y and z loop headers and any enclosing scaffold loop as loop-carried PHIs
+that nothing reads, and LoopVectorize refuses a header PHI that is neither an induction nor
+a reduction ("value that could not be identified as reduction is used outside the loop").
+`vectorizeFunction` runs ADCE right after mem2reg for every wrapper; the wrappers that hold a
+Vector value never showed the defect only because their InstCombine rounds deleted the
+cycles.
+
+**A value live across a region boundary takes a slot (2026-10-09).** Fission demotes a value
+defined before a barrier and used after it to a stack slot (step 3c), since each region is
+its own work-item loop. The scaffold loops of 4b split the body at loop boundaries as well,
+and a lowering temporary that crosses one, a Shared panel address computed at the top of a
+uniform loop's body and reused after an inner scaffold loop (q6kWmmaIdMwKernel), was left
+as SSA across two work-item loops: "Instruction does not dominate all uses". Once the regions
+are known, any value defined in one region and used outside it takes a slot like a local
+(step 6b); a tainted one gets a context array in step 7 and its accesses are redirected in
+step 10. `CAJETA_XPU_DEBUG_WAVE` reports how many values moved.
+
 The work-item loop also carries `llvm.loop.interleave.count` 1: left to its cost model
 LoopVectorize interleaved some regions four times, so their vector loop needed a 4W-wide
 block and every smaller block ran the scalar copy.

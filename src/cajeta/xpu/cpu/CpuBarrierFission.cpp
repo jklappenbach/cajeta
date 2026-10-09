@@ -422,6 +422,18 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     llvm::Constant* flag0 = llvm::ConstantInt::get(i8b, 0);
     struct ArmPred { llvm::AllocaInst* mask; bool polarity; };
     llvm::DenseMap<llvm::BasicBlock*, llvm::SmallVector<ArmPred, 2>> blockPreds;
+    // Every block of a PREDICATED scaffold loop's body, to the loop's per
+    // work-item `active` flag (nested loops: several). Step 9 admits a region
+    // that starts inside such a body only for the work-items still active in
+    // the loop, so a body cut into several regions by 4c stays right: a
+    // work-item that left the loop must not run a later body region on an
+    // arm mask it never refreshed (xpu-kernel-adaptor 4.2.1.5, 2026-10-09).
+    llvm::DenseMap<llvm::BasicBlock*, llvm::SmallVector<llvm::AllocaInst*, 2>> predBodyFlags;
+    // A predicated loop's end-of-trip blocks and flag, by its scaffold header
+    // (`.hdr`): `skip` ORs the work-item's flag into `any` and goes to the
+    // latch, `leave` clears the flag on the way out of the loop.
+    llvm::DenseMap<llvm::BasicBlock*, llvm::BasicBlock*> predSkipOf, predLeaveOf;
+    llvm::DenseMap<llvm::BasicBlock*, llvm::AllocaInst*> predActiveOf;
     llvm::SmallPtrSet<llvm::BasicBlock*, 8> cutSet;
     llvm::SmallPtrSet<llvm::BasicBlock*, 4> splitSet;
     llvm::SmallPtrSet<llvm::BasicBlock*, 8> uniformScaffoldHeaders;
@@ -464,21 +476,40 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // region. A path that computes something, skips and rejoins is real
     // divergence (4c predicates the barrier-free case; a barrier under it is
     // still declined).
+    //
+    // `within` is the loop whose body the level is: the question is asked of
+    // ONE trip of it, so neither walk crosses its backedge. Without that, every
+    // block of the body "arrives" at `to` by way of the latch and the header
+    // on a later trip, and a per-work-item branch inside a scaffold loop whose
+    // else arm holds a loop and whose then arm stores read as a clean exit:
+    // q4kWmmaIdMwKernel's store tail, `while (tt < nAct) { if (tb + 16 <=
+    // mEnd) { store } else { while (w < 256) ... } }`, got no arm from 4c and
+    // its join was then reached by two region paths (xpu-kernel-adaptor
+    // 4.2.1.5, 2026-10-09).
     auto everyMissIsACleanExit = [&](llvm::BasicBlock* to,
-                                     llvm::BasicBlock* levelEntry) {
+                                     llvm::BasicBlock* levelEntry,
+                                     llvm::Loop* within) {
         llvm::SmallPtrSet<llvm::BasicBlock*, 32> arrives;
         llvm::SmallVector<llvm::BasicBlock*, 16> bw{to};
         while (!bw.empty()) {
             llvm::BasicBlock* b = bw.pop_back_val();
             if (!arrives.insert(b).second) continue;
-            for (llvm::BasicBlock* p : llvm::predecessors(b)) bw.push_back(p);
+            for (llvm::BasicBlock* p : llvm::predecessors(b)) {
+                if (within && b == within->getHeader() && within->contains(p))
+                    continue;                       // the backedge: a later trip
+                bw.push_back(p);
+            }
         }
         llvm::SmallPtrSet<llvm::BasicBlock*, 32> span;
         llvm::SmallVector<llvm::BasicBlock*, 16> fw{levelEntry};
         while (!fw.empty()) {
             llvm::BasicBlock* b = fw.pop_back_val();
             if (b == to || !span.insert(b).second) continue;
-            for (llvm::BasicBlock* sb : llvm::successors(b)) fw.push_back(sb);
+            for (llvm::BasicBlock* sb : llvm::successors(b)) {
+                if (within && sb == within->getHeader() && within->contains(b))
+                    continue;                       // the backedge
+                fw.push_back(sb);
+            }
         }
         for (llvm::BasicBlock* b : span)
             if (!arrives.count(b) && blockHasWork(b)) return false;
@@ -540,7 +571,13 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             return false;
         };
         if (!scaffoldUniformLoops) return false;
-        if (loopContainsBoundary(L)) return no("it holds a barrier or a region cut");
+        // A region cut 4c placed is not a barrier: the body it splits is still
+        // run trip by trip under the work-item flags (step 9), so only a real
+        // barrier disqualifies the loop (4.2.1.5).
+        bool realBarrier = false;
+        for (llvm::BasicBlock* b : boundarySet)
+            if (!cutSet.count(b) && L->contains(b)) { realBarrier = true; break; }
+        if (realBarrier) return no("it holds a barrier");
         llvm::BasicBlock* latch = L->getLoopLatch();
         if (!latch) return no("no single latch");
         if (latch == L->getHeader()) return no("one-block loop (latch is the header)");
@@ -756,7 +793,11 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             llvm::BasicBlock* join = nullptr;
             if (auto* nd = pdt.getNode(ctl))
                 if (auto* d = nd->getIDom()) join = d->getBlock();
-            if (!join || join == ctl) continue;
+            if (!join || join == ctl) {
+                if (std::getenv("CAJETA_XPU_DEBUG_WAVE"))
+                    fprintf(stderr, "[wave-cand] guard %s: no join\n", ctl->getName().str().c_str());
+                continue;
+            }
             llvm::BasicBlock* T = br->getSuccessor(0);
             llvm::BasicBlock* F = br->getSuccessor(1);
             if (T == join) { std::swap(T, F); }        // an `if (!c)` shape
@@ -801,9 +842,14 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                     llvm::Loop* L = cLI.getLoopFor(b);
                     llvm::BasicBlock* lvl =
                         levelEntryOf(b, L ? L->getParentLoop() : nullptr, cDT);
-                    if (!pdt.dominates(b, lvl) && !everyMissIsACleanExit(b, lvl))
+                    if (!pdt.dominates(b, lvl)
+                        && !everyMissIsACleanExit(b, lvl, L ? L->getParentLoop() : nullptr))
                         needsArm = true;
                 }
+            if (std::getenv("CAJETA_XPU_DEBUG_WAVE"))
+                fprintf(stderr, "[wave-cand] guard %s (join %s): loop %d barrier %d needsArm %d splitInside %d\n",
+                        ctl->getName().str().c_str(), join->getName().str().c_str(),
+                        (int) holdsLoop, (int) holdsBarrier, (int) needsArm, (int) splitInside);
             if (!holdsLoop || holdsBarrier || !(needsArm || splitInside)) continue;
             for (llvm::BasicBlock* b : scopeT)
                 if (scopeF.count(b))
@@ -949,7 +995,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 llvm::BasicBlock* levelEntry =
                     levelEntryOf(c.header, L->getParentLoop(), uDT);
                 if (!uPDT.dominates(c.header, levelEntry)
-                    && !everyMissIsACleanExit(c.header, levelEntry)) {
+                    && !everyMissIsACleanExit(c.header, levelEntry, L->getParentLoop())) {
                     if (qdbg)
                         fprintf(stderr, "[wave-qual] %s: NOT scaffold — not every "
                                 "work-item reaches it from level '%s'\n",
@@ -1219,6 +1265,10 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             pbody.push_back(gate);
             pbody.push_back(leave);
             pbody.push_back(skip);
+            for (llvm::BasicBlock* bb : pbody) predBodyFlags[bb].push_back(active);
+            predSkipOf[HS] = skip;
+            predLeaveOf[HS] = leave;
+            predActiveOf[HS] = active;
             scaffolded.push_back({HS, std::move(pbody)});
         }
 
@@ -1241,18 +1291,44 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             if (L->contains(s)) return s;
         return L->getHeader();
     };
+    // A real barrier, as opposed to a region cut 4c placed.
+    auto loopHasRealBarrier = [&](llvm::Loop* L) {
+        for (llvm::BasicBlock* b : boundarySet)
+            if (!cutSet.count(b) && L->contains(b)) return true;
+        return false;
+    };
     for (llvm::Loop* top : LI) {
         for (llvm::Loop* L : llvm::depth_first(top)) {
             if (!loopHasBarrier(L)) continue;
             if (!L->getLoopLatch() || !L->getExitBlock())
                 unsupported("a barrier in a loop without a single latch/exit");
+            // A predicated scaffold loop (4b) holding only CUTS: its trips run
+            // while any work-item is active and every body region runs under
+            // each work-item's own flag, so a cut inside it needs no uniform
+            // trip count. A real barrier does: it must be reached the same
+            // number of times by every work-item. q4kWmmaIdMwKernel's store
+            // tail, a per-work-item loop whose arm 4c cuts, is the first such
+            // shape (xpu-kernel-adaptor 4.2.1.5, 2026-10-09).
+            if (predicatedScaffoldHeaders.count(L->getHeader()) && !loopHasRealBarrier(L))
+                continue;
             llvm::SmallVector<llvm::BasicBlock*, 4> exiting;
             L->getExitingBlocks(exiting);
             for (llvm::BasicBlock* xb : exiting)
                 if (auto* br = llvm::dyn_cast<llvm::CondBrInst>(xb->getTerminator()))
-                    if (tainted.count(br->getCondition()))
+                    if (tainted.count(br->getCondition())) {
+                        std::string hn = L->getHeader()->hasName()
+                            ? L->getHeader()->getName().str() : std::string("<bb>");
                         unsupported("a barrier in a loop with a work-item-"
-                                    "dependent trip count (must be uniform)");
+                                    "dependent trip count (must be uniform): loop "
+                                    + hn + ", exiting at "
+                                    + (xb->hasName() ? xb->getName().str() : std::string("<bb>"))
+                                    + (predicatedScaffoldHeaders.count(L->getHeader())
+                                           ? ", predicated scaffold" : "")
+                                    + (uniformScaffoldHeaders.count(L->getHeader())
+                                           ? ", uniform scaffold" : "")
+                                    + (loopHasRealBarrier(L) ? ", holds a barrier"
+                                                             : ", holds cuts only"));
+                    }
         }
     }
     // Post-dominating the level entry IS the block-uniformity a barrier needs.
@@ -1261,13 +1337,20 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // A uniform split's arm is a level of its own: inside it, "all work-items
     // must reach the barrier" means all of them that took this arm, and they
     // all did, because the branch was uniform.
+    // A 4c arm is a level too: the work-items its mask admits are the ones
+    // that took the branch, and inside the arm every one of them reaches a
+    // loop the arm holds. An arm INSIDE a loop is deeper than the loop's own
+    // body entry and is the level there (q4kWmmaIdMwKernel's store tail,
+    // xpu-kernel-adaptor 4.2.1.5, 2026-10-09).
     auto deepestArmEntry = [&](llvm::BasicBlock* b) -> llvm::BasicBlock* {
         llvm::BasicBlock* best = nullptr;
+        auto consider = [&](llvm::BasicBlock* arm) {
+            if (!arm || !DT.dominates(arm, b)) return;
+            if (!best || DT.dominates(best, arm)) best = arm;
+        };
         for (llvm::BasicBlock* ctl : splitSet)
-            for (llvm::BasicBlock* arm : llvm::successors(ctl)) {
-                if (!DT.dominates(arm, b)) continue;
-                if (!best || DT.dominates(best, arm)) best = arm;
-            }
+            for (llvm::BasicBlock* arm : llvm::successors(ctl)) consider(arm);
+        for (llvm::BasicBlock* cut : cutSet) consider(cut->getSingleSuccessor());
         return best;
     };
 
@@ -1275,10 +1358,10 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         if (cutSet.count(bar)) continue;          // a region cut, not a barrier
         llvm::Loop* bl = LI.getLoopFor(bar);
         llvm::BasicBlock* levelEntry = bl ? inLoopSuccOf(bl) : bodyEntry;
-        if (!bl)
-            if (llvm::BasicBlock* arm = deepestArmEntry(bar)) levelEntry = arm;
+        if (llvm::BasicBlock* arm = deepestArmEntry(bar))
+            if (!bl || bl->contains(arm)) levelEntry = arm;
         if (!PDT.dominates(bar, levelEntry)
-            && !everyMissIsACleanExit(bar, levelEntry))
+            && !everyMissIsACleanExit(bar, levelEntry, bl))
             unsupported("a barrier under work-item-divergent control flow "
                         "(all work-items must reach every barrier, or leave "
                         "without doing anything on the way out)");
@@ -1289,11 +1372,10 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             if (!isScaffoldLoop(L)) continue;
             llvm::Loop* P = L->getParentLoop();
             llvm::BasicBlock* levelEntry = P ? inLoopSuccOf(P) : bodyEntry;
-            if (!P)
-                if (llvm::BasicBlock* arm = deepestArmEntry(L->getHeader()))
-                    levelEntry = arm;
+            if (llvm::BasicBlock* arm = deepestArmEntry(L->getHeader()))
+                if (!P || P->contains(arm)) levelEntry = arm;
             if (!PDT.dominates(L->getHeader(), levelEntry)
-                && !everyMissIsACleanExit(L->getHeader(), levelEntry))
+                && !everyMissIsACleanExit(L->getHeader(), levelEntry, P))
                 unsupported("a barrier loop under work-item-divergent control "
                             "flow (every work-item must enter a loop that holds "
                             "a barrier, or leave without doing anything on the "
@@ -1378,19 +1460,40 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         bool reachedRet = false;
         bool reachedLatch = false;
         bool reachedStop = false;             // hit this level's join
+        // Edges into the enclosing predicated loop's `skip` or `leave`, when
+        // that loop's body holds cuts (4.2.1.5): the region ends there per
+        // work-item, and the walk decides below where they go.
+        std::vector<std::pair<llvm::BasicBlock*, unsigned>> predEdges;
+        bool reachedSkip = false;
+    };
+    // A predicated scaffold loop whose body 4c cut into several regions.
+    auto predicatedCutBody = [&](llvm::Loop* L) {
+        if (!L || !predicatedScaffoldHeaders.count(L->getHeader())) return false;
+        for (llvm::BasicBlock* c : cutSet)
+            if (L->contains(c)) return true;
+        return false;
     };
     auto collect = [&](llvm::BasicBlock* start, llvm::Loop* encLoop,
                        llvm::BasicBlock* stopAt) {
         Collected R;
         llvm::SmallPtrSet<llvm::BasicBlock*, 16> seen;
         llvm::SmallVector<llvm::BasicBlock*, 16> work{start};
+        const bool cutBody = predicatedCutBody(encLoop);
+        llvm::BasicBlock* pSkip = cutBody ? predSkipOf[encLoop->getHeader()] : nullptr;
+        llvm::BasicBlock* pLeave = cutBody ? predLeaveOf[encLoop->getHeader()] : nullptr;
         while (!work.empty()) {
             llvm::BasicBlock* bb = work.pop_back_val();
             if (!seen.insert(bb).second) continue;
             R.blocks.push_back(bb);
             auto* term = bb->getTerminator();
             if (llvm::isa<llvm::ReturnInst>(term)) { R.reachedRet = true; continue; }
-            for (llvm::BasicBlock* s : llvm::successors(bb)) {
+            for (unsigned si = 0; si < term->getNumSuccessors(); ++si) {
+                llvm::BasicBlock* s = term->getSuccessor(si);
+                if (cutBody && (s == pSkip || s == pLeave)) {
+                    R.predEdges.push_back({bb, si});
+                    R.reachedSkip = true;
+                    continue;
+                }
                 if (s == stopAt) { R.reachedStop = true; continue; }
                 if (boundarySet.count(s)) { R.barrier = s; continue; }
                 if (splitSet.count(s)) { R.split = s; continue; }
@@ -1457,6 +1560,34 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                     continue;
                 }
             Collected R = collect(cur, encLoop, stopAt);
+            if (R.reachedSkip) {
+                llvm::BasicBlock* hs = encLoop->getHeader();
+                if (R.barrier) {
+                    // A work-item that leaves the loop in a region before a cut
+                    // clears its flag and goes on to the cut with the others;
+                    // every later region of the body admits only the active
+                    // work-items (step 9), so it does nothing more this trip.
+                    auto* lv = llvm::BasicBlock::Create(
+                        ctx, hs->getName() + ".leave.cut", wrapper, R.barrier);
+                    llvm::IRBuilder<> b(lv);
+                    b.CreateStore(flag0, predActiveOf[hs]);
+                    b.CreateBr(R.barrier);
+                    for (auto& e : R.predEdges)
+                        e.first->getTerminator()->setSuccessor(e.second, lv);
+                    R.blocks.push_back(lv);
+                } else {
+                    // The last region of the body: it ends through `leave` and
+                    // `skip` at the latch, and it alone owns them.
+                    llvm::BasicBlock* pSkip = predSkipOf[hs];
+                    llvm::BasicBlock* pLeave = predLeaveOf[hs];
+                    for (auto& e : R.predEdges)
+                        if (e.first->getTerminator()->getSuccessor(e.second) == pLeave
+                            && !llvm::is_contained(R.blocks, pLeave))
+                            R.blocks.push_back(pLeave);
+                    if (!llvm::is_contained(R.blocks, pSkip)) R.blocks.push_back(pSkip);
+                    R.reachedLatch = true;
+                }
+            }
             // Claim every block a region collects, not only its start: a block
             // two regions reach is left dangling by the second — a miscompile.
             for (llvm::BasicBlock* b : R.blocks)
@@ -1547,6 +1678,17 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     };
     walk(bodyEntry, /*encLoop=*/nullptr, /*predBlock=*/trueEntry,
          /*stopAt=*/nullptr);
+    // A predicated loop whose body holds cuts: every edge into its `leave`
+    // was rewired to a `.leave.cut` of its region, so the original block is
+    // unreachable and belongs to no region. Its store to the flag would read
+    // as a stranded per-work-item access (step 10), so drop the block's body.
+    for (auto& kv : predLeaveOf) {
+        llvm::Loop* L = LI.getLoopFor(kv.first);
+        if (!predicatedCutBody(L)) continue;
+        llvm::BasicBlock* lv = kv.second;
+        if (!llvm::pred_empty(lv) || regioned.count(lv)) continue;
+        while (&lv->front() != lv->getTerminator()) lv->front().eraseFromParent();
+    }
 
     auto regionOf = [&](llvm::BasicBlock* bb) -> int {
         for (size_t i = 0; i < jobs.size(); ++i)
@@ -1554,6 +1696,50 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 if (b == bb) return (int) i;
         return -1;
     };
+
+    // --- 6b. A value live across a REGION boundary goes to a stack slot ------
+    // Step 3c demoted what crosses a BARRIER. The scaffold loops of 4b split
+    // the body into regions at loop boundaries too, and a lowering temporary
+    // (a Shared panel address computed at the top of a uniform loop's body and
+    // reused after an inner scaffold loop: q6kWmmaIdMwKernel) then has its
+    // definition in one work-item loop and its uses in another, which is not
+    // SSA once each region is its own loop ("Instruction does not dominate
+    // all uses", xpu-kernel-adaptor 4.2.1.5, 2026-10-09). Such a value takes a
+    // slot like a local: step 7 gives it a context array when it is tainted
+    // and read in another region, and step 10 redirects its accesses.
+    {
+        std::vector<llvm::Instruction*> crossing;
+        for (RegionJob& J : jobs) {
+            llvm::SmallPtrSet<llvm::BasicBlock*, 32> inJ(J.blocks.begin(), J.blocks.end());
+            for (llvm::BasicBlock* bb : J.blocks)
+                for (llvm::Instruction& in : *bb) {
+                    if (llvm::isa<llvm::AllocaInst>(in) || in.getType()->isVoidTy()) continue;
+                    for (llvm::Use& u : in.uses()) {
+                        auto* user = llvm::cast<llvm::Instruction>(u.getUser());
+                        llvm::BasicBlock* ub = user->getParent();
+                        if (auto* phi = llvm::dyn_cast<llvm::PHINode>(user))
+                            ub = phi->getIncomingBlock(u);
+                        if (!inJ.count(ub)) { crossing.push_back(&in); break; }
+                    }
+                }
+        }
+        for (llvm::Instruction* in : crossing) {
+            const bool wasTainted = tainted.count(in) != 0;
+            llvm::AllocaInst* slot = nullptr;
+            if (auto* phi = llvm::dyn_cast<llvm::PHINode>(in))
+                slot = llvm::DemotePHIToStack(phi, bodyEntry->getFirstInsertionPt());
+            else
+                slot = llvm::DemoteRegToStack(*in, false, bodyEntry->getFirstInsertionPt());
+            if (!slot) continue;
+            allocas.push_back(slot);
+            if (wasTainted)
+                for (llvm::User* su : slot->users())
+                    if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(su)) tainted.insert(ld);
+        }
+        if (!crossing.empty() && std::getenv("CAJETA_XPU_DEBUG_WAVE"))
+            fprintf(stderr, "[wave-fission] %zu value(s) live across a region boundary moved to slots\n",
+                    crossing.size());
+    }
 
     // --- 7. Context arrays for tid-tainted locals live across a barrier -----
     llvm::DenseMap<llvm::AllocaInst*, llvm::AllocaInst*> ctxArray;
@@ -1747,6 +1933,18 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 llvm::Value* m = rb.CreateICmpNE(rb.CreateLoad(i8, mp, "wi.mask.v"),
                                                  alive0, "wi.mask.c");
                 if (!ap.polarity) m = rb.CreateNot(m, "wi.mask.n");
+                admit = admit ? rb.CreateAnd(admit, m, "wi.admit") : m;
+            }
+        auto flagsIt = predBodyFlags.find(J.entry);
+        if (flagsIt != predBodyFlags.end())
+            for (llvm::AllocaInst* act : flagsIt->second) {
+                auto f = ctxArray.find(act);
+                if (f == ctxArray.end())
+                    unsupported("a predicated loop's active flag has no context array");
+                llvm::Value* ap = rb.CreateInBoundsGEP(i8, f->second, J.linear,
+                                                       "wi.act.p");
+                llvm::Value* m = rb.CreateICmpNE(rb.CreateLoad(i8, ap, "wi.act.v"),
+                                                 alive0, "wi.act.c");
                 admit = admit ? rb.CreateAnd(admit, m, "wi.admit") : m;
             }
         if (admit) rb.CreateCondBr(admit, J.entry, xLat);
