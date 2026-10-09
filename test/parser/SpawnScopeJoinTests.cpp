@@ -120,22 +120,21 @@ TEST(SpawnScopeJoinTests, longLivedScopeReapsFinishedTasks) {
 // passes the `}` — the fix moves the join point, it must not remove it.
 TEST(SpawnScopeJoinTests, explicitScopeStillJoinsAtBrace) {
     EXPECT_EQ(runI32(
-        "    public static async int32 adder(Channel<int32> go, int32[] out) {\n"
+        "    public static async int32 adder(Channel<int32> go, AtomicInt32 sum) {\n"
         "        Optional<int32> v = go.receive();\n"
-        "        out[0] = out[0] + v.get();\n"
+        "        sum.fetchAdd(v.get());\n"
         "        return 0;\n"
         "    }\n"
         "    public static int32 run() {\n"
         "        Channel<int32> go = heap Channel<int32>(2);\n"
-        "        int32[] out = heap int32[1];\n"
-        "        out[0] = 0;\n"
+        "        AtomicInt32 sum = heap AtomicInt32(0);\n"
         "        scope {\n"
-        "            spawn adder(go, out);\n"
-        "            spawn adder(go, out);\n"
+        "            spawn adder(go, sum);\n"
+        "            spawn adder(go, sum);\n"
         "            go.send(20);\n"
         "            go.send(22);\n"
         "        }\n"
-        "        return out[0];\n"                     // 42 iff the } joined
+        "        return sum.load();\n"                   // 42 iff the } joined
         "    }\n"
     ), 42);
 }
