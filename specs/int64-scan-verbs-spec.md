@@ -226,7 +226,17 @@ scan of the block counts, not from its own total.
   a group is one lane, so a workgroup scan built on them would be wrong
   there.
   **Answered 2026-10-10 (Julian): overloads on the existing `Wave` names, and
-  `Workgroup.scan` beside `Workgroup.reduce`.**
+  `Workgroup.scan` beside `Workgroup.reduce`. Revised the same day, after a
+  probe: an `int32` argument or a bare literal resolves to an `int64`
+  overload ahead of a `uint32` one, so overloads would move existing
+  `int32` callers to the 64-bit form, and make `reduceMax`/`reduceMin` of a
+  negative `int32` signed where it is unsigned today. The `Wave` forms take
+  an `I64` suffix instead (`reduceSumI64`, `reduceMaxI64`, `reduceMinI64`,
+  `prefixSumI64`, `shuffleSyncI64`, `shuffleXorSyncI64`, `shuffleUpSyncI64`,
+  `shuffleDownSyncI64`), as `Wave` spells its float forms. `Workgroup.reduce`
+  and `Workgroup.scan` stay overloads: `Workgroup.reduce` already has an
+  `int32` form, so an `int32` argument matches it exactly (Unit 3 confirms
+  it by probe, and a bare literal too).**
 
 - **7.2** Should `Workgroup.scan` also hand back the workgroup total? A
   compaction needs it to reserve output space. Recommended: not yet. The
