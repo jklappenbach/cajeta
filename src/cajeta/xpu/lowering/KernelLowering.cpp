@@ -3425,26 +3425,33 @@ private:
             }
             if (name == "shuffleXorSync" || name == "shuffleUpSync" ||
                 name == "shuffleDownSync" || name == "shuffleXorSyncF32" ||
-                name == "shuffleUpSyncF32" || name == "shuffleDownSyncF32") {
+                name == "shuffleUpSyncF32" || name == "shuffleDownSyncF32" ||
+                name == "shuffleSyncI64" || name == "shuffleXorSyncI64" ||
+                name == "shuffleUpSyncI64" || name == "shuffleDownSyncI64") {
                 // The three derived forms are one shuffle from a computed
                 // source lane: xor is the butterfly, up and down clamp to the
                 // lane itself at the wave's edge (CUDA's shfl contract), so
                 // every backend's plain shuffle serves them. The F32 forms
-                // send the float's bits through the same shuffle.
+                // send the float's bits through the same shuffle; the I64
+                // forms, the plain one included, go through waveShuffle64.
                 if (args.size() != 2) unsupported("Wave." + name + " arity");
                 usedSubgroupOp_ = true;
                 llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
                 llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
                 const bool asF32 = name.size() > 3 && name.compare(name.size() - 3, 3, "F32") == 0;
-                const std::string form = asF32 ? name.substr(0, name.size() - 3) : name;
+                const bool asI64 = name.size() > 3 && name.compare(name.size() - 3, 3, "I64") == 0;
+                const std::string form = asF32 || asI64 ? name.substr(0, name.size() - 3) : name;
                 llvm::Value* value = lowerExpr(args[0].expression);
                 if (asF32)
                     value = builder.CreateBitCast(coerceTo(value, f32), i32, "shfl.bits");
+                if (asI64) value = coerceTo(value, llvm::Type::getInt64Ty(ctx));
                 llvm::Value* d = coerceTo(lowerExpr(args[1].expression), i32, false);
                 llvm::Value* lane =
                     coerceTo(varying(target.waveLaneId(builder, mod)), i32, false);
                 llvm::Value* src;
-                if (form == "shuffleXorSync") {
+                if (form == "shuffleSync") {
+                    src = d;
+                } else if (form == "shuffleXorSync") {
                     src = builder.CreateXor(lane, d, "shfl.xor");
                 } else if (form == "shuffleUpSync") {
                     llvm::Value* up = builder.CreateSub(lane, d, "shfl.up");
@@ -3457,10 +3464,28 @@ private:
                     src = builder.CreateSelect(builder.CreateICmpULT(down, w),
                                                down, lane, "shfl.src");
                 }
+                if (asI64) return target.waveShuffle64(builder, mod, value, src);
                 llvm::Value* got = target.waveShuffle(builder, mod, value, src);
                 if (asF32)
                     return builder.CreateBitCast(coerceTo(got, i32, false), f32, "shfl.f32");
                 return got;
+            }
+            if (name == "reduceSumI64" || name == "reduceMaxI64" || name == "reduceMinI64") {
+                if (args.size() != 1) unsupported("Wave." + name + " arity");
+                usedSubgroupOp_ = true;
+                using R64 = LoweringTarget::WaveReduce64Op;
+                const R64 op = name == "reduceSumI64" ? R64::Sum
+                             : name == "reduceMaxI64" ? R64::SMax : R64::SMin;
+                return target.waveReduce64(
+                    builder, mod, op,
+                    coerceTo(lowerExpr(args[0].expression), llvm::Type::getInt64Ty(ctx)));
+            }
+            if (name == "prefixSumI64") {
+                if (args.size() != 1) unsupported("Wave.prefixSumI64 arity");
+                usedSubgroupOp_ = true;
+                return varying(target.waveScan64(
+                    builder, mod,
+                    coerceTo(lowerExpr(args[0].expression), llvm::Type::getInt64Ty(ctx))));
             }
             if (name == "shuffleSyncF32") {
                 if (args.size() != 2) unsupported("Wave.shuffleSyncF32 arity");
@@ -8638,6 +8663,93 @@ llvm::Value* LoweringTarget::waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
         isFirst, lane, b.CreateSub(lane, llvm::ConstantInt::get(i32, 1)));
     llvm::Value* prev = waveShuffleDivergent(b, m, inc, prevLane);
     return b.CreateSelect(isFirst, identity, prev);
+}
+
+// The int64 shuffle default: two i32 halves through the backend's own shuffle.
+llvm::Value* LoweringTarget::waveShuffle64(llvm::IRBuilderBase& b, llvm::Module& m,
+                                           llvm::Value* value, llvm::Value* srcLane) {
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+    llvm::Value* lo = b.CreateTrunc(value, i32, "shfl64.lo");
+    llvm::Value* hi = b.CreateTrunc(b.CreateLShr(value, 32), i32, "shfl64.hi");
+    llvm::Value* slo = b.CreateZExtOrTrunc(waveShuffleDivergent(b, m, lo, srcLane), i32);
+    llvm::Value* shi = b.CreateZExtOrTrunc(waveShuffleDivergent(b, m, hi, srcLane), i32);
+    return b.CreateOr(b.CreateZExt(slo, i64),
+                      b.CreateShl(b.CreateZExt(shi, i64), 32), "shfl64");
+}
+
+// The int64 reduce default: the XOR butterfly over the whole width, every lane
+// combining with its partner at distance 1, 2, 4, ... through waveShuffle64.
+llvm::Value* LoweringTarget::waveReduce64(llvm::IRBuilderBase& b, llvm::Module& m,
+                                          WaveReduce64Op op, llvm::Value* value) {
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+    llvm::Value* lane = waveLaneId(b, m);
+    llvm::Value* width = waveWidth(b, m);
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* preheader = b.GetInsertBlock();
+    llvm::BasicBlock* loop = llvm::BasicBlock::Create(ctx, "red64.loop", fn);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx, "red64.done", fn);
+    b.CreateBr(loop);
+    b.SetInsertPoint(loop);
+    llvm::PHINode* accPhi = b.CreatePHI(i64, 2, "red64.acc");
+    llvm::PHINode* dPhi = b.CreatePHI(i32, 2, "red64.d");
+    accPhi->addIncoming(value, preheader);
+    dPhi->addIncoming(llvm::ConstantInt::get(i32, 1), preheader);
+    llvm::Value* other = waveShuffle64(b, m, accPhi, b.CreateXor(lane, dPhi, "red64.src"));
+    llvm::Value* acc;
+    if (op == WaveReduce64Op::Sum)
+        acc = b.CreateAdd(accPhi, other, "red64.sum");
+    else if (op == WaveReduce64Op::SMax)
+        acc = b.CreateSelect(b.CreateICmpSGT(accPhi, other), accPhi, other, "red64.max");
+    else
+        acc = b.CreateSelect(b.CreateICmpSLT(accPhi, other), accPhi, other, "red64.min");
+    llvm::Value* dNext = b.CreateShl(dPhi, 1);
+    accPhi->addIncoming(acc, loop);
+    dPhi->addIncoming(dNext, loop);
+    b.CreateCondBr(b.CreateICmpULT(dNext, width), loop, done);
+    b.SetInsertPoint(done);
+    llvm::PHINode* res = b.CreatePHI(i64, 1, "red64.result");
+    res->addIncoming(acc, loop);
+    return res;
+}
+
+// The int64 exclusive scan default: waveScan's Hillis-Steele sum over waveShuffle64.
+llvm::Value* LoweringTarget::waveScan64(llvm::IRBuilderBase& b, llvm::Module& m,
+                                        llvm::Value* value) {
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+    llvm::Value* lane = waveLaneId(b, m);
+    llvm::Value* width = waveWidth(b, m);
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* preheader = b.GetInsertBlock();
+    llvm::BasicBlock* loop = llvm::BasicBlock::Create(ctx, "scan64.loop", fn);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx, "scan64.done", fn);
+    b.CreateBr(loop);
+    b.SetInsertPoint(loop);
+    llvm::PHINode* accPhi = b.CreatePHI(i64, 2, "scan64.acc");
+    llvm::PHINode* dPhi = b.CreatePHI(i32, 2, "scan64.d");
+    accPhi->addIncoming(value, preheader);
+    dPhi->addIncoming(llvm::ConstantInt::get(i32, 1), preheader);
+    llvm::Value* pred = b.CreateICmpUGE(lane, dPhi);
+    llvm::Value* src = b.CreateSelect(pred, b.CreateSub(lane, dPhi), lane);
+    llvm::Value* other = waveShuffle64(b, m, accPhi, src);
+    llvm::Value* acc = b.CreateSelect(pred, b.CreateAdd(accPhi, other), accPhi);
+    llvm::Value* dNext = b.CreateShl(dPhi, 1);
+    accPhi->addIncoming(acc, loop);
+    dPhi->addIncoming(dNext, loop);
+    b.CreateCondBr(b.CreateICmpULT(dNext, width), loop, done);
+    b.SetInsertPoint(done);
+    llvm::PHINode* inc = b.CreatePHI(i64, 1, "scan64.inclusive");
+    inc->addIncoming(acc, loop);
+    llvm::Value* isFirst = b.CreateICmpEQ(lane, llvm::ConstantInt::get(i32, 0));
+    llvm::Value* prevLane = b.CreateSelect(
+        isFirst, lane, b.CreateSub(lane, llvm::ConstantInt::get(i32, 1)));
+    llvm::Value* prev = waveShuffle64(b, m, inc, prevLane);
+    return b.CreateSelect(isFirst, llvm::ConstantInt::get(i64, 0), prev);
 }
 
 // The shared XOR butterfly: every lane combines with its partner at distance d

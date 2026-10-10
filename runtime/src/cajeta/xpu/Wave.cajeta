@@ -217,4 +217,46 @@ public final class Wave {
     /** {@link #shuffleDownSync} on a float32: the bits travel unchanged. */
     @Native("__cajeta_xpu_wave_shuffle_down_f32")
     public static float32 shuffleDownSyncF32(float32 value, uint32 delta);
+
+    // The int64 forms. Each is its uint32 or float sibling on a signed 64-bit
+    // value, exact on every backend at every wave width; a backend with no
+    // 64-bit shuffle moves the value as two 32-bit halves. They are spelled
+    // with an `I64` suffix, not as overloads of the uint32 names, because an
+    // int32 or literal argument resolves to an int64 overload ahead of a
+    // uint32 one, which would move existing callers to the 64-bit form.
+
+    /** {@link #shuffleSync} on an int64: both halves of lane `srcLane`'s value. */
+    @Native("__cajeta_xpu_wave_shuffle_sync_i64")
+    public static int64 shuffleSyncI64(int64 value, uint32 srcLane);
+
+    /** {@link #shuffleXorSync} on an int64. */
+    @Native("__cajeta_xpu_wave_shuffle_xor_i64")
+    public static int64 shuffleXorSyncI64(int64 value, uint32 mask);
+
+    /** {@link #shuffleUpSync} on an int64. */
+    @Native("__cajeta_xpu_wave_shuffle_up_i64")
+    public static int64 shuffleUpSyncI64(int64 value, uint32 delta);
+
+    /** {@link #shuffleDownSync} on an int64. */
+    @Native("__cajeta_xpu_wave_shuffle_down_i64")
+    public static int64 shuffleDownSyncI64(int64 value, uint32 delta);
+
+    /** The wrapped sum of `value` across the active lanes; every lane receives it. */
+    @Native("__cajeta_xpu_wave_reduce_sum_i64")
+    public static int64 reduceSumI64(int64 value);
+
+    /** The SIGNED maximum of `value` across the active lanes. */
+    @Native("__cajeta_xpu_wave_reduce_smax_i64")
+    public static int64 reduceMaxI64(int64 value);
+
+    /** The SIGNED minimum of `value` across the active lanes. */
+    @Native("__cajeta_xpu_wave_reduce_smin_i64")
+    public static int64 reduceMinI64(int64 value);
+
+    /**
+     * EXCLUSIVE prefix sum, wrapped: lane `i` receives the sum of `value` over
+     * lanes `0..i-1`, and lane 0 receives 0. See {@link #prefixSum}.
+     */
+    @Native("__cajeta_xpu_wave_prefix_sum_i64")
+    public static int64 prefixSumI64(int64 value);
 }

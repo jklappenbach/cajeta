@@ -567,6 +567,76 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
             }
             b.CreateRet(res);
         }
+    } else if (scalarName == "__cajeta_xpu_wave_reduce_sum_i64" ||
+               scalarName == "__cajeta_xpu_wave_reduce_smax_i64" ||
+               scalarName == "__cajeta_xpu_wave_reduce_smin_i64" ||
+               (scalarName.ends_with("_i64_m") &&
+                scalarName.starts_with("__cajeta_xpu_wave_reduce_"))) {
+        // The int64 reduces, plain and mask-as-data: the 32-bit variants over
+        // <W x i64>. The mask-as-data form takes the guard as a second argument.
+        const bool asData = scalarName.ends_with("_m");
+        const llvm::StringRef base = asData ? scalarName.drop_back(2) : scalarName;
+        tokens = asData ? "vv" : "v";
+        auto* vTy = llvm::FixedVectorType::get(i64, W);
+        auto reduceOf = [&](llvm::IRBuilder<>& b, llvm::Value* x) -> llvm::Value* {
+            if (base == "__cajeta_xpu_wave_reduce_smax_i64")
+                return b.CreateIntMaxReduce(x, /*IsSigned=*/true);
+            if (base == "__cajeta_xpu_wave_reduce_smin_i64")
+                return b.CreateIntMinReduce(x, /*IsSigned=*/true);
+            return b.CreateAddReduce(x);
+        };
+        const uint64_t ident = base == "__cajeta_xpu_wave_reduce_smax_i64" ? 0x8000000000000000ull
+                             : base == "__cajeta_xpu_wave_reduce_smin_i64" ? 0x7FFFFFFFFFFFFFFFull
+                                                                           : 0ull;
+        llvm::Constant* idc = llvm::ConstantInt::get(i64, ident);
+        std::vector<llvm::Type*> uArgs = {vTy};
+        if (asData) uArgs.push_back(maskTy);
+        unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
+                                    llvm::FunctionType::get(vTy, uArgs, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", unmasked));
+            llvm::Value* x = unmasked->getArg(0);
+            if (asData) x = b.CreateSelect(unmasked->getArg(1), x, b.CreateVectorSplat(W, idc));
+            b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, x)));
+        }
+        std::vector<llvm::Type*> mArgs = uArgs;
+        mArgs.push_back(maskTy);
+        masked = makeVariantShell(m, scalarName.str() + "_Mv" + sw,
+                                  llvm::FunctionType::get(vTy, mArgs, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", masked));
+            llvm::Value* act = asData ? b.CreateAnd(masked->getArg(1), masked->getArg(2))
+                                      : masked->getArg(1);
+            llvm::Value* x = b.CreateSelect(act, masked->getArg(0), b.CreateVectorSplat(W, idc));
+            b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, x)));
+        }
+    } else if (scalarName == "__cajeta_xpu_wave_prefix_sum_i64") {
+        // The int64 exclusive prefix sum: the 32-bit variant over <W x i64>.
+        tokens = "v";
+        auto* vTy = llvm::FixedVectorType::get(i64, W);
+        auto scan = [&](llvm::IRBuilder<>& b, llvm::Value* x) {
+            llvm::Value* res = llvm::PoisonValue::get(vTy);
+            llvm::Value* acc = llvm::ConstantInt::get(i64, 0);
+            for (unsigned i = 0; i < W; ++i) {
+                res = b.CreateInsertElement(res, acc, b.getInt32(i));
+                acc = b.CreateAdd(acc, b.CreateExtractElement(x, b.getInt32(i)));
+            }
+            return res;
+        };
+        unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
+                                    llvm::FunctionType::get(vTy, {vTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", unmasked));
+            b.CreateRet(scan(b, unmasked->getArg(0)));
+        }
+        masked = makeVariantShell(m, scalarName.str() + "_Mv" + sw,
+                                  llvm::FunctionType::get(vTy, {vTy, maskTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", masked));
+            llvm::Value* x = b.CreateSelect(masked->getArg(1), masked->getArg(0),
+                                            llvm::Constant::getNullValue(vTy));
+            b.CreateRet(scan(b, x));
+        }
     } else {
         return;
     }
@@ -723,6 +793,10 @@ static const char* const kWaveOps[] = {
     "__cajeta_xpu_wave_reduce_xor_u32",
     "__cajeta_xpu_wave_prefix_sum_u32",
     "__cajeta_xpu_wave_prefix_product_u32",
+    "__cajeta_xpu_wave_reduce_sum_i64",
+    "__cajeta_xpu_wave_reduce_smax_i64",
+    "__cajeta_xpu_wave_reduce_smin_i64",
+    "__cajeta_xpu_wave_prefix_sum_i64",
     "__cajeta_xpu_wave_ballot_sync",
     "__cajeta_xpu_wave_shuffle_sync_u32",
 };
@@ -795,11 +869,11 @@ struct WaveRemarkHandler final : public llvm::DiagnosticHandler {
 
 static bool isMaskAsDataReduce(llvm::StringRef name, bool* isMasked) {
     if (!name.starts_with("__cajeta_xpu_wave_reduce_")) return false;
-    if (name.ends_with("_u32") || name.ends_with("_f32")) {
+    if (name.ends_with("_u32") || name.ends_with("_f32") || name.ends_with("_i64")) {
         *isMasked = false;
         return true;
     }
-    if (name.ends_with("_u32_m") || name.ends_with("_f32_m")) {
+    if (name.ends_with("_u32_m") || name.ends_with("_f32_m") || name.ends_with("_i64_m")) {
         *isMasked = true;
         return true;
     }

@@ -99,6 +99,7 @@ These are every built-in the interpreter defines.
 | `Wave.shuffleXorSync(v, m)` | `v` from lane `laneId ^ m`, which must be active |
 | `Wave.shuffleUpSync(v, d)`, `shuffleDownSync(v, d)` | `v` from lane `laneId - d` or `laneId + d`; a lane past the wave's edge reads itself |
 | `Wave.rotate(v, d)` | `v` from lane `(laneId + d) % W` |
+| `Wave.shuffleSyncI64`, `shuffleXorSyncI64`, `shuffleUpSyncI64`, `shuffleDownSyncI64` | the uint32 forms on an int64; both halves of the source lane's value |
 | `Quad.broadcast(v, i)` | `v` from lane `(laneId & ~3) + (i & 3)`, which must be active |
 | `Quad.swapHorizontal(v)`, `swapVertical(v)`, `swapDiagonal(v)` | `v` from lane `laneId ^ 1`, `^ 2`, `^ 3`, which must be active |
 | `Quad.all(p)`, `any(p)` | the AND or OR of `p` over the four lanes of the quad, every one of which must be active |
@@ -106,7 +107,9 @@ These are every built-in the interpreter defines.
 | `Wave.reduceSum/Max/Min/And/Or/Xor` | uint32, over the active lanes in lane order; sums wrap |
 | `Wave.reduceSumF32`, `reduceMaxF32` | an xor butterfly over the full width, partners at distance 1, 2, 4 and up in that order; inactive lanes contribute 0 or -inf. nvptx, cpu and a Vulkan virtual wave sum in this order; amdgpu and native SPIR-V use the device's own reduce, whose order is the driver's. RADV and amdgpu sum in this order too (measured, `XpuNativeFloatReduceOrderTests`). Another vendor's Vulkan driver is unmeasured and carries a stated bound |
 | `Wave.reduceSumF32Segmented(v, seg)`, `reduceMaxF32Segmented` | the same butterfly stopped at `seg`: partners at distance 1 up to `seg/2`, so each aligned span of `seg` lanes reduces on its own and every lane of a span holds the span's result. `seg` is uniform across the wave and a power of two, and is clamped to `W` |
+| `Wave.reduceSumI64`, `reduceMaxI64`, `reduceMinI64` | int64, over the active lanes in lane order; the sum wraps, the maximum and minimum are signed |
 | `Wave.prefixSum`, `prefixProduct` | exclusive scan in lane order, uint32 |
+| `Wave.prefixSumI64` | exclusive sum in lane order, int64, wrapped; lane 0 receives 0 |
 | `Group.width`, `laneId`, `rowId` | `W`; `linear % W`; `Workgroup.x`, as int32 |
 | `Group.reduce(op, v)` | `Wave.reduceSumF32` for `GroupOp.Add`, `Wave.reduceMaxF32` for `GroupOp.Max` |
 | `Group.reduceSegmented(seg, op, v)` | the segmented form of the same |

@@ -553,6 +553,23 @@ public:
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         return pureCall(b, m, sym, i32, {value}, "wave.scan");
     }
+    // The int64 reduce and scan are stubs with width-W variants, as the 32-bit
+    // ones are; the int64 shuffle keeps the default, two halves through the
+    // 32-bit shuffle stub.
+    llvm::Value* waveReduce64(llvm::IRBuilderBase& b, llvm::Module& m,
+                              WaveReduce64Op op, llvm::Value* value) override {
+        const char* sym = op == WaveReduce64Op::Sum ? "__cajeta_xpu_wave_reduce_sum_i64"
+                        : op == WaveReduce64Op::SMax ? "__cajeta_xpu_wave_reduce_smax_i64"
+                                                     : "__cajeta_xpu_wave_reduce_smin_i64";
+        llvm::Type* i64 = llvm::Type::getInt64Ty(m.getContext());
+        return pureCall(b, m, sym, i64, {value}, "wave.reduce64");
+    }
+    llvm::Value* waveScan64(llvm::IRBuilderBase& b, llvm::Module& m,
+                            llvm::Value* value) override {
+        llvm::Type* i64 = llvm::Type::getInt64Ty(m.getContext());
+        return pureCall(b, m, "__cajeta_xpu_wave_prefix_sum_i64", i64, {value},
+                        "wave.scan64");
+    }
     // The work-item index modulo the wave width; lane 0 in the width-1 fallback.
     llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
         return b.CreateURem(threadId(b, m, 0), waveWidth(b, m), "wave.laneid");

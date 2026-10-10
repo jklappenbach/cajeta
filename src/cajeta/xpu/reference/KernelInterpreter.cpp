@@ -685,6 +685,9 @@ const std::set<std::string>& staticBuiltins() {
         "Wave.shuffleXorSync", "Wave.shuffleUpSync", "Wave.shuffleDownSync",
         "Wave.shuffleSyncF32", "Wave.shuffleXorSyncF32", "Wave.shuffleUpSyncF32",
         "Wave.shuffleDownSyncF32",
+        "Wave.shuffleSyncI64", "Wave.shuffleXorSyncI64", "Wave.shuffleUpSyncI64",
+        "Wave.shuffleDownSyncI64", "Wave.reduceSumI64", "Wave.reduceMaxI64", "Wave.reduceMinI64",
+        "Wave.prefixSumI64",
         "Quad.broadcast", "Quad.swapHorizontal", "Quad.swapVertical", "Quad.swapDiagonal",
         "Quad.all", "Quad.any",
         "Wave.reduceSum", "Wave.reduceMax", "Wave.reduceMin",
@@ -3021,7 +3024,8 @@ private:
                     || q == "Wave.reduceSumF32Segmented" || q == "Wave.reduceMaxF32Segmented"
                     || q == "Wave.shuffleSyncF32" || q == "Wave.shuffleXorSyncF32"
                     || q == "Wave.shuffleUpSyncF32" || q == "Wave.shuffleDownSyncF32";
-            Ty pt = f32 ? Ty{Prim::F32, true} : Ty{Prim::I32, false};
+            bool i64 = q.size() > 3 && q.compare(q.size() - 3, 3, "I64") == 0;
+            Ty pt = f32 ? Ty{Prim::F32, true} : i64 ? Ty{Prim::I64, true} : Ty{Prim::I32, false};
             if (q == "Wave.ballotSync") pt = {Prim::Bool, false};
             if (a.empty()) refuse("`" + q + "` without its value (" + where + ")");
             arr.arg = (q == "Wave.shuffleSync" || q == "Wave.rotate") ? a[0] : convert(a[0], pt);
@@ -3520,6 +3524,10 @@ private:
             {"Wave.shuffleDownSync", {Prim::I32, false}}, {"Wave.shuffleSyncF32", {Prim::F32, true}},
             {"Wave.shuffleXorSyncF32", {Prim::F32, true}}, {"Wave.shuffleUpSyncF32", {Prim::F32, true}},
             {"Wave.shuffleDownSyncF32", {Prim::F32, true}},
+            {"Wave.shuffleSyncI64", {Prim::I64, true}}, {"Wave.shuffleXorSyncI64", {Prim::I64, true}},
+            {"Wave.shuffleUpSyncI64", {Prim::I64, true}}, {"Wave.shuffleDownSyncI64", {Prim::I64, true}},
+            {"Wave.reduceSumI64", {Prim::I64, true}}, {"Wave.reduceMaxI64", {Prim::I64, true}},
+            {"Wave.reduceMinI64", {Prim::I64, true}}, {"Wave.prefixSumI64", {Prim::I64, true}},
             {"Quad.broadcast", {Prim::I32, false}}, {"Quad.swapHorizontal", {Prim::I32, false}},
             {"Quad.swapVertical", {Prim::I32, false}}, {"Quad.swapDiagonal", {Prim::I32, false}},
             {"Quad.all", {Prim::Bool, false}}, {"Quad.any", {Prim::Bool, false}},
@@ -3708,17 +3716,23 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
     }
     if (q == "Wave.shuffleXorSync" || q == "Wave.shuffleUpSync" || q == "Wave.shuffleDownSync"
             || q == "Wave.shuffleSyncF32" || q == "Wave.shuffleXorSyncF32"
-            || q == "Wave.shuffleUpSyncF32" || q == "Wave.shuffleDownSyncF32") {
+            || q == "Wave.shuffleUpSyncF32" || q == "Wave.shuffleDownSyncF32"
+            || q == "Wave.shuffleSyncI64" || q == "Wave.shuffleXorSyncI64"
+            || q == "Wave.shuffleUpSyncI64" || q == "Wave.shuffleDownSyncI64") {
         // One shuffle from a computed source: xor is the butterfly; up and
         // down read the lane itself past the wave's edge, as shfl does. The
-        // F32 forms are the same shuffle of the float's bits.
+        // F32 forms are the same shuffle of the float's bits, the I64 forms
+        // of both halves.
         for (uint32_t m : lanes) {
             uint64_t d = G.sync[m].arrival.arg2.u64();
             uint64_t l = laneOf(m);
             uint64_t src;
-            if (q == "Wave.shuffleXorSync" || q == "Wave.shuffleXorSyncF32") src = l ^ d;
-            else if (q == "Wave.shuffleUpSync" || q == "Wave.shuffleUpSyncF32") src = l >= d ? l - d : l;
-            else if (q == "Wave.shuffleDownSync" || q == "Wave.shuffleDownSyncF32") src = l + d < W ? l + d : l;
+            if (q == "Wave.shuffleXorSync" || q == "Wave.shuffleXorSyncF32"
+                    || q == "Wave.shuffleXorSyncI64") src = l ^ d;
+            else if (q == "Wave.shuffleUpSync" || q == "Wave.shuffleUpSyncF32"
+                    || q == "Wave.shuffleUpSyncI64") src = l >= d ? l - d : l;
+            else if (q == "Wave.shuffleDownSync" || q == "Wave.shuffleDownSyncF32"
+                    || q == "Wave.shuffleDownSyncI64") src = l + d < W ? l + d : l;
             else src = d;
             auto it = byLane.find((uint32_t) src);
             if (src >= W || it == byLane.end())
@@ -3779,6 +3793,29 @@ void resolveWave(Group& G, const std::vector<uint32_t>& lanes, uint32_t W) {
         uint64_t mask = 0;
         for (uint32_t m : lanes) if (argOf(m).i) mask |= 1ull << laneOf(m);
         for (uint32_t m : lanes) G.sync[m].arrival.result = mkInt({Prim::I64, false}, mask);
+        return;
+    }
+    if (q == "Wave.prefixSumI64") {
+        // The int64 exclusive prefix sum, wrapped; lane 0 receives 0.
+        uint64_t run = 0;
+        for (auto& [l, m] : byLane) {
+            G.sync[m].arrival.result = mkInt({Prim::I64, true}, run);
+            run += argOf(m).u64();
+        }
+        return;
+    }
+    if (q == "Wave.reduceSumI64" || q == "Wave.reduceMaxI64" || q == "Wave.reduceMinI64") {
+        // The int64 reduces: a wrapped sum, a signed maximum and minimum.
+        uint64_t acc = 0;
+        bool firstLane = true;
+        for (auto& [l, m] : byLane) {
+            const int64_t x = argOf(m).s64();
+            if (firstLane) { acc = (uint64_t) x; firstLane = false; continue; }
+            if (q == "Wave.reduceSumI64") acc += (uint64_t) x;
+            else if (q == "Wave.reduceMaxI64") acc = x > (int64_t) acc ? (uint64_t) x : acc;
+            else acc = x < (int64_t) acc ? (uint64_t) x : acc;
+        }
+        for (uint32_t m : lanes) G.sync[m].arrival.result = mkInt({Prim::I64, true}, acc);
         return;
     }
     if (q == "Wave.prefixSum" || q == "Wave.prefixProduct") {

@@ -832,6 +832,20 @@ namespace xpu {
         virtual llvm::Value* waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
                                       WaveScanOp op, llvm::Value* value);
 
+        // The int64 forms: an i64 shuffled from `srcLane`, reduced across the active
+        // lanes (a wrapped sum, a SIGNED max or min), or exclusively prefix-summed.
+        // NOT pure-virtual: the shuffle moves two i32 halves through
+        // waveShuffleDivergent, and the reduce and scan are the same width-agnostic
+        // butterfly and Hillis-Steele loops as the 32-bit defaults over that
+        // shuffle, so every backend has them. A native 64-bit form overrides.
+        enum class WaveReduce64Op { Sum, SMax, SMin };
+        virtual llvm::Value* waveShuffle64(llvm::IRBuilderBase& b, llvm::Module& m,
+                                           llvm::Value* value, llvm::Value* srcLane);
+        virtual llvm::Value* waveReduce64(llvm::IRBuilderBase& b, llvm::Module& m,
+                                          WaveReduce64Op op, llvm::Value* value);
+        virtual llvm::Value* waveScan64(llvm::IRBuilderBase& b, llvm::Module& m,
+                                        llvm::Value* value);
+
         // The calling work-item's lane index within its wave: i32 in [0, waveWidth).
         // NVPTX laneid; AMDGPU mbcnt; Vulkan SubgroupLocalInvocationId; CPU tid%w.
         virtual llvm::Value* waveLaneId(llvm::IRBuilderBase& b,

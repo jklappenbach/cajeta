@@ -173,6 +173,27 @@ float __cajeta_xpu_wave_shuffle_up_f32(float value, uint32_t delta) {
 float __cajeta_xpu_wave_shuffle_down_f32(float value, uint32_t delta) {
     (void)delta; return value;
 }
+// The int64 forms at one lane: a shuffle and a reduce read the lane itself, the
+// exclusive prefix is 0. The `_m` reduces are the mask-as-data spellings.
+int64_t __cajeta_xpu_wave_shuffle_sync_i64(int64_t value, uint32_t srcLane) {
+    (void)srcLane; return value;
+}
+int64_t __cajeta_xpu_wave_shuffle_xor_i64(int64_t value, uint32_t mask) {
+    (void)mask; return value;
+}
+int64_t __cajeta_xpu_wave_shuffle_up_i64(int64_t value, uint32_t delta) {
+    (void)delta; return value;
+}
+int64_t __cajeta_xpu_wave_shuffle_down_i64(int64_t value, uint32_t delta) {
+    (void)delta; return value;
+}
+int64_t __cajeta_xpu_wave_reduce_sum_i64(int64_t value) { return value; }
+int64_t __cajeta_xpu_wave_reduce_smax_i64(int64_t value) { return value; }
+int64_t __cajeta_xpu_wave_reduce_smin_i64(int64_t value) { return value; }
+int64_t __cajeta_xpu_wave_reduce_sum_i64_m(int64_t value, _Bool active) { return active ? value : 0; }
+int64_t __cajeta_xpu_wave_reduce_smax_i64_m(int64_t value, _Bool active) { return active ? value : INT64_MIN; }
+int64_t __cajeta_xpu_wave_reduce_smin_i64_m(int64_t value, _Bool active) { return active ? value : INT64_MAX; }
+int64_t __cajeta_xpu_wave_prefix_sum_i64(int64_t value) { (void)value; return 0; }
 
 uint32_t __cajeta_xpu_quad_broadcast(uint32_t value, uint32_t index) {
     (void)index; return value;
