@@ -88,10 +88,12 @@ bool makeCert(const char* cn, long beforeSec, long afterSec,
     X509_gmtime_adj(X509_getm_notBefore(x), beforeSec);
     X509_gmtime_adj(X509_getm_notAfter(x), afterSec);
     X509_set_pubkey(x, pkey);
-    X509_NAME* name = X509_get_subject_name(x);
+    X509_NAME* name = X509_NAME_new();
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
                                (const unsigned char*) cn, -1, -1, 0);
+    X509_set_subject_name(x, name);
     X509_set_issuer_name(x, name);   // self-signed: issuer == subject
+    X509_NAME_free(name);
 
     // Subject Alternative Name (DNS:<cn>) — what X509_check_host matches first.
     std::string san = std::string("DNS:") + cn;

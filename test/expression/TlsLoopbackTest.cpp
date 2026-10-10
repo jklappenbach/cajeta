@@ -33,10 +33,12 @@ bool makeSelfSigned(const char* cn, std::string& certPem, std::string& keyPem) {
     X509_gmtime_adj(X509_getm_notBefore(x), 0);
     X509_gmtime_adj(X509_getm_notAfter(x), 3600L);
     X509_set_pubkey(x, pkey);
-    X509_NAME* name = X509_get_subject_name(x);
+    X509_NAME* name = X509_NAME_new();
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
                                (const unsigned char*) cn, -1, -1, 0);
+    X509_set_subject_name(x, name);
     X509_set_issuer_name(x, name);
+    X509_NAME_free(name);
     std::string san = std::string("DNS:") + cn;
     X509_EXTENSION* ext = X509V3_EXT_conf_nid(NULL, NULL, NID_subject_alt_name,
                                               san.c_str());
