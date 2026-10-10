@@ -1,8 +1,8 @@
 # int64 and scan building blocks (spec)
 
-Status: draft, written 2026-10-09 at Julian's request. Julian answered the
-open questions 2026-10-10 (7). 6.3 and 6.4, the row partitioner, were added
-that day and await his review.
+Status: active, approved by Julian 2026-10-10. Written 2026-10-09 at his
+request; he answered the open questions (7) and approved 6.3 and 6.4, the
+row partitioner, on 2026-10-10.
 
 ## 1. Definition
 
