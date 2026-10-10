@@ -314,6 +314,130 @@ void buildScan(llvm::Module& m, llvm::Function* fn, bool product, unsigned w, un
     b.CreateRet(res);
 }
 
+// The int64 forms keep to the 32-bit subgroup ops, so they need no 64-bit subgroup feature.
+// A sum splits each value into three pieces of at most 22 bits: no piece's sum over a wave
+// carries out of 32 bits, so each piece goes through the native 32-bit reduce or prefix sum
+// (which skips inactive invocations) and the three recombine exactly, modulo 2^64.
+const unsigned kPieceShift[3] = {0, 21, 42};
+const uint64_t kPieceMask[3] = {(1ull << 21) - 1, (1ull << 21) - 1, (1ull << 22) - 1};
+
+llvm::Value* piece64(llvm::IRBuilder<>& b, llvm::Value* x, unsigned p) {
+    llvm::Value* v = b.CreateLShr(x, b.getInt64(kPieceShift[p]));
+    return b.CreateTrunc(b.CreateAnd(v, b.getInt64(kPieceMask[p])), b.getInt32Ty(), "piece");
+}
+
+llvm::Value* joinPieces(llvm::IRBuilder<>& b, llvm::Value* const* sums) {
+    llvm::Value* r = b.getInt64(0);
+    for (unsigned p = 0; p < 3; ++p)
+        r = b.CreateAdd(r, b.CreateShl(b.CreateZExt(sums[p], b.getInt64Ty()),
+                                       b.getInt64(kPieceShift[p])));
+    return r;
+}
+
+llvm::Value* readLane64(llvm::IRBuilder<>& b, llvm::Module& m, llvm::Value* v, llvm::Value* src) {
+    llvm::Value* lo = readLane(b, m, b.CreateTrunc(v, b.getInt32Ty()), src);
+    llvm::Value* hi = readLane(b, m, b.CreateTrunc(b.CreateLShr(v, b.getInt64(32)),
+                                                   b.getInt32Ty()), src);
+    return b.CreateOr(b.CreateZExt(lo, b.getInt64Ty()),
+                      b.CreateShl(b.CreateZExt(hi, b.getInt64Ty()), b.getInt64(32)), "rl64");
+}
+
+// invocationButterfly over an int64, both halves read from the partner block's first active
+// invocation.
+llvm::Value* invocationButterfly64(llvm::IRBuilder<>& b, llvm::Module& m, llvm::Value* x,
+                                   unsigned upTo, llvm::Value* ident,
+                                   const std::function<llvm::Value*(llvm::Value*, llvm::Value*)>& op) {
+    llvm::Value* lane = sublaneId(b, m);
+    llvm::Value* active = activeInvocations(b, m);
+    for (unsigned d = 1; d < upTo; d <<= 1) {
+        llvm::Value* base = b.CreateAnd(b.CreateXor(lane, b.getInt32(d)), b.getInt32(~(d - 1)));
+        llvm::Value* blk = ballotBlock(b, active, base, d);
+        llvm::Value* none = b.CreateICmpEQ(blk, b.getInt32(0));
+        llvm::Value* src = b.CreateSelect(none, lane, b.CreateAdd(base, firstBitLow(b, m, blk)));
+        x = op(x, b.CreateSelect(none, ident, readLane64(b, m, x, src)));
+    }
+    return x;
+}
+
+void buildIntReduce64(llvm::Module& m, llvm::Function* fn, const std::string& op, unsigned w,
+                      unsigned c, unsigned s) {
+    llvm::IRBuilder<> b(llvm::BasicBlock::Create(m.getContext(), "entry", fn));
+    llvm::Value* ident = b.getInt64(op == "smax" ? 0x8000000000000000ull
+                                    : op == "smin" ? 0x7FFFFFFFFFFFFFFFull : 0ull);
+    const bool narrow = c == 1 && s > w;
+    std::vector<llvm::Value*> xs;
+    for (unsigned k = 0; k < c; ++k)
+        xs.push_back(sliceMasked(b, fn, 1, k, b.CreateExtractElement(fn->getArg(0), uint64_t(k)),
+                                 ident));
+    llvm::Value* r;
+    if (op == "sum") {
+        llvm::Function* red = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_wave_reduce_sum, {b.getInt32Ty()});
+        auto add = [&](llvm::Value* a, llvm::Value* x) { return b.CreateAdd(a, x); };
+        llvm::Value* sums[3];
+        for (unsigned p = 0; p < 3; ++p) {
+            if (narrow) {
+                sums[p] = invocationButterfly(b, m, piece64(b, xs[0], p), w, b.getInt32(0), add);
+            } else {
+                llvm::Value* acc = nullptr;
+                for (llvm::Value* x : xs) {
+                    llvm::Value* t = b.CreateCall(red, {piece64(b, x, p)});
+                    acc = acc ? b.CreateAdd(acc, t) : t;
+                }
+                sums[p] = acc;
+            }
+        }
+        r = joinPieces(b, sums);
+    } else {
+        auto combine = [&](llvm::Value* a, llvm::Value* x) -> llvm::Value* {
+            llvm::Value* aWins = op == "smax" ? b.CreateICmpSGT(a, x) : b.CreateICmpSLT(a, x);
+            return b.CreateSelect(aWins, a, x);
+        };
+        llvm::Value* acc = xs[0];
+        for (unsigned k = 1; k < c; ++k) acc = combine(acc, xs[k]);
+        r = invocationButterfly64(b, m, acc, narrow ? w : s, ident, combine);
+    }
+    b.CreateRet(b.CreateVectorSplat(c, r));
+}
+
+// The int64 exclusive scan: buildScan's sum, piece by piece.
+void buildScan64(llvm::Module& m, llvm::Function* fn, unsigned w, unsigned c, unsigned s) {
+    llvm::IRBuilder<> b(llvm::BasicBlock::Create(m.getContext(), "entry", fn));
+    llvm::Function* pre = llvm::Intrinsic::getOrInsertDeclaration(
+        &m, llvm::Intrinsic::spv_wave_prefix_sum, {b.getInt32Ty()});
+    if (c == 1 && s > w) {
+        llvm::Value* x = sliceMasked(b, fn, 1, 0, b.CreateExtractElement(fn->getArg(0), uint64_t(0)),
+                                     b.getInt64(0));
+        llvm::Value* lane = sublaneId(b, m);
+        llvm::Value* base = spanBase(b, lane, w);
+        llvm::Value* first = b.CreateAdd(
+            base, firstBitLow(b, m, ballotBlock(b, activeInvocations(b, m), base, w)));
+        llvm::Value* sums[3];
+        for (unsigned p = 0; p < 3; ++p) {
+            llvm::Value* excl = b.CreateCall(pre, {piece64(b, x, p)});
+            sums[p] = b.CreateSub(excl, readLane(b, m, excl, first));
+        }
+        b.CreateRet(b.CreateVectorSplat(1, joinPieces(b, sums)));
+        return;
+    }
+    llvm::Value* before[3] = {b.getInt32(0), b.getInt32(0), b.getInt32(0)};
+    llvm::Value* res = llvm::PoisonValue::get(fn->getReturnType());
+    for (unsigned k = 0; k < c; ++k) {
+        llvm::Value* x = sliceMasked(b, fn, 1, k, b.CreateExtractElement(fn->getArg(0), uint64_t(k)),
+                                     b.getInt64(0));
+        llvm::Value* sums[3];
+        for (unsigned p = 0; p < 3; ++p) {
+            llvm::Value* xp = piece64(b, x, p);
+            llvm::Value* excl = b.CreateCall(pre, {xp});
+            sums[p] = b.CreateAdd(before[p], excl);
+            before[p] = b.CreateAdd(before[p],
+                                    readLane(b, m, b.CreateAdd(excl, xp), b.getInt32(s - 1)));
+        }
+        res = b.CreateInsertElement(res, joinPieces(b, sums), uint64_t(k));
+    }
+    b.CreateRet(res);
+}
+
 void attachVariants(llvm::Module& m, llvm::Function* stub, unsigned w, unsigned c, unsigned s) {
     llvm::LLVMContext& ctx = m.getContext();
     const std::string name = stub->getName().str();
@@ -333,6 +457,13 @@ void attachVariants(llvm::Module& m, llvm::Function* stub, unsigned w, unsigned 
     } else if (name == kVirtualBallot) {
         buildBallot(m, un, w, c, s);
         buildBallot(m, mk, w, c, s);
+    } else if (name.rfind(kVirtualIntReduce64, 0) == 0) {
+        const std::string op = name.substr(std::string(kVirtualIntReduce64).size());
+        buildIntReduce64(m, un, op, w, c, s);
+        buildIntReduce64(m, mk, op, w, c, s);
+    } else if (name == kVirtualScanSum64) {
+        buildScan64(m, un, w, c, s);
+        buildScan64(m, mk, w, c, s);
     } else if (name.rfind(kVirtualIntReduce, 0) == 0) {
         const std::string op = name.substr(std::string(kVirtualIntReduce).size());
         buildIntReduce(m, un, op, w, c, s);

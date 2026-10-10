@@ -1366,6 +1366,21 @@ public:
                             llvm::Value* delta) override {
         return LoweringTarget::waveRotate(b, m, value, delta);
     }
+    // The int64 reduce and scan are stubs, as the 32-bit ones are: the defaults' butterfly and
+    // scan loops would sit inside the slot loop and keep it from vectorizing. The int64
+    // shuffle keeps the default, two halves through the shuffle stub.
+    llvm::Value* waveReduce64(llvm::IRBuilderBase& b, llvm::Module& m, WaveReduce64Op op,
+                              llvm::Value* value) override {
+        std::string name = std::string(kVirtualIntReduce64)
+                         + (op == WaveReduce64Op::Sum ? "sum"
+                            : op == WaveReduce64Op::SMax ? "smax" : "smin");
+        return b.CreateCall(virtualWaveStub(m, name.c_str(), b.getInt64Ty(), {b.getInt64Ty()}),
+                            {value}, "vired64");
+    }
+    llvm::Value* waveScan64(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value) override {
+        return b.CreateCall(virtualWaveStub(m, kVirtualScanSum64, b.getInt64Ty(), {b.getInt64Ty()}),
+                            {value}, "vscan64");
+    }
     llvm::Value* quadBroadcast(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value,
                                llvm::Value* index) override {
         return LoweringTarget::quadBroadcast(b, m, value, index);

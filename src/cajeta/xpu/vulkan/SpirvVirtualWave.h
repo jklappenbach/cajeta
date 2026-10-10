@@ -28,6 +28,9 @@ namespace vulkan {
     inline constexpr const char* kVirtualIntReduce = "__cajeta_xpu_wave_vk_ireduce_";
     inline constexpr const char* kVirtualScanSum = "__cajeta_xpu_wave_vk_prefix_sum";
     inline constexpr const char* kVirtualScanProduct = "__cajeta_xpu_wave_vk_prefix_product";
+    // The int64 forms: a reduce (sum, smax, smin) and the exclusive prefix sum.
+    inline constexpr const char* kVirtualIntReduce64 = "__cajeta_xpu_wave_vk_ireduce64_";
+    inline constexpr const char* kVirtualScanSum64 = "__cajeta_xpu_wave_vk_prefix_sum64";
 
     // The per-lane stub a virtual wave verb lowers to; the slot vectorizer swaps in its C-wide variant.
     llvm::Function* virtualWaveStub(llvm::Module& m, const char* name, llvm::Type* ret,
