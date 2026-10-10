@@ -13,6 +13,7 @@
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/xpu/XpuTarget.h"
 #include "cajeta/xpu/reference/Conformance.h"
+#include "cajeta/xpu/vulkan/VulkanDriver.h"
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -41,11 +42,13 @@ std::string kernelName(uint32_t w) { return "i64w" + std::to_string(w); }
 std::string source(const std::vector<uint32_t>& widths) {
     std::string s =
         "package test;\n"
+        "import cajeta.xpu.Device;\n"
         "import cajeta.xpu.KernelBuffer;\n"
         "import cajeta.xpu.KernelStream;\n"
         "import cajeta.xpu.KernelThread;\n"
         "import cajeta.xpu.Wave;\n"
-        "public class V {\n";
+        "public class V {\n"
+        "    static int32 lastVirtual;\n";
     for (uint32_t w : widths) s += "    static int64[] got" + std::to_string(w) + ";\n";
     for (uint32_t w : widths)
         s += "    @Kernel\n"
@@ -86,6 +89,7 @@ std::string source(const std::vector<uint32_t>& widths) {
         s += "        KernelBuffer<int64> o" + W + " = heap KernelBuffer<int64>(n * 8);\n"
              "        " + kernelName(w) + ".launch(s, grid: [2], block: [64])(o" + W + ", in);\n"
              "        s.sync();\n"
+             "        lastVirtual = Device.lastLaunchVirtualSubgroup();\n"
              "        got" + W + " = heap int64[n * 8];\n"
              "        o" + W + ".download(got" + W + ");\n";
     }
@@ -100,6 +104,7 @@ std::string source(const std::vector<uint32_t>& widths) {
     for (uint32_t w : widths)
         s += "    public static int64 at" + std::to_string(w) + "(uint32 i) { return got" +
              std::to_string(w) + "[i]; }\n";
+    s += "    public static int32 virt() { return lastVirtual; }\n";
     s += "}\n";
     return s;
 }
@@ -150,6 +155,7 @@ struct Outputs {
     std::map<uint32_t, std::vector<int64_t>> byWidth;
     std::string stderrText;
     bool ran = false;
+    int32_t lastVirtual = -1;   // the subgroup width the last launch ran virtually over, 0 native
 };
 
 Outputs runOn(cajeta::xpu::Backend be, const fs::path& dir,
@@ -174,6 +180,7 @@ Outputs runOn(cajeta::xpu::Backend be, const fs::path& dir,
     if (!dir.empty()) unsetenv("CAJETA_XPU_RECORD");
     EXPECT_EQ(r, 1) << o.stderrText;
     if (r != 1) return o;
+    if (auto virt = jit->lookup<int32_t (*)()>("virt")) o.lastVirtual = virt();
     for (auto& [w, f] : at)
         for (uint32_t k = 0; k < kN * kVerbs; ++k) o.byWidth[w].push_back(f(k));
     o.ran = r == 1;
@@ -277,4 +284,20 @@ TEST(XpuWaveI64, everyVerbMatchesTheModelAndReplaysOnAmdgpu) {
 TEST(XpuWaveI64, everyVerbMatchesTheModelOnVulkan) {
     if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
     deviceMatches(cajeta::xpu::Backend::Spirv, "vulkan", false);
+}
+
+// The narrow virtual path: a 32-lane wave over subgroups of 64, two waves per subgroup, each
+// kept in its own span. CAJETA_XPU_VK_FORCE_SUBGROUP makes the launch take it on a device that
+// could run 32 natively, and the runtime's record of the launch shows it did, so a native run
+// cannot pass as a narrow one.
+TEST(XpuWaveI64, everyVerbRunsAsANarrowVirtualWaveOnVulkan) {
+    if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    if (!cajeta::xpu::vulkan::VulkanDriver::canRunSubgroupWidth(64))
+        GTEST_SKIP() << "this Vulkan device cannot run subgroups of 64";
+    setenv("CAJETA_XPU_VK_FORCE_SUBGROUP", "64", 1);
+    Outputs o = runOn(cajeta::xpu::Backend::Spirv, fs::path(), kDeviceWidths);
+    unsetenv("CAJETA_XPU_VK_FORCE_SUBGROUP");
+    ASSERT_TRUE(o.ran) << o.stderrText;
+    EXPECT_EQ(o.lastVirtual, 64) << "the launch did not run over subgroups of 64";
+    matchesTheModel(o, "vulkan narrow", kDeviceWidths);
 }

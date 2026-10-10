@@ -10,6 +10,8 @@
 #include "cajeta/xpu/XpuTarget.h"
 #include "cajeta/xpu/vulkan/VulkanDriver.h"
 #include "cajeta/xpu/reference/Conformance.h"
+#include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -24,9 +26,11 @@ using cajeta_test::findKernel;
 
 namespace {
 
-const char* kKernels[] = {"wgF", "wgI", "wgLoop"};
+const char* kKernels[] = {"wgF", "wgI", "wgLoop", "wgL", "wgL1"};
 const uint32_t kN = 768;
 const uint32_t kWrittenI = 2 * 96 * 3, kWrittenL = 2 * 128;
+// int64-scan-verbs Unit 3: wgL reduces int64 over three waves per workgroup, wgL1 over one.
+const uint32_t kWrittenL64 = 2 * 96 * 3, kWrittenL1 = 2 * 32 * 2;
 
 const char* kSource = R"CJ(
 package test;
@@ -34,12 +38,15 @@ import cajeta.xpu.GroupOp;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
+import cajeta.xpu.Wave;
 import cajeta.xpu.Workgroup;
 import cajeta.xpu.XpuLaunchException;
 public class W {
     static float32[] gotF;
     static int32[] gotI;
     static float32[] gotL;
+    static int64[] gotL64;
+    static int64[] gotL1;
     @Kernel
     @Wave(width = 32)
     public static void wgF(KernelBuffer<float32> out, KernelBuffer<float32> in) {
@@ -70,6 +77,32 @@ public class W {
         }
         out[g] = acc;
     }
+    @Kernel
+    @Wave(width = 32)
+    public static void wgL(KernelBuffer<int64> out, KernelBuffer<int64> in) {
+        uint32 g = KernelThread.globalIdX();
+        int64 v = in[g];
+        out[g * 3] = Workgroup.reduce(GroupOp.Add, v);
+        out[g * 3 + 1] = Workgroup.reduce(GroupOp.Max, v);
+        out[g * 3 + 2] = Workgroup.reduce(GroupOp.Min, v);
+    }
+    // One wave per workgroup: the workgroup reduce is the wave reduce, so both differences are 0.
+    @Kernel
+    @Wave(width = 32)
+    public static void wgL1(KernelBuffer<int64> out, KernelBuffer<int64> in) {
+        uint32 g = KernelThread.globalIdX();
+        int64 v = in[g];
+        out[g * 2] = Workgroup.reduce(GroupOp.Add, v) - Wave.reduceSumI64(v);
+        out[g * 2 + 1] = Workgroup.reduce(GroupOp.Max, v) - Wave.reduceMaxI64(v);
+    }
+    public static int64 input64(uint32 i) {
+        int64 k = (int64) i;
+        uint32 m = i % 4;
+        if (m == 0) { return (int64) 4294967295 - k; }
+        if (m == 1) { return (int64) 0 - k * (int64) 4294967297; }
+        if (m == 2) { return k * (int64) 8589934592 + (int64) 4294967290; }
+        return (int64) 0 - (int64) 9223372036854775807 + k;
+    }
     public static int32 run() {
         uint32 n = 768;
         float32[] hf = heap float32[n];
@@ -92,6 +125,20 @@ public class W {
         s.sync();
         wgLoop.launch(s, grid: [2], block: [128])(outL, inF);
         s.sync();
+        int64[] hl = heap int64[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hl[i] = W.input64(i); }
+        KernelBuffer<int64> inL = heap KernelBuffer<int64>(n);
+        KernelBuffer<int64> outL64 = heap KernelBuffer<int64>(n * 3);
+        KernelBuffer<int64> outL1 = heap KernelBuffer<int64>(n * 3);
+        inL.upload(hl);
+        wgL.launch(s, grid: [2], block: [96])(outL64, inL);
+        s.sync();
+        wgL1.launch(s, grid: [2], block: [32])(outL1, inL);
+        s.sync();
+        gotL64 = heap int64[n * 3];
+        gotL1 = heap int64[n * 3];
+        outL64.download(gotL64);
+        outL1.download(gotL1);
         gotF = heap float32[n * 3];
         gotI = heap int32[n * 3];
         gotL = heap float32[n];
@@ -116,12 +163,15 @@ public class W {
     public static float32 f(uint32 i) { return gotF[i]; }
     public static int32 iv(uint32 i) { return gotI[i]; }
     public static float32 l(uint32 i) { return gotL[i]; }
+    public static int64 l64(uint32 i) { return gotL64[i]; }
+    public static int64 l1(uint32 i) { return gotL1[i]; }
 }
 )CJ";
 
 struct Outputs {
     std::vector<float> f, l;
     std::vector<int32_t> i;
+    std::vector<int64_t> l64, l1;
     std::string stderrText;
 };
 
@@ -137,8 +187,10 @@ Outputs runOn(cajeta::xpu::Backend be, const fs::path& dir) {
     auto fAt = jit->lookup<float (*)(uint32_t)>("f");
     auto iAt = jit->lookup<int32_t (*)(uint32_t)>("iv");
     auto lAt = jit->lookup<float (*)(uint32_t)>("l");
-    EXPECT_TRUE(fn && fAt && iAt && lAt);
-    if (!(fn && fAt && iAt && lAt)) return o;
+    auto l64At = jit->lookup<int64_t (*)(uint32_t)>("l64");
+    auto l1At = jit->lookup<int64_t (*)(uint32_t)>("l1");
+    EXPECT_TRUE(fn && fAt && iAt && lAt && l64At && l1At);
+    if (!(fn && fAt && iAt && lAt && l64At && l1At)) return o;
     if (!dir.empty()) setenv("CAJETA_XPU_RECORD", dir.string().c_str(), 1);
     testing::internal::CaptureStderr();
     int32_t r = fn();
@@ -150,6 +202,11 @@ Outputs runOn(cajeta::xpu::Backend be, const fs::path& dir) {
         o.i.push_back(iAt(k));
     }
     for (uint32_t k = 0; k < kN; ++k) o.l.push_back(lAt(k));
+    if (r == 1)
+        for (uint32_t k = 0; k < kN * 3; ++k) {
+            o.l64.push_back(l64At(k));
+            o.l1.push_back(l1At(k));
+        }
     return o;
 }
 
@@ -169,6 +226,11 @@ void sameAsCpu(const Outputs& dev, const char* backend) {
     for (size_t k = 0; k < kWrittenL; ++k)
         ASSERT_EQ(bits(dev.l[k]), bits(cpu.l[k])) << "wgLoop[" << k << "] on " << backend
             << ": " << dev.l[k] << " vs cpu " << cpu.l[k];
+    ASSERT_EQ(dev.l64.size(), cpu.l64.size());
+    for (size_t k = 0; k < kWrittenL64; ++k)
+        ASSERT_EQ(dev.l64[k], cpu.l64[k]) << "wgL[" << k << "] on " << backend;
+    for (size_t k = 0; k < kWrittenL1; ++k)
+        ASSERT_EQ(dev.l1[k], cpu.l1[k]) << "wgL1[" << k << "] on " << backend;
 }
 
 // 3.1.1, 3.1.2: every launch replays bit for bit, and every kernel was recorded.
@@ -182,7 +244,7 @@ Outputs everyKernelPassesOn(cajeta::xpu::Backend be, const char* backend) {
     std::vector<cajeta::MethodPtr> kernels;
     for (const char* n : kKernels)
         if (auto k = findKernel(module, "test.W", n)) kernels.push_back(k);
-    EXPECT_EQ(kernels.size(), 3u);
+    EXPECT_EQ(kernels.size(), 5u);
     ref::CorpusRun run = ref::runCorpus(kernels, dir.string(), "");
     std::map<std::string, std::string> outcome;
     for (auto& r : run.results) {
@@ -200,6 +262,39 @@ Outputs everyKernelPassesOn(cajeta::xpu::Backend be, const char* backend) {
 
 TEST(XpuWorkgroupReduceCorpus, everyKernelMatchesTheReferenceOnCpu) {
     everyKernelPassesOn(cajeta::xpu::Backend::Cpu, "cpu");
+}
+
+int64_t input64(uint32_t i) {
+    int64_t k = i;
+    switch (i % 4) {
+        case 0: return INT64_C(4294967295) - k;
+        case 1: return (int64_t) (0 - (uint64_t) k * UINT64_C(4294967297));
+        case 2: return k * INT64_C(8589934592) + INT64_C(4294967290);
+        default: return INT64_MIN + 1 + k;
+    }
+}
+
+// int64-scan-verbs 3.2.1 and 3.2.2 on cpu: the int64 reduce over a workgroup of three waves is
+// the exact wrapped sum and the signed max and min over its 96 lanes, and over a one-wave
+// workgroup it equals the wave reduce.
+TEST(XpuWorkgroupReduceCorpus, anInt64ReduceIsExactAndOneWaveIsTheWaveReduceOnCpu) {
+    Outputs o = runOn(cajeta::xpu::Backend::Cpu, fs::path());
+    ASSERT_EQ(o.l64.size(), kN * 3);
+    for (uint32_t g = 0; g < 2 * 96; ++g) {
+        uint32_t base = g - g % 96;
+        uint64_t sum = 0;
+        int64_t mx = INT64_MIN, mn = INT64_MAX;
+        for (uint32_t j = 0; j < 96; ++j) {
+            int64_t x = input64(base + j);
+            sum += (uint64_t) x;
+            mx = std::max(mx, x);
+            mn = std::min(mn, x);
+        }
+        ASSERT_EQ(o.l64[g * 3], (int64_t) sum) << "Add at g " << g;
+        ASSERT_EQ(o.l64[g * 3 + 1], mx) << "Max at g " << g;
+        ASSERT_EQ(o.l64[g * 3 + 2], mn) << "Min at g " << g;
+    }
+    for (uint32_t k = 0; k < kWrittenL1; ++k) ASSERT_EQ(o.l1[k], 0) << "wgL1[" << k << "]";
 }
 
 TEST(XpuWorkgroupReduceCorpus, everyKernelMatchesTheReferenceOnAmdgpu) {

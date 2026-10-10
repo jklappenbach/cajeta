@@ -2997,6 +2997,7 @@ private:
             if (a.size() != 2) refuse("`Workgroup.reduce` takes (GroupOp, value) (" + where + ")");
             if (a[0].i > 2) refuse("`Workgroup.reduce` with an unknown GroupOp (" + where + ")");
             arr.arg = a[1].t.prim == Prim::F32 ? convert(a[1], {Prim::F32, true})
+                    : a[1].t.prim == Prim::I64 ? convert(a[1], {Prim::I64, true})
                                                : convert(a[1], {Prim::I32, true});
             arr.arg2 = a[0];
         } else if (q == "WaveVector.ofLane") {
@@ -3568,6 +3569,8 @@ private:
         }
         if ((q == "Group.reduce" || q == "Workgroup.reduce") && mc->getParameters().size() == 2) {
             const CExpr* v = expr(mc->getParameters()[1].expression.get());
+            if (v && q == "Workgroup.reduce" && v->t.prim == Prim::I64)
+                return node(&Item::xFallback, Ty{Prim::I64, true}, mc);
             if (v && v->t.prim != Prim::F32) return node(&Item::xFallback, Ty{Prim::I32, true}, mc);
         }
         if (auto rt = fixedReturn(q)) return node(&Item::xFallback, *rt, mc);
@@ -3932,6 +3935,20 @@ bool resolve(Group& G) {
         const uint32_t W = G.run.wave;
         const bool isF = a.arg.t.prim == Prim::F32;
         const uint64_t op = a.arg2.u64();
+        if (a.arg.t.prim == Prim::I64) {
+            // int64: exact in any order, a wrapped sum or the signed max or min.
+            int64_t acc = G.sync[waiting[0]].arrival.arg.s64();
+            for (size_t k = 1; k < waiting.size(); ++k) {
+                const int64_t x = G.sync[waiting[k]].arrival.arg.s64();
+                acc = op == 0 ? (int64_t) ((uint64_t) acc + (uint64_t) x)
+                    : op == 1 ? std::max(acc, x) : std::min(acc, x);
+            }
+            for (uint32_t m : waiting) {
+                G.sync[m].arrival.result = mkInt(Ty{Prim::I64, true}, (uint64_t) acc);
+                G.sync[m].st = ItemSync::Ready;
+            }
+            return true;
+        }
         double accF = 0;
         int32_t accI = 0;
         for (uint32_t w0 = 0; w0 < n; w0 += W) {

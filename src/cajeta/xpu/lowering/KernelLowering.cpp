@@ -1133,13 +1133,19 @@ private:
         llvm::Type* elemTy = v->getType();
         const bool isF = elemTy->isFloatTy();
         const bool isSigned = exprSigned(args[1].expression);
-        if (!isF && !(elemTy->isIntegerTy(32) && isSigned))
-            unsupported("Workgroup.reduce takes a float32 or int32 value, not " +
+        const bool is64 = elemTy->isIntegerTy(64) && isSigned;
+        if (!isF && !is64 && !(elemTy->isIntegerTy(32) && isSigned))
+            unsupported("Workgroup.reduce takes a float32, int32 or int64 value, not " +
                         cajetaScalarName(elemTy, isSigned));
         usedSubgroupOp_ = true;
         const FOp fop = ord == 0 ? FOp::Sum : ord == 1 ? FOp::Max : FOp::Min;
         llvm::Value* part;
         if (isF) part = target.waveReduceF32(builder, mod, fop, v);
+        else if (is64) {
+            using R64 = LoweringTarget::WaveReduce64Op;
+            part = target.waveReduce64(builder, mod,
+                                       ord == 0 ? R64::Sum : ord == 1 ? R64::SMax : R64::SMin, v);
+        }
         else if (ord == 0) part = target.waveReduceSum(builder, mod, v);
         else part = target.waveReduce(builder, mod,
                                       ord == 1 ? LoweringTarget::WaveReduceOp::SMax

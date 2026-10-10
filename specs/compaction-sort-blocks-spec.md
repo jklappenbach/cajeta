@@ -190,9 +190,11 @@ at its current types.
   on the same butterfly. The reference already evaluates it for
   `Group.reduce(GroupOp.Min, ...)`.
 - **`Workgroup.reduce`**: over `uint32` (unsigned max and min) and `float64`
-  (the `float32` form's fixed combine order). `uint32` arguments resolve to
-  a form today; that resolution is measured before the overload is added, so
-  no existing caller changes meaning silently.
+  (the `float32` form's fixed combine order). Measured 2026-10-10 with
+  `float32`, `int32` and `int64` overloads: a `uint32` argument resolves to
+  the `float32` form today, an `int32` or literal to the `int32` form. So a
+  `uint32` overload moves today's `uint32` callers off a float reduce, and
+  the plan finds those callers before it lands.
 - **`float64` atomics**: `atomicAdd`, `atomicMin` and `atomicMax` on a
   `KernelBuffer<float64>`. Native where the device has them, a
   compare-exchange loop on the 64-bit word otherwise, and refused by name on

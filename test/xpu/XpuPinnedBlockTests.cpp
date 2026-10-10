@@ -73,6 +73,14 @@ const char* kSrc =
     "    public static void unlaunched(KernelBuffer<float32> out) {\n"
     "        out[KernelThread.x()] = (float32) Workgroup.dimX();\n"
     "    }\n"
+    "    @Kernel @Wave(width = 32)\n"
+    "    public static void pinned64(KernelBuffer<int64> out) {\n"
+    "        int64 s = Workgroup.reduce(GroupOp.Add, (int64) KernelThread.x());\n"
+    "        if (KernelThread.x() == 0) { out[Workgroup.x()] = s; }\n"
+    "    }\n"
+    "    public static void go64(KernelStream s, KernelBuffer<int64> out) {\n"
+    "        pinned64.launch(s, grid: [2], block: [256])(out);\n"
+    "    }\n"
     "    public static void go(KernelStream s, KernelBuffer<float32> out,\n"
     "            KernelBuffer<int32> dims, uint32 n) {\n"
     "        pinned.launch(s, grid: [1], block: [256])(out, dims);\n"
@@ -160,6 +168,14 @@ TEST(XpuPinnedBlockTests, aPinnedKernelReadsNoWorkgroupSizeOnAmdgpu) {
     EXPECT_EQ(pinned.find("llvm.amdgcn.dispatch.ptr"), std::string::npos) << pinned;
     std::string split = lowered(s->kernel("split"), "amdgpu");
     EXPECT_NE(split.find("llvm.amdgcn.dispatch.ptr"), std::string::npos);
+}
+
+// int64-scan-verbs 3.1.2: the int64 reduce folds its wave count from the pin as the other forms do.
+TEST(XpuPinnedBlockTests, aPinnedInt64ReduceReadsNoWorkgroupSizeOnAmdgpu) {
+    auto s = scan();
+    std::string pinned = lowered(s->kernel("pinned64"), "amdgpu");
+    if (pinned.empty()) GTEST_SKIP() << "no amdgpu target";
+    EXPECT_EQ(pinned.find("llvm.amdgcn.dispatch.ptr"), std::string::npos) << pinned;
 }
 
 TEST(XpuPinnedBlockTests, aPinnedKernelReadsNoWorkgroupSizeOnNvptx) {

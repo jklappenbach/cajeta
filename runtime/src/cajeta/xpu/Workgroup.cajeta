@@ -46,4 +46,11 @@ public final class Workgroup {
     /** {@link #reduce} over int32: the sum (wrapping as int32 does), or the signed max or min. */
     @Native("__cajeta_xpu_workgroup_reduce_i32")
     public static int32 reduce(GroupOp op, int32 value);
+
+    /**
+     * {@link #reduce} over int64: the sum (wrapping as int64 does), or the signed max or
+     * min. An int32 or literal argument still resolves to the int32 form.
+     */
+    @Native("__cajeta_xpu_workgroup_reduce_i64")
+    public static int64 reduce(GroupOp op, int64 value);
 }

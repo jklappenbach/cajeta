@@ -106,6 +106,9 @@ int32_t __cajeta_xpu_workgroup_reduce_i32(int32_t op, int32_t value) {
     (void) op;
     return value;
 }
+int64_t __cajeta_xpu_workgroup_reduce_i64(int32_t op, int64_t value) {
+    (void)op; return value;
+}
 float __cajeta_xpu_group_reduce_f32_seg(int32_t segment, int32_t op, float value) {
     (void) segment; (void) op;
     return value;
