@@ -1388,10 +1388,21 @@ void foldWaveVariants(llvm::Function& f) {
                 bool fissioned = false;
                 while (!fissioned) {
                     try {
+                        // The block every launch site passes, when they agree
+                        // on one (workgroup-reduce 6.8): the runtime refuses
+                        // any other block for this kernel (reason 4), so
+                        // fission may read `globalIdX() / B` as the workgroup
+                        // index (step 2b). Only the rewrite sees it: a
+                        // constant ntid made a block-32 work-item loop's trip
+                        // count constant and LoopVectorize left its wave
+                        // shuffle scalar (XpuCpuDistCoopVerb, 2026-10-10).
+                        FissionHooks fh;
+                        if (const auto& pin = method->pinnedLaunchBlock())
+                            fh.pinnedBlockX = (*pin)[0];
                         fissionBarrierKernel(linked, wrapper, nReal, ctaidV, ntidV,
                                              nctaidV, hostModule, &wiLatches,
                                              dynSharedBytes,
-                                             /*scaffoldUniformLoops=*/scaffold);
+                                             /*scaffoldUniformLoops=*/scaffold, fh);
                         fissioned = true;
                     } catch (cajeta::Exception& e) {
                         if (scaffold) {

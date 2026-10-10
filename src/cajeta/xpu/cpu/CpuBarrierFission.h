@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <optional>
 #include <vector>
 
 namespace llvm {
@@ -23,6 +24,10 @@ namespace cpu {
     struct FissionHooks {
         bool keepSharedMemory = false;
         std::vector<llvm::BasicBlock*>* barrierBlocks = nullptr;
+        // The block's x extent every launch site passes, when they agree
+        // (workgroup-reduce 6.8): `globalIdX() / pinnedBlockX` is then the
+        // workgroup index (step 2b).
+        std::optional<unsigned> pinnedBlockX;
     };
 
     // True iff `linked` calls the barrier marker (i.e. needs fission).

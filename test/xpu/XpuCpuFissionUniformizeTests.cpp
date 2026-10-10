@@ -1942,3 +1942,116 @@ TEST(XpuCpuFissionUniformize, groupStripeMacAndReduceAgreeAtTheWaveWidthOnCpu) {
 }
 
 }  // namespace
+
+// (p) A barrier loop bounded by a value indexed by `globalIdX() / B`, where B
+// is the block every launch site passes. The attention flash-prefill kernels
+// of cajeta-llm (`wg = globalIdX() / 256; ... while (kb0 < kEnd)`) were
+// refused on cpu for exactly this: the quotient reads per-work-item, so the
+// trip count does, and a barrier loop must have a uniform one. With the block
+// pinned (workgroup-reduce 6.8) tid.x is below B on every launch, so
+// `(wg * B + tid.x) / B` IS the workgroup index and `% B` is tid.x. Each
+// block sums 1..lens[wg] through Shared, and `% B` picks the neighbour.
+const char* kPinnedQuotientSrc = R"CJ(
+    @Kernel
+    public static void pq(KernelBuffer<float32> out, KernelBuffer<int32> lens) {
+        Shared<float32> sm = shared float32[64];
+        uint32 lane = KernelThread.globalIdX() % 64;
+        uint32 wg = KernelThread.globalIdX() / 64;
+        uint32 n = (uint32) lens[(int64) wg];
+        float32 acc = 0.0f;
+        uint32 k = 0;
+        while (k < n) {
+            sm[lane] = (float32) (k + 1 + lane);
+            Barrier.workgroup();
+            acc = acc + sm[(lane + 1) % 64];
+            Barrier.workgroup();
+            k = k + 1;
+        }
+        out[(int64) (wg * 64 + lane)] = acc;
+    }
+    public static int32 run() {
+        uint32 blocks = 4;
+        uint32 total = blocks * 64;
+        int32[] hl = heap int32[blocks];
+        hl[0] = 3; hl[1] = 5; hl[2] = 0; hl[3] = 7;
+        float32[] hout = heap float32[total];
+        float32[] want = heap float32[total];
+        uint32 i = 0;
+        while (i < total) {
+            hout[i] = -1.0f;
+            uint32 b = i / 64;
+            uint32 nb = (i % 64 + 1) % 64;
+            float32 s = 0.0f;
+            uint32 k = 0;
+            while (k < (uint32) hl[b]) { s = s + (float32) (k + 1 + nb); k = k + 1; }
+            want[i] = s;
+            i = i + 1;
+        }
+        KernelBuffer<int32> bl = heap KernelBuffer<int32>(blocks);
+        KernelBuffer<float32> bout = heap KernelBuffer<float32>(total);
+        bl.upload(hl);
+        bout.upload(hout);
+        KernelStream s #= KernelStream.current();
+        try {
+            pq.launch(s, grid: [4], block: [64])(bout, bl);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        bout.download(hout);
+        if (hout[0] == -1.0f) { return -1; }
+        return verify(hout, total, want);
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, aBarrierLoopBoundedByTheQuotientOverThePinnedBlockLowers) {
+    const int r = runOnCpu(std::string(kPreamble) + kPinnedQuotientSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100+i wrong at lane i)";
+}
+
+// (q) A workgroup-uniform local updated by every work-item in a plain loop
+// after a barrier. Step 9b snapshots a uniform read-modify-write only when the
+// store post-dominates the region entry; a store in a loop body never does, so
+// the slot stayed shared and each work-item added its sum on top of the last
+// one's: lane n read 4 * (n + 1). Found as the epi WMMA kernels' replicated
+// tile accumulator reading 32 times too large once their tile index stopped
+// being per-work-item (2026-10-10). Every lane reads 4.
+const char* kUniformRmwInALoopSrc = R"CJ(
+    @Kernel
+    public static void ur(KernelBuffer<float32> out) {
+        Shared<float32> sm = shared float32[64];
+        uint32 t = KernelThread.x();
+        float32 acc = 0.0f;
+        sm[t] = 1.0f;
+        Barrier.workgroup();
+        uint32 k = 0;
+        while (k < 4) { acc = acc + sm[k]; k = k + 1; }
+        out[t] = acc;
+    }
+    public static int32 run() {
+        uint32 n = 64;
+        float32[] hout = heap float32[n];
+        float32[] want = heap float32[n];
+        uint32 i = 0;
+        while (i < n) { hout[i] = -1.0f; want[i] = 4.0f; i = i + 1; }
+        KernelBuffer<float32> bout = heap KernelBuffer<float32>(n);
+        bout.upload(hout);
+        KernelStream s #= KernelStream.current();
+        try {
+            ur.launch(s, grid: [1], block: [64])(bout);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        bout.download(hout);
+        if (hout[0] == -1.0f) { return -1; }
+        return verify(hout, n, want);
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, aUniformLocalUpdatedInALoopByEveryWorkItemIsNotSummedAcrossThem) {
+    const int r = runOnCpu(std::string(kPreamble) + kUniformRmwInALoopSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100+i wrong at lane i)";
+}

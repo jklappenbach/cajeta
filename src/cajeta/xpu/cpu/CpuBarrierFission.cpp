@@ -14,6 +14,8 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PatternMatch.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/IR/ReplaceConstant.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
@@ -207,6 +209,63 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // The entry builder must keep inserting *before* this terminator.
     auto* entryBr = eb.CreateBr(bodyEntry);
     eb.SetInsertPoint(entryBr);
+
+    // --- 2b. The global index over the block width is the workgroup index ---
+    // `wg = globalIdX() / 256` with the block pinned at 256 (every launch site
+    // passes it, workgroup-reduce 6.8, and the runtime admits no other): the
+    // global index is `ctaid.x * ntid.x + tid.x` and tid.x < ntid.x on every
+    // launch, so the quotient IS ctaid.x and the remainder tid.x. Read as
+    // written, the quotient is tainted by tid.x, and a barrier loop whose trip
+    // count comes from it was refused (cajeta-llm's attention flash-prefill
+    // kernels, xpu-kernel-adaptor 4.2.1). Without a pin only a division by
+    // ntid.x itself (`Workgroup.dimX()`) is rewritten, which holds anyway.
+    {
+        using namespace llvm::PatternMatch;
+        // ntid.x itself, or the pinned extent as a literal: the same number
+        // on every launch the runtime admits.
+        const std::optional<unsigned> pinX = hooks.pinnedBlockX;
+        auto sameExtent = [&](llvm::Value* v) {
+            if (v == ntidX) return true;
+            auto* a = llvm::dyn_cast<llvm::ConstantInt>(v);
+            return pinX && a && a->getValue().getActiveBits() <= 32
+                && a->getZExtValue() == *pinX;
+        };
+        // `ctaid * ntid + tid.x` in any operand order: the workgroup index, or null.
+        auto groupOf = [&](llvm::Value* x) -> llvm::Value* {
+            llvm::Value *l, *r, *u, *n;
+            if (!match(x, m_Add(m_Value(l), m_Value(r)))) return nullptr;
+            if (r != phX) std::swap(l, r);
+            if (r != phX) return nullptr;
+            if (!match(l, m_Mul(m_Value(u), m_Value(n)))) return nullptr;
+            if (!sameExtent(n)) std::swap(u, n);
+            return sameExtent(n) ? u : nullptr;
+        };
+        const bool pow2 = pinX && *pinX != 0 && (*pinX & (*pinX - 1)) == 0;
+        const unsigned log2X = pow2 ? llvm::Log2_32(*pinX) : 0;
+        std::vector<std::pair<llvm::Instruction*, llvm::Value*>> repl;
+        for (auto& bb : *wrapper)
+            for (auto& in : bb) {
+                llvm::Value *x, *d;
+                const llvm::APInt* c = nullptr;
+                llvm::Value* to = nullptr;
+                if (match(&in, m_UDiv(m_Value(x), m_Value(d))) && sameExtent(d)) {
+                    to = groupOf(x);
+                } else if (pow2 && match(&in, m_LShr(m_Value(x), m_APInt(c)))
+                           && *c == log2X) {
+                    to = groupOf(x);
+                } else if (match(&in, m_URem(m_Value(x), m_Value(d))) && sameExtent(d)) {
+                    if (groupOf(x)) to = phX;
+                } else if (pow2 && match(&in, m_And(m_Value(x), m_APInt(c)))
+                           && *c == *pinX - 1) {
+                    if (groupOf(x)) to = phX;
+                }
+                if (to && to->getType() == in.getType()) repl.push_back({&in, to});
+            }
+        for (auto& [in, to] : repl) in->replaceAllUsesWith(to);
+        if (!repl.empty() && std::getenv("CAJETA_XPU_DEBUG_WAVE"))
+            fprintf(stderr, "[wave-fission] %s: %zu global-index quotient(s) over the pinned block\n",
+                    wrapper->getName().str().c_str(), repl.size());
+    }
 
     // --- 3. Split at barriers into empty boundary blocks --------------------
     llvm::SmallPtrSet<llvm::BasicBlock*, 4> boundarySet;
@@ -1831,6 +1890,27 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     }
 
     // --- 7. Context arrays for tid-tainted locals live across a barrier -----
+    // Also for a workgroup-uniform local that a region READ-MODIFY-WRITES where
+    // step 9b cannot snapshot it: the store sits in a loop or behind a branch,
+    // so it does not post-dominate the region entry, and every branch of the
+    // region is uniform, so every work-item runs the update. Left in one slot,
+    // each work-item adds its delta on top of the last one's: a replicated
+    // software tile's accumulator updated in its element loops (`facc` of the
+    // epi WMMA kernels) read 32 times its value at block 32 once `globalIdX() /
+    // 32` stopped tainting it (2026-10-10). The lane-0 tail (`if (t == 0) {
+    // total = total + p; }`) has a per-work-item branch and keeps its slot.
+    llvm::PostDominatorTree cPDT(*wrapper);
+    llvm::DominatorTree rmwDT(*wrapper);
+    std::vector<bool> regionFlowUniform(jobs.size(), true);
+    for (size_t r = 0; r < jobs.size(); ++r)
+        for (llvm::BasicBlock* b : jobs[r].blocks) {
+            auto* t = b->getTerminator();
+            if (auto* br = llvm::dyn_cast<llvm::CondBrInst>(t)) {
+                if (tainted.count(br->getCondition())) regionFlowUniform[r] = false;
+            } else if (auto* sw = llvm::dyn_cast<llvm::SwitchInst>(t)) {
+                if (tainted.count(sw->getCondition())) regionFlowUniform[r] = false;
+            }
+        }
     llvm::DenseMap<llvm::AllocaInst*, llvm::AllocaInst*> ctxArray;
     for (llvm::AllocaInst* a : allocas) {
         // Follow GEPs: a distributed coop tile's per-lane slot is reached only
@@ -1855,7 +1935,50 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             noteRegion(st);
         }
         for (llvm::LoadInst* ld : loads) noteRegion(ld);
-        if ((perWorkItem && multi) || forceCtx.count(a)) {
+        // Only where 9b CANNOT help: no store of the region post-dominates its
+        // entry (a loop counter's `k = 0` does, and 9b's snapshot handles it),
+        // and the region reads the slot before any of its stores can have run.
+        // Wider, the rule gave loop counters reached through derived pointers
+        // a context array step 10 cannot redirect, and seven cajeta-llm
+        // kernels were refused (2026-10-10).
+        // And only a local step 10 can redirect: every direct user a load,
+        // store or GEP inside a region. A scaffold loop's own counter is read
+        // by the scaffold header, outside every region, and stays uniform.
+        auto redirectable = [&](llvm::AllocaInst* al) {
+            for (llvm::User* u : al->users()) {
+                auto* ui = llvm::dyn_cast<llvm::Instruction>(u);
+                if (!ui || regionOf(ui->getParent()) < 0) return false;
+                if (auto* st = llvm::dyn_cast<llvm::StoreInst>(ui)) {
+                    if (st->getValueOperand() == al) return false;
+                } else if (!llvm::isa<llvm::LoadInst>(ui)
+                           && !llvm::isa<llvm::GetElementPtrInst>(ui)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        bool uniformRmw = false;
+        if (!perWorkItem && !forceCtx.count(a) && redirectable(a)) {
+            for (size_t rg = 0; rg < jobs.size() && !uniformRmw; ++rg) {
+                if (!regionFlowUniform[rg]) continue;
+                llvm::SmallVector<llvm::StoreInst*, 4> rs;
+                for (llvm::StoreInst* st : stores)
+                    if (regionOf(st->getParent()) == (int) rg) rs.push_back(st);
+                if (rs.empty()) continue;
+                bool snapshotable = false;
+                for (llvm::StoreInst* st : rs)
+                    if (cPDT.dominates(st->getParent(), jobs[rg].entry)) { snapshotable = true; break; }
+                if (snapshotable) continue;
+                for (llvm::LoadInst* ld : loads) {
+                    if (regionOf(ld->getParent()) != (int) rg) continue;
+                    bool afterStore = false;
+                    for (llvm::StoreInst* st : rs)
+                        if (rmwDT.dominates(st, ld)) { afterStore = true; break; }
+                    if (!afterStore) { uniformRmw = true; break; }
+                }
+            }
+        }
+        if ((perWorkItem && multi) || forceCtx.count(a) || uniformRmw) {
             auto* arr = eb.CreateAlloca(a->getAllocatedType(), 0, ntidAll,
                                         a->getName() + ".ctx");
             arr->setAlignment(a->getAlign());

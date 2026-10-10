@@ -556,6 +556,33 @@ loop runs trips that admit nobody and ends
 (`XpuCpuFissionSlotInit.aUniformSlotNoWorkItemWroteIsZeroNotUndef`, an IR check, since the
 wrong behaviour depends on garbage; xpu-kernel-adaptor 4.2.1.12).
 
+**The global index over the pinned block is the workgroup index (2026-10-10).** A kernel
+whose launch sites all pass one constant block B (workgroup-reduce 6.8) is never launched
+with another (the runtime refuses it, reason 4), and `KernelThread.globalIdX()` is
+`ctaid.x * ntid.x + tid.x`. Since ntid.x is B and tid.x < B on every launch, fission
+rewrites `globalIdX() / B` to the workgroup index and
+`globalIdX() % B` to tid.x before it asks what is uniform (step 2b, with the `>>` and
+`&` forms for a power of two). Read as written, the quotient was tainted by tid.x, and the
+attention flash-prefill kernels of cajeta-llm (`wg = globalIdX() / 256; ... while (kb0 <
+kEnd)` with kEnd derived from wg) were refused: a barrier loop with a work-item-dependent
+trip count. Without a pin only a division by `Workgroup.dimX()` itself is rewritten. The pin reaches
+fission alone: passing it as constant ntid made a 32-wide block's work-item loop a
+constant 32 trips, which LoopVectorize declined, and a wave shuffle stayed scalar.
+(`XpuCpuFissionUniformize.aBarrierLoopBoundedByTheQuotientOverThePinnedBlockLowers`,
+xpu-kernel-adaptor 4.2.1.)
+
+**A uniform local every work-item updates in a loop is per work-item (2026-10-10).** Step
+9b makes a uniform read-modify-write idempotent by snapshotting the slot at the region's
+entry, and does so only when the store post-dominates that entry. A store in a loop body
+or behind a uniform branch does not, so the slot stayed shared and every work-item added
+its update on top of the last one's: a kernel summing four values after a barrier read
+4 (n + 1) at lane n. Step 7 now gives such a local a context array when the region's
+branches are all uniform (every work-item runs the update, each into its own copy). A
+per-work-item branch (`if (t == 0) { total = total + p; }`, the lane-0 tail) keeps the
+shared slot, which is what that pattern needs. Found when the pinned-block quotient made
+the epi WMMA kernels' replicated tile accumulator uniform and it read 32 times too large at
+block 32 (`XpuCpuFissionUniformize.aUniformLocalUpdatedInALoopByEveryWorkItemIsNotSummedAcrossThem`).
+
 The work-item loop also carries `llvm.loop.interleave.count` 1: left to its cost model
 LoopVectorize interleaved some regions four times, so their vector loop needed a 4W-wide
 block and every smaller block ran the scalar copy.
