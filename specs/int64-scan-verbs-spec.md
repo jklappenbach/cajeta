@@ -1,6 +1,8 @@
 # int64 and scan building blocks (spec)
 
-Status: draft, written 2026-10-09 at Julian's request. Open questions in 7.
+Status: draft, written 2026-10-09 at Julian's request. Julian answered the
+open questions 2026-10-10 (7). 6.3 and 6.4, the row partitioner, were added
+that day and await his review.
 
 ## 1. Definition
 
@@ -151,8 +153,8 @@ as a one-lane group.
 ### 6.1 Requirements
 
 Once a release carries the verbs, `featureScan` runs one 32-lane wave per
-feature and `partitionScatter` counts with `Workgroup.reduce`. Every split
-and every partition stays bit-identical to the CPU builder, which
+feature, and the row partitioner of 6.3 replaces `partitionScatter`. Every
+split and every partition stays bit-identical to the CPU builder, which
 `GpuSplitFinderTest`, `GpuPartitionTest` and the reference fixtures already
 check, and each rewritten kernel is no slower at the fixtures' shapes.
 
@@ -161,10 +163,59 @@ check, and each rewritten kernel is no slower at the fixtures' shapes.
 - **6.2.1** When `featureScan` runs a wave per feature, its per-feature
   records equal the current kernel's on every fixture, ties to the lowest
   bin included.
-- **6.2.2** When `partitionScatter` counts per block, the (left, right)
-  counts and every row's position are unchanged.
+- **6.2.2** When the partitioner of 6.3 splits a node, the (left, right)
+  counts and every row's node are unchanged.
 - **6.2.3** When either kernel is timed against its current form at the
   fixtures' shapes, it is no slower.
+
+### 6.3 The row partitioner
+
+In scope by Julian's answer to 7.3. Read 2026-10-10 at cajeta-xgboost
+0883745: every row carries its node in `position[]`, and for each node
+`GpuHistogram.histScatter` and `GpuPartition.partitionScatter` scan all `n`
+rows and keep those with `pos == nid`. Each call uploads the `n × nf` bin
+matrix and the quantized gradients from the host again. A tree of depth `d`
+therefore reads every row about `2^d` times per level.
+
+XGBoost's GPU builder keeps instead a row-index array in which each node's
+rows are one contiguous segment, and splits a segment in place. This spec
+adopts that layout:
+
+- The bin matrix and the quantized gradient pairs are uploaded once per
+  training run and stay on the device.
+- A row-index buffer `ridx` of `n` `int32` holds every node's rows as a
+  segment `[begin, begin + count)`. The root is `0 .. n-1`.
+- Splitting a node is a stable partition of its segment: the left child's
+  rows first, then the right child's, each in ascending row order, which is
+  the CPU builder's order. It runs in two passes over the segment. In the
+  first, each workgroup counts its left rows with
+  `Workgroup.reduce(GroupOp.Add, int32)`. The block counts are then scanned
+  exclusively into each block's base, and their sum is the left count. In
+  the second, a lane's left slot is its block's base plus
+  `Workgroup.scan(GroupOp.Add, leftFlag)`, and a right row's slot follows
+  from its index in the segment minus the left rows before it. The second
+  pass writes to a scratch buffer, and the segment is copied back.
+- The counts come from the first pass, so no atomic is needed.
+- A node's histogram covers only its segment: one thread per (row, feature)
+  cell of the segment, scattering with the same integer atomics as today.
+- The host learns each row's node from the segments when it needs one,
+  once per tree, rather than per split.
+
+The workgroup total of 7.2 is not needed here: a block's base comes from the
+scan of the block counts, not from its own total.
+
+### 6.4 Use cases for the partitioner
+
+- **6.4.1** When a node is split, each child's segment holds exactly the
+  rows the CPU builder assigns it, in ascending row order.
+- **6.4.2** When a segment spans several workgroups, the partition is still
+  stable, and the left count equals the CPU builder's.
+- **6.4.3** When a node's histogram is built from its segment, it equals the
+  CPU builder's bit for bit.
+- **6.4.4** When a tree is trained, the bin matrix and the gradient pairs are
+  uploaded once, not once per node.
+- **6.4.5** When a tree is trained at the fixtures' shapes, it is no slower
+  than with today's per-node kernels.
 
 ## 7. Open questions
 
@@ -174,14 +225,25 @@ check, and each rewritten kernel is no slower at the fixtures' shapes.
   `Group.scan(GroupOp, T)`, but `Group` verbs are an identity on cpu, where
   a group is one lane, so a workgroup scan built on them would be wrong
   there.
+  **Answered 2026-10-10 (Julian): overloads on the existing `Wave` names, and
+  `Workgroup.scan` beside `Workgroup.reduce`.**
+
 - **7.2** Should `Workgroup.scan` also hand back the workgroup total? A
   compaction needs it to reserve output space. Recommended: not yet. The
   total is one `Workgroup.reduce` of the same value, which costs a second
   barrier, and an adopter can measure whether that matters.
+  **Answered 2026-10-10 (Julian): not yet. A lane that needs the total takes
+  the last lane's prefix plus its value, and the partitioner of 6.3 does not
+  need it.**
+
 - **7.3** Is XGBoost's row partitioner (contiguous rows per node, built with
   `Workgroup.scan`, histograms over a node's rows only) in this spec's
   adoption, or a later cajeta-xgboost spec? Recommended: later. It changes
   the training loop's data layout, not only kernels.
+  **Answered 2026-10-10 (Julian): in this spec. 6.3 and 6.4.**
+
 - **7.4** Are the `int64` shuffles in scope? Recommended: yes. The scan and
   reduce are built from them on backends with no native 64-bit form, and
   they cost little once the halves are handled.
+  **Answered 2026-10-10 (Julian): yes.**
+
