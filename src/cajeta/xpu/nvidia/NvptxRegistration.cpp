@@ -106,6 +106,11 @@ namespace nvidia {
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
             const std::string entryName = kernelRegistryName(method);
+            if (unloweredHoldsBeforeLowering(*method, "nvptx")) {
+                reportUnloweredKernel(*method, entryName, "nvptx",
+                                      "held before lowering (@Unlowered hold = true)", arch);
+                continue;
+            }
 
             // The device lowerer has its own context; the host module waits for bytes.
             llvm::LLVMContext devCtx;
