@@ -1882,9 +1882,36 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     }
 
     // --- 8. Hoist remaining allocas to the true entry -----------------------
+    // ZEROED there (xpu-kernel-adaptor 4.2.1.12), for the reason step 7
+    // zero-fills the context arrays. A uniform slot is written by the
+    // work-items a region admits, and when the region admits nobody -- every
+    // work-item already left through a per-work-item `return`, the
+    // last-block check of a pack tail -- a scaffold loop's header still runs
+    // once for the block and reads the slot. Uninitialized, mem2reg made that
+    // an `undef` phi in the loop's exit test, and iq3xxsQ8IdGateUpGluKernel
+    // spun every cpu worker until the watchdog, only after other kernels had
+    // left the right garbage behind. Zero runs such a loop through trips
+    // that admit nobody, and ends.
     for (llvm::AllocaInst* a : allocas) {
         if (ctxArray.count(a)) continue;
         a->moveBefore(phX->getIterator());
+        llvm::Type* at = a->getAllocatedType();
+        if (!at->isSized()) continue;
+        if (a->isArrayAllocation()) {
+            const llvm::DataLayout& dl = wrapper->getParent()->getDataLayout();
+            llvm::IRBuilder<> zb(phX);
+            llvm::Value* n = zb.CreateZExtOrTrunc(a->getArraySize(),
+                                                  llvm::Type::getInt64Ty(ctx));
+            zb.CreateMemSet(a, llvm::ConstantInt::get(i8b, 0),
+                            zb.CreateMul(n, llvm::ConstantInt::get(
+                                llvm::Type::getInt64Ty(ctx),
+                                dl.getTypeAllocSize(at))),
+                            a->getAlign());
+            continue;
+        }
+        auto* z = new llvm::StoreInst(llvm::Constant::getNullValue(at), a,
+                                      phX->getIterator());
+        z->setAlignment(a->getAlign());
     }
 
     // --- 8b. The work-item activity mask ------------------------------------

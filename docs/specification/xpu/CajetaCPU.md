@@ -544,6 +544,18 @@ workgroup-uniform `break` lower as predicated loops and answer by value
 (`XpuCpuFissionUniformize.{aPerWorkItemBreakLeavesTheLoopForThatWorkItem,
 aUniformBreakInsideAScaffoldLoopLowers}`, xpu-kernel-adaptor 4.2.1.3).
 
+**A uniform slot starts at zero (2026-10-09).** A workgroup-uniform local is one stack slot
+for the block, written by the work-items a region admits. When a region admits nobody,
+because every work-item already left through a per-work-item `return` (the last-block check
+of a pack tail), a scaffold loop after it still runs its header once for the block and reads
+a slot no work-item wrote: after mem2reg an `undef` phi in the loop's exit test, so the trip
+count was whatever an earlier kernel left behind. iq3xxsQ8IdGateUpGluKernel spun every cpu
+worker until the watchdog, and only in the full cajeta-llm leg. Fission now zeroes every
+uniform slot at the wrapper's true entry, as step 7 zero-fills the context arrays, and such a
+loop runs trips that admit nobody and ends
+(`XpuCpuFissionSlotInit.aUniformSlotNoWorkItemWroteIsZeroNotUndef`, an IR check, since the
+wrong behaviour depends on garbage; xpu-kernel-adaptor 4.2.1.12).
+
 The work-item loop also carries `llvm.loop.interleave.count` 1: left to its cost model
 LoopVectorize interleaved some regions four times, so their vector loop needed a 4W-wide
 block and every smaller block ran the scalar copy.
