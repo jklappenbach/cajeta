@@ -736,13 +736,19 @@ namespace cajeta {
                         instExtended.push_back(QualifiedName::fromContext(coi));
                     }
                 } else { // implements
-                    instImplemented.push_back(QualifiedName::fromContext(coi));
-                    vector<QualifiedNamePtr> argsCaptured;
                     auto targsList = coi->typeArguments();
                     CajetaParser::TypeArgumentsContext* leafTargs = nullptr;
                     for (auto* ta : targsList) {
                         if (ta) leafTargs = ta;
                     }
+                    QualifiedNamePtr implName = QualifiedName::fromContext(coi);
+                    if (!leafTargs) {
+                        auto iface = dynamic_pointer_cast<CajetaClass>(
+                            CajetaType::fromContext(tt, module));
+                        if (iface && iface->isInterface()) implName = iface->getQName();
+                    }
+                    instImplemented.push_back(implName);
+                    vector<QualifiedNamePtr> argsCaptured;
                     if (leafTargs) {
                         for (auto* targ : leafTargs->typeArgument()) {
                             if (!targ || !targ->typeType()) continue;
