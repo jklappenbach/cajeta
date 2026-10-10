@@ -89,6 +89,37 @@ form is: lane 0 receives 0. Each acts on the active lanes of one wave as its
 - **2.2.4** When the same kernel runs on two backends or at two wave widths,
   each lane's result is the same.
 
+### 2.3 `Bits` over `uint64`
+
+Added 2026-10-10 at Julian's word. `Wave.ballotSync` returns a `uint64`, and
+`Bits` takes only `uint32`, so a kernel cannot count a ballot's lanes or find
+its lowest lane in one operation. Unit 6's `featureScan` picks the lowest lane
+holding the tile's best gain from a ballot.
+
+`Bits.count`, `reverse`, `rotateLeft` and `rotateRight` gain `uint64`
+overloads. `Bits.trailingZeros` and `Bits.leadingZeros` are new, over `uint32`
+and `uint64`, and return `uint32`; of 0 they return the width (32 or 64).
+Overloads are safe here, unlike in `Wave` (7.1): a probe on 2026-10-10 with
+`f(uint32)` and `f(uint64)` resolved `int32`, `uint32` and literal arguments
+to `f(uint32)`, and only a `uint64` argument to `f(uint64)`. The same probe
+resolved an `int64` argument to `f(uint32)`, a narrowing that exists today
+with only the `uint32` form; that is a language question outside this spec.
+
+Each form is one generic LLVM intrinsic (`ctpop`, `cttz`, `ctlz`,
+`bitreverse`, `fshl`, `fshr`). A backend without a native 64-bit form, such as
+SPIR-V's 32-bit `FindILsb`/`FindUMsb`, combines the two halves.
+
+### 2.4 Use cases for `Bits`
+
+- **2.4.1** When a lane counts a ballot with `Bits.count`, it receives the
+  number of lanes that passed.
+- **2.4.2** When a lane takes `Bits.trailingZeros` of a non-zero ballot, it
+  receives the lowest lane that passed; of 0, it receives 64.
+- **2.4.3** When `leadingZeros` is taken of 0 it returns the width, and of 1
+  the width minus 1, at both widths.
+- **2.4.4** When an existing call passes a `uint32`, an `int32` or a literal,
+  it still calls the `uint32` form.
+
 ## 3. `Workgroup.reduce` over `int64`
 
 ### 3.1 Requirements
