@@ -80,6 +80,11 @@ namespace amd {
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
             const std::string entryName = kernelRegistryName(method);
+            if (unloweredHoldsBeforeLowering(*method, "amdgpu")) {
+                reportUnloweredKernel(*method, entryName, "amdgpu",
+                                      "held before lowering (@Unlowered hold = true)", arch);
+                continue;
+            }
 
             // The device lowerer has its own context; the host module is untouched until bytes.
             llvm::LLVMContext devCtx;

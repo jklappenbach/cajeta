@@ -1652,7 +1652,10 @@ backend skip the kernel before lowering, report it as the tracked note
 (`held before lowering`), and never read it STALE, since nothing was tried.
 It is the lever for a kernel whose lowering does not end, which is what the
 cpu vectorize deadline (`CAJETA_XPU_CPU_VECTORIZE_DEADLINE_S`) names
-(xpu-kernel-adaptor 6.4.16). The cpu backend honours it today.
+(xpu-kernel-adaptor 6.4.16), and for a kernel that lowers but must not
+ship on a part, as the Q4_K 64x64 tile on gfx1151, where it spills and the
+shape filter prunes it (xpu-tile-shape-selection 4.9.1). Every backend
+honours it.
 
 A hold on a class template's kernel method covers every instantiation,
 and instantiations differ: `QkTile<128, 128, 32, 64, 128>` needs 73 KB of

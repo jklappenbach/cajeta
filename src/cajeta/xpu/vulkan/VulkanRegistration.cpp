@@ -89,6 +89,12 @@ namespace vulkan {
         auto emitVariant = [&](const MethodPtr& method, const std::string& regName,
                                bool software, bool registerKparams,
                                unsigned virtualWave = 0, unsigned virtualSubgroup = 0) -> bool {
+            if (unloweredHoldsBeforeLowering(*method, "vulkan")) {
+                if (virtualSubgroup) noteVirtualSkipped(regName, "held before lowering");
+                else reportUnloweredKernel(*method, regName, "vulkan",
+                                           "held before lowering (@Unlowered hold = true)");
+                return false;
+            }
             auto tm = createSpirvTargetMachine(arch);
             if (!tm) return false;
             llvm::LLVMContext devCtx;

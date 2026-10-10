@@ -418,6 +418,29 @@ TEST(XpuKernelGate, aHoldBeforeLoweringSkipsTheKernelAndIsNeverStale) {
     EXPECT_EQ(b.log.find("cajeta: error:"), std::string::npos) << b.log;
 }
 
+// The same hold on the GPU backends. Until 2026-10-10 only the cpu registration
+// asked, so a hold on an amdgpu kernel that lowered (QkTile<64,...>, which
+// spills 100 bytes on gfx1151 and is pruned there) still lowered, still
+// spilled, and read STALE (xpu-tile-shape-selection 4.9.1).
+TEST(XpuKernelGate, aHoldBeforeLoweringSkipsTheKernelOnEveryGpuBackend) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    for (const char* be : {"amdgpu", "nvptx", "vulkan"}) {
+        const std::string hold = std::string("    @Unlowered(backend = \"") + be
+            + "\", tracked = \"xpu-tile-shape-selection 4.9.1\", hold = true)\n";
+        Built b = build(program(hold, hold), be);
+        EXPECT_EQ(b.rc, 0) << be << ":\n" << b.log;
+        EXPECT_NE(b.log.find(std::string("cajeta: note: [xpu-kernel-skipped] good: no ") + be
+                             + " device code"), std::string::npos)
+            << be << ": `good` lowers, yet hold = true must skip it:\n" << b.log;
+        EXPECT_NE(b.log.find("held before lowering"), std::string::npos) << be << ":\n" << b.log;
+        EXPECT_NE(b.log.find("[tracked: xpu-tile-shape-selection 4.9.1]"), std::string::npos)
+            << be << ":\n" << b.log;
+        EXPECT_EQ(b.log.find("STALE"), std::string::npos) << be << ":\n" << b.log;
+        EXPECT_EQ(b.log.find("xpu-kernel-spill"), std::string::npos) << be << ":\n" << b.log;
+        EXPECT_EQ(b.log.find("cajeta: error:"), std::string::npos) << be << ":\n" << b.log;
+    }
+}
+
 // mayLower = true: the hold is PER INSTANTIATION. One @Unlowered on a class
 // template's kernel method covers every instantiation, and they differ:
 // QkTile<128,...> needs 73 KB of LDS and is declined on amdgpu, QkTile<64,...>
