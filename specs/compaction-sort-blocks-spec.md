@@ -1,7 +1,7 @@
 # Compaction, sort and type-coverage building blocks (spec)
 
 Status: draft, written 2026-10-10 at Julian's request. He answered the open
-questions the same day (9); the spec awaits his review.
+questions the same day (9) and reviewed it on 2026-10-11 (10).
 
 ## 1. Definition
 
@@ -76,6 +76,9 @@ number of active lanes whose `p` is true. Both are the ballot of `p` and a
 bit count, below the lane's own bit for `rank`, at the wave's real width.
 `Wave.laneMaskBelow()` returns the `uint64` with a bit set for each lane
 below the calling one, for the ballot idioms the two verbs do not cover.
+The ballot is a `uint64`, so the three cover waves of up to 64 lanes, which
+is every wave a backend builds today; a wider declared wave is refused by
+name.
 
 ### 2.2 Use cases
 
@@ -112,9 +115,12 @@ passed. `T` is `int32`, `int64`, `uint32` or `float32`. It is a barrier like
 
 A host call, `DeviceScan` in `cajeta.xpu`, scans a `KernelBuffer<int32>` or
 `KernelBuffer<int64>` of any length into an output buffer: element `i`
-receives the sum of elements `0 .. i-1`, element 0 receives 0, and the call
-returns the total. It runs on the device with no host round trip between its
-launches, and its result is the same on every backend.
+receives the sum of elements `0 .. i-1`, and element 0 receives 0. The total
+goes to a one-element device buffer the caller passes, so the call queues
+its launches on the caller's stream and returns at once; reading the total
+is the caller's own download (Julian, 2026-10-11). It runs on the device
+with no host round trip between its launches, and its result is the same on
+every backend.
 
 Two routes, chosen per backend (Julian's answer to 9.4):
 
@@ -135,7 +141,10 @@ Both routes give the same result, since integer addition is exact.
 ### 4.2 Use cases
 
 - **4.2.1** When a buffer of a million counts is scanned, each output equals
-  the host's exclusive prefix sum, and the returned total equals the sum.
+  the host's exclusive prefix sum, and the total slot holds the sum.
+- **4.2.6** When a scan is queued, the call returns before the device has
+  run it, and a later launch on the same stream reads the total slot as a
+  kernel argument with no host round trip.
 - **4.2.2** When the buffer is shorter than one workgroup, or empty, the
   result is still exact.
 - **4.2.3** When cajeta-xgboost's partitioner scans its block counts with it,
@@ -151,8 +160,10 @@ Both routes give the same result, since integer addition is exact.
 ### 5.1 Requirements
 
 A host call, `DeviceSort` in `cajeta.xpu`, sorts a `KernelBuffer` of keys
-in ascending order, stably, optionally carrying a `uint32` value per key
-(typically the key's original index). Keys are `uint32`, `int32`,
+in ascending or descending order, stably in both (equal keys keep their
+input order), optionally carrying a `uint32` value per key: the key's
+original index, by which the caller gathers any wider payload afterwards
+(Julian, 2026-10-11). Keys are `uint32`, `int32`,
 `float32`, `uint64`, `int64` or `float64` (Julian's answer to 9.5). Signed
 and float keys are mapped to an order-preserving unsigned form and back. A
 float sorts in IEEE total order: -0 before +0, and NaNs after +infinity; a
@@ -170,9 +181,10 @@ output is identical on every backend because a stable sort has one answer.
 - **5.2.4** When `int64`, `uint64` and `float64` keys are sorted, including
   the extremes of each type and both zeros, each output equals the host's
   stable sort in that type's order.
-- **5.2.5** When cajeta-llm sorts a logits row of 128k entries descending
-  (by sorting negated keys, or reading the output backwards), the top-k
-  indices equal the host Sampler's.
+- **5.2.5** When cajeta-llm sorts a logits row of 128k entries descending,
+  the top-k indices equal the host Sampler's, ties to the lower index
+  included. (Reading an ascending sort backwards would reverse the ties, which
+  is why descending is a mode, not a convention.)
 
 ## 6. Type coverage
 
@@ -272,3 +284,18 @@ onto the device forms is a later decision per library.
   the passes.
   **Answered 2026-10-10 (Julian): `int64`, `uint64` and `float64` keys as
   well. Section 5.1.**
+
+## 10. Review, 2026-10-11
+
+Julian reviewed sections 2 to 6 interactively:
+
+- **10.1** `DeviceScan`'s total goes to a device slot the caller passes, not
+  a host return value, so the call never waits on the device (4.1, 4.2.6).
+- **10.2** `DeviceSort` has a descending mode, stable like the ascending one,
+  so a top-k matches the host Sampler's tie-break (5.1, 5.2.5).
+- **10.3** The sort carries a `uint32` index only; a wider payload is
+  gathered by it afterwards.
+- **10.4** The plan lands the small verbs first: type coverage (6), the wave
+  rank (2) and the broadcast (3), then `DeviceScan` (4), then `DeviceSort`
+  (5), which builds on all of them.
+
