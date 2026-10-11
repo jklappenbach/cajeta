@@ -202,6 +202,12 @@ token (§7.15).
   is sampled as a single launch, because that batch pays the launch floor
   in the engine too. The family decides which, by the problem, not by a
   flag.
+- The MoE Id GEMM family samples in place (Julian, 2026-10-11): its
+  first launches of a problem with no stored answer are the samples, every
+  survivor in turn and each one the real work, timed between two syncs. A
+  repeated launch of one bank ranked its members against the engine, 1.17x
+  slower at a 512-token prefill; the engine's own launches are its regime
+  whatever the cause.
 
 Use cases:
 - 4.1 First use on a new machine times the survivors once (a budgeted few
@@ -306,7 +312,7 @@ is `<64, 128, 64, 16>` and the 128-row kernel is `<128, 128, 64, 32>`.
   template's 64 member, global activation feed against staged.
 - **Every batch.** The family is asked at every batch, rows above one,
   replacing the threshold `np >= 64 * expertsN`. Single-token decode never
-  reaches these kernels. The sample rule in §4 keeps small batches honest.
+  reaches these kernels. The family samples in place, §4.
 - **The key is bucketed** for this family, §4 and §7.12.
 - **Q4_K first.** The symmetric and Q6_K twins follow as their own items.
 - **The scheduler is later.** A budget-aware filter, where the scheduler
