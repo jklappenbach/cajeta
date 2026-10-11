@@ -431,8 +431,10 @@ namespace cajeta {
         }
     }
 
-    // Synthesizes the interface vtables deferred while a class was a placeholder.
+    // Decides the template bound checks deferred while a type was unparsed, then
+    // synthesizes the interface vtables deferred while a class was a placeholder.
     void CajetaModule::completePendingInterfaceVTables() {
+        CajetaClass::checkDeferredBounds();
         for (auto& [canon, structure] : structures) {
             auto klass = std::dynamic_pointer_cast<CajetaClass>(structure);
             if (klass && klass->hasPendingIfaceVTables()

@@ -796,6 +796,24 @@ namespace cajeta {
         // into ONE compile's graph, and a stale entry resolves against the wrong registries.
         static void resetDeferredInstantiationState();
 
+        // A `<T extends B>` check the instantiation could not decide: B, or a supertype
+        // of the argument, lives in a file not parsed yet. Decided by checkDeferredBounds.
+        struct DeferredBoundCheck {
+            CajetaClassPtr templateClass;
+            string param;
+            QualifiedNamePtr bound;
+            CajetaTypePtr arg;
+            string file;
+            int line = -1;
+            int column = -1;
+        };
+        static vector<DeferredBoundCheck>& deferredBoundChecks();
+        // Decides every deferred bound check once all sources are parsed; throws
+        // CAJETA_ERROR_TYPE_PARAMETER_BOUND at the instantiating site on a violation.
+        static void checkDeferredBounds();
+        // Whether `arg` is `bound` or reaches it through extends or implements.
+        static bool satisfiesBound(const CajetaClassPtr& arg, const CajetaClassPtr& bound);
+
 
         // Diamond inference: the type-parameter bindings, in declaration order, for a
         // `new Box<>(args)` site. Throws CAJETA_ERROR_TYPE_INFERENCE when it cannot.

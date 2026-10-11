@@ -645,8 +645,9 @@ namespace cajeta {
         // supertypes are all non-placeholder. Runs after parse, before Phase 1.
         static void buildPendingPrototypes();
 
-        // Re-run per-(class, iface) vtable synthesis for classes that skipped a
-        // then-placeholder interface. Idempotent; called once per codegen pass.
+        // Decide deferred template bound checks, then re-run per-(class, iface) vtable
+        // synthesis for classes that skipped a then-placeholder interface. Idempotent;
+        // called once per codegen pass, after every source is parsed.
         void completePendingInterfaceVTables();
 
         // Post-parse defense in depth: report any class still flagged placeholder,

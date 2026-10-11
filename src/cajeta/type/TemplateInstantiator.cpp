@@ -13,6 +13,7 @@
 #include "../compile/CajetaLlvmVisitor.h"
 #include "../compile/Compiler.h"
 #include "../error/Exception.h"
+#include "../error/GeneratedCode.h"
 #include "cajeta/xref/XrefIndex.h"
 #include "CajetaParser.h"
 #include "CajetaLexer.h"
@@ -82,7 +83,83 @@ namespace cajeta {
 
     void CajetaClass::resetDeferredInstantiationState() {
         deferredInstantiations().clear();
+        deferredBoundChecks().clear();
         instantiationReuseTarget().reset();
+    }
+
+    vector<CajetaClass::DeferredBoundCheck>& CajetaClass::deferredBoundChecks() {
+        static thread_local vector<DeferredBoundCheck> pending;
+        return pending;
+    }
+
+    // The class a bound names, by canonical then short name; null while its file is unparsed.
+    static CajetaClassPtr boundClassOf(const QualifiedNamePtr& bound) {
+        auto& cmap = CajetaType::getCanonicalMap();
+        auto it = cmap.find(bound->toCanonical());
+        if (it == cmap.end()) it = cmap.find(bound->getTypeName());
+        if (it == cmap.end()) return nullptr;
+        auto k = dynamic_pointer_cast<CajetaClass>(it->second);
+        return (k && !k->isPlaceholder()) ? k : nullptr;
+    }
+
+    // Whether every extends and implements clause reachable from `c` has resolved.
+    static bool supertypesSettled(const CajetaClassPtr& c, std::set<const CajetaClass*>& seen) {
+        if (!c || !seen.insert(c.get()).second) return true;
+        if (c->isPlaceholder()) return false;
+        if (c->getSuperClasses().size() < c->getQExtended().size()) return false;
+        if (c->getImplementedInterfaces().size() < c->getQImplemented().size()) return false;
+        for (auto& p : c->getSuperClasses()) {
+            if (!supertypesSettled(p, seen)) return false;
+        }
+        for (auto& i : c->getImplementedInterfaces()) {
+            if (!supertypesSettled(i, seen)) return false;
+        }
+        return true;
+    }
+
+    bool CajetaClass::satisfiesBound(const CajetaClassPtr& arg, const CajetaClassPtr& bound) {
+        if (!arg || !bound) return false;
+        std::string want = bound->getQName()->toCanonical();
+        std::set<const CajetaClass*> seen;
+        std::function<bool(const CajetaClassPtr&)> reaches = [&](const CajetaClassPtr& c) {
+            if (!c || !seen.insert(c.get()).second) return false;
+            if (c->getQName()->toCanonical() == want) return true;
+            for (auto& p : c->getSuperClasses()) {
+                if (reaches(p)) return true;
+            }
+            for (auto& i : c->getImplementedInterfaces()) {
+                if (reaches(i)) return true;
+            }
+            return false;
+        };
+        return reaches(arg);
+    }
+
+    static std::string unsatisfiedBoundMessage(const CajetaClassPtr& templ, const std::string& param,
+                                               const QualifiedNamePtr& bound,
+                                               const CajetaTypePtr& arg) {
+        std::string argName = (arg && arg->getQName()) ? arg->getQName()->toCanonical() : "?";
+        return "template " + templ->getQName()->toCanonical() + ": argument '" + argName
+            + "' does not satisfy bound '" + bound->getTypeName() + "' on parameter '"
+            + param + "'";
+    }
+
+    void CajetaClass::checkDeferredBounds() {
+        auto checks = std::move(deferredBoundChecks());
+        deferredBoundChecks().clear();
+        for (auto& d : checks) {
+            auto boundClass = boundClassOf(d.bound);
+            if (!boundClass) {
+                throw Exception("template " + d.templateClass->getQName()->toCanonical()
+                                    + ": bound '" + d.bound->getTypeName() + "' on parameter '"
+                                    + d.param + "' did not resolve to a class",
+                                "CAJETA_ERROR_TYPE_PARAMETER_BOUND", d.file, d.line, d.column);
+            }
+            if (!satisfiesBound(dynamic_pointer_cast<CajetaClass>(d.arg), boundClass)) {
+                throw Exception(unsatisfiedBoundMessage(d.templateClass, d.param, d.bound, d.arg),
+                                "CAJETA_ERROR_TYPE_PARAMETER_BOUND", d.file, d.line, d.column);
+            }
+        }
     }
 
     // Completes every queued instantiation whose template has since materialized, and
@@ -396,34 +473,19 @@ namespace cajeta {
                     }
                     continue;
                 }
-                // canonicalMap holds a template under both its canonical and
-                // its short name; `extends` lookups try the canonical first.
-                auto& cmap = CajetaType::getCanonicalMap();
-                CajetaTypePtr boundType;
-                auto it = cmap.find(bound->toCanonical());
-                if (it != cmap.end()) {
-                    boundType = it->second;
-                } else {
-                    auto nit = cmap.find(bound->getTypeName());
-                    if (nit != cmap.end()) boundType = nit->second;
+                auto boundClass = boundClassOf(bound);
+                if (boundClass && satisfiesBound(argClass, boundClass)) continue;
+                std::set<const CajetaClass*> seen;
+                if (!boundClass || (argClass && !supertypesSettled(argClass, seen))) {
+                    SourceSite at = currentRequestSite();
+                    deferredBoundChecks().push_back(
+                        {static_pointer_cast<CajetaClass>(shared_from_this()), param.name,
+                         bound, args[i], at.file, at.line, at.column});
+                    continue;
                 }
-                auto boundClass = dynamic_pointer_cast<CajetaClass>(boundType);
-                if (!boundClass) {
-                    throw Exception(
-                        "template " + qName->toCanonical() + ": bound '"
-                            + bound->getTypeName() + "' on parameter '"
-                            + param.name + "' did not resolve to a class",
-                        "CAJETA_ERROR_TYPE_PARAMETER_BOUND");
-                }
-                if (!argClass || !argClass->isParentOrKind(boundClass)) {
-                    throw Exception(
-                        "template " + qName->toCanonical() + ": argument '"
-                            + args[i]->getQName()->toCanonical()
-                            + "' does not satisfy bound '"
-                            + bound->getTypeName() + "' on parameter '"
-                            + param.name + "'",
-                        "CAJETA_ERROR_TYPE_PARAMETER_BOUND");
-                }
+                auto self = static_pointer_cast<CajetaClass>(shared_from_this());
+                throw Exception(unsatisfiedBoundMessage(self, param.name, bound, args[i]),
+                                "CAJETA_ERROR_TYPE_PARAMETER_BOUND");
             }
         }
 
