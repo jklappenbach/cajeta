@@ -1377,6 +1377,13 @@ public:
         return b.CreateCall(virtualWaveStub(m, name.c_str(), b.getInt64Ty(), {b.getInt64Ty()}),
                             {value}, "vired64");
     }
+    llvm::Value* waveScanMinMax(llvm::IRBuilderBase& b, llvm::Module& m, bool isMax,
+                                llvm::Value* value) override {
+        llvm::Type* ty = value->getType();
+        std::string name = std::string(kVirtualScanMinMax) + (isMax ? "smax" : "smin")
+                         + (ty->isIntegerTy(64) ? "64" : "32");
+        return b.CreateCall(virtualWaveStub(m, name.c_str(), ty, {ty}), {value}, "vscanmm");
+    }
     llvm::Value* waveScan64(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value) override {
         return b.CreateCall(virtualWaveStub(m, kVirtualScanSum64, b.getInt64Ty(), {b.getInt64Ty()}),
                             {value}, "vscan64");

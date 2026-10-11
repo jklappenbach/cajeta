@@ -570,6 +570,13 @@ public:
         return pureCall(b, m, "__cajeta_xpu_wave_prefix_sum_i64", i64, {value},
                         "wave.scan64");
     }
+    llvm::Value* waveScanMinMax(llvm::IRBuilderBase& b, llvm::Module& m, bool isMax,
+                                llvm::Value* value) override {
+        const bool is64 = value->getType()->isIntegerTy(64);
+        std::string sym = std::string("__cajeta_xpu_wave_prefix_") + (isMax ? "smax" : "smin")
+                        + (is64 ? "_i64" : "_i32");
+        return pureCall(b, m, sym.c_str(), value->getType(), {value}, "wave.scanmm");
+    }
     // The work-item index modulo the wave width; lane 0 in the width-1 fallback.
     llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
         return b.CreateURem(threadId(b, m, 0), waveWidth(b, m), "wave.laneid");

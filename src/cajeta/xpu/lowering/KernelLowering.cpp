@@ -581,8 +581,38 @@ private:
         llvm::BasicBlock* continueBB;
         llvm::BasicBlock* breakBB;
         std::string label;            // "" for an unlabeled loop
+        bool isLoop = true;           // false for a switch, which only borrows the loop's continue
+        bool tailBarrier = false;     // a Workgroup.scan in the body: end each pass with a barrier
     };
     std::vector<LoopTarget> loopTargets;
+    // Every `continue` branch, by the block it jumps to, so a loop whose passes must end with a
+    // barrier can put one before each.
+    std::map<llvm::BasicBlock*, std::vector<llvm::Instruction*>> continueBranches_;
+
+    // Pop the innermost loop. When a Workgroup.scan in its body asked for it, every pass ends
+    // with a workgroup barrier: at the body's end and before each `continue`. The barrier keeps
+    // the next pass's totals out of the scratch until every lane has read this pass's, and it
+    // sits where a call-site barrier would leave the lanes' own use of the result after the
+    // loop's last barrier, which cpu fission cannot split across the back edge.
+    void popLoop() {
+        LoopTarget t = loopTargets.back();
+        loopTargets.pop_back();
+        std::vector<llvm::Instruction*> conts;
+        if (t.continueBB) {
+            auto it = continueBranches_.find(t.continueBB);
+            if (it != continueBranches_.end()) {
+                conts = it->second;
+                continueBranches_.erase(it);
+            }
+        }
+        if (!t.tailBarrier) return;
+        if (!builder.GetInsertBlock()->hasTerminator()) target.workgroupBarrier(builder, mod);
+        for (llvm::Instruction* br : conts) {
+            llvm::IRBuilderBase::InsertPointGuard guard(builder);
+            builder.SetInsertPoint(br);
+            target.workgroupBarrier(builder, mod);
+        }
+    }
     std::string pendingLoopLabel_;    // set by an IdentifierLabel; the next loop consumes it
 
     // Push a loop's break/continue targets, attaching any pending label (from a
@@ -704,7 +734,7 @@ private:
                     ? "continue outside loop"
                     : "continue: no enclosing loop labeled '" + cs->getLabel() + "'");
             if (!t->continueBB) unsupported(kUnrolledExitRefusal);
-            builder.CreateBr(t->continueBB);
+            continueBranches_[t->continueBB].push_back(builder.CreateBr(t->continueBB));
             builder.SetInsertPoint(llvm::BasicBlock::Create(ctx, "after.continue", fn));
             return;
         }
@@ -1237,6 +1267,140 @@ private:
         return acc;
     }
 
+    // Workgroup.scan (int64-scan-verbs spec 4): each wave scans its lanes, the wave's last
+    // lane stores the wave's total in per-call-site scratch, a barrier, then each lane combines
+    // the totals of the waves before its own and adds its in-wave prefix. A call site inside a
+    // loop ends its loop's every pass with a barrier instead (popLoop).
+    llvm::Value* lowerWorkgroupScan(const std::vector<MethodCallParameter>& args) {
+        if (args.size() != 2) unsupported("Workgroup.scan(op, value) arity");
+        auto* c = llvm::dyn_cast<llvm::ConstantInt>(lowerExpr(args[0].expression));
+        if (!c)
+            unsupported("Workgroup.scan op must be a compile-time GroupOp constant "
+                        "(GroupOp.Add / .Max / .Min)");
+        uint64_t ord = c->getZExtValue();
+        if (ord > 2)
+            unsupported("Workgroup.scan: unknown GroupOp ordinal " + std::to_string(ord) +
+                        " (Add=0, Max=1, Min=2)");
+        llvm::Value* v = lowerExpr(args[1].expression);
+        llvm::Type* elemTy = v->getType();
+        const bool isSigned = exprSigned(args[1].expression);
+        const bool is64 = elemTy->isIntegerTy(64);
+        if (!isSigned || !(is64 || elemTy->isIntegerTy(32)))
+            unsupported("Workgroup.scan takes an int32 or int64 value, not " +
+                        cajetaScalarName(elemTy, isSigned));
+        usedSubgroupOp_ = true;
+        llvm::Value* ex;
+        if (ord == 0)
+            ex = is64 ? target.waveScan64(builder, mod, v)
+                      : builder.CreateZExtOrTrunc(
+                            target.waveScan(builder, mod, LoweringTarget::WaveScanOp::Sum, v),
+                            elemTy);
+        else
+            ex = target.waveScanMinMax(builder, mod, ord == 1, v);
+        ex = varying(ex);
+        const unsigned bits = elemTy->getIntegerBitWidth();
+        llvm::Value* ident = llvm::ConstantInt::get(
+            elemTy, ord == 0 ? llvm::APInt(bits, 0)
+                  : ord == 1 ? llvm::APInt::getSignedMinValue(bits)
+                             : llvm::APInt::getSignedMaxValue(bits));
+        auto combine = [&](llvm::Value* a, llvm::Value* b) -> llvm::Value* {
+            if (ord == 0) return builder.CreateAdd(a, b, "wgs.add");
+            return builder.CreateBinaryIntrinsic(
+                ord == 1 ? llvm::Intrinsic::smax : llvm::Intrinsic::smin, a, b);
+        };
+
+        const unsigned minW = std::max(1u, target.minWaveWidth());
+        const uint64_t slots = (blockLimit_ + minW - 1) / minW;
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(elemTy, slots);
+        auto* gv = new llvm::GlobalVariable(
+            mod, arrTy, /*isConstant=*/false, llvm::GlobalValue::InternalLinkage,
+            llvm::UndefValue::get(arrTy),
+            fn->getName().str() + "_wgscan_" + std::to_string(wgReduceSites_++),
+            /*InsertBefore=*/nullptr, llvm::GlobalValue::NotThreadLocal, kSharedAS);
+        gv->setAlignment(llvm::MaybeAlign(16));
+
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        auto asI32 = [&](llvm::Value* x) { return builder.CreateZExtOrTrunc(x, i32); };
+        auto flatIndex = [&]() {
+            llvm::Value* dx = asI32(groupDim(0));
+            llvm::Value* dy = asI32(groupDim(1));
+            return builder.CreateAdd(
+                asI32(varying(target.threadId(builder, mod, 0))),
+                builder.CreateMul(builder.CreateAdd(
+                    asI32(varying(target.threadId(builder, mod, 1))),
+                    builder.CreateMul(asI32(varying(target.threadId(builder, mod, 2))), dy)), dx),
+                "wgs.flat");
+        };
+        auto groupThreads = [&]() {
+            return builder.CreateMul(builder.CreateMul(asI32(groupDim(0)), asI32(groupDim(1))),
+                                     asI32(groupDim(2)), "wgs.threads");
+        };
+        auto slot = [&](llvm::Value* idx) {
+            return builder.CreateInBoundsGEP(
+                arrTy, gv, {llvm::ConstantInt::get(i64, 0), builder.CreateZExt(idx, i64)});
+        };
+        llvm::Value* width = asI32(target.waveWidth(builder, mod));
+        llvm::Value* lane = asI32(varying(target.waveLaneId(builder, mod)));
+        llvm::Value* flat = flatIndex();
+        // The wave's last lane: the wave's top lane, or the workgroup's last lane when the
+        // last wave is partial.
+        llvm::Value* isLast = builder.CreateOr(
+            builder.CreateICmpEQ(lane, builder.CreateSub(width, builder.getInt32(1))),
+            builder.CreateICmpEQ(flat, builder.CreateSub(groupThreads(), builder.getInt32(1))),
+            "wgs.last");
+        llvm::BasicBlock* storeBB = llvm::BasicBlock::Create(ctx, "wgs.store", fn);
+        llvm::BasicBlock* joinBB = llvm::BasicBlock::Create(ctx, "wgs.join", fn);
+        builder.CreateCondBr(isLast, storeBB, joinBB);
+        builder.SetInsertPoint(storeBB);
+        builder.CreateStore(combine(ex, v), slot(builder.CreateUDiv(flat, width, "wgs.wave")));
+        builder.CreateBr(joinBB);
+        builder.SetInsertPoint(joinBB);
+        target.workgroupBarrier(builder, mod);
+        llvm::BasicBlock* readBB = llvm::BasicBlock::Create(ctx, "wgs.read", fn);
+        markWorkgroupReduce(builder.CreateBr(readBB));
+        builder.SetInsertPoint(readBB);
+
+        // Stack slots, not phis: barrier fission privatizes an alloca per work-item. The loop
+        // runs over every wave with a bound uniform across the workgroup, and takes a total
+        // only from the waves before this lane's own.
+        llvm::AllocaInst* accSlot = entryAlloca(elemTy, "wgs.acc");
+        llvm::AllocaInst* iSlot = entryAlloca(i32, "wgs.i");
+        builder.CreateStore(ident, accSlot);
+        builder.CreateStore(builder.getInt32(0), iSlot);
+        llvm::BasicBlock* loopBB = llvm::BasicBlock::Create(ctx, "wgs.loop", fn);
+        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(ctx, "wgs.body", fn);
+        llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(ctx, "wgs.done", fn);
+        builder.CreateBr(loopBB);
+        builder.SetInsertPoint(loopBB);
+        llvm::Value* rWidth = asI32(target.waveWidth(builder, mod));
+        llvm::Value* nWaves = builder.CreateUDiv(
+            builder.CreateAdd(groupThreads(), builder.CreateSub(rWidth, builder.getInt32(1))),
+            rWidth, "wgs.waves");
+        llvm::Value* i = builder.CreateLoad(i32, iSlot, "wgs.iv");
+        builder.CreateCondBr(builder.CreateICmpULT(i, nWaves), bodyBB, doneBB);
+        builder.SetInsertPoint(bodyBB);
+        llvm::Value* myWave = builder.CreateUDiv(flatIndex(), asI32(target.waveWidth(builder, mod)),
+                                                 "wgs.mywave");
+        llvm::Value* accv = builder.CreateLoad(elemTy, accSlot, "wgs.accv");
+        llvm::Value* next = builder.CreateSelect(
+            builder.CreateICmpULT(i, myWave),
+            combine(accv, builder.CreateLoad(elemTy, slot(i), "wgs.ti")), accv);
+        builder.CreateStore(next, accSlot);
+        builder.CreateStore(builder.CreateAdd(i, builder.getInt32(1)), iSlot);
+        builder.CreateBr(loopBB);
+        builder.SetInsertPoint(doneBB);
+        llvm::Value* acc = combine(builder.CreateLoad(elemTy, accSlot, "wgs.before"), ex);
+        if (loopDepth_ > 0) {
+            LoopTarget* loop = nullptr;
+            for (auto it = loopTargets.rbegin(); it != loopTargets.rend(); ++it)
+                if (it->isLoop) { loop = &*it; break; }
+            if (loop && loop->continueBB) loop->tailBarrier = true;
+            else target.workgroupBarrier(builder, mod);   // an unrolled loop: no pass end to own
+        }
+        return acc;
+    }
+
     // Lower `Shared<T> name = shared T[size]` to one module-level addrspace(3)
     // global - shared memory is per block, not a per-thread alloca - and
     // register its decayed element pointer so tile[i] reuses the buffer path.
@@ -1715,7 +1879,7 @@ private:
         builder.SetInsertPoint(body);
         pushLoop(upd, exit);
         lowerStatement(fs->getBody());
-        loopTargets.pop_back();
+        popLoop();
         if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(upd);
         builder.SetInsertPoint(upd);
         for (auto& u : fs->getUpdate()) lowerExprStatement(u);
@@ -1785,7 +1949,7 @@ private:
                 builder.SetInsertPoint(body);
                 pushLoop(upd, exit);
                 lowerStatement(efs->getBody());
-                loopTargets.pop_back();
+                popLoop();
                 if (!builder.GetInsertBlock()->hasTerminator())
                     builder.CreateBr(upd);
                 builder.SetInsertPoint(upd);
@@ -1880,7 +2044,7 @@ private:
                             elemSlot);
         pushLoop(upd, exit);
         lowerStatement(efs->getBody());
-        loopTargets.pop_back();
+        popLoop();
         if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(upd);
 
         builder.SetInsertPoint(upd);
@@ -1903,7 +2067,7 @@ private:
         builder.SetInsertPoint(body);
         pushLoop(head, exit);
         lowerStatement(ws->getBody());
-        loopTargets.pop_back();
+        popLoop();
         if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(head);
         builder.SetInsertPoint(exit);
     }
@@ -1917,7 +2081,7 @@ private:
         builder.SetInsertPoint(body);
         pushLoop(tail, exit);
         lowerStatement(ds->getBody());
-        loopTargets.pop_back();
+        popLoop();
         if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(tail);
         builder.SetInsertPoint(tail);
         builder.CreateCondBr(toI1(lowerExpr(ds->getCondition())), body, exit);
@@ -3326,6 +3490,7 @@ private:
             if (name == "dimY") return groupDim(1);
             if (name == "dimZ") return groupDim(2);
             if (name == "reduce") return lowerWorkgroupReduce(mc->getParameters());
+            if (name == "scan") return lowerWorkgroupScan(mc->getParameters());
         } else if (recv == "Barrier") {
             if (name == "workgroup") {
                 target.workgroupBarrier(builder, mod);
@@ -7138,6 +7303,7 @@ private:
         builder.CreateBr(defaultBB);
         const LoopTarget* enclosing = findLoopTarget("");
         loopTargets.push_back({enclosing ? enclosing->continueBB : nullptr, endBB, ""});
+        loopTargets.back().isLoop = false;
         for (size_t g = 0; g < groups.size(); ++g) {
             builder.SetInsertPoint(bodies[g]);
             scoped([&] { for (auto& st : groups[g].statements) lowerStatement(st); });
@@ -8756,6 +8922,53 @@ llvm::Value* LoweringTarget::waveScan64(llvm::IRBuilderBase& b, llvm::Module& m,
         isFirst, lane, b.CreateSub(lane, llvm::ConstantInt::get(i32, 1)));
     llvm::Value* prev = waveShuffle64(b, m, inc, prevLane);
     return b.CreateSelect(isFirst, llvm::ConstantInt::get(i64, 0), prev);
+}
+
+// The max and min exclusive scan default: waveScan's Hillis-Steele loop, the value moved by
+// the 32-bit shuffle or by waveShuffle64.
+llvm::Value* LoweringTarget::waveScanMinMax(llvm::IRBuilderBase& b, llvm::Module& m, bool isMax,
+                                            llvm::Value* value) {
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* ty = value->getType();
+    const bool is64 = ty->isIntegerTy(64);
+    auto shuffle = [&](llvm::Value* v, llvm::Value* src) -> llvm::Value* {
+        return is64 ? waveShuffle64(b, m, v, src)
+                    : b.CreateZExtOrTrunc(waveShuffleDivergent(b, m, v, src), ty);
+    };
+    auto combine = [&](llvm::Value* x, llvm::Value* y) {
+        return b.CreateBinaryIntrinsic(isMax ? llvm::Intrinsic::smax : llvm::Intrinsic::smin, x, y);
+    };
+    const unsigned bits = ty->getIntegerBitWidth();
+    llvm::Value* ident = llvm::ConstantInt::get(ty, isMax ? llvm::APInt::getSignedMinValue(bits)
+                                                          : llvm::APInt::getSignedMaxValue(bits));
+    llvm::Value* lane = waveLaneId(b, m);
+    llvm::Value* width = waveWidth(b, m);
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* preheader = b.GetInsertBlock();
+    llvm::BasicBlock* loop = llvm::BasicBlock::Create(ctx, "scanmm.loop", fn);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx, "scanmm.done", fn);
+    b.CreateBr(loop);
+    b.SetInsertPoint(loop);
+    llvm::PHINode* accPhi = b.CreatePHI(ty, 2, "scanmm.acc");
+    llvm::PHINode* dPhi = b.CreatePHI(i32, 2, "scanmm.d");
+    accPhi->addIncoming(value, preheader);
+    dPhi->addIncoming(llvm::ConstantInt::get(i32, 1), preheader);
+    llvm::Value* pred = b.CreateICmpUGE(lane, dPhi);
+    llvm::Value* src = b.CreateSelect(pred, b.CreateSub(lane, dPhi), lane);
+    llvm::Value* other = shuffle(accPhi, src);
+    llvm::Value* acc = b.CreateSelect(pred, combine(accPhi, other), accPhi);
+    llvm::Value* dNext = b.CreateShl(dPhi, 1);
+    accPhi->addIncoming(acc, loop);
+    dPhi->addIncoming(dNext, loop);
+    b.CreateCondBr(b.CreateICmpULT(dNext, width), loop, done);
+    b.SetInsertPoint(done);
+    llvm::PHINode* inc = b.CreatePHI(ty, 1, "scanmm.inclusive");
+    inc->addIncoming(acc, loop);
+    llvm::Value* isFirst = b.CreateICmpEQ(lane, llvm::ConstantInt::get(i32, 0));
+    llvm::Value* prevLane = b.CreateSelect(
+        isFirst, lane, b.CreateSub(lane, llvm::ConstantInt::get(i32, 1)));
+    return b.CreateSelect(isFirst, ident, shuffle(inc, prevLane));
 }
 
 // The shared XOR butterfly: every lane combines with its partner at distance d

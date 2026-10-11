@@ -31,6 +31,8 @@ namespace vulkan {
     // The int64 forms: a reduce (sum, smax, smin) and the exclusive prefix sum.
     inline constexpr const char* kVirtualIntReduce64 = "__cajeta_xpu_wave_vk_ireduce64_";
     inline constexpr const char* kVirtualScanSum64 = "__cajeta_xpu_wave_vk_prefix_sum64";
+    // The signed max and min exclusive scans: `smax32`, `smin32`, `smax64`, `smin64`.
+    inline constexpr const char* kVirtualScanMinMax = "__cajeta_xpu_wave_vk_prefix_mm_";
 
     // The per-lane stub a virtual wave verb lowers to; the slot vectorizer swaps in its C-wide variant.
     llvm::Function* virtualWaveStub(llvm::Module& m, const char* name, llvm::Type* ret,

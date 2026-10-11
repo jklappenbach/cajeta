@@ -438,6 +438,57 @@ void buildScan64(llvm::Module& m, llvm::Function* fn, unsigned w, unsigned c, un
     b.CreateRet(res);
 }
 
+// The signed max and min exclusive scans, for Workgroup.scan, which every lane reaches: an
+// inclusive Hillis-Steele scan reads only lower lanes, which are present, then each lane takes
+// its neighbour below's inclusive value. Slots combine in logical lane order, as buildScan's do.
+void buildScanMinMax(llvm::Module& m, llvm::Function* fn, bool isMax, bool is64, unsigned w,
+                     unsigned c, unsigned s) {
+    llvm::IRBuilder<> b(llvm::BasicBlock::Create(m.getContext(), "entry", fn));
+    llvm::Type* ty = is64 ? b.getInt64Ty() : b.getInt32Ty();
+    const unsigned bits = is64 ? 64 : 32;
+    llvm::Value* ident = llvm::ConstantInt::get(
+        ty, isMax ? llvm::APInt::getSignedMinValue(bits) : llvm::APInt::getSignedMaxValue(bits));
+    auto combine = [&](llvm::Value* a, llvm::Value* x) {
+        return b.CreateBinaryIntrinsic(isMax ? llvm::Intrinsic::smax : llvm::Intrinsic::smin, a, x);
+    };
+    auto rl = [&](llvm::Value* v, llvm::Value* src) {
+        return is64 ? readLane64(b, m, v, src) : readLane(b, m, v, src);
+    };
+    llvm::Value* lane = sublaneId(b, m);
+    const bool narrow = c == 1 && s > w;
+    const unsigned span = narrow ? w : s;
+    llvm::Value* pos = narrow ? b.CreateSub(lane, spanBase(b, lane, w)) : lane;
+    auto exclusiveOf = [&](llvm::Value* x, llvm::Value** total) {
+        llvm::Value* incl = x;
+        for (unsigned d = 1; d < span; d <<= 1) {
+            llvm::Value* has = b.CreateICmpUGE(pos, b.getInt32(d));
+            llvm::Value* src = b.CreateSelect(has, b.CreateSub(lane, b.getInt32(d)), lane);
+            incl = b.CreateSelect(has, combine(incl, rl(incl, src)), incl);
+        }
+        llvm::Value* has = b.CreateICmpUGE(pos, b.getInt32(1));
+        llvm::Value* below = rl(incl, b.CreateSelect(has, b.CreateSub(lane, b.getInt32(1)), lane));
+        if (total) *total = rl(incl, b.getInt32(s - 1));
+        return b.CreateSelect(has, below, ident);
+    };
+    if (narrow) {
+        llvm::Value* x = sliceMasked(b, fn, 1, 0, b.CreateExtractElement(fn->getArg(0), uint64_t(0)),
+                                     ident);
+        b.CreateRet(b.CreateVectorSplat(1, exclusiveOf(x, nullptr)));
+        return;
+    }
+    llvm::Value* before = ident;
+    llvm::Value* res = llvm::PoisonValue::get(fn->getReturnType());
+    for (unsigned k = 0; k < c; ++k) {
+        llvm::Value* x = sliceMasked(b, fn, 1, k, b.CreateExtractElement(fn->getArg(0), uint64_t(k)),
+                                     ident);
+        llvm::Value* total = nullptr;
+        llvm::Value* ex = exclusiveOf(x, &total);
+        res = b.CreateInsertElement(res, combine(before, ex), uint64_t(k));
+        before = combine(before, total);
+    }
+    b.CreateRet(res);
+}
+
 void attachVariants(llvm::Module& m, llvm::Function* stub, unsigned w, unsigned c, unsigned s) {
     llvm::LLVMContext& ctx = m.getContext();
     const std::string name = stub->getName().str();
@@ -461,6 +512,12 @@ void attachVariants(llvm::Module& m, llvm::Function* stub, unsigned w, unsigned 
         const std::string op = name.substr(std::string(kVirtualIntReduce64).size());
         buildIntReduce64(m, un, op, w, c, s);
         buildIntReduce64(m, mk, op, w, c, s);
+    } else if (name.rfind(kVirtualScanMinMax, 0) == 0) {
+        const std::string tail = name.substr(std::string(kVirtualScanMinMax).size());
+        const bool isMax = tail.rfind("smax", 0) == 0, is64 = tail.size() > 2
+                           && tail.compare(tail.size() - 2, 2, "64") == 0;
+        buildScanMinMax(m, un, isMax, is64, w, c, s);
+        buildScanMinMax(m, mk, isMax, is64, w, c, s);
     } else if (name == kVirtualScanSum64) {
         buildScan64(m, un, w, c, s);
         buildScan64(m, mk, w, c, s);

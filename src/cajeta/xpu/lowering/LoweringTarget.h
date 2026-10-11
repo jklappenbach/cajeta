@@ -846,6 +846,13 @@ namespace xpu {
         virtual llvm::Value* waveScan64(llvm::IRBuilderBase& b, llvm::Module& m,
                                         llvm::Value* value);
 
+        // EXCLUSIVE signed max (`isMax`) or min scan of an i32 or i64 across the wave's lanes;
+        // lane 0 receives the type's minimum or maximum. Workgroup.scan's in-wave step for Max
+        // and Min, called where every lane of the workgroup is present. NOT pure-virtual: the
+        // default is waveScan's Hillis-Steele loop over waveShuffleDivergent or waveShuffle64.
+        virtual llvm::Value* waveScanMinMax(llvm::IRBuilderBase& b, llvm::Module& m, bool isMax,
+                                            llvm::Value* value);
+
         // The calling work-item's lane index within its wave: i32 in [0, waveWidth).
         // NVPTX laneid; AMDGPU mbcnt; Vulkan SubgroupLocalInvocationId; CPU tid%w.
         virtual llvm::Value* waveLaneId(llvm::IRBuilderBase& b,

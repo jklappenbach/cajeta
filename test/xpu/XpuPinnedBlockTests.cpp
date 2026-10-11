@@ -78,8 +78,14 @@ const char* kSrc =
     "        int64 s = Workgroup.reduce(GroupOp.Add, (int64) KernelThread.x());\n"
     "        if (KernelThread.x() == 0) { out[Workgroup.x()] = s; }\n"
     "    }\n"
+    "    @Kernel @Wave(width = 32)\n"
+    "    public static void pinnedScan(KernelBuffer<int64> out) {\n"
+    "        int64 s = Workgroup.scan(GroupOp.Add, (int64) KernelThread.x());\n"
+    "        out[KernelThread.globalIdX()] = s;\n"
+    "    }\n"
     "    public static void go64(KernelStream s, KernelBuffer<int64> out) {\n"
     "        pinned64.launch(s, grid: [2], block: [256])(out);\n"
+    "        pinnedScan.launch(s, grid: [2], block: [256])(out);\n"
     "    }\n"
     "    public static void go(KernelStream s, KernelBuffer<float32> out,\n"
     "            KernelBuffer<int32> dims, uint32 n) {\n"
@@ -174,6 +180,14 @@ TEST(XpuPinnedBlockTests, aPinnedKernelReadsNoWorkgroupSizeOnAmdgpu) {
 TEST(XpuPinnedBlockTests, aPinnedInt64ReduceReadsNoWorkgroupSizeOnAmdgpu) {
     auto s = scan();
     std::string pinned = lowered(s->kernel("pinned64"), "amdgpu");
+    if (pinned.empty()) GTEST_SKIP() << "no amdgpu target";
+    EXPECT_EQ(pinned.find("llvm.amdgcn.dispatch.ptr"), std::string::npos) << pinned;
+}
+
+// int64-scan-verbs 4.1.2: a pinned scan folds its wave count as the reduce does.
+TEST(XpuPinnedBlockTests, aPinnedScanReadsNoWorkgroupSizeOnAmdgpu) {
+    auto s = scan();
+    std::string pinned = lowered(s->kernel("pinnedScan"), "amdgpu");
     if (pinned.empty()) GTEST_SKIP() << "no amdgpu target";
     EXPECT_EQ(pinned.find("llvm.amdgcn.dispatch.ptr"), std::string::npos) << pinned;
 }

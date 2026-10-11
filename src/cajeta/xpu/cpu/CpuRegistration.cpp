@@ -610,6 +610,40 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
             llvm::Value* x = b.CreateSelect(act, masked->getArg(0), b.CreateVectorSplat(W, idc));
             b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, x)));
         }
+    } else if (scalarName.starts_with("__cajeta_xpu_wave_prefix_smax_") ||
+               scalarName.starts_with("__cajeta_xpu_wave_prefix_smin_")) {
+        // The signed max and min exclusive scans over <W x i32> or <W x i64>.
+        tokens = "v";
+        const bool isMax = scalarName.starts_with("__cajeta_xpu_wave_prefix_smax_");
+        llvm::Type* eTy = scalarName.ends_with("_i64") ? i64 : i32;
+        auto* vTy = llvm::FixedVectorType::get(eTy, W);
+        const unsigned bits = eTy->getIntegerBitWidth();
+        llvm::Constant* idc = llvm::ConstantInt::get(
+            eTy, isMax ? llvm::APInt::getSignedMinValue(bits) : llvm::APInt::getSignedMaxValue(bits));
+        auto scan = [&](llvm::IRBuilder<>& b, llvm::Value* x) {
+            llvm::Value* res = llvm::PoisonValue::get(vTy);
+            llvm::Value* acc = idc;
+            for (unsigned i = 0; i < W; ++i) {
+                res = b.CreateInsertElement(res, acc, b.getInt32(i));
+                acc = b.CreateBinaryIntrinsic(isMax ? llvm::Intrinsic::smax : llvm::Intrinsic::smin,
+                                              acc, b.CreateExtractElement(x, b.getInt32(i)));
+            }
+            return res;
+        };
+        unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
+                                    llvm::FunctionType::get(vTy, {vTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", unmasked));
+            b.CreateRet(scan(b, unmasked->getArg(0)));
+        }
+        masked = makeVariantShell(m, scalarName.str() + "_Mv" + sw,
+                                  llvm::FunctionType::get(vTy, {vTy, maskTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", masked));
+            llvm::Value* x = b.CreateSelect(masked->getArg(1), masked->getArg(0),
+                                            b.CreateVectorSplat(W, idc));
+            b.CreateRet(scan(b, x));
+        }
     } else if (scalarName == "__cajeta_xpu_wave_prefix_sum_i64") {
         // The int64 exclusive prefix sum: the 32-bit variant over <W x i64>.
         tokens = "v";
@@ -797,6 +831,10 @@ static const char* const kWaveOps[] = {
     "__cajeta_xpu_wave_reduce_smax_i64",
     "__cajeta_xpu_wave_reduce_smin_i64",
     "__cajeta_xpu_wave_prefix_sum_i64",
+    "__cajeta_xpu_wave_prefix_smax_i32",
+    "__cajeta_xpu_wave_prefix_smin_i32",
+    "__cajeta_xpu_wave_prefix_smax_i64",
+    "__cajeta_xpu_wave_prefix_smin_i64",
     "__cajeta_xpu_wave_ballot_sync",
     "__cajeta_xpu_wave_shuffle_sync_u32",
 };

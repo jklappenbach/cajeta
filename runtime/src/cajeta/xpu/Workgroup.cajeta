@@ -53,4 +53,20 @@ public final class Workgroup {
      */
     @Native("__cajeta_xpu_workgroup_reduce_i64")
     public static int64 reduce(GroupOp op, int64 value);
+
+    /**
+     * EXCLUSIVE scan of `value` over the workgroup's linear order (x, then y, then z): each
+     * lane receives `op` combined over every lane before it, and lane 0 the identity (0 for
+     * Add, the type's minimum for Max, its maximum for Min). A barrier like {@link #reduce}.
+     * Each wave scans its lanes, the wave's last lane stores the wave's total, and each lane
+     * combines the totals of the waves before its own with its in-wave prefix. Exact on every
+     * backend. Called from host code it acts as a workgroup of one lane and returns the
+     * identity.
+     */
+    @Native("__cajeta_xpu_workgroup_scan_i32")
+    public static int32 scan(GroupOp op, int32 value);
+
+    /** {@link #scan} over int64. */
+    @Native("__cajeta_xpu_workgroup_scan_i64")
+    public static int64 scan(GroupOp op, int64 value);
 }

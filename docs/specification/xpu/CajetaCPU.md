@@ -811,3 +811,31 @@ registration so the registry owns its keys (matching the env-registry in the sam
 Regression test `XpuCpuDriverTests.registryKeySurvivesCallerTeardown` registers a uniquely-named
 kernel, tears down its JIT, then looks up — clean miss, no crash (deterministically SIGSEGVs
 against the pre-fix runtime). Full `Xpu*` suite now green with nothing excluded.
+
+**A local assigned under a lane-divergent branch is per work-item (2026-10-10).** Step 4's
+taint followed values and memory, not control. `float32 keep = 0.0f; if (t % 3 == 0) {
+keep = 1.0f; }` stores two constants, so `keep` took one shared slot, and after a barrier
+every work-item read the last one's value: `Workgroup.scan`'s compaction kernel kept
+nothing on cpu. Now a slot stored inside the region a branch on a lane-varying condition
+reaches before its post-dominator, and loaded outside that region where the store can
+reach the load, is per work-item. A load the store cannot reach reads what came before
+it: cajeta-llm's `routerTopKKernel` reuses `k` for its wave-reduce selection loop and
+again inside a later `if (lane == 0)`, and counting that earlier load made the selection
+loop's trip count per work-item and its wave reduces scalar.
+"Lane-varying" is the work-item index's taint cut at a quotient by a non-constant value, by
+a constant of at least the smallest cpu wave (8), or a shift by at least 3: a branch on
+`globalIdX() / Group.width()` selects an arm for a whole wave, as the fused qkv kernels'
+shared `which` always assumed. A slot loaded only inside the region keeps its single slot:
+an early return's survivors and the counters of loops inside a per-work-item guard are read
+by exactly the work-items that stored them, and marking those refused barrier loops and
+broke guarded splits when first tried.
+(`XpuCpuFissionUniformize.aLocalAssignedUnderAPerWorkItemBranchIsPerWorkItemAcrossABarrier`,
+int64-scan-verbs 4.2.3.)
+
+**`Workgroup.scan` in a loop ends each pass with a barrier (2026-10-10).** A reduce in a
+loop ends with a second barrier at its call site, which is harmless because its result is
+the same on every lane. A scan's result is not, so the lanes' own use of it would follow
+the loop's last barrier, which fission cannot split across the back edge ("per-work-item
+code in the latch of a barrier loop"). The lowering instead puts the barrier at the end of
+every pass of the innermost loop, and before each `continue`.
+

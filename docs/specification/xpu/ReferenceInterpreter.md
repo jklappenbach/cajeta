@@ -89,6 +89,8 @@ These are every built-in the interpreter defines.
 | `KernelThread.x/y/z` | the work-item's index in its workgroup |
 | `KernelThread.globalIdX/Y/Z` | `Workgroup.x * dimX + KernelThread.x`, per axis |
 | `Workgroup.x/y/z`, `dimX/Y/Z` | the workgroup's index; the block's size |
+| `Workgroup.reduce(op, v)` | every work-item of the workgroup waits; float32 per wave in the xor-butterfly order then the partials from wave 0 up; int32 and int64 exact, a wrapped sum or the signed max or min |
+| `Workgroup.scan(op, v)` | every work-item waits; each receives `op` over the work-items before it in linear order, exactly, and the first the identity (0, the type's minimum for Max, its maximum for Min); int32 and int64 |
 | `Barrier.workgroup` | every work-item of the workgroup arrives at this barrier before any continues |
 | `Barrier.wave` | every live lane of the wave arrives before any continues |
 | `Barrier.workgroupMemory`, `deviceMemory` | no effect |

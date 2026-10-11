@@ -679,6 +679,7 @@ const std::set<std::string>& staticBuiltins() {
         "KernelThread.globalIdX", "KernelThread.globalIdY", "KernelThread.globalIdZ",
         "Workgroup.x", "Workgroup.y", "Workgroup.z",
         "Workgroup.dimX", "Workgroup.dimY", "Workgroup.dimZ", "Workgroup.reduce",
+        "Workgroup.scan",
         "Barrier.workgroup", "Barrier.wave", "Barrier.workgroupMemory", "Barrier.deviceMemory",
         "Wave.width", "Wave.laneId", "Wave.isFirstLane",
         "Wave.shuffleSync", "Wave.ballotSync", "Wave.rotate",
@@ -731,7 +732,7 @@ const std::set<std::string>& atomics() {
 bool isCollective(const std::string& q) {
     if (q == "Barrier.workgroup" || q == "Barrier.wave" || q == "Group.reduce"
             || q == "Group.reduceSegmented" || q == "WaveVector.ofLane"
-            || q == "Workgroup.reduce") return true;
+            || q == "Workgroup.reduce" || q == "Workgroup.scan") return true;
     if (startsWith(q, "Quad.")) return true;   // a quad op is a wave collective over four lanes
     if (!startsWith(q, "Wave.")) return false;
     return q != "Wave.width" && q != "Wave.laneId" && q != "Wave.isFirstLane";
@@ -2993,9 +2994,9 @@ private:
                 arr.what = iOps[a[0].i];
                 arr.arg = convert(a[1], {Prim::I32, true});
             }
-        } else if (q == "Workgroup.reduce") {
-            if (a.size() != 2) refuse("`Workgroup.reduce` takes (GroupOp, value) (" + where + ")");
-            if (a[0].i > 2) refuse("`Workgroup.reduce` with an unknown GroupOp (" + where + ")");
+        } else if (q == "Workgroup.reduce" || q == "Workgroup.scan") {
+            if (a.size() != 2) refuse("`" + q + "` takes (GroupOp, value) (" + where + ")");
+            if (a[0].i > 2) refuse("`" + q + "` with an unknown GroupOp (" + where + ")");
             arr.arg = a[1].t.prim == Prim::F32 ? convert(a[1], {Prim::F32, true})
                     : a[1].t.prim == Prim::I64 ? convert(a[1], {Prim::I64, true})
                                                : convert(a[1], {Prim::I32, true});
@@ -3567,6 +3568,11 @@ private:
             n->kind = it->second;
             return n;
         }
+        if (q == "Workgroup.scan" && mc->getParameters().size() == 2) {
+            const CExpr* v = expr(mc->getParameters()[1].expression.get());
+            return node(&Item::xFallback,
+                        Ty{v && v->t.prim == Prim::I64 ? Prim::I64 : Prim::I32, true}, mc);
+        }
         if ((q == "Group.reduce" || q == "Workgroup.reduce") && mc->getParameters().size() == 2) {
             const CExpr* v = expr(mc->getParameters()[1].expression.get());
             if (v && q == "Workgroup.reduce" && v->t.prim == Prim::I64)
@@ -3906,7 +3912,8 @@ bool resolve(Group& G) {
                 anyLive = true;
                 if (G.sync[m].st != ItemSync::Waiting
                         || G.sync[m].arrival.what == "Barrier.workgroup"
-                        || G.sync[m].arrival.what == "Workgroup.reduce") { ready = false; break; }
+                        || G.sync[m].arrival.what == "Workgroup.reduce"
+                        || G.sync[m].arrival.what == "Workgroup.scan") { ready = false; break; }
                 lanes.push_back(m);
             }
             if (!anyLive || !ready || lanes.empty()) continue;
@@ -3915,6 +3922,39 @@ bool resolve(Group& G) {
             any = true;
         }
         if (any) return true;
+    }
+
+    // Workgroup.scan: every work-item waits at the same call; each receives the exclusive
+    // combination over the work-items before it in linear order, exact in any order.
+    bool allAtScan = true;
+    for (uint32_t m : waiting)
+        if (G.sync[m].arrival.what != "Workgroup.scan") allAtScan = false;
+    if (allAtScan) {
+        const Arrival& a = G.sync[waiting[0]].arrival;
+        if (!done.empty())
+            undefined("`Workgroup.scan` (" + a.where + ") is never reached by " +
+                      std::to_string(done.size()) + " of the workgroup's " + std::to_string(n) +
+                      " work-items, which returned first");
+        for (uint32_t m : waiting)
+            if (G.sync[m].arrival.site != a.site)
+                undefined("work-items of one workgroup wait at different `Workgroup.scan` "
+                          "calls (" + a.where + " and " + G.sync[m].arrival.where + ")");
+        const bool is64 = a.arg.t.prim == Prim::I64;
+        const uint64_t op = a.arg2.u64();
+        const int64_t lo = is64 ? INT64_MIN : INT32_MIN, hi = is64 ? INT64_MAX : INT32_MAX;
+        int64_t acc = op == 0 ? 0 : op == 1 ? lo : hi;
+        for (uint32_t m : waiting) {
+            const int64_t x = G.sync[m].arrival.arg.s64();
+            G.sync[m].arrival.result = mkInt(Ty{is64 ? Prim::I64 : Prim::I32, true}, (uint64_t) acc);
+            G.sync[m].st = ItemSync::Ready;
+            if (op == 0) {
+                acc = (int64_t) ((uint64_t) acc + (uint64_t) x);
+                if (!is64) acc = (int32_t) (uint32_t) (uint64_t) acc;
+            } else {
+                acc = op == 1 ? std::max(acc, x) : std::min(acc, x);
+            }
+        }
+        return true;
     }
 
     // Workgroup.reduce: every work-item waits at the same call. Each wave reduces as

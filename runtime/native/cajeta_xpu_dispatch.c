@@ -109,6 +109,18 @@ int32_t __cajeta_xpu_workgroup_reduce_i32(int32_t op, int32_t value) {
 int64_t __cajeta_xpu_workgroup_reduce_i64(int32_t op, int64_t value) {
     (void)op; return value;
 }
+// A one-lane workgroup's exclusive scan is the identity: 0, the minimum or the maximum.
+int32_t __cajeta_xpu_workgroup_scan_i32(int32_t op, int32_t value) {
+    (void)value; return op == 0 ? 0 : op == 1 ? INT32_MIN : INT32_MAX;
+}
+int64_t __cajeta_xpu_workgroup_scan_i64(int32_t op, int64_t value) {
+    (void)value; return op == 0 ? 0 : op == 1 ? INT64_MIN : INT64_MAX;
+}
+// The signed max and min exclusive wave scans at one lane: the identity.
+int32_t __cajeta_xpu_wave_prefix_smax_i32(int32_t value) { (void)value; return INT32_MIN; }
+int32_t __cajeta_xpu_wave_prefix_smin_i32(int32_t value) { (void)value; return INT32_MAX; }
+int64_t __cajeta_xpu_wave_prefix_smax_i64(int64_t value) { (void)value; return INT64_MIN; }
+int64_t __cajeta_xpu_wave_prefix_smin_i64(int64_t value) { (void)value; return INT64_MAX; }
 float __cajeta_xpu_group_reduce_f32_seg(int32_t segment, int32_t op, float value) {
     (void) segment; (void) op;
     return value;
