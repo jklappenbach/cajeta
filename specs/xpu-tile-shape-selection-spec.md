@@ -58,10 +58,12 @@ chooses among (§5), never invented by it.
 
 ### 1.2 Scope
 
-- matrix-core GEMM tiles first (the TcTile family, the WMMA Mw family);
+- matrix-core GEMM tiles first (the TcTile family, the WMMA Mw family, the
+  MoE Id GEMM family of §7.15);
 - the shape parameters named above;
-- nvptx FIRST, built and proven on sm_89 where the tile exists; amdgpu next
-  (64 KB LDS, the wave64 option); cpu answers "no matrix core" through the
+- nvptx FIRST for the TcTile family, built and proven on sm_89 where the
+  tile exists, and gfx1151 first for the Mw and Id families, which are
+  measured there (64 KB LDS, the wave64 option); cpu answers "no matrix core" through the
   probe that already exists (`Linear.matrixCoresPay`).
 
 This spec belongs to the tile family, beside `xpu-tile-manifest` (whose
@@ -77,7 +79,9 @@ family)".
   them.
 - **The launch block at bind.** That is `xpu-kernel-adaptor` §4. This spec
   chooses which compiled kernel to bind, not its block.
-- **Scheduling among kernels.** That is `xpu-tile-scheduling`.
+- **Scheduling among kernels.** That is `xpu-tile-scheduling`, and the
+  budget-aware choice among a family's members beside their neighbors
+  (§7.15) is a later spec of its own.
 - **A shipped table of shapes per part.** `xpu-kernel-adaptor` §1.4 forbids
   it, and this spec inherits that. A winner is measured per machine and
   cached, never committed.
@@ -122,6 +126,11 @@ Use cases:
   The compiler does not enumerate a parameter grid.
 - 2.4 A shape the body cannot serve is refused at instantiation, by name
   (for example WM not a multiple of 16), rather than miscompiled.
+- 2.6 A family may list a hand-written kernel at a shape beside the
+  template's instantiation at the same shape, to measure a difference of
+  design rather than of shape (the Id GEMM's activation feed, global
+  against staged). The hand member enters the filter and the timing like
+  any other and is retired when it stops winning.
 
 ## 3. The feasibility filter
 
@@ -163,7 +172,9 @@ Use cases:
 ## 4. The measured choice
 
 The survivors are timed on the device at the shapes the model actually runs.
-For cajeta-llm these are the engine's projections at the prefill chunk.
+For cajeta-llm these are the engine's projections at the prefill chunk, and
+for the Id GEMM family the MoE batch's expert rows at every batch above one
+token (§7.15).
 
 - The probe is the existing pattern: `Linear.matrixCoresPay` for the "do
   matrix cores pay at all" decision, and `Autotune` with `tuneBuildId` for a
@@ -173,12 +184,24 @@ For cajeta-llm these are the engine's projections at the prefill chunk.
   today. An explicit warm-up (`--prewarm`) can do the same ahead of time.
 - The winner is recorded per (device, kernel family, exact (M, N, K)),
   keyed by the build id, so a rebuild that changes the kernel re-measures
-  it. An LLM runs a handful of fixed projection shapes, so one entry per
-  shape is exact and few; buckets were rejected because a bucket edge can
-  pick the wrong shape.
+  it. One entry per exact shape is right where the shapes are fixed and
+  few, the dense projections. Where M is not a fixed shape, the MoE batch's
+  expert rows, the family keys M as its 128-row chunk count rounded up to
+  the power of two above, so a build holds at most a few entries per bank.
+  The objection to buckets, that an edge can pick the wrong shape, is
+  answered by the margin: a member that leads by less than the tie margin
+  at an edge is a tie by §7.12, and either member is acceptable (Julian,
+  2026-10-11, reversing the 2026-10-03 rejection for this case only).
 - Timing uses the deferred stream and the event tier with its calibrated
   clock (`KernelTimer`), and interleaves candidates, because the box's clock
   is bimodal and a single sequential sweep has read 2x off.
+- What a sample is depends on how the engine runs the shape. A shape the
+  engine replays back to back, a prefill projection, is sampled as a burst
+  of launches between two syncs, priced per launch. A shape the engine runs
+  once per batch, a MoE batch below one full chunk per expert on average,
+  is sampled as a single launch, because that batch pays the launch floor
+  in the engine too. The family decides which, by the problem, not by a
+  flag.
 
 Use cases:
 - 4.1 First use on a new machine times the survivors once (a budgeted few
@@ -209,9 +232,16 @@ not hold on another part. That is exactly the choice this spec automates.
 A route asks the manifest which instantiation won for its problem class and
 launches that one. It never names a backend or a part. The existing
 `Linear.matmulBatchKeep` arms become ONE ARM PER FAMILY: the arm asks the
-cache for the winning instantiation at its (M, N, K) and launches it.
+cache for the winning member at its key (§4) and launches it.
 Today's hand-picked TcTile shape becomes the family's default listed shape,
 used until a winner is measured.
+
+A family whose members read different inputs, the Id GEMM's 64-row and
+128-row chunk maps, lists each member with the input it reads and the
+launch over it. The route hands the family the batch and launches what the
+family returns. `MoeFfn`'s two Id arms become one, and the 64-row kernel is
+the default listed member until a winner is measured, which is what the old
+threshold chose for small batches.
 
 ## 7. Decisions (Julian, 2026-10-03, in an interactive review)
 
@@ -224,13 +254,15 @@ used until a winner is measured.
 - 7.4 Compile: every listed candidate is lowered at build, under a cap the
   family declares.
 - 7.5 Probe: at first use, cached; a warm-up may run it ahead of time.
-- 7.6 Cache key: exact (M, N, K) per device, family and build id.
+- 7.6 Cache key: exact (M, N, K) per device, family and build id, or M
+  bucketed where M is not a fixed shape (7.15, 2026-10-11).
 - 7.7 Spills: any spill prunes.
 - 7.8 Variants: shapes first; variants in a later unit.
-- 7.9 Backends: nvptx first, amdgpu next.
+- 7.9 Backends: nvptx first, amdgpu next; the Mw and Id families gfx1151
+  first (7.15).
 - 7.10 `@Occupancy` constant expressions over template parameters are in
   scope.
-- 7.11 Routes: one arm per family, reading the winner at its (M, N, K).
+- 7.11 Routes: one arm per family, reading the winner at its key.
 - 7.13 Spelling: a family lists its candidates with `@Shapes`, a list of
   instantiations on the family class (Julian, 2026-10-03).
 
@@ -248,8 +280,9 @@ used until a winner is measured.
 The cache must re-measure whenever something could change which candidate
 wins.
 - **Key:** an entry is keyed by the device's UUID (not its name), the driver
-  version, the build id, the family and the exact (M, N, K). A change to any
-  of them misses the cache, and the next first use times again. The
+  version, the build id, the family and the exact (M, N, K), or for a
+  family whose M is not a fixed shape, (M bucketed as §4 says, N, K). A
+  change to any of them misses the cache, and the next first use times again. The
   rows-per-block knob keys on the build id alone today.
 - **Margin:** the entry records how far the winner led. A lead under about
   3% is recorded as a TIE, and either shape is acceptable. Clocks are NOT
@@ -262,3 +295,21 @@ wins.
 - **Reset:** `cajeta tune --reset` clears the cache by hand.
 - **Not yet:** periodic re-checks of the winner against the runner-up, until
   there is evidence of drift the above misses.
+
+### 7.15 The Id GEMM family (Julian, 2026-10-10 and 2026-10-11, interactive)
+
+The MoE Id GEMM's two chunk sizes are one shape family: the 64-row kernel
+is `<64, 128, 64, 16>` and the 128-row kernel is `<128, 128, 64, 32>`.
+- **One template.** The 128-row design is written once, `IdTile`, and
+  instantiated at both shapes. The hand 64-row kernel is listed as a third
+  member (use case 2.6) until timing retires it: same shape as the
+  template's 64 member, global activation feed against staged.
+- **Every batch.** The family is asked at every batch, rows above one,
+  replacing the threshold `np >= 64 * expertsN`. Single-token decode never
+  reaches these kernels. The sample rule in §4 keeps small batches honest.
+- **The key is bucketed** for this family, §4 and §7.12.
+- **Q4_K first.** The symmetric and Q6_K twins follow as their own items.
+- **The scheduler is later.** A budget-aware filter, where the scheduler
+  hands the family the share of a compute unit it may spend beside its
+  neighbors and picks the member that packs, is its own spec. The members
+  and their manifest footprints are what it will choose from.
