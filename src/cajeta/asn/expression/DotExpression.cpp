@@ -33,6 +33,21 @@ namespace cajeta {
         }
     }
 
+    // A class template's bare name inside one of its instantiations names that
+    // instantiation, whose statics exist; the template itself has none.
+    static CajetaTypePtr injectedInstantiation(const CajetaTypePtr& scoped,
+                                               const CajetaModulePtr& module) {
+        auto named = dynamic_pointer_cast<CajetaClass>(scoped);
+        auto method = module ? module->getCurrentMethod() : nullptr;
+        if (!named || !method || !method->getParent()) return scoped;
+        CajetaClassPtr self = method->getParent();
+        auto origin = self->getTemplateOrigin();
+        if (origin && origin->getQName()->toCanonical() == named->getQName()->toCanonical()) {
+            return self;
+        }
+        return scoped;
+    }
+
     // Resolve the LHS, look this member up on its resolved class type, and pin
     // our own type to the member's — enum constants and statics included.
     void DotExpression::resolveTypes(CajetaModulePtr module) {
@@ -56,7 +71,7 @@ namespace cajeta {
             // Static field `Counter.total`: the LHS names a class, not a local, and
             // resolves through ofScoped — the raw short-name key is last-writer-wins.
             if (!lhs->getResolvedType()) {
-                auto scoped = CajetaType::ofScoped(ns, module);
+                auto scoped = injectedInstantiation(CajetaType::ofScoped(ns, module), module);
                 if (auto staticKlass = dynamic_pointer_cast<CajetaClass>(scoped)) {
                     lhs->setResolvedType(staticKlass);
                 }
@@ -255,7 +270,8 @@ namespace cajeta {
             // ofScoped, not the raw short-name key (see resolveTypes above).
             auto scoped = obscuringLocal
                 ? nullptr
-                : CajetaType::ofScoped(idLhs->getTextValue(), module);
+                : injectedInstantiation(CajetaType::ofScoped(idLhs->getTextValue(), module),
+                                        module);
             {
                 if (auto staticKlass = dynamic_pointer_cast<CajetaClass>(scoped)) {
                     // A static declared on a base class is visible through derived names.
