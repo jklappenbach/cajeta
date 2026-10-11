@@ -900,6 +900,56 @@ namespace cajeta {
                         llvm::MaybeAlign(8), bytes);
     }
 
+    bool CajetaClass::isInterfaceUpcast(const CajetaTypePtr& from, const CajetaTypePtr& to) {
+        auto f = dynamic_pointer_cast<CajetaClass>(from);
+        auto t = dynamic_pointer_cast<CajetaClass>(to);
+        if (!f || !t || !f->isInterface() || !t->isInterface() || f.get() == t.get()) {
+            return false;
+        }
+        return f->interfaceAncestorSlot(*t) >= 0;
+    }
+
+    void CajetaClass::upcastInterfaceBody(const CajetaModulePtr& module, llvm::IRBuilder<>* b,
+                                          llvm::Value* body, const CajetaTypePtr& from,
+                                          const CajetaTypePtr& to) {
+        if (!isInterfaceUpcast(from, to)) return;
+        auto f = dynamic_pointer_cast<CajetaClass>(from);
+        auto t = dynamic_pointer_cast<CajetaClass>(to);
+        int slot = f->interfaceAncestorSlot(*t);
+        llvm::Module* lm = b->GetInsertBlock()->getModule();
+        llvm::Type* bodyTy = t->getLlvmType();
+        llvm::Type* ptrTy = llvm::PointerType::get(lm->getContext(), 0);
+        uint64_t bytes = lm->getDataLayout().getTypeAllocSize(bodyTy);
+        llvm::Type* zTy = llvm::ArrayType::get(b->getInt8Ty(), bytes);
+        auto* zero = llvm::dyn_cast<llvm::GlobalVariable>(
+            lm->getOrInsertGlobal("__cajeta_iface_zero_body", zTy));
+        if (zero && !zero->hasInitializer()) {
+            zero->setInitializer(llvm::ConstantAggregateZero::get(zTy));
+            zero->setConstant(true);
+            zero->setLinkage(llvm::GlobalValue::PrivateLinkage);
+            zero->setAlignment(llvm::Align(8));
+        }
+        llvm::Value* vtSlot = b->CreateStructGEP(bodyTy, body, 1, "iface_up_vtable_slot");
+        llvm::Value* vt = b->CreateLoad(ptrTy, vtSlot, "iface_up_from");
+        llvm::Value* at = b->CreateInBoundsGEP(ptrTy, vt, b->getInt64((uint64_t) slot),
+                                               "iface_up_at");
+        llvm::Value* safe = b->CreateSelect(b->CreateIsNull(vt), zero, at, "iface_up_safe");
+        b->CreateStore(b->CreateLoad(ptrTy, safe, "iface_up_to"), vtSlot);
+    }
+
+    llvm::Value* CajetaClass::upcastInterfaceValue(const CajetaModulePtr& module,
+                                                   llvm::IRBuilder<>* b, llvm::Value* src,
+                                                   const CajetaTypePtr& from,
+                                                   const CajetaTypePtr& to) {
+        if (!src || !isInterfaceUpcast(from, to)) return src;
+        llvm::Type* bodyTy = to->getLlvmType();
+        llvm::Value* copy = module->createEntryAlloca(bodyTy, "iface_up");
+        copyInterfaceBody(module, b, copy, src, bodyTy);
+        upcastInterfaceBody(module, b, copy, from, to);
+        if (!src->getType()->isPointerTy()) return b->CreateLoad(bodyTy, copy, "iface_up_val");
+        return copy;
+    }
+
     void CajetaClass::recordInitializerTitle(const CajetaModulePtr& module, llvm::IRBuilder<>* b,
                                              llvm::Value* thisPtr, const StructurePropertyPtr& prop,
                                              const AbstractSyntaxNodePtr& init) {
@@ -1663,9 +1713,34 @@ namespace cajeta {
         return ordered;
     }
 
-    // Emits one flat `[N x ptr]` vtable global per (this class, interface) pair over
-    // the transitive implements closure. Slot 0 holds this class's drop function and
-    // the method slots follow in getFlattenedInterfaceMethods order.
+    std::vector<CajetaClassPtr> CajetaClass::getInterfaceAncestors() {
+        std::vector<CajetaClassPtr> out;
+        std::set<std::string> seen{ qName->toCanonical() };
+        std::vector<CajetaClassPtr> frontier{
+            std::static_pointer_cast<CajetaClass>(shared_from_this()) };
+        for (size_t cursor = 0; cursor < frontier.size(); ++cursor) {
+            auto parents = frontier[cursor]->getSuperClasses();
+            for (auto& parent : parents) {
+                if (!parent || !parent->isInterface()) continue;
+                if (!seen.insert(parent->getQName()->toCanonical()).second) continue;
+                out.push_back(parent);
+                frontier.push_back(parent);
+            }
+        }
+        return out;
+    }
+
+    int CajetaClass::interfaceAncestorSlot(const CajetaClass& ancestor) {
+        std::string want = ancestor.getQName()->toCanonical();
+        auto ancestors = getInterfaceAncestors();
+        for (size_t k = 0; k < ancestors.size(); ++k) {
+            if (ancestors[k]->getQName()->toCanonical() == want) {
+                return (int) (1 + getFlattenedInterfaceMethods().size() + k);
+            }
+        }
+        return -1;
+    }
+
     // Every interface this class is assignable to, its own and every base's.
     // A class that inherits an interface through a parent still converts to it,
     // and the conversion reads THIS class's table, so it needs one.
@@ -1714,9 +1789,24 @@ namespace cajeta {
         };
         for (auto& direct : directAndInherited) collect(direct);
 
+        // A table is the drop function, the interface's method slots, then a pointer to
+        // this class's table for each interface it extends, in getInterfaceAncestors
+        // order. The ancestor pointers are filled once every table here exists.
+        struct PendingTable {
+            std::vector<CajetaClassPtr> ancestors;
+            std::vector<llvm::Constant*> entries;
+            llvm::GlobalVariable* gv;
+        };
+        std::vector<PendingTable> tables;
         pendingIfaceVTables = false;
         for (auto& iface : allIfaces) {
-            if (iface->isPlaceholder()) {
+            auto ancestors = iface->getInterfaceAncestors();
+            auto unready = [](const CajetaClassPtr& c) {
+                return c->isPlaceholder() || c->getSuperClasses().size() < c->getQExtended().size();
+            };
+            bool waiting = unready(iface);
+            for (auto& a : ancestors) waiting = waiting || unready(a);
+            if (waiting) {
                 pendingIfaceVTables = true;
                 continue;
             }
@@ -1787,26 +1877,35 @@ namespace cajeta {
             }
 
             llvm::ArrayType* arrTy = llvm::ArrayType::get(
-                ptrTy, entries.size());
+                ptrTy, entries.size() + ancestors.size());
             std::string globalName = std::string("class.")
                 + sanitize(classCanonical) + "_iface_"
                 + sanitize(ifaceCanonical) + "_VTable";
-            if (llvm::GlobalVariable* existing = lmod->getNamedGlobal(globalName)) {
-                if (!existing->hasInitializer()
-                        && existing->getValueType() == arrTy) {
-                    existing->setInitializer(
-                        llvm::ConstantArray::get(arrTy, entries));
-                    existing->setConstant(true);
-                }
-                interfaceVTables[ifaceCanonical] = existing;
-                continue;
+            llvm::GlobalVariable* gv = lmod->getNamedGlobal(globalName);
+            if (gv) {
+                interfaceVTables[ifaceCanonical] = gv;
+                if (gv->hasInitializer() || gv->getValueType() != arrTy) continue;
+            } else {
+                gv = new llvm::GlobalVariable(
+                    *lmod, arrTy, /*isConstant=*/true,
+                    llvm::GlobalValue::ExternalLinkage, nullptr, globalName);
+                interfaceVTables[ifaceCanonical] = gv;
             }
+            tables.push_back({ancestors, entries, gv});
+        }
 
-            llvm::Constant* init = llvm::ConstantArray::get(arrTy, entries);
-            auto* gv = new llvm::GlobalVariable(
-                *lmod, arrTy, /*isConstant=*/true,
-                llvm::GlobalValue::ExternalLinkage, init, globalName);
-            interfaceVTables[ifaceCanonical] = gv;
+        for (auto& t : tables) {
+            for (auto& a : t.ancestors) {
+                auto it = interfaceVTables.find(a->getQName()->toCanonical());
+                if (it != interfaceVTables.end() && it->second) {
+                    t.entries.push_back(CajetaModule::ensureGlobalInModule(lmod, it->second));
+                } else {
+                    t.entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
+                }
+            }
+            llvm::ArrayType* arrTy = llvm::ArrayType::get(ptrTy, t.entries.size());
+            t.gv->setInitializer(llvm::ConstantArray::get(arrTy, t.entries));
+            t.gv->setConstant(true);
         }
     }
 
@@ -5221,6 +5320,7 @@ namespace cajeta {
                     v = CajetaClass::adjustForUpcast(
                         emitMod, v, srcClass, dstClass);
                 }
+                v = CajetaClass::upcastInterfaceValue(emitMod, coerceBuilder, v, srcClass, dstClass);
                 if (srcClass && dstClass
                         && !srcClass->isInterface()
                         && dstClass->isInterface()) {

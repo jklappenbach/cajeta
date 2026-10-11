@@ -2018,6 +2018,10 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
                     bodyTy, val, 0, "iface_data_slot");
                 return builder->CreateLoad(ptrTy, dataSlot, "iface_to_class");
             }
+            if (CajetaClass::isInterfaceUpcast(srcClass, dstClass)) {
+                resolvedType = destType;
+                return CajetaClass::upcastInterfaceValue(module, builder, val, srcClass, dstClass);
+            }
         }
         llvm::Type* srcTy = val->getType();
         llvm::Type* dstTy = destType->getLlvmType();
@@ -2276,13 +2280,20 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
         return CajetaModule::ensureGlobalInModule(module->emitTargetLlvmModule(), co);
     }
 
-    // Types the ternary from the `then` arm; there is no least-upper-bound across arms
-    // yet, so codegen coerces the `else` arm to match.
+    // Types the ternary from the `then` arm, or from the `else` arm when that is an
+    // interface the `then` arm's interface extends; codegen coerces the other arm.
     void BooleanSwitchExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         if (children.size() >= 2) {
             if (auto thenExpr = dynamic_pointer_cast<Expression>(children[1])) {
                 resolvedType = thenExpr->getResolvedType();
+            }
+        }
+        if (children.size() >= 3) {
+            if (auto elseExpr = dynamic_pointer_cast<Expression>(children[2])) {
+                if (CajetaClass::isInterfaceUpcast(resolvedType, elseExpr->getResolvedType())) {
+                    resolvedType = elseExpr->getResolvedType();
+                }
             }
         }
     }
@@ -2333,14 +2344,33 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
         bool classLike = thenVal && thenVal->getType()->isPointerTy();
         llvm::Value* thenFlag = classLike
             ? armTitleFlag(module, thenAst) : nullptr;
+        auto elseAst = dynamic_pointer_cast<Expression>(children[2]);
+        CajetaTypePtr armTarget = resolvedType;
+        if (!armTarget && thenAst) {
+            armTarget = thenAst->getResolvedType();
+            auto thenCls = dynamic_pointer_cast<CajetaClass>(armTarget);
+            if (thenCls && thenCls->isInterface() && elseAst) {
+                if (!elseAst->getResolvedType()) elseAst->resolveTypes(module);
+                if (CajetaClass::isInterfaceUpcast(armTarget, elseAst->getResolvedType())) {
+                    armTarget = elseAst->getResolvedType();
+                }
+            }
+        }
+        if (thenAst) {
+            thenVal = CajetaClass::upcastInterfaceValue(module, builder, thenVal,
+                                                        thenAst->getResolvedType(), armTarget);
+        }
         llvm::BasicBlock* thenEnd = builder->GetInsertBlock();
         builder->CreateBr(mergeBB);
 
         builder->SetInsertPoint(elseBB);
-        auto elseAst = dynamic_pointer_cast<Expression>(children[2]);
         llvm::Value* elseVal = loadIfLValue(module, children[2]->generateCode(module), elseAst);
         llvm::Value* elseFlag = classLike
             ? armTitleFlag(module, elseAst) : nullptr;
+        if (elseAst) {
+            elseVal = CajetaClass::upcastInterfaceValue(module, builder, elseVal,
+                                                        elseAst->getResolvedType(), armTarget);
+        }
         if (elseVal->getType() != thenVal->getType()) {
             llvm::Type* tt = thenVal->getType();
             llvm::Type* et = elseVal->getType();

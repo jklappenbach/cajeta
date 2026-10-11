@@ -2348,6 +2348,8 @@ namespace cajeta {
                             llvm::AllocaInst* slot = field->getOrCreateAllocation();
                             llvm::Value* bodyPtr = builder->CreateLoad(
                                 slot->getAllocatedType(), slot);
+                            bodyPtr = CajetaClass::upcastInterfaceValue(
+                                module, builder, bodyPtr, field->getType(), byValRet);
                             // The slot holds null when the local holds null, and
                             // a null interface is a ZEROED body, not 24 bytes
                             // read off address zero.
@@ -2500,6 +2502,16 @@ namespace cajeta {
                 expression->getSourceLine(), expression->getSourceColumn() + 1,
                 "returned expression is 'void', but the method returns a value",
                 "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
+        }
+        if (retTy->isAggregateType()) {
+            if (auto m = module->getCurrentMethod()) {
+                CajetaTypePtr srcTy = expression->getResolvedType();
+                if (CajetaClass::isInterfaceUpcast(srcTy, m->getReturnType())
+                        && retTy == m->getReturnType()->getLlvmType()) {
+                    val = CajetaClass::upcastInterfaceValue(module, builder, val, srcTy,
+                                                            m->getReturnType());
+                }
+            }
         }
         // Wrap a concrete class into the interface's 24-byte
         // `{ ptr data, ptr vtable, i64 kind }` body. MUST run before the aggregate

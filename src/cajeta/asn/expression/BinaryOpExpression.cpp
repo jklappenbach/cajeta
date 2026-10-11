@@ -275,6 +275,7 @@ namespace cajeta {
             uint64_t bodyBytes = dl.getTypeAllocSize(bodyTy);
             builder->CreateMemCpy(slot, llvm::MaybeAlign(8),
                 rhsVal, llvm::MaybeAlign(8), bodyBytes);
+            CajetaClass::upcastInterfaceBody(module, builder, slot, rhsClass, ifaceClass);
             // The copy's kind is the SOURCE's title, not the source body's word verbatim:
             // two OWNED words would free one instance twice. Null keeps 0.
             {

@@ -419,6 +419,18 @@ namespace cajeta {
         // Copies the interface body at `src` into `dst`; a null `src` zeroes `dst`.
         static void copyInterfaceBody(const CajetaModulePtr& module, llvm::IRBuilder<>* b,
                                       llvm::Value* dst, llvm::Value* src, llvm::Type* bodyTy);
+        // Whether a value held as interface `from` needs `to`'s table: `from` extends `to`.
+        static bool isInterfaceUpcast(const CajetaTypePtr& from, const CajetaTypePtr& to);
+        // Re-points the interface body at `body`, held as `from`, at the class's `to` table.
+        static void upcastInterfaceBody(const CajetaModulePtr& module, llvm::IRBuilder<>* b,
+                                        llvm::Value* body, const CajetaTypePtr& from,
+                                        const CajetaTypePtr& to);
+        // `src` as a `to` value, in `src`'s form (body pointer or body value): a re-pointed
+        // copy when `from` extends `to`, else `src`.
+        static llvm::Value* upcastInterfaceValue(const CajetaModulePtr& module,
+                                                 llvm::IRBuilder<>* b, llvm::Value* src,
+                                                 const CajetaTypePtr& from,
+                                                 const CajetaTypePtr& to);
 
         bool needsOwnershipWord() const {
             for (const auto& q : propertyList) {
@@ -667,13 +679,18 @@ namespace cajeta {
         void setDeclWalkInFlight(bool v) { declWalkInFlight = v; }
         bool isDeclWalkInFlight() const { return declWalkInFlight; }
 
-        // Synthesize a per-(class, interface) vtable global for every implemented
-        // interface: a flat `[N x ptr]` in interface-declaration order.
+        // A per-(class, interface) table for every assignable interface: the drop function,
+        // the method slots, then the class's table for each interface that one extends.
         void synthesizeInterfaceVTables();
 
         // The methods an interface's per-(impl, iface) vtable lays out, in vtable order:
         // own first, then parents by BFS. synthesizeInterfaceVTables and invokeMethod agree.
         std::vector<MethodPtr> getFlattenedInterfaceMethods();
+        // The interfaces this interface extends, transitively, each once, nearest first.
+        // Their tables follow the method slots in this interface's tables, in this order.
+        std::vector<CajetaClassPtr> getInterfaceAncestors();
+        // The slot of this interface's tables that holds the class's `ancestor` table, or -1.
+        int interfaceAncestorSlot(const CajetaClass& ancestor);
         // Name and parameter types of `m`, without its class: the key of an interface slot.
         static std::string interfaceSlotKey(const MethodPtr& m);
 

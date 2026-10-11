@@ -1012,6 +1012,7 @@ namespace cajeta {
                     } else {
                         CajetaClass::copyInterfaceBody(module, builder, home,
                             builder->CreateLoad(ptrTy, slot, "iface_src"), bodyTy);
+                        CajetaClass::upcastInterfaceBody(module, builder, home, rhsClass, ifaceKlass);
                         builder->CreateStore(kindVal,
                             builder->CreateStructGEP(bodyTy, home, 2, "iface_kind"));
                     }
