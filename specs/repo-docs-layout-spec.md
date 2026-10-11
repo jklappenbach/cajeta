@@ -1,6 +1,7 @@
 # One documentation layout for every repo (spec)
 
-Status: draft, written 2026-10-11 at Julian's request. Open questions in 6.
+Status: draft, written 2026-10-11 at Julian's request; he answered its open
+questions the same day (6).
 
 ## 1. Definition
 
@@ -32,6 +33,8 @@ none answers "what changed in this release" at all.
 
 ### 1.3 Constraints
 
+- Minimal (Julian, 2026-10-11). Each document is as short as it can be and
+  says a thing once; a release's changelog entry is a few lines.
 - Authored in Markdown, as `docs/` already is; site builders import it.
 - Nothing generated is edited by hand: a generated page says so in its first
   line and is rebuilt, not patched.
@@ -45,9 +48,9 @@ Every repository has:
 - **`README.md`**: what the project is, how to install or depend on it, a
   quick start that compiles, and links to the four below. It does not hold
   release notes or reference material.
-- **`CHANGELOG.md`**: one section per released version, newest first, headed
-  `## <version> (<date>)`, with the user-visible additions, changes and fixes.
-  An `## Unreleased` section at the top collects entries as work lands.
+- **`CHANGELOG.md`**: a separate file, one section per released version,
+  newest first, headed `## <version> (<date>)`: a few lines on what a user
+  will notice, written when the version is cut.
 - **`docs/guide.md`** (or `docs/guide/` for a large project, as cajeta has):
   overall usage, task by task.
 - **`docs/packages/<package>.md`**: one page per public package, what it is
@@ -99,21 +102,13 @@ the release-body wiring), then each library in the order its next release
 falls. A library is done when its README links all four and the docs check
 passes.
 
-## 6. Open questions
+## 6. Decisions (Julian, 2026-10-11)
 
-- **6.1** Changelog sections: free prose, or the Keep a Changelog headings
-  (Added, Changed, Fixed, Removed)? Recommended: the headings, so a release
-  body reads the same everywhere.
-- **6.2** When are entries written: with each change (into `## Unreleased`),
-  or at release time from the commits? Recommended: with each change, since
-  the commit that makes a user-visible change knows what it is; the release
-  renames `Unreleased` to the version.
-- **6.3** Does cajeta keep its numbered `docs/guide/` and `docs/stdlib/`, with
-  `docs/packages/` as a new name only for the libraries? Recommended: keep
-  cajeta's names, and say in the layout that `stdlib/` is cajeta's
-  `packages/`.
-- **6.4** v0.40.0 is being cut now (2026-10-11), before this spec can land. Its
-  notes: write them by hand into a first `CHANGELOG.md` and paste them into the
-  release body after it publishes, or leave v0.40.0 with the fixed body?
-  Recommended: by hand, so the first changelog entry is the first release
-  that needed one.
+- **6.1** Documentation is minimal. The changelog is its own file, and each
+  release's entry is as short as possible, in plain lines rather than fixed
+  headings.
+- **6.2** Entries are written at release time.
+- **6.3** cajeta keeps `docs/guide/` and `docs/stdlib/`; `stdlib/` is
+  cajeta's `packages/`. Libraries use `docs/guide.md` and `docs/packages/`.
+- **6.4** v0.40.0's notes are written by hand into a first `CHANGELOG.md` and
+  pasted into its release body after it publishes.
