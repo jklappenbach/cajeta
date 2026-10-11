@@ -2,6 +2,8 @@
 
 #include "CpuBarrierFission.h"
 
+#include <optional>
+
 #include "cajeta/error/Exception.h"
 
 #include "llvm/ADT/DepthFirstIterator.h"
@@ -90,9 +92,32 @@ void collectMemUsers(llvm::Value* base,
 // Least fixpoint of the per-work-item value set over SSA def-use AND memory
 // round-trips: pre-mem2reg a store/load through an alloca slot breaks the SSA
 // chain, so loads from any tainted slot are tainted too. Widening is safe.
+//
+// With `controlFn`, control dependence too. The blocks reachable from the arms
+// of a branch on a tainted condition before its post-dominator run for some
+// work-items and not others. A slot stored in one of them and loaded OUTSIDE them is read
+// by work-items that skipped the store, so it is per work-item whatever value
+// it stores: `float32 keep = 0.0f; if (t % 3 == 0) { keep = 1.0f; }` stores two
+// constants, and took one shared slot, so every work-item read the last one's
+// `keep` after a barrier (2026-10-10). Loaded only inside them, it is not: an
+// early return's survivors, and the counters of loops inside a per-work-item
+// guard, are read by exactly the work-items that stored them (marking those
+// refused barrier loops and broke the guarded splits, measured the same day).
+// Such a slot is put in `tainted` itself, so step 7 gives it a context array.
+//
+// `cut` stops the SSA propagation at an instruction; `branchTaint` (default
+// `tainted`) decides which branches count as divergent.
 void computeTaint(llvm::ArrayRef<llvm::Value*> seeds,
                   llvm::ArrayRef<llvm::AllocaInst*> slots,
-                  llvm::SmallPtrSetImpl<llvm::Value*>& tainted) {
+                  llvm::SmallPtrSetImpl<llvm::Value*>& tainted,
+                  llvm::Function* controlFn = nullptr,
+                  const std::function<bool(llvm::Instruction*)>& cut = nullptr,
+                  const llvm::SmallPtrSetImpl<llvm::Value*>* branchTaint = nullptr) {
+    const llvm::SmallPtrSetImpl<llvm::Value*>& divergentCond = branchTaint ? *branchTaint : tainted;
+    std::optional<llvm::PostDominatorTree> pdt;
+    if (controlFn) pdt.emplace(*controlFn);
+    std::vector<llvm::SmallPtrSet<llvm::BasicBlock*, 16>> dependent;   // per tainted branch
+    llvm::SmallPtrSet<llvm::Instruction*, 16> seenBranch;
     llvm::SmallVector<llvm::Value*, 32> work(seeds.begin(), seeds.end());
     for (;;) {
         while (!work.empty()) {                       // SSA def-use propagation
@@ -100,8 +125,32 @@ void computeTaint(llvm::ArrayRef<llvm::Value*> seeds,
             if (!tainted.insert(v).second) continue;
             for (llvm::User* u : v->users())
                 if (auto* i = llvm::dyn_cast<llvm::Instruction>(u))
-                    work.push_back(i);
+                    if (!cut || !cut(i)) work.push_back(i);
         }
+        if (pdt)                                      // control dependence
+            for (llvm::BasicBlock& bb : *controlFn) {
+                llvm::Instruction* term = bb.getTerminator();
+                llvm::Value* cond = nullptr;
+                if (auto* br = llvm::dyn_cast_or_null<llvm::CondBrInst>(term))
+                    cond = br->getCondition();
+                else if (auto* sw = llvm::dyn_cast_or_null<llvm::SwitchInst>(term))
+                    cond = sw->getCondition();
+                if (!cond || !divergentCond.count(cond) || !seenBranch.insert(term).second) continue;
+                auto* node = pdt->getNode(&bb);
+                llvm::BasicBlock* stop =
+                    node && node->getIDom() ? node->getIDom()->getBlock() : nullptr;
+                // Every block reachable from the branch's arms before its post-dominator:
+                // what only some work-items run, loop bodies under the arms included.
+                llvm::SmallPtrSet<llvm::BasicBlock*, 16> cd;
+                llvm::SmallVector<llvm::BasicBlock*, 16> todo(llvm::successors(&bb).begin(),
+                                                              llvm::successors(&bb).end());
+                while (!todo.empty()) {
+                    llvm::BasicBlock* y = todo.pop_back_val();
+                    if (y == stop || !cd.insert(y).second) continue;
+                    for (llvm::BasicBlock* z : llvm::successors(y)) todo.push_back(z);
+                }
+                if (!cd.empty()) dependent.push_back(std::move(cd));
+            }
         bool added = false;                           // memory propagation
         for (llvm::AllocaInst* a : slots) {
             llvm::SmallVector<llvm::LoadInst*, 8> loads;
@@ -112,7 +161,32 @@ void computeTaint(llvm::ArrayRef<llvm::Value*> seeds,
                 if (tainted.count(st->getValueOperand())) {
                     perWorkItem = true; break;
                 }
+            // A load outside the region that the store can reach: a work-item that skipped
+            // the store reads the slot after it. A load the store cannot reach (an earlier
+            // loop that reuses the local, `k` in routerTopKKernel) reads what came before.
+            for (const auto& cd : dependent) {
+                if (perWorkItem) break;
+                for (llvm::StoreInst* st : stores) {
+                    if (perWorkItem) break;
+                    if (!cd.count(st->getParent())) continue;
+                    llvm::SmallPtrSet<llvm::BasicBlock*, 32> after;
+                    llvm::SmallVector<llvm::BasicBlock*, 16> todo(
+                        llvm::successors(st->getParent()).begin(),
+                        llvm::successors(st->getParent()).end());
+                    while (!todo.empty()) {
+                        llvm::BasicBlock* y = todo.pop_back_val();
+                        if (!after.insert(y).second) continue;
+                        for (llvm::BasicBlock* z : llvm::successors(y)) todo.push_back(z);
+                    }
+                    for (llvm::LoadInst* ld : loads)
+                        if (!cd.count(ld->getParent()) && after.count(ld->getParent())) {
+                            perWorkItem = true;
+                            break;
+                        }
+                }
+            }
             if (!perWorkItem) continue;
+            if (pdt) tainted.insert(a);
             for (llvm::LoadInst* ld : loads)
                 if (!tainted.count(ld)) { work.push_back(ld); added = true; }
         }
@@ -418,7 +492,27 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // array (aWaveFedAccumulatorIsPerWorkItem), and the gate's vanished-wave-op
     // check (CpuRegistration) stays as the backstop.
     llvm::Value* seeds[] = {phX, phY, phZ};
-    computeTaint(seeds, allocas, tainted);
+    // Which branches differ between neighbouring lanes: the work-item index taint, cut at
+    // a quotient by a non-constant value, by a constant of at least the smallest cpu wave,
+    // or a shift by at least its log. `globalIdX() / Group.width()` then selects an arm
+    // the same way for a whole wave, as the shared slot of the local it sets (`which` in
+    // the fused qkv kernels) always assumed; `t % 3` and `t / 2` still diverge. Only
+    // these branches make a local stored under them per work-item (computeTaint).
+    llvm::SmallPtrSet<llvm::Value*, 32> laneTainted;
+    {
+        auto waveQuotient = [](llvm::Instruction* i) {
+            const unsigned op = i->getOpcode();
+            if (op != llvm::Instruction::UDiv && op != llvm::Instruction::SDiv
+                    && op != llvm::Instruction::LShr && op != llvm::Instruction::AShr)
+                return false;
+            auto* c = llvm::dyn_cast<llvm::ConstantInt>(i->getOperand(1));
+            if (!c) return true;
+            const bool shift = op == llvm::Instruction::LShr || op == llvm::Instruction::AShr;
+            return shift ? c->getZExtValue() >= 3 : c->getZExtValue() >= 8;
+        };
+        computeTaint(seeds, allocas, laneTainted, nullptr, waveQuotient);
+    }
+    computeTaint(seeds, allocas, tainted, wrapper, nullptr, &laneTainted);
     // Separately: values that carry a WAVE RESULT. Not part of the taint set
     // -- seeding taint with them was measured to change which locals become
     // context arrays and broke four working shapes -- but the re-arm in step 9
@@ -1930,6 +2024,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 else if (only != rg) multi = true;
             }
         };
+        // A slot computeTaint found stored under a per-work-item branch is per work-item.
+        if (tainted.count(a)) perWorkItem = true;
         for (llvm::StoreInst* st : stores) {
             if (tainted.count(st->getValueOperand())) perWorkItem = true;
             noteRegion(st);

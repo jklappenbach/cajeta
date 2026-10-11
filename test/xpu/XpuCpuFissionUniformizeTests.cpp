@@ -2055,3 +2055,50 @@ TEST(XpuCpuFissionUniformize, aUniformLocalUpdatedInALoopByEveryWorkItemIsNotSum
     const int r = runOnCpu(std::string(kPreamble) + kUniformRmwInALoopSrc);
     EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100+i wrong at lane i)";
 }
+
+// A local assigned only under a per-work-item branch is per-work-item. Before the barrier it
+// held two stores of constants, neither tainted, so it took one shared slot and every work-item
+// read the last one's value after the barrier: Workgroup.scan's compaction kernel kept nothing
+// on cpu (int64-scan-verbs 4.1.1, 2026-10-10).
+const char* kBranchAssignedLocalSrc = R"CJ(
+    @Kernel
+    public static void ba(KernelBuffer<float32> out) {
+        Shared<float32> sm = shared float32[64];
+        uint32 t = KernelThread.x();
+        float32 keep = 0.0f;
+        if (t % 3 == 0) { keep = 1.0f; }
+        sm[t] = 2.0f;
+        Barrier.workgroup();
+        out[t] = keep + sm[63 - t];
+    }
+    public static int32 run() {
+        uint32 n = 64;
+        float32[] hout = heap float32[n];
+        float32[] want = heap float32[n];
+        uint32 i = 0;
+        while (i < n) {
+            hout[i] = -1.0f;
+            want[i] = 2.0f;
+            if (i % 3 == 0) { want[i] = 3.0f; }
+            i = i + 1;
+        }
+        KernelBuffer<float32> bout = heap KernelBuffer<float32>(n);
+        bout.upload(hout);
+        KernelStream s #= KernelStream.current();
+        try {
+            ba.launch(s, grid: [1], block: [64])(bout);
+            s.sync();
+        } catch (Exception e) {
+            return -1;
+        }
+        bout.download(hout);
+        if (hout[0] == -1.0f) { return -1; }
+        return verify(hout, n, want);
+    }
+}
+)CJ";
+
+TEST(XpuCpuFissionUniformize, aLocalAssignedUnderAPerWorkItemBranchIsPerWorkItemAcrossABarrier) {
+    const int r = runOnCpu(std::string(kPreamble) + kBranchAssignedLocalSrc);
+    EXPECT_EQ(r, 0) << "r=" << r << " (-1 refused, 100+i wrong at lane i)";
+}
