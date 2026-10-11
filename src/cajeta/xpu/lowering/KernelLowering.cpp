@@ -305,6 +305,11 @@ public:
     // True iff the lowered body used a cross-lane subgroup op (shuffle/ballot/
     // reduce). Drives the maximal-reconvergence request at finalization.
     bool usedSubgroupOp() const { return usedSubgroupOp_; }
+    // The Workgroup collectives the kernel lowered, for a refusal to name.
+    std::string workgroupVerbs() const {
+        if (usedWorkgroupReduce_ && usedWorkgroupScan_) return "Workgroup.reduce or Workgroup.scan";
+        return usedWorkgroupScan_ ? "Workgroup.scan" : "Workgroup.reduce";
+    }
     // The most threads a launch of this kernel can have: sizes Workgroup.reduce's scratch.
     void setBlockLimit(unsigned n) { blockLimit_ = n; }
     // The block every launch site passes (workgroup-reduce 6.8): workgroup size reads fold to it.
@@ -526,6 +531,8 @@ private:
     // Set when the body lowers a cross-lane subgroup op; read at finalization to
     // request maximal reconvergence where the backend models it.
     bool usedSubgroupOp_ = false;
+    bool usedWorkgroupReduce_ = false;
+    bool usedWorkgroupScan_ = false;
     int loopDepth_ = 0;
     unsigned blockLimit_ = 1024;
     std::optional<std::array<unsigned, 3>> pinnedBlock_;
@@ -1168,6 +1175,7 @@ private:
             unsupported("Workgroup.reduce takes a float32, int32 or int64 value, not " +
                         cajetaScalarName(elemTy, isSigned));
         usedSubgroupOp_ = true;
+        usedWorkgroupReduce_ = true;
         const FOp fop = ord == 0 ? FOp::Sum : ord == 1 ? FOp::Max : FOp::Min;
         llvm::Value* part;
         if (isF) part = target.waveReduceF32(builder, mod, fop, v);
@@ -1289,6 +1297,7 @@ private:
             unsupported("Workgroup.scan takes an int32 or int64 value, not " +
                         cajetaScalarName(elemTy, isSigned));
         usedSubgroupOp_ = true;
+        usedWorkgroupScan_ = true;
         llvm::Value* ex;
         if (ord == 0)
             ex = is64 ? target.waveScan64(builder, mod, v)
@@ -9151,7 +9160,7 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
     lowerer.setDeviceContext(method->getParent(), &deviceFns);
     lowerer.lowerBody(method);
     if (workgroupReduceUnderDivergence(*fn))
-        unsupported("Workgroup.reduce under work-item-divergent control flow in " + kname +
+        unsupported(lowerer.workgroupVerbs() + " under work-item-divergent control flow in " + kname +
                     " (every lane of the workgroup must reach it, and none may return "
                     "before it)");
     // If the kernel used a cross-lane subgroup op, ask the backend for maximal

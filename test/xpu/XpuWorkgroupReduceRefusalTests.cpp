@@ -83,11 +83,11 @@ std::map<std::string, std::string> lowerOnEvery(const std::string& src, const st
 }
 
 void refusedEverywhere(const std::string& kernels, const std::string& kernel,
-                       const std::string& cause) {
+                       const std::string& cause, const std::string& verb = "Workgroup.reduce") {
     auto why = lowerOnEvery(wrap(kernels), kernel);
     EXPECT_FALSE(why.empty());
     for (auto& [be, w] : why) {
-        EXPECT_NE(w.find("Workgroup.reduce"), std::string::npos) << be << ": " << w;
+        EXPECT_NE(w.find(verb), std::string::npos) << be << ": " << w;
         EXPECT_NE(w.find(cause), std::string::npos) << be << ": " << w;
     }
 }
@@ -262,14 +262,15 @@ TEST(XpuWorkgroupReduceRefusal, aFloat64ValueIsRefusedByName) {
 )CJ", "k", "float64");
 }
 
-TEST(XpuWorkgroupReduceRefusal, anInt64ValueIsRefusedByName) {
-    refusedEverywhere(R"CJ(
+// int64 joined the reduce in int64-scan-verbs Unit 3 (ea973565); this pinned its refusal.
+TEST(XpuWorkgroupReduceRefusal, anInt64ValueLowers) {
+    lowersEverywhere(R"CJ(
     @Kernel
     public static void k(KernelBuffer<int64> out, KernelBuffer<int64> in) {
         uint32 t = KernelThread.x();
         out[t] = (int64) Workgroup.reduce(GroupOp.Add, in[t]);
     }
-)CJ", "k", "int64");
+)CJ", "k");
 }
 
 TEST(XpuWorkgroupReduceRefusal, anInt32ValueLowers) {
@@ -295,3 +296,63 @@ TEST(XpuWorkgroupReduceRefusal, aHostCallActsAsAOneLaneWorkgroup) {
     EXPECT_EQ(f(), 2.5f);
     EXPECT_EQ(i(), -7);
 }
+
+// int64-scan-verbs 5.2.1: Workgroup.scan is refused under divergence as the reduce is, and the
+// refusal names the scan.
+TEST(XpuWorkgroupReduceRefusal, aScanUnderALaneGuardIsRefusedNamingTheScan) {
+    refusedEverywhere(R"CJ(
+    @Kernel
+    public static void k(KernelBuffer<int32> out, KernelBuffer<int32> in) {
+        uint32 g = KernelThread.globalIdX();
+        if (KernelThread.x() < 16) {
+            out[g] = Workgroup.scan(GroupOp.Add, in[g]);
+        }
+    }
+)CJ", "k", kDivergent, "Workgroup.scan");
+}
+
+TEST(XpuWorkgroupReduceRefusal, aScanWithALaneGuardOverTheValueOnlyLowers) {
+    lowersEverywhere(R"CJ(
+    @Kernel
+    public static void k(KernelBuffer<int32> out, KernelBuffer<int32> in) {
+        uint32 g = KernelThread.globalIdX();
+        int32 x = 0;
+        if (KernelThread.x() < 16) { x = in[g]; }
+        out[g] = Workgroup.scan(GroupOp.Add, x);
+    }
+)CJ", "k");
+}
+
+// int64-scan-verbs 5.2.2: the scan takes int32 or int64, and a refusal names the type given.
+TEST(XpuWorkgroupReduceRefusal, aFloat32ScanIsRefusedByName) {
+    refusedEverywhere(R"CJ(
+    @Kernel
+    public static void k(KernelBuffer<float32> out, KernelBuffer<float32> in) {
+        uint32 t = KernelThread.x();
+        out[t] = (float32) Workgroup.scan(GroupOp.Add, in[t]);
+    }
+)CJ", "k", "float32", "Workgroup.scan");
+}
+
+TEST(XpuWorkgroupReduceRefusal, aUint32ScanIsRefusedByName) {
+    refusedEverywhere(R"CJ(
+    @Kernel
+    public static void k(KernelBuffer<uint32> out, KernelBuffer<uint32> in) {
+        uint32 t = KernelThread.x();
+        out[t] = (uint32) Workgroup.scan(GroupOp.Max, in[t]);
+    }
+)CJ", "k", "uint32", "Workgroup.scan");
+}
+
+TEST(XpuWorkgroupReduceRefusal, Int32AndInt64ScansLower) {
+    lowersEverywhere(R"CJ(
+    @Kernel
+    public static void k(KernelBuffer<int32> out, KernelBuffer<int32> in,
+                         KernelBuffer<int64> out64, KernelBuffer<int64> in64) {
+        uint32 t = KernelThread.x();
+        out[t] = Workgroup.scan(GroupOp.Min, in[t]);
+        out64[t] = Workgroup.scan(GroupOp.Max, in64[t]);
+    }
+)CJ", "k");
+}
+

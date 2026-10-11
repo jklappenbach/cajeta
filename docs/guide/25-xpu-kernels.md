@@ -33,7 +33,10 @@ Inside a kernel body:
   segmented reductions.
 - `Workgroup.reduce(GroupOp.Add, x)` (and `Max`, `Min`) across every
   wave of the workgroup, with no wave width or count in the source
-  (25.2.3).
+  (25.2.3), and `Workgroup.scan`, its exclusive prefix (25.2.4).
+- The `int64` forms of the wave verbs, spelled with an `I64` suffix
+  (`Wave.reduceSumI64`, `prefixSumI64`, `shuffleSyncI64` and the rest),
+  exact on every backend at every wave width.
 - `Shared<T> t = shared T[n]` for LDS.
 - `Vector<T,N>` with `vload<N>`, `asWords` / `asBytes`, and `lut4`, a
   16-entry byte table in one `v_perm_b32`.
@@ -328,7 +331,58 @@ What to read in it:
 - The operator is a `GroupOp` literal and the value a `float32` or an
   `int32`. Anything else is refused by name, a `uint32` included.
   Called from host code, it acts as a workgroup of one lane and returns
-  its own value.
+  its own value. `Workgroup.reduce` also takes an `int64`, exact in any
+  order.
+
+### 25.2.4 Example — each lane's place in the workgroup
+
+A filter that writes the items it keeps densely needs each keeping lane
+to know how many lanes before it kept one. `Workgroup.scan` returns that:
+the exclusive combination over the lanes before this one in the
+workgroup's order, with the first lane receiving the identity.
+
+```cajeta
+package guide.xpu;
+
+import cajeta.xpu.GroupOp;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+
+public class Compact {
+    @Kernel
+    @Wave(width = 32)
+    public static void keepPositive(KernelBuffer<float32> out, KernelBuffer<int32> counts,
+                                    KernelBuffer<float32> x, uint32 n) {
+        uint32 g = KernelThread.globalIdX();
+        float32 v = 0.0f;
+        if (g < n) { v = x[g]; }
+        int32 keep = 0;
+        if (v > 0.0f) { keep = 1; }
+        int32 slot = Workgroup.scan(GroupOp.Add, keep);
+        uint32 base = Workgroup.x() * Workgroup.dimX();
+        if (keep == 1) { out[base + (uint32) slot] = v; }
+        int32 kept = Workgroup.reduce(GroupOp.Add, keep);
+        if (KernelThread.x() == 0) { counts[Workgroup.x()] = kept; }
+    }
+}
+```
+
+What to read in it:
+
+- Each workgroup writes its kept values densely into its own span, in
+  lane order. Lanes past `n` compute `0.0f` and keep nothing, so every
+  lane still reaches both calls.
+- It takes `GroupOp.Add`, `Max` or `Min` over an `int32` or an `int64`
+  and is exact on every backend. The expansion is the reduce's: each wave
+  scans its lanes, the wave's last lane stores the wave's total, one
+  barrier, then each lane adds the totals of the waves before its own.
+- The workgroup's total is not returned. Take it with a `Workgroup.reduce`
+  of the same value, as here, or from the last lane's `slot + keep`.
+- The refusals are the reduce's: a call some lane may not reach, an
+  operator that is not a `GroupOp` literal, and a value that is not an
+  `int32` or `int64` are refused by name. Inside a loop, each pass ends
+  with a barrier.
 
 ## 25.3 Prefill: fill the device, then feed the tile
 

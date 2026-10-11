@@ -902,9 +902,10 @@ conformance kernel in the corpus (`XpuBuildingBlockCorpusTests`):
 | per-element access with the lane map | `elements/get/set/row/col` (§5.5.1) | accumulator | accumulator | refused by name | every tile |
 | integer multiply-add over packed bytes | `Vector<u8/i8,N>.dotAccum/dot/dotSum`, `Group.mac` | dp4a | v_dot4 | OpSDot/UDot | VNNI or widening |
 | byte permute | `Bits.permute(lo, hi, sel)`, `Vector<int8,N>.lut4` | prmt | v_perm | shifts (lut4: a vector shuffle) | shifts |
-| wave shuffle, reduce, ballot | `Wave.shuffleSync/XorSync/UpSync/DownSync` and their `F32` forms, `reduce*`, `ballotSync`, `Group.reduce` | shfl, redux | the wave intrinsics | subgroup ops | the vectorized lanes |
+| wave shuffle, reduce, ballot | `Wave.shuffleSync/XorSync/UpSync/DownSync` and their `F32` and `I64` forms, `reduce*` (with `reduceSumI64/MaxI64/MinI64`), `prefixSum/prefixSumI64`, `ballotSync`, `Group.reduce` | shfl, redux (int64: two 32-bit halves) | the wave intrinsics (int64: halves) | subgroup ops (int64 on a virtual wave: 22-bit pieces through the 32-bit ops) | the vectorized lanes |
 | quad shuffle and vote | `Quad.broadcast/swapHorizontal/swapVertical/swapDiagonal/all/any` | shfl, vote.ballot | the wave intrinsics | OpGroupNonUniformQuad* | the vectorized lanes |
-| workgroup reduce | `Workgroup.reduce(GroupOp, float32/int32)` (§3.2) | the wave reduce, shared scratch, `bar.sync` | the wave reduce, LDS, `s_barrier` | subgroup reduce, Workgroup storage, control barrier | the vectorized lanes and barrier fission |
+| workgroup reduce | `Workgroup.reduce(GroupOp, float32/int32/int64)` (§3.2) | the wave reduce, shared scratch, `bar.sync` | the wave reduce, LDS, `s_barrier` | subgroup reduce, Workgroup storage, control barrier | the vectorized lanes and barrier fission |
+| workgroup scan | `Workgroup.scan(GroupOp, int32/int64)`, exclusive | the wave scan, shared scratch, `bar.sync` | the wave scan, LDS, `s_barrier` | subgroup scan, Workgroup storage, control barrier | the vectorized lanes and barrier fission |
 | conversions between widths | scalar casts; `Vector.toF32/toF16/toBF16/toF64/toI32/toI8/widenLo/widenHi/narrow/asWords/asBytes` | every backend, through LLVM's conversions | | | |
 | async copy | `AsyncCopy.copy/commit/wait`, `CoopStage.panelAsync` | cp.async | LDS-direct load | synchronous copy | synchronous copy |
 | swizzled shared tile | `Swizzled<T, S> t = shared T[N]` | identity layout | XOR swizzle | identity layout | identity layout |
