@@ -22,6 +22,7 @@
 #include "cajeta/error/Exception.h"
 #include "cajeta/xpu/amd/AmdgpuBackend.h"
 #include "cajeta/xpu/nvidia/NvptxBackend.h"
+#include "XpuDeviceTestUtil.h"
 
 #include <cstdlib>
 #if !defined(_WIN32)
@@ -456,4 +457,43 @@ TEST(XpuKernelGate, aHoldThatMayLowerIsNotStaleWhenTheKernelLowers) {
     EXPECT_NE(b.log.find("cajeta: note: [xpu-kernel-skipped] bad: no cpu device code"), std::string::npos) << b.log;
     EXPECT_NE(b.log.find("[tracked: xpu-kernel-adaptor 1.8.3]"), std::string::npos) << b.log;
     EXPECT_EQ(b.log.find("cajeta: error:"), std::string::npos) << b.log;
+}
+
+// A launch of a kernel with no Vulkan device code is refused and throws, as on the other
+// backends. It used to print a line and return, so the caller read its buffers as results.
+TEST(XpuKernelGate, aVulkanLaunchWithNoDeviceCodeIsRefused) {
+    if (!cajeta::xpu::test::vulkanAvailable()) GTEST_SKIP() << "no Vulkan device";
+    const std::string src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelStream;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    @Unlowered(backend = \"vulkan\", tracked = \"xpu-kernel-adaptor 4.2.2\", hold = true)\n"
+        "    public static void held(KernelBuffer<int32> out) {\n"
+        "        out[KernelThread.globalIdX()] = 7;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        KernelBuffer<int32> o = heap KernelBuffer<int32>(64);\n"
+        "        KernelStream s #= KernelStream.current();\n"
+        "        try {\n"
+        "            held.launch(s, grid: [1], block: [64])(o);\n"
+        "            s.sync();\n"
+        "        } catch (Exception e) {\n"
+        "            return 2;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.M", o);
+    ASSERT_NE(jit, nullptr);
+    auto run = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(run, nullptr);
+    testing::internal::CaptureStderr();
+    int32_t r = run();
+    std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(r, 2) << "the launch of a kernel with no Vulkan code returned normally:\n" << err;
 }

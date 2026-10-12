@@ -801,6 +801,7 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
         fprintf(stderr,
                 "cajeta.xpu: missing/invalid parameter metadata for Vulkan "
                 "kernel '%s'\n", kernelName);
+        cajeta_xpu_note_launch_refusal(kernelName, CAJ_XPU_VULKAN);
         return;
     }
     const int n = kp->count;
