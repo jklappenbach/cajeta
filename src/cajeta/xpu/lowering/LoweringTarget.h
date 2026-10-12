@@ -397,6 +397,11 @@ namespace xpu {
                                          llvm::Value* lo, llvm::Value* hi,
                                          llvm::Value* selector);
 
+        // Whether `Bits` lowers its 64-bit forms to one 64-bit intrinsic and counts zeros of 0
+        // natively. SPIR-V's bit instructions take 32-bit operands and its backend cannot lower
+        // cttz or ctlz, so it combines two halves and counts zeros through ctpop.
+        virtual bool nativeBits64() const { return true; }
+
         // The escape hatch's inline assembly (@TargetAsm, spec §7.5), checked at
         // its boundary: does constraint `code` ("r", "v", "{v0}", the letter(s)
         // after any `=`) admit an operand of type `t` on this backend? `why`

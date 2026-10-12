@@ -242,6 +242,44 @@ uint32_t __cajeta_xpu_bits_rotate_right_u32(uint32_t value, uint32_t amount) {
     amount &= 31u;
     return amount == 0u ? value : ((value >> amount) | (value << (32u - amount)));
 }
+uint64_t __cajeta_xpu_bits_reverse_u64(uint64_t value) {
+    return ((uint64_t) __cajeta_xpu_bits_reverse_u32((uint32_t) value) << 32)
+         | __cajeta_xpu_bits_reverse_u32((uint32_t) (value >> 32));
+}
+uint32_t __cajeta_xpu_bits_count_u64(uint64_t value) {
+    return __cajeta_xpu_bits_count_u32((uint32_t) value)
+         + __cajeta_xpu_bits_count_u32((uint32_t) (value >> 32));
+}
+uint64_t __cajeta_xpu_bits_rotate_left_u64(uint64_t value, uint32_t amount) {
+    amount &= 63u;
+    return amount == 0u ? value : ((value << amount) | (value >> (64u - amount)));
+}
+uint64_t __cajeta_xpu_bits_rotate_right_u64(uint64_t value, uint32_t amount) {
+    amount &= 63u;
+    return amount == 0u ? value : ((value >> amount) | (value << (64u - amount)));
+}
+uint32_t __cajeta_xpu_bits_trailing_zeros_u32(uint32_t value) {
+    uint32_t n = 0;
+    if (!value) return 32u;
+    while (!(value & 1u)) { value >>= 1; ++n; }
+    return n;
+}
+uint32_t __cajeta_xpu_bits_trailing_zeros_u64(uint64_t value) {
+    uint32_t lo = (uint32_t) value;
+    return lo ? __cajeta_xpu_bits_trailing_zeros_u32(lo)
+              : 32u + __cajeta_xpu_bits_trailing_zeros_u32((uint32_t) (value >> 32));
+}
+uint32_t __cajeta_xpu_bits_leading_zeros_u32(uint32_t value) {
+    uint32_t n = 0;
+    if (!value) return 32u;
+    while (!(value & 0x80000000u)) { value <<= 1; ++n; }
+    return n;
+}
+uint32_t __cajeta_xpu_bits_leading_zeros_u64(uint64_t value) {
+    uint32_t hi = (uint32_t) (value >> 32);
+    return hi ? __cajeta_xpu_bits_leading_zeros_u32(hi)
+              : 32u + __cajeta_xpu_bits_leading_zeros_u32((uint32_t) value);
+}
 // Byte permute: result byte i is byte (selector nibble i & 7) of {lo, hi}.
 uint32_t __cajeta_xpu_bits_permute_u32(uint32_t lo, uint32_t hi, uint32_t selector) {
     uint64_t bytes = ((uint64_t) hi << 32) | (uint64_t) lo;

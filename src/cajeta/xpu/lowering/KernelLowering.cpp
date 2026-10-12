@@ -3892,37 +3892,91 @@ private:
         } else if (recv == "Bits") {
             const auto& args = mc->getParameters();
             auto* i32 = llvm::Type::getInt32Ty(ctx);
+            auto* i64 = llvm::Type::getInt64Ty(ctx);
             auto u32arg = [&](int i) {
                 return builder.CreateZExtOrTrunc(
                     lowerExpr(args[i].expression), i32);
             };
+            // Only a uint64 argument selects a 64-bit overload, as on the host.
+            llvm::Value* first = args.empty() ? nullptr : lowerExpr(args[0].expression);
+            bool wide = first && first->getType()->isIntegerTy(64)
+                && !exprSigned(args[0].expression);
+            auto opArg = [&](int) {
+                return builder.CreateZExtOrTrunc(first, wide ? i64 : i32);
+            };
+            auto lo = [&](llvm::Value* v) { return builder.CreateTrunc(v, i32); };
+            auto hi = [&](llvm::Value* v) {
+                return builder.CreateTrunc(builder.CreateLShr(v, 32), i32);
+            };
+            auto zeros = [&](llvm::Intrinsic::ID id, llvm::Value* v) -> llvm::Value* {
+                if (target.nativeBits64())
+                    return builder.CreateBinaryIntrinsic(id, v, builder.getFalse());
+                llvm::Type* ty = v->getType();
+                unsigned bits = ty->getIntegerBitWidth();
+                if (id == llvm::Intrinsic::cttz)
+                    return builder.CreateUnaryIntrinsic(llvm::Intrinsic::ctpop,
+                        builder.CreateAnd(builder.CreateSub(v, llvm::ConstantInt::get(ty, 1)),
+                                          builder.CreateNot(v)));
+                llvm::Value* s = v;
+                for (unsigned k = 1; k < bits; k *= 2)
+                    s = builder.CreateOr(s, builder.CreateLShr(s, k));
+                return builder.CreateSub(llvm::ConstantInt::get(ty, bits),
+                    builder.CreateUnaryIntrinsic(llvm::Intrinsic::ctpop, s), "bits.lz");
+            };
             if (name == "reverse") {
                 if (args.size() != 1) unsupported("Bits.reverse arity");
-                return builder.CreateUnaryIntrinsic(
-                    llvm::Intrinsic::bitreverse, u32arg(0));
+                llvm::Value* v = opArg(0);
+                if (!wide || target.nativeBits64())
+                    return builder.CreateUnaryIntrinsic(llvm::Intrinsic::bitreverse, v);
+                llvm::Value* rl = builder.CreateUnaryIntrinsic(llvm::Intrinsic::bitreverse, lo(v));
+                llvm::Value* rh = builder.CreateUnaryIntrinsic(llvm::Intrinsic::bitreverse, hi(v));
+                return builder.CreateOr(builder.CreateShl(builder.CreateZExt(rl, i64), 32),
+                                        builder.CreateZExt(rh, i64), "bits.rev64");
             }
             if (name == "count") {
                 if (args.size() != 1) unsupported("Bits.count arity");
-                return builder.CreateUnaryIntrinsic(
-                    llvm::Intrinsic::ctpop, u32arg(0));
+                llvm::Value* v = opArg(0);
+                if (!wide) return builder.CreateUnaryIntrinsic(llvm::Intrinsic::ctpop, v);
+                if (target.nativeBits64())
+                    return builder.CreateTrunc(
+                        builder.CreateUnaryIntrinsic(llvm::Intrinsic::ctpop, v), i32);
+                return builder.CreateAdd(
+                    builder.CreateUnaryIntrinsic(llvm::Intrinsic::ctpop, lo(v)),
+                    builder.CreateUnaryIntrinsic(llvm::Intrinsic::ctpop, hi(v)), "bits.pop64");
+            }
+            if (name == "trailingZeros" || name == "leadingZeros") {
+                if (args.size() != 1) unsupported("Bits." + name + " arity");
+                bool trailing = name == "trailingZeros";
+                auto id = trailing ? llvm::Intrinsic::cttz : llvm::Intrinsic::ctlz;
+                llvm::Value* v = opArg(0);
+                if (!wide) return zeros(id, v);
+                if (target.nativeBits64()) return builder.CreateTrunc(zeros(id, v), i32);
+                llvm::Value* first = trailing ? lo(v) : hi(v);
+                llvm::Value* second = trailing ? hi(v) : lo(v);
+                return builder.CreateSelect(
+                    builder.CreateICmpNE(first, builder.getInt32(0)), zeros(id, first),
+                    builder.CreateAdd(builder.getInt32(32), zeros(id, second)), "bits.zeros64");
             }
             if (name == "permute") {
                 if (args.size() != 3) unsupported("Bits.permute arity");
-                return target.bytePermute(builder, mod, u32arg(0), u32arg(1),
-                                          u32arg(2));
+                return target.bytePermute(builder, mod, builder.CreateZExtOrTrunc(first, i32),
+                                          u32arg(1), u32arg(2));
             }
             if (name == "rotateLeft" || name == "rotateRight") {
                 if (args.size() != 2) unsupported("Bits.rotate arity");
-                llvm::Value* v = u32arg(0);
-                llvm::Value* amt = u32arg(1);
+                llvm::Value* v = opArg(0);
+                llvm::Type* ty = v->getType();
+                llvm::Value* amt = builder.CreateZExtOrTrunc(
+                    lowerExpr(args[1].expression), ty);
                 // Deliberately NOT llvm.fshl/fshr: the SPIR-V backend lowers
                 // those through a generated helper function with external
                 // linkage, which pulls in OpCapability Linkage and Vulkan rejects.
-                auto* w = builder.getInt32(32);
-                auto* mask = builder.getInt32(31);
+                unsigned bits = ty->getIntegerBitWidth();
+                auto* w = llvm::ConstantInt::get(ty, bits);
+                auto* mask = llvm::ConstantInt::get(ty, bits - 1);
                 llvm::Value* s = builder.CreateAnd(amt, mask, "bits.rot.s");
-                // (32 - s) & 31 keeps the complementary shift in [0,31], so s == 0
-                // is a 0-shift rather than an undef shift-by-32.
+                // (w - s) & (w - 1) keeps the complementary shift in range, so s == 0
+                // is a 0-shift rather than an undef shift by the width.
                 llvm::Value* cs = builder.CreateAnd(
                     builder.CreateSub(w, s), mask, "bits.rot.cs");
                 bool left = (name == "rotateLeft");

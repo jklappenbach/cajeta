@@ -116,7 +116,8 @@ These are every built-in the interpreter defines.
 | `Group.reduce(op, v)` | `Wave.reduceSumF32` for `GroupOp.Add`, `Wave.reduceMaxF32` for `GroupOp.Max` |
 | `Group.reduceSegmented(seg, op, v)` | the segmented form of the same |
 | `Cajeta.bitsToF32`, `f32ToBits`, `bitsToF64`, `f64ToBits` | the same bits, reinterpreted |
-| `Bits.count`, `reverse`, `rotateLeft`, `rotateRight` | on uint32; a rotate takes its amount modulo 32 |
+| `Bits.count`, `reverse`, `rotateLeft`, `rotateRight` | on uint32, or on uint64 when the argument is a uint64; a rotate takes its amount modulo the width |
+| `Bits.trailingZeros`, `leadingZeros` | on uint32 or uint64 as above; of 0 the width (32 or 64) |
 | `Bits.permute(lo, hi, sel)` | byte `i` of the result is byte `sel.nibble[i] & 7` of the eight bytes `{lo, hi}`, `lo` holding bytes 0 to 3 |
 | `AsyncCopy.copy(dst, d0, src, s0, n)` | `dst[d0 + i] = src[s0 + i]` for `i < n`, landed at once by every work-item of the group; `commit` and `wait` do nothing, and the `Barrier.workgroup` that publishes the tile is the kernel's own |
 | `for (T k : Group.stripe(n))` | `k` runs from `laneId` while below `n`, stepping by `W` |

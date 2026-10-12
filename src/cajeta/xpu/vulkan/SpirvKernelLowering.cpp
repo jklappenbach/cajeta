@@ -147,6 +147,7 @@ llvm::Value* bindResource(llvm::IRBuilderBase& b, llvm::Module& m,
 class SpirvTarget : public LoweringTarget {
 public:
     const char* name() const override { return "spirv"; }
+    bool nativeBits64() const override { return false; }
     // Vulkan kernel params arrive as descriptors (a no-param void main()), so a
     // bindless buffer array binds per access via handlefrombinding, not fn->getArg.
     bool descriptorBoundParams() const override { return true; }

@@ -700,6 +700,7 @@ const std::set<std::string>& staticBuiltins() {
         "Group.mac",
         "WaveVector.ofSlice", "WaveVector.broadcast", "WaveVector.ofLane",
         "Bits.reverse", "Bits.count", "Bits.rotateLeft", "Bits.rotateRight", "Bits.permute",
+        "Bits.trailingZeros", "Bits.leadingZeros",
         "AsyncCopy.copy", "AsyncCopy.commit", "AsyncCopy.wait",
         "Cajeta.bitsToF32", "Cajeta.f32ToBits", "Cajeta.bitsToF64", "Cajeta.f64ToBits",
         "Math.min", "Math.max", "Math.abs", "Math.fma",
@@ -2950,10 +2951,24 @@ private:
         if (startsWith(q, "Bits.")) {
             std::vector<Val> a = args(mc);
             if (a.empty()) refuse("`" + q + "` without its value (" + where + ")");
+            if (a[0].t.prim == Prim::I64 && !a[0].t.sgn) {
+                uint64_t v = (uint64_t) a[0].i;
+                uint32_t k = a.size() > 1 ? (uint32_t) convert(a[1], {Prim::I32, false}).i & 63 : 0;
+                uint64_t r = 0;
+                if (q == "Bits.count") { for (; v; v &= v - 1) ++r; return u32(r); }
+                if (q == "Bits.trailingZeros") { r = 64; for (int b = 0; b < 64; ++b) if (v >> b & 1) { r = b; break; } return u32(r); }
+                if (q == "Bits.leadingZeros") { r = 64; for (int b = 63; b >= 0; --b) if (v >> b & 1) { r = 63 - b; break; } return u32(r); }
+                if (q == "Bits.reverse") { for (int b = 0; b < 64; ++b) if (v >> b & 1) r |= UINT64_C(1) << (63 - b); }
+                else if (q == "Bits.rotateLeft") r = k ? (v << k) | (v >> (64 - k)) : v;
+                else r = k ? (v >> k) | (v << (64 - k)) : v;
+                return mkInt({Prim::I64, false}, r);
+            }
             uint32_t v = (uint32_t) convert(a[0], {Prim::I32, false}).i;
             uint32_t k = a.size() > 1 ? (uint32_t) convert(a[1], {Prim::I32, false}).i & 31 : 0;
             uint32_t r = 0;
             if (q == "Bits.count") { for (; v; v &= v - 1) ++r; }
+            else if (q == "Bits.trailingZeros") { r = 32; for (int b = 0; b < 32; ++b) if (v >> b & 1) { r = b; break; } }
+            else if (q == "Bits.leadingZeros") { r = 32; for (int b = 31; b >= 0; --b) if (v >> b & 1) { r = 31 - b; break; } }
             else if (q == "Bits.reverse") { for (int b = 0; b < 32; ++b) if (v >> b & 1) r |= 1u << (31 - b); }
             else if (q == "Bits.rotateLeft") r = k ? (v << k) | (v >> (32 - k)) : v;
             else r = k ? (v >> k) | (v << (32 - k)) : v;
@@ -3519,8 +3534,8 @@ private:
             {"Group.reduce", {Prim::F32, true}}, {"Group.reduceSegmented", {Prim::F32, true}},
             {"Workgroup.reduce", {Prim::F32, true}},
             {"Group.mac", {Prim::I32, true}},
-            {"Bits.count", {Prim::I32, false}}, {"Bits.reverse", {Prim::I32, false}},
-            {"Bits.rotateLeft", {Prim::I32, false}}, {"Bits.rotateRight", {Prim::I32, false}},
+            {"Bits.count", {Prim::I32, false}}, {"Bits.trailingZeros", {Prim::I32, false}},
+            {"Bits.leadingZeros", {Prim::I32, false}},
             {"Bits.permute", {Prim::I32, false}},
             {"Wave.shuffleXorSync", {Prim::I32, false}}, {"Wave.shuffleUpSync", {Prim::I32, false}},
             {"Wave.shuffleDownSync", {Prim::I32, false}}, {"Wave.shuffleSyncF32", {Prim::F32, true}},
@@ -3567,6 +3582,12 @@ private:
             CExpr* n = node(&Item::xThread, t, mc);
             n->kind = it->second;
             return n;
+        }
+        if ((q == "Bits.reverse" || q == "Bits.rotateLeft" || q == "Bits.rotateRight")
+                && !mc->getParameters().empty()) {
+            const CExpr* v = expr(mc->getParameters()[0].expression.get());
+            bool wide = v && v->t.prim == Prim::I64 && !v->t.sgn;
+            return node(&Item::xFallback, Ty{wide ? Prim::I64 : Prim::I32, false}, mc);
         }
         if (q == "Workgroup.scan" && mc->getParameters().size() == 2) {
             const CExpr* v = expr(mc->getParameters()[1].expression.get());
