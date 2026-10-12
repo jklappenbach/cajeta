@@ -171,3 +171,59 @@ TEST(ScopeArchive, scopesPublishedInAnArchiveServeTheConsumer) {
     EXPECT_NE(run.find("p1=2 p2=6"), std::string::npos) << run;
     EXPECT_NE(run.find("id=3 qid=8 bump=109"), std::string::npos) << run;
 }
+
+// Multibinding across an archive boundary: components a dependency .cja
+// contributes reach an `ArrayList<T>` and a `HashMap<String, T>` site in the
+// consumer, beside the consumer's own (primavera-web spec §7.5: codecs arrive
+// as compiled dependencies).
+TEST(ScopeArchive, multibindingCollectsComponentsFromADependency) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    World w;
+    w.write("libsrc/lib/Codec.cajeta", "package lib;\npublic interface Codec { int32 rank(); }\n");
+    w.write("libsrc/lib/Gzip.cajeta",
+        "package lib;\n"
+        "@Component(name = \"gzip\")\n"
+        "public class Gzip implements Codec {\n"
+        "    public Gzip() { return; }\n"
+        "    public int32 rank() { return 1; }\n"
+        "}\n");
+    w.write("libsrc/lib/Lib.cajeta",
+        "package lib;\npublic final class Lib { public static void main(String[] args) { } }\n");
+    w.write("appsrc/app/Main.cajeta",
+        "package app;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "import cajeta.collection.HashMap;\n"
+        "import lib.Codec;\n"
+        "@Component(name = \"brotli\")\n"
+        "public class Brotli implements Codec {\n"
+        "    public Brotli() { return; }\n"
+        "    public int32 rank() { return 2; }\n"
+        "}\n"
+        "@Component\n"
+        "public class Codecs {\n"
+        "    @Inject ArrayList<Codec> all;\n"
+        "    @Inject HashMap<String, Codec> byName;\n"
+        "    public Codecs() { return; }\n"
+        "}\n"
+        "public class Main {\n"
+        "    public static int32 main(String[] args) {\n"
+        "        Codecs c = Codecs.__cajeta_inject();\n"
+        "        int32 sum = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < c.all.count()) { sum = sum + c.all.get(i).rank(); i = i + 1; }\n"
+        "        boolean gz = c.byName.containsKey(\"gzip\");\n"
+        "        System.stdout.println(\"count=\" + c.all.count() + \" sum=\" + sum + \" gzip=\" + gz);\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n");
+    fs::create_directories(w.root / "libout");
+    fs::create_directories(w.root / "appout");
+    std::string log;
+    ASSERT_EQ(w.sh("\"" + compilerBinary() + "\" --emit=cja -o libout/lib.cja "
+                   "lib.Lib.main libsrc libout", log, "build-cja"), 0) << log;
+    ASSERT_EQ(w.sh("\"" + compilerBinary() + "\" --emit=exe --classpath=libout/lib.cja "
+                   "-o appout/prog app.Main.main appsrc appout", log, "build-exe"), 0) << log;
+    std::string run;
+    ASSERT_EQ(w.sh("./appout/prog", run, "run"), 0) << run;
+    EXPECT_NE(run.find("count=2 sum=3 gzip=true"), std::string::npos) << run;
+}
