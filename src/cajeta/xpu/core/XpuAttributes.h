@@ -33,6 +33,8 @@ namespace xpu {
         // @Access narrows a buffer parameter's mode; @Streaming makes its access non-temporal.
         static constexpr const char* Access       = "Access";
         static constexpr const char* Streaming    = "Streaming";
+        // @Cost is refused: a kernel's cost is derived or measured, never declared (manifest D6).
+        static constexpr const char* Cost         = "Cost";
 
         // @Intrinsic — the method has NO implementation anywhere, and none is
         // written: `@Intrinsic public void mma(...);`, a declaration with a

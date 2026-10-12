@@ -497,3 +497,44 @@ TEST(XpuKernelGate, aVulkanLaunchWithNoDeviceCodeIsRefused) {
     std::string err = testing::internal::GetCapturedStderr();
     EXPECT_EQ(r, 2) << "the launch of a kernel with no Vulkan code returned normally:\n" << err;
 }
+
+namespace {
+
+std::string costProgram(const std::string& ann) {
+    return
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "public class M {\n"
+        "    @Kernel\n" + ann +
+        "    public static void scale(KernelBuffer<float32> y, float32 a) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        y[i] = a * y[i];\n"
+        "    }\n"
+        "    public static void main(String[] args) { }\n"
+        "}\n";
+}
+
+}  // namespace
+
+// xpu-tile-manifest 4.1.5: there is no author-declared cost (D6). A kernel carrying @Cost fails
+// the build at its declaration, on any backend, naming the decision.
+TEST(XpuKernelCost, anAuthorDeclaredCostFailsTheBuildNamingD6) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    for (const char* be : {"cpu", "amdgpu"}) {
+        Built b = build(costProgram("    @Cost(bytes = 8)\n"), be);
+        EXPECT_NE(b.rc, 0) << be << ": a kernel declaring @Cost must fail the build:\n" << b.log;
+        EXPECT_NE(b.log.find("CAJETA_ERROR_XPU_AUTHOR_COST"), std::string::npos) << be << ":\n" << b.log;
+        EXPECT_NE(b.log.find("scale"), std::string::npos) << be << ":\n" << b.log;
+        EXPECT_NE(b.log.find("D6"), std::string::npos) << be << ":\n" << b.log;
+        EXPECT_NE(b.log.find("M.cajeta:7:"), std::string::npos)
+            << be << ": the error is located at the kernel:\n" << b.log;
+    }
+}
+
+TEST(XpuKernelCost, aKernelWithoutCostBuilds) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(costProgram(""), "cpu");
+    EXPECT_EQ(b.rc, 0) << b.log;
+    EXPECT_EQ(b.log.find("CAJETA_ERROR_XPU_AUTHOR_COST"), std::string::npos) << b.log;
+}

@@ -2589,6 +2589,18 @@ namespace cajeta {
     // @Kernel's device image + a registration ctor into that module's own host LLVM
     // module, and with --xpu-emit also drop a per-kernel artifact. Never throws.
     void Compiler::emitXpuKernels(const std::string& archiveRootPath) {
+        for (auto& module : modules) {
+            for (auto& method : module->getAllMethods()) {
+                if (!method || !cajeta::xpu::isKernel(*method)
+                        || !method->findAnnotation(cajeta::xpu::XpuAttr::Cost)) continue;
+                SourceSite at = method->declarationSite();
+                throw cajeta::Exception(
+                    "@Cost on kernel '" + method->getName() + "': a kernel's cost is derived by the "
+                    "compiler from its body or measured by the runtime, never declared by its "
+                    "author (xpu-tile-manifest D6); remove the annotation",
+                    "CAJETA_ERROR_XPU_AUTHOR_COST", at.file, at.line, at.column);
+            }
+        }
         if (xpuBackends.empty()) {
             return;
         }
