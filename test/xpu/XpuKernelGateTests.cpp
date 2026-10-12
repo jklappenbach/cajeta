@@ -515,6 +515,22 @@ std::string costProgram(const std::string& ann) {
         "}\n";
 }
 
+// The same kernel over an int8 buffer, with `params` in place of its parameter list.
+std::string storedProgram(const std::string& params) {
+    return
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void unpack(" + params + ") {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        y[i] = (float32) (((int32) w[i] & 15) * 2);\n"
+        "    }\n"
+        "    public static void main(String[] args) { }\n"
+        "}\n";
+}
+
 }  // namespace
 
 // xpu-tile-manifest 4.1.5: there is no author-declared cost (D6). A kernel carrying @Cost fails
@@ -537,4 +553,26 @@ TEST(XpuKernelCost, aKernelWithoutCostBuilds) {
     Built b = build(costProgram(""), "cpu");
     EXPECT_EQ(b.rc, 0) << b.log;
     EXPECT_EQ(b.log.find("CAJETA_ERROR_XPU_AUTHOR_COST"), std::string::npos) << b.log;
+}
+
+// xpu-tile-manifest 4.2.2: @Stored states a KernelBuffer's payload width, between 1 and its element's.
+TEST(XpuKernelCost, aStoredWidthOnABufferBuilds) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    Built b = build(storedProgram("KernelBuffer<float32> y, @Stored(bits = 4) KernelBuffer<int8> w"), "cpu");
+    EXPECT_EQ(b.rc, 0) << b.log;
+    EXPECT_EQ(b.log.find("CAJETA_ERROR_XPU_STORED_WIDTH"), std::string::npos) << b.log;
+}
+
+TEST(XpuKernelCost, aStoredWidthOffABufferOrPastItsElementFailsTheBuild) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    for (const char* params :
+            {"KernelBuffer<float32> y, KernelBuffer<int8> w, @Stored(bits = 4) uint32 n",
+             "KernelBuffer<float32> y, @Stored(bits = 16) KernelBuffer<int8> w",
+             "KernelBuffer<float32> y, @Stored(bits = 0) KernelBuffer<int8> w"}) {
+        Built b = build(storedProgram(params), "cpu");
+        EXPECT_NE(b.rc, 0) << params << ":\n" << b.log;
+        EXPECT_NE(b.log.find("CAJETA_ERROR_XPU_STORED_WIDTH"), std::string::npos) << params << ":\n" << b.log;
+        EXPECT_NE(b.log.find("M.cajeta:6:"), std::string::npos)
+            << params << ": the error is located at the kernel:\n" << b.log;
+    }
 }

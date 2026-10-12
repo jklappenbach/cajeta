@@ -188,6 +188,7 @@ namespace nvidia {
             applyAccess(manifest, access);
             applyNativeOps(manifest, kfn);
             warnIfSpilling(manifest, softwareCoopTileBytesOf(kfn));
+            applyCost(manifest, method);
 
             llvm::Constant* dataInit = llvm::ConstantDataArray::get(
                 ctx, llvm::ArrayRef<uint8_t>(cubin.data(), cubin.size()));

@@ -35,6 +35,8 @@ namespace xpu {
         static constexpr const char* Streaming    = "Streaming";
         // @Cost is refused: a kernel's cost is derived or measured, never declared (manifest D6).
         static constexpr const char* Cost         = "Cost";
+        // @Stored(bits = N) states a buffer parameter's payload width for the work model.
+        static constexpr const char* Stored       = "Stored";
 
         // @Intrinsic — the method has NO implementation anywhere, and none is
         // written: `@Intrinsic public void mma(...);`, a declaration with a

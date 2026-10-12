@@ -2591,9 +2591,14 @@ namespace cajeta {
     void Compiler::emitXpuKernels(const std::string& archiveRootPath) {
         for (auto& module : modules) {
             for (auto& method : module->getAllMethods()) {
-                if (!method || !cajeta::xpu::isKernel(*method)
-                        || !method->findAnnotation(cajeta::xpu::XpuAttr::Cost)) continue;
+                if (!method || !cajeta::xpu::isKernel(*method)) continue;
                 SourceSite at = method->declarationSite();
+                std::string stored = cajeta::xpu::storedAnnotationError(method);
+                if (!stored.empty())
+                    throw cajeta::Exception(
+                        stored + " on kernel '" + method->getName() + "' (xpu-tile-manifest spec 4.5)",
+                        "CAJETA_ERROR_XPU_STORED_WIDTH", at.file, at.line, at.column);
+                if (!method->findAnnotation(cajeta::xpu::XpuAttr::Cost)) continue;
                 throw cajeta::Exception(
                     "@Cost on kernel '" + method->getName() + "': a kernel's cost is derived by the "
                     "compiler from its body or measured by the runtime, never declared by its "

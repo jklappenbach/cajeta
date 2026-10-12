@@ -143,6 +143,7 @@ namespace vulkan {
                 applyNativeOps(m, kfn);
                 if (auto attr = XpuKernelAttr::from(*method); attr && attr->waveWidth())
                     m.waveWidth = (unsigned) *attr->waveWidth();
+                applyCost(m, method);
                 manifest = std::move(m);
             }
 

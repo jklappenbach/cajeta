@@ -1984,6 +1984,7 @@ void foldWaveVariants(llvm::Function& f) {
             if (hostW > 0)
                 b.CreateCall(setWaveFn,
                              {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), hostW)});
+            applyCost(manifest, method);
             emitManifestRegistration(hostModule, b, nameStr, /*CAJ_XPU_CPU=*/3,
                                      "", manifest);
             b.CreateRetVoid();

@@ -75,6 +75,10 @@ namespace xpu {
         m.drainsDevice = access.drainsDevice;
     }
 
+    void applyCost(KernelManifest& m, const MethodPtr& kernel) {
+        m.work = deriveKernelCost(kernel, m.waveWidth);
+    }
+
     std::string sha256Hex(const uint8_t* data, std::size_t len) {
         llvm::SHA256 h;
         h.update(llvm::ArrayRef<uint8_t>(data, len));
@@ -162,6 +166,25 @@ namespace xpu {
             nativeOps.push_back(std::move(o));
         }
         root["nativeOps"] = std::move(nativeOps);
+        if (m.work) {
+            llvm::json::Object work;
+            work["costUnit"] = m.work->costUnit;
+            putS(work, "workAxisParam", m.work->workAxisParam);
+            work["matrixMacs"] = m.work->matrixMacs;
+            work["vectorMacs"] = m.work->vectorMacs;
+            work["intOps"] = m.work->intOps;
+            llvm::json::Array buffers;
+            for (const KernelBufferCost& b : m.work->buffers) {
+                llvm::json::Object o;
+                o["param"] = b.param;
+                o["storedBits"] = (int64_t) b.storedBits;
+                o["bytesRead"] = b.bytesRead;
+                o["bytesWritten"] = b.bytesWritten;
+                buffers.push_back(std::move(o));
+            }
+            work["buffers"] = std::move(buffers);
+            root["work"] = std::move(work);
+        }
         root["restartable"] = m.restartable;
         root["drainsDevice"] = m.drainsDevice;
         root["captureSafe"] = m.captureSafe;
@@ -248,6 +271,27 @@ namespace xpu {
                 if (e.op.empty() || e.instruction.empty()) continue;
                 m.nativeOps.push_back(std::move(e));
             }
+        }
+        if (const llvm::json::Object* w = root->getObject("work")) {
+            KernelCost c;
+            c.costUnit = w->getString("costUnit").value_or("item").str();
+            c.workAxisParam = getS(*w, "workAxisParam");
+            c.matrixMacs = w->getString("matrixMacs").value_or("measured").str();
+            c.vectorMacs = w->getString("vectorMacs").value_or("measured").str();
+            c.intOps = w->getString("intOps").value_or("measured").str();
+            if (const llvm::json::Array* bs = w->getArray("buffers")) {
+                for (const auto& v : *bs) {
+                    const llvm::json::Object* o = v.getAsObject();
+                    if (!o) continue;
+                    KernelBufferCost b;
+                    b.param = o->getString("param").value_or("").str();
+                    b.storedBits = getU(*o, "storedBits").value_or(0);
+                    b.bytesRead = o->getString("bytesRead").value_or("measured").str();
+                    b.bytesWritten = o->getString("bytesWritten").value_or("measured").str();
+                    c.buffers.push_back(std::move(b));
+                }
+            }
+            m.work = std::move(c);
         }
         m.restartable = root->getBoolean("restartable").value_or(false);
         m.drainsDevice = root->getBoolean("drainsDevice").value_or(false);

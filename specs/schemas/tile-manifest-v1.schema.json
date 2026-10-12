@@ -38,14 +38,28 @@
     },
     "work": {
       "type": "object",
-      "description": "Per-group cost expressions over the kernel's parameters and tile constants (spec §4).",
+      "description": "The work model derived from the kernel body (spec §4). Costs are per group for a kernel on the Group surface, per work item for a hand kernel, and each is an expression over the kernel's parameters or measured.",
+      "required": ["costUnit", "matrixMacs", "vectorMacs", "intOps", "buffers"],
       "properties": {
+        "costUnit": { "enum": ["group", "item"], "description": "What one cost counts: a Group summed over its lanes, or one work item (spec §4.5a)" },
         "workAxisParam": { "type": "string", "description": "The parameter that is the roofline coordinate (token count, row count, item count)" },
         "matrixMacs": { "$ref": "#/$defs/costExpr" },
         "vectorMacs": { "$ref": "#/$defs/costExpr" },
-        "intOps": { "$ref": "#/$defs/costExpr" },
-        "bytesRead": { "$ref": "#/$defs/costExpr" },
-        "bytesWritten": { "$ref": "#/$defs/costExpr" },
+        "intOps": { "$ref": "#/$defs/costExpr", "description": "Integer multiplies and multiply-adds whose result is not only an index; a vector dot counts its lanes" },
+        "buffers": {
+          "type": "array",
+          "description": "One entry per KernelBuffer parameter, in declaration order.",
+          "items": {
+            "type": "object",
+            "required": ["param", "storedBits", "bytesRead", "bytesWritten"],
+            "properties": {
+              "param": { "type": "string" },
+              "storedBits": { "type": "integer", "minimum": 1, "maximum": 64, "description": "The payload width: @Stored(bits = N) when stated (4 for MXFP4 weights), else the element width" },
+              "bytesRead": { "$ref": "#/$defs/costExpr" },
+              "bytesWritten": { "$ref": "#/$defs/costExpr" }
+            }
+          }
+        },
         "perItemCost": { "$ref": "#/$defs/costExpr", "description": "For ragged launches: cost of one item, e.g. alpha*l_q + beta*l_kv" }
       }
     },
@@ -88,7 +102,6 @@
           "kind": { "enum": ["kernelBuffer", "shared", "image", "residentPool", "indirect"] },
           "mode": { "enum": ["read", "write", "readwrite", "accumulate", "indirect"] },
           "origin": { "enum": ["derived", "declared"] },
-          "storedBits": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Stored element width when narrower than the compute width (4 for MXFP4 weights, 8 for Q8 activations)" },
           "streaming": { "type": "boolean", "description": "Lowered non-temporal (spec §6.3)" },
           "coalesced": { "type": "boolean" }
         }
@@ -136,13 +149,9 @@
   },
   "$defs": {
     "costExpr": {
-      "type": "object",
-      "required": ["kind"],
-      "properties": {
-        "kind": { "enum": ["expr", "measured"], "description": "expr = derived by the compiler; measured = the runtime fills it from observation. There is no author-declared cost (spec D6)." },
-        "expr": { "type": "string", "description": "Arithmetic over parameter names and tile constants, e.g. '2*T*d*k' or 'blocksPerRow*17'" },
-        "params": { "type": "array", "items": { "type": "string" } }
-      }
+      "type": "string",
+      "pattern": "^(measured|[A-Za-z0-9_+*/() -]+)$",
+      "description": "Arithmetic over parameter names, tile constants and integer literals with + - * / and parentheses, e.g. '4*cols' or '17*blocksPerRow', or the word measured: the runtime fills it from observation. There is no author-declared cost (spec D6)."
     }
   }
 }

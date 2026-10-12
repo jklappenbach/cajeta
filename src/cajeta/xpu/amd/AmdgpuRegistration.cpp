@@ -229,6 +229,7 @@ namespace amd {
                     applyAccess(m, access);
                     applyNativeOps(m, kfn);
                     warnIfSpilling(m, softwareCoopTileBytesOf(kfn));
+                    applyCost(m, method);
                     kernelManifests.push_back(std::move(m));
                 }
             }

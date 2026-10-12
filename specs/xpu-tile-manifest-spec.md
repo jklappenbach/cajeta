@@ -143,8 +143,9 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
   width per buffer, because bytes moved and compute width diverge and the
   crossover from memory-bound to compute-bound moves with the stored width
   (findings §ML.13.1). The author states it with a parameter annotation,
-  `@Stored(bits = 4)`, which scales that buffer's bytes and nothing else
-  (decided 2026-10-12).
+  `@Stored(bits = 4)`. It is recorded beside the bytes the body moves and
+  does not scale them, because a buffer typed by its stored byte already
+  counts true bytes (decided 2026-10-12, corrected the same day).
 - **4.5a** When a kernel uses `Group`, its costs are per group, summed over
   the group's lanes; a hand kernel's are per work item. The manifest names
   the unit, and each cost is an expression over the kernel's parameters or

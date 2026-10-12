@@ -4,6 +4,7 @@
 #pragma once
 
 #include "KernelAccess.h"
+#include "KernelCost.h"
 
 #include <array>
 #include <cstddef>
@@ -89,6 +90,8 @@ namespace xpu {
         // 4A.2.6). Always emitted: an EMPTY list on a kernel that should carry
         // an mma is itself the visible absence. Deduplicated, first-selection order.
         std::vector<KernelNativeOp> nativeOps;
+        // The work model from the body (spec §4); absent until derived.
+        std::optional<KernelCost> work;
 
         bool hasFootprint() const {
             return waveWidth || vgpr || sgpr || spillBytes || spillStoreBytes
@@ -111,6 +114,9 @@ namespace xpu {
     std::string kernelRegistryName(const MethodPtr& kernel);
 
     void applyAccess(KernelManifest& m, const KernelAccessSummary& access);
+
+    // Derives the work model, counting a Group at the manifest's wave width.
+    void applyCost(KernelManifest& m, const MethodPtr& kernel);
 
     // "sha256:<64 lowercase hex>" over `len` bytes.
     std::string sha256Hex(const uint8_t* data, std::size_t len);

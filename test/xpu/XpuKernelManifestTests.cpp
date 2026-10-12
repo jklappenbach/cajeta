@@ -917,6 +917,13 @@ TEST(XpuKernelManifest, schemaAndRecordAgreeFieldForField) {
     m.occupancyLimiter = "registers";
     m.restartable = true;
     m.captureSafe = true;
+    cajeta::xpu::KernelCost work;
+    work.costUnit = "group";
+    work.vectorMacs = "cols";
+    work.intOps = "measured";
+    work.workAxisParam = "rows";
+    work.buffers.push_back({"a", 4, "17*cols/32", "0"});
+    m.work = work;
 
     std::string json = cajeta::xpu::toJson(m);
     EXPECT_TRUE(validateAgainstSchema(json).empty()) << json;
@@ -943,6 +950,13 @@ TEST(XpuKernelManifest, schemaAndRecordAgreeFieldForField) {
     EXPECT_EQ(back.occupancyLimiter, m.occupancyLimiter);
     EXPECT_EQ(back.restartable, m.restartable);
     EXPECT_EQ(back.captureSafe, m.captureSafe);
+    ASSERT_TRUE(back.work.has_value());
+    EXPECT_EQ(back.work->costUnit, "group");
+    EXPECT_EQ(back.work->intOps, "measured");
+    EXPECT_EQ(back.work->workAxisParam, m.work->workAxisParam);
+    ASSERT_EQ(back.work->buffers.size(), 1u);
+    EXPECT_EQ(back.work->buffers[0].storedBits, 4u);
+    EXPECT_EQ(back.work->buffers[0].bytesRead, "17*cols/32");
     EXPECT_EQ(cajeta::xpu::toJson(back), json) << "second serialization differs";
 
     // Key sets: emitted == declared, for the two objects Unit 1 owns.
