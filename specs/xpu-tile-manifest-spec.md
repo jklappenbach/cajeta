@@ -142,7 +142,13 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
   at (4-bit weights, 8-bit activations, f16 KV), the manifest records the stored
   width per buffer, because bytes moved and compute width diverge and the
   crossover from memory-bound to compute-bound moves with the stored width
-  (findings §ML.13.1).
+  (findings §ML.13.1). The author states it with a parameter annotation,
+  `@Stored(bits = 4)`, which scales that buffer's bytes and nothing else
+  (decided 2026-10-12).
+- **4.5a** When a kernel uses `Group`, its costs are per group, summed over
+  the group's lanes; a hand kernel's are per work item. The manifest names
+  the unit, and each cost is an expression over the kernel's parameters or
+  `measured` (decided 2026-10-12).
 - **4.6** When a kernel's parallel axis is a token count, a row count, or an
   item count, the manifest names which parameter is the work axis so the
   runtime can read the roofline coordinate directly from the arguments.
