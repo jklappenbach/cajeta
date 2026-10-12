@@ -8888,7 +8888,7 @@ namespace cajeta {
                 if (argIdx >= parameters.size()) return;
                 auto argExprBase = parameters[argIdx].expression;
                 auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
-                    argExprBase);
+                    ownership::peelReferenceCasts(argExprBase));
                 if (!idExpr) return;
                 auto scope = module->getScopeStack().peek();
                 if (!scope) return;

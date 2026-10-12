@@ -168,4 +168,19 @@ stdlib's `ArrayStream<T> extends Stream<T> implements Splittable<T>` is the
 canonical shape. Since Cajeta has multiple inheritance of concrete behavior,
 interfaces are for contracts, not for smuggling implementation.
 
+An interface that extends another converts to it implicitly. The other
+direction is a cast, checked at run time as in Java: `(Wide) b` finds the
+instance's class's `Wide` implementation, and throws
+`cajeta.error.ClassCastException` when the class does not implement `Wide`.
+A null value casts to null.
+
+```cajeta
+public interface Base { int32 size(); }
+public interface Wide extends Base { int32 rows(); }
+
+Base b = heap Grid();        // Grid implements Wide
+Wide w = (Wide) b;           // a lend, as `=` always is
+int32 r = w.rows();
+```
+
 Next: [18 Annotations](18-annotations.md).

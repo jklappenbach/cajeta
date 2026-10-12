@@ -1730,6 +1730,10 @@ namespace cajeta {
         return out;
     }
 
+    int CajetaClass::interfaceDirectorySlot() {
+        return (int) (1 + getFlattenedInterfaceMethods().size() + getInterfaceAncestors().size());
+    }
+
     int CajetaClass::interfaceAncestorSlot(const CajetaClass& ancestor) {
         std::string want = ancestor.getQName()->toCanonical();
         auto ancestors = getInterfaceAncestors();
@@ -1789,9 +1793,26 @@ namespace cajeta {
         };
         for (auto& direct : directAndInherited) collect(direct);
 
-        // A table is the drop function, the interface's method slots, then a pointer to
-        // this class's table for each interface it extends, in getInterfaceAncestors
-        // order. The ancestor pointers are filled once every table here exists.
+        // A table is the drop function, the interface's method slots, a pointer to this
+        // class's table for each interface it extends, in getInterfaceAncestors order,
+        // then this class's directory (interfaceDirectorySlot). The ancestor pointers are
+        // filled once every table here exists.
+        // The directory is the count, then a (canonical name, table) pair per interface,
+        // which a downcast searches. It is filled once no table here is waiting.
+        std::string dirName = std::string("class.") + sanitize(classCanonical) + "_iface_dir";
+        llvm::ArrayType* dirTy = llvm::ArrayType::get(ptrTy, 1 + 2 * allIfaces.size());
+        llvm::GlobalVariable* dir = lmod->getNamedGlobal(dirName);
+        if (dir && !dir->hasInitializer() && dir->getValueType() != dirTy) {
+            auto* grown = new llvm::GlobalVariable(*lmod, dirTy, /*isConstant=*/true,
+                llvm::GlobalValue::ExternalLinkage, nullptr, dirName + ".grown");
+            dir->replaceAllUsesWith(grown);
+            dir->eraseFromParent();
+            grown->setName(dirName);
+            dir = grown;
+        } else if (!dir) {
+            dir = new llvm::GlobalVariable(*lmod, dirTy, /*isConstant=*/true,
+                llvm::GlobalValue::ExternalLinkage, nullptr, dirName);
+        }
         struct PendingTable {
             std::vector<CajetaClassPtr> ancestors;
             std::vector<llvm::Constant*> entries;
@@ -1877,7 +1898,7 @@ namespace cajeta {
             }
 
             llvm::ArrayType* arrTy = llvm::ArrayType::get(
-                ptrTy, entries.size() + ancestors.size());
+                ptrTy, entries.size() + ancestors.size() + 1);
             std::string globalName = std::string("class.")
                 + sanitize(classCanonical) + "_iface_"
                 + sanitize(ifaceCanonical) + "_VTable";
@@ -1903,10 +1924,29 @@ namespace cajeta {
                     t.entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
                 }
             }
+            t.entries.push_back(dir);
             llvm::ArrayType* arrTy = llvm::ArrayType::get(ptrTy, t.entries.size());
             t.gv->setInitializer(llvm::ConstantArray::get(arrTy, t.entries));
             t.gv->setConstant(true);
         }
+
+        if (pendingIfaceVTables || dir->hasInitializer()) return;
+        std::vector<llvm::Constant*> dirEntries{ llvm::ConstantExpr::getIntToPtr(
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), allIfaces.size()), ptrTy) };
+        for (auto& iface : allIfaces) {
+            std::string canon = iface->getQName()->toCanonical();
+            auto it = interfaceVTables.find(canon);
+            llvm::Constant* table = (it != interfaceVTables.end() && it->second)
+                ? (llvm::Constant*) CajetaModule::ensureGlobalInModule(lmod, it->second)
+                : (llvm::Constant*) llvm::ConstantPointerNull::get(ptrTy);
+            llvm::Constant* text = llvm::ConstantDataArray::getString(ctx, canon);
+            auto* name = new llvm::GlobalVariable(*lmod, text->getType(), /*isConstant=*/true,
+                llvm::GlobalValue::PrivateLinkage, text, dirName + ".name");
+            name->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+            dirEntries.push_back(name);
+            dirEntries.push_back(table);
+        }
+        dir->setInitializer(llvm::ConstantArray::get(dirTy, dirEntries));
     }
 
     // @AutoHash, also implied by @Data / @Value: add a structural hash() that walks

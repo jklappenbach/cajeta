@@ -97,6 +97,8 @@ namespace cajeta::ownership {
 
     /// The static shape of `e`; total over ExprKind, never throws.
     TitleShape classify(const ExpressionPtr& e, const CajetaModulePtr& module);
+    // `e` with its reference casts removed: the expression whose title `e` carries.
+    ExpressionPtr peelReferenceCasts(const ExpressionPtr& e);
 
     TitleShape moveFrom(const TitleShape& inner, bool sharpStore);
 

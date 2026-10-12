@@ -655,6 +655,18 @@ int32_t __cajeta_instanceof_named(void* obj, const char* targetName) {
     return cajeta_rtti_isa_named(rtti, targetName, 0);
 }
 
+// A class's interface directory: dir[0] is the count, then a (canonical name, table)
+// pair per interface the class is assignable to. The class's table for `name`, or NULL.
+void* __cajeta_iface_dir_find(void** dir, const char* name) {
+    if (!dir || !name) return NULL;
+    intptr_t n = (intptr_t) dir[0];
+    for (intptr_t i = 0; i < n; ++i) {
+        const char* have = (const char*) dir[1 + 2 * i];
+        if (have && strcmp(have, name) == 0) return dir[2 + 2 * i];
+    }
+    return NULL;
+}
+
 // --- cajeta.reflect class registry (REFL-8) --------------------------------
 // canonical name -> cached #ClassObject, filled by per-class startup ctors, so
 // Class.forName resolves with no live instance. Process-lifetime, never freed.

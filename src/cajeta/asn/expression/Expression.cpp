@@ -1854,7 +1854,8 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
     // through __cajeta_throw_titled with its title, so the catch that takes it frees it.
     static void emitCaptureCastThrowBranch(CajetaModulePtr module,
                                            llvm::Value* matchBit,
-                                           const std::string& msgDetail) {
+                                           const std::string& msgDetail,
+                                           const std::string& msgHead = "capture cast failed: ") {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
@@ -1870,8 +1871,7 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
         auto it = cmap.find("cajeta.error.ClassCastException");
         if (it != cmap.end()) {
             if (auto cce = std::dynamic_pointer_cast<CajetaClass>(it->second)) {
-                llvm::Value* msg = materializeStringConstant(module,
-                    "capture cast failed: " + msgDetail);
+                llvm::Value* msg = materializeStringConstant(module, msgHead + msgDetail);
                 std::vector<ParameterEntry> entries;
                 entries.push_back(
                     ParameterEntry(CajetaType::of("String"), "", msg));
@@ -1938,6 +1938,43 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
             r, llvm::ConstantInt::get(r->getType(), 0));
         emitCaptureCastThrowBranch(module, matchBit,
             "element of " + baseCanon + " is not a " + boundCanon);
+    }
+
+    // `(Wide) b` where Wide extends b's interface: a copy of b's body re-pointed at the
+    // instance class's Wide table, found by name in the directory b's table ends with.
+    // A null value stays null; a class without Wide throws ClassCastException.
+    static llvm::Value* emitInterfaceDowncast(CajetaModulePtr module, llvm::Value* src,
+                                              const CajetaClassPtr& from,
+                                              const CajetaClassPtr& to) {
+        auto* b = module->getBuilder();
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Type* bodyTy = to->getLlvmType();
+        llvm::Value* copy = module->createEntryAlloca(bodyTy, "iface_down");
+        CajetaClass::copyInterfaceBody(module, b, copy, src, bodyTy);
+        llvm::Value* vtSlot = b->CreateStructGEP(bodyTy, copy, 1, "iface_down_vtable_slot");
+        llvm::Value* vt = b->CreateLoad(ptrTy, vtSlot, "iface_down_from");
+        llvm::Function* fn = b->GetInsertBlock()->getParent();
+        llvm::BasicBlock* lookBB = llvm::BasicBlock::Create(ctx, "iface_down_look", fn);
+        llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(ctx, "iface_down_done", fn);
+        b->CreateCondBr(b->CreateIsNull(vt), doneBB, lookBB);
+        b->SetInsertPoint(lookBB);
+        llvm::Value* dirAt = b->CreateInBoundsGEP(ptrTy, vt,
+            b->getInt64((uint64_t) from->interfaceDirectorySlot()), "iface_down_dir_at");
+        llvm::Value* dir = b->CreateLoad(ptrTy, dirAt, "iface_down_dir");
+        std::string canon = to->getQName()->toCanonical();
+        llvm::Value* table = vt;
+        if (llvm::Function* find = module->getRuntimeFunction("__cajeta_iface_dir_find")) {
+            table = b->CreateCall(find, {dir, b->CreateGlobalString(canon, "iface_down.name")},
+                                  "iface_down_to");
+        }
+        emitCaptureCastThrowBranch(module, b->CreateIsNotNull(table),
+            "the instance's class does not implement " + canon, "interface cast failed: ");
+        b->CreateStore(table, vtSlot);
+        b->CreateBr(doneBB);
+        b->SetInsertPoint(doneBB);
+        if (!src->getType()->isPointerTy()) return b->CreateLoad(bodyTy, copy, "iface_down_val");
+        return copy;
     }
 
     // Emits the cast: an interface source unwraps the fat body, a record upcast slices
@@ -2021,6 +2058,22 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
             if (CajetaClass::isInterfaceUpcast(srcClass, dstClass)) {
                 resolvedType = destType;
                 return CajetaClass::upcastInterfaceValue(module, builder, val, srcClass, dstClass);
+            }
+            if (CajetaClass::isInterfaceUpcast(dstClass, srcClass)) {
+                resolvedType = destType;
+                return emitInterfaceDowncast(module, val, srcClass, dstClass);
+            }
+            // `(Wide) w` of a Wide: a copy of the body, as every other interface cast
+            // makes, so a `#=` from it does not bind the source's own slot.
+            if (srcIsIface && dstIsIface && srcClass.get() == dstClass.get()) {
+                resolvedType = destType;
+                llvm::Type* bodyTy = dstClass->getLlvmType();
+                llvm::Value* copy = module->createEntryAlloca(bodyTy, "iface_same");
+                CajetaClass::copyInterfaceBody(module, builder, copy, val, bodyTy);
+                if (!val->getType()->isPointerTy()) {
+                    return builder->CreateLoad(bodyTy, copy, "iface_same_val");
+                }
+                return copy;
             }
         }
         llvm::Type* srcTy = val->getType();
@@ -2954,8 +3007,11 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
                 }
             }
         }
-        if (inner && inner->kind() == ExprKind::Identifier) {
-            auto idExpr = std::static_pointer_cast<IdentifierExpression>(inner);
+        // `#(T) x` moves x: the classifier reads a reference cast as its operand, so the
+        // local behind it is the one disarmed.
+        ExpressionPtr movedLocal = ownership::peelReferenceCasts(inner);
+        if (movedLocal && movedLocal->kind() == ExprKind::Identifier) {
+            auto idExpr = std::static_pointer_cast<IdentifierExpression>(movedLocal);
             auto scope = module->getScopeStack().peek();
             if (scope) {
                 // `#x` demands a statically active owner: a borrow-shaped class local owns no

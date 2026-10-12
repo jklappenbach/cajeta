@@ -45,10 +45,12 @@ namespace cajeta::ownership {
                 && !std::dynamic_pointer_cast<CajetaArray>(t);
         }
 
+        // A cast to a class, a view or an interface names the same instance, so its title
+        // is its operand's. An interface cast copies the body, not the instance.
         inline bool isReferenceCast(const CajetaTypePtr& dt) {
             auto dc = std::dynamic_pointer_cast<CajetaClass>(dt);
             auto dv = std::dynamic_pointer_cast<CajetaView>(dt);
-            return (bool) dv || (dc && !dc->isInterface() && !dc->isValueType());
+            return (bool) dv || (dc && !dc->isValueType());
         }
 
         inline uint32_t typeFlags(const CajetaTypePtr& t) {
@@ -276,6 +278,17 @@ namespace cajeta::ownership {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic error "-Wswitch"
 #endif
+    ExpressionPtr peelReferenceCasts(const ExpressionPtr& e) {
+        ExpressionPtr at = e;
+        while (at && at->kind() == ExprKind::Cast
+                && isReferenceCast(std::static_pointer_cast<CastExpression>(at)->getDestType())) {
+            auto c = childOf(at, 0);
+            if (!c) break;
+            at = c;
+        }
+        return at;
+    }
+
     TitleShape classify(const ExpressionPtr& e0, const CajetaModulePtr& module) {
         if (!e0) return make(TitleFamily::Unsupported, TitleAnswer::Scalar, TitleSource::None, e0);
         ExpressionPtr e = e0;

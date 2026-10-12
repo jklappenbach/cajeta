@@ -689,6 +689,9 @@ namespace cajeta {
         // The interfaces this interface extends, transitively, each once, nearest first.
         // Their tables follow the method slots in this interface's tables, in this order.
         std::vector<CajetaClassPtr> getInterfaceAncestors();
+        // The slot of this interface's tables that holds the class's interface directory:
+        // the count, then a (canonical name, table) pair per interface the class has.
+        int interfaceDirectorySlot();
         // The slot of this interface's tables that holds the class's `ancestor` table, or -1.
         int interfaceAncestorSlot(const CajetaClass& ancestor);
         // Name and parameter types of `m`, without its class: the key of an interface slot.
