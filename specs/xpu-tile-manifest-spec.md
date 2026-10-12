@@ -326,7 +326,9 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
   submission's kernel; the author-filled `KernelResourceDescriptor` fields
   shipped in cooperative-tile Unit 6 (`ldsBytes`, `vgprCount`) are replaced by
   manifest values and the author-facing constructor parameters for them are
-  removed.
+  removed. Dynamic LDS is a launch argument the manifest cannot know, so the
+  submission states it as `sharedBytes`, the launch's own label, and the
+  descriptor adds it to the static bytes.
 - **12.3** When `cajeta kernel-inspect` (the `kernel-artifact-inspection` spec)
   prints a kernel's resource report, its footprint columns are the manifest's
   §3 fields, so the inspection tool and the scheduler cannot disagree.

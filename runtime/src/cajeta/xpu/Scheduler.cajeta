@@ -4,6 +4,7 @@ import cajeta.collection.ArrayList;
 import cajeta.error.RecoverableException;
 import cajeta.xpu.Device;
 import cajeta.xpu.KernelManifest;
+import cajeta.lang.Optional;
 
 /**
  * Scheduler — the reserved submit seam for the future multi-kernel scheduler
@@ -39,61 +40,10 @@ public final class Scheduler {
 
     /**
      * Record `sub` for the future scheduler and emit its resource descriptor
-     * (§7.1). `sub`'s read/write sets, policy, and character are carried and
-     * consumed by nothing yet; the caller launches immediately after, reading the
-     * geometry from `sub`. The descriptor's geometry and wave count are real, LDS
-     * is the submission's declared reservation, character is the submission's, and
-     * VGPR is the honest stub until the backend surfaces register counts (§5.2).
+     * (§7.1). With `sub.kernel` named, the register count and static LDS come from
+     * its manifest and, with its buffers bound, the access sets too (manifest §6.6, §12.2).
      */
     public static #KernelResourceDescriptor submit(KernelSubmission sub) {
-        // xpu-tile-manifest §6.6: with the kernel named and its buffers bound in
-        // parameter order, the sets come from the manifest — what the lowered
-        // body does, not what the author says it does. A restated set that
-        // disagrees is refused rather than trusted.
-        if (sub.kernel != null && sub.bound.count() > 0) {
-            KernelManifest m #= KernelManifest.of(sub.kernel);
-            if (m != null) {
-                ArrayList<int64> reads #= heap ArrayList<int64>();
-                ArrayList<int64> writes #= heap ArrayList<int64>();
-                ArrayList<int64> accs #= heap ArrayList<int64>();
-                int32 n = m.accessCount();
-                if (sub.bound.count() < n) { n = sub.bound.count(); }
-                int32 i = 0;
-                while (i < n) {
-                    int64 h = sub.bound.get(i);
-                    String mode = m.accessMode(i);
-                    if (mode.equals("read")) {
-                        reads.add(h);
-                    } else if (mode.equals("write")) {
-                        writes.add(h);
-                    } else if (mode.equals("readwrite")) {
-                        reads.add(h);
-                        writes.add(h);
-                    } else if (mode.equals("accumulate")) {
-                        writes.add(h);
-                        accs.add(h);
-                    }
-                    i = i + 1;
-                }
-                if (sub.readSet.count() > 0 && !Scheduler.sameSet(sub.readSet, reads)) {
-                    throw heap RecoverableException("Scheduler.submit: the restated "
-                        + "read set of `" + sub.kernel + "` disagrees with what its "
-                        + "body does (xpu-tile-manifest §6.6); drop the reads() calls "
-                        + "or fix them");
-                }
-                if (sub.writeSet.count() > 0 && !Scheduler.sameSet(sub.writeSet, writes)) {
-                    throw heap RecoverableException("Scheduler.submit: the restated "
-                        + "write set of `" + sub.kernel + "` disagrees with what its "
-                        + "body does (xpu-tile-manifest §6.6); drop the writes() calls "
-                        + "or fix them");
-                }
-                Scheduler.copyInto(sub.readSet, reads);
-                Scheduler.copyInto(sub.writeSet, writes);
-                Scheduler.copyInto(sub.accumulateSet, accs);
-            }
-        }
-        // §7.1: record what the schedule already knows. waveCount from the
-        // geometry and the active backend's wave width (1 on the CPU backend).
         int32 waveW = 1;
         if (!Device.activeBackend().equals("cpu")) {
             int32 w = Device.waveSize();
@@ -101,17 +51,67 @@ public final class Scheduler {
                 waveW = w;
             }
         }
-        // int64 to dodge the int32 multiply-overflow trap on large launches.
         int64 threads = (int64) sub.gridX * (int64) sub.blockX;
         int64 waves = (threads + (int64) waveW - 1) / (int64) waveW;
-
-        return heap KernelResourceDescriptor(
-            0,                    // vgprCount — TODO: backend regalloc (§7.1)
-            sub.ldsBytes,
+        KernelResourceDescriptor d = heap KernelResourceDescriptor(
             (int32) waves,
             sub.gridX, sub.gridY, sub.gridZ,
             sub.blockX, sub.blockY, sub.blockZ,
             sub.character);
+        d.ldsBytes = sub.sharedBytes;
+        if (sub.kernel != null) {
+            KernelManifest m #= KernelManifest.of(sub.kernel);
+            if (m != null) {
+                Optional<int32> vgpr = m.vgpr();
+                if (vgpr.isPresent()) { d.vgprCount = vgpr.get(); }
+                Optional<int32> lds = m.ldsStaticBytes();
+                if (lds.isPresent()) { d.ldsBytes = d.ldsBytes + lds.get(); }
+                if (sub.bound.count() > 0) { Scheduler.deriveSets(sub, m); }
+            }
+        }
+        return #d;
+    }
+
+    // Fill `sub`'s sets from the manifest's access modes, refusing a restated set
+    // that disagrees with the body (manifest §6.6).
+    private static void deriveSets(KernelSubmission sub, KernelManifest m) {
+        ArrayList<int64> reads #= heap ArrayList<int64>();
+        ArrayList<int64> writes #= heap ArrayList<int64>();
+        ArrayList<int64> accs #= heap ArrayList<int64>();
+        int32 n = m.accessCount();
+        if (sub.bound.count() < n) { n = sub.bound.count(); }
+        int32 i = 0;
+        while (i < n) {
+            int64 h = sub.bound.get(i);
+            String mode = m.accessMode(i);
+            if (mode.equals("read")) {
+                reads.add(h);
+            } else if (mode.equals("write")) {
+                writes.add(h);
+            } else if (mode.equals("readwrite")) {
+                reads.add(h);
+                writes.add(h);
+            } else if (mode.equals("accumulate")) {
+                writes.add(h);
+                accs.add(h);
+            }
+            i = i + 1;
+        }
+        if (sub.readSet.count() > 0 && !Scheduler.sameSet(sub.readSet, reads)) {
+            throw heap RecoverableException("Scheduler.submit: the restated "
+                + "read set of `" + sub.kernel + "` disagrees with what its "
+                + "body does (xpu-tile-manifest §6.6); drop the reads() calls "
+                + "or fix them");
+        }
+        if (sub.writeSet.count() > 0 && !Scheduler.sameSet(sub.writeSet, writes)) {
+            throw heap RecoverableException("Scheduler.submit: the restated "
+                + "write set of `" + sub.kernel + "` disagrees with what its "
+                + "body does (xpu-tile-manifest §6.6); drop the writes() calls "
+                + "or fix them");
+        }
+        Scheduler.copyInto(sub.readSet, reads);
+        Scheduler.copyInto(sub.writeSet, writes);
+        Scheduler.copyInto(sub.accumulateSet, accs);
     }
 
     // Same handles, any order, no multiplicity: the set comparison behind the

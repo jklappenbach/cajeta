@@ -15,6 +15,8 @@
 #include "gtest/gtest.h"
 
 #include "../jit/JitTestHelper.h"
+#include "XpuDeviceTestUtil.h"
+#include "cajeta/xpu/XpuTarget.h"
 
 #include <string>
 
@@ -117,7 +119,7 @@ const char* kSubmitSource =
     "        sub.writes(dc.handle());\n"
     "        sub.policy = SchedulePolicy.Latency;\n"
     "        sub.character = ArithmeticCharacter.ComputeBound;\n"
-    "        sub.ldsBytes = 128;\n"
+    "        sub.sharedBytes = 128;\n"
     "        KernelResourceDescriptor desc #= Scheduler.submit(sub);\n"
     "        add.launch(s, grid: [sub.gridX], block: [sub.blockX])(dc, da, db);\n"
     "        s.sync();\n"
@@ -155,4 +157,86 @@ TEST(XpuSchedulerSeam, policyAndCharacterAreCarried) {
     auto fn = jit->lookup<int (*)()>("runPolicy");
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 0) << "submit-seam policy/character check failed";
+}
+
+namespace {
+
+// manifest Unit 10: a named kernel's descriptor carries the manifest's register
+// count and static LDS plus the submission's dynamic shared bytes.
+const char* kFootprintSource =
+    "package test;\n"
+    "import cajeta.xpu.Barrier;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelManifest;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "import cajeta.xpu.Scheduler;\n"
+    "import cajeta.xpu.Shared;\n"
+    "import cajeta.xpu.KernelSubmission;\n"
+    "import cajeta.xpu.KernelResourceDescriptor;\n"
+    "public class Fp {\n"
+    "    @Kernel\n"
+    "    @Occupancy(maxThreads = 256)\n"
+    "    public static void withLds(KernelBuffer<float32> x, KernelBuffer<float32> y) {\n"
+    "        uint32 t = KernelThread.x();\n"
+    "        Shared<float32> s = shared float32[256];\n"
+    "        s[t] = x[t];\n"
+    "        Barrier.workgroup();\n"
+    "        y[t] = s[255 - t];\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        KernelManifest m #= KernelManifest.of(\"withLds\");\n"
+    "        if (m == null) { return 10; }\n"
+    "        if (!m.vgpr().isPresent()) { return 11; }\n"
+    "        KernelSubmission sub = heap KernelSubmission(1, 256);\n"
+    "        sub.kernel = \"withLds\";\n"
+    "        sub.sharedBytes = 64;\n"
+    "        KernelResourceDescriptor desc #= Scheduler.submit(sub);\n"
+    "        if (desc.vgprCount <= 0) { return 20; }\n"
+    "        if (desc.vgprCount != m.vgpr().get()) { return 21; }\n"
+    "        if (desc.ldsBytes != 1024 + 64) { return 22; }\n"
+    "        return 0;\n"
+    "    }\n"
+    "}\n";
+
+const char* descriptorSource(const char* args) {
+    static std::string s;
+    s = std::string(
+        "package test;\n"
+        "import cajeta.xpu.KernelResourceDescriptor;\n"
+        "import cajeta.xpu.ArithmeticCharacter;\n"
+        "public class Dc {\n"
+        "    public static int32 run() {\n"
+        "        KernelResourceDescriptor d = heap KernelResourceDescriptor(")
+        + args + ");\n"
+        "        return d.vgprCount;\n"
+        "    }\n"
+        "}\n";
+    return s.c_str();
+}
+
+} // namespace
+
+TEST(XpuSchedulerSeam, aNamedKernelsDescriptorCarriesItsManifestFootprint) {
+    CAJETA_SKIP_IF_NO_HIP();
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(kFootprintSource, "test.Fp", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 0) << "the descriptor did not carry the manifest's VGPR count and LDS";
+}
+
+TEST(XpuSchedulerSeam, theAuthorCannotFillTheFootprint) {
+    EXPECT_ANY_THROW(CajetaJit::compile(
+        descriptorSource("0, 0, 1, 1, 1, 1, 1, 1, 1, ArithmeticCharacter.MemoryBound"),
+        "test.Dc", cpuOptions()))
+        << "the retired vgprCount and ldsBytes constructor parameters still compile";
+    auto jit = CajetaJit::compile(
+        descriptorSource("1, 1, 1, 1, 1, 1, 1, ArithmeticCharacter.MemoryBound"),
+        "test.Dc", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 0) << "a descriptor built without a manifest knows no registers";
 }

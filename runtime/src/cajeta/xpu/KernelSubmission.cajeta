@@ -32,8 +32,8 @@ public final class KernelSubmission {
     public int32 blockX;
     public int32 blockY;
     public int32 blockZ;
-    // Shared-memory (LDS) bytes per block the kernel reserves (0 if none).
-    public int32 ldsBytes;
+    // Dynamic LDS bytes per block, the launch's `sharedBytes:` (0 if none).
+    public int32 sharedBytes;
     // The scheduling objective (§6.3) and arithmetic character (§7.4). Defaulted;
     // the author may overwrite either before submit.
     public SchedulePolicy policy;
@@ -61,7 +61,7 @@ public final class KernelSubmission {
         this.blockX = blockThreads;
         this.blockY = 1;
         this.blockZ = 1;
-        this.ldsBytes = 0;
+        this.sharedBytes = 0;
         this.policy = SchedulePolicy.Throughput;          // §6.3 default
         this.character = ArithmeticCharacter.MemoryBound;
         this.readSet #= heap ArrayList<int64>();
