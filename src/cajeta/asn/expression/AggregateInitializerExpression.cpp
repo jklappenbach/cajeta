@@ -1,6 +1,7 @@
 // AggregateInitializerExpression — see header for the design.
 
 #include "AggregateInitializerExpression.h"
+#include "ScalarConvert.h"
 #include "Identifier.h"
 #include "../../compile/CajetaModule.h"
 #include "../../error/Diagnostics.h"
@@ -201,11 +202,11 @@ namespace cajeta {
             if (value->getType() != fieldTy) {
                 llvm::Type* srcTy = value->getType();
                 if (fieldTy->isIntegerTy() && srcTy->isIntegerTy()) {
-                    value = builder->CreateIntCast(value, fieldTy, /*isSigned=*/true);
+                    value = convertIntBySource(*builder, value, fieldTy, convertsSigned(srcExpr, module));
                 } else if (fieldTy->isFloatingPointTy() && srcTy->isFloatingPointTy()) {
                     value = builder->CreateFPCast(value, fieldTy);
                 } else if (fieldTy->isFloatingPointTy() && srcTy->isIntegerTy()) {
-                    value = builder->CreateSIToFP(value, fieldTy);
+                    value = convertIntBySource(*builder, value, fieldTy, convertsSigned(srcExpr, module));
                 } else if (fieldTy->isIntegerTy() && srcTy->isFloatingPointTy()) {
                     value = builder->CreateFPToSI(value, fieldTy);
                 } else if (fieldTy->isAggregateType()) {

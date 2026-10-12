@@ -29,6 +29,7 @@
 #include "../compile/SessionState.h"
 #include "../field/HeapField.h"
 #include "../error/Exception.h"
+#include "../asn/expression/ScalarConvert.h"
 #include "../asn/expression/LiteralExpression.h"
 #include "../asn/VariableDeclarator.h"
 #include "../ownership/TitleClassifier.h"
@@ -5416,7 +5417,8 @@ namespace cajeta {
                 llvm::Type* expected = mft->getParamType(i + thisOffset + sretOffset);
                 if (v && v->getType() != expected) {
                     if (expected->isIntegerTy() && v->getType()->isIntegerTy()) {
-                        v = coerceBuilder->CreateIntCast(v, expected, /*isSigned=*/true);
+                        v = convertIntBySource(*coerceBuilder, v, expected,
+                                               convertsSigned(parameters[i].type));
                     } else if (expected->isFloatingPointTy() && v->getType()->isFloatingPointTy()) {
                         v = coerceBuilder->CreateFPCast(v, expected);
                     } else if (expected->isPointerTy()

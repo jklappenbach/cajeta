@@ -3,6 +3,7 @@
 //
 
 #include "../error/Diagnostics.h"
+#include "../asn/expression/ScalarConvert.h"
 #include "DefaultConstructorMethod.h"
 #include "../type/CajetaClass.h"
 #include "../asn/DefaultBlock.h"
@@ -64,11 +65,11 @@ namespace cajeta {
                 if (slotTy && initVal->getType() != slotTy) {
                     llvm::Type* srcTy = initVal->getType();
                     if (slotTy->isIntegerTy() && srcTy->isIntegerTy()) {
-                        initVal = b->CreateIntCast(initVal, slotTy, /*isSigned=*/true);
+                        initVal = convertIntBySource(*b, initVal, slotTy, convertsSigned(init, module));
                     } else if (slotTy->isFloatingPointTy() && srcTy->isFloatingPointTy()) {
                         initVal = b->CreateFPCast(initVal, slotTy);
                     } else if (slotTy->isFloatingPointTy() && srcTy->isIntegerTy()) {
-                        initVal = b->CreateSIToFP(initVal, slotTy);
+                        initVal = convertIntBySource(*b, initVal, slotTy, convertsSigned(init, module));
                     } else if (slotTy->isIntegerTy() && srcTy->isFloatingPointTy()) {
                         initVal = b->CreateFPToSI(initVal, slotTy);
                     }

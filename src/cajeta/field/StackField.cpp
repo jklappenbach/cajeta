@@ -4,6 +4,7 @@
 #include "../type/CajetaType.h"
 #include "../compile/CajetaModule.h"
 #include "../asn/VariableDeclarator.h"
+#include "../asn/expression/ScalarConvert.h"
 
 namespace cajeta {
     StackField::StackField(CajetaModulePtr module,
@@ -50,12 +51,11 @@ namespace cajeta {
                     if (initVal->getType() != fieldTy) {
                         auto* builder = module->getBuilder();
                         llvm::Type* srcTy = initVal->getType();
-                        if (fieldTy->isIntegerTy() && srcTy->isIntegerTy()) {
-                            initVal = builder->CreateIntCast(initVal, fieldTy, /*isSigned=*/true);
+                        if ((fieldTy->isIntegerTy() || fieldTy->isFloatingPointTy()) && srcTy->isIntegerTy()) {
+                            initVal = convertIntBySource(*builder, initVal, fieldTy,
+                                                         convertsSigned(initializer, module));
                         } else if (fieldTy->isFloatingPointTy() && srcTy->isFloatingPointTy()) {
                             initVal = builder->CreateFPCast(initVal, fieldTy);
-                        } else if (fieldTy->isFloatingPointTy() && srcTy->isIntegerTy()) {
-                            initVal = builder->CreateSIToFP(initVal, fieldTy);
                         } else if (fieldTy->isIntegerTy() && srcTy->isFloatingPointTy()) {
                             initVal = builder->CreateFPToSI(initVal, fieldTy);
                         }

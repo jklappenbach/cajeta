@@ -3,6 +3,7 @@
 //
 
 #include "Statement.h"
+#include "expression/ScalarConvert.h"
 #include "expression/Expression.h"
 #include "expression/MethodCallExpression.h"
 #include "expression/CallExpression.h"
@@ -2568,12 +2569,10 @@ namespace cajeta {
 
         llvm::Type* valTy = val->getType();
         if (valTy != retTy) {
-            if (retTy->isIntegerTy() && valTy->isIntegerTy()) {
-                val = builder->CreateIntCast(val, retTy, /*isSigned=*/true);
+            if ((retTy->isIntegerTy() || retTy->isFloatingPointTy()) && valTy->isIntegerTy()) {
+                val = convertIntBySource(*builder, val, retTy, convertsSigned(expression, module));
             } else if (retTy->isFloatingPointTy() && valTy->isFloatingPointTy()) {
                 val = builder->CreateFPCast(val, retTy);
-            } else if (retTy->isFloatingPointTy() && valTy->isIntegerTy()) {
-                val = builder->CreateSIToFP(val, retTy);
             } else if (retTy->isIntegerTy() && valTy->isFloatingPointTy()) {
                 val = builder->CreateFPToSI(val, retTy);
             } else if (retTy->isAggregateType() && valTy->isPointerTy()) {

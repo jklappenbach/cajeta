@@ -3,6 +3,7 @@
 //
 
 #include "../error/Diagnostics.h"
+#include "../asn/expression/ScalarConvert.h"
 #include "Method.h"
 #include "DefaultConstructorMethod.h"
 #include "llvm/IR/IRBuilder.h"
@@ -2857,11 +2858,11 @@ namespace cajeta {
                     if (slotTy && initVal->getType() != slotTy) {
                         llvm::Type* srcTy = initVal->getType();
                         if (slotTy->isIntegerTy() && srcTy->isIntegerTy()) {
-                            initVal = builder->CreateIntCast(initVal, slotTy, /*isSigned=*/true);
+                            initVal = convertIntBySource(*builder, initVal, slotTy, convertsSigned(init, module));
                         } else if (slotTy->isFloatingPointTy() && srcTy->isFloatingPointTy()) {
                             initVal = builder->CreateFPCast(initVal, slotTy);
                         } else if (slotTy->isFloatingPointTy() && srcTy->isIntegerTy()) {
-                            initVal = builder->CreateSIToFP(initVal, slotTy);
+                            initVal = convertIntBySource(*builder, initVal, slotTy, convertsSigned(init, module));
                         } else if (slotTy->isIntegerTy() && srcTy->isFloatingPointTy()) {
                             initVal = builder->CreateFPToSI(initVal, slotTy);
                         }

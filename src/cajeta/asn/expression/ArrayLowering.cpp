@@ -11,20 +11,18 @@
 #include "../../type/CajetaClass.h"
 #include "../../type/CajetaView.h"
 #include "Expression.h"
+#include "ScalarConvert.h"
 
 namespace cajeta {
 
     namespace {
-        // Coerce to the element slot's width; references store directly. Unsigned
-        // WIDENING arrives already sign-extended, a bug in the shared path.
+        // Coerce to the element slot's width by the source's signedness; references store directly.
         llvm::Value* coerceToElement(llvm::IRBuilder<>* b, llvm::Value* v,
-                                     llvm::Type* elemTy) {
+                                     llvm::Type* elemTy, bool srcSigned) {
             llvm::Type* vt = v->getType();
             if (vt == elemTy) return v;
-            if (elemTy->isIntegerTy() && vt->isIntegerTy())
-                return b->CreateIntCast(v, elemTy, /*isSigned=*/true);
-            if (elemTy->isFloatingPointTy() && vt->isIntegerTy())
-                return b->CreateSIToFP(v, elemTy);
+            if ((elemTy->isIntegerTy() || elemTy->isFloatingPointTy()) && vt->isIntegerTy())
+                return convertIntBySource(*b, v, elemTy, srcSigned);
             if (elemTy->isFloatingPointTy() && vt->isFloatingPointTy())
                 return b->CreateFPCast(v, elemTy);
             return v;
@@ -99,7 +97,7 @@ namespace cajeta {
                 v = builder->CreateLoad(a->getAllocatedType(), a);
             }
             if (!v) { ++idx; continue; }
-            v = coerceToElement(builder, v, elemTy);
+            v = coerceToElement(builder, v, elemTy, convertsSigned(node, module));
             std::vector<llvm::Value*> gepIndices = {
                 llvm::ConstantInt::get(i64Ty, 0),
                 llvm::ConstantInt::get(i32Ty, CajetaArray::DATA_FIELD_INDEX),

@@ -3,6 +3,7 @@
 //
 
 #include "Expression.h"
+#include "ScalarConvert.h"
 #include "cajeta/compile/DiagnosticSite.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/ownership/TitleClassifier.h"
@@ -1455,7 +1456,7 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
         auto idxAst = dynamic_pointer_cast<Expression>(children[1]);
         idx = loadIfLValue(module, idx, idxAst);
         if (idx->getType() != i64Ty) {
-            idx = builder->CreateIntCast(idx, i64Ty, /*isSigned=*/true);
+            idx = builder->CreateIntCast(idx, i64Ty, convertsSigned(idxAst, module));
         }
 
         if (arrayType->isInlineArray()) {
@@ -2427,12 +2428,10 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
         if (elseVal->getType() != thenVal->getType()) {
             llvm::Type* tt = thenVal->getType();
             llvm::Type* et = elseVal->getType();
-            if (tt->isIntegerTy() && et->isIntegerTy()) {
-                elseVal = builder->CreateIntCast(elseVal, tt, /*isSigned=*/true);
+            if ((tt->isIntegerTy() || tt->isFloatingPointTy()) && et->isIntegerTy()) {
+                elseVal = convertIntBySource(*builder, elseVal, tt, convertsSigned(elseAst, module));
             } else if (tt->isFloatingPointTy() && et->isFloatingPointTy()) {
                 elseVal = builder->CreateFPCast(elseVal, tt);
-            } else if (tt->isFloatingPointTy() && et->isIntegerTy()) {
-                elseVal = builder->CreateSIToFP(elseVal, tt);
             } else if (tt->isIntegerTy() && et->isFloatingPointTy()) {
                 elseVal = builder->CreateFPToSI(elseVal, tt);
             }

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iostream>
 #include "../../error/Diagnostics.h"
+#include "ScalarConvert.h"
 #include "BinaryOpExpression.h"
 #include "OperatorDispatch.h"
 #include "../LocalVariableDeclaration.h"
@@ -536,8 +537,8 @@ namespace cajeta {
         }
 
         if (lt->isFloatingPointTy() || rt->isFloatingPointTy()) {
-            if (lt->isIntegerTy()) l = builder->CreateSIToFP(l, rt);
-            if (rt->isIntegerTy()) r = builder->CreateSIToFP(r, lt);
+            if (lt->isIntegerTy()) l = convertIntBySource(*builder, l, rt, lhsSigned);
+            if (rt->isIntegerTy()) r = convertIntBySource(*builder, r, lt, rhsSigned);
             lt = l->getType();
             rt = r->getType();
             if (lt->getScalarSizeInBits() > rt->getScalarSizeInBits()) {
@@ -2249,12 +2250,10 @@ namespace cajeta {
                     }
                 }
                 if (slotTy && rhsVal->getType() != slotTy) {
-                    if (slotTy->isIntegerTy() && rhsVal->getType()->isIntegerTy()) {
-                        rhsVal = builder->CreateIntCast(rhsVal, slotTy, /*isSigned=*/true);
+                    if ((slotTy->isIntegerTy() || slotTy->isFloatingPointTy()) && rhsVal->getType()->isIntegerTy()) {
+                        rhsVal = convertIntBySource(*builder, rhsVal, slotTy, convertsSigned(rhsAst, module));
                     } else if (slotTy->isFloatingPointTy() && rhsVal->getType()->isFloatingPointTy()) {
                         rhsVal = builder->CreateFPCast(rhsVal, slotTy);
-                    } else if (slotTy->isFloatingPointTy() && rhsVal->getType()->isIntegerTy()) {
-                        rhsVal = builder->CreateSIToFP(rhsVal, slotTy);
                     } else if (slotTy->isIntegerTy() && rhsVal->getType()->isFloatingPointTy()) {
                         rhsVal = builder->CreateFPToSI(rhsVal, slotTy);
                     }
@@ -3285,7 +3284,9 @@ namespace cajeta {
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
                     return binaryOverflowIsSigned(a, b);
                 };
-                auto [pl, pr] = coerceArithPair(module, l, r);
+                auto [pl, pr] = coerceArithPair(module, l, r,
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 if (pl->getType()->isFPOrFPVectorTy()) {
                     result = emitFpBinOp(module, pl, pr, llvm::Instruction::FAdd);
                 } else if (module->getFlags().overflowChecks == OverflowChecks::On

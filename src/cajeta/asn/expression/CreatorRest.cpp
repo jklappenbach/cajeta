@@ -2,6 +2,7 @@
 // Created by James Klappenbach on 4/19/23.
 //
 
+#include "ScalarConvert.h"
 #include "CreatorRest.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/xref/XrefIndex.h"
@@ -459,7 +460,7 @@ namespace cajeta {
                     "CAJETA_ERROR_NULL_ARRAY_DIMENSION");
             }
             if (count->getType() != i64Ty) {
-                count = builder->CreateIntCast(count, i64Ty, /*isSigned=*/true);
+                count = builder->CreateIntCast(count, i64Ty, convertsSigned(countAst, module));
             }
 
             llvm::Type* headerTy = arr->getLlvmType();
