@@ -132,6 +132,12 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
   developer cannot reasonably know it, the corpus shows declared classes are
   wrong across phases, and one solo run per shape is cheap (§14). The measured
   cost is reported back to the developer through the profiler (§14.4).
+- **4.2a** When a buffer's bytes are derived, they are the bytes the body
+  requests. DRAM traffic for a launch differs from requests times groups:
+  reuse across groups lowers it, and uncoalesced access raises it. The
+  runtime observes DRAM bytes (decided 2026-10-12 against gfx1151 counters:
+  Witness A's launch moves 0.32x of its requests, a lane-strided hand kernel
+  2.3x to 5.8x).
 - **4.3a** When every cost field of a kernel is `measured`, the scheduler is
   still correct: derived cost expressions shorten warm-up, they are never a
   requirement (scheduling spec §3.4).
