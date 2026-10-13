@@ -3828,6 +3828,9 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
             CajetaTypePtr type;
             bool byValue;     // true: primitive copy; false: pointer slot
             bool byTransfer;  // true: `#name` transfer (only meaningful when
+            // An interface borrow: the closure keeps its own copy of the {data, vtable,
+            // kind} body, since the slot may point at a temporary in a frame that returns.
+            llvm::StructType* ifaceBody = nullptr;
         };
         std::vector<Capture> captures;
         ScopePtr outerScope = module->getScopeStack().isEmpty()
@@ -3864,7 +3867,9 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
                 // capture stays by value.
                 bool byTransfer = !byValue
                     && transferNames.find(name) != transferNames.end();
-                captures.push_back({name, t, byValue, byTransfer});
+                llvm::StructType* ifaceBody = (!byValue && !byTransfer)
+                    ? interfaceBodyType(t) : nullptr;
+                captures.push_back({name, t, byValue, byTransfer, ifaceBody});
                 // Any borrow capture ties the closure's lifetime to the enclosing scope; the
                 // escape check at ReturnStatement reads this flag.
                 if (!byValue && !byTransfer) {
@@ -3901,6 +3906,10 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
             std::vector<llvm::Type*> capLlvmTypes;
             capLlvmTypes.reserve(captures.size());
             for (auto& c : captures) {
+                if (c.ifaceBody) {
+                    capLlvmTypes.push_back(c.ifaceBody);
+                    continue;
+                }
                 capLlvmTypes.push_back(c.byValue
                     ? c.type->getLlvmType()
                     : (llvm::Type*) llvm::PointerType::get(llvmCtx, 0));
@@ -3965,6 +3974,17 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
                 llvm::Value* slot = outerBuilder->CreateStructGEP(
                     capturesTy, capturesPtr, (unsigned) i,
                     std::string("cap.") + cap.name);
+                if (cap.ifaceBody) {
+                    // Copy the body, marked borrowed: the closure never frees the object.
+                    llvm::Value* body = outerBuilder->CreateLoad(
+                        cap.ifaceBody, outerVal, cap.name + ".body");
+                    body = outerBuilder->CreateInsertValue(body,
+                        llvm::ConstantInt::get(outerBuilder->getInt64Ty(),
+                                               IFACE_KIND_BORROWED_CLASS),
+                        {2}, cap.name + ".borrowed");
+                    outerBuilder->CreateStore(body, slot);
+                    continue;
+                }
                 outerBuilder->CreateStore(outerVal, slot);
                 // A `#name` transfer hands ownership to the closure, whose drop_fn frees it, so
                 // the outer binding's drop entry must be deactivated or both would free it.
@@ -4047,8 +4067,10 @@ void cajetaSharpStoreArms(const ExpressionPtr& rhs) {
                 llvm::Type* slotTy = cap.byValue
                     ? cap.type->getLlvmType()
                     : ptrLlvmTy;
-                llvm::Value* val = lambdaBuilder->CreateLoad(
-                    slotTy, slot, cap.name);
+                // An interface capture's slot points at the closure's own copy of the body.
+                llvm::Value* val = cap.ifaceBody
+                    ? slot
+                    : lambdaBuilder->CreateLoad(slotTy, slot, cap.name);
                 llvm::AllocaInst* localSlot = lambdaBuilder->CreateAlloca(
                     slotTy, nullptr, cap.name);
                 lambdaBuilder->CreateStore(val, localSlot);

@@ -218,3 +218,48 @@ TEST(ClosureCaptureLifetimeTests, sharpCreatorArgumentInsideTheBodyMovesIntoTheC
         "        return after * 100000 + between * 10000 + first * 1000 + second * 10 + Cfg.gone;\n");
     EXPECT_EQ(r, 7071) << "alive after the factory, read correctly twice, freed once with the keeper";
 }
+
+// An interface-typed formal captured by an escaping lambda. The formal is a
+// pointer to the interface value the CALLER made when it converted the class,
+// so the closure must keep the value itself: a pointer to the caller's
+// temporary dangles once `build` returns (primavera-web Unit 5's sample read a
+// UserPool through one and called a null slot).
+TEST(ClosureCaptureLifetimeTests, interfaceFormalCapturedPastTheConvertingFrame) {
+    const char* src =
+        "package test;\n"
+        "public interface Pool { int32 size(); }\n"
+        "public class Mem implements Pool {\n"
+        "    public int32 n;\n"
+        "    public Mem(int32 n) { this.n = n; }\n"
+        "    public int32 size() { return this.n; }\n"
+        "}\n"
+        "public final class A {\n"
+        "    static class K {\n"
+        "        (int32) -> int32 f;\n"
+        "        public K((int32) -> int32 f) { this.f #= f; }\n"
+        "        public int32 call(int32 x) { return this.f(x); }\n"
+        "    }\n"
+        "    static #K wire(Pool p) { return heap K((x) -> x + p.size()); }\n"
+        "    static #K build(Mem m) { return A.wire(m); }\n"
+        "    static int64 churn(int32 d) {\n"
+        "        int64[] pad = stack int64[64];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 64) { pad[i] = (int64) (d * 1000 + i); i = i + 1; }\n"
+        "        if (d > 0) { return pad[3] + A.churn(d - 1); }\n"
+        "        return pad[3];\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Mem m = heap Mem(42);\n"
+        "        K k #= A.build(m);\n"
+        "        A.churn(8);\n"
+        "        int32 first = k.call(1);\n"
+        "        A.churn(8);\n"
+        "        return first * 1000 + k.call(2);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.A");
+    ASSERT_TRUE(jit);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_TRUE(fn);
+    EXPECT_EQ(fn(), 43044) << "both calls read the pool through the closure's own copy";
+}
