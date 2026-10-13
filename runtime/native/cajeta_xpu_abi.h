@@ -201,6 +201,9 @@ void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
  * payload at +8, NOT NUL-terminated), as a fresh int8[] the caller owns or NULL. */
 void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len);
 
+/* Bumped by every manifest registration, so a parsed-manifest cache knows when to refill. */
+int64_t __cajeta_xpu_kernel_manifest_generation(void);
+
 /* Device bandwidth (GB/s): a device-to-device copy of `bytes` (2*bytes of
  * traffic), best of `passes`; 0.0 on failure or no GPU. */
 double cajeta_xpu_measure_bandwidth_gbps(uint64_t bytes, int32_t passes);

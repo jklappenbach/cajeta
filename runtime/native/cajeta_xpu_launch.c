@@ -1293,7 +1293,7 @@ void __cajeta_xpu_register_kernel_manifest(const char* kernelName,
         e->json = (const char*) json;
         e->len = len;
     }
-    g_xpu_manifest_gen++;
+    __atomic_add_fetch(&g_xpu_manifest_gen, 1, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 }
 
@@ -1386,6 +1386,11 @@ static int caj_xpu_block_refused(const char* name, int32_t bx, int32_t by, int32
             name, b[0], b[1], b[2], bx, by, bz);
     return 1;
 }
+// The manifest registration count, read without the registry lock.
+int64_t __cajeta_xpu_kernel_manifest_generation(void) {
+    return (int64_t) __atomic_load_n(&g_xpu_manifest_gen, __ATOMIC_ACQUIRE);
+}
+
 // The active backend's manifest JSON as a fresh cajeta int8[] the caller owns, or NULL.
 // STATIC native (no `this`); `nameArr` is an int8[] whose payload starts at +8.
 void* __cajeta_xpu_kernel_manifest_json(void* nameArr, int64_t len) {

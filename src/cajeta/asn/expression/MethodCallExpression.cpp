@@ -1880,6 +1880,13 @@ namespace cajeta {
                     entries.push_back(
                         ParameterEntry(CajetaType::of("String"), "", nameStr));
                     std::string ofName = "of";
+                    if (MethodPtr ofMethod = kmClass->resolveMethod(
+                            ofName, entries, /*isConstructor=*/false,
+                            /*callFloating=*/false, explicitMethodTypeArgs)) {
+                        resolvedReturnsOwnership = ofMethod->isReturnsOwnership();
+                        resolvedReturnsOwnershipKnown = true;
+                        resolvedMethod = ofMethod;
+                    }
                     llvm::Value* record = kmClass->invokeMethod(
                         ofName, entries, /*isConstructor=*/false,
                         /*thisInstance=*/nullptr, module);

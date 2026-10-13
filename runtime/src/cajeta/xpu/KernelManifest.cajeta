@@ -5,6 +5,9 @@ import cajeta.codec.json.JsonArray;
 import cajeta.codec.json.JsonObject;
 import cajeta.codec.json.JsonValue;
 import cajeta.collection.ArrayList;
+import cajeta.collection.HashMap;
+import cajeta.concurrent.Lock;
+import cajeta.concurrent.LockGuard;
 import cajeta.lang.Optional;
 
 /**
@@ -54,6 +57,11 @@ public final class KernelManifest {
     /** Derived: may enter a replayed graph (§8.3). */
     public boolean captureSafe;
 
+    // ---- the per-process cache behind `of`: one map per registration generation --
+    private static Lock CACHE_GATE = heap Lock();
+    private static ArrayList<HashMap<String, KernelManifest>> CACHE = heap ArrayList<HashMap<String, KernelManifest>>();
+    private static int64 cacheGeneration = -1L;
+
     // ---- access (§6): one entry per buffer-like parameter, declaration order --
     private ArrayList<String> accessParamList;
     private ArrayList<String> accessModeList;
@@ -99,9 +107,31 @@ public final class KernelManifest {
     /**
      * The manifest of `kernelName` (a simple `@Kernel` name) for the active
      * backend, or `null` when that backend registered no device code for it.
+     * A lent view of a per-process record that lives as long as the program.
      * `k.manifest()` lowers to this.
      */
-    public static #KernelManifest of(String kernelName) {
+    public static KernelManifest of(String kernelName) {
+        LockGuard g #= KernelManifest.CACHE_GATE.acquire();
+        int64 gen = KernelManifest.nativeGeneration();
+        if (gen != KernelManifest.cacheGeneration || KernelManifest.CACHE.count() == 0) {
+            HashMap<String, KernelManifest> fresh = heap HashMap<String, KernelManifest>();
+            KernelManifest.CACHE.add(#fresh);
+            KernelManifest.cacheGeneration = gen;
+        }
+        HashMap<String, KernelManifest> live = KernelManifest.CACHE.get(KernelManifest.CACHE.count() - 1);
+        KernelManifest hit = live.get(kernelName);
+        if (hit != null || live.containsKey(kernelName)) {
+            return #= hit;
+        }
+        int8[] kb #= kernelName.toBytes();
+        int32 kn = (int32) kb.count();
+        String key = heap String(#kb, kn);
+        KernelManifest m #= KernelManifest.parse(kernelName);
+        live.put(#key, #m);
+        return live.get(kernelName);
+    }
+
+    private static #KernelManifest parse(String kernelName) {
         int8[] b #= kernelName.toBytes();
         int8[] json #= KernelManifest.nativeJson(b, (int64) b.count());
         if (json == null) {
@@ -306,6 +336,9 @@ public final class KernelManifest {
 
     @Native("__cajeta_xpu_kernel_manifest_json")
     private static #int8[] nativeJson(int8[] name, int64 len);
+
+    @Native("__cajeta_xpu_kernel_manifest_generation")
+    private static int64 nativeGeneration();
 
     // ---- measured footprint: what the DRIVER allocated, on this device ---- //
     // The accessors above report what the COMPILER modelled for a target it

@@ -840,6 +840,123 @@ TEST(XpuKernelManifest, accessorReturnsRecordForActiveTarget) {
     EXPECT_EQ(fn(), 0);
 }
 
+namespace {
+std::string cacheProgram(const std::string& pkg, const std::string& body) {
+    return "package " + pkg + ";\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.xpu.KernelManifest;\n"
+        "public final class P {\n"
+        "    @Kernel\n"
+        "    public static void cachek(KernelBuffer<float32> y, uint32 n) {\n"
+        "        uint32 i = KernelThread.x();\n"
+        "        if (i < n) { y[i] = 1.0f; }\n"
+        "    }\n"
+        + body +
+        "}\n";
+}
+
+int runCacheProgram(const std::string& pkg, const std::string& body,
+                    std::unique_ptr<CajetaJit>& keep) {
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    keep = CajetaJit::compile(cacheProgram(pkg, body), pkg + ".P", o);
+    if (!keep) return -1;
+    auto fn = keep->lookup<int (*)()>("run");
+    if (!fn) return -2;
+    return fn();
+}
+}
+
+// scheduling 1.1.6 — a second `of` returns the record the first parsed: a
+// write through the first reference is visible through the second.
+TEST(XpuKernelManifest, aSecondOfReturnsTheRecordTheFirstParsed) {
+    std::unique_ptr<CajetaJit> jit;
+    int rc = runCacheProgram("mc1",
+        "    public static int32 run() {\n"
+        "        KernelManifest a = cachek.manifest();\n"
+        "        KernelManifest b = KernelManifest.of(\"cachek\");\n"
+        "        if (a == null || b == null) { return 1; }\n"
+        "        boolean was = a.instrumented;\n"
+        "        a.instrumented = !was;\n"
+        "        boolean seen = b.instrumented;\n"
+        "        a.instrumented = was;\n"
+        "        if (seen == was) { return 2; }\n"
+        "        return 0;\n"
+        "    }\n", jit);
+    EXPECT_EQ(rc, 0);
+}
+
+// scheduling 1.1.6 — a record kept in a field, a static and a plain return
+// stays readable after later lookups, and compiles under the ownership checks.
+TEST(XpuKernelManifest, aKeptRecordOutlivesLaterLookups) {
+    std::unique_ptr<CajetaJit> jit;
+    int rc = runCacheProgram("mc2",
+        "    static KernelManifest kept;\n"
+        "    KernelManifest held;\n"
+        "    public P() { this.held #= KernelManifest.of(\"cachek\"); }\n"
+        "    static KernelManifest lookup() { return KernelManifest.of(\"cachek\"); }\n"
+        "    public static int32 run() {\n"
+        "        P p = heap P();\n"
+        "        P.kept #= P.lookup();\n"
+        "        int32 i = 0;\n"
+        "        while (i < 100) {\n"
+        "            KernelManifest t = cachek.manifest();\n"
+        "            if (t == null) { return 1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (p.held == null || P.kept == null) { return 2; }\n"
+        "        if (!p.held.kernel.equals(\"mc2.P.cachek\")) { return 3; }\n"
+        "        if (!P.kept.kernel.equals(\"mc2.P.cachek\")) { return 4; }\n"
+        "        if (!p.held.codeHash.startsWith(\"sha256:\")) { return 5; }\n"
+        "        return 0;\n"
+        "    }\n", jit);
+    EXPECT_EQ(rc, 0);
+}
+
+// scheduling 1.1.6 — a name registered after `of` cached it as absent is served
+// from the new registration, within one program.
+TEST(XpuKernelManifest, aLaterRegistrationIsNotServedStale) {
+    const std::string src = cacheProgram("mc3",
+        "    public static int32 before() {\n"
+        "        KernelManifest g = KernelManifest.of(\"mc3ghost\");\n"
+        "        if (g == null) { return 0; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "    public static int32 after() {\n"
+        "        KernelManifest g = KernelManifest.of(\"mc3ghost\");\n"
+        "        if (g == null) { return 1; }\n"
+        "        if (!g.kernel.equals(\"mc3.P.mc3ghost\")) { return 2; }\n"
+        "        return 0;\n"
+        "    }\n");
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
+    auto jit = CajetaJit::compile(src, "mc3.P", o);
+    ASSERT_NE(jit, nullptr);
+    auto before = jit->lookup<int (*)()>("before");
+    auto after = jit->lookup<int (*)()>("after");
+    ASSERT_NE(before, nullptr);
+    ASSERT_NE(after, nullptr);
+    ASSERT_EQ(before(), 0);
+
+    cajeta::xpu::KernelManifest ghost;
+    ghost.kernel = "mc3.P.mc3ghost";
+    ghost.target = "cpu/test";
+    ghost.codeHash = "sha256:" + std::string(64, '0');
+    ghost.compilerVersion = "test";
+    static const std::string json = cajeta::xpu::toJson(ghost);
+    using RegisterFn = void (*)(const char*, int32_t, const char*, const void*, uint64_t);
+    using BackendFn = int32_t (*)();
+    auto reg = reinterpret_cast<RegisterFn>(
+        jit->lookupRawSymbol("__cajeta_xpu_register_kernel_manifest"));
+    auto backend = reinterpret_cast<BackendFn>(
+        jit->lookupRawSymbol("__cajeta_xpu_active_backend_id"));
+    ASSERT_NE(reg, nullptr);
+    ASSERT_NE(backend, nullptr);
+    reg("mc3ghost", backend(), "", json.data(), json.size());
+    EXPECT_EQ(after(), 0);
+}
+
 // 1.1.7 — the JSON copy an AOT build writes beside the artifact validates
 // against tile-manifest-v1.schema.json (§12.4). Drives the real compiler binary
 // with --emit=obj --xpu-backend=cpu (GPU-free).
@@ -1644,4 +1761,21 @@ TEST(XpuKernelManifest, nativeOpsAreReadableFromCajetaSource) {
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 0);
+}
+
+// scheduling 1.1.6 — `k.manifest()` binds a lent record: a scoped local holding
+// it must not free the cached record on drop (it was armed as owned).
+TEST(XpuKernelManifest, aScopedManifestLocalLeavesTheCachedRecord) {
+    std::unique_ptr<CajetaJit> jit;
+    int rc = runCacheProgram("mc4",
+        "    public static int32 run() {\n"
+        "        {\n"
+        "            KernelManifest t = cachek.manifest();\n"
+        "            if (t == null) { return 1; }\n"
+        "        }\n"
+        "        KernelManifest u = KernelManifest.of(\"cachek\");\n"
+        "        if (!u.kernel.equals(\"mc4.P.cachek\")) { return 3; }\n"
+        "        return 0;\n"
+        "    }\n", jit);
+    EXPECT_EQ(rc, 0);
 }

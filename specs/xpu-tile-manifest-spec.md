@@ -321,7 +321,10 @@ ceiling — and no launch path reads any of it (`hardware-profile-tuning-finding
 
 - **12.1** When a program references a kernel, `k.manifest()` returns the
   manifest for the active target as a host record with the fields above;
-  absent fields read as absent, not zero.
+  absent fields read as absent, not zero. The record is parsed once per kernel
+  and lent. Every later call returns the same record, and it stays valid for
+  the life of the program. A manifest registered after the first lookup, such
+  as one from a module loaded later, is what later calls return.
 - **12.2** When `Scheduler.submit` is called, it reads the manifest for the
   submission's kernel; the author-filled `KernelResourceDescriptor` fields
   shipped in cooperative-tile Unit 6 (`ldsBytes`, `vgprCount`) are replaced by
