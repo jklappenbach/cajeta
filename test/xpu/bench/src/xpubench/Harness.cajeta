@@ -262,7 +262,7 @@ public final class Harness {
         int32 slot = 0;
         while (slot < (int32) order.count()) {
             String arm = arms.get(order[slot]);
-            rows.arm = arm;
+            rows.arm #= arm;
             Workloads.applyArm(arm);
             System.stdout.println("--- arm " + arm + " ---");
 
