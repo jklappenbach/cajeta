@@ -9,6 +9,7 @@
 - A lambda that captures an interface value keeps its own copy of it, so it no longer reads a dead frame once the function that converted the value returns.
 - Templates: a bound holds through `implements` and waits for a type not yet parsed; a class template's bare name inside its own body names the instantiation.
 - xpu: kernel manifests carry a work model derived from the kernel body, and manifest bytes are the bytes a kernel requests. `Scheduler.submit` reads a kernel's footprint from its manifest. API change: `KernelResourceDescriptor`'s constructor drops `vgprCount` and `ldsBytes`, and `KernelSubmission.ldsBytes` is renamed `sharedBytes`. A kernel declaring `@Cost` fails the build.
+- xpu: `KernelManifest.of` returns a lent view of a record parsed once per process, so a program may keep the record and a submit no longer pays the JSON parse. Its signature changes from `#KernelManifest` to `KernelManifest`; a caller that binds the result with `#=` keeps compiling, since `#=` records the borrow.
 - xpu: `Bits` over `uint64`, with `trailingZeros` and `leadingZeros` at both widths. A Vulkan launch of a kernel with no Vulkan device code is refused, as on the other backends.
 
 ## 0.40.0 (2026-10-11)
