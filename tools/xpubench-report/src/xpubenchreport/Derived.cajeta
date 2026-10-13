@@ -14,6 +14,10 @@ public final class Derived {
     public float64 value;
     public boolean pending;
     public String note;
+    // The band over repeated passes; n 0 means one pass (lo and hi are the value).
+    public float64 lo;
+    public float64 hi;
+    public int64 n;
 
     public Derived() {
         this.workload = "";
@@ -23,5 +27,8 @@ public final class Derived {
         this.value = 0.0;
         this.pending = false;
         this.note = "";
+        this.lo = 0.0;
+        this.hi = 0.0;
+        this.n = 0L;
     }
 }

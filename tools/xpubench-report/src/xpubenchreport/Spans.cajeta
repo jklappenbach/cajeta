@@ -365,6 +365,90 @@ public final class Spans {
     }
 
     /**
+     * One row per KPI over repeated profiled passes of one workload/shape
+     * (xpu-tile-scheduling 0.1.4): the median of the passes with their
+     * [min, max] and n, so a device span is banded rather than one sample.
+     */
+    public static #ArrayList<Derived> deriveRepeated(ArrayList<Spans> passes, String workload,
+                                                     String shape, String names, int64 iterations,
+                                                     float64 wallUs) {
+        ArrayList<ArrayList<Derived>> per = heap ArrayList<ArrayList<Derived>>();
+        int32 i = 0;
+        while (i < passes.count()) {
+            ArrayList<Derived> d #= Spans.derive(passes.get(i), workload, shape, names, iterations, wallUs);
+            per.add(#d);
+            i = i + 1;
+        }
+        return Spans.combine(per);
+    }
+
+    /** Per-pass row lists merged KPI by KPI in the first pass's order; a KPI any pass left pending stays pending. */
+    public static #ArrayList<Derived> combine(ArrayList<ArrayList<Derived>> per) {
+        ArrayList<Derived> out = heap ArrayList<Derived>();
+        if (per.count() == 0) {
+            return out;
+        }
+        ArrayList<Derived> first = per.get(0);
+        int32 k = 0;
+        while (k < first.count()) {
+            Derived f = first.get(k);
+            k = k + 1;
+            float64[] vals = heap float64[per.count()];
+            int32 nv = 0;
+            String why = "";
+            int32 p = 0;
+            while (p < per.count()) {
+                ArrayList<Derived> list = per.get(p);
+                p = p + 1;
+                int32 q = 0;
+                while (q < list.count()) {
+                    Derived d = list.get(q);
+                    q = q + 1;
+                    if (d.workload.equals(f.workload) && d.shape.equals(f.shape) && d.kpi.equals(f.kpi)) {
+                        if (d.pending) {
+                            why = "" + d.note;
+                        } else {
+                            vals[nv] = d.value;
+                            nv = nv + 1;
+                        }
+                    }
+                }
+            }
+            if (why.byteLength() > 0 || nv == 0) {
+                out.add(#Spans.pendingRow(f.workload, f.shape, f.kpi, why));
+                continue;
+            }
+            Spans.sortValues(vals, nv);
+            float64 med = vals[nv / 2];
+            if (nv % 2 == 0) {
+                med = (vals[nv / 2 - 1] + vals[nv / 2]) / 2.0;
+            }
+            Derived m #= Spans.value(f.workload, f.shape, f.kpi, f.unit, Spans.round(med, 2),
+                                     f.note + "; median of " + nv + " profiled passes");
+            m.lo = vals[0];
+            m.hi = vals[nv - 1];
+            m.n = (int64) nv;
+            out.add(#m);
+        }
+        return out;
+    }
+
+    /** Ascending insertion sort of the first `n` values. */
+    static void sortValues(float64[] v, int32 n) {
+        int32 i = 1;
+        while (i < n) {
+            float64 x = v[i];
+            int32 j = i - 1;
+            while (j >= 0 && v[j] > x) {
+                v[j + 1] = v[j];
+                j = j - 1;
+            }
+            v[j + 1] = x;
+            i = i + 1;
+        }
+    }
+
+    /**
      * Rows for the cajeta-llm run (report §3.5 automated). `wallMs` is the
      * profiled process's prefill + decode wall. Fractions and busy are
      * totals-based and pending when the ring dropped records or cannot say;

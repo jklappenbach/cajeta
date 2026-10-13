@@ -48,9 +48,10 @@ public final class Workloads {
     // pairs the streaming arm against the legs of record.
     public static boolean streamingSaxpy = false;
 
-    /** Arms are labels in Unit 0; later units switch the scheduler here. */
+    /** Switch the launches, and the llm child, to `arm` (scheduling 0.1.3). */
     public static void applyArm(String arm) {
-        return;
+        Arm.apply(arm);
+        Llm.arm #= "" + arm;
     }
 
     static int32 grid(uint32 n) {

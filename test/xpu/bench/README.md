@@ -71,8 +71,9 @@ Two facts about the set, both measured on 2026-09-06:
   and the protected frame's `frame_p99` beside it (`pair`) as ordinary
   verdicts. Run with `SPANS=0`: the profiled pass names kernels, and the
   streaming twin's spans would land under `saxpyStream`.
-- **Profiled passes** (scheduling plan 0.2.4). After the timed run, `run.sh`
-  runs each workload once more under `CAJETA_PROFILER=1` — one kernel shape
+- **Profiled passes** (scheduling plan 0.2.4, 0.2.6). After the timed run,
+  `run.sh` runs each workload `PROFILE_REPEATS` times more (default 5), once
+  per arm per repeat in A/B/B/A order, under `CAJETA_PROFILER=1` — one kernel shape
   and one seam target per pass, so every span in a trace belongs to one row
   (`--kernel-shape=small|large`, `--seam-targets=5`) — summarises the trace
   per kernel (`cajeta profile summary --csv`) and derives the rows the host
@@ -98,16 +99,32 @@ Two facts about the set, both measured on 2026-09-06:
 - **Idle gate.** The harness refuses (exit 3) while another `cajeta_test`,
   `xpubench`, `gpuparity`, `SchedThroughput`, or llama.cpp binary is alive,
   by process name, excluding itself. Load average is printed beside it.
-- **Arms.** `--arms=a,b` runs arms in A/B/B/A order; in Unit 0 there is one
-  arm, `baseline`, and the switch point (`Workloads.applyArm`) is where a
-  later unit turns the scheduler on and off.
+- **Contention gate** (scheduling plan 0.1.5). Process names miss the load
+  that matters on an APU: a CPU process streaming memory slowed the GPU's
+  bandwidth-bound kernels 42% to 55% with the GPU clocks unchanged (report
+  §4 T-006). Over a one-second window (`--gate-window-ms=`) the harness reads
+  foreign CPU busy (all CPU time outside itself and its waited children),
+  other processes' DRM gfx and compute engine time, and any other GPU
+  compute process, and refuses (exit 3) over `--gate-cpu=10` percent, over
+  `--gate-gpu=5` percent, or beside another compute process.
+- **Witness rows.** Each workload block writes `witness` rows for its arm
+  round: `foreign_cpu_pct`, `foreign_gpu_pct`, and `scheduled_launches` (the
+  launches the scheduler saw, 0 under the bypass arm). `trial` never pairs
+  them as KPIs. A KPI outside its band whose block had a witness over the
+  threshold on either side reads `contended`, not `worse`.
+- **Arms.** `--arms=a,b` runs arms in A/B/B/A order, two rounds for two or
+  more arms. `Workloads.applyArm` switches the process (`bypass` takes the
+  raw launch ABI through `Scheduler.bypass`, `scheduled` the seam, any other
+  arm leaves it as it started) and the llm child, which runs under
+  `env CAJETA_XPU_SCHEDULER=bypass` or `env -u CAJETA_XPU_SCHEDULER`.
 - **Identity.** Every row carries device, backend, driver, compiler commit,
   power mode, date, and arm.
 
-`XpuBenchHarnessTests.cpp` compiles the harness's own `Stats` and `Gate`
-sources and checks the A/B/B/A order, the band arithmetic, and the gate in
-both directions (it refuses beside a live process named like a bench, and
-does not refuse on a clean table or because of its own pid).
+`XpuBenchHarnessTests.cpp` compiles the harness's own `Stats`, `Gate` and
+`Arm` sources and checks the A/B/B/A order, the band arithmetic, the gate
+in both directions (it refuses beside a live process named like a bench,
+and does not refuse on a clean table or because of its own pid), the arm
+switch, and the witness parsers.
 
 ## Rendering
 
@@ -126,8 +143,13 @@ the before row has no band (n = 1: reported, not gated; exit 1 on any
 code) a KPI's band is the union of the two runs' bands and its n their sum,
 so a pair of single-sample rows is banded by the two runs' spread and a
 drifting five-block KPI widens to that drift; a KPI absent from the rerun
-keeps its own band. `spans` appends device-span rows derived from one
-profiled pass (`run.sh` calls it after every pass).
+keeps its own band. With `--before-arm=` and `--after-arm=` both files may
+be the same interleaved leg: each arm's rounds merge into one row per key
+(the median of the round medians, the union band, the summed n). `trial`
+exits 1 on any `worse`, 3 when the only failures are `contended`.
+`spans` appends device-span rows derived from a comma list of summaries,
+one per repeated profiled pass: the median of the passes, banded by their
+[min, max] (`run.sh` calls it once per workload per arm).
 
 A leg can be split across invocations to fit a tool's timeout:
 `run.sh cpu --workloads=kernels`, then `KEEP_ROWS=1 DATE=<the first

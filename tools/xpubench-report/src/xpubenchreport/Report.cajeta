@@ -76,7 +76,7 @@ public final class Report {
 
         public #String identity() {
             return this.device + " | " + this.backend + " | " + this.driver + " | "
-                + this.compiler + " | " + this.powerMode + " | " + this.date;
+                + this.compiler + " | " + this.powerMode + " | " + this.date + " | " + this.arm;
         }
 
         public #String key() {
@@ -195,13 +195,147 @@ public final class Report {
         return s.replace("|", "/");
     }
 
-    /** Lower is better for durations, misses, slowdowns; higher for rates. */
+    // Foreign-load thresholds above which a regression reads `contended` (0.1.5).
+    static float64 contendedCpuPct = 10.0;
+    static float64 contendedGpuPct = 5.0;
+
+    /**
+     * The rows of one arm, an arm's repeated rounds merged per key
+     * (scheduling 0.1.3): the median of the round medians, the union band,
+     * the summed n. `arm` empty keeps every row unmerged.
+     */
+    public static #ArrayList<Row> armRows(ArrayList<Row> all, String arm) {
+        ArrayList<Row> out = heap ArrayList<Row>();
+        int32 i = 0;
+        while (i < all.count()) {
+            Row r = all.get(i);
+            i = i + 1;
+            if (arm.byteLength() > 0 && !r.arm.equals(arm)) {
+                continue;
+            }
+            String key #= r.key();
+            boolean seen = false;
+            int32 k = 0;
+            while (k < out.count()) {
+                String ko #= out.get(k).key();
+                if (ko.equals(key)) {
+                    seen = true;
+                }
+                k = k + 1;
+            }
+            if (seen && arm.byteLength() > 0) {
+                continue;
+            }
+            out.add(#Report.mergeKey(all, arm, r));
+        }
+        return out;
+    }
+
+    /** Every measured row of `arm` with `first`'s key, merged into a fresh row. */
+    static #Row mergeKey(ArrayList<Row> all, String arm, Row first) {
+        Row m = heap Row();
+        m.workload #= "" + first.workload;
+        m.shape #= "" + first.shape;
+        m.kpi #= "" + first.kpi;
+        m.unit #= "" + first.unit;
+        m.device #= "" + first.device;
+        m.backend #= "" + first.backend;
+        m.driver #= "" + first.driver;
+        m.compiler #= "" + first.compiler;
+        m.powerMode #= "" + first.powerMode;
+        m.date #= "" + first.date;
+        m.arm #= "" + first.arm;
+        m.note #= "" + first.note;
+        m.median = first.median;
+        m.lo = first.lo;
+        m.hi = first.hi;
+        m.p95 = first.p95;
+        m.n = first.n;
+        if (arm.byteLength() == 0) {
+            return m;
+        }
+        String key #= first.key();
+        float64[] meds = heap float64[all.count()];
+        int32 nm = 0;
+        int64 n = 0L;
+        float64 lo = 0.0;
+        float64 hi = 0.0;
+        int32 i = 0;
+        while (i < all.count()) {
+            Row r = all.get(i);
+            i = i + 1;
+            String kr #= r.key();
+            if (!r.arm.equals(arm) || !kr.equals(key) || r.unit.equals("pending")) {
+                continue;
+            }
+            if (nm == 0 || r.lo < lo) {
+                lo = r.lo;
+            }
+            if (nm == 0 || r.hi > hi) {
+                hi = r.hi;
+            }
+            meds[nm] = r.median;
+            nm = nm + 1;
+            n = n + r.n;
+        }
+        if (nm == 0) {
+            return m;
+        }
+        Spans.sortValues(meds, nm);
+        float64 med = meds[nm / 2];
+        if (nm % 2 == 0) {
+            med = (meds[nm / 2 - 1] + meds[nm / 2]) / 2.0;
+        }
+        m.median = med;
+        m.lo = lo;
+        m.hi = hi;
+        m.n = n;
+        return m;
+    }
+
+    /** The harness block a row's workload ran in: `kernel.saxpy` in `kernels`, `llm.decode` in `llm`. */
+    static #String blockOf(String workload) {
+        if (workload.startsWith("kernel.")) {
+            return "" + "kernels";
+        }
+        int64 dot = workload.indexOf(".");
+        if (dot < 0L) {
+            return "" + workload;
+        }
+        return workload.substring(0, (int32) dot);
+    }
+
+    /** The largest witness of `kpi` over `rows` for `block`, or -1 when none was recorded. */
+    static float64 witness(ArrayList<Row> rows, String block, String kpi) {
+        float64 w = 0.0 - 1.0;
+        int32 i = 0;
+        while (i < rows.count()) {
+            Row r = rows.get(i);
+            i = i + 1;
+            if (r.workload.equals("witness") && r.shape.equals(block) && r.kpi.equals(kpi)
+                && r.hi > w) {
+                w = r.hi;
+            }
+        }
+        return w;
+    }
+
+    /** True when either side's witness for `block` was over a threshold. */
+    static boolean contendedBlock(ArrayList<Row> b, ArrayList<Row> af, String block) {
+        return Report.witness(b, block, "foreign_cpu_pct") > Report.contendedCpuPct
+            || Report.witness(af, block, "foreign_cpu_pct") > Report.contendedCpuPct
+            || Report.witness(b, block, "foreign_gpu_pct") > Report.contendedGpuPct
+            || Report.witness(af, block, "foreign_gpu_pct") > Report.contendedGpuPct;
+    }
+
+    /** Lower is better for durations, misses, slowdowns and device idle; higher for rates. */
     public static boolean lowerIsBetter(Row r) {
         String u = r.unit;
         if (u.equals("us") || u.equals("ms") || u.equals("bytes")) {
             return true;
         }
-        if (r.kpi.contains("missed") || r.kpi.contains("slowdown") || r.kpi.contains("cost")) {
+        if (r.kpi.contains("missed") || r.kpi.contains("slowdown") || r.kpi.contains("cost")
+            || r.kpi.contains("queue_empty")) {
             return true;
         }
         return false;
@@ -326,7 +460,8 @@ public final class Report {
             i = i + 1;
         }
         if (pos < 2) {
-            System.stderr.println("usage: xpubench-report trial <before.jsonl> <after.jsonl> --id=T-001 --unit=... --commit=...");
+            System.stderr.println("usage: xpubench-report trial <before.jsonl> <after.jsonl> --id=T-001 --unit=... --commit=... "
+                + "[--bands=<rerun.jsonl>] [--before-arm=<arm> --after-arm=<arm>] [--contended-cpu=10 --contended-gpu=5]");
             return 2;
         }
         String id #= Report.opt(args, "--id=", "T-???");
@@ -334,18 +469,33 @@ public final class Report {
         String commit #= Report.opt(args, "--commit=", "");
         String date #= Report.opt(args, "--date=", "");
         String bandsPath #= Report.opt(args, "--bands=", "");
-        ArrayList<Row> b #= Report.loadFile(before);
-        ArrayList<Row> af #= Report.loadFile(after);
+        String beforeArm #= Report.opt(args, "--before-arm=", "");
+        String afterArm #= Report.opt(args, "--after-arm=", "");
+        String cpuMax #= Report.opt(args, "--contended-cpu=", "10");
+        String gpuMax #= Report.opt(args, "--contended-gpu=", "5");
+        Report.contendedCpuPct = (float64) Long.parseLong(cpuMax);
+        Report.contendedGpuPct = (float64) Long.parseLong(gpuMax);
+        ArrayList<Row> b0 #= Report.loadFile(before);
+        ArrayList<Row> b #= Report.armRows(b0, beforeArm);
+        ArrayList<Row> a0 #= Report.loadFile(after);
+        ArrayList<Row> af #= Report.armRows(a0, afterArm);
         ArrayList<Row> bands = heap ArrayList<Row>();
         if (bandsPath.byteLength() > 0) {
-            ArrayList<Row> p #= Report.loadFile(bandsPath);
+            ArrayList<Row> p0 #= Report.loadFile(bandsPath);
+            ArrayList<Row> p #= Report.armRows(p0, beforeArm);
             bands.appendAll(p);
         }
         TrialResult res #= Report.trialRows(b, af, bands, id, unit, commit, date);
         if (res.refused) {
             return 2;
         }
-        return res.worse == 0 ? 0 : 1;
+        if (res.worse > 0) {
+            return 1;
+        }
+        if (res.contended > 0) {
+            return 3;
+        }
+        return 0;
     }
 
     /** Index of the last measured row in `rows` with `key`, or -1. (An index,
@@ -403,7 +553,8 @@ public final class Report {
             Row rb = b.get(x);
             int32 xb = x;
             x = x + 1;
-            if (rb.unit.equals("pending") || rb.kpi.equals("launches") || Report.superseded(b, xb)) {
+            if (rb.unit.equals("pending") || rb.unit.equals("witness") || rb.kpi.equals("launches")
+                || Report.superseded(b, xb)) {
                 continue;
             }
             String key #= rb.key();
@@ -432,7 +583,11 @@ public final class Report {
                 res.paired = res.paired + 1;
                 int32 v = Verdict.of(Report.lowerIsBetter(rb), lo0, hi0, n0, ra.median);
                 String verdict = Verdict.name(v);
-                if (v == Verdict.WORSE) {
+                String block #= Report.blockOf(rb.workload);
+                if (v == Verdict.WORSE && Report.contendedBlock(b, af, block)) {
+                    verdict = "contended";
+                    res.contended = res.contended + 1;
+                } else if (v == Verdict.WORSE) {
                     res.worse = res.worse + 1;
                 } else if (v == Verdict.SINGLE) {
                     res.single = res.single + 1;
@@ -460,6 +615,11 @@ public final class Report {
         String bandsNote = "";
         if (res.widened > 0) {
             bandsNote = "; " + res.widened + " KPI(s) banded by the union of two runs (--bands)";
+        }
+        if (res.contended > 0) {
+            bandsNote = bandsNote + "; " + res.contended + " KPI(s) outside their band while a witness saw "
+                + "foreign load over " + Report.contendedCpuPct + "% CPU or " + Report.contendedGpuPct
+                + "% GPU: contended, rerun on a quiet box";
         }
         if (res.worse == 0) {
             System.stdout.println("not-worse: every paired KPI with a noise band is inside it or better"
@@ -489,6 +649,7 @@ public final class Report {
         String outPath #= Report.opt(args, "--out=", "");
         String shape #= Report.opt(args, "--shape=", "");
         String wallS #= Report.opt(args, "--wall-ms=", "0");
+        String armOverride #= Report.opt(args, "--arm=", "");
         boolean llm = false;
         int32 a = 0;
         while (a < (int32) args.count()) {
@@ -502,23 +663,55 @@ public final class Report {
                 + "--out=<leg rows> [--llm --shape=<shape> --wall-ms=<int>]");
             return 2;
         }
-        int8[] cb #= File.readAllBytes(csvPath);
-        if (cb == null) {
-            System.stderr.println("xpubench-report: cannot read " + csvPath);
+        // A comma list of summaries: repeated profiled passes, banded (0.1.4).
+        ArrayList<Spans> passes = heap ArrayList<Spans>();
+        int64 dropped = 0L;
+        int32 st = 0;
+        int32 ci = 0;
+        while (ci <= csvPath.byteLength()) {
+            if (ci == csvPath.byteLength() || csvPath.byteAt(ci) == 44) {
+                if (ci > st) {
+                    String one #= csvPath.substring(st, ci);
+                    int8[] cb #= File.readAllBytes(one);
+                    if (cb == null) {
+                        System.stderr.println("xpubench-report: cannot read " + one);
+                        return 1;
+                    }
+                    String csv #= heap String(#cb, (int32) cb.count());
+                    Spans one1 #= Spans.parse(csv);
+                    if (one1.dropped > 0L) {
+                        dropped = dropped + one1.dropped;
+                    }
+                    passes.add(#one1);
+                }
+                st = ci + 1;
+            }
+            ci = ci + 1;
+        }
+        if (passes.count() == 0) {
+            System.stderr.println("xpubench-report: no summary in --csv=" + csvPath);
             return 1;
         }
-        String csv #= heap String(#cb, (int32) cb.count());
-        Spans s #= Spans.parse(csv);
         ArrayList<Row> rows #= Report.loadFile(rowsPath);
         if (rows.count() == 0) {
             System.stderr.println("xpubench-report: no rows in " + rowsPath);
             return 1;
         }
         Row id = rows.get(0);
+        if (armOverride.byteLength() > 0) {
+            id.arm #= "" + armOverride;
+        }
         ArrayList<Derived> all = heap ArrayList<Derived>();
         if (llm) {
-            ArrayList<Derived> d #= Spans.deriveLlm(s, shape, (float64) Long.parseLong(wallS));
-            all.appendAll(d);
+            ArrayList<ArrayList<Derived>> per = heap ArrayList<ArrayList<Derived>>();
+            int32 pi = 0;
+            while (pi < passes.count()) {
+                ArrayList<Derived> d #= Spans.deriveLlm(passes.get(pi), shape, (float64) Long.parseLong(wallS));
+                per.add(#d);
+                pi = pi + 1;
+            }
+            ArrayList<Derived> merged #= Spans.combine(per);
+            all.appendAll(merged);
         } else {
             int32 i = 0;
             while (i < rows.count()) {
@@ -534,8 +727,8 @@ public final class Report {
                         }
                         j = j + 1;
                     }
-                    ArrayList<Derived> d #= Spans.derive(s, r.workload, r.shape, r.note,
-                                                         (int64) r.median, wall);
+                    ArrayList<Derived> d #= Spans.deriveRepeated(passes, r.workload, r.shape, r.note,
+                                                                 (int64) r.median, wall);
                     all.appendAll(d);
                 }
                 i = i + 1;
@@ -547,7 +740,8 @@ public final class Report {
             k = k + 1;
         }
         System.stdout.println("xpubench-report: " + all.count() + " span row(s) appended to " + outPath
-            + (s.dropped > (int64) 0 ? " (ring dropped " + s.dropped + " records)" : ""));
+            + " from " + passes.count() + " pass(es)"
+            + (dropped > (int64) 0 ? " (ring dropped " + dropped + " records)" : ""));
         return 0;
     }
 
@@ -559,11 +753,19 @@ public final class Report {
         w.key("shape");     w.writeString(d.shape);
         w.key("kpi");       w.writeString(d.kpi);
         w.key("unit");      w.writeString(d.unit);
+        float64 lo = d.value;
+        float64 hi = d.value;
+        int64 n = d.pending ? (int64) 0 : (int64) 1;
+        if (!d.pending && d.n > 0L) {
+            lo = d.lo;
+            hi = d.hi;
+            n = d.n;
+        }
         w.key("median");    w.writeNumber(d.value);
-        w.key("min");       w.writeNumber(d.value);
-        w.key("max");       w.writeNumber(d.value);
+        w.key("min");       w.writeNumber(lo);
+        w.key("max");       w.writeNumber(hi);
         w.key("p95");       w.writeNumber(0.0);
-        w.key("n");         w.writeNumber(d.pending ? (int64) 0 : (int64) 1);
+        w.key("n");         w.writeNumber(n);
         w.key("device");    w.writeString(id.device);
         w.key("backend");   w.writeString(id.backend);
         w.key("driver");    w.writeString(id.driver);

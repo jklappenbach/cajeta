@@ -81,6 +81,14 @@ public final class Stats {
         return m;
     }
 
+    /** Rounds for `arms` arms: two for an A/B trial, so the order is A B B A. */
+    public static int32 armRounds(int32 arms) {
+        if (arms > 1) {
+            return 2;
+        }
+        return 1;
+    }
+
     /**
      * The arm order for `rounds` rounds over `arms` arms: A B B A A B B A ...
      * (the reflected pattern), so a background load that decays over the

@@ -1,0 +1,40 @@
+package xpubench;
+
+import cajeta.lang.String;
+import cajeta.xpu.Scheduler;
+
+/**
+ * The arms a scheduling trial runs (xpu-tile-scheduling 0.1.3): `bypass`
+ * takes the raw launch ABI, `scheduled` the scheduler seam, and any other arm
+ * leaves the process as it started.
+ */
+public final class Arm {
+    private Arm() { }
+
+    /** Switch this process's launches to `arm`. */
+    public static void apply(String arm) {
+        if (arm.equals("bypass")) {
+            Scheduler.bypass(true);
+        } else if (arm.equals("scheduled")) {
+            Scheduler.bypass(false);
+        }
+    }
+
+    /** The argv prefix that runs a child process in `arm`; empty to inherit. */
+    public static #String[] envPrefix(String arm) {
+        if (arm.equals("bypass")) {
+            String[] p = heap String[2];
+            p[0] = "env";
+            p[1] = "CAJETA_XPU_SCHEDULER=bypass";
+            return p;
+        }
+        if (arm.equals("scheduled")) {
+            String[] q = heap String[3];
+            q[0] = "env";
+            q[1] = "-u";
+            q[2] = "CAJETA_XPU_SCHEDULER";
+            return q;
+        }
+        return heap String[0];
+    }
+}

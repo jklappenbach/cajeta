@@ -93,25 +93,54 @@ build_llm() {   # the cajeta-llm SchedThroughput bench, GPU only (no cpu fallbac
     LLM_EXE="$OUT/schedthroughput"
 }
 
-# One profiled pass: the harness under CAJETA_PROFILER with a ring sized to
-# the launch count, the trace summarised per kernel, and the rows the host
-# clock cannot produce derived from the spans and appended to the leg's rows
-# (xpu-tile-scheduling plan 0.2.4; the derivations live in
-# tools/xpubench-report Spans.cajeta). A pass runs one shape and one seam
-# target at a time so every span in the trace belongs to one row.
+# One profiled pass group: the harness under CAJETA_PROFILER with a ring sized
+# to the launch count, PROFILE_REPEATS times per arm in A/B/B/A order, each
+# pass summarised per kernel, and one banded row per KPI per arm derived from
+# all of that arm's summaries (plan 0.2.4, 0.2.6): a device span is the median
+# of the passes with their spread, never one sample. A pass runs one shape and
+# one seam target at a time so every span in a trace belongs to one row.
 #   $1 backend  $2 binary  $3 leg rows  $4 driver  $5 tag  $6 ring  $7.. harness flags
 profile_pass() {
     local backend="$1" bin="$2" rows="$3" driver="$4" tag="$5" ring="$6"; shift 6
-    local base="$OUT/prof-${tag}-${backend}-${STAMP}"
-    rm -f "$base.pftrace" "$base.jsonl" "$base.csv"
-    echo "[xpubench] profiled pass $tag (ring $ring)"
-    CAJETA_XPU_BACKEND="$backend" CAJETA_PROFILER=1 CAJETA_PROFILER_OUT="$base.pftrace" \
-        CAJETA_PROFILER_GPU_RING="$ring" \
-        "$OUT/$bin" --out="$base.jsonl" --compiler="$COMMIT" --driver="$driver" --date="$DATE" \
-        "$@" > "$base.log" 2>&1 || { echo "[xpubench] profiled pass $tag failed — $base.log" >&2; return 0; }
-    if [[ ! -s "$base.pftrace" ]]; then echo "[xpubench] no trace from pass $tag" >&2; return 0; fi
-    "$CAJETA" profile summary "$base.pftrace" --csv > "$base.csv" 2>/dev/null || { echo "[xpubench] no device track in pass $tag" >&2; return 0; }
-    "$OUT/xpubench-report" spans --csv="$base.csv" --rows="$base.jsonl" --out="$rows"
+    local reps="${PROFILE_REPEATS:-5}" r i arm base
+    local -a arms order
+    IFS=, read -r -a arms <<< "$(harness_arms)"
+    declare -A csvs=() jsonl=()
+    for ((r = 1; r <= reps; r++)); do
+        order=("${arms[@]}")
+        if (( r % 2 == 0 )); then
+            order=()
+            for ((i = ${#arms[@]} - 1; i >= 0; i--)); do order+=("${arms[$i]}"); done
+        fi
+        for arm in "${order[@]}"; do
+            base="$OUT/prof-${tag}-${backend}-${STAMP}-${arm}-${r}"
+            rm -f "$base.pftrace" "$base.jsonl" "$base.csv"
+            echo "[xpubench] profiled pass $tag arm $arm ($r/$reps, ring $ring)"
+            CAJETA_XPU_BACKEND="$backend" CAJETA_PROFILER=1 CAJETA_PROFILER_OUT="$base.pftrace" \
+                CAJETA_PROFILER_GPU_RING="$ring" \
+                "$OUT/$bin" --out="$base.jsonl" --compiler="$COMMIT" --driver="$driver" --date="$DATE" \
+                --arms="$arm" "$@" > "$base.log" 2>&1 \
+                || { echo "[xpubench] profiled pass $tag arm $arm failed — $base.log" >&2; continue; }
+            if [[ ! -s "$base.pftrace" ]]; then echo "[xpubench] no trace from pass $tag" >&2; continue; fi
+            "$CAJETA" profile summary "$base.pftrace" --csv > "$base.csv" 2>/dev/null \
+                || { echo "[xpubench] no device track in pass $tag" >&2; continue; }
+            csvs[$arm]="${csvs[$arm]:+${csvs[$arm]},}$base.csv"
+            jsonl[$arm]="$base.jsonl"
+        done
+    done
+    for arm in "${arms[@]}"; do
+        [[ -n "${csvs[$arm]:-}" ]] || continue
+        "$OUT/xpubench-report" spans --csv="${csvs[$arm]}" --rows="${jsonl[$arm]}" --out="$rows"
+    done
+}
+
+# The --arms= list this invocation runs (`baseline` when the caller passed none).
+harness_arms() {
+    local a
+    for a in "${EXTRA[@]}"; do
+        case "$a" in --arms=*) echo "${a#--arms=}"; return 0;; esac
+    done
+    echo "baseline"
 }
 
 span_passes() {   # $1 backend  $2 binary  $3 leg rows  $4 driver
@@ -141,20 +170,31 @@ span_passes() {   # $1 backend  $2 binary  $3 leg rows  $4 driver
     # cannot hand its child an extended environment), its wall from the two
     # lines it prints, the rows derived with --llm.
     if [[ "$backend" == "hip" && -n "${LLM_EXE:-}" && "$LLM" == "1" ]] && has_workload "$wl" llm; then
-        local base="$OUT/prof-llm-${backend}-${STAMP}"
-        rm -f "$base.pftrace" "$base.csv" "$base.log"
-        echo "[xpubench] profiled pass llm (ring 4194304)"
-        CAJETA_PROFILER=1 CAJETA_PROFILER_OUT="$base.pftrace" CAJETA_PROFILER_GPU_RING=4194304 \
-            "$LLM_EXE" "$MODEL" "prompt=${PROMPT:-2048}" "gen=${GEN:-64}" "ctx=$(( ${PROMPT:-2048} + ${GEN:-64} + 64 ))" \
-            > "$base.log" 2>&1 || { echo "[xpubench] profiled llm run failed — $base.log" >&2; return 0; }
-        local pre dec wall
-        pre="$(awk '/^prefill ms:/ {print $3}' "$base.log" | head -1)"
-        dec="$(awk '/^decode ms:/ {print $3}' "$base.log" | head -1)"
-        if [[ -z "$pre" || -z "$dec" || ! -s "$base.pftrace" ]]; then echo "[xpubench] profiled llm run printed no timings" >&2; return 0; fi
-        wall="$(awk -v a="$pre" -v b="$dec" 'BEGIN { printf "%d", a + b }')"
-        "$CAJETA" profile summary "$base.pftrace" --csv > "$base.csv" 2>/dev/null || return 0
-        "$OUT/xpubench-report" spans --llm --csv="$base.csv" --rows="$rows" --out="$rows" \
-            --shape="prompt${PROMPT:-2048}+gen${GEN:-64}" --wall-ms="$wall"
+        local -a larms
+        local larm
+        IFS=, read -r -a larms <<< "$(harness_arms)"
+        for larm in "${larms[@]}"; do
+            local base="$OUT/prof-llm-${backend}-${STAMP}-${larm}"
+            local -a envp=()
+            case "$larm" in
+                bypass) envp=(env CAJETA_XPU_SCHEDULER=bypass) ;;
+                scheduled) envp=(env -u CAJETA_XPU_SCHEDULER) ;;
+            esac
+            rm -f "$base.pftrace" "$base.csv" "$base.log"
+            echo "[xpubench] profiled pass llm arm $larm (ring 4194304)"
+            CAJETA_PROFILER=1 CAJETA_PROFILER_OUT="$base.pftrace" CAJETA_PROFILER_GPU_RING=4194304 \
+                "${envp[@]}" "$LLM_EXE" "$MODEL" "prompt=${PROMPT:-2048}" "gen=${GEN:-64}" \
+                "ctx=$(( ${PROMPT:-2048} + ${GEN:-64} + 64 ))" \
+                > "$base.log" 2>&1 || { echo "[xpubench] profiled llm run failed — $base.log" >&2; continue; }
+            local pre dec wall
+            pre="$(awk '/^prefill ms:/ {print $3}' "$base.log" | head -1)"
+            dec="$(awk '/^decode ms:/ {print $3}' "$base.log" | head -1)"
+            if [[ -z "$pre" || -z "$dec" || ! -s "$base.pftrace" ]]; then echo "[xpubench] profiled llm run printed no timings" >&2; continue; fi
+            wall="$(awk -v a="$pre" -v b="$dec" 'BEGIN { printf "%d", a + b }')"
+            "$CAJETA" profile summary "$base.pftrace" --csv > "$base.csv" 2>/dev/null || continue
+            "$OUT/xpubench-report" spans --llm --csv="$base.csv" --rows="$rows" --out="$rows" \
+                --shape="prompt${PROMPT:-2048}+gen${GEN:-64}" --wall-ms="$wall" --arm="$larm"
+        done
     fi
 }
 

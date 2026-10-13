@@ -192,6 +192,18 @@ public final class Harness {
             System.stdout.println("refusing to measure on a busy box (exit 3)");
             return 3;
         }
+        // contention gate (0.1.5): a CPU streaming memory slows the device on a shared memory system
+        int32 self = Gate.selfPid();
+        float64 gateCpu = (float64) Harness.optInt(args, "--gate-cpu=", 10);
+        float64 gateGpu = (float64) Harness.optInt(args, "--gate-gpu=", 5);
+        float64[] box #= Gate.window(self, Harness.optInt(args, "--gate-window-ms=", 1000));
+        System.stdout.println("contention gate: foreign CPU " + Stats.round(box[0], 1) + "%, foreign GPU "
+            + Stats.round(box[1], 1) + "%, other GPU compute processes " + (int32) box[2]);
+        if (box[2] > 0.0 || Gate.contended(box[0], box[1], gateCpu, gateGpu)) {
+            System.stdout.println("refusing to measure beside foreign load over " + gateCpu + "% CPU or "
+                + gateGpu + "% GPU, or another GPU compute process (exit 3)");
+            return 3;
+        }
 
         String shapesArg #= Harness.opt(args, "--shapes=", "auto");
         boolean shapesSmall = shapesArg.equals("small");
@@ -257,7 +269,7 @@ public final class Harness {
             }
             ai = ai + 1;
         }
-        int32[] order #= Stats.abbaOrder(arms.count(), 1);
+        int32[] order #= Stats.abbaOrder(arms.count(), Stats.armRounds(arms.count()));
         float64 soloP99 = 0.0;
         int32 slot = 0;
         while (slot < (int32) order.count()) {
@@ -267,6 +279,7 @@ public final class Harness {
             System.stdout.println("--- arm " + arm + " ---");
 
             if (Harness.has(workloads, "kernels")) {
+                int64[] w0 #= Gate.snapshot(self);
                 System.stdout.println("[kernels] shape " + kernelShape);
                 boolean doSmall = !kernelShape.equals("large");
                 boolean doLarge = !kernelShape.equals("small");
@@ -284,43 +297,72 @@ public final class Harness {
                 if (doLarge) { Workloads.wmma(rows, mmLarge, "" + (int32) mmLarge + "^2"); }
                 if (doSmall) { Workloads.gather(rows, small, "" + (int32) small); }
                 if (doLarge) { Workloads.gather(rows, large, "" + (int32) large); }
+                Harness.witness(rows, "kernels", w0, self);
             }
             if (Harness.has(workloads, "cg")) {
+                int64[] w0 #= Gate.snapshot(self);
                 System.stdout.println("[cg]");
                 Workloads.cg(rows, stW, stH, cgIters, "" + (int32) stW + "x" + (int32) stH
                              + "x" + cgIters, "cg");
+                Harness.witness(rows, "cg", w0, self);
             }
             if (Harness.has(workloads, "degenerate")) {
+                int64[] w0 #= Gate.snapshot(self);
                 System.stdout.println("[degenerate]");
                 uint32 one = 1;
                 Workloads.cg(rows, one, one, cgIters, "1x1x" + cgIters, "degenerate");
+                Harness.witness(rows, "degenerate", w0, self);
             }
             if (Harness.has(workloads, "frame")) {
+                int64[] w0 #= Gate.snapshot(self);
                 System.stdout.println("[frame]");
                 soloP99 = Workloads.frame(rows, (uint32) frameN, frames, 16667, false, 0.0, "frame");
+                Harness.witness(rows, "frame", w0, self);
             }
             if (Harness.has(workloads, "pair")) {
+                int64[] w0 #= Gate.snapshot(self);
                 System.stdout.println("[pair]");
                 Workloads.frame(rows, (uint32) frameN, frames, 16667, true, soloP99, "pair");
+                Harness.witness(rows, "pair", w0, self);
             }
             if (Harness.has(workloads, "seam")) {
+                int64[] w0 #= Gate.snapshot(self);
                 System.stdout.println("[seam] targets " + seamTargets);
                 String st = "," + seamTargets + ",";
                 if (st.contains(",5,")) { Workloads.seam(rows, 5); }
                 if (st.contains(",50,")) { Workloads.seam(rows, 50); }
                 if (st.contains(",200,")) { Workloads.seam(rows, 200); }
+                Harness.witness(rows, "seam", w0, self);
             }
             if (Harness.has(workloads, "llm")) {
                 if (llmExe.byteLength() == 0 || model.byteLength() == 0) {
                     System.stdout.println("[llm] skipped: pass --llm-exe= and --model=");
                 } else {
+                    int64[] w0 #= Gate.snapshot(self);
                     System.stdout.println("[llm]");
                     Llm.run(rows, llmExe, model, prompt, gen, llmRuns);
+                    Harness.witness(rows, "llm", w0, self);
                 }
             }
             slot = slot + 1;
         }
         System.stdout.println("wrote " + rows.written + " rows to " + out);
         return 0;
+    }
+
+    /** The block's contention witness rows (0.1.5): foreign CPU and GPU busy since `w0`. */
+    static void witness(Rows rows, String block, int64[] w0, int32 self) {
+        int64[] w1 #= Gate.snapshot(self);
+        float64[] f #= Gate.between(w0, w1);
+        float64 c = Stats.round(f[0], 1);
+        float64 g = Stats.round(f[1], 1);
+        rows.row("witness", block, "foreign_cpu_pct", "witness", c, c, c, 0.0, 1,
+                 "CPU busy outside this process and its waited children, over the block");
+        rows.row("witness", block, "foreign_gpu_pct", "witness", g, g, g, 0.0, 1,
+                 "other processes' DRM gfx and compute engine time, over the block");
+        rows.row("witness", block, "scheduled_launches", "witness", f[3], f[3], f[3], 0.0, 1,
+                 "launches the scheduler recorded during the block (0 under the bypass arm)");
+        System.stdout.println("  witness " + block + ": foreign CPU " + c + "%, foreign GPU " + g
+            + "%, scheduled launches " + (int64) f[3]);
     }
 }

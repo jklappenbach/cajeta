@@ -586,3 +586,256 @@ TEST(XpuBenchHarness, trialBandsFromDayApartPair) {
     EXPECT_EQ(call("bandsIsAfter"), -1)
         << "--bands with the after run's own identity must be refused, not read as all keep";
 }
+
+// ── Contention-proof trials (xpu-tile-scheduling 0.1.3 to 0.1.5) ─────────
+//
+// Report §4 T-006: a scheduled leg's profiled CG pass read +27% while the
+// bypass legs either side agreed to 0.2%. The cause was CPU memory traffic
+// on the shared APU memory system (saxpy +42%, stencil5 +55% beside a CPU
+// stream), which the name-based gate cannot see. Three defences, each
+// driven through the shipping sources: arms interleave inside one process
+// and an arm's rounds merge into one banded row; a profiled pass repeats
+// and its spans are banded; and a witness of foreign CPU and GPU busy turns
+// a `worse` taken under contention into `contended`.
+namespace {
+
+const char* kArmDriver =
+    "package xpubench;\n"
+    "import cajeta.xpu.Scheduler;\n"
+    "public class DriveArm {\n"
+    "    public static int32 toggles() {\n"
+    "        Arm.apply(\"bypass\");\n"
+    "        if (!Scheduler.bypassed()) { return 1; }\n"
+    "        Arm.apply(\"scheduled\");\n"
+    "        if (Scheduler.bypassed()) { return 2; }\n"
+    "        Arm.apply(\"baseline\");\n"
+    "        if (Scheduler.bypassed()) { return 3; }\n"
+    "        return 0;\n"
+    "    }\n"
+    "    public static int32 childEnv() {\n"
+    "        String[] b #= Arm.envPrefix(\"bypass\");\n"
+    "        if (b.count() != 2 || !b[0].equals(\"env\") || !b[1].equals(\"CAJETA_XPU_SCHEDULER=bypass\")) { return 1; }\n"
+    "        String[] s #= Arm.envPrefix(\"scheduled\");\n"
+    "        if (s.count() != 3 || !s[1].equals(\"-u\") || !s[2].equals(\"CAJETA_XPU_SCHEDULER\")) { return 2; }\n"
+    "        return 0;\n"
+    "    }\n"
+    "    public static int32 twoArmsTwoRounds() {\n"
+    "        if (Stats.armRounds(1) != 1) { return 1; }\n"
+    "        if (Stats.armRounds(2) != 2) { return 2; }\n"
+    "        int32[] o #= Stats.abbaOrder(2, Stats.armRounds(2));\n"
+    "        return o[0] * 1000 + o[1] * 100 + o[2] * 10 + o[3];\n"
+    "    }\n"
+    "    public static int32 statTicks() {\n"
+    "        int64[] t #= Gate.statTicks(\"cpu  100 0 50 1000 10 0 5 0 0 0\");\n"
+    "        if (t[0] != 155L) { return 1; }\n"
+    "        if (t[1] != 1165L) { return 2; }\n"
+    "        return 0;\n"
+    "    }\n"
+    "    public static int32 procTicks() {\n"
+    "        return (int32) Gate.procTicks(\"1234 (x y) S 1 2 3 4 5 6 7 8 9 10 70 30 0 0 20 0 1 0 5\");\n"
+    "    }\n"
+    "    public static int32 engineNs() {\n"
+    "        return (int32) Gate.engineNs(\"drm-client-id:\\t60\\ndrm-engine-gfx:\\t1000 ns\\n\"\n"
+    "            + \"drm-engine-compute:\\t234 ns\\ndrm-engine-dma:\\t5 ns\\n\");\n"
+    "    }\n"
+    "    public static int32 foreignCpu() {\n"
+    "        return (int32) (Gate.foreignCpuPct(100L, 1000L, 10L, 300L, 2000L, 60L) * 10.0);\n"
+    "    }\n"
+    "    public static int32 contended() {\n"
+    "        int32 r = 0;\n"
+    "        if (Gate.contended(15.0, 0.0, 10.0, 5.0)) { r = r + 1; }\n"
+    "        if (Gate.contended(5.0, 6.0, 10.0, 5.0)) { r = r + 10; }\n"
+    "        if (Gate.contended(5.0, 1.0, 10.0, 5.0)) { r = r + 100; }\n"
+    "        return r;\n"
+    "    }\n"
+    "}\n";
+
+std::unique_ptr<CajetaJit> compileArm() {
+    std::map<std::string, std::string> sources;
+    sources["xpubench.Stats"] = readFile(here() + "/src/xpubench/Stats.cajeta");
+    sources["xpubench.Gate"] = readFile(here() + "/src/xpubench/Gate.cajeta");
+    sources["xpubench.Arm"] = readFile(here() + "/src/xpubench/Arm.cajeta");
+    sources["xpubench.DriveArm"] = kArmDriver;
+    return CajetaJit::compile(sources, "xpubench.DriveArm", cpuOptions());
+}
+
+const char* kArmTrialDriver =
+    "package xpubenchreport;\n"
+    "import cajeta.collection.ArrayList;\n"
+    "import cajeta.lang.String;\n"
+    "public class DriveAT {\n"
+    "    static #String row(String arm, String wl, String shape, String kpi, String unit,\n"
+    "                       float64 med, float64 lo, float64 hi, int32 n) {\n"
+    "        return \"{\\\"workload\\\":\\\"\" + wl + \"\\\",\\\"shape\\\":\\\"\" + shape + \"\\\",\\\"kpi\\\":\\\"\" + kpi\n"
+    "            + \"\\\",\\\"unit\\\":\\\"\" + unit + \"\\\",\\\"median\\\":\" + med + \",\\\"min\\\":\" + lo\n"
+    "            + \",\\\"max\\\":\" + hi + \",\\\"p95\\\":0,\\\"n\\\":\" + n\n"
+    "            + \",\\\"device\\\":\\\"d\\\",\\\"backend\\\":\\\"hip\\\",\\\"driver\\\":\\\"v\\\",\\\"compiler\\\":\\\"c\\\",\"\n"
+    "            + \"\\\"powerMode\\\":\\\"auto\\\",\\\"date\\\":\\\"2026-10-13\\\",\\\"arm\\\":\\\"\" + arm + \"\\\",\\\"note\\\":\\\"\\\"}\\n\";\n"
+    "    }\n"
+    "    static #ArrayList<Report.Row> rows(String json) {\n"
+    "        ArrayList<Report.Row> list = heap ArrayList<Report.Row>();\n"
+    "        int8[] bytes #= json.toBytes();\n"
+    "        Report.load(list, bytes, (int32) bytes.count());\n"
+    "        return list;\n"
+    "    }\n"
+    "    static int32 trial(String json) {\n"
+    "        ArrayList<Report.Row> all #= DriveAT.rows(json);\n"
+    "        ArrayList<Report.Row> b #= Report.armRows(all, \"bypass\");\n"
+    "        ArrayList<Report.Row> a #= Report.armRows(all, \"scheduled\");\n"
+    "        ArrayList<Report.Row> none = heap ArrayList<Report.Row>();\n"
+    "        TrialResult r #= Report.trialRows(b, a, none, \"T-test\", \"u\", \"c\", \"\");\n"
+    "        return r.contended * 10000 + r.worse * 1000 + r.single * 100 + r.widened * 10 + r.paired;\n"
+    "    }\n"
+    // ABBA in one file: bypass 10.0 then 10.5, scheduled 10.5 then 11.0.
+    "    static #String abba() {\n"
+    "        return DriveAT.row(\"bypass\", \"kernel.saxpy\", \"s\", \"duration_isolated\", \"us\", 10.0, 9.5, 10.5, 5)\n"
+    "            + DriveAT.row(\"scheduled\", \"kernel.saxpy\", \"s\", \"duration_isolated\", \"us\", 10.5, 10.25, 10.75, 5)\n"
+    "            + DriveAT.row(\"scheduled\", \"kernel.saxpy\", \"s\", \"duration_isolated\", \"us\", 11.0, 10.75, 11.25, 5)\n"
+    "            + DriveAT.row(\"bypass\", \"kernel.saxpy\", \"s\", \"duration_isolated\", \"us\", 10.5, 10.0, 10.75, 5);\n"
+    "    }\n"
+    // merged: bypass 10.25 [9.5, 10.75] n 10; scheduled 10.75 inside it -> keep.
+    // The last round alone (10.5 [10.0, 10.75] against 11.0) would read worse.
+    "    public static int32 mergedRounds() {\n"
+    "        String j #= DriveAT.abba();\n"
+    "        return DriveAT.trial(j);\n"
+    "    }\n"
+    "    public static int32 mergedBand() {\n"
+    "        String j #= DriveAT.abba();\n"
+    "        ArrayList<Report.Row> all #= DriveAT.rows(j);\n"
+    "        ArrayList<Report.Row> b #= Report.armRows(all, \"bypass\");\n"
+    "        if (b.count() != 1) { return 1; }\n"
+    "        Report.Row m = b.get(0);\n"
+    "        if (m.median != 10.25) { return 2; }\n"
+    "        if (m.lo != 9.5 || m.hi != 10.75) { return 3; }\n"
+    "        if (m.n != 10L) { return 4; }\n"
+    "        return 0;\n"
+    "    }\n"
+    // after reads 12.0 against [9.5, 10.5]; the after arm's kernels block saw 40% foreign CPU.
+    "    static #String regressed(float64 witness) {\n"
+    "        return DriveAT.row(\"bypass\", \"kernel.saxpy\", \"s\", \"duration_isolated\", \"us\", 10.0, 9.5, 10.5, 5)\n"
+    "            + DriveAT.row(\"bypass\", \"witness\", \"kernels\", \"foreign_cpu_pct\", \"witness\", 1.0, 1.0, 1.0, 1)\n"
+    "            + DriveAT.row(\"scheduled\", \"kernel.saxpy\", \"s\", \"duration_isolated\", \"us\", 12.0, 11.9, 12.1, 5)\n"
+    "            + DriveAT.row(\"scheduled\", \"witness\", \"kernels\", \"foreign_cpu_pct\", \"witness\", witness, witness, witness, 1);\n"
+    "    }\n"
+    "    public static int32 contendedWorse() {\n"
+    "        String j #= DriveAT.regressed(40.0);\n"
+    "        return DriveAT.trial(j);\n"
+    "    }\n"
+    "    public static int32 quietWorse() {\n"
+    "        String j #= DriveAT.regressed(2.0);\n"
+    "        return DriveAT.trial(j);\n"
+    "    }\n"
+    // queue_empty_time is device idle: less is better, though its unit is a percentage
+    "    public static int32 queueEmptyLowerIsBetter() {\n"
+    "        String j #= DriveAT.row(\"bypass\", \"cg\", \"s\", \"queue_empty_time\", \"%\", 15.0, 15.0, 15.0, 1);\n"
+    "        ArrayList<Report.Row> r #= DriveAT.rows(j);\n"
+    "        if (Report.lowerIsBetter(r.get(0))) { return 0; }\n"
+    "        return 1;\n"
+    "    }\n"
+    "}\n";
+
+const char* kRepeatDriver =
+    "package xpubenchreport;\n"
+    "import cajeta.collection.ArrayList;\n"
+    "import cajeta.lang.String;\n"
+    "public class DriveR {\n"
+    "    static #String csv(int32 avgNs) {\n"
+    "        return \"# gpu_records_kept=1800 gpu_records_dropped=0\\n\"\n"
+    "            + \"name,count,total_ns,self_ns,avg_ns,max_ns\\n\"\n"
+    "            + \"saxpy,1800,\" + (1800 * avgNs) + \",\" + (1800 * avgNs) + \",\" + avgNs + \",\" + avgNs + \"\\n\";\n"
+    "    }\n"
+    // two passes, saxpy 20 us and 30 us: one row, median 25, band [20, 30], n 2
+    "    public static int32 repeated() {\n"
+    "        ArrayList<Spans> passes = heap ArrayList<Spans>();\n"
+    "        String a #= DriveR.csv(20000);\n"
+    "        String b #= DriveR.csv(30000);\n"
+    "        passes.add(#Spans.parse(a));\n"
+    "        passes.add(#Spans.parse(b));\n"
+    "        ArrayList<Derived> d #= Spans.deriveRepeated(passes, \"kernel.saxpy\", \"1048576\", \"saxpy\",\n"
+    "                                                     (int64) 1800, 0.0);\n"
+    "        if (d.count() != 1) { return 1; }\n"
+    "        Derived r = d.get(0);\n"
+    "        if (!r.kpi.equals(\"device_span\")) { return 2; }\n"
+    "        if (r.value != 25.0) { return 3; }\n"
+    "        if (r.lo != 20.0 || r.hi != 30.0) { return 4; }\n"
+    "        if (r.n != 2L) { return 5; }\n"
+    "        return 0;\n"
+    "    }\n"
+    "}\n";
+
+std::unique_ptr<CajetaJit> compileReport(const char* driverName, const char* driver) {
+    std::map<std::string, std::string> sources;
+    std::string dir = here() + "/../../../tools/xpubench-report/src/xpubenchreport/";
+    sources["xpubenchreport.Report"] = readFile(dir + "Report.cajeta");
+    sources["xpubenchreport.Verdict"] = readFile(dir + "Verdict.cajeta");
+    sources["xpubenchreport.Span"] = readFile(dir + "Span.cajeta");
+    sources["xpubenchreport.Derived"] = readFile(dir + "Derived.cajeta");
+    sources["xpubenchreport.Spans"] = readFile(dir + "Spans.cajeta");
+    sources["xpubenchreport.TrialResult"] = readFile(dir + "TrialResult.cajeta");
+    sources[std::string("xpubenchreport.") + driverName] = driver;
+    return CajetaJit::compile(sources, std::string("xpubenchreport.") + driverName, cpuOptions());
+}
+
+} // namespace
+
+// 0.1.3 — the arm reaches the scheduler and the llm child; two arms run ABBA.
+TEST(XpuBenchHarness, anArmTogglesTheSchedulerAndTheChild) {
+    auto jit = compileArm();
+    ASSERT_NE(jit, nullptr);
+    auto call = [&](const char* name) {
+        auto f = jit->lookup<int (*)()>(name);
+        return f ? f() : -1;
+    };
+    EXPECT_EQ(call("toggles"), 0);
+    EXPECT_EQ(call("childEnv"), 0);
+    EXPECT_EQ(call("twoArmsTwoRounds"), 110) << "two arms, two rounds: 0 1 1 0";
+}
+
+// 0.1.3 — an arm's rounds merge into one banded row, and the merge decides.
+TEST(XpuBenchHarness, armRoundsMergeIntoOneBandedRow) {
+    auto jit = compileReport("DriveAT", kArmTrialDriver);
+    ASSERT_NE(jit, nullptr);
+    auto call = [&](const char* name) {
+        auto f = jit->lookup<int (*)()>(name);
+        return f ? f() : -1;
+    };
+    EXPECT_EQ(call("mergedBand"), 0);
+    EXPECT_EQ(call("mergedRounds"), 1) << "contended.worse.single.widened.paired: 0/0/0/0/1";
+}
+
+// 0.1.5 — a regression taken under foreign load reads contended, not worse.
+TEST(XpuBenchHarness, aWorseUnderForeignLoadReadsContended) {
+    auto jit = compileReport("DriveAT", kArmTrialDriver);
+    ASSERT_NE(jit, nullptr);
+    auto call = [&](const char* name) {
+        auto f = jit->lookup<int (*)()>(name);
+        return f ? f() : -1;
+    };
+    EXPECT_EQ(call("contendedWorse"), 10001) << "40% foreign CPU in the after block";
+    EXPECT_EQ(call("quietWorse"), 1001) << "a quiet box keeps the worse verdict";
+    EXPECT_EQ(call("queueEmptyLowerIsBetter"), 0) << "a busier device must not read as a regression";
+}
+
+// 0.1.4 — repeated profiled passes give a banded device span.
+TEST(XpuBenchHarness, repeatedProfiledPassesBandTheSpan) {
+    auto jit = compileReport("DriveR", kRepeatDriver);
+    ASSERT_NE(jit, nullptr);
+    auto f = jit->lookup<int (*)()>("repeated");
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(f(), 0);
+}
+
+// 0.1.5 — the witness's parsers and threshold.
+TEST(XpuBenchHarness, contentionWitnessParsers) {
+    auto jit = compileArm();
+    ASSERT_NE(jit, nullptr);
+    auto call = [&](const char* name) {
+        auto f = jit->lookup<int (*)()>(name);
+        return f ? f() : -1;
+    };
+    EXPECT_EQ(call("statTicks"), 0);
+    EXPECT_EQ(call("procTicks"), 100) << "utime 70 + stime 30, after a comm with a space";
+    EXPECT_EQ(call("engineNs"), 1234) << "gfx + compute, not dma";
+    EXPECT_EQ(call("foreignCpu"), 150) << "(200 busy - 50 own) / 1000 total";
+    EXPECT_EQ(call("contended"), 11) << "over on CPU, over on GPU, under both";
+}

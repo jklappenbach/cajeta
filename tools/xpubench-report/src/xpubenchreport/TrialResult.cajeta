@@ -10,6 +10,8 @@ public final class TrialResult {
     public int32 widened;
     /** KPIs paired at all (a row in both files). */
     public int32 paired;
+    /** KPIs outside their band while a witness saw foreign load over its threshold: unreadable, rerun. */
+    public int32 contended;
     /** The trial was refused: `--bands` carried the after run's own identity,
      *  so the union would contain every after median and every verdict
      *  would be `keep` by construction. */
@@ -20,6 +22,7 @@ public final class TrialResult {
         this.single = 0;
         this.widened = 0;
         this.paired = 0;
+        this.contended = 0;
         this.refused = false;
     }
 }

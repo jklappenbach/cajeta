@@ -21,6 +21,9 @@ import cajeta.process.ProcessResult;
 public final class Llm {
     private Llm() { }
 
+    /** The arm the llm child runs in; empty inherits this process's environment. */
+    public static String arm = "";
+
     /** The float after `key` on the line, or -1 when absent. */
     static float64 after(String line, String key) {
         int64 at = line.indexOf(key);
@@ -49,12 +52,19 @@ public final class Llm {
         int32 got = 0;
         int32 r = 0;
         while (r < runs) {
-            String[] argv = heap String[5];
-            argv[0] = exe;
-            argv[1] = model;
-            argv[2] = "prompt=" + prompt;
-            argv[3] = "gen=" + gen;
-            argv[4] = "ctx=" + (prompt + gen + 64);
+            String[] pre #= Arm.envPrefix(Llm.arm);
+            int32 np = (int32) pre.count();
+            String[] argv = heap String[np + 5];
+            int32 q = 0;
+            while (q < np) {
+                argv[q] = pre[q];
+                q = q + 1;
+            }
+            argv[np] = exe;
+            argv[np + 1] = model;
+            argv[np + 2] = "prompt=" + prompt;
+            argv[np + 3] = "gen=" + gen;
+            argv[np + 4] = "ctx=" + (prompt + gen + 64);
             Command cmd = heap Command(#argv);
             cmd.captureStdout();
             cmd.captureStderr();
