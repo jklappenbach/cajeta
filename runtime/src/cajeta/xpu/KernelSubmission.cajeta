@@ -3,26 +3,23 @@ package cajeta.xpu;
 import cajeta.collection.ArrayList;
 
 /**
- * KernelSubmission — one kernel invocation described for the submit seam
- * (xpu-cooperative-tile §7.2): the launch geometry, the {@link SchedulePolicy},
- * the {@link ArithmeticCharacter}, and the READ and WRITE buffer sets (by {@link
- * KernelBuffer#handle} identity). It carries everything a future multi-kernel
- * scheduler needs to reorder / fuse / overlap and to derive the inter-kernel
- * dependency DAG (§7.3) — while {@link Scheduler#submit} today just launches it
- * immediately.
- *
- * A RESERVED seam: nothing reads the r/w sets or the policy yet. Build one at a
- * launch site, add the buffers the kernel reads and writes, and hand it to
- * {@link Scheduler#submit}:
+ * KernelSubmission — one kernel invocation described for the scheduler
+ * (xpu-tile-scheduling §2): the launch geometry, the {@link SchedulePolicy}
+ * and its deadline window, protection, a compute-unit budget, a capture
+ * identity, an energy budget, the {@link ArithmeticCharacter}, and the READ,
+ * WRITE and ACCUMULATE buffer sets by {@link KernelBuffer#handle} identity,
+ * derived from the kernel's manifest. Pass it in the stream's place at a
+ * launch; the plain stream form is the same submission at the kernel's
+ * defaults:
  *
  *     KernelSubmission sub = heap KernelSubmission(gridBlocks, blockThreads);
- *     sub.reads(a.handle());
- *     sub.reads(b.handle());
- *     sub.writes(c.handle());
- *     sub.policy = SchedulePolicy.Throughput;
- *     sub.character = ArithmeticCharacter.MemoryBound;
- *     KernelResourceDescriptor desc #= Scheduler.submit(sub);
- *     k.launch(s, grid: [sub.gridX], block: [sub.blockX])(a, b, c);   // immediate
+ *     sub.policy = SchedulePolicy.Latency;
+ *     sub.latestNs = Clock.nanoTime() + 2000000L;
+ *     sub.stream = s;
+ *     k.launch(sub, grid: [sub.gridX], block: [sub.blockX])(a, b, c);
+ *
+ * {@link Scheduler#submit} is the explicit form: name the kernel, bind its
+ * buffers in parameter order, and read the descriptor it returns.
  */
 public final class KernelSubmission {
     // Launch geometry (all three dims; y/z default to 1 for the 1-D common case).
@@ -52,6 +49,25 @@ public final class KernelSubmission {
     public String kernel;
     // Buffer handles in the kernel's buffer-PARAMETER order (see bind).
     public ArrayList<int64> bound;
+    // The deadline window in the host clock (Clock.nanoTime), 0 = none
+    // (scheduling spec §2.3); a window that has closed at submit time is a
+    // rejection (§2.9).
+    public int64 earliestNs;
+    public int64 latestNs;
+    // Protected: no scheduling action may defer or throttle it (§2.4).
+    public boolean protectedLaunch;
+    // Compute-unit budget as a count, 0 = none (§2.5).
+    public int32 cuBudget;
+    // Capture identity for replay, 0 = none (§2.6).
+    public int64 captureId;
+    // Energy budget in joules per period, 0 = none (§2.3, §8.7).
+    public float64 energyJoules;
+    // Resident pool and per-item reservation, 0 = none (§2.7).
+    public int64 poolHandle;
+    public int64 poolReserve;
+    // The target stream when the submission stands in the stream's place at a
+    // launch; null = the default stream.
+    public KernelStream stream;
 
     /** A 1-D submission: `gridBlocks` blocks of `blockThreads` threads. */
     public KernelSubmission(int32 gridBlocks, int32 blockThreads) {
@@ -64,6 +80,15 @@ public final class KernelSubmission {
         this.sharedBytes = 0;
         this.policy = SchedulePolicy.Throughput;          // §6.3 default
         this.character = ArithmeticCharacter.MemoryBound;
+        this.earliestNs = 0L;
+        this.latestNs = 0L;
+        this.protectedLaunch = false;
+        this.cuBudget = 0;
+        this.captureId = 0L;
+        this.energyJoules = 0.0;
+        this.poolHandle = 0L;
+        this.poolReserve = 0L;
+        this.stream = null;
         this.readSet #= heap ArrayList<int64>();
         this.writeSet #= heap ArrayList<int64>();
         this.accumulateSet #= heap ArrayList<int64>();

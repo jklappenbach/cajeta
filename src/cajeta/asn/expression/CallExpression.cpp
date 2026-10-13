@@ -169,8 +169,25 @@ namespace cajeta {
         if (!sharedBytes) sharedBytes = llvm::ConstantInt::get(i32Ty, 0);
 
         // Stream `handle` (i64) orders this launch with its async copies; 0 =
-        // the default stream.
+        // the default stream. A KernelSubmission in the stream's place carries
+        // its policy fields to the scheduler seam (xpu-tile-scheduling §2.1) in
+        // a stack CajetaXpuSubmission, and its stream, when it names one.
         llvm::Value* streamHandle = nullptr;
+        llvm::Value* subPtr = llvm::ConstantPointerNull::get(ptrTy);
+        llvm::Type* f64Ty = llvm::Type::getDoubleTy(ctx);
+        llvm::StructType* subTy = llvm::StructType::get(
+            ctx, {i32Ty, i32Ty, i32Ty, i32Ty, i64Ty, i64Ty, i64Ty, f64Ty,
+                  i64Ty, i64Ty});
+        auto streamHandleOf = [&](const std::shared_ptr<CajetaClass>& sklass,
+                                  llvm::Value* sv) -> llvm::Value* {
+            auto& sprops = sklass->getProperties();
+            auto it = sprops.find("handle");
+            if (it == sprops.end()) return nullptr;
+            unsigned idx = (unsigned) sklass->getFieldLlvmIndex(it->second);
+            llvm::Value* hPtr = builder->CreateStructGEP(
+                sklass->getLlvmType(), sv, idx, "stream.handle.ptr");
+            return builder->CreateLoad(i64Ty, hPtr, "stream.handle");
+        };
         if (streamExpr) {
             llvm::Value* sv = streamExpr->generateCode(module);
             sv = loadIfLValue(module, sv, streamExpr);
@@ -178,15 +195,70 @@ namespace cajeta {
             auto sklass = std::dynamic_pointer_cast<CajetaClass>(
                 streamExpr->getResolvedType());
             if (sklass && sklass->toCanonical() == "cajeta.xpu.KernelStream") {
+                streamHandle = streamHandleOf(sklass, sv);
+            } else if (sklass
+                       && sklass->toCanonical() == "cajeta.xpu.KernelSubmission") {
                 auto& sprops = sklass->getProperties();
-                auto it = sprops.find("handle");
-                if (it != sprops.end()) {
-                    unsigned idx =
-                        (unsigned) sklass->getFieldLlvmIndex(it->second);
-                    llvm::Value* hPtr = builder->CreateStructGEP(
-                        sklass->getLlvmType(), sv, idx, "stream.handle.ptr");
-                    streamHandle =
-                        builder->CreateLoad(i64Ty, hPtr, "stream.handle");
+                auto field = [&](const char* name, llvm::Type* asTy,
+                                 bool isInt) -> llvm::Value* {
+                    auto it = sprops.find(name);
+                    if (it == sprops.end()) {
+                        throw Exception(std::string("KernelSubmission is missing "
+                                                    "field ") + name, "XPU-N02");
+                    }
+                    unsigned idx = (unsigned) sklass->getFieldLlvmIndex(it->second);
+                    llvm::Type* fty = it->second->getType()->getLlvmType();
+                    llvm::Value* p = builder->CreateStructGEP(
+                        sklass->getLlvmType(), sv, idx, std::string("sub.") + name);
+                    llvm::Value* v = builder->CreateLoad(fty, p, name);
+                    if (isInt && fty != asTy) {
+                        v = builder->CreateIntCast(v, asTy, /*isSigned=*/false);
+                    }
+                    return v;
+                };
+                llvm::Value* subVal = module->createEntryAlloca(subTy, "xpu.sub");
+                auto put = [&](unsigned i, llvm::Value* v) {
+                    builder->CreateStore(
+                        v, builder->CreateStructGEP(subTy, subVal, i, "xpu.sub.f"));
+                };
+                put(0, llvm::ConstantInt::get(i32Ty, 1));
+                put(1, field("policy", i32Ty, true));
+                put(2, field("protectedLaunch", i32Ty, true));
+                put(3, field("cuBudget", i32Ty, true));
+                put(4, field("earliestNs", i64Ty, true));
+                put(5, field("latestNs", i64Ty, true));
+                put(6, field("captureId", i64Ty, true));
+                put(7, field("energyJoules", f64Ty, false));
+                put(8, field("poolHandle", i64Ty, true));
+                put(9, field("poolReserve", i64Ty, true));
+                subPtr = subVal;
+                // The submission's stream, when it names one.
+                auto sit = sprops.find("stream");
+                auto streamKlass = sit == sprops.end() ? nullptr
+                    : std::dynamic_pointer_cast<CajetaClass>(sit->second->getType());
+                if (streamKlass) {
+                    unsigned sidx = (unsigned) sklass->getFieldLlvmIndex(sit->second);
+                    llvm::Value* sp = builder->CreateStructGEP(
+                        sklass->getLlvmType(), sv, sidx, "sub.stream.ptr");
+                    llvm::Value* sobj = builder->CreateLoad(ptrTy, sp, "sub.stream");
+                    llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+                    llvm::BasicBlock* haveBB =
+                        llvm::BasicBlock::Create(ctx, "sub.stream.have", curFn);
+                    llvm::BasicBlock* joinBB =
+                        llvm::BasicBlock::Create(ctx, "sub.stream.join", curFn);
+                    llvm::BasicBlock* fromBB = builder->GetInsertBlock();
+                    builder->CreateCondBr(
+                        builder->CreateIsNull(sobj, "sub.stream.null"), joinBB, haveBB);
+                    builder->SetInsertPoint(haveBB);
+                    llvm::Value* h = streamHandleOf(streamKlass, sobj);
+                    if (!h) h = llvm::ConstantInt::get(i64Ty, 0);
+                    llvm::BasicBlock* haveEnd = builder->GetInsertBlock();
+                    builder->CreateBr(joinBB);
+                    builder->SetInsertPoint(joinBB);
+                    llvm::PHINode* phi = builder->CreatePHI(i64Ty, 2, "sub.stream.handle");
+                    phi->addIncoming(llvm::ConstantInt::get(i64Ty, 0), fromBB);
+                    phi->addIncoming(h, haveEnd);
+                    streamHandle = phi;
                 }
             }
         }
@@ -416,6 +488,7 @@ namespace cajeta {
             module->callStdlibStaticVoid("cajeta.xpu.Device", "checkLaunch");
         };
 
+        llvm::Value* specBase = llvm::ConstantPointerNull::get(ptrTy);
         if (!specVals.empty()) {
             llvm::Type* specArrTy =
                 llvm::ArrayType::get(i32Ty, specVals.size());
@@ -428,58 +501,34 @@ namespace cajeta {
                      llvm::ConstantInt::get(i64Ty, i)}, "xpu.spec.slot");
                 builder->CreateStore(specVals[i], slot);
             }
-            llvm::Value* specBase = builder->CreateInBoundsGEP(
+            specBase = builder->CreateInBoundsGEP(
                 specArrTy, specArr,
                 {llvm::ConstantInt::get(i64Ty, 0),
                  llvm::ConstantInt::get(i64Ty, 0)}, "xpu.spec.base");
-
-            // void __cajeta_xpu_launch_v3(i8* name, gx,gy,gz, bx,by,bz,
-            //   i32 sharedBytes, ptr argv, i64 streamHandle, i32 deviceId,
-            //   i32 specCount, ptr specValues)
-            llvm::Function* launchV3 =
-                module->getRuntimeFunction("__cajeta_xpu_launch_v3");
-            if (!launchV3) {
-                llvm::FunctionType* ft = llvm::FunctionType::get(
-                    llvm::Type::getVoidTy(ctx),
-                    {ptrTy, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty,
-                     ptrTy, i64Ty, i32Ty, i32Ty, ptrTy},
-                    /*vararg=*/false);
-                launchV3 = llvm::cast<llvm::Function>(
-                    module->getLlvmModule()
-                        ->getOrInsertFunction("__cajeta_xpu_launch_v3", ft)
-                        .getCallee());
-            }
-            builder->CreateCall(
-                launchV3,
-                {nameStr, grid[0], grid[1], grid[2], block[0], block[1],
-                 block[2], sharedBytes, argvBase, streamHandle,
-                 llvm::ConstantInt::get(i32Ty, (uint64_t) -1),
-                 llvm::ConstantInt::get(i32Ty, specVals.size()),
-                 specBase});
-            emitLaunchRefusalCheck();
-            return nullptr;
         }
 
-        // void __cajeta_xpu_launch(i8* name, i32 gridX, i32 gridY, i32 gridZ,
-        //                          i32 blockX, i32 blockY, i32 blockZ,
-        //                          i32 sharedBytes, ptr argv, i64 streamHandle)
-        llvm::Function* launchFn =
-            module->getRuntimeFunction("__cajeta_xpu_launch");
-        if (!launchFn) {
+        // Every launch is a submission (xpu-tile-scheduling §2.1, D12):
+        // i32 __cajeta_xpu_submit_v1(i8* name, gx,gy,gz, bx,by,bz,
+        //   i32 sharedBytes, ptr argv, i64 streamHandle, i32 specCount,
+        //   ptr specValues, ptr submission)
+        llvm::Function* submitFn =
+            module->getRuntimeFunction("__cajeta_xpu_submit_v1");
+        if (!submitFn) {
             llvm::FunctionType* ft = llvm::FunctionType::get(
-                llvm::Type::getVoidTy(ctx),
-                {ptrTy, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, ptrTy,
-                 i64Ty},
+                i32Ty,
+                {ptrTy, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty,
+                 ptrTy, i64Ty, i32Ty, ptrTy, ptrTy},
                 /*vararg=*/false);
-            launchFn = llvm::cast<llvm::Function>(
+            submitFn = llvm::cast<llvm::Function>(
                 module->getLlvmModule()
-                    ->getOrInsertFunction("__cajeta_xpu_launch", ft)
+                    ->getOrInsertFunction("__cajeta_xpu_submit_v1", ft)
                     .getCallee());
         }
-        builder->CreateCall(launchFn,
-                            {nameStr, grid[0], grid[1], grid[2],
-                             block[0], block[1], block[2], sharedBytes,
-                             argvBase, streamHandle});
+        builder->CreateCall(
+            submitFn,
+            {nameStr, grid[0], grid[1], grid[2], block[0], block[1],
+             block[2], sharedBytes, argvBase, streamHandle,
+             llvm::ConstantInt::get(i32Ty, specVals.size()), specBase, subPtr});
         emitLaunchRefusalCheck();
         return nullptr;
     }

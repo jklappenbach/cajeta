@@ -366,6 +366,10 @@ public final class Device {
             why = "the launch passes a block other than the one block every launch "
                 + "site of this kernel passes, which the kernel was built for";
         }
+        if (reason == 5) {
+            why = "the submission was rejected: its deadline window closed before "
+                + "it was submitted, and a late run is never silent";
+        }
         String msg #= "cajeta.xpu: launch refused for kernel '" + kernel
                     + "' on backend '" + backend
                     + "' (" + why + ")";

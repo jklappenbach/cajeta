@@ -73,7 +73,7 @@ The borrow checker holds across the boundary: a buffer lent to a launch is borro
 
 ## 17.8 Kernel Scheduling
 
-Every launch is also a **submission**: `Scheduler.submit(sub)` records a `KernelSubmission` — geometry, policy, and the kernel's read/write sets — and returns the kernel's resource descriptor. The access sets are the raw material of the dependency DAG, and the launch takes its geometry from the recorded submission.
+Every launch is a **submission**. The plain form `k.launch(s, grid:, block:)(args)` reaches the runtime as a submission at the kernel's default policy, with its read, write and accumulate sets taken from the kernel's manifest and bound to the buffers passed. A `KernelSubmission` passed in the stream's place, `k.launch(sub, grid:, block:)(args)`, adds what a default cannot know: the policy, a deadline window, protection, a compute-unit budget, a capture identity, an energy budget, and the target stream. A kernel with no manifest for the active backend runs as an unclassified submission with a diagnostic. A submission whose window has closed is rejected with its reason (`XpuLaunchException`) and never run late. `Scheduler.submit(sub)` is the explicit form of the same path: it fills the sets from the manifest and returns the kernel's resource descriptor. `Scheduler.bypass(true)`, or `CAJETA_XPU_SCHEDULER=bypass`, takes the raw launch ABI for A/B measurement and is the only unscheduled path.
 
 The scheduling model over that interface:
 

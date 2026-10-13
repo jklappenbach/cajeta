@@ -7,36 +7,110 @@ import cajeta.xpu.KernelManifest;
 import cajeta.lang.Optional;
 
 /**
- * Scheduler — the reserved submit seam for the future multi-kernel scheduler
- * (xpu-cooperative-tile §7.2). A kernel invocation is routed through {@link
- * #submit} by describing it as a {@link KernelSubmission} (geometry + policy +
- * read/write sets); submit RECORDS the submission (the raw material of the
- * dependency DAG, §7.3) and returns the kernel's {@link KernelResourceDescriptor}
- * (§7.1). The author then launches immediately, taking the launch geometry from
- * the submission that went through submit:
+ * Scheduler — the scheduler seam (xpu-tile-scheduling §2). Every launch is a
+ * submission: `k.launch(s, grid:, block:)(args)` reaches the runtime as a
+ * default-policy submission whose access sets come from the kernel's
+ * manifest, and a {@link KernelSubmission} in the stream's place carries what
+ * a default cannot know (policy, deadline window, protection, a compute-unit
+ * budget, a capture identity, an energy budget):
  *
  *     KernelSubmission sub = heap KernelSubmission(gridBlocks, blockThreads);
- *     sub.reads(a.handle());  sub.reads(b.handle());  sub.writes(c.handle());
- *     KernelResourceDescriptor desc #= Scheduler.submit(sub);
- *     k.launch(s, grid: [sub.gridX], block: [sub.blockX])(a, b, c);   // immediate
+ *     sub.policy = SchedulePolicy.Latency;
+ *     sub.latestNs = Clock.nanoTime() + 2000000L;
+ *     k.launch(sub, grid: [sub.gridX], block: [sub.blockX])(a, b, c);
  *
- * There is NO scheduler behind the seam: nothing reorders, fuses, graph-captures,
- * or reads the descriptor / r/w sets yet (§1.4, §7.1). The seam is the plug-in
- * point — a later scheduler makes submit gate/queue on the submission and packs
- * occupancy from the descriptor, with no change to any call site. Removing this
- * seam is the only thing a future scheduler could not avoid, so it is the right
- * point, not machinery.
- *
- * NOTE (why submit does not itself run the launch): the ideal seam wraps the
- * `k.launch(...)` in a thunk that submit invokes (so it can defer the launch
- * outright). That form is blocked today — a kernel-launch expression inside a
- * lambda body crashes host codegen (captured buffers are not reached; a separate
- * compiler improvement is needed). Until that lands, submit records + returns and
- * the launch is the adjacent immediate statement, its geometry read from `sub`.
+ * {@link #submit} is the explicit form of the same path: it fills the
+ * submission's sets from the manifest and returns the kernel's {@link
+ * KernelResourceDescriptor}. The runtime records each scheduled launch;
+ * {@link #last}, {@link #submissionCount}, {@link #bypassedCount} and {@link
+ * #rejectedCount} read the record back. Nothing reorders or defers a launch
+ * yet. The {@link #bypass} switch takes the raw launch ABI for A/B measurement
+ * and is the only unscheduled path (§2.1a).
  */
 public final class Scheduler {
 
     private Scheduler() { }
+
+    /** Launches scheduled in this process (every launch not bypassed or rejected). */
+    public static int64 submissionCount() { return Scheduler.nativeCount(0); }
+
+    /** Launches that took the raw ABI under the bypass switch (§2.1a). */
+    public static int64 bypassedCount() { return Scheduler.nativeCount(1); }
+
+    /** Submissions rejected with a reason (§2.9). */
+    public static int64 rejectedCount() { return Scheduler.nativeCount(2); }
+
+    /**
+     * The bypass switch (§2.1a): on, every launch takes the raw ABI and the
+     * scheduler sees nothing. For A/B measurement only. `CAJETA_XPU_SCHEDULER=bypass`
+     * sets it at startup.
+     */
+    public static void bypass(boolean on) { Scheduler.nativeBypass(on ? 1 : 0); }
+
+    public static boolean bypassed() { return Scheduler.nativeBypassed() != 0; }
+
+    /** A copy of the most recent scheduled launch, or null before the first. */
+    public static #SubmissionRecord last() {
+        if (Scheduler.submissionCount() == 0L) { return null; }
+        SubmissionRecord r = heap SubmissionRecord();
+        int8[] buf = heap int8[256];
+        int64 n = Scheduler.nativeLastName(buf, 256L);
+        r.kernel #= heap String(#buf, (int32) n);
+        r.gridX = (int32) Scheduler.nativeLastField(0);
+        r.gridY = (int32) Scheduler.nativeLastField(1);
+        r.gridZ = (int32) Scheduler.nativeLastField(2);
+        r.blockX = (int32) Scheduler.nativeLastField(3);
+        r.blockY = (int32) Scheduler.nativeLastField(4);
+        r.blockZ = (int32) Scheduler.nativeLastField(5);
+        r.sharedBytes = (int32) Scheduler.nativeLastField(6);
+        r.streamHandle = Scheduler.nativeLastField(7);
+        int32 p = (int32) Scheduler.nativeLastField(8);
+        if (p == 1) { r.policy = SchedulePolicy.Latency; }
+        if (p == 2) { r.policy = SchedulePolicy.FrameBudget; }
+        if (p == 3) { r.policy = SchedulePolicy.Energy; }
+        r.protectedLaunch = Scheduler.nativeLastField(9) != 0L;
+        r.earliestNs = Scheduler.nativeLastField(10);
+        r.latestNs = Scheduler.nativeLastField(11);
+        r.cuBudget = (int32) Scheduler.nativeLastField(12);
+        r.captureId = Scheduler.nativeLastField(13);
+        r.energyJoules = Scheduler.nativeLastEnergy();
+        r.classified = Scheduler.nativeLastField(15) != 0L;
+        r.poolHandle = Scheduler.nativeLastField(19);
+        r.poolReserve = Scheduler.nativeLastField(20);
+        Scheduler.fillSet(r.readSet, 0, (int32) Scheduler.nativeLastField(16));
+        Scheduler.fillSet(r.writeSet, 1, (int32) Scheduler.nativeLastField(17));
+        Scheduler.fillSet(r.accumulateSet, 2, (int32) Scheduler.nativeLastField(18));
+        return #r;
+    }
+
+    private static void fillSet(ArrayList<int64> dst, int32 set, int32 n) {
+        int32 i = 0;
+        while (i < n) {
+            dst.add(Scheduler.nativeLastHandle(set, i));
+            i = i + 1;
+        }
+    }
+
+    @Native("__cajeta_xpu_submission_count")
+    private static int64 nativeCount(int32 which);
+
+    @Native("__cajeta_xpu_scheduler_bypass")
+    private static void nativeBypass(int32 on);
+
+    @Native("__cajeta_xpu_scheduler_bypassed")
+    private static int32 nativeBypassed();
+
+    @Native("__cajeta_xpu_last_submission_field")
+    private static int64 nativeLastField(int32 key);
+
+    @Native("__cajeta_xpu_last_submission_energy")
+    private static float64 nativeLastEnergy();
+
+    @Native("__cajeta_xpu_last_submission_name")
+    private static int64 nativeLastName(int8[] buf, int64 cap);
+
+    @Native("__cajeta_xpu_last_submission_handle")
+    private static int64 nativeLastHandle(int32 set, int32 i);
 
     /**
      * Record `sub` for the future scheduler and emit its resource descriptor

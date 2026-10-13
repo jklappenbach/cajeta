@@ -63,6 +63,53 @@ void __cajeta_xpu_launch(const char* kernelName,
                          int32_t blockX, int32_t blockY, int32_t blockZ,
                          uint32_t sharedBytes, void* argv, int64_t streamHandle);
 
+/* --- the scheduler seam (xpu-tile-scheduling §2) ------------------------- *
+ * Every launch is a submission: the compiler emits __cajeta_xpu_submit_v1 for
+ * the launch form and for a KernelSubmission in the stream's place. `sub` is
+ * NULL for the kernel's defaults. Returns 0, or the refusal reason it recorded
+ * for Device.checkLaunch (5 = the deadline window had closed, §2.9). Under the
+ * bypass switch the launch takes __cajeta_xpu_launch_v3 and nothing is
+ * recorded (§2.1a). The values are frozen ABI: append, never renumber. */
+typedef struct CajetaXpuSubmission {
+    int32_t version;        /* 1 */
+    int32_t policy;         /* SchedulePolicy ordinal, -1 = the kernel's default */
+    int32_t protectedBit;   /* §2.4 */
+    int32_t cuBudget;       /* compute units, 0 = none (§2.5) */
+    int64_t earliestNs;     /* window in CLOCK_MONOTONIC ns, 0 = none (§2.3) */
+    int64_t latestNs;
+    int64_t captureId;      /* 0 = none (§2.6) */
+    double  energyJoules;   /* 0 = none (§8.7) */
+    int64_t poolHandle;     /* 0 = none (§2.7) */
+    int64_t poolReserve;
+} CajetaXpuSubmission;
+
+int32_t __cajeta_xpu_submit_v1(const char* kernelName,
+                               int32_t gridX, int32_t gridY, int32_t gridZ,
+                               int32_t blockX, int32_t blockY, int32_t blockZ,
+                               uint32_t sharedBytes, void* argv,
+                               int64_t streamHandle,
+                               int32_t specCount, const int32_t* specValues,
+                               const CajetaXpuSubmission* sub);
+
+/* The bypass switch, also CAJETA_XPU_SCHEDULER=bypass at startup. */
+void    __cajeta_xpu_scheduler_bypass(int32_t on);
+int32_t __cajeta_xpu_scheduler_bypassed(void);
+
+/* Counters: 0 scheduled, 1 bypassed, 2 rejected. */
+int64_t __cajeta_xpu_submission_count(int32_t which);
+
+/* The most recent scheduled submission. Field keys: 0..5 grid x,y,z block
+ * x,y,z; 6 sharedBytes; 7 stream; 8 policy; 9 protected; 10 earliest;
+ * 11 latest; 12 cuBudget; 13 captureId; 15 classified; 16..18 read, write,
+ * accumulate set sizes; 19 poolHandle; 20 poolReserve. */
+int64_t __cajeta_xpu_last_submission_field(int32_t key);
+double  __cajeta_xpu_last_submission_energy(void);
+int64_t __cajeta_xpu_last_submission_name(void* bufArr, int64_t cap);
+int64_t __cajeta_xpu_last_submission_handle(int32_t set, int32_t i);
+
+/* Drops one (name, backend) manifest registration; a module unload. */
+void __cajeta_xpu_unregister_kernel_manifest(const char* kernelName, int32_t backend);
+
 /* --- device profile (xpu-device-profile) --------------------------------- *
  * Raw, per-process device facts a host consumer turns into a DeviceModel.
  * Numeric fields are sanity-clamped and 0 means UNKNOWN throughout. */

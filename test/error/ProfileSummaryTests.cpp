@@ -325,3 +325,70 @@ TEST(ProfileSummary, aTraceWithoutRingAccountingSaysUnknown) {
     EXPECT_EQ(s.gpuRecordsKept, -1);
     EXPECT_EQ(s.gpuRecordsDropped, -1);
 }
+
+// ── The instrumentation track (xpu-tile-scheduling 1.1.3) ─────────────────
+//
+// Exact-instrumentation records are run totals on their own track, written
+// as instants annotated with calls and inclusive_ns. The scheduler seam
+// records one for `cajeta.xpu.Scheduler.submit` so a profiled run reports
+// the seam's cost per launch in the summary beside the kernels.
+namespace {
+
+std::string writeInstrTrace(const char* name, int64_t calls, int64_t inclusiveNs) {
+    uint8_t buf[1024];
+    int32_t n = 0;
+    {   // TrackDescriptor{uuid=2, name="cajeta.instrumentation"}
+        uint8_t td[64];
+        int32_t t = __cajeta_pb_uint64(td, 1, 2);
+        const char* nm = "cajeta.instrumentation";
+        t += __cajeta_pb_bytes(td + t, 2, (const uint8_t*) nm, (int32_t) std::strlen(nm));
+        uint8_t pkt[96];
+        int32_t p = __cajeta_pb_bytes(pkt, 60, td, t);
+        n += __cajeta_pb_bytes(buf + n, 1, pkt, p);
+    }
+    {   // TrackEvent{type=INSTANT(3), track=2, name, annos}
+        uint8_t te[256];
+        int32_t t = __cajeta_pb_uint64(te, 9, 3);
+        t += __cajeta_pb_uint64(te + t, 11, 2);
+        t += __cajeta_pb_bytes(te + t, 23, (const uint8_t*) name, (int32_t) std::strlen(name));
+        auto anno = [&](const char* key, int64_t v) {
+            uint8_t da[64];
+            int32_t d = __cajeta_pb_bytes(da, 10, (const uint8_t*) key, (int32_t) std::strlen(key));
+            d += __cajeta_pb_uint64(da + d, 4, (uint64_t) v);
+            t += __cajeta_pb_bytes(te + t, 4, da, d);
+        };
+        anno("calls", calls);
+        anno("inclusive_ns", inclusiveNs);
+        uint8_t pkt[320];
+        int32_t p = __cajeta_pb_uint64(pkt, 8, 0);
+        p += __cajeta_pb_bytes(pkt + p, 11, te, t);
+        n += __cajeta_pb_bytes(buf + n, 1, pkt, p);
+    }
+    const char* dir = std::getenv("TMPDIR");
+    std::string path = std::string(dir ? dir : "tmp") + "/profile-summary-instr-"
+        + std::to_string(calls) + ".pftrace";
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return "";
+    std::fwrite(buf, 1, (size_t) n, f);
+    std::fclose(f);
+    return path;
+}
+
+} // namespace
+
+// 1.1.3 — an instrumentation record reaches the summary as calls, inclusive
+// time and the per-call average.
+TEST(ProfileSummary, instrumentationRecordsAreListedWithTheirPerCallCost) {
+    std::string path = writeInstrTrace("cajeta.xpu.Scheduler.submit(cajeta_xpu_sched.c)",
+                                       1000, 630000);
+    ASSERT_FALSE(path.empty()) << "could not write the fixture under $TMPDIR";
+    Summary s;
+    std::string err;
+    ASSERT_TRUE(cajeta::prof::summarize(path, SummaryOptions{}, &s, &err)) << err;
+    ASSERT_EQ(s.instr.size(), 1u);
+    EXPECT_EQ(s.instr[0].name, "cajeta.xpu.Scheduler.submit(cajeta_xpu_sched.c)");
+    EXPECT_EQ(s.instr[0].calls, 1000);
+    EXPECT_EQ(s.instr[0].inclusiveNs, 630000);
+    EXPECT_EQ(s.instr[0].avgNs(), 630);
+    std::remove(path.c_str());
+}

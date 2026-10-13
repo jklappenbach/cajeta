@@ -1,0 +1,61 @@
+package cajeta.xpu;
+
+import cajeta.collection.ArrayList;
+
+/**
+ * SubmissionRecord — a snapshot of the most recent scheduled launch, as the
+ * runtime recorded it (xpu-tile-scheduling §2): the kernel, geometry, the
+ * policy fields the submission carried, and the access sets bound from the
+ * manifest. Read it with {@link Scheduler#last}; it is a copy and owns its
+ * lists.
+ */
+public final class SubmissionRecord {
+    public String kernel;
+    public int32 gridX;
+    public int32 gridY;
+    public int32 gridZ;
+    public int32 blockX;
+    public int32 blockY;
+    public int32 blockZ;
+    public int32 sharedBytes;
+    public int64 streamHandle;
+    public SchedulePolicy policy;
+    public boolean protectedLaunch;
+    public int64 earliestNs;
+    public int64 latestNs;
+    public int32 cuBudget;
+    public int64 captureId;
+    public float64 energyJoules;
+    public int64 poolHandle;
+    public int64 poolReserve;
+    /** False when no manifest existed for the kernel on the active target (§2.8). */
+    public boolean classified;
+    public ArrayList<int64> readSet;
+    public ArrayList<int64> writeSet;
+    public ArrayList<int64> accumulateSet;
+
+    public SubmissionRecord() {
+        this.kernel = "";
+        this.gridX = 0;
+        this.gridY = 0;
+        this.gridZ = 0;
+        this.blockX = 0;
+        this.blockY = 0;
+        this.blockZ = 0;
+        this.sharedBytes = 0;
+        this.streamHandle = 0L;
+        this.policy = SchedulePolicy.Throughput;
+        this.protectedLaunch = false;
+        this.earliestNs = 0L;
+        this.latestNs = 0L;
+        this.cuBudget = 0;
+        this.captureId = 0L;
+        this.energyJoules = 0.0;
+        this.poolHandle = 0L;
+        this.poolReserve = 0L;
+        this.classified = false;
+        this.readSet #= heap ArrayList<int64>();
+        this.writeSet #= heap ArrayList<int64>();
+        this.accumulateSet #= heap ArrayList<int64>();
+    }
+}

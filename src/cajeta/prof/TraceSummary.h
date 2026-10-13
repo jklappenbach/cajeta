@@ -37,9 +37,18 @@ namespace cajeta::prof {
 
     struct GapBucket { int64_t upToNs; int64_t count; int64_t totalNs; };
     struct Gap { int64_t ns; int64_t relTs; std::string before; std::string after; };
+    /** One exact-instrumentation record: run totals, not slices. */
+    struct InstrStat {
+        std::string name;
+        int64_t calls = 0;
+        int64_t inclusiveNs = 0;
+        int64_t avgNs() const { return calls > 0 ? inclusiveNs / calls : 0; }
+    };
 
     struct Summary {
         std::vector<KernelStat> rows;      // sorted by totalNs, descending
+        /** The instrumentation track, listed after the rows in both outputs. */
+        std::vector<InstrStat> instr;
         int64_t sliceCount = 0;
         /** Sum of `selfNs` over every row; may exceed `spanNs` on concurrent tracks. */
         int64_t totalSelfNs = 0;

@@ -202,6 +202,9 @@ namespace cajeta::prof {
                     walk(g.data, (size_t) g.len, [&](const Field& t) {
                         if (t.number == kTeName && t.wire == 2) {
                             name.assign((const char*) t.data, (size_t) t.len);
+                        } else if (t.number == kTeNameIid && t.wire == 0) {
+                            auto it = internedName.find(t.len);
+                            if (it != internedName.end()) name = it->second;
                         } else if (t.number == kTeDebugAnnos && t.wire == 2) {
                             std::string key;
                             int64_t v = 0;
@@ -223,6 +226,18 @@ namespace cajeta::prof {
                             else if (a.first == "gpu_records_dropped") out->gpuRecordsDropped = a.second;
                             else if (a.first == "gpu_pending_overflow") out->gpuPendingOverflow = a.second;
                             else if (a.first == "gpu_pending_unclaimed") out->gpuPendingUnclaimed = a.second;
+                        }
+                    } else if (!name.empty()) {
+                        // An exact-instrumentation record carries its run totals.
+                        InstrStat s;
+                        bool calls = false, incl = false;
+                        for (const auto& a : annos) {
+                            if (a.first == "calls") { s.calls = a.second; calls = true; }
+                            else if (a.first == "inclusive_ns") { s.inclusiveNs = a.second; incl = true; }
+                        }
+                        if (calls && incl) {
+                            s.name = name;
+                            out->instr.push_back(std::move(s));
                         }
                     }
                 }
@@ -442,7 +457,7 @@ namespace cajeta::prof {
                 what, path.c_str(), opts.host ? "host" : "device queue");
             return 1;
         }
-        if (sum.rows.empty()) {
+        if (sum.rows.empty() && sum.instr.empty()) {
             std::fprintf(stderr,
                 "cajeta profile: %" PRId64 " matching track(s), but no slice fell in the window\n",
                 sum.trackCount);
@@ -460,6 +475,12 @@ namespace cajeta::prof {
                 std::printf("%s,%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "\n",
                             r.name.c_str(), r.count, r.totalNs, r.selfNs,
                             r.avgNs(), r.maxNs);
+            }
+            // Instrumentation records are run totals: total and self coincide, max is unknown.
+            for (const auto& s : sum.instr) {
+                std::printf("%s,%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",0\n",
+                            s.name.c_str(), s.calls, s.inclusiveNs, s.inclusiveNs,
+                            s.avgNs());
             }
             return 0;
         }
@@ -484,6 +505,16 @@ namespace cajeta::prof {
                     "self %s, wall %s\n",
                     sum.sliceCount, sum.trackCount,
                     fmtNs(sum.totalSelfNs).c_str(), fmtNs(sum.spanNs).c_str());
+        if (!sum.instr.empty()) {
+            size_t iw = 15;
+            for (const auto& s : sum.instr) iw = std::max(iw, s.name.size());
+            std::printf("\n%-*s %8s %12s %12s\n", (int) iw, "instrumentation",
+                        "calls", "inclusive", "per call");
+            for (const auto& s : sum.instr) {
+                std::printf("%-*s %8" PRId64 " %12s %12s\n", (int) iw, s.name.c_str(),
+                            s.calls, fmtNs(s.inclusiveNs).c_str(), fmtNs(s.avgNs()).c_str());
+            }
+        }
         if (opts.gaps) {
             std::printf("\ngaps between consecutive slices: %" PRId64 " gaps, idle %s "
                         "(%.1f%% of wall)\n", sum.gapCount, fmtNs(sum.gapTotalNs).c_str(),

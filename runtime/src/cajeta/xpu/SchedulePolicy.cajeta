@@ -14,5 +14,6 @@ package cajeta.xpu;
 public enum SchedulePolicy {
     Throughput,   // 0 — maximize work per unit time (the default; training GEMMs)
     Latency,      // 1 — minimize time-to-result for a single submission
-    FrameBudget   // 2 — fit within a per-frame deadline (interactive / games)
+    FrameBudget,  // 2 — fit within a per-frame deadline (interactive / games)
+    Energy        // 3 — a joules-per-period budget on a periodic stream (scheduling §8.7)
 }
