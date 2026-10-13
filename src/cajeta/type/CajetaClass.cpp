@@ -1749,6 +1749,30 @@ namespace cajeta {
     // Every interface this class is assignable to, its own and every base's.
     // A class that inherits an interface through a parent still converts to it,
     // and the conversion reads THIS class's table, so it needs one.
+    namespace {
+        // True when `ifaceMethod` belongs to `cajeta.wire.Encoder<T>` and `cls` supplies it
+        // as a static method of the same name and arity: the form an @Encoding encoder
+        // takes, which is called directly and never through the interface table.
+        bool staticEncoderMethod(CajetaClass& cls, const CajetaClass& iface, const MethodPtr& ifaceMethod) {
+            if (!ifaceMethod) return false;
+            const CajetaClass* origin = iface.getTemplateOrigin() ? iface.getTemplateOrigin().get() : &iface;
+            if (!origin->getQName() || origin->getQName()->toCanonical() != "cajeta.wire.Encoder") {
+                return false;
+            }
+            size_t want = ifaceMethod->getParameterList().size();
+            if (want > 0 && ifaceMethod->getParameterList().front()
+                    && ifaceMethod->getParameterList().front()->getName() == "this") {
+                --want;
+            }
+            for (auto& [canon, m] : cls.getMethods()) {
+                if (!m || m->getName() != ifaceMethod->getName()) continue;
+                if (m->getModifiers().find(STATIC) == m->getModifiers().end()) continue;
+                if (m->getParameterList().size() == want) return true;
+            }
+            return false;
+        }
+    }
+
     std::vector<CajetaClassPtr> CajetaClass::allAssignableInterfaces() const {
         std::vector<CajetaClassPtr> out;
         std::set<const CajetaClass*> seen;
@@ -1881,7 +1905,7 @@ namespace cajeta {
                 if (!concrete || !concrete->getLlvmFunction()) {
                     // An abstract class may leave an interface method to its
                     // descendants, so its empty slot is expected and not a warning.
-                    if (!isAbstract()) {
+                    if (!isAbstract() && !staticEncoderMethod(*this, *iface, ifaceMethod)) {
                         std::ostringstream w;
                         w << "warning: [iface-vtable-null-slot] "
                           << classCanonical << " has no built implementation for "
@@ -4387,6 +4411,7 @@ namespace cajeta {
                     continue;
                 }
                 if (isAbstract()) continue;
+                if (staticEncoderMethod(*this, *iface, m)) continue;
                 std::string msg = "class '" + qName->toCanonical()
                     + "' implements interface '" + iface->getQName()->toCanonical()
                     + "' but does not provide '" + m->toCanonical(/*labeled=*/false)

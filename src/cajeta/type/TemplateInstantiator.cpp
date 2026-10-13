@@ -395,10 +395,11 @@ namespace cajeta {
                 if (cls->isPlaceholder()) {
                     bool isTVar = !cls->getQName()
                         || cls->getQName()->getPackageName().empty();
-                    // Interfaces keep short-circuiting on any placeholder:
-                    // vtable conformance is signature-strict and would reject
-                    // a static-method @Encoding implementer.
-                    if (isTVar || interfaceFlag) {
+                    // An interface over a forward placeholder is built like a
+                    // class: handing back the bare template left it with no
+                    // methods, so every call through `Codec<Signup>` failed
+                    // when Signup's file had not been read yet.
+                    if (isTVar) {
                         return static_pointer_cast<CajetaClass>(
                             shared_from_this());
                     }
