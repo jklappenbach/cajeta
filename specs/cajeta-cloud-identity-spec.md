@@ -46,7 +46,8 @@ including its failure modes: a duplicate registration conflicts, a wrong
 password fails, an expired code is rejected.
 
 A filesystem-backed driver does **not** live in `cajeta-cloud`. Parent §1.4
-keeps the library at `capabilities: []`, and parent §1.5 places every local
+keeps the library free of filesystem and network capability (it declares only
+`env`, for §9.2), and parent §1.5 places every local
 backend in a separate, uncommitted `cajeta-cloud-local`. If the registration
 sample needs users to survive a restart before a provider adapter exists, the
 filesystem driver is written in `cajeta-cloud-local` and the sample depends on
@@ -261,9 +262,13 @@ is no runtime scan for adapters.
 - **9.1** When a provider adapter is a compiled dependency of the
   application, it contributes its implementation of the port to the DI graph
   as a named `@Component`.
-- **9.2** When configuration names a provider (`identity.provider = cognito`),
-  that named implementation is selected. When the name matches no compiled-in
-  implementation, startup fails and the message lists the ones present.
+- **9.2** *(Amended 2026-10-13.)* When configuration names a provider
+  (`identity.provider = cognito`), that named implementation is selected.
+  Configuration is the `IDENTITY_PROVIDER` environment variable, overridden by
+  code: an `IdentityConfig` component the application declares wins when it
+  returns a name, as the AWS SDKs let code override the environment. When the
+  name matches no compiled-in implementation, startup fails and the message
+  lists the ones present.
 - **9.3** When no provider adapter is compiled in, the memory driver is the
   only implementation and is selected without configuration. This is "default
   to the reference implementation".

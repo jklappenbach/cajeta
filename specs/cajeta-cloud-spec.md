@@ -112,7 +112,8 @@ A port is not complete until it has:
    also pass.
 
 **The capability argument is what makes this a rule rather than a preference.**
-`cajeta-cloud` declares `"capabilities": []` — no filesystem, no network. A
+`cajeta-cloud` declares no filesystem and no network capability, only `env` for
+one read (§14.11, amended 2026-10-13). A
 filesystem-backed driver would force the interface library to declare filesystem
 capability, and every consumer of a pure interface would inherit it. Memory
 drivers keep the declaration literally true. This is the same boundary that
@@ -215,7 +216,7 @@ startup error.
 
 ```
 cajeta-cloud          ports + in-memory drivers + conformance testkits
-                      capabilities: []  — no filesystem, no network, no SDK deps
+                      capabilities: ["env"]  — no filesystem, no network, no SDK deps
 cajeta-cloud-aws      S3, SQS, SNS, …   (needs cajeta-http, SigV4, XML)
 cajeta-cloud-azure    Blob, Service Bus, …
 cajeta-cloud-gcp      Cloud Storage, Pub/Sub, …
@@ -586,9 +587,12 @@ changed the design; both are cheap now and expensive to retrofit.
 - **14.9** Credentials never appear in logs or error messages (§9.5).
 - **14.10** Every specified port ships an in-memory driver that passes the full
   conformance suite (§1.4) — asserted per port, not claimed.
-- **14.11** `cajeta-cloud` declares **`"capabilities": []`** and its build
-  contains no filesystem or network call, verified against the manifest (§1.4).
-  A filesystem-backed driver landing here is a spec violation, not a shortcut.
+- **14.11** *(Amended 2026-10-13, Julian: the AWS order, environment first and
+  code overriding it.)* `cajeta-cloud` declares **`"capabilities": ["env"]`**
+  and its build contains no filesystem or network call, verified against the
+  manifest (§1.4). `env` covers one read, `IDENTITY_PROVIDER` (identity
+  addendum §9.2); any other environment read is a violation. A
+  filesystem-backed driver landing here is a spec violation, not a shortcut.
 - **14.12** The full object-store vertical runs end to end with **no network, no
   provider account, and no filesystem**, including concurrent conditional writes
   (§14.2).
